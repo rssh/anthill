@@ -1,0 +1,7 @@
+[package]
+name = "anthill-core"
+version = "0.1.0"
+edition = "2021"
+description = "Anthill kernel language: terms, parser, KB, stage0"
+
+[dependencies]

@@ -1,0 +1,31 @@
+val scala3Version = "3.6.3"
+
+lazy val root = project
+  .in(file("."))
+  .aggregate(core, engine)
+  .settings(
+    name := "anthill-scaland"
+  )
+
+lazy val core = project
+  .in(file("core"))
+  .settings(
+    name := "anthill-core",
+    version := "0.1.0-SNAPSHOT",
+    scalaVersion := scala3Version,
+    libraryDependencies ++= Seq(
+      "org.scalameta" %% "munit" % "1.0.0" % Test
+    )
+  )
+
+lazy val engine = project
+  .in(file("engine"))
+  .dependsOn(core)
+  .settings(
+    name := "anthill-engine",
+    version := "0.1.0-SNAPSHOT",
+    scalaVersion := scala3Version,
+    libraryDependencies ++= Seq(
+      "org.scalameta" %% "munit" % "1.0.0" % Test
+    )
+  )

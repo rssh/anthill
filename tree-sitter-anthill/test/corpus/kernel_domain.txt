@@ -1,0 +1,148 @@
+=====================================
+Empty domain with braces
+=====================================
+
+domain banking {
+}
+
+---
+
+(source_file
+  (domain_declaration
+    name: (name (identifier))))
+
+=====================================
+Domain with entity and operation
+=====================================
+
+domain banking
+  export Account, Money, deposit
+  entity Account(id: AccountId, balance: Money)
+  operation deposit(a: Account, m: Money) -> Account
+    requires gt(m, zero-val)
+    ensures eq(balance(result), add(balance(a), m))
+end
+
+---
+
+(source_file
+  (domain_declaration
+    name: (name (identifier))
+    (export_clause
+      (name (identifier))
+      (name (identifier))
+      (name (identifier)))
+    (entity_declaration
+      name: (name (identifier))
+      (field_decl
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      (field_decl
+        name: (identifier)
+        type: (simple_type (name (identifier)))))
+    (operation_declaration
+      name: (name (identifier))
+      (param
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      (param
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      return_type: (simple_type (name (identifier)))
+      (operation_clause
+        (requires_clause
+          (rule_body
+            (fn_term
+              name: (name (identifier))
+              (identifier)
+              (identifier)))))
+      (operation_clause
+        (ensures_clause
+          (rule_body
+            (fn_term
+              name: (name (identifier))
+              (fn_term
+                name: (name (identifier))
+                (identifier))
+              (fn_term
+                name: (name (identifier))
+                (fn_term
+                  name: (name (identifier))
+                  (identifier))
+                (identifier)))))))))
+
+=====================================
+Abstract sort
+=====================================
+
+sort Scalar
+
+---
+
+(source_file
+  (abstract_sort
+    name: (name (identifier))))
+
+=====================================
+Defined sort (ADT)
+=====================================
+
+sort WorkStatus = {
+  entity Draft
+  entity Open
+  entity Claimed(agent: String, since: String)
+}
+
+---
+
+(source_file
+  (defined_sort
+    name: (name (identifier))
+    (constructor
+      name: (name (identifier)))
+    (constructor
+      name: (name (identifier)))
+    (constructor
+      name: (name (identifier))
+      (field_decl
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      (field_decl
+        name: (identifier)
+        type: (simple_type (name (identifier)))))))
+
+=====================================
+Fact with metadata
+=====================================
+
+fact parent("alice", "bob") [trust: axiom, agent: "author"]
+
+---
+
+(source_file
+  (fact_declaration
+    term: (fn_term
+      name: (name (identifier))
+      (string_literal)
+      (string_literal))
+    (meta_block
+      (meta_entry
+        key: (name (identifier))
+        value: (identifier))
+      (meta_entry
+        key: (name (identifier))
+        value: (string_literal)))))
+
+=====================================
+Line comment
+=====================================
+
+-- this is a comment
+sort T
+
+---
+
+(source_file
+  (line_comment)
+  (abstract_sort
+    name: (name (identifier))))

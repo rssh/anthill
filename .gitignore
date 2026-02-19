@@ -1,0 +1,26 @@
+# Rust
+rustland/target/
+
+# Scala
+scaland/target/
+scaland/project/target/
+scaland/.bsp/
+scaland/.metals/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Tree-sitter generated
+tree-sitter-anthill/node_modules/
+tree-sitter-anthill/src/
+tree-sitter-anthill/build/
+tree-sitter-anthill/bindings/
+tree-sitter-anthill/target/
+
+# OS
+.DS_Store
+
+# Claude
+.claude/

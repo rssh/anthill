@@ -1,0 +1,29 @@
+{
+  "name": "tree-sitter-anthill",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Anthill kernel language",
+  "main": "bindings/node",
+  "keywords": ["parser", "anthill", "tree-sitter"],
+  "dependencies": {
+    "node-addon-api": "^8.0.0",
+    "node-gyp-build": "^4.8.0"
+  },
+  "peerDependencies": {
+    "tree-sitter": "^0.22.4"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.25.0"
+  },
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "parse": "tree-sitter parse"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.anthill",
+      "file-types": ["anthill"],
+      "injection-regex": "anthill"
+    }
+  ]
+}

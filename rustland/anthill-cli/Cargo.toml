@@ -1,0 +1,8 @@
+[package]
+name = "anthill-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Anthill CLI: validate, status, verify, decompose"
+
+[dependencies]
+anthill-core = { path = "../anthill-core" }

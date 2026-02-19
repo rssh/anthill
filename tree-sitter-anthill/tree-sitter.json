@@ -1,0 +1,19 @@
+{
+  "grammars": [
+    {
+      "name": "anthill",
+      "camelcase": "Anthill",
+      "scope": "source.anthill",
+      "path": ".",
+      "file-types": ["anthill"],
+      "injection-regex": "anthill"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "links": {}
+  },
+  "bindings": {
+    "rust": true
+  }
+}

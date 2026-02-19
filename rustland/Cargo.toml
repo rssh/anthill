@@ -1,0 +1,3 @@
+[workspace]
+members = ["anthill-core", "anthill-cli"]
+resolver = "2"
