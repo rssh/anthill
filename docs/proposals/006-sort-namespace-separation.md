@@ -48,9 +48,7 @@ Import ::= 'import' Name ['.' '{' NameList '}']
 
 ### 3. Instantiation is purely sort-level via `Name{bindings}`
 
-The inline type expression `Name{bindings}` is the sole mechanism for sort parameter binding. It works in two positions:
-
-**a) Type expressions** — binding sort parameters in fields and signatures:
+The inline type expression `Name{bindings}` is the sole mechanism for sort parameter binding in type positions:
 
 ```
 entity Project(
@@ -59,25 +57,36 @@ entity Project(
 )
 ```
 
-**b) Sort member declarations** — expressing typeclass-like requirements:
+### 4. `requires` for sort-level constraints
+
+The `requires` keyword already means "precondition" on operations:
+
+```
+operation withdraw(a: Account, m: Money) -> Account
+  requires gt(m, zero-val), gte(balance(a), m)
+```
+
+The same keyword works at the sort level — a **precondition for instantiation**:
 
 ```
 sort Ordered {
   sort T
-  sort Eq{T = T}              -- "T has an Eq" — requirement
+  requires Eq{T = T}              -- to instantiate Ordered, T must have Eq
   operation gt(a: T, b: T) -> Bool
   ...
 }
-
-sort Money {
-  sort Numeric{T = Money}     -- Money has numeric operations
-  entity dollars(amount: Int)
-}
 ```
 
-A `sort Eq{T = T}` inside Ordered's body means: "an instance of Eq for my T is part of my structure." This is analogous to Scala's `given Eq[T]` or Haskell's `(Eq a) =>` constraint.
+This is uniform: `requires` = "this must be satisfied before you can use this."
 
-### 4. Typeclass-like patterns are expressible as sorts
+| Level | Syntax | Meaning |
+|-------|--------|---------|
+| Operation | `requires gt(m, zero-val)` | Precondition to **call** the operation |
+| Sort | `requires Eq{T = T}` | Precondition to **instantiate** the sort |
+
+Note the distinction from `sort T` (which **declares** a new abstract parameter). `requires Eq{T=T}` **references** an existing sort with bindings — it's a constraint, not a declaration.
+
+### 5. Typeclass-like patterns are expressible as sorts
 
 Specifications with abstract sort parameters ARE sorts:
 
@@ -91,7 +100,7 @@ sort Eq {
 
 sort Ordered {
   sort T
-  sort Eq{T = T}
+  requires Eq{T = T}
   operation gt(a: T, b: T) -> Bool
   operation gte(a: T, b: T) -> Bool
   operation lt(a: T, b: T) -> Bool
@@ -104,7 +113,7 @@ sort Ordered {
 
 sort Numeric {
   sort T
-  sort Ordered{T = T}
+  requires Ordered{T = T}
   operation add(a: T, b: T) -> T
   operation sub(a: T, b: T) -> T
   operation mul(a: T, b: T) -> T
@@ -115,9 +124,9 @@ sort Numeric {
 }
 ```
 
-The chain `Numeric → Ordered → Eq` is expressed entirely through sort member declarations. No import-level binding needed.
+The chain `Numeric → Ordered → Eq` is expressed entirely through `requires`. No import-level binding needed.
 
-### 5. Interface satisfaction is a Horn clause
+### 6. Interface satisfaction is a Horn clause
 
 "Does X satisfy Y?" can be expressed as a rule over `member` facts (from proposal 001.1):
 
@@ -136,7 +145,7 @@ This is a KB query, not a built-in mechanism. It can be refined, extended, or ov
 ```
 namespace banking {
   sort Money {
-    sort Numeric{T = Money}
+    requires Numeric{T = Money}
     entity dollars(amount: Int)
   }
 
@@ -168,7 +177,7 @@ namespace anthill.prelude {
 }
 ```
 
-Usage: `List{T = Int}` in type position, or `sort List{T = Int}` as a member declaration.
+Usage: `List{T = Int}` in type position.
 
 ### Functor / Monad
 
@@ -184,7 +193,7 @@ sort Monad {
   sort M
     sort T
   end
-  sort Functor{F = M}           -- Monad requires Functor
+  requires Functor{F = M}           -- Monad requires Functor
   operation return(x: T) -> M
   operation bind(m: M, f: T -> M{T = U}) -> M{T = U}
   rule bind(return(?x), ?f) = ?f(?x)
@@ -207,7 +216,8 @@ NamespaceContent ::= Sort | Namespace | Rule | Operation
                    | Entity | Fact | Constraint
                    | OperationBlock | RuleBlock
 
--- Sort unchanged (already supports full body from 001)
+-- Sort body gains 'requires' for sort-level constraints:
+SortContent ::= ... | 'requires' TypeExpr
 
 -- Import simplified (no where clause):
 Import ::= 'import' Name ['.' '{' NameList '}']
@@ -215,12 +225,14 @@ Import ::= 'import' Name ['.' '{' NameList '}']
 
 Soft keywords: replace `domain` with `namespace`.
 
+The `requires` keyword is already a soft keyword (used in operations). At sort level, `requires Eq{T=T}` is a sort-level constraint — a precondition for instantiation.
+
 ## Relationship to existing systems
 
 | Anthill | Maude | Scala 3 | Haskell |
 |---------|-------|---------|---------|
 | `sort Eq { sort T; ... }` | `fth EQ { sort T; ... }` | `trait Eq[T]` | `class Eq a` |
-| `sort Eq{T=Money}` (member) | `view Eq(Money)` | `given Eq[Money]` | `instance Eq Money` |
+| `requires Eq{T=Money}` | `view Eq(Money)` | `given Eq[Money]` | `instance Eq Money` |
 | `Name{T=Int}` (type expr) | sort instantiation | `List[Int]` | `List Int` |
 | `namespace` | `fmod` (flat module) | `package` / `object` | `module` |
 | `import` | `protecting` / `including` | `import` | `import` |
@@ -229,7 +241,7 @@ Soft keywords: replace `domain` with `namespace`.
 
 1. **Rename `domain` → `namespace`** in grammar, parser, converter, loader
 2. **Move prelude specs from `domain` to `sort`** (Eq, Ordered, Numeric)
-3. **Implement `sort X{T=Y}` as member declaration** — the loader already produces member facts; a parameterized sort reference in member position creates a requirement
+3. **Add `requires` at sort level** — parse as sort-level constraint, loader emits requirement facts
 4. **Resolve `Name{bindings}` at use sites** — separate resolve pass
 
 Steps 1-2 are mechanical. Steps 3-4 require the resolve pass discussed in 001.1.
@@ -237,5 +249,5 @@ Steps 1-2 are mechanical. Steps 3-4 require the resolve pass discussed in 001.1.
 ## Backwards compatibility
 
 - `domain` keyword replaced by `namespace` — existing files need updating
-- `import ... where` removed — inline `Name{bindings}` and sort member declarations replace it
+- `import ... where` removed — inline `Name{bindings}` and `requires` replace it
 - All algebraic specs (Eq, Ordered, Numeric) become sorts — no behavioral change, just keyword
