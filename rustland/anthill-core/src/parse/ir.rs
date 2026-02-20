@@ -119,7 +119,7 @@ pub enum Item {
     // Kernel
     Domain(Domain),
     AbstractSort(AbstractSort),
-    DefinedSort(DefinedSort),
+    SortWithBody(SortWithBody),
     Rule(Rule),
     Operation(Operation),
     // Sugar
@@ -165,18 +165,14 @@ pub struct AbstractSort {
 }
 
 #[derive(Debug)]
-pub struct DefinedSort {
+pub struct SortWithBody {
     pub visibility: Option<Visibility>,
     pub name: Name,
-    pub constructors: Vec<Constructor>,
+    pub imports: Vec<Import>,
+    pub exports: Vec<Name>,
+    pub items: Vec<Item>,
     pub meta: Option<MetaBlock>,
     pub span: Span,
-}
-
-#[derive(Debug)]
-pub struct Constructor {
-    pub name: Name,
-    pub fields: Vec<FieldDecl>,
 }
 
 #[derive(Debug)]

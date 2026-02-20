@@ -82,7 +82,7 @@ Option B is more consistent with the algebraic specification tradition (pattern 
 A tuple sort `(A, B)` is equivalent to a sort with a single anonymous constructor:
 
 ```
-(A, B)  ≡  sort _Tuple2 = { entity _Tuple2(_1: A, _2: B) }
+(A, B)  ≡  sort _Tuple2 { entity _Tuple2(_1: A, _2: B) }
 ```
 
 This equivalence is semantic — the kernel may implement tuples directly or desugar them. Named entities remain preferred when field names carry domain meaning:

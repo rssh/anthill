@@ -84,10 +84,10 @@ sort Scalar
     name: (name (identifier))))
 
 =====================================
-Defined sort (ADT)
+Sort with body (ADT)
 =====================================
 
-sort WorkStatus = {
+sort WorkStatus {
   entity Draft
   entity Open
   entity Claimed(agent: String, since: String)
@@ -96,13 +96,13 @@ sort WorkStatus = {
 ---
 
 (source_file
-  (defined_sort
+  (sort_with_body
     name: (name (identifier))
-    (constructor
+    (entity_declaration
       name: (name (identifier)))
-    (constructor
+    (entity_declaration
       name: (name (identifier)))
-    (constructor
+    (entity_declaration
       name: (name (identifier))
       (field_decl
         name: (identifier)

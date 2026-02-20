@@ -36,6 +36,8 @@ module.exports = grammar({
     [$.rule_declaration, $.rule_entry],
     // operation <name>(...) could start a single operation or an operation block
     [$.operation_declaration, $.operation_entry],
+    // sort <name> could be abstract_sort or sort_with_body (resolved by presence of body)
+    [$.abstract_sort, $.sort_with_body],
   ],
 
   rules: {
@@ -58,7 +60,7 @@ module.exports = grammar({
     _declaration: $ => choice(
       $.domain_declaration,
       $.abstract_sort,
-      $.defined_sort,
+      $.sort_with_body,
       $.rule_declaration,
       $.operation_declaration,
       // Sugar
@@ -139,18 +141,14 @@ module.exports = grammar({
       optional($.meta_block),
     ),
 
-    defined_sort: $ => seq(
+    sort_with_body: $ => seq(
       optional($.visibility),
       'sort',
       field('name', $.name),
-      '=',
-      $._body_constructors,
+      repeat($.import_clause),
+      optional($.export_clause),
+      $._body_domain,
       optional($.meta_block),
-    ),
-
-    _body_constructors: $ => choice(
-      seq('{', repeat($.constructor), '}'),
-      seq(repeat($.constructor), 'end'),
     ),
 
     constructor: $ => seq(

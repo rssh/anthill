@@ -241,7 +241,7 @@ impl<'a> Loader<'a> {
             match item {
                 Item::Domain(d) => self.load_domain(d),
                 Item::AbstractSort(s) => self.load_abstract_sort(s, domain),
-                Item::DefinedSort(s) => self.load_defined_sort(s, domain),
+                Item::SortWithBody(s) => self.load_sort_with_body(s, domain),
                 Item::Rule(r) => self.load_rule(r, domain),
                 Item::Operation(o) => self.load_operation(o, domain),
                 Item::Entity(e) => self.load_entity(e, domain),
@@ -297,42 +297,51 @@ impl<'a> Loader<'a> {
         self.kb.assert_fact(fact_term, sort_sort, domain, None);
     }
 
-    fn load_defined_sort(&mut self, s: &DefinedSort, domain: TermId) {
+    fn load_sort_with_body(&mut self, s: &SortWithBody, parent_domain: TermId) {
         let sort_term = self.name_to_sort_term(&s.name);
         let sort_sort = self.kb.make_name_term("Sort");
 
-        self.kb.register_sort(sort_term, SortKind::Defined);
+        // Determine kind: Defined if it has direct entity children, Abstract otherwise
+        let has_entities = s.items.iter().any(|item| matches!(item, Item::Entity(_)));
+        let kind = if has_entities { SortKind::Defined } else { SortKind::Abstract };
+        self.kb.register_sort(sort_term, kind);
 
         // Assert SortInfo fact
         let sort_info_sym = self.kb.intern("SortInfo");
-        let defined_sym = self.kb.intern("Defined");
-        let defined_term = self.kb.alloc(Term::Ident(defined_sym));
+        let kind_str = if has_entities { "Defined" } else { "Abstract" };
+        let kind_sym = self.kb.intern(kind_str);
+        let kind_term = self.kb.alloc(Term::Ident(kind_sym));
         let fact_term = self.kb.alloc(Term::Fn {
             functor: sort_info_sym,
             args: SmallVec::from_slice(&[
                 FnArg::Positional(sort_term),
-                FnArg::Positional(defined_term),
+                FnArg::Positional(kind_term),
             ]),
         });
-        self.kb.assert_fact(fact_term, sort_sort, domain, None);
+        self.kb.assert_fact(fact_term, sort_sort, parent_domain, None);
 
-        // Register each constructor as a subsort
-        for ctor in &s.constructors {
-            let ctor_term = self.name_to_sort_term(&ctor.name);
-            self.kb.register_sort(ctor_term, SortKind::Constructor);
-            self.kb.register_subsort(ctor_term, sort_term);
+        // Register direct entity children as constructor subsorts
+        for item in &s.items {
+            if let Item::Entity(e) = item {
+                let ctor_term = self.name_to_sort_term(&e.name);
+                self.kb.register_sort(ctor_term, SortKind::Constructor);
+                self.kb.register_subsort(ctor_term, sort_term);
 
-            // Assert Subsort fact
-            let subsort_sym = self.kb.intern("Subsort");
-            let subsort_fact = self.kb.alloc(Term::Fn {
-                functor: subsort_sym,
-                args: SmallVec::from_slice(&[
-                    FnArg::Positional(ctor_term),
-                    FnArg::Positional(sort_term),
-                ]),
-            });
-            self.kb.assert_fact(subsort_fact, sort_sort, domain, None);
+                // Assert Subsort fact
+                let subsort_sym = self.kb.intern("Subsort");
+                let subsort_fact = self.kb.alloc(Term::Fn {
+                    functor: subsort_sym,
+                    args: SmallVec::from_slice(&[
+                        FnArg::Positional(ctor_term),
+                        FnArg::Positional(sort_term),
+                    ]),
+                });
+                self.kb.assert_fact(subsort_fact, sort_sort, parent_domain, None);
+            }
         }
+
+        // Load all items within this sort's domain scope
+        self.load_items(&s.items, Some(sort_term));
     }
 
     fn load_entity(&mut self, e: &Entity, domain: TermId) {

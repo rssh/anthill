@@ -136,7 +136,7 @@ impl<'a> Converter<'a> {
         match node.kind() {
             "domain_declaration" => self.convert_domain(node).map(Item::Domain),
             "abstract_sort" => self.convert_abstract_sort(node).map(Item::AbstractSort),
-            "defined_sort" => self.convert_defined_sort(node).map(Item::DefinedSort),
+            "sort_with_body" => self.convert_sort_with_body(node).map(Item::SortWithBody),
             "rule_declaration" => self.convert_rule(node).map(Item::Rule),
             "operation_declaration" => self.convert_operation(node).map(Item::Operation),
             "entity_declaration" => self.convert_entity(node).map(Item::Entity),
@@ -528,38 +528,47 @@ impl<'a> Converter<'a> {
         Some(AbstractSort { visibility, name, meta, span })
     }
 
-    fn convert_defined_sort(&mut self, node: Node) -> Option<DefinedSort> {
+    fn convert_sort_with_body(&mut self, node: Node) -> Option<SortWithBody> {
         let name = self.field(node, "name")
             .map(|n| self.convert_name(n))?;
         let visibility = self.convert_visibility(node);
         let meta = self.convert_meta_block(node);
         let span = self.span(node);
 
-        let constructors = self.children_by_kind(node, "constructor")
+        let imports = self.children_by_kind(node, "import_clause")
             .into_iter()
-            .map(|c| self.convert_constructor(c))
+            .map(|ic| self.convert_import(ic))
             .collect();
 
-        Some(DefinedSort {
+        let exports = self.child_by_kind(node, "export_clause")
+            .map(|ec| self.children_by_kind(ec, "name")
+                .into_iter()
+                .map(|n| self.convert_name(n))
+                .collect())
+            .unwrap_or_default();
+
+        let mut items = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "name" | "visibility" | "import_clause" | "export_clause" | "meta_block" => {}
+                _ => {
+                    if let Some(item) = self.convert_item(child) {
+                        items.push(item);
+                    }
+                }
+            }
+        }
+
+        Some(SortWithBody {
             visibility,
             name,
-            constructors,
+            imports,
+            exports,
+            items,
             meta,
             span,
         })
-    }
-
-    fn convert_constructor(&mut self, node: Node) -> Constructor {
-        let name = self.field(node, "name")
-            .map(|n| self.convert_name(n))
-            .unwrap_or_else(|| Name::simple(self.intern("?"), self.span(node)));
-
-        let fields = self.children_by_kind(node, "field_decl")
-            .into_iter()
-            .map(|f| self.convert_field_decl(f))
-            .collect();
-
-        Constructor { name, fields }
     }
 
     fn convert_field_decl(&mut self, node: Node) -> FieldDecl {

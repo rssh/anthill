@@ -117,7 +117,7 @@ This preserves the closed ADT property: the set of constructors is exactly what 
 |-------------|------------------|-----------------|---------------------|
 | `sort X` (abstract, no body) | X itself | Yes | Only if has sub-sorts |
 | `sort X { ... }` (with body) | X itself | Yes | Yes |
-| `sort X = { entity ... }` (ADT) | X itself | Yes | Only if has sub-sorts |
+| ~~`sort X = { entity ... }` (ADT)~~ | *(removed, use `sort X { entity ... }` instead)* | | |
 | `domain D { ... }` | Only by convention | Only if primary sort exists | Yes |
 
 The `domain` keyword remains for multi-sort modules that are not themselves types:
@@ -182,22 +182,22 @@ end
 
 This sugar is deferred — it can be added without breaking changes once usage patterns stabilize.
 
-## The Defined ADT Form as Sugar
+## The `= { ... }` Form (Removed)
 
-The existing `sort X = { entity ... }` form is sugar for a body containing only constructors:
+The `sort X = { entity ... }` form has been removed. All sorts with bodies use the unified syntax:
 
 ```
-sort Option = { entity none, entity some(value: T) }
+sort Option {
+  entity none
+  entity some(value: T)
+}
 
--- equivalent to:
-
+-- or with end-delimiter:
 sort Option
   entity none
   entity some(value: T)
 end
 ```
-
-Both forms remain valid. The `= { ... }` form is concise for pure ADTs without operations or parameters.
 
 ## Open vs. Closed Sorts
 
@@ -257,7 +257,7 @@ With the unification, prelude definitions become self-contained sorts:
 domain anthill.prelude.List
   export List, nil, cons, length
   sort T
-  sort List = {
+  sort List {
     entity nil
     entity cons(head: T, tail: List)
   }
@@ -278,7 +278,7 @@ sort List
 end
 ```
 
-The inner `sort List = { ... }` nesting is eliminated. Entities belong directly to the sort.
+The inner `sort List { ... }` nesting is eliminated. Entities belong directly to the sort.
 
 ```
 -- Option:
@@ -354,7 +354,7 @@ end
 All existing syntax remains valid:
 
 - `sort X` (abstract) — unchanged.
-- `sort X = { entity ... }` (defined ADT) — unchanged, now sugar for body-only-constructors form.
+- ~~`sort X = { entity ... }` (defined ADT)~~ — removed, use `sort X { entity ... }` body form instead.
 - `domain D { ... }` — unchanged, remains available for multi-sort modules.
 - `Name{T=X}` inline binding — unchanged in syntax, now works uniformly because every sort is a domain.
 - `import D where { T = X }` — unchanged, extended to support sort-constructor binding.

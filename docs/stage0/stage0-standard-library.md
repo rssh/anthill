@@ -64,7 +64,7 @@ domain anthill.stage0
     scope      : SourceScope
   )
 
-  sort SourceScope = {                     -- enum: all nullary constructors
+  sort SourceScope {                     -- enum: all nullary constructors
     entity Main
     entity Test
     entity Generated
@@ -84,7 +84,7 @@ domain anthill.stage0
     success    : SuccessCriterion
   )
 
-  sort SuccessCriterion = {                -- ADT: success criterion for tool execution
+  sort SuccessCriterion {                -- ADT: success criterion for tool execution
     entity ExitZero
     entity ExitCode(code: Int)
     entity OutputMatches(pattern: String)
@@ -111,20 +111,20 @@ domain anthill.stage0
     status      : WorkStatus
   )
 
-  sort ContextRef = {                      -- ADT: what a work item references
+  sort ContextRef {                      -- ADT: what a work item references
     entity FileRef(path: String, lines: Option{T = String})
     entity FactRef(domain: String, pattern: Term)
     entity WorkItemRef(id: String)
   }
 
-  sort AcceptanceCriterion = {             -- ADT: how to verify a work item
+  sort AcceptanceCriterion {             -- ADT: how to verify a work item
     entity ToolPasses(tool: String, params: Option{T = Term})
     entity FactHolds(domain: String, pattern: Term)
     entity Compiles(source: SourceRoot)
     entity Constraint(term: Term)
   }
 
-  sort WorkStatus = {                      -- ADT: work item lifecycle
+  sort WorkStatus {                      -- ADT: work item lifecycle
     entity Draft                           -- proposed by decomposer, awaiting review
     entity Open                            -- accepted, available for agents to claim
     entity Claimed(agent: String, since: String)
@@ -139,7 +139,7 @@ domain anthill.stage0
   -- Agent capabilities
   -- =================================================================
 
-  sort Capability = {                      -- ADT: what an agent can do
+  sort Capability {                      -- ADT: what an agent can do
     entity Code(languages: List{T = String})  -- write/modify code
     entity Test                               -- run acceptance tools
     entity Refine                             -- provide feedback, request changes

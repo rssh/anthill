@@ -114,7 +114,7 @@ Can the term language express self-referential structures like `Y(Y)` (the Y-com
 However, the lambda calculus can be **encoded** as a sort with rules:
 
 ```
-sort Lambda = { entity var(n: String), entity app(f: Lambda, x: Lambda), entity lam(p: String, b: Lambda) }
+sort Lambda { entity var(n: String), entity app(f: Lambda, x: Lambda), entity lam(p: String, b: Lambda) }
 rule eval(app(lam(?x, ?body), ?arg)) = subst(?body, ?x, ?arg)
 ```
 
@@ -301,18 +301,16 @@ The kernel has a type system (sorts). Unification must respect it — `?x : Nat`
 
 ### 5.1 Sources of Subtyping
 
-**Constructor ≤ DefinedSort.** A defined sort enumerates its constructors. Each constructor's type is a subtype of the sort:
+**Constructor ≤ Sort.** A sort with entity constructors enumerates its constructors. Each constructor's type is a subtype of the sort:
 
 ```
-sort Nat = { entity zero, entity succ(pred: Nat) }
+sort Nat { entity zero, entity succ(pred: Nat) }
 
   zero  : Nat    -- zero ≤ Nat
   succ  : Nat    -- succ ≤ Nat
 ```
 
 This is exactly Maude's subsort relation: constructor sorts are subsorts of the declared sort. Pattern matching on `?x : Nat` can produce `zero` or `succ(...)`.
-
-**Domain extends.** `domain finance extends banking` — all exported sorts of `banking` are available in `finance`. This is sort inclusion, not subtyping per se, but it means the sort lattice spans domains.
 
 **Parametric instantiation.** `List{T=Int}` is a ground instantiation of the parametric sort `List`. The relation between `List` (with abstract `T`) and `List{T=Int}` is **instantiation**, not subtyping. But the constructor subsort relation applies to the instantiated version too:
 
@@ -329,11 +327,11 @@ In a reflective system, the language describes itself. A standard domain `anthil
 
 ```
 domain anthill.reflect.syntax
-  sort Type = {
+  sort Type {
     entity SimpleType(name: Name)
     entity ParameterizedType(name: Name, bindings: List{T = SortBinding})
   }
-  sort SortBinding = {
+  sort SortBinding {
     entity SortBinding(param: Name, bound: Type)
   }
 end
@@ -385,16 +383,15 @@ rule has_numeric(?domain, ?sort) :-
 
 There is no separate `SortLattice` structure. Sort relationships are **facts in the KB**, and the subsort index is a **materialized index** maintained by the same `assert()` path as all other indexes.
 
-When a defined sort is loaded:
+When a sort with constructors is loaded:
 
 ```
-sort Nat = { entity zero, entity succ(pred: Nat) }
+sort Nat { entity zero, entity succ(pred: Nat) }
 ```
 
 The loader asserts facts:
 
 ```
-fact DefinedSort("Nat", constructors: ["zero", "succ"])
 fact Subsort("zero", "Nat")
 fact Subsort("succ", "Nat")
 fact SortInfo("Nat", Defined)
@@ -416,8 +413,7 @@ These indexes are updated when sort facts are asserted, just like `by_sort` and 
 Built during domain loading (after parsing):
 1. Parse all sort declarations
 2. Convert each sort's `TypeExpr` to a type-term in the store (hash-consed)
-3. For each defined sort, assert `DefinedSort` fact + `Subsort` facts for constructors
-4. For each `extends` clause, assert sort inclusion facts
+3. For each sort with entity constructors, assert `Subsort` facts for constructors
 5. For each `import ... where`, instantiate parametric sorts — producing new type-terms like `ParameterizedType("List", [SortBinding("T", SimpleType("Int"))])`
 
 ### 5.4 Subtype Checking
@@ -431,7 +427,7 @@ impl KnowledgeBase {
     fn is_subtype(&self, sub: TermId, sup: TermId) -> bool { ... }
 
     /// What are the immediate child sorts?
-    /// For a defined sort, this returns its constructors.
+    /// For a sort with constructors, this returns its constructors.
     fn sort_children(&self, sort: TermId) -> &[TermId] { ... }
 
     /// What kind of sort is this? (Abstract, Defined, Constructor)

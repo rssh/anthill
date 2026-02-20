@@ -37,8 +37,8 @@ fn parse_abstract_sort() {
 }
 
 #[test]
-fn parse_defined_sort() {
-    let source = r#"sort WorkStatus = {
+fn parse_sort_with_body() {
+    let source = r#"sort WorkStatus {
   entity Draft
   entity Open
   entity Claimed(agent: String, since: String)
@@ -47,15 +47,27 @@ fn parse_defined_sort() {
     let parsed = parse::parse(source).expect("parse failed");
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
-        Item::DefinedSort(s) => {
+        Item::SortWithBody(s) => {
             assert_eq!(parsed.interner.resolve(s.name.last()), "WorkStatus");
-            assert_eq!(s.constructors.len(), 3);
-            assert_eq!(parsed.interner.resolve(s.constructors[0].name.last()), "Draft");
-            assert_eq!(parsed.interner.resolve(s.constructors[1].name.last()), "Open");
-            assert_eq!(parsed.interner.resolve(s.constructors[2].name.last()), "Claimed");
-            assert_eq!(s.constructors[2].fields.len(), 2);
+            assert_eq!(s.items.len(), 3);
+            // Check each entity constructor
+            match &s.items[0] {
+                Item::Entity(e) => assert_eq!(parsed.interner.resolve(e.name.last()), "Draft"),
+                other => panic!("expected Entity, got {:?}", std::mem::discriminant(other)),
+            }
+            match &s.items[1] {
+                Item::Entity(e) => assert_eq!(parsed.interner.resolve(e.name.last()), "Open"),
+                other => panic!("expected Entity, got {:?}", std::mem::discriminant(other)),
+            }
+            match &s.items[2] {
+                Item::Entity(e) => {
+                    assert_eq!(parsed.interner.resolve(e.name.last()), "Claimed");
+                    assert_eq!(e.fields.len(), 2);
+                }
+                other => panic!("expected Entity, got {:?}", std::mem::discriminant(other)),
+            }
         }
-        other => panic!("expected DefinedSort, got {:?}", std::mem::discriminant(other)),
+        other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
     }
 }
 
@@ -223,8 +235,8 @@ fn load_domain_into_kb() {
 }
 
 #[test]
-fn load_defined_sort_registers_subsorts() {
-    let source = r#"sort Nat = {
+fn load_sort_with_body_registers_subsorts() {
+    let source = r#"sort Nat {
   entity zero
   entity succ(pred: Nat)
 }
@@ -277,7 +289,7 @@ fn load_banking_domain() {
     let source = r#"domain banking
   export Account, Money, deposit
 
-  sort Money = {
+  sort Money {
     entity dollars(amount: Int)
   }
 

@@ -150,62 +150,47 @@ The kernel has only four primitive types for `Const` values:
 
 ### 4.4 The Prelude Domains
 
-Common compound types are defined in standard prelude domains using the kernel's own constructs. **Parametric types are domains with abstract sorts** — instantiated via `import ... where` or via **inline type expressions** `Name{bindings}`. **Sum types are defined sorts** — `sort S = { entity C₁(...), entity C₂(...) }` enumerates constructors (see §5.2).
+Common compound types are defined in standard prelude sorts using the kernel's own constructs. **Parametric types are sorts with abstract sub-sorts** — instantiated via `import ... where` or via **inline type expressions** `Name{bindings}`. **Sum types are sorts with entity constructors** — `sort S { entity C₁(...), entity C₂(...) }` enumerates constructors (see §5.2).
 
 ```
--- Duration: a non-parametric prelude domain
-domain anthill.prelude.Duration
-  export Duration
+-- Duration: a non-parametric prelude sort
+sort anthill.prelude.Duration {
+  entity Duration(amount: Int, unit: String)         -- duration(5, "m")
+}
 
-  sort Duration = {
-    entity Duration(amount: Int, unit: String)       -- duration(5, "m")
-  }
-end
-
--- Timestamp: a non-parametric prelude domain
-domain anthill.prelude.Timestamp
-  export Timestamp
-
-  sort Timestamp = {
-    entity Timestamp(value: String)
-  }
-end
+-- Timestamp: a non-parametric prelude sort
+sort anthill.prelude.Timestamp {
+  entity Timestamp(value: String)
+}
 
 -- Nat: natural numbers (Peano)
-domain anthill.prelude.Nat
+sort anthill.prelude.Nat
   export Nat, zero, succ
 
-  sort Nat = {
-    entity zero                                      -- base case
-    entity succ(pred: Nat)                           -- successor
-  }
+  entity zero                                        -- base case
+  entity succ(pred: Nat)                             -- successor
 end
 
--- List: a parametric domain (T is the abstract sort parameter)
--- The primary sort shares the domain's name (same-name convention)
-domain anthill.prelude.List
+-- List: a parametric sort (T is the abstract sort parameter)
+sort anthill.prelude.List
   export List, nil, cons, length
 
   sort T                                             -- type parameter (abstract)
-  sort List = {                                      -- defined: closed ADT
-    entity nil                                       -- empty list
-    entity cons(head: T, tail: List)                 -- cons cell
-  }
+  entity nil                                         -- empty list
+  entity cons(head: T, tail: List)                   -- cons cell
 
   operation length(l: List) -> Nat
   rule length(nil) = zero
   rule length(cons(?x, ?xs)) = succ(length(?xs))
 end
 
--- Option: a parametric domain
-domain anthill.prelude.Option
+-- Option: a parametric sort
+sort anthill.prelude.Option
   export Option, none, some
 
   sort T                                             -- type parameter (abstract)
-  sort Option = {                                    -- defined: closed ADT
-    entity none                                      -- absent
-    entity some(value: T)                            -- present
-  }
+  entity none                                        -- absent
+  entity some(value: T)                              -- present
 end
 
 -- Eq: equality
@@ -391,32 +376,32 @@ sort Vector
 operation dim(v: Vector) -> Nat        -- accessor
 ```
 
-**Defined sort** — enumerates all constructors (inhabitants). This is the kernel's algebraic data type mechanism. Each constructor is declared with the `entity` keyword and optional named fields:
+**Sort with body** — a sort can have a body containing entities (constructors), sub-sorts (parameters), operations, rules, and other items. When a sort body contains entity declarations, they are constructors of that sort, making it a closed ADT:
 
 ```
-sort Nat = {                         -- defined: closed set of constructors
+sort Nat {                           -- closed set of constructors
   entity zero                        --   nullary constructor
   entity succ(pred: Nat)             --   constructor with field
 }
 
-sort List = {
+sort List {
   entity nil
   entity cons(head: T, tail: List)
 }
 ```
 
-A defined sort is **closed** — exactly the listed constructors exist. Pattern matching in rules works via unification on constructor terms:
+A sort with entity constructors is **closed** — exactly the listed constructors exist. Pattern matching in rules works via unification on constructor terms:
 
 ```
 rule length(nil) = zero
 rule length(cons(?x, ?xs)) = succ(length(?xs))
 ```
 
-**Standalone `entity`** is syntactic sugar for a single-constructor defined sort (see §6.3):
+**Standalone `entity`** is syntactic sugar for a single-constructor sort (see §6.3):
 
 ```
 entity Account(id: AccountId, balance: Money)
--- desugars to: sort Account = { entity Account(id: AccountId, balance: Money) }
+-- desugars to: sort Account { entity Account(id: AccountId, balance: Money) }
 ```
 
 ### 5.3 Rule
@@ -628,7 +613,7 @@ For the formal development of both interpretations and their equivalence proofs,
 
 ## 6. Syntactic Sugar
 
-Readable shorthand that desugars to kernel constructs. The reasoning engine only sees rules and defined sorts.
+Readable shorthand that desugars to kernel constructs. The reasoning engine only sees rules and sorts.
 
 ### 6.1 Fact (bodyless rule)
 
@@ -664,7 +649,7 @@ constraint non_negative: balance(?a, ?b) => b >= 0
 
 ### 6.3 Entity (single-constructor sort)
 
-A standalone entity declaration is sugar for a defined sort with one constructor. This is the most common case — a named record type.
+A standalone entity declaration is sugar for a sort with one constructor. This is the most common case — a named record type.
 
 ```
 Entity ::= [Visibility] 'entity' Name ['(' FieldList ')']
@@ -675,10 +660,10 @@ Entity ::= [Visibility] 'entity' Name ['(' FieldList ')']
 
 ```
 entity Account(id: AccountId, balance: Money)
-→  sort Account = { entity Account(id: AccountId, balance: Money) }
+→  sort Account { entity Account(id: AccountId, balance: Money) }
 
 entity Marker
-→  sort Marker = { entity Marker }
+→  sort Marker { entity Marker }
 ```
 
 ### 6.4 Operation and Rule Blocks
@@ -772,7 +757,7 @@ domain anthill.prelude.Meta
     -- The kernel recognizes well-known keys; all others pass through.
 
   -- Trust: verification status of a fact
-  sort Trust = {
+  sort Trust {
     entity proved                        -- formally proved (Lean/Isabelle kernel)
     entity verified                      -- mechanically verified (Z3, ctproof)
     entity tested(n: Int)                -- passed n test runs (Hypothesis, sbt-test)
@@ -784,7 +769,7 @@ domain anthill.prelude.Meta
   }
 
   -- ProofResult: outcome of discharging an obligation
-  sort ProofResult = {
+  sort ProofResult {
     entity Proved(witness: Term, solver: String, duration: Duration)
     entity Disproved(counterexample: Term, solver: String)
     entity Timeout(strategies: Term)
@@ -862,11 +847,36 @@ When an obligation is discharged, the result is recorded as a `ProofResult` term
 The kernel enforces a **structural type system**:
 
 - **Abstract sorts** (`sort S`) introduce types without representation. Can appear in operation signatures and fields, but has no constructors until a carrier binding is provided.
-- **Defined sorts** (`sort S = { entity C₁(...), entity C₂(...) }`) introduce closed algebraic data types. All constructors are enumerated; pattern matching in rules is exhaustive.
+- **Sorts with constructors** (`sort S { entity C₁(...), entity C₂(...) }`) introduce closed algebraic data types. All constructors are enumerated; pattern matching in rules is exhaustive.
 - **Operations** have typed signatures: `operation op(x: A, y: B) -> C`. Parameters are named bindings; the kernel type-checks that actual arguments match declared types.
 - **Terms** are typed: `Const` carries its type, `Var` declares its type, `Fn` has the type of its sort's constructor, `Ref` refers to a named type.
 
-### 8.2 Rule Evaluation
+### 8.2 Subsorting
+
+Constructors of a sort are **subsorts** of that sort. If `sort S { entity C₁(...), entity C₂(...) }`, then `C₁ <: S` and `C₂ <: S`. A term classified as sort `C₁` is also of sort `S`.
+
+This is the standard **order-sorted algebra** approach (as in Maude/OBJ):
+
+- Each constructor name is a sort in its own right.
+- The subsort relation `C <: S` is registered when a sort with entity constructors is declared.
+- Subsorting is **transitive**: if `A <: B` and `B <: C`, then `A <: C`.
+- Querying by sort `S` returns facts of sort `S` and all subsorts of `S`.
+
+```
+sort Nat {
+  entity zero
+  entity succ(pred: Nat)
+}
+
+-- This establishes:
+--   zero <: Nat
+--   succ  <: Nat
+-- A query for sort Nat matches terms of sort zero and sort succ.
+```
+
+Subsorting does **not** arise from nesting. A sort `T` declared inside a domain or sort body is a **parameter**, not a subsort. Only the constructor-of relationship creates subsorting.
+
+### 8.3 Rule Evaluation
 
 The kernel's reasoning engine supports:
 
@@ -878,7 +888,7 @@ The kernel's reasoning engine supports:
 
 **Termination:** The kernel uses stratification and loop detection to ensure rule evaluation terminates. Recursive rules must be stratifiable (no negation through recursion in the basic mode; stratified negation is supported for constrained cases).
 
-### 8.3 Constraint Enforcement
+### 8.4 Constraint Enforcement
 
 Constraints (denials) are checked whenever a new fact is asserted:
 
@@ -888,7 +898,7 @@ Constraints (denials) are checked whenever a new fact is asserted:
 
 This is the kernel's integrity mechanism — it prevents logically inconsistent states.
 
-### 8.4 Operation Contracts and Obligations
+### 8.5 Operation Contracts and Obligations
 
 When an operation has `requires`/`ensures` clauses and an `Implementation` fact links code to it:
 
@@ -899,7 +909,7 @@ When an operation has `requires`/`ensures` clauses and an `Implementation` fact 
 
 The kernel recognizes `Implementation` as a **well-known entity type** and triggers obligation generation automatically.
 
-### 8.5 Domain Visibility
+### 8.6 Domain Visibility
 
 The kernel enforces domain boundaries:
 
@@ -911,12 +921,12 @@ The kernel enforces domain boundaries:
 
 Visibility is enforced at query time and assertion time.
 
-### 8.6 Algebras
+### 8.7 Algebras
 
 An algebra is not a separate syntactic construct — it is the **typing structure that emerges** from declarations within a domain:
 
 - **Abstract sorts** define the type parameters of the algebra.
-- **Defined sorts** define concrete types with constructors (ADTs).
+- **Sorts with constructors** define concrete types with constructors (ADTs).
 - **Operations** define typed behaviors with contracts.
 - **Rules** (including constraint sugar) express laws.
 
@@ -938,7 +948,7 @@ The kernel language connects to three traditions:
 |----------------|-------|
 | `domain` | theory (`fth`) or module (`fmod`) |
 | `sort T` (abstract) | `sort` |
-| `sort S = { entity ... }` (defined) | sort with constructor ops (`op ... : -> S [ctor]`) |
+| `sort S { entity ... }` | sort with constructor ops (`op ... : -> S [ctor]`) |
 | `operation` | `op` (operator declaration) |
 | `rule` (derivation) | equation (`eq`) or rewrite rule (`rl`) |
 | `constraint` (denial) | membership axiom / conditional axiom |
@@ -963,7 +973,7 @@ domain banking
   sort Money
   import anthill.prelude.Numeric where { T = Money }   -- gives us +, -, >, >=, = for Money
 
-  entity Account(                       -- sugar: sort Account = { entity Account(...) }
+  entity Account(                       -- sugar: sort Account { entity Account(...) }
     id      : AccountId,
     balance : Money
   )
@@ -1146,10 +1156,16 @@ Visibility  ::= 'internal' | 'export' | 'public'
 
 Sort        ::= [Visibility] 'sort' Name                           -- abstract
                   ['meta' ':' Meta]
-              | [Visibility] 'sort' Name '=' Body[Constructor*]    -- defined (ADT)
+              | [Visibility] 'sort' Name                           -- sort with body
+                  Import*
+                  ['export' NameList]
+                Body[SortContent*]
                   ['meta' ':' Meta]
 
-Constructor ::= 'entity' Name ['(' FieldList ')']
+SortContent ::= Sort | Entity | Operation | Rule
+              | Fact | Constraint | OperationBlock | RuleBlock
+              | Domain
+
 FieldList   ::= Field (',' Field)*
 Field       ::= Name ':' Type
 
@@ -1186,7 +1202,7 @@ Constraint  ::= 'constraint' [Name ':'] RuleBody
 
 Entity      ::= [Visibility] 'entity' Name ['(' FieldList ')']
                   ['meta' ':' Meta]
-              -- desugars to: sort Name = { entity Name [( FieldList )] }
+              -- desugars to: sort Name { entity Name [( FieldList )] }
 
 OperationBlock ::= 'operation' Body[OperationEntry*]
               -- desugars to: individual Operation declarations
