@@ -1,6 +1,6 @@
 # Proposal 001: Sort/Domain Unification
 
-**Status:** Draft
+**Status:** Implemented
 **Affects:** Kernel Language Specification §4.4, §5.1, §5.2, §8.6, §11
 
 ## Motivation
