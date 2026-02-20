@@ -277,6 +277,7 @@ impl<'a> Loader<'a> {
                 Item::SortWithBody(s) => self.load_sort_with_body(s, domain),
                 Item::Rule(r) => self.load_rule(r, domain),
                 Item::Operation(o) => self.load_operation(o, domain),
+                Item::RequiresDecl(r) => self.load_requires_decl(r, domain),
                 Item::Entity(e) => self.load_entity(e, domain),
                 Item::Fact(f) => self.load_fact(f, domain),
                 Item::Constraint(c) => self.load_constraint(c, domain),
@@ -462,6 +463,17 @@ impl<'a> Loader<'a> {
         });
 
         self.kb.assert_fact(constraint_term, constraint_sort, domain, None);
+    }
+
+    fn load_requires_decl(&mut self, r: &RequiresDecl, domain: TermId) {
+        let requirement_sort = self.kb.make_name_term("Requirement");
+        let requires_sym = self.kb.intern("Requires");
+        let type_term = self.type_expr_to_term(&r.type_expr);
+        let requires_term = self.kb.alloc(Term::Fn {
+            functor: requires_sym,
+            args: SmallVec::from_elem(FnArg::Positional(type_term), 1),
+        });
+        self.kb.assert_fact(requires_term, requirement_sort, domain, None);
     }
 
     fn load_project(&mut self, p: &Project, domain: TermId) {

@@ -134,6 +134,62 @@ fact parent("alice", "bob") [trust: axiom, agent: "author"]
         value: (string_literal)))))
 
 =====================================
+Sort with requires declaration
+=====================================
+
+sort Ordered {
+  sort T
+  requires Eq{T = T}
+  operation gt(a: T, b: T) -> Bool
+}
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name (identifier))
+    (abstract_sort
+      name: (name (identifier)))
+    (requires_declaration
+      type: (parameterized_type
+        (name (identifier))
+        (sort_binding
+          param: (name (identifier))
+          type: (simple_type (name (identifier))))))
+    (operation_declaration
+      name: (name (identifier))
+      (param
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      (param
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      return_type: (simple_type (name (identifier))))))
+
+=====================================
+Namespace with requires declaration
+=====================================
+
+namespace banking {
+  sort Money
+  requires Numeric{T = Money}
+}
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name (identifier))
+    (abstract_sort
+      name: (name (identifier)))
+    (requires_declaration
+      type: (parameterized_type
+        (name (identifier))
+        (sort_binding
+          param: (name (identifier))
+          type: (simple_type (name (identifier))))))))
+
+=====================================
 Line comment
 =====================================
 

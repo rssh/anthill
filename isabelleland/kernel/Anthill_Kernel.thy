@@ -419,6 +419,7 @@ datatype module_item =
   | MI_Entity aterm
   | MI_Rule arule
   | MI_Operation operation
+  | MI_Requires aterm  \<comment> \<open>standalone requires: type expression as term\<close>
   | MI_SubModule module_body
 and module_body = \<comment> \<open>mb_primary_sort: Some s = sort-with-body; None = namespace\<close>
   ModuleBody
@@ -430,7 +431,11 @@ and module_body = \<comment> \<open>mb_primary_sort: Some s = sort-with-body; No
 fun direct_entities :: "module_item list \<Rightarrow> aterm list" where
   "direct_entities [] = []"
 | "direct_entities (MI_Entity e # rest) = e # direct_entities rest"
-| "direct_entities (_ # rest) = direct_entities rest"
+| "direct_entities (MI_Sort _ _ # rest) = direct_entities rest"
+| "direct_entities (MI_Rule _ # rest) = direct_entities rest"
+| "direct_entities (MI_Operation _ # rest) = direct_entities rest"
+| "direct_entities (MI_Requires _ # rest) = direct_entities rest"
+| "direct_entities (MI_SubModule _ # rest) = direct_entities rest"
 
 definition determine_sort_kind :: "module_item list \<Rightarrow> sort_kind" where
   "determine_sort_kind items \<equiv>
@@ -695,6 +700,8 @@ where
      fst (assert_fact kb (arule_head r) (Fn ''Rule'' []) sc None)"
 | "load_module_item kb sc (MI_Operation oper) =
      fst (assert_fact kb (Fn (op_name oper) []) (Fn ''Operation'' []) sc None)"
+| "load_module_item kb sc (MI_Requires t) =
+     fst (assert_fact kb (Fn ''Requires'' [Positional t]) (Fn ''Requirement'' []) sc None)"
 | "load_module_item kb sc (MI_SubModule mb) =
      load_module_body kb mb"
 | "load_module_items kb sc [] = kb"

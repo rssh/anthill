@@ -122,6 +122,7 @@ pub enum Item {
     SortWithBody(SortWithBody),
     Rule(Rule),
     Operation(Operation),
+    RequiresDecl(RequiresDecl),
     // Sugar
     Entity(Entity),
     Fact(Fact),
@@ -216,6 +217,14 @@ pub struct Operation {
 pub struct Param {
     pub name: Symbol,
     pub ty: TypeExpr,
+}
+
+// ── Requires declaration ────────────────────────────────────────
+
+#[derive(Debug)]
+pub struct RequiresDecl {
+    pub type_expr: TypeExpr,
+    pub span: Span,
 }
 
 // ── Sugar: entity, fact, constraint ─────────────────────────────

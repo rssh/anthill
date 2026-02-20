@@ -139,6 +139,7 @@ impl<'a> Converter<'a> {
             "sort_with_body" => self.convert_sort_with_body(node).map(Item::SortWithBody),
             "rule_declaration" => self.convert_rule(node).map(Item::Rule),
             "operation_declaration" => self.convert_operation(node).map(Item::Operation),
+            "requires_declaration" => self.convert_requires_decl(node).map(Item::RequiresDecl),
             "entity_declaration" => self.convert_entity(node).map(Item::Entity),
             "fact_declaration" => self.convert_fact(node).map(Item::Fact),
             "constraint_declaration" => self.convert_constraint(node).map(Item::Constraint),
@@ -719,6 +720,15 @@ impl<'a> Converter<'a> {
             self.err(format!("unknown effect: {text}"), node);
             None
         }
+    }
+
+    // ── Requires declaration ──────────────────────────────────────
+
+    fn convert_requires_decl(&mut self, node: Node) -> Option<RequiresDecl> {
+        let span = self.span(node);
+        let type_expr = self.field(node, "type")
+            .map(|t| self.convert_type(t))?;
+        Some(RequiresDecl { type_expr, span })
     }
 
     // ── Sugar: entity, fact, constraint ─────────────────────────

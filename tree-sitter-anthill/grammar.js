@@ -38,6 +38,8 @@ module.exports = grammar({
     [$.operation_declaration, $.operation_entry],
     // sort <name> could be abstract_sort or sort_with_body (resolved by presence of body)
     [$.abstract_sort, $.sort_with_body],
+    // After operation clauses, `requires` could be another clause or a standalone declaration
+    [$.operation_declaration],
   ],
 
   rules: {
@@ -63,6 +65,7 @@ module.exports = grammar({
       $.sort_with_body,
       $.rule_declaration,
       $.operation_declaration,
+      $.requires_declaration,
       // Sugar
       $.entity_declaration,
       $.fact_declaration,
@@ -119,9 +122,11 @@ module.exports = grammar({
 
     _namespace_content: $ => choice(
       $.namespace_declaration,
+      $.abstract_sort,
       $.sort_with_body,
       $.rule_declaration,
       $.operation_declaration,
+      $.requires_declaration,
       $.entity_declaration,
       $.fact_declaration,
       $.constraint_declaration,
@@ -213,6 +218,11 @@ module.exports = grammar({
       $.requires_clause,
       $.ensures_clause,
       $.effects_clause,
+    ),
+
+    requires_declaration: $ => seq(
+      'requires',
+      field('type', $._type),
     ),
 
     requires_clause: $ => seq('requires', $.rule_body),

@@ -573,6 +573,77 @@ fn member_facts_queryable_by_domain() {
         "Option should have 3 members (T, none, some)");
 }
 
+// ── Requires declaration tests ──────────────────────────────────
+
+#[test]
+fn parse_sort_with_requires() {
+    let source = r#"sort Ordered {
+  sort T
+  requires Eq{T = T}
+  operation gt(a: T, b: T) -> Bool
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    assert_eq!(parsed.items.len(), 1);
+    match &parsed.items[0] {
+        Item::SortWithBody(s) => {
+            assert_eq!(parsed.interner.resolve(s.name.last()), "Ordered");
+            // Items: AbstractSort(T), RequiresDecl(Eq{T=T}), Operation(gt)
+            assert_eq!(s.items.len(), 3);
+            match &s.items[1] {
+                Item::RequiresDecl(r) => {
+                    match &r.type_expr {
+                        TypeExpr::Parameterized { name, bindings } => {
+                            assert_eq!(parsed.interner.resolve(name.last()), "Eq");
+                            assert_eq!(bindings.len(), 1);
+                            assert_eq!(parsed.interner.resolve(bindings[0].param.last()), "T");
+                        }
+                        other => panic!("expected Parameterized type, got {:?}", other),
+                    }
+                }
+                other => panic!("expected RequiresDecl, got {:?}", std::mem::discriminant(other)),
+            }
+        }
+        other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn load_sort_with_requires() {
+    let source = r#"sort Ordered {
+  sort T
+  requires Eq{T = T}
+  operation gt(a: T, b: T) -> Bool
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    // Check that a Requirement fact exists
+    let req_sort = kb.make_name_term("Requirement");
+    let reqs = kb.by_sort(req_sort);
+    assert_eq!(reqs.len(), 1, "should have 1 Requirement fact");
+
+    // The requirement should be scoped to the Ordered sort
+    let ordered_term = kb.make_name_term("Ordered");
+    assert_eq!(
+        kb.fact_domain(reqs[0]), ordered_term,
+        "requirement should be scoped to the Ordered sort"
+    );
+
+    // The requirement term should be Requires(ParameterizedType(Eq(), T=T()))
+    let fid = reqs[0];
+    let tid = kb.fact_term(fid);
+    match kb.get_term(tid) {
+        Term::Fn { functor, args } => {
+            assert_eq!(kb.resolve_sym(*functor), "Requires");
+            assert_eq!(args.len(), 1);
+        }
+        other => panic!("expected Fn term for Requirement, got {:?}", other),
+    }
+}
+
 // ── Mutual reference tests ──────────────────────────────────────
 
 fn check_term_contains(kb: &KnowledgeBase, term: TermId, target: TermId, found: &mut bool) {
