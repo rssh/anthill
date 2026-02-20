@@ -195,31 +195,31 @@ lemma modifies_subset_reads:
   "modifies_resources effs \<subseteq> reads_resources effs"
   by (auto simp: reads_resources_def modifies_resources_def)
 
-subsubsection \<open>Env condition\<close>
+subsubsection \<open>Effect-env condition\<close>
 
 text \<open>
-  An effectful operation respects its env condition if it only modifies the
+  An effectful operation respects its effect-env condition if it only modifies the
   resources declared in its @{text Modifies} effects.
 \<close>
 
-definition respects_env :: "effect list \<Rightarrow> env \<Rightarrow> env \<Rightarrow> bool" where
-  "respects_env effs e_before e_after \<equiv>
+definition respects_effect_env :: "effect list \<Rightarrow> env \<Rightarrow> env \<Rightarrow> bool" where
+  "respects_effect_env effs e_before e_after \<equiv>
      \<forall>s. s \<notin> modifies_resources effs \<longrightarrow> e_after s = e_before s"
 
 text \<open>A pure (effect-free) operation preserves the entire environment.\<close>
 
-lemma pure_env: "respects_env [] e e"
-  by (simp add: respects_env_def modifies_resources_def)
+lemma pure_effect_env: "respects_effect_env [] e e"
+  by (simp add: respects_effect_env_def modifies_resources_def)
 
 text \<open>
-  Env weakening: declaring more effects makes the constraint easier
+  Effect-env weakening: declaring more effects makes the constraint easier
   to satisfy.
 \<close>
 
-lemma env_weaken:
-  "\<lbrakk> set effs1 \<subseteq> set effs2; respects_env effs1 e1 e2 \<rbrakk>
-   \<Longrightarrow> respects_env effs2 e1 e2"
-  by (auto simp: respects_env_def modifies_resources_def)
+lemma effect_env_weaken:
+  "\<lbrakk> set effs1 \<subseteq> set effs2; respects_effect_env effs1 e1 e2 \<rbrakk>
+   \<Longrightarrow> respects_effect_env effs2 e1 e2"
+  by (auto simp: respects_effect_env_def modifies_resources_def)
 
 subsubsection \<open>Well-behavedness\<close>
 
@@ -235,7 +235,7 @@ record operation =
 
 text \<open>
   An effectful implementation is well-behaved w.r.t.\ its declared
-  effects when every successful execution respects the env condition and all
+  effects when every successful execution respects the effect-env condition and all
   required capabilities are present in the environment.
 \<close>
 
@@ -248,7 +248,7 @@ definition well_behaved :: "operation \<Rightarrow> effectful_op \<Rightarrow> b
      \<forall>e args res.
        capabilities_present (op_effects spec) e \<longrightarrow>
        impl e args = Inl res \<longrightarrow>
-       respects_env (op_effects spec) e (er_env res)"
+       respects_effect_env (op_effects spec) e (er_env res)"
 
 text \<open>
   Composition of two effectful operations threads the environment
@@ -269,16 +269,16 @@ definition compose_effectful ::
                      er_events = er_events r1 @ er_events r2 \<rparr>))"
 
 text \<open>
-  Env composition: if @{text f} respects @{text effs1} and @{text g}
+  Effect-env composition: if @{text f} respects @{text effs1} and @{text g}
   respects @{text effs2}, their composition respects @{text "effs1 @ effs2"}.
 \<close>
 
-lemma compose_env:
-  assumes wf: "respects_env effs1 e0 e1"
-      and wg: "respects_env effs2 e1 e2"
-  shows "respects_env (effs1 @ effs2) e0 e2"
+lemma compose_effect_env:
+  assumes wf: "respects_effect_env effs1 e0 e1"
+      and wg: "respects_effect_env effs2 e1 e2"
+  shows "respects_effect_env (effs1 @ effs2) e0 e2"
   using assms
-  by (auto simp: respects_env_def modifies_resources_def)
+  by (auto simp: respects_effect_env_def modifies_resources_def)
 
 text \<open>A pure operation (no effects) is trivially well-behaved.\<close>
 
@@ -292,8 +292,8 @@ proof (intro allI impI)
   moreover obtain v where "impl e args = Inl \<lparr> er_value = v, er_env = e, er_events = [] \<rparr>"
     using pure by blast
   ultimately have "er_env res = e" by force
-  thus "respects_env (op_effects (spec\<lparr> op_effects := [] \<rparr>)) e (er_env res)"
-    by (simp add: pure_env)
+  thus "respects_effect_env (op_effects (spec\<lparr> op_effects := [] \<rparr>)) e (er_env res)"
+    by (simp add: pure_effect_env)
 qed
 
 subsubsection \<open>Monadic interpretation\<close>
@@ -397,17 +397,17 @@ qed
 
 text \<open>
   The frame condition is preserved by the correspondence: a monadic
-  computation respects the env condition iff the corresponding state-passing
+  computation respects the effect-env condition iff the corresponding state-passing
   operation does.
 \<close>
 
-lemma env_to_monad:
+lemma effect_env_to_monad:
   assumes "from_monad m e args = Inl res"
-  and "respects_env effs e (er_env res)"
+  and "respects_effect_env effs e (er_env res)"
   shows "\<exists>v e' evts. m args e = Inl (v, e', evts)
          \<and> (\<forall>s. s \<notin> modifies_resources effs \<longrightarrow> e' s = e s)"
   using assms
-  by (auto simp: from_monad_def respects_env_def
+  by (auto simp: from_monad_def respects_effect_env_def
            split: sum.splits prod.splits)
 
 subsection \<open>Visibility and Domains\<close>

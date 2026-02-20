@@ -526,9 +526,9 @@ Each `Modifies(target)` and `Reads(source)` effect declares a **resource** — a
 - `Errors(Err)` — the operation may fail, returning an error of type `Err` instead of a result.
 - `Requires(Cap)` — the operation requires capability `Cap` to be present (non-`None`) in the environment.
 
-#### Env Condition
+#### Effect-Env Condition
 
-An effectful operation **respects its env condition** if it only modifies the resources declared in its `Modifies` effects:
+An effectful operation **respects its effect-env condition** if it only modifies the resources declared in its `Modifies` effects:
 
 > For all resource names `s` not in the `Modifies` set: `Env_after(s) = Env_before(s)`.
 
@@ -558,7 +558,7 @@ Before executing an operation, the kernel verifies that all `Requires(Cap)` capa
 
 When an `Implementation` fact links code to an operation with effects:
 
-1. The implementation must **respect the env condition** — it may only modify declared resources.
+1. The implementation must **respect the effect-env condition** — it may only modify declared resources.
 2. The implementation must **check capabilities** — all `Requires` resources must be present.
 3. `requires` clauses are checked against input parameters and the pre-environment.
 4. `ensures` clauses are checked against input parameters, the result, and the post-environment.
@@ -617,7 +617,7 @@ The monad laws hold: `bind (return x) f = f x`, `bind m return = m`, and `bind (
 
 #### Equivalence of Interpretations
 
-The state-passing interpretation (§5.6) and the monadic interpretation are **isomorphic** — conversion functions `to_monad` and `from_monad` form a round-trip in both directions. The env condition is preserved by the correspondence.
+The state-passing interpretation (§5.6) and the monadic interpretation are **isomorphic** — conversion functions `to_monad` and `from_monad` form a round-trip in both directions. The effect-env condition is preserved by the correspondence.
 
 The two interpretations have the **same expressivity** when the environment can contain:
 1. **Duplicated state** — the environment may hold copies of resource values, allowing the monad's internal state to be embedded in the environment representation.
