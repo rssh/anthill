@@ -1,6 +1,6 @@
 # Proposal 006: Sort/Namespace Separation and Sort-Based Instantiation
 
-**Status:** Draft
+**Status:** Steps 1–3 implemented; Step 4 (resolve pass) pending
 **Depends on:** [001-sort-domain-unification](001-sort-domain-unification.md), [001.1-sort-members-and-kb-duality](001.1-sort-members-and-kb-duality.md)
 **Affects:** Kernel Language Specification §4.4, §5.1, §5.2, §8.7, §9, §11
 
@@ -71,7 +71,7 @@ The same keyword works at the sort level — a **precondition for instantiation*
 ```
 sort Ordered {
   sort T
-  requires Eq{T = T}              -- to instantiate Ordered, T must have Eq
+  requires Eq{T}              -- to instantiate Ordered, T must have Eq
   operation gt(a: T, b: T) -> Bool
   ...
 }
@@ -82,9 +82,9 @@ This is uniform: `requires` = "this must be satisfied before you can use this."
 | Level | Syntax | Meaning |
 |-------|--------|---------|
 | Operation | `requires gt(m, zero-val)` | Precondition to **call** the operation |
-| Sort | `requires Eq{T = T}` | Precondition to **instantiate** the sort |
+| Sort | `requires Eq{T}` | Precondition to **instantiate** the sort |
 
-Note the distinction from `sort T` (which **declares** a new abstract parameter). `requires Eq{T=T}` **references** an existing sort with bindings — it's a constraint, not a declaration.
+Note the distinction from `sort T` (which **declares** a new abstract parameter). `requires Eq{T}` **references** an existing sort with bindings — it's a constraint, not a declaration. The punned form `Eq{T}` is shorthand for `Eq{T = T}` when the parameter name matches a type in scope.
 
 ### 5. Typeclass-like patterns are expressible as sorts
 
@@ -100,7 +100,7 @@ sort Eq {
 
 sort Ordered {
   sort T
-  requires Eq{T = T}
+  requires Eq{T}
   operation gt(a: T, b: T) -> Bool
   operation gte(a: T, b: T) -> Bool
   operation lt(a: T, b: T) -> Bool
@@ -113,7 +113,7 @@ sort Ordered {
 
 sort Numeric {
   sort T
-  requires Ordered{T = T}
+  requires Ordered{T}
   operation add(a: T, b: T) -> T
   operation sub(a: T, b: T) -> T
   operation mul(a: T, b: T) -> T
@@ -225,26 +225,26 @@ Import ::= 'import' Name ['.' '{' NameList '}']
 
 Soft keywords: replace `domain` with `namespace`.
 
-The `requires` keyword is already a soft keyword (used in operations). At sort level, `requires Eq{T=T}` is a sort-level constraint — a precondition for instantiation.
+The `requires` keyword is already a soft keyword (used in operations). At sort level, `requires Eq{T}` is a sort-level constraint — a precondition for instantiation. Sort bindings support punning: `Eq{T}` = `Eq{T = T}`.
 
 ## Relationship to existing systems
 
 | Anthill | Maude | Scala 3 | Haskell |
 |---------|-------|---------|---------|
 | `sort Eq { sort T; ... }` | `fth EQ { sort T; ... }` | `trait Eq[T]` | `class Eq a` |
-| `requires Eq{T=Money}` | `view Eq(Money)` | `given Eq[Money]` | `instance Eq Money` |
+| `requires Eq{T = Money}` | `view Eq(Money)` | `given Eq[Money]` | `instance Eq Money` |
 | `Name{T=Int}` (type expr) | sort instantiation | `List[Int]` | `List Int` |
 | `namespace` | `fmod` (flat module) | `package` / `object` | `module` |
 | `import` | `protecting` / `including` | `import` | `import` |
 
 ## Implementation path
 
-1. **Rename `domain` → `namespace`** in grammar, parser, converter, loader
-2. **Move prelude specs from `domain` to `sort`** (Eq, Ordered, Numeric)
-3. **Add `requires` at sort level** — parse as sort-level constraint, loader emits requirement facts
-4. **Resolve `Name{bindings}` at use sites** — separate resolve pass
+1. **Rename `domain` → `namespace`** in grammar, parser, converter, loader — **done** (31b05f0)
+2. **Move prelude specs from `domain` to `sort`** (Eq, Ordered, Numeric) — **done** (b925da4)
+3. **Add `requires` at sort level** — parse as sort-level constraint, loader emits `Requirement` facts — **done** (e005ede). Also added sort-binding punning: `Eq{T}` = `Eq{T = T}` (d7dbcb3).
+4. **Resolve `Name{bindings}` at use sites** — separate resolve pass — **pending**
 
-Steps 1-2 are mechanical. Steps 3-4 require the resolve pass discussed in 001.1.
+Steps 1–3 are complete. Step 4 requires the resolve pass discussed in 001.1.
 
 ## Backwards compatibility
 
