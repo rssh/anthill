@@ -190,6 +190,28 @@ namespace banking {
           type: (simple_type (name (identifier))))))))
 
 =====================================
+Requires with punned sort binding
+=====================================
+
+sort Ordered {
+  sort T
+  requires Eq{T}
+}
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name (identifier))
+    (abstract_sort
+      name: (name (identifier)))
+    (requires_declaration
+      type: (parameterized_type
+        (name (identifier))
+        (sort_binding
+          param: (name (identifier)))))))
+
+=====================================
 Line comment
 =====================================
 

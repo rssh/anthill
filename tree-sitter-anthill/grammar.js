@@ -106,8 +106,7 @@ module.exports = grammar({
 
     sort_binding: $ => seq(
       field('param', $.name),
-      '=',
-      field('type', $._type),
+      optional(seq('=', field('type', $._type))),
     ),
 
     export_clause: $ => seq(

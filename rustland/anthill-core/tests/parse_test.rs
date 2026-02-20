@@ -644,6 +644,43 @@ fn load_sort_with_requires() {
     }
 }
 
+#[test]
+fn parse_requires_punned_binding() {
+    // `Eq{T}` should desugar to `Eq{T = T}`
+    let source = r#"sort Ordered {
+  sort T
+  requires Eq{T}
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::SortWithBody(s) => {
+            match &s.items[1] {
+                Item::RequiresDecl(r) => {
+                    match &r.type_expr {
+                        TypeExpr::Parameterized { name, bindings } => {
+                            assert_eq!(parsed.interner.resolve(name.last()), "Eq");
+                            assert_eq!(bindings.len(), 1);
+                            let b = &bindings[0];
+                            assert_eq!(parsed.interner.resolve(b.param.last()), "T");
+                            // The bound should also be T (desugared from punning)
+                            match &b.bound {
+                                TypeExpr::Simple(bound_name) => {
+                                    assert_eq!(parsed.interner.resolve(bound_name.last()), "T");
+                                }
+                                other => panic!("expected Simple type, got {:?}", other),
+                            }
+                        }
+                        other => panic!("expected Parameterized type, got {:?}", other),
+                    }
+                }
+                other => panic!("expected RequiresDecl, got {:?}", std::mem::discriminant(other)),
+            }
+        }
+        other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
 // ── Mutual reference tests ──────────────────────────────────────
 
 fn check_term_contains(kb: &KnowledgeBase, term: TermId, target: TermId, found: &mut bool) {

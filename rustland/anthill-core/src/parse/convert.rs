@@ -211,12 +211,10 @@ impl<'a> Converter<'a> {
                 let sym = self.intern("?");
                 Name::simple(sym, self.span(node))
             });
+        // Punning: `Eq{T}` desugars to `Eq{T = T}` — param name becomes the type
         let bound = self.field(node, "type")
             .map(|n| self.convert_type(n))
-            .unwrap_or_else(|| {
-                let sym = self.intern("?");
-                TypeExpr::Simple(Name::simple(sym, self.span(node)))
-            });
+            .unwrap_or_else(|| TypeExpr::Simple(param.clone()));
         SortBinding { param, bound }
     }
 
