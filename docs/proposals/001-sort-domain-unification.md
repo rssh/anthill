@@ -77,6 +77,54 @@ end
 - `domain` = module without a primary type.
 - One mechanism, two entry points.
 
+## Name Uniqueness
+
+**A name may be declared as either a `sort` or a `domain` in the same scope, not both.** Declaring both `sort X` and `domain X` in the same scope is an error.
+
+Rationale: since `sort X` already implicitly defines `domain X`, a separate `domain X` declaration would either conflict or require "reopening" semantics. Reopening would introduce complexity (what can be added? can constructors be added, breaking closed ADT?) without sufficient benefit.
+
+### Separating Structure from Behavior
+
+When a sort's definition becomes large, or when operations on a sort are defined separately (e.g., in a different file or by a different agent), use a **companion domain** — a separate domain that imports the sort:
+
+```
+-- Type structure (defines the sort and its constructors):
+sort Option
+  sort T
+  entity none
+  entity some(value: T)
+end
+
+-- Companion domain (adds operations, defined separately):
+domain Option-ops
+  import Option
+  operation get_or(o: Option, default: T) -> T
+  rule get_or(some(?x), ?d) = ?x
+  rule get_or(none, ?d) = ?d
+end
+```
+
+This is analogous to Scala's companion objects (`trait X` + `object X`) or Maude's extending modules. The companion domain has full access to the sort's constructors via `import`.
+
+**Naming convention:** No fixed convention is prescribed at this stage. Projects may use `X-ops`, `X-companion`, or any other name. If a dominant pattern emerges, syntactic sugar may be introduced in a future proposal — for example, a `companion` block within a sort declaration that desugars to a separate domain with an implicit import:
+
+```
+-- Possible future sugar (not part of this proposal):
+sort Option
+  sort T
+  entity none
+  entity some(value: T)
+companion
+  operation get_or(o: Option, default: T) -> T
+  rule get_or(some(?x), ?d) = ?x
+  rule get_or(none, ?d) = ?d
+end
+
+-- Would desugar to the two-declaration form above.
+```
+
+This sugar is deferred — it can be added without breaking changes once usage patterns stabilize.
+
 ## The Defined ADT Form as Sugar
 
 The existing `sort X = { entity ... }` form is sugar for a body containing only constructors:
