@@ -242,9 +242,9 @@ The `requires` keyword is already a soft keyword (used in operations). At sort l
 1. **Rename `domain` → `namespace`** in grammar, parser, converter, loader — **done** (31b05f0)
 2. **Move prelude specs from `domain` to `sort`** (Eq, Ordered, Numeric) — **done** (b925da4)
 3. **Add `requires` at sort level** — parse as sort-level constraint, loader emits `Requirement` facts — **done** (e005ede). Also added sort-binding punning: `Eq{T}` = `Eq{T = T}` (d7dbcb3).
-4. **Resolve `Name{bindings}` at use sites** — separate resolve pass — **pending**
+4. **Validate `Name{bindings}` and `requires` constraints** — not a separate compiler pass; well-formedness checks (valid sort references, valid parameter names, arity) are expressed as constraint rules in the KB. Errors surface through the standard denial/constraint mechanism.
 
-Steps 1–3 are complete. Step 4 requires the resolve pass discussed in 001.1.
+Steps 1–3 are complete. Step 4 is prelude content (constraint rules), not a compiler change.
 
 ## Backwards compatibility
 
