@@ -1,0 +1,3 @@
+session Anthill_Kernel = HOL +
+  theories
+    Anthill_Kernel

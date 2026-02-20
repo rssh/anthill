@@ -494,6 +494,139 @@ Effect ::= Modifies(target: Name)       -- mutates state
          | Requires(capability: Name)   -- needs a capability
 ```
 
+### 5.6 Effect Semantics (State-Passing Interpretation)
+
+Effects give operations a precise execution semantics via a state-passing interpretation. An operation
+
+```
+operation op(x1: A1, ..., xm: Am) -> R
+  effects (Modifies S, Reads T, Emits E, Errors Err, Requires Cap)
+```
+
+is interpreted as a function that threads an **environment** — a mapping from resource names to their current state:
+
+```
+op_e : Env × A1 × ... × Am → (R × Env × Event list) + Error
+```
+
+where:
+- **`Env`** is a partial map from resource names (symbols) to terms representing their current state.
+- On success, the operation returns the result value `R`, an updated environment `Env`, and a list of emitted events.
+- On failure, the operation returns an error term.
+
+An operation without effects is **pure**: it receives the environment unchanged and must return it unchanged.
+
+#### Environment and Resources
+
+Each `Modifies(target)` and `Reads(source)` effect declares a **resource** — a named slot in the environment. The environment maps resource names to their current state as terms.
+
+- `Reads(S)` — the operation may inspect `Env(S)` but must not change it.
+- `Modifies(S)` — the operation may inspect and update `Env(S)`. Every `Modifies` implicitly grants `Reads`.
+- `Emits(E)` — the operation may append events of type `E` to the output event list.
+- `Errors(Err)` — the operation may fail, returning an error of type `Err` instead of a result.
+- `Requires(Cap)` — the operation requires capability `Cap` to be present (non-`None`) in the environment.
+
+#### Env Condition
+
+An effectful operation **respects its env condition** if it only modifies the resources declared in its `Modifies` effects:
+
+> For all resource names `s` not in the `Modifies` set: `Env_after(s) = Env_before(s)`.
+
+This is the fundamental correctness property: an operation's declared effects are an upper bound on what it may change. Pure operations (no effects) must preserve the entire environment.
+
+#### Composition
+
+Sequential composition of effectful operations threads the environment and concatenates emitted events:
+
+```
+(g ∘ f)(env, args) =
+  case f(env, args) of
+    Error err → Error err
+    Ok (r1, env1, events1) →
+      case g(env1, [r1]) of
+        Error err → Error err
+        Ok (r2, env2, events2) → Ok (r2, env2, events1 ++ events2)
+```
+
+If `f` respects effects `E1` and `g` respects effects `E2`, then `g ∘ f` respects effects `E1 ∪ E2`.
+
+#### Capability Checking
+
+Before executing an operation, the kernel verifies that all `Requires(Cap)` capabilities are present in the environment. If any required capability is absent (`Env(Cap) = None`), execution is rejected before the operation body runs.
+
+#### Verification Obligations
+
+When an `Implementation` fact links code to an operation with effects:
+
+1. The implementation must **respect the env condition** — it may only modify declared resources.
+2. The implementation must **check capabilities** — all `Requires` resources must be present.
+3. `requires` clauses are checked against input parameters and the pre-environment.
+4. `ensures` clauses are checked against input parameters, the result, and the post-environment.
+
+These generate proof obligations (see §8.4) that can be discharged at various trust levels.
+
+### 5.7 Monadic Interpretation of Effects
+
+The same effects admit an equivalent **monadic interpretation**. An operation
+
+```
+operation op(x1: A1, ..., xm: Am) -> R
+  effects (Modifies S, Reads T, Emits E, Errors Err, Requires Cap)
+```
+
+is interpreted as a computation in a combined monad `M_E`:
+
+```
+op_m : A1 → ... → Am → M_E(R)
+```
+
+where `M_E` layers:
+- **`StateT Env`** — for `Reads`/`Modifies` (thread mutable state),
+- **`WriterT (Event list)`** — for `Emits` (accumulate events),
+- **`ExceptT Error`** — for `Errors` (short-circuit on failure),
+- **`ReaderT Caps`** — for `Requires` (access capabilities).
+
+Concretely, `M_E(R) = Env → (R × Env × Event list) + Error`.
+
+#### Monadic Operations
+
+The monad provides primitive operations corresponding to each effect kind:
+
+| Effect | Monadic primitive | Type |
+|--------|-------------------|------|
+| `Reads(S)` | `get_resource(S)` | `M_E(Term option)` |
+| `Modifies(S)` | `put_resource(S, v)` | `M_E(Unit)` |
+| `Emits(E)` | `emit_event(e)` | `M_E(Unit)` |
+| `Errors(Err)` | `throw_error(err)` | `M_E(A)` for any `A` |
+| `Requires(Cap)` | `require_capability(Cap)` | `M_E(Unit)` |
+
+Sequencing is monadic bind:
+
+```
+bind : M_E(A) → (A → M_E(B)) → M_E(B)
+bind m f = λenv.
+  case m env of
+    Error err → Error err
+    Ok (a, env', events1) →
+      case f a env' of
+        Error err → Error err
+        Ok (b, env'', events2) → Ok (b, env'', events1 ++ events2)
+```
+
+The monad laws hold: `bind (return x) f = f x`, `bind m return = m`, and `bind (bind m f) g = bind m (λx. bind (f x) g)`.
+
+#### Equivalence of Interpretations
+
+The state-passing interpretation (§5.6) and the monadic interpretation are **isomorphic** — conversion functions `to_monad` and `from_monad` form a round-trip in both directions. The env condition is preserved by the correspondence.
+
+The two interpretations have the **same expressivity** when the environment can contain:
+1. **Duplicated state** — the environment may hold copies of resource values, allowing the monad's internal state to be embedded in the environment representation.
+2. **Continuated expressions** — the environment may hold suspended computations (closures), allowing monadic bind/sequencing to be represented as data.
+
+Since the kernel language does not yet have execution semantics (flow expressions, sequencing), continuations cannot currently be expressed in the non-monadic form. The monadic interpretation therefore provides a natural way to reason about sequential composition of effectful operations — once execution semantics are introduced, both forms will be fully interchangeable.
+
+For the formal development of both interpretations and their equivalence proofs, see `isabelleland/kernel/Anthill_Kernel.thy`.
+
 ## 6. Syntactic Sugar
 
 Readable shorthand that desugars to kernel constructs. The reasoning engine only sees rules and defined sorts.
