@@ -68,7 +68,7 @@ All keywords are **context-dependent** (soft), following the Scala 3 approach: a
 
 | Context | Soft keywords |
 |---------|--------------|
-| Top level / namespace body | `namespace`, `sort`, `rule`, `operation`, `entity`, `fact`, `constraint` |
+| Top level / namespace body | `namespace`, `sort`, `rule`, `operation`, `requires`, `entity`, `fact`, `constraint` |
 | Namespace header | `import`, `export`, `end` |
 | Visibility (prefix) | `internal`, `export`, `public` |
 | Operation | `requires`, `ensures`, `effects` |
@@ -210,7 +210,7 @@ sort anthill.prelude.Ordered
   export gt, gte, lt, lte
 
   sort T
-  requires Eq{T = T}
+  requires Eq{T}
 
   operation {
     gt(a: T, b: T) -> Bool          -- >
@@ -232,7 +232,7 @@ sort anthill.prelude.Numeric
   export add, sub, mul, zero-val
 
   sort T
-  requires Ordered{T = T}
+  requires Ordered{T}
 
   operation {
     add(a: T, b: T) -> T           -- +
@@ -293,7 +293,22 @@ Namespace ::= 'namespace' Name
 Import ::= 'import' Name ['.' '{' NameList '}']
 
 NameList    ::= Name (',' Name)*
-SortBinding ::= Name '=' Type                   -- binds an abstract sort to a concrete type
+SortBinding ::= Name '=' Type                   -- explicit: binds an abstract sort to a concrete type
+              | Name                             -- punning: Eq{T} is shorthand for Eq{T = T}
+```
+
+When a sort binding omits the `= Type` part, the parameter name is used as both the binding name and the bound type. This **punning** shorthand (analogous to TypeScript's `{x}` for `{x: x}`) is useful when a sort parameter has the same name as a type in scope:
+
+```
+-- These are equivalent:
+requires Eq{T = T}       -- explicit
+requires Eq{T}           -- punned: T binds to T
+
+-- Mixed: punned and explicit bindings in the same type expression
+requires Bifunctor{A, B = Int}   -- A binds to A, B binds to Int
+
+-- Explicit is required when names differ:
+requires Numeric{T = Money}      -- T binds to Money
 ```
 
 Import makes names from another namespace visible in the current scope. Sort parameters remain abstract — they are instantiated separately via inline type expressions (`Name{bindings}`), not at import time:
@@ -320,6 +335,7 @@ Default visibility is `internal`. The namespace-level `export` clause lists expo
 
 ```
 NamespaceContent ::= Sort | Rule | Operation
+                   | RequiresDecl           -- sort-level constraint (see §5.2)
                    | Entity                 -- sugar (desugars to single-constructor Sort, see §6.3)
                    | Fact | Constraint      -- sugar (desugars to Rule, see §6.1, §6.2)
                    | OperationBlock | RuleBlock  -- sugar (desugars to individual declarations, see §6.4)
@@ -355,7 +371,7 @@ sort Vector
 operation dim(v: Vector) -> Nat        -- accessor
 ```
 
-**Sort with body** — a sort can have a body containing entities (constructors), sub-sorts (parameters), operations, rules, and other items. When a sort body contains entity declarations, they are constructors of that sort, making it a closed ADT:
+**Sort with body** — a sort can have a body containing entities (constructors), sub-sorts (parameters), `requires` declarations (sort-level constraints), operations, rules, and other items. When a sort body contains entity declarations, they are constructors of that sort, making it a closed ADT:
 
 ```
 sort Nat {                           -- closed set of constructors
@@ -375,6 +391,30 @@ A sort with entity constructors is **closed** — exactly the listed constructor
 rule length(nil) = zero
 rule length(cons(?x, ?xs)) = succ(length(?xs))
 ```
+
+**Requires declaration** — a standalone `requires` in a sort or namespace body declares a sort-level constraint: the enclosing scope depends on another algebraic spec. This is distinct from operation-level `requires` clauses (preconditions on individual operations).
+
+```
+RequiresDecl ::= 'requires' Type
+```
+
+The `requires` declaration takes a type expression — either a simple sort name or a parameterized sort with bindings:
+
+```
+sort Ordered {
+  sort T
+  requires Eq{T}                     -- this sort depends on Eq over T
+
+  operation gt(a: T, b: T) -> Bool
+}
+
+namespace banking {
+  sort Money
+  requires Numeric{T = Money}         -- this namespace depends on Numeric over Money
+}
+```
+
+When loaded into the KB, a `requires` declaration emits a `Requirement` fact scoped to the enclosing sort or namespace.
 
 **Standalone `entity`** is syntactic sugar for a single-constructor sort (see §6.3):
 
@@ -1122,9 +1162,10 @@ Namespace   ::= 'namespace' Name
 
 Import      ::= 'import' Name ['.' '{' NameList '}']
 NameList    ::= Name (',' Name)*
-SortBinding ::= Name '=' Type
+SortBinding ::= Name ['=' Type]                 -- without '= Type': punning (Eq{T} = Eq{T = T})
 
 NamespaceContent ::= Sort | Rule | Operation
+                   | RequiresDecl                 -- sort-level constraint
                    | Entity                       -- sugar (§6.3)
                    | Fact | Constraint            -- sugar (§6.1, §6.2)
                    | OperationBlock | RuleBlock   -- sugar (§6.4)
@@ -1141,6 +1182,7 @@ Sort        ::= [Visibility] 'sort' Name                           -- abstract
                   ['meta' ':' Meta]
 
 SortContent ::= Sort | Entity | Operation | Rule
+              | RequiresDecl
               | Fact | Constraint | OperationBlock | RuleBlock
               | Namespace
 
@@ -1166,6 +1208,8 @@ Param       ::= Name ':' Type
 Effect      ::= 'Modifies' '(' Name ')' | 'Reads' '(' Name ')'
               | 'Emits' '(' Name ')' | 'Errors' '(' Name ')'
               | 'Requires' '(' Name ')'
+
+RequiresDecl ::= 'requires' Type                -- sort-level constraint (in sort/namespace body)
 
 -- =================================================================
 -- Syntactic Sugar
