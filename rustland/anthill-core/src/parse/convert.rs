@@ -445,13 +445,6 @@ impl<'a> Converter<'a> {
             .map(|n| self.convert_name(n))?;
         let span = self.span(node);
 
-        let extends = self.child_by_kind(node, "extends_clause")
-            .map(|ec| self.children_by_kind(ec, "name")
-                .into_iter()
-                .map(|n| self.convert_name(n))
-                .collect())
-            .unwrap_or_default();
-
         let imports = self.children_by_kind(node, "import_clause")
             .into_iter()
             .map(|ic| self.convert_import(ic))
@@ -469,7 +462,7 @@ impl<'a> Converter<'a> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             match child.kind() {
-                "name" | "extends_clause" | "import_clause" | "export_clause" => {}
+                "name" | "import_clause" | "export_clause" => {}
                 _ => {
                     if let Some(item) = self.convert_item(child) {
                         items.push(item);
@@ -480,7 +473,6 @@ impl<'a> Converter<'a> {
 
         Some(Domain {
             name,
-            extends,
             imports,
             exports,
             items,

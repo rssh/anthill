@@ -141,7 +141,6 @@ pub enum Item {
 #[derive(Debug)]
 pub struct Domain {
     pub name: Name,
-    pub extends: Vec<Name>,
     pub imports: Vec<Import>,
     pub exports: Vec<Name>,
     pub items: Vec<Item>,

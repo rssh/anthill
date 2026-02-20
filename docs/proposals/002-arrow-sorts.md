@@ -162,7 +162,7 @@ Error-handling extension (cf. `dotty-cps-async`'s `CpsTryMonad[F[_]]`):
 
 ```
 sort CpsTryMonad
-  extends CpsMonad
+  import CpsMonad
   sort Err
 
   operation error(e: Err) -> F{T = A}

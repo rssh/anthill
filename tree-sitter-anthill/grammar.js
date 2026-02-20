@@ -88,15 +88,9 @@ module.exports = grammar({
     domain_declaration: $ => seq(
       'domain',
       field('name', $.name),
-      optional($.extends_clause),
       repeat($.import_clause),
       optional($.export_clause),
       $._body_domain,
-    ),
-
-    extends_clause: $ => seq(
-      'extends',
-      commaSep1($.name),
     ),
 
     import_clause: $ => seq(

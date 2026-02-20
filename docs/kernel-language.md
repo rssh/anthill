@@ -69,7 +69,7 @@ All keywords are **context-dependent** (soft), following the Scala 3 approach: a
 | Context | Soft keywords |
 |---------|--------------|
 | Top level / domain body | `domain`, `sort`, `rule`, `operation`, `entity`, `fact`, `constraint` |
-| Domain header | `extends`, `import`, `export`, `where`, `end` |
+| Domain header | `import`, `export`, `where`, `end` |
 | Visibility (prefix) | `internal`, `export`, `public` |
 | Operation | `requires`, `ensures`, `effects` |
 | Rule | `:-` (operator, not keyword) |
@@ -220,7 +220,7 @@ domain anthill.prelude.Eq
   rule neq(?a, ?b) = not(eq(?a, ?b))
 end
 
--- Ordered: total ordering (extends Eq)
+-- Ordered: total ordering (imports Eq)
 domain anthill.prelude.Ordered
   export gt, gte, lt, lte
 
@@ -242,7 +242,7 @@ domain anthill.prelude.Ordered
   }
 end
 
--- Numeric: basic arithmetic (extends Ordered)
+-- Numeric: basic arithmetic (imports Ordered)
 domain anthill.prelude.Numeric
   export add, sub, mul, zero-val
 
@@ -315,7 +315,6 @@ The unit of encapsulation and independent evolution. A domain scopes sorts, enti
 
 ```
 Domain ::= 'domain' Name
-             ['extends' Name (',' Name)*]       -- inherit from parent domains
              Import*                             -- explicit imports
              ['export' NameList]                 -- what is visible outside (default: nothing)
            Body[DomainContent*]
@@ -1128,7 +1127,6 @@ Term        ::= Const(type, value)
 -- =================================================================
 
 Domain      ::= 'domain' Name
-                  ['extends' Name (',' Name)*]
                   Import*
                   ['export' NameList]
                 Body[DomainContent*]

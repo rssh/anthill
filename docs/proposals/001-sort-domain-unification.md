@@ -24,7 +24,7 @@ This elevates the same-name convention from a naming pattern to a language rule:
 
 ## Grammar Changes
 
-Sort declarations gain an optional body. The body uses the same `Body[...]` delimiters as domains (`{ ... }` or `... end`):
+Sort declarations gain an optional body. The structure mirrors the domain grammar (§5.1): imports and exports in the header, content in the body.
 
 ```
 -- BEFORE:
@@ -38,8 +38,11 @@ Sort ::= [Visibility] 'sort' Name
            ['meta' ':' Meta]                                    -- abstract (unchanged)
        | [Visibility] 'sort' Name '=' Body[Constructor*]
            ['meta' ':' Meta]                                    -- defined ADT (unchanged)
-       | [Visibility] 'sort' Name Body[SortContent*]
-           ['meta' ':' Meta]                                    -- NEW: sort with body
+       | [Visibility] 'sort' Name                               -- NEW: sort with body
+           Import*
+           ['export' NameList]
+         Body[SortContent*]
+           ['meta' ':' Meta]
 
 SortContent ::= Sort                    -- sub-sorts (parameters)
               | Entity                  -- constructors
@@ -49,10 +52,64 @@ SortContent ::= Sort                    -- sub-sorts (parameters)
               | Constraint             -- integrity constraints
               | OperationBlock          -- grouped methods
               | RuleBlock               -- grouped laws
-              | Import                  -- imports into the sort's domain
+              | Domain                  -- nested domains (sub-modules)
 ```
 
-`SortContent` is identical to `DomainContent` (§5.1). A sort with a body IS a domain.
+`SortContent` is identical to `DomainContent` (§5.1). A sort with a body IS a domain. Everything a domain can contain, a sort can contain — including nested domains and nested sorts. Imports and exports appear in the header, just as in domains.
+
+**Note:** The `extends` clause has been removed from the domain grammar (§5.1) due to unclear semantics — `import` covers all known use cases. This proposal does not introduce `extends` for sorts either.
+
+### Nesting
+
+A nested `sort T` (abstract, no body) serves as a **type parameter**. A nested `sort S { ... }` (with body) is a **nested type definition** within the sort's namespace. A nested `domain D { ... }` is a **sub-module** — useful for grouping related operations without introducing a new type:
+
+```
+sort List
+  sort T
+  entity nil
+  entity cons(head: T, tail: List)
+
+  -- Nested domain groups operations without being a type:
+  domain traversal
+    operation length(l: List) -> Nat
+    operation reverse(l: List) -> List
+    rule length(nil) = zero
+    rule length(cons(?x, ?xs)) = succ(length(?xs))
+  end
+end
+```
+
+### Lexical Scoping
+
+Nested content (sub-sorts, nested domains) can reference names from enclosing scopes. This is standard lexical scoping:
+
+```
+sort List
+  sort T                                    -- parameter
+  entity cons(head: T, tail: List)          -- references T and List
+
+  domain traversal
+    operation head(l: List) -> T            -- references List and T from enclosing sort
+  end
+end
+```
+
+### Constructor Scope
+
+An entity is a constructor of sort `X` only if it appears **directly** in `X`'s body — not inside a nested domain or nested sort:
+
+```
+sort Expr
+  entity Var(name: String)                  -- constructor of Expr ✓
+  entity Add(left: Expr, right: Expr)       -- constructor of Expr ✓
+
+  domain helpers
+    entity ParseError(message: String)      -- NOT a constructor of Expr (its own sort)
+  end
+end
+```
+
+This preserves the closed ADT property: the set of constructors is exactly what appears directly in the sort body, regardless of nested content.
 
 ## Relationship Between `sort` and `domain`
 
