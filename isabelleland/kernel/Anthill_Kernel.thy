@@ -416,7 +416,6 @@ datatype visibility = Internal | Export | Public
 
 record domain =
   dom_name    :: symbol
-  dom_extends :: "symbol list"
   dom_sorts   :: "(sort_id \<times> sort_kind) list"
   dom_rules   :: "arule list"
   dom_ops     :: "operation list"
