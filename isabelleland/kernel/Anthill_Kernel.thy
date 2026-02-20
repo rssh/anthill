@@ -414,12 +414,27 @@ subsection \<open>Visibility and Domains\<close>
 
 datatype visibility = Internal | Export | Public
 
-record domain =
-  dom_name    :: symbol
-  dom_sorts   :: "(sort_id \<times> sort_kind) list"
-  dom_rules   :: "arule list"
-  dom_ops     :: "operation list"
-  dom_visibility :: visibility
+datatype module_item =
+    MI_Sort sort_id sort_kind
+  | MI_Entity aterm
+  | MI_Rule arule
+  | MI_Operation operation
+  | MI_SubModule module_body
+and module_body = \<comment> \<open>mb_primary_sort: Some s = sort-with-body; None = domain\<close>
+  ModuleBody
+    (mb_name : symbol)
+    (mb_primary_sort : "sort_id option")
+    (mb_items : "module_item list")
+    (mb_visibility : visibility)
+
+fun direct_entities :: "module_item list \<Rightarrow> aterm list" where
+  "direct_entities [] = []"
+| "direct_entities (MI_Entity e # rest) = e # direct_entities rest"
+| "direct_entities (_ # rest) = direct_entities rest"
+
+definition determine_sort_kind :: "module_item list \<Rightarrow> sort_kind" where
+  "determine_sort_kind items \<equiv>
+     (if direct_entities items \<noteq> [] then Defined else Abstract)"
 
 subsection \<open>Substitution\<close>
 
@@ -574,7 +589,7 @@ type_synonym fact_id = nat
 record fact_entry =
   fe_term     :: aterm
   fe_sort     :: sort_id
-  fe_domain   :: symbol
+  fe_domain   :: sort_id
   fe_meta     :: "aterm option"
   fe_retracted :: bool
 
@@ -615,7 +630,7 @@ lemma is_subtype_trans:
 subsubsection \<open>Fact operations\<close>
 
 definition assert_fact ::
-  "knowledge_base \<Rightarrow> aterm \<Rightarrow> sort_id \<Rightarrow> symbol \<Rightarrow> aterm option
+  "knowledge_base \<Rightarrow> aterm \<Rightarrow> sort_id \<Rightarrow> sort_id \<Rightarrow> aterm option
    \<Rightarrow> knowledge_base \<times> fact_id" where
   "assert_fact kb t s d m \<equiv>
      let fid = length (kb_facts kb);
@@ -658,6 +673,41 @@ definition register_subsort ::
   "knowledge_base \<Rightarrow> sort_id \<Rightarrow> sort_id \<Rightarrow> knowledge_base" where
   "register_subsort kb child parent \<equiv>
      kb\<lparr> kb_subsort := kb_subsort kb @ [(child, parent)] \<rparr>"
+
+fun register_constructor_subsorts ::
+  "knowledge_base \<Rightarrow> sort_id \<Rightarrow> aterm list \<Rightarrow> knowledge_base" where
+  "register_constructor_subsorts kb _ [] = kb"
+| "register_constructor_subsorts kb parent (ctor # rest) =
+     register_constructor_subsorts
+       (register_subsort (register_sort kb ctor Constructor) ctor parent)
+       parent rest"
+
+subsubsection \<open>Module loading\<close>
+
+fun load_module_item :: "knowledge_base \<Rightarrow> sort_id \<Rightarrow> module_item \<Rightarrow> knowledge_base"
+and load_module_items :: "knowledge_base \<Rightarrow> sort_id \<Rightarrow> module_item list \<Rightarrow> knowledge_base"
+and load_module_body :: "knowledge_base \<Rightarrow> module_body \<Rightarrow> knowledge_base"
+where
+  "load_module_item kb sc (MI_Sort s k) = register_sort kb s k"
+| "load_module_item kb sc (MI_Entity e) =
+     fst (assert_fact kb e (Fn ''Entity'' []) sc None)"
+| "load_module_item kb sc (MI_Rule r) =
+     fst (assert_fact kb (arule_head r) (Fn ''Rule'' []) sc None)"
+| "load_module_item kb sc (MI_Operation oper) =
+     fst (assert_fact kb (Fn (op_name oper) []) (Fn ''Operation'' []) sc None)"
+| "load_module_item kb sc (MI_SubModule mb) =
+     load_module_body kb mb"
+| "load_module_items kb sc [] = kb"
+| "load_module_items kb sc (i # rest) =
+     load_module_items (load_module_item kb sc i) sc rest"
+| "load_module_body kb (ModuleBody name ps items vis) =
+     (let scope = Fn name [];
+          kb1 = (case ps of
+                   None \<Rightarrow> fst (assert_fact kb scope (Fn ''Domain'' []) scope None)
+                 | Some s \<Rightarrow> register_constructor_subsorts
+                               (register_sort kb s (determine_sort_kind items))
+                               s (direct_entities items))
+      in load_module_items kb1 scope items)"
 
 subsubsection \<open>Fresh variables\<close>
 
@@ -736,5 +786,70 @@ lemma empty_kb_consistent:
   using assms
   by (auto simp add: kb_consistent_def denial_violated_def
                      body_satisfied_def query_empty_kb)
+
+text \<open>Nested entities are not constructors of the outer scope.\<close>
+
+lemma nested_entity_not_constructor:
+  "direct_entities [MI_SubModule m] = []"
+  by simp
+
+text \<open>Constructor subsort registration: every direct entity becomes a subtype of the parent.\<close>
+
+lemma register_constructor_subsorts_mono:
+  "set (kb_subsort kb) \<subseteq> set (kb_subsort (register_constructor_subsorts kb parent es))"
+proof (induction es arbitrary: kb)
+  case Nil
+  then show ?case by simp
+next
+  case (Cons a es)
+  have "set (kb_subsort kb)
+        \<subseteq> set (kb_subsort (register_subsort (register_sort kb a Constructor) a parent))"
+    by (auto simp: register_subsort_def register_sort_def)
+  also have "\<dots> \<subseteq> set (kb_subsort (register_constructor_subsorts
+                        (register_subsort (register_sort kb a Constructor) a parent)
+                        parent es))"
+    using Cons.IH by blast
+  finally show ?case by simp
+qed
+
+lemma register_constructor_subsorts_adds_pair:
+  assumes "e \<in> set es"
+  shows "(e, parent) \<in> set (kb_subsort (register_constructor_subsorts kb parent es))"
+  using assms
+proof (induction es arbitrary: kb)
+  case Nil
+  then show ?case by simp
+next
+  case (Cons a es)
+  show ?case
+  proof (cases "a = e")
+    case True
+    have "(e, parent) \<in> set (kb_subsort
+            (register_subsort (register_sort kb e Constructor) e parent))"
+      by (auto simp: register_subsort_def register_sort_def)
+    then show ?thesis
+      using True register_constructor_subsorts_mono[of
+        "register_subsort (register_sort kb e Constructor) e parent" parent es]
+      by (auto simp: subset_iff)
+  next
+    case False
+    then have "e \<in> set es" using Cons.prems by simp
+    then show ?thesis using Cons.IH by simp
+  qed
+qed
+
+lemma constructor_subsort_registration:
+  assumes "e \<in> set (direct_entities items)"
+  and "kb' = register_constructor_subsorts kb s (direct_entities items)"
+  shows "is_subtype kb' e s"
+  using assms register_constructor_subsorts_adds_pair
+  by (auto simp: is_subtype_def subsort_rel_def intro: r_into_rtrancl)
+
+text \<open>Name uniqueness predicate for well-formed scopes.\<close>
+
+definition well_formed_scope :: "module_item list \<Rightarrow> bool" where
+  "well_formed_scope items \<equiv>
+     \<forall>m1 m2. MI_SubModule m1 \<in> set items \<and> MI_SubModule m2 \<in> set items
+       \<and> mb_name m1 = mb_name m2 \<longrightarrow> m1 = m2"
 
 end
