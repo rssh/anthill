@@ -3,7 +3,7 @@
 /// One struct maintains everything. Sort relations are facts; subsort
 /// indexes are materialized alongside other indexes.
 ///
-/// See: docs/stage0/term-store-design.md §7, §9 (Layer 0)
+/// See: docs/stage0/rust-term-store-design.md §7, §9 (Layer 0)
 
 pub mod term;
 pub mod subst;

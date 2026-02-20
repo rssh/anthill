@@ -3,7 +3,7 @@
 /// Terms are immutable. Structurally identical terms share the same `TermId`.
 /// Reference counting cascades to subterms on release.
 ///
-/// See: docs/stage0/term-store-design.md §3.3, §4
+/// See: docs/stage0/rust-term-store-design.md §3.3, §4
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};

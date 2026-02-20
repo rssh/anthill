@@ -5,7 +5,7 @@
 /// Stage 0 adds: project, tool, workitem, feedback blocks.
 ///
 /// All keywords except `true`/`false` are soft (context-dependent).
-/// See: docs/stage0/kernel-language.md
+/// See: docs/kernel-language.md
 
 module.exports = grammar({
   name: 'anthill',

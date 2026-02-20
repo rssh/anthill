@@ -1,7 +1,7 @@
 /// Substitution — maps logic variables to term ids.
 ///
 /// Functional now; `chase()` stubbed for Layer 1 (unification).
-/// See: docs/stage0/term-store-design.md §3.4
+/// See: docs/stage0/rust-term-store-design.md §3.4
 
 use std::collections::HashMap;
 
