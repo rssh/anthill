@@ -1,0 +1,22 @@
+[package]
+name = "tree-sitter-anthill"
+version = "0.1.0"
+edition = "2021"
+description = "Tree-sitter grammar for the Anthill kernel language"
+build = "bindings/rust/build.rs"
+include = [
+  "bindings/rust/*",
+  "src/*",
+]
+
+[lib]
+path = "bindings/rust/lib.rs"
+
+[dependencies]
+tree-sitter-language = "0.1"
+
+[dev-dependencies]
+tree-sitter = "0.25"
+
+[build-dependencies]
+cc = "1"

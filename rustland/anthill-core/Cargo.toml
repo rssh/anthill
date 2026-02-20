@@ -5,3 +5,7 @@ edition = "2021"
 description = "Anthill kernel language: terms, parser, KB, stage0"
 
 [dependencies]
+smallvec = { version = "1", features = ["const_generics"] }
+ordered-float = "4"
+tree-sitter = "0.25"
+tree-sitter-anthill = { path = "../../tree-sitter-anthill" }
