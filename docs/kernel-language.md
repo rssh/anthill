@@ -194,7 +194,7 @@ sort anthill.prelude.Option
 end
 
 -- Eq: equality
-namespace anthill.prelude.Eq
+sort anthill.prelude.Eq
   export eq, neq
 
   sort T
@@ -205,12 +205,12 @@ namespace anthill.prelude.Eq
   rule neq(?a, ?b) = not(eq(?a, ?b))
 end
 
--- Ordered: total ordering (imports Eq)
-namespace anthill.prelude.Ordered
+-- Ordered: total ordering (requires Eq)
+sort anthill.prelude.Ordered
   export gt, gte, lt, lte
 
   sort T
-  import anthill.prelude.Eq
+  requires Eq{T = T}
 
   operation {
     gt(a: T, b: T) -> Bool          -- >
@@ -227,12 +227,12 @@ namespace anthill.prelude.Ordered
   }
 end
 
--- Numeric: basic arithmetic (imports Ordered)
-namespace anthill.prelude.Numeric
+-- Numeric: basic arithmetic (requires Ordered)
+sort anthill.prelude.Numeric
   export add, sub, mul, zero-val
 
   sort T
-  import anthill.prelude.Ordered
+  requires Ordered{T = T}
 
   operation {
     add(a: T, b: T) -> T           -- +
@@ -249,7 +249,7 @@ namespace anthill.prelude.Numeric
 end
 ```
 
-Infix operators `>`, `>=`, `<`, `<=`, `+`, `-`, `*`, `=` are sugar for the corresponding operations — `a > b` desugars to `gt(a, b)`, `a + b` to `add(a, b)`, etc. These are available when the corresponding prelude namespace is imported for the sort.
+Infix operators `>`, `>=`, `<`, `<=`, `+`, `-`, `*`, `=` are sugar for the corresponding operations — `a > b` desugars to `gt(a, b)`, `a + b` to `add(a, b)`, etc. These are available when the corresponding prelude sort is required (e.g. `requires Numeric{T = Money}`).
 
 **Instantiation** — via inline type expressions (`Name{bindings}`):
 
@@ -949,8 +949,9 @@ A complete algebra with sorts (abstract and defined), operations, contracts, and
 namespace banking
   export Account, Money, deposit, withdraw, balance
 
-  sort Money
-  import anthill.prelude.Numeric   -- gives us +, -, >, >=, = for Money
+  sort Money {
+    requires Numeric{T = Money}      -- gives us +, -, >, >=, = for Money
+  }
 
   entity Account(                       -- sugar: sort Account { entity Account(...) }
     id      : AccountId,
@@ -984,8 +985,9 @@ With infix sugar (once defined), the same namespace reads more naturally:
 namespace banking
   export Account, Money, deposit, withdraw, balance
 
-  sort Money
-  import anthill.prelude.Numeric
+  sort Money {
+    requires Numeric{T = Money}
+  }
 
   entity Account(id: AccountId, balance: Money)
 
