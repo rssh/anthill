@@ -949,9 +949,8 @@ A complete algebra with sorts (abstract and defined), operations, contracts, and
 namespace banking
   export Account, Money, deposit, withdraw, balance
 
-  sort Money {
-    requires Numeric{T = Money}      -- gives us +, -, >, >=, = for Money
-  }
+  sort Money
+  requires Numeric{T = Money}          -- gives us +, -, >, >=, = for Money
 
   entity Account(                       -- sugar: sort Account { entity Account(...) }
     id      : AccountId,
@@ -985,9 +984,8 @@ With infix sugar (once defined), the same namespace reads more naturally:
 namespace banking
   export Account, Money, deposit, withdraw, balance
 
-  sort Money {
-    requires Numeric{T = Money}
-  }
+  sort Money
+  requires Numeric{T = Money}
 
   entity Account(id: AccountId, balance: Money)
 
