@@ -503,17 +503,9 @@ impl<'a> Converter<'a> {
             None
         };
 
-        let where_clause = self.child_by_kind(node, "where_clause").map(|wc| {
-            self.children_by_kind(wc, "sort_binding")
-                .into_iter()
-                .map(|b| self.convert_sort_binding(b))
-                .collect()
-        });
-
         Import {
             path,
             selected,
-            where_clause,
         }
     }
 

@@ -69,7 +69,7 @@ All keywords are **context-dependent** (soft), following the Scala 3 approach: a
 | Context | Soft keywords |
 |---------|--------------|
 | Top level / domain body | `domain`, `sort`, `rule`, `operation`, `entity`, `fact`, `constraint` |
-| Domain header | `import`, `export`, `where`, `end` |
+| Domain header | `import`, `export`, `end` |
 | Visibility (prefix) | `internal`, `export`, `public` |
 | Operation | `requires`, `ensures`, `effects` |
 | Rule | `:-` (operator, not keyword) |
@@ -150,7 +150,7 @@ The kernel has only four primitive types for `Const` values:
 
 ### 4.4 The Prelude Domains
 
-Common compound types are defined in standard prelude sorts using the kernel's own constructs. **Parametric types are sorts with abstract sub-sorts** — instantiated via `import ... where` or via **inline type expressions** `Name{bindings}`. **Sum types are sorts with entity constructors** — `sort S { entity C₁(...), entity C₂(...) }` enumerates constructors (see §5.2).
+Common compound types are defined in standard prelude sorts using the kernel's own constructs. **Parametric types are sorts with abstract sub-sorts** — instantiated via **inline type expressions** `Name{bindings}`. **Sum types are sorts with entity constructors** — `sort S { entity C₁(...), entity C₂(...) }` enumerates constructors (see §5.2).
 
 ```
 -- Duration: a non-parametric prelude sort
@@ -210,7 +210,7 @@ domain anthill.prelude.Ordered
   export gt, gte, lt, lte
 
   sort T
-  import anthill.prelude.Eq where { T = T }
+  import anthill.prelude.Eq
 
   operation {
     gt(a: T, b: T) -> Bool          -- >
@@ -232,7 +232,7 @@ domain anthill.prelude.Numeric
   export add, sub, mul, zero-val
 
   sort T
-  import anthill.prelude.Ordered where { T = T }
+  import anthill.prelude.Ordered
 
   operation {
     add(a: T, b: T) -> T           -- +
@@ -251,21 +251,7 @@ end
 
 Infix operators `>`, `>=`, `<`, `<=`, `+`, `-`, `*`, `=` are sugar for the corresponding operations — `a > b` desugars to `gt(a, b)`, `a + b` to `add(a, b)`, etc. These are available when the corresponding prelude domain is imported for the sort.
 
-**Instantiation** — two equivalent mechanisms:
-
-**1. Import-level binding** (`import ... where`) — binds once, reuse throughout the domain:
-
-```
-domain my_project
-  import anthill.prelude.List where { T = Int }
-  -- now List, nil, cons, length are all bound to Int
-
-  import anthill.prelude.Option where { T = String }
-  -- now Option, none, some are bound to String
-end
-```
-
-**2. Inline type expression** (`Name{bindings}`) — one-off usage in a field or signature:
+**Instantiation** — via inline type expressions (`Name{bindings}`):
 
 ```
 entity Project(
@@ -277,7 +263,7 @@ entity Project(
 operation lookup(key: String) -> Option{T = Account}
 ```
 
-The inline form `List{T=Int}` refers to the primary sort of domain `anthill.prelude.List` with `T` bound to `Int`. Domain name and sort name share the same name (same-name convention); they live in different namespaces so there is no collision.
+The inline form `List{T=Int}` refers to the sort `List` with abstract sort parameter `T` bound to `Int`. This is the Maude view mechanism expressed as a type expression.
 
 **Grammar:**
 
@@ -286,7 +272,7 @@ Type ::= Name                                        -- simple type reference
        | Name '{' SortBinding (',' SortBinding)* '}' -- inline instantiation
 ```
 
-Both mechanisms are exactly Maude's parameterized module + view mechanism, with the inline form as syntactic convenience.
+Import and instantiation are separate concepts: `import` makes names visible, inline `Name{bindings}` instantiates sort parameters. They are not bundled together.
 
 Additional types are introduced via `sort` declarations (abstract or defined) in any domain.
 
@@ -305,22 +291,15 @@ Domain ::= 'domain' Name
            Body[DomainContent*]
 
 Import ::= 'import' Name ['.' '{' NameList '}']
-             ['where' '{' SortBinding (',' SortBinding)* '}']
 
 NameList    ::= Name (',' Name)*
 SortBinding ::= Name '=' Type                   -- binds an abstract sort to a concrete type
 ```
 
-The `where` clause on imports provides **sort bindings** — the Maude view mechanism. When importing a parametric domain (one with abstract sorts), the `where` clause binds those sorts to concrete types:
+Import makes names from another domain visible in the current scope. Sort parameters remain abstract — they are instantiated separately via inline type expressions (`Name{bindings}`), not at import time:
 
 ```
--- Import a parametric domain, binding its sort parameter:
-import anthill.prelude.List where { T = Int }
-
--- Import selected items:
-import anthill.prelude.List.{List, nil, cons} where { T = Int }
-
--- Import without binding (sorts remain abstract — re-exported as parameters):
+-- Import selected items from a domain:
 import anthill.prelude.List.{List, nil, cons}
 
 -- Import everything from a domain:
@@ -932,15 +911,15 @@ An algebra is not a separate syntactic construct — it is the **typing structur
 
 The algebra IS the domain. When an `Implementation` fact provides carrier bindings (`carrier: { Scalar = float, Vector = CudaDeviceBuffer[float] }`), it instantiates the algebra for a specific host language.
 
-**Parametric structure:** Abstract sorts in a domain serve as type parameters. A domain with abstract sort `T` is a parametric module — instantiated via `import ... where { T = ConcreteType }` or via inline type expression `List{T = Int}`. For example, `anthill.prelude.List` has abstract sort `T`; importing it with `where { T = Int }` or using `List{T = Int}` inline produces a list-of-integers.
+**Parametric structure:** Abstract sorts in a domain serve as type parameters. A domain with abstract sort `T` is a parametric module — instantiated via inline type expressions `List{T = Int}`. For example, `anthill.prelude.List` has abstract sort `T`; using `List{T = Int}` inline produces a list-of-integers.
 
-This also supports type class-like patterns: a domain declaring `sort A` and `operation combine(x: A, y: A) -> A` with laws is a specification that any type with a `combine` operation must satisfy. Importing it with `where { A = MyType }` binds the specification to a concrete type.
+This also supports type class-like patterns: a domain declaring `sort A` and `operation combine(x: A, y: A) -> A` with laws is a specification that any type with a `combine` operation must satisfy. Using `MyType` in place of `A` via inline binding instantiates the specification for a concrete type.
 
 ## 9. Connections to Existing Systems
 
 The kernel language connects to three traditions:
 
-**ML-style modules.** Domain ≈ signature (declares abstract types and operations), Implementation with carrier bindings ≈ structure (provides concrete types), `import ... where` ≈ functor application. But anthill domains are richer — they contain rules (logic) and contracts (requires/ensures), making them algebraic specifications rather than pure type signatures.
+**ML-style modules.** Domain ≈ signature (declares abstract types and operations), Implementation with carrier bindings ≈ structure (provides concrete types), inline `Name{bindings}` ≈ functor application. But anthill domains are richer — they contain rules (logic) and contracts (requires/ensures), making them algebraic specifications rather than pure type signatures.
 
 **Maude / OBJ / CafeOBJ.** The closest match:
 
@@ -953,7 +932,7 @@ The kernel language connects to three traditions:
 | `rule` (derivation) | equation (`eq`) or rewrite rule (`rl`) |
 | `constraint` (denial) | membership axiom / conditional axiom |
 | `Implementation.carrier` | view (maps theory sorts to module sorts) |
-| `import ... where { T = X }` / `List{T = X}` | view instantiation (binds sort parameter) |
+| `List{T = X}` (inline instantiation) | view instantiation (binds sort parameter) |
 | domain with abstract sort | parameterized module (`fmod X{Y :: TRIV}`) |
 
 The anthill adds: `Unspecified` (partial formalization), metadata (trust, provenance, agent), host-language embeddings (bidirectional mapping to Scala/Python/etc.), and the stigmergic agent layer.
@@ -971,7 +950,7 @@ domain banking
   export Account, Money, deposit, withdraw, balance
 
   sort Money
-  import anthill.prelude.Numeric where { T = Money }   -- gives us +, -, >, >=, = for Money
+  import anthill.prelude.Numeric   -- gives us +, -, >, >=, = for Money
 
   entity Account(                       -- sugar: sort Account { entity Account(...) }
     id      : AccountId,
@@ -1006,7 +985,7 @@ domain banking
   export Account, Money, deposit, withdraw, balance
 
   sort Money
-  import anthill.prelude.Numeric where { T = Money }
+  import anthill.prelude.Numeric
 
   entity Account(id: AccountId, balance: Money)
 
@@ -1142,7 +1121,6 @@ Domain      ::= 'domain' Name
                 Body[DomainContent*]
 
 Import      ::= 'import' Name ['.' '{' NameList '}']
-                  ['where' '{' SortBinding (',' SortBinding)* '}']
 NameList    ::= Name (',' Name)*
 SortBinding ::= Name '=' Type
 

@@ -306,9 +306,6 @@ impl<'a> Loader<'a> {
         // Assert domain as a fact
         self.kb.assert_fact(domain_term, domain_sort, domain_term, None);
 
-        // Process imports (including where clauses)
-        self.process_imports(&d.imports, domain_term);
-
         // Emit member facts for direct children
         self.emit_member_facts_for_items(&d.items, domain_term);
 
@@ -378,9 +375,6 @@ impl<'a> Loader<'a> {
                 self.kb.assert_fact(subsort_fact, sort_sort, parent_domain, None);
             }
         }
-
-        // Process imports (including where clauses)
-        self.process_imports(&s.imports, sort_term);
 
         // Emit member facts for direct children
         self.emit_member_facts_for_items(&s.items, sort_term);
@@ -596,63 +590,6 @@ impl<'a> Loader<'a> {
     }
 
     // ── Import processing ─────────────────────────────────────
-
-    /// Process import declarations: apply where-clause substitutions against
-    /// facts already present in the KB.
-    ///
-    /// This does NOT resolve or load imported files — that is the caller's
-    /// responsibility (a separate resolution pass). This method only handles
-    /// the where-clause substitution for imports whose targets are already loaded.
-    fn process_imports(&mut self, imports: &[Import], current_domain: TermId) {
-        for import in imports {
-            let path = join_segments(&self.parsed.interner, &import.path.segments);
-            self.load_where_clause(import, &path, current_domain);
-        }
-    }
-
-    /// Apply a where clause: build substitution bindings from the where clause,
-    /// find all facts in the imported sort's domain, substitute, and re-assert
-    /// into the current domain.
-    ///
-    /// Validation (checking that binding params are actual members) is deferred
-    /// to a separate resolve pass.
-    fn load_where_clause(
-        &mut self,
-        import: &Import,
-        _path: &str,
-        current_domain: TermId,
-    ) {
-        let where_bindings = match &import.where_clause {
-            Some(bindings) if !bindings.is_empty() => bindings,
-            _ => return,
-        };
-
-        // The imported sort is the last segment of the path
-        let imported_sort_name = self.parsed.interner.resolve(import.path.last());
-        let imported_sort = self.kb.make_name_term(imported_sort_name);
-
-        // Build (from, to) pairs from where clause bindings
-        let mut subst_pairs: Vec<(TermId, TermId)> = Vec::new();
-        for binding in where_bindings {
-            let param_name = self.parsed.interner.resolve(binding.param.last());
-            let param_sym = self.kb.intern(param_name);
-            let param_term = self.kb.make_name_term_from_sym(param_sym);
-            let bound_term = self.type_expr_to_term(&binding.bound);
-            subst_pairs.push((param_term, bound_term));
-        }
-
-        // Get all facts in the imported sort's domain, substitute, and re-assert
-        let imported_facts = self.kb.by_domain(imported_sort);
-        for fid in imported_facts {
-            let fact_term = self.kb.fact_term(fid);
-            let fact_sort = self.kb.fact_sort(fid);
-            let fact_meta = self.kb.fact_meta(fid);
-
-            let new_term = self.kb.subst_term_multi(fact_term, &subst_pairs);
-            let new_sort = self.kb.subst_term_multi(fact_sort, &subst_pairs);
-            self.kb.assert_fact(new_term, new_sort, current_domain, fact_meta);
-        }
-    }
 
     // ── Member fact emission ───────────────────────────────────
 

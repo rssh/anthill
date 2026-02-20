@@ -151,7 +151,6 @@ pub struct Domain {
 pub struct Import {
     pub path: Name,
     pub selected: Option<Vec<Name>>,
-    pub where_clause: Option<Vec<SortBinding>>,
 }
 
 // ── Sort ────────────────────────────────────────────────────────

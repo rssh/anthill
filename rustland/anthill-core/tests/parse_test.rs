@@ -573,10 +573,7 @@ fn member_facts_queryable_by_domain() {
         "Option should have 3 members (T, none, some)");
 }
 
-// ── Where clause tests ──────────────────────────────────────────
-// Note: validation (checking that binding params are real members) is
-// deferred to a separate resolve pass. These tests use load_all to
-// pre-load all files into the KB before where-clause processing.
+// ── Mutual reference tests ──────────────────────────────────────
 
 fn check_term_contains(kb: &KnowledgeBase, term: TermId, target: TermId, found: &mut bool) {
     if term == target {
@@ -593,88 +590,6 @@ fn check_term_contains(kb: &KnowledgeBase, term: TermId, target: TermId, found: 
         }
     }
 }
-
-#[test]
-fn where_clause_substitutes_sort_parameter() {
-    // File 1: defines Container with sort parameter T
-    let container_src = r#"sort Container {
-  sort T
-  entity box(value: T)
-}
-"#;
-    // File 2: imports Container with where clause
-    let main_src = r#"domain myDomain
-  import Container where { T = Int }
-end
-"#;
-
-    let container_parsed = parse::parse(container_src).expect("parse Container");
-    let main_parsed = parse::parse(main_src).expect("parse main");
-
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &[&container_parsed, &main_parsed], &NullResolver)
-        .expect("load_all failed");
-
-    // The original Container facts should exist
-    let container_term = kb.make_name_term("Container");
-    let container_facts = kb.by_domain(container_term);
-    assert!(!container_facts.is_empty(), "Container should have facts");
-
-    // After where clause substitution, myDomain should have substituted copies
-    let my_domain_term = kb.make_name_term("myDomain");
-    let my_domain_facts = kb.by_domain(my_domain_term);
-    assert!(!my_domain_facts.is_empty(),
-        "myDomain should have substituted facts from where clause");
-
-    // Verify that substituted facts replace T with Int
-    let int_term = kb.make_name_term("Int");
-    let mut found_int = false;
-    for &fid in &my_domain_facts {
-        let term = kb.fact_term(fid);
-        check_term_contains(&kb, term, int_term, &mut found_int);
-    }
-    assert!(found_int, "substituted facts should contain Int instead of T");
-}
-
-#[test]
-fn where_clause_multiple_bindings() {
-    let pair_src = r#"sort Pair {
-  sort A
-  sort B
-  entity pair(fst: A, snd: B)
-}
-"#;
-    let main_src = r#"domain myDomain
-  import Pair where { A = Int, B = String }
-end
-"#;
-
-    let pair_parsed = parse::parse(pair_src).expect("parse Pair");
-    let main_parsed = parse::parse(main_src).expect("parse main");
-
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &[&pair_parsed, &main_parsed], &NullResolver)
-        .expect("load_all failed");
-
-    let my_domain_term = kb.make_name_term("myDomain");
-    let my_domain_facts = kb.by_domain(my_domain_term);
-    assert!(!my_domain_facts.is_empty(),
-        "myDomain should have facts from where clause with multiple bindings");
-
-    let int_term = kb.make_name_term("Int");
-    let string_term = kb.make_name_term("String");
-    let mut found_int = false;
-    let mut found_string = false;
-    for &fid in &my_domain_facts {
-        let term = kb.fact_term(fid);
-        check_term_contains(&kb, term, int_term, &mut found_int);
-        check_term_contains(&kb, term, string_term, &mut found_string);
-    }
-    assert!(found_int, "substituted facts should contain Int");
-    assert!(found_string, "substituted facts should contain String");
-}
-
-// ── Mutual reference tests ──────────────────────────────────────
 
 #[test]
 fn mutual_reference_two_domains() {
@@ -742,46 +657,6 @@ end
         check_term_contains(&kb, term, shape_term, &mut convert_refs_shape);
     }
     assert!(convert_refs_shape, "Units' convert should reference Shape");
-}
-
-#[test]
-fn mutual_reference_with_where_clause() {
-    // File 1: a generic Collection sort
-    let collection_src = r#"sort Collection {
-  sort T
-  entity empty
-  entity cons(head: T, tail: Collection)
-}
-"#;
-    // File 2: a domain that uses Collection twice with different bindings
-    let main_src = r#"domain App
-  import Collection where { T = Int }
-  import Collection where { T = String }
-end
-"#;
-
-    let collection_parsed = parse::parse(collection_src).expect("parse Collection");
-    let main_parsed = parse::parse(main_src).expect("parse main");
-
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &[&collection_parsed, &main_parsed], &NullResolver)
-        .expect("load_all failed");
-
-    let app_term = kb.make_name_term("App");
-    let app_facts = kb.by_domain(app_term);
-
-    // Should have substituted facts from both where clauses
-    let int_term = kb.make_name_term("Int");
-    let string_term = kb.make_name_term("String");
-    let mut found_int = false;
-    let mut found_string = false;
-    for &fid in &app_facts {
-        let term = kb.fact_term(fid);
-        check_term_contains(&kb, term, int_term, &mut found_int);
-        check_term_contains(&kb, term, string_term, &mut found_string);
-    }
-    assert!(found_int, "App should have Collection{{T=Int}} facts");
-    assert!(found_string, "App should have Collection{{T=String}} facts");
 }
 
 #[test]

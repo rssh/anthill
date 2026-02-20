@@ -99,14 +99,6 @@ module.exports = grammar({
       'import',
       $.name,
       optional(seq('.', '{', commaSep1($.name), '}')),
-      optional($.where_clause),
-    ),
-
-    where_clause: $ => seq(
-      'where',
-      '{',
-      commaSep1($.sort_binding),
-      '}',
     ),
 
     sort_binding: $ => seq(
