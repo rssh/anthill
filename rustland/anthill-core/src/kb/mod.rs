@@ -11,6 +11,8 @@ pub mod load;
 
 use std::collections::HashMap;
 
+use smallvec::SmallVec;
+
 use crate::intern::{Interner, Symbol};
 use term::{Term, TermId, TermStore, VarId};
 
@@ -57,6 +59,7 @@ pub struct KnowledgeBase {
     // Indexes — all maintained atomically by assert/retract
     by_sort: HashMap<TermId, Vec<FactId>>,
     by_functor: HashMap<Symbol, Vec<FactId>>,
+    by_domain: HashMap<TermId, Vec<FactId>>,
 
     // Sort indexes (subsort relations are facts; these are materialized indexes)
     subsort_children: HashMap<TermId, Vec<TermId>>,
@@ -81,6 +84,7 @@ impl KnowledgeBase {
             facts: Vec::new(),
             by_sort: HashMap::new(),
             by_functor: HashMap::new(),
+            by_domain: HashMap::new(),
             subsort_children: HashMap::new(),
             subsort_parents: HashMap::new(),
             sort_info: HashMap::new(),
@@ -150,6 +154,9 @@ impl KnowledgeBase {
         // Update indexes
         self.by_sort.entry(sort).or_default().push(fact_id);
 
+        // Index by domain
+        self.by_domain.entry(domain).or_default().push(fact_id);
+
         // Index by top-level functor
         if let Term::Fn { functor, .. } = *self.terms.get(term) {
             self.by_functor.entry(functor).or_default().push(fact_id);
@@ -173,6 +180,9 @@ impl KnowledgeBase {
 
         // Remove from indexes
         if let Some(v) = self.by_sort.get_mut(&sort) {
+            v.retain(|&id| id != fact_id);
+        }
+        if let Some(v) = self.by_domain.get_mut(&domain) {
             v.retain(|&id| id != fact_id);
         }
         if let Term::Fn { functor, .. } = *self.terms.get(term) {
@@ -295,6 +305,24 @@ impl KnowledgeBase {
     /// Get the domain of a fact.
     pub fn fact_domain(&self, fact_id: FactId) -> TermId {
         self.facts[fact_id.index()].domain
+    }
+
+    /// Get the meta of a fact.
+    pub fn fact_meta(&self, fact_id: FactId) -> Option<TermId> {
+        self.facts[fact_id.index()].meta
+    }
+
+    /// All active facts belonging to a given domain.
+    pub fn by_domain(&self, domain: TermId) -> Vec<FactId> {
+        self.by_domain
+            .get(&domain)
+            .map(|v| {
+                v.iter()
+                    .copied()
+                    .filter(|fid| !self.facts[fid.index()].retracted)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Get sort kind info.
@@ -463,8 +491,59 @@ impl KnowledgeBase {
         let sym = self.interner.intern(name);
         self.terms.alloc(Term::Fn {
             functor: sym,
-            args: smallvec::SmallVec::new(),
+            args: SmallVec::new(),
         })
+    }
+
+    /// Allocate a nullary functor term from an already-interned symbol.
+    pub fn make_name_term_from_sym(&mut self, sym: Symbol) -> TermId {
+        self.terms.alloc(Term::Fn {
+            functor: sym,
+            args: SmallVec::new(),
+        })
+    }
+
+    // ── Name-level substitution ──────────────────────────────────
+
+    /// Replace all occurrences of `from` with `to` throughout a term's structure.
+    /// Returns a new hash-consed TermId (may be the same if no replacement occurred).
+    pub fn subst_term(&mut self, term: TermId, from: TermId, to: TermId) -> TermId {
+        if term == from {
+            return to;
+        }
+        match self.terms.get(term).clone() {
+            Term::Fn { functor, args } => {
+                let new_args: SmallVec<[term::FnArg; 4]> = args
+                    .iter()
+                    .map(|a| match a {
+                        term::FnArg::Positional(id) => {
+                            term::FnArg::Positional(self.subst_term(*id, from, to))
+                        }
+                        term::FnArg::Named(sym, id) => {
+                            term::FnArg::Named(*sym, self.subst_term(*id, from, to))
+                        }
+                    })
+                    .collect();
+                self.alloc(Term::Fn { functor, args: new_args })
+            }
+            Term::Unspecified { text, hints } => {
+                let new_hints: SmallVec<[TermId; 2]> = hints
+                    .iter()
+                    .map(|&id| self.subst_term(id, from, to))
+                    .collect();
+                self.alloc(Term::Unspecified { text, hints: new_hints })
+            }
+            // Leaf terms: no substructure to recurse into
+            _ => term,
+        }
+    }
+
+    /// Apply multiple substitutions (from → to) to a term.
+    pub fn subst_term_multi(&mut self, mut term: TermId, bindings: &[(TermId, TermId)]) -> TermId {
+        for &(from, to) in bindings {
+            term = self.subst_term(term, from, to);
+        }
+        term
     }
 }
 
@@ -625,6 +704,73 @@ mod tests {
         assert!(kb.match_term(term_f, term_f).is_some());
         // Different functor → fails
         assert!(kb.match_term(term_f, term_g).is_none());
+    }
+
+    #[test]
+    fn subst_term_replaces_name() {
+        let mut kb = KnowledgeBase::new();
+        let t = kb.make_name_term("T");
+        let int = kb.make_name_term("Int");
+
+        // Build Option(T) = Fn("Option", [Positional(Fn("T",[]))])
+        let option_sym = kb.intern("Option");
+        let option_t = kb.alloc(Term::Fn {
+            functor: option_sym,
+            args: SmallVec::from_elem(FnArg::Positional(t), 1),
+        });
+
+        let result = kb.subst_term(option_t, t, int);
+        match kb.get_term(result) {
+            Term::Fn { functor, args } => {
+                assert_eq!(*functor, option_sym);
+                assert_eq!(args.len(), 1);
+                match args[0] {
+                    FnArg::Positional(id) => assert_eq!(id, int),
+                    _ => panic!("expected positional arg"),
+                }
+            }
+            other => panic!("expected Fn, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn subst_term_identity() {
+        let mut kb = KnowledgeBase::new();
+        let t = kb.make_name_term("T");
+        let int = kb.make_name_term("Int");
+        let string = kb.make_name_term("String");
+
+        // Substituting a name that doesn't appear should return the same term
+        let result = kb.subst_term(t, int, string);
+        assert_eq!(result, t);
+    }
+
+    #[test]
+    fn subst_term_nested() {
+        let mut kb = KnowledgeBase::new();
+        let t = kb.make_name_term("T");
+        let int = kb.make_name_term("Int");
+
+        // Build pair(T, T)
+        let pair_sym = kb.intern("pair");
+        let pair_tt = kb.alloc(Term::Fn {
+            functor: pair_sym,
+            args: SmallVec::from_slice(&[FnArg::Positional(t), FnArg::Positional(t)]),
+        });
+
+        let result = kb.subst_term(pair_tt, t, int);
+        match kb.get_term(result) {
+            Term::Fn { args, .. } => {
+                // Both args should now be Int
+                for arg in args.iter() {
+                    match arg {
+                        FnArg::Positional(id) => assert_eq!(*id, int),
+                        _ => panic!("expected positional"),
+                    }
+                }
+            }
+            other => panic!("expected Fn, got {:?}", other),
+        }
     }
 
     #[test]

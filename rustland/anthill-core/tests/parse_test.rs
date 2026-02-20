@@ -3,7 +3,7 @@
 use anthill_core::parse;
 use anthill_core::parse::ir::*;
 use anthill_core::kb::{KnowledgeBase, SortKind};
-use anthill_core::kb::term::{Term, Literal, FnArg};
+use anthill_core::kb::term::{Term, TermId, Literal, FnArg};
 use anthill_core::kb::load::{self, NullResolver};
 
 // ── Parsing tests ───────────────────────────────────────────────
@@ -377,6 +377,67 @@ fact parent("bob", "charlie")
 }
 
 #[test]
+fn load_sort_with_operation() {
+    let source = r#"sort Account
+  entity checking(id: AccountId, balance: Money)
+  entity savings(id: AccountId, balance: Money, rate: Money)
+
+  operation deposit(a: Account, m: Money) -> Account
+    requires gt(m, zero-val)
+    ensures eq(balance(result), add(balance(a), m))
+
+  operation withdraw(a: Account, m: Money) -> Account
+    requires gt(m, zero-val), gte(balance(a), m)
+end
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    // Operations should be registered as facts with sort "Operation"
+    let op_sort = kb.make_name_term("Operation");
+    let ops = kb.by_sort(op_sort);
+    assert_eq!(ops.len(), 2, "should have 2 Operation facts (deposit, withdraw)");
+
+    // The operation facts should be scoped to the Account sort (not a separate domain)
+    let account_sym = kb.intern("Account");
+    let account_term = kb.alloc(Term::Fn {
+        functor: account_sym,
+        args: smallvec::SmallVec::new(),
+    });
+    for &fid in &ops {
+        assert_eq!(
+            kb.fact_domain(fid), account_term,
+            "operation should be scoped to the Account sort"
+        );
+    }
+
+    // Verify operation terms have the right functors
+    let deposit_sym = kb.intern("deposit");
+    let withdraw_sym = kb.intern("withdraw");
+    let op_functors: Vec<_> = ops.iter().map(|&fid| {
+        match kb.get_term(kb.fact_term(fid)) {
+            Term::Fn { functor, .. } => *functor,
+            other => panic!("expected Fn term for operation, got {:?}", other),
+        }
+    }).collect();
+    assert!(op_functors.contains(&deposit_sym), "should have deposit operation");
+    assert!(op_functors.contains(&withdraw_sym), "should have withdraw operation");
+
+    // The sort itself should be Defined (has entities) with constructors as subsorts
+    assert_eq!(kb.sort_kind(account_term), Some(SortKind::Defined));
+
+    let checking_sym = kb.intern("checking");
+    let checking_term = kb.alloc(Term::Fn {
+        functor: checking_sym,
+        args: smallvec::SmallVec::new(),
+    });
+    assert!(kb.is_subtype(checking_term, account_term),
+        "checking should be a subtype of Account");
+    assert_eq!(kb.sort_kind(checking_term), Some(SortKind::Constructor));
+}
+
+#[test]
 fn retract_fact() {
     let source = r#"fact parent("alice", "bob")"#;
     let parsed = parse::parse(source).expect("parse failed");
@@ -389,4 +450,374 @@ fn retract_fact() {
 
     kb.retract(facts[0]);
     assert_eq!(kb.by_sort(fact_sort).len(), 0);
+}
+
+// ── Member fact tests ───────────────────────────────────────────
+
+#[test]
+fn member_facts_for_sort_with_body() {
+    let source = r#"sort Nat {
+  entity zero
+  entity succ(pred: Nat)
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let member_sort = kb.make_name_term("Member");
+    let members = kb.by_sort(member_sort);
+
+    // Should have 2 Constructor members (zero, succ)
+    assert_eq!(members.len(), 2, "Nat should have 2 member facts");
+
+    // Verify they are Constructor members
+    for &fid in &members {
+        let term = kb.fact_term(fid);
+        match kb.get_term(term) {
+            Term::Fn { args, .. } => {
+                assert_eq!(args.len(), 3);
+                // Second arg should be Ident("Constructor")
+                match args[1] {
+                    FnArg::Positional(id) => {
+                        let ctor_sym = kb.intern("Constructor");
+                        assert!(matches!(kb.get_term(id), Term::Ident(s) if *s == ctor_sym));
+                    }
+                    _ => panic!("expected positional arg"),
+                }
+            }
+            other => panic!("expected Fn term, got {:?}", other),
+        }
+    }
+}
+
+#[test]
+fn member_facts_for_sort_with_params_and_ops() {
+    let source = r#"sort Account
+  sort AccountId
+  entity checking(id: AccountId, balance: Int)
+  entity savings(id: AccountId, balance: Int)
+  operation deposit(a: Account, m: Int) -> Account
+end
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let member_sort = kb.make_name_term("Member");
+    let account_term = kb.make_name_term("Account");
+
+    // Get member facts for Account specifically
+    let account_facts = kb.by_domain(account_term);
+    let member_facts: Vec<_> = account_facts
+        .iter()
+        .filter(|&&fid| kb.fact_sort(fid) == member_sort)
+        .copied()
+        .collect();
+
+    // Should have: AccountId (Sort), checking (Constructor), savings (Constructor), deposit (Operation)
+    assert!(member_facts.len() >= 4,
+        "Account should have at least 4 members, got {}", member_facts.len());
+}
+
+#[test]
+fn member_facts_for_domain() {
+    let source = r#"domain banking {
+  entity Account(id: String, balance: Int)
+  operation deposit(a: Account, m: Int) -> Account
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let member_sort = kb.make_name_term("Member");
+    let banking_term = kb.make_name_term("banking");
+
+    let domain_facts = kb.by_domain(banking_term);
+    let member_facts: Vec<_> = domain_facts
+        .iter()
+        .filter(|&&fid| kb.fact_sort(fid) == member_sort)
+        .copied()
+        .collect();
+
+    // Should have: Account (Constructor), deposit (Operation)
+    assert_eq!(member_facts.len(), 2,
+        "banking domain should have 2 member facts");
+}
+
+#[test]
+fn member_facts_queryable_by_domain() {
+    let source = r#"sort Option {
+  sort T
+  entity none
+  entity some(value: T)
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let option_term = kb.make_name_term("Option");
+    let member_sort = kb.make_name_term("Member");
+
+    // Query by_domain for Option should include member facts
+    let domain_facts = kb.by_domain(option_term);
+    let member_count = domain_facts
+        .iter()
+        .filter(|&&fid| kb.fact_sort(fid) == member_sort)
+        .count();
+
+    // T (Sort), none (Constructor), some (Constructor) = 3 members
+    assert_eq!(member_count, 3,
+        "Option should have 3 members (T, none, some)");
+}
+
+// ── Where clause tests ──────────────────────────────────────────
+// Note: validation (checking that binding params are real members) is
+// deferred to a separate resolve pass. These tests use load_all to
+// pre-load all files into the KB before where-clause processing.
+
+fn check_term_contains(kb: &KnowledgeBase, term: TermId, target: TermId, found: &mut bool) {
+    if term == target {
+        *found = true;
+        return;
+    }
+    if let Term::Fn { args, .. } = kb.get_term(term) {
+        for arg in args.iter() {
+            let sub = match arg {
+                FnArg::Positional(id) => *id,
+                FnArg::Named(_, id) => *id,
+            };
+            check_term_contains(kb, sub, target, found);
+        }
+    }
+}
+
+#[test]
+fn where_clause_substitutes_sort_parameter() {
+    // File 1: defines Container with sort parameter T
+    let container_src = r#"sort Container {
+  sort T
+  entity box(value: T)
+}
+"#;
+    // File 2: imports Container with where clause
+    let main_src = r#"domain myDomain
+  import Container where { T = Int }
+end
+"#;
+
+    let container_parsed = parse::parse(container_src).expect("parse Container");
+    let main_parsed = parse::parse(main_src).expect("parse main");
+
+    let mut kb = KnowledgeBase::new();
+    load::load_all(&mut kb, &[&container_parsed, &main_parsed], &NullResolver)
+        .expect("load_all failed");
+
+    // The original Container facts should exist
+    let container_term = kb.make_name_term("Container");
+    let container_facts = kb.by_domain(container_term);
+    assert!(!container_facts.is_empty(), "Container should have facts");
+
+    // After where clause substitution, myDomain should have substituted copies
+    let my_domain_term = kb.make_name_term("myDomain");
+    let my_domain_facts = kb.by_domain(my_domain_term);
+    assert!(!my_domain_facts.is_empty(),
+        "myDomain should have substituted facts from where clause");
+
+    // Verify that substituted facts replace T with Int
+    let int_term = kb.make_name_term("Int");
+    let mut found_int = false;
+    for &fid in &my_domain_facts {
+        let term = kb.fact_term(fid);
+        check_term_contains(&kb, term, int_term, &mut found_int);
+    }
+    assert!(found_int, "substituted facts should contain Int instead of T");
+}
+
+#[test]
+fn where_clause_multiple_bindings() {
+    let pair_src = r#"sort Pair {
+  sort A
+  sort B
+  entity pair(fst: A, snd: B)
+}
+"#;
+    let main_src = r#"domain myDomain
+  import Pair where { A = Int, B = String }
+end
+"#;
+
+    let pair_parsed = parse::parse(pair_src).expect("parse Pair");
+    let main_parsed = parse::parse(main_src).expect("parse main");
+
+    let mut kb = KnowledgeBase::new();
+    load::load_all(&mut kb, &[&pair_parsed, &main_parsed], &NullResolver)
+        .expect("load_all failed");
+
+    let my_domain_term = kb.make_name_term("myDomain");
+    let my_domain_facts = kb.by_domain(my_domain_term);
+    assert!(!my_domain_facts.is_empty(),
+        "myDomain should have facts from where clause with multiple bindings");
+
+    let int_term = kb.make_name_term("Int");
+    let string_term = kb.make_name_term("String");
+    let mut found_int = false;
+    let mut found_string = false;
+    for &fid in &my_domain_facts {
+        let term = kb.fact_term(fid);
+        check_term_contains(&kb, term, int_term, &mut found_int);
+        check_term_contains(&kb, term, string_term, &mut found_string);
+    }
+    assert!(found_int, "substituted facts should contain Int");
+    assert!(found_string, "substituted facts should contain String");
+}
+
+// ── Mutual reference tests ──────────────────────────────────────
+
+#[test]
+fn mutual_reference_two_domains() {
+    // File 1: domain X references sort from domain Y
+    let file_x = r#"domain Geometry
+  sort Shape
+  entity circle(radius: Int)
+  entity rect(w: Int, h: Int)
+  operation area(s: Shape) -> Measure
+end
+"#;
+    // File 2: domain Y references sort from domain X
+    let file_y = r#"domain Units
+  sort Measure
+  entity meters(n: Int)
+  entity pixels(n: Int)
+  operation convert(m: Measure, target: Shape) -> Measure
+end
+"#;
+
+    let parsed_x = parse::parse(file_x).expect("parse Geometry");
+    let parsed_y = parse::parse(file_y).expect("parse Units");
+
+    // Load both files into the same KB — order shouldn't matter for basic loading
+    let mut kb = KnowledgeBase::new();
+    load::load_all(&mut kb, &[&parsed_x, &parsed_y], &NullResolver)
+        .expect("load_all failed");
+
+    // Both domains should be registered
+    let domain_sort = kb.make_name_term("Domain");
+    let domains = kb.by_sort(domain_sort);
+    assert_eq!(domains.len(), 2, "should have 2 domains");
+
+    // Geometry's facts should reference Measure (from Units)
+    let geometry_term = kb.make_name_term("Geometry");
+    let geometry_facts = kb.by_domain(geometry_term);
+    assert!(!geometry_facts.is_empty(), "Geometry should have facts");
+
+    // Units' facts should reference Shape (from Geometry)
+    let units_term = kb.make_name_term("Units");
+    let units_facts = kb.by_domain(units_term);
+    assert!(!units_facts.is_empty(), "Units should have facts");
+
+    // Both sorts should exist as type references in operations
+    let op_sort = kb.make_name_term("Operation");
+    let ops = kb.by_sort(op_sort);
+    assert_eq!(ops.len(), 2, "should have 2 operations (area, convert)");
+
+    // Verify cross-references: area returns Measure, convert takes Shape
+    let measure_term = kb.make_name_term("Measure");
+    let shape_term = kb.make_name_term("Shape");
+
+    // area operation is in Geometry domain but references Measure
+    let mut area_refs_measure = false;
+    for &fid in &geometry_facts {
+        let term = kb.fact_term(fid);
+        check_term_contains(&kb, term, measure_term, &mut area_refs_measure);
+    }
+    assert!(area_refs_measure, "Geometry's area should reference Measure");
+
+    // convert operation is in Units domain but references Shape
+    let mut convert_refs_shape = false;
+    for &fid in &units_facts {
+        let term = kb.fact_term(fid);
+        check_term_contains(&kb, term, shape_term, &mut convert_refs_shape);
+    }
+    assert!(convert_refs_shape, "Units' convert should reference Shape");
+}
+
+#[test]
+fn mutual_reference_with_where_clause() {
+    // File 1: a generic Collection sort
+    let collection_src = r#"sort Collection {
+  sort T
+  entity empty
+  entity cons(head: T, tail: Collection)
+}
+"#;
+    // File 2: a domain that uses Collection twice with different bindings
+    let main_src = r#"domain App
+  import Collection where { T = Int }
+  import Collection where { T = String }
+end
+"#;
+
+    let collection_parsed = parse::parse(collection_src).expect("parse Collection");
+    let main_parsed = parse::parse(main_src).expect("parse main");
+
+    let mut kb = KnowledgeBase::new();
+    load::load_all(&mut kb, &[&collection_parsed, &main_parsed], &NullResolver)
+        .expect("load_all failed");
+
+    let app_term = kb.make_name_term("App");
+    let app_facts = kb.by_domain(app_term);
+
+    // Should have substituted facts from both where clauses
+    let int_term = kb.make_name_term("Int");
+    let string_term = kb.make_name_term("String");
+    let mut found_int = false;
+    let mut found_string = false;
+    for &fid in &app_facts {
+        let term = kb.fact_term(fid);
+        check_term_contains(&kb, term, int_term, &mut found_int);
+        check_term_contains(&kb, term, string_term, &mut found_string);
+    }
+    assert!(found_int, "App should have Collection{{T=Int}} facts");
+    assert!(found_string, "App should have Collection{{T=String}} facts");
+}
+
+#[test]
+fn mutual_reference_load_order_independent() {
+    let file_a = r#"sort A {
+  entity mkA(ref: B)
+}
+"#;
+    let file_b = r#"sort B {
+  entity mkB(ref: A)
+}
+"#;
+
+    let parsed_a = parse::parse(file_a).expect("parse A");
+    let parsed_b = parse::parse(file_b).expect("parse B");
+
+    // Load A then B
+    let mut kb1 = KnowledgeBase::new();
+    load::load_all(&mut kb1, &[&parsed_a, &parsed_b], &NullResolver)
+        .expect("load A,B failed");
+
+    // Load B then A
+    let mut kb2 = KnowledgeBase::new();
+    load::load_all(&mut kb2, &[&parsed_b, &parsed_a], &NullResolver)
+        .expect("load B,A failed");
+
+    // Both should have the same fact counts
+    assert_eq!(kb1.fact_count(), kb2.fact_count(),
+        "load order should not affect fact count");
+
+    // Both should have the same sort relationships
+    let a1 = kb1.make_name_term("A");
+    let mka1 = kb1.make_name_term("mkA");
+    assert!(kb1.is_subtype(mka1, a1));
+
+    let a2 = kb2.make_name_term("A");
+    let mka2 = kb2.make_name_term("mkA");
+    assert!(kb2.is_subtype(mka2, a2));
 }

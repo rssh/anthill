@@ -70,8 +70,12 @@ impl std::error::Error for LoadError {}
 
 /// Load a parsed file into the knowledge base.
 ///
-/// The `resolver` is used to fetch source text for `import` declarations.
+/// The `resolver` is used to fetch source text for `import_tools` declarations.
 /// Pass `&NullResolver` if no imports are expected.
+///
+/// For multi-file projects with `import` declarations (including `where` clauses),
+/// use `load_all` to load all files into the same KB so that cross-file references
+/// resolve correctly.
 pub fn load(
     kb: &mut KnowledgeBase,
     parsed: &ParsedFile,
@@ -79,6 +83,31 @@ pub fn load(
 ) -> Result<(), Vec<LoadError>> {
     let mut loaded_paths = HashSet::new();
     load_with_visited(kb, parsed, resolver, &mut loaded_paths)
+}
+
+/// Load multiple parsed files into the same knowledge base.
+///
+/// All files are loaded sequentially into the shared KB, so imports
+/// referencing sorts/domains from other files in the set will find
+/// their facts already present (order-independent for `where` clauses
+/// since member facts from earlier files are visible to later ones).
+pub fn load_all(
+    kb: &mut KnowledgeBase,
+    files: &[&ParsedFile],
+    resolver: &dyn SourceResolver,
+) -> Result<(), Vec<LoadError>> {
+    let mut loaded_paths = HashSet::new();
+    let mut all_errors = Vec::new();
+    for parsed in files {
+        if let Err(errs) = load_with_visited(kb, parsed, resolver, &mut loaded_paths) {
+            all_errors.extend(errs);
+        }
+    }
+    if all_errors.is_empty() {
+        Ok(())
+    } else {
+        Err(all_errors)
+    }
 }
 
 /// Internal: load with cycle detection via `loaded_paths`.
@@ -224,6 +253,10 @@ impl<'a> Loader<'a> {
                     let bound_term = self.type_expr_to_term(&b.bound);
                     args.push(FnArg::Named(param_sym, bound_term));
                 }
+
+                // Note: validation that binding params are actual members is deferred
+                // to a separate resolve pass.
+
                 let param_type_sym = self.kb.intern("ParameterizedType");
                 self.kb.alloc(Term::Fn {
                     functor: param_type_sym,
@@ -272,6 +305,12 @@ impl<'a> Loader<'a> {
 
         // Assert domain as a fact
         self.kb.assert_fact(domain_term, domain_sort, domain_term, None);
+
+        // Process imports (including where clauses)
+        self.process_imports(&d.imports, domain_term);
+
+        // Emit member facts for direct children
+        self.emit_member_facts_for_items(&d.items, domain_term);
 
         // Load nested items within this domain scope
         self.load_items(&d.items, Some(domain_term));
@@ -339,6 +378,12 @@ impl<'a> Loader<'a> {
                 self.kb.assert_fact(subsort_fact, sort_sort, parent_domain, None);
             }
         }
+
+        // Process imports (including where clauses)
+        self.process_imports(&s.imports, sort_term);
+
+        // Emit member facts for direct children
+        self.emit_member_facts_for_items(&s.items, sort_term);
 
         // Load all items within this sort's domain scope
         self.load_items(&s.items, Some(sort_term));
@@ -546,6 +591,136 @@ impl<'a> Loader<'a> {
                         message: format!("cannot resolve import '{}': {}", path, e),
                     });
                 }
+            }
+        }
+    }
+
+    // ── Import processing ─────────────────────────────────────
+
+    /// Process import declarations: apply where-clause substitutions against
+    /// facts already present in the KB.
+    ///
+    /// This does NOT resolve or load imported files — that is the caller's
+    /// responsibility (a separate resolution pass). This method only handles
+    /// the where-clause substitution for imports whose targets are already loaded.
+    fn process_imports(&mut self, imports: &[Import], current_domain: TermId) {
+        for import in imports {
+            let path = join_segments(&self.parsed.interner, &import.path.segments);
+            self.load_where_clause(import, &path, current_domain);
+        }
+    }
+
+    /// Apply a where clause: build substitution bindings from the where clause,
+    /// find all facts in the imported sort's domain, substitute, and re-assert
+    /// into the current domain.
+    ///
+    /// Validation (checking that binding params are actual members) is deferred
+    /// to a separate resolve pass.
+    fn load_where_clause(
+        &mut self,
+        import: &Import,
+        _path: &str,
+        current_domain: TermId,
+    ) {
+        let where_bindings = match &import.where_clause {
+            Some(bindings) if !bindings.is_empty() => bindings,
+            _ => return,
+        };
+
+        // The imported sort is the last segment of the path
+        let imported_sort_name = self.parsed.interner.resolve(import.path.last());
+        let imported_sort = self.kb.make_name_term(imported_sort_name);
+
+        // Build (from, to) pairs from where clause bindings
+        let mut subst_pairs: Vec<(TermId, TermId)> = Vec::new();
+        for binding in where_bindings {
+            let param_name = self.parsed.interner.resolve(binding.param.last());
+            let param_sym = self.kb.intern(param_name);
+            let param_term = self.kb.make_name_term_from_sym(param_sym);
+            let bound_term = self.type_expr_to_term(&binding.bound);
+            subst_pairs.push((param_term, bound_term));
+        }
+
+        // Get all facts in the imported sort's domain, substitute, and re-assert
+        let imported_facts = self.kb.by_domain(imported_sort);
+        for fid in imported_facts {
+            let fact_term = self.kb.fact_term(fid);
+            let fact_sort = self.kb.fact_sort(fid);
+            let fact_meta = self.kb.fact_meta(fid);
+
+            let new_term = self.kb.subst_term_multi(fact_term, &subst_pairs);
+            let new_sort = self.kb.subst_term_multi(fact_sort, &subst_pairs);
+            self.kb.assert_fact(new_term, new_sort, current_domain, fact_meta);
+        }
+    }
+
+    // ── Member fact emission ───────────────────────────────────
+
+    /// Emit a single member fact: member(name, kind, parent)
+    /// with sort = Fn("Member",[]), domain = parent.
+    fn emit_member_fact(&mut self, name_sym: Symbol, kind_str: &str, parent: TermId) {
+        let member_sym = self.kb.intern("member");
+        let member_sort = self.kb.make_name_term("Member");
+        let name_term = self.kb.make_name_term_from_sym(name_sym);
+        let kind_sym = self.kb.intern(kind_str);
+        let kind_term = self.kb.alloc(Term::Ident(kind_sym));
+        let member_term = self.kb.alloc(Term::Fn {
+            functor: member_sym,
+            args: SmallVec::from_slice(&[
+                FnArg::Positional(name_term),
+                FnArg::Positional(kind_term),
+                FnArg::Positional(parent),
+            ]),
+        });
+        self.kb.assert_fact(member_term, member_sort, parent, None);
+    }
+
+    /// Emit member facts for all direct children of a sort/domain.
+    fn emit_member_facts_for_items(&mut self, items: &[Item], parent: TermId) {
+        for item in items {
+            match item {
+                Item::Entity(e) => {
+                    let sym = self.reintern_name(&e.name);
+                    self.emit_member_fact(sym, "Constructor", parent);
+                }
+                Item::AbstractSort(s) => {
+                    let sym = self.reintern_name(&s.name);
+                    self.emit_member_fact(sym, "Sort", parent);
+                }
+                Item::SortWithBody(s) => {
+                    let sym = self.reintern_name(&s.name);
+                    self.emit_member_fact(sym, "Sort", parent);
+                }
+                Item::Operation(o) => {
+                    let sym = self.reintern_name(&o.name);
+                    self.emit_member_fact(sym, "Operation", parent);
+                }
+                Item::OperationBlock(ob) => {
+                    for op in &ob.entries {
+                        let sym = self.reintern_name(&op.name);
+                        self.emit_member_fact(sym, "Operation", parent);
+                    }
+                }
+                Item::Rule(r) => {
+                    if let Some(ref label) = r.label {
+                        let sym = self.reintern_name(label);
+                        self.emit_member_fact(sym, "Rule", parent);
+                    }
+                }
+                Item::RuleBlock(rb) => {
+                    for rule in &rb.entries {
+                        if let Some(ref label) = rule.label {
+                            let sym = self.reintern_name(label);
+                            self.emit_member_fact(sym, "Rule", parent);
+                        }
+                    }
+                }
+                Item::Domain(d) => {
+                    let sym = self.reintern_name(&d.name);
+                    self.emit_member_fact(sym, "Domain", parent);
+                }
+                // Unnamed items: Fact, Constraint, Project, Tool, WorkItem, etc.
+                _ => {}
             }
         }
     }
