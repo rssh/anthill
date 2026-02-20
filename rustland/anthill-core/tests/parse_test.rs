@@ -9,16 +9,16 @@ use anthill_core::kb::load::{self, NullResolver};
 // ── Parsing tests ───────────────────────────────────────────────
 
 #[test]
-fn parse_empty_domain() {
-    let source = "domain banking {\n}\n";
+fn parse_empty_namespace() {
+    let source = "namespace banking {\n}\n";
     let parsed = parse::parse(source).expect("parse failed");
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
-        Item::Domain(d) => {
-            assert_eq!(parsed.interner.resolve(d.name.last()), "banking");
-            assert!(d.items.is_empty());
+        Item::Namespace(n) => {
+            assert_eq!(parsed.interner.resolve(n.name.last()), "banking");
+            assert!(n.items.is_empty());
         }
-        other => panic!("expected Domain, got {:?}", std::mem::discriminant(other)),
+        other => panic!("expected Namespace, got {:?}", std::mem::discriminant(other)),
     }
 }
 
@@ -103,8 +103,8 @@ fn parse_fact_with_meta() {
 }
 
 #[test]
-fn parse_domain_with_entity_and_operation() {
-    let source = r#"domain banking
+fn parse_namespace_with_entity_and_operation() {
+    let source = r#"namespace banking
   export Account, Money, deposit
   entity Account(id: AccountId, balance: Money)
   operation deposit(a: Account, m: Money) -> Account
@@ -115,13 +115,13 @@ end
     let parsed = parse::parse(source).expect("parse failed");
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
-        Item::Domain(d) => {
-            assert_eq!(parsed.interner.resolve(d.name.last()), "banking");
-            assert_eq!(d.exports.len(), 3);
-            assert_eq!(d.items.len(), 2); // entity + operation
+        Item::Namespace(n) => {
+            assert_eq!(parsed.interner.resolve(n.name.last()), "banking");
+            assert_eq!(n.exports.len(), 3);
+            assert_eq!(n.items.len(), 2); // entity + operation
 
             // Check entity
-            match &d.items[0] {
+            match &n.items[0] {
                 Item::Entity(e) => {
                     assert_eq!(parsed.interner.resolve(e.name.last()), "Account");
                     assert_eq!(e.fields.len(), 2);
@@ -130,7 +130,7 @@ end
             }
 
             // Check operation
-            match &d.items[1] {
+            match &n.items[1] {
                 Item::Operation(o) => {
                     assert_eq!(parsed.interner.resolve(o.name.last()), "deposit");
                     assert_eq!(o.params.len(), 2);
@@ -140,7 +140,7 @@ end
                 other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
             }
         }
-        other => panic!("expected Domain, got {:?}", std::mem::discriminant(other)),
+        other => panic!("expected Namespace, got {:?}", std::mem::discriminant(other)),
     }
 }
 
@@ -221,8 +221,8 @@ fn parse_line_comment() {
 // ── Loading tests ───────────────────────────────────────────────
 
 #[test]
-fn load_domain_into_kb() {
-    let source = r#"domain banking {
+fn load_namespace_into_kb() {
+    let source = r#"namespace banking {
   entity Account(id: AccountId, balance: Money)
 }
 "#;
@@ -230,7 +230,7 @@ fn load_domain_into_kb() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    // Should have facts: Domain(banking), Entity(Account)
+    // Should have facts: Namespace(banking), Entity(Account)
     assert!(kb.fact_count() >= 2);
 }
 
@@ -285,8 +285,8 @@ fn load_fact_and_query_by_sort() {
 }
 
 #[test]
-fn load_banking_domain() {
-    let source = r#"domain banking
+fn load_banking_namespace() {
+    let source = r#"namespace banking
   export Account, Money, deposit
 
   sort Money {
@@ -307,8 +307,8 @@ end
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     // Check we have facts of various sorts
-    let domain_sort = kb.make_name_term("Domain");
-    assert!(!kb.by_sort(domain_sort).is_empty(), "should have Domain fact");
+    let ns_sort = kb.make_name_term("Namespace");
+    assert!(!kb.by_sort(ns_sort).is_empty(), "should have Namespace fact");
 
     let entity_sort = kb.make_name_term("Entity");
     assert!(!kb.by_sort(entity_sort).is_empty(), "should have Entity fact");
@@ -521,8 +521,8 @@ end
 }
 
 #[test]
-fn member_facts_for_domain() {
-    let source = r#"domain banking {
+fn member_facts_for_namespace() {
+    let source = r#"namespace banking {
   entity Account(id: String, balance: Int)
   operation deposit(a: Account, m: Int) -> Account
 }
@@ -534,8 +534,8 @@ fn member_facts_for_domain() {
     let member_sort = kb.make_name_term("Member");
     let banking_term = kb.make_name_term("banking");
 
-    let domain_facts = kb.by_domain(banking_term);
-    let member_facts: Vec<_> = domain_facts
+    let ns_facts = kb.by_domain(banking_term);
+    let member_facts: Vec<_> = ns_facts
         .iter()
         .filter(|&&fid| kb.fact_sort(fid) == member_sort)
         .copied()
@@ -543,7 +543,7 @@ fn member_facts_for_domain() {
 
     // Should have: Account (Constructor), deposit (Operation)
     assert_eq!(member_facts.len(), 2,
-        "banking domain should have 2 member facts");
+        "banking namespace should have 2 member facts");
 }
 
 #[test]
@@ -592,22 +592,24 @@ fn check_term_contains(kb: &KnowledgeBase, term: TermId, target: TermId, found: 
 }
 
 #[test]
-fn mutual_reference_two_domains() {
-    // File 1: domain X references sort from domain Y
-    let file_x = r#"domain Geometry
-  sort Shape
-  entity circle(radius: Int)
-  entity rect(w: Int, h: Int)
+fn mutual_reference_two_namespaces() {
+    // File 1: namespace X references sort from namespace Y
+    let file_x = r#"namespace Geometry {
+  sort Shape {
+    entity circle(radius: Int)
+    entity rect(w: Int, h: Int)
+  }
   operation area(s: Shape) -> Measure
-end
+}
 "#;
-    // File 2: domain Y references sort from domain X
-    let file_y = r#"domain Units
-  sort Measure
-  entity meters(n: Int)
-  entity pixels(n: Int)
+    // File 2: namespace Y references sort from namespace X
+    let file_y = r#"namespace Units {
+  sort Measure {
+    entity meters(n: Int)
+    entity pixels(n: Int)
+  }
   operation convert(m: Measure, target: Shape) -> Measure
-end
+}
 "#;
 
     let parsed_x = parse::parse(file_x).expect("parse Geometry");
@@ -618,10 +620,10 @@ end
     load::load_all(&mut kb, &[&parsed_x, &parsed_y], &NullResolver)
         .expect("load_all failed");
 
-    // Both domains should be registered
-    let domain_sort = kb.make_name_term("Domain");
-    let domains = kb.by_sort(domain_sort);
-    assert_eq!(domains.len(), 2, "should have 2 domains");
+    // Both namespaces should be registered
+    let ns_sort = kb.make_name_term("Namespace");
+    let namespaces = kb.by_sort(ns_sort);
+    assert_eq!(namespaces.len(), 2, "should have 2 namespaces");
 
     // Geometry's facts should reference Measure (from Units)
     let geometry_term = kb.make_name_term("Geometry");
@@ -642,7 +644,7 @@ end
     let measure_term = kb.make_name_term("Measure");
     let shape_term = kb.make_name_term("Shape");
 
-    // area operation is in Geometry domain but references Measure
+    // area operation is in Geometry namespace but references Measure
     let mut area_refs_measure = false;
     for &fid in &geometry_facts {
         let term = kb.fact_term(fid);
@@ -650,7 +652,7 @@ end
     }
     assert!(area_refs_measure, "Geometry's area should reference Measure");
 
-    // convert operation is in Units domain but references Shape
+    // convert operation is in Units namespace but references Shape
     let mut convert_refs_shape = false;
     for &fid in &units_facts {
         let term = kb.fact_term(fid);

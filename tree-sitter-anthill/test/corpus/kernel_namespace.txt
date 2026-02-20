@@ -1,21 +1,21 @@
 =====================================
-Empty domain with braces
+Empty namespace with braces
 =====================================
 
-domain banking {
+namespace banking {
 }
 
 ---
 
 (source_file
-  (domain_declaration
+  (namespace_declaration
     name: (name (identifier))))
 
 =====================================
-Domain with entity and operation
+Namespace with entity and operation
 =====================================
 
-domain banking
+namespace banking
   export Account, Money, deposit
   entity Account(id: AccountId, balance: Money)
   operation deposit(a: Account, m: Money) -> Account
@@ -26,7 +26,7 @@ end
 ---
 
 (source_file
-  (domain_declaration
+  (namespace_declaration
     name: (name (identifier))
     (export_clause
       (name (identifier))

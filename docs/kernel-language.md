@@ -1,16 +1,16 @@
 # Kernel Language Specification
 
-The kernel language is the minimal formal language of the anthill knowledge base. It defines four constructs that the reasoning engine understands natively — everything else in the anthill is built on top of these as entity types in standard domains.
+The kernel language is the minimal formal language of the anthill knowledge base. It defines four constructs that the reasoning engine understands natively — everything else in the anthill is built on top of these as entity types in standard namespaces.
 
 This specification is **self-contained**: it can be implemented without reference to the high-level design document ([metasystem-design-draft.md](../metasystem-design-draft.md)), which provides motivation and vision but is not formal.
 
 ## 1. Design Principles
 
-1. **Minimal kernel.** Four constructs: `domain`, `sort`, `rule`, `operation`. The kernel is deliberately small — analogous to the kernel of a proof assistant (Lean, Coq) that is small, trusted, and verifies proofs, while tactics (large, untrusted) find them. `entity` is syntactic sugar (see §6).
+1. **Minimal kernel.** Four constructs: `namespace`, `sort`, `rule`, `operation`. The kernel is deliberately small — analogous to the kernel of a proof assistant (Lean, Coq) that is small, trusted, and verifies proofs, while tactics (large, untrusted) find them. `entity` is syntactic sugar (see §6).
 
 2. **Rule is THE knowledge primitive.** All knowledge in the KB is expressed as rules (Horn clauses). `fact` and `constraint` are syntactic sugar that desugar to rules. This unifies ground assertions, derived knowledge, and integrity constraints under one mechanism.
 
-3. **Algebraic specification.** The kernel is in the tradition of algebraic specification languages (OBJ, CafeOBJ, Maude): a domain declares sorts (abstract or defined types), operations (typed behavioral specs with contracts), and rules (laws). An algebra is not a separate construct — it IS a domain.
+3. **Algebraic specification.** The kernel is in the tradition of algebraic specification languages (OBJ, CafeOBJ, Maude): a namespace declares sorts (abstract or defined types), operations (typed behavioral specs with contracts), and rules (laws). An algebra is not a separate construct — it IS a namespace.
 
 4. **Partial formalization.** Any term can be `Unspecified` — described in natural language, to be refined later. This allows a spectrum from fully informal to fully formal within the same language.
 
@@ -68,8 +68,8 @@ All keywords are **context-dependent** (soft), following the Scala 3 approach: a
 
 | Context | Soft keywords |
 |---------|--------------|
-| Top level / domain body | `domain`, `sort`, `rule`, `operation`, `entity`, `fact`, `constraint` |
-| Domain header | `import`, `export`, `end` |
+| Top level / namespace body | `namespace`, `sort`, `rule`, `operation`, `entity`, `fact`, `constraint` |
+| Namespace header | `import`, `export`, `end` |
 | Visibility (prefix) | `internal`, `export`, `public` |
 | Operation | `requires`, `ensures`, `effects` |
 | Rule | `:-` (operator, not keyword) |
@@ -140,7 +140,7 @@ The kernel has only four primitive types for `Const` values:
 | `Float` | `3.14`, `-0.5` |
 | `Bool` | `true`, `false` |
 
-**Everything else is a compound type** — defined via `sort` and `operation` in the `anthill.prelude` standard domain (see §4.4). Literal syntax for compound types is sugar:
+**Everything else is a compound type** — defined via `sort` and `operation` in the `anthill.prelude` standard namespace (see §4.4). Literal syntax for compound types is sugar:
 
 | Literal | Desugars to |
 |---------|------------|
@@ -148,7 +148,7 @@ The kernel has only four primitive types for `Const` values:
 | `30s` | `Duration(30, "s")` |
 | `[a, b, c]` | `cons(a, cons(b, cons(c, nil)))` |
 
-### 4.4 The Prelude Domains
+### 4.4 The Prelude Namespaces
 
 Common compound types are defined in standard prelude sorts using the kernel's own constructs. **Parametric types are sorts with abstract sub-sorts** — instantiated via **inline type expressions** `Name{bindings}`. **Sum types are sorts with entity constructors** — `sort S { entity C₁(...), entity C₂(...) }` enumerates constructors (see §5.2).
 
@@ -194,7 +194,7 @@ sort anthill.prelude.Option
 end
 
 -- Eq: equality
-domain anthill.prelude.Eq
+namespace anthill.prelude.Eq
   export eq, neq
 
   sort T
@@ -206,7 +206,7 @@ domain anthill.prelude.Eq
 end
 
 -- Ordered: total ordering (imports Eq)
-domain anthill.prelude.Ordered
+namespace anthill.prelude.Ordered
   export gt, gte, lt, lte
 
   sort T
@@ -228,7 +228,7 @@ domain anthill.prelude.Ordered
 end
 
 -- Numeric: basic arithmetic (imports Ordered)
-domain anthill.prelude.Numeric
+namespace anthill.prelude.Numeric
   export add, sub, mul, zero-val
 
   sort T
@@ -249,7 +249,7 @@ domain anthill.prelude.Numeric
 end
 ```
 
-Infix operators `>`, `>=`, `<`, `<=`, `+`, `-`, `*`, `=` are sugar for the corresponding operations — `a > b` desugars to `gt(a, b)`, `a + b` to `add(a, b)`, etc. These are available when the corresponding prelude domain is imported for the sort.
+Infix operators `>`, `>=`, `<`, `<=`, `+`, `-`, `*`, `=` are sugar for the corresponding operations — `a > b` desugars to `gt(a, b)`, `a + b` to `add(a, b)`, etc. These are available when the corresponding prelude namespace is imported for the sort.
 
 **Instantiation** — via inline type expressions (`Name{bindings}`):
 
@@ -274,21 +274,21 @@ Type ::= Name                                        -- simple type reference
 
 Import and instantiation are separate concepts: `import` makes names visible, inline `Name{bindings}` instantiates sort parameters. They are not bundled together.
 
-Additional types are introduced via `sort` declarations (abstract or defined) in any domain.
+Additional types are introduced via `sort` declarations (abstract or defined) in any namespace.
 
 ## 5. Kernel Constructs
 
 Four constructs the reasoning engine understands natively.
 
-### 5.1 Domain
+### 5.1 Namespace
 
-The unit of encapsulation and independent evolution. A domain scopes sorts, entities, operations, and rules. Domains can be nested.
+The unit of encapsulation and independent evolution. A namespace scopes sorts, entities, operations, and rules. Namespaces can be nested.
 
 ```
-Domain ::= 'domain' Name
-             Import*                             -- explicit imports
-             ['export' NameList]                 -- what is visible outside (default: nothing)
-           Body[DomainContent*]
+Namespace ::= 'namespace' Name
+                Import*                             -- explicit imports
+                ['export' NameList]                 -- what is visible outside (default: nothing)
+              Body[NamespaceContent*]
 
 Import ::= 'import' Name ['.' '{' NameList '}']
 
@@ -296,34 +296,34 @@ NameList    ::= Name (',' Name)*
 SortBinding ::= Name '=' Type                   -- binds an abstract sort to a concrete type
 ```
 
-Import makes names from another domain visible in the current scope. Sort parameters remain abstract — they are instantiated separately via inline type expressions (`Name{bindings}`), not at import time:
+Import makes names from another namespace visible in the current scope. Sort parameters remain abstract — they are instantiated separately via inline type expressions (`Name{bindings}`), not at import time:
 
 ```
--- Import selected items from a domain:
+-- Import selected items from a namespace:
 import anthill.prelude.List.{List, nil, cons}
 
--- Import everything from a domain:
+-- Import everything from a namespace:
 import banking
 ```
 
-**Visibility** controls what crosses domain boundaries, expressed as a prefix modifier on declarations:
+**Visibility** controls what crosses namespace boundaries, expressed as a prefix modifier on declarations:
 
 ```
-Visibility ::= 'internal'    -- visible only within this domain (default, can be omitted)
-             | 'export'      -- visible to domains that import this one
+Visibility ::= 'internal'    -- visible only within this namespace (default, can be omitted)
+             | 'export'      -- visible to namespaces that import this one
              | 'public'      -- visible everywhere (use sparingly)
 ```
 
-Default visibility is `internal`. The domain-level `export` clause lists exported names; individual `export`/`public` prefixes on declarations must be consistent with it.
+Default visibility is `internal`. The namespace-level `export` clause lists exported names; individual `export`/`public` prefixes on declarations must be consistent with it.
 
-**Domain content** — what can appear inside a domain:
+**Namespace content** — what can appear inside a namespace:
 
 ```
-DomainContent ::= Sort | Rule | Operation
-                | Entity                 -- sugar (desugars to single-constructor Sort, see §6.3)
-                | Fact | Constraint      -- sugar (desugars to Rule, see §6.1, §6.2)
-                | OperationBlock | RuleBlock  -- sugar (desugars to individual declarations, see §6.4)
-                | Domain                 -- nested domains
+NamespaceContent ::= Sort | Rule | Operation
+                   | Entity                 -- sugar (desugars to single-constructor Sort, see §6.3)
+                   | Fact | Constraint      -- sugar (desugars to Rule, see §6.1, §6.2)
+                   | OperationBlock | RuleBlock  -- sugar (desugars to individual declarations, see §6.4)
+                   | Namespace              -- nested namespaces
 ```
 
 ### 5.2 Sort
@@ -341,7 +341,7 @@ FieldList   ::= Field (',' Field)*
 Field       ::= Name ':' Type
 ```
 
-**Abstract sort** — declares that a type exists without specifying its representation. Used for type parameters in parametric domains, and for types whose carrier is provided later by an implementation.
+**Abstract sort** — declares that a type exists without specifying its representation. Used for type parameters in parametric namespaces, and for types whose carrier is provided later by an implementation.
 
 ```
 sort Scalar                          -- abstract: no inhabitants defined
@@ -702,14 +702,14 @@ Since `meta: { ... }` has clear delimiters and `requires`/`ensures`/`effects` ar
 
 ### 6.5 Requires / Ensures (scoped constraints)
 
-The `requires` and `ensures` clauses in operations are scoped constraints — they generate denials tied to the operation's input/output bindings. When an `Implementation` fact (from the `anthill.verification` standard domain) pairs with an operation, the kernel generates corresponding obligation rules.
+The `requires` and `ensures` clauses in operations are scoped constraints — they generate denials tied to the operation's input/output bindings. When an `Implementation` fact (from the `anthill.verification` standard namespace) pairs with an operation, the kernel generates corresponding obligation rules.
 
 ## 7. Metadata
 
-Every fact in the KB carries metadata. `Meta` is an **entity** in the `anthill.prelude` domain — not a special grammar production. It is a regular Fn term with named arguments:
+Every fact in the KB carries metadata. `Meta` is an **entity** in the `anthill.prelude` namespace — not a special grammar production. It is a regular Fn term with named arguments:
 
 ```
-domain anthill.prelude.Meta
+namespace anthill.prelude.Meta
   import anthill.prelude.Option
   import anthill.prelude.Nat
   export Meta, Trust, ProofResult
@@ -853,7 +853,7 @@ sort Nat {
 -- A query for sort Nat matches terms of sort zero and sort succ.
 ```
 
-Subsorting does **not** arise from nesting. A sort `T` declared inside a domain or sort body is a **parameter**, not a subsort. Only the constructor-of relationship creates subsorting.
+Subsorting does **not** arise from nesting. A sort `T` declared inside a namespace or sort body is a **parameter**, not a subsort. Only the constructor-of relationship creates subsorting.
 
 ### 8.3 Rule Evaluation
 
@@ -881,51 +881,51 @@ This is the kernel's integrity mechanism — it prevents logically inconsistent 
 
 When an operation has `requires`/`ensures` clauses and an `Implementation` fact links code to it:
 
-1. The kernel generates **proof obligations** — facts of entity type `Obligation` (from the `anthill.verification` standard domain).
+1. The kernel generates **proof obligations** — facts of entity type `Obligation` (from the `anthill.verification` standard namespace).
 2. The obligation states: "prove that the implementation satisfies the contract."
 3. Agents attempt to discharge the obligation. The kernel verifies submitted proofs.
 4. Successfully discharged obligations elevate the implementation's trust level.
 
 The kernel recognizes `Implementation` as a **well-known entity type** and triggers obligation generation automatically.
 
-### 8.6 Domain Visibility
+### 8.6 Namespace Visibility
 
-The kernel enforces domain boundaries:
+The kernel enforces namespace boundaries:
 
-- Declarations without a visibility prefix are **internal** — visible only within the declaring domain.
-- **`export`**-prefixed declarations are visible to domains that explicitly `import` them.
+- Declarations without a visibility prefix are **internal** — visible only within the declaring namespace.
+- **`export`**-prefixed declarations are visible to namespaces that explicitly `import` them.
 - **`public`**-prefixed declarations are visible everywhere (discouraged).
-- A query or rule body can only reference facts visible from the querying domain's scope.
-- `import Name.{names}` makes specific names from another domain visible.
+- A query or rule body can only reference facts visible from the querying namespace's scope.
+- `import Name.{names}` makes specific names from another namespace visible.
 
 Visibility is enforced at query time and assertion time.
 
 ### 8.7 Algebras
 
-An algebra is not a separate syntactic construct — it is the **typing structure that emerges** from declarations within a domain:
+An algebra is not a separate syntactic construct — it is the **typing structure that emerges** from declarations within a namespace:
 
 - **Abstract sorts** define the type parameters of the algebra.
 - **Sorts with constructors** define concrete types with constructors (ADTs).
 - **Operations** define typed behaviors with contracts.
 - **Rules** (including constraint sugar) express laws.
 
-The algebra IS the domain. When an `Implementation` fact provides carrier bindings (`carrier: { Scalar = float, Vector = CudaDeviceBuffer[float] }`), it instantiates the algebra for a specific host language.
+The algebra IS the namespace. When an `Implementation` fact provides carrier bindings (`carrier: { Scalar = float, Vector = CudaDeviceBuffer[float] }`), it instantiates the algebra for a specific host language.
 
-**Parametric structure:** Abstract sorts in a domain serve as type parameters. A domain with abstract sort `T` is a parametric module — instantiated via inline type expressions `List{T = Int}`. For example, `anthill.prelude.List` has abstract sort `T`; using `List{T = Int}` inline produces a list-of-integers.
+**Parametric structure:** Abstract sorts in a namespace serve as type parameters. A namespace with abstract sort `T` is a parametric module — instantiated via inline type expressions `List{T = Int}`. For example, `anthill.prelude.List` has abstract sort `T`; using `List{T = Int}` inline produces a list-of-integers.
 
-This also supports type class-like patterns: a domain declaring `sort A` and `operation combine(x: A, y: A) -> A` with laws is a specification that any type with a `combine` operation must satisfy. Using `MyType` in place of `A` via inline binding instantiates the specification for a concrete type.
+This also supports type class-like patterns: a namespace declaring `sort A` and `operation combine(x: A, y: A) -> A` with laws is a specification that any type with a `combine` operation must satisfy. Using `MyType` in place of `A` via inline binding instantiates the specification for a concrete type.
 
 ## 9. Connections to Existing Systems
 
 The kernel language connects to three traditions:
 
-**ML-style modules.** Domain ≈ signature (declares abstract types and operations), Implementation with carrier bindings ≈ structure (provides concrete types), inline `Name{bindings}` ≈ functor application. But anthill domains are richer — they contain rules (logic) and contracts (requires/ensures), making them algebraic specifications rather than pure type signatures.
+**ML-style modules.** Namespace ≈ signature (declares abstract types and operations), Implementation with carrier bindings ≈ structure (provides concrete types), inline `Name{bindings}` ≈ functor application. But anthill namespaces are richer — they contain rules (logic) and contracts (requires/ensures), making them algebraic specifications rather than pure type signatures.
 
 **Maude / OBJ / CafeOBJ.** The closest match:
 
 | Kernel language | Maude |
 |----------------|-------|
-| `domain` | theory (`fth`) or module (`fmod`) |
+| `namespace` | theory (`fth`) or module (`fmod`) |
 | `sort T` (abstract) | `sort` |
 | `sort S { entity ... }` | sort with constructor ops (`op ... : -> S [ctor]`) |
 | `operation` | `op` (operator declaration) |
@@ -933,7 +933,7 @@ The kernel language connects to three traditions:
 | `constraint` (denial) | membership axiom / conditional axiom |
 | `Implementation.carrier` | view (maps theory sorts to module sorts) |
 | `List{T = X}` (inline instantiation) | view instantiation (binds sort parameter) |
-| domain with abstract sort | parameterized module (`fmod X{Y :: TRIV}`) |
+| namespace with abstract sort | parameterized module (`fmod X{Y :: TRIV}`) |
 
 The anthill adds: `Unspecified` (partial formalization), metadata (trust, provenance, agent), host-language embeddings (bidirectional mapping to Scala/Python/etc.), and the stigmergic agent layer.
 
@@ -941,12 +941,12 @@ The anthill adds: `Unspecified` (partial formalization), metadata (trust, proven
 
 ## 10. Examples
 
-### 10.1 Banking Domain
+### 10.1 Banking Namespace
 
 A complete algebra with sorts (abstract and defined), operations, contracts, and laws:
 
 ```
-domain banking
+namespace banking
   export Account, Money, deposit, withdraw, balance
 
   sort Money
@@ -978,10 +978,10 @@ domain banking
 end
 ```
 
-With infix sugar (once defined), the same domain reads more naturally:
+With infix sugar (once defined), the same namespace reads more naturally:
 
 ```
-domain banking
+namespace banking
   export Account, Money, deposit, withdraw, balance
 
   sort Money
@@ -1013,7 +1013,7 @@ end
 Abstract algebra with sort variables, instantiated by different implementations:
 
 ```
-domain linear_algebra
+namespace linear_algebra
   export Scalar, Vector, add, scale, dot, dim
 
   sort Scalar
@@ -1038,7 +1038,7 @@ domain linear_algebra
 end
 ```
 
-Two implementations (in the `anthill.verification` standard domain) could provide different carrier bindings:
+Two implementations (in the `anthill.verification` standard namespace) could provide different carrier bindings:
 
 ```
 -- CPU implementation:
@@ -1054,20 +1054,20 @@ fact Implementation("linear_algebra",
   [trust: proposed]
 ```
 
-### 10.3 Domain with Nested Subdomains
+### 10.3 Namespace with Nested Sub-namespaces
 
 ```
-domain finance
+namespace finance
   import banking.{Account, Money}
   export risk, audit
 
-  domain risk {
+  namespace risk {
     sort RiskLevel
     operation assess(a: Account) -> RiskLevel
     constraint bounded: assess(?a) <= maxRisk
   }
 
-  domain audit {
+  namespace audit {
     entity AuditEntry(
       account : Account,
       action  : String,
@@ -1115,20 +1115,20 @@ Term        ::= Const(type, value)
 -- Kernel Constructs (4)
 -- =================================================================
 
-Domain      ::= 'domain' Name
+Namespace   ::= 'namespace' Name
                   Import*
                   ['export' NameList]
-                Body[DomainContent*]
+                Body[NamespaceContent*]
 
 Import      ::= 'import' Name ['.' '{' NameList '}']
 NameList    ::= Name (',' Name)*
 SortBinding ::= Name '=' Type
 
-DomainContent ::= Sort | Rule | Operation
-                | Entity                       -- sugar (§6.3)
-                | Fact | Constraint            -- sugar (§6.1, §6.2)
-                | OperationBlock | RuleBlock   -- sugar (§6.4)
-                | Domain
+NamespaceContent ::= Sort | Rule | Operation
+                   | Entity                       -- sugar (§6.3)
+                   | Fact | Constraint            -- sugar (§6.1, §6.2)
+                   | OperationBlock | RuleBlock   -- sugar (§6.4)
+                   | Namespace
 
 Visibility  ::= 'internal' | 'export' | 'public'
 
@@ -1142,7 +1142,7 @@ Sort        ::= [Visibility] 'sort' Name                           -- abstract
 
 SortContent ::= Sort | Entity | Operation | Rule
               | Fact | Constraint | OperationBlock | RuleBlock
-              | Domain
+              | Namespace
 
 FieldList   ::= Field (',' Field)*
 Field       ::= Name ':' Type

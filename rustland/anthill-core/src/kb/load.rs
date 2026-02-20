@@ -272,7 +272,7 @@ impl<'a> Loader<'a> {
 
         for item in items {
             match item {
-                Item::Domain(d) => self.load_domain(d),
+                Item::Namespace(n) => self.load_namespace(n),
                 Item::AbstractSort(s) => self.load_abstract_sort(s, domain),
                 Item::SortWithBody(s) => self.load_sort_with_body(s, domain),
                 Item::Rule(r) => self.load_rule(r, domain),
@@ -299,18 +299,18 @@ impl<'a> Loader<'a> {
         }
     }
 
-    fn load_domain(&mut self, d: &Domain) {
-        let domain_term = self.name_to_sort_term(&d.name);
-        let domain_sort = self.kb.make_name_term("Domain");
+    fn load_namespace(&mut self, n: &Namespace) {
+        let ns_term = self.name_to_sort_term(&n.name);
+        let ns_sort = self.kb.make_name_term("Namespace");
 
-        // Assert domain as a fact
-        self.kb.assert_fact(domain_term, domain_sort, domain_term, None);
+        // Assert namespace as a fact
+        self.kb.assert_fact(ns_term, ns_sort, ns_term, None);
 
         // Emit member facts for direct children
-        self.emit_member_facts_for_items(&d.items, domain_term);
+        self.emit_member_facts_for_items(&n.items, ns_term);
 
-        // Load nested items within this domain scope
-        self.load_items(&d.items, Some(domain_term));
+        // Load nested items within this namespace scope
+        self.load_items(&n.items, Some(ns_term));
     }
 
     fn load_abstract_sort(&mut self, s: &AbstractSort, domain: TermId) {
@@ -652,9 +652,9 @@ impl<'a> Loader<'a> {
                         }
                     }
                 }
-                Item::Domain(d) => {
-                    let sym = self.reintern_name(&d.name);
-                    self.emit_member_fact(sym, "Domain", parent);
+                Item::Namespace(n) => {
+                    let sym = self.reintern_name(&n.name);
+                    self.emit_member_fact(sym, "Namespace", parent);
                 }
                 // Unnamed items: Fact, Constraint, Project, Tool, WorkItem, etc.
                 _ => {}

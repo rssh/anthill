@@ -1,6 +1,6 @@
 /// Tree-sitter grammar for the Anthill kernel language + Stage 0 sugar.
 ///
-/// The kernel has 4 constructs: domain, sort, rule, operation.
+/// The kernel has 4 constructs: namespace, sort, rule, operation.
 /// Sugar adds: entity, fact, constraint, operation/rule blocks.
 /// Stage 0 adds: project, tool, workitem, feedback blocks.
 ///
@@ -58,7 +58,7 @@ module.exports = grammar({
     // =========================================================
 
     _declaration: $ => choice(
-      $.domain_declaration,
+      $.namespace_declaration,
       $.abstract_sort,
       $.sort_with_body,
       $.rule_declaration,
@@ -84,15 +84,15 @@ module.exports = grammar({
     ),
 
     // =========================================================
-    // Domain
+    // Namespace
     // =========================================================
 
-    domain_declaration: $ => seq(
-      'domain',
+    namespace_declaration: $ => seq(
+      'namespace',
       field('name', $.name),
       repeat($.import_clause),
       optional($.export_clause),
-      $._body_domain,
+      $._body_namespace,
     ),
 
     import_clause: $ => seq(
@@ -112,14 +112,26 @@ module.exports = grammar({
       commaSep1($.name),
     ),
 
-    _body_domain: $ => choice(
-      seq('{', repeat($._domain_content), '}'),
-      seq(repeat($._domain_content), 'end', optional($.name)),
+    _body_namespace: $ => choice(
+      seq('{', repeat($._namespace_content), '}'),
+      seq(repeat($._namespace_content), 'end', optional($.name)),
     ),
 
-    _domain_content: $ => choice(
-      $._declaration,
-      // domain_declaration is already in _declaration but also allows nesting
+    _namespace_content: $ => choice(
+      $.namespace_declaration,
+      $.sort_with_body,
+      $.rule_declaration,
+      $.operation_declaration,
+      $.entity_declaration,
+      $.fact_declaration,
+      $.constraint_declaration,
+      $.operation_block,
+      $.rule_block,
+    ),
+
+    _body_sort: $ => choice(
+      seq('{', repeat($._declaration), '}'),
+      seq(repeat($._declaration), 'end', optional($.name)),
     ),
 
     // =========================================================
@@ -139,7 +151,7 @@ module.exports = grammar({
       field('name', $.name),
       repeat($.import_clause),
       optional($.export_clause),
-      $._body_domain,
+      $._body_sort,
       optional($.meta_block),
     ),
 

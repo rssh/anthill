@@ -117,7 +117,7 @@ pub enum ParseLiteral {
 #[derive(Debug)]
 pub enum Item {
     // Kernel
-    Domain(Domain),
+    Namespace(Namespace),
     AbstractSort(AbstractSort),
     SortWithBody(SortWithBody),
     Rule(Rule),
@@ -136,10 +136,10 @@ pub enum Item {
     ImportTools(ImportTools),
 }
 
-// ── Domain ──────────────────────────────────────────────────────
+// ── Namespace ───────────────────────────────────────────────────
 
 #[derive(Debug)]
-pub struct Domain {
+pub struct Namespace {
     pub name: Name,
     pub imports: Vec<Import>,
     pub exports: Vec<Name>,

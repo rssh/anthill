@@ -134,7 +134,7 @@ impl<'a> Converter<'a> {
 
     fn convert_item(&mut self, node: Node) -> Option<Item> {
         match node.kind() {
-            "domain_declaration" => self.convert_domain(node).map(Item::Domain),
+            "namespace_declaration" => self.convert_namespace(node).map(Item::Namespace),
             "abstract_sort" => self.convert_abstract_sort(node).map(Item::AbstractSort),
             "sort_with_body" => self.convert_sort_with_body(node).map(Item::SortWithBody),
             "rule_declaration" => self.convert_rule(node).map(Item::Rule),
@@ -438,9 +438,9 @@ impl<'a> Converter<'a> {
         terms
     }
 
-    // ── Domain ──────────────────────────────────────────────────
+    // ── Namespace ───────────────────────────────────────────────
 
-    fn convert_domain(&mut self, node: Node) -> Option<Domain> {
+    fn convert_namespace(&mut self, node: Node) -> Option<Namespace> {
         let name = self.field(node, "name")
             .map(|n| self.convert_name(n))?;
         let span = self.span(node);
@@ -457,7 +457,7 @@ impl<'a> Converter<'a> {
                 .collect())
             .unwrap_or_default();
 
-        // Domain body items
+        // Namespace body items
         let mut items = Vec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -471,7 +471,7 @@ impl<'a> Converter<'a> {
             }
         }
 
-        Some(Domain {
+        Some(Namespace {
             name,
             imports,
             exports,

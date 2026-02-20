@@ -6,7 +6,7 @@ section \<open>Anthill Kernel Language --- Formal Specification\<close>
 
 text \<open>
   This theory formalises the core constructs of the Anthill kernel language:
-  terms, sorts, rules (Horn clauses with denials), operations, domains,
+  terms, sorts, rules (Horn clauses with denials), operations, namespaces,
   first-order substitution and unification, trust levels, and basic
   knowledge-base operations.
 
@@ -410,7 +410,7 @@ lemma effect_env_to_monad:
   by (auto simp: from_monad_def respects_effect_env_def
            split: sum.splits prod.splits)
 
-subsection \<open>Visibility and Domains\<close>
+subsection \<open>Visibility and Namespaces\<close>
 
 datatype visibility = Internal | Export | Public
 
@@ -420,7 +420,7 @@ datatype module_item =
   | MI_Rule arule
   | MI_Operation operation
   | MI_SubModule module_body
-and module_body = \<comment> \<open>mb_primary_sort: Some s = sort-with-body; None = domain\<close>
+and module_body = \<comment> \<open>mb_primary_sort: Some s = sort-with-body; None = namespace\<close>
   ModuleBody
     (mb_name : symbol)
     (mb_primary_sort : "sort_id option")
@@ -703,7 +703,7 @@ where
 | "load_module_body kb (ModuleBody name ps items vis) =
      (let scope = Fn name [];
           kb1 = (case ps of
-                   None \<Rightarrow> fst (assert_fact kb scope (Fn ''Domain'' []) scope None)
+                   None \<Rightarrow> fst (assert_fact kb scope (Fn ''Namespace'' []) scope None)
                  | Some s \<Rightarrow> register_constructor_subsorts
                                (register_sort kb s (determine_sort_kind items))
                                s (direct_entities items))
