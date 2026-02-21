@@ -3,7 +3,8 @@
 -- Generic SQL store parameterized by dialect. PostgreSQL, MySQL, SQLite,
 -- DuckDB etc. are dialects, not separate store types.
 namespace anthill.persistence.sql
-  import anthill.persistence.{Store, StoreCaps}
+  import anthill.reflect.{Term}
+  import anthill.persistence.{QueryableStore}
   export SqlStore, SqlDialect, QueryBinding, ColumnDef
 
   sort SqlDialect {
@@ -18,9 +19,7 @@ namespace anthill.persistence.sql
     schema     : String,
     dialect    : SqlDialect
   )
-
-  -- All SQL stores are queryable: backward chaining delegates to SQL
-  rule caps(SqlStore(?_)) = queryable
+  fact QueryableStore
 
   -- ================================================================
   -- Query bindings: how to translate patterns to SQL

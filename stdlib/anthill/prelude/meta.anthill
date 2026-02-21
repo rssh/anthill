@@ -1,5 +1,6 @@
 -- Meta: metadata for facts in the KB
 namespace anthill.prelude.Meta
+  import anthill.reflect.{Term}
   import anthill.prelude.{Option}
   export Meta, Trust, ProofResult
 

@@ -94,7 +94,7 @@ module.exports = grammar({
       'namespace',
       field('name', $.name),
       repeat($.import_clause),
-      optional($.export_clause),
+      repeat($.export_clause),
       $._body_namespace,
     ),
 
@@ -176,7 +176,7 @@ module.exports = grammar({
       'sort',
       field('name', $.name),
       repeat($.import_clause),
-      optional($.export_clause),
+      repeat($.export_clause),
       $._body_sort,
       optional($.meta_block),
     ),

@@ -489,12 +489,12 @@ impl<'a> Converter<'a> {
             .map(|ic| self.convert_import(ic))
             .collect();
 
-        let exports = self.child_by_kind(node, "export_clause")
-            .map(|ec| self.children_by_kind(ec, "name")
-                .into_iter()
-                .map(|n| self.convert_name(n))
-                .collect())
-            .unwrap_or_default();
+        let mut exports = Vec::new();
+        for ec in self.children_by_kind(node, "export_clause") {
+            for n in self.children_by_kind(ec, "name") {
+                exports.push(self.convert_name(n));
+            }
+        }
 
         // Namespace body items
         let mut items = Vec::new();
@@ -592,12 +592,12 @@ impl<'a> Converter<'a> {
             .map(|ic| self.convert_import(ic))
             .collect();
 
-        let exports = self.child_by_kind(node, "export_clause")
-            .map(|ec| self.children_by_kind(ec, "name")
-                .into_iter()
-                .map(|n| self.convert_name(n))
-                .collect())
-            .unwrap_or_default();
+        let mut exports = Vec::new();
+        for ec in self.children_by_kind(node, "export_clause") {
+            for n in self.children_by_kind(ec, "name") {
+                exports.push(self.convert_name(n));
+            }
+        }
 
         let mut items = Vec::new();
         let mut cursor = node.walk();

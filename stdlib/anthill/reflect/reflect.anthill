@@ -3,10 +3,30 @@
 -- Reflection/introspection: represent anthill constructs (sorts, operations,
 -- rules) as data, and provide query operations. This is the META-LEVEL
 -- (analogous to Maude's META-LEVEL module).
+--
+-- Defines the kernel's abstract types:
+--   Term    — opaque handle to a term in the KB
+--   FactId  — opaque handle to a stored fact
+-- These are abstract sorts: implementations bind them to concrete
+-- Rust types via Implementation facts.
 namespace anthill.reflect
   import anthill.prelude.{List}
   import anthill.prelude.{Option}
-  export TermRepr, SortInfo, OperationInfo, FieldInfo, sorts, operations, constructors, fields, rules
+  export Term, FactId
+  export TermRepr, SortInfo, OperationInfo, FieldInfo
+  export reify, reflect
+  export sorts, operations, constructors, fields, rules
+
+  -- ================================================================
+  -- Opaque kernel handles (abstract — implementation-defined)
+  -- ================================================================
+
+  -- A term in the knowledge base. Opaque: pass it to persist/retrieve/reify,
+  -- but to inspect its structure, use reify() to get a TermRepr.
+  sort Term
+
+  -- Handle to a stored fact. Returned by persist(), used by retract().
+  sort FactId
 
   -- The knowledge base as a typed effect resource
   sort KB {
@@ -17,6 +37,8 @@ namespace anthill.reflect
   -- Term representation (reified terms as data)
   -- ================================================================
 
+  -- Structural decomposition of Term — for introspection.
+  -- Term is opaque; TermRepr is transparent.
   sort TermRepr {
     entity ConstRepr(type_name: String, value: String)
     entity VarRepr(type_name: String, name: String)
@@ -53,6 +75,18 @@ namespace anthill.reflect
     name         : String,
     type_name    : String
   )
+
+  -- ================================================================
+  -- Bridge: opaque Term ↔ structural TermRepr
+  -- ================================================================
+
+  -- Decompose an opaque Term into its structural representation
+  operation reify(t: Term) -> TermRepr
+    effects (Reads(kb))
+
+  -- Construct an opaque Term from a structural representation
+  operation reflect(r: TermRepr) -> Term
+    effects (Reads(kb))
 
   -- ================================================================
   -- Query operations (KB introspection)

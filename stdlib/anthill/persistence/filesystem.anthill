@@ -1,11 +1,11 @@
 -- Filesystem: bulk file-based persistence backend
 namespace anthill.persistence.filesystem
-  import anthill.persistence.{Store, StoreCaps}
+  import anthill.reflect.{Term}
+  import anthill.prelude.Meta.{Meta}
+  import anthill.persistence.{BulkStore}
 
   entity FileStore(root: String, convention: FileConvention)
-
-  -- FileStore is always bulk: load all files, work in memory
-  rule caps(FileStore(?_)) = bulk
+  fact BulkStore
 
   -- ================================================================
   -- File conventions: how facts map to files
@@ -25,6 +25,10 @@ namespace anthill.persistence.filesystem
   --   -> .anthill/project.anthill
   -- Feedback(workitem: "WI-001", ...)
   --   -> .anthill/workitems/WI-001.feedback.anthill
+
+  namespace Factory
+    operation create(conventions: FileConvention, root: String) -> FileStore
+  end
 
   operation file_path(fact: Term, meta: Meta, conv: FileConvention) -> String
 

@@ -28,6 +28,8 @@ The mapping is deterministic: given the same anthill source, the same Rust code 
 | `effects (Requires Cap)` | generic bound or runtime check |
 | `sort T` (abstract sub-sort = type parameter) | generic `<T>` |
 | `requires Eq{T}` | trait bound: `where T: Eq` or supertrait |
+| `fact SortName` (inside sort body) | supertrait: `trait S: SortName` |
+| `fact SortName` (in entity's namespace) | `impl SortName for Entity` |
 | `List{T = X}` | `Vec<X>` |
 | `Option{T = X}` | `Option<X>` |
 | `rule` (law) | `#[cfg(test)]` property-based test stub |
@@ -52,8 +54,8 @@ A sort whose body contains operations but no entity constructors maps to a Rust 
 
 ```
 sort Store {                               pub trait Store {
-  operation caps(                →              fn caps(&self) -> StoreCaps;
-    store: Store) -> StoreCaps                 ...
+  operation persist(              →              fn persist(&mut self, ...) -> ...;
+    store: Store, ...) -> FactId                 ...
   ...                                      }
 }
 
@@ -171,7 +173,6 @@ Anthill prelude sorts map to idiomatic Rust types:
 | `Float` | `f64` |
 | `Bool` | `bool` |
 | `String` | `String` |
-| `Nat` | `u64` |
 | `List{T = X}` | `Vec<X>` |
 | `Option{T = X}` | `Option<X>` |
 | `Duration` | `std::time::Duration` |
@@ -221,6 +222,34 @@ constraint non_negative: gte(balance(?a), zero-val)
 ```
 
 These are generated in a separate `invariants` submodule for test-time checking.
+
+### 2.13 Fact as Subsort Declaration → Supertrait or Impl
+
+A `fact SortName` declares a subsort (is-a) relationship. It maps differently depending on context:
+
+**Inside a sort body** — becomes a supertrait:
+
+```
+sort QueryableStore {                      pub trait QueryableStore: Store {
+  fact Store                      →            fn retrieve(&self, ...) -> ...;
+  operation retrieve(                      }
+    store: QueryableStore,
+    pattern: Term) -> List{T = Term}
+}
+```
+
+`fact Store` inside `sort QueryableStore` means "every QueryableStore is-a Store", which maps to supertrait inheritance in Rust.
+
+**In an entity's namespace** — becomes a trait implementation:
+
+```
+-- In namespace anthill.persistence.sql:
+entity SqlStore(                           pub struct SqlStore { ... }
+  connection: String, ...)        →
+fact QueryableStore                        impl QueryableStore for SqlStore { ... }
+```
+
+`fact QueryableStore` in the namespace where `SqlStore` is defined means "SqlStore is-a QueryableStore", which maps to implementing the trait.
 
 ## 3. Generation Boundary
 
@@ -373,7 +402,7 @@ sort Eq {
 
 -- Rule 1: Inside sort List, first arg is List
 sort List {
-  operation length(l: List) -> Nat         →  fn length(&self) -> u64;
+  operation length(l: List) -> Int         →  fn length(&self) -> i64;
 }
 
 -- Rule 2: In namespace config, first arg is Settings (an entity in config)
@@ -407,7 +436,7 @@ The kernel's effect declarations (kernel spec §5.5) map to Rust idioms:
 
 ```
 operation persist(store: Store, fact: Term, meta: Meta) -> FactId
-  effects (Modifies store)
+  effects (Modifies(store))
 
 →  fn persist(&mut self, fact: Term, meta: Meta) -> Result<FactId, Error>;
 ```
@@ -419,8 +448,8 @@ operation persist(store: Store, fact: Term, meta: Meta) -> FactId
 - `Result<R, Error>` return type (I/O can fail)
 
 ```
-operation retrieve(store: Store, pattern: Term) -> List{T = Term}
-  effects (Reads store)
+operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
+  effects (Reads(store))
 
 →  fn retrieve(&self, pattern: Term) -> Result<Vec<Term>, Error>;
 ```
@@ -502,57 +531,95 @@ operation balance(a: Account) -> Money
 
 ## 6. Concrete Examples
 
-### 6.1 Persistence Store (from Proposal 007)
+### 6.1 Persistence Store Hierarchy
+
+The persistence layer uses a three-sort hierarchy: `Store` (base), `QueryableStore` (pattern-based retrieval), and `BulkStore` (load-all-into-memory). The sort hierarchy replaces runtime capability tags.
 
 ```
 -- Anthill:
 namespace anthill.persistence
 
-  sort StoreCaps {
-    entity queryable
-    entity bulk
-  }
+  sort Store                                  -- base: all backends
 
-  sort Store {
-    operation caps(store: Store) -> StoreCaps
-    operation persist(store: Store, fact: Term, meta: Meta) -> FactId
-      effects (Modifies store)
-    operation retrieve(store: Store, pattern: Term) -> List{T = Term}
-      effects (Reads store)
-    operation retract(store: Store, id: FactId) -> Bool
-      effects (Modifies store)
-    operation pull(store: Store) -> List{T = Term}
-      effects (Reads store)
-    operation flush(store: Store, delta: List{T = Term})
-      effects (Modifies store)
-  }
+  operation route(fact: Term) -> Store
+  operation persist(store: Store, fact: Term, meta: Meta) -> FactId
+    effects (Modifies(store))
+  operation retract(store: Store, id: FactId) -> Bool
+    effects (Modifies(store))
+  operation flush(store: Store, delta: List{T = Term}) -> Bool
+    effects (Modifies(store))
+
+  sort QueryableStore
+    fact Store                                -- QueryableStore is-a Store
+
+  operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
+    effects (Reads(store))
+
+  sort BulkStore
+    fact Store                                -- BulkStore is-a Store
+
+  operation pull(store: BulkStore) -> List{T = Term}
+    effects (Reads(store))
+
 end
+
+-- In namespace anthill.persistence.sql:
+entity SqlStore(connection: String, schema: String, dialect: SqlDialect)
+fact QueryableStore                           -- SqlStore is-a QueryableStore
+
+-- In namespace anthill.persistence.filesystem:
+entity FileStore(root: String, convention: FileConvention)
+fact BulkStore                                -- FileStore is-a BulkStore
 ```
 
 Generated Rust:
 
 ```rust
 pub mod persistence {
-    pub enum StoreCaps {
-        Queryable,
-        Bulk,
-    }
-
     pub trait Store {
-        fn caps(&self) -> StoreCaps;
-
         fn persist(&mut self, fact: Term, meta: Meta) -> Result<FactId, Error>;
-
-        fn retrieve(&self, pattern: Term) -> Result<Vec<Term>, Error>;
-
         fn retract(&mut self, id: FactId) -> Result<bool, Error>;
-
-        fn pull(&self) -> Result<Vec<Term>, Error>;
-
-        fn flush(&mut self, delta: Vec<Term>) -> Result<(), Error>;
+        fn flush(&mut self, delta: Vec<Term>) -> Result<bool, Error>;
     }
+
+    pub trait QueryableStore: Store {
+        fn retrieve(&self, pattern: Term) -> Result<Vec<Term>, Error>;
+    }
+
+    pub trait BulkStore: Store {
+        fn pull(&self) -> Result<Vec<Term>, Error>;
+    }
+
+    pub fn route(fact: Term) -> impl Store { todo!() }
+}
+
+pub mod sql {
+    use super::persistence::*;
+
+    pub struct SqlStore {
+        pub connection: String,
+        pub schema: String,
+        pub dialect: SqlDialect,
+    }
+
+    impl Store for SqlStore { /* ... */ }
+    impl QueryableStore for SqlStore { /* ... */ }
+}
+
+pub mod filesystem {
+    use super::persistence::*;
+
+    pub struct FileStore {
+        pub root: String,
+        pub convention: FileConvention,
+    }
+
+    impl Store for FileStore { /* ... */ }
+    impl BulkStore for FileStore { /* ... */ }
 }
 ```
+
+Note: `fact Store` inside `sort QueryableStore` becomes supertrait `QueryableStore: Store`. `fact QueryableStore` in the SqlStore namespace becomes `impl QueryableStore for SqlStore` (which implies `impl Store for SqlStore` since `QueryableStore: Store`).
 
 ### 6.2 Prelude List
 
@@ -562,9 +629,9 @@ sort anthill.prelude.List
   sort T
   entity nil
   entity cons(head: T, tail: List)
-  operation length(l: List) -> Nat
-  rule length(nil) = zero
-  rule length(cons(?x, ?xs)) = succ(length(?xs))
+  operation length(l: List) -> Int
+  rule length(nil) = 0
+  rule length(cons(?x, ?xs)) = add(1, length(?xs))
 end
 ```
 
@@ -577,7 +644,7 @@ pub enum List<T> {
 }
 
 impl<T> List<T> {
-    pub fn length(&self) -> u64 {
+    pub fn length(&self) -> i64 {
         todo!()
     }
 }
@@ -586,13 +653,13 @@ impl<T> List<T> {
 mod tests {
     use super::*;
 
-    // Law: length(nil) = zero
+    // Law: length(nil) = 0
     #[test]
     fn prop_length_nil() {
         todo!("property: List::Nil.length() == 0")
     }
 
-    // Law: length(cons(x, xs)) = succ(length(xs))
+    // Law: length(cons(x, xs)) = 1 + length(xs)
     #[test]
     fn prop_length_cons() {
         todo!("property: Cons { head, tail }.length() == 1 + tail.length()")

@@ -1,58 +1,56 @@
--- Persistence: abstract storage backend and core operations
+-- Persistence: abstract storage algebra
+--
+-- Three-sort hierarchy:
+--   Store              — base: persist, retract, flush (all backends)
+--   QueryableStore     — adds retrieve (pattern-based query; e.g. SQL)
+--   BulkStore          — adds pull (load all into memory; e.g. filesystem)
 namespace anthill.persistence
-  export Store, StoreCaps, route, retrieve, persist, retract, pull, flush
+  import anthill.reflect.{Term, FactId}
+  import anthill.prelude.Meta.{Meta}
+  export Store, QueryableStore, BulkStore
+  export route, persist, retract, flush, retrieve, pull
 
   -- ================================================================
-  -- Store: abstract storage backend
+  -- Store: base storage backend
   -- ================================================================
 
-  sort Store                                  -- abstract: filesystem, postgres, sqlite, ...
-
-  -- What the store can do natively
-  sort StoreCaps {
-    entity queryable                          -- supports pattern-based retrieval;
-                                              --   backward chaining delegates to store
-    entity bulk                               -- must load all facts into memory;
-                                              --   backward chaining works in-KB
-  }
-
-  operation caps(store: Store) -> StoreCaps
-
-  -- ================================================================
-  -- Routing: 1-to-1 mapping from fact sort to store
-  -- ================================================================
+  sort Store                                  -- abstract: filesystem, sql, ...
 
   -- Given a fact, which store owns it?
   operation route(fact: Term) -> Store
-
-  -- ================================================================
-  -- Core operations on any store
-  -- ================================================================
 
   -- Persist a fact to its backing store
   operation persist(store: Store, fact: Term, meta: Meta) -> FactId
     effects (Modifies(store))
 
-  -- Retrieve facts matching a pattern
-  -- For queryable stores: translates pattern to native query
-  -- For bulk stores: no-op (facts already in KB from pull)
-  operation retrieve(store: Store, pattern: Term) -> List{T = Term}
-    effects (Reads(store))
-
   -- Remove a fact from its backing store
   operation retract(store: Store, id: FactId) -> Bool
     effects (Modifies(store))
 
-  -- ================================================================
-  -- Bulk loading and flushing
-  -- ================================================================
-
-  -- Pull all facts from a bulk store into the KB
-  operation pull(store: Store) -> List{T = Term}
-    effects (Reads(store))
-
   -- Flush KB delta (new/changed/retracted facts) back to store
   operation flush(store: Store, delta: List{T = Term}) -> Bool
     effects (Modifies(store))
+
+  -- ================================================================
+  -- QueryableStore: pattern-based retrieval
+  -- ================================================================
+
+  sort QueryableStore
+    fact Store                                -- QueryableStore is-a Store
+
+  -- Retrieve facts matching a pattern (delegates to backend query)
+  operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
+    effects (Reads(store))
+
+  -- ================================================================
+  -- BulkStore: load-all-into-memory
+  -- ================================================================
+
+  sort BulkStore
+    fact Store                                -- BulkStore is-a Store
+
+  -- Pull all facts from store into the KB
+  operation pull(store: BulkStore) -> List{T = Term}
+    effects (Reads(store))
 
 end
