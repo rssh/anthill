@@ -9,3 +9,6 @@ smallvec = { version = "1", features = ["const_generics"] }
 ordered-float = "4"
 tree-sitter = "0.25"
 tree-sitter-anthill = { path = "../../tree-sitter-anthill" }
+
+[dev-dependencies]
+tempfile = "=3.14.0"

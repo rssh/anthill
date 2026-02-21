@@ -25,6 +25,10 @@ impl FactId {
     pub fn index(self) -> usize {
         self.0 as usize
     }
+
+    pub fn from_index(index: usize) -> Self {
+        FactId(index as u32)
+    }
 }
 
 // ── Fact entry ──────────────────────────────────────────────────
