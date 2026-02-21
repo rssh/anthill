@@ -20,6 +20,12 @@ anthill check                              -- load project, run constraints, rep
 anthill query "by_sort Operation"          -- load project, query, print results
 anthill query "by_functor deposit"         -- queries reach both in-memory and queryable stores
 anthill flush                              -- write pending KB changes back to stores
+anthill codegen rust                       -- generate Rust skeletons for unimplemented namespaces
+anthill codegen rust banking               -- generate for a specific namespace
+anthill codegen rust --output src/generated/  -- specify output directory
+anthill codegen rust --dry-run             -- preview without writing files
+anthill codegen rust --include-implemented -- regenerate even if Implementation fact exists
+anthill codegen rust --exclude graphics    -- skip a namespace
 ```
 
 ### 1.2 Explicit File Mode
@@ -43,6 +49,11 @@ Examples:
 anthill check
 anthill query "by_sort WorkItem"
 anthill query "AuditEntry(account: \"alice\", ?action, ?amount, ?at)"
+
+-- Code generation:
+anthill codegen rust
+anthill codegen rust banking --output src/generated/
+anthill codegen rust --dry-run
 
 -- Explicit file mode:
 anthill load banking.anthill prelude.anthill
@@ -270,6 +281,7 @@ The CLI is a thin layer over `anthill-core` and the persistence layer:
 | `pending` | list uncommitted changes awaiting flush |
 | `flush` | `persistence::flush()` — write delta to backing stores |
 | `pull` | `persistence::pull()` — reload from bulk stores |
+| `codegen rust` | `codegen::rust::generate()` — forward-map namespaces to Rust skeletons ([docs](rust-forward-mapping.md)) |
 
 ### 3.2 Bootstrap and Startup
 

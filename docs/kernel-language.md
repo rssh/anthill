@@ -10,7 +10,7 @@ This specification is **self-contained**: it can be implemented without referenc
 
 2. **Rule is THE knowledge primitive.** All knowledge in the KB is expressed as rules (Horn clauses). `fact` and `constraint` are syntactic sugar that desugar to rules. This unifies ground assertions, derived knowledge, and integrity constraints under one mechanism.
 
-3. **Algebraic specification.** The kernel is in the tradition of algebraic specification languages (OBJ, CafeOBJ, Maude): a namespace declares sorts (abstract or defined types), operations (typed behavioral specs with contracts), and rules (laws). An algebra is not a separate construct — it IS a namespace.
+3. **Algebraic specification.** The kernel is in the tradition of algebraic specification languages (OBJ, CafeOBJ, Maude): a namespace declares sorts (abstract or defined types), operations (typed behavioral specs with contracts), and rules (laws).
 
 4. **Partial formalization.** Any term can be `Unspecified` — described in natural language, to be refined later. This allows a spectrum from fully informal to fully formal within the same language.
 
@@ -334,7 +334,7 @@ Default visibility is `internal`. The namespace-level `export` clause lists expo
 **Namespace content** — what can appear inside a namespace:
 
 ```
-NamespaceContent ::= Sort | Rule | Operation
+NamespaceContent ::= Sort | Rule | Operation         -- Sort: only sorts-with-body (not abstract)
                    | RequiresDecl           -- sort-level constraint (see §5.2)
                    | Entity                 -- sugar (desugars to single-constructor Sort, see §6.3)
                    | Fact | Constraint      -- sugar (desugars to Rule, see §6.1, §6.2)
@@ -357,18 +357,19 @@ FieldList   ::= Field (',' Field)*
 Field       ::= Name ':' Type
 ```
 
-**Abstract sort** — declares that a type exists without specifying its representation. Used for type parameters in parametric namespaces, and for types whose carrier is provided later by an implementation.
+**Abstract sort** — declares that a type exists without specifying its representation. Abstract sorts appear only inside sort bodies, where they serve as **type parameters** — their carrier is provided later by an implementation or by inline instantiation.
 
 ```
-sort Scalar                          -- abstract: no inhabitants defined
-sort T                               -- abstract: type parameter
+sort T                               -- abstract: type parameter (inside a sort body)
 ```
 
-Abstract properties are expressed as accessor operations:
+Abstract properties are expressed as accessor operations within the enclosing sort body:
 
 ```
-sort Vector
-operation dim(v: Vector) -> Nat        -- accessor
+sort linear_algebra {
+  sort Vector                        -- abstract: type parameter
+  operation dim(v: Vector) -> Nat    -- accessor
+}
 ```
 
 **Sort with body** — a sort can have a body containing entities (constructors), sub-sorts (parameters), `requires` declarations (sort-level constraints), operations, rules, and other items. When a sort body contains entity declarations, they are constructors of that sort, making it a closed ADT:
@@ -408,9 +409,9 @@ sort Ordered {
   operation gt(a: T, b: T) -> Bool
 }
 
-namespace banking {
+sort banking {
   sort Money
-  requires Numeric{T = Money}         -- this namespace depends on Numeric over Money
+  requires Numeric{T = Money}         -- this sort (algebra) depends on Numeric over Money
 }
 ```
 
@@ -842,7 +843,8 @@ Ordering: `proved` > `verified` > `tested(N)` > `empirical` > `proposed` > `stal
 |---|---|---|
 | `trust` | `Trust` | Determines verification status; affects what can participate in proofs |
 | `agent` | `String` | Recorded as provenance |
-| `timestamp` | `String` | Recorded as provenance |
+| `timestamp` | `String` | Recorded as provenance (when fact was asserted/loaded) |
+| `last-modified` | `String` | When the fact's content last changed (distinct from `timestamp` — does not update on re-load if content is unchanged). Used by codegen to detect stale implementations (see [rust-forward-mapping.md §3.5](rust-forward-mapping.md#35-staleness-detection-via-timestamps)). |
 | `iteration` | `Int` | Tracks project evolution |
 | `source` | `String` | File/line reference |
 | `supersedes` | `Name` | Links to previous version of this fact |
@@ -865,7 +867,7 @@ When an obligation is discharged, the result is recorded as a `ProofResult` term
 
 The kernel enforces a **structural type system**:
 
-- **Abstract sorts** (`sort S`) introduce types without representation. Can appear in operation signatures and fields, but has no constructors until a carrier binding is provided.
+- **Abstract sorts** (`sort T` inside a sort body) introduce type parameters without representation. Can appear in operation signatures and fields within the enclosing sort, but have no constructors until a carrier binding is provided.
 - **Sorts with constructors** (`sort S { entity C₁(...), entity C₂(...) }`) introduce closed algebraic data types. All constructors are enumerated; pattern matching in rules is exhaustive.
 - **Operations** have typed signatures: `operation op(x: A, y: B) -> C`. Parameters are named bindings; the kernel type-checks that actual arguments match declared types.
 - **Terms** are typed: `Const` carries its type, `Var` declares its type, `Fn` has the type of its sort's constructor, `Ref` refers to a named type.
@@ -942,24 +944,26 @@ Visibility is enforced at query time and assertion time.
 
 ### 8.7 Algebras
 
-An algebra is not a separate syntactic construct — it is the **typing structure that emerges** from declarations within a namespace:
+An algebra is not a separate syntactic construct — it is the **typing structure that emerges** from declarations within a sort body:
 
-- **Abstract sorts** define the type parameters of the algebra.
-- **Sorts with constructors** define concrete types with constructors (ADTs).
+- **Abstract sub-sorts** (`sort T` inside a sort body) define the type parameters of the algebra.
+- **Entity constructors** define concrete inhabitants (ADT variants).
 - **Operations** define typed behaviors with contracts.
 - **Rules** (including constraint sugar) express laws.
 
-The algebra IS the namespace. When an `Implementation` fact provides carrier bindings (`carrier: { Scalar = float, Vector = CudaDeviceBuffer[float] }`), it instantiates the algebra for a specific host language.
+A sort-with-body that contains abstract sub-sorts, operations, and laws IS an algebra. When an `Implementation` fact provides carrier bindings (`carrier: { Scalar = float, Vector = CudaDeviceBuffer[float] }`), it instantiates the algebra for a specific host language.
 
-**Parametric structure:** Abstract sorts in a namespace serve as type parameters. A namespace with abstract sort `T` is a parametric module — instantiated via inline type expressions `List{T = Int}`. For example, `anthill.prelude.List` has abstract sort `T`; using `List{T = Int}` inline produces a list-of-integers.
+**Parametric structure:** Abstract sorts inside a sort body serve as type parameters. A sort with abstract sub-sort `T` is a parametric module — instantiated via inline type expressions `List{T = Int}`. For example, `anthill.prelude.List` has abstract sub-sort `T`; using `List{T = Int}` inline produces a list-of-integers.
 
-This also supports type class-like patterns: a namespace declaring `sort A` and `operation combine(x: A, y: A) -> A` with laws is a specification that any type with a `combine` operation must satisfy. Using `MyType` in place of `A` via inline binding instantiates the specification for a concrete type.
+This also supports type class-like patterns: a sort declaring `sort A` and `operation combine(x: A, y: A) -> A` with laws is a specification that any type with a `combine` operation must satisfy. Using `MyType` in place of `A` via inline binding instantiates the specification for a concrete type.
+
+**Namespaces** group sorts, operations, and rules for encapsulation and visibility control, but do not introduce type parameters. A namespace may contain sorts (both parametric and concrete), but abstract sorts (no body) appear only inside sort bodies as type parameters — never directly in a namespace.
 
 ## 9. Connections to Existing Systems
 
 The kernel language connects to three traditions:
 
-**ML-style modules.** Namespace ≈ signature (declares abstract types and operations), Implementation with carrier bindings ≈ structure (provides concrete types), inline `Name{bindings}` ≈ functor application. But anthill namespaces are richer — they contain rules (logic) and contracts (requires/ensures), making them algebraic specifications rather than pure type signatures.
+**ML-style modules.** A sort-with-body (containing abstract sub-sorts and operations) ≈ signature (declares abstract types and operations), Implementation with carrier bindings ≈ structure (provides concrete types), inline `Name{bindings}` ≈ functor application. But anthill sorts are richer — they contain rules (logic) and contracts (requires/ensures), making them algebraic specifications rather than pure type signatures. Namespaces provide encapsulation and visibility control (like ML structures), but type parameters live in sort bodies, not namespaces.
 
 **Maude / OBJ / CafeOBJ.** The closest match:
 
@@ -973,7 +977,7 @@ The kernel language connects to three traditions:
 | `constraint` (denial) | membership axiom / conditional axiom |
 | `Implementation.carrier` | view (maps theory sorts to module sorts) |
 | `List{T = X}` (inline instantiation) | view instantiation (binds sort parameter) |
-| namespace with abstract sort | parameterized module (`fmod X{Y :: TRIV}`) |
+| sort with abstract sub-sort | parameterized module (`fmod X{Y :: TRIV}`) |
 
 The anthill adds: `Unspecified` (partial formalization), metadata (trust, provenance, agent), host-language embeddings (bidirectional mapping to Scala/Python/etc.), and the stigmergic agent layer.
 
@@ -981,18 +985,18 @@ The anthill adds: `Unspecified` (partial formalization), metadata (trust, proven
 
 ## 10. Examples
 
-### 10.1 Banking Namespace
+### 10.1 Banking Algebra
 
-A complete algebra with sorts (abstract and defined), operations, contracts, and laws:
+A complete algebra with type parameters, operations, contracts, and laws. Because the algebra is parametric over `Money` (an abstract sort whose carrier is provided by an implementation), it uses `sort` — not `namespace` — as the enclosing construct:
 
 ```
-namespace banking
+sort banking
   export Account, Money, deposit, withdraw, balance
 
-  sort Money
-  requires Numeric{T = Money}          -- gives us +, -, >, >=, = for Money
+  sort Money                                         -- type parameter (abstract)
+  requires Numeric{T = Money}                        -- gives us +, -, >, >=, = for Money
 
-  entity Account(                       -- sugar: sort Account { entity Account(...) }
+  entity Account(                                    -- sugar: sort Account { entity Account(...) }
     id      : AccountId,
     balance : Money
   )
@@ -1018,10 +1022,10 @@ namespace banking
 end
 ```
 
-With infix sugar (once defined), the same namespace reads more naturally:
+With infix sugar (once defined), the same algebra reads more naturally:
 
 ```
-namespace banking
+sort banking
   export Account, Money, deposit, withdraw, balance
 
   sort Money
@@ -1050,14 +1054,14 @@ end
 
 ### 10.2 Linear Algebra with Parametric Sorts
 
-Abstract algebra with sort variables, instantiated by different implementations:
+Abstract algebra with sort variables, instantiated by different implementations. Parametric over `Scalar` and `Vector`, so it uses `sort` as the enclosing construct:
 
 ```
-namespace linear_algebra
+sort linear_algebra
   export Scalar, Vector, add, scale, dot, dim
 
-  sort Scalar
-  sort Vector
+  sort Scalar                                        -- type parameter (abstract)
+  sort Vector                                        -- type parameter (abstract)
 
   operation {
     dim(v: Vector) -> Nat
@@ -1102,9 +1106,13 @@ namespace finance
   export risk, audit
 
   namespace risk {
-    sort RiskLevel
+    sort RiskLevel {                              -- defined sort (not abstract)
+      entity Low
+      entity Medium
+      entity High
+    }
     operation assess(a: Account) -> RiskLevel
-    constraint bounded: assess(?a) <= maxRisk
+    constraint bounded: lte(assess(?a), maxRisk)
   }
 
   namespace audit {
@@ -1173,13 +1181,16 @@ NamespaceContent ::= Sort | Rule | Operation
 
 Visibility  ::= 'internal' | 'export' | 'public'
 
-Sort        ::= [Visibility] 'sort' Name                           -- abstract
+Sort        ::= [Visibility] 'sort' Name                           -- abstract (only in SortContent)
                   ['meta' ':' Meta]
               | [Visibility] 'sort' Name                           -- sort with body
                   Import*
                   ['export' NameList]
                 Body[SortContent*]
                   ['meta' ':' Meta]
+
+-- Note: abstract sorts (first form, no body) may only appear inside a sort body
+-- as type parameters. Namespaces contain only sorts-with-body (second form).
 
 SortContent ::= Sort | Entity | Operation | Rule
               | RequiresDecl
