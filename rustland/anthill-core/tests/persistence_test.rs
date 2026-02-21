@@ -4,8 +4,8 @@
 
 use std::path::PathBuf;
 
-use anthill_core::kb::term::{FnArg, Literal, Term};
-use anthill_core::kb::{KnowledgeBase, FactId};
+use anthill_core::kb::term::{Literal, Term};
+use anthill_core::kb::{KnowledgeBase, RuleId};
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::persistence::print::{self, TermPrinter};
 use anthill_core::persistence::file_store::{FileConvention, FileStore};
@@ -26,7 +26,8 @@ fn printer_round_trip_simple_fact() {
     let int_term = kb.make_name_term("Int");
     let eq_term = kb.alloc(Term::Fn {
         functor: eq_sym,
-        args: SmallVec::from_slice(&[FnArg::Named(t_sym, int_term)]),
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(t_sym, int_term)]),
     });
 
     let text = print::print_fact(&kb, eq_term, None);
@@ -44,7 +45,8 @@ fn printer_round_trip_string_literal() {
     let s = kb.alloc(Term::Const(Literal::String("hello \"world\"".into())));
     let t = kb.alloc(Term::Fn {
         functor: f,
-        args: SmallVec::from_slice(&[FnArg::Positional(s)]),
+        pos_args: SmallVec::from_slice(&[s]),
+        named_args: SmallVec::new(),
     });
 
     let text = print::print_fact(&kb, t, None);
@@ -61,10 +63,8 @@ fn printer_round_trip_numeric_literals() {
     let float_val = kb.alloc(Term::Const(Literal::Float(OrderedFloat(3.14))));
     let t = kb.alloc(Term::Fn {
         functor: f,
-        args: SmallVec::from_slice(&[
-            FnArg::Positional(int_val),
-            FnArg::Positional(float_val),
-        ]),
+        pos_args: SmallVec::from_slice(&[int_val, float_val]),
+        named_args: SmallVec::new(),
     });
 
     let text = print::print_fact(&kb, t, None);
@@ -80,11 +80,13 @@ fn printer_nested_fn() {
     let val = kb.alloc(Term::Const(Literal::Int(1)));
     let inner = kb.alloc(Term::Fn {
         functor: inner_sym,
-        args: SmallVec::from_slice(&[FnArg::Positional(val)]),
+        pos_args: SmallVec::from_slice(&[val]),
+        named_args: SmallVec::new(),
     });
     let outer = kb.alloc(Term::Fn {
         functor: outer_sym,
-        args: SmallVec::from_slice(&[FnArg::Positional(inner)]),
+        pos_args: SmallVec::from_slice(&[inner]),
+        named_args: SmallVec::new(),
     });
 
     let printer = TermPrinter::new(&kb);
@@ -168,7 +170,8 @@ fn persist_and_flush_flat() {
     let val = kb.alloc(Term::Const(Literal::Int(42)));
     let bar = kb.alloc(Term::Fn {
         functor: bar_sym,
-        args: SmallVec::from_slice(&[FnArg::Named(x_sym, val)]),
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(x_sym, val)]),
     });
     store.persist(&kb, bar, sort, domain, None).unwrap();
 
@@ -241,7 +244,8 @@ fn full_round_trip() {
     let int_term = kb1.make_name_term("Int");
     let eq_fact = kb1.alloc(Term::Fn {
         functor: eq_sym,
-        args: SmallVec::from_slice(&[FnArg::Named(t_sym, int_term)]),
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(t_sym, int_term)]),
     });
     let fid1 = kb1.assert_fact(eq_fact, fact_sort, domain, None);
 
@@ -251,7 +255,8 @@ fn full_round_trip() {
     let bob = kb1.alloc(Term::Const(Literal::String("bob".into())));
     let parent_fact = kb1.alloc(Term::Fn {
         functor: parent_sym,
-        args: SmallVec::from_slice(&[FnArg::Positional(alice), FnArg::Positional(bob)]),
+        pos_args: SmallVec::from_slice(&[alice, bob]),
+        named_args: SmallVec::new(),
     });
     let fid2 = kb1.assert_fact(parent_fact, fact_sort, domain, None);
 
@@ -311,7 +316,7 @@ fn retract_is_recorded() {
     let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
 
     // Retract returns Ok(true) in stage 0
-    let result = store.retract(FactId::from_index(0));
+    let result = store.retract(RuleId::from_index(0));
     assert!(result.is_ok());
     assert!(result.unwrap());
 }

@@ -8,6 +8,7 @@
 pub mod term;
 pub mod subst;
 pub mod load;
+pub(crate) mod persist_subst;
 pub(crate) mod discrim;
 
 use std::collections::HashMap;
@@ -18,25 +19,29 @@ use crate::intern::{Interner, Symbol};
 use term::{Term, TermId, TermStore, VarId};
 use discrim::SubstTree;
 
-// ── Fact handle ─────────────────────────────────────────────────
+// ── Rule handle ─────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct FactId(u32);
+pub struct RuleId(u32);
 
-impl FactId {
+impl RuleId {
     pub fn index(self) -> usize {
         self.0 as usize
     }
 
     pub fn from_index(index: usize) -> Self {
-        FactId(index as u32)
+        RuleId(index as u32)
     }
 }
 
-// ── Fact entry ──────────────────────────────────────────────────
+/// Backwards-compatible alias.
+pub type FactId = RuleId;
 
-struct FactEntry {
-    term: TermId,
+// ── Rule entry ──────────────────────────────────────────────────
+
+struct RuleEntry {
+    head: TermId,
+    body: Vec<TermId>,
     sort: TermId,
     domain: TermId,
     meta: Option<TermId>,
@@ -59,13 +64,13 @@ pub struct KnowledgeBase {
     pub(crate) terms: TermStore,
     pub(crate) interner: Interner,
 
-    // Facts
-    facts: Vec<FactEntry>,
+    // Rules (facts are rules with empty body)
+    rules: Vec<RuleEntry>,
 
     // Indexes — all maintained atomically by assert/retract
-    by_sort: HashMap<TermId, Vec<FactId>>,
-    by_functor: HashMap<Symbol, Vec<FactId>>,
-    by_domain: HashMap<TermId, Vec<FactId>>,
+    by_sort: HashMap<TermId, Vec<RuleId>>,
+    by_functor: HashMap<Symbol, Vec<RuleId>>,
+    by_domain: HashMap<TermId, Vec<RuleId>>,
 
     // Sort indexes (subsort relations are facts; these are materialized indexes)
     subsort_children: HashMap<TermId, Vec<TermId>>,
@@ -73,7 +78,7 @@ pub struct KnowledgeBase {
     sort_info: HashMap<TermId, SortKind>,
 
     // Discrimination tree index for structural term matching
-    discrim: SubstTree<FactId>,
+    discrim: SubstTree<RuleId>,
 
     // Variable counter for fresh VarId allocation
     next_var: u32,
@@ -90,7 +95,7 @@ impl KnowledgeBase {
         Self {
             terms: TermStore::new(),
             interner: Interner::new(),
-            facts: Vec::new(),
+            rules: Vec::new(),
             by_sort: HashMap::new(),
             by_functor: HashMap::new(),
             by_domain: HashMap::new(),
@@ -133,28 +138,35 @@ impl KnowledgeBase {
         self.terms.get(id)
     }
 
-    // ── Fact assertion / retraction ─────────────────────────────
+    // ── Rule assertion / retraction ─────────────────────────────
 
-    /// Assert a fact into the KB. Updates all indexes.
-    pub fn assert_fact(
+    /// Assert a rule into the KB. The primary method: head + body + metadata.
+    /// Facts are rules with an empty body. Uses `insert_pattern` to handle
+    /// variables in the head.
+    pub fn assert_rule(
         &mut self,
-        term: TermId,
+        head: TermId,
+        body: Vec<TermId>,
         sort: TermId,
         domain: TermId,
         meta: Option<TermId>,
-    ) -> FactId {
-        let fact_id = FactId(self.facts.len() as u32);
+    ) -> RuleId {
+        let rule_id = RuleId(self.rules.len() as u32);
 
         // Incref on all referenced terms
-        self.terms.incref(term);
+        self.terms.incref(head);
         self.terms.incref(sort);
         self.terms.incref(domain);
         if let Some(m) = meta {
             self.terms.incref(m);
         }
+        for &b in &body {
+            self.terms.incref(b);
+        }
 
-        self.facts.push(FactEntry {
-            term,
+        self.rules.push(RuleEntry {
+            head,
+            body,
             sort,
             domain,
             meta,
@@ -162,57 +174,72 @@ impl KnowledgeBase {
         });
 
         // Update indexes
-        self.by_sort.entry(sort).or_default().push(fact_id);
+        self.by_sort.entry(sort).or_default().push(rule_id);
 
         // Index by domain
-        self.by_domain.entry(domain).or_default().push(fact_id);
+        self.by_domain.entry(domain).or_default().push(rule_id);
 
         // Index by top-level functor
-        if let Term::Fn { functor, .. } = *self.terms.get(term) {
-            self.by_functor.entry(functor).or_default().push(fact_id);
+        if let Term::Fn { functor, .. } = *self.terms.get(head) {
+            self.by_functor.entry(functor).or_default().push(rule_id);
         }
 
-        // Discrimination tree index
-        self.discrim.insert_ground(&self.terms, term, fact_id);
+        // Discrimination tree index (insert_pattern handles vars in head)
+        self.discrim.insert_pattern(&self.terms, head, rule_id);
 
-        fact_id
+        rule_id
     }
 
-    /// Mark a fact as retracted. Removes from active indexes, decrements refcounts.
-    pub fn retract(&mut self, fact_id: FactId) {
-        let entry = &mut self.facts[fact_id.index()];
+    /// Assert a ground fact (rule with empty body). Convenience wrapper.
+    pub fn assert_fact(
+        &mut self,
+        term: TermId,
+        sort: TermId,
+        domain: TermId,
+        meta: Option<TermId>,
+    ) -> RuleId {
+        self.assert_rule(term, vec![], sort, domain, meta)
+    }
+
+    /// Mark a rule/fact as retracted. Removes from active indexes, decrements refcounts.
+    pub fn retract(&mut self, id: RuleId) {
+        let entry = &mut self.rules[id.index()];
         if entry.retracted {
             return;
         }
         entry.retracted = true;
 
-        let term = entry.term;
+        let head = entry.head;
         let sort = entry.sort;
         let domain = entry.domain;
         let meta = entry.meta;
+        let body: Vec<TermId> = entry.body.clone();
 
         // Remove from indexes
         if let Some(v) = self.by_sort.get_mut(&sort) {
-            v.retain(|&id| id != fact_id);
+            v.retain(|&rid| rid != id);
         }
         if let Some(v) = self.by_domain.get_mut(&domain) {
-            v.retain(|&id| id != fact_id);
+            v.retain(|&rid| rid != id);
         }
-        if let Term::Fn { functor, .. } = *self.terms.get(term) {
+        if let Term::Fn { functor, .. } = *self.terms.get(head) {
             if let Some(v) = self.by_functor.get_mut(&functor) {
-                v.retain(|&id| id != fact_id);
+                v.retain(|&rid| rid != id);
             }
         }
 
         // Remove from discrimination tree (before releasing terms)
-        self.discrim.remove_ground(&self.terms, term, &fact_id);
+        self.discrim.remove_ground(&self.terms, head, &id);
 
         // Release refcounts
-        self.terms.release(term);
+        self.terms.release(head);
         self.terms.release(sort);
         self.terms.release(domain);
         if let Some(m) = meta {
             self.terms.release(m);
+        }
+        for b in body {
+            self.terms.release(b);
         }
     }
 
@@ -261,29 +288,29 @@ impl KnowledgeBase {
 
     // ── Query ───────────────────────────────────────────────────
 
-    /// All active facts of a given sort (including subsorts).
-    pub fn by_sort(&self, sort: TermId) -> Vec<FactId> {
+    /// All active rules/facts of a given sort (including subsorts).
+    pub fn by_sort(&self, sort: TermId) -> Vec<RuleId> {
         let mut result = Vec::new();
 
-        // Direct facts of this sort
-        if let Some(facts) = self.by_sort.get(&sort) {
-            for &fid in facts {
-                if !self.facts[fid.index()].retracted {
-                    result.push(fid);
+        // Direct entries of this sort
+        if let Some(ids) = self.by_sort.get(&sort) {
+            for &rid in ids {
+                if !self.rules[rid.index()].retracted {
+                    result.push(rid);
                 }
             }
         }
 
-        // Facts of subsorts
+        // Entries of subsorts
         let mut stack: Vec<TermId> = Vec::new();
         if let Some(children) = self.subsort_children.get(&sort) {
             stack.extend(children.iter().copied());
         }
         while let Some(child) = stack.pop() {
-            if let Some(facts) = self.by_sort.get(&child) {
-                for &fid in facts {
-                    if !self.facts[fid.index()].retracted {
-                        result.push(fid);
+            if let Some(ids) = self.by_sort.get(&child) {
+                for &rid in ids {
+                    if !self.rules[rid.index()].retracted {
+                        result.push(rid);
                     }
                 }
             }
@@ -295,51 +322,82 @@ impl KnowledgeBase {
         result
     }
 
-    /// All active facts with a given top-level functor symbol.
-    pub fn by_functor(&self, sym: Symbol) -> Vec<FactId> {
+    /// All active rules/facts with a given top-level functor symbol.
+    pub fn by_functor(&self, sym: Symbol) -> Vec<RuleId> {
         self.by_functor
             .get(&sym)
             .map(|v| {
                 v.iter()
                     .copied()
-                    .filter(|fid| !self.facts[fid.index()].retracted)
+                    .filter(|rid| !self.rules[rid.index()].retracted)
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    /// Get the term of a fact.
-    pub fn fact_term(&self, fact_id: FactId) -> TermId {
-        self.facts[fact_id.index()].term
-    }
-
-    /// Get the sort of a fact.
-    pub fn fact_sort(&self, fact_id: FactId) -> TermId {
-        self.facts[fact_id.index()].sort
-    }
-
-    /// Get the domain of a fact.
-    pub fn fact_domain(&self, fact_id: FactId) -> TermId {
-        self.facts[fact_id.index()].domain
-    }
-
-    /// Get the meta of a fact.
-    pub fn fact_meta(&self, fact_id: FactId) -> Option<TermId> {
-        self.facts[fact_id.index()].meta
-    }
-
-    /// All active facts belonging to a given domain.
-    pub fn by_domain(&self, domain: TermId) -> Vec<FactId> {
+    /// All active rules/facts belonging to a given domain.
+    pub fn by_domain(&self, domain: TermId) -> Vec<RuleId> {
         self.by_domain
             .get(&domain)
             .map(|v| {
                 v.iter()
                     .copied()
-                    .filter(|fid| !self.facts[fid.index()].retracted)
+                    .filter(|rid| !self.rules[rid.index()].retracted)
                     .collect()
             })
             .unwrap_or_default()
     }
+
+    // ── Rule accessors ───────────────────────────────────────────
+
+    /// Get the head term of a rule.
+    pub fn rule_head(&self, id: RuleId) -> TermId {
+        self.rules[id.index()].head
+    }
+
+    /// Get the body literals of a rule (empty for ground facts).
+    pub fn rule_body(&self, id: RuleId) -> &[TermId] {
+        &self.rules[id.index()].body
+    }
+
+    /// Get the sort of a rule.
+    pub fn rule_sort(&self, id: RuleId) -> TermId {
+        self.rules[id.index()].sort
+    }
+
+    /// Get the domain of a rule.
+    pub fn rule_domain(&self, id: RuleId) -> TermId {
+        self.rules[id.index()].domain
+    }
+
+    /// Get the meta of a rule.
+    pub fn rule_meta(&self, id: RuleId) -> Option<TermId> {
+        self.rules[id.index()].meta
+    }
+
+    // ── Fact accessors (aliases for rule accessors) ──────────────
+
+    /// Get the head term of a fact (alias for `rule_head`).
+    pub fn fact_term(&self, id: RuleId) -> TermId {
+        self.rule_head(id)
+    }
+
+    /// Get the sort of a fact (alias for `rule_sort`).
+    pub fn fact_sort(&self, id: RuleId) -> TermId {
+        self.rule_sort(id)
+    }
+
+    /// Get the domain of a fact (alias for `rule_domain`).
+    pub fn fact_domain(&self, id: RuleId) -> TermId {
+        self.rule_domain(id)
+    }
+
+    /// Get the meta of a fact (alias for `rule_meta`).
+    pub fn fact_meta(&self, id: RuleId) -> Option<TermId> {
+        self.rule_meta(id)
+    }
+
+    // ── Sort management queries ──────────────────────────────────
 
     /// Get sort kind info.
     pub fn sort_kind(&self, sort_term: TermId) -> Option<SortKind> {
@@ -354,9 +412,16 @@ impl KnowledgeBase {
             .unwrap_or(&[])
     }
 
-    /// Number of active (non-retracted) facts.
+    // ── Counting ─────────────────────────────────────────────────
+
+    /// Number of active (non-retracted) entries with empty body (ground facts).
     pub fn fact_count(&self) -> usize {
-        self.facts.iter().filter(|f| !f.retracted).count()
+        self.rules.iter().filter(|r| !r.retracted && r.body.is_empty()).count()
+    }
+
+    /// Number of active (non-retracted) entries with non-empty body (proper rules).
+    pub fn rule_count(&self) -> usize {
+        self.rules.iter().filter(|r| !r.retracted && !r.body.is_empty()).count()
     }
 
     // ── Pattern matching ─────────────────────────────────────────
@@ -404,23 +469,21 @@ impl KnowledgeBase {
                     _ => false,
                 }
             }
-            Term::Fn { functor: f_p, args: args_p } => {
+            Term::Fn { functor: f_p, pos_args: pos_p, named_args: named_p } => {
                 match self.terms.get(target) {
-                    Term::Fn { functor: f_t, args: args_t } => {
-                        if f_p != f_t || args_p.len() != args_t.len() {
+                    Term::Fn { functor: f_t, pos_args: pos_t, named_args: named_t } => {
+                        if f_p != f_t || pos_p.len() != pos_t.len() || named_p.len() != named_t.len() {
                             return false;
                         }
-                        for (ap, at) in args_p.iter().zip(args_t.iter()) {
-                            let (pid, tid) = match (ap, at) {
-                                (term::FnArg::Positional(p), term::FnArg::Positional(t)) => (*p, *t),
-                                (term::FnArg::Named(kp, p), term::FnArg::Named(kt, t)) => {
-                                    if kp != kt {
-                                        return false;
-                                    }
-                                    (*p, *t)
-                                }
-                                _ => return false, // positional vs named mismatch
-                            };
+                        for (&pid, &tid) in pos_p.iter().zip(pos_t.iter()) {
+                            if !self.match_term_rec(pid, tid, subst) {
+                                return false;
+                            }
+                        }
+                        for (&(kp, pid), &(kt, tid)) in named_p.iter().zip(named_t.iter()) {
+                            if kp != kt {
+                                return false;
+                            }
                             if !self.match_term_rec(pid, tid, subst) {
                                 return false;
                             }
@@ -450,28 +513,141 @@ impl KnowledgeBase {
         }
     }
 
-    /// Find all active facts whose term matches the given pattern.
+    /// Find all active rules/facts whose head matches the given pattern.
     ///
-    /// Uses the discrimination tree to narrow candidates via multi-level
-    /// structural dispatch, then verifies with `match_term` for deep
-    /// nested matching beyond one arg level.
-    pub fn query(&self, pattern: TermId) -> Vec<(FactId, subst::Substitution)> {
-        // Use discrimination tree for candidate narrowing
-        let candidates = self.discrim.query(&self.terms, pattern);
+    /// Uses the discrimination tree for multi-level structural dispatch.
+    /// Variable bindings are resolved via path extraction from head terms.
+    pub fn query(&self, pattern: TermId) -> Vec<(RuleId, subst::Substitution)> {
+        let rules = &self.rules;
+        let candidates = self.discrim.query_resolved(
+            &self.terms,
+            pattern,
+            |rid: &RuleId| rules[rid.index()].head,
+        );
 
         let mut results = Vec::new();
-        for (fid, _tree_subst) in candidates {
-            if self.facts[fid.index()].retracted {
+        for (rid, tree_subst) in candidates {
+            if self.rules[rid.index()].retracted {
                 continue;
             }
-            let fact_term = self.facts[fid.index()].term;
-            // Verify with full match_term (handles deep nesting beyond
-            // the tree's one-level arg indexing)
-            if let Some(s) = self.match_term(pattern, fact_term) {
-                results.push((fid, s));
-            }
+            debug_assert!(
+                self.match_term(pattern, self.rules[rid.index()].head).is_some(),
+                "discrim tree returned candidate that doesn't match pattern (rule_id={:?})",
+                rid,
+            );
+            results.push((rid, tree_subst));
         }
         results
+    }
+
+    /// Find all active rules (non-empty body) whose head matches the pattern.
+    pub fn query_rules(&self, pattern: TermId) -> Vec<(RuleId, subst::Substitution)> {
+        self.query(pattern)
+            .into_iter()
+            .filter(|(rid, _)| !self.rules[rid.index()].body.is_empty())
+            .collect()
+    }
+
+    // ── Variable-aware operations ─────────────────────────────
+
+    /// Collect all VarIds occurring in a term (DFS, deduped).
+    pub fn collect_vars(&self, term: TermId) -> Vec<VarId> {
+        let mut vars = Vec::new();
+        self.collect_vars_rec(term, &mut vars);
+        vars
+    }
+
+    fn collect_vars_rec(&self, term: TermId, vars: &mut Vec<VarId>) {
+        match self.terms.get(term) {
+            Term::Var(vid) => {
+                if !vars.contains(vid) {
+                    vars.push(*vid);
+                }
+            }
+            Term::Fn { pos_args, named_args, .. } => {
+                let pos_args = pos_args.clone();
+                let named_args = named_args.clone();
+                for &id in pos_args.iter() {
+                    self.collect_vars_rec(id, vars);
+                }
+                for &(_, id) in named_args.iter() {
+                    self.collect_vars_rec(id, vars);
+                }
+            }
+            Term::Unspecified { hints, .. } => {
+                let hints = hints.clone();
+                for &id in hints.iter() {
+                    self.collect_vars_rec(id, vars);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Apply a substitution to a term, replacing Var nodes with their bindings.
+    /// Returns a new hash-consed TermId.
+    pub fn apply_subst(&mut self, term: TermId, subst: &subst::Substitution) -> TermId {
+        match self.terms.get(term).clone() {
+            Term::Var(vid) => {
+                if let Some(bound) = subst.resolve(vid) {
+                    bound
+                } else {
+                    term
+                }
+            }
+            Term::Fn { functor, pos_args, named_args } => {
+                let new_pos: SmallVec<[TermId; 4]> = pos_args
+                    .iter()
+                    .map(|&id| self.apply_subst(id, subst))
+                    .collect();
+                let new_named: SmallVec<[(crate::intern::Symbol, TermId); 2]> = named_args
+                    .iter()
+                    .map(|&(sym, id)| (sym, self.apply_subst(id, subst)))
+                    .collect();
+                self.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named })
+            }
+            Term::Unspecified { text, hints } => {
+                let new_hints: SmallVec<[TermId; 2]> = hints
+                    .iter()
+                    .map(|&id| self.apply_subst(id, subst))
+                    .collect();
+                self.alloc(Term::Unspecified { text, hints: new_hints })
+            }
+            _ => term,
+        }
+    }
+
+    /// Create a fresh copy of a rule's head and body with all variables renamed
+    /// to fresh VarIds. Returns `(new_head, new_body)`.
+    pub fn standardize_apart(&mut self, id: RuleId) -> (TermId, Vec<TermId>) {
+        let head = self.rules[id.index()].head;
+        let body = self.rules[id.index()].body.clone();
+
+        // Collect all vars from head + body
+        let mut all_vars = self.collect_vars(head);
+        for &b in &body {
+            for v in self.collect_vars(b) {
+                if !all_vars.contains(&v) {
+                    all_vars.push(v);
+                }
+            }
+        }
+
+        // Build a renaming substitution
+        let mut rename = subst::Substitution::new();
+        for vid in all_vars {
+            let fresh = self.fresh_var(vid.name());
+            let fresh_term = self.alloc(Term::Var(fresh));
+            rename.bind(vid, fresh_term);
+        }
+
+        let new_head = self.apply_subst(head, &rename);
+        let new_body: Vec<TermId> = body
+            .iter()
+            .map(|&b| self.apply_subst(b, &rename))
+            .collect();
+
+        (new_head, new_body)
     }
 
     // ── Helpers ─────────────────────────────────────────────────
@@ -481,7 +657,8 @@ impl KnowledgeBase {
         let sym = self.interner.intern(name);
         self.terms.alloc(Term::Fn {
             functor: sym,
-            args: SmallVec::new(),
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
         })
     }
 
@@ -489,7 +666,8 @@ impl KnowledgeBase {
     pub fn make_name_term_from_sym(&mut self, sym: Symbol) -> TermId {
         self.terms.alloc(Term::Fn {
             functor: sym,
-            args: SmallVec::new(),
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
         })
     }
 
@@ -502,19 +680,16 @@ impl KnowledgeBase {
             return to;
         }
         match self.terms.get(term).clone() {
-            Term::Fn { functor, args } => {
-                let new_args: SmallVec<[term::FnArg; 4]> = args
+            Term::Fn { functor, pos_args, named_args } => {
+                let new_pos: SmallVec<[TermId; 4]> = pos_args
                     .iter()
-                    .map(|a| match a {
-                        term::FnArg::Positional(id) => {
-                            term::FnArg::Positional(self.subst_term(*id, from, to))
-                        }
-                        term::FnArg::Named(sym, id) => {
-                            term::FnArg::Named(*sym, self.subst_term(*id, from, to))
-                        }
-                    })
+                    .map(|&id| self.subst_term(id, from, to))
                     .collect();
-                self.alloc(Term::Fn { functor, args: new_args })
+                let new_named: SmallVec<[(crate::intern::Symbol, TermId); 2]> = named_args
+                    .iter()
+                    .map(|&(sym, id)| (sym, self.subst_term(id, from, to)))
+                    .collect();
+                self.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named })
             }
             Term::Unspecified { text, hints } => {
                 let new_hints: SmallVec<[TermId; 2]> = hints
@@ -546,7 +721,7 @@ impl Default for KnowledgeBase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use term::{FnArg, Literal};
+    use term::Literal;
     use smallvec::SmallVec;
 
     #[test]
@@ -560,7 +735,8 @@ mod tests {
             let arg = kb.alloc(Term::Const(Literal::String("A001".into())));
             kb.alloc(Term::Fn {
                 functor: id_sym,
-                args: SmallVec::from_elem(FnArg::Positional(arg), 1),
+                pos_args: SmallVec::from_elem(arg, 1),
+                named_args: SmallVec::new(),
             })
         };
 
@@ -646,19 +822,15 @@ mod tests {
         // Pattern: f(?x, ?x)
         let pattern = kb.alloc(Term::Fn {
             functor: f_sym,
-            args: SmallVec::from_slice(&[
-                FnArg::Positional(var_term),
-                FnArg::Positional(var_term),
-            ]),
+            pos_args: SmallVec::from_slice(&[var_term, var_term]),
+            named_args: SmallVec::new(),
         });
 
         // Target: f(1, 1) — should match
         let target_ok = kb.alloc(Term::Fn {
             functor: f_sym,
-            args: SmallVec::from_slice(&[
-                FnArg::Positional(val),
-                FnArg::Positional(val),
-            ]),
+            pos_args: SmallVec::from_slice(&[val, val]),
+            named_args: SmallVec::new(),
         });
         assert!(kb.match_term(pattern, target_ok).is_some());
 
@@ -666,10 +838,8 @@ mod tests {
         let val2 = kb.alloc(Term::Const(Literal::Int(2)));
         let target_bad = kb.alloc(Term::Fn {
             functor: f_sym,
-            args: SmallVec::from_slice(&[
-                FnArg::Positional(val),
-                FnArg::Positional(val2),
-            ]),
+            pos_args: SmallVec::from_slice(&[val, val2]),
+            named_args: SmallVec::new(),
         });
         assert!(kb.match_term(pattern, target_bad).is_none());
     }
@@ -683,11 +853,13 @@ mod tests {
 
         let term_f = kb.alloc(Term::Fn {
             functor: f,
-            args: SmallVec::from_elem(FnArg::Positional(val), 1),
+            pos_args: SmallVec::from_elem(val, 1),
+            named_args: SmallVec::new(),
         });
         let term_g = kb.alloc(Term::Fn {
             functor: g,
-            args: SmallVec::from_elem(FnArg::Positional(val), 1),
+            pos_args: SmallVec::from_elem(val, 1),
+            named_args: SmallVec::new(),
         });
 
         // Same functor + args → matches
@@ -702,22 +874,20 @@ mod tests {
         let t = kb.make_name_term("T");
         let int = kb.make_name_term("Int");
 
-        // Build Option(T) = Fn("Option", [Positional(Fn("T",[]))])
+        // Build Option(T) = Fn("Option", pos_args=[Fn("T",[])], named_args=[])
         let option_sym = kb.intern("Option");
         let option_t = kb.alloc(Term::Fn {
             functor: option_sym,
-            args: SmallVec::from_elem(FnArg::Positional(t), 1),
+            pos_args: SmallVec::from_elem(t, 1),
+            named_args: SmallVec::new(),
         });
 
         let result = kb.subst_term(option_t, t, int);
         match kb.get_term(result) {
-            Term::Fn { functor, args } => {
+            Term::Fn { functor, pos_args, .. } => {
                 assert_eq!(*functor, option_sym);
-                assert_eq!(args.len(), 1);
-                match args[0] {
-                    FnArg::Positional(id) => assert_eq!(id, int),
-                    _ => panic!("expected positional arg"),
-                }
+                assert_eq!(pos_args.len(), 1);
+                assert_eq!(pos_args[0], int);
             }
             other => panic!("expected Fn, got {:?}", other),
         }
@@ -745,18 +915,16 @@ mod tests {
         let pair_sym = kb.intern("pair");
         let pair_tt = kb.alloc(Term::Fn {
             functor: pair_sym,
-            args: SmallVec::from_slice(&[FnArg::Positional(t), FnArg::Positional(t)]),
+            pos_args: SmallVec::from_slice(&[t, t]),
+            named_args: SmallVec::new(),
         });
 
         let result = kb.subst_term(pair_tt, t, int);
         match kb.get_term(result) {
-            Term::Fn { args, .. } => {
+            Term::Fn { pos_args, .. } => {
                 // Both args should now be Int
-                for arg in args.iter() {
-                    match arg {
-                        FnArg::Positional(id) => assert_eq!(*id, int),
-                        _ => panic!("expected positional"),
-                    }
+                for &id in pos_args.iter() {
+                    assert_eq!(id, int);
                 }
             }
             other => panic!("expected Fn, got {:?}", other),
@@ -777,17 +945,13 @@ mod tests {
 
         let fact1 = kb.alloc(Term::Fn {
             functor: parent_sym,
-            args: SmallVec::from_slice(&[
-                FnArg::Positional(alice),
-                FnArg::Positional(bob),
-            ]),
+            pos_args: SmallVec::from_slice(&[alice, bob]),
+            named_args: SmallVec::new(),
         });
         let fact2 = kb.alloc(Term::Fn {
             functor: parent_sym,
-            args: SmallVec::from_slice(&[
-                FnArg::Positional(bob),
-                FnArg::Positional(charlie),
-            ]),
+            pos_args: SmallVec::from_slice(&[bob, charlie]),
+            named_args: SmallVec::new(),
         });
 
         kb.assert_fact(fact1, fact_sort, domain, None);
@@ -799,15 +963,224 @@ mod tests {
         let var_x = kb.alloc(Term::Var(vid));
         let pattern = kb.alloc(Term::Fn {
             functor: parent_sym,
-            args: SmallVec::from_slice(&[
-                FnArg::Positional(var_x),
-                FnArg::Positional(bob),
-            ]),
+            pos_args: SmallVec::from_slice(&[var_x, bob]),
+            named_args: SmallVec::new(),
         });
 
         let results = kb.query(pattern);
         assert_eq!(results.len(), 1);
         let (_, ref s) = results[0];
         assert_eq!(s.resolve(vid), Some(alice));
+    }
+
+    #[test]
+    fn assert_rule_with_body() {
+        let mut kb = KnowledgeBase::new();
+        let rule_sort = kb.make_name_term("Rule");
+        let domain = kb.make_name_term("test");
+        let parent_sym = kb.intern("parent");
+        let grandparent_sym = kb.intern("grandparent");
+
+        let x_sym = kb.intern("x");
+        let y_sym = kb.intern("y");
+        let z_sym = kb.intern("z");
+        let vx = kb.fresh_var(x_sym);
+        let vy = kb.fresh_var(y_sym);
+        let vz = kb.fresh_var(z_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+        let var_y = kb.alloc(Term::Var(vy));
+        let var_z = kb.alloc(Term::Var(vz));
+
+        // grandparent(?x, ?z) :- parent(?x, ?y), parent(?y, ?z)
+        let head = kb.alloc(Term::Fn {
+            functor: grandparent_sym,
+            pos_args: SmallVec::from_slice(&[var_x, var_z]),
+            named_args: SmallVec::new(),
+        });
+        let b1 = kb.alloc(Term::Fn {
+            functor: parent_sym,
+            pos_args: SmallVec::from_slice(&[var_x, var_y]),
+            named_args: SmallVec::new(),
+        });
+        let b2 = kb.alloc(Term::Fn {
+            functor: parent_sym,
+            pos_args: SmallVec::from_slice(&[var_y, var_z]),
+            named_args: SmallVec::new(),
+        });
+
+        let rid = kb.assert_rule(head, vec![b1, b2], rule_sort, domain, None);
+
+        // rule_body should return the body
+        assert_eq!(kb.rule_body(rid).len(), 2);
+        assert_eq!(kb.rule_head(rid), head);
+
+        // fact_count should be 0, rule_count should be 1
+        assert_eq!(kb.fact_count(), 0);
+        assert_eq!(kb.rule_count(), 1);
+    }
+
+    #[test]
+    fn query_rules_filters_facts() {
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Test");
+        let domain = kb.make_name_term("test");
+        let f_sym = kb.intern("f");
+
+        // Assert a ground fact f(1)
+        let v1 = kb.alloc(Term::Const(Literal::Int(1)));
+        let fact_term = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(v1, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(fact_term, sort, domain, None);
+
+        // Assert a rule f(?x) :- g(?x)
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+        let rule_head = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let g_sym = kb.intern("g");
+        let body_lit = kb.alloc(Term::Fn {
+            functor: g_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule(rule_head, vec![body_lit], sort, domain, None);
+
+        // query() should find both
+        let q_sym = kb.intern("q");
+        let qv = kb.fresh_var(q_sym);
+        let var_q = kb.alloc(Term::Var(qv));
+        let pattern = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(var_q, 1),
+            named_args: SmallVec::new(),
+        });
+        assert_eq!(kb.query(pattern).len(), 2);
+
+        // query_rules() should find only the rule
+        assert_eq!(kb.query_rules(pattern).len(), 1);
+    }
+
+    #[test]
+    fn apply_subst_replaces_vars() {
+        let mut kb = KnowledgeBase::new();
+        let f_sym = kb.intern("f");
+        let x_sym = kb.intern("x");
+        let vid = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vid));
+        let val = kb.alloc(Term::Const(Literal::Int(42)));
+
+        let term = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let mut s = subst::Substitution::new();
+        s.bind(vid, val);
+        let result = kb.apply_subst(term, &s);
+
+        match kb.get_term(result) {
+            Term::Fn { pos_args, .. } => {
+                assert_eq!(pos_args[0], val);
+            }
+            other => panic!("expected Fn, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn standardize_apart_produces_fresh_vars() {
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Rule");
+        let domain = kb.make_name_term("test");
+        let f_sym = kb.intern("f");
+        let g_sym = kb.intern("g");
+
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+
+        let head = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let body_lit = kb.alloc(Term::Fn {
+            functor: g_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let rid = kb.assert_rule(head, vec![body_lit], sort, domain, None);
+        let (new_head, new_body) = kb.standardize_apart(rid);
+
+        // Head and body should have a different variable
+        assert_ne!(new_head, head);
+        let head_vars = kb.collect_vars(new_head);
+        assert_eq!(head_vars.len(), 1);
+        assert_ne!(head_vars[0], vx);
+
+        // Body should share the same fresh variable as head
+        assert_eq!(new_body.len(), 1);
+        let body_vars = kb.collect_vars(new_body[0]);
+        assert_eq!(body_vars.len(), 1);
+        assert_eq!(head_vars[0], body_vars[0]);
+    }
+
+    #[test]
+    fn collect_vars_finds_all() {
+        let mut kb = KnowledgeBase::new();
+        let f_sym = kb.intern("f");
+        let x_sym = kb.intern("x");
+        let y_sym = kb.intern("y");
+        let vx = kb.fresh_var(x_sym);
+        let vy = kb.fresh_var(y_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+        let var_y = kb.alloc(Term::Var(vy));
+
+        let term = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_slice(&[var_x, var_y, var_x]),
+            named_args: SmallVec::new(),
+        });
+
+        let vars = kb.collect_vars(term);
+        assert_eq!(vars.len(), 2);
+        assert!(vars.contains(&vx));
+        assert!(vars.contains(&vy));
+    }
+
+    #[test]
+    fn retract_releases_body_terms() {
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Rule");
+        let domain = kb.make_name_term("test");
+        let f_sym = kb.intern("f");
+        let g_sym = kb.intern("g");
+
+        let val = kb.alloc(Term::Const(Literal::Int(99)));
+        let head = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(val, 1),
+            named_args: SmallVec::new(),
+        });
+        let body_lit = kb.alloc(Term::Fn {
+            functor: g_sym,
+            pos_args: SmallVec::from_elem(val, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let rid = kb.assert_rule(head, vec![body_lit], sort, domain, None);
+        assert_eq!(kb.rule_count(), 1);
+
+        kb.retract(rid);
+        assert_eq!(kb.rule_count(), 0);
+        assert_eq!(kb.fact_count(), 0);
     }
 }

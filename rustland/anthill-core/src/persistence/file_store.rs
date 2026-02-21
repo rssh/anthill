@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::kb::{FactId, KnowledgeBase};
+use crate::kb::{RuleId, KnowledgeBase};
 use crate::kb::term::TermId;
 use crate::parse;
 
@@ -40,7 +40,7 @@ pub struct FileStore {
     root: PathBuf,
     convention: FileConvention,
     pending_writes: Vec<PendingWrite>,
-    pending_retracts: Vec<FactId>,
+    pending_retracts: Vec<RuleId>,
 }
 
 impl FileStore {
@@ -115,7 +115,7 @@ impl Store for FileStore {
         Ok(())
     }
 
-    fn retract(&mut self, id: FactId) -> Result<bool, PersistenceError> {
+    fn retract(&mut self, id: RuleId) -> Result<bool, PersistenceError> {
         // Stage 0: record the retraction but don't modify files.
         // File modification on retract is deferred to a future stage.
         self.pending_retracts.push(id);

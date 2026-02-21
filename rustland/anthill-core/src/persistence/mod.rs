@@ -8,7 +8,7 @@
 pub mod print;
 pub mod file_store;
 
-use crate::kb::{FactId, KnowledgeBase};
+use crate::kb::{RuleId, KnowledgeBase};
 use crate::kb::term::TermId;
 use crate::parse::error::ParseError;
 use crate::parse::ir::ParsedFile;
@@ -60,7 +60,7 @@ pub trait Store {
     ) -> Result<(), PersistenceError>;
 
     /// Mark a fact for retraction. Returns true if the fact was known.
-    fn retract(&mut self, id: FactId) -> Result<bool, PersistenceError>;
+    fn retract(&mut self, id: RuleId) -> Result<bool, PersistenceError>;
 
     /// Flush all buffered writes to storage.
     fn flush(&mut self, kb: &KnowledgeBase) -> Result<(), PersistenceError>;

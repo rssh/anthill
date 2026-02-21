@@ -14,7 +14,7 @@ use smallvec::SmallVec;
 use crate::intern::Symbol;
 use crate::parse::ir::*;
 use super::{KnowledgeBase, SortKind};
-use super::term::{Term, TermId, FnArg, VarId};
+use super::term::{Term, TermId, VarId};
 
 // ── Source resolution ──────────────────────────────────────────
 
@@ -201,18 +201,17 @@ impl<'a> Loader<'a> {
                 };
                 Term::Var(kb_vid)
             }
-            Term::Fn { functor, args } => {
+            Term::Fn { functor, pos_args, named_args } => {
                 let new_functor = self.reintern(functor);
-                let new_args: SmallVec<[FnArg; 4]> = args
+                let new_pos: SmallVec<[TermId; 4]> = pos_args
                     .iter()
-                    .map(|a| match a {
-                        FnArg::Positional(id) => FnArg::Positional(self.convert_term(*id)),
-                        FnArg::Named(sym, id) => {
-                            FnArg::Named(self.reintern(*sym), self.convert_term(*id))
-                        }
-                    })
+                    .map(|&id| self.convert_term(id))
                     .collect();
-                Term::Fn { functor: new_functor, args: new_args }
+                let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
+                    .iter()
+                    .map(|&(sym, id)| (self.reintern(sym), self.convert_term(id)))
+                    .collect();
+                Term::Fn { functor: new_functor, pos_args: new_pos, named_args: new_named }
             }
             Term::Ref(sym) => Term::Ref(self.reintern(sym)),
             Term::Unspecified { text, hints } => {
@@ -236,7 +235,8 @@ impl<'a> Loader<'a> {
         let functor = self.reintern_name(name);
         self.kb.alloc(Term::Fn {
             functor,
-            args: SmallVec::new(),
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
         })
     }
 
@@ -246,12 +246,11 @@ impl<'a> Loader<'a> {
             TypeExpr::Simple(name) => self.name_to_sort_term(name),
             TypeExpr::Parameterized { name, bindings } => {
                 let name_term = self.name_to_sort_term(name);
-                let mut args: SmallVec<[FnArg; 4]> = SmallVec::new();
-                args.push(FnArg::Positional(name_term));
+                let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
                 for b in bindings {
                     let param_sym = self.reintern(b.param.last());
                     let bound_term = self.type_expr_to_term(&b.bound);
-                    args.push(FnArg::Named(param_sym, bound_term));
+                    named_args.push((param_sym, bound_term));
                 }
 
                 // Note: validation that binding params are actual members is deferred
@@ -260,7 +259,8 @@ impl<'a> Loader<'a> {
                 let param_type_sym = self.kb.intern("ParameterizedType");
                 self.kb.alloc(Term::Fn {
                     functor: param_type_sym,
-                    args,
+                    pos_args: SmallVec::from_elem(name_term, 1),
+                    named_args,
                 })
             }
         }
@@ -326,10 +326,8 @@ impl<'a> Loader<'a> {
         let abstract_term = self.kb.alloc(Term::Ident(abstract_sym));
         let fact_term = self.kb.alloc(Term::Fn {
             functor: sort_info_sym,
-            args: SmallVec::from_slice(&[
-                FnArg::Positional(sort_term),
-                FnArg::Positional(abstract_term),
-            ]),
+            pos_args: SmallVec::from_slice(&[sort_term, abstract_term]),
+            named_args: SmallVec::new(),
         });
         self.kb.assert_fact(fact_term, sort_sort, domain, None);
     }
@@ -350,10 +348,8 @@ impl<'a> Loader<'a> {
         let kind_term = self.kb.alloc(Term::Ident(kind_sym));
         let fact_term = self.kb.alloc(Term::Fn {
             functor: sort_info_sym,
-            args: SmallVec::from_slice(&[
-                FnArg::Positional(sort_term),
-                FnArg::Positional(kind_term),
-            ]),
+            pos_args: SmallVec::from_slice(&[sort_term, kind_term]),
+            named_args: SmallVec::new(),
         });
         self.kb.assert_fact(fact_term, sort_sort, parent_domain, None);
 
@@ -368,10 +364,8 @@ impl<'a> Loader<'a> {
                 let subsort_sym = self.kb.intern("Subsort");
                 let subsort_fact = self.kb.alloc(Term::Fn {
                     functor: subsort_sym,
-                    args: SmallVec::from_slice(&[
-                        FnArg::Positional(ctor_term),
-                        FnArg::Positional(sort_term),
-                    ]),
+                    pos_args: SmallVec::from_slice(&[ctor_term, sort_term]),
+                    named_args: SmallVec::new(),
                 });
                 self.kb.assert_fact(subsort_fact, sort_sort, parent_domain, None);
             }
@@ -388,16 +382,16 @@ impl<'a> Loader<'a> {
         let entity_sort = self.kb.make_name_term("Entity");
         let functor = self.reintern_name(&e.name);
 
-        let args: SmallVec<[FnArg; 4]> = e.fields
+        let named_args: SmallVec<[(Symbol, TermId); 2]> = e.fields
             .iter()
             .map(|f| {
                 let field_sym = self.reintern(f.name);
                 let type_term = self.type_expr_to_term(&f.ty);
-                FnArg::Named(field_sym, type_term)
+                (field_sym, type_term)
             })
             .collect();
 
-        let entity_term = self.kb.alloc(Term::Fn { functor, args });
+        let entity_term = self.kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args });
         self.kb.assert_fact(entity_term, entity_sort, domain, None);
     }
 
@@ -411,19 +405,18 @@ impl<'a> Loader<'a> {
 
     fn load_rule(&mut self, r: &Rule, domain: TermId) {
         let rule_sort = self.kb.make_name_term("Rule");
-        let rule_sym = self.kb.intern("Rule");
 
         let head_term = match &r.head {
             RuleHead::Term(tid) => self.convert_term(*tid),
             RuleHead::Bottom => self.kb.alloc(Term::Bottom),
         };
 
-        let rule_term = self.kb.alloc(Term::Fn {
-            functor: rule_sym,
-            args: SmallVec::from_elem(FnArg::Positional(head_term), 1),
-        });
+        let body: Vec<TermId> = r.body.as_ref()
+            .map(|terms| terms.iter().map(|&tid| self.convert_term(tid)).collect())
+            .unwrap_or_default();
 
-        self.kb.assert_fact(rule_term, rule_sort, domain, None);
+        let meta = r.meta.as_ref().map(|mb| self.load_meta_block(mb));
+        self.kb.assert_rule(head_term, body, rule_sort, domain, meta);
     }
 
     fn load_operation(&mut self, o: &Operation, domain: TermId) {
@@ -432,19 +425,19 @@ impl<'a> Loader<'a> {
 
         let return_term = self.type_expr_to_term(&o.return_type);
 
-        let mut args: SmallVec<[FnArg; 4]> = o.params
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = o.params
             .iter()
             .map(|p| {
                 let param_sym = self.reintern(p.name);
                 let type_term = self.type_expr_to_term(&p.ty);
-                FnArg::Named(param_sym, type_term)
+                (param_sym, type_term)
             })
             .collect();
 
         let ret_sym = self.kb.intern("_returns");
-        args.push(FnArg::Named(ret_sym, return_term));
+        named_args.push((ret_sym, return_term));
 
-        let op_term = self.kb.alloc(Term::Fn { functor, args });
+        let op_term = self.kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args });
         self.kb.assert_fact(op_term, op_sort, domain, None);
     }
 
@@ -452,36 +445,39 @@ impl<'a> Loader<'a> {
         let constraint_sort = self.kb.make_name_term("Constraint");
         let constraint_sym = self.kb.intern("Constraint");
 
-        let head_terms: SmallVec<[FnArg; 4]> = c.head
+        let head_pos: SmallVec<[TermId; 4]> = c.head
             .iter()
-            .map(|&tid| FnArg::Positional(self.convert_term(tid)))
+            .map(|&tid| self.convert_term(tid))
             .collect();
 
-        let mut args: SmallVec<[FnArg; 4]> = SmallVec::new();
+        let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
 
         let head_sym = self.kb.intern("head");
         let head_term = self.kb.alloc(Term::Fn {
             functor: head_sym,
-            args: head_terms,
+            pos_args: head_pos,
+            named_args: SmallVec::new(),
         });
-        args.push(FnArg::Positional(head_term));
+        pos_args.push(head_term);
 
         if let Some(guard) = &c.guard {
-            let guard_terms: SmallVec<[FnArg; 4]> = guard
+            let guard_pos: SmallVec<[TermId; 4]> = guard
                 .iter()
-                .map(|&tid| FnArg::Positional(self.convert_term(tid)))
+                .map(|&tid| self.convert_term(tid))
                 .collect();
             let guard_sym = self.kb.intern("guard");
             let guard_term = self.kb.alloc(Term::Fn {
                 functor: guard_sym,
-                args: guard_terms,
+                pos_args: guard_pos,
+                named_args: SmallVec::new(),
             });
-            args.push(FnArg::Positional(guard_term));
+            pos_args.push(guard_term);
         }
 
         let constraint_term = self.kb.alloc(Term::Fn {
             functor: constraint_sym,
-            args,
+            pos_args,
+            named_args: SmallVec::new(),
         });
 
         self.kb.assert_fact(constraint_term, constraint_sort, domain, None);
@@ -493,7 +489,8 @@ impl<'a> Loader<'a> {
         let type_term = self.type_expr_to_term(&r.type_expr);
         let requires_term = self.kb.alloc(Term::Fn {
             functor: requires_sym,
-            args: SmallVec::from_elem(FnArg::Positional(type_term), 1),
+            pos_args: SmallVec::from_elem(type_term, 1),
+            named_args: SmallVec::new(),
         });
         self.kb.assert_fact(requires_term, requirement_sort, domain, None);
     }
@@ -504,7 +501,8 @@ impl<'a> Loader<'a> {
 
         let project_term = self.kb.alloc(Term::Fn {
             functor,
-            args: SmallVec::new(),
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
         });
 
         self.kb.assert_fact(project_term, project_sort, domain, None);
@@ -519,7 +517,8 @@ impl<'a> Loader<'a> {
 
         let tool_term = self.kb.alloc(Term::Fn {
             functor,
-            args: SmallVec::from_elem(FnArg::Named(cmd_sym, cmd_term), 1),
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(cmd_sym, cmd_term)]),
         });
 
         self.kb.assert_fact(tool_term, tool_sort, domain, None);
@@ -532,16 +531,16 @@ impl<'a> Loader<'a> {
         let status_term = self.load_work_status(&w.status);
         let status_sym = self.kb.intern("status");
 
-        let mut args: SmallVec<[FnArg; 4]> = SmallVec::new();
-        args.push(FnArg::Named(status_sym, status_term));
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named_args.push((status_sym, status_term));
 
         if let Some(desc_id) = w.description {
             let desc = self.convert_term(desc_id);
             let desc_sym = self.kb.intern("description");
-            args.push(FnArg::Named(desc_sym, desc));
+            named_args.push((desc_sym, desc));
         }
 
-        let wi_term = self.kb.alloc(Term::Fn { functor, args });
+        let wi_term = self.kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args });
 
         let meta = w.meta.as_ref().map(|mb| self.load_meta_block(mb));
         self.kb.assert_fact(wi_term, wi_sort, domain, meta);
@@ -569,7 +568,8 @@ impl<'a> Loader<'a> {
         let wi_functor = self.reintern_name(&f.workitem);
         let wi_term = self.kb.alloc(Term::Fn {
             functor: wi_functor,
-            args: SmallVec::new(),
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
         });
 
         let content_term = self.convert_term(f.content);
@@ -578,9 +578,10 @@ impl<'a> Loader<'a> {
 
         let feedback_term = self.kb.alloc(Term::Fn {
             functor: feedback_sym,
-            args: SmallVec::from_slice(&[
-                FnArg::Named(wi_arg_sym, wi_term),
-                FnArg::Named(content_sym, content_term),
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (wi_arg_sym, wi_term),
+                (content_sym, content_term),
             ]),
         });
 
@@ -637,11 +638,8 @@ impl<'a> Loader<'a> {
         let kind_term = self.kb.alloc(Term::Ident(kind_sym));
         let member_term = self.kb.alloc(Term::Fn {
             functor: member_sym,
-            args: SmallVec::from_slice(&[
-                FnArg::Positional(name_term),
-                FnArg::Positional(kind_term),
-                FnArg::Positional(parent),
-            ]),
+            pos_args: SmallVec::from_slice(&[name_term, kind_term, parent]),
+            named_args: SmallVec::new(),
         });
         self.kb.assert_fact(member_term, member_sort, parent, None);
     }
@@ -698,17 +696,18 @@ impl<'a> Loader<'a> {
 
     fn load_meta_block(&mut self, mb: &MetaBlock) -> TermId {
         let meta_sym = self.kb.intern("meta");
-        let args: SmallVec<[FnArg; 4]> = mb.entries
+        let named_args: SmallVec<[(Symbol, TermId); 2]> = mb.entries
             .iter()
             .map(|e| {
                 let key_sym = self.reintern(e.key.last());
                 let val = self.convert_term(e.value);
-                FnArg::Named(key_sym, val)
+                (key_sym, val)
             })
             .collect();
         self.kb.alloc(Term::Fn {
             functor: meta_sym,
-            args,
+            pos_args: SmallVec::new(),
+            named_args,
         })
     }
 }
