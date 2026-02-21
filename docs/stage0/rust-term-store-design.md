@@ -561,9 +561,11 @@ KnowledgeBase
   ├── indexes (all maintained atomically by assert/retract)
   │     ├── by_sort: HashMap<TermId, Vec<FactId>>
   │     ├── by_functor: HashMap<Symbol, Vec<FactId>>
+  │     ├── by_domain: HashMap<TermId, Vec<FactId>>
   │     ├── subsort_children: HashMap<TermId, Vec<TermId>>  -- parent → child sorts
   │     ├── subsort_parents: HashMap<TermId, Vec<TermId>>   -- child → parent sorts
   │     ├── sort_info: HashMap<TermId, SortKind>
+  │     ├── discrim: SubstTree<FactId>                      -- substitution tree (§7.6)
   │     ├── by_body_functor: HashMap<Symbol, Vec<RuleId>>   -- for forward chaining (Layer 2)
   │     └── by_head_functor: HashMap<Symbol, Vec<RuleId>>   -- for backward chaining (Layer 2)
   │
@@ -618,9 +620,12 @@ impl KnowledgeBase {
         self.rebuild_congruence();  // propagate: if a=b then f(a)=f(b)
     }
 
-    /// Query: find facts matching a pattern. Layer 1.
+    /// Query: find facts matching a pattern.
+    /// Uses the substitution tree (§7.6) for multi-level candidate narrowing,
+    /// then verifies with match_term for deep nested matching.
     fn query(&self, pattern: TermId) -> Vec<(FactId, Substitution)> {
-        // Use indexes to narrow candidates, then unify
+        let candidates = self.discrim.query(&self.terms, pattern);
+        // Filter retracted, verify with full match_term
         ...
     }
 
@@ -650,7 +655,64 @@ This is exactly what **egg** (e-graphs good) does for equality saturation. The K
 
 Retraction marks a fact as retracted and removes it from indexes. Refcounts on the fact's terms are decremented. The e-graph is NOT affected by retraction — equalities, once derived, persist (they are logical consequences, not assertions that can be withdrawn). If we need to retract an equation (e.g., a rule is removed), that requires rebuilding the affected e-classes, which is more expensive.
 
-### 7.6 Reference: E-Graphs
+### 7.6 Substitution Tree (Discrimination Index)
+
+The **substitution tree** is the primary structural index for term matching, replacing linear scan after `by_functor`. It is a discrimination tree that collects variable bindings during traversal — at each leaf, the stored data (FactId, rule RHS, etc.) is immediately usable with the accumulated substitution.
+
+**Two edge types at each node:**
+
+- **Concrete edges** — `HashMap<DiscrimKey, Node>`: dispatch on specific value (functor, literal, ident, etc.)
+- **Variable edges** — `Vec<(VarId, Node)>`: match anything, bind VarId to the query value at this position
+
+Ground facts create only concrete edges. Rule patterns with variables create variable edges at `Var` positions.
+
+**Key extraction.** Terms are flattened into a sequence of `DiscrimKey` values. For `Fn { functor, args }`:
+
+```
+[Functor(sym), Arity(n), <arg_keys>...]
+```
+
+Arguments: positional first, named sorted by `Symbol::index()` for canonical ordering (the term itself is not modified). Each arg emits a structural marker (`Positional` or `NamedKey(sym)`) followed by a one-level value key (`Lit(...)`, `Ident(...)`, `FnRef { functor, arity }`, etc.).
+
+Example — `Account(id: "A001", name: "Savings")`:
+```
+[Functor(Account), Arity(2), NamedKey(id), Lit("A001"), NamedKey(name), Lit("Savings")]
+```
+
+**Traversal semantics.** When walking the tree with a query term:
+
+- Query concrete, tree concrete: follow if keys match (no binding)
+- Query concrete, tree variable: bind tree's VarId to query value, follow
+- Query variable, tree concrete: follow all concrete edges (bind query VarId)
+- Query variable, tree variable: follow, bind both
+
+At each leaf reached: `(LeafData, Substitution)` with all bindings collected along the path.
+
+**Persistent substitution.** At branch points, the substitution is forked via `clone()`. The `PersistSubst` trait provides:
+
+```rust
+trait PersistSubst: Clone {
+    fn new() -> Self;
+    fn with_binding(self, var: VarId, term: TermId) -> Self;
+    fn resolve(&self, var: VarId) -> Option<TermId>;
+    fn into_substitution(self) -> Substitution;
+}
+```
+
+`with_binding` consumes self (after clone at branch points). Two implementations:
+
+- **SmallSubst** — `SmallVec<[(VarId, TermId); 8]>`. Clone = memcpy. `with_binding` pushes and returns self. Best for ≤ 8 bindings (Layer 0 fact patterns).
+- **SharedSubst** — Arc cons-list. Clone = Arc refcount bump, O(1). `with_binding` prepends a new `Arc<SubstCell>` from the moved head. Structural sharing between branches — for deeper patterns with many branch points.
+
+**Generic leaf type.** `SubstTree<L>` is generic over the leaf data:
+- Fact indexing: `L = FactId`
+- Rule indexing (future): `L = RuleEntry { rule_id, rhs: TermId }`
+
+**Current integration.** Layer 0 uses the tree as a candidate-narrowing step: `discrim.query()` produces candidate `(FactId, _)` pairs, then `match_term()` verifies for deep nested matching beyond one arg level. When deeper indexing is added, `match_term` becomes unnecessary.
+
+**Reference:** Shevchenko & Doroshenko, "TermWare-3" (2019) — discrimination trees for multi-level term dispatch.
+
+### 7.7 Reference: E-Graphs
 
 - **egg** (Rust library): https://egraphs-good.github.io/ — e-graphs with equality saturation
 - **eqlog**: Datalog extended with equality — close to our equational rules
@@ -682,7 +744,8 @@ The `KnowledgeBase` is built incrementally. Each layer adds capability without c
 ```
 KnowledgeBase
   ├── terms: hash-consed Vec<Term> with refcounting
-  ├── facts: Vec<FactEntry> with by_sort and by_functor indexes
+  ├── facts: Vec<FactEntry> with by_sort, by_functor, and by_domain indexes
+  ├── discrim: SubstTree<FactId> — substitution tree for structural matching (§7.6)
   ├── sorts: subsort/supersort relations from parsed domain declarations
   ├── next_var: u32 (counter for fresh VarId allocation)
   └── rules: stored but not evaluated
@@ -691,10 +754,11 @@ KnowledgeBase
 - Parser allocates terms into KB via `kb.alloc()`
 - Domain loading registers sorts, asserts parsed facts via `kb.assert()`
 - `kb.by_sort()` and `kb.by_functor()` for index-based queries
-- `kb.query(pattern)` with one-way unification (pattern matching against
-  indexed facts) — e.g., `WorkItem(?id, status: Open)` finds all open
-  workitems.  No speculative term allocation: patterns are caller-owned,
-  matching only creates bindings in the `Substitution`.
+- `kb.query(pattern)` uses the substitution tree (§7.6) for multi-level
+  candidate narrowing, then verifies with `match_term` for deep nested
+  matching — e.g., `WorkItem(?id, status: Open)` finds all open workitems.
+  No speculative term allocation: patterns are caller-owned, matching only
+  creates bindings in the `Substitution`.
 - `kb.match_term(pattern, target)` — one-way unification of a single term
 - `kb.fresh_var(name)` allocates unique variable identities
 - Substitution struct (binds `VarId → TermId`), used by pattern matching

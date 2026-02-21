@@ -8,6 +8,7 @@
 pub mod term;
 pub mod subst;
 pub mod load;
+pub(crate) mod discrim;
 
 use std::collections::HashMap;
 
@@ -15,6 +16,7 @@ use smallvec::SmallVec;
 
 use crate::intern::{Interner, Symbol};
 use term::{Term, TermId, TermStore, VarId};
+use discrim::SubstTree;
 
 // ── Fact handle ─────────────────────────────────────────────────
 
@@ -70,6 +72,9 @@ pub struct KnowledgeBase {
     subsort_parents: HashMap<TermId, Vec<TermId>>,
     sort_info: HashMap<TermId, SortKind>,
 
+    // Discrimination tree index for structural term matching
+    discrim: SubstTree<FactId>,
+
     // Variable counter for fresh VarId allocation
     next_var: u32,
 
@@ -92,6 +97,7 @@ impl KnowledgeBase {
             subsort_children: HashMap::new(),
             subsort_parents: HashMap::new(),
             sort_info: HashMap::new(),
+            discrim: SubstTree::new(),
             next_var: 0,
             sort_sort: None,
             subsort_sort: None,
@@ -166,6 +172,9 @@ impl KnowledgeBase {
             self.by_functor.entry(functor).or_default().push(fact_id);
         }
 
+        // Discrimination tree index
+        self.discrim.insert_ground(&self.terms, term, fact_id);
+
         fact_id
     }
 
@@ -194,6 +203,9 @@ impl KnowledgeBase {
                 v.retain(|&id| id != fact_id);
             }
         }
+
+        // Remove from discrimination tree (before releasing terms)
+        self.discrim.remove_ground(&self.terms, term, &fact_id);
 
         // Release refcounts
         self.terms.release(term);
@@ -440,47 +452,21 @@ impl KnowledgeBase {
 
     /// Find all active facts whose term matches the given pattern.
     ///
-    /// Uses the functor index to narrow candidates when the pattern
-    /// has a top-level `Fn` functor. Returns matching facts with
-    /// their substitutions.
+    /// Uses the discrimination tree to narrow candidates via multi-level
+    /// structural dispatch, then verifies with `match_term` for deep
+    /// nested matching beyond one arg level.
     pub fn query(&self, pattern: TermId) -> Vec<(FactId, subst::Substitution)> {
-        // Determine candidate facts via index
-        let candidates: Vec<FactId> = match self.terms.get(pattern) {
-            Term::Fn { functor, .. } => {
-                // Use functor index for efficiency
-                self.by_functor
-                    .get(functor)
-                    .map(|v| {
-                        v.iter()
-                            .copied()
-                            .filter(|fid| !self.facts[fid.index()].retracted)
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            }
-            Term::Var(_) => {
-                // Variable pattern matches everything — scan all facts
-                self.facts
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, f)| !f.retracted)
-                    .map(|(i, _)| FactId(i as u32))
-                    .collect()
-            }
-            _ => {
-                // For other patterns, scan all facts
-                self.facts
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, f)| !f.retracted)
-                    .map(|(i, _)| FactId(i as u32))
-                    .collect()
-            }
-        };
+        // Use discrimination tree for candidate narrowing
+        let candidates = self.discrim.query(&self.terms, pattern);
 
         let mut results = Vec::new();
-        for fid in candidates {
+        for (fid, _tree_subst) in candidates {
+            if self.facts[fid.index()].retracted {
+                continue;
+            }
             let fact_term = self.facts[fid.index()].term;
+            // Verify with full match_term (handles deep nesting beyond
+            // the tree's one-level arg indexing)
             if let Some(s) = self.match_term(pattern, fact_term) {
                 results.push((fid, s));
             }
