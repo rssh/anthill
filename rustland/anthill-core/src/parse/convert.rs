@@ -781,11 +781,13 @@ impl<'a> Converter<'a> {
         let span = self.span(node);
         let label = self.field(node, "label")
             .map(|n| self.convert_name(n));
-        let body = self.field(node, "body")
+        let head = self.field(node, "head")
             .map(|b| self.convert_rule_body(b))
             .unwrap_or_default();
+        let guard = self.field(node, "guard")
+            .map(|b| self.convert_rule_body(b));
         let meta = self.convert_meta_block(node);
-        Some(Constraint { label, body, meta, span })
+        Some(Constraint { label, head, guard, meta, span })
     }
 
     // ── Sugar: blocks ───────────────────────────────────────────

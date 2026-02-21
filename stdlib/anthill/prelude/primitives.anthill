@@ -7,11 +7,3 @@ sort anthill.prelude.Duration {
 sort anthill.prelude.Timestamp {
   entity Timestamp(value: String)
 }
-
--- Nat: natural numbers (Peano)
-sort anthill.prelude.Nat
-  export Nat, zero, succ
-
-  entity zero                                        -- base case
-  entity succ(pred: Nat)                             -- successor
-end

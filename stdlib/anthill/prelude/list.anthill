@@ -6,7 +6,7 @@ sort anthill.prelude.List
   entity nil                                         -- empty list
   entity cons(head: T, tail: List)                   -- cons cell
 
-  operation length(l: List) -> Nat
-  rule length(nil) = zero
-  rule length(cons(?x, ?xs)) = succ(length(?xs))
+  operation length(l: List) -> Int
+  rule length(nil) = 0
+  rule length(cons(?x, ?xs)) = add(1, length(?xs))
 end

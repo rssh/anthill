@@ -1,0 +1,38 @@
+-- Bool: operations on the built-in Bool type
+namespace anthill.prelude.Bool
+  import anthill.prelude.{Eq}
+  export and, or, not, ite
+
+  requires Eq{Bool}
+
+  operation {
+    and(a: Bool, b: Bool) -> Bool
+    or(a: Bool, b: Bool) -> Bool
+    not(a: Bool) -> Bool
+    ite(cond: Bool, then: Term, else: Term) -> Term   -- if-then-else
+  }
+
+  -- Laws: Boolean algebra
+  rule {
+    -- identity
+    and_true:   and(true, ?a) = ?a
+    or_false:   or(false, ?a) = ?a
+    -- annihilation
+    and_false:  and(false, ?_) = false
+    or_true:    or(true, ?_) = true
+    -- complement
+    not_true:   not(true) = false
+    not_false:  not(false) = true
+    -- double negation
+    not_not:    not(not(?a)) = ?a
+    -- commutativity
+    and_comm:   and(?a, ?b) = and(?b, ?a)
+    or_comm:    or(?a, ?b) = or(?b, ?a)
+    -- de Morgan
+    demorgan_and: not(and(?a, ?b)) = or(not(?a), not(?b))
+    demorgan_or:  not(or(?a, ?b)) = and(not(?a), not(?b))
+    -- if-then-else
+    ite_true:   ite(true, ?t, ?_) = ?t
+    ite_false:  ite(false, ?_, ?e) = ?e
+  }
+end

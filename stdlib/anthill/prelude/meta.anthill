@@ -1,7 +1,6 @@
 -- Meta: metadata for facts in the KB
 namespace anthill.prelude.Meta
   import anthill.prelude.{Option}
-  import anthill.prelude.{Nat}
   export Meta, Trust, ProofResult
 
   -- Meta is an open-keyed entity: it has well-known fields,

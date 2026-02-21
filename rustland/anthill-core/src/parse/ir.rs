@@ -258,7 +258,8 @@ pub struct Fact {
 #[derive(Debug)]
 pub struct Constraint {
     pub label: Option<Name>,
-    pub body: Vec<TermId>,
+    pub head: Vec<TermId>,
+    pub guard: Option<Vec<TermId>>,
     pub meta: Option<MetaBlock>,
     pub span: Span,
 }

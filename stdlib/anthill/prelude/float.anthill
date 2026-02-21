@@ -1,0 +1,31 @@
+-- Float: operations on the built-in Float type
+namespace anthill.prelude.Float
+  import anthill.prelude.{Eq, Ordered, Numeric}
+  export abs, neg, max, min, floor, ceil, round, recip
+
+  -- Float satisfies the parametric algebra specs
+  requires Eq{Float}
+  requires Ordered{Float}
+  requires Numeric{Float}
+
+  -- Operations beyond what Numeric provides
+  operation {
+    abs(a: Float) -> Float
+    neg(a: Float) -> Float                -- -a
+    max(a: Float, b: Float) -> Float
+    min(a: Float, b: Float) -> Float
+    floor(a: Float) -> Int                -- round toward negative infinity
+    ceil(a: Float) -> Int                 -- round toward positive infinity
+    round(a: Float) -> Int                -- round to nearest
+    recip(a: Float) -> Float              -- 1/a
+  }
+
+  -- Laws
+  rule neg(?a) = sub(0.0, ?a)
+  rule abs(?a) = max(?a, neg(?a))
+  rule max(?a, ?b) = ite(gt(?a, ?b), ?a, ?b)
+  rule min(?a, ?b) = ite(lt(?a, ?b), ?a, ?b)
+
+  -- Constraint: reciprocal of zero
+  constraint recip_nonzero: neq(?a, 0.0) :- recip(?a)
+end

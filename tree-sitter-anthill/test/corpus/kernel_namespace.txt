@@ -289,6 +289,47 @@ end
         type: (simple_type (name (identifier)))))))
 
 =====================================
+Constraint with guard
+=====================================
+
+constraint non_negative: gte(balance(?a), 0) :- balance(?a, ?_)
+
+---
+
+(source_file
+  (constraint_declaration
+    label: (name (identifier))
+    head: (rule_body
+      (fn_term
+        name: (name (identifier))
+        (fn_term
+          name: (name (identifier))
+          (variable (identifier)))
+        (integer_literal)))
+    guard: (rule_body
+      (fn_term
+        name: (name (identifier))
+        (variable (identifier))
+        (variable (identifier))))))
+
+=====================================
+Constraint without guard
+=====================================
+
+constraint positive: gt(?x, 0)
+
+---
+
+(source_file
+  (constraint_declaration
+    label: (name (identifier))
+    head: (rule_body
+      (fn_term
+        name: (name (identifier))
+        (variable (identifier))
+        (integer_literal)))))
+
+=====================================
 Line comment
 =====================================
 

@@ -165,14 +165,6 @@ sort anthill.prelude.Timestamp {
   entity Timestamp(value: String)
 }
 
--- Nat: natural numbers (Peano)
-sort anthill.prelude.Nat
-  export Nat, zero, succ
-
-  entity zero                                        -- base case
-  entity succ(pred: Nat)                             -- successor
-end
-
 -- List: a parametric sort (T is the abstract sort parameter)
 sort anthill.prelude.List
   export List, nil, cons, length
@@ -181,9 +173,9 @@ sort anthill.prelude.List
   entity nil                                         -- empty list
   entity cons(head: T, tail: List)                   -- cons cell
 
-  operation length(l: List) -> Nat
-  rule length(nil) = zero
-  rule length(cons(?x, ?xs)) = succ(length(?xs))
+  operation length(l: List) -> Int
+  rule length(nil) = 0
+  rule length(cons(?x, ?xs)) = add(1, length(?xs))
 end
 
 -- Option: a parametric sort
@@ -378,16 +370,17 @@ Abstract properties are expressed as accessor operations within the enclosing so
 ```
 sort linear_algebra {
   sort Vector                        -- abstract: type parameter
-  operation dim(v: Vector) -> Nat    -- accessor
+  operation dim(v: Vector) -> Int     -- accessor
 }
 ```
 
 **Sort with body** — a sort can have a body containing entities (constructors), sub-sorts (parameters), `requires` declarations (sort-level constraints), operations, rules, and other items. When a sort body contains entity declarations, they are constructors of that sort, making it a closed ADT:
 
 ```
-sort Nat {                           -- closed set of constructors
-  entity zero                        --   nullary constructor
-  entity succ(pred: Nat)             --   constructor with field
+sort Color {                         -- closed set of constructors
+  entity red                         --   nullary constructor
+  entity green
+  entity blue
 }
 
 sort List {
@@ -399,8 +392,8 @@ sort List {
 A sort with entity constructors is **closed** — exactly the listed constructors exist. Pattern matching in rules works via unification on constructor terms:
 
 ```
-rule length(nil) = zero
-rule length(cons(?x, ?xs)) = succ(length(?xs))
+rule length(nil) = 0
+rule length(cons(?x, ?xs)) = add(1, length(?xs))
 ```
 
 **Requires declaration** — a standalone `requires` in a sort or namespace body declares a sort-level constraint: the enclosing scope depends on another algebraic spec. This is distinct from operation-level `requires` clauses (preconditions on individual operations).
@@ -439,7 +432,7 @@ entity Account(id: AccountId, balance: Money)
 **THE knowledge primitive.** A Horn clause. All knowledge in the KB is expressed as rules. Two important special cases are given syntactic sugar (see §6):
 
 - `fact X` = bodyless rule (ground assertion)
-- `constraint C` = headless rule / denial (integrity constraint)
+- `constraint I :- G` = integrity constraint (invariant `I` must hold when guard `G` holds)
 
 ```
 Rule ::= 'rule' [Name ':'] Head [':-' RuleBody]
@@ -460,7 +453,7 @@ rule ancestor(?X, ?Z) :- parent(?X, ?Y), ancestor(?Y, ?Z)
 -- Ground assertion (= fact): bodyless rule
 rule parent("alice", "bob")
 
--- Denial / integrity constraint: headless rule (head = ⊥)
+-- Denial / integrity constraint: desugared from constraint syntax
 rule non_negative: ⊥ :- balance(?a, ?b), lt(?b, 0)
 ```
 
@@ -666,15 +659,17 @@ fact parent("alice", "bob")
 An integrity invariant — the KB rejects any state that violates it.
 
 ```
-Constraint ::= 'constraint' [Name ':'] RuleBody
+Constraint ::= 'constraint' [Name ':'] Invariant [':-' Guard]
                  ['meta' ':' Meta]
 ```
+
+The invariant (head) states what must be true; the guard (body after `:-`) states when it must be true. Without a guard, the invariant must always hold.
 
 **Desugars to:**
 
 ```
-constraint non_negative: balance(?a, ?b) => b >= 0
-→  rule non_negative: ⊥ :- balance(?a, ?b), lt(?b, 0)
+constraint non_negative: gte(balance(?a), 0) :- balance(?a, ?b)
+→  rule non_negative: ⊥ :- balance(?a, ?b), lt(balance(?a), 0)
 ```
 
 ### 6.3 Entity (single-constructor sort)
@@ -764,7 +759,6 @@ Every fact in the KB carries metadata. `Meta` is an **entity** in the `anthill.p
 ```
 namespace anthill.prelude.Meta
   import anthill.prelude.Option
-  import anthill.prelude.Nat
   export Meta, Trust, ProofResult
 
   -- Meta is an open-keyed entity: it has well-known fields,
@@ -896,15 +890,17 @@ This is the standard **order-sorted algebra** approach (as in Maude/OBJ):
 - Querying by sort `S` returns facts of sort `S` and all subsorts of `S`.
 
 ```
-sort Nat {
-  entity zero
-  entity succ(pred: Nat)
+sort Color {
+  entity red
+  entity green
+  entity blue
 }
 
 -- This establishes:
---   zero <: Nat
---   succ  <: Nat
--- A query for sort Nat matches terms of sort zero and sort succ.
+--   red   <: Color
+--   green <: Color
+--   blue  <: Color
+-- A query for sort Color matches terms of sort red, green, and blue.
 ```
 
 Subsorting does **not** arise from nesting. A sort `T` declared inside a namespace or sort body is a **parameter**, not a subsort. Only the constructor-of relationship creates subsorting.
@@ -1029,7 +1025,7 @@ sort banking
     :- gt(?m, zero-val)
 
   -- Integrity constraint (sugar):
-  constraint non_negative: gte(balance(?a), zero-val)
+  constraint non_negative: gte(balance(?a), zero-val) :- balance(?a, ?_)
     -- desugars to: rule non_negative: ⊥ :- balance(?a, ?b), lt(?b, zero-val)
 end
 ```
@@ -1060,7 +1056,7 @@ sort banking
   rule deposit_positive: balance(deposit(?a, ?m)) > balance(?a)
     :- ?m > 0
 
-  constraint non_negative: balance(?a) >= 0
+  constraint non_negative: balance(?a) >= 0 :- balance(?a, ?_)
 end
 ```
 
@@ -1076,7 +1072,7 @@ sort linear_algebra
   sort Vector                                        -- type parameter (abstract)
 
   operation {
-    dim(v: Vector) -> Nat
+    dim(v: Vector) -> Int
     add(a: Vector, b: Vector) -> Vector
       requires dim(a) = dim(b)
       ensures dim(result) = dim(a)
@@ -1124,7 +1120,7 @@ namespace finance
       entity High
     }
     operation assess(a: Account) -> RiskLevel
-    constraint bounded: lte(assess(?a), maxRisk)
+    constraint bounded: lte(assess(?a), maxRisk) :- assess(?a, ?_)
   }
 
   namespace audit {
@@ -1244,9 +1240,9 @@ RequiresDecl ::= 'requires' Type                -- sort-level constraint (in sor
 Fact        ::= 'fact' Term ['meta' ':' Meta]
               -- desugars to: rule Term
 
-Constraint  ::= 'constraint' [Name ':'] RuleBody
+Constraint  ::= 'constraint' [Name ':'] Invariant [':-' Guard]
                   ['meta' ':' Meta]
-              -- desugars to: rule [Name ':'] ⊥ :- ¬RuleBody
+              -- desugars to: rule [Name ':'] ⊥ :- Guard, ¬Invariant
 
 Entity      ::= [Visibility] 'entity' Name ['(' FieldList ')']
                   ['meta' ':' Meta]

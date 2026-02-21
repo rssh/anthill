@@ -279,7 +279,8 @@ module.exports = grammar({
     constraint_declaration: $ => seq(
       'constraint',
       optional(seq(field('label', $.name), ':')),
-      field('body', $.rule_body),
+      field('head', $.rule_body),
+      optional(seq(':-', field('guard', $.rule_body))),
       optional($.meta_block),
     ),
 

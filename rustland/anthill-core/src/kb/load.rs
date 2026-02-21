@@ -452,14 +452,36 @@ impl<'a> Loader<'a> {
         let constraint_sort = self.kb.make_name_term("Constraint");
         let constraint_sym = self.kb.intern("Constraint");
 
-        let body_terms: SmallVec<[FnArg; 4]> = c.body
+        let head_terms: SmallVec<[FnArg; 4]> = c.head
             .iter()
             .map(|&tid| FnArg::Positional(self.convert_term(tid)))
             .collect();
 
+        let mut args: SmallVec<[FnArg; 4]> = SmallVec::new();
+
+        let head_sym = self.kb.intern("head");
+        let head_term = self.kb.alloc(Term::Fn {
+            functor: head_sym,
+            args: head_terms,
+        });
+        args.push(FnArg::Positional(head_term));
+
+        if let Some(guard) = &c.guard {
+            let guard_terms: SmallVec<[FnArg; 4]> = guard
+                .iter()
+                .map(|&tid| FnArg::Positional(self.convert_term(tid)))
+                .collect();
+            let guard_sym = self.kb.intern("guard");
+            let guard_term = self.kb.alloc(Term::Fn {
+                functor: guard_sym,
+                args: guard_terms,
+            });
+            args.push(FnArg::Positional(guard_term));
+        }
+
         let constraint_term = self.kb.alloc(Term::Fn {
             functor: constraint_sym,
-            args: body_terms,
+            args,
         });
 
         self.kb.assert_fact(constraint_term, constraint_sort, domain, None);

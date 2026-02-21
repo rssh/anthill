@@ -1,0 +1,33 @@
+-- String: operations on the built-in String type
+namespace anthill.prelude.String
+  import anthill.prelude.{Eq, Ordered}
+  export concat, length, isEmpty, contains, startsWith, endsWith, substring, indexOf, replace, trim, toUpper, toLower, split
+
+  -- String satisfies equality and lexicographic ordering
+  requires Eq{String}
+  requires Ordered{String}
+
+  operation {
+    concat(a: String, b: String) -> String
+    length(s: String) -> Int
+    isEmpty(s: String) -> Bool
+    contains(s: String, sub: String) -> Bool
+    startsWith(s: String, prefix: String) -> Bool
+    endsWith(s: String, suffix: String) -> Bool
+    substring(s: String, start: Int, end: Int) -> String
+    indexOf(s: String, sub: String) -> Int       -- -1 if not found
+    replace(s: String, old: String, new: String) -> String
+    trim(s: String) -> String
+    toUpper(s: String) -> String
+    toLower(s: String) -> String
+    split(s: String, sep: String) -> List{T = String}
+  }
+
+  -- Laws
+  rule isEmpty(?s) = eq(length(?s), 0)
+  rule concat("", ?s) = ?s
+  rule concat(?s, "") = ?s
+  rule startsWith(?s, "") = true
+  rule endsWith(?s, "") = true
+  rule contains(?s, "") = true
+end
