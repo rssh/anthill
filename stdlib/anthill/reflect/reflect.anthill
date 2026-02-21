@@ -8,6 +8,11 @@ namespace anthill.reflect
   import anthill.prelude.{Option}
   export TermRepr, SortInfo, OperationInfo, FieldInfo, sorts, operations, constructors, fields, rules
 
+  -- The knowledge base as a typed effect resource
+  sort KB {
+    entity kb
+  }
+
   -- ================================================================
   -- Term representation (reified terms as data)
   -- ================================================================
