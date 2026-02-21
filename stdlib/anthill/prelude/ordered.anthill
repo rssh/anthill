@@ -1,20 +1,39 @@
 -- Ordered: total ordering (requires Eq)
 sort anthill.prelude.Ordered
-  export gt, gte, lt, lte
+  export compare, gt, gte, lt, lte, max, min
 
   sort T
   requires Eq{T}
 
+  -- Primary operation: compare returns -1, 0, or 1
+  operation compare(a: T, b: T) -> Int
+
+  -- Derived operations
   operation {
     gt(a: T, b: T) -> Bool          -- >
     gte(a: T, b: T) -> Bool         -- >=
     lt(a: T, b: T) -> Bool          -- <
     lte(a: T, b: T) -> Bool         -- <=
+    max(a: T, b: T) -> T
+    min(a: T, b: T) -> T
   }
 
   rule {
-    lt(?a, ?b)  = gt(?b, ?a)
-    lte(?a, ?b) = gte(?b, ?a)
-    gte(?a, ?b) = not(lt(?a, ?b))
+    gt(?a, ?b)  = gt(compare(?a, ?b), 0)
+    lt(?a, ?b)  = lt(compare(?a, ?b), 0)
+    gte(?a, ?b) = gte(compare(?a, ?b), 0)
+    lte(?a, ?b) = lte(compare(?a, ?b), 0)
+    max(?a, ?b) = ite(gte(?a, ?b), ?a, ?b)
+    min(?a, ?b) = ite(lte(?a, ?b), ?a, ?b)
+  }
+
+  -- Laws
+  rule {
+    -- antisymmetry
+    compare_antisym: compare(?a, ?b) = neg(compare(?b, ?a))
+    -- reflexivity
+    compare_refl: compare(?a, ?a) = 0
+    -- consistency with eq
+    compare_eq: eq(?a, ?b) = eq(compare(?a, ?b), 0)
   }
 end
