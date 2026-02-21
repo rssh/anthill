@@ -1,0 +1,76 @@
+-- Reflect: term representation and sort/operation queries (introspection)
+--
+-- Reflection/introspection: represent anthill constructs (sorts, operations,
+-- rules) as data, and provide query operations. This is the META-LEVEL
+-- (analogous to Maude's META-LEVEL module).
+namespace anthill.reflect
+  import anthill.prelude.{List}
+  import anthill.prelude.{Option}
+  export TermRepr, SortInfo, OperationInfo, FieldInfo, sorts, operations, constructors, fields, rules
+
+  -- ================================================================
+  -- Term representation (reified terms as data)
+  -- ================================================================
+
+  sort TermRepr {
+    entity ConstRepr(type_name: String, value: String)
+    entity VarRepr(type_name: String, name: String)
+    entity FnRepr(name: String, args: List{T = TermRepr})
+    entity RefRepr(name: String)
+    entity UnspecifiedRepr(text: String)
+    entity QuotedRepr(language: String, source: String)
+  }
+
+  -- ================================================================
+  -- Sort introspection
+  -- ================================================================
+
+  entity SortInfo(
+    name         : String,                          -- qualified name
+    is_abstract  : Bool,                            -- true if no body (type parameter)
+    constructors : List{T = String},                -- constructor names (empty if abstract)
+    operations   : List{T = String},                -- operation names in this sort
+    parameters   : List{T = String},                -- abstract sub-sort names (type params)
+    requires     : List{T = String}                 -- required sort constraints
+  )
+
+  entity OperationInfo(
+    name         : String,
+    sort_context : Option{T = String},              -- enclosing sort, if any
+    params       : List{T = FieldInfo},
+    return_type  : String,
+    has_requires : Bool,
+    has_ensures  : Bool,
+    effects      : List{T = String}
+  )
+
+  entity FieldInfo(
+    name         : String,
+    type_name    : String
+  )
+
+  -- ================================================================
+  -- Query operations (KB introspection)
+  -- ================================================================
+
+  -- All sorts in a namespace (or globally)
+  operation sorts(namespace: Option{T = String}) -> List{T = SortInfo}
+    effects (Reads(kb))
+
+  -- Operations of a sort
+  operation operations(sort_name: String) -> List{T = OperationInfo}
+    effects (Reads(kb))
+
+  -- Constructors of a defined sort
+  operation constructors(sort_name: String) -> List{T = String}
+    effects (Reads(kb))
+
+  -- Fields of an entity/constructor
+  operation fields(name: String) -> List{T = FieldInfo}
+    effects (Reads(kb))
+
+  -- Rules (laws) associated with a sort
+  operation rules(sort_name: String) -> List{T = TermRepr}
+    effects (Reads(kb))
+
+end

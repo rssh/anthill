@@ -78,7 +78,7 @@ anthill console
 loading project from .anthill/project.anthill
   bootstrap: FileStore(".anthill", stage0) — 3 sorts, 5 operations, 12 facts
   bulk pull: FileStore(".anthill", stage0) — 8 workitems, 3 feedback
-  oracle:    PgStore("postgresql://localhost/myproject") — queryable (audit_entries, metrics)
+  oracle:    SqlStore("postgresql://localhost/myproject") — queryable (audit_entries, metrics)
 ready. 9 sorts, 20 operations, 23 facts in memory; 2 queryable stores registered.
 
 anthill>
@@ -152,8 +152,8 @@ anthill> query by_domain Account
 
 -- Pattern query — reaches queryable stores via backward chaining:
 anthill> query AuditEntry(account: "alice", ?action, ?amount, ?at)
-AuditEntry("alice", "deposit",  500, "2026-01-15T10:00:00Z")  [store: PgStore, table: audit_entries]
-AuditEntry("alice", "withdraw", 200, "2026-02-01T14:30:00Z")  [store: PgStore, table: audit_entries]
+AuditEntry("alice", "deposit",  500, "2026-01-15T10:00:00Z")  [store: SqlStore, table: audit_entries]
+AuditEntry("alice", "withdraw", 200, "2026-02-01T14:30:00Z")  [store: SqlStore, table: audit_entries]
 (2 results from queryable store)
 ```
 
@@ -209,13 +209,13 @@ anthill> help                   -- show available commands
 ```
 anthill> stores
   FileStore(".anthill", stage0)                         bulk     12 facts loaded
-  PgStore("postgresql://localhost/myproject", "anthill") queryable  (audit_entries, metrics)
+  SqlStore("postgresql://localhost/myproject", "anthill") queryable  (audit_entries, metrics)
 
 anthill> routes
   WorkItem(?)   → FileStore(".anthill", stage0)
   Project(?)    → FileStore(".anthill", stage0)
   Feedback(?)   → FileStore(".anthill", stage0)
-  AuditEntry(?) → PgStore("postgresql://localhost/myproject", "anthill")
+  AuditEntry(?) → SqlStore("postgresql://localhost/myproject", "anthill")
   ?             → FileStore(".anthill", stage0)    [default]
 
 anthill> pending
@@ -225,7 +225,7 @@ anthill> pending
 
 anthill> flush
   FileStore(".anthill"): 2 persisted, 1 retracted
-  PgStore("postgresql://..."): 0 changes
+  SqlStore("postgresql://..."): 0 changes
 flushed.
 
 anthill> flush --dry-run
@@ -258,7 +258,7 @@ The CLI is a thin layer over `anthill-core` and the persistence layer:
                    (route, persist, retrieve,
                     flush, pull)
                      ╱        │        ╲
-              FileStore    PgStore    (other stores)
+              FileStore    SqlStore    (other stores)
               (bulk)       (queryable)
 ```
 
@@ -322,7 +322,7 @@ The console is **plumbing**; stage0 commands are **porcelain**:
                            │
                     ───────┴────────
                    Persistence Layer
-                 (FileStore, PgStore, ...)
+                 (FileStore, SqlStore, ...)
 ```
 
 Stage 0 workflow commands build on the same KB and persistence layer. They could be added as console commands later (`status`, `verify WI-001`), but the console is useful without them.

@@ -1,0 +1,20 @@
+-- Ordered: total ordering (requires Eq)
+sort anthill.prelude.Ordered
+  export gt, gte, lt, lte
+
+  sort T
+  requires Eq{T}
+
+  operation {
+    gt(a: T, b: T) -> Bool          -- >
+    gte(a: T, b: T) -> Bool         -- >=
+    lt(a: T, b: T) -> Bool          -- <
+    lte(a: T, b: T) -> Bool         -- <=
+  }
+
+  rule {
+    lt(?a, ?b)  = gt(?b, ?a)
+    lte(?a, ?b) = gte(?b, ?a)
+    gte(?a, ?b) = not(lt(?a, ?b))
+  }
+end

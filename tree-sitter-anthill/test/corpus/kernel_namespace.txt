@@ -212,6 +212,83 @@ sort Ordered {
           param: (name (identifier)))))))
 
 =====================================
+Import with dotted name
+=====================================
+
+namespace test
+  import anthill.prelude.List
+  entity Foo(x: String)
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name (identifier))
+    (import_clause
+      (import_path
+        (identifier)
+        (identifier)
+        (identifier)))
+    (entity_declaration
+      name: (name (identifier))
+      (field_decl
+        name: (identifier)
+        type: (simple_type (name (identifier)))))))
+
+=====================================
+Selective import
+=====================================
+
+namespace test
+  import anthill.prelude.{List, Option}
+  entity Foo(x: String)
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name (identifier))
+    (import_clause
+      (import_path
+        (identifier)
+        (identifier)
+        (selective_import
+          (identifier)
+          (identifier))))
+    (entity_declaration
+      name: (name (identifier))
+      (field_decl
+        name: (identifier)
+        type: (simple_type (name (identifier)))))))
+
+=====================================
+Wildcard import
+=====================================
+
+namespace test
+  import anthill.prelude.*
+  entity Foo(x: String)
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name (identifier))
+    (import_clause
+      (import_path
+        (identifier)
+        (identifier)
+        (wildcard_import)))
+    (entity_declaration
+      name: (name (identifier))
+      (field_decl
+        name: (identifier)
+        type: (simple_type (name (identifier)))))))
+
+=====================================
 Line comment
 =====================================
 

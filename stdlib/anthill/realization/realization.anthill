@@ -1,0 +1,45 @@
+-- Realization: binding specifications to host-language code
+--
+-- Realization = providing concrete carriers for abstract sorts.
+-- Contains the code binding (Implementation, CarrierBinding) and
+-- proof obligations generated from contracts (Obligation).
+namespace anthill.realization
+  import anthill.prelude.{List}
+  import anthill.prelude.Meta.{ProofResult}
+  export Implementation, Obligation, CarrierBinding
+
+  -- Links host-language code to an anthill algebra spec
+  entity Implementation(
+    target      : String,                           -- qualified name of the spec
+    artifact    : String,                           -- path to source file
+    language    : String,                           -- "rust", "scala", "python"
+    carrier     : List{T = CarrierBinding}          -- maps abstract sorts to host types
+  )
+
+  entity CarrierBinding(
+    sort_name   : String,                           -- abstract sort in the spec
+    host_type   : String                            -- host-language type name
+  )
+
+  -- Proof obligation generated from operation contracts
+  entity Obligation(
+    target      : String,                           -- which spec
+    operation   : String,                           -- which operation
+    kind        : ObligationKind,
+    formula     : Term,
+    status      : ObligationStatus
+  )
+
+  sort ObligationKind {
+    entity Precondition                              -- from requires clause
+    entity Postcondition                             -- from ensures clause
+    entity EffectEnvCondition                        -- from effects declaration
+    entity Law                                       -- from rule (law)
+  }
+
+  sort ObligationStatus {
+    entity Pending
+    entity Discharged(result: ProofResult)
+    entity Failed(result: ProofResult)
+  }
+end

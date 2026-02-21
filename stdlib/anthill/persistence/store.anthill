@@ -1,0 +1,58 @@
+-- Persistence: abstract storage backend and core operations
+namespace anthill.persistence
+  export Store, StoreCaps, route, retrieve, persist, retract, pull, flush
+
+  -- ================================================================
+  -- Store: abstract storage backend
+  -- ================================================================
+
+  sort Store                                  -- abstract: filesystem, postgres, sqlite, ...
+
+  -- What the store can do natively
+  sort StoreCaps {
+    entity queryable                          -- supports pattern-based retrieval;
+                                              --   backward chaining delegates to store
+    entity bulk                               -- must load all facts into memory;
+                                              --   backward chaining works in-KB
+  }
+
+  operation caps(store: Store) -> StoreCaps
+
+  -- ================================================================
+  -- Routing: 1-to-1 mapping from fact sort to store
+  -- ================================================================
+
+  -- Given a fact, which store owns it?
+  operation route(fact: Term) -> Store
+
+  -- ================================================================
+  -- Core operations on any store
+  -- ================================================================
+
+  -- Persist a fact to its backing store
+  operation persist(store: Store, fact: Term, meta: Meta) -> FactId
+    effects (Modifies(store))
+
+  -- Retrieve facts matching a pattern
+  -- For queryable stores: translates pattern to native query
+  -- For bulk stores: no-op (facts already in KB from pull)
+  operation retrieve(store: Store, pattern: Term) -> List{T = Term}
+    effects (Reads(store))
+
+  -- Remove a fact from its backing store
+  operation retract(store: Store, id: FactId) -> Bool
+    effects (Modifies(store))
+
+  -- ================================================================
+  -- Bulk loading and flushing
+  -- ================================================================
+
+  -- Pull all facts from a bulk store into the KB
+  operation pull(store: Store) -> List{T = Term}
+    effects (Reads(store))
+
+  -- Flush KB delta (new/changed/retracted facts) back to store
+  operation flush(store: Store, delta: List{T = Term}) -> Bool
+    effects (Modifies(store))
+
+end

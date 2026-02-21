@@ -100,9 +100,31 @@ module.exports = grammar({
 
     import_clause: $ => seq(
       'import',
-      $.name,
-      optional(seq('.', '{', commaSep1($.name), '}')),
+      $.import_path,
     ),
+
+    // Dedicated import path rule: a flat sequence of dot-separated segments.
+    // The segment type after each '.' determines the import kind:
+    //   - all identifiers     → plain import (e.g., import anthill.prelude.List)
+    //   - last is {names}     → selective   (e.g., import anthill.prelude.{List, Option})
+    //   - last is *           → wildcard    (e.g., import anthill.prelude.*)
+    //
+    // No ambiguity: '.' is always consumed by the repeat, and the segment
+    // after '.' is unambiguously identifier, '*', or '{...}'.
+    import_path: $ => seq(
+      $.identifier,
+      repeat(seq('.', $._import_segment)),
+    ),
+
+    _import_segment: $ => choice(
+      $.identifier,
+      $.wildcard_import,
+      $.selective_import,
+    ),
+
+    wildcard_import: $ => '*',
+
+    selective_import: $ => seq('{', commaSep1($.identifier), '}'),
 
     sort_binding: $ => seq(
       field('param', $.name),

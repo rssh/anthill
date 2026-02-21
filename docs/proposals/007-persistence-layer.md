@@ -80,7 +80,7 @@ rule route(Project(?))   = FileStore(".anthill", stage0)
 rule route(Feedback(?))  = FileStore(".anthill", stage0)
 
 -- Everything else goes to the database
-rule route(?)            = PgStore("postgresql://localhost/myproject", "anthill")
+rule route(?)            = SqlStore("postgresql://localhost/myproject", "anthill", Postgresql)
 ```
 
 Because routing rules are facts in the KB, they are queryable (`query by_sort Rule` filtered by `route`) and self-documenting.
@@ -185,18 +185,27 @@ end
 
 The filesystem backend is the **bootstrap store** — it is always available and always loaded first (see §8).
 
-### 7. Concrete Backend: PostgreSQL
+### 7. Concrete Backend: SQL (with Dialect)
 
-The PostgreSQL backend stores facts as table rows. It is `queryable` — backward chaining translates KB patterns to SQL queries.
+The SQL backend stores facts as table rows. It is `queryable` — backward chaining translates KB patterns to SQL queries. PostgreSQL, MySQL, SQLite, DuckDB etc. are **dialects** of a single `SqlStore`, not separate store types.
+
+> **Canonical source:** `stdlib/anthill/persistence/sql.anthill`
 
 ```
-namespace anthill.persistence.postgresql
-  import anthill.persistence
+namespace anthill.persistence.sql
+  import anthill.persistence.{Store, StoreCaps}
 
-  entity PgStore(connection: String, schema: String)
+  sort SqlDialect {
+    entity Postgresql
+    entity Mysql
+    entity Sqlite
+    entity Duckdb
+  }
 
-  -- PgStore is queryable: backward chaining delegates to SQL
-  rule caps(PgStore(?)) = queryable
+  entity SqlStore(connection: String, schema: String, dialect: SqlDialect)
+
+  -- All SQL stores are queryable: backward chaining delegates to SQL
+  rule caps(SqlStore(?_)) = queryable
 
   -- ================================================================
   -- Query bindings: how to translate patterns to SQL
@@ -205,16 +214,19 @@ namespace anthill.persistence.postgresql
   -- A QueryBinding maps a fact sort to a table with explicit SQL.
   -- The SQL uses Quoted terms (kernel spec §4.2) — formal in SQL,
   -- embedded in the anthill.
+  --
+  -- SQL is written manually per-binding for now. Dialect-aware
+  -- generation from columns + dialect can be added later.
   entity QueryBinding(
     sort_pattern : Term,                      -- which facts this binding handles
     table        : String,
     columns      : List{T = ColumnDef},
-    retrieve_sql : Quoted("sql", "..."),       -- pattern → SELECT
-    persist_sql  : Quoted("sql", "..."),       -- fact → INSERT/UPSERT
-    retract_sql  : Quoted("sql", "...")        -- id → DELETE
+    retrieve_sql : Term,                      -- Quoted("sql", "...") pattern → SELECT
+    persist_sql  : Term,                      -- Quoted("sql", "...") fact → INSERT/UPSERT
+    retract_sql  : Term                       -- Quoted("sql", "...") id → DELETE
   )
 
-  entity ColumnDef(name: String, field: String, pg_type: String)
+  entity ColumnDef(name: String, field: String, sql_type: String)
 end
 ```
 
@@ -222,14 +234,15 @@ end
 
 ```
 -- Declare the store
-fact audit_db(PgStore(
+fact audit_db(SqlStore(
   connection: "postgresql://localhost/myproject",
-  schema: "anthill"
+  schema: "anthill",
+  dialect: Postgresql
 ))
 
 -- Route AuditEntry facts to postgres
-rule route(AuditEntry(?)) = PgStore(
-  "postgresql://localhost/myproject", "anthill"
+rule route(AuditEntry(?)) = SqlStore(
+  "postgresql://localhost/myproject", "anthill", Postgresql
 )
 
 -- Bind the query translation
@@ -300,15 +313,16 @@ If storage configuration is in the KB, and you need storage to load the KB, ther
 namespace my-project
   import anthill.persistence
   import anthill.persistence.filesystem
-  import anthill.persistence.postgresql
+  import anthill.persistence.sql.*
 
   -- Bootstrap store: always filesystem, always loaded first
   fact bootstrap(FileStore(root: ".anthill", convention: stage0))
 
   -- Secondary store: queryable, for large-scale data
-  fact project_db(PgStore(
+  fact project_db(SqlStore(
     connection: "postgresql://localhost/myproject",
-    schema: "anthill"
+    schema: "anthill",
+    dialect: Postgresql
   ))
 
   -- Routing with precedence:
@@ -319,8 +333,8 @@ namespace my-project
   rule route(ToolDef(?))     = FileStore(".anthill", stage0)
 
   -- Large-scale operational data goes to postgres (queryable)
-  rule route(AuditEntry(?))  = PgStore("postgresql://localhost/myproject", "anthill")
-  rule route(Metric(?))      = PgStore("postgresql://localhost/myproject", "anthill")
+  rule route(AuditEntry(?))  = SqlStore("postgresql://localhost/myproject", "anthill", Postgresql)
+  rule route(Metric(?))      = SqlStore("postgresql://localhost/myproject", "anthill", Postgresql)
 
   -- Default: everything else goes to files
   rule route(?)              = FileStore(".anthill", stage0)
@@ -343,7 +357,7 @@ SQL queries in `QueryBinding` are `Quoted("sql", ...)` terms — formal in SQL, 
 
 #### Implementation Facts (§8.5)
 
-Concrete store backends (FileStore, PgStore) are implementations of the abstract `Store` algebra. When an `Implementation` fact links host-language code to the `persist`/`retrieve`/`retract` operations, the kernel can generate proof obligations for the effect-env condition (§5.6): the implementation must only modify declared resources.
+Concrete store backends (FileStore, SqlStore) are implementations of the abstract `Store` algebra. When an `Implementation` fact links host-language code to the `persist`/`retrieve`/`retract` operations, the kernel can generate proof obligations for the effect-env condition (§5.6): the implementation must only modify declared resources.
 
 ### 10. Scope and Non-Goals
 

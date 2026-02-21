@@ -1,0 +1,36 @@
+-- Filesystem: bulk file-based persistence backend
+namespace anthill.persistence.filesystem
+  import anthill.persistence.{Store, StoreCaps}
+
+  entity FileStore(root: String, convention: FileConvention)
+
+  -- FileStore is always bulk: load all files, work in memory
+  rule caps(FileStore(?_)) = bulk
+
+  -- ================================================================
+  -- File conventions: how facts map to files
+  -- ================================================================
+
+  sort FileConvention {
+    entity stage0                             -- Stage 0 layout:
+                                              --   workitems/ dir, project.anthill, etc.
+    entity by_namespace                       -- one directory per namespace
+    entity flat                               -- all files in root directory
+  }
+
+  -- Stage 0 convention routing:
+  -- WorkItem(id: "WI-001", status: Draft, ...)
+  --   -> .anthill/workitems/WI-001.anthill.draft
+  -- Project(...)
+  --   -> .anthill/project.anthill
+  -- Feedback(workitem: "WI-001", ...)
+  --   -> .anthill/workitems/WI-001.feedback.anthill
+
+  operation file_path(fact: Term, meta: Meta, conv: FileConvention) -> String
+
+  -- Status-dependent renaming (stage0 convention):
+  -- Draft    -> .anthill.draft
+  -- Rejected -> .anthill.rejected
+  -- other    -> .anthill
+  operation suffix(status: Term, conv: FileConvention) -> String
+end

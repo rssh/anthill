@@ -1,0 +1,20 @@
+-- Numeric: basic arithmetic (requires Ordered)
+sort anthill.prelude.Numeric
+  export add, sub, mul, zero-val
+
+  sort T
+  requires Ordered{T}
+
+  operation {
+    add(a: T, b: T) -> T           -- +
+    sub(a: T, b: T) -> T           -- -
+    mul(a: T, b: T) -> T           -- *
+    zero-val() -> T                -- additive identity
+  }
+
+  rule {
+    add_comm:  add(?a, ?b) = add(?b, ?a)
+    add_assoc: add(add(?a, ?b), ?c) = add(?a, add(?b, ?c))
+    add_identity: add(?a, zero-val) = ?a
+  }
+end

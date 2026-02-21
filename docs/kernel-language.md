@@ -152,6 +152,8 @@ The kernel has only four primitive types for `Const` values:
 
 Common compound types are defined in standard prelude sorts using the kernel's own constructs. **Parametric types are sorts with abstract sub-sorts** — instantiated via **inline type expressions** `Name{bindings}`. **Sum types are sorts with entity constructors** — `sort S { entity C₁(...), entity C₂(...) }` enumerates constructors (see §5.2).
 
+> **Canonical source:** The prelude definitions below are extracted from `stdlib/anthill/prelude/`. Those `.anthill` files are the canonical source; this section is for reference.
+
 ```
 -- Duration: a non-parametric prelude sort
 sort anthill.prelude.Duration {
@@ -290,7 +292,10 @@ Namespace ::= 'namespace' Name
                 ['export' NameList]                 -- what is visible outside (default: nothing)
               Body[NamespaceContent*]
 
-Import ::= 'import' Name ['.' '{' NameList '}']
+Import ::= 'import' ImportPath
+ImportPath ::= Name                               -- import a specific name
+             | Name '.' '{' NameList '}'           -- selective: specific names from a namespace
+             | Name '.' '*'                        -- wildcard: everything from a namespace
 
 NameList    ::= Name (',' Name)*
 SortBinding ::= Name '=' Type                   -- explicit: binds an abstract sort to a concrete type
@@ -311,14 +316,19 @@ requires Bifunctor{A, B = Int}   -- A binds to A, B binds to Int
 requires Numeric{T = Money}      -- T binds to Money
 ```
 
-Import makes names from another namespace visible in the current scope. Sort parameters remain abstract — they are instantiated separately via inline type expressions (`Name{bindings}`), not at import time:
+Import makes names from another namespace visible in the current scope. Sort parameters remain abstract — they are instantiated separately via inline type expressions (`Name{bindings}`), not at import time.
+
+Three import forms:
 
 ```
+-- Import a specific name from a namespace:
+import anthill.prelude.List                   -- imports "List" from anthill.prelude
+
 -- Import selected items from a namespace:
-import anthill.prelude.List.{List, nil, cons}
+import anthill.prelude.{List, Option}         -- imports "List" and "Option" from anthill.prelude
 
 -- Import everything from a namespace:
-import banking
+import anthill.prelude.*                      -- imports all exported names from anthill.prelude
 ```
 
 **Visibility** controls what crosses namespace boundaries, expressed as a prefix modifier on declarations:
@@ -743,11 +753,13 @@ Since `meta: { ... }` has clear delimiters and `requires`/`ensures`/`effects` ar
 
 ### 6.5 Requires / Ensures (scoped constraints)
 
-The `requires` and `ensures` clauses in operations are scoped constraints — they generate denials tied to the operation's input/output bindings. When an `Implementation` fact (from the `anthill.verification` standard namespace) pairs with an operation, the kernel generates corresponding obligation rules.
+The `requires` and `ensures` clauses in operations are scoped constraints — they generate denials tied to the operation's input/output bindings. When an `Implementation` fact (from the `anthill.realization` standard namespace) pairs with an operation, the kernel generates corresponding obligation rules.
 
 ## 7. Metadata
 
-Every fact in the KB carries metadata. `Meta` is an **entity** in the `anthill.prelude` namespace — not a special grammar production. It is a regular Fn term with named arguments:
+Every fact in the KB carries metadata. `Meta` is an **entity** in the `anthill.prelude` namespace — not a special grammar production. It is a regular Fn term with named arguments.
+
+> **Canonical source:** `stdlib/anthill/prelude/meta.anthill`
 
 ```
 namespace anthill.prelude.Meta
@@ -923,7 +935,7 @@ This is the kernel's integrity mechanism — it prevents logically inconsistent 
 
 When an operation has `requires`/`ensures` clauses and an `Implementation` fact links code to it:
 
-1. The kernel generates **proof obligations** — facts of entity type `Obligation` (from the `anthill.verification` standard namespace).
+1. The kernel generates **proof obligations** — facts of entity type `Obligation` (from the `anthill.realization` standard namespace, see `stdlib/anthill/realization/`).
 2. The obligation states: "prove that the implementation satisfies the contract."
 3. Agents attempt to discharge the obligation. The kernel verifies submitted proofs.
 4. Successfully discharged obligations elevate the implementation's trust level.
@@ -1082,7 +1094,7 @@ sort linear_algebra
 end
 ```
 
-Two implementations (in the `anthill.verification` standard namespace) could provide different carrier bindings:
+Two implementations (in the `anthill.realization` standard namespace, see `stdlib/anthill/realization/`) could provide different carrier bindings:
 
 ```
 -- CPU implementation:
@@ -1168,7 +1180,10 @@ Namespace   ::= 'namespace' Name
                   ['export' NameList]
                 Body[NamespaceContent*]
 
-Import      ::= 'import' Name ['.' '{' NameList '}']
+Import      ::= 'import' ImportPath
+ImportPath  ::= Name                                           -- import a name
+              | Name '.' '{' NameList '}'                      -- selective import
+              | Name '.' '*'                                   -- wildcard import
 NameList    ::= Name (',' Name)*
 SortBinding ::= Name ['=' Type]                 -- without '= Type': punning (Eq{T} = Eq{T = T})
 

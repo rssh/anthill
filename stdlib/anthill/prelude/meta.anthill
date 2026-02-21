@@ -1,0 +1,47 @@
+-- Meta: metadata for facts in the KB
+namespace anthill.prelude.Meta
+  import anthill.prelude.{Option}
+  import anthill.prelude.{Nat}
+  export Meta, Trust, ProofResult
+
+  -- Meta is an open-keyed entity: it has well-known fields,
+  -- but any Name : Term pair is allowed as an entry.
+  -- Unknown keys are stored as-is and available for queries.
+  --
+  -- Well-known keys have semantic meaning to the kernel:
+  --   trust      — verification status (see Trust sort below)
+  --   agent      — who asserted this fact
+  --   timestamp  — when it was asserted
+  --   iteration  — which iteration of the project
+  --   source     — file, line, language
+  --   supersedes — which previous fact this replaces
+  --
+  -- Additional keys are project-defined:
+  --   Meta(trust: axiom, agent: "author", reviewer: "rssh", priority: 3)
+
+  entity Meta(entries: Term)
+    -- entries is an open structure: any named arguments are accepted.
+    -- In practice, Meta is constructed with named-arg syntax:
+    --   Meta(trust: axiom, agent: "author")
+    -- The kernel recognizes well-known keys; all others pass through.
+
+  -- Trust: verification status of a fact
+  sort Trust {
+    entity proved                        -- formally proved (Lean/Isabelle kernel)
+    entity verified                      -- mechanically verified (Z3, ctproof)
+    entity tested(n: Int)                -- passed n test runs (Hypothesis, sbt-test)
+    entity empirical                     -- observed but not formally checked
+    entity proposed                      -- asserted by agent, not yet verified
+    entity stale                         -- was valid, environment changed
+    entity axiom                         -- ground truth (domain knowledge)
+    entity decision                      -- architectural choice
+  }
+
+  -- ProofResult: outcome of discharging an obligation
+  sort ProofResult {
+    entity Proved(witness: Term, solver: String, duration: Duration)
+    entity Disproved(counterexample: Term, solver: String)
+    entity Timeout(strategies: Term)
+    entity Unknown(reason: String)
+  }
+end

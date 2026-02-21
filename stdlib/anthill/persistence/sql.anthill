@@ -1,0 +1,49 @@
+-- SQL: queryable database persistence backend
+--
+-- Generic SQL store parameterized by dialect. PostgreSQL, MySQL, SQLite,
+-- DuckDB etc. are dialects, not separate store types.
+namespace anthill.persistence.sql
+  import anthill.persistence.{Store, StoreCaps}
+  export SqlStore, SqlDialect, QueryBinding, ColumnDef
+
+  sort SqlDialect {
+    entity Postgresql
+    entity Mysql
+    entity Sqlite
+    entity Duckdb
+  }
+
+  entity SqlStore(
+    connection : String,
+    schema     : String,
+    dialect    : SqlDialect
+  )
+
+  -- All SQL stores are queryable: backward chaining delegates to SQL
+  rule caps(SqlStore(?_)) = queryable
+
+  -- ================================================================
+  -- Query bindings: how to translate patterns to SQL
+  -- ================================================================
+
+  -- A QueryBinding maps a fact sort to a table with explicit SQL.
+  -- The SQL uses Quoted terms (kernel spec §4.2) -- formal in SQL,
+  -- embedded in the anthill.
+  --
+  -- SQL is written manually per-binding for now. Dialect-aware
+  -- generation from columns + dialect can be added later.
+  entity QueryBinding(
+    sort_pattern : Term,                      -- which facts this binding handles
+    table        : String,
+    columns      : List{T = ColumnDef},
+    retrieve_sql : Term,                      -- Quoted("sql", "...") pattern -> SELECT
+    persist_sql  : Term,                      -- Quoted("sql", "...") fact -> INSERT/UPSERT
+    retract_sql  : Term                       -- Quoted("sql", "...") id -> DELETE
+  )
+
+  entity ColumnDef(
+    name     : String,                        -- column name in SQL
+    field    : String,                        -- field name in anthill entity
+    sql_type : String                         -- dialect-specific type (e.g., "text", "numeric")
+  )
+end
