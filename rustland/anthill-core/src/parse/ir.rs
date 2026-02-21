@@ -288,12 +288,9 @@ pub enum Visibility {
 }
 
 #[derive(Debug)]
-pub enum Effect {
-    Modifies(Name),
-    Reads(Name),
-    Emits(Name),
-    Errors(Name),
-    Requires(Name),
+pub struct Effect {
+    pub kind: Name,
+    pub target: Name,
 }
 
 #[derive(Debug)]

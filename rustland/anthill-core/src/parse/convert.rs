@@ -761,24 +761,11 @@ impl<'a> Converter<'a> {
     }
 
     fn convert_effect(&mut self, node: Node) -> Option<Effect> {
-        let text = self.text(node);
-        let name_node = self.child_by_kind(node, "name")?;
-        let name = self.convert_name(name_node);
-
-        if text.starts_with("Modifies") {
-            Some(Effect::Modifies(name))
-        } else if text.starts_with("Reads") {
-            Some(Effect::Reads(name))
-        } else if text.starts_with("Emits") {
-            Some(Effect::Emits(name))
-        } else if text.starts_with("Errors") {
-            Some(Effect::Errors(name))
-        } else if text.starts_with("Requires") {
-            Some(Effect::Requires(name))
-        } else {
-            self.err(format!("unknown effect: {text}"), node);
-            None
-        }
+        let kind_node = self.field(node, "kind")?;
+        let target_node = self.field(node, "target")?;
+        let kind = self.convert_name(kind_node);
+        let target = self.convert_name(target_node);
+        Some(Effect { kind, target })
     }
 
     // ── Requires declaration ──────────────────────────────────────

@@ -503,15 +503,25 @@ An operation without an implementation is an **open obligation** — it emits a 
 
 ### 5.5 Effects
 
-Effects are part of operation declarations, not standalone constructs:
+Effects are part of operation declarations, not standalone constructs. Effect kinds are **open** — any `Name(target)` pair is valid:
 
 ```
-Effect ::= Modifies(target: Name)       -- mutates state
-         | Reads(source: Name)          -- depends on external state
-         | Emits(event: Name)           -- produces events
-         | Errors(error: Name)          -- can fail with typed error
-         | Requires(capability: Name)   -- needs a capability
+Effect ::= Name '(' Name ')'            -- kind(target)
 ```
+
+> **Canonical source:** Well-known effect kinds are defined in `stdlib/anthill/prelude/effects.anthill` as the `EffectKind` sort. The kernel recognizes these for state-passing and monadic interpretations (§5.6-5.7):
+
+| Effect kind | Meaning |
+|-------------|---------|
+| `Modifies(target)` | Mutates a resource's state |
+| `Reads(source)` | Depends on a resource's state (implied by Modifies) |
+| `Emits(event)` | Produces events of a given type |
+| `Errors(error)` | Can fail with a typed error |
+| `Requires(capability)` | Needs a capability to execute |
+| `Suspends(resource)` | May suspend execution (async/coroutine) |
+| `Allocates(pool)` | Allocates from a resource pool |
+
+Users can define additional effect kinds; the kernel stores and propagates them but only interprets the well-known ones.
 
 ### 5.6 Effect Semantics (State-Passing Interpretation)
 
@@ -1276,9 +1286,7 @@ Operation   ::= [Visibility] 'operation' Name '(' [ParamList] ')' '->' Type
 ParamList   ::= Param (',' Param)*
 Param       ::= Name ':' Type
 
-Effect      ::= 'Modifies' '(' Name ')' | 'Reads' '(' Name ')'
-              | 'Emits' '(' Name ')' | 'Errors' '(' Name ')'
-              | 'Requires' '(' Name ')'
+Effect      ::= Name '(' Name ')'         -- open: any kind(target) pair
 
 RequiresDecl ::= 'requires' Type                -- sort-level constraint (in sort/namespace body)
 

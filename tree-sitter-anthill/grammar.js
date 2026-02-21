@@ -250,12 +250,11 @@ module.exports = grammar({
     ensures_clause: $ => seq('ensures', $.rule_body),
     effects_clause: $ => seq('effects', '(', commaSep1($.effect), ')'),
 
-    effect: $ => choice(
-      seq('Modifies', '(', $.name, ')'),
-      seq('Reads', '(', $.name, ')'),
-      seq('Emits', '(', $.name, ')'),
-      seq('Errors', '(', $.name, ')'),
-      seq('Requires', '(', $.name, ')'),
+    effect: $ => seq(
+      field('kind', $.name),
+      '(',
+      field('target', $.name),
+      ')',
     ),
 
     // =========================================================

@@ -1,0 +1,15 @@
+-- Effects: well-known effect kinds
+--
+-- Effect kinds are open — any Name(target) is valid in an effects clause.
+-- This sort defines the well-known kinds that the kernel recognizes
+-- for state-passing and monadic interpretations (see kernel spec §5.6-5.7).
+-- Users can define additional effect kinds as needed.
+sort anthill.prelude.EffectKind {
+  entity Modifies       -- mutates a resource's state
+  entity Reads          -- depends on a resource's state (implied by Modifies)
+  entity Emits          -- produces events of a given type
+  entity Errors         -- can fail with a typed error
+  entity Requires       -- needs a capability to execute
+  entity Suspends       -- may suspend execution (async/coroutine)
+  entity Allocates      -- allocates from a resource pool
+}
