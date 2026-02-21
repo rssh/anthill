@@ -151,7 +151,17 @@ pub struct Namespace {
 #[derive(Debug)]
 pub struct Import {
     pub path: Name,
-    pub selected: Option<Vec<Name>>,
+    pub kind: ImportKind,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ImportKind {
+    /// `import anthill.prelude.List` — import a specific name
+    Plain,
+    /// `import anthill.prelude.{List, Option}` — import selected names
+    Selective(Vec<Name>),
+    /// `import anthill.prelude.*` — import everything from namespace
+    Wildcard,
 }
 
 // ── Sort ────────────────────────────────────────────────────────

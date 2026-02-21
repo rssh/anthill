@@ -1,10 +1,36 @@
 /// Integration tests: parse .anthill source → verify IR structure → load into KB → query.
 
+use std::path::PathBuf;
+
 use anthill_core::parse;
 use anthill_core::parse::ir::*;
 use anthill_core::kb::{KnowledgeBase, SortKind};
 use anthill_core::kb::term::{Term, TermId, Literal, FnArg};
 use anthill_core::kb::load::{self, NullResolver};
+
+/// Collect all .anthill files under a directory, recursively.
+fn collect_anthill_files(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    if dir.is_dir() {
+        for entry in std::fs::read_dir(dir).expect("read stdlib dir") {
+            let entry = entry.expect("read dir entry");
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(collect_anthill_files(&path));
+            } else if path.extension().is_some_and(|e| e == "anthill") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// Path to stdlib/ relative to the test file.
+fn stdlib_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../stdlib/anthill")
+}
 
 // ── Parsing tests ───────────────────────────────────────────────
 
@@ -805,4 +831,106 @@ fn mutual_reference_load_order_independent() {
     let a2 = kb2.make_name_term("A");
     let mka2 = kb2.make_name_term("mkA");
     assert!(kb2.is_subtype(mka2, a2));
+}
+
+// ── Standard library parse tests ────────────────────────────────
+//
+// These tests discover .anthill files from the stdlib/ directory
+// at runtime, so adding new files automatically includes them
+// without test changes.
+
+#[test]
+fn stdlib_parse_all_files() {
+    let dir = stdlib_dir();
+    let files = collect_anthill_files(&dir);
+    assert!(!files.is_empty(), "no .anthill files found in {}", dir.display());
+
+    let mut failed = Vec::new();
+    for path in &files {
+        let source = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let rel = path.strip_prefix(&dir).unwrap_or(path);
+        match parse::parse(&source) {
+            Ok(parsed) => {
+                assert!(!parsed.items.is_empty(),
+                    "{}: parsed OK but produced no items", rel.display());
+            }
+            Err(errors) => {
+                failed.push(format!("{}: {} error(s): {:?}",
+                    rel.display(), errors.len(), errors));
+            }
+        }
+    }
+
+    assert!(failed.is_empty(),
+        "stdlib files failed to parse:\n  {}", failed.join("\n  "));
+}
+
+#[test]
+fn stdlib_load_all_into_kb() {
+    let dir = stdlib_dir();
+    let files = collect_anthill_files(&dir);
+    assert!(!files.is_empty());
+
+    let parsed: Vec<_> = files.iter()
+        .map(|path| {
+            let source = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            parse::parse(&source)
+                .unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
+        })
+        .collect();
+
+    let refs: Vec<_> = parsed.iter().collect();
+    let mut kb = KnowledgeBase::new();
+    load::load_all(&mut kb, &refs, &NullResolver)
+        .expect("load_all stdlib failed");
+
+    assert!(kb.fact_count() > 0,
+        "KB should contain facts after loading {} stdlib files", files.len());
+}
+
+#[test]
+fn stdlib_import_kinds() {
+    // Selective import
+    let source = r#"namespace test
+  import anthill.prelude.{Option, Nat}
+  entity Foo(x: String)
+end
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Namespace(n) => {
+            assert_eq!(n.imports.len(), 1);
+            match &n.imports[0].kind {
+                ImportKind::Selective(names) => assert_eq!(names.len(), 2),
+                other => panic!("expected Selective, got {other:?}"),
+            }
+        }
+        _ => panic!("expected Namespace"),
+    }
+
+    // Wildcard import
+    let source = "namespace test\n  import anthill.prelude.*\n  entity Foo(x: String)\nend\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Namespace(n) => {
+            assert_eq!(n.imports.len(), 1);
+            assert!(matches!(n.imports[0].kind, ImportKind::Wildcard));
+            assert_eq!(n.imports[0].path.segments.len(), 2);
+        }
+        _ => panic!("expected Namespace"),
+    }
+
+    // Plain import
+    let source = "namespace test\n  import anthill.prelude.List\n  entity Foo(x: String)\nend\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Namespace(n) => {
+            assert_eq!(n.imports.len(), 1);
+            assert!(matches!(n.imports[0].kind, ImportKind::Plain));
+            assert_eq!(n.imports[0].path.segments.len(), 3);
+        }
+        _ => panic!("expected Namespace"),
+    }
 }

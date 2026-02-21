@@ -480,31 +480,52 @@ impl<'a> Converter<'a> {
     }
 
     fn convert_import(&mut self, node: Node) -> Import {
-        let names: Vec<_> = self.children_by_kind(node, "name")
-            .into_iter()
-            .map(|n| self.convert_name(n))
-            .collect();
+        // import_clause → import_path → identifier+ [selective_import | wildcard_import]
+        let import_path = self.child_by_kind(node, "import_path")
+            .unwrap_or(node);
 
-        let path = names.into_iter().next().unwrap_or_else(|| {
-            Name::simple(self.intern("?"), self.span(node))
-        });
+        let mut cursor = import_path.walk();
+        let children: Vec<_> = import_path.named_children(&mut cursor).collect();
 
-        // Selected imports from { ... }
-        // For simplicity, re-scan for names after the first
-        let all_names: Vec<_> = self.children_by_kind(node, "name")
-            .into_iter()
-            .map(|n| self.convert_name(n))
-            .collect();
+        // Check for wildcard or selective import (last segment)
+        let has_wildcard = children.iter().any(|c| c.kind() == "wildcard_import");
+        let selective = children.iter()
+            .find(|c| c.kind() == "selective_import");
 
-        let selected = if all_names.len() > 1 {
-            Some(all_names[1..].to_vec())
+        if has_wildcard {
+            // import a.b.* → path = a.b, kind = Wildcard
+            let path_segments: SmallVec<_> = children.iter()
+                .filter(|c| c.kind() == "identifier")
+                .map(|c| self.intern(self.text(*c)))
+                .collect();
+            let path = Name { segments: path_segments, span: self.span(import_path) };
+            Import { path, kind: ImportKind::Wildcard }
+        } else if let Some(sel_node) = selective {
+            // import a.b.{X, Y} → path = a.b, kind = Selective([X, Y])
+            let path_segments: SmallVec<_> = children.iter()
+                .filter(|c| c.kind() == "identifier")
+                .map(|c| self.intern(self.text(*c)))
+                .collect();
+            let path = Name { segments: path_segments, span: self.span(import_path) };
+
+            let sel = *sel_node;
+            let mut sel_cursor = sel.walk();
+            let selected: Vec<_> = sel.named_children(&mut sel_cursor)
+                .filter(|c| c.kind() == "identifier")
+                .map(|c| {
+                    let sym = self.intern(self.text(c));
+                    Name::simple(sym, self.span(c))
+                })
+                .collect();
+            Import { path, kind: ImportKind::Selective(selected) }
         } else {
-            None
-        };
-
-        Import {
-            path,
-            selected,
+            // import a.b.c → path = a.b.c, kind = Plain
+            let path_segments: SmallVec<_> = children.iter()
+                .filter(|c| c.kind() == "identifier")
+                .map(|c| self.intern(self.text(*c)))
+                .collect();
+            let path = Name { segments: path_segments, span: self.span(import_path) };
+            Import { path, kind: ImportKind::Plain }
         }
     }
 
