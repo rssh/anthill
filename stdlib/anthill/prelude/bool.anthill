@@ -3,7 +3,7 @@ namespace anthill.prelude.Bool
   import anthill.prelude.{Eq}
   export and, or, not, ite
 
-  requires Eq{Bool}
+  fact Eq{T = Bool}
 
   operation {
     and(a: Bool, b: Bool) -> Bool

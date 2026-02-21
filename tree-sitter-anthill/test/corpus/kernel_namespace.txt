@@ -289,6 +289,22 @@ end
         type: (simple_type (name (identifier)))))))
 
 =====================================
+Fact with instantiation term
+=====================================
+
+fact Eq{T = Int}
+
+---
+
+(source_file
+  (fact_declaration
+    term: (instantiation_term
+      name: (name (identifier))
+      (sort_binding
+        param: (name (identifier))
+        type: (simple_type (name (identifier)))))))
+
+=====================================
 Constraint with guard
 =====================================
 

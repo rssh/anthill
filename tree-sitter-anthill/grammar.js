@@ -553,6 +553,7 @@ module.exports = grammar({
       $.boolean_literal,
       $.variable,
       $.fn_term,
+      $.instantiation_term,
       $.ref_term,
       $.unspecified_term,
       $.infix_term,
@@ -577,6 +578,16 @@ module.exports = grammar({
       field('name', $.identifier),
       ':',
       field('value', $._term),
+    ),
+
+    // Instantiation term: Eq{Int}, List{T = Int}, etc.
+    // Same syntax as parameterized_type but in term position.
+    // Used for: fact Eq{Int}, fact Numeric{Int}, etc.
+    instantiation_term: $ => seq(
+      field('name', $.name),
+      '{',
+      commaSep1($.sort_binding),
+      '}',
     ),
 
     ref_term: $ => seq('Ref', '(', $.name, ')'),

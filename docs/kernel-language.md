@@ -268,6 +268,18 @@ Type ::= Name                                        -- simple type reference
 
 Import and instantiation are separate concepts: `import` makes names visible, inline `Name{bindings}` instantiates sort parameters. They are not bundled together.
 
+**Instantiation as term:** The `Name{bindings}` syntax is valid both in type position and in term position. In term position, it represents a sort instantiation as a first-class value — used to assert that a type satisfies a parametric spec:
+
+```
+-- "Int satisfies Eq" — a fact in the KB
+fact Eq{T = Int}
+
+-- "String satisfies Ordered" — scoped to the declaring namespace
+fact Ordered{T = String}
+```
+
+This follows the "types are terms" principle: sort instantiations are knowledge, expressible as facts. Different namespaces can provide different instantiations (see §5.1 on namespace scoping).
+
 Additional types are introduced via `sort` declarations (abstract or defined) in any namespace.
 
 ## 5. Kernel Constructs
@@ -965,6 +977,27 @@ A sort-with-body that contains abstract sub-sorts, operations, and laws IS an al
 
 This also supports type class-like patterns: a sort declaring `sort A` and `operation combine(x: A, y: A) -> A` with laws is a specification that any type with a `combine` operation must satisfy. Using `MyType` in place of `A` via inline binding instantiates the specification for a concrete type.
 
+**Spec satisfaction:** To declare that a concrete type satisfies a parametric spec, assert the instantiation as a fact:
+
+```
+-- Int satisfies Eq, Ordered, and Numeric
+fact Eq{T = Int}
+fact Ordered{T = Int}
+fact Numeric{T = Int}
+```
+
+For built-in types, the operations are primitive (provided by the runtime). For user-defined types, rules define the operations:
+
+```
+fact Eq{T = Color}
+rule eq(red, red) = true
+rule eq(green, green) = true
+rule eq(blue, blue) = true
+rule eq(?_, ?_) = false
+```
+
+Since facts are scoped to namespaces, different namespaces can provide different instantiations of the same spec for the same type (e.g. different orderings). A consumer chooses which instantiation to use via `import`.
+
 **Namespaces** group sorts, operations, and rules for encapsulation and visibility control, but do not introduce type parameters. A namespace may contain sorts (both parametric and concrete), but abstract sorts (no body) appear only inside sort bodies as type parameters — never directly in a namespace.
 
 ## 9. Connections to Existing Systems
@@ -1164,6 +1197,7 @@ Term        ::= Const(type, value)
               | Var(type, name)              -- written as ?name
               | Fn(name, args: [Term])
               | Ref(Name)
+              | Instantiation(Name, SortBinding+)  -- Eq{T = Int} in term position
               | Unspecified(text, hints, id) -- written as <"text">
               | Quoted(language, source)
 

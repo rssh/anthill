@@ -262,6 +262,7 @@ impl<'a> Converter<'a> {
                 self.terms.alloc(Term::Var(vid))
             }
             "fn_term" => self.convert_fn_term(node),
+            "instantiation_term" => self.convert_instantiation_term(node),
             "ref_term" => {
                 let name_node = self.child_by_kind(node, "name");
                 let sym = if let Some(n) = name_node {
@@ -313,6 +314,45 @@ impl<'a> Converter<'a> {
         }
 
         self.terms.alloc(Term::Fn { functor, args })
+    }
+
+    fn convert_instantiation_term(&mut self, node: Node) -> TermId {
+        // Eq{Int} or Eq{T = Int} — parameterized type in term position
+        let name_node = self.field(node, "name").unwrap_or(node);
+        let name = self.convert_name(name_node);
+        let functor = self.intern_name(&name);
+
+        let mut args = SmallVec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "sort_binding" {
+                let param_node = self.field(child, "param");
+                let type_node = self.field(child, "type");
+                if let Some(p) = param_node {
+                    let param_name = self.convert_name(p);
+                    let param_sym = self.intern_name(&param_name);
+                    let value_tid = if let Some(t) = type_node {
+                        // Explicit: Eq{T = Int} — convert the type to a Ref term
+                        let type_name = self.convert_type_to_name(t);
+                        let type_sym = self.intern_name(&type_name);
+                        self.terms.alloc(Term::Ref(type_sym))
+                    } else {
+                        // Punned: Eq{Int} — param name IS the type
+                        self.terms.alloc(Term::Ref(param_sym))
+                    };
+                    args.push(FnArg::Named(param_sym, value_tid));
+                }
+            }
+        }
+
+        self.terms.alloc(Term::Fn { functor, args })
+    }
+
+    /// Extract a Name from a type CST node (simple_type or parameterized_type).
+    fn convert_type_to_name(&mut self, node: Node) -> Name {
+        // simple_type is just a name node; parameterized_type starts with a name
+        let name_node = self.child_by_kind(node, "name").unwrap_or(node);
+        self.convert_name(name_node)
     }
 
     fn convert_unspecified(&mut self, node: Node) -> TermId {
@@ -1453,6 +1493,7 @@ fn is_term_kind(kind: &str) -> bool {
             | "boolean_literal"
             | "variable"
             | "fn_term"
+            | "instantiation_term"
             | "ref_term"
             | "unspecified_term"
             | "infix_term"

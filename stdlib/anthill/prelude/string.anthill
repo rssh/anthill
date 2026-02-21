@@ -4,8 +4,8 @@ namespace anthill.prelude.String
   export concat, length, isEmpty, contains, startsWith, endsWith, substring, indexOf, replace, trim, toUpper, toLower, split
 
   -- String satisfies equality and lexicographic ordering
-  requires Eq{String}
-  requires Ordered{String}
+  fact Eq{T = String}
+  fact Ordered{T = String}
 
   operation {
     concat(a: String, b: String) -> String

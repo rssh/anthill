@@ -4,9 +4,9 @@ namespace anthill.prelude.Int
   export minValue, maxValue, abs, neg, mod, rem, max, min, sign, divExact
 
   -- Int satisfies the parametric algebra specs
-  requires Eq{Int}
-  requires Ordered{Int}
-  requires Numeric{Int}
+  fact Eq{T = Int}
+  fact Ordered{T = Int}
+  fact Numeric{T = Int}
 
   -- Bounds: Int is finite (platform-dependent, e.g. i64)
   operation minValue() -> Int
