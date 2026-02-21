@@ -240,17 +240,23 @@ fn full_persistence_store_hierarchy() {
 
     assert!(out.contains("mod persistence"), "should have mod persistence: {out}");
 
-    // Abstract sorts → unit structs (opaque types)
-    assert!(out.contains("struct Store;"), "should have struct Store: {out}");
-    assert!(out.contains("struct QueryableStore;"), "should have struct QueryableStore: {out}");
-    assert!(out.contains("struct BulkStore;"), "should have struct BulkStore: {out}");
+    // Three-trait hierarchy
+    assert!(out.contains("trait Store"), "should have trait Store: {out}");
+    assert!(out.contains("trait QueryableStore: Store"), "should have QueryableStore: Store: {out}");
+    assert!(out.contains("trait BulkStore: Store"), "should have BulkStore: Store: {out}");
 
-    // All operations as free functions
+    // Store should have persist, retract, flush
     assert!(out.contains("fn persist("), "should have persist: {out}");
     assert!(out.contains("fn retract("), "should have retract: {out}");
     assert!(out.contains("fn flush("), "should have flush: {out}");
+
+    // QueryableStore should have retrieve
     assert!(out.contains("fn retrieve("), "should have retrieve: {out}");
+
+    // BulkStore should have pull
     assert!(out.contains("fn pull("), "should have pull: {out}");
+
+    // route should be a free function
     assert!(out.contains("fn route("), "should have route: {out}");
 }
 
