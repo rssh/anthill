@@ -4,21 +4,30 @@
 -- Contains the code binding (Implementation, CarrierBinding) and
 -- proof obligations generated from contracts (Obligation).
 namespace anthill.realization
-  import anthill.prelude.{List}
+  import anthill.prelude.{List, Option}
   import anthill.prelude.Meta.{ProofResult}
-  export Implementation, Obligation, CarrierBinding
+  export Implementation, Obligation, CarrierBinding, NamespaceMapping
 
   -- Links host-language code to an anthill algebra spec
   entity Implementation(
     target      : String,                           -- qualified name of the spec
     artifact    : String,                           -- path to source file
     language    : String,                           -- "rust", "scala", "python"
-    carrier     : List{T = CarrierBinding}          -- maps abstract sorts to host types
+    profile     : Option{T = String},               -- e.g. "cpu", "gpu", "memory-optimized"
+    description : Option{T = String},               -- free text for humans
+    carrier     : List{T = CarrierBinding},         -- maps abstract sorts to host types
+    namespace_map : List{T = NamespaceMapping}      -- maps anthill namespaces to host modules
   )
 
   entity CarrierBinding(
     sort_name   : String,                           -- abstract sort in the spec
     host_type   : String                            -- host-language type name
+  )
+
+  -- Maps anthill namespace to host-language module/package
+  entity NamespaceMapping(
+    namespace   : String,                           -- anthill namespace (e.g. "anthill.prelude.List")
+    host_module : String                            -- host module (e.g. "std::vec::Vec" in Rust)
   )
 
   -- Proof obligation generated from operation contracts

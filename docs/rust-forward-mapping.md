@@ -852,6 +852,7 @@ The forward mapping and `Implementation` facts are two halves of a round-trip:
 ```
 fact Implementation("banking",
   artifact: "src/banking.rs", language: "rust",
+  profile: "std",
   carrier: { Money: "i64", AccountId: "u64" })
   [trust: proposed]
 ```

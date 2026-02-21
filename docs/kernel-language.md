@@ -1123,21 +1123,36 @@ sort linear_algebra
 end
 ```
 
-Two implementations (in the `anthill.realization` standard namespace, see `stdlib/anthill/realization/`) could provide different carrier bindings:
+Multiple implementations (in the `anthill.realization` standard namespace, see `stdlib/anthill/realization/`) can provide different carrier bindings. The `profile` field distinguishes them:
 
 ```
--- CPU implementation:
+-- Rust std implementation:
 fact Implementation("linear_algebra",
-  artifact: "src/linalg/cpu.scala", language: "scala",
-  carrier: { Scalar: "Double", Vector: "Array[Double]" })
+  artifact: "src/linalg/cpu.rs", language: "rust",
+  profile: "std",
+  description: "CPU-based linear algebra using std Vec",
+  carrier: { Scalar: "f64", Vector: "Vec<f64>" },
+  namespace_map: { "anthill.prelude.List": "std::vec::Vec" })
   [trust: proposed]
 
--- GPU implementation:
+-- Rust no_std implementation (embedded):
+fact Implementation("linear_algebra",
+  artifact: "src/linalg/embedded.rs", language: "rust",
+  profile: "no_std",
+  description: "Fixed-size linear algebra for embedded targets",
+  carrier: { Scalar: "f32", Vector: "heapless::Vec<f32, 64>" },
+  namespace_map: { "anthill.prelude.List": "heapless::Vec" })
+  [trust: proposed]
+
+-- Python GPU implementation:
 fact Implementation("linear_algebra",
   artifact: "src/linalg/cuda.py", language: "python",
+  profile: "gpu",
   carrier: { Scalar: "float32", Vector: "CudaDeviceBuffer[float32]" })
   [trust: proposed]
 ```
+
+**Profile compatibility:** When assembling a build, all selected implementations must share a compatible profile. For example, in Rust `no_std` targets, every component must use `no_std`-compatible implementations — mixing `std` and `no_std` profiles is an error. This is a build-time constraint analogous to feature unification in Cargo.
 
 ### 10.3 Namespace with Nested Sub-namespaces
 
