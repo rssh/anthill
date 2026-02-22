@@ -82,7 +82,7 @@ sort Scalar = ?
 (source_file
   (abstract_sort
     name: (name (identifier))
-    definition: (unspecified_sort)))
+    definition: (variable)))
 
 =====================================
 Sort with body (ADT)
@@ -151,7 +151,7 @@ sort Ordered {
     name: (name (identifier))
     (abstract_sort
       name: (name (identifier))
-      definition: (unspecified_sort))
+      definition: (variable))
     (requires_declaration
       type: (parameterized_type
         (name (identifier))
@@ -184,7 +184,7 @@ namespace banking {
     name: (name (identifier))
     (abstract_sort
       name: (name (identifier))
-      definition: (unspecified_sort))
+      definition: (variable))
     (requires_declaration
       type: (parameterized_type
         (name (identifier))
@@ -208,7 +208,7 @@ sort Ordered {
     name: (name (identifier))
     (abstract_sort
       name: (name (identifier))
-      definition: (unspecified_sort))
+      definition: (variable))
     (requires_declaration
       type: (parameterized_type
         (name (identifier))
@@ -324,13 +324,13 @@ constraint non_negative: gte(balance(?a), 0) :- balance(?a, ?_)
         name: (name (identifier))
         (fn_term
           name: (name (identifier))
-          (variable (identifier)))
+          (variable))
         (integer_literal)))
     guard: (rule_body
       (fn_term
         name: (name (identifier))
-        (variable (identifier))
-        (variable (identifier))))))
+        (variable)
+        (variable)))))
 
 =====================================
 Constraint without guard
@@ -346,8 +346,27 @@ constraint positive: gt(?x, 0)
     head: (rule_body
       (fn_term
         name: (name (identifier))
-        (variable (identifier))
+        (variable)
         (integer_literal)))))
+
+=====================================
+Anonymous variable in rule
+=====================================
+
+rule first: frs(?a, ?) = ?a
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (infix_term
+        (fn_term
+          name: (name (identifier))
+          (variable)
+          (variable))
+        (variable)))))
 
 =====================================
 Line comment
@@ -362,7 +381,7 @@ sort T = ?
   (line_comment)
   (abstract_sort
     name: (name (identifier))
-    definition: (unspecified_sort)))
+    definition: (variable)))
 
 =====================================
 Sort type alias (simple)

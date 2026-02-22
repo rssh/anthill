@@ -254,12 +254,21 @@ impl<'a> Converter<'a> {
                 self.terms.alloc(Term::Const(Literal::Bool(b)))
             }
             "variable" => {
-                // ?x — child is identifier
-                let ident = self.child_by_kind(node, "identifier");
-                let name = ident.map(|n| self.text(n)).unwrap_or("_");
-                let sym = self.intern(name);
-                let vid = self.get_or_create_var(sym);
-                self.terms.alloc(Term::Var(vid))
+                // variable is a single token: ?name or bare ?
+                let text = self.text(node);
+                if text.len() > 1 {
+                    // Named variable: ?x (shared within scope)
+                    let name = &text[1..]; // strip leading '?'
+                    let sym = self.intern(name);
+                    let vid = self.get_or_create_var(sym);
+                    self.terms.alloc(Term::Var(vid))
+                } else {
+                    // Bare ? — anonymous variable (always fresh, like _ in Prolog)
+                    let sym = self.intern("_");
+                    let vid = VarId::new(self.next_var, sym);
+                    self.next_var += 1;
+                    self.terms.alloc(Term::Var(vid))
+                }
             }
             "fn_term" => self.convert_fn_term(node),
             "instantiation_term" => self.convert_instantiation_term(node),
@@ -580,11 +589,11 @@ impl<'a> Converter<'a> {
         let meta = self.convert_meta_block(node);
         let span = self.span(node);
 
-        // Extract definition: ? → None (unspecified), Type → Some(TypeExpr)
+        // Extract definition: ?/? Name → None (unspecified), Type → Some(TypeExpr)
         let bound = self.field(node, "definition")
             .and_then(|def| {
-                if def.kind() == "unspecified_sort" {
-                    None  // sort T = ?
+                if def.kind() == "variable" {
+                    None  // sort T = ? or sort T = ?A (variable = unspecified)
                 } else {
                     Some(self.convert_type(def))  // sort T = Int
                 }

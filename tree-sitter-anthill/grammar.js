@@ -169,13 +169,11 @@ module.exports = grammar({
       field('name', $.name),
       '=',
       field('definition', choice(
-        $.unspecified_sort,   // sort T = ?
+        $.variable,          // sort T = ? or sort T = ?A
         $._type,             // sort Money = Int, sort Ids = List{T=Int}
       )),
       optional($.meta_block),
     ),
-
-    unspecified_sort: $ => '?',
 
     sort_with_body: $ => seq(
       optional($.visibility),
@@ -565,7 +563,10 @@ module.exports = grammar({
       $.identifier,
     ),
 
-    variable: $ => seq('?', $.identifier),
+    // ? = anonymous variable (each occurrence distinct, like _ in Prolog)
+    // ?name = named variable (shared within scope)
+    // Single token: ?name must be written without whitespace.
+    variable: $ => token(seq('?', optional(/[a-zA-Z_][a-zA-Z0-9_-]*/))),
 
     fn_term: $ => seq(
       field('name', $.name),
