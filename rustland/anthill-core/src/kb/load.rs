@@ -69,6 +69,10 @@ pub enum LoadError {
         span: Span,
         scope_name: String,
     },
+    UnresolvedImport {
+        path: String,
+        span: Span,
+    },
     AmbiguousSymbol {
         name: String,
         candidates: Vec<String>,
@@ -85,6 +89,9 @@ impl std::fmt::Display for LoadError {
         match self {
             LoadError::UnresolvedName { name, span, scope_name } => {
                 write!(f, "unresolved name '{}' in scope '{}' at {}..{}", name, scope_name, span.start, span.end)
+            }
+            LoadError::UnresolvedImport { path, span } => {
+                write!(f, "unresolved import '{}' at {}..{}", path, span.start, span.end)
             }
             LoadError::AmbiguousSymbol { name, candidates, span, scope_name } => {
                 write!(f, "ambiguous symbol '{}' in scope '{}' at {}..{}: candidates {:?}", name, scope_name, span.start, span.end, candidates)
@@ -108,7 +115,7 @@ impl std::error::Error for LoadError {}
 /// Two sub-passes over all files:
 /// - Pass 1: Define all names, record exports and type params
 /// - Pass 2: Process `requires` and `import` declarations → build parent scope chain
-pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) {
+pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<LoadError> {
     let global = kb.make_name_term("_global");
 
     // Sub-pass 1: define all names
@@ -117,9 +124,11 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) {
     }
 
     // Sub-pass 2: process requires and imports (all sorts exist now)
+    let mut errors = Vec::new();
     for file in files {
-        scan_items_pass2(kb, &file.items, &file.symbols, global, "");
+        scan_items_pass2(kb, &file.items, &file.symbols, global, "", &mut errors);
     }
+    errors
 }
 
 /// Check if a scope term represents a sort (vs. the global scope or a namespace).
@@ -343,6 +352,7 @@ fn scan_items_pass2(
     parse_sym: &crate::intern::SymbolTable,
     scope: TermId,
     prefix: &str,
+    errors: &mut Vec<LoadError>,
 ) {
     for item in items {
         match item {
@@ -351,9 +361,9 @@ fn scan_items_pass2(
                 let qualified = make_qualified(prefix, &name);
                 if let Some(sort_term) = find_scope_by_name(kb, &qualified) {
                     // Process sort-level imports
-                    process_imports(kb, parse_sym, &s.imports, sort_term);
+                    process_imports(kb, parse_sym, &s.imports, sort_term, errors);
                     // Recurse
-                    scan_items_pass2(kb, &s.items, parse_sym, sort_term, &qualified);
+                    scan_items_pass2(kb, &s.items, parse_sym, sort_term, &qualified, errors);
                 }
             }
             Item::Namespace(n) => {
@@ -361,9 +371,9 @@ fn scan_items_pass2(
                 let qualified = make_qualified(prefix, &name);
                 if let Some(ns_term) = find_scope_by_name(kb, &qualified) {
                     // Process namespace-level imports
-                    process_imports(kb, parse_sym, &n.imports, ns_term);
+                    process_imports(kb, parse_sym, &n.imports, ns_term, errors);
                     // Recurse
-                    scan_items_pass2(kb, &n.items, parse_sym, ns_term, &qualified);
+                    scan_items_pass2(kb, &n.items, parse_sym, ns_term, &qualified, errors);
                 }
             }
             Item::RequiresDecl(r) => {
@@ -453,11 +463,13 @@ fn build_instantiation_term(
 }
 
 /// Process `import` declarations → register imported names and parent scopes.
+/// Unresolvable import paths produce errors.
 fn process_imports(
     kb: &mut KnowledgeBase,
     parse_sym: &crate::intern::SymbolTable,
     imports: &[Import],
     scope: TermId,
+    errors: &mut Vec<LoadError>,
 ) {
     for imp in imports {
         let path = join_segments(parse_sym, &imp.path.segments);
@@ -465,7 +477,8 @@ fn process_imports(
             ImportKind::Plain => {
                 // `import anthill.prelude.List` → make "List" resolvable locally
                 // and add the target scope as a parent for accessing its contents.
-                if let Some(&original_sym) = kb.symbols.by_qualified_name.get(&path) {
+                let found = kb.symbols.by_qualified_name.get(&path).copied();
+                if let Some(original_sym) = found {
                     let short = last_segment(&path);
                     kb.symbols.add_import(scope.raw(), short, original_sym);
                 }
@@ -474,6 +487,11 @@ fn process_imports(
                         parent_scope_raw: target_scope.raw(),
                         instantiation_term_raw: target_scope.raw(),
                         is_enclosing: false,
+                    });
+                } else if found.is_none() {
+                    errors.push(LoadError::UnresolvedImport {
+                        path: path.clone(),
+                        span: imp.path.span,
                     });
                 }
             }
@@ -489,6 +507,13 @@ fn process_imports(
                 // 2. Resolve short name within the base-path scope (e.g., "Term"
                 //    defined inside `namespace anthill.reflect`)
                 let base_scope = find_scope_by_name(kb, &path);
+                if base_scope.is_none() && !kb.symbols.by_qualified_name.contains_key(&path) {
+                    // The base path itself doesn't resolve
+                    errors.push(LoadError::UnresolvedImport {
+                        path: path.clone(),
+                        span: imp.path.span,
+                    });
+                }
                 for name in names {
                     let short = join_segments(parse_sym, &name.segments);
                     let qualified = format!("{}.{}", path, short);
@@ -504,6 +529,11 @@ fn process_imports(
                         });
                     if let Some(sym) = original_sym {
                         kb.symbols.add_import(scope.raw(), &short, sym);
+                    } else {
+                        errors.push(LoadError::UnresolvedImport {
+                            path: qualified,
+                            span: name.span,
+                        });
                     }
                 }
             }
@@ -513,6 +543,11 @@ fn process_imports(
                         parent_scope_raw: target_scope.raw(),
                         instantiation_term_raw: target_scope.raw(),
                         is_enclosing: false,
+                    });
+                } else {
+                    errors.push(LoadError::UnresolvedImport {
+                        path: path.clone(),
+                        span: imp.path.span,
                     });
                 }
             }
@@ -550,10 +585,17 @@ pub fn load(
     resolver: &dyn SourceResolver,
 ) -> Result<(), Vec<LoadError>> {
     // Phase 1: Scan definitions from this file
-    scan_definitions(kb, &[parsed]);
+    let mut all_errors = scan_definitions(kb, &[parsed]);
     // Phase 2: Load
     let mut loaded_paths = HashSet::new();
-    load_with_visited(kb, parsed, resolver, &mut loaded_paths)
+    if let Err(errs) = load_with_visited(kb, parsed, resolver, &mut loaded_paths) {
+        all_errors.extend(errs);
+    }
+    if all_errors.is_empty() {
+        Ok(())
+    } else {
+        Err(all_errors)
+    }
 }
 
 /// Load multiple parsed files into the same knowledge base.
@@ -566,11 +608,10 @@ pub fn load_all(
     resolver: &dyn SourceResolver,
 ) -> Result<(), Vec<LoadError>> {
     // Phase 1: Scan all definitions across all files
-    scan_definitions(kb, files);
+    let mut all_errors = scan_definitions(kb, files);
 
     // Phase 2: Load files with scope-aware resolution
     let mut loaded_paths = HashSet::new();
-    let mut all_errors = Vec::new();
     for parsed in files {
         if let Err(errs) = load_with_visited(kb, parsed, resolver, &mut loaded_paths) {
             all_errors.extend(errs);
@@ -1204,7 +1245,8 @@ impl<'a> Loader<'a> {
                     match crate::parse::parse(&source) {
                         Ok(imported) => {
                             // Scan definitions from the imported file before loading
-                            scan_definitions(self.kb, &[&imported]);
+                            let scan_errs = scan_definitions(self.kb, &[&imported]);
+                            self.errors.extend(scan_errs);
                             if let Err(errs) = load_with_visited(
                                 self.kb, &imported, self.resolver, self.loaded_paths,
                             ) {

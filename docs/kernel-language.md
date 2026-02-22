@@ -1399,9 +1399,9 @@ A sort exports its members (operations, entities) but not its own name. When Eq 
 
 `anthill.prelude.Bool` uses `Term` (from `anthill.reflect`) in the `ite` operation: `ite(cond: Bool, then: Term, else: Term) -> Term`. This creates a dependency from prelude to reflect. Should `Term` be a primitive type (like Int/String/Bool/Float) registered via `register_prelude`?
 
-### 12.4 Unresolvable imports are silent
+### 12.4 ~~Unresolvable imports are silent~~ (resolved)
 
-When `import nonexistent.path.*` or `import nonexistent.path.{Name}` references a namespace that was never defined, the loader silently skips it — no error is reported. Should unresolvable imports be hard errors?
+Unresolvable imports are now hard errors. All three import kinds (plain, selective, wildcard) produce `UnresolvedImport` errors when the target path or name cannot be found during `scan_definitions` pass 2.
 
 ### 12.5 Effect target name resolution
 

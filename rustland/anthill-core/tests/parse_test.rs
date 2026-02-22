@@ -932,7 +932,67 @@ end
     }
 }
 
-// ── Unresolved name hard error tests ────────────────────────────
+// ── Unresolved import / name hard error tests ──────────────────
+
+#[test]
+fn unresolved_import_plain_is_hard_error() {
+    let source = r#"namespace test
+  import nonexistent.path.Foo
+  entity Bar(x: String)
+end
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    let result = load::load(&mut kb, &parsed, &NullResolver);
+    let errors = result.expect_err("expected load errors for unresolved import");
+
+    let import_errors: Vec<_> = errors.iter().filter(|e| {
+        matches!(e, load::LoadError::UnresolvedImport { path, .. } if path == "nonexistent.path.Foo")
+    }).collect();
+    assert!(!import_errors.is_empty(),
+        "should report UnresolvedImport for 'nonexistent.path.Foo', got: {:?}", errors);
+}
+
+#[test]
+fn unresolved_import_wildcard_is_hard_error() {
+    let source = r#"namespace test
+  import nonexistent.path.*
+  entity Bar(x: String)
+end
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    let result = load::load(&mut kb, &parsed, &NullResolver);
+    let errors = result.expect_err("expected load errors for unresolved wildcard import");
+
+    let import_errors: Vec<_> = errors.iter().filter(|e| {
+        matches!(e, load::LoadError::UnresolvedImport { path, .. } if path == "nonexistent.path")
+    }).collect();
+    assert!(!import_errors.is_empty(),
+        "should report UnresolvedImport for 'nonexistent.path', got: {:?}", errors);
+}
+
+#[test]
+fn unresolved_import_selective_is_hard_error() {
+    let source = r#"namespace test
+  import nonexistent.path.{Foo, Bar}
+  entity Baz(x: String)
+end
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    let result = load::load(&mut kb, &parsed, &NullResolver);
+    let errors = result.expect_err("expected load errors for unresolved selective import");
+
+    let import_errors: Vec<_> = errors.iter().filter(|e| {
+        matches!(e, load::LoadError::UnresolvedImport { .. })
+    }).collect();
+    assert!(!import_errors.is_empty(),
+        "should report UnresolvedImport errors, got: {:?}", errors);
+}
 
 #[test]
 fn unresolved_name_is_hard_error() {
