@@ -8,6 +8,7 @@
 pub mod term;
 pub mod subst;
 pub mod load;
+pub mod resolve;
 pub(crate) mod persist_subst;
 pub(crate) mod discrim;
 
@@ -424,93 +425,26 @@ impl KnowledgeBase {
         self.rules.iter().filter(|r| !r.retracted && !r.body.is_empty()).count()
     }
 
-    // ── Pattern matching ─────────────────────────────────────────
+    // ── Term matching ─────────────────────────────────────────────
+    //
+    // match_term inserts `target` into a temporary discrimination tree and
+    // queries with `pattern`, reusing the real KB indexing infrastructure.
 
-    /// One-way unification: match `pattern` against `target`.
+    /// Match `pattern` against `target` using a temporary discrimination tree.
     ///
-    /// Variables in the pattern bind to subterms of the target.
-    /// Variables in the target are treated as opaque (not unified).
+    /// Variables on the pattern side bind to corresponding subterms of
+    /// `target`. Variables on the target side are inserted into the tree
+    /// as variable edges and bind when the pattern provides concrete values.
+    ///
     /// Returns `Some(subst)` on success, `None` on failure.
     pub fn match_term(&self, pattern: TermId, target: TermId) -> Option<subst::Substitution> {
-        let mut s = subst::Substitution::new();
-        if self.match_term_rec(pattern, target, &mut s) {
-            Some(s)
-        } else {
-            None
-        }
-    }
-
-    fn match_term_rec(
-        &self,
-        pattern: TermId,
-        target: TermId,
-        subst: &mut subst::Substitution,
-    ) -> bool {
-        // If same TermId (hash-consed), they're structurally equal
-        if pattern == target {
-            return true;
-        }
-
-        match self.terms.get(pattern) {
-            Term::Var(vid) => {
-                // Variable in pattern: bind or check consistency
-                if let Some(bound) = subst.resolve(*vid) {
-                    // Already bound — must match the same target
-                    bound == target
-                } else {
-                    subst.bind(*vid, target);
-                    true
-                }
-            }
-            Term::Const(lit_p) => {
-                // Constants must be equal
-                match self.terms.get(target) {
-                    Term::Const(lit_t) => lit_p == lit_t,
-                    _ => false,
-                }
-            }
-            Term::Fn { functor: f_p, pos_args: pos_p, named_args: named_p } => {
-                match self.terms.get(target) {
-                    Term::Fn { functor: f_t, pos_args: pos_t, named_args: named_t } => {
-                        if f_p != f_t || pos_p.len() != pos_t.len() || named_p.len() != named_t.len() {
-                            return false;
-                        }
-                        for (&pid, &tid) in pos_p.iter().zip(pos_t.iter()) {
-                            if !self.match_term_rec(pid, tid, subst) {
-                                return false;
-                            }
-                        }
-                        for (&(kp, pid), &(kt, tid)) in named_p.iter().zip(named_t.iter()) {
-                            if kp != kt {
-                                return false;
-                            }
-                            if !self.match_term_rec(pid, tid, subst) {
-                                return false;
-                            }
-                        }
-                        true
-                    }
-                    _ => false,
-                }
-            }
-            Term::Ident(sym_p) => {
-                match self.terms.get(target) {
-                    Term::Ident(sym_t) => sym_p == sym_t,
-                    _ => false,
-                }
-            }
-            Term::Ref(sym_p) => {
-                match self.terms.get(target) {
-                    Term::Ref(sym_t) => sym_p == sym_t,
-                    _ => false,
-                }
-            }
-            Term::Bottom => matches!(self.terms.get(target), Term::Bottom),
-            Term::Unspecified { .. } => {
-                // Unspecified terms don't participate in matching
-                false
-            }
-        }
+        let mut tree = SubstTree::<()>::new();
+        tree.insert_pattern(&self.terms, target, ());
+        let results = tree.query_resolved(&self.terms, pattern, |_| target);
+        // Filter out contradictory substitutions (e.g. ?x bound to two different values)
+        results.into_iter()
+            .map(|(_, s)| s)
+            .find(|s| !s.is_contradiction())
     }
 
     /// Find all active rules/facts whose head matches the given pattern.
@@ -530,11 +464,9 @@ impl KnowledgeBase {
             if self.rules[rid.index()].retracted {
                 continue;
             }
-            debug_assert!(
-                self.match_term(pattern, self.rules[rid.index()].head).is_some(),
-                "discrim tree returned candidate that doesn't match pattern (rule_id={:?})",
-                rid,
-            );
+            if tree_subst.is_contradiction() {
+                continue;
+            }
             results.push((rid, tree_subst));
         }
         results
@@ -617,6 +549,75 @@ impl KnowledgeBase {
         }
     }
 
+    // ── Walk / reify ──────────────────────────────────────────────
+
+    /// Chase Var→binding→Var chains through a substitution.
+    /// Returns the final non-variable TermId, or the last unbound Var.
+    pub fn walk(&self, term: TermId, subst: &subst::Substitution) -> TermId {
+        let mut current = term;
+        loop {
+            match self.terms.get(current) {
+                Term::Var(vid) => {
+                    if let Some(bound) = subst.resolve(*vid) {
+                        if bound == current {
+                            return current; // self-referential, stop
+                        }
+                        current = bound;
+                    } else {
+                        return current;
+                    }
+                }
+                _ => return current,
+            }
+        }
+    }
+
+    /// Deep walk — recursively chase all vars through the substitution,
+    /// rebuilding the term with concrete bindings. Unlike `apply_subst`
+    /// which doesn't chase transitive variable chains.
+    pub fn reify(&mut self, term: TermId, subst: &subst::Substitution) -> TermId {
+        let walked = self.walk(term, subst);
+        match self.terms.get(walked).clone() {
+            Term::Var(_) => walked, // unbound variable, leave as-is
+            Term::Fn { functor, pos_args, named_args } => {
+                let new_pos: SmallVec<[TermId; 4]> = pos_args
+                    .iter()
+                    .map(|&id| self.reify(id, subst))
+                    .collect();
+                let new_named: SmallVec<[(crate::intern::Symbol, TermId); 2]> = named_args
+                    .iter()
+                    .map(|&(sym, id)| (sym, self.reify(id, subst)))
+                    .collect();
+                self.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named })
+            }
+            Term::Unspecified { text, hints } => {
+                let new_hints: SmallVec<[TermId; 2]> = hints
+                    .iter()
+                    .map(|&id| self.reify(id, subst))
+                    .collect();
+                self.alloc(Term::Unspecified { text, hints: new_hints })
+            }
+            _ => walked, // Const, Ident, Ref, Bottom — no substructure
+        }
+    }
+
+    // ── Rule classification ─────────────────────────────────────
+
+    /// Check if a rule is an equation: head functor is "eq" with 2 positional
+    /// args and body is empty.
+    pub fn is_equation(&self, id: RuleId) -> bool {
+        let entry = &self.rules[id.index()];
+        if !entry.body.is_empty() || entry.retracted {
+            return false;
+        }
+        match self.terms.get(entry.head) {
+            Term::Fn { functor, pos_args, .. } => {
+                self.interner.resolve(*functor) == "eq" && pos_args.len() == 2
+            }
+            _ => false,
+        }
+    }
+
     /// Create a fresh copy of a rule's head and body with all variables renamed
     /// to fresh VarIds. Returns `(new_head, new_body)`.
     pub fn standardize_apart(&mut self, id: RuleId) -> (TermId, Vec<TermId>) {
@@ -648,6 +649,106 @@ impl KnowledgeBase {
             .collect();
 
         (new_head, new_body)
+    }
+
+    /// Instantiate a rule's body with fresh variables, incorporating bindings
+    /// from a discrimination tree match.
+    ///
+    /// The discrim tree's `tree_subst` has a mix of entries:
+    /// - **Query vars** → rule-head subterms (concrete values or `Var(rule_vid)`)
+    /// - **Rule vars** → concrete query subterms (when query had concrete values)
+    ///
+    /// This method:
+    /// 1. Builds a rename map: for each rule var, use concrete value from
+    ///    tree_subst if available, otherwise create a fresh var
+    /// 2. Applies rename to rule body → `fresh_body`
+    /// 3. Builds `answer_links` mapping query vars to fresh vars (or concrete
+    ///    values) based on tree_subst entries
+    ///
+    /// Returns `(fresh_body, answer_links)` where `answer_links` maps
+    /// query variables to their fresh counterparts (or concrete values).
+    pub fn with_fresh_vars(
+        &mut self,
+        id: RuleId,
+        tree_subst: &subst::Substitution,
+    ) -> (Vec<TermId>, subst::Substitution) {
+        let head = self.rules[id.index()].head;
+        let body = self.rules[id.index()].body.clone();
+
+        // Collect all vars from head + body
+        let mut all_vars = self.collect_vars(head);
+        for &b in &body {
+            for v in self.collect_vars(b) {
+                if !all_vars.contains(&v) {
+                    all_vars.push(v);
+                }
+            }
+        }
+
+        // Step 1: Build rename map for rule variables
+        // If tree_subst has a concrete binding for a rule var → use it directly
+        // Otherwise → create a fresh var
+        let mut rename = subst::Substitution::new();
+
+        for vid in &all_vars {
+            if let Some(bound) = tree_subst.resolve(*vid) {
+                if !matches!(self.terms.get(bound), Term::Var(_)) {
+                    // tree_subst has rule_var → concrete: substitute directly
+                    rename.bind(*vid, bound);
+                    continue;
+                }
+            }
+            // No concrete binding — create fresh var
+            let fresh = self.fresh_var(vid.name());
+            let fresh_term = self.alloc(Term::Var(fresh));
+            rename.bind(*vid, fresh_term);
+        }
+
+        // Step 2: Apply rename to rule body → fresh_body
+        let fresh_body: Vec<TermId> = body
+            .iter()
+            .map(|&b| self.apply_subst(b, &rename))
+            .collect();
+
+        // Step 3: Build answer_links from tree_subst
+        // For each tree_subst entry whose key is a query var (not a rule var),
+        // map it to the appropriate fresh var or concrete value
+        let mut answer_links = subst::Substitution::new();
+
+        for (ts_vid, bound_term) in &tree_subst.bindings {
+            // Skip entries keyed by rule vars — they're already in rename
+            if all_vars.contains(ts_vid) {
+                continue;
+            }
+            // This is a query var entry
+            match self.terms.get(*bound_term) {
+                Term::Var(rule_vid) => {
+                    // query_var → Var(rule_vid): find what rename mapped rule_vid to
+                    let rule_vid = *rule_vid;
+                    if let Some(renamed) = rename.resolve(rule_vid) {
+                        answer_links.bind(*ts_vid, renamed);
+                    }
+                }
+                _ => {
+                    // query_var → concrete value: pass through directly
+                    answer_links.bind(*ts_vid, *bound_term);
+                }
+            }
+        }
+
+        (fresh_body, answer_links)
+    }
+
+    /// Apply a substitution to each goal in a list, returning new goal terms.
+    ///
+    /// Used to propagate concrete bindings from a ground fact match to
+    /// remaining goals.
+    pub fn apply_subst_each(
+        &mut self,
+        goals: &[TermId],
+        subst: &subst::Substitution,
+    ) -> Vec<TermId> {
+        goals.iter().map(|&g| self.apply_subst(g, subst)).collect()
     }
 
     // ── Helpers ─────────────────────────────────────────────────
