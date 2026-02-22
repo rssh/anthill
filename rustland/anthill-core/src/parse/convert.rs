@@ -9,18 +9,18 @@ use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 use tree_sitter::Node;
 
-use crate::intern::{Interner, Symbol};
+use crate::intern::{SymbolTable, Symbol};
 use crate::span::Span;
-use crate::kb::term::{Term, TermId, FnArg, Literal, VarId};
+use crate::kb::term::{Term, TermId, Literal, VarId};
 
 /// Join name segments into a single dot-separated string for interning.
-fn join_name_segments(interner: &crate::intern::Interner, segments: &[Symbol]) -> String {
+fn join_name_segments(symbols: &crate::intern::SymbolTable, segments: &[Symbol]) -> String {
     let mut out = String::new();
     for (i, &sym) in segments.iter().enumerate() {
         if i > 0 {
             out.push('.');
         }
-        out.push_str(interner.resolve(sym));
+        out.push_str(symbols.name(sym));
     }
     out
 }
@@ -30,7 +30,7 @@ use super::ir::*;
 
 pub(super) struct Converter<'a> {
     source: &'a str,
-    pub interner: Interner,
+    pub symbols: SymbolTable,
     pub terms: SimpleTermStore,
     pub items: Vec<Item>,
     pub errors: Vec<ParseError>,
@@ -46,7 +46,7 @@ impl<'a> Converter<'a> {
     pub fn new(source: &'a str) -> Self {
         Self {
             source,
-            interner: Interner::new(),
+            symbols: SymbolTable::new(),
             terms: SimpleTermStore::new(),
             items: Vec::new(),
             errors: Vec::new(),
@@ -66,7 +66,7 @@ impl<'a> Converter<'a> {
     }
 
     fn intern(&mut self, s: &str) -> Symbol {
-        self.interner.intern(s)
+        self.symbols.intern(s)
     }
 
     fn err(&mut self, msg: impl Into<String>, node: Node) {
@@ -95,7 +95,7 @@ impl<'a> Converter<'a> {
             // Already a single segment — just re-use it
             name.segments[0]
         } else {
-            let joined = join_name_segments(&self.interner, &name.segments);
+            let joined = join_name_segments(&self.symbols, &name.segments);
             self.intern(&joined)
         }
     }
@@ -291,7 +291,8 @@ impl<'a> Converter<'a> {
         let name = self.convert_name(name_node);
         let functor = self.intern_name(&name);
 
-        let mut args = SmallVec::new();
+        let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
+        let mut named_args: SmallVec<[(crate::intern::Symbol, TermId); 2]> = SmallVec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             match child.kind() {
@@ -301,19 +302,19 @@ impl<'a> Converter<'a> {
                     if let (Some(k), Some(v)) = (key_node, val_node) {
                         let sym = self.intern(self.text(k));
                         let tid = self.convert_term(v);
-                        args.push(FnArg::Named(sym, tid));
+                        named_args.push((sym, tid));
                     }
                 }
                 "name" => { /* already handled */ }
                 _ if is_term_kind(child.kind()) => {
                     let tid = self.convert_term(child);
-                    args.push(FnArg::Positional(tid));
+                    pos_args.push(tid);
                 }
                 _ => {}
             }
         }
 
-        self.terms.alloc(Term::Fn { functor, args })
+        self.terms.alloc(Term::Fn { functor, pos_args, named_args })
     }
 
     fn convert_instantiation_term(&mut self, node: Node) -> TermId {
@@ -322,7 +323,7 @@ impl<'a> Converter<'a> {
         let name = self.convert_name(name_node);
         let functor = self.intern_name(&name);
 
-        let mut args = SmallVec::new();
+        let mut named_args: SmallVec<[(crate::intern::Symbol, TermId); 2]> = SmallVec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             if child.kind() == "sort_binding" {
@@ -340,12 +341,12 @@ impl<'a> Converter<'a> {
                         // Punned: Eq{Int} — param name IS the type
                         self.terms.alloc(Term::Ref(param_sym))
                     };
-                    args.push(FnArg::Named(param_sym, value_tid));
+                    named_args.push((param_sym, value_tid));
                 }
             }
         }
 
-        self.terms.alloc(Term::Fn { functor, args })
+        self.terms.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args })
     }
 
     /// Extract a Name from a type CST node (simple_type or parameterized_type).
@@ -400,7 +401,8 @@ impl<'a> Converter<'a> {
 
         self.terms.alloc(Term::Fn {
             functor,
-            args: SmallVec::from_slice(&[FnArg::Positional(lhs), FnArg::Positional(rhs)]),
+            pos_args: SmallVec::from_slice(&[lhs, rhs]),
+            named_args: SmallVec::new(),
         })
     }
 

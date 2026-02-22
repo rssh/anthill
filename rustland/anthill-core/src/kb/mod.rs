@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 use smallvec::SmallVec;
 
-use crate::intern::{Interner, Symbol};
+use crate::intern::{SymbolTable, Symbol};
 use term::{Term, TermId, TermStore, VarId};
 use discrim::SubstTree;
 
@@ -63,7 +63,7 @@ pub enum SortKind {
 pub struct KnowledgeBase {
     // Term storage (hash-consed, refcounted)
     pub(crate) terms: TermStore,
-    pub(crate) interner: Interner,
+    pub(crate) symbols: SymbolTable,
 
     // Rules (facts are rules with empty body)
     rules: Vec<RuleEntry>,
@@ -95,7 +95,7 @@ impl KnowledgeBase {
     pub fn new() -> Self {
         Self {
             terms: TermStore::new(),
-            interner: Interner::new(),
+            symbols: SymbolTable::new(),
             rules: Vec::new(),
             by_sort: HashMap::new(),
             by_functor: HashMap::new(),
@@ -119,7 +119,7 @@ impl KnowledgeBase {
 
     /// Intern a string, returning a Symbol.
     pub fn intern(&mut self, s: &str) -> Symbol {
-        self.interner.intern(s)
+        self.symbols.intern(s)
     }
 
     /// Allocate a fresh logic variable id, carrying the display name.
@@ -131,7 +131,7 @@ impl KnowledgeBase {
 
     /// Resolve a Symbol back to a string.
     pub fn resolve_sym(&self, sym: Symbol) -> &str {
-        self.interner.resolve(sym)
+        self.symbols.name(sym)
     }
 
     /// Get the Term for a TermId.
@@ -612,7 +612,7 @@ impl KnowledgeBase {
         }
         match self.terms.get(entry.head) {
             Term::Fn { functor, pos_args, .. } => {
-                self.interner.resolve(*functor) == "eq" && pos_args.len() == 2
+                self.symbols.name(*functor) == "eq" && pos_args.len() == 2
             }
             _ => false,
         }
@@ -755,12 +755,37 @@ impl KnowledgeBase {
 
     /// Convenience: allocate a nullary functor term (name with no args).
     pub fn make_name_term(&mut self, name: &str) -> TermId {
-        let sym = self.interner.intern(name);
+        let sym = self.symbols.intern(name);
         self.terms.alloc(Term::Fn {
             functor: sym,
             pos_args: SmallVec::new(),
             named_args: SmallVec::new(),
         })
+    }
+
+    /// Resolve a user-defined symbol and create a nullary Fn term.
+    /// Falls back to intern() if no resolved symbol exists.
+    pub fn resolve_name_term(&mut self, name: &str) -> TermId {
+        let sym = if let Some(found) = self.symbols.find_resolved_symbol(name) {
+            found
+        } else {
+            self.symbols.intern(name)
+        };
+        self.terms.alloc(Term::Fn {
+            functor: sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        })
+    }
+
+    /// Check if a qualified name has a defined symbol in the symbol table.
+    pub fn has_qualified_name(&self, name: &str) -> bool {
+        self.symbols.by_qualified_name.contains_key(name)
+    }
+
+    /// Resolve a qualified name and return its short name (if defined).
+    pub fn qualified_short_name(&self, name: &str) -> Option<&str> {
+        self.symbols.by_qualified_name.get(name).map(|&sym| self.symbols.name(sym))
     }
 
     /// Allocate a nullary functor term from an already-interned symbol.

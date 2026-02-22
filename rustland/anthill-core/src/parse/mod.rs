@@ -26,7 +26,7 @@ pub fn parse(source: &str) -> Result<ParsedFile, Vec<ParseError>> {
     if converter.errors.is_empty() {
         Ok(ParsedFile {
             items: converter.items,
-            interner: converter.interner,
+            symbols: converter.symbols,
             terms: converter.terms,
         })
     } else {

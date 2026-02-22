@@ -97,9 +97,12 @@ pub enum Term {
     Var(VarId),
     /// Function application: `f(arg1, arg2, key: arg3)`.
     /// `functor` is the fully-qualified interned name of the function symbol.
+    /// Positional args are stored in `pos_args`, named args in `named_args`
+    /// (pre-sorted by `Symbol::index()` at construction time).
     Fn {
         functor: Symbol,
-        args: SmallVec<[FnArg; 4]>,
+        pos_args: SmallVec<[TermId; 4]>,
+        named_args: SmallVec<[(Symbol, TermId); 2]>,
     },
     /// Reference term: `Ref(name)`
     Ref(Symbol),
@@ -118,13 +121,11 @@ impl Term {
     /// Immediate child `TermId`s of this term.
     pub fn subterms(&self) -> SmallVec<[TermId; 4]> {
         match self {
-            Term::Fn { args, .. } => args
-                .iter()
-                .map(|a| match a {
-                    FnArg::Positional(id) => *id,
-                    FnArg::Named(_, id) => *id,
-                })
-                .collect(),
+            Term::Fn { pos_args, named_args, .. } => {
+                let mut out: SmallVec<[TermId; 4]> = pos_args.iter().copied().collect();
+                out.extend(named_args.iter().map(|&(_, id)| id));
+                out
+            }
             Term::Unspecified { hints, .. } => {
                 hints.iter().copied().collect()
             }
@@ -132,14 +133,14 @@ impl Term {
             | Term::Bottom | Term::Ident(_) => SmallVec::new(),
         }
     }
-}
 
-// ── FnArg ───────────────────────────────────────────────────────
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum FnArg {
-    Positional(TermId),
-    Named(Symbol, TermId),
+    /// Total arity (positional + named args). Only meaningful for `Fn` terms.
+    pub fn arity(&self) -> usize {
+        match self {
+            Term::Fn { pos_args, named_args, .. } => pos_args.len() + named_args.len(),
+            _ => 0,
+        }
+    }
 }
 
 // ── Literal ─────────────────────────────────────────────────────
@@ -271,7 +272,8 @@ mod tests {
         let inner = store.alloc(Term::Const(Literal::Int(1)));
         let outer = store.alloc(Term::Fn {
             functor: sym(0),
-            args: SmallVec::from_elem(FnArg::Positional(inner), 1),
+            pos_args: SmallVec::from_elem(inner, 1),
+            named_args: SmallVec::new(),
         });
         // inner has refcount 2 (1 from alloc + 1 from being a subterm of outer)
         assert_eq!(store.refcount(inner), 2);
@@ -288,7 +290,8 @@ mod tests {
         // a + b is represented as add(a, b)
         let sum = store.alloc(Term::Fn {
             functor: sym(0), // would be intern("add") in real use
-            args: SmallVec::from_slice(&[FnArg::Positional(a), FnArg::Positional(b)]),
+            pos_args: SmallVec::from_slice(&[a, b]),
+            named_args: SmallVec::new(),
         });
         let subs = store.get(sum).subterms();
         assert_eq!(subs.as_slice(), &[a, b]);

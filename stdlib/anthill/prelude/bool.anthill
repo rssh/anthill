@@ -1,6 +1,7 @@
 -- Bool: operations on the built-in Bool type
 namespace anthill.prelude.Bool
   import anthill.prelude.{Eq}
+  import anthill.reflect.{Term}
   export and, or, not, ite
 
   fact Eq{T = Bool}

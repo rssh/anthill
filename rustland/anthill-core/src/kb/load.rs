@@ -4,6 +4,8 @@
 /// Re-interns symbols, re-allocates terms into the hash-consed store,
 /// registers sorts, and asserts facts.
 ///
+/// **Pipeline:** scan_definitions (define all names) → load (fill KB with facts).
+///
 /// The loader takes a `SourceResolver` to fetch imported files. The CLI
 /// provides a real FS implementation; tests use `NullResolver`.
 
@@ -11,8 +13,9 @@ use std::collections::{HashMap, HashSet};
 
 use smallvec::SmallVec;
 
-use crate::intern::Symbol;
+use crate::intern::{Symbol, SymbolDef, SymbolKind, ScopeInclusion, ResolveResult};
 use crate::parse::ir::*;
+use crate::span::Span;
 use super::{KnowledgeBase, SortKind};
 use super::term::{Term, TermId, VarId};
 
@@ -36,66 +39,508 @@ impl SourceResolver for NullResolver {
     }
 }
 
+/// Extract the last dot-separated segment from a qualified name.
+fn last_segment(qualified: &str) -> &str {
+    qualified.rsplit('.').next().unwrap_or(qualified)
+}
+
 /// Join name segments into a single dot-separated string.
-fn join_segments(interner: &crate::intern::Interner, segments: &[Symbol]) -> String {
+fn join_segments(symbols: &crate::intern::SymbolTable, segments: &[Symbol]) -> String {
     let mut out = String::new();
     for (i, &sym) in segments.iter().enumerate() {
         if i > 0 {
             out.push('.');
         }
-        out.push_str(interner.resolve(sym));
+        out.push_str(symbols.name(sym));
     }
     out
 }
 
 #[derive(Clone, Debug)]
-pub struct LoadError {
-    pub message: String,
-}
-
-impl LoadError {
-    #[allow(dead_code)]
-    fn new(msg: impl Into<String>) -> Self {
-        Self { message: msg.into() }
-    }
+pub enum LoadError {
+    UnresolvedName {
+        name: String,
+        span: Span,
+        scope_name: String,
+    },
+    AmbiguousSymbol {
+        name: String,
+        candidates: Vec<String>,
+        span: Span,
+        scope_name: String,
+    },
+    Other {
+        message: String,
+    },
 }
 
 impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "load error: {}", self.message)
+        match self {
+            LoadError::UnresolvedName { name, span, scope_name } => {
+                write!(f, "unresolved name '{}' in scope '{}' at {}..{}", name, scope_name, span.start, span.end)
+            }
+            LoadError::AmbiguousSymbol { name, candidates, span, scope_name } => {
+                write!(f, "ambiguous symbol '{}' in scope '{}' at {}..{}: candidates {:?}", name, scope_name, span.start, span.end, candidates)
+            }
+            LoadError::Other { message } => {
+                write!(f, "load error: {}", message)
+            }
+        }
     }
 }
 
 impl std::error::Error for LoadError {}
 
+// ══════════════════════════════════════════════════════════════════
+// Phase 1: Scan definitions
+// ══════════════════════════════════════════════════════════════════
+
+/// Scan all parsed files to define symbols (sorts, namespaces, entities,
+/// operations, rules) and build the scope inclusion chain (requires, imports).
+///
+/// Two sub-passes over all files:
+/// - Pass 1: Define all names, record exports and type params
+/// - Pass 2: Process `requires` and `import` declarations → build parent scope chain
+pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) {
+    let global = kb.make_name_term("_global");
+
+    // Sub-pass 1: define all names
+    for file in files {
+        scan_items_pass1(kb, &file.items, &file.symbols, global);
+    }
+
+    // Sub-pass 2: process requires and imports (all sorts exist now)
+    for file in files {
+        scan_items_pass2(kb, &file.items, &file.symbols, global);
+    }
+}
+
+/// Check if a scope term represents a sort (vs. the global scope or a namespace).
+/// Heuristic: if the scope has a symbol defined as Sort kind, it's a sort scope.
+fn is_sort_scope(kb: &KnowledgeBase, scope: TermId) -> bool {
+    if let Term::Fn { functor, pos_args, named_args } = kb.get_term(scope) {
+        if pos_args.is_empty() && named_args.is_empty() {
+            if let crate::intern::SymbolDef::Resolved { kind: SymbolKind::Sort, .. } = kb.symbols.get(*functor) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// For a dotted name like `"a.b.C"`, create implicit intermediate namespaces
+/// `"a"` and `"a.b"` (if they don't already exist), returning the short name
+/// (`"C"`) and the innermost scope (`a.b`'s term).
+///
+/// If the name has no dots, returns `(full_name, outer_scope)` unchanged.
+fn ensure_intermediate_namespaces(
+    kb: &mut KnowledgeBase,
+    full_name: &str,
+    outer_scope: TermId,
+) -> (String, TermId) {
+    let segments: Vec<&str> = full_name.split('.').collect();
+    if segments.len() <= 1 {
+        return (full_name.to_owned(), outer_scope);
+    }
+
+    let mut current_scope = outer_scope;
+    // Process all segments except the last one — each becomes a namespace
+    for i in 0..segments.len() - 1 {
+        let path: String = segments[..=i].join(".");
+        let short = segments[i];
+
+        // Check if this namespace already exists in the current scope
+        let existing = kb.symbols.by_qualified_name.get(&path).copied().filter(|&sym| {
+            matches!(
+                kb.symbols.get(sym),
+                SymbolDef::Resolved { kind: SymbolKind::Namespace, scope_raw, .. }
+                if *scope_raw == current_scope.raw()
+            )
+        });
+
+        let ns_term = if let Some(sym) = existing {
+            // Reuse existing namespace
+            kb.alloc(Term::Fn {
+                functor: sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::new(),
+            })
+        } else {
+            // Create implicit namespace
+            let sym = kb.symbols.define(short, &path, SymbolKind::Namespace, current_scope.raw());
+            let ns_term = kb.alloc(Term::Fn {
+                functor: sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::new(),
+            });
+            // Enclosing scope is visible from within this namespace
+            kb.symbols.add_parent(ns_term.raw(), ScopeInclusion {
+                parent_scope_raw: current_scope.raw(),
+                instantiation_term_raw: current_scope.raw(),
+                is_enclosing: true,
+            });
+            ns_term
+        };
+
+        current_scope = ns_term;
+    }
+
+    (segments.last().unwrap().to_string(), current_scope)
+}
+
+/// Sub-pass 1: define all names, record exports and type params.
+fn scan_items_pass1(
+    kb: &mut KnowledgeBase,
+    items: &[Item],
+    parse_sym: &crate::intern::SymbolTable,
+    scope: TermId,
+) {
+    for item in items {
+        match item {
+            Item::SortWithBody(s) => {
+                let name = join_segments(parse_sym, &s.name.segments);
+                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope);
+                let sym = kb.symbols.define(&short, &name, SymbolKind::Sort, actual_scope.raw());
+                let sort_term = kb.alloc(Term::Fn {
+                    functor: sym,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::new(),
+                });
+                // Implicit parent: the enclosing scope is visible from within the sort
+                kb.symbols.add_parent(sort_term.raw(), ScopeInclusion {
+                    parent_scope_raw: actual_scope.raw(),
+                    instantiation_term_raw: actual_scope.raw(),
+                    is_enclosing: true,
+                });
+                // Record exports
+                for export_name in &s.exports {
+                    let n = join_segments(parse_sym, &export_name.segments);
+                    kb.symbols.add_export(sort_term.raw(), &n);
+                }
+                // Recurse into sort body
+                scan_items_pass1(kb, &s.items, parse_sym, sort_term);
+            }
+            Item::AbstractSort(s) => {
+                let name = join_segments(parse_sym, &s.name.segments);
+                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope);
+                let _sym = kb.symbols.define(&short, &name, SymbolKind::Sort, actual_scope.raw());
+                // `sort T` inside a SortWithBody = type parameter
+                if is_sort_scope(kb, scope) {
+                    kb.symbols.add_type_param(scope.raw(), &short);
+                }
+            }
+            Item::Namespace(n) => {
+                let name = join_segments(parse_sym, &n.name.segments);
+                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope);
+                // Reuse existing namespace symbol if already defined in the same scope
+                // (multiple files can contribute items to the same namespace).
+                let existing = kb.symbols.by_qualified_name.get(&name).copied().filter(|&sym| {
+                    matches!(
+                        kb.symbols.get(sym),
+                        SymbolDef::Resolved { kind: SymbolKind::Namespace, scope_raw, .. }
+                        if *scope_raw == actual_scope.raw()
+                    )
+                });
+                let (_sym, ns_term) = if let Some(sym) = existing {
+                    let ns_term = kb.alloc(Term::Fn {
+                        functor: sym,
+                        pos_args: SmallVec::new(),
+                        named_args: SmallVec::new(),
+                    });
+                    (sym, ns_term)
+                } else {
+                    let sym = kb.symbols.define(&short, &name, SymbolKind::Namespace, actual_scope.raw());
+                    let ns_term = kb.alloc(Term::Fn {
+                        functor: sym,
+                        pos_args: SmallVec::new(),
+                        named_args: SmallVec::new(),
+                    });
+                    // Implicit parent: the enclosing scope is visible from within the namespace
+                    kb.symbols.add_parent(ns_term.raw(), ScopeInclusion {
+                        parent_scope_raw: actual_scope.raw(),
+                        instantiation_term_raw: actual_scope.raw(),
+                        is_enclosing: true,
+                    });
+                    (sym, ns_term)
+                };
+                // Record exports (merge for existing namespaces)
+                for export_name in &n.exports {
+                    let en = join_segments(parse_sym, &export_name.segments);
+                    kb.symbols.add_export(ns_term.raw(), &en);
+                }
+                // Recurse into namespace body
+                scan_items_pass1(kb, &n.items, parse_sym, ns_term);
+            }
+            Item::Entity(e) => {
+                let name = join_segments(parse_sym, &e.name.segments);
+                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope);
+                kb.symbols.define(&short, &name, SymbolKind::Entity, actual_scope.raw());
+            }
+            Item::Operation(o) => {
+                let name = join_segments(parse_sym, &o.name.segments);
+                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope);
+                kb.symbols.define(&short, &name, SymbolKind::Operation, actual_scope.raw());
+            }
+            Item::OperationBlock(ob) => {
+                for op in &ob.entries {
+                    let name = join_segments(parse_sym, &op.name.segments);
+                    kb.symbols.define(&name, &name, SymbolKind::Operation, scope.raw());
+                }
+            }
+            Item::Rule(r) => {
+                if let Some(ref label) = r.label {
+                    let name = join_segments(parse_sym, &label.segments);
+                    kb.symbols.define(&name, &name, SymbolKind::Rule, scope.raw());
+                }
+            }
+            Item::RuleBlock(rb) => {
+                for rule in &rb.entries {
+                    if let Some(ref label) = rule.label {
+                        let name = join_segments(parse_sym, &label.segments);
+                        kb.symbols.define(&name, &name, SymbolKind::Rule, scope.raw());
+                    }
+                }
+            }
+            Item::Constraint(_) => {
+                // Constraints don't define named symbols
+            }
+            // Stage 0 items, facts, requires — handled elsewhere or not names
+            _ => {}
+        }
+    }
+}
+
+/// Sub-pass 2: process requires declarations and imports → build parent scope chain.
+fn scan_items_pass2(
+    kb: &mut KnowledgeBase,
+    items: &[Item],
+    parse_sym: &crate::intern::SymbolTable,
+    scope: TermId,
+) {
+    for item in items {
+        match item {
+            Item::SortWithBody(s) => {
+                let name = join_segments(parse_sym, &s.name.segments);
+                if let Some(sort_term) = find_scope_by_name(kb, &name) {
+                    // Process sort-level imports
+                    process_imports(kb, parse_sym, &s.imports, sort_term);
+                    // Recurse
+                    scan_items_pass2(kb, &s.items, parse_sym, sort_term);
+                }
+            }
+            Item::Namespace(n) => {
+                let name = join_segments(parse_sym, &n.name.segments);
+                if let Some(ns_term) = find_scope_by_name(kb, &name) {
+                    // Process namespace-level imports
+                    process_imports(kb, parse_sym, &n.imports, ns_term);
+                    // Recurse
+                    scan_items_pass2(kb, &n.items, parse_sym, ns_term);
+                }
+            }
+            Item::RequiresDecl(r) => {
+                let req_sort_name = type_expr_base_name(parse_sym, &r.type_expr);
+                // Use scope-aware resolution first (handles imported/aliased names),
+                // falling back to qualified-name lookup.
+                let req_scope = resolve_name_to_scope(kb, &req_sort_name, scope)
+                    .or_else(|| find_scope_by_name(kb, &req_sort_name));
+                if let Some(req_scope) = req_scope {
+                    // Create instantiation term
+                    let inst_term = build_instantiation_term(kb, parse_sym, &r.type_expr, scope);
+                    kb.symbols.add_parent(scope.raw(), ScopeInclusion {
+                        parent_scope_raw: req_scope.raw(),
+                        instantiation_term_raw: inst_term.raw(),
+                        is_enclosing: false,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Get the base name of a TypeExpr (ignoring bindings).
+fn type_expr_base_name(parse_sym: &crate::intern::SymbolTable, ty: &TypeExpr) -> String {
+    match ty {
+        TypeExpr::Simple(name) => join_segments(parse_sym, &name.segments),
+        TypeExpr::Parameterized { name, .. } => join_segments(parse_sym, &name.segments),
+    }
+}
+
+/// Resolve a name in the given scope context, returning a scope TermId.
+/// Uses the full scope-aware resolution chain (locals, imports, parents).
+fn resolve_name_to_scope(kb: &mut KnowledgeBase, name: &str, scope: TermId) -> Option<TermId> {
+    match kb.symbols.resolve_in_scope(name, scope.raw()) {
+        crate::intern::ResolveResult::Found(sym) => {
+            Some(kb.alloc(Term::Fn {
+                functor: sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::new(),
+            }))
+        }
+        _ => None,
+    }
+}
+
+/// Find a scope TermId by looking up a qualified name in the symbol table,
+/// then reconstructing the nullary Fn term.
+fn find_scope_by_name(kb: &mut KnowledgeBase, qualified: &str) -> Option<TermId> {
+    let sym = *kb.symbols.by_qualified_name.get(qualified)?;
+    Some(kb.alloc(Term::Fn {
+        functor: sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    }))
+}
+
+/// Build an instantiation term for `requires Eq{T}`.
+fn build_instantiation_term(
+    kb: &mut KnowledgeBase,
+    parse_sym: &crate::intern::SymbolTable,
+    type_expr: &TypeExpr,
+    _current_scope: TermId,
+) -> TermId {
+    match type_expr {
+        TypeExpr::Simple(name) => {
+            let n = join_segments(parse_sym, &name.segments);
+            find_scope_by_name(kb, &n)
+                .unwrap_or_else(|| kb.make_name_term(&n))
+        }
+        TypeExpr::Parameterized { name, bindings } => {
+            let sort_name = join_segments(parse_sym, &name.segments);
+            let sort_sym = kb.symbols.find_sort_symbol(&sort_name)
+                .unwrap_or_else(|| kb.symbols.intern(&sort_name));
+            let named_args: SmallVec<[(Symbol, TermId); 2]> = bindings.iter().map(|b| {
+                let key = kb.symbols.intern(&join_segments(parse_sym, &b.param.segments));
+                let val = build_instantiation_term(kb, parse_sym, &b.bound, _current_scope);
+                (key, val)
+            }).collect();
+            kb.alloc(Term::Fn {
+                functor: sort_sym,
+                pos_args: SmallVec::new(),
+                named_args,
+            })
+        }
+    }
+}
+
+/// Process `import` declarations → register imported names and parent scopes.
+fn process_imports(
+    kb: &mut KnowledgeBase,
+    parse_sym: &crate::intern::SymbolTable,
+    imports: &[Import],
+    scope: TermId,
+) {
+    for imp in imports {
+        let path = join_segments(parse_sym, &imp.path.segments);
+        match &imp.kind {
+            ImportKind::Plain => {
+                // `import anthill.prelude.List` → make "List" resolvable locally
+                // and add the target scope as a parent for accessing its contents.
+                if let Some(&original_sym) = kb.symbols.by_qualified_name.get(&path) {
+                    let short = last_segment(&path);
+                    kb.symbols.add_import(scope.raw(), short, original_sym);
+                }
+                if let Some(target_scope) = find_scope_by_name(kb, &path) {
+                    kb.symbols.add_parent(scope.raw(), ScopeInclusion {
+                        parent_scope_raw: target_scope.raw(),
+                        instantiation_term_raw: target_scope.raw(),
+                        is_enclosing: false,
+                    });
+                }
+            }
+            ImportKind::Selective(names) => {
+                // `import anthill.prelude.{Eq, Ordered}` → for each name,
+                // register a local alias. Parent-scope links are NOT added here —
+                // if sort contents (operations) are needed, use `requires` or
+                // wildcard import (`import path.*`) instead.
+                //
+                // Two strategies for finding the symbol:
+                // 1. Direct qualified-name lookup (e.g., "anthill.prelude.Eq" as a
+                //    top-level dotted name)
+                // 2. Resolve short name within the base-path scope (e.g., "Term"
+                //    defined inside `namespace anthill.reflect`)
+                let base_scope = find_scope_by_name(kb, &path);
+                for name in names {
+                    let short = join_segments(parse_sym, &name.segments);
+                    let qualified = format!("{}.{}", path, short);
+                    // Try qualified lookup first, then resolve within base scope
+                    let original_sym = kb.symbols.by_qualified_name.get(&qualified).copied()
+                        .or_else(|| {
+                            base_scope.and_then(|bs| {
+                                match kb.symbols.resolve_in_scope(&short, bs.raw()) {
+                                    crate::intern::ResolveResult::Found(sym) => Some(sym),
+                                    _ => None,
+                                }
+                            })
+                        });
+                    if let Some(sym) = original_sym {
+                        kb.symbols.add_import(scope.raw(), &short, sym);
+                    }
+                }
+            }
+            ImportKind::Wildcard => {
+                if let Some(target_scope) = find_scope_by_name(kb, &path) {
+                    kb.symbols.add_parent(scope.raw(), ScopeInclusion {
+                        parent_scope_raw: target_scope.raw(),
+                        instantiation_term_raw: target_scope.raw(),
+                        is_enclosing: false,
+                    });
+                }
+            }
+        }
+    }
+}
+
+// ── Prelude: built-in primitive sorts ────────────────────────────
+
+/// Primitive sort names that are always available in the global scope.
+/// These correspond to the stdlib primitive types (Int, Float, String, Bool).
+pub const PRELUDE_SORTS: &[&str] = &["Int", "Float", "String", "Bool"];
+
+/// Register primitive sorts in the global scope so they are always resolvable.
+///
+/// Call this before `scan_definitions` / `load` to ensure that references to
+/// `Int`, `Float`, `String`, `Bool` never produce unresolved-name errors.
+pub fn register_prelude(kb: &mut KnowledgeBase) {
+    let global = kb.make_name_term("_global");
+    for &name in PRELUDE_SORTS {
+        kb.symbols.define(name, name, SymbolKind::Sort, global.raw());
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Phase 2: Load into KB
+// ══════════════════════════════════════════════════════════════════
+
 /// Load a parsed file into the knowledge base.
 ///
-/// The `resolver` is used to fetch source text for `import_tools` declarations.
-/// Pass `&NullResolver` if no imports are expected.
-///
-/// For multi-file projects with `import` declarations (including `where` clauses),
-/// use `load_all` to load all files into the same KB so that cross-file references
-/// resolve correctly.
+/// Scans definitions first, then loads facts into the KB.
 pub fn load(
     kb: &mut KnowledgeBase,
     parsed: &ParsedFile,
     resolver: &dyn SourceResolver,
 ) -> Result<(), Vec<LoadError>> {
+    // Phase 1: Scan definitions from this file
+    scan_definitions(kb, &[parsed]);
+    // Phase 2: Load
     let mut loaded_paths = HashSet::new();
     load_with_visited(kb, parsed, resolver, &mut loaded_paths)
 }
 
 /// Load multiple parsed files into the same knowledge base.
 ///
-/// All files are loaded sequentially into the shared KB, so imports
-/// referencing sorts/domains from other files in the set will find
-/// their facts already present (order-independent for `where` clauses
-/// since member facts from earlier files are visible to later ones).
+/// Scans ALL files for definitions first, then loads them. This ensures
+/// cross-file references resolve correctly regardless of load order.
 pub fn load_all(
     kb: &mut KnowledgeBase,
     files: &[&ParsedFile],
     resolver: &dyn SourceResolver,
 ) -> Result<(), Vec<LoadError>> {
+    // Phase 1: Scan all definitions across all files
+    scan_definitions(kb, files);
+
+    // Phase 2: Load files with scope-aware resolution
     let mut loaded_paths = HashSet::new();
     let mut all_errors = Vec::new();
     for parsed in files {
@@ -117,7 +562,8 @@ fn load_with_visited(
     resolver: &dyn SourceResolver,
     loaded_paths: &mut HashSet<String>,
 ) -> Result<(), Vec<LoadError>> {
-    let mut loader = Loader::new(kb, parsed, resolver, loaded_paths);
+    let global = kb.make_name_term("_global");
+    let mut loader = Loader::new(kb, parsed, resolver, loaded_paths, global);
     loader.load_items(&parsed.items, None);
 
     if loader.errors.is_empty() {
@@ -134,11 +580,13 @@ struct Loader<'a> {
     loaded_paths: &'a mut HashSet<String>,
     // Map from parse-time TermId → KB TermId
     term_map: HashMap<u32, TermId>,
-    // Map from parse-time Symbol → KB Symbol
+    // Map from parse-time Symbol → KB Symbol (for reintern — plain intern)
     sym_map: HashMap<u32, Symbol>,
     // Map from parse-time VarId → KB VarId
     var_map: HashMap<u32, VarId>,
     errors: Vec<LoadError>,
+    // Current scope for scope-aware resolution
+    current_scope: TermId,
 }
 
 impl<'a> Loader<'a> {
@@ -147,6 +595,7 @@ impl<'a> Loader<'a> {
         parsed: &'a ParsedFile,
         resolver: &'a dyn SourceResolver,
         loaded_paths: &'a mut HashSet<String>,
+        global_scope: TermId,
     ) -> Self {
         Self {
             kb,
@@ -157,27 +606,115 @@ impl<'a> Loader<'a> {
             sym_map: HashMap::new(),
             var_map: HashMap::new(),
             errors: Vec::new(),
+            current_scope: global_scope,
         }
     }
 
     /// Re-intern a symbol from the parse interner into the KB interner.
+    /// Plain intern — no scope-aware resolution. Used for field names,
+    /// param names, meta keys, variable names.
     fn reintern(&mut self, sym: Symbol) -> Symbol {
         if let Some(&mapped) = self.sym_map.get(&sym.index()) {
             return mapped;
         }
-        let s = self.parsed.interner.resolve(sym);
+        let s = self.parsed.symbols.resolve(sym);
         let new_sym = self.kb.intern(s);
         self.sym_map.insert(sym.index(), new_sym);
         new_sym
     }
 
     /// Re-intern a parse IR Name as a single dot-joined KB Symbol.
+    /// Plain intern — no scope-aware resolution.
     fn reintern_name(&mut self, name: &Name) -> Symbol {
         if name.segments.len() == 1 {
             self.reintern(name.segments[0])
         } else {
-            let joined = join_segments(&self.parsed.interner, &name.segments);
+            let joined = join_segments(&self.parsed.symbols, &name.segments);
             self.kb.intern(&joined)
+        }
+    }
+
+    /// Human-readable name for the current scope (for error messages).
+    fn scope_display_name(&self) -> String {
+        match self.kb.get_term(self.current_scope) {
+            Term::Fn { functor, .. } => {
+                match self.kb.symbols.get(*functor) {
+                    SymbolDef::Resolved { short_name, .. } => short_name.clone(),
+                    SymbolDef::Unresolved { name } => name.clone(),
+                }
+            }
+            _ => "_unknown".to_owned(),
+        }
+    }
+
+    /// Extract qualified names from a list of candidate symbols (for error messages).
+    fn candidate_names(&self, candidates: &[Symbol]) -> Vec<String> {
+        candidates.iter().map(|&sym| {
+            match self.kb.symbols.get(sym) {
+                SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
+                SymbolDef::Unresolved { name } => name.clone(),
+            }
+        }).collect()
+    }
+
+    /// Scope-aware symbol resolution for functors and type/sort references.
+    /// If resolution finds a defined symbol, returns it; otherwise falls
+    /// back to plain intern (term-level functors may be undefined data names).
+    /// Ambiguous matches are still hard errors.
+    fn remap_symbol(&mut self, sym: Symbol) -> Symbol {
+        let name = self.parsed.symbols.name(sym);
+        let scope = self.current_scope.raw();
+        match self.kb.symbols.resolve_in_scope(name, scope) {
+            ResolveResult::Found(resolved) => resolved,
+            ResolveResult::Ambiguous(candidates) => {
+                self.errors.push(LoadError::AmbiguousSymbol {
+                    name: name.to_owned(),
+                    candidates: self.candidate_names(&candidates),
+                    span: Span::default(),
+                    scope_name: self.scope_display_name(),
+                });
+                self.kb.symbols.intern(name)
+            }
+            ResolveResult::NotFound => self.kb.symbols.intern(name),
+        }
+    }
+
+    /// Scope-aware name resolution for multi-segment names.
+    fn remap_name(&mut self, name: &Name) -> Symbol {
+        let lookup_name = if name.segments.len() == 1 {
+            self.parsed.symbols.name(name.segments[0]).to_owned()
+        } else {
+            join_segments(&self.parsed.symbols, &name.segments)
+        };
+        let scope = self.current_scope.raw();
+        match self.kb.symbols.resolve_in_scope(&lookup_name, scope) {
+            ResolveResult::Found(resolved) => resolved,
+            ResolveResult::Ambiguous(candidates) => {
+                self.errors.push(LoadError::AmbiguousSymbol {
+                    name: lookup_name.clone(),
+                    candidates: self.candidate_names(&candidates),
+                    span: name.span,
+                    scope_name: self.scope_display_name(),
+                });
+                self.kb.symbols.intern(&lookup_name)
+            }
+            ResolveResult::NotFound => {
+                // For multi-segment names, try qualified name lookup
+                // (the name might be defined via dotted declaration in
+                // an intermediate namespace not yet in our scope chain)
+                if name.segments.len() > 1 {
+                    if let Some(&sym) = self.kb.symbols.by_qualified_name.get(&lookup_name) {
+                        return sym;
+                    }
+                }
+                let sym = self.kb.symbols.intern(&lookup_name);
+                self.errors.push(LoadError::UnresolvedName {
+                    name: lookup_name,
+                    span: name.span,
+                    scope_name: self.scope_display_name(),
+                });
+                sym
+            }
         }
     }
 
@@ -202,7 +739,7 @@ impl<'a> Loader<'a> {
                 Term::Var(kb_vid)
             }
             Term::Fn { functor, pos_args, named_args } => {
-                let new_functor = self.reintern(functor);
+                let new_functor = self.remap_symbol(functor);
                 let new_pos: SmallVec<[TermId; 4]> = pos_args
                     .iter()
                     .map(|&id| self.convert_term(id))
@@ -213,7 +750,10 @@ impl<'a> Loader<'a> {
                     .collect();
                 Term::Fn { functor: new_functor, pos_args: new_pos, named_args: new_named }
             }
-            Term::Ref(sym) => Term::Ref(self.reintern(sym)),
+            Term::Ref(sym) => {
+                let new_sym = self.remap_symbol(sym);
+                Term::Ref(new_sym)
+            }
             Term::Unspecified { text, hints } => {
                 let new_hints: SmallVec<[TermId; 2]> = hints
                     .iter()
@@ -222,7 +762,15 @@ impl<'a> Loader<'a> {
                 Term::Unspecified { text, hints: new_hints }
             }
             Term::Bottom => Term::Bottom,
-            Term::Ident(sym) => Term::Ident(self.reintern(sym)),
+            Term::Ident(sym) => {
+                let new_sym = self.remap_symbol(sym);
+                // Promote to Ref if the symbol resolved to a defined name
+                if self.kb.symbols.is_resolved(new_sym) {
+                    Term::Ref(new_sym)
+                } else {
+                    Term::Ident(new_sym)
+                }
+            }
         };
 
         let kb_id = self.kb.alloc(kb_term);
@@ -230,9 +778,9 @@ impl<'a> Loader<'a> {
         kb_id
     }
 
-    /// Convert a Name to a sort term (nullary Fn term).
+    /// Convert a Name to a sort term (nullary Fn term) using scope-aware resolution.
     fn name_to_sort_term(&mut self, name: &Name) -> TermId {
-        let functor = self.reintern_name(name);
+        let functor = self.remap_name(name);
         self.kb.alloc(Term::Fn {
             functor,
             pos_args: SmallVec::new(),
@@ -253,9 +801,6 @@ impl<'a> Loader<'a> {
                     named_args.push((param_sym, bound_term));
                 }
 
-                // Note: validation that binding params are actual members is deferred
-                // to a separate resolve pass.
-
                 let param_type_sym = self.kb.intern("ParameterizedType");
                 self.kb.alloc(Term::Fn {
                     functor: param_type_sym,
@@ -266,9 +811,11 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// Load items (top-level or within a domain).
+    /// Load items (top-level or within a domain), tracking scope.
     fn load_items(&mut self, items: &[Item], domain: Option<TermId>) {
+        let prev_scope = self.current_scope;
         let domain = domain.unwrap_or_else(|| self.kb.make_name_term("_global"));
+        self.current_scope = domain;
 
         for item in items {
             match item {
@@ -298,6 +845,8 @@ impl<'a> Loader<'a> {
                 Item::ImportTools(it) => self.load_import_tools(it, domain),
             }
         }
+
+        self.current_scope = prev_scope;
     }
 
     fn load_namespace(&mut self, n: &Namespace) {
@@ -307,11 +856,17 @@ impl<'a> Loader<'a> {
         // Assert namespace as a fact
         self.kb.assert_fact(ns_term, ns_sort, ns_term, None);
 
+        // Set scope to namespace for member resolution
+        let prev_scope = self.current_scope;
+        self.current_scope = ns_term;
+
         // Emit member facts for direct children
         self.emit_member_facts_for_items(&n.items, ns_term);
 
         // Load nested items within this namespace scope
         self.load_items(&n.items, Some(ns_term));
+
+        self.current_scope = prev_scope;
     }
 
     fn load_abstract_sort(&mut self, s: &AbstractSort, domain: TermId) {
@@ -353,6 +908,10 @@ impl<'a> Loader<'a> {
         });
         self.kb.assert_fact(fact_term, sort_sort, parent_domain, None);
 
+        // Set scope to sort for child resolution
+        let prev_scope = self.current_scope;
+        self.current_scope = sort_term;
+
         // Register direct entity children as constructor subsorts
         for item in &s.items {
             if let Item::Entity(e) = item {
@@ -376,11 +935,13 @@ impl<'a> Loader<'a> {
 
         // Load all items within this sort's domain scope
         self.load_items(&s.items, Some(sort_term));
+
+        self.current_scope = prev_scope;
     }
 
     fn load_entity(&mut self, e: &Entity, domain: TermId) {
         let entity_sort = self.kb.make_name_term("Entity");
-        let functor = self.reintern_name(&e.name);
+        let functor = self.remap_name(&e.name);
 
         let named_args: SmallVec<[(Symbol, TermId); 2]> = e.fields
             .iter()
@@ -421,7 +982,7 @@ impl<'a> Loader<'a> {
 
     fn load_operation(&mut self, o: &Operation, domain: TermId) {
         let op_sort = self.kb.make_name_term("Operation");
-        let functor = self.reintern_name(&o.name);
+        let functor = self.remap_name(&o.name);
 
         let return_term = self.type_expr_to_term(&o.return_type);
 
@@ -590,9 +1151,9 @@ impl<'a> Loader<'a> {
 
     fn load_import_tools(&mut self, it: &ImportTools, _domain: TermId) {
         for name in &it.names {
-            let path = join_segments(&self.parsed.interner, &name.segments);
+            let path = join_segments(&self.parsed.symbols, &name.segments);
             if self.loaded_paths.contains(&path) {
-                continue; // already loaded or in progress — skip to break cycles
+                continue;
             }
             self.loaded_paths.insert(path.clone());
 
@@ -600,6 +1161,8 @@ impl<'a> Loader<'a> {
                 Ok(source) => {
                     match crate::parse::parse(&source) {
                         Ok(imported) => {
+                            // Scan definitions from the imported file before loading
+                            scan_definitions(self.kb, &[&imported]);
                             if let Err(errs) = load_with_visited(
                                 self.kb, &imported, self.resolver, self.loaded_paths,
                             ) {
@@ -608,7 +1171,7 @@ impl<'a> Loader<'a> {
                         }
                         Err(parse_errs) => {
                             for pe in parse_errs {
-                                self.errors.push(LoadError {
+                                self.errors.push(LoadError::Other {
                                     message: format!("parse error in import '{}': {}", path, pe.message),
                                 });
                             }
@@ -616,7 +1179,7 @@ impl<'a> Loader<'a> {
                     }
                 }
                 Err(e) => {
-                    self.errors.push(LoadError {
+                    self.errors.push(LoadError::Other {
                         message: format!("cannot resolve import '{}': {}", path, e),
                     });
                 }
@@ -624,12 +1187,8 @@ impl<'a> Loader<'a> {
         }
     }
 
-    // ── Import processing ─────────────────────────────────────
-
     // ── Member fact emission ───────────────────────────────────
 
-    /// Emit a single member fact: member(name, kind, parent)
-    /// with sort = Fn("Member",[]), domain = parent.
     fn emit_member_fact(&mut self, name_sym: Symbol, kind_str: &str, parent: TermId) {
         let member_sym = self.kb.intern("member");
         let member_sort = self.kb.make_name_term("Member");
@@ -644,51 +1203,49 @@ impl<'a> Loader<'a> {
         self.kb.assert_fact(member_term, member_sort, parent, None);
     }
 
-    /// Emit member facts for all direct children of a sort/domain.
     fn emit_member_facts_for_items(&mut self, items: &[Item], parent: TermId) {
         for item in items {
             match item {
                 Item::Entity(e) => {
-                    let sym = self.reintern_name(&e.name);
+                    let sym = self.remap_name(&e.name);
                     self.emit_member_fact(sym, "Constructor", parent);
                 }
                 Item::AbstractSort(s) => {
-                    let sym = self.reintern_name(&s.name);
+                    let sym = self.remap_name(&s.name);
                     self.emit_member_fact(sym, "Sort", parent);
                 }
                 Item::SortWithBody(s) => {
-                    let sym = self.reintern_name(&s.name);
+                    let sym = self.remap_name(&s.name);
                     self.emit_member_fact(sym, "Sort", parent);
                 }
                 Item::Operation(o) => {
-                    let sym = self.reintern_name(&o.name);
+                    let sym = self.remap_name(&o.name);
                     self.emit_member_fact(sym, "Operation", parent);
                 }
                 Item::OperationBlock(ob) => {
                     for op in &ob.entries {
-                        let sym = self.reintern_name(&op.name);
+                        let sym = self.remap_name(&op.name);
                         self.emit_member_fact(sym, "Operation", parent);
                     }
                 }
                 Item::Rule(r) => {
                     if let Some(ref label) = r.label {
-                        let sym = self.reintern_name(label);
+                        let sym = self.remap_name(label);
                         self.emit_member_fact(sym, "Rule", parent);
                     }
                 }
                 Item::RuleBlock(rb) => {
                     for rule in &rb.entries {
                         if let Some(ref label) = rule.label {
-                            let sym = self.reintern_name(label);
+                            let sym = self.remap_name(label);
                             self.emit_member_fact(sym, "Rule", parent);
                         }
                     }
                 }
                 Item::Namespace(n) => {
-                    let sym = self.reintern_name(&n.name);
+                    let sym = self.remap_name(&n.name);
                     self.emit_member_fact(sym, "Namespace", parent);
                 }
-                // Unnamed items: Fact, Constraint, Project, Tool, WorkItem, etc.
                 _ => {}
             }
         }

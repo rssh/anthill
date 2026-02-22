@@ -4,6 +4,7 @@
 -- DuckDB etc. are dialects, not separate store types.
 namespace anthill.persistence.sql
   import anthill.reflect.{Term}
+  import anthill.prelude.{List}
   import anthill.persistence.{QueryableStore}
   export SqlStore, SqlDialect, QueryBinding, ColumnDef
 

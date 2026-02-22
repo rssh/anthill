@@ -4,7 +4,7 @@
 /// produce the textual representation suitable for writing to `.anthill` files.
 
 use crate::kb::KnowledgeBase;
-use crate::kb::term::{FnArg, Literal, Term, TermId};
+use crate::kb::term::{Literal, Term, TermId};
 
 /// Prints KB terms as `.anthill` source text.
 pub struct TermPrinter<'a> {
@@ -30,22 +30,22 @@ impl<'a> TermPrinter<'a> {
                 buf.push('?');
                 buf.push_str(self.kb.resolve_sym(vid.name()));
             }
-            Term::Fn { functor, args } => {
+            Term::Fn { functor, pos_args, named_args } => {
                 buf.push_str(self.kb.resolve_sym(*functor));
-                if !args.is_empty() {
+                if !pos_args.is_empty() || !named_args.is_empty() {
                     buf.push('(');
-                    for (i, arg) in args.iter().enumerate() {
-                        if i > 0 {
-                            buf.push_str(", ");
-                        }
-                        match arg {
-                            FnArg::Positional(tid) => self.write_term(*tid, buf),
-                            FnArg::Named(sym, tid) => {
-                                buf.push_str(self.kb.resolve_sym(*sym));
-                                buf.push_str(": ");
-                                self.write_term(*tid, buf);
-                            }
-                        }
+                    let mut first = true;
+                    for &tid in pos_args.iter() {
+                        if !first { buf.push_str(", "); }
+                        first = false;
+                        self.write_term(tid, buf);
+                    }
+                    for &(sym, tid) in named_args.iter() {
+                        if !first { buf.push_str(", "); }
+                        first = false;
+                        buf.push_str(self.kb.resolve_sym(sym));
+                        buf.push_str(": ");
+                        self.write_term(tid, buf);
                     }
                     buf.push(')');
                 }
@@ -188,7 +188,8 @@ mod tests {
         let b = kb.alloc(Term::Const(Literal::String("bob".into())));
         let t = kb.alloc(Term::Fn {
             functor: sym,
-            args: SmallVec::from_slice(&[FnArg::Positional(a), FnArg::Positional(b)]),
+            pos_args: SmallVec::from_slice(&[a, b]),
+            named_args: SmallVec::new(),
         });
         let printer = TermPrinter::new(&kb);
         assert_eq!(printer.print_term(t), "parent(\"alice\", \"bob\")");
@@ -204,9 +205,10 @@ mod tests {
         let name_val = kb.alloc(Term::Const(Literal::String("Savings".into())));
         let t = kb.alloc(Term::Fn {
             functor: f,
-            args: SmallVec::from_slice(&[
-                FnArg::Named(id_sym, id_val),
-                FnArg::Named(name_sym, name_val),
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (id_sym, id_val),
+                (name_sym, name_val),
             ]),
         });
         let printer = TermPrinter::new(&kb);
@@ -232,7 +234,8 @@ mod tests {
         let int = kb.make_name_term("Int");
         let t = kb.alloc(Term::Fn {
             functor: sym,
-            args: SmallVec::from_slice(&[FnArg::Named(t_sym, int)]),
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(t_sym, int)]),
         });
         let out = print_fact(&kb, t, None);
         assert_eq!(out, "fact Eq(T: Int)\n");

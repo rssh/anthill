@@ -6,6 +6,7 @@
 --   BulkStore          — adds pull (load all into memory; e.g. filesystem)
 namespace anthill.persistence
   import anthill.reflect.{Term, FactId}
+  import anthill.prelude.{List}
   import anthill.prelude.Meta.{Meta}
   export Store, QueryableStore, BulkStore
   export route, persist, retract, flush, retrieve, pull

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anthill_core::parse;
 use anthill_core::parse::ir::*;
 use anthill_core::kb::{KnowledgeBase, SortKind};
-use anthill_core::kb::term::{Term, TermId, Literal, FnArg};
+use anthill_core::kb::term::{Term, TermId, Literal};
 use anthill_core::kb::load::{self, NullResolver};
 
 /// Collect all .anthill files under a directory, recursively.
@@ -41,7 +41,7 @@ fn parse_empty_namespace() {
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
         Item::Namespace(n) => {
-            assert_eq!(parsed.interner.resolve(n.name.last()), "banking");
+            assert_eq!(parsed.symbols.name(n.name.last()), "banking");
             assert!(n.items.is_empty());
         }
         other => panic!("expected Namespace, got {:?}", std::mem::discriminant(other)),
@@ -55,7 +55,7 @@ fn parse_abstract_sort() {
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
         Item::AbstractSort(s) => {
-            assert_eq!(parsed.interner.resolve(s.name.last()), "Scalar");
+            assert_eq!(parsed.symbols.name(s.name.last()), "Scalar");
             assert!(s.visibility.is_none());
         }
         other => panic!("expected AbstractSort, got {:?}", std::mem::discriminant(other)),
@@ -74,20 +74,20 @@ fn parse_sort_with_body() {
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
         Item::SortWithBody(s) => {
-            assert_eq!(parsed.interner.resolve(s.name.last()), "WorkStatus");
+            assert_eq!(parsed.symbols.name(s.name.last()), "WorkStatus");
             assert_eq!(s.items.len(), 3);
             // Check each entity constructor
             match &s.items[0] {
-                Item::Entity(e) => assert_eq!(parsed.interner.resolve(e.name.last()), "Draft"),
+                Item::Entity(e) => assert_eq!(parsed.symbols.name(e.name.last()), "Draft"),
                 other => panic!("expected Entity, got {:?}", std::mem::discriminant(other)),
             }
             match &s.items[1] {
-                Item::Entity(e) => assert_eq!(parsed.interner.resolve(e.name.last()), "Open"),
+                Item::Entity(e) => assert_eq!(parsed.symbols.name(e.name.last()), "Open"),
                 other => panic!("expected Entity, got {:?}", std::mem::discriminant(other)),
             }
             match &s.items[2] {
                 Item::Entity(e) => {
-                    assert_eq!(parsed.interner.resolve(e.name.last()), "Claimed");
+                    assert_eq!(parsed.symbols.name(e.name.last()), "Claimed");
                     assert_eq!(e.fields.len(), 2);
                 }
                 other => panic!("expected Entity, got {:?}", std::mem::discriminant(other)),
@@ -106,16 +106,13 @@ fn parse_fact_with_meta() {
         Item::Fact(f) => {
             // The term should be a fn_term: parent("alice", "bob")
             match parsed.terms.get(f.term) {
-                Term::Fn { functor, args } => {
-                    assert_eq!(parsed.interner.resolve(*functor), "parent");
-                    assert_eq!(args.len(), 2);
+                Term::Fn { functor, pos_args, .. } => {
+                    assert_eq!(parsed.symbols.name(*functor), "parent");
+                    assert_eq!(pos_args.len(), 2);
                     // Check first arg is "alice"
-                    match &args[0] {
-                        FnArg::Positional(id) => match parsed.terms.get(*id) {
-                            Term::Const(Literal::String(s)) => assert_eq!(s, "alice"),
-                            other => panic!("expected String, got {:?}", other),
-                        },
-                        other => panic!("expected Positional, got {:?}", other),
+                    match parsed.terms.get(pos_args[0]) {
+                        Term::Const(Literal::String(s)) => assert_eq!(s, "alice"),
+                        other => panic!("expected String, got {:?}", other),
                     }
                 }
                 other => panic!("expected Fn, got {:?}", other),
@@ -142,14 +139,14 @@ end
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
         Item::Namespace(n) => {
-            assert_eq!(parsed.interner.resolve(n.name.last()), "banking");
+            assert_eq!(parsed.symbols.name(n.name.last()), "banking");
             assert_eq!(n.exports.len(), 3);
             assert_eq!(n.items.len(), 2); // entity + operation
 
             // Check entity
             match &n.items[0] {
                 Item::Entity(e) => {
-                    assert_eq!(parsed.interner.resolve(e.name.last()), "Account");
+                    assert_eq!(parsed.symbols.name(e.name.last()), "Account");
                     assert_eq!(e.fields.len(), 2);
                 }
                 other => panic!("expected Entity, got {:?}", std::mem::discriminant(other)),
@@ -158,7 +155,7 @@ end
             // Check operation
             match &n.items[1] {
                 Item::Operation(o) => {
-                    assert_eq!(parsed.interner.resolve(o.name.last()), "deposit");
+                    assert_eq!(parsed.symbols.name(o.name.last()), "deposit");
                     assert_eq!(o.params.len(), 2);
                     assert_eq!(o.requires.len(), 1);
                     assert_eq!(o.ensures.len(), 1);
@@ -182,7 +179,7 @@ fn parse_simple_project() {
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
         Item::Project(p) => {
-            assert_eq!(parsed.interner.resolve(p.name.last()), "cps2");
+            assert_eq!(parsed.symbols.name(p.name.last()), "cps2");
         }
         other => panic!("expected Project, got {:?}", std::mem::discriminant(other)),
     }
@@ -201,7 +198,7 @@ fn parse_tool_declaration() {
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
         Item::Tool(t) => {
-            assert_eq!(parsed.interner.resolve(t.name.last()), "sbt-test-only");
+            assert_eq!(parsed.symbols.name(t.name.last()), "sbt-test-only");
             assert_eq!(t.command, "sbt");
             assert!(matches!(t.success, SuccessCriterion::ExitZero));
         }
@@ -222,7 +219,7 @@ fn parse_workitem() {
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
         Item::WorkItem(w) => {
-            assert_eq!(parsed.interner.resolve(w.id.last()), "WI-CPS2-MATCH-001");
+            assert_eq!(parsed.symbols.name(w.id.last()), "WI-CPS2-MATCH-001");
             assert!(matches!(w.status, WorkStatus::Open));
             assert_eq!(w.acceptance.len(), 1);
         }
@@ -238,7 +235,7 @@ fn parse_line_comment() {
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
         Item::AbstractSort(s) => {
-            assert_eq!(parsed.interner.resolve(s.name.last()), "T");
+            assert_eq!(parsed.symbols.name(s.name.last()), "T");
         }
         other => panic!("expected AbstractSort, got {:?}", std::mem::discriminant(other)),
     }
@@ -249,6 +246,8 @@ fn parse_line_comment() {
 #[test]
 fn load_namespace_into_kb() {
     let source = r#"namespace banking {
+  sort AccountId
+  sort Money
   entity Account(id: AccountId, balance: Money)
 }
 "#;
@@ -271,19 +270,9 @@ fn load_sort_with_body_registers_subsorts() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    // Find the Nat and zero sort terms
-    let nat_sym = kb.intern("Nat");
-    let zero_sym = kb.intern("zero");
-
-    // Look up sort terms by finding them in the KB
-    let nat_term = kb.alloc(Term::Fn {
-        functor: nat_sym,
-        args: smallvec::SmallVec::new(),
-    });
-    let zero_term = kb.alloc(Term::Fn {
-        functor: zero_sym,
-        args: smallvec::SmallVec::new(),
-    });
+    // Find the Nat and zero sort terms (use resolve_name_term for user-defined names)
+    let nat_term = kb.resolve_name_term("Nat");
+    let zero_term = kb.resolve_name_term("zero");
 
     // Check subsort relationship
     assert!(kb.is_subtype(zero_term, nat_term), "zero should be a subtype of Nat");
@@ -315,6 +304,8 @@ fn load_banking_namespace() {
     let source = r#"namespace banking
   export Account, Money, deposit
 
+  sort AccountId
+
   sort Money {
     entity dollars(amount: Int)
   }
@@ -330,6 +321,7 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     // Check we have facts of various sorts
@@ -346,16 +338,8 @@ end
     assert!(!kb.by_sort(fact_sort).is_empty(), "should have Fact fact");
 
     // Check sort relationship: dollars < Money
-    let money_sym = kb.intern("Money");
-    let dollars_sym = kb.intern("dollars");
-    let money_term = kb.alloc(Term::Fn {
-        functor: money_sym,
-        args: smallvec::SmallVec::new(),
-    });
-    let dollars_term = kb.alloc(Term::Fn {
-        functor: dollars_sym,
-        args: smallvec::SmallVec::new(),
-    });
+    let money_term = kb.resolve_name_term("Money");
+    let dollars_term = kb.resolve_name_term("dollars");
     assert!(kb.is_subtype(dollars_term, money_term));
 }
 
@@ -380,9 +364,9 @@ fn load_workitem_and_query() {
     let fid = workitems[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
-        Term::Fn { functor, args } => {
+        Term::Fn { functor, named_args, .. } => {
             assert_eq!(kb.resolve_sym(*functor), "WI-001");
-            assert!(!args.is_empty());
+            assert!(!named_args.is_empty());
         }
         other => panic!("expected Fn term for WorkItem, got {:?}", other),
     }
@@ -405,6 +389,8 @@ fact parent("bob", "charlie")
 #[test]
 fn load_sort_with_operation() {
     let source = r#"sort Account
+  sort AccountId
+  sort Money
   entity checking(id: AccountId, balance: Money)
   entity savings(id: AccountId, balance: Money, rate: Money)
 
@@ -426,11 +412,7 @@ end
     assert_eq!(ops.len(), 2, "should have 2 Operation facts (deposit, withdraw)");
 
     // The operation facts should be scoped to the Account sort (not a separate domain)
-    let account_sym = kb.intern("Account");
-    let account_term = kb.alloc(Term::Fn {
-        functor: account_sym,
-        args: smallvec::SmallVec::new(),
-    });
+    let account_term = kb.resolve_name_term("Account");
     for &fid in &ops {
         assert_eq!(
             kb.fact_domain(fid), account_term,
@@ -438,26 +420,20 @@ end
         );
     }
 
-    // Verify operation terms have the right functors
-    let deposit_sym = kb.intern("deposit");
-    let withdraw_sym = kb.intern("withdraw");
-    let op_functors: Vec<_> = ops.iter().map(|&fid| {
+    // Verify operation terms have the right functors (compare by name string)
+    let op_names: Vec<_> = ops.iter().map(|&fid| {
         match kb.get_term(kb.fact_term(fid)) {
-            Term::Fn { functor, .. } => *functor,
+            Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_owned(),
             other => panic!("expected Fn term for operation, got {:?}", other),
         }
     }).collect();
-    assert!(op_functors.contains(&deposit_sym), "should have deposit operation");
-    assert!(op_functors.contains(&withdraw_sym), "should have withdraw operation");
+    assert!(op_names.contains(&"deposit".to_owned()), "should have deposit operation");
+    assert!(op_names.contains(&"withdraw".to_owned()), "should have withdraw operation");
 
     // The sort itself should be Defined (has entities) with constructors as subsorts
     assert_eq!(kb.sort_kind(account_term), Some(SortKind::Defined));
 
-    let checking_sym = kb.intern("checking");
-    let checking_term = kb.alloc(Term::Fn {
-        functor: checking_sym,
-        args: smallvec::SmallVec::new(),
-    });
+    let checking_term = kb.resolve_name_term("checking");
     assert!(kb.is_subtype(checking_term, account_term),
         "checking should be a subtype of Account");
     assert_eq!(kb.sort_kind(checking_term), Some(SortKind::Constructor));
@@ -498,19 +474,14 @@ fn member_facts_for_sort_with_body() {
     assert_eq!(members.len(), 2, "Nat should have 2 member facts");
 
     // Verify they are Constructor members
+    let ctor_sym = kb.intern("Constructor");
     for &fid in &members {
         let term = kb.fact_term(fid);
         match kb.get_term(term) {
-            Term::Fn { args, .. } => {
-                assert_eq!(args.len(), 3);
+            Term::Fn { pos_args, .. } => {
+                assert_eq!(pos_args.len(), 3);
                 // Second arg should be Ident("Constructor")
-                match args[1] {
-                    FnArg::Positional(id) => {
-                        let ctor_sym = kb.intern("Constructor");
-                        assert!(matches!(kb.get_term(id), Term::Ident(s) if *s == ctor_sym));
-                    }
-                    _ => panic!("expected positional arg"),
-                }
+                assert!(matches!(kb.get_term(pos_args[1]), Term::Ident(s) if *s == ctor_sym));
             }
             other => panic!("expected Fn term, got {:?}", other),
         }
@@ -528,10 +499,11 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let member_sort = kb.make_name_term("Member");
-    let account_term = kb.make_name_term("Account");
+    let account_term = kb.resolve_name_term("Account");
 
     // Get member facts for Account specifically
     let account_facts = kb.by_domain(account_term);
@@ -555,10 +527,11 @@ fn member_facts_for_namespace() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let member_sort = kb.make_name_term("Member");
-    let banking_term = kb.make_name_term("banking");
+    let banking_term = kb.resolve_name_term("banking");
 
     let ns_facts = kb.by_domain(banking_term);
     let member_facts: Vec<_> = ns_facts
@@ -584,7 +557,7 @@ fn member_facts_queryable_by_domain() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let option_term = kb.make_name_term("Option");
+    let option_term = kb.resolve_name_term("Option");
     let member_sort = kb.make_name_term("Member");
 
     // Query by_domain for Option should include member facts
@@ -613,16 +586,16 @@ fn parse_sort_with_requires() {
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
         Item::SortWithBody(s) => {
-            assert_eq!(parsed.interner.resolve(s.name.last()), "Ordered");
+            assert_eq!(parsed.symbols.name(s.name.last()), "Ordered");
             // Items: AbstractSort(T), RequiresDecl(Eq{T=T}), Operation(gt)
             assert_eq!(s.items.len(), 3);
             match &s.items[1] {
                 Item::RequiresDecl(r) => {
                     match &r.type_expr {
                         TypeExpr::Parameterized { name, bindings } => {
-                            assert_eq!(parsed.interner.resolve(name.last()), "Eq");
+                            assert_eq!(parsed.symbols.name(name.last()), "Eq");
                             assert_eq!(bindings.len(), 1);
-                            assert_eq!(parsed.interner.resolve(bindings[0].param.last()), "T");
+                            assert_eq!(parsed.symbols.name(bindings[0].param.last()), "T");
                         }
                         other => panic!("expected Parameterized type, got {:?}", other),
                     }
@@ -636,7 +609,11 @@ fn parse_sort_with_requires() {
 
 #[test]
 fn load_sort_with_requires() {
-    let source = r#"sort Ordered {
+    let source = r#"sort Eq {
+  sort T
+}
+
+sort Ordered {
   sort T
   requires Eq{T = T}
   operation gt(a: T, b: T) -> Bool
@@ -644,6 +621,7 @@ fn load_sort_with_requires() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     // Check that a Requirement fact exists
@@ -652,7 +630,7 @@ fn load_sort_with_requires() {
     assert_eq!(reqs.len(), 1, "should have 1 Requirement fact");
 
     // The requirement should be scoped to the Ordered sort
-    let ordered_term = kb.make_name_term("Ordered");
+    let ordered_term = kb.resolve_name_term("Ordered");
     assert_eq!(
         kb.fact_domain(reqs[0]), ordered_term,
         "requirement should be scoped to the Ordered sort"
@@ -662,9 +640,9 @@ fn load_sort_with_requires() {
     let fid = reqs[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
-        Term::Fn { functor, args } => {
+        Term::Fn { functor, pos_args, .. } => {
             assert_eq!(kb.resolve_sym(*functor), "Requires");
-            assert_eq!(args.len(), 1);
+            assert_eq!(pos_args.len(), 1);
         }
         other => panic!("expected Fn term for Requirement, got {:?}", other),
     }
@@ -685,14 +663,14 @@ fn parse_requires_punned_binding() {
                 Item::RequiresDecl(r) => {
                     match &r.type_expr {
                         TypeExpr::Parameterized { name, bindings } => {
-                            assert_eq!(parsed.interner.resolve(name.last()), "Eq");
+                            assert_eq!(parsed.symbols.name(name.last()), "Eq");
                             assert_eq!(bindings.len(), 1);
                             let b = &bindings[0];
-                            assert_eq!(parsed.interner.resolve(b.param.last()), "T");
+                            assert_eq!(parsed.symbols.name(b.param.last()), "T");
                             // The bound should also be T (desugared from punning)
                             match &b.bound {
                                 TypeExpr::Simple(bound_name) => {
-                                    assert_eq!(parsed.interner.resolve(bound_name.last()), "T");
+                                    assert_eq!(parsed.symbols.name(bound_name.last()), "T");
                                 }
                                 other => panic!("expected Simple type, got {:?}", other),
                             }
@@ -714,36 +692,37 @@ fn check_term_contains(kb: &KnowledgeBase, term: TermId, target: TermId, found: 
         *found = true;
         return;
     }
-    if let Term::Fn { args, .. } = kb.get_term(term) {
-        for arg in args.iter() {
-            let sub = match arg {
-                FnArg::Positional(id) => *id,
-                FnArg::Named(_, id) => *id,
-            };
-            check_term_contains(kb, sub, target, found);
+    if let Term::Fn { pos_args, named_args, .. } = kb.get_term(term) {
+        for &id in pos_args.iter() {
+            check_term_contains(kb, id, target, found);
+        }
+        for &(_, id) in named_args.iter() {
+            check_term_contains(kb, id, target, found);
         }
     }
 }
 
 #[test]
 fn mutual_reference_two_namespaces() {
-    // File 1: namespace X references sort from namespace Y
-    let file_x = r#"namespace Geometry {
+    // File 1: namespace X references sort from namespace Y (via import)
+    let file_x = r#"namespace Geometry
+  import Units
   sort Shape {
     entity circle(radius: Int)
     entity rect(w: Int, h: Int)
   }
   operation area(s: Shape) -> Measure
-}
+end
 "#;
-    // File 2: namespace Y references sort from namespace X
-    let file_y = r#"namespace Units {
+    // File 2: namespace Y references sort from namespace X (via import)
+    let file_y = r#"namespace Units
+  import Geometry
   sort Measure {
     entity meters(n: Int)
     entity pixels(n: Int)
   }
   operation convert(m: Measure, target: Shape) -> Measure
-}
+end
 "#;
 
     let parsed_x = parse::parse(file_x).expect("parse Geometry");
@@ -751,6 +730,7 @@ fn mutual_reference_two_namespaces() {
 
     // Load both files into the same KB — order shouldn't matter for basic loading
     let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
     load::load_all(&mut kb, &[&parsed_x, &parsed_y], &NullResolver)
         .expect("load_all failed");
 
@@ -760,12 +740,12 @@ fn mutual_reference_two_namespaces() {
     assert_eq!(namespaces.len(), 2, "should have 2 namespaces");
 
     // Geometry's facts should reference Measure (from Units)
-    let geometry_term = kb.make_name_term("Geometry");
+    let geometry_term = kb.resolve_name_term("Geometry");
     let geometry_facts = kb.by_domain(geometry_term);
     assert!(!geometry_facts.is_empty(), "Geometry should have facts");
 
     // Units' facts should reference Shape (from Geometry)
-    let units_term = kb.make_name_term("Units");
+    let units_term = kb.resolve_name_term("Units");
     let units_facts = kb.by_domain(units_term);
     assert!(!units_facts.is_empty(), "Units should have facts");
 
@@ -774,9 +754,9 @@ fn mutual_reference_two_namespaces() {
     let ops = kb.by_sort(op_sort);
     assert_eq!(ops.len(), 2, "should have 2 operations (area, convert)");
 
-    // Verify cross-references: area returns Measure, convert takes Shape
-    let measure_term = kb.make_name_term("Measure");
-    let shape_term = kb.make_name_term("Shape");
+    // Cross-namespace type references resolved via imports
+    let measure_term = kb.resolve_name_term("Measure");
+    let shape_term = kb.resolve_name_term("Shape");
 
     // area operation is in Geometry namespace but references Measure
     let mut area_refs_measure = false;
@@ -824,12 +804,12 @@ fn mutual_reference_load_order_independent() {
         "load order should not affect fact count");
 
     // Both should have the same sort relationships
-    let a1 = kb1.make_name_term("A");
-    let mka1 = kb1.make_name_term("mkA");
+    let a1 = kb1.resolve_name_term("A");
+    let mka1 = kb1.resolve_name_term("mkA");
     assert!(kb1.is_subtype(mka1, a1));
 
-    let a2 = kb2.make_name_term("A");
-    let mka2 = kb2.make_name_term("mkA");
+    let a2 = kb2.resolve_name_term("A");
+    let mka2 = kb2.resolve_name_term("mkA");
     assert!(kb2.is_subtype(mka2, a2));
 }
 
@@ -883,11 +863,28 @@ fn stdlib_load_all_into_kb() {
 
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .expect("load_all stdlib failed");
+    load::register_prelude(&mut kb);
+    let load_result = load::load_all(&mut kb, &refs, &NullResolver);
 
     assert!(kb.fact_count() > 0,
         "KB should contain facts after loading {} stdlib files", files.len());
+
+    if let Err(ref errors) = load_result {
+        // Print diagnostics before asserting so they're visible on failure
+        let mut unresolved: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for e in errors {
+            if let load::LoadError::UnresolvedName { name, scope_name, .. } = e {
+                *unresolved.entry(format!("{name} (in {scope_name})")).or_default() += 1;
+            }
+        }
+        eprintln!("stdlib load: {} errors from {} files:", errors.len(), files.len());
+        for (key, count) in &unresolved {
+            eprintln!("  {key}: {count}x");
+        }
+    }
+    assert!(load_result.is_ok(),
+        "stdlib should load with 0 errors, got {}",
+        load_result.as_ref().err().map_or(0, |e| e.len()));
 }
 
 #[test]
@@ -933,4 +930,222 @@ end
         }
         _ => panic!("expected Namespace"),
     }
+}
+
+// ── Unresolved name hard error tests ────────────────────────────
+
+#[test]
+fn unresolved_name_is_hard_error() {
+    let source = r#"sort Foo {
+  operation bar(x: Nonexistent) -> Nonexistent
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    let result = load::load(&mut kb, &parsed, &NullResolver);
+    let errors = result.expect_err("expected load errors for unresolved type");
+
+    // Should have UnresolvedName errors for "Nonexistent"
+    let unresolved: Vec<_> = errors.iter().filter(|e| {
+        matches!(e, load::LoadError::UnresolvedName { name, .. } if name == "Nonexistent")
+    }).collect();
+    assert!(!unresolved.is_empty(),
+        "should report UnresolvedName for 'Nonexistent', got: {:?}", errors);
+
+    // Verify span is non-default (the name has a real source location)
+    for err in &unresolved {
+        if let load::LoadError::UnresolvedName { span, .. } = err {
+            assert!(span.end > span.start,
+                "span should be non-empty for unresolved name");
+        }
+    }
+}
+
+#[test]
+fn all_names_resolved_no_errors() {
+    let source = r#"sort Eq {
+  sort T
+}
+
+sort Ordered {
+  sort T
+  requires Eq{T = T}
+  operation compare(a: T, b: T) -> Int
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    load::load(&mut kb, &parsed, &NullResolver)
+        .expect("load should succeed with all names resolved");
+}
+
+#[test]
+fn namespace_scoped_sorts_resolve() {
+    // Sorts defined inside a namespace should be visible to siblings
+    // via the enclosing scope (no explicit import needed).
+    let source = r#"namespace A {
+  sort B
+  sort C {
+    requires B
+    operation use_b(x: B) -> B
+  }
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver)
+        .expect("load should succeed: B is visible from C via namespace A");
+
+    // Verify requirement is registered
+    let req_sort = kb.make_name_term("Requirement");
+    let reqs = kb.by_sort(req_sort);
+    assert_eq!(reqs.len(), 1, "should have 1 Requirement (B) for C");
+}
+
+// ── Multi-file namespace dedup tests ────────────────────────────
+
+#[test]
+fn multi_file_same_namespace_resolution() {
+    // Two files both declare `namespace ns`.  Namespace dedup merges them
+    // into a single scope so sorts from one file are visible in the other.
+    let file1 = r#"namespace ns {
+  sort A
+}
+"#;
+    let file2 = r#"namespace ns {
+  sort B {
+    operation use_a(x: A) -> A
+  }
+}
+"#;
+
+    let parsed1 = parse::parse(file1).expect("parse file1");
+    let parsed2 = parse::parse(file2).expect("parse file2");
+
+    let mut kb = KnowledgeBase::new();
+    load::load_all(&mut kb, &[&parsed1, &parsed2], &NullResolver)
+        .expect("load should succeed: A is visible from B via shared namespace ns");
+
+    // Both sorts should be registered
+    let sort_sort = kb.make_name_term("Sort");
+    let sorts = kb.by_sort(sort_sort);
+    assert!(sorts.len() >= 2, "should have at least 2 sorts (A, B)");
+
+    // The operation in B should reference A
+    let op_sort = kb.make_name_term("Operation");
+    let ops = kb.by_sort(op_sort);
+    assert_eq!(ops.len(), 1, "should have 1 operation (use_a)");
+}
+
+// ── Dotted name intermediate namespace tests ────────────────────
+
+#[test]
+fn dotted_name_creates_intermediate_namespaces() {
+    // `sort a.b.C` should create implicit namespaces `a` and `a.b`,
+    // and define `C` (short name) in the `a.b` scope.
+    let source = r#"sort a.b.C {
+  entity mkC
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    // Check that `a` and `a.b` are registered as Namespace symbols
+    assert!(kb.has_qualified_name("a"),
+        "implicit namespace 'a' should exist");
+    assert!(kb.has_qualified_name("a.b"),
+        "implicit namespace 'a.b' should exist");
+
+    // Check that `C` is findable by qualified name
+    assert!(kb.has_qualified_name("a.b.C"),
+        "sort 'a.b.C' should be registered by qualified name");
+
+    // Check that `C` has short_name "C" (not "a.b.C")
+    assert_eq!(kb.qualified_short_name("a.b.C"), Some("C"),
+        "sort should have short name 'C'");
+
+    // `C` should be a registered sort with constructor `mkC`
+    let c_term = kb.resolve_name_term("C");
+    assert_eq!(kb.sort_kind(c_term), Some(SortKind::Defined));
+}
+
+#[test]
+fn dotted_siblings_share_scope() {
+    // Two dotted names with the same prefix should share the implicit
+    // intermediate namespace, making sibling sorts visible to each other.
+    let file1 = r#"sort ns.A"#;
+    let file2 = r#"sort ns.B {
+  operation use_a(x: A) -> A
+}
+"#;
+
+    let parsed1 = parse::parse(file1).expect("parse file1");
+    let parsed2 = parse::parse(file2).expect("parse file2");
+
+    let mut kb = KnowledgeBase::new();
+    load::load_all(&mut kb, &[&parsed1, &parsed2], &NullResolver)
+        .expect("load should succeed: A and B are siblings in implicit 'ns' scope");
+
+    // Both sorts should be registered
+    let sort_sort = kb.make_name_term("Sort");
+    let sorts = kb.by_sort(sort_sort);
+    assert!(sorts.len() >= 2, "should have at least 2 sorts (A, B)");
+
+    // The operation in B should reference A (resolved via shared ns scope)
+    let op_sort = kb.make_name_term("Operation");
+    let ops = kb.by_sort(op_sort);
+    assert_eq!(ops.len(), 1, "should have 1 operation (use_a)");
+}
+
+#[test]
+fn dotted_namespace_creates_hierarchy() {
+    // `namespace a.b.c` should create implicit namespaces `a` and `a.b`.
+    let source = r#"namespace a.b.c {
+  sort X
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    assert!(kb.has_qualified_name("a"),
+        "implicit namespace 'a' should exist");
+    assert!(kb.has_qualified_name("a.b"),
+        "implicit namespace 'a.b' should exist");
+    assert!(kb.has_qualified_name("a.b.c"),
+        "explicit namespace 'a.b.c' should exist");
+
+    // X should be defined in the `a.b.c` scope
+    assert!(kb.has_qualified_name("X"), "sort X should be registered");
+}
+
+#[test]
+fn implicit_and_explicit_namespace_merge() {
+    // An implicit namespace from a dotted name and an explicit namespace
+    // declaration should merge into the same scope.
+    let file1 = r#"sort ns.A"#;
+    let file2 = r#"namespace ns {
+  sort B {
+    operation use_a(x: A) -> A
+  }
+}
+"#;
+
+    let parsed1 = parse::parse(file1).expect("parse file1");
+    let parsed2 = parse::parse(file2).expect("parse file2");
+
+    let mut kb = KnowledgeBase::new();
+    load::load_all(&mut kb, &[&parsed1, &parsed2], &NullResolver)
+        .expect("load should succeed: implicit and explicit 'ns' merge");
+
+    // Both A (from dotted name) and B (from explicit namespace) should exist
+    assert!(kb.has_qualified_name("ns.A"));
+    assert!(kb.has_qualified_name("B"));
+
+    // The operation in B should resolve A via the shared namespace scope
+    let op_sort = kb.make_name_term("Operation");
+    let ops = kb.by_sort(op_sort);
+    assert_eq!(ops.len(), 1, "should have 1 operation (use_a)");
 }

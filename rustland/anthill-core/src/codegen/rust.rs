@@ -6,13 +6,13 @@
 ///
 /// See `docs/rust-forward-mapping.md` for the full mapping specification.
 
-use crate::intern::{Interner, Symbol};
+use crate::intern::{SymbolTable, Symbol};
 use crate::kb::term::Term;
 use crate::parse::ir::*;
 
 /// Generate Rust skeleton code from a parsed anthill file.
 pub fn generate_rust(parsed: &ParsedFile) -> String {
-    let mut cg = RustCodegen::new(&parsed.interner, &parsed.terms);
+    let mut cg = RustCodegen::new(&parsed.symbols, &parsed.terms);
     cg.emit_items(&parsed.items, None);
     cg.output
 }
@@ -30,7 +30,7 @@ struct SortInfo<'a> {
 }
 
 impl<'a> SortInfo<'a> {
-    fn from_items(items: &'a [Item], interner: &Interner, terms: &SimpleTermStore) -> Self {
+    fn from_items(items: &'a [Item], symbols: &SymbolTable, terms: &SimpleTermStore) -> Self {
         let mut info = SortInfo {
             type_params: Vec::new(),
             supertraits: Vec::new(),
@@ -44,14 +44,14 @@ impl<'a> SortInfo<'a> {
         for item in items {
             match item {
                 Item::AbstractSort(s) => {
-                    info.type_params.push(interner.resolve(s.name.last()).to_owned());
+                    info.type_params.push(symbols.name(s.name.last()).to_owned());
                 }
                 Item::RequiresDecl(r) => {
-                    let name = type_expr_name(interner, &r.type_expr);
+                    let name = type_expr_name(symbols, &r.type_expr);
                     info.supertraits.push(name);
                 }
                 Item::Fact(f) => {
-                    if let Some(name) = extract_fact_sort_name(interner, terms, f) {
+                    if let Some(name) = extract_fact_sort_name(symbols, terms, f) {
                         info.supertraits.push(name);
                     }
                 }
@@ -91,16 +91,16 @@ impl<'a> SortInfo<'a> {
 // ── Codegen struct ───────────────────────────────────────────────
 
 struct RustCodegen<'a> {
-    interner: &'a Interner,
+    symbols: &'a SymbolTable,
     terms: &'a SimpleTermStore,
     output: String,
     indent: usize,
 }
 
 impl<'a> RustCodegen<'a> {
-    fn new(interner: &'a Interner, terms: &'a SimpleTermStore) -> Self {
+    fn new(symbols: &'a SymbolTable, terms: &'a SimpleTermStore) -> Self {
         Self {
-            interner,
+            symbols,
             terms,
             output: String::new(),
             indent: 0,
@@ -132,11 +132,11 @@ impl<'a> RustCodegen<'a> {
     // ── Name resolution helpers ──────────────────────────────────
 
     fn resolve(&self, name: &Name) -> String {
-        self.interner.resolve(name.last()).to_owned()
+        self.symbols.name(name.last()).to_owned()
     }
 
     fn resolve_sym(&self, sym: Symbol) -> String {
-        self.interner.resolve(sym).to_owned()
+        self.symbols.name(sym).to_owned()
     }
 
     fn visibility_prefix(&self, vis: Option<Visibility>) -> &'static str {
@@ -346,7 +346,7 @@ impl<'a> RustCodegen<'a> {
                     // If preceded by a sort, associate as supertrait
                     if let Some(ref sname) = current_sort {
                         if let Some(trait_name) = extract_fact_sort_name(
-                            self.interner, self.terms, f
+                            self.symbols, self.terms, f
                         ) {
                             // Only associate if the fact name is a known sort
                             // (not an entity-level fact like `fact BulkStore`)
@@ -495,7 +495,7 @@ impl<'a> RustCodegen<'a> {
         extra_supers: &[String],
     ) {
         let sort_name = self.resolve(&sort.name);
-        let mut info = SortInfo::from_items(&sort.items, self.interner, self.terms);
+        let mut info = SortInfo::from_items(&sort.items, self.symbols, self.terms);
 
         // Add extra namespace-level operations and supertraits
         for op in extra_ops {
@@ -569,7 +569,7 @@ impl<'a> RustCodegen<'a> {
 
     fn emit_sort(&mut self, sort: &SortWithBody) {
         let sort_name = self.resolve(&sort.name);
-        let info = SortInfo::from_items(&sort.items, self.interner, self.terms);
+        let info = SortInfo::from_items(&sort.items, self.symbols, self.terms);
 
         if !info.entities.is_empty() {
             self.emit_sort_as_enum(sort, &sort_name, &info);
@@ -654,7 +654,7 @@ impl<'a> RustCodegen<'a> {
 
         // Self-collapse heuristic: if exactly one type param and every op's
         // first param type matches it → collapse to Self, don't emit generic
-        let collapse_self = should_collapse_self(info, self.interner);
+        let collapse_self = should_collapse_self(info, self.symbols);
 
         // Determine trait generics (non-collapsed type params)
         let trait_generics = if collapse_self {
@@ -738,7 +738,7 @@ impl<'a> RustCodegen<'a> {
         collapse_self: bool,
     ) {
         let op_name = to_snake_case(&self.resolve(&op.name));
-        let effects = analyze_effects(&op.effects, self.interner);
+        let effects = analyze_effects(&op.effects, self.symbols);
 
         // Determine self-arg
         let (has_self, is_mut) = self.check_self_arg(op, sort_name, type_params, &effects);
@@ -802,7 +802,7 @@ impl<'a> RustCodegen<'a> {
     ) {
         let vis = if in_impl { self.visibility_prefix(op.visibility) } else { "" };
         let op_name = to_snake_case(&self.resolve(&op.name));
-        let effects = analyze_effects(&op.effects, self.interner);
+        let effects = analyze_effects(&op.effects, self.symbols);
 
         let (has_self, is_mut) = self.check_self_arg(op, sort_name, type_params, &effects);
 
@@ -843,7 +843,7 @@ impl<'a> RustCodegen<'a> {
     fn emit_free_function(&mut self, op: &Operation, _enclosing_ns: Option<&Namespace>) {
         let vis = self.visibility_prefix(op.visibility);
         let op_name = to_snake_case(&self.resolve(&op.name));
-        let effects = analyze_effects(&op.effects, self.interner);
+        let effects = analyze_effects(&op.effects, self.symbols);
 
         // Check namespace entity rule: if first param type matches a local entity
         let mut params_str = String::new();
@@ -913,7 +913,7 @@ impl<'a> RustCodegen<'a> {
             None => return,
         };
 
-        let trait_name = match extract_fact_sort_name(self.interner, self.terms, fact) {
+        let trait_name = match extract_fact_sort_name(self.symbols, self.terms, fact) {
             Some(n) => n,
             None => return,
         };
@@ -977,7 +977,7 @@ struct EffectInfo {
     emits_type: Option<String>,
 }
 
-fn analyze_effects(effects: &[Effect], interner: &Interner) -> EffectInfo {
+fn analyze_effects(effects: &[Effect], symbols: &SymbolTable) -> EffectInfo {
     let mut info = EffectInfo {
         has_modifies: false,
         has_reads: false,
@@ -987,8 +987,8 @@ fn analyze_effects(effects: &[Effect], interner: &Interner) -> EffectInfo {
     };
 
     for effect in effects {
-        let kind = interner.resolve(effect.kind.last());
-        let target = interner.resolve(effect.target.last());
+        let kind = symbols.name(effect.kind.last());
+        let target = symbols.name(effect.target.last());
 
         match kind {
             "Modifies" => {
@@ -1023,7 +1023,7 @@ fn wrap_return_type(raw: &str, effects: &EffectInfo) -> String {
 
 // ── Self-collapse heuristic ──────────────────────────────────────
 
-fn should_collapse_self(info: &SortInfo, interner: &Interner) -> bool {
+fn should_collapse_self(info: &SortInfo, symbols: &SymbolTable) -> bool {
     if info.type_params.len() != 1 {
         return false;
     }
@@ -1043,8 +1043,8 @@ fn should_collapse_self(info: &SortInfo, interner: &Interner) -> bool {
         }
 
         let first_type = match &op.params[0].ty {
-            TypeExpr::Simple(name) => interner.resolve(name.last()).to_owned(),
-            TypeExpr::Parameterized { name, .. } => interner.resolve(name.last()).to_owned(),
+            TypeExpr::Simple(name) => symbols.name(name.last()).to_owned(),
+            TypeExpr::Parameterized { name, .. } => symbols.name(name.last()).to_owned(),
         };
 
         if first_type != *param_name {
@@ -1104,21 +1104,21 @@ fn to_snake_case(s: &str) -> String {
 }
 
 /// Extract a sort name from a fact term (for fact-as-supertrait pattern).
-fn extract_fact_sort_name(interner: &Interner, terms: &SimpleTermStore, fact: &Fact) -> Option<String> {
+fn extract_fact_sort_name(symbols: &SymbolTable, terms: &SimpleTermStore, fact: &Fact) -> Option<String> {
     match terms.get(fact.term) {
-        Term::Ident(sym) => Some(interner.resolve(*sym).to_owned()),
-        Term::Fn { functor, args } if args.is_empty() => {
-            Some(interner.resolve(*functor).to_owned())
+        Term::Ident(sym) => Some(symbols.name(*sym).to_owned()),
+        Term::Fn { functor, pos_args, named_args } if pos_args.is_empty() && named_args.is_empty() => {
+            Some(symbols.name(*functor).to_owned())
         }
         _ => None,
     }
 }
 
 /// Get the short name from a TypeExpr.
-fn type_expr_name(interner: &Interner, ty: &TypeExpr) -> String {
+fn type_expr_name(symbols: &SymbolTable, ty: &TypeExpr) -> String {
     match ty {
-        TypeExpr::Simple(name) => interner.resolve(name.last()).to_owned(),
-        TypeExpr::Parameterized { name, .. } => interner.resolve(name.last()).to_owned(),
+        TypeExpr::Simple(name) => symbols.name(name.last()).to_owned(),
+        TypeExpr::Parameterized { name, .. } => symbols.name(name.last()).to_owned(),
     }
 }
 

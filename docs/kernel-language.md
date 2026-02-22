@@ -290,6 +290,25 @@ Four constructs the reasoning engine understands natively.
 
 The unit of encapsulation and independent evolution. A namespace scopes sorts, entities, operations, and rules. Namespaces can be nested.
 
+**Dotted names desugar to nested namespaces.** When any declaration (`sort`, `namespace`, `entity`, `operation`) uses a dotted name, each dot-separated prefix segment becomes an implicit namespace if one does not already exist. The item itself is defined by its last segment (short name) in the innermost scope.
+
+```
+-- This declaration:
+sort anthill.prelude.List { ... }
+
+-- desugars to:
+namespace anthill {              -- implicit, created if not present
+  namespace prelude {            -- implicit, created if not present
+    sort List { ... }            -- short_name = "List", qualified_name = "anthill.prelude.List"
+  }
+}
+```
+
+Implicit namespaces merge with explicit namespaces of the same qualified name. This means:
+- Siblings share a scope: `sort ns.A` and `sort ns.B` in separate files both live in the implicit `ns` namespace and can reference each other without imports.
+- Wildcard imports work naturally: `import anthill.prelude.*` imports all items defined in the `anthill.prelude` scope.
+- Explicit `namespace anthill { ... }` and implicit `anthill` (from `sort anthill.prelude.X`) merge into one scope.
+
 ```
 Namespace ::= 'namespace' Name
                 Import*                             -- explicit imports
@@ -1348,3 +1367,48 @@ Trust       ::= 'proved' | 'verified' | 'tested' '(' IntLit ')'
 MetaBlock   ::= '[' MetaEntry (',' MetaEntry)* ']'
 MetaEntry   ::= Name ':' Term                   -- any key-value pair
 ```
+
+## 12. Open Questions
+
+Design questions discovered during implementation that need decisions.
+
+### 12.1 What does a selective import bring into scope?
+
+`import anthill.prelude.{Eq}` makes the name `Eq` available as a local alias. It does **not** add Eq's scope as a parent — the sort's internal operations (`eq`, `neq`) are not automatically accessible. To access a sort's contents, use `requires Eq{T}` (for sort composition) or `import anthill.prelude.Eq.*` (wildcard import).
+
+### 12.2 Qualified names for nested definitions
+
+Items defined inside namespaces (e.g., `sort Term` inside `namespace anthill.reflect`) are stored with `qualified_name = "Term"`, not `"anthill.reflect.Term"`. The `define()` call uses the item's own name as both short and qualified. This means `by_qualified_name` can't distinguish `Term` in `anthill.reflect` from a hypothetical `Term` in another namespace.
+
+**Options:**
+- (a) Compute fully-qualified names during scan by prepending the enclosing scope path.
+- (b) Keep flat names; rely on scope-aware resolution (current workaround).
+
+### 12.3 Self-export
+
+A sort exports its members (operations, entities) but not its own name. When Eq exports `eq, neq`, an importer can access those operations but must resolve the name `Eq` separately. Should sorts/namespaces implicitly export their own name?
+
+### 12.4 Term as a prelude type
+
+`anthill.prelude.Bool` uses `Term` (from `anthill.reflect`) in the `ite` operation: `ite(cond: Bool, then: Term, else: Term) -> Term`. This creates a dependency from prelude to reflect. Should `Term` be a primitive type (like Int/String/Bool/Float) registered via `register_prelude`?
+
+### 12.5 Unresolvable imports are silent
+
+When `import nonexistent.path.*` or `import nonexistent.path.{Name}` references a namespace that was never defined, the loader silently skips it — no error is reported. Should unresolvable imports be hard errors?
+
+### 12.6 Effect target name resolution
+
+Effect targets like `effects (Reads(kb))` reference names (`kb`) that may be entities in scope (e.g., `sort KB { entity kb }`). Currently the parser accepts arbitrary names and the loader stores them as-is without scope-aware resolution. Should effect target names go through the import/resolution pipeline?
+
+### 12.7 Re-export semantics
+
+There is no mechanism for a namespace to re-export an imported name. If namespace A imports `Eq` from `anthill.prelude`, it cannot make `Eq` visible to its own importers. Should `import X; export X;` or similar re-export syntax be supported?
+
+### 12.8 Circular imports and requires
+
+If sort A `requires B` and sort B `requires A`, the scope parent chain forms a cycle. The resolver's `visited` set prevents infinite recursion (returning `NotFound` on cycle), but no diagnostic is reported. Should circular requires/imports be detected and reported during scanning?
+
+### 12.9 Duplicate facts from multi-file namespaces
+
+When two files define `namespace ns`, the scan phase correctly merges them into one scope, but the load phase asserts the `Namespace` fact twice (once per file). Should `assert_fact` be idempotent for structural facts, or should the loader deduplicate?
+

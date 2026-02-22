@@ -9,7 +9,7 @@
 
 use smallvec::SmallVec;
 
-use crate::intern::{Interner, Symbol};
+use crate::intern::{SymbolTable, Symbol};
 use crate::span::Span;
 use crate::kb::term::{Term, TermId};
 
@@ -50,7 +50,7 @@ impl SimpleTermStore {
 #[derive(Debug)]
 pub struct ParsedFile {
     pub items: Vec<Item>,
-    pub interner: Interner,
+    pub symbols: SymbolTable,
     pub terms: SimpleTermStore,
 }
 
