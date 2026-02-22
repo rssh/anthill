@@ -44,6 +44,12 @@ fn last_segment(qualified: &str) -> &str {
     qualified.rsplit('.').next().unwrap_or(qualified)
 }
 
+/// Construct a fully-qualified name by prepending a prefix.
+/// If prefix is empty, returns name as-is.
+fn make_qualified(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() { name.to_owned() } else { format!("{}.{}", prefix, name) }
+}
+
 /// Join name segments into a single dot-separated string.
 fn join_segments(symbols: &crate::intern::SymbolTable, segments: &[Symbol]) -> String {
     let mut out = String::new();
@@ -107,12 +113,12 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) {
 
     // Sub-pass 1: define all names
     for file in files {
-        scan_items_pass1(kb, &file.items, &file.symbols, global);
+        scan_items_pass1(kb, &file.items, &file.symbols, global, "");
     }
 
     // Sub-pass 2: process requires and imports (all sorts exist now)
     for file in files {
-        scan_items_pass2(kb, &file.items, &file.symbols, global);
+        scan_items_pass2(kb, &file.items, &file.symbols, global, "");
     }
 }
 
@@ -134,10 +140,14 @@ fn is_sort_scope(kb: &KnowledgeBase, scope: TermId) -> bool {
 /// (`"C"`) and the innermost scope (`a.b`'s term).
 ///
 /// If the name has no dots, returns `(full_name, outer_scope)` unchanged.
+///
+/// `prefix` is the fully-qualified path of the enclosing scope. Intermediate
+/// namespaces get qualified names prepended with this prefix.
 fn ensure_intermediate_namespaces(
     kb: &mut KnowledgeBase,
     full_name: &str,
     outer_scope: TermId,
+    prefix: &str,
 ) -> (String, TermId) {
     let segments: Vec<&str> = full_name.split('.').collect();
     if segments.len() <= 1 {
@@ -148,10 +158,11 @@ fn ensure_intermediate_namespaces(
     // Process all segments except the last one — each becomes a namespace
     for i in 0..segments.len() - 1 {
         let path: String = segments[..=i].join(".");
+        let qualified_path = make_qualified(prefix, &path);
         let short = segments[i];
 
         // Check if this namespace already exists in the current scope
-        let existing = kb.symbols.by_qualified_name.get(&path).copied().filter(|&sym| {
+        let existing = kb.symbols.by_qualified_name.get(&qualified_path).copied().filter(|&sym| {
             matches!(
                 kb.symbols.get(sym),
                 SymbolDef::Resolved { kind: SymbolKind::Namespace, scope_raw, .. }
@@ -168,7 +179,7 @@ fn ensure_intermediate_namespaces(
             })
         } else {
             // Create implicit namespace
-            let sym = kb.symbols.define(short, &path, SymbolKind::Namespace, current_scope.raw());
+            let sym = kb.symbols.define(short, &qualified_path, SymbolKind::Namespace, current_scope.raw());
             let ns_term = kb.alloc(Term::Fn {
                 functor: sym,
                 pos_args: SmallVec::new(),
@@ -190,18 +201,23 @@ fn ensure_intermediate_namespaces(
 }
 
 /// Sub-pass 1: define all names, record exports and type params.
+///
+/// `prefix` is the fully-qualified path of the enclosing scope (empty at top level).
+/// Nested items get `qualified_name = prefix + "." + name`.
 fn scan_items_pass1(
     kb: &mut KnowledgeBase,
     items: &[Item],
     parse_sym: &crate::intern::SymbolTable,
     scope: TermId,
+    prefix: &str,
 ) {
     for item in items {
         match item {
             Item::SortWithBody(s) => {
                 let name = join_segments(parse_sym, &s.name.segments);
-                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope);
-                let sym = kb.symbols.define(&short, &name, SymbolKind::Sort, actual_scope.raw());
+                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
+                let qualified = make_qualified(prefix, &name);
+                let sym = kb.symbols.define(&short, &qualified, SymbolKind::Sort, actual_scope.raw());
                 let sort_term = kb.alloc(Term::Fn {
                     functor: sym,
                     pos_args: SmallVec::new(),
@@ -218,24 +234,26 @@ fn scan_items_pass1(
                     let n = join_segments(parse_sym, &export_name.segments);
                     kb.symbols.add_export(sort_term.raw(), &n);
                 }
-                // Recurse into sort body
-                scan_items_pass1(kb, &s.items, parse_sym, sort_term);
+                // Recurse into sort body with the sort's qualified name as prefix
+                scan_items_pass1(kb, &s.items, parse_sym, sort_term, &qualified);
             }
             Item::AbstractSort(s) => {
                 let name = join_segments(parse_sym, &s.name.segments);
-                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope);
-                let _sym = kb.symbols.define(&short, &name, SymbolKind::Sort, actual_scope.raw());
-                // `sort T` inside a SortWithBody = type parameter
-                if is_sort_scope(kb, scope) {
+                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
+                let qualified = make_qualified(prefix, &name);
+                let _sym = kb.symbols.define(&short, &qualified, SymbolKind::Sort, actual_scope.raw());
+                // `sort T = ?` inside a SortWithBody = type parameter
+                if s.bound.is_none() && is_sort_scope(kb, scope) {
                     kb.symbols.add_type_param(scope.raw(), &short);
                 }
             }
             Item::Namespace(n) => {
                 let name = join_segments(parse_sym, &n.name.segments);
-                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope);
+                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
+                let qualified = make_qualified(prefix, &name);
                 // Reuse existing namespace symbol if already defined in the same scope
                 // (multiple files can contribute items to the same namespace).
-                let existing = kb.symbols.by_qualified_name.get(&name).copied().filter(|&sym| {
+                let existing = kb.symbols.by_qualified_name.get(&qualified).copied().filter(|&sym| {
                     matches!(
                         kb.symbols.get(sym),
                         SymbolDef::Resolved { kind: SymbolKind::Namespace, scope_raw, .. }
@@ -250,7 +268,7 @@ fn scan_items_pass1(
                     });
                     (sym, ns_term)
                 } else {
-                    let sym = kb.symbols.define(&short, &name, SymbolKind::Namespace, actual_scope.raw());
+                    let sym = kb.symbols.define(&short, &qualified, SymbolKind::Namespace, actual_scope.raw());
                     let ns_term = kb.alloc(Term::Fn {
                         functor: sym,
                         pos_args: SmallVec::new(),
@@ -269,36 +287,41 @@ fn scan_items_pass1(
                     let en = join_segments(parse_sym, &export_name.segments);
                     kb.symbols.add_export(ns_term.raw(), &en);
                 }
-                // Recurse into namespace body
-                scan_items_pass1(kb, &n.items, parse_sym, ns_term);
+                // Recurse into namespace body with the namespace's qualified name as prefix
+                scan_items_pass1(kb, &n.items, parse_sym, ns_term, &qualified);
             }
             Item::Entity(e) => {
                 let name = join_segments(parse_sym, &e.name.segments);
-                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope);
-                kb.symbols.define(&short, &name, SymbolKind::Entity, actual_scope.raw());
+                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
+                let qualified = make_qualified(prefix, &name);
+                kb.symbols.define(&short, &qualified, SymbolKind::Entity, actual_scope.raw());
             }
             Item::Operation(o) => {
                 let name = join_segments(parse_sym, &o.name.segments);
-                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope);
-                kb.symbols.define(&short, &name, SymbolKind::Operation, actual_scope.raw());
+                let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
+                let qualified = make_qualified(prefix, &name);
+                kb.symbols.define(&short, &qualified, SymbolKind::Operation, actual_scope.raw());
             }
             Item::OperationBlock(ob) => {
                 for op in &ob.entries {
                     let name = join_segments(parse_sym, &op.name.segments);
-                    kb.symbols.define(&name, &name, SymbolKind::Operation, scope.raw());
+                    let qualified = make_qualified(prefix, &name);
+                    kb.symbols.define(&name, &qualified, SymbolKind::Operation, scope.raw());
                 }
             }
             Item::Rule(r) => {
                 if let Some(ref label) = r.label {
                     let name = join_segments(parse_sym, &label.segments);
-                    kb.symbols.define(&name, &name, SymbolKind::Rule, scope.raw());
+                    let qualified = make_qualified(prefix, &name);
+                    kb.symbols.define(&name, &qualified, SymbolKind::Rule, scope.raw());
                 }
             }
             Item::RuleBlock(rb) => {
                 for rule in &rb.entries {
                     if let Some(ref label) = rule.label {
                         let name = join_segments(parse_sym, &label.segments);
-                        kb.symbols.define(&name, &name, SymbolKind::Rule, scope.raw());
+                        let qualified = make_qualified(prefix, &name);
+                        kb.symbols.define(&name, &qualified, SymbolKind::Rule, scope.raw());
                     }
                 }
             }
@@ -312,30 +335,35 @@ fn scan_items_pass1(
 }
 
 /// Sub-pass 2: process requires declarations and imports → build parent scope chain.
+///
+/// `prefix` is the fully-qualified path of the enclosing scope (empty at top level).
 fn scan_items_pass2(
     kb: &mut KnowledgeBase,
     items: &[Item],
     parse_sym: &crate::intern::SymbolTable,
     scope: TermId,
+    prefix: &str,
 ) {
     for item in items {
         match item {
             Item::SortWithBody(s) => {
                 let name = join_segments(parse_sym, &s.name.segments);
-                if let Some(sort_term) = find_scope_by_name(kb, &name) {
+                let qualified = make_qualified(prefix, &name);
+                if let Some(sort_term) = find_scope_by_name(kb, &qualified) {
                     // Process sort-level imports
                     process_imports(kb, parse_sym, &s.imports, sort_term);
                     // Recurse
-                    scan_items_pass2(kb, &s.items, parse_sym, sort_term);
+                    scan_items_pass2(kb, &s.items, parse_sym, sort_term, &qualified);
                 }
             }
             Item::Namespace(n) => {
                 let name = join_segments(parse_sym, &n.name.segments);
-                if let Some(ns_term) = find_scope_by_name(kb, &name) {
+                let qualified = make_qualified(prefix, &name);
+                if let Some(ns_term) = find_scope_by_name(kb, &qualified) {
                     // Process namespace-level imports
                     process_imports(kb, parse_sym, &n.imports, ns_term);
                     // Recurse
-                    scan_items_pass2(kb, &n.items, parse_sym, ns_term);
+                    scan_items_pass2(kb, &n.items, parse_sym, ns_term, &qualified);
                 }
             }
             Item::RequiresDecl(r) => {
@@ -875,16 +903,30 @@ impl<'a> Loader<'a> {
 
         self.kb.register_sort(sort_term, SortKind::Abstract);
 
-        // Assert SortInfo fact
-        let sort_info_sym = self.kb.intern("SortInfo");
-        let abstract_sym = self.kb.intern("Abstract");
-        let abstract_term = self.kb.alloc(Term::Ident(abstract_sym));
-        let fact_term = self.kb.alloc(Term::Fn {
-            functor: sort_info_sym,
-            pos_args: SmallVec::from_slice(&[sort_term, abstract_term]),
-            named_args: SmallVec::new(),
-        });
-        self.kb.assert_fact(fact_term, sort_sort, domain, None);
+        if let Some(ref bound_type) = s.bound {
+            // Type alias: sort Money = Int
+            let target_term = self.type_expr_to_term(bound_type);
+
+            // Assert SortAlias fact: SortAlias(Money, Int)
+            let alias_sym = self.kb.intern("SortAlias");
+            let alias_fact = self.kb.alloc(Term::Fn {
+                functor: alias_sym,
+                pos_args: SmallVec::from_slice(&[sort_term, target_term]),
+                named_args: SmallVec::new(),
+            });
+            self.kb.assert_fact(alias_fact, sort_sort, domain, None);
+        } else {
+            // Unspecified: sort T = ? (type parameter or abstract sort)
+            let sort_info_sym = self.kb.intern("SortInfo");
+            let abstract_sym = self.kb.intern("Abstract");
+            let abstract_term = self.kb.alloc(Term::Ident(abstract_sym));
+            let fact_term = self.kb.alloc(Term::Fn {
+                functor: sort_info_sym,
+                pos_args: SmallVec::from_slice(&[sort_term, abstract_term]),
+                named_args: SmallVec::new(),
+            });
+            self.kb.assert_fact(fact_term, sort_sort, domain, None);
+        }
     }
 
     fn load_sort_with_body(&mut self, s: &SortWithBody, parent_domain: TermId) {

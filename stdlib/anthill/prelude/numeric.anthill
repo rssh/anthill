@@ -2,7 +2,7 @@
 sort anthill.prelude.Numeric
   export add, sub, mul, zero-val
 
-  sort T
+  sort T = ?
   requires Ordered{T}
 
   operation {

@@ -10,7 +10,7 @@ This specification is **self-contained**: it can be implemented without referenc
 
 2. **Rule is THE knowledge primitive.** All knowledge in the KB is expressed as rules (Horn clauses). `fact` and `constraint` are syntactic sugar that desugar to rules. This unifies ground assertions, derived knowledge, and integrity constraints under one mechanism.
 
-3. **Algebraic specification.** The kernel is in the tradition of algebraic specification languages (OBJ, CafeOBJ, Maude): a namespace declares sorts (abstract or defined types), operations (typed behavioral specs with contracts), and rules (laws).
+3. **Algebraic specification.** The kernel is in the tradition of algebraic specification languages (OBJ, CafeOBJ, Maude): a namespace declares sorts (unspecified, type aliases, or defined types), operations (typed behavioral specs with contracts), and rules (laws).
 
 4. **Partial formalization.** Any term can be `Unspecified` — described in natural language, to be refined later. This allows a spectrum from fully informal to fully formal within the same language.
 
@@ -150,7 +150,7 @@ The kernel has only four primitive types for `Const` values:
 
 ### 4.4 The Prelude Namespaces
 
-Common compound types are defined in standard prelude sorts using the kernel's own constructs. **Parametric types are sorts with abstract sub-sorts** — instantiated via **inline type expressions** `Name{bindings}`. **Sum types are sorts with entity constructors** — `sort S { entity C₁(...), entity C₂(...) }` enumerates constructors (see §5.2).
+Common compound types are defined in standard prelude sorts using the kernel's own constructs. **Parametric types are sorts with unspecified sub-sorts** — instantiated via **inline type expressions** `Name{bindings}`. **Sum types are sorts with entity constructors** — `sort S { entity C₁(...), entity C₂(...) }` enumerates constructors (see §5.2).
 
 > **Canonical source:** The prelude definitions below are extracted from `stdlib/anthill/prelude/`. Those `.anthill` files are the canonical source; this section is for reference.
 
@@ -165,11 +165,11 @@ sort anthill.prelude.Timestamp {
   entity Timestamp(value: String)
 }
 
--- List: a parametric sort (T is the abstract sort parameter)
+-- List: a parametric sort (T is the unspecified sort parameter)
 sort anthill.prelude.List
   export List, nil, cons, length
 
-  sort T                                             -- type parameter (abstract)
+  sort T = ?                                         -- type parameter (unspecified)
   entity nil                                         -- empty list
   entity cons(head: T, tail: List)                   -- cons cell
 
@@ -182,7 +182,7 @@ end
 sort anthill.prelude.Option
   export Option, none, some
 
-  sort T                                             -- type parameter (abstract)
+  sort T = ?                                         -- type parameter (unspecified)
   entity none                                        -- absent
   entity some(value: T)                              -- present
 end
@@ -191,7 +191,7 @@ end
 sort anthill.prelude.Eq
   export eq, neq
 
-  sort T
+  sort T = ?
   operation {
     eq(a: T, b: T) -> Bool
     neq(a: T, b: T) -> Bool
@@ -203,7 +203,7 @@ end
 sort anthill.prelude.Ordered
   export gt, gte, lt, lte
 
-  sort T
+  sort T = ?
   requires Eq{T}
 
   operation {
@@ -225,7 +225,7 @@ end
 sort anthill.prelude.Numeric
   export add, sub, mul, zero-val
 
-  sort T
+  sort T = ?
   requires Ordered{T}
 
   operation {
@@ -257,7 +257,7 @@ entity Project(
 operation lookup(key: String) -> Option{T = Account}
 ```
 
-The inline form `List{T=Int}` refers to the sort `List` with abstract sort parameter `T` bound to `Int`. This is the Maude view mechanism expressed as a type expression.
+The inline form `List{T=Int}` refers to the sort `List` with unspecified sort parameter `T` bound to `Int`. This is the Maude view mechanism expressed as a type expression.
 
 **Grammar:**
 
@@ -280,7 +280,7 @@ fact Ordered{T = String}
 
 This follows the "types are terms" principle: sort instantiations are knowledge, expressible as facts. Different namespaces can provide different instantiations (see §5.1 on namespace scoping).
 
-Additional types are introduced via `sort` declarations (abstract or defined) in any namespace.
+Additional types are introduced via `sort` declarations (unspecified, type alias, or defined) in any namespace.
 
 ## 5. Kernel Constructs
 
@@ -309,6 +309,8 @@ Implicit namespaces merge with explicit namespaces of the same qualified name. T
 - Wildcard imports work naturally: `import anthill.prelude.*` imports all items defined in the `anthill.prelude` scope.
 - Explicit `namespace anthill { ... }` and implicit `anthill` (from `sort anthill.prelude.X`) merge into one scope.
 
+**Qualified names.** Every defined symbol has a `short_name` (last segment) and a `qualified_name` (full path from the global scope). Items nested inside a sort or namespace body have their qualified name constructed by prepending the enclosing scope's qualified path. For example, `operation eq` inside `sort anthill.prelude.Eq` gets `qualified_name = "anthill.prelude.Eq.eq"`. The `by_qualified_name` index serves as a global registry of fully-qualified paths, while scope-aware resolution (`resolve_in_scope`) uses short names and parent scope chains.
+
 ```
 Namespace ::= 'namespace' Name
                 Import*                             -- explicit imports
@@ -321,7 +323,7 @@ ImportPath ::= Name                               -- import a specific name
              | Name '.' '*'                        -- wildcard: everything from a namespace
 
 NameList    ::= Name (',' Name)*
-SortBinding ::= Name '=' Type                   -- explicit: binds an abstract sort to a concrete type
+SortBinding ::= Name '=' Type                   -- explicit: binds an unspecified sort to a concrete type
               | Name                             -- punning: Eq{T} is shorthand for Eq{T = T}
 ```
 
@@ -339,7 +341,7 @@ requires Bifunctor{A, B = Int}   -- A binds to A, B binds to Int
 requires Numeric{T = Money}      -- T binds to Money
 ```
 
-Import makes names from another namespace visible in the current scope. Sort parameters remain abstract — they are instantiated separately via inline type expressions (`Name{bindings}`), not at import time.
+Import makes names from another namespace visible in the current scope. Sort parameters remain unspecified — they are instantiated separately via inline type expressions (`Name{bindings}`), not at import time.
 
 Three import forms:
 
@@ -367,7 +369,7 @@ Default visibility is `internal`. The namespace-level `export` clause lists expo
 **Namespace content** — what can appear inside a namespace:
 
 ```
-NamespaceContent ::= Sort | Rule | Operation         -- Sort: only sorts-with-body (not abstract)
+NamespaceContent ::= Sort | Rule | Operation         -- Sort: sorts-with-body or type aliases (not unspecified)
                    | RequiresDecl           -- sort-level constraint (see §5.2)
                    | Entity                 -- sugar (desugars to single-constructor Sort, see §6.3)
                    | Fact | Constraint      -- sugar (desugars to Rule, see §6.1, §6.2)
@@ -377,10 +379,12 @@ NamespaceContent ::= Sort | Rule | Operation         -- Sort: only sorts-with-bo
 
 ### 5.2 Sort
 
-A type declaration. Sort has two forms — **abstract** (declared, not defined) and **defined** (inhabitants enumerated as a closed ADT):
+A type declaration. Sort has three forms — **unspecified** (declared, carrier unknown), **type alias** (equated to another type), and **sort with body** (inhabitants enumerated as a closed ADT, or algebra with operations/rules):
 
 ```
-Sort ::= [Visibility] 'sort' Name                            -- abstract
+Sort ::= [Visibility] 'sort' Name '=' '?'                    -- unspecified
+           ['meta' ':' Meta]
+       | [Visibility] 'sort' Name '=' Type                   -- type alias
            ['meta' ':' Meta]
        | [Visibility] 'sort' Name '=' Body[Constructor*]     -- defined (ADT)
            ['meta' ':' Meta]
@@ -390,22 +394,29 @@ FieldList   ::= Field (',' Field)*
 Field       ::= Name ':' Type
 ```
 
-**Abstract sort** — declares that a type exists without specifying its representation. Abstract sorts appear only inside sort bodies, where they serve as **type parameters** — their carrier is provided later by an implementation or by inline instantiation.
+**Unspecified sort** (`sort Name = ?`) — declares that a type exists without specifying its representation. Unspecified sorts appear inside sort bodies, where they serve as **type parameters** — their carrier is provided later by an implementation or by inline instantiation.
 
 ```
-sort T                               -- abstract: type parameter (inside a sort body)
+sort T = ?                           -- unspecified: type parameter (inside a sort body)
 ```
 
-Abstract properties are expressed as accessor operations within the enclosing sort body:
+**Type alias** (`sort Name = Type`) — creates a name that is equivalent to an existing type. Useful for domain-specific naming:
+
+```
+sort Money = Int                     -- Money is an alias for Int
+sort Velocity = Float                -- Velocity is an alias for Float
+```
+
+Unspecified properties are expressed as accessor operations within the enclosing sort body:
 
 ```
 sort linear_algebra {
-  sort Vector                        -- abstract: type parameter
+  sort Vector = ?                    -- unspecified: type parameter
   operation dim(v: Vector) -> Int     -- accessor
 }
 ```
 
-**Sort with body** — a sort can have a body containing entities (constructors), sub-sorts (parameters), `requires` declarations (sort-level constraints), operations, rules, and other items. When a sort body contains entity declarations, they are constructors of that sort, making it a closed ADT:
+**Sort with body** — a sort can have a body containing entities (constructors), sub-sorts (parameters, either unspecified or aliased), `requires` declarations (sort-level constraints), operations, rules, and other items. When a sort body contains entity declarations, they are constructors of that sort, making it a closed ADT:
 
 ```
 sort Color {                         -- closed set of constructors
@@ -437,14 +448,14 @@ The `requires` declaration takes a type expression — either a simple sort name
 
 ```
 sort Ordered {
-  sort T
+  sort T = ?
   requires Eq{T}                     -- this sort depends on Eq over T
 
   operation gt(a: T, b: T) -> Bool
 }
 
 sort banking {
-  sort Money
+  sort Money = ?
   requires Numeric{T = Money}         -- this sort (algebra) depends on Numeric over Money
 }
 ```
@@ -914,7 +925,8 @@ When an obligation is discharged, the result is recorded as a `ProofResult` term
 
 The kernel enforces a **structural type system**:
 
-- **Abstract sorts** (`sort T` inside a sort body) introduce type parameters without representation. Can appear in operation signatures and fields within the enclosing sort, but have no constructors until a carrier binding is provided.
+- **Unspecified sorts** (`sort T = ?` inside a sort body) introduce type parameters without representation. Can appear in operation signatures and fields within the enclosing sort, but have no constructors until a carrier binding is provided.
+- **Type aliases** (`sort Money = Int`) introduce a name equivalent to an existing type. The alias is interchangeable with the aliased type.
 - **Sorts with constructors** (`sort S { entity C₁(...), entity C₂(...) }`) introduce closed algebraic data types. All constructors are enumerated; pattern matching in rules is exhaustive.
 - **Operations** have typed signatures: `operation op(x: A, y: B) -> C`. Parameters are named bindings; the kernel type-checks that actual arguments match declared types.
 - **Terms** are typed: `Const` carries its type, `Var` declares its type, `Fn` has the type of its sort's constructor, `Ref` refers to a named type.
@@ -995,16 +1007,16 @@ Visibility is enforced at query time and assertion time.
 
 An algebra is not a separate syntactic construct — it is the **typing structure that emerges** from declarations within a sort body:
 
-- **Abstract sub-sorts** (`sort T` inside a sort body) define the type parameters of the algebra.
+- **Unspecified sub-sorts** (`sort T = ?` inside a sort body) define the type parameters of the algebra.
 - **Entity constructors** define concrete inhabitants (ADT variants).
 - **Operations** define typed behaviors with contracts.
 - **Rules** (including constraint sugar) express laws.
 
-A sort-with-body that contains abstract sub-sorts, operations, and laws IS an algebra. When an `Implementation` fact provides carrier bindings (`carrier: { Scalar = float, Vector = CudaDeviceBuffer[float] }`), it instantiates the algebra for a specific host language.
+A sort-with-body that contains unspecified sub-sorts, operations, and laws IS an algebra. When an `Implementation` fact provides carrier bindings (`carrier: { Scalar = float, Vector = CudaDeviceBuffer[float] }`), it instantiates the algebra for a specific host language.
 
-**Parametric structure:** Abstract sorts inside a sort body serve as type parameters. A sort with abstract sub-sort `T` is a parametric module — instantiated via inline type expressions `List{T = Int}`. For example, `anthill.prelude.List` has abstract sub-sort `T`; using `List{T = Int}` inline produces a list-of-integers.
+**Parametric structure:** Unspecified sorts inside a sort body serve as type parameters. A sort with unspecified sub-sort `T` is a parametric module — instantiated via inline type expressions `List{T = Int}`. For example, `anthill.prelude.List` has unspecified sub-sort `T`; using `List{T = Int}` inline produces a list-of-integers.
 
-This also supports type class-like patterns: a sort declaring `sort A` and `operation combine(x: A, y: A) -> A` with laws is a specification that any type with a `combine` operation must satisfy. Using `MyType` in place of `A` via inline binding instantiates the specification for a concrete type.
+This also supports type class-like patterns: a sort declaring `sort A = ?` and `operation combine(x: A, y: A) -> A` with laws is a specification that any type with a `combine` operation must satisfy. Using `MyType` in place of `A` via inline binding instantiates the specification for a concrete type.
 
 **Spec satisfaction:** To declare that a concrete type satisfies a parametric spec, assert the instantiation as a fact:
 
@@ -1027,27 +1039,27 @@ rule eq(?_, ?_) = false
 
 Since facts are scoped to namespaces, different namespaces can provide different instantiations of the same spec for the same type (e.g. different orderings). A consumer chooses which instantiation to use via `import`.
 
-**Namespaces** group sorts, operations, and rules for encapsulation and visibility control, but do not introduce type parameters. A namespace may contain sorts (both parametric and concrete), but abstract sorts (no body) appear only inside sort bodies as type parameters — never directly in a namespace.
+**Namespaces** group sorts, operations, and rules for encapsulation and visibility control, but do not introduce type parameters. A namespace may contain sorts (both parametric and concrete) and type aliases, but unspecified sorts (`sort T = ?`) appear only inside sort bodies as type parameters — never directly in a namespace.
 
 ## 9. Connections to Existing Systems
 
 The kernel language connects to three traditions:
 
-**ML-style modules.** A sort-with-body (containing abstract sub-sorts and operations) ≈ signature (declares abstract types and operations), Implementation with carrier bindings ≈ structure (provides concrete types), inline `Name{bindings}` ≈ functor application. But anthill sorts are richer — they contain rules (logic) and contracts (requires/ensures), making them algebraic specifications rather than pure type signatures. Namespaces provide encapsulation and visibility control (like ML structures), but type parameters live in sort bodies, not namespaces.
+**ML-style modules.** A sort-with-body (containing unspecified sub-sorts and operations) ≈ signature (declares abstract types and operations), Implementation with carrier bindings ≈ structure (provides concrete types), inline `Name{bindings}` ≈ functor application. But anthill sorts are richer — they contain rules (logic) and contracts (requires/ensures), making them algebraic specifications rather than pure type signatures. Namespaces provide encapsulation and visibility control (like ML structures), but type parameters live in sort bodies, not namespaces.
 
 **Maude / OBJ / CafeOBJ.** The closest match:
 
 | Kernel language | Maude |
 |----------------|-------|
 | `namespace` | theory (`fth`) or module (`fmod`) |
-| `sort T` (abstract) | `sort` |
+| `sort T = ?` (unspecified) | `sort` |
 | `sort S { entity ... }` | sort with constructor ops (`op ... : -> S [ctor]`) |
 | `operation` | `op` (operator declaration) |
 | `rule` (derivation) | equation (`eq`) or rewrite rule (`rl`) |
 | `constraint` (denial) | membership axiom / conditional axiom |
 | `Implementation.carrier` | view (maps theory sorts to module sorts) |
 | `List{T = X}` (inline instantiation) | view instantiation (binds sort parameter) |
-| sort with abstract sub-sort | parameterized module (`fmod X{Y :: TRIV}`) |
+| sort with unspecified sub-sort | parameterized module (`fmod X{Y :: TRIV}`) |
 
 The anthill adds: `Unspecified` (partial formalization), metadata (trust, provenance, agent), host-language embeddings (bidirectional mapping to Scala/Python/etc.), and the stigmergic agent layer.
 
@@ -1057,13 +1069,13 @@ The anthill adds: `Unspecified` (partial formalization), metadata (trust, proven
 
 ### 10.1 Banking Algebra
 
-A complete algebra with type parameters, operations, contracts, and laws. Because the algebra is parametric over `Money` (an abstract sort whose carrier is provided by an implementation), it uses `sort` — not `namespace` — as the enclosing construct:
+A complete algebra with type parameters, operations, contracts, and laws. Because the algebra is parametric over `Money` (an unspecified sort whose carrier is provided by an implementation), it uses `sort` — not `namespace` — as the enclosing construct:
 
 ```
 sort banking
   export Account, Money, deposit, withdraw, balance
 
-  sort Money                                         -- type parameter (abstract)
+  sort Money = ?                                     -- type parameter (unspecified)
   requires Numeric{T = Money}                        -- gives us +, -, >, >=, = for Money
 
   entity Account(                                    -- sugar: sort Account { entity Account(...) }
@@ -1098,7 +1110,7 @@ With infix sugar (once defined), the same algebra reads more naturally:
 sort banking
   export Account, Money, deposit, withdraw, balance
 
-  sort Money
+  sort Money = ?
   requires Numeric{T = Money}
 
   entity Account(id: AccountId, balance: Money)
@@ -1130,8 +1142,8 @@ Abstract algebra with sort variables, instantiated by different implementations.
 sort linear_algebra
   export Scalar, Vector, add, scale, dot, dim
 
-  sort Scalar                                        -- type parameter (abstract)
-  sort Vector                                        -- type parameter (abstract)
+  sort Scalar = ?                                    -- type parameter (unspecified)
+  sort Vector = ?                                    -- type parameter (unspecified)
 
   operation {
     dim(v: Vector) -> Int
@@ -1191,7 +1203,7 @@ namespace finance
   export risk, audit
 
   namespace risk {
-    sort RiskLevel {                              -- defined sort (not abstract)
+    sort RiskLevel {                              -- defined sort (not unspecified)
       entity Low
       entity Medium
       entity High
@@ -1270,7 +1282,9 @@ NamespaceContent ::= Sort | Rule | Operation
 
 Visibility  ::= 'internal' | 'export' | 'public'
 
-Sort        ::= [Visibility] 'sort' Name                           -- abstract (only in SortContent)
+Sort        ::= [Visibility] 'sort' Name '=' '?'                   -- unspecified (only in SortContent)
+                  ['meta' ':' Meta]
+              | [Visibility] 'sort' Name '=' Type                  -- type alias
                   ['meta' ':' Meta]
               | [Visibility] 'sort' Name                           -- sort with body
                   Import*
@@ -1278,8 +1292,9 @@ Sort        ::= [Visibility] 'sort' Name                           -- abstract (
                 Body[SortContent*]
                   ['meta' ':' Meta]
 
--- Note: abstract sorts (first form, no body) may only appear inside a sort body
--- as type parameters. Namespaces contain only sorts-with-body (second form).
+-- Note: unspecified sorts (first form) may only appear inside a sort body
+-- as type parameters. Type aliases (second form) may appear in sort or namespace bodies.
+-- Namespaces contain sorts-with-body and type aliases (not unspecified sorts).
 
 SortContent ::= Sort | Entity | Operation | Rule
               | RequiresDecl
@@ -1376,39 +1391,31 @@ Design questions discovered during implementation that need decisions.
 
 `import anthill.prelude.{Eq}` makes the name `Eq` available as a local alias. It does **not** add Eq's scope as a parent — the sort's internal operations (`eq`, `neq`) are not automatically accessible. To access a sort's contents, use `requires Eq{T}` (for sort composition) or `import anthill.prelude.Eq.*` (wildcard import).
 
-### 12.2 Qualified names for nested definitions
-
-Items defined inside namespaces (e.g., `sort Term` inside `namespace anthill.reflect`) are stored with `qualified_name = "Term"`, not `"anthill.reflect.Term"`. The `define()` call uses the item's own name as both short and qualified. This means `by_qualified_name` can't distinguish `Term` in `anthill.reflect` from a hypothetical `Term` in another namespace.
-
-**Options:**
-- (a) Compute fully-qualified names during scan by prepending the enclosing scope path.
-- (b) Keep flat names; rely on scope-aware resolution (current workaround).
-
-### 12.3 Self-export
+### 12.2 Self-export
 
 A sort exports its members (operations, entities) but not its own name. When Eq exports `eq, neq`, an importer can access those operations but must resolve the name `Eq` separately. Should sorts/namespaces implicitly export their own name?
 
-### 12.4 Term as a prelude type
+### 12.3 Term as a prelude type
 
 `anthill.prelude.Bool` uses `Term` (from `anthill.reflect`) in the `ite` operation: `ite(cond: Bool, then: Term, else: Term) -> Term`. This creates a dependency from prelude to reflect. Should `Term` be a primitive type (like Int/String/Bool/Float) registered via `register_prelude`?
 
-### 12.5 Unresolvable imports are silent
+### 12.4 Unresolvable imports are silent
 
 When `import nonexistent.path.*` or `import nonexistent.path.{Name}` references a namespace that was never defined, the loader silently skips it — no error is reported. Should unresolvable imports be hard errors?
 
-### 12.6 Effect target name resolution
+### 12.5 Effect target name resolution
 
 Effect targets like `effects (Reads(kb))` reference names (`kb`) that may be entities in scope (e.g., `sort KB { entity kb }`). Currently the parser accepts arbitrary names and the loader stores them as-is without scope-aware resolution. Should effect target names go through the import/resolution pipeline?
 
-### 12.7 Re-export semantics
+### 12.6 Re-export semantics
 
 There is no mechanism for a namespace to re-export an imported name. If namespace A imports `Eq` from `anthill.prelude`, it cannot make `Eq` visible to its own importers. Should `import X; export X;` or similar re-export syntax be supported?
 
-### 12.8 Circular imports and requires
+### 12.7 Circular imports and requires
 
 If sort A `requires B` and sort B `requires A`, the scope parent chain forms a cycle. The resolver's `visited` set prevents infinite recursion (returning `NotFound` on cycle), but no diagnostic is reported. Should circular requires/imports be detected and reported during scanning?
 
-### 12.9 Duplicate facts from multi-file namespaces
+### 12.8 Duplicate facts from multi-file namespaces
 
 When two files define `namespace ns`, the scan phase correctly merges them into one scope, but the load phase asserts the `Namespace` fact twice (once per file). Should `assert_fact` be idempotent for structural facts, or should the loader deduplicate?
 

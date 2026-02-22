@@ -36,8 +36,7 @@ module.exports = grammar({
     [$.rule_declaration, $.rule_entry],
     // operation <name>(...) could start a single operation or an operation block
     [$.operation_declaration, $.operation_entry],
-    // sort <name> could be abstract_sort or sort_with_body (resolved by presence of body)
-    [$.abstract_sort, $.sort_with_body],
+    // (removed: abstract_sort vs sort_with_body conflict — `= ?` disambiguates)
     // After operation clauses, `requires` could be another clause or a standalone declaration
     [$.operation_declaration],
   ],
@@ -168,8 +167,15 @@ module.exports = grammar({
       optional($.visibility),
       'sort',
       field('name', $.name),
+      '=',
+      field('definition', choice(
+        $.unspecified_sort,   // sort T = ?
+        $._type,             // sort Money = Int, sort Ids = List{T=Int}
+      )),
       optional($.meta_block),
     ),
+
+    unspecified_sort: $ => '?',
 
     sort_with_body: $ => seq(
       optional($.visibility),

@@ -72,16 +72,17 @@ end
                 (identifier)))))))))
 
 =====================================
-Abstract sort
+Abstract sort (unspecified)
 =====================================
 
-sort Scalar
+sort Scalar = ?
 
 ---
 
 (source_file
   (abstract_sort
-    name: (name (identifier))))
+    name: (name (identifier))
+    definition: (unspecified_sort)))
 
 =====================================
 Sort with body (ADT)
@@ -138,7 +139,7 @@ Sort with requires declaration
 =====================================
 
 sort Ordered {
-  sort T
+  sort T = ?
   requires Eq{T = T}
   operation gt(a: T, b: T) -> Bool
 }
@@ -149,7 +150,8 @@ sort Ordered {
   (sort_with_body
     name: (name (identifier))
     (abstract_sort
-      name: (name (identifier)))
+      name: (name (identifier))
+      definition: (unspecified_sort))
     (requires_declaration
       type: (parameterized_type
         (name (identifier))
@@ -171,7 +173,7 @@ Namespace with requires declaration
 =====================================
 
 namespace banking {
-  sort Money
+  sort Money = ?
   requires Numeric{T = Money}
 }
 
@@ -181,7 +183,8 @@ namespace banking {
   (namespace_declaration
     name: (name (identifier))
     (abstract_sort
-      name: (name (identifier)))
+      name: (name (identifier))
+      definition: (unspecified_sort))
     (requires_declaration
       type: (parameterized_type
         (name (identifier))
@@ -194,7 +197,7 @@ Requires with punned sort binding
 =====================================
 
 sort Ordered {
-  sort T
+  sort T = ?
   requires Eq{T}
 }
 
@@ -204,7 +207,8 @@ sort Ordered {
   (sort_with_body
     name: (name (identifier))
     (abstract_sort
-      name: (name (identifier)))
+      name: (name (identifier))
+      definition: (unspecified_sort))
     (requires_declaration
       type: (parameterized_type
         (name (identifier))
@@ -350,11 +354,42 @@ Line comment
 =====================================
 
 -- this is a comment
-sort T
+sort T = ?
 
 ---
 
 (source_file
   (line_comment)
   (abstract_sort
-    name: (name (identifier))))
+    name: (name (identifier))
+    definition: (unspecified_sort)))
+
+=====================================
+Sort type alias (simple)
+=====================================
+
+sort Money = Int
+
+---
+
+(source_file
+  (abstract_sort
+    name: (name (identifier))
+    definition: (simple_type (name (identifier)))))
+
+=====================================
+Sort type alias (parameterized)
+=====================================
+
+sort IntList = List{T = Int}
+
+---
+
+(source_file
+  (abstract_sort
+    name: (name (identifier))
+    definition: (parameterized_type
+      (name (identifier))
+      (sort_binding
+        param: (name (identifier))
+        type: (simple_type (name (identifier)))))))

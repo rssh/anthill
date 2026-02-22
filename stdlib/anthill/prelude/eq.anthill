@@ -2,7 +2,7 @@
 sort anthill.prelude.Eq
   export eq, neq
 
-  sort T
+  sort T = ?
   operation {
     eq(a: T, b: T) -> Bool
     neq(a: T, b: T) -> Bool

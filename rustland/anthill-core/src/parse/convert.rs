@@ -579,7 +579,18 @@ impl<'a> Converter<'a> {
         let visibility = self.convert_visibility(node);
         let meta = self.convert_meta_block(node);
         let span = self.span(node);
-        Some(AbstractSort { visibility, name, meta, span })
+
+        // Extract definition: ? → None (unspecified), Type → Some(TypeExpr)
+        let bound = self.field(node, "definition")
+            .and_then(|def| {
+                if def.kind() == "unspecified_sort" {
+                    None  // sort T = ?
+                } else {
+                    Some(self.convert_type(def))  // sort T = Int
+                }
+            });
+
+        Some(AbstractSort { visibility, name, bound, meta, span })
     }
 
     fn convert_sort_with_body(&mut self, node: Node) -> Option<SortWithBody> {

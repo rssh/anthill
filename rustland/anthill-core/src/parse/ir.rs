@@ -170,6 +170,7 @@ pub enum ImportKind {
 pub struct AbstractSort {
     pub visibility: Option<Visibility>,
     pub name: Name,
+    pub bound: Option<TypeExpr>,  // None = unspecified (?), Some = type alias
     pub meta: Option<MetaBlock>,
     pub span: Span,
 }

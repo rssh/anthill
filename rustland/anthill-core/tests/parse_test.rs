@@ -50,7 +50,7 @@ fn parse_empty_namespace() {
 
 #[test]
 fn parse_abstract_sort() {
-    let source = "sort Scalar\n";
+    let source = "sort Scalar = ?\n";
     let parsed = parse::parse(source).expect("parse failed");
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
@@ -229,7 +229,7 @@ fn parse_workitem() {
 
 #[test]
 fn parse_line_comment() {
-    let source = "-- this is a comment\nsort T\n";
+    let source = "-- this is a comment\nsort T = ?\n";
     let parsed = parse::parse(source).expect("parse failed");
     // Comment should be skipped, only the sort should be parsed
     assert_eq!(parsed.items.len(), 1);
@@ -246,8 +246,8 @@ fn parse_line_comment() {
 #[test]
 fn load_namespace_into_kb() {
     let source = r#"namespace banking {
-  sort AccountId
-  sort Money
+  sort AccountId = ?
+  sort Money = ?
   entity Account(id: AccountId, balance: Money)
 }
 "#;
@@ -304,7 +304,7 @@ fn load_banking_namespace() {
     let source = r#"namespace banking
   export Account, Money, deposit
 
-  sort AccountId
+  sort AccountId = ?
 
   sort Money {
     entity dollars(amount: Int)
@@ -389,8 +389,8 @@ fact parent("bob", "charlie")
 #[test]
 fn load_sort_with_operation() {
     let source = r#"sort Account
-  sort AccountId
-  sort Money
+  sort AccountId = ?
+  sort Money = ?
   entity checking(id: AccountId, balance: Money)
   entity savings(id: AccountId, balance: Money, rate: Money)
 
@@ -491,7 +491,7 @@ fn member_facts_for_sort_with_body() {
 #[test]
 fn member_facts_for_sort_with_params_and_ops() {
     let source = r#"sort Account
-  sort AccountId
+  sort AccountId = ?
   entity checking(id: AccountId, balance: Int)
   entity savings(id: AccountId, balance: Int)
   operation deposit(a: Account, m: Int) -> Account
@@ -548,7 +548,7 @@ fn member_facts_for_namespace() {
 #[test]
 fn member_facts_queryable_by_domain() {
     let source = r#"sort Option {
-  sort T
+  sort T = ?
   entity none
   entity some(value: T)
 }
@@ -577,7 +577,7 @@ fn member_facts_queryable_by_domain() {
 #[test]
 fn parse_sort_with_requires() {
     let source = r#"sort Ordered {
-  sort T
+  sort T = ?
   requires Eq{T = T}
   operation gt(a: T, b: T) -> Bool
 }
@@ -610,11 +610,11 @@ fn parse_sort_with_requires() {
 #[test]
 fn load_sort_with_requires() {
     let source = r#"sort Eq {
-  sort T
+  sort T = ?
 }
 
 sort Ordered {
-  sort T
+  sort T = ?
   requires Eq{T = T}
   operation gt(a: T, b: T) -> Bool
 }
@@ -652,7 +652,7 @@ sort Ordered {
 fn parse_requires_punned_binding() {
     // `Eq{T}` should desugar to `Eq{T = T}`
     let source = r#"sort Ordered {
-  sort T
+  sort T = ?
   requires Eq{T}
 }
 "#;
@@ -964,11 +964,11 @@ fn unresolved_name_is_hard_error() {
 #[test]
 fn all_names_resolved_no_errors() {
     let source = r#"sort Eq {
-  sort T
+  sort T = ?
 }
 
 sort Ordered {
-  sort T
+  sort T = ?
   requires Eq{T = T}
   operation compare(a: T, b: T) -> Int
 }
@@ -985,7 +985,7 @@ fn namespace_scoped_sorts_resolve() {
     // Sorts defined inside a namespace should be visible to siblings
     // via the enclosing scope (no explicit import needed).
     let source = r#"namespace A {
-  sort B
+  sort B = ?
   sort C {
     requires B
     operation use_b(x: B) -> B
@@ -1010,7 +1010,7 @@ fn multi_file_same_namespace_resolution() {
     // Two files both declare `namespace ns`.  Namespace dedup merges them
     // into a single scope so sorts from one file are visible in the other.
     let file1 = r#"namespace ns {
-  sort A
+  sort A = ?
 }
 "#;
     let file2 = r#"namespace ns {
@@ -1069,6 +1069,10 @@ fn dotted_name_creates_intermediate_namespaces() {
     // `C` should be a registered sort with constructor `mkC`
     let c_term = kb.resolve_name_term("C");
     assert_eq!(kb.sort_kind(c_term), Some(SortKind::Defined));
+
+    // Entity `mkC` inside sort `a.b.C` gets fully-qualified name
+    assert!(kb.has_qualified_name("a.b.C.mkC"),
+        "entity mkC inside sort a.b.C should have qualified name 'a.b.C.mkC'");
 }
 
 #[test]
@@ -1103,7 +1107,7 @@ fn dotted_siblings_share_scope() {
 fn dotted_namespace_creates_hierarchy() {
     // `namespace a.b.c` should create implicit namespaces `a` and `a.b`.
     let source = r#"namespace a.b.c {
-  sort X
+  sort X = ?
 }
 "#;
     let parsed = parse::parse(source).expect("parse failed");
@@ -1117,8 +1121,8 @@ fn dotted_namespace_creates_hierarchy() {
     assert!(kb.has_qualified_name("a.b.c"),
         "explicit namespace 'a.b.c' should exist");
 
-    // X should be defined in the `a.b.c` scope
-    assert!(kb.has_qualified_name("X"), "sort X should be registered");
+    // X should be defined in the `a.b.c` scope with fully-qualified name
+    assert!(kb.has_qualified_name("a.b.c.X"), "sort X should be registered as 'a.b.c.X'");
 }
 
 #[test]
@@ -1141,11 +1145,92 @@ fn implicit_and_explicit_namespace_merge() {
         .expect("load should succeed: implicit and explicit 'ns' merge");
 
     // Both A (from dotted name) and B (from explicit namespace) should exist
+    // B is inside namespace ns, so its fully-qualified name is "ns.B"
     assert!(kb.has_qualified_name("ns.A"));
-    assert!(kb.has_qualified_name("B"));
+    assert!(kb.has_qualified_name("ns.B"));
 
     // The operation in B should resolve A via the shared namespace scope
     let op_sort = kb.make_name_term("Operation");
     let ops = kb.by_sort(op_sort);
     assert_eq!(ops.len(), 1, "should have 1 operation (use_a)");
+}
+
+// ── Fully-qualified name tests ──────────────────────────────────
+
+#[test]
+fn nested_items_have_qualified_names() {
+    // Items defined inside a sort body get fully-qualified names:
+    // operation `eq` inside `sort Eq` → qualified_name = "Eq.eq"
+    let source = r#"sort Eq {
+  sort T = ?
+  operation eq(a: T, b: T) -> Bool
+  operation neq(a: T, b: T) -> Bool
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    // Sort Eq at top level
+    assert!(kb.has_qualified_name("Eq"),
+        "sort Eq should be registered");
+    // Type param T inside Eq
+    assert!(kb.has_qualified_name("Eq.T"),
+        "type param T should have qualified name 'Eq.T'");
+    // Operations inside Eq
+    assert!(kb.has_qualified_name("Eq.eq"),
+        "operation eq should have qualified name 'Eq.eq'");
+    assert!(kb.has_qualified_name("Eq.neq"),
+        "operation neq should have qualified name 'Eq.neq'");
+}
+
+#[test]
+fn nested_items_in_dotted_sort_have_qualified_names() {
+    // Items inside a dotted sort: `sort anthill.prelude.Eq { operation eq ... }`
+    // → qualified_name = "anthill.prelude.Eq.eq"
+    let source = r#"sort anthill.prelude.Eq {
+  sort T = ?
+  operation eq(a: T, b: T) -> Bool
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    assert!(kb.has_qualified_name("anthill.prelude.Eq"),
+        "sort should have qualified name 'anthill.prelude.Eq'");
+    assert!(kb.has_qualified_name("anthill.prelude.Eq.T"),
+        "type param should have qualified name 'anthill.prelude.Eq.T'");
+    assert!(kb.has_qualified_name("anthill.prelude.Eq.eq"),
+        "operation should have qualified name 'anthill.prelude.Eq.eq'");
+}
+
+#[test]
+fn nested_items_in_namespace_have_qualified_names() {
+    // Entities and sorts inside a namespace get fully-qualified names.
+    let source = r#"namespace anthill.reflect {
+  sort Term {
+    entity Const(value: Int)
+    entity Fn(functor: String)
+  }
+  sort SortInfo = ?
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    assert!(kb.has_qualified_name("anthill.reflect"),
+        "namespace should have qualified name 'anthill.reflect'");
+    assert!(kb.has_qualified_name("anthill.reflect.Term"),
+        "sort Term should have qualified name 'anthill.reflect.Term'");
+    assert!(kb.has_qualified_name("anthill.reflect.Term.Const"),
+        "entity Const should have qualified name 'anthill.reflect.Term.Const'");
+    assert!(kb.has_qualified_name("anthill.reflect.Term.Fn"),
+        "entity Fn should have qualified name 'anthill.reflect.Term.Fn'");
+    assert!(kb.has_qualified_name("anthill.reflect.SortInfo"),
+        "sort SortInfo should have qualified name 'anthill.reflect.SortInfo'");
 }

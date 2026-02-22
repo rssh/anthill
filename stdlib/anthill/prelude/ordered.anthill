@@ -2,7 +2,7 @@
 sort anthill.prelude.Ordered
   export compare, gt, gte, lt, lte, max, min
 
-  sort T
+  sort T = ?
   requires Eq{T}
 
   -- Primary operation: compare returns -1, 0, or 1

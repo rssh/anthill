@@ -2,7 +2,7 @@
 sort anthill.prelude.List
   export List, nil, cons, length
 
-  sort T                                             -- type parameter (abstract)
+  sort T = ?                                           -- type parameter (abstract)
   entity nil                                         -- empty list
   entity cons(head: T, tail: List)                   -- cons cell
 

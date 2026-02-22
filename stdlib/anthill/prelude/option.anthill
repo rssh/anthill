@@ -2,7 +2,7 @@
 sort anthill.prelude.Option
   export Option, none, some
 
-  sort T                                             -- type parameter (abstract)
+  sort T = ?                                           -- type parameter (abstract)
   entity none                                        -- absent
   entity some(value: T)                              -- present
 end

@@ -51,7 +51,7 @@ fn sort_with_constructors_to_enum() {
 #[test]
 fn sort_with_ops_to_trait() {
     let out = gen(r#"sort Eq {
-  sort T
+  sort T = ?
   operation eq(a: T, b: T) -> Bool
   operation neq(a: T, b: T) -> Bool
 }
@@ -66,7 +66,7 @@ fn sort_with_ops_to_trait() {
 #[test]
 fn self_collapse_heuristic() {
     let out = gen(r#"sort Eq {
-  sort T
+  sort T = ?
   operation eq(a: T, b: T) -> Bool
 }
 "#);
@@ -82,7 +82,7 @@ fn self_collapse_heuristic() {
 #[test]
 fn requires_to_supertrait() {
     let out = gen(r#"sort Ordered {
-  sort T
+  sort T = ?
   requires Eq{T = T}
   operation compare(a: T, b: T) -> Int
 }
@@ -165,7 +165,7 @@ fn prelude_type_mappings() {
 #[test]
 fn recursive_field_to_box() {
     let out = gen(r#"sort List {
-  sort T
+  sort T = ?
   entity Nil
   entity Cons(head: T, tail: List)
 }
@@ -208,7 +208,7 @@ end
 #[test]
 fn rules_to_test_stubs() {
     let out = gen(r#"sort Eq {
-  sort T
+  sort T = ?
   operation eq(a: T, b: T) -> Bool
   rule reflexive: eq(?a, ?a)
 }
@@ -265,8 +265,8 @@ fn full_persistence_store_hierarchy() {
 #[test]
 fn abstract_sort_in_namespace_to_unit_struct() {
     let out = gen(r#"namespace reflect
-  sort Term
-  sort FactId
+  sort Term = ?
+  sort FactId = ?
   operation reify(t: Term) -> Term
 end
 "#);

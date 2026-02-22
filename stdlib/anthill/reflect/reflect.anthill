@@ -23,10 +23,10 @@ namespace anthill.reflect
 
   -- A term in the knowledge base. Opaque: pass it to persist/retrieve/reify,
   -- but to inspect its structure, use reify() to get a TermRepr.
-  sort Term
+  sort Term = ?
 
   -- Handle to a stored fact. Returned by persist(), used by retract().
-  sort FactId
+  sort FactId = ?
 
   -- The knowledge base as a typed effect resource
   sort KB {
