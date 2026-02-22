@@ -170,10 +170,7 @@ module.exports = grammar({
       'sort',
       field('name', $.name),
       '=',
-      field('definition', choice(
-        $.variable,          // sort T = ? or sort T = ?A
-        $._type,             // sort Money = Int, sort Ids = List{T=Int}
-      )),
+      field('definition', $._type),
       optional(field('description', $.description_block)),
       optional($.meta_block),
     ),
@@ -569,13 +566,21 @@ module.exports = grammar({
       $.integer_literal,
       $.float_literal,
       $.boolean_literal,
-      $.variable,
+      $.variable_term,
       $.fn_term,
       $.instantiation_term,
       $.ref_term,
       $.infix_term,
       $.identifier,
     ),
+
+    // Variable with optional inline description: ?x {< text >}
+    // prec.right ensures the description_block is greedily consumed by
+    // variable_term rather than by an enclosing rule (e.g., abstract_sort).
+    variable_term: $ => prec.right(seq(
+      $.variable,
+      optional(field('description', $.description_block)),
+    )),
 
     // ? = anonymous variable (each occurrence distinct, like _ in Prolog)
     // ?name = named variable (shared within scope)
@@ -627,6 +632,7 @@ module.exports = grammar({
     _type: $ => choice(
       $.simple_type,
       $.parameterized_type,
+      $.variable_term,
     ),
 
     simple_type: $ => $.name,

@@ -57,6 +57,7 @@ fn parse_abstract_sort() {
         Item::AbstractSort(s) => {
             assert_eq!(parsed.symbols.name(s.name.last()), "Scalar");
             assert!(s.visibility.is_none());
+            assert!(matches!(s.definition, TypeExpr::Variable { .. }));
         }
         other => panic!("expected AbstractSort, got {:?}", std::mem::discriminant(other)),
     }
@@ -956,7 +957,7 @@ fn parse_abstract_sort_with_description() {
     match &parsed.items[0] {
         Item::AbstractSort(s) => {
             assert_eq!(parsed.symbols.name(s.name.last()), "Money");
-            assert!(s.bound.is_none());
+            assert!(matches!(s.definition, TypeExpr::Variable { .. }));
             assert_eq!(s.description.as_deref(), Some("Monetary amount"));
         }
         other => panic!("expected AbstractSort, got {:?}", std::mem::discriminant(other)),
@@ -974,16 +975,16 @@ fn load_describe_emits_desc_fact() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let desc_sort = kb.make_name_term("Desc");
+    let desc_sort = kb.make_name_term("Description");
     let descs = kb.by_sort(desc_sort);
-    assert_eq!(descs.len(), 1, "should have 1 Desc fact");
+    assert_eq!(descs.len(), 1, "should have 1 Description fact");
 
     // Verify the Desc fact structure: Desc(target, text)
     let fid = descs[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
         Term::Fn { functor, pos_args, .. } => {
-            assert_eq!(kb.resolve_sym(*functor), "Desc");
+            assert_eq!(kb.resolve_sym(*functor), "Description");
             assert_eq!(pos_args.len(), 2);
             // Second arg should be the description text
             match kb.get_term(pos_args[1]) {
@@ -993,7 +994,7 @@ fn load_describe_emits_desc_fact() {
                 other => panic!("expected String constant, got {:?}", other),
             }
         }
-        other => panic!("expected Fn term for Desc, got {:?}", other),
+        other => panic!("expected Fn term for Description, got {:?}", other),
     }
 }
 
@@ -1004,15 +1005,15 @@ fn load_abstract_sort_description_emits_desc_fact() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let desc_sort = kb.make_name_term("Desc");
+    let desc_sort = kb.make_name_term("Description");
     let descs = kb.by_sort(desc_sort);
-    assert_eq!(descs.len(), 1, "should have 1 Desc fact from inline description");
+    assert_eq!(descs.len(), 1, "should have 1 Description fact from inline description");
 
     let fid = descs[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
         Term::Fn { functor, pos_args, .. } => {
-            assert_eq!(kb.resolve_sym(*functor), "Desc");
+            assert_eq!(kb.resolve_sym(*functor), "Description");
             assert_eq!(pos_args.len(), 2);
             match kb.get_term(pos_args[1]) {
                 Term::Const(Literal::String(s)) => {
@@ -1021,8 +1022,169 @@ fn load_abstract_sort_description_emits_desc_fact() {
                 other => panic!("expected String constant, got {:?}", other),
             }
         }
-        other => panic!("expected Fn term for Desc, got {:?}", other),
+        other => panic!("expected Fn term for Description, got {:?}", other),
     }
+}
+
+// ── Variable with inline description tests ──────────────────────
+
+#[test]
+fn parse_variable_with_description() {
+    let source = "rule test: foo(?x {< the x value >})\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    assert_eq!(parsed.items.len(), 1);
+    match &parsed.items[0] {
+        Item::Rule(r) => {
+            // Head should be a fn_term foo(?x)
+            match &r.head {
+                RuleHead::Term(tid) => {
+                    match parsed.terms.get(*tid) {
+                        Term::Fn { functor, pos_args, .. } => {
+                            assert_eq!(parsed.symbols.name(*functor), "foo");
+                            assert_eq!(pos_args.len(), 1);
+                            // The variable term should have a description
+                            assert!(parsed.terms.descriptions.contains_key(&pos_args[0]),
+                                "variable should have a description entry");
+                            assert_eq!(parsed.terms.descriptions[&pos_args[0]], "the x value");
+                        }
+                        other => panic!("expected Fn term, got {:?}", other),
+                    }
+                }
+                other => panic!("expected Term head, got {:?}", other),
+            }
+        }
+        other => panic!("expected Rule, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn load_variable_description_emits_fact() {
+    let source = "rule test: foo(?x {< the x value >})\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let desc_sort = kb.make_name_term("Description");
+    let descs = kb.by_sort(desc_sort);
+    assert_eq!(descs.len(), 1, "should have 1 Description fact from variable annotation");
+
+    let fid = descs[0];
+    let tid = kb.fact_term(fid);
+    match kb.get_term(tid) {
+        Term::Fn { functor, pos_args, .. } => {
+            assert_eq!(kb.resolve_sym(*functor), "Description");
+            assert_eq!(pos_args.len(), 2);
+            match kb.get_term(pos_args[1]) {
+                Term::Const(Literal::String(s)) => {
+                    assert_eq!(s, "the x value");
+                }
+                other => panic!("expected String constant, got {:?}", other),
+            }
+        }
+        other => panic!("expected Fn term for Description, got {:?}", other),
+    }
+}
+
+// ── Variable types in type positions ─────────────────────────────
+
+#[test]
+fn parse_operation_with_variable_types() {
+    let source = "operation identity(x: ?T) -> ?T\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    assert_eq!(parsed.items.len(), 1);
+    match &parsed.items[0] {
+        Item::Operation(o) => {
+            assert_eq!(parsed.symbols.name(o.name.last()), "identity");
+            assert_eq!(o.params.len(), 1);
+            match &o.params[0].ty {
+                TypeExpr::Variable { term_id, description } => {
+                    assert!(description.is_none());
+                    // Verify it's a named variable (not anonymous)
+                    match parsed.terms.get(*term_id) {
+                        Term::Var(vid) => {
+                            assert_eq!(parsed.symbols.name(vid.name()), "T");
+                        }
+                        other => panic!("expected Var, got {:?}", other),
+                    }
+                }
+                other => panic!("expected Variable type, got {:?}", other),
+            }
+            match &o.return_type {
+                TypeExpr::Variable { term_id, .. } => {
+                    match parsed.terms.get(*term_id) {
+                        Term::Var(vid) => {
+                            assert_eq!(parsed.symbols.name(vid.name()), "T");
+                        }
+                        other => panic!("expected Var, got {:?}", other),
+                    }
+                }
+                other => panic!("expected Variable return type, got {:?}", other),
+            }
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn variable_types_share_scope_in_operation() {
+    // ?X in param and return type should share the same VarId
+    let source = "operation id(x: ?X) -> ?X\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Operation(o) => {
+            let param_tid = match &o.params[0].ty {
+                TypeExpr::Variable { term_id, .. } => *term_id,
+                _ => panic!("expected Variable"),
+            };
+            let ret_tid = match &o.return_type {
+                TypeExpr::Variable { term_id, .. } => *term_id,
+                _ => panic!("expected Variable"),
+            };
+            // Both should be the same variable (same VarId)
+            let param_var = match parsed.terms.get(param_tid) {
+                Term::Var(vid) => vid.raw(),
+                _ => panic!("expected Var"),
+            };
+            let ret_var = match parsed.terms.get(ret_tid) {
+                Term::Var(vid) => vid.raw(),
+                _ => panic!("expected Var"),
+            };
+            assert_eq!(param_var, ret_var,
+                "?X should share identity across param and return type");
+        }
+        _ => panic!("expected Operation"),
+    }
+}
+
+#[test]
+fn parse_entity_with_variable_field_types() {
+    let source = "entity Pair(fst: ?A, snd: ?B)\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    assert_eq!(parsed.items.len(), 1);
+    match &parsed.items[0] {
+        Item::Entity(e) => {
+            assert_eq!(parsed.symbols.name(e.name.last()), "Pair");
+            assert_eq!(e.fields.len(), 2);
+            assert!(matches!(e.fields[0].ty, TypeExpr::Variable { .. }));
+            assert!(matches!(e.fields[1].ty, TypeExpr::Variable { .. }));
+        }
+        other => panic!("expected Entity, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn load_operation_with_variable_types() {
+    let source = r#"sort Funcs {
+  operation identity(x: ?T) -> ?T
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let op_sort = kb.make_name_term("Operation");
+    let ops = kb.by_sort(op_sort);
+    assert_eq!(ops.len(), 1, "should have 1 Operation fact");
 }
 
 // ── Unresolved import / name hard error tests ──────────────────
@@ -1156,6 +1318,39 @@ fn namespace_scoped_sorts_resolve() {
     assert_eq!(reqs.len(), 1, "should have 1 Requirement (B) for C");
 }
 
+// ── Circular requires tests ─────────────────────────────────────
+
+#[test]
+fn circular_requires_does_not_panic() {
+    let source = r#"
+sort A {
+  sort T = ?
+  requires B{T}
+  operation use_b(x: T) -> T
+}
+
+sort B {
+  sort T = ?
+  requires A{T}
+  operation use_a(x: T) -> T
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver)
+        .expect("circular requires should not panic");
+
+    // Both sorts should exist
+    let a_term = kb.resolve_name_term("A");
+    let b_term = kb.resolve_name_term("B");
+    assert_ne!(a_term, b_term, "A and B should be distinct sorts");
+
+    // Both should have requirements
+    let req_sort = kb.make_name_term("Requirement");
+    let reqs = kb.by_sort(req_sort);
+    assert_eq!(reqs.len(), 2, "should have 2 requirements (A requires B, B requires A)");
+}
+
 // ── Multi-file namespace dedup tests ────────────────────────────
 
 #[test]
@@ -1189,6 +1384,31 @@ fn multi_file_same_namespace_resolution() {
     let op_sort = kb.make_name_term("Operation");
     let ops = kb.by_sort(op_sort);
     assert_eq!(ops.len(), 1, "should have 1 operation (use_a)");
+}
+
+#[test]
+fn multi_file_same_namespace_no_duplicate_facts() {
+    let file1 = "namespace ns {\n  sort A = ?\n}\n";
+    let file2 = "namespace ns {\n  sort B = ?\n}\n";
+
+    let parsed1 = parse::parse(file1).expect("parse file1");
+    let parsed2 = parse::parse(file2).expect("parse file2");
+
+    let mut kb = KnowledgeBase::new();
+    load::load_all(&mut kb, &[&parsed1, &parsed2], &NullResolver)
+        .expect("load failed");
+
+    let ns_sort = kb.make_name_term("Namespace");
+    let ns_facts = kb.by_sort(ns_sort);
+    // Two files both declare `namespace ns` — should produce 1 Namespace fact, not 2
+    let ns_count = ns_facts.iter().filter(|&&fid| {
+        if let Term::Fn { functor, .. } = kb.get_term(kb.fact_term(fid)) {
+            kb.resolve_sym(*functor) == "ns"
+        } else {
+            false
+        }
+    }).count();
+    assert_eq!(ns_count, 1, "namespace ns should have exactly 1 Namespace fact, got {}", ns_count);
 }
 
 // ── Dotted name intermediate namespace tests ────────────────────

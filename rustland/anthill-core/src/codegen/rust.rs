@@ -154,6 +154,7 @@ impl<'a> RustCodegen<'a> {
                 let n = self.resolve(name);
                 map_primitive_type(&n)
             }
+            TypeExpr::Variable { .. } => "T".to_owned(),
             TypeExpr::Parameterized { name, bindings } => {
                 let n = self.resolve(name);
                 match n.as_str() {
@@ -194,6 +195,7 @@ impl<'a> RustCodegen<'a> {
                 }
                 map_primitive_type(&n)
             }
+            TypeExpr::Variable { .. } => "T".to_owned(),
             TypeExpr::Parameterized { name, bindings } => {
                 let n = self.resolve(name);
                 if n == sort_name {
@@ -710,6 +712,7 @@ impl<'a> RustCodegen<'a> {
         let type_name = match ty {
             TypeExpr::Simple(name) => self.resolve(name),
             TypeExpr::Parameterized { name, .. } => self.resolve(name),
+            TypeExpr::Variable { .. } => "T".to_owned(),
         };
         if type_name == sort_name {
             // Self-referential → Box
@@ -903,6 +906,7 @@ impl<'a> RustCodegen<'a> {
         match ty {
             TypeExpr::Simple(name) => self.resolve(name),
             TypeExpr::Parameterized { name, .. } => self.resolve(name),
+            TypeExpr::Variable { .. } => "T".to_owned(),
         }
     }
 
@@ -1046,6 +1050,7 @@ fn should_collapse_self(info: &SortInfo, symbols: &SymbolTable) -> bool {
         let first_type = match &op.params[0].ty {
             TypeExpr::Simple(name) => symbols.name(name.last()).to_owned(),
             TypeExpr::Parameterized { name, .. } => symbols.name(name.last()).to_owned(),
+            TypeExpr::Variable { .. } => "T".to_owned(),
         };
 
         if first_type != *param_name {
@@ -1120,6 +1125,7 @@ fn type_expr_name(symbols: &SymbolTable, ty: &TypeExpr) -> String {
     match ty {
         TypeExpr::Simple(name) => symbols.name(name.last()).to_owned(),
         TypeExpr::Parameterized { name, .. } => symbols.name(name.last()).to_owned(),
+        TypeExpr::Variable { .. } => "T".to_owned(),
     }
 }
 

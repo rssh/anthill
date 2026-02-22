@@ -7,6 +7,8 @@
 /// no hash-consing). During loading into the KB, terms are re-allocated
 /// into the hash-consed store.
 
+use std::collections::HashMap;
+
 use smallvec::SmallVec;
 
 use crate::intern::{SymbolTable, Symbol};
@@ -19,6 +21,8 @@ use crate::kb::term::{Term, TermId};
 #[derive(Debug, Default)]
 pub struct SimpleTermStore {
     terms: Vec<Term>,
+    /// Inline description blocks attached to variables: TermId → description text.
+    pub descriptions: HashMap<TermId, String>,
 }
 
 impl SimpleTermStore {
@@ -93,6 +97,11 @@ pub enum TypeExpr {
     Parameterized {
         name: Name,
         bindings: Vec<SortBinding>,
+    },
+    /// Type variable: `?` or `?name`, with optional inline description.
+    Variable {
+        term_id: TermId,
+        description: Option<String>,
     },
 }
 
@@ -171,7 +180,7 @@ pub enum ImportKind {
 pub struct AbstractSort {
     pub visibility: Option<Visibility>,
     pub name: Name,
-    pub bound: Option<TypeExpr>,  // None = unspecified (?), Some = type alias
+    pub definition: TypeExpr,
     pub description: Option<String>,
     pub meta: Option<MetaBlock>,
     pub span: Span,

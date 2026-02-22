@@ -197,6 +197,17 @@ impl<'a> Converter<'a> {
                     .collect();
                 TypeExpr::Parameterized { name, bindings }
             }
+            "variable_term" => {
+                let var_node = self.child_by_kind(node, "variable").unwrap_or(node);
+                let term_id = self.convert_variable_node(var_node);
+                let description = self.field(node, "description")
+                    .map(|d| strip_description_delimiters(self.text(d)));
+                TypeExpr::Variable { term_id, description }
+            }
+            "variable" => {
+                let term_id = self.convert_variable_node(node);
+                TypeExpr::Variable { term_id, description: None }
+            }
             _ => {
                 self.err(format!("unexpected type node: {}", node.kind()), node);
                 let sym = self.intern("?");
@@ -256,20 +267,17 @@ impl<'a> Converter<'a> {
             }
             "variable" => {
                 // variable is a single token: ?name or bare ?
-                let text = self.text(node);
-                if text.len() > 1 {
-                    // Named variable: ?x (shared within scope)
-                    let name = &text[1..]; // strip leading '?'
-                    let sym = self.intern(name);
-                    let vid = self.get_or_create_var(sym);
-                    self.terms.alloc(Term::Var(vid))
-                } else {
-                    // Bare ? — anonymous variable (always fresh, like _ in Prolog)
-                    let sym = self.intern("_");
-                    let vid = VarId::new(self.next_var, sym);
-                    self.next_var += 1;
-                    self.terms.alloc(Term::Var(vid))
+                self.convert_variable_node(node)
+            }
+            "variable_term" => {
+                // variable_term wraps variable + optional description_block
+                let var_node = self.child_by_kind(node, "variable").unwrap_or(node);
+                let tid = self.convert_variable_node(var_node);
+                if let Some(desc_node) = self.field(node, "description") {
+                    let desc = strip_description_delimiters(self.text(desc_node));
+                    self.terms.descriptions.insert(tid, desc);
                 }
+                tid
             }
             "fn_term" => self.convert_fn_term(node),
             "instantiation_term" => self.convert_instantiation_term(node),
@@ -292,6 +300,23 @@ impl<'a> Converter<'a> {
                 self.err(format!("unexpected term node: {other}"), node);
                 self.terms.alloc(Term::Bottom)
             }
+        }
+    }
+
+    fn convert_variable_node(&mut self, node: Node) -> TermId {
+        let text = self.text(node);
+        if text.len() > 1 {
+            // Named variable: ?x (shared within scope)
+            let name = &text[1..]; // strip leading '?'
+            let sym = self.intern(name);
+            let vid = self.get_or_create_var(sym);
+            self.terms.alloc(Term::Var(vid))
+        } else {
+            // Bare ? — anonymous variable (always fresh, like _ in Prolog)
+            let sym = self.intern("_");
+            let vid = VarId::new(self.next_var, sym);
+            self.next_var += 1;
+            self.terms.alloc(Term::Var(vid))
         }
     }
 
@@ -564,20 +589,28 @@ impl<'a> Converter<'a> {
         let meta = self.convert_meta_block(node);
         let span = self.span(node);
 
-        // Extract definition: ?/? Name → None (unspecified), Type → Some(TypeExpr)
-        let bound = self.field(node, "definition")
-            .and_then(|def| {
-                if def.kind() == "variable" {
-                    None  // sort T = ? or sort T = ?A (variable = unspecified)
-                } else {
-                    Some(self.convert_type(def))  // sort T = Int
-                }
+        let definition = self.field(node, "definition")
+            .map(|def| self.convert_type(def))
+            .unwrap_or_else(|| {
+                // Fallback: anonymous variable
+                let sym = self.intern("_");
+                let vid = crate::kb::term::VarId::new(self.next_var, sym);
+                self.next_var += 1;
+                let tid = self.terms.alloc(Term::Var(vid));
+                TypeExpr::Variable { term_id: tid, description: None }
             });
 
-        let description = self.field(node, "description")
+        // Description: check abstract_sort's own description field first,
+        // then hoist from variable_term's description if present.
+        let mut description = self.field(node, "description")
             .map(|d| strip_description_delimiters(self.text(d)));
+        if description.is_none() {
+            if let TypeExpr::Variable { description: ref var_desc, .. } = definition {
+                description = var_desc.clone();
+            }
+        }
 
-        Some(AbstractSort { visibility, name, bound, description, meta, span })
+        Some(AbstractSort { visibility, name, definition, description, meta, span })
     }
 
     fn convert_sort_with_body(&mut self, node: Node) -> Option<SortWithBody> {
@@ -1491,6 +1524,7 @@ fn is_term_kind(kind: &str) -> bool {
             | "float_literal"
             | "boolean_literal"
             | "variable"
+            | "variable_term"
             | "fn_term"
             | "instantiation_term"
             | "ref_term"

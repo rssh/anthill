@@ -191,7 +191,8 @@ impl KnowledgeBase {
         rule_id
     }
 
-    /// Assert a ground fact (rule with empty body). Convenience wrapper.
+    /// Assert a ground fact (rule with empty body). Idempotent: if an identical
+    /// fact (same head, sort, domain) already exists, returns the existing RuleId.
     pub fn assert_fact(
         &mut self,
         term: TermId,
@@ -199,6 +200,19 @@ impl KnowledgeBase {
         domain: TermId,
         meta: Option<TermId>,
     ) -> RuleId {
+        // Dedup: check if this exact fact already exists
+        if let Some(ids) = self.by_sort.get(&sort) {
+            for &rid in ids {
+                let entry = &self.rules[rid.index()];
+                if !entry.retracted
+                    && entry.head == term
+                    && entry.domain == domain
+                    && entry.body.is_empty()
+                {
+                    return rid;
+                }
+            }
+        }
         self.assert_rule(term, vec![], sort, domain, meta)
     }
 

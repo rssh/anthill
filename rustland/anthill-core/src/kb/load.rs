@@ -252,7 +252,7 @@ fn scan_items_pass1(
                 let qualified = make_qualified(prefix, &name);
                 let _sym = kb.symbols.define(&short, &qualified, SymbolKind::Sort, actual_scope.raw());
                 // `sort T = ?` inside a SortWithBody = type parameter
-                if s.bound.is_none() && is_sort_scope(kb, scope) {
+                if matches!(s.definition, TypeExpr::Variable { .. }) && is_sort_scope(kb, scope) {
                     kb.symbols.add_type_param(scope.raw(), &short);
                 }
             }
@@ -402,6 +402,7 @@ fn type_expr_base_name(parse_sym: &crate::intern::SymbolTable, ty: &TypeExpr) ->
     match ty {
         TypeExpr::Simple(name) => join_segments(parse_sym, &name.segments),
         TypeExpr::Parameterized { name, .. } => join_segments(parse_sym, &name.segments),
+        TypeExpr::Variable { .. } => "?".to_owned(),
     }
 }
 
@@ -458,6 +459,10 @@ fn build_instantiation_term(
                 pos_args: SmallVec::new(),
                 named_args,
             })
+        }
+        TypeExpr::Variable { .. } => {
+            // Variable in type position → just use a placeholder name term
+            kb.make_name_term("?")
         }
     }
 }
@@ -837,6 +842,13 @@ impl<'a> Loader<'a> {
 
         let kb_id = self.kb.alloc(kb_term);
         self.term_map.insert(parse_id.raw(), kb_id);
+
+        // Emit Description fact if the variable has an inline description
+        if let Some(desc_text) = self.parsed.terms.descriptions.get(&parse_id) {
+            let desc_text = desc_text.clone();
+            self.emit_desc_fact(kb_id, &desc_text, self.current_scope);
+        }
+
         kb_id
     }
 
@@ -869,6 +881,14 @@ impl<'a> Loader<'a> {
                     pos_args: SmallVec::from_elem(name_term, 1),
                     named_args,
                 })
+            }
+            TypeExpr::Variable { term_id, description } => {
+                let kb_id = self.convert_term(*term_id);
+                if let Some(desc_text) = description {
+                    let desc_text = desc_text.clone();
+                    self.emit_desc_fact(kb_id, &desc_text, self.current_scope);
+                }
+                kb_id
             }
         }
     }
@@ -938,29 +958,32 @@ impl<'a> Loader<'a> {
 
         self.kb.register_sort(sort_term, SortKind::Abstract);
 
-        if let Some(ref bound_type) = s.bound {
-            // Type alias: sort Money = Int
-            let target_term = self.type_expr_to_term(bound_type);
+        match &s.definition {
+            TypeExpr::Variable { .. } => {
+                // Unspecified: sort T = ? (type parameter or abstract sort)
+                let sort_info_sym = self.kb.intern("SortInfo");
+                let abstract_sym = self.kb.intern("Abstract");
+                let abstract_term = self.kb.alloc(Term::Ident(abstract_sym));
+                let fact_term = self.kb.alloc(Term::Fn {
+                    functor: sort_info_sym,
+                    pos_args: SmallVec::from_slice(&[sort_term, abstract_term]),
+                    named_args: SmallVec::new(),
+                });
+                self.kb.assert_fact(fact_term, sort_sort, domain, None);
+            }
+            _ => {
+                // Type alias: sort Money = Int
+                let target_term = self.type_expr_to_term(&s.definition);
 
-            // Assert SortAlias fact: SortAlias(Money, Int)
-            let alias_sym = self.kb.intern("SortAlias");
-            let alias_fact = self.kb.alloc(Term::Fn {
-                functor: alias_sym,
-                pos_args: SmallVec::from_slice(&[sort_term, target_term]),
-                named_args: SmallVec::new(),
-            });
-            self.kb.assert_fact(alias_fact, sort_sort, domain, None);
-        } else {
-            // Unspecified: sort T = ? (type parameter or abstract sort)
-            let sort_info_sym = self.kb.intern("SortInfo");
-            let abstract_sym = self.kb.intern("Abstract");
-            let abstract_term = self.kb.alloc(Term::Ident(abstract_sym));
-            let fact_term = self.kb.alloc(Term::Fn {
-                functor: sort_info_sym,
-                pos_args: SmallVec::from_slice(&[sort_term, abstract_term]),
-                named_args: SmallVec::new(),
-            });
-            self.kb.assert_fact(fact_term, sort_sort, domain, None);
+                // Assert SortAlias fact: SortAlias(Money, Int)
+                let alias_sym = self.kb.intern("SortAlias");
+                let alias_fact = self.kb.alloc(Term::Fn {
+                    functor: alias_sym,
+                    pos_args: SmallVec::from_slice(&[sort_term, target_term]),
+                    named_args: SmallVec::new(),
+                });
+                self.kb.assert_fact(alias_fact, sort_sort, domain, None);
+            }
         }
 
         // Emit Desc fact if description is present
@@ -1144,8 +1167,8 @@ impl<'a> Loader<'a> {
     }
 
     fn emit_desc_fact(&mut self, target: TermId, text: &str, domain: TermId) {
-        let desc_sort = self.kb.make_name_term("Desc");
-        let desc_sym = self.kb.intern("Desc");
+        let desc_sort = self.kb.make_name_term("Description");
+        let desc_sym = self.kb.intern("Description");
         let text_term = self.kb.alloc(Term::Const(super::term::Literal::String(text.to_string())));
         let desc_fact = self.kb.alloc(Term::Fn {
             functor: desc_sym,

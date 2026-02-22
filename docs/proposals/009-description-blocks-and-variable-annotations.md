@@ -1,6 +1,6 @@
 # 009: Description blocks and variable annotations
 
-## Status: Draft
+## Status: Mostly implemented
 
 ## Problem
 
@@ -149,9 +149,9 @@ References use `@Name` syntax inside `{< >}` blocks. This is unambiguous since `
 #### Scoping and queryability
 
 - The same variable `?T` can have different descriptions in different sorts.
-- Descriptions are queryable: `by_functor("Desc")` returns all documented symbols.
-- `describe` from a different file/scope adds a `Desc` fact in that scope.
-- Inline `? {< text >}` emits a `Desc` fact scoped to the enclosing rule/sort/namespace.
+- Descriptions are queryable: `by_functor("Description")` returns all documented symbols.
+- `describe` from a different file/scope adds a `Description` fact in that scope.
+- Inline `? {< text >}` emits a `Description` fact scoped to the enclosing rule/sort/namespace.
 
 Example KB facts produced:
 
@@ -180,32 +180,9 @@ With descriptions as external KB facts, the `Term::Unspecified` variant is no lo
 
 The `unspecified_term` grammar rule and `Term::Unspecified` variant can be removed.
 
-### 7. Primary description
+### 7. ~~Primary description~~ (dropped)
 
-A symbol may accumulate multiple `Desc` facts from different scopes and files. One description should be distinguished as the **primary** — the canonical, authoritative documentation for that symbol.
-
-```
-Desc(target, scope, text, primary: true)
-Desc(target, other_scope, text, primary: false)
-```
-
-Rules for determining the primary description:
-
-1. **Inline description** at the declaration site is primary by default:
-   ```anthill
-   sort T = ? {< The element type >}   -- this is primary
-   ```
-
-2. **`describe` with `primary` marker** can override:
-   ```anthill
-   describe Eq.T primary {<
-     The type that supports equality comparison.
-   >}
-   ```
-
-3. If no explicit primary exists, the description closest to the declaration (same scope) wins.
-
-This matters for tooling: IDE hover, generated documentation, and agent prompts should show the primary description. Supplementary descriptions from other scopes provide additional context but don't replace the primary.
+Dropped — all descriptions of the same target are equal. Tooling can choose which to display based on context (e.g., prefer same-scope, most recent, etc.) without language-level `primary` markers.
 
 ### 8. Agent-requested descriptions
 
@@ -329,19 +306,32 @@ describe Account.balance {<
 >}
 ```
 
-## Impact
+## Implementation status
 
-### Grammar changes
-- Add `description_block` rule: `{< ... >}`
-- Add `describe_declaration` to `_declaration` and `_namespace_content`
-- Allow optional `description_block` after `variable` in term position
-- Remove `unspecified_term` rule
+### Implemented
 
-### Rust core changes
-- Remove `Term::Unspecified` variant from `kb::term`
-- Add `Desc` fact emission in the loader
-- Update converter: `unspecified_term` handling removed, `description_block` handling added
-- `describe_declaration` converted to `Desc` facts during loading
+- **§1 Clean separation** — fully implemented
+- **§2 Description block syntax** — `description_block` token in grammar, parsed and converted
+- **§3 Inline variable descriptions** — fully implemented in both term and type positions. `? {< text >}` works in rules, operation params, entity fields, return types, sort bindings, and `sort T = ? {< text >}`. Variables (`?`, `?name`) are valid as types everywhere via `variable_term` in the `_type` grammar rule. Named type variables share identity within scope.
+- **§4 The `describe` construct** — `describe Name {< text >}` grammar rule, parse IR (`Item::Describe`), converter, loader emitting `Description(target, text)` facts
+- **§5 Representation** — descriptions stored as `Description(target, text)` KB facts. Content is plain text (structured content model with `@Name` references and `## heading` sections is a tooling concern — see below).
+- **§6 Remove `Term::Unspecified`** — fully removed from grammar (`unspecified_term`), parse IR, converter, term store, KB operations (collect_vars, apply_subst, reify, subst_term), discrimination tree, loader, printer, codegen
+- **§8 Agent-requested descriptions** — no language changes needed. Agents can already assert `fact DescRequest(target, agent, context)` and query with `by_functor("DescRequest")`. Workitem integration uses existing Stage 0 syntax.
+- **§10 Deprecation of `<"...">` syntax** — fully removed
+- **kernel-language.md** — updated: §4.1 rewritten, `Unspecified` removed from Term grammar, `Describe` added to namespace/sort content, appendix grammar updated, Type grammar includes `VariableTerm`
+- **reflect.anthill** — `DescriptionInfo` entity and `descriptions` query operation added, `UnspecifiedRepr` removed from `TermRepr`
+
+### Tooling concern (not kernel)
+
+- **§5 Structured content model** — `@Name` references, `## heading` sections within description text. Description content is stored as plain text in `Description` facts. Structured parsing (`@Name` → reference links, `## heading` → addressable sections) can be done as a post-processing step by any tool that reads these facts (IDE hover, doc generation, agent prompts). No grammar or core parser changes needed.
+
+### Dropped
+
+- **§7 Primary description** — dropped. Multiple descriptions of the same target are all equal; tooling can choose which to display based on context.
+
+### Deferred
+
+- **§9 Description propagation through substitution** — derived `DescriptionRef` facts with reference chains when substitution replaces described variables. Deferred because `subst_term` has no production call sites yet — type substitution mechanics may take a different form than anticipated. Revisit when the type instantiation mechanism is designed.
 
 ### Relation to proposal 008
 This proposal **supersedes** proposal 008 (doc comments for sorts). Instead of extracting `--` comments as documentation, all documentation uses the explicit `{< >}` syntax. Comments remain purely for code erasure.

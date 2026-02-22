@@ -1,7 +1,6 @@
 -- Bool: operations on the built-in Bool type
 namespace anthill.prelude.Bool
   import anthill.prelude.{Eq}
-  import anthill.reflect.{Term}
   export and, or, not, ite
 
   fact Eq{T = Bool}
@@ -10,7 +9,7 @@ namespace anthill.prelude.Bool
     and(a: Bool, b: Bool) -> Bool
     or(a: Bool, b: Bool) -> Bool
     not(a: Bool) -> Bool
-    ite(cond: Bool, then: Term, else: Term) -> Term   -- if-then-else
+    ite(cond: Bool, then: ?A, else: ?A) -> ?A          -- if-then-else
   }
 
   -- Laws: Boolean algebra

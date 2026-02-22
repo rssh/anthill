@@ -12,7 +12,7 @@ This specification is **self-contained**: it can be implemented without referenc
 
 3. **Algebraic specification.** The kernel is in the tradition of algebraic specification languages (OBJ, CafeOBJ, Maude): a namespace declares sorts (unspecified, type aliases, or defined types), operations (typed behavioral specs with contracts), and rules (laws).
 
-4. **Partial formalization.** Any term can be `Unspecified` — described in natural language, to be refined later. This allows a spectrum from fully informal to fully formal within the same language.
+4. **Partial formalization.** Any declaration can have a **description block** (`{< >}`) — free-form text preserved as KB facts. Combined with anonymous variables (`?`), this allows a spectrum from fully informal to fully formal within the same language.
 
 5. **Everything carries metadata.** Every fact has provenance (who, when, trust level, iteration). Trust is attached to facts, not to agents.
 
@@ -101,29 +101,44 @@ Term ::= Const(type, value)            -- ground value: 42 : Int, "hello" : Stri
        | Var(type, name)               -- unification variable: ?x : Int
        | Fn(name, args: [Term])        -- compound: account(?id, ?owner, ?bal)
        | Ref(Name)                     -- reference to named entity: banking.Money
-       | Unspecified(text, hints, id)  -- not yet formalized (see §4.1)
        | Quoted(language, source)      -- verbatim host-language fragment (see §4.2)
 ```
 
-### 4.1 Unspecified Terms
+### 4.1 Description Blocks
 
-`Unspecified(text, hints, id)` represents knowledge that exists but is not yet formal. It can appear **anywhere a Term can appear**, creating a spectrum from fully informal to fully formal within a single statement.
+Description blocks (`{< >}`) attach human-readable text to declarations. Unlike comments (`--`, `{- -}`), description blocks are **structural** — they are preserved as `Description` facts in the KB.
 
 ```
--- Inline syntax:
-<"human-readable description">
+-- Inline description on an abstract sort:
+sort T = ? {< The element type >}
 
--- With hints for search/matching:
-<"non-negative balance", hints: [domain: banking, type: constraint]>
+-- Standalone describe declaration:
+describe Eq.T {<
+  The type that supports equality comparison.
+  Must be a concrete type, not a type constructor.
+>}
+
+-- Inline description on a variable in any term position:
+rule test: foo(?x {< the x value >})
+constraint positive: gt(?amount {< must be non-negative >}, 0)
 ```
 
-Each `Unspecified` term has a stable `id` for tracking refinement. **Refinement** replaces an `Unspecified` with a more formal term (which may itself contain `Unspecified` subterms).
+Description blocks can appear in three positions:
 
-**Key property:** Unspecified terms **cannot participate in proofs** — they can be stored and queried, but cannot be premises in derivations or achieve trust above `proposed`. This creates a natural incentive to formalize.
+1. **After `sort Name = ?`** — describes an abstract sort / type parameter.
+2. **After `describe Name`** — standalone, can reference any named symbol.
+3. **After a variable (`?` or `?name`) in term position** — describes what the variable represents in that rule, constraint, fact, or operation contract.
+
+Descriptions are stored as `Description(target, text)` facts, queryable via `by_functor("Description")`. For variables, the target is the variable's term in the KB. The `describe` construct can attach descriptions post-hoc, potentially from a different scope or file.
+
+| Purpose | Syntax | Structural? |
+|---------|--------|-------------|
+| Commenting out code | `--` (line), `{- -}` (block) | No — discarded by parser |
+| Description / documentation | `{< >}` (description block) | Yes — preserved as KB facts |
 
 ### 4.2 Quoted Terms
 
-`Quoted(language, source)` embeds host-language fragments verbatim. Unlike `Unspecified`, a `Quoted` term IS formal — just in a different language. Host-language embeddings can interpret it.
+`Quoted(language, source)` embeds host-language fragments verbatim. A `Quoted` term IS formal — just in a different language. Host-language embeddings can interpret it.
 
 ```
 Quoted("scala", "case class Account(id: Long, balance: BigDecimal)")
@@ -264,6 +279,7 @@ The inline form `List{T=Int}` refers to the sort `List` with unspecified sort pa
 ```
 Type ::= Name                                        -- simple type reference
        | Name '{' SortBinding (',' SortBinding)* '}' -- inline instantiation
+       | VariableTerm                                 -- logical variable: ?, ?T, ?T {< desc >}
 ```
 
 Import and instantiation are separate concepts: `import` makes names visible, inline `Name{bindings}` instantiates sort parameters. They are not bundled together.
@@ -341,7 +357,7 @@ requires Bifunctor{A, B = Int}   -- A binds to A, B binds to Int
 requires Numeric{T = Money}      -- T binds to Money
 ```
 
-Import makes names from another namespace visible in the current scope. Sort parameters remain unspecified — they are instantiated separately via inline type expressions (`Name{bindings}`), not at import time.
+Import makes names from another namespace visible in the current scope as local aliases. It does **not** add the imported sort's scope as a parent — importing `Eq` does not make `eq`/`neq` directly accessible. To access a sort's contents, use `requires Eq{T}` (sort composition) or wildcard import. Sort parameters remain unspecified — they are instantiated separately via inline type expressions (`Name{bindings}`), not at import time.
 
 Three import forms:
 
@@ -374,6 +390,7 @@ NamespaceContent ::= Sort | Rule | Operation         -- Sort: sorts-with-body or
                    | Entity                 -- sugar (desugars to single-constructor Sort, see §6.3)
                    | Fact | Constraint      -- sugar (desugars to Rule, see §6.1, §6.2)
                    | OperationBlock | RuleBlock  -- sugar (desugars to individual declarations, see §6.4)
+                   | Describe               -- description block (see §4.1)
                    | Namespace              -- nested namespaces
 ```
 
@@ -398,6 +415,15 @@ Field       ::= Name ':' Type
 
 ```
 sort T = ?                           -- unspecified: type parameter (inside a sort body)
+sort T = ?Name                       -- unspecified: named logical variable (shared within scope)
+```
+
+**Logical variables as types** — The `?` and `?name` syntax (logical variables) is valid in any type position, not just in `sort ... = ?` definitions. Named type variables share identity within their enclosing scope (operation, rule, entity), just like term variables:
+
+```
+operation identity(x: ?T) -> ?T           -- ?T is the same variable in param and return type
+entity Pair(fst: ?A, snd: ?B)             -- two distinct type variables
+operation transform(x: ?T {< input type >}) -> ?T  -- with inline description
 ```
 
 **Type alias** (`sort Name = Type`) — creates a name that is equivalent to an existing type. Useful for domain-specific naming:
@@ -1061,7 +1087,7 @@ The kernel language connects to three traditions:
 | `List{T = X}` (inline instantiation) | view instantiation (binds sort parameter) |
 | sort with unspecified sub-sort | parameterized module (`fmod X{Y :: TRIV}`) |
 
-The anthill adds: `Unspecified` (partial formalization), metadata (trust, provenance, agent), host-language embeddings (bidirectional mapping to Scala/Python/etc.), and the stigmergic agent layer.
+The anthill adds: description blocks (partial formalization as KB facts), metadata (trust, provenance, agent), host-language embeddings (bidirectional mapping to Scala/Python/etc.), and the stigmergic agent layer.
 
 **Proof assistants (Lean, Coq, Isabelle).** The kernel/tactic split: the kernel (small, trusted) checks proofs; tactics (large, untrusted) find proofs. In the anthill: the kernel grammar verifies, agents construct. The `trust` level on facts plays the role of Lean's `axiom` vs `theorem` distinction.
 
@@ -1250,12 +1276,13 @@ Body[F]     ::= '{' F '}'  |  F 'end'
 -- =================================================================
 
 Term        ::= Const(type, value)
-              | Var(type, name)              -- written as ?name
+              | VariableTerm                 -- variable with optional description
               | Fn(name, args: [Term])
               | Ref(Name)
               | Instantiation(Name, SortBinding+)  -- Eq{T = Int} in term position
-              | Unspecified(text, hints, id) -- written as <"text">
               | Quoted(language, source)
+
+VariableTerm ::= Var [DescriptionBlock]      -- ?name {< text >} or bare ? {< text >}
 
 -- =================================================================
 -- Kernel Constructs (4)
@@ -1278,11 +1305,13 @@ NamespaceContent ::= Sort | Rule | Operation
                    | Entity                       -- sugar (§6.3)
                    | Fact | Constraint            -- sugar (§6.1, §6.2)
                    | OperationBlock | RuleBlock   -- sugar (§6.4)
+                   | Describe                     -- description (§4.1)
                    | Namespace
 
 Visibility  ::= 'internal' | 'export' | 'public'
 
 Sort        ::= [Visibility] 'sort' Name '=' '?'                   -- unspecified (only in SortContent)
+                  [DescriptionBlock]
                   ['meta' ':' Meta]
               | [Visibility] 'sort' Name '=' Type                  -- type alias
                   ['meta' ':' Meta]
@@ -1299,13 +1328,17 @@ Sort        ::= [Visibility] 'sort' Name '=' '?'                   -- unspecifie
 SortContent ::= Sort | Entity | Operation | Rule
               | RequiresDecl
               | Fact | Constraint | OperationBlock | RuleBlock
-              | Namespace
+              | Describe | Namespace
+
+DescriptionBlock ::= '{<' Text '>}'               -- free-form text, preserved as KB facts
+Describe    ::= 'describe' Name DescriptionBlock   -- attach description to named symbol
 
 FieldList   ::= Field (',' Field)*
 Field       ::= Name ':' Type
 
 Type        ::= Name                                           -- simple: Account, Int
               | Name '{' SortBinding (',' SortBinding)* '}'    -- inline instantiation: List{T=Int}
+              | VariableTerm                                    -- logical variable: ?, ?T, ?T {< desc >}
 
 Rule        ::= 'rule' [Name ':'] Head [':-' RuleBody]
                   ['meta' ':' Meta]
@@ -1387,35 +1420,7 @@ MetaEntry   ::= Name ':' Term                   -- any key-value pair
 
 Design questions discovered during implementation that need decisions.
 
-### 12.1 What does a selective import bring into scope?
+### 12.1 Effect semantics
 
-`import anthill.prelude.{Eq}` makes the name `Eq` available as a local alias. It does **not** add Eq's scope as a parent — the sort's internal operations (`eq`, `neq`) are not automatically accessible. To access a sort's contents, use `requires Eq{T}` (for sort composition) or `import anthill.prelude.Eq.*` (wildcard import).
-
-### 12.2 Self-export
-
-A sort exports its members (operations, entities) but not its own name. When Eq exports `eq, neq`, an importer can access those operations but must resolve the name `Eq` separately. Should sorts/namespaces implicitly export their own name?
-
-### 12.3 Term as a prelude type
-
-`anthill.prelude.Bool` uses `Term` (from `anthill.reflect`) in the `ite` operation: `ite(cond: Bool, then: Term, else: Term) -> Term`. This creates a dependency from prelude to reflect. Should `Term` be a primitive type (like Int/String/Bool/Float) registered via `register_prelude`?
-
-### 12.4 ~~Unresolvable imports are silent~~ (resolved)
-
-Unresolvable imports are now hard errors. All three import kinds (plain, selective, wildcard) produce `UnresolvedImport` errors when the target path or name cannot be found during `scan_definitions` pass 2.
-
-### 12.5 Effect target name resolution
-
-Effect targets like `effects (Reads(kb))` reference names (`kb`) that may be entities in scope (e.g., `sort KB { entity kb }`). Currently the parser accepts arbitrary names and the loader stores them as-is without scope-aware resolution. Should effect target names go through the import/resolution pipeline?
-
-### 12.6 Re-export semantics
-
-There is no mechanism for a namespace to re-export an imported name. If namespace A imports `Eq` from `anthill.prelude`, it cannot make `Eq` visible to its own importers. Should `import X; export X;` or similar re-export syntax be supported?
-
-### 12.7 Circular imports and requires
-
-If sort A `requires B` and sort B `requires A`, the scope parent chain forms a cycle. The resolver's `visited` set prevents infinite recursion (returning `NotFound` on cycle), but no diagnostic is reported. Should circular requires/imports be detected and reported during scanning?
-
-### 12.8 Duplicate facts from multi-file namespaces
-
-When two files define `namespace ns`, the scan phase correctly merges them into one scope, but the load phase asserts the `Namespace` fact twice (once per file). Should `assert_fact` be idempotent for structural facts, or should the loader deduplicate?
+Effect declarations (`effects (Reads(kb))`) are currently stored as-is — open `Name(target)` pairs with no resolution or checking. Before resolving effect target names through the scope pipeline, the broader effect semantics need design: what effect kinds exist (Reads/Modifies/Emits/...), how they compose across operation calls, whether they are checked or advisory, and how they interact with the sort/requires system.
 

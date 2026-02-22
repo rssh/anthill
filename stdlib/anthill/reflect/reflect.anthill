@@ -13,7 +13,7 @@ namespace anthill.reflect
   import anthill.prelude.{List}
   import anthill.prelude.{Option}
   export Term, FactId
-  export TermRepr, SortInfo, OperationInfo, FieldInfo, DescInfo
+  export TermRepr, SortInfo, OperationInfo, FieldInfo, DescriptionInfo
   export reify, reflect
   export sorts, operations, constructors, fields, rules, descriptions
 
@@ -115,13 +115,13 @@ namespace anthill.reflect
   -- Descriptions
   -- ================================================================
 
-  entity DescInfo(
+  entity DescriptionInfo(
     target  : String,
     content : String
   )
 
   -- Query descriptions (optionally filtered by target name)
-  operation descriptions(target: Option{T = String}) -> List{T = DescInfo}
+  operation descriptions(target: Option{T = String}) -> List{T = DescriptionInfo}
     effects (Reads(kb))
 
 end
