@@ -506,12 +506,6 @@ impl KnowledgeBase {
                     self.collect_vars_rec(id, vars);
                 }
             }
-            Term::Unspecified { hints, .. } => {
-                let hints = hints.clone();
-                for &id in hints.iter() {
-                    self.collect_vars_rec(id, vars);
-                }
-            }
             _ => {}
         }
     }
@@ -537,13 +531,6 @@ impl KnowledgeBase {
                     .map(|&(sym, id)| (sym, self.apply_subst(id, subst)))
                     .collect();
                 self.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named })
-            }
-            Term::Unspecified { text, hints } => {
-                let new_hints: SmallVec<[TermId; 2]> = hints
-                    .iter()
-                    .map(|&id| self.apply_subst(id, subst))
-                    .collect();
-                self.alloc(Term::Unspecified { text, hints: new_hints })
             }
             _ => term,
         }
@@ -589,13 +576,6 @@ impl KnowledgeBase {
                     .map(|&(sym, id)| (sym, self.reify(id, subst)))
                     .collect();
                 self.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named })
-            }
-            Term::Unspecified { text, hints } => {
-                let new_hints: SmallVec<[TermId; 2]> = hints
-                    .iter()
-                    .map(|&id| self.reify(id, subst))
-                    .collect();
-                self.alloc(Term::Unspecified { text, hints: new_hints })
             }
             _ => walked, // Const, Ident, Ref, Bottom — no substructure
         }
@@ -816,13 +796,6 @@ impl KnowledgeBase {
                     .map(|&(sym, id)| (sym, self.subst_term(id, from, to)))
                     .collect();
                 self.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named })
-            }
-            Term::Unspecified { text, hints } => {
-                let new_hints: SmallVec<[TermId; 2]> = hints
-                    .iter()
-                    .map(|&id| self.subst_term(id, from, to))
-                    .collect();
-                self.alloc(Term::Unspecified { text, hints: new_hints })
             }
             // Leaf terms: no substructure to recurse into
             _ => term,

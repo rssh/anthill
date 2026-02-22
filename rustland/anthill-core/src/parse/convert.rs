@@ -150,6 +150,7 @@ impl<'a> Converter<'a> {
             "workitem_declaration" => self.convert_workitem(node).map(Item::WorkItem),
             "feedback_declaration" => self.convert_feedback(node).map(Item::Feedback),
             "import_tools_declaration" => self.convert_import_tools(node).map(Item::ImportTools),
+            "describe_declaration" => self.convert_describe(node).map(Item::Describe),
             "line_comment" | "block_comment" => None,
             other => {
                 self.err(format!("unexpected top-level node: {other}"), node);
@@ -282,7 +283,6 @@ impl<'a> Converter<'a> {
                 };
                 self.terms.alloc(Term::Ref(sym))
             }
-            "unspecified_term" => self.convert_unspecified(node),
             "infix_term" => self.convert_infix(node),
             "identifier" => {
                 let sym = self.intern(self.text(node));
@@ -363,31 +363,6 @@ impl<'a> Converter<'a> {
         // simple_type is just a name node; parameterized_type starts with a name
         let name_node = self.child_by_kind(node, "name").unwrap_or(node);
         self.convert_name(name_node)
-    }
-
-    fn convert_unspecified(&mut self, node: Node) -> TermId {
-        // Extract the text between <" and "> or <" and ",
-        let raw = self.text(node);
-        let text = if let Some(start) = raw.find("<\"") {
-            let after = &raw[start + 2..];
-            if let Some(end) = after.find('"') {
-                after[..end].to_string()
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
-
-        let mut hints = SmallVec::new();
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            if is_term_kind(child.kind()) {
-                hints.push(self.convert_term(child));
-            }
-        }
-
-        self.terms.alloc(Term::Unspecified { text, hints })
     }
 
     /// Desugar infix syntax to a `Fn` term: `a + b` → `add(a, b)`.
@@ -599,7 +574,10 @@ impl<'a> Converter<'a> {
                 }
             });
 
-        Some(AbstractSort { visibility, name, bound, meta, span })
+        let description = self.field(node, "description")
+            .map(|d| strip_description_delimiters(self.text(d)));
+
+        Some(AbstractSort { visibility, name, bound, description, meta, span })
     }
 
     fn convert_sort_with_body(&mut self, node: Node) -> Option<SortWithBody> {
@@ -937,6 +915,18 @@ impl<'a> Converter<'a> {
             .map(|b| self.convert_rule_body(b));
         let meta = self.convert_meta_block(node);
         Some(Rule { label, head, body, meta, span })
+    }
+
+    // ── Describe ────────────────────────────────────────────────
+
+    fn convert_describe(&mut self, node: Node) -> Option<Describe> {
+        let target = self.field(node, "target")
+            .map(|n| self.convert_name(n))?;
+        let content = self.field(node, "content")
+            .map(|d| strip_description_delimiters(self.text(d)))
+            .unwrap_or_default();
+        let span = self.span(node);
+        Some(Describe { target, content, span })
     }
 
     // ── Stage 0: project ────────────────────────────────────────
@@ -1504,8 +1494,17 @@ fn is_term_kind(kind: &str) -> bool {
             | "fn_term"
             | "instantiation_term"
             | "ref_term"
-            | "unspecified_term"
             | "infix_term"
             | "identifier"
     )
+}
+
+/// Strip `{<` and `>}` delimiters from a description block token.
+fn strip_description_delimiters(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let inner = trimmed
+        .strip_prefix("{<")
+        .and_then(|s| s.strip_suffix(">}"))
+        .unwrap_or(trimmed);
+    inner.trim().to_string()
 }

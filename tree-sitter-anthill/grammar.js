@@ -71,6 +71,7 @@ module.exports = grammar({
       $.constraint_declaration,
       $.operation_block,
       $.rule_block,
+      $.describe_declaration,
     ),
 
     // =========================================================
@@ -152,6 +153,7 @@ module.exports = grammar({
       $.constraint_declaration,
       $.operation_block,
       $.rule_block,
+      $.describe_declaration,
     ),
 
     _body_sort: $ => choice(
@@ -172,6 +174,7 @@ module.exports = grammar({
         $.variable,          // sort T = ? or sort T = ?A
         $._type,             // sort Money = Int, sort Ids = List{T=Int}
       )),
+      optional(field('description', $.description_block)),
       optional($.meta_block),
     ),
 
@@ -285,6 +288,18 @@ module.exports = grammar({
       field('head', $.rule_body),
       optional(seq(':-', field('guard', $.rule_body))),
       optional($.meta_block),
+    ),
+
+    // =========================================================
+    // Description blocks
+    // =========================================================
+
+    description_block: $ => token(seq('{<', /[^>]*(?:>[^}][^>]*)*/, '>}')),
+
+    describe_declaration: $ => seq(
+      'describe',
+      field('target', $.name),
+      field('content', $.description_block),
     ),
 
     // =========================================================
@@ -558,7 +573,6 @@ module.exports = grammar({
       $.fn_term,
       $.instantiation_term,
       $.ref_term,
-      $.unspecified_term,
       $.infix_term,
       $.identifier,
     ),
@@ -597,11 +611,6 @@ module.exports = grammar({
     ),
 
     ref_term: $ => seq('Ref', '(', $.name, ')'),
-
-    unspecified_term: $ => choice(
-      seq('<"', /[^"]*/, '">'),
-      seq('<"', /[^"]*/, '",', 'hints', ':', '[', commaSep1($._term), ']', '>'),
-    ),
 
     // Infix sugar: a > b, a + b, a = b, etc.
     infix_term: $ => choice(

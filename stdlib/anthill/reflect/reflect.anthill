@@ -13,9 +13,9 @@ namespace anthill.reflect
   import anthill.prelude.{List}
   import anthill.prelude.{Option}
   export Term, FactId
-  export TermRepr, SortInfo, OperationInfo, FieldInfo
+  export TermRepr, SortInfo, OperationInfo, FieldInfo, DescInfo
   export reify, reflect
-  export sorts, operations, constructors, fields, rules
+  export sorts, operations, constructors, fields, rules, descriptions
 
   -- ================================================================
   -- Opaque kernel handles (abstract — implementation-defined)
@@ -44,7 +44,6 @@ namespace anthill.reflect
     entity VarRepr(type_name: String, name: String)
     entity FnRepr(name: String, args: List{T = TermRepr})
     entity RefRepr(name: String)
-    entity UnspecifiedRepr(text: String)
     entity QuotedRepr(language: String, source: String)
   }
 
@@ -110,6 +109,19 @@ namespace anthill.reflect
 
   -- Rules (laws) associated with a sort
   operation rules(sort_name: String) -> List{T = TermRepr}
+    effects (Reads(kb))
+
+  -- ================================================================
+  -- Descriptions
+  -- ================================================================
+
+  entity DescInfo(
+    target  : String,
+    content : String
+  )
+
+  -- Query descriptions (optionally filtered by target name)
+  operation descriptions(target: Option{T = String}) -> List{T = DescInfo}
     effects (Reads(kb))
 
 end

@@ -106,11 +106,6 @@ pub enum Term {
     },
     /// Reference term: `Ref(name)`
     Ref(Symbol),
-    /// Unspecified term: `<"description">` with optional hints
-    Unspecified {
-        text: String,
-        hints: SmallVec<[TermId; 2]>,
-    },
     /// Bottom: `⊥`
     Bottom,
     /// Bare identifier — resolves to Ref or Var later
@@ -125,9 +120,6 @@ impl Term {
                 let mut out: SmallVec<[TermId; 4]> = pos_args.iter().copied().collect();
                 out.extend(named_args.iter().map(|&(_, id)| id));
                 out
-            }
-            Term::Unspecified { hints, .. } => {
-                hints.iter().copied().collect()
             }
             Term::Const(_) | Term::Var(_) | Term::Ref(_)
             | Term::Bottom | Term::Ident(_) => SmallVec::new(),

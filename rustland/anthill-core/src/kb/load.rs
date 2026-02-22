@@ -823,13 +823,6 @@ impl<'a> Loader<'a> {
                 let new_sym = self.remap_symbol(sym);
                 Term::Ref(new_sym)
             }
-            Term::Unspecified { text, hints } => {
-                let new_hints: SmallVec<[TermId; 2]> = hints
-                    .iter()
-                    .map(|&id| self.convert_term(id))
-                    .collect();
-                Term::Unspecified { text, hints: new_hints }
-            }
             Term::Bottom => Term::Bottom,
             Term::Ident(sym) => {
                 let new_sym = self.remap_symbol(sym);
@@ -907,6 +900,7 @@ impl<'a> Loader<'a> {
                         self.load_rule(rule, domain);
                     }
                 }
+                Item::Describe(d) => self.load_describe(d, domain),
                 Item::Project(p) => self.load_project(p, domain),
                 Item::Tool(t) => self.load_tool(t, domain),
                 Item::WorkItem(w) => self.load_workitem(w, domain),
@@ -967,6 +961,11 @@ impl<'a> Loader<'a> {
                 named_args: SmallVec::new(),
             });
             self.kb.assert_fact(fact_term, sort_sort, domain, None);
+        }
+
+        // Emit Desc fact if description is present
+        if let Some(ref desc_text) = s.description {
+            self.emit_desc_fact(sort_term, desc_text, domain);
         }
     }
 
@@ -1137,6 +1136,23 @@ impl<'a> Loader<'a> {
             named_args: SmallVec::new(),
         });
         self.kb.assert_fact(requires_term, requirement_sort, domain, None);
+    }
+
+    fn load_describe(&mut self, d: &Describe, domain: TermId) {
+        let target_term = self.name_to_sort_term(&d.target);
+        self.emit_desc_fact(target_term, &d.content, domain);
+    }
+
+    fn emit_desc_fact(&mut self, target: TermId, text: &str, domain: TermId) {
+        let desc_sort = self.kb.make_name_term("Desc");
+        let desc_sym = self.kb.intern("Desc");
+        let text_term = self.kb.alloc(Term::Const(super::term::Literal::String(text.to_string())));
+        let desc_fact = self.kb.alloc(Term::Fn {
+            functor: desc_sym,
+            pos_args: SmallVec::from_slice(&[target, text_term]),
+            named_args: SmallVec::new(),
+        });
+        self.kb.assert_fact(desc_fact, desc_sort, domain, None);
     }
 
     fn load_project(&mut self, p: &Project, domain: TermId) {

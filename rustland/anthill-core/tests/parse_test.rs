@@ -932,6 +932,99 @@ end
     }
 }
 
+// ── Describe declaration tests ──────────────────────────────────
+
+#[test]
+fn parse_describe_declaration() {
+    let source = "describe Account {< A bank account holding funds >}\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    assert_eq!(parsed.items.len(), 1);
+    match &parsed.items[0] {
+        Item::Describe(d) => {
+            assert_eq!(parsed.symbols.name(d.target.last()), "Account");
+            assert_eq!(d.content, "A bank account holding funds");
+        }
+        other => panic!("expected Describe, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_abstract_sort_with_description() {
+    let source = "sort Money = ? {< Monetary amount >}\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    assert_eq!(parsed.items.len(), 1);
+    match &parsed.items[0] {
+        Item::AbstractSort(s) => {
+            assert_eq!(parsed.symbols.name(s.name.last()), "Money");
+            assert!(s.bound.is_none());
+            assert_eq!(s.description.as_deref(), Some("Monetary amount"));
+        }
+        other => panic!("expected AbstractSort, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn load_describe_emits_desc_fact() {
+    let source = r#"namespace banking {
+  sort Account = ?
+  describe Account {< A bank account holding funds >}
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let desc_sort = kb.make_name_term("Desc");
+    let descs = kb.by_sort(desc_sort);
+    assert_eq!(descs.len(), 1, "should have 1 Desc fact");
+
+    // Verify the Desc fact structure: Desc(target, text)
+    let fid = descs[0];
+    let tid = kb.fact_term(fid);
+    match kb.get_term(tid) {
+        Term::Fn { functor, pos_args, .. } => {
+            assert_eq!(kb.resolve_sym(*functor), "Desc");
+            assert_eq!(pos_args.len(), 2);
+            // Second arg should be the description text
+            match kb.get_term(pos_args[1]) {
+                Term::Const(Literal::String(s)) => {
+                    assert_eq!(s, "A bank account holding funds");
+                }
+                other => panic!("expected String constant, got {:?}", other),
+            }
+        }
+        other => panic!("expected Fn term for Desc, got {:?}", other),
+    }
+}
+
+#[test]
+fn load_abstract_sort_description_emits_desc_fact() {
+    let source = "sort Money = ? {< Monetary amount >}\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let desc_sort = kb.make_name_term("Desc");
+    let descs = kb.by_sort(desc_sort);
+    assert_eq!(descs.len(), 1, "should have 1 Desc fact from inline description");
+
+    let fid = descs[0];
+    let tid = kb.fact_term(fid);
+    match kb.get_term(tid) {
+        Term::Fn { functor, pos_args, .. } => {
+            assert_eq!(kb.resolve_sym(*functor), "Desc");
+            assert_eq!(pos_args.len(), 2);
+            match kb.get_term(pos_args[1]) {
+                Term::Const(Literal::String(s)) => {
+                    assert_eq!(s, "Monetary amount");
+                }
+                other => panic!("expected String constant, got {:?}", other),
+            }
+        }
+        other => panic!("expected Fn term for Desc, got {:?}", other),
+    }
+}
+
 // ── Unresolved import / name hard error tests ──────────────────
 
 #[test]

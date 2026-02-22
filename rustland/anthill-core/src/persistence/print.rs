@@ -56,17 +56,6 @@ impl<'a> TermPrinter<'a> {
             Term::Ident(sym) => {
                 buf.push_str(self.kb.resolve_sym(*sym));
             }
-            Term::Unspecified { text, .. } => {
-                buf.push_str("<\"");
-                // Escape any double quotes in the text
-                for ch in text.chars() {
-                    if ch == '"' {
-                        buf.push('\\');
-                    }
-                    buf.push(ch);
-                }
-                buf.push_str("\">");
-            }
             Term::Bottom => {
                 buf.push_str("bottom");
             }

@@ -412,3 +412,30 @@ sort IntList = List{T = Int}
       (sort_binding
         param: (name (identifier))
         type: (simple_type (name (identifier)))))))
+
+=====================================
+Describe declaration
+=====================================
+
+describe Account {< A bank account holding funds >}
+
+---
+
+(source_file
+  (describe_declaration
+    target: (name (identifier))
+    content: (description_block)))
+
+=====================================
+Abstract sort with description
+=====================================
+
+sort Money = ? {< Monetary amount >}
+
+---
+
+(source_file
+  (abstract_sort
+    name: (name (identifier))
+    definition: (variable)
+    description: (description_block)))

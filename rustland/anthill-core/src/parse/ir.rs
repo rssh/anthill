@@ -129,6 +129,7 @@ pub enum Item {
     Constraint(Constraint),
     OperationBlock(OperationBlock),
     RuleBlock(RuleBlock),
+    Describe(Describe),
     // Stage 0
     Project(Project),
     Tool(Tool),
@@ -171,6 +172,7 @@ pub struct AbstractSort {
     pub visibility: Option<Visibility>,
     pub name: Name,
     pub bound: Option<TypeExpr>,  // None = unspecified (?), Some = type alias
+    pub description: Option<String>,
     pub meta: Option<MetaBlock>,
     pub span: Span,
 }
@@ -276,6 +278,15 @@ pub struct OperationBlock {
 #[derive(Debug)]
 pub struct RuleBlock {
     pub entries: Vec<Rule>,
+    pub span: Span,
+}
+
+// ── Describe ────────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub struct Describe {
+    pub target: Name,
+    pub content: String,
     pub span: Span,
 }
 

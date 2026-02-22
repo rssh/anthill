@@ -105,7 +105,7 @@ impl<L> SubstTree<L> {
                 node.concrete.entry(DiscrimKey::Bottom)
                     .or_insert_with(DiscrimNode::new)
             }
-            Term::Var(_) | Term::Unspecified { .. } => node,
+            Term::Var(_) => node,
         }
     }
 
@@ -178,7 +178,6 @@ impl<L> SubstTree<L> {
                 node.concrete.entry(DiscrimKey::Bottom)
                     .or_insert_with(DiscrimNode::new)
             }
-            Term::Unspecified { .. } => node,
         }
     }
 
@@ -248,7 +247,7 @@ impl<L> SubstTree<L> {
             Term::Ident(sym) => Self::remove_at_leaf_key(node, DiscrimKey::Ident(*sym), leaf),
             Term::Ref(sym) => Self::remove_at_leaf_key(node, DiscrimKey::Ref(*sym), leaf),
             Term::Bottom => Self::remove_at_leaf_key(node, DiscrimKey::Bottom, leaf),
-            Term::Var(_) | Term::Unspecified { .. } => node.is_empty(),
+            Term::Var(_) => node.is_empty(),
         }
     }
 
@@ -346,7 +345,7 @@ impl<L> SubstTree<L> {
             Term::Bottom => {
                 Self::remove_value_then_continue(node, DiscrimKey::Bottom, terms, arg_seq, idx, leaf)
             }
-            Term::Var(_) | Term::Unspecified { .. } => node.is_empty(),
+            Term::Var(_) => node.is_empty(),
         }
     }
 
@@ -455,7 +454,6 @@ impl<L: Clone> SubstTree<L> {
             Term::Bottom => {
                 Self::query_leaf_key(node, &DiscrimKey::Bottom, query_term, subst, results);
             }
-            Term::Unspecified { .. } => {}
         }
     }
 
@@ -608,7 +606,6 @@ impl<L: Clone> SubstTree<L> {
                     subst, results, on_done,
                 );
             }
-            Term::Unspecified { .. } => {}
         }
     }
 
