@@ -1,15 +1,39 @@
--- Effects: well-known effect kinds
+-- Effects: effect declaration and well-known effect kinds
 --
--- Effect kinds are open — any Name(target) is valid in an effects clause.
--- This sort defines the well-known kinds that the kernel recognizes
--- for state-passing and monadic interpretations (see kernel spec §5.6-5.7).
--- Users can define additional effect kinds as needed.
-sort anthill.prelude.EffectKind {
-  entity Modifies       -- mutates a resource's state
-  entity Reads          -- depends on a resource's state (implied by Modifies)
-  entity Emits          -- produces events of a given type
-  entity Errors         -- can fail with a typed error
-  entity Requires       -- needs a capability to execute
-  entity Suspends       -- may suspend execution (async/coroutine)
-  entity Allocates      -- allocates from a resource pool
+-- Each effect kind is a sort with an entity constructor:
+--   sort Read { sort T = ?; entity Read(target: T) }
+--
+-- Type level:  Read{T = KB}   — sort instantiation, used in effects clauses
+-- Term level:  Read(kb)       — entity instance, has type Read{T = KB}
+--
+-- Effect kinds are registered via `fact Effect{T = Kind{?}}`.
+-- The kernel checks effect declarations; interpretation is provided
+-- by the realization layer (host-language, unsafe).
+-- See proposal 013 (Abstract Effects).
+
+-- Effect: meta-sort for effect registration.
+-- fact Effect{T = Read{?}} means "Read{target} for any target is a valid effect."
+sort anthill.prelude.Effect {
+  sort T = ?
 }
+
+-- Well-known effect kinds
+sort Read     { sort T = ?; entity Read(target: T) }       -- depends on a resource's state
+sort Modify   { sort T = ?; entity Modify(target: T) }     -- mutates a resource's state
+sort Emit     { sort T = ?; entity Emit(target: T) }       -- produces events of a given type
+sort Error    { sort T = ?; entity Error(target: T) }       -- can fail with a typed error
+sort Require  { sort T = ?; entity Require(target: T) }     -- needs a capability to execute
+sort Suspend  { sort T = ?; entity Suspend(target: T) }     -- may suspend execution
+sort Allocate { sort T = ?; entity Allocate(target: T) }    -- allocates from a resource pool
+
+-- Register as effects
+fact Effect{T = Read{?}}
+fact Effect{T = Modify{?}}
+fact Effect{T = Emit{?}}
+fact Effect{T = Error{?}}
+fact Effect{T = Require{?}}
+fact Effect{T = Suspend{?}}
+fact Effect{T = Allocate{?}}
+
+-- Read is implied by Modify
+rule Effect{T = Read{?r}} :- Effect{T = Modify{?r}}

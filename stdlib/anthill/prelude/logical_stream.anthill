@@ -1,0 +1,57 @@
+-- LogicalStream: the logic monad for multi-valued computation.
+--
+-- A LogicalStream{T = S} represents a computation producing zero or more
+-- values of sort S, with backtracking. This is LogicT from Kiselyov et al.
+--
+-- Satisfies Stream — head, tail, splitFirst, takeN, collect, isEmpty
+-- are inherited via fact Stream{T}. LogicalStream provides splitFirst
+-- as the primitive; the rest derive from Stream's rules.
+--
+-- Pending arrow sorts (proposal 002): flatMap, map, filter, fairFlatMap, ifte
+--
+-- See proposals: 010 (Query System), 011 (Type Resolution), 012 (Syntax Sugar)
+sort anthill.prelude.LogicalStream
+  import anthill.prelude.{Stream, Option, Pair, Unit, Bool, Int}
+  export LogicalStream, empty, pure, mplus, guard, interleave
+
+  sort T = ?
+
+  -- LogicalStream provides Stream for any T, with effect Read{kb}.
+  -- Stream operations (head, tail, splitFirst, takeN, collect, isEmpty)
+  -- are inherited — not redeclared here.
+  -- LogicalStream must provide splitFirst (Stream's primitive);
+  -- head, tail, isEmpty derive from Stream's rules.
+  fact Stream{T, E = Read{kb}}
+
+  -- ================================================================
+  -- Stream primitive (required by fact Stream{T})
+  -- ================================================================
+
+  operation splitFirst(s: LogicalStream{T = ?A})
+    -> Option{T = Pair{A = ?A, B = LogicalStream{T = ?A}}}
+
+  -- ================================================================
+  -- Logic-specific construction
+  -- ================================================================
+
+  entity empty                                             -- zero results (failure)
+
+  operation pure(x: T) -> LogicalStream                    -- single result
+
+  operation mplus(a: LogicalStream{T = ?A}, b: LogicalStream{T = ?A})
+    -> LogicalStream{T = ?A}                               -- disjunction
+
+  operation guard(cond: Bool) -> LogicalStream{T = Unit}   -- filter
+
+  operation interleave(a: LogicalStream{T = ?A}, b: LogicalStream{T = ?A})
+    -> LogicalStream{T = ?A}                               -- fair disjunction
+
+  -- ================================================================
+  -- Derived rules
+  -- ================================================================
+
+  rule interleave(?a, ?b) = mplus(pure(?first), interleave(?b, ?rest))
+    :- splitFirst(?a) = some(pair(?first, ?rest))
+  rule interleave(?a, ?b) = ?b
+    :- splitFirst(?a) = none
+end

@@ -1,0 +1,35 @@
+-- Stream: lazy sequence of values.
+-- Abstract — representation is implementation-defined.
+--
+-- E is the abstract effect required to observe the stream.
+-- Concrete sorts bind E to their specific effect:
+--   LogicalStream binds E = Read{kb}
+--   a file reader might bind E = Reads(file)
+--   a pure stream might bind E = Pure (no effects)
+sort anthill.prelude.Stream
+  import anthill.prelude.{Option, Pair, List, Bool, Int}
+  export Stream, head, tail, splitFirst, takeN, collect, isEmpty
+
+  sort T = ?              -- element type
+  sort E = ?              -- effect required to observe
+
+  operation splitFirst(s: Stream) -> Option{T = Pair{A = T, B = Stream}}
+    effects (E)
+  operation head(s: Stream) -> Option{T = T}
+    effects (E)
+  operation tail(s: Stream) -> Stream
+    effects (E)
+  operation takeN(s: Stream, n: Int) -> List{T = T}
+    effects (E)
+  operation collect(s: Stream) -> List{T = T}
+    effects (E)
+  operation isEmpty(s: Stream) -> Bool
+    effects (E)
+
+  -- Laws (derived from splitFirst)
+  rule head(?s) = some(fst(?p)) :- splitFirst(?s) = some(?p)
+  rule head(?s) = none :- splitFirst(?s) = none
+  rule tail(?s) = snd(?p) :- splitFirst(?s) = some(?p)
+  rule isEmpty(?s) = true :- splitFirst(?s) = none
+  rule isEmpty(?s) = false :- splitFirst(?s) = some(?)
+end

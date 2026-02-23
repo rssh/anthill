@@ -2,7 +2,7 @@
 
 ## Status: Brainstorming
 
-## Depends on: none
+## Depends on: 013 (Abstract Effects — Stream needs abstract effect parameter)
 
 ## Blocks: 010 (Query System), 012 (Sort-Defined Syntax Sugar)
 
@@ -36,6 +36,89 @@ This means: type parameters and logic variables are **unified at the KB level**.
 **Path A: Instantiation = unification.** Since `?T` is `Var(VarId)`, binding `Stream{T = Int}` could be literal unification of `?T` with `Int`. Type resolution IS query resolution. Most "types-are-terms" approach.
 
 **Path B: Instantiation stays syntactic.** `Stream{T = Int}` remains `Fn("Stream", T: Ref("Int"))` — a concrete term. The KB never unifies type vars during instantiation. Simpler, current behavior.
+
+### Key Insight: Type Checking = Logic Procedures Against the KB
+
+Since types are terms and sort relationships are facts, **type checking is just querying the KB**. There is no separate type checker — the reasoning engine IS the type checker.
+
+Concretely, all type-level operations reduce to KB queries/rules:
+
+```
+-- Subtyping: already in the Isabelle formalization as is_subtype
+-- (reflexive-transitive closure of subsort facts)
+rule is_subtype(?A, ?A)
+rule is_subtype(?A, ?C) :- is_subtype(?A, ?B), is_subtype(?B, ?C)
+rule is_subtype(?Ctor, ?Sort) :- constructor_of(?Ctor, ?Sort)
+
+-- Sort membership: term has sort S
+rule has_sort(?term, ?sort) :- entity_of(?term, ?sort)
+rule has_sort(?term, ?parent) :- has_sort(?term, ?child), is_subtype(?child, ?parent)
+
+-- Spec satisfaction: does Int satisfy Eq?
+-- = conjunctive query: apply {T → Int} to Eq's fact template, check all match
+rule satisfies(?Sort, ?Spec) :-
+    template_of(?Spec, ?Facts),
+    all_facts_present(?Facts, {?Spec.T -> ?Sort})
+
+-- Operation dispatch: which sort's `map` applies?
+-- = query for Operation(map, ...) facts, filter by argument sort
+rule resolves_to(?op_name, ?args, ?sort) :-
+    Operation(?op_name, ?params) in ?sort,
+    args_match(?args, ?params)
+```
+
+This means:
+- **No separate type checker** — reuse the query/rule engine
+- **Typing rules are KB facts** — extensible (agents can add new subtyping rules)
+- **Type errors are query failures** — "no substitution σ satisfies the fact-set template"
+- **The typing lattice is emergent** from KB facts, not a separate data structure
+- **Incremental**: as agents assert new facts (implementations, sort relations), the typing landscape evolves dynamically
+
+The Isabelle formalization already works this way: `is_subtype` is defined as the reflexive-transitive closure of `subsort_rel` (which is just `set (kb_subsort kb)` — facts). Extending this to spec satisfaction and operation dispatch is natural.
+
+This resolves the "when does type resolution happen?" question (OQ1): **whenever you query**. Type resolution is not a pipeline stage — it's a query against the current KB state. Early checks use the available facts; later checks use more facts. Missing facts = obligations, not errors.
+
+### Implementation Status: The Engine Already Exists
+
+The Rust implementation already has the core machinery for this approach:
+
+| Component | Status | Location |
+|-----------|--------|----------|
+| SLD resolution (backward chaining) | **Done** | `kb/resolve.rs` — conjunctive goals, shared vars |
+| Pattern matching with variables | **Done** | `kb/mod.rs` — `query(pattern)` |
+| Discrimination tree index | **Done** | `kb/discrim.rs` — structural matching |
+| Equational rewriting | **Done** | `kb/resolve.rs` — `simplify()` |
+| Indexes (by_sort, by_functor, by_domain) | **Done** | `kb/mod.rs` |
+| Subsort hierarchy | **Done** | materialized parent/child indexes |
+| Forward chaining | Missing | Automatic fact derivation |
+| Constraint/denial checking | Missing | Integrity enforcement |
+| Negation-as-failure | Missing | `not(pattern)` in queries |
+| Tabling/memoization | Missing | Cached recursive solutions |
+
+The SLD resolver (`resolve(goals, config) -> Vec<Solution>`) already supports conjunctive goals with shared variables — which is exactly what fact-set matching needs. **Type checking as logic procedures can be built on top of `resolve()` today.**
+
+### Type Application: Resolve On Demand, Don't Materialize
+
+When you write `List{T = Int}`, the question is whether to **materialize** concrete facts for the instantiation or **resolve on demand**.
+
+**Materialize** = generate concrete facts:
+```
+-- From template Operation(length, l: List, _returns: Int) with List.T = ?
+-- Generate: Operation(length, l: List{T=Int}, _returns: Int)
+```
+Pro: fast lookup. Con: combinatorial explosion (N instantiations × M operations).
+
+**Resolve on demand** = keep templates with variables, use SLD resolution with substitution:
+```
+-- Query: "what operations does List{T=Int} have?"
+-- = resolve([Operation(?name, ?params) in List], {T → Int})
+-- SLD resolver applies substitution, returns matching operations
+```
+Pro: no explosion, lazy, naturally incremental. Con: every type query is a resolution step.
+
+Since SLD resolution already exists and handles exactly this (conjunctive goals with substitution), **on-demand resolution is the right default**. Tabling (caching resolved results) can be added later if performance requires it.
+
+This means type application `List{T = Int}` is NOT a separate mechanism — it's a parameterized query. No new code needed for type instantiation; just express it as goals for the resolver.
 
 ## The Problem
 
@@ -390,6 +473,283 @@ Benefits:
 **OQ7.2.** Where are errors reported? At the term level (pointing to the specific argument)? At the declaration level (pointing to the operation signature)?
 
 **OQ7.3.** Can errors be deferred? In a logic programming system, some type mismatches might be detected only at query time (when unification fails). Is it acceptable to have "runtime type errors" from unification failure, or should everything be caught statically?
+
+## Required Stdlib Sorts
+
+The type resolution and query system require several new sorts. These form a dependency chain from primitives up to first-class queries.
+
+### Unit (literal, not entity)
+
+`unit` should be a **built-in literal constant** (like `true`, `false`, `42`, `"hello"`), not an entity in a sort. This requires:
+
+- **Grammar**: `unit` as a reserved keyword alongside `true`/`false`
+- **Rust**: `Literal::Unit` variant in `enum Literal`
+- **Stdlib**: `sort Unit = ?` (abstract/built-in, like `sort Int = ?`)
+
+`unit` is the return type of effectful operations with no meaningful result, and the element type of `guard(cond: Bool) -> LogicalStream{T = Unit}`.
+
+### Pair (prelude)
+
+Product type. Needed for `msplit` result and Substitution bindings.
+
+```
+sort anthill.prelude.Pair
+  export Pair, pair, fst, snd
+
+  sort A = ?
+  sort B = ?
+  entity pair(fst: A, snd: B)
+
+  operation fst(p: Pair) -> A
+  operation snd(p: Pair) -> B
+  rule fst(pair(?a, ?b)) = ?a
+  rule snd(pair(?a, ?b)) = ?b
+end
+```
+
+### Stream (prelude, spec sort) — read-only lazy sequence
+
+A **spec sort** (interface) for read-only lazy sequences. Declares the observation protocol — any sort that supports `msplit` and observation operations can satisfy `Stream`.
+
+```
+sort anthill.prelude.Stream
+  import anthill.prelude.{Option, Pair, List, Int}
+  export Stream, msplit, once, observeOne, observeN, collect
+
+  sort T = ?                -- the implementing sort
+
+  -- Decompose into first element + rest. THE fundamental primitive.
+  operation msplit(s: T) -> Option{T = Pair{A = ?Elem, B = T}}
+
+  -- First result only
+  operation once(s: T) -> T
+
+  -- Observation: crossing from lazy-land to concrete values
+  operation observeOne(s: T) -> Option{T = ?Elem}
+  operation observeN(s: T, n: Int) -> List{T = ?Elem}
+  operation collect(s: T) -> List{T = ?Elem}
+end
+```
+
+Database cursors, file readers, and other sequential sources satisfy `Stream`. Note: the element type `?Elem` is determined by the implementing sort's structure (e.g., `LogicalStream{T = Account}` has `?Elem = Account`). This is a higher-kinded relationship — see OQ9.5.
+
+### LogicalStream (prelude, concrete sort) — logic monad
+
+The **logic monad**: a concrete sort for multi-valued computation with backtracking. This is what queries produce.
+
+LogicalStream declares `fact Stream{T}` inside its body — "I provide Stream for any element type T." Stream operations (`head`, `tail`, `splitFirst`, `takeN`, `collect`, `isEmpty`) are inherited, not redeclared. LogicalStream only provides `splitFirst` (Stream's primitive); the rest derive from Stream's rules.
+
+```
+sort anthill.prelude.LogicalStream
+  import anthill.prelude.{Stream, Option, Pair, Unit, Bool, Int}
+  export LogicalStream, empty, pure, mplus, guard, interleave
+
+  sort T = ?
+
+  -- LogicalStream provides Stream for any T.
+  -- Stream operations inherited — not redeclared here.
+  -- Only splitFirst (Stream's primitive) is provided.
+  fact Stream{T}
+
+  -- Stream primitive (required by fact Stream{T})
+  operation splitFirst(s: LogicalStream{T = ?A})
+    -> Option{T = Pair{A = ?A, B = LogicalStream{T = ?A}}}
+
+  -- Logic-specific construction
+  entity empty                                             -- zero results (failure)
+  operation pure(x: T) -> LogicalStream                    -- single result
+  operation mplus(a: LogicalStream{T = ?A}, b: LogicalStream{T = ?A})
+    -> LogicalStream{T = ?A}                               -- disjunction
+  operation guard(cond: Bool) -> LogicalStream{T = Unit}   -- filter
+  operation interleave(a: LogicalStream{T = ?A}, b: LogicalStream{T = ?A})
+    -> LogicalStream{T = ?A}                               -- fair disjunction
+
+  -- Derived
+  rule interleave(?a, ?b) = mplus(pure(?first), interleave(?b, ?rest))
+    :- splitFirst(?a) = some(pair(?first, ?rest))
+  rule interleave(?a, ?b) = ?b
+    :- splitFirst(?a) = none
+
+  -- Monadic operations pending arrow sorts (proposal 002):
+  -- flatMap, map, filter, fairFlatMap, ifte
+end
+```
+
+**Key distinction**: `Stream` declares observation operations with derived rules. `LogicalStream` satisfies Stream (provides `splitFirst`) and adds **construction** (`mplus`, `pure`, `empty`) and **branching** (`guard`). No operation duplication — Stream's `head`/`tail`/`takeN`/`collect`/`isEmpty` are inherited via `fact Stream{T}`.
+
+### Substitution (reflect)
+
+Variable bindings from query/unification results. The output of `execute(query)` is `LogicalStream{T = Substitution}`.
+
+```
+-- Added to stdlib/anthill/reflect/reflect.anthill alongside Term/TermRepr:
+
+-- A substitution maps variable names to terms: {?x → t1, ?y → t2, ...}
+-- Uses Map from prelude — get, put, keys, values, contains all available.
+sort Substitution = Map{K = String, V = Term}
+
+-- Apply a substitution to a term (replace all bound variables)
+operation apply_subst(s: Substitution, t: Term) -> Term
+  effects (Reads(kb))
+
+-- Compose two substitutions: apply s1 then s2
+operation compose(s1: Substitution, s2: Substitution) -> Substitution
+```
+
+Substitution is a type alias for `Map{K = String, V = Term}`. All Map operations (`get`, `put`, `keys`, `contains`, etc.) work directly on substitutions. `execute(query)` returns `LogicalStream{T = Substitution}`: each element is a complete set of bindings for one solution.
+
+Lives in `reflect` alongside `Term` and `TermRepr` — it's part of the KB introspection/manipulation API.
+
+### Map (prelude)
+
+General-purpose key-value association. Required by Substitution, useful broadly.
+
+```
+sort anthill.prelude.Map
+  sort K = ?
+  sort V = ?
+  requires Eq{T = K}
+
+  entity empty_map
+  entity entry(key: K, value: V, rest: Map)
+
+  operation get(m: Map, key: K) -> Option{T = V}
+  operation put(m: Map, key: K, value: V) -> Map
+  operation contains(m: Map, key: K) -> Bool
+  operation remove(m: Map, key: K) -> Map
+  operation keys(m: Map) -> List{T = K}
+  operation values(m: Map) -> List{T = V}
+  operation entries(m: Map) -> List{T = Pair{A = K, B = V}}
+  operation size(m: Map) -> Int
+end
+```
+
+Representation is an association list (`entry(k, v, rest)`) — transparent, pattern-matchable, works with existing rewrite rules. Implementations can optimize to hash maps or trees via realization.
+
+### LogicalQuery (reflect)
+
+First-class query representation. Queries as composable, storable, inspectable KB values.
+
+```
+-- Added to stdlib/anthill/reflect/reflect.anthill:
+
+sort LogicalQuery {
+  entity pattern_query(term: Term)                        -- single pattern match
+  entity sort_query(sort_name: String)                    -- all facts of a sort
+  entity conjunction(left: LogicalQuery, right: LogicalQuery)   -- AND (shared vars = join)
+  entity disjunction(left: LogicalQuery, right: LogicalQuery)   -- OR
+  entity negation(query: LogicalQuery)                    -- NOT (negation-as-failure)
+  entity guarded(query: LogicalQuery, condition: Term)    -- filter
+  entity projected(query: LogicalQuery, vars: List{T = String}) -- projection
+  entity limited(query: LogicalQuery, count: Int)         -- cardinality limit
+}
+
+-- Execute a query against the KB
+operation execute(query: LogicalQuery) -> LogicalStream{T = Substitution}
+  effects (Reads(kb))
+
+-- The type-to-query mapping:
+-- Extract a sort's fact template as a LogicalQuery
+operation sort_template(sort_name: String) -> LogicalQuery
+  effects (Reads(kb))
+
+-- Apply a substitution to a sort template → concrete conjunctive query
+-- Eq{T=Int} → instantiation_query("Eq", bind("T", reflect("Int"), empty_subst))
+operation instantiation_query(sort_name: String, bindings: Substitution)
+  -> LogicalQuery
+  effects (Reads(kb))
+```
+
+The **type-to-query mapping**: `sort_template` extracts a sort's fact template. `instantiation_query` applies a substitution to produce a concrete conjunctive query. This is how type checking becomes querying:
+
+```
+-- "Does Int satisfy Eq?" becomes:
+execute(instantiation_query("Eq", bind("T", reflect("Int"), empty_subst)))
+-- → checks KB for: SortInfo(Int, ?), Operation(eq, a: Int, b: Int, _returns: Bool)
+-- → LogicalStream of substitutions (non-empty = satisfied, empty = obligations)
+```
+
+### Monad hierarchy (spec sorts, pending proposal 002)
+
+With arrow sorts, the spec sort hierarchy for monadic abstractions:
+
+```
+-- Functor: map over a parameterized sort
+sort anthill.prelude.Functor
+  sort F { sort T = ? }
+  sort A = ?
+  sort B = ?
+  operation map(fa: F{T = A}, f: (A) => B) -> F{T = B}
+  rule identity: map(?fa, ?x => ?x) = ?fa
+end
+
+-- Monad: sequencing with context
+sort anthill.prelude.Monad
+  requires Functor{F}
+  sort A = ?
+  sort B = ?
+  operation pure(a: A) -> F{T = A}
+  operation flatMap(fa: F{T = A}, f: (A) => F{T = B}) -> F{T = B}
+  rule left_id:  flatMap(pure(?x), ?f) = ?f(?x)
+  rule right_id: flatMap(?m, pure) = ?m
+end
+
+-- LogicMonad: Monad + backtracking
+sort anthill.prelude.LogicMonad
+  requires Monad{F}
+  sort A = ?
+  operation empty() -> F{T = A}
+  operation mplus(a: F{T = A}, b: F{T = A}) -> F{T = A}
+  operation msplit(s: F{T = A}) -> Option{T = Pair{A = A, B = F{T = A}}}
+  operation guard(cond: Bool) -> F{T = Unit}
+end
+
+-- LogicalStream satisfies all three:
+fact Functor{F = LogicalStream}
+fact Monad{F = LogicalStream}
+fact LogicMonad{F = LogicalStream}
+```
+
+These spec sorts enable sort-defined syntax sugar (proposal 012): any sort satisfying `Monad` gets comprehension syntax; any sort satisfying `LogicMonad` gets backtracking/choose syntax.
+
+### Sort dependency chain
+
+```
+Unit (literal)        ←── guard returns LogicalStream{T = Unit}
+    ↑
+Pair                  ←── msplit returns Option{T = Pair{...}}, Map entries
+    ↑
+Map                   ←── key-value association (requires Eq on keys)
+    ↑
+Stream (spec sort)    ←── read-only observation interface
+    ↑
+LogicalStream         ←── concrete sort, fact Stream{T} (inherits Stream ops)
+    ↑
+Substitution          ←── Map{K = String, V = Term} (type alias, in reflect)
+    ↑
+LogicalQuery          ←── first-class queries (depends on Term, LogicalStream, Substitution)
+    ↑
+Functor/Monad/        ←── spec sorts (depend on arrow sorts / proposal 002)
+  LogicMonad
+```
+
+### Open questions (new sorts)
+
+**OQ9.1.** Resolved: Stream is a sort with operations and derived rules. Concrete sorts satisfy it by declaring `fact Stream{T}` inside their body and providing the primitive operation (`splitFirst`). Derived operations (`head`, `tail`, `isEmpty`, etc.) are inherited — not redeclared. LogicalStream is one such sort; database cursors, file readers, etc. would be others.
+
+**OQ9.2.** Should observation operations (`observeOne`, `observeN`, `collect`) have `effects (Reads(kb))`? They're consuming lazy values, which might trigger KB reads. Or should effects be on the *stream construction* side only?
+
+**OQ9.3.** Resolved: LogicalStream declares `fact Stream{T}` inside its body — "I provide Stream for any element type T." Note: `fact Stream{T = LogicalStream}` would mean "Stream of LogicalStreams" (wrong). The fact goes inside the sort body, where `T` refers to the sort's own type parameter.
+
+**OQ9.3b.** Resolved: **Operation inheritance via fact.** When a sort declares `fact Stream{T}`, it does NOT redeclare Stream's operations. Stream's operations (`head`, `tail`, `splitFirst`, `takeN`, `collect`, `isEmpty`) are automatically available on the satisfying sort. Stream's derived rules (e.g., `head` from `splitFirst`) carry over. The satisfying sort only provides the **primitive** operations (e.g., `splitFirst`); derived operations come for free.
+
+This is the **minimal complete definition** pattern. Stream declares which operations are primitive vs derived. LogicalStream implements `splitFirst`; `head`, `tail`, `isEmpty` derive from Stream's rules. This avoids duplication and keeps satisfying sorts focused on what's unique to them.
+
+**OQ9.4.** Should `Substitution` be generic over the value type? `Substitution{V = Term}` vs `Substitution{V = TermRepr}` vs always `Term`. Currently pinned to `Term` since that's what the KB stores.
+
+**OQ9.5.** The Monad spec sort hierarchy uses higher-kinded type parameter `F { sort T = ? }`. This requires the type resolution system to handle higher-kinded matching — checking that `LogicalStream` (which has `sort T = ?`) matches the shape expected by `Monad{F}`. How complex is this? The Stream spec sort has the same issue: `sort T = ?` in Stream means "the implementing sort", but the implementing sort itself has an element type parameter. Matching `Stream{T = LogicalStream}` needs to understand that LogicalStream's operations produce results parameterized by LogicalStream's own `T`.
+
+**OQ9.6.** Element type in the Stream spec sort. The Stream spec declares `msplit(s: T) -> Option{T = Pair{A = ?Elem, B = T}}` where `?Elem` is the element type. But `?Elem` is not a declared parameter of Stream — it's implicitly determined by the implementing sort's structure. Should `?Elem` be an explicit parameter? E.g., `sort Stream { sort T = ?; sort Elem = ? }` with `fact Stream{T = LogicalStream, Elem = Account}`? Or is `?Elem` resolved by unification when checking that the implementing sort's `msplit` matches the spec's signature?
 
 ## Relationship to Other Proposals
 

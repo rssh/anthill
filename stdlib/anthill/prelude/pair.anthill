@@ -1,0 +1,13 @@
+-- Pair: product type (two-element tuple)
+sort anthill.prelude.Pair
+  export Pair, pair, fst, snd
+
+  sort A = ?
+  sort B = ?
+  entity pair(fst: A, snd: B)
+
+  operation fst(p: Pair) -> A
+  operation snd(p: Pair) -> B
+  rule fst(pair(?a, ?b)) = ?a
+  rule snd(pair(?a, ?b)) = ?b
+end

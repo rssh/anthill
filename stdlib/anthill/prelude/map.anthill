@@ -1,0 +1,40 @@
+-- Map: abstract key-value association (requires Eq on keys)
+sort anthill.prelude.Map
+  import anthill.prelude.{Option, List, Pair, Bool, Int, Eq}
+  export Map, empty, get, put, contains, remove
+  export keys, values, entries, size
+
+  sort K = ?
+  sort V = ?
+  requires Eq{T = K}
+
+  -- Construction
+  operation empty() -> Map
+  operation put(m: Map, key: K, value: V) -> Map
+
+  -- Lookup
+  operation get(m: Map, key: K) -> Option{T = V}
+  operation contains(m: Map, key: K) -> Bool
+
+  -- Removal
+  operation remove(m: Map, key: K) -> Map
+
+  -- Projections
+  operation keys(m: Map) -> List{T = K}
+  operation values(m: Map) -> List{T = V}
+  operation entries(m: Map) -> List{T = Pair{A = K, B = V}}
+  operation size(m: Map) -> Int
+
+  -- Laws (algebraic specification)
+  rule get(empty, ?) = none
+  rule get(put(?m, ?k, ?v), ?k) = some(?v)
+  rule get(put(?m, ?k2, ?v), ?k) = get(?m, ?k)
+    :- neq(?k, ?k2)
+
+  rule contains(?m, ?k) = neq(get(?m, ?k), none)
+
+  rule remove(empty, ?) = empty
+  rule get(remove(?m, ?k), ?k) = none
+
+  rule size(empty) = 0
+end

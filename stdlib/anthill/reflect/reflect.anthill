@@ -12,10 +12,16 @@
 namespace anthill.reflect
   import anthill.prelude.{List}
   import anthill.prelude.{Option}
+  import anthill.prelude.{LogicalStream}
+  import anthill.prelude.{Map}
   export Term, FactId
   export TermRepr, SortInfo, OperationInfo, FieldInfo, DescriptionInfo
+  export Substitution, apply_subst, compose
+  export LogicalQuery, pattern_query, sort_query, conjunction, disjunction
+  export negation, guarded, projected, limited
   export reify, reflect
   export sorts, operations, constructors, fields, rules, descriptions
+  export execute, sort_template, instantiation_query
 
   -- ================================================================
   -- Opaque kernel handles (abstract — implementation-defined)
@@ -81,11 +87,11 @@ namespace anthill.reflect
 
   -- Decompose an opaque Term into its structural representation
   operation reify(t: Term) -> TermRepr
-    effects (Reads(kb))
+    effects (Read{kb})
 
   -- Construct an opaque Term from a structural representation
   operation reflect(r: TermRepr) -> Term
-    effects (Reads(kb))
+    effects (Read{kb})
 
   -- ================================================================
   -- Query operations (KB introspection)
@@ -93,23 +99,23 @@ namespace anthill.reflect
 
   -- All sorts in a namespace (or globally)
   operation sorts(namespace: Option{T = String}) -> List{T = SortInfo}
-    effects (Reads(kb))
+    effects (Read{kb})
 
   -- Operations of a sort
   operation operations(sort_name: String) -> List{T = OperationInfo}
-    effects (Reads(kb))
+    effects (Read{kb})
 
   -- Constructors of a defined sort
   operation constructors(sort_name: String) -> List{T = String}
-    effects (Reads(kb))
+    effects (Read{kb})
 
   -- Fields of an entity/constructor
   operation fields(name: String) -> List{T = FieldInfo}
-    effects (Reads(kb))
+    effects (Read{kb})
 
   -- Rules (laws) associated with a sort
   operation rules(sort_name: String) -> List{T = TermRepr}
-    effects (Reads(kb))
+    effects (Read{kb})
 
   -- ================================================================
   -- Descriptions
@@ -122,6 +128,54 @@ namespace anthill.reflect
 
   -- Query descriptions (optionally filtered by target name)
   operation descriptions(target: Option{T = String}) -> List{T = DescriptionInfo}
-    effects (Reads(kb))
+    effects (Read{kb})
+
+  -- ================================================================
+  -- Substitution: variable bindings from query/unification
+  -- ================================================================
+
+  -- A substitution maps variable names to terms: {?x → t1, ?y → t2, ...}
+  -- Produced by execute(query), used for type instantiation checking.
+  -- Lookup/keys/values/etc. come from Map operations.
+  sort Substitution = Map{K = String, V = Term}
+
+  -- Apply a substitution to a term (replace all bound variables)
+  operation apply_subst(s: Substitution, t: Term) -> Term
+    effects (Read{kb})
+
+  -- Compose two substitutions: apply s1 then s2
+  operation compose(s1: Substitution, s2: Substitution) -> Substitution
+
+  -- ================================================================
+  -- LogicalQuery: first-class query representation
+  -- ================================================================
+
+  -- Queries as composable, storable, inspectable KB values.
+  -- See proposal 010 (Query System) for design rationale.
+  sort LogicalQuery {
+    entity pattern_query(term: Term)                              -- single pattern
+    entity sort_query(sort_name: String)                          -- all facts of a sort
+    entity conjunction(left: LogicalQuery, right: LogicalQuery)   -- AND (shared vars = join)
+    entity disjunction(left: LogicalQuery, right: LogicalQuery)   -- OR
+    entity negation(query: LogicalQuery)                          -- NOT (negation-as-failure)
+    entity guarded(query: LogicalQuery, condition: Term)          -- filter
+    entity projected(query: LogicalQuery, vars: List{T = String}) -- projection
+    entity limited(query: LogicalQuery, count: Int)               -- cardinality limit
+  }
+
+  -- Execute a query against the KB
+  operation execute(query: LogicalQuery) -> LogicalStream{T = Substitution}
+    effects (Read{kb})
+
+  -- Extract a sort's fact template as a query
+  operation sort_template(sort_name: String) -> LogicalQuery
+    effects (Read{kb})
+
+  -- Apply bindings to a sort template → concrete conjunctive query.
+  -- E.g., instantiation_query("Eq", bind("T", reflect("Int"), empty_subst))
+  -- produces the query that checks whether Int satisfies Eq.
+  operation instantiation_query(sort_name: String, bindings: Substitution)
+    -> LogicalQuery
+    effects (Read{kb})
 
 end

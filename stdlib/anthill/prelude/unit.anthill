@@ -1,0 +1,4 @@
+-- Unit: the sort with exactly one value.
+-- `unit` is a built-in literal constant (like true, false, 42, "hello").
+-- Requires: grammar keyword `unit`, Rust `Literal::Unit` variant.
+sort anthill.prelude.Unit = ?
