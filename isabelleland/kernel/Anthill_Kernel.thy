@@ -42,7 +42,6 @@ and aterm =
   | Var var_id
   | Fn symbol "fn_arg list"
   | Ref symbol
-  | Unspecified string "aterm list"
   | Quoted string string
   | Bottom
 
@@ -144,14 +143,35 @@ text \<open>
   is interpreted in the non-monadic style as
   \<^verbatim>\<open>op_e : Env \<times> A1 \<times> ... \<times> Am \<rightarrow> (R \<times> Env \<times> Event list) + Error\<close>
   where @{text Env} maps resource names to their current state.
+
+  Effects are represented as open (kind, target) pairs.  The well-known
+  kinds Modifies, Reads, Emits, Errors, Requires are defined in stdlib;
+  additional effect kinds may be introduced by libraries.
 \<close>
 
-datatype effect =
-    Modifies symbol    \<comment> \<open>state mutation target\<close>
-  | Reads symbol       \<comment> \<open>dependency on external state\<close>
-  | Emits symbol       \<comment> \<open>event production\<close>
-  | Errors symbol      \<comment> \<open>failure mode\<close>
-  | Requires symbol    \<comment> \<open>capability requirement\<close>
+record effect =
+  eff_kind   :: symbol
+  eff_target :: symbol
+
+text \<open>
+  Well-known effect kinds.  These abbreviations mirror the five standard
+  effect constructors defined in the Anthill standard library.
+\<close>
+
+abbreviation eff_Modifies :: "symbol \<Rightarrow> effect" where
+  "eff_Modifies s \<equiv> \<lparr> eff_kind = ''Modifies'', eff_target = s \<rparr>"
+
+abbreviation eff_Reads :: "symbol \<Rightarrow> effect" where
+  "eff_Reads s \<equiv> \<lparr> eff_kind = ''Reads'', eff_target = s \<rparr>"
+
+abbreviation eff_Emits :: "symbol \<Rightarrow> effect" where
+  "eff_Emits s \<equiv> \<lparr> eff_kind = ''Emits'', eff_target = s \<rparr>"
+
+abbreviation eff_Errors :: "symbol \<Rightarrow> effect" where
+  "eff_Errors s \<equiv> \<lparr> eff_kind = ''Errors'', eff_target = s \<rparr>"
+
+abbreviation eff_Requires :: "symbol \<Rightarrow> effect" where
+  "eff_Requires s \<equiv> \<lparr> eff_kind = ''Requires'', eff_target = s \<rparr>"
 
 subsubsection \<open>Effect environment\<close>
 
@@ -175,19 +195,25 @@ type_synonym effectful_op = "env \<Rightarrow> aterm list \<Rightarrow> (effectf
 subsubsection \<open>Resource projections\<close>
 
 definition reads_resources :: "effect list \<Rightarrow> symbol set" where
-  "reads_resources effs \<equiv> {s. Reads s \<in> set effs} \<union> {s. Modifies s \<in> set effs}"
+  "reads_resources effs \<equiv>
+     {s. \<exists>e \<in> set effs. eff_kind e = ''Reads'' \<and> eff_target e = s}
+   \<union> {s. \<exists>e \<in> set effs. eff_kind e = ''Modifies'' \<and> eff_target e = s}"
 
 definition modifies_resources :: "effect list \<Rightarrow> symbol set" where
-  "modifies_resources effs \<equiv> {s. Modifies s \<in> set effs}"
+  "modifies_resources effs \<equiv>
+     {s. \<exists>e \<in> set effs. eff_kind e = ''Modifies'' \<and> eff_target e = s}"
 
 definition emits_events :: "effect list \<Rightarrow> symbol set" where
-  "emits_events effs \<equiv> {s. Emits s \<in> set effs}"
+  "emits_events effs \<equiv>
+     {s. \<exists>e \<in> set effs. eff_kind e = ''Emits'' \<and> eff_target e = s}"
 
 definition required_capabilities :: "effect list \<Rightarrow> symbol set" where
-  "required_capabilities effs \<equiv> {s. Requires s \<in> set effs}"
+  "required_capabilities effs \<equiv>
+     {s. \<exists>e \<in> set effs. eff_kind e = ''Requires'' \<and> eff_target e = s}"
 
 definition error_types :: "effect list \<Rightarrow> symbol set" where
-  "error_types effs \<equiv> {s. Errors s \<in> set effs}"
+  "error_types effs \<equiv>
+     {s. \<exists>e \<in> set effs. eff_kind e = ''Errors'' \<and> eff_target e = s}"
 
 text \<open>Reads is always a superset of Modifies (you read what you mutate).\<close>
 
@@ -295,6 +321,16 @@ proof (intro allI impI)
   thus "respects_effect_env (op_effects (spec\<lparr> op_effects := [] \<rparr>)) e (er_env res)"
     by (simp add: pure_effect_env)
 qed
+
+subsubsection \<open>Description Facts\<close>
+
+text \<open>
+  Description blocks produce facts of the form @{text "Description(target, text)"}.
+  The syntax @{verbatim \<open>describe Name {< text >}\<close>} is sugar for asserting a
+  fact with sort @{text Description} and domain equal to the enclosing scope.
+  Descriptions replace the former @{text Unspecified} term variant --- they live
+  in the knowledge base as ordinary facts rather than as a special term node.
+\<close>
 
 subsubsection \<open>Monadic interpretation\<close>
 
@@ -476,8 +512,6 @@ and apply_subst :: "subst \<Rightarrow> aterm \<Rightarrow> aterm" where
 | "apply_subst \<sigma> (Var v) = chase \<sigma> (Var v)"
 | "apply_subst \<sigma> (Fn f args) = Fn f (map (apply_subst_arg \<sigma>) args)"
 | "apply_subst \<sigma> (Ref s) = Ref s"
-| "apply_subst \<sigma> (Unspecified txt hints) =
-     Unspecified txt (map (apply_subst \<sigma>) hints)"
 | "apply_subst \<sigma> (Quoted lang src) = Quoted lang src"
 | "apply_subst \<sigma> Bottom = Bottom"
 | "apply_subst_arg \<sigma> (Positional t) = Positional (apply_subst \<sigma> t)"
@@ -491,7 +525,6 @@ and fv :: "aterm \<Rightarrow> var_id set" where
 | "fv (Var v) = {v}"
 | "fv (Fn _ args) = \<Union>(set (map fv_arg args))"
 | "fv (Ref _) = {}"
-| "fv (Unspecified _ hints) = \<Union>(set (map fv hints))"
 | "fv (Quoted _ _) = {}"
 | "fv Bottom = {}"
 | "fv_arg (Positional t) = fv t"
@@ -514,7 +547,6 @@ and occurs_in :: "var_id \<Rightarrow> aterm \<Rightarrow> bool" where
 | "occurs_in v (Var w) = (v = w)"
 | "occurs_in v (Fn _ args) = (\<exists>a \<in> set args. occurs_in_arg v a)"
 | "occurs_in v (Ref _) = False"
-| "occurs_in v (Unspecified _ hints) = (\<exists>h \<in> set hints. occurs_in v h)"
 | "occurs_in v (Quoted _ _) = False"
 | "occurs_in v Bottom = False"
 | "occurs_in_arg v (Positional t) = occurs_in v t"
@@ -634,15 +666,65 @@ lemma is_subtype_trans:
 
 subsubsection \<open>Fact operations\<close>
 
+text \<open>
+  Find an existing active fact with the same term, sort, and domain.
+  Used to make @{text assert_fact} idempotent --- asserting the same
+  fact twice returns the existing fact id without duplicating it.
+\<close>
+
+fun find_fact_aux ::
+  "fact_entry list \<Rightarrow> nat \<Rightarrow> aterm \<Rightarrow> sort_id \<Rightarrow> sort_id
+   \<Rightarrow> fact_id option" where
+  "find_fact_aux [] _ _ _ _ = None"
+| "find_fact_aux (e # es) idx t s d =
+     (if fe_term e = t \<and> fe_sort e = s \<and> fe_domain e = d
+         \<and> \<not> fe_retracted e
+      then Some idx
+      else find_fact_aux es (Suc idx) t s d)"
+
+definition find_existing_fact ::
+  "knowledge_base \<Rightarrow> aterm \<Rightarrow> sort_id \<Rightarrow> sort_id
+   \<Rightarrow> fact_id option" where
+  "find_existing_fact kb t s d \<equiv>
+     find_fact_aux (kb_facts kb) 0 t s d"
+
+lemma find_fact_aux_valid:
+  "find_fact_aux es idx t s d = Some fid \<Longrightarrow>
+   fid < idx + length es"
+proof (induction es arbitrary: idx)
+  case Nil then show ?case by simp
+next
+  case (Cons e es)
+  show ?case
+  proof (cases "fe_term e = t \<and> fe_sort e = s \<and> fe_domain e = d \<and> \<not> fe_retracted e")
+    case True then show ?thesis using Cons.prems by simp
+  next
+    case False
+    then have "find_fact_aux es (Suc idx) t s d = Some fid"
+      using Cons.prems by auto
+    then have "fid < Suc idx + length es" using Cons.IH by blast
+    then show ?thesis by simp
+  qed
+qed
+
+lemma find_existing_fact_valid:
+  "find_existing_fact kb t s d = Some fid \<Longrightarrow>
+   fid < length (kb_facts kb)"
+  unfolding find_existing_fact_def
+  using find_fact_aux_valid by fastforce
+
 definition assert_fact ::
   "knowledge_base \<Rightarrow> aterm \<Rightarrow> sort_id \<Rightarrow> sort_id \<Rightarrow> aterm option
    \<Rightarrow> knowledge_base \<times> fact_id" where
   "assert_fact kb t s d m \<equiv>
-     let fid = length (kb_facts kb);
-         entry = \<lparr> fe_term = t, fe_sort = s, fe_domain = d,
-                    fe_meta = m, fe_retracted = False \<rparr>;
-         kb' = kb\<lparr> kb_facts := kb_facts kb @ [entry] \<rparr>
-     in (kb', fid)"
+     (case find_existing_fact kb t s d of
+        Some fid \<Rightarrow> (kb, fid)
+      | None \<Rightarrow>
+          let fid = length (kb_facts kb);
+              entry = \<lparr> fe_term = t, fe_sort = s, fe_domain = d,
+                         fe_meta = m, fe_retracted = False \<rparr>;
+              kb' = kb\<lparr> kb_facts := kb_facts kb @ [entry] \<rparr>
+          in (kb', fid))"
 
 definition retract :: "knowledge_base \<Rightarrow> fact_id \<Rightarrow> knowledge_base" where
   "retract kb fid \<equiv>
@@ -724,6 +806,13 @@ definition fresh_var :: "knowledge_base \<Rightarrow> knowledge_base \<times> va
 subsection \<open>Denial Checking\<close>
 
 text \<open>
+  Note: denial checking and forward chaining are specified here as a
+  reference for the formal semantics.  They are not yet implemented in the
+  Stage 0 Rust layer, which currently performs only fact assertion and
+  pattern-matching queries.
+\<close>
+
+text \<open>
   A denial @{text "\<bottom> :- B1, \<dots>, Bn"} is violated when all body atoms
   are provable.  We check this after each fact assertion.
 \<close>
@@ -758,19 +847,36 @@ definition derivable_facts ::
 
 subsection \<open>Properties\<close>
 
-text \<open>Asserting a fact increases the fact count.\<close>
+text \<open>Asserting a fact preserves or extends the fact store.\<close>
 
-lemma assert_increases_facts:
+lemma assert_fact_preserves_or_extends:
   "assert_fact kb t s d m = (kb', fid) \<Longrightarrow>
+   length (kb_facts kb') = length (kb_facts kb) \<or>
    length (kb_facts kb') = length (kb_facts kb) + 1"
-  by (auto simp add: assert_fact_def Let_def)
+  by (auto simp: assert_fact_def Let_def split: option.splits)
+
+text \<open>Asserting a new fact (no existing duplicate) increases the fact count.\<close>
+
+lemma assert_new_fact_increases:
+  "\<lbrakk> assert_fact kb t s d m = (kb', fid);
+     find_existing_fact kb t s d = None \<rbrakk> \<Longrightarrow>
+   length (kb_facts kb') = length (kb_facts kb) + 1"
+  by (auto simp: assert_fact_def Let_def)
+
+text \<open>Asserting an existing fact is idempotent.\<close>
+
+lemma assert_fact_idempotent:
+  "find_existing_fact kb t s d = Some fid \<Longrightarrow>
+   assert_fact kb t s d m = (kb, fid)"
+  by (simp add: assert_fact_def)
 
 text \<open>The returned fact id is valid.\<close>
 
 lemma assert_fact_id_valid:
   "assert_fact kb t s d m = (kb', fid) \<Longrightarrow>
    fid < length (kb_facts kb')"
-  by (auto simp add: assert_fact_def Let_def)
+  by (auto simp: assert_fact_def Let_def
+           dest: find_existing_fact_valid split: option.splits)
 
 text \<open>Subsort reflexivity and transitivity hold by construction.\<close>
 
