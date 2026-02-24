@@ -1,7 +1,7 @@
 -- Effects: effect declaration and well-known effect kinds
 --
 -- Each effect kind is a sort with an entity constructor:
---   sort Read { sort T = ?; entity Read(target: T) }
+--   sort Read { sort T = ?  entity Read(target: T) }
 --
 -- Type level:  Read{T = KB}   — sort instantiation, used in effects clauses
 -- Term level:  Read(kb)       — entity instance, has type Read{T = KB}
@@ -18,13 +18,13 @@ sort anthill.prelude.Effect {
 }
 
 -- Well-known effect kinds
-sort Read     { sort T = ?; entity Read(target: T) }       -- depends on a resource's state
-sort Modify   { sort T = ?; entity Modify(target: T) }     -- mutates a resource's state
-sort Emit     { sort T = ?; entity Emit(target: T) }       -- produces events of a given type
-sort Error    { sort T = ?; entity Error(target: T) }       -- can fail with a typed error
-sort Require  { sort T = ?; entity Require(target: T) }     -- needs a capability to execute
-sort Suspend  { sort T = ?; entity Suspend(target: T) }     -- may suspend execution
-sort Allocate { sort T = ?; entity Allocate(target: T) }    -- allocates from a resource pool
+sort Read     { sort T = ? entity Read(target: T) }       -- depends on a resource's state
+sort Modify   { sort T = ? entity Modify(target: T) }     -- mutates a resource's state
+sort Emit     { sort T = ? entity Emit(target: T) }       -- produces events of a given type
+sort Error    { sort T = ? entity Error(target: T) }       -- can fail with a typed error
+sort Require  { sort T = ? entity Require(target: T) }     -- needs a capability to execute
+sort Suspend  { sort T = ? entity Suspend(target: T) }     -- may suspend execution
+sort Allocate { sort T = ? entity Allocate(target: T) }    -- allocates from a resource pool
 
 -- Register as effects
 fact Effect{T = Read{?}}

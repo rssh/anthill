@@ -341,6 +341,7 @@ ImportPath ::= Name                               -- import a specific name
 NameList    ::= Name (',' Name)*
 SortBinding ::= Name '=' Type                   -- explicit: binds an unspecified sort to a concrete type
               | Name                             -- punning: Eq{T} is shorthand for Eq{T = T}
+              | VariableTerm                     -- anonymous/named variable: Read{?}, Read{?r}
 ```
 
 When a sort binding omits the `= Type` part, the parameter name is used as both the binding name and the bound type. This **punning** shorthand (analogous to TypeScript's `{x}` for `{x: x}`) is useful when a sort parameter has the same name as a type in scope:
@@ -355,6 +356,16 @@ requires Bifunctor{A, B = Int}   -- A binds to A, B binds to Int
 
 -- Explicit is required when names differ:
 requires Numeric{T = Money}      -- T binds to Money
+```
+
+A sort binding can also be a **logical variable** (`?` or `?name`). This is used to express existential quantification over type parameters — "for any instantiation":
+
+```
+-- Read{?} means "Read instantiated with any target type"
+fact Effect{T = Read{?}}         -- Read is an effect kind, for any target
+
+-- Named variable binds across the term:
+rule Effect{T = Read{?r}} :- Effect{T = Modify{?r}}   -- Modify implies Read
 ```
 
 Import makes names from another namespace visible in the current scope as local aliases. It does **not** add the imported sort's scope as a parent — importing `Eq` does not make `eq`/`neq` directly accessible. To access a sort's contents, use `requires Eq{T}` (sort composition) or wildcard import. Sort parameters remain unspecified — they are instantiated separately via inline type expressions (`Name{bindings}`), not at import time.
@@ -1299,6 +1310,7 @@ ImportPath  ::= Name                                           -- import a name
               | Name '.' '*'                                   -- wildcard import
 NameList    ::= Name (',' Name)*
 SortBinding ::= Name ['=' Type]                 -- without '= Type': punning (Eq{T} = Eq{T = T})
+              | VariableTerm                    -- variable binding: Read{?}, Read{?r}
 
 NamespaceContent ::= Sort | Rule | Operation
                    | RequiresDecl                 -- sort-level constraint

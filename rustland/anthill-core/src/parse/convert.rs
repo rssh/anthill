@@ -218,16 +218,30 @@ impl<'a> Converter<'a> {
 
     fn convert_sort_binding(&mut self, node: Node) -> SortBinding {
         let param = self.field(node, "param")
-            .map(|n| self.convert_name(n))
-            .unwrap_or_else(|| {
+            .map(|n| self.convert_name(n));
+        let type_field = self.field(node, "type");
+
+        match (param, type_field) {
+            // Explicit: Eq{T = Int} — param and type both present
+            (Some(p), Some(t)) => SortBinding { param: p, bound: self.convert_type(t) },
+            // Punning: Eq{T} — param only, desugars to Eq{T = T}
+            (Some(p), None) => {
+                let bound = TypeExpr::Simple(p.clone());
+                SortBinding { param: p, bound }
+            }
+            // Variable: Read{?} or Read{?r} — no param name, just a variable type
+            (None, Some(t)) => {
+                let bound = self.convert_type(t);
                 let sym = self.intern("?");
-                Name::simple(sym, self.span(node))
-            });
-        // Punning: `Eq{T}` desugars to `Eq{T = T}` — param name becomes the type
-        let bound = self.field(node, "type")
-            .map(|n| self.convert_type(n))
-            .unwrap_or_else(|| TypeExpr::Simple(param.clone()));
-        SortBinding { param, bound }
+                SortBinding { param: Name::simple(sym, self.span(node)), bound }
+            }
+            // Fallback (shouldn't happen)
+            (None, None) => {
+                let sym = self.intern("?");
+                let name = Name::simple(sym, self.span(node));
+                SortBinding { param: name.clone(), bound: TypeExpr::Simple(name) }
+            }
+        }
     }
 
     // ── Terms ───────────────────────────────────────────────────
@@ -357,30 +371,39 @@ impl<'a> Converter<'a> {
         let name = self.convert_name(name_node);
         let functor = self.intern_name(&name);
 
+        let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
         let mut named_args: SmallVec<[(crate::intern::Symbol, TermId); 2]> = SmallVec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             if child.kind() == "sort_binding" {
                 let param_node = self.field(child, "param");
                 let type_node = self.field(child, "type");
-                if let Some(p) = param_node {
-                    let param_name = self.convert_name(p);
-                    let param_sym = self.intern_name(&param_name);
-                    let value_tid = if let Some(t) = type_node {
+                match (param_node, type_node) {
+                    (Some(p), Some(t)) => {
                         // Explicit: Eq{T = Int} — convert the type to a Ref term
+                        let param_name = self.convert_name(p);
+                        let param_sym = self.intern_name(&param_name);
                         let type_name = self.convert_type_to_name(t);
                         let type_sym = self.intern_name(&type_name);
-                        self.terms.alloc(Term::Ref(type_sym))
-                    } else {
+                        named_args.push((param_sym, self.terms.alloc(Term::Ref(type_sym))));
+                    }
+                    (Some(p), None) => {
                         // Punned: Eq{Int} — param name IS the type
-                        self.terms.alloc(Term::Ref(param_sym))
-                    };
-                    named_args.push((param_sym, value_tid));
+                        let param_name = self.convert_name(p);
+                        let param_sym = self.intern_name(&param_name);
+                        named_args.push((param_sym, self.terms.alloc(Term::Ref(param_sym))));
+                    }
+                    (None, Some(t)) => {
+                        // Variable binding: Read{?} or Read{?r}
+                        let tid = self.convert_term(t);
+                        pos_args.push(tid);
+                    }
+                    (None, None) => {}
                 }
             }
         }
 
-        self.terms.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args })
+        self.terms.alloc(Term::Fn { functor, pos_args, named_args })
     }
 
     /// Extract a Name from a type CST node (simple_type or parameterized_type).

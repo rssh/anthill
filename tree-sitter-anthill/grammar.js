@@ -126,9 +126,13 @@ module.exports = grammar({
 
     selective_import: $ => seq('{', commaSep1($.identifier), '}'),
 
-    sort_binding: $ => seq(
-      field('param', $.name),
-      optional(seq('=', field('type', $._type))),
+    sort_binding: $ => choice(
+      seq(
+        field('param', $.name),
+        optional(seq('=', field('type', $._type))),
+      ),
+      // Variable as standalone binding: Read{?}, Effect{?r}
+      field('type', $.variable_term),
     ),
 
     export_clause: $ => seq(

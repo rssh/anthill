@@ -610,3 +610,51 @@ operation run(x: Int) -> Int
     (operation_clause
       (effects_clause
         (simple_type (name (identifier)))))))
+
+=====================================
+Variable in sort binding (anonymous)
+=====================================
+
+fact Effect{T = Read{?}}
+
+---
+
+(source_file
+  (fact_declaration
+    term: (instantiation_term
+      name: (name (identifier))
+      (sort_binding
+        param: (name (identifier))
+        type: (parameterized_type
+          (name (identifier))
+          (sort_binding
+            type: (variable_term (variable))))))))
+
+=====================================
+Variable in sort binding (named)
+=====================================
+
+rule Effect{T = Read{?r}} :- Effect{T = Modify{?r}}
+
+---
+
+(source_file
+  (rule_declaration
+    head: (rule_head
+      (instantiation_term
+        name: (name (identifier))
+        (sort_binding
+          param: (name (identifier))
+          type: (parameterized_type
+            (name (identifier))
+            (sort_binding
+              type: (variable_term (variable)))))))
+    body: (rule_body
+      (instantiation_term
+        name: (name (identifier))
+        (sort_binding
+          param: (name (identifier))
+          type: (parameterized_type
+            (name (identifier))
+            (sort_binding
+              type: (variable_term (variable)))))))))
