@@ -175,7 +175,7 @@ module.exports = grammar({
       field('name', $.name),
       '=',
       field('definition', $._type),
-      optional(field('description', $.description_block)),
+      repeat(field('description', $.description_block)),
       optional($.meta_block),
     ),
 
@@ -183,6 +183,7 @@ module.exports = grammar({
       optional($.visibility),
       'sort',
       field('name', $.name),
+      repeat(field('description', $.description_block)),
       repeat($.import_clause),
       repeat($.export_clause),
       $._body_sort,
@@ -293,7 +294,7 @@ module.exports = grammar({
     describe_declaration: $ => seq(
       'describe',
       field('target', $.name),
-      field('content', $.description_block),
+      repeat1(field('content', $.description_block)),
     ),
 
     // =========================================================
@@ -571,12 +572,12 @@ module.exports = grammar({
       $.identifier,
     ),
 
-    // Variable with optional inline description: ?x {< text >}
+    // Variable with optional inline description(s): ?x {< text >} {< more >}
     // prec.right ensures the description_block is greedily consumed by
     // variable_term rather than by an enclosing rule (e.g., abstract_sort).
     variable_term: $ => prec.right(seq(
       $.variable,
-      optional(field('description', $.description_block)),
+      repeat(field('description', $.description_block)),
     )),
 
     // ? = anonymous variable (each occurrence distinct, like _ in Prolog)

@@ -64,6 +64,32 @@ fn parse_abstract_sort() {
 }
 
 #[test]
+fn parse_abstract_sort_named_variable() {
+    let source = "sort T = ?Element\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    assert_eq!(parsed.items.len(), 1);
+    match &parsed.items[0] {
+        Item::AbstractSort(s) => {
+            assert_eq!(parsed.symbols.name(s.name.last()), "T");
+            assert!(s.visibility.is_none());
+            match &s.definition {
+                TypeExpr::Variable { term_id, .. } => {
+                    let term = parsed.terms.get(*term_id);
+                    match term {
+                        anthill_core::kb::term::Term::Var(vid) => {
+                            assert_eq!(parsed.symbols.name(vid.name()), "Element");
+                        }
+                        other => panic!("expected Var term, got {:?}", other),
+                    }
+                }
+                other => panic!("expected Variable type, got {:?}", other),
+            }
+        }
+        other => panic!("expected AbstractSort, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
 fn parse_sort_with_body() {
     let source = r#"sort WorkStatus {
   entity Draft
@@ -1031,7 +1057,7 @@ fn parse_describe_declaration() {
     match &parsed.items[0] {
         Item::Describe(d) => {
             assert_eq!(parsed.symbols.name(d.target.last()), "Account");
-            assert_eq!(d.content, "A bank account holding funds");
+            assert_eq!(d.contents, vec!["A bank account holding funds"]);
         }
         other => panic!("expected Describe, got {:?}", std::mem::discriminant(other)),
     }
@@ -1046,7 +1072,7 @@ fn parse_abstract_sort_with_description() {
         Item::AbstractSort(s) => {
             assert_eq!(parsed.symbols.name(s.name.last()), "Money");
             assert!(matches!(s.definition, TypeExpr::Variable { .. }));
-            assert_eq!(s.description.as_deref(), Some("Monetary amount"));
+            assert_eq!(s.descriptions, vec!["Monetary amount"]);
         }
         other => panic!("expected AbstractSort, got {:?}", std::mem::discriminant(other)),
     }
@@ -1133,7 +1159,7 @@ fn parse_variable_with_description() {
                             // The variable term should have a description
                             assert!(parsed.terms.descriptions.contains_key(&pos_args[0]),
                                 "variable should have a description entry");
-                            assert_eq!(parsed.terms.descriptions[&pos_args[0]], "the x value");
+                            assert_eq!(parsed.terms.descriptions[&pos_args[0]], vec!["the x value"]);
                         }
                         other => panic!("expected Fn term, got {:?}", other),
                     }
@@ -1173,6 +1199,152 @@ fn load_variable_description_emits_fact() {
     }
 }
 
+// ── Multiple description blocks ──────────────────────────────────
+
+#[test]
+fn parse_describe_multiple_blocks() {
+    let source = "describe Account {< A bank account >} {< Holds funds >}\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    assert_eq!(parsed.items.len(), 1);
+    match &parsed.items[0] {
+        Item::Describe(d) => {
+            assert_eq!(parsed.symbols.name(d.target.last()), "Account");
+            assert_eq!(d.contents, vec!["A bank account", "Holds funds"]);
+        }
+        other => panic!("expected Describe, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_abstract_sort_multiple_descriptions() {
+    let source = "sort Money = ? {< Monetary amount >} {< Used in banking >}\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    assert_eq!(parsed.items.len(), 1);
+    match &parsed.items[0] {
+        Item::AbstractSort(s) => {
+            assert_eq!(parsed.symbols.name(s.name.last()), "Money");
+            assert_eq!(s.descriptions, vec!["Monetary amount", "Used in banking"]);
+        }
+        other => panic!("expected AbstractSort, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_sort_with_body_descriptions() {
+    let source = r#"sort WorkStatus {< Tracks work progress >} {
+  entity Draft
+  entity Open
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    assert_eq!(parsed.items.len(), 1);
+    match &parsed.items[0] {
+        Item::SortWithBody(s) => {
+            assert_eq!(parsed.symbols.name(s.name.last()), "WorkStatus");
+            assert_eq!(s.descriptions, vec!["Tracks work progress"]);
+            assert_eq!(s.items.len(), 2);
+        }
+        other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn load_describe_multiple_blocks_emits_facts() {
+    let source = r#"namespace banking {
+  sort Account = ?
+  describe Account {< A bank account >} {< Holds funds >}
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let desc_sort = kb.make_name_term("Description");
+    let descs = kb.by_sort(desc_sort);
+    assert_eq!(descs.len(), 2, "should have 2 Description facts from multi-block describe");
+
+    // Collect description texts
+    let mut texts: Vec<String> = descs.iter().map(|fid| {
+        let tid = kb.fact_term(*fid);
+        match kb.get_term(tid) {
+            Term::Fn { pos_args, .. } => {
+                match kb.get_term(pos_args[1]) {
+                    Term::Const(Literal::String(s)) => s.clone(),
+                    other => panic!("expected String, got {:?}", other),
+                }
+            }
+            other => panic!("expected Fn, got {:?}", other),
+        }
+    }).collect();
+    texts.sort();
+    assert_eq!(texts, vec!["A bank account", "Holds funds"]);
+}
+
+#[test]
+fn load_abstract_sort_multiple_descriptions_emits_facts() {
+    let source = "sort Money = ? {< Monetary amount >} {< Used in banking >}\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let desc_sort = kb.make_name_term("Description");
+    let descs = kb.by_sort(desc_sort);
+    assert_eq!(descs.len(), 2, "should have 2 Description facts from multi-description abstract sort");
+}
+
+#[test]
+fn load_sort_with_body_description_emits_fact() {
+    let source = r#"sort WorkStatus {< Tracks work progress >} {
+  entity Draft
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let desc_sort = kb.make_name_term("Description");
+    let descs = kb.by_sort(desc_sort);
+    assert_eq!(descs.len(), 1, "should have 1 Description fact from sort_with_body");
+
+    let fid = descs[0];
+    let tid = kb.fact_term(fid);
+    match kb.get_term(tid) {
+        Term::Fn { functor, pos_args, .. } => {
+            assert_eq!(kb.resolve_sym(*functor), "Description");
+            match kb.get_term(pos_args[1]) {
+                Term::Const(Literal::String(s)) => {
+                    assert_eq!(s, "Tracks work progress");
+                }
+                other => panic!("expected String, got {:?}", other),
+            }
+        }
+        other => panic!("expected Fn, got {:?}", other),
+    }
+}
+
+#[test]
+fn parse_variable_multiple_descriptions() {
+    let source = "rule test: foo(?x {< first >} {< second >})\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Rule(r) => {
+            match &r.head {
+                RuleHead::Term(tid) => {
+                    match parsed.terms.get(*tid) {
+                        Term::Fn { pos_args, .. } => {
+                            let descs = &parsed.terms.descriptions[&pos_args[0]];
+                            assert_eq!(descs, &vec!["first", "second"]);
+                        }
+                        other => panic!("expected Fn, got {:?}", other),
+                    }
+                }
+                other => panic!("expected Term head, got {:?}", other),
+            }
+        }
+        other => panic!("expected Rule, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
 // ── Variable types in type positions ─────────────────────────────
 
 #[test]
@@ -1185,8 +1357,8 @@ fn parse_operation_with_variable_types() {
             assert_eq!(parsed.symbols.name(o.name.last()), "identity");
             assert_eq!(o.params.len(), 1);
             match &o.params[0].ty {
-                TypeExpr::Variable { term_id, description } => {
-                    assert!(description.is_none());
+                TypeExpr::Variable { term_id, descriptions } => {
+                    assert!(descriptions.is_empty());
                     // Verify it's a named variable (not anonymous)
                     match parsed.terms.get(*term_id) {
                         Term::Var(vid) => {

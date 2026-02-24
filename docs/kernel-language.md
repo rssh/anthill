@@ -12,7 +12,7 @@ This specification is **self-contained**: it can be implemented without referenc
 
 3. **Algebraic specification.** The kernel is in the tradition of algebraic specification languages (OBJ, CafeOBJ, Maude): a namespace declares sorts (unspecified, type aliases, or defined types), operations (typed behavioral specs with contracts), and rules (laws).
 
-4. **Partial formalization.** Any declaration can have a **description block** (`{< >}`) — free-form text preserved as KB facts. Combined with anonymous variables (`?`), this allows a spectrum from fully informal to fully formal within the same language.
+4. **Partial formalization.** Any declaration can have one or more **description blocks** (`{< >}`) — free-form text preserved as KB facts. Multiple blocks are stored as an ordered list within a single fact. Combined with anonymous variables (`?`), this allows a spectrum from fully informal to fully formal within the same language.
 
 5. **Everything carries metadata.** Every fact has provenance (who, when, trust level, iteration). Trust is attached to facts, not to agents.
 
@@ -106,13 +106,18 @@ Term ::= Const(type, value)            -- ground value: 42 : Int, "hello" : Stri
 
 ### 4.1 Description Blocks
 
-Description blocks (`{< >}`) attach human-readable text to declarations. Unlike comments (`--`, `{- -}`), description blocks are **structural** — they are preserved as `Description` facts in the KB.
+Description blocks (`{< >}`) attach human-readable text to declarations. Unlike comments (`--`, `{- -}`), description blocks are **structural** — they are preserved as `Description` facts in the KB. Multiple description blocks can be attached to the same target; they are stored as an ordered list within a single `Description` fact.
 
 ```
 -- Inline description on an abstract sort:
 sort T = ? {< The element type >}
 
--- Standalone describe declaration:
+-- Multiple description blocks on a sort with body:
+sort Account {< Core banking entity >} {< See RFC-042 for rationale >}
+  entity account(id: AccountId, balance: Money)
+end
+
+-- Standalone describe declaration (appends to existing descriptions):
 describe Eq.T {<
   The type that supports equality comparison.
   Must be a concrete type, not a type constructor.
@@ -121,15 +126,21 @@ describe Eq.T {<
 -- Inline description on a variable in any term position:
 rule test: foo(?x {< the x value >})
 constraint positive: gt(?amount {< must be non-negative >}, 0)
+
+-- Multiple description blocks on a variable:
+operation withdraw(amount: ?T {< monetary type >} {< must support subtraction >}) -> ?T
 ```
 
-Description blocks can appear in three positions:
+Description blocks can appear in four positions:
 
 1. **After `sort Name = ?`** — describes an abstract sort / type parameter.
-2. **After `describe Name`** — standalone, can reference any named symbol.
-3. **After a variable (`?` or `?name`) in term position** — describes what the variable represents in that rule, constraint, fact, or operation contract.
+2. **After `sort Name` (before body or `= Type`)** — describes any sort form.
+3. **After `describe Name`** — standalone, can reference any named symbol. Appends to existing descriptions.
+4. **After a variable (`?` or `?name`) in term position** — describes what the variable represents in that rule, constraint, fact, or operation contract.
 
-Descriptions are stored as `Description(target, text)` facts, queryable via `by_functor("Description")`. For variables, the target is the variable's term in the KB. The `describe` construct can attach descriptions post-hoc, potentially from a different scope or file.
+Multiple `{< >}` blocks on the same target are collected into an ordered list, preserving declaration order. The `describe` construct appends to the existing list if a `Description` fact already exists for that target, enabling incremental annotation across files.
+
+Descriptions are stored as `Description(target, [text₁, text₂, …])` facts, queryable via `by_functor("Description")`. For variables, the target is the variable's term in the KB.
 
 | Purpose | Syntax | Structural? |
 |---------|--------|-------------|
@@ -279,7 +290,7 @@ The inline form `List{T=Int}` refers to the sort `List` with unspecified sort pa
 ```
 Type ::= Name                                        -- simple type reference
        | Name '{' SortBinding (',' SortBinding)* '}' -- inline instantiation
-       | VariableTerm                                 -- logical variable: ?, ?T, ?T {< desc >}
+       | VariableTerm                                 -- logical variable: ?, ?T, ?T {< desc >}*
 ```
 
 Import and instantiation are separate concepts: `import` makes names visible, inline `Name{bindings}` instantiates sort parameters. They are not bundled together.
@@ -423,11 +434,17 @@ NamespaceContent ::= Sort | Rule | Operation         -- Sort: sorts-with-body or
 A type declaration. Sort has three forms — **unspecified** (declared, carrier unknown), **type alias** (equated to another type), and **sort with body** (inhabitants enumerated as a closed ADT, or algebra with operations/rules):
 
 ```
-Sort ::= [Visibility] 'sort' Name '=' '?'                    -- unspecified
+Sort ::= [Visibility] 'sort' Name '=' VariableTerm              -- unspecified
+           DescriptionBlock*
            ['meta' ':' Meta]
        | [Visibility] 'sort' Name '=' Type                   -- type alias
+           DescriptionBlock*
            ['meta' ':' Meta]
-       | [Visibility] 'sort' Name '=' Body[Constructor*]     -- defined (ADT)
+       | [Visibility] 'sort' Name                            -- sort with body
+           DescriptionBlock*
+           Import*
+           ['export' NameList]
+           Body[SortContent*]
            ['meta' ':' Meta]
 
 Constructor ::= 'entity' Name ['(' FieldList ')']            -- variant/constructor
@@ -1306,7 +1323,7 @@ Term        ::= Const(type, value)
               | Instantiation(Name, SortBinding+)  -- Eq{T = Int} in term position
               | Quoted(language, source)
 
-VariableTerm ::= Var [DescriptionBlock]      -- ?name {< text >} or bare ? {< text >}
+VariableTerm ::= Var DescriptionBlock*        -- ?name {< text >}* or bare ? {< text >}*
 
 -- =================================================================
 -- Kernel Constructs (4)
@@ -1335,12 +1352,14 @@ NamespaceContent ::= Sort | Rule | Operation
 
 Visibility  ::= 'internal' | 'export' | 'public'
 
-Sort        ::= [Visibility] 'sort' Name '=' '?'                   -- unspecified (only in SortContent)
-                  [DescriptionBlock]
+Sort        ::= [Visibility] 'sort' Name '=' VariableTerm              -- unspecified (only in SortContent)
+                  DescriptionBlock*
                   ['meta' ':' Meta]
               | [Visibility] 'sort' Name '=' Type                  -- type alias
+                  DescriptionBlock*
                   ['meta' ':' Meta]
               | [Visibility] 'sort' Name                           -- sort with body
+                  DescriptionBlock*
                   Import*
                   ['export' NameList]
                 Body[SortContent*]
@@ -1356,14 +1375,14 @@ SortContent ::= Sort | Entity | Operation | Rule
               | Describe | Namespace
 
 DescriptionBlock ::= '{<' Text '>}'               -- free-form text, preserved as KB facts
-Describe    ::= 'describe' Name DescriptionBlock   -- attach description to named symbol
+Describe    ::= 'describe' Name DescriptionBlock+  -- attach description(s) to named symbol; appends to existing
 
 FieldList   ::= Field (',' Field)*
 Field       ::= Name ':' Type
 
 Type        ::= Name                                           -- simple: Account, Int
               | Name '{' SortBinding (',' SortBinding)* '}'    -- inline instantiation: List{T=Int}
-              | VariableTerm                                    -- logical variable: ?, ?T, ?T {< desc >}
+              | VariableTerm                                    -- logical variable: ?, ?T, ?T {< desc >}*
 
 Rule        ::= 'rule' [Name ':'] Head [':-' RuleBody]
                   ['meta' ':' Meta]

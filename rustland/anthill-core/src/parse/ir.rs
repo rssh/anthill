@@ -21,8 +21,8 @@ use crate::kb::term::{Term, TermId};
 #[derive(Debug, Default)]
 pub struct SimpleTermStore {
     terms: Vec<Term>,
-    /// Inline description blocks attached to variables: TermId → description text.
-    pub descriptions: HashMap<TermId, String>,
+    /// Inline description blocks attached to variables: TermId → description texts.
+    pub descriptions: HashMap<TermId, Vec<String>>,
 }
 
 impl SimpleTermStore {
@@ -98,10 +98,10 @@ pub enum TypeExpr {
         name: Name,
         bindings: Vec<SortBinding>,
     },
-    /// Type variable: `?` or `?name`, with optional inline description.
+    /// Type variable: `?` or `?name`, with zero or more inline descriptions.
     Variable {
         term_id: TermId,
-        description: Option<String>,
+        descriptions: Vec<String>,
     },
 }
 
@@ -181,7 +181,7 @@ pub struct AbstractSort {
     pub visibility: Option<Visibility>,
     pub name: Name,
     pub definition: TypeExpr,
-    pub description: Option<String>,
+    pub descriptions: Vec<String>,
     pub meta: Option<MetaBlock>,
     pub span: Span,
 }
@@ -190,6 +190,7 @@ pub struct AbstractSort {
 pub struct SortWithBody {
     pub visibility: Option<Visibility>,
     pub name: Name,
+    pub descriptions: Vec<String>,
     pub imports: Vec<Import>,
     pub exports: Vec<Name>,
     pub items: Vec<Item>,
@@ -295,7 +296,7 @@ pub struct RuleBlock {
 #[derive(Debug)]
 pub struct Describe {
     pub target: Name,
-    pub content: String,
+    pub contents: Vec<String>,
     pub span: Span,
 }
 

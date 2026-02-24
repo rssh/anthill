@@ -880,10 +880,12 @@ impl<'a> Loader<'a> {
         let kb_id = self.kb.alloc(kb_term);
         self.term_map.insert(parse_id.raw(), kb_id);
 
-        // Emit Description fact if the variable has an inline description
-        if let Some(desc_text) = self.parsed.terms.descriptions.get(&parse_id) {
-            let desc_text = desc_text.clone();
-            self.emit_desc_fact(kb_id, &desc_text, self.current_scope);
+        // Emit Description facts if the variable has inline descriptions
+        if let Some(desc_texts) = self.parsed.terms.descriptions.get(&parse_id) {
+            let desc_texts = desc_texts.clone();
+            for desc_text in &desc_texts {
+                self.emit_desc_fact(kb_id, desc_text, self.current_scope);
+            }
         }
 
         kb_id
@@ -919,11 +921,10 @@ impl<'a> Loader<'a> {
                     named_args,
                 })
             }
-            TypeExpr::Variable { term_id, description } => {
+            TypeExpr::Variable { term_id, descriptions } => {
                 let kb_id = self.convert_term(*term_id);
-                if let Some(desc_text) = description {
-                    let desc_text = desc_text.clone();
-                    self.emit_desc_fact(kb_id, &desc_text, self.current_scope);
+                for desc_text in descriptions {
+                    self.emit_desc_fact(kb_id, desc_text, self.current_scope);
                 }
                 kb_id
             }
@@ -1023,8 +1024,8 @@ impl<'a> Loader<'a> {
             }
         }
 
-        // Emit Desc fact if description is present
-        if let Some(ref desc_text) = s.description {
+        // Emit Description facts for all description blocks
+        for desc_text in &s.descriptions {
             self.emit_desc_fact(sort_term, desc_text, domain);
         }
     }
@@ -1049,6 +1050,11 @@ impl<'a> Loader<'a> {
             named_args: SmallVec::new(),
         });
         self.kb.assert_fact(fact_term, sort_sort, parent_domain, None);
+
+        // Emit Description facts for all description blocks
+        for desc_text in &s.descriptions {
+            self.emit_desc_fact(sort_term, desc_text, parent_domain);
+        }
 
         // Set scope to sort for child resolution
         let prev_scope = self.current_scope;
@@ -1230,7 +1236,9 @@ impl<'a> Loader<'a> {
 
     fn load_describe(&mut self, d: &Describe, domain: TermId) {
         let target_term = self.name_to_sort_term(&d.target);
-        self.emit_desc_fact(target_term, &d.content, domain);
+        for content in &d.contents {
+            self.emit_desc_fact(target_term, content, domain);
+        }
     }
 
     fn emit_desc_fact(&mut self, target: TermId, text: &str, domain: TermId) {

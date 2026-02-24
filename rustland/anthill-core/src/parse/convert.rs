@@ -121,6 +121,12 @@ impl<'a> Converter<'a> {
             .collect()
     }
 
+    /// All children with a given field name (for repeated fields).
+    fn fields_by_name<'t>(&self, node: Node<'t>, name: &str) -> Vec<Node<'t>> {
+        let mut cursor = node.walk();
+        node.children_by_field_name(name, &mut cursor).collect()
+    }
+
     // ── Root ────────────────────────────────────────────────────
 
     pub fn convert_file(&mut self, root: Node) {
@@ -200,13 +206,15 @@ impl<'a> Converter<'a> {
             "variable_term" => {
                 let var_node = self.child_by_kind(node, "variable").unwrap_or(node);
                 let term_id = self.convert_variable_node(var_node);
-                let description = self.field(node, "description")
-                    .map(|d| strip_description_delimiters(self.text(d)));
-                TypeExpr::Variable { term_id, description }
+                let descriptions = self.fields_by_name(node, "description")
+                    .into_iter()
+                    .map(|d| strip_description_delimiters(self.text(d)))
+                    .collect();
+                TypeExpr::Variable { term_id, descriptions }
             }
             "variable" => {
                 let term_id = self.convert_variable_node(node);
-                TypeExpr::Variable { term_id, description: None }
+                TypeExpr::Variable { term_id, descriptions: Vec::new() }
             }
             _ => {
                 self.err(format!("unexpected type node: {}", node.kind()), node);
@@ -284,12 +292,15 @@ impl<'a> Converter<'a> {
                 self.convert_variable_node(node)
             }
             "variable_term" => {
-                // variable_term wraps variable + optional description_block
+                // variable_term wraps variable + zero or more description_blocks
                 let var_node = self.child_by_kind(node, "variable").unwrap_or(node);
                 let tid = self.convert_variable_node(var_node);
-                if let Some(desc_node) = self.field(node, "description") {
-                    let desc = strip_description_delimiters(self.text(desc_node));
-                    self.terms.descriptions.insert(tid, desc);
+                let descs: Vec<String> = self.fields_by_name(node, "description")
+                    .into_iter()
+                    .map(|d| strip_description_delimiters(self.text(d)))
+                    .collect();
+                if !descs.is_empty() {
+                    self.terms.descriptions.insert(tid, descs);
                 }
                 tid
             }
@@ -620,20 +631,22 @@ impl<'a> Converter<'a> {
                 let vid = crate::kb::term::VarId::new(self.next_var, sym);
                 self.next_var += 1;
                 let tid = self.terms.alloc(Term::Var(vid));
-                TypeExpr::Variable { term_id: tid, description: None }
+                TypeExpr::Variable { term_id: tid, descriptions: Vec::new() }
             });
 
-        // Description: check abstract_sort's own description field first,
-        // then hoist from variable_term's description if present.
-        let mut description = self.field(node, "description")
-            .map(|d| strip_description_delimiters(self.text(d)));
-        if description.is_none() {
-            if let TypeExpr::Variable { description: ref var_desc, .. } = definition {
-                description = var_desc.clone();
+        // Descriptions: collect abstract_sort's own description fields first,
+        // then hoist from variable_term's descriptions if empty.
+        let mut descriptions: Vec<String> = self.fields_by_name(node, "description")
+            .into_iter()
+            .map(|d| strip_description_delimiters(self.text(d)))
+            .collect();
+        if descriptions.is_empty() {
+            if let TypeExpr::Variable { descriptions: ref var_descs, .. } = definition {
+                descriptions = var_descs.clone();
             }
         }
 
-        Some(AbstractSort { visibility, name, definition, description, meta, span })
+        Some(AbstractSort { visibility, name, definition, descriptions, meta, span })
     }
 
     fn convert_sort_with_body(&mut self, node: Node) -> Option<SortWithBody> {
@@ -642,6 +655,11 @@ impl<'a> Converter<'a> {
         let visibility = self.convert_visibility(node);
         let meta = self.convert_meta_block(node);
         let span = self.span(node);
+
+        let descriptions: Vec<String> = self.fields_by_name(node, "description")
+            .into_iter()
+            .map(|d| strip_description_delimiters(self.text(d)))
+            .collect();
 
         let imports = self.children_by_kind(node, "import_clause")
             .into_iter()
@@ -659,7 +677,8 @@ impl<'a> Converter<'a> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             match child.kind() {
-                "name" | "visibility" | "import_clause" | "export_clause" | "meta_block" => {}
+                "name" | "visibility" | "import_clause" | "export_clause" | "meta_block"
+                | "description_block" => {}
                 _ => {
                     if let Some(item) = self.convert_item(child) {
                         items.push(item);
@@ -671,6 +690,7 @@ impl<'a> Converter<'a> {
         Some(SortWithBody {
             visibility,
             name,
+            descriptions,
             imports,
             exports,
             items,
@@ -978,11 +998,12 @@ impl<'a> Converter<'a> {
     fn convert_describe(&mut self, node: Node) -> Option<Describe> {
         let target = self.field(node, "target")
             .map(|n| self.convert_name(n))?;
-        let content = self.field(node, "content")
+        let contents: Vec<String> = self.fields_by_name(node, "content")
+            .into_iter()
             .map(|d| strip_description_delimiters(self.text(d)))
-            .unwrap_or_default();
+            .collect();
         let span = self.span(node);
-        Some(Describe { target, content, span })
+        Some(Describe { target, contents, span })
     }
 
     // ── Stage 0: project ────────────────────────────────────────

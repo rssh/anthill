@@ -384,6 +384,19 @@ sort T = ?
     definition: (variable_term (variable))))
 
 =====================================
+Abstract sort with named variable
+=====================================
+
+sort T = ?Element
+
+---
+
+(source_file
+  (abstract_sort
+    name: (name (identifier))
+    definition: (variable_term (variable))))
+
+=====================================
 Sort type alias (simple)
 =====================================
 
@@ -658,3 +671,72 @@ rule Effect{T = Read{?r}} :- Effect{T = Modify{?r}}
             (name (identifier))
             (sort_binding
               type: (variable_term (variable)))))))))
+
+=====================================
+Abstract sort with multiple descriptions
+=====================================
+
+sort Money = ? {< Monetary amount >} {< Used in banking >}
+
+---
+
+(source_file
+  (abstract_sort
+    name: (name (identifier))
+    definition: (variable_term
+      (variable)
+      description: (description_block)
+      description: (description_block))))
+
+=====================================
+Describe with multiple blocks
+=====================================
+
+describe Account {< A bank account >} {< Holds funds >}
+
+---
+
+(source_file
+  (describe_declaration
+    target: (name (identifier))
+    content: (description_block)
+    content: (description_block)))
+
+=====================================
+Sort with body and descriptions
+=====================================
+
+sort WorkStatus {< Tracks work progress >} {
+  entity Draft
+  entity Open
+}
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name (identifier))
+    description: (description_block)
+    (entity_declaration
+      name: (name (identifier)))
+    (entity_declaration
+      name: (name (identifier)))))
+
+=====================================
+Variable with multiple descriptions in rule
+=====================================
+
+rule test: foo(?x {< first desc >} {< second desc >})
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (fn_term
+        name: (name (identifier))
+        (variable_term
+          (variable)
+          description: (description_block)
+          description: (description_block))))))
