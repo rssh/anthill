@@ -310,8 +310,7 @@ pub enum Visibility {
 
 #[derive(Debug)]
 pub struct Effect {
-    pub kind: Name,
-    pub target: Name,
+    pub type_expr: TypeExpr,
 }
 
 #[derive(Debug)]

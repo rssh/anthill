@@ -97,7 +97,7 @@ fn fact_inside_sort_to_supertrait() {
     let out = gen(r#"sort QueryableStore {
   fact Store
   operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
-    effects (Reads(store))
+    effects (Read{store})
 }
 "#);
     assert!(out.contains("trait QueryableStore: Store {"), "output:\n{out}");
@@ -109,7 +109,7 @@ fn fact_inside_sort_to_supertrait() {
 fn effects_modifies_to_mut_self_result() {
     let out = gen(r#"sort Store {
   operation persist(store: Store, fact: Term, meta: Meta) -> FactId
-    effects (Modifies(store))
+    effects (Modify{store})
 }
 "#);
     assert!(out.contains("fn persist(&mut self"), "output:\n{out}");
@@ -122,7 +122,7 @@ fn effects_modifies_to_mut_self_result() {
 fn effects_reads_to_self_result() {
     let out = gen(r#"sort QueryableStore {
   operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
-    effects (Reads(store))
+    effects (Read{store})
 }
 "#);
     assert!(out.contains("fn retrieve(&self"), "output:\n{out}");
@@ -135,7 +135,7 @@ fn effects_reads_to_self_result() {
 fn effects_emits_to_callback() {
     let out = gen(r#"sort Processor {
   operation process(p: Processor) -> Bool
-    effects (Emits(AuditEvent))
+    effects (Emit{AuditEvent})
 }
 "#);
     assert!(out.contains("on_event: impl FnMut(AuditEvent)"), "output:\n{out}");

@@ -992,24 +992,35 @@ fn analyze_effects(effects: &[Effect], symbols: &SymbolTable) -> EffectInfo {
     };
 
     for effect in effects {
-        let kind = symbols.name(effect.kind.last());
-        let target = symbols.name(effect.target.last());
+        match &effect.type_expr {
+            TypeExpr::Parameterized { name, bindings } => {
+                let kind = symbols.name(name.last());
+                // Extract target from first binding's param name (the punned form)
+                let target = if let Some(b) = bindings.first() {
+                    symbols.name(b.param.last()).to_owned()
+                } else {
+                    continue;
+                };
 
-        match kind {
-            "Modifies" => {
-                info.has_modifies = true;
-                info.modifies_targets.push(target.to_owned());
+                match kind {
+                    "Modify" => {
+                        info.has_modifies = true;
+                        info.modifies_targets.push(target);
+                    }
+                    "Read" => {
+                        info.has_reads = true;
+                    }
+                    "Error" => {
+                        info.errors_type = Some(map_primitive_type(&target));
+                    }
+                    "Emit" => {
+                        info.emits_type = Some(map_primitive_type(&target));
+                    }
+                    _ => {}
+                }
             }
-            "Reads" => {
-                info.has_reads = true;
-            }
-            "Errors" => {
-                info.errors_type = Some(map_primitive_type(target));
-            }
-            "Emits" => {
-                info.emits_type = Some(map_primitive_type(target));
-            }
-            _ => {}
+            // Abstract effect (simple type or variable) — skip
+            TypeExpr::Simple(_) | TypeExpr::Variable { .. } => {}
         }
     }
 

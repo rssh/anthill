@@ -752,9 +752,13 @@ impl<'a> Converter<'a> {
                         }
                     }
                     "effects_clause" => {
-                        for eff in self.children_by_kind(child, "effect") {
-                            if let Some(e) = self.convert_effect(eff) {
-                                effects.push(e);
+                        let mut cursor2 = child.walk();
+                        for type_child in child.named_children(&mut cursor2) {
+                            match type_child.kind() {
+                                "simple_type" | "parameterized_type" | "variable_term" => {
+                                    effects.push(Effect { type_expr: self.convert_type(type_child) });
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -791,14 +795,6 @@ impl<'a> Converter<'a> {
             });
 
         Param { name, ty }
-    }
-
-    fn convert_effect(&mut self, node: Node) -> Option<Effect> {
-        let kind_node = self.field(node, "kind")?;
-        let target_node = self.field(node, "target")?;
-        let kind = self.convert_name(kind_node);
-        let target = self.convert_name(target_node);
-        Some(Effect { kind, target })
     }
 
     // ── Requires declaration ──────────────────────────────────────
@@ -901,9 +897,13 @@ impl<'a> Converter<'a> {
                         }
                     }
                     "effects_clause" => {
-                        for eff in self.children_by_kind(child, "effect") {
-                            if let Some(e) = self.convert_effect(eff) {
-                                effects.push(e);
+                        let mut cursor2 = child.walk();
+                        for type_child in child.named_children(&mut cursor2) {
+                            match type_child.kind() {
+                                "simple_type" | "parameterized_type" | "variable_term" => {
+                                    effects.push(Effect { type_expr: self.convert_type(type_child) });
+                                }
+                                _ => {}
                             }
                         }
                     }

@@ -533,3 +533,80 @@ operation foo(x: ?T {< the type >}) -> ?T
         (variable)
         description: (description_block)))
     return_type: (variable_term (variable))))
+
+=====================================
+Effects with parameterized type
+=====================================
+
+sort Store {
+  operation persist(store: Store, fact: Term) -> FactId
+    effects (Modify{store})
+}
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name (identifier))
+    (operation_declaration
+      name: (name (identifier))
+      (param
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      (param
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      return_type: (simple_type (name (identifier)))
+      (operation_clause
+        (effects_clause
+          (parameterized_type
+            (name (identifier))
+            (sort_binding
+              param: (name (identifier)))))))))
+
+=====================================
+Effects with multiple types
+=====================================
+
+operation process(store: Store) -> Bool
+  effects (Read{store}, Emit{AuditEvent})
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name (identifier))
+    (param
+      name: (identifier)
+      type: (simple_type (name (identifier))))
+    return_type: (simple_type (name (identifier)))
+    (operation_clause
+      (effects_clause
+        (parameterized_type
+          (name (identifier))
+          (sort_binding
+            param: (name (identifier))))
+        (parameterized_type
+          (name (identifier))
+          (sort_binding
+            param: (name (identifier))))))))
+
+=====================================
+Effects with abstract effect type
+=====================================
+
+operation run(x: Int) -> Int
+  effects (E)
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name (identifier))
+    (param
+      name: (identifier)
+      type: (simple_type (name (identifier))))
+    return_type: (simple_type (name (identifier)))
+    (operation_clause
+      (effects_clause
+        (simple_type (name (identifier)))))))
