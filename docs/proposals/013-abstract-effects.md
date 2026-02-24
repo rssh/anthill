@@ -1,10 +1,10 @@
 # 013: Abstract Effect Parameters
 
-## Status: Partially implemented (grammar + parse IR + codegen; effect checking not yet done)
+## Status: Partially implemented (grammar + parse IR + codegen + KB loading; effect checking not yet done)
 
 ## Depends on: none
 
-## Blocks: 011 (Type Resolution — Stream needs abstract effect parameter)
+## Blocks: nothing (no longer blocks 011 — abstract effect parameters work)
 
 ## Motivation
 

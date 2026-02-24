@@ -2,7 +2,7 @@
 
 ## Status: Brainstorming
 
-## Depends on: 013 (Abstract Effects — Stream needs abstract effect parameter)
+## Depends on: none (013 dependency resolved — abstract effect parameters implemented)
 
 ## Blocks: 010 (Query System), 012 (Sort-Defined Syntax Sugar)
 
