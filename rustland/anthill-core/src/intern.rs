@@ -210,10 +210,14 @@ impl SymbolTable {
             for inclusion in parents {
                 let parent_scope = inclusion.parent_scope_raw;
 
-                // Skip if name is a type param in the parent scope
-                if let Some(type_params) = self.scope_type_params.get(&parent_scope) {
-                    if type_params.contains(name) {
-                        continue;
+                // Skip if name is a type param in the parent scope,
+                // UNLESS this is an enclosing scope (operations within a sort
+                // should see the sort's type parameters).
+                if !inclusion.is_enclosing {
+                    if let Some(type_params) = self.scope_type_params.get(&parent_scope) {
+                        if type_params.contains(name) {
+                            continue;
+                        }
                     }
                 }
 

@@ -441,6 +441,94 @@ end
 }
 
 #[test]
+fn load_operation_with_effects() {
+    let source = r#"sort Read { sort T = ? entity Read(target: T) }
+sort Modify { sort T = ? entity Modify(target: T) }
+sort Store {
+  entity store
+  operation persist(s: Store, fact: Int) -> Int
+    effects (Modify{store})
+  operation retrieve(s: Store, pattern: Int) -> Int
+    effects (Read{store})
+  operation process(s: Store, x: Int) -> Int
+    effects (Read{store}, Modify{store})
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let op_sort = kb.make_name_term("Operation");
+    let ops = kb.by_sort(op_sort);
+    assert_eq!(ops.len(), 3, "should have 3 operations");
+
+    // Check each operation has effects stored
+    for &fid in &ops {
+        let term = kb.get_term(kb.fact_term(fid));
+        match term {
+            Term::Fn { functor, named_args, .. } => {
+                let name = kb.resolve_sym(*functor).to_owned();
+                // Find _effects in named_args
+                let effects_entry = named_args.iter().find(|(sym, _)| {
+                    kb.resolve_sym(*sym) == "_effects"
+                });
+                assert!(effects_entry.is_some(),
+                    "operation '{}' should have _effects named arg", name);
+
+                // Check the effects term has the right number of positional args
+                let (_, effects_tid) = effects_entry.unwrap();
+                match kb.get_term(*effects_tid) {
+                    Term::Fn { pos_args, .. } => {
+                        let expected = match name.as_str() {
+                            "persist" => 1,
+                            "retrieve" => 1,
+                            "process" => 2,
+                            _ => panic!("unexpected operation: {}", name),
+                        };
+                        assert_eq!(pos_args.len(), expected,
+                            "operation '{}' should have {} effect(s)", name, expected);
+                    }
+                    other => panic!("expected Fn for _effects, got {:?}", other),
+                }
+            }
+            other => panic!("expected Fn term for operation, got {:?}", other),
+        }
+    }
+}
+
+#[test]
+fn load_operation_with_abstract_effect() {
+    let source = r#"sort MySort {
+  sort E = ?
+  operation doSomething(x: Int) -> Int
+    effects (E)
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let op_sort = kb.make_name_term("Operation");
+    let ops = kb.by_sort(op_sort);
+    assert_eq!(ops.len(), 1, "should have 1 operation");
+
+    // Abstract effect E should still be stored
+    let term = kb.get_term(kb.fact_term(ops[0]));
+    match term {
+        Term::Fn { named_args, .. } => {
+            let effects_entry = named_args.iter().find(|(sym, _)| {
+                kb.resolve_sym(*sym) == "_effects"
+            });
+            assert!(effects_entry.is_some(),
+                "operation should have _effects even for abstract effects");
+        }
+        other => panic!("expected Fn term, got {:?}", other),
+    }
+}
+
+#[test]
 fn retract_fact() {
     let source = r#"fact parent("alice", "bob")"#;
     let parsed = parse::parse(source).expect("parse failed");

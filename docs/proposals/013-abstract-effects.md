@@ -1,6 +1,6 @@
 # 013: Abstract Effect Parameters
 
-## Status: Draft
+## Status: Partially implemented (grammar + parse IR + codegen; effect checking not yet done)
 
 ## Depends on: none
 
@@ -10,26 +10,33 @@
 
 Stream operations need effects (at minimum `Read{kb}` for KB queries), but the Stream sort doesn't know *which* effect — that depends on the concrete stream source. This requires **abstract effect parameters**: a sort declares `sort E = ?` and uses `E` in effect clauses.
 
-Currently the grammar requires concrete effects: `effects (Read{kb})`. There's no way to write `effects (E)` where `E` is abstract.
+More broadly: effects are sorts. An effect like `Read{kb}` is a sort instantiation — `Read` parameterized with target `kb`. The kernel treats effects as opaque labels for composition and checking. It never interprets them. The interpretation (what "reading the KB" actually does) lives outside, in the realization layer.
 
-More broadly: effects are abstract sorts. An effect like `Read{kb}` is just an entity — a label. The kernel treats effects as opaque labels for composition and checking. It never interprets them. The interpretation (what "reading the KB" actually does) lives outside, in the realization layer.
+## The Insight: Effects as Sorts and Facts
 
-## The Insight: Effects as Facts
-
-Effects are terms, and effect kinds are declared via facts:
+Effect kinds are declared as sorts with entity constructors, and registered via facts:
 
 ```
-sort Effect { sort T = ? }
+-- Effect kinds are sorts with type parameter and entity constructor
+sort Read     { sort T = ? entity Read(target: T) }
+sort Modify   { sort T = ? entity Modify(target: T) }
+sort Emit     { sort T = ? entity Emit(target: T) }
+sort Error    { sort T = ? entity Error(target: T) }
 
-fact Effect{T = Reads(?)}       -- Reads(anything) is a valid effect
-fact Effect{T = Modifies(?)}    -- Modifies(anything) is a valid effect
-fact Effect{T = Emits(?)}       -- etc.
+-- Registration: each kind is a valid effect
+fact Effect{T = Read{?}}
+fact Effect{T = Modify{?}}
+fact Effect{T = Emit{?}}
+fact Effect{T = Error{?}}
+
+-- Relationships: Modify implies Read
+rule Effect{T = Read{?r}} :- Effect{T = Modify{?r}}
 ```
 
 This means:
-- **New effect kinds are just fact assertions.** `fact Effect{T = Logs(?)}` declares a user-defined effect kind — no grammar or kernel change needed.
-- **Effect checking is KB querying.** When an operation declares `effects (Foo(bar))`, the kernel checks `fact Effect{T = Foo(?)}` in the KB. Unknown effect kind = missing fact.
-- **Effect relationships are rules.** `Reads` implied by `Modifies` is: `rule Effect{T = Reads(?r)} :- Effect{T = Modifies(?r)}`.
+- **New effect kinds are just sorts + fact assertions.** `sort Audits { sort T = ? entity Audits(target: T) }` + `fact Effect{T = Audits{?}}` declares a user-defined effect kind — no grammar or kernel change needed.
+- **Effect checking is KB querying.** When an operation declares `effects (Foo{bar})`, the kernel checks `fact Effect{T = Foo{?}}` in the KB. Unknown effect kind = missing fact.
+- **Effect relationships are rules.** `Read` implied by `Modify` is: `rule Effect{T = Read{?r}} :- Effect{T = Modify{?r}}`.
 - **Effects are queryable.** "What effects exist?" is a KB query.
 
 ```
@@ -38,7 +45,7 @@ This means:
 │  - Effect sort + fact declarations  │
 │  - effect composition (union, §5.6) │
 │  - checking via KB query:           │
-│    fact Effect{T = Kind(?)} exists? │
+│    fact Effect{T = Kind{?}} exists? │
 │  - abstract effect parameters       │
 └──────────────┬──────────────────────┘
                │ abstract boundary
@@ -51,9 +58,9 @@ This means:
 ```
 
 The kernel knows:
-- Which effect kinds exist (via `fact Effect{T = Kind(?)}` in KB)
+- Which effect kinds exist (via `fact Effect{T = Kind{?}}` in KB)
 - Effects compose (sequential = union, see §5.6)
-- Effect relationships (`Reads` implied by `Modifies` — a rule)
+- Effect relationships (`Read` implied by `Modify` — a rule)
 - Operations declare their effects
 
 The kernel does NOT know:
@@ -65,56 +72,63 @@ Effect interpretation is inherently unsafe — it touches the real world (IO, st
 
 ### User-defined effects
 
-Because effect kinds are facts, users can define their own:
+Because effect kinds are sorts + facts, users can define their own:
 
 ```
 sort MyApp {
   sort AuditLog { entity audit_log }
 
   -- Declare a new effect kind
-  fact Effect{T = Audits(?)}
+  sort Audits { sort T = ? entity Audits(target: T) }
+  fact Effect{T = Audits{?}}
 
   operation create_account(name: String) -> Account
-    effects (Modify{store}, Audits(audit_log))
+    effects (Modify{store}, Audits{audit_log})
 }
 ```
 
-No grammar change, no kernel change — just a fact assertion.
+No grammar change, no kernel change — just a sort declaration and fact assertion.
 
-## Grammar Change
+## Grammar Change (Implemented)
 
-The current `effect` rule is too restrictive — it only accepts `Name(Name)`. Effects are terms: they can be concrete (`Read{kb}`), abstract (`E`), logical variables (`?E`), or instantiation terms (`MyEffect{param = value}`). The grammar should accept the same expressions as type/term positions.
+The old `effect` rule was removed. The `effects_clause` now accepts type expressions directly:
 
 ```js
-// Current (too restrictive):
-effect: $ => seq(
-  field('kind', $.name),
-  '(',
-  field('target', $.name),
-  ')',
-),
+// Old (removed):
+effect: $ => seq(field('kind', $.name), '(', field('target', $.name), ')'),
+effects_clause: $ => seq('effects', '(', commaSep1($.effect), ')'),
 
-// Proposed: effect is a general term (instantiation, variable, or name)
-effect: $ => choice(
-  $.instantiation_term,   // Read{kb}, Modify{store}, MyEffect{target = x}
-  $.variable_term,        // ?E — logical variable
-  $.identifier,           // E — abstract sort parameter name
-),
+// Implemented:
+effects_clause: $ => seq('effects', '(', commaSep1($._type), ')'),
 ```
 
-This allows:
+Where `_type` is `simple_type | parameterized_type | variable_term`. This accepts:
 ```
-effects (Read{kb})                 -- concrete: instantiation term
-effects (E)                        -- abstract sort param: identifier
-effects (?E)                       -- logical variable
-effects (MyEffect{target = store}) -- parameterized effect
+effects (Read{kb})                 -- parameterized_type: sort instantiation
+effects (E)                        -- simple_type: abstract sort parameter
+effects (?E)                       -- variable_term: logical variable
 effects (Read{kb}, E)              -- mix of concrete and abstract
 effects (Read{kb}, ?extra)         -- mix with logical variable
 ```
 
-**Breaking change**: the effect syntax changes from `Reads(kb)` (fn_term, old) to `Read{kb}` (instantiation term, new). Effects use sort instantiation syntax because effects ARE sort instantiations — `Read{kb}` is `Read` instantiated with target `kb`, declared via `fact Effect{T = Read{?}}`.
+### Why types, not terms?
 
-Note: `Read{kb}` is already a valid `fn_term` (name + parenthesized args). So the existing concrete syntax is just a special case of the general term form — no backwards compatibility issue.
+Effects in operation signatures are **sort instantiations** — `Read{store}` is `Read` parameterized with `store`. This is `Name{bindings}` syntax, which is a type expression (`parameterized_type`). The same syntax works in type position (`List{T = Int}`) and in fact position (`fact Eq{T = Int}`).
+
+Values can appear in sort binding positions because types are terms. `Read{store}` where `store` is an operation parameter is a sort instantiation referencing a concrete value — a natural form of value-dependent typing that requires no special mechanism. The KB's unification handles abstract bindings (`Read{?}`) and concrete ones (`Read{store}`) uniformly. This is equivalent in power to dependent type theory (DOT, Martin-Löf), expressed as Horn clause resolution instead of typing judgments — the complexity is inherent in what's being checked, not in the formalism.
+
+### Sort bindings accept variables
+
+Sort bindings were extended to accept logical variables as standalone bindings:
+
+```js
+sort_binding: $ => choice(
+  seq(field('param', $.name), optional(seq('=', field('type', $._type)))),
+  field('type', $.variable_term),  // Read{?}, Read{?r}
+),
+```
+
+This enables effect registration facts like `fact Effect{T = Read{?}}` where `?` means "for any target".
 
 ## Usage in Sort Definitions
 
@@ -182,69 +196,64 @@ This is analogous to:
 
 The kernel verifies that effects are declared and compose correctly. The realization provides the semantics. The boundary is clear: the kernel is safe; interpretation is unsafe.
 
-## Rust Implementation
+## Rust Implementation (Done)
 
-### Parse IR change
+### Parse IR
 
-Since effects are now general terms, the parse IR representation simplifies — an effect IS a term:
+Effects are stored as `TypeExpr` in the parse IR — matching their syntactic form as type expressions:
 
 ```rust
-// Current: effects are a special (kind, target) pair
-// Proposed: effects are just terms
-
-// In the operation's parsed representation:
-struct ParsedOperation {
-    // ...
-    effects: Vec<TermId>,  // was: Vec<(Symbol, Symbol)>
+pub struct Effect {
+    pub type_expr: TypeExpr,  // was: { kind: Name, target: Name }
 }
 ```
 
-Each effect is stored as a term in the `SimpleTermStore`:
-- `Read{kb}` → `Fn("Reads", [Ref("kb")])` — same as any fn_term
-- `E` → `Ref("E")` or `Ident("E")` — name reference
-- `?E` → `Var(VarId)` — logical variable
-- `MyEffect{target = store}` → `Fn("MyEffect", [target: Ref("store")])` — instantiation
+Each effect is a `TypeExpr`:
+- `Read{kb}` → `TypeExpr::Parameterized { name: "Read", bindings: [{param: "kb", bound: Simple("kb")}] }`
+- `E` → `TypeExpr::Simple(Name("E"))`
+- `?E` → `TypeExpr::Variable { term_id, description: None }`
 
-### Converter change
+### Converter
 
-In `parse/convert.rs`, the effect conversion dispatches on node type instead of extracting `kind`/`target` fields:
+In `parse/convert.rs`, effects_clause handling iterates over type child nodes:
 
 ```rust
-// When converting an effect node:
-fn convert_effect(&mut self, node: Node) -> TermId {
-    // Effect is a general term — reuse existing term conversion
-    self.convert_term(node)
+"effects_clause" => {
+    for type_child in child.named_children(&mut cursor) {
+        match type_child.kind() {
+            "simple_type" | "parameterized_type" | "variable_term" => {
+                effects.push(Effect { type_expr: self.convert_type(type_child) });
+            }
+            _ => {}
+        }
+    }
 }
 ```
 
-This is simpler than the current code — no special-case parsing of `kind`/`target` fields.
+### Codegen (Rust)
 
-### KB representation
+`analyze_effects` extracts kind/target from `TypeExpr::Parameterized`:
 
-Effects on operations become a list of term IDs, where each term is:
-- `Fn("Reads", [Ref("kb")])` — concrete effect
-- `Ref("E")` — abstract sort parameter (resolved during loading)
-- `Var(v)` — logical variable (bound during spec satisfaction checking)
-- `Fn("MyEffect", [target: Ref("store")])` — parameterized effect
+```rust
+match &effect.type_expr {
+    TypeExpr::Parameterized { name, bindings } => {
+        let kind = symbols.name(name.last());   // "Modify", "Read", etc.
+        let target = bindings.first()...;        // "store", "kb", etc.
+        match kind { "Modify" => ..., "Read" => ..., "Error" => ..., "Emit" => ... }
+    }
+    TypeExpr::Simple(_) | TypeExpr::Variable { .. } => {} // abstract — skip
+}
+```
 
-This is consistent with types-are-terms: effects are terms too.
+## What's Not Yet Implemented
 
-## Scope
-
-This proposal is intentionally small:
-1. Grammar: replace the rigid `effect` rule with a `choice` over general term forms
-2. Parse IR: effects become term IDs (simpler, not more complex)
-3. Converter: delegate to existing `convert_term` (less code, not more)
-4. KB: effects already stored as terms — abstract effects are just variables/refs
-
-It does NOT cover:
-- Effect interpretation semantics (realization concern)
-- Effect polymorphism with constraints (`E includes Reads`) — see proposal 003
-- Effect composition rules beyond what §5.6 already defines
-- Arrow sorts with effects — see proposal 003
+- **Effect checking via KB query** — the kernel does not yet verify `fact Effect{T = Kind{?}}` exists when an operation declares an effect
+- **Effect composition** — sequential composition (union of effect sets) is not yet enforced
+- **Effect polymorphism with constraints** (`E includes Read`) — see proposal 003
+- **Arrow sorts with effects** — see proposal 003
 
 ## Relationship to Other Proposals
 
 - **003 (Effect Arrow Sorts)**: Covers `(A) => B effect [E]` — effects on function types. This proposal covers abstract effects in operation `effects(E)` clauses. Complementary.
-- **011 (Type Resolution)**: Stream's `sort E = ?` needs this proposal. 011 depends on 013.
+- **011 (Type Resolution)**: Stream's `sort E = ?` needs this proposal. 011 depends on 013. The typing lattice in 011 now documents entity instances as sort members, which grounds the value-dependent typing that effects rely on.
 - **002 (Arrow Sorts)**: Independent. Abstract effects work without arrow sorts.

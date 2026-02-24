@@ -209,6 +209,41 @@ fn ensure_intermediate_namespaces(
     (segments.last().unwrap().to_string(), current_scope)
 }
 
+/// Create an operation scope and define its parameters.
+///
+/// Operations get their own scope so that parameter names are resolvable
+/// in effects clauses (e.g., `effects (Modify{store})` where `store` is a parameter).
+fn scan_operation_params(
+    kb: &mut KnowledgeBase,
+    parse_sym: &crate::intern::SymbolTable,
+    op: &Operation,
+    op_sym: Symbol,
+    enclosing_scope: TermId,
+    prefix: &str,
+) {
+    if op.params.is_empty() {
+        return;
+    }
+    // Allocate a scope term for the operation
+    let op_term = kb.alloc(Term::Fn {
+        functor: op_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+    // Operation scope sees enclosing scope
+    kb.symbols.add_parent(op_term.raw(), ScopeInclusion {
+        parent_scope_raw: enclosing_scope.raw(),
+        instantiation_term_raw: enclosing_scope.raw(),
+        is_enclosing: true,
+    });
+    // Define each parameter in the operation's scope
+    for p in &op.params {
+        let param_name = parse_sym.name(p.name);
+        let qualified = format!("{}.{}", prefix, param_name);
+        kb.symbols.define(param_name, &qualified, SymbolKind::Param, op_term.raw());
+    }
+}
+
 /// Sub-pass 1: define all names, record exports and type params.
 ///
 /// `prefix` is the fully-qualified path of the enclosing scope (empty at top level).
@@ -309,13 +344,15 @@ fn scan_items_pass1(
                 let name = join_segments(parse_sym, &o.name.segments);
                 let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
                 let qualified = make_qualified(prefix, &name);
-                kb.symbols.define(&short, &qualified, SymbolKind::Operation, actual_scope.raw());
+                let op_sym = kb.symbols.define(&short, &qualified, SymbolKind::Operation, actual_scope.raw());
+                scan_operation_params(kb, parse_sym, o, op_sym, actual_scope, &qualified);
             }
             Item::OperationBlock(ob) => {
                 for op in &ob.entries {
                     let name = join_segments(parse_sym, &op.name.segments);
                     let qualified = make_qualified(prefix, &name);
-                    kb.symbols.define(&name, &qualified, SymbolKind::Operation, scope.raw());
+                    let op_sym = kb.symbols.define(&name, &qualified, SymbolKind::Operation, scope.raw());
+                    scan_operation_params(kb, parse_sym, op, op_sym, scope, &qualified);
                 }
             }
             Item::Rule(r) => {
@@ -1089,6 +1126,18 @@ impl<'a> Loader<'a> {
         let op_sort = self.kb.make_name_term("Operation");
         let functor = self.remap_name(&o.name);
 
+        // Enter operation scope if params exist (scope created during scanning).
+        // Operations without params don't get their own scope.
+        let prev_scope = self.current_scope;
+        if !o.params.is_empty() {
+            let op_scope = self.kb.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::new(),
+            });
+            self.current_scope = op_scope;
+        }
+
         let return_term = self.type_expr_to_term(&o.return_type);
 
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = o.params
@@ -1102,6 +1151,24 @@ impl<'a> Loader<'a> {
 
         let ret_sym = self.kb.intern("_returns");
         named_args.push((ret_sym, return_term));
+
+        // Store effects as _effects(E1, E2, ...) named arg
+        if !o.effects.is_empty() {
+            let effect_terms: SmallVec<[TermId; 4]> = o.effects
+                .iter()
+                .map(|e| self.type_expr_to_term(&e.type_expr))
+                .collect();
+            let effects_functor = self.kb.intern("_effects");
+            let effects_term = self.kb.alloc(Term::Fn {
+                functor: effects_functor,
+                pos_args: effect_terms,
+                named_args: SmallVec::new(),
+            });
+            let effects_sym = self.kb.intern("_effects");
+            named_args.push((effects_sym, effects_term));
+        }
+
+        self.current_scope = prev_scope;
 
         let op_term = self.kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args });
         self.kb.assert_fact(op_term, op_sort, domain, None);

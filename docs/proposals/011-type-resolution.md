@@ -276,11 +276,29 @@ The Anthill type universe, from most concrete to most abstract:
     └──────────┬─────────┘              └──────────────────────┘
                │
     ┌──────────┴─────────┐
+    │ Entity instances    │  — constructed values: Read(kb), cons(1, nil)
+    │ (inhabit their sort)│
+    └──────────┬─────────┘
+               │
+    ┌──────────┴─────────┐
     │ Literals            │
     │ (Int, Float,        │
     │  String, Bool)      │
     └────────────────────┘
 ```
+
+**Entity instances and sort membership.** An entity constructor applied to arguments produces a term that inhabits the enclosing sort. Given `sort Read { sort T = ? entity Read(target: T) }`, the term `Read(kb)` is an instance of sort `Read{T = typeof(kb)}`. This means values can appear in sort binding positions:
+
+```
+-- Sort-level: Read parameterized with any target
+fact Effect{T = Read{?}}
+
+-- Value-level: Read applied to a specific operation parameter
+operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
+  effects (Read{store})          -- store references a concrete parameter
+```
+
+Because types are terms and type checking is KB querying, no separate dependent-type mechanism is needed. A value in a type position is simply a term where a term is expected. The KB's unification handles abstract bindings (`Read{?}`) and concrete ones (`Read{store}`) uniformly. This is equivalent in power to dependent type theory (DOT, Martin-Löf), expressed as Horn clause resolution instead of typing judgments — the complexity is inherent in what's being checked, not in the notation chosen.
 
 **OQ5b.1. Are there untyped terms?** Several cases where terms lack a known sort:
 

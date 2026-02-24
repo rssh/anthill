@@ -296,6 +296,19 @@ fact Ordered{T = String}
 
 This follows the "types are terms" principle: sort instantiations are knowledge, expressible as facts. Different namespaces can provide different instantiations (see §5.1 on namespace scoping).
 
+**Entity instances and sort membership:** An entity constructor applied to arguments produces a term that inhabits the enclosing sort. For example, given `sort Read { sort T = ? entity Read(target: T) }`, the term `Read(kb)` is an instance of sort `Read{T = typeof(kb)}`. This means entity instances can appear in sort binding positions — `Read{kb}` is `Read` instantiated with target `kb`:
+
+```
+-- Sort-level: Read parameterized with any target
+fact Effect{T = Read{?}}
+
+-- Value-level: Read applied to a specific parameter
+operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
+  effects (Read{store})          -- store is an operation parameter (a value)
+```
+
+Because types are terms and type checking is KB querying, referencing values in type positions requires no special dependent-type mechanism — it is simply a term appearing where a term is expected. The KB's unification machinery handles both abstract bindings (`Read{?}`) and concrete ones (`Read{store}`) uniformly.
+
 Additional types are introduced via `sort` declarations (unspecified, type alias, or defined) in any namespace.
 
 ## 5. Kernel Constructs
