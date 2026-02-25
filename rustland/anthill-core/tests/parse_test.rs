@@ -1231,7 +1231,8 @@ fn parse_abstract_sort_multiple_descriptions() {
 
 #[test]
 fn parse_sort_with_body_descriptions() {
-    let source = r#"sort WorkStatus {< Tracks work progress >} {
+    let source = r#"{< Tracks work progress >}
+sort WorkStatus {
   entity Draft
   entity Open
 }
@@ -1294,7 +1295,8 @@ fn load_abstract_sort_multiple_descriptions_emits_facts() {
 
 #[test]
 fn load_sort_with_body_description_emits_fact() {
-    let source = r#"sort WorkStatus {< Tracks work progress >} {
+    let source = r#"{< Tracks work progress >}
+sort WorkStatus {
   entity Draft
 }
 "#;
@@ -1866,4 +1868,99 @@ fn nested_items_in_namespace_have_qualified_names() {
         "entity Fn should have qualified name 'anthill.reflect.Term.Fn'");
     assert!(kb.has_qualified_name("anthill.reflect.SortInfo"),
         "sort SortInfo should have qualified name 'anthill.reflect.SortInfo'");
+}
+
+// ── Abstract sort variable preservation tests ────────────────────
+
+#[test]
+fn load_abstract_sort_variable_emits_sort_alias() {
+    // sort T = ?Element should produce SortAlias(T, ?Element), not SortInfo(T, Abstract)
+    let source = "sort T = ?Element\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let sort_sort = kb.make_name_term("Sort");
+    let facts = kb.by_sort(sort_sort);
+    // Find the SortAlias fact
+    let alias_facts: Vec<_> = facts.iter().filter(|fid| {
+        let tid = kb.fact_term(**fid);
+        matches!(kb.get_term(tid), Term::Fn { functor, .. } if kb.resolve_sym(*functor) == "SortAlias")
+    }).collect();
+    assert_eq!(alias_facts.len(), 1, "should have 1 SortAlias fact");
+
+    let tid = kb.fact_term(*alias_facts[0]);
+    match kb.get_term(tid) {
+        Term::Fn { functor, pos_args, .. } => {
+            assert_eq!(kb.resolve_sym(*functor), "SortAlias");
+            assert_eq!(pos_args.len(), 2);
+            // Second arg should be a Var term (the logical variable ?Element)
+            match kb.get_term(pos_args[1]) {
+                Term::Var(vid) => {
+                    assert_eq!(kb.resolve_sym(vid.name()), "Element");
+                }
+                other => panic!("expected Var term for ?Element, got {:?}", other),
+            }
+        }
+        other => panic!("expected Fn term for SortAlias, got {:?}", other),
+    }
+}
+
+#[test]
+fn load_abstract_sort_anonymous_variable_emits_sort_alias() {
+    // sort T = ? should also produce SortAlias with an anonymous Var
+    let source = "sort T = ?\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let sort_sort = kb.make_name_term("Sort");
+    let facts = kb.by_sort(sort_sort);
+    let alias_facts: Vec<_> = facts.iter().filter(|fid| {
+        let tid = kb.fact_term(**fid);
+        matches!(kb.get_term(tid), Term::Fn { functor, .. } if kb.resolve_sym(*functor) == "SortAlias")
+    }).collect();
+    assert_eq!(alias_facts.len(), 1, "should have 1 SortAlias fact for anonymous variable");
+
+    let tid = kb.fact_term(*alias_facts[0]);
+    match kb.get_term(tid) {
+        Term::Fn { pos_args, .. } => {
+            assert!(matches!(kb.get_term(pos_args[1]), Term::Var(_)),
+                "target should be a Var term");
+        }
+        other => panic!("expected Fn term, got {:?}", other),
+    }
+}
+
+#[test]
+fn load_abstract_sort_shared_variables() {
+    // sort A = ?X and sort B = ?X should share the same VarId in the KB
+    let source = "sort A = ?X\nsort B = ?X\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let sort_sort = kb.make_name_term("Sort");
+    let facts = kb.by_sort(sort_sort);
+    let alias_facts: Vec<_> = facts.iter().filter(|fid| {
+        let tid = kb.fact_term(**fid);
+        matches!(kb.get_term(tid), Term::Fn { functor, .. } if kb.resolve_sym(*functor) == "SortAlias")
+    }).collect();
+    assert_eq!(alias_facts.len(), 2, "should have 2 SortAlias facts");
+
+    // Extract the VarIds from both SortAlias targets
+    let var_ids: Vec<u32> = alias_facts.iter().map(|fid| {
+        let tid = kb.fact_term(**fid);
+        match kb.get_term(tid) {
+            Term::Fn { pos_args, .. } => {
+                match kb.get_term(pos_args[1]) {
+                    Term::Var(vid) => vid.raw(),
+                    other => panic!("expected Var, got {:?}", other),
+                }
+            }
+            other => panic!("expected Fn, got {:?}", other),
+        }
+    }).collect();
+    assert_eq!(var_ids[0], var_ids[1],
+        "?X should share the same VarId across both sort definitions");
 }

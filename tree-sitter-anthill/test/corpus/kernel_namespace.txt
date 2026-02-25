@@ -477,7 +477,7 @@ describe Account {< A bank account holding funds >}
 Abstract sort with description
 =====================================
 
-sort Money = ? {< Monetary amount >}
+sort Money = ? {< Monetary amount >} ?
 
 ---
 
@@ -492,7 +492,7 @@ sort Money = ? {< Monetary amount >}
 Anonymous variable with description in rule
 =====================================
 
-rule test: foo(? {< an unknown value >})
+rule test: foo(? {< an unknown value >} ?)
 
 ---
 
@@ -510,7 +510,7 @@ rule test: foo(? {< an unknown value >})
 Named variable with description in rule
 =====================================
 
-rule test: bar(?x {< the x value >}, ?x)
+rule test: bar(?x {< the x value >} ?, ?x)
 
 ---
 
@@ -567,7 +567,7 @@ entity Pair(fst: ?A, snd: ?B)
 Variable with description in type position
 =====================================
 
-operation foo(x: ?T {< the type >}) -> ?T
+operation foo(x: ?T {< the type >} ?) -> ?T
 
 ---
 
@@ -710,7 +710,7 @@ rule Effect{T = Read{?r}} :- Effect{T = Modify{?r}}
 Abstract sort with multiple descriptions
 =====================================
 
-sort Money = ? {< Monetary amount >} {< Used in banking >}
+sort Money = ? {< Monetary amount >} {< Used in banking >} ?
 
 ---
 
@@ -740,7 +740,8 @@ describe Account {< A bank account >} {< Holds funds >}
 Sort with body and descriptions
 =====================================
 
-sort WorkStatus {< Tracks work progress >} {
+{< Tracks work progress >}
+sort WorkStatus {
   entity Draft
   entity Open
 }
@@ -749,8 +750,8 @@ sort WorkStatus {< Tracks work progress >} {
 
 (source_file
   (sort_with_body
-    name: (name (identifier))
     description: (description_block)
+    name: (name (identifier))
     (entity_declaration
       name: (name (identifier)))
     (entity_declaration
@@ -760,7 +761,7 @@ sort WorkStatus {< Tracks work progress >} {
 Variable with multiple descriptions in rule
 =====================================
 
-rule test: foo(?x {< first desc >} {< second desc >})
+rule test: foo(?x {< first desc >} {< second desc >} ?)
 
 ---
 

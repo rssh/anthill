@@ -39,6 +39,7 @@ module.exports = grammar({
     // (removed: abstract_sort vs sort_with_body conflict — `= ?` disambiguates)
     // After operation clauses, `requires` could be another clause or a standalone declaration
     [$.operation_declaration],
+    [$.variable_term],
   ],
 
   rules: {
@@ -91,6 +92,7 @@ module.exports = grammar({
     // =========================================================
 
     namespace_declaration: $ => seq(
+      repeat(field('description', $.description_block)),
       'namespace',
       field('name', $.name),
       $._body_namespace,
@@ -187,20 +189,20 @@ module.exports = grammar({
     // =========================================================
 
     abstract_sort: $ => seq(
+      repeat(field('description', $.description_block)),
       optional($.visibility),
       'sort',
       field('name', $.name),
       '=',
       field('definition', $._type),
-      repeat(field('description', $.description_block)),
       optional($.meta_block),
     ),
 
     sort_with_body: $ => seq(
+      repeat(field('description', $.description_block)),
       optional($.visibility),
       'sort',
       field('name', $.name),
-      repeat(field('description', $.description_block)),
       $._body_sort,
       optional($.meta_block),
     ),
@@ -222,6 +224,7 @@ module.exports = grammar({
     // =========================================================
 
     rule_declaration: $ => seq(
+      repeat(field('description', $.description_block)),
       'rule',
       optional(seq(field('label', $.name), ':')),
       field('head', $.rule_head),
@@ -241,6 +244,7 @@ module.exports = grammar({
     // =========================================================
 
     operation_declaration: $ => seq(
+      repeat(field('description', $.description_block)),
       optional($.visibility),
       'operation',
       field('name', $.name),
@@ -279,6 +283,7 @@ module.exports = grammar({
     // =========================================================
 
     entity_declaration: $ => seq(
+      repeat(field('description', $.description_block)),
       optional($.visibility),
       'entity',
       field('name', $.name),
@@ -287,12 +292,14 @@ module.exports = grammar({
     ),
 
     fact_declaration: $ => seq(
+      repeat(field('description', $.description_block)),
       'fact',
       field('term', $._term),
       optional($.meta_block),
     ),
 
     constraint_declaration: $ => seq(
+      repeat(field('description', $.description_block)),
       'constraint',
       optional(seq(field('label', $.name), ':')),
       field('head', $.rule_body),
@@ -306,11 +313,11 @@ module.exports = grammar({
 
     description_block: $ => token(seq('{<', /[^>]*(?:>[^}][^>]*)*/, '>}')),
 
-    describe_declaration: $ => seq(
+    describe_declaration: $ => prec.right(seq(
       'describe',
       field('target', $.name),
       repeat1(field('content', $.description_block)),
-    ),
+    )),
 
     // =========================================================
     // Sugar: operation block, rule block
@@ -587,13 +594,16 @@ module.exports = grammar({
       $.identifier,
     ),
 
-    // Variable with optional inline description(s): ?x {< text >} {< more >}
-    // prec.right ensures the description_block is greedily consumed by
-    // variable_term rather than by an enclosing rule (e.g., abstract_sort).
-    variable_term: $ => prec.right(seq(
+    // Variable with optional inline description(s): ?x {< text >}?
+    // If descriptions are present, the variable term must end with '?'.
+    variable_term: $ => choice(
       $.variable,
-      repeat(field('description', $.description_block)),
-    )),
+      seq(
+        $.variable,
+        repeat1(field('description', $.description_block)),
+        '?'
+      ),
+    ),
 
     // ? = anonymous variable (each occurrence distinct, like _ in Prolog)
     // ?name = named variable (shared within scope)

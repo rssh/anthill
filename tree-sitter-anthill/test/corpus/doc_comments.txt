@@ -1,0 +1,45 @@
+==================
+Documented Variable Term
+==================
+sort T = ?x{< variable doc >}?
+
+---
+
+(source_file
+  (abstract_sort
+    name: (name (identifier))
+    definition: (variable_term
+      (variable)
+      description: (description_block))))
+
+==================
+Documented Sort
+==================
+{< sort doc >}
+sort T { }
+
+---
+
+(source_file
+  (sort_with_body
+    description: (description_block)
+    name: (name (identifier))))
+
+==================
+Ambiguity Resolution
+==================
+sort T = ?x{< var doc >}?
+{< sort doc >}
+sort U { }
+
+---
+
+(source_file
+  (abstract_sort
+    name: (name (identifier))
+    definition: (variable_term
+      (variable)
+      description: (description_block)))
+  (sort_with_body
+    description: (description_block)
+    name: (name (identifier))))
