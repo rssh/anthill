@@ -169,6 +169,40 @@ sort Ordered {
       return_type: (simple_type (name (identifier))))))
 
 =====================================
+Sort with import/export statements
+=====================================
+
+sort math
+  import anthill.prelude.Numeric
+  export add, zero-val
+
+  operation add(x: Int, y: Int) -> Int
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name (identifier))
+    (import_clause
+      (import_path
+        (identifier)
+        (identifier)
+        (identifier)))
+    (export_clause
+      (name (identifier))
+      (name (identifier)))
+    (operation_declaration
+      name: (name (identifier))
+      (param
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      (param
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      return_type: (simple_type (name (identifier))))))
+
+=====================================
 Namespace with requires declaration
 =====================================
 

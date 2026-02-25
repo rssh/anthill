@@ -93,8 +93,6 @@ module.exports = grammar({
     namespace_declaration: $ => seq(
       'namespace',
       field('name', $.name),
-      repeat($.import_clause),
-      repeat($.export_clause),
       $._body_namespace,
     ),
 
@@ -158,11 +156,30 @@ module.exports = grammar({
       $.operation_block,
       $.rule_block,
       $.describe_declaration,
+      $.import_clause,
+      $.export_clause,
     ),
 
     _body_sort: $ => choice(
-      seq('{', repeat($._declaration), '}'),
-      seq(repeat($._declaration), 'end', optional($.name)),
+      seq('{', repeat($._sort_content), '}'),
+      seq(repeat($._sort_content), 'end', optional($.name)),
+    ),
+
+    _sort_content: $ => choice(
+      $.namespace_declaration,
+      $.abstract_sort,
+      $.sort_with_body,
+      $.rule_declaration,
+      $.operation_declaration,
+      $.requires_declaration,
+      $.entity_declaration,
+      $.fact_declaration,
+      $.constraint_declaration,
+      $.operation_block,
+      $.rule_block,
+      $.describe_declaration,
+      $.import_clause,
+      $.export_clause,
     ),
 
     // =========================================================
@@ -184,8 +201,6 @@ module.exports = grammar({
       'sort',
       field('name', $.name),
       repeat(field('description', $.description_block)),
-      repeat($.import_clause),
-      repeat($.export_clause),
       $._body_sort,
       optional($.meta_block),
     ),

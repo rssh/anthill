@@ -353,11 +353,10 @@ Implicit namespaces merge with explicit namespaces of the same qualified name. T
 
 ```
 Namespace ::= 'namespace' Name
-                Import*                             -- explicit imports
-                ['export' NameList]                 -- what is visible outside (default: nothing)
               Body[NamespaceContent*]
 
 Import ::= 'import' ImportPath
+Export ::= 'export' NameList
 ImportPath ::= Name                               -- import a specific name
              | Name '.' '{' NameList '}'           -- selective: specific names from a namespace
              | Name '.' '*'                        -- wildcard: everything from a namespace
@@ -415,18 +414,19 @@ Visibility ::= 'internal'    -- visible only within this namespace (default, can
              | 'public'      -- visible everywhere (use sparingly)
 ```
 
-Default visibility is `internal`. The namespace-level `export` clause lists exported names; individual `export`/`public` prefixes on declarations must be consistent with it.
+Default visibility is `internal`. Standalone `export` statements inside the namespace body list exported names; individual `export`/`public` prefixes on declarations must be consistent with them.
 
 **Namespace content** — what can appear inside a namespace:
 
 ```
-NamespaceContent ::= Sort | Rule | Operation         -- Sort: sorts-with-body or type aliases (not unspecified)
-                   | RequiresDecl           -- sort-level constraint (see §5.2)
-                   | Entity                 -- sugar (desugars to single-constructor Sort, see §6.3)
-                   | Fact | Constraint      -- sugar (desugars to Rule, see §6.1, §6.2)
+NamespaceContent ::= Import | Export               -- statements can appear anywhere in the body
+                   | Sort | Rule | Operation      -- Sort: sorts-with-body or type aliases (not unspecified)
+                   | RequiresDecl                -- sort-level constraint (see §5.2)
+                   | Entity                      -- sugar (desugars to single-constructor Sort, see §6.3)
+                   | Fact | Constraint           -- sugar (desugars to Rule, see §6.1, §6.2)
                    | OperationBlock | RuleBlock  -- sugar (desugars to individual declarations, see §6.4)
-                   | Describe               -- description block (see §4.1)
-                   | Namespace              -- nested namespaces
+                   | Describe                    -- description block (see §4.1)
+                   | Namespace                   -- nested namespaces
 ```
 
 ### 5.2 Sort
@@ -442,8 +442,6 @@ Sort ::= [Visibility] 'sort' Name '=' VariableTerm              -- unspecified
            ['meta' ':' Meta]
        | [Visibility] 'sort' Name                            -- sort with body
            DescriptionBlock*
-           Import*
-           ['export' NameList]
            Body[SortContent*]
            ['meta' ':' Meta]
 
@@ -451,6 +449,8 @@ Constructor ::= 'entity' Name ['(' FieldList ')']            -- variant/construc
 FieldList   ::= Field (',' Field)*
 Field       ::= Name ':' Type
 ```
+
+`SortContent` mirrors `NamespaceContent`: imports and exports are ordinary statements that can appear anywhere in the body, interleaved with sorts, entities, rules, operations, sugar forms, descriptions, or even nested namespaces.
 
 **Unspecified sort** (`sort Name = ?`) — declares that a type exists without specifying its representation. Unspecified sorts appear inside sort bodies, where they serve as **type parameters** — their carrier is provided later by an implementation or by inline instantiation.
 
@@ -1330,11 +1330,10 @@ VariableTerm ::= Var DescriptionBlock*        -- ?name {< text >}* or bare ? {< 
 -- =================================================================
 
 Namespace   ::= 'namespace' Name
-                  Import*
-                  ['export' NameList]
                 Body[NamespaceContent*]
 
 Import      ::= 'import' ImportPath
+Export      ::= 'export' NameList
 ImportPath  ::= Name                                           -- import a name
               | Name '.' '{' NameList '}'                      -- selective import
               | Name '.' '*'                                   -- wildcard import
@@ -1342,7 +1341,8 @@ NameList    ::= Name (',' Name)*
 SortBinding ::= Name ['=' Type]                 -- without '= Type': punning (Eq{T} = Eq{T = T})
               | VariableTerm                    -- variable binding: Read{?}, Read{?r}
 
-NamespaceContent ::= Sort | Rule | Operation
+NamespaceContent ::= Import | Export
+                   | Sort | Rule | Operation
                    | RequiresDecl                 -- sort-level constraint
                    | Entity                       -- sugar (§6.3)
                    | Fact | Constraint            -- sugar (§6.1, §6.2)
@@ -1360,8 +1360,6 @@ Sort        ::= [Visibility] 'sort' Name '=' VariableTerm              -- unspec
                   ['meta' ':' Meta]
               | [Visibility] 'sort' Name                           -- sort with body
                   DescriptionBlock*
-                  Import*
-                  ['export' NameList]
                 Body[SortContent*]
                   ['meta' ':' Meta]
 
@@ -1369,7 +1367,8 @@ Sort        ::= [Visibility] 'sort' Name '=' VariableTerm              -- unspec
 -- as type parameters. Type aliases (second form) may appear in sort or namespace bodies.
 -- Namespaces contain sorts-with-body and type aliases (not unspecified sorts).
 
-SortContent ::= Sort | Entity | Operation | Rule
+SortContent ::= Import | Export
+              | Sort | Entity | Operation | Rule
               | RequiresDecl
               | Fact | Constraint | OperationBlock | RuleBlock
               | Describe | Namespace
