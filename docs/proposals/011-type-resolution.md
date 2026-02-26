@@ -294,24 +294,27 @@ A key design decision: **every entity instance is also a sort** — a singleton 
 
 **The rule, not the fact.** This property is expressed as a general law in the KB, not as per-entity fact assertions:
 
+The loader already emits `Subsort(entity, parent)` for every entity in a sort body. This single fact is sufficient — an entity is a valid sort if and only if it appears in the subsort index. No new predicate is needed.
+
+The subtyping rules from §OQ5 already handle this:
+
 ```
--- Universal rule: every entity of a parent sort is itself a singleton sort
-rule is_sort(?e) :- entity_of(?e, ?parent)
-
--- Subtyping: singleton sorts are subtypes of their parent
-rule is_subtype(?e, ?parent) :- entity_of(?e, ?parent)
+-- Already defined: reflexive-transitive closure of Subsort
+rule is_subtype(?A, ?A)
+rule is_subtype(?A, ?C) :- is_subtype(?A, ?B), is_subtype(?B, ?C)
+rule is_subtype(?Ctor, ?Sort) :- Subsort(?Ctor, ?Sort)
 ```
 
-This is critically different from emitting individual `Sort(Draft, Singleton)` facts during loading:
+When type resolution checks whether `kb` is a valid sort (e.g., in `Modifies{kb}`), it queries `Subsort(kb, ?)`. If found, `kb` is a sort. This is already how the subsort index works — no additional `is_sort` predicate or `Sort(kb, Singleton)` facts are needed.
 
-| Approach | `Sort(Draft, Singleton)` fact | `is_sort(?e) :- entity_of(?e, ?)` rule |
-|----------|-------------------------------|----------------------------------------|
-| Mechanism | Loader emits N facts | One rule derives all |
-| Retraction | Must track and retract individually | Automatic: retract entity → sort vanishes |
-| New entities | Loader must emit for each | Derived immediately |
-| Knowledge-theoretic | Ground truth (axiom) | Derived truth (theorem) |
+The critical point: this is **derived knowledge, not asserted facts**. The loader emits `Subsort(Draft, WorkStatus)` because `entity Draft` appears inside `sort WorkStatus`. If the entity declaration is retracted, the subsort fact disappears, and `Draft` ceases to be a valid sort. Compare:
 
-The rule-based approach is the anthill way: knowledge is derived from rules, not hardcoded by the loader.
+| Approach | Per-entity `Sort(Draft, Singleton)` facts | `Subsort(Draft, WorkStatus)` (existing) |
+|----------|-------------------------------------------|----------------------------------------|
+| Mechanism | Loader emits N extra facts | Already emitted — no new facts |
+| Sort validity | Separate predicate to check | Query subsort index (existing) |
+| Retraction | Must track and retract separately | Automatic with entity retraction |
+| New entities | Must remember to emit | Already part of entity loading |
 
 **Spectrum of singleton types.** Different entity forms give different strength of singleton:
 
@@ -343,9 +346,9 @@ sort Stream {
 
 No special effect-target resolution needed — effect parameters are sort parameters, entity instances are sorts, and the existing sort instantiation / subtyping machinery handles everything:
 
-- `Modifies{kb}` is valid because `kb` is a sort (derived from entity rule)
-- `Modifies{kb} <: Modifies{KB}` follows from `kb <: KB` + covariance
+- `Modifies{kb}` is valid because `kb` appears in the subsort index (`Subsort(kb, KB)`)
 - `effects (E)` where `E = Modifies{kb}` works by substitution
+- Whether `Modifies{kb} <: Modifies{KB}` holds depends on variance — see OQ5c below
 
 **Why this is not full dependent types.** This looks like dependent types, but the complexity is bounded:
 
@@ -355,6 +358,40 @@ No special effect-target resolution needed — effect parameters are sort parame
 4. **No universe hierarchy** — `Sort` is the only meta-level, no `Sort : Sort : Sort ...`
 
 The key insight: in a system where "type checking = KB querying" and "types are terms", singleton types are free — they're just the observation that entity terms can appear in sort positions, and the KB's existing unification handles it.
+
+### OQ5c. Variance of Parameterized Sorts
+
+Anthill currently has no notion of variance. Given `Subsort(kb, KB)`, does `Modifies{kb} <: Modifies{KB}` hold? This depends on whether the sort parameter of `Modifies` is covariant.
+
+Rather than introducing variance annotations (like Scala's `+T`/`-T`), variance can be expressed as **subtyping rules** — consistent with "type checking = KB querying":
+
+```
+-- Modifies is covariant: if A <: B then Modifies{A} <: Modifies{B}
+rule is_subtype(Modifies{?A}, Modifies{?B}) :- is_subtype(?A, ?B)
+
+-- Reads is covariant
+rule is_subtype(Reads{?A}, Reads{?B}) :- is_subtype(?A, ?B)
+
+-- Fn is contravariant in input, covariant in output
+rule is_subtype(Fn{A = ?A2, R = ?R1}, Fn{A = ?A1, R = ?R2})
+  :- is_subtype(?A1, ?A2), is_subtype(?R1, ?R2)
+```
+
+Each parameterized sort explicitly declares how subtyping propagates through its parameters. No special annotation mechanism, no compiler inference — just rules in the KB.
+
+**Trade-offs:**
+
+- **Pro**: no new language feature — pure rules, extensible by agents
+- **Pro**: each sort controls its own variance (some parameters covariant, others not)
+- **Pro**: non-standard variance patterns are expressible (e.g., invariant for mutable containers, phantom parameters)
+- **Con**: requires writing explicit subtyping rules for each parameterized sort
+- **Con**: no static check that the declared variance is sound (a covariant rule on a mutable container would be unsound)
+
+**OQ5c.1.** Should there be a convenience mechanism to derive variance rules from parameter usage patterns? E.g., if a parameter only appears in return types of operations, automatically generate a covariant rule. This would be sugar over the explicit rules, not a separate mechanism.
+
+**OQ5c.2.** How to ensure soundness? In traditional type systems, the compiler checks that declared variance is consistent with usage (covariant parameters can't appear in input positions). With rules-as-variance, unsound rules are expressible. Options: (a) trust the author, (b) add a checking rule/constraint that validates variance declarations against operation signatures, (c) defer — soundness checking is a concern for a later iteration.
+
+**OQ5c.3.** Default variance: should parameterized sorts without explicit subtyping rules be **invariant** by default? This is the safe choice — `List{Int}` and `List{Nat}` are unrelated unless a rule says otherwise.
 
 **OQ5b.1. Are there untyped terms?** Several cases where terms lack a known sort:
 
