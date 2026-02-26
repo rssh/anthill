@@ -24,7 +24,7 @@ In the current implementation, type variables (`?T` in sort definitions and oper
 
 | Source | KB representation |
 |--------|-------------------|
-| `sort T = ?` in sort body | `SortInfo(T, Abstract)` fact; `?` not stored as a separate term |
+| `sort T = ?` in sort body | `SortAlias(T, Var(?))` fact; the `?` IS stored as a Var term |
 | `?T` in operation param type | `Var(VarId)` directly in the operation's `Fn` named_args |
 | `?x` in rule body | `Var(VarId)` — structurally identical |
 | `Stream{T = Int}` (instantiation) | `Fn("Stream", T: Ref("Int"))` — **not** unification, just structured data |
@@ -276,8 +276,9 @@ The Anthill type universe, from most concrete to most abstract:
     └──────────┬─────────┘              └──────────────────────┘
                │
     ┌──────────┴─────────┐
-    │ Entity instances    │  — constructed values: Read(kb), cons(1, nil)
-    │ (inhabit their sort)│
+    │ Singleton sorts     │  — entity instances AS sorts: Draft, kb, nil
+    │ (each instance is   │    (derived by rule, not asserted individually)
+    │  its own type)      │
     └──────────┬─────────┘
                │
     ┌──────────┴─────────┐
@@ -287,18 +288,73 @@ The Anthill type universe, from most concrete to most abstract:
     └────────────────────┘
 ```
 
-**Entity instances and sort membership.** An entity constructor applied to arguments produces a term that inhabits the enclosing sort. Given `sort Read { sort T = ? entity Read(target: T) }`, the term `Read(kb)` is an instance of sort `Read{T = typeof(kb)}`. This means values can appear in sort binding positions:
+### Entity Instances as Sorts (Singleton Types)
+
+A key design decision: **every entity instance is also a sort** — a singleton type containing exactly itself. This is not a special mechanism but a natural consequence of "types are terms": if `SortId = TermId`, then any term can appear where a sort is expected.
+
+**The rule, not the fact.** This property is expressed as a general law in the KB, not as per-entity fact assertions:
 
 ```
--- Sort-level: Read parameterized with any target
-fact Effect{T = Read{?}}
+-- Universal rule: every entity of a parent sort is itself a singleton sort
+rule is_sort(?e) :- entity_of(?e, ?parent)
 
--- Value-level: Read applied to a specific operation parameter
-operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
-  effects (Read{store})          -- store references a concrete parameter
+-- Subtyping: singleton sorts are subtypes of their parent
+rule is_subtype(?e, ?parent) :- entity_of(?e, ?parent)
 ```
 
-Because types are terms and type checking is KB querying, no separate dependent-type mechanism is needed. A value in a type position is simply a term where a term is expected. The KB's unification handles abstract bindings (`Read{?}`) and concrete ones (`Read{store}`) uniformly. This is equivalent in power to dependent type theory (DOT, Martin-Löf), expressed as Horn clause resolution instead of typing judgments — the complexity is inherent in what's being checked, not in the notation chosen.
+This is critically different from emitting individual `Sort(Draft, Singleton)` facts during loading:
+
+| Approach | `Sort(Draft, Singleton)` fact | `is_sort(?e) :- entity_of(?e, ?)` rule |
+|----------|-------------------------------|----------------------------------------|
+| Mechanism | Loader emits N facts | One rule derives all |
+| Retraction | Must track and retract individually | Automatic: retract entity → sort vanishes |
+| New entities | Loader must emit for each | Derived immediately |
+| Knowledge-theoretic | Ground truth (axiom) | Derived truth (theorem) |
+
+The rule-based approach is the anthill way: knowledge is derived from rules, not hardcoded by the loader.
+
+**Spectrum of singleton types.** Different entity forms give different strength of singleton:
+
+| Entity form | As sort | Inhabitants | Example |
+|---|---|---|---|
+| Nullary (`entity Draft`) | Singleton — exactly one value | `Draft` | `Draft <: WorkStatus` |
+| With fields (`entity Account(id, bal)`) | Refinement family — each application is a sort | `Account(42, 100)` | `Account(42, 100) <: Account` |
+| Parameterized (`entity Pair(fst: ?A, snd: ?B)`) | Dependent family — sort varies with params | `Pair(Int, String)` | `Pair(Int, String) <: Pair` |
+
+For the effect system, the **nullary case** is the primary need (resource identifiers like `kb`, `store`). The refinement and dependent cases are powerful but can be deferred.
+
+**Connection to effects.** With entity-instances-as-sorts, effect targets become regular sort parameters:
+
+```
+sort KB { entity kb }
+
+-- kb is both a value of sort KB AND a singleton sort
+-- Therefore Modifies{kb} is a regular sort instantiation:
+operation mutate(kb: KB) -> KB
+  effects (Modifies{kb})           -- kb is a sort parameter, not a special name
+
+-- Abstract effects work uniformly:
+sort Stream {
+  sort E = ?                       -- abstract effect parameter
+  operation next(s: Stream) -> Option{T = ?Elem}
+    effects (E)                    -- E could be Reads{kb}, Modifies{store}, etc.
+}
+```
+
+No special effect-target resolution needed — effect parameters are sort parameters, entity instances are sorts, and the existing sort instantiation / subtyping machinery handles everything:
+
+- `Modifies{kb}` is valid because `kb` is a sort (derived from entity rule)
+- `Modifies{kb} <: Modifies{KB}` follows from `kb <: KB` + covariance
+- `effects (E)` where `E = Modifies{kb}` works by substitution
+
+**Why this is not full dependent types.** This looks like dependent types, but the complexity is bounded:
+
+1. **No Pi/Sigma types** — no function types that depend on values (that's proposal 002's territory)
+2. **No type-level computation** — singleton sorts are just facts, not computed types
+3. **Decidability preserved** — checking `kb <: KB` is a KB query (fact lookup), not a reduction
+4. **No universe hierarchy** — `Sort` is the only meta-level, no `Sort : Sort : Sort ...`
+
+The key insight: in a system where "type checking = KB querying" and "types are terms", singleton types are free — they're just the observation that entity terms can appear in sort positions, and the KB's existing unification handles it.
 
 **OQ5b.1. Are there untyped terms?** Several cases where terms lack a known sort:
 
@@ -418,14 +474,16 @@ This is fundamentally different from term unification:
 
 #### Sort definitions as fact templates with variables (not Abstract marker)
 
-Currently, `sort T = ?` in a sort body creates `SortInfo(T, Abstract)` — using a special enum variant. Instead, store `SortInfo(T, ?)` where `?` is a logical variable:
+**Update (implemented):** `sort T = ?` now emits `SortAlias(T, Var(?))` — the logical variable is stored directly as a `Term::Var`. Both variable (`sort T = ?Element`) and alias (`sort T = Int`) forms use `SortAlias`. The old `SortInfo(T, Abstract)` path has been removed.
+
+The proposed extension: store sort templates with logical variables throughout:
 
 ```
--- Current (special Abstract kind):
-sort Eq { sort T = ? }   →   SortInfo(Eq.T, Abstract)
+-- Implemented: SortAlias with Var
+sort Eq { sort T = ? }   →   SortAlias(Eq.T, Var(?))
 
--- Proposed (logical variable):
-sort Eq { sort T = ? }   →   SortInfo(Eq.T, ?kind)
+-- Template extension: all facts use variables
+sort Eq { sort T = ? }   →   SortAlias(Eq.T, ?kind)
 ```
 
 Then the sort definition IS its fact template — a set of facts with logical variables:
