@@ -996,33 +996,20 @@ impl<'a> Loader<'a> {
 
         self.kb.register_sort(sort_term, SortKind::Abstract);
 
-        match &s.definition {
-            TypeExpr::Variable { .. } => {
-                // Unspecified: sort T = ? (type parameter or abstract sort)
-                let sort_info_sym = self.kb.intern("SortInfo");
-                let abstract_sym = self.kb.intern("Abstract");
-                let abstract_term = self.kb.alloc(Term::Ident(abstract_sym));
-                let fact_term = self.kb.alloc(Term::Fn {
-                    functor: sort_info_sym,
-                    pos_args: SmallVec::from_slice(&[sort_term, abstract_term]),
-                    named_args: SmallVec::new(),
-                });
-                self.kb.assert_fact(fact_term, sort_sort, domain, None);
-            }
-            _ => {
-                // Type alias: sort Money = Int
-                let target_term = self.type_expr_to_term(&s.definition);
-
-                // Assert SortAlias fact: SortAlias(Money, Int)
-                let alias_sym = self.kb.intern("SortAlias");
-                let alias_fact = self.kb.alloc(Term::Fn {
-                    functor: alias_sym,
-                    pos_args: SmallVec::from_slice(&[sort_term, target_term]),
-                    named_args: SmallVec::new(),
-                });
-                self.kb.assert_fact(alias_fact, sort_sort, domain, None);
-            }
-        }
+        // Both variable (sort T = ?Element) and alias (sort T = Int) emit SortAlias.
+        // For variables, use convert_term directly to avoid double-emitting descriptions
+        // (AbstractSort.descriptions already covers them via the loop below).
+        let target_term = match &s.definition {
+            TypeExpr::Variable { term_id, .. } => self.convert_term(*term_id),
+            _ => self.type_expr_to_term(&s.definition),
+        };
+        let alias_sym = self.kb.intern("SortAlias");
+        let alias_fact = self.kb.alloc(Term::Fn {
+            functor: alias_sym,
+            pos_args: SmallVec::from_slice(&[sort_term, target_term]),
+            named_args: SmallVec::new(),
+        });
+        self.kb.assert_fact(alias_fact, sort_sort, domain, None);
 
         // Emit Description facts for all description blocks
         for desc_text in &s.descriptions {
