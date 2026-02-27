@@ -186,11 +186,14 @@ impl<'a> RustCodegen<'a> {
 
     /// Map a type, but if the type name matches the enclosing sort name,
     /// replace with `Self`.
-    fn type_to_rust_in_sort(&self, ty: &TypeExpr, sort_name: &str, type_params: &[String]) -> String {
+    fn type_to_rust_in_sort(&self, ty: &TypeExpr, sort_name: &str, type_params: &[String], collapse_type_params: bool) -> String {
         match ty {
             TypeExpr::Simple(name) => {
                 let n = self.resolve(name);
-                if n == sort_name || type_params.iter().any(|p| p == &n) {
+                if n == sort_name {
+                    return "Self".to_owned();
+                }
+                if collapse_type_params && type_params.iter().any(|p| p == &n) {
                     return "Self".to_owned();
                 }
                 map_primitive_type(&n)
@@ -205,20 +208,20 @@ impl<'a> RustCodegen<'a> {
                     "List" => {
                         let inner = bindings.iter()
                             .find(|b| self.resolve(&b.param) == "T")
-                            .map(|b| self.type_to_rust_in_sort(&b.bound, sort_name, type_params))
+                            .map(|b| self.type_to_rust_in_sort(&b.bound, sort_name, type_params, collapse_type_params))
                             .unwrap_or_else(|| "T".to_owned());
                         format!("Vec<{inner}>")
                     }
                     "Option" => {
                         let inner = bindings.iter()
                             .find(|b| self.resolve(&b.param) == "T")
-                            .map(|b| self.type_to_rust_in_sort(&b.bound, sort_name, type_params))
+                            .map(|b| self.type_to_rust_in_sort(&b.bound, sort_name, type_params, collapse_type_params))
                             .unwrap_or_else(|| "T".to_owned());
                         format!("Option<{inner}>")
                     }
                     _ => {
                         let args: Vec<String> = bindings.iter()
-                            .map(|b| self.type_to_rust_in_sort(&b.bound, sort_name, type_params))
+                            .map(|b| self.type_to_rust_in_sort(&b.bound, sort_name, type_params, collapse_type_params))
                             .collect();
                         let mapped = map_primitive_type(&n);
                         format!("{mapped}<{}>", args.join(", "))
@@ -745,7 +748,7 @@ impl<'a> RustCodegen<'a> {
         let effects = analyze_effects(&op.effects, self.symbols);
 
         // Determine self-arg
-        let (has_self, is_mut) = self.check_self_arg(op, sort_name, type_params, &effects);
+        let (has_self, is_mut) = self.check_self_arg(op, sort_name, type_params, &effects, collapse_self);
 
         let mut params_str = String::new();
 
@@ -764,11 +767,7 @@ impl<'a> RustCodegen<'a> {
                 params_str.push_str(", ");
             }
             let pname = to_snake_case(&self.resolve_sym(param.name));
-            let ptype = if collapse_self {
-                self.type_to_rust_in_sort(&param.ty, sort_name, type_params)
-            } else {
-                self.type_to_rust(&param.ty)
-            };
+            let ptype = self.type_to_rust_in_sort(&param.ty, sort_name, type_params, collapse_self);
             // Non-self params of sort type or type-param type get &-ref
             let ptype = if should_ref_param(&ptype) {
                 format!("&{ptype}")
@@ -787,11 +786,7 @@ impl<'a> RustCodegen<'a> {
         }
 
         // Return type
-        let raw_ret = if collapse_self {
-            self.type_to_rust_in_sort(&op.return_type, sort_name, type_params)
-        } else {
-            self.type_to_rust(&op.return_type)
-        };
+        let raw_ret = self.type_to_rust_in_sort(&op.return_type, sort_name, type_params, collapse_self);
         let ret = wrap_return_type(&raw_ret, &effects);
 
         self.line(&format!("fn {op_name}({params_str}) -> {ret};"));
@@ -808,7 +803,7 @@ impl<'a> RustCodegen<'a> {
         let op_name = to_snake_case(&self.resolve(&op.name));
         let effects = analyze_effects(&op.effects, self.symbols);
 
-        let (has_self, is_mut) = self.check_self_arg(op, sort_name, type_params, &effects);
+        let (has_self, is_mut) = self.check_self_arg(op, sort_name, type_params, &effects, false);
 
         let mut params_str = String::new();
 
@@ -826,7 +821,7 @@ impl<'a> RustCodegen<'a> {
                 params_str.push_str(", ");
             }
             let pname = to_snake_case(&self.resolve_sym(param.name));
-            let ptype = self.type_to_rust(&param.ty);
+            let ptype = self.type_to_rust_in_sort(&param.ty, sort_name, type_params, false);
             params_str.push_str(&format!("{pname}: {ptype}"));
         }
 
@@ -837,7 +832,7 @@ impl<'a> RustCodegen<'a> {
             params_str.push_str(&format!("on_event: impl FnMut({event_type})"));
         }
 
-        let raw_ret = self.type_to_rust(&op.return_type);
+        let raw_ret = self.type_to_rust_in_sort(&op.return_type, sort_name, type_params, false);
         let ret = wrap_return_type(&raw_ret, &effects);
 
         self.line(&format!("{vis}fn {op_name}({params_str}) -> {ret};"));
@@ -880,6 +875,7 @@ impl<'a> RustCodegen<'a> {
         sort_name: &str,
         type_params: &[String],
         effects: &EffectInfo,
+        collapse_type_params: bool,
     ) -> (bool, bool) {
         if op.params.is_empty() {
             return (false, false);
@@ -889,7 +885,7 @@ impl<'a> RustCodegen<'a> {
 
         // Check if first param type matches the sort name or a type param
         let is_self = first_type_name == sort_name
-            || type_params.iter().any(|p| p == &first_type_name);
+            || (collapse_type_params && type_params.iter().any(|p| p == &first_type_name));
 
         if !is_self {
             return (false, false);
@@ -1124,7 +1120,7 @@ fn to_snake_case(s: &str) -> String {
 fn extract_fact_sort_name(symbols: &SymbolTable, terms: &SimpleTermStore, fact: &Fact) -> Option<String> {
     match terms.get(fact.term) {
         Term::Ident(sym) => Some(symbols.name(*sym).to_owned()),
-        Term::Fn { functor, pos_args, named_args } if pos_args.is_empty() && named_args.is_empty() => {
+        Term::Fn { functor, .. } => {
             Some(symbols.name(*functor).to_owned())
         }
         _ => None,

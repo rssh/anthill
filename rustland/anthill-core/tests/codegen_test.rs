@@ -308,3 +308,59 @@ end
     assert!(!out.contains("// impl QueryableStore for SqlStore"), "should not associate with SqlStore: {out}");
     assert!(!out.contains("// impl QueryableStore for QueryBinding"), "should not associate with QueryBinding: {out}");
 }
+
+// ── Test 21: Fact with bindings → supertrait ─────────────────────
+
+#[test]
+fn fact_with_bindings_to_supertrait() {
+    let out = gen(r#"sort Stream {
+  sort S = ?
+  sort E = ?
+  fact Streamable{T = S}
+  operation head(s: S) -> Option{T = S}
+}
+"#);
+    assert!(out.contains("Streamable"), "should have supertrait Streamable: {out}");
+}
+
+// ── Test 22: Enum type param NOT collapsed to self ───────────────
+
+#[test]
+fn enum_type_param_not_self() {
+    let out = gen(r#"sort LogicalStream {
+  sort T = ?
+  entity Empty
+  operation pure(x: T) -> LogicalStream
+}
+"#);
+    // pure should NOT get &self — T is a type param, not the sort itself
+    assert!(out.contains("fn pure(x: T) -> Self"), "pure should have (x: T) -> Self, not &self: {out}");
+    assert!(!out.contains("fn pure(&self"), "pure should NOT have &self: {out}");
+}
+
+// ── Test 23: Trait self in return with multi type params ─────────
+
+#[test]
+fn trait_self_in_return_multi_param() {
+    let out = gen(r#"sort Stream {
+  sort S = ?
+  sort E = ?
+  operation tail(s: Stream) -> Stream
+}
+"#);
+    // With 2 type params, collapse_self is false, but sort-name → Self still works
+    assert!(out.contains("fn tail(&self) -> Self"), "should have tail(&self) -> Self: {out}");
+}
+
+// ── Test 24: Enum self in return type ────────────────────────────
+
+#[test]
+fn enum_self_in_return() {
+    let out = gen(r#"sort LogicalStream {
+  sort T = ?
+  entity Empty
+  operation mplus(a: LogicalStream, b: LogicalStream) -> LogicalStream
+}
+"#);
+    assert!(out.contains("-> Self"), "return type should be Self: {out}");
+}

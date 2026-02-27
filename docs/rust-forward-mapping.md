@@ -28,8 +28,8 @@ The mapping is deterministic: given the same anthill source, the same Rust code 
 | `effects (Requires Cap)` | generic bound or runtime check |
 | `sort T` (abstract sub-sort = type parameter) | generic `<T>` |
 | `requires Eq{T}` | trait bound: `where T: Eq` or supertrait |
-| `fact SortName` (inside sort body) | supertrait: `trait S: SortName` |
-| `fact SortName` (in entity's namespace) | `impl SortName for Entity` |
+| `fact SortName` or `fact SortName{bindings}` (inside sort body) | supertrait: `trait S: SortName` |
+| `fact SortName` or `fact SortName{bindings}` (in entity's namespace) | `impl SortName for Entity` |
 | `List{T = X}` | `Vec<X>` |
 | `Option{T = X}` | `Option<X>` |
 | `rule` (law) | `#[cfg(test)]` property-based test stub |
@@ -70,6 +70,19 @@ sort Eq {                                  pub trait Eq {
 
 When the sort has a type parameter (`sort T` inside the body), the parameter becomes a Rust generic or `Self` depending on usage (see §2.6).
 
+**Self substitution.** Inside trait method signatures, the enclosing sort name is always replaced with `Self` — both in parameter types and return types. For single-type-parameter traits, the type parameter is also collapsed to `Self` and removed from the trait's generic list (see §4). For multi-parameter traits, only the sort name itself becomes `Self`:
+
+```
+sort Stream {                              trait Stream<T, E> {
+  sort T                        →              fn split_first(&self) -> Option<Pair<T, Self>>;
+  sort E                                       fn tail(&self) -> Self;
+  operation split_first(                   }
+    s: Stream) -> Option{...}
+  operation tail(s: Stream)
+    -> Stream
+}
+```
+
 ### 2.3 Sort with Constructors → Enum
 
 A sort with entity constructors maps to a Rust enum. Each constructor becomes a variant:
@@ -89,6 +102,23 @@ sort WorkStatus {                          pub enum WorkStatus {
 ```
 
 Nullary constructors (no fields) become unit variants. Constructors with fields become struct variants.
+
+**Self substitution in enum impl blocks.** When an enum sort also has operations, the sort name in parameter types and return types is replaced with `Self`. However, type parameters are NOT collapsed to `Self` for enums — they remain as generic parameters:
+
+```
+sort LogicalStream {                       enum LogicalStream<T> {
+  sort T                                       Empty,
+  entity Empty                   →         }
+  operation pure(x: T)                     impl<T> LogicalStream<T> {
+    -> LogicalStream                           fn pure(x: T) -> Self;
+  operation mplus(                             fn mplus(&self, b: Self) -> Self;
+    a: LogicalStream,                      }
+    b: LogicalStream)
+    -> LogicalStream
+}
+```
+
+Note that `pure(x: T)` does NOT get `&self` — type parameter `T` is not treated as the sort itself in enum context. Only the sort name `LogicalStream` matches for the self-arg heuristic.
 
 ### 2.4 Standalone Entity → Struct
 
@@ -225,7 +255,7 @@ These are generated in a separate `invariants` submodule for test-time checking.
 
 ### 2.13 Fact as Subsort Declaration → Supertrait or Impl
 
-A `fact SortName` declares a subsort (is-a) relationship. It maps differently depending on context:
+A `fact SortName` or `fact SortName{bindings}` declares a subsort (is-a) relationship. The bindings (if any) are used by the kernel for constraint checking but are ignored by the codegen — only the sort name matters for the Rust mapping. It maps differently depending on context:
 
 **Inside a sort body** — becomes a supertrait:
 
@@ -236,9 +266,16 @@ sort QueryableStore {                      pub trait QueryableStore: Store {
     store: QueryableStore,
     pattern: Term) -> List{T = Term}
 }
+
+sort Stream {                              trait Stream<T, E>: Streamable {
+  sort T                          →            ...
+  sort E                                   }
+  fact Streamable{T = T}
+  ...
+}
 ```
 
-`fact Store` inside `sort QueryableStore` means "every QueryableStore is-a Store", which maps to supertrait inheritance in Rust.
+`fact Store` inside `sort QueryableStore` means "every QueryableStore is-a Store". `fact Streamable{T = T}` inside `sort Stream` means "every Stream is-a Streamable" — the bindings are stripped, only the sort name `Streamable` becomes a supertrait.
 
 **In an entity's namespace** — becomes a trait implementation:
 
@@ -385,7 +422,7 @@ $ anthill codegen rust --dry-run
 
 When mapping operations to Rust methods vs. free functions, the codegen must decide which (if any) argument becomes `self`. The heuristic:
 
-1. **Enclosing sort rule.** If the operation is declared inside a sort body `sort S { operation op(x: S, ...) -> R }`, and the first argument's type is `S` (the enclosing sort) or its type parameter, then `x` becomes `self`. This applies to both trait-mapped sorts (no constructors) and enum-mapped sorts (with constructors).
+1. **Enclosing sort rule.** If the operation is declared inside a sort body `sort S { operation op(x: S, ...) -> R }`, and the first argument's type matches `S` (the enclosing sort name), then `x` becomes `self`. For **single-type-parameter trait sorts** (where "self-collapse" is active), the type parameter also matches — `op(x: T, ...) → fn op(&self, ...)`. For **enum sorts** and **multi-parameter trait sorts**, only the sort name itself matches.
 
 2. **Namespace entity rule.** If the operation is declared at namespace level, and its first argument type matches an entity or defined sort declared in the same namespace, it becomes a method in an `impl` block for that type.
 
@@ -394,13 +431,29 @@ When mapping operations to Rust methods vs. free functions, the codegen must dec
 **Examples:**
 
 ```
--- Rule 1: Inside sort Eq, first arg is type parameter T → self
+-- Rule 1a: Single-param trait — type param T matches as self
 sort Eq {
   sort T
   operation eq(a: T, b: T) -> Bool        →  fn eq(&self, other: &Self) -> bool;
 }
 
--- Rule 1: Inside sort List, first arg is List
+-- Rule 1b: Multi-param trait — sort name matches as self, type params do not
+sort Stream {
+  sort T
+  sort E
+  operation tail(s: Stream) -> Stream      →  fn tail(&self) -> Self;
+}
+
+-- Rule 1c: Enum — sort name matches as self, type params do NOT
+sort LogicalStream {
+  sort T
+  entity Empty
+  operation mplus(a: LogicalStream,        →  fn mplus(&self, b: Self) -> Self;
+    b: LogicalStream) -> LogicalStream
+  operation pure(x: T) -> LogicalStream    →  fn pure(x: T) -> Self;   -- T ≠ self
+}
+
+-- Rule 1d: Sort name match in enum
 sort List {
   operation length(l: List) -> Int         →  fn length(&self) -> i64;
 }
