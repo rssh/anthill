@@ -19,6 +19,7 @@ use smallvec::SmallVec;
 use crate::intern::{SymbolTable, Symbol};
 use term::{Term, TermId, TermStore, VarId};
 use discrim::SubstTree;
+use resolve::BuiltinTag;
 
 // ── Rule handle ─────────────────────────────────────────────────
 
@@ -81,6 +82,9 @@ pub struct KnowledgeBase {
     // Discrimination tree index for structural term matching
     discrim: SubstTree<RuleId>,
 
+    // Builtin dispatch: functor symbol → builtin tag
+    builtins: HashMap<Symbol, BuiltinTag>,
+
     // Variable counter for fresh VarId allocation
     next_var: u32,
 
@@ -104,6 +108,7 @@ impl KnowledgeBase {
             subsort_parents: HashMap::new(),
             sort_info: HashMap::new(),
             discrim: SubstTree::new(),
+            builtins: HashMap::new(),
             next_var: 0,
             sort_sort: None,
             subsort_sort: None,
@@ -144,6 +149,11 @@ impl KnowledgeBase {
     /// Assert a rule into the KB. The primary method: head + body + metadata.
     /// Facts are rules with an empty body. Uses `insert_pattern` to handle
     /// variables in the head.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the head's functor is a registered builtin. Builtins cannot
+    /// be shadowed by user-defined rules or facts.
     pub fn assert_rule(
         &mut self,
         head: TermId,
@@ -152,6 +162,17 @@ impl KnowledgeBase {
         domain: TermId,
         meta: Option<TermId>,
     ) -> RuleId {
+        // Guard: reject assertions whose head functor is a registered builtin
+        if let Term::Fn { functor, .. } = self.terms.get(head) {
+            if let Some(tag) = self.builtins.get(functor) {
+                let name = self.symbols.name(*functor);
+                panic!(
+                    "cannot assert rule/fact with head functor {:?}: it is a registered builtin ({:?})",
+                    name, tag,
+                );
+            }
+        }
+
         let rule_id = RuleId(self.rules.len() as u32);
 
         // Incref on all referenced terms
@@ -822,6 +843,29 @@ impl KnowledgeBase {
             term = self.subst_term(term, from, to);
         }
         term
+    }
+
+    // ── Builtin dispatch ────────────────────────────────────────
+
+    /// Register a builtin by its fully-qualified name.
+    pub fn register_builtin(&mut self, name: &str, tag: BuiltinTag) {
+        let sym = self.symbols.intern(name);
+        self.builtins.insert(sym, tag);
+    }
+
+    /// Register the standard builtins (`anthill.reflect.nonvar`, `anthill.reflect.ground`).
+    pub fn register_standard_builtins(&mut self) {
+        self.register_builtin("anthill.reflect.nonvar", BuiltinTag::NonVar);
+        self.register_builtin("anthill.reflect.ground", BuiltinTag::Ground);
+    }
+
+    /// Check if a goal term's functor is a registered builtin.
+    /// Returns `Some(tag)` if so, `None` otherwise.
+    pub fn get_builtin(&self, goal: TermId) -> Option<BuiltinTag> {
+        match self.terms.get(goal) {
+            Term::Fn { functor, .. } => self.builtins.get(functor).copied(),
+            _ => None,
+        }
     }
 }
 

@@ -13,9 +13,34 @@
 use smallvec::SmallVec;
 
 use super::subst::Substitution;
-use super::term::{Term, TermId};
+use super::term::{Term, TermId, VarId};
 use super::RuleId;
 use super::KnowledgeBase;
+
+// ── Builtin tags ───────────────────────────────────────────────
+
+/// Tag identifying a builtin operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuiltinTag {
+    /// `anthill.reflect.nonvar(?x)` — succeeds if `?x` is bound to a non-variable.
+    NonVar,
+    /// `anthill.reflect.ground(?x)` — succeeds if `?x` is fully ground (no variables).
+    Ground,
+}
+
+/// Result of executing a builtin.
+enum BuiltinResult {
+    /// Builtin succeeded; continue with these substitution extensions.
+    Success,
+    /// Builtin cannot evaluate yet (argument still unbound); delay this goal.
+    Delay,
+}
+
+/// Result of a recursive groundness check.
+enum GroundCheck {
+    Ground,
+    HasVar,
+}
 
 // ── Configuration ───────────────────────────────────────────────
 
@@ -45,8 +70,12 @@ impl Default for ResolveConfig {
 ///
 /// The substitution is always flat (path-compressed) — use `subst.resolve(vid)`
 /// directly, no `walk` needed.
+///
+/// `residual` contains delayed goals that could not be resolved (e.g., a
+/// `nonvar(?x)` where `?x` was never bound by any other goal).
 pub struct Solution {
     pub subst: Substitution,
+    pub residual: Vec<TermId>,
 }
 
 // ── EqChange ────────────────────────────────────────────────────
@@ -93,12 +122,27 @@ impl KnowledgeBase {
 
         // All goals solved — success
         if goals.is_empty() {
-            solutions.push(Solution { subst: answer_subst.clone() });
+            solutions.push(Solution { subst: answer_subst.clone(), residual: vec![] });
             return;
         }
 
         // Select first goal (already maximally concrete)
         let goal = goals[0];
+
+        // Check if this goal is a builtin
+        if let Some(tag) = self.get_builtin(goal) {
+            match self.execute_builtin(tag, goal, answer_subst) {
+                BuiltinResult::Success => {
+                    // Builtin succeeded — continue with remaining goals
+                    self.resolve_goals(&goals[1..], answer_subst, depth + 1, config, solutions);
+                }
+                BuiltinResult::Delay => {
+                    // Builtin can't evaluate yet — switch to delay-aware resolution
+                    self.resolve_with_delay(goal, &goals[1..], answer_subst, depth, config, solutions);
+                }
+            }
+            return;
+        }
 
         // Query discrimination tree for candidate rules/facts
         let mut candidates = self.query(goal);
@@ -113,6 +157,9 @@ impl KnowledgeBase {
                 }
             }
         }
+
+        let solutions_before = solutions.len();
+        let mut any_rule_delayed = false;
 
         for (rid, tree_subst) in candidates {
             if config.max_solutions > 0 && solutions.len() >= config.max_solutions {
@@ -142,6 +189,14 @@ impl KnowledgeBase {
                 // Apply tree_subst's query-var bindings to remaining goals
                 let remaining = self.apply_subst_each(&goals[1..], &tree_subst);
 
+                // Collect caller-originated fresh vars before consuming answer_links
+                let caller_fresh_vars: Vec<VarId> = answer_links.bindings.values()
+                    .filter_map(|&tid| match self.terms.get(tid) {
+                        Term::Var(vid) => Some(*vid),
+                        _ => None,
+                    })
+                    .collect();
+
                 // Merge answer links (query vars → fresh vars) into answer_subst
                 let mut merged = answer_subst.clone();
                 merged.bind_compressed(
@@ -149,11 +204,26 @@ impl KnowledgeBase {
                     &self.terms,
                 );
 
+                // Pre-check: if any builtin in the body would delay on a caller
+                // variable, skip this candidate — the original goal should delay
+                if !caller_fresh_vars.is_empty()
+                    && self.body_builtins_delay_on_caller_vars(&fresh_body, &caller_fresh_vars, &merged)
+                {
+                    any_rule_delayed = true;
+                    continue;
+                }
+
                 // Prepend fresh body goals before remaining goals
                 let mut new_goals = fresh_body;
                 new_goals.extend(remaining);
                 self.resolve_goals(&new_goals, &merged, depth + 1, config, solutions);
             }
+        }
+
+        // If no solutions found and some rule delayed on caller vars,
+        // delay the original goal (move to end) instead of failing.
+        if solutions.len() == solutions_before && any_rule_delayed {
+            self.resolve_with_delay(goal, &goals[1..], answer_subst, depth, config, solutions);
         }
     }
 
@@ -239,6 +309,293 @@ impl KnowledgeBase {
         }
 
         (current, changes)
+    }
+
+    // ── Builtin execution ──────────────────────────────────────
+
+    /// Dispatch a builtin by tag. The goal has already been identified as a
+    /// builtin; this evaluates it against the current substitution.
+    fn execute_builtin(
+        &self,
+        tag: BuiltinTag,
+        goal: TermId,
+        answer_subst: &Substitution,
+    ) -> BuiltinResult {
+        match tag {
+            BuiltinTag::NonVar => self.builtin_nonvar(goal, answer_subst),
+            BuiltinTag::Ground => self.builtin_ground(goal, answer_subst),
+        }
+    }
+
+    /// `nonvar(?x)`: succeeds if `?x` is bound to a non-variable after walking.
+    fn builtin_nonvar(&self, goal: TermId, subst: &Substitution) -> BuiltinResult {
+        let arg = self.builtin_first_arg(goal);
+        let walked = self.walk(arg, subst);
+        match self.terms.get(walked) {
+            Term::Var(_) => BuiltinResult::Delay,
+            _ => BuiltinResult::Success,
+        }
+    }
+
+    /// `ground(?x)`: succeeds if `?x` is fully ground (no unbound variables anywhere).
+    fn builtin_ground(&self, goal: TermId, subst: &Substitution) -> BuiltinResult {
+        let arg = self.builtin_first_arg(goal);
+        match self.is_ground(arg, subst) {
+            GroundCheck::Ground => BuiltinResult::Success,
+            GroundCheck::HasVar => BuiltinResult::Delay,
+        }
+    }
+
+    /// Recursive groundness check: walk the term, then check all subterms.
+    fn is_ground(&self, term: TermId, subst: &Substitution) -> GroundCheck {
+        let walked = self.walk(term, subst);
+        match self.terms.get(walked) {
+            Term::Var(_) => GroundCheck::HasVar,
+            Term::Const(_) | Term::Ref(_) | Term::Bottom | Term::Ident(_) => GroundCheck::Ground,
+            Term::Fn { pos_args, named_args, .. } => {
+                let pos_args = pos_args.clone();
+                let named_args = named_args.clone();
+                for &arg in pos_args.iter() {
+                    if matches!(self.is_ground(arg, subst), GroundCheck::HasVar) {
+                        return GroundCheck::HasVar;
+                    }
+                }
+                for &(_, arg) in named_args.iter() {
+                    if matches!(self.is_ground(arg, subst), GroundCheck::HasVar) {
+                        return GroundCheck::HasVar;
+                    }
+                }
+                GroundCheck::Ground
+            }
+        }
+    }
+
+    /// Extract the first positional argument from a builtin goal term.
+    fn builtin_first_arg(&self, goal: TermId) -> TermId {
+        match self.terms.get(goal) {
+            Term::Fn { pos_args, .. } => {
+                debug_assert!(!pos_args.is_empty(), "builtin goal must have at least one argument");
+                pos_args[0]
+            }
+            _ => panic!("builtin_first_arg called on non-Fn term"),
+        }
+    }
+
+    /// Collect all unbound VarIds in a term, walking through the substitution.
+    fn collect_unbound_vars(&self, term: TermId, subst: &Substitution, out: &mut Vec<VarId>) {
+        let walked = self.walk(term, subst);
+        match self.terms.get(walked) {
+            Term::Var(vid) => {
+                if !out.contains(vid) {
+                    out.push(*vid);
+                }
+            }
+            Term::Fn { pos_args, named_args, .. } => {
+                let pos_args = pos_args.clone();
+                let named_args = named_args.clone();
+                for &arg in pos_args.iter() {
+                    self.collect_unbound_vars(arg, subst, out);
+                }
+                for &(_, arg) in named_args.iter() {
+                    self.collect_unbound_vars(arg, subst, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Check if any builtin in a rule body would delay on a caller-originated
+    /// variable (one that came from the query via answer_links).
+    ///
+    /// If a builtin delays on an internal variable (created fresh for this rule),
+    /// other body goals may bind it — that's fine, no propagation needed.
+    /// But if it delays on a caller variable, the whole rule should delay.
+    fn body_builtins_delay_on_caller_vars(
+        &self,
+        body: &[TermId],
+        caller_fresh_vars: &[VarId],
+        subst: &Substitution,
+    ) -> bool {
+        for &goal in body {
+            if let Some(tag) = self.get_builtin(goal) {
+                if matches!(self.execute_builtin(tag, goal, subst), BuiltinResult::Delay) {
+                    let arg = self.builtin_first_arg(goal);
+                    let mut unbound = Vec::new();
+                    self.collect_unbound_vars(arg, subst, &mut unbound);
+                    if unbound.iter().any(|v| caller_fresh_vars.contains(v)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    // ── Delay handling ─────────────────────────────────────────
+
+    /// Entry point when a goal delays: move it to end, resolve remaining,
+    /// then switch to delay-aware loop.
+    fn resolve_with_delay(
+        &mut self,
+        delayed_goal: TermId,
+        remaining: &[TermId],
+        answer_subst: &Substitution,
+        depth: usize,
+        config: &ResolveConfig,
+        solutions: &mut Vec<Solution>,
+    ) {
+        if remaining.is_empty() {
+            // No remaining goals to potentially bind the variable —
+            // residualize the delayed goal.
+            solutions.push(Solution {
+                subst: answer_subst.clone(),
+                residual: vec![delayed_goal],
+            });
+            return;
+        }
+
+        // Build goal list: remaining goals + delayed goal at end
+        let mut goals: Vec<TermId> = remaining.to_vec();
+        goals.push(delayed_goal);
+
+        // Start delay-aware resolution with 1 consecutive delay already counted
+        self.resolve_goals_delayed(&goals, answer_subst, depth + 1, config, solutions, 1);
+    }
+
+    /// Delay-aware resolution loop. Tracks consecutive delays to detect
+    /// when all remaining goals have delayed (no progress possible).
+    fn resolve_goals_delayed(
+        &mut self,
+        goals: &[TermId],
+        answer_subst: &Substitution,
+        depth: usize,
+        config: &ResolveConfig,
+        solutions: &mut Vec<Solution>,
+        consecutive_delays: usize,
+    ) {
+        // Check limits
+        if depth > config.max_depth {
+            return;
+        }
+        if config.max_solutions > 0 && solutions.len() >= config.max_solutions {
+            return;
+        }
+
+        // All goals solved — success (shouldn't happen with delayed goals, but handle it)
+        if goals.is_empty() {
+            solutions.push(Solution { subst: answer_subst.clone(), residual: vec![] });
+            return;
+        }
+
+        // All goals have delayed without progress — residualize everything
+        if consecutive_delays >= goals.len() {
+            solutions.push(Solution {
+                subst: answer_subst.clone(),
+                residual: goals.to_vec(),
+            });
+            return;
+        }
+
+        let goal = goals[0];
+
+        // Check if this goal is a builtin
+        if let Some(tag) = self.get_builtin(goal) {
+            match self.execute_builtin(tag, goal, answer_subst) {
+                BuiltinResult::Success => {
+                    // Builtin succeeded — continue with remaining goals, reset delay counter
+                    self.resolve_goals_delayed(
+                        &goals[1..], answer_subst, depth + 1, config, solutions, 0,
+                    );
+                }
+                BuiltinResult::Delay => {
+                    // Still can't evaluate — rotate to end
+                    let mut rotated: Vec<TermId> = goals[1..].to_vec();
+                    rotated.push(goal);
+                    self.resolve_goals_delayed(
+                        &rotated, answer_subst, depth + 1, config, solutions,
+                        consecutive_delays + 1,
+                    );
+                }
+            }
+            return;
+        }
+
+        // Non-builtin goal: resolve normally, then continue in delayed mode
+        let mut candidates = self.query(goal);
+
+        if config.simplify {
+            let has_non_eq = candidates.iter().any(|(rid, _)| !self.is_equation(*rid));
+            if !has_non_eq {
+                let (rewritten, changes) = self.apply_eq_rules(goal, 100);
+                if !changes.is_empty() {
+                    candidates = self.query(rewritten);
+                }
+            }
+        }
+
+        let solutions_before = solutions.len();
+        let mut any_rule_delayed = false;
+
+        for (rid, tree_subst) in candidates {
+            if config.max_solutions > 0 && solutions.len() >= config.max_solutions {
+                return;
+            }
+
+            if self.is_equation(rid) {
+                continue;
+            }
+
+            let body = self.rule_body(rid).to_vec();
+
+            if body.is_empty() {
+                let remaining = self.apply_subst_each(&goals[1..], &tree_subst);
+                let mut merged = answer_subst.clone();
+                merged.bind_compressed(
+                    tree_subst.bindings.into_iter(),
+                    &self.terms,
+                );
+                // Reset consecutive delays — a non-builtin goal succeeded
+                self.resolve_goals_delayed(&remaining, &merged, depth + 1, config, solutions, 0);
+            } else {
+                let (fresh_body, answer_links) = self.with_fresh_vars(rid, &tree_subst);
+                let remaining = self.apply_subst_each(&goals[1..], &tree_subst);
+
+                let caller_fresh_vars: Vec<VarId> = answer_links.bindings.values()
+                    .filter_map(|&tid| match self.terms.get(tid) {
+                        Term::Var(vid) => Some(*vid),
+                        _ => None,
+                    })
+                    .collect();
+
+                let mut merged = answer_subst.clone();
+                merged.bind_compressed(
+                    answer_links.bindings.into_iter(),
+                    &self.terms,
+                );
+
+                if !caller_fresh_vars.is_empty()
+                    && self.body_builtins_delay_on_caller_vars(&fresh_body, &caller_fresh_vars, &merged)
+                {
+                    any_rule_delayed = true;
+                    continue;
+                }
+
+                let mut new_goals = fresh_body;
+                new_goals.extend(remaining);
+                // Reset consecutive delays — a non-builtin goal succeeded
+                self.resolve_goals_delayed(&new_goals, &merged, depth + 1, config, solutions, 0);
+            }
+        }
+
+        // If no solutions and some rule delayed on caller vars → rotate this goal
+        if solutions.len() == solutions_before && any_rule_delayed {
+            let mut rotated: Vec<TermId> = goals[1..].to_vec();
+            rotated.push(goal);
+            self.resolve_goals_delayed(
+                &rotated, answer_subst, depth + 1, config, solutions,
+                consecutive_delays + 1,
+            );
+        }
     }
 }
 
@@ -988,5 +1345,471 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].original, lhs);
         assert_eq!(changes[0].rewritten, four);
+    }
+
+    // ── Builtin dispatch + delay tests ─────────────────────────
+
+    /// Helper: set up a KB with standard builtins registered.
+    fn kb_with_builtins() -> KnowledgeBase {
+        let mut kb = KnowledgeBase::new();
+        kb.register_standard_builtins();
+        kb
+    }
+
+    #[test]
+    fn nonvar_succeeds_on_bound_var() {
+        // f(?x), anthill.reflect.nonvar(?x) where f("hello") exists → success, no residual
+        let mut kb = kb_with_builtins();
+        let sort = kb.make_name_term("Fact");
+        let domain = kb.make_name_term("test");
+        let f_sym = kb.intern("f");
+        let nonvar_sym = kb.intern("anthill.reflect.nonvar");
+
+        let hello = kb.alloc(Term::Const(Literal::String("hello".into())));
+        let f_hello = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(hello, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(f_hello, sort, domain, None);
+
+        // Query: f(?x), anthill.reflect.nonvar(?x)
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+
+        let goal_f = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let goal_nonvar = kb.alloc(Term::Fn {
+            functor: nonvar_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig::default();
+        let results = kb.resolve(&[goal_f, goal_nonvar], &config);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].residual.is_empty());
+        assert_eq!(kb.reify(var_x, &results[0].subst), hello);
+    }
+
+    #[test]
+    fn nonvar_delays_then_succeeds() {
+        // anthill.reflect.nonvar(?x), f(?x) → nonvar delays, f binds x, nonvar retried → success
+        let mut kb = kb_with_builtins();
+        let sort = kb.make_name_term("Fact");
+        let domain = kb.make_name_term("test");
+        let f_sym = kb.intern("f");
+        let nonvar_sym = kb.intern("anthill.reflect.nonvar");
+
+        let hello = kb.alloc(Term::Const(Literal::String("hello".into())));
+        let f_hello = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(hello, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(f_hello, sort, domain, None);
+
+        // Query: anthill.reflect.nonvar(?x), f(?x)
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+
+        let goal_nonvar = kb.alloc(Term::Fn {
+            functor: nonvar_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let goal_f = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig::default();
+        let results = kb.resolve(&[goal_nonvar, goal_f], &config);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].residual.is_empty());
+        assert_eq!(kb.reify(var_x, &results[0].subst), hello);
+    }
+
+    #[test]
+    fn nonvar_residualizes_when_permanently_unbound() {
+        // anthill.reflect.nonvar(?x) alone → residual contains the goal
+        let mut kb = kb_with_builtins();
+        let nonvar_sym = kb.intern("anthill.reflect.nonvar");
+
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+
+        let goal = kb.alloc(Term::Fn {
+            functor: nonvar_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig::default();
+        let results = kb.resolve(&[goal], &config);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].residual.len(), 1);
+        assert_eq!(results[0].residual[0], goal);
+    }
+
+    #[test]
+    fn ground_succeeds_on_literal() {
+        // f(?x), anthill.reflect.ground(?x) where f(42) exists → success
+        let mut kb = kb_with_builtins();
+        let sort = kb.make_name_term("Fact");
+        let domain = kb.make_name_term("test");
+        let f_sym = kb.intern("f");
+        let ground_sym = kb.intern("anthill.reflect.ground");
+
+        let val = kb.alloc(Term::Const(Literal::Int(42)));
+        let f_42 = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(val, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(f_42, sort, domain, None);
+
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+
+        let goal_f = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let goal_ground = kb.alloc(Term::Fn {
+            functor: ground_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig::default();
+        let results = kb.resolve(&[goal_f, goal_ground], &config);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].residual.is_empty());
+    }
+
+    #[test]
+    fn ground_delays_on_partial_binding() {
+        // f(?x), anthill.reflect.ground(?x) where f binds x to pair(?y) → ground delays, residualizes
+        let mut kb = kb_with_builtins();
+        let sort = kb.make_name_term("Fact");
+        let domain = kb.make_name_term("test");
+        let f_sym = kb.intern("f");
+        let pair_sym = kb.intern("pair");
+        let ground_sym = kb.intern("anthill.reflect.ground");
+
+        // Fact: f(pair(?y)) — not ground, has an unbound variable inside
+        let y_sym = kb.intern("y");
+        let vy = kb.fresh_var(y_sym);
+        let var_y = kb.alloc(Term::Var(vy));
+        let pair_y = kb.alloc(Term::Fn {
+            functor: pair_sym,
+            pos_args: SmallVec::from_elem(var_y, 1),
+            named_args: SmallVec::new(),
+        });
+        let f_pair = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(pair_y, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(f_pair, sort, domain, None);
+
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+
+        let goal_f = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let goal_ground = kb.alloc(Term::Fn {
+            functor: ground_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig::default();
+        let results = kb.resolve(&[goal_f, goal_ground], &config);
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].residual.is_empty(), "ground should residualize when argument contains unbound var");
+    }
+
+    #[test]
+    fn existing_resolve_unchanged() {
+        // No builtins registered, basic resolution still works with empty residual
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Fact");
+        let domain = kb.make_name_term("test");
+        let f_sym = kb.intern("f");
+
+        let val = kb.alloc(Term::Const(Literal::Int(1)));
+        let fact = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(val, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(fact, sort, domain, None);
+
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+        let goal = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig::default();
+        let results = kb.resolve(&[goal], &config);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].residual.is_empty());
+        assert_eq!(results[0].subst.resolve(vx), Some(val));
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot assert rule/fact with head functor")]
+    fn builtin_protection_rejects_shadowing() {
+        let mut kb = kb_with_builtins();
+        let sort = kb.make_name_term("Fact");
+        let domain = kb.make_name_term("test");
+        let nonvar_sym = kb.intern("anthill.reflect.nonvar");
+
+        let val = kb.alloc(Term::Const(Literal::Int(1)));
+        let head = kb.alloc(Term::Fn {
+            functor: nonvar_sym,
+            pos_args: SmallVec::from_elem(val, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(head, sort, domain, None); // should panic
+    }
+
+    // ── Delay propagation through rules ────────────────────────
+
+    #[test]
+    fn delay_propagates_through_rule_body() {
+        // Rule: check(?x) :- nonvar(?x), is_thing(?x)
+        // Fact: is_thing(42)
+        // Query: check(?a), bind_a(?a)  where bind_a(42) is a fact
+        //
+        // Without propagation: check(?a) fires rule, nonvar delays,
+        //   is_thing enumerates, nonvar becomes vacuous (guard defeated).
+        // With propagation: check(?a) delays (nonvar on caller var),
+        //   bind_a binds ?a=42, check(42) retries → nonvar(42) succeeds.
+        let mut kb = kb_with_builtins();
+        let sort = kb.make_name_term("Rule");
+        let domain = kb.make_name_term("test");
+        let nonvar_sym = kb.intern("anthill.reflect.nonvar");
+        let check_sym = kb.intern("check");
+        let is_thing_sym = kb.intern("is_thing");
+        let bind_a_sym = kb.intern("bind_a");
+
+        // Fact: is_thing(42)
+        let val_42 = kb.alloc(Term::Const(Literal::Int(42)));
+        let is_thing_42 = kb.alloc(Term::Fn {
+            functor: is_thing_sym,
+            pos_args: SmallVec::from_elem(val_42, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(is_thing_42, sort, domain, None);
+
+        // Fact: bind_a(42)
+        let bind_a_42 = kb.alloc(Term::Fn {
+            functor: bind_a_sym,
+            pos_args: SmallVec::from_elem(val_42, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(bind_a_42, sort, domain, None);
+
+        // Rule: check(?x) :- nonvar(?x), is_thing(?x)
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+
+        let check_head = kb.alloc(Term::Fn {
+            functor: check_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let nonvar_goal = kb.alloc(Term::Fn {
+            functor: nonvar_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let is_thing_goal = kb.alloc(Term::Fn {
+            functor: is_thing_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule(check_head, vec![nonvar_goal, is_thing_goal], sort, domain, None);
+
+        // Query: check(?a), bind_a(?a)
+        let a_sym = kb.intern("a");
+        let va = kb.fresh_var(a_sym);
+        let var_a = kb.alloc(Term::Var(va));
+
+        let q_check = kb.alloc(Term::Fn {
+            functor: check_sym,
+            pos_args: SmallVec::from_elem(var_a, 1),
+            named_args: SmallVec::new(),
+        });
+        let q_bind = kb.alloc(Term::Fn {
+            functor: bind_a_sym,
+            pos_args: SmallVec::from_elem(var_a, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig::default();
+        let results = kb.resolve(&[q_check, q_bind], &config);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].residual.is_empty());
+        assert_eq!(kb.reify(var_a, &results[0].subst), val_42);
+    }
+
+    #[test]
+    fn delay_propagation_residualizes_when_unresolvable() {
+        // Rule: check(?x) :- nonvar(?x), is_thing(?x)
+        // Query: check(?a) with ?a never bound → check(?a) delays, residualizes
+        let mut kb = kb_with_builtins();
+        let sort = kb.make_name_term("Rule");
+        let domain = kb.make_name_term("test");
+        let nonvar_sym = kb.intern("anthill.reflect.nonvar");
+        let check_sym = kb.intern("check");
+        let is_thing_sym = kb.intern("is_thing");
+
+        // Fact: is_thing(42)
+        let val_42 = kb.alloc(Term::Const(Literal::Int(42)));
+        let is_thing_42 = kb.alloc(Term::Fn {
+            functor: is_thing_sym,
+            pos_args: SmallVec::from_elem(val_42, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(is_thing_42, sort, domain, None);
+
+        // Rule: check(?x) :- nonvar(?x), is_thing(?x)
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+
+        let check_head = kb.alloc(Term::Fn {
+            functor: check_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let nonvar_goal = kb.alloc(Term::Fn {
+            functor: nonvar_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let is_thing_goal = kb.alloc(Term::Fn {
+            functor: is_thing_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule(check_head, vec![nonvar_goal, is_thing_goal], sort, domain, None);
+
+        // Query: check(?a) alone — ?a never bound
+        let a_sym = kb.intern("a");
+        let va = kb.fresh_var(a_sym);
+        let var_a = kb.alloc(Term::Var(va));
+
+        let q_check = kb.alloc(Term::Fn {
+            functor: check_sym,
+            pos_args: SmallVec::from_elem(var_a, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig::default();
+        let results = kb.resolve(&[q_check], &config);
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].residual.is_empty(), "check(?a) should residualize when ?a is unbound");
+    }
+
+    #[test]
+    fn nonvar_internal_var_still_reorders_in_body() {
+        // Rule: foo(?x) :- bar(?y), nonvar(?y), baz(?y, ?x)
+        // Here ?y is internal — nonvar(?y) should reorder within body (not propagate).
+        // bar(?y) binds ?y, then nonvar succeeds.
+        let mut kb = kb_with_builtins();
+        let sort = kb.make_name_term("Rule");
+        let domain = kb.make_name_term("test");
+        let nonvar_sym = kb.intern("anthill.reflect.nonvar");
+        let foo_sym = kb.intern("foo");
+        let bar_sym = kb.intern("bar");
+        let baz_sym = kb.intern("baz");
+
+        // Fact: bar(10)
+        let val_10 = kb.alloc(Term::Const(Literal::Int(10)));
+        let bar_10 = kb.alloc(Term::Fn {
+            functor: bar_sym,
+            pos_args: SmallVec::from_elem(val_10, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(bar_10, sort, domain, None);
+
+        // Fact: baz(10, 99)
+        let val_99 = kb.alloc(Term::Const(Literal::Int(99)));
+        let baz_10_99 = kb.alloc(Term::Fn {
+            functor: baz_sym,
+            pos_args: SmallVec::from_slice(&[val_10, val_99]),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(baz_10_99, sort, domain, None);
+
+        // Rule: foo(?x) :- bar(?y), nonvar(?y), baz(?y, ?x)
+        let x_sym = kb.intern("x");
+        let y_sym = kb.intern("y");
+        let vx = kb.fresh_var(x_sym);
+        let vy = kb.fresh_var(y_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+        let var_y = kb.alloc(Term::Var(vy));
+
+        let foo_head = kb.alloc(Term::Fn {
+            functor: foo_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let bar_body = kb.alloc(Term::Fn {
+            functor: bar_sym,
+            pos_args: SmallVec::from_elem(var_y, 1),
+            named_args: SmallVec::new(),
+        });
+        let nonvar_body = kb.alloc(Term::Fn {
+            functor: nonvar_sym,
+            pos_args: SmallVec::from_elem(var_y, 1),
+            named_args: SmallVec::new(),
+        });
+        let baz_body = kb.alloc(Term::Fn {
+            functor: baz_sym,
+            pos_args: SmallVec::from_slice(&[var_y, var_x]),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule(foo_head, vec![bar_body, nonvar_body, baz_body], sort, domain, None);
+
+        // Query: foo(?a) — ?y is internal, bar binds it, nonvar reorders within body
+        let a_sym = kb.intern("a");
+        let va = kb.fresh_var(a_sym);
+        let var_a = kb.alloc(Term::Var(va));
+
+        let q_foo = kb.alloc(Term::Fn {
+            functor: foo_sym,
+            pos_args: SmallVec::from_elem(var_a, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig::default();
+        let results = kb.resolve(&[q_foo], &config);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].residual.is_empty());
+        assert_eq!(kb.reify(var_a, &results[0].subst), val_99);
     }
 }
