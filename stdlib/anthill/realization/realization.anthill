@@ -7,7 +7,9 @@ namespace anthill.realization
   import anthill.prelude.{List, Option}
   import anthill.prelude.Meta.{ProofResult}
   import anthill.reflect.{Term}
-  export Implementation, Obligation, CarrierBinding, NamespaceMapping
+  export Implementation, Obligation, CarrierBinding, NamespaceMapping,
+         LanguageMapping, EffectMapping, ReceiverRule, TypeMapping,
+         ReceiverForm
 
   -- Links host-language code to an anthill algebra spec
   entity Implementation(
@@ -29,6 +31,54 @@ namespace anthill.realization
   entity NamespaceMapping(
     namespace   : String,                           -- anthill namespace (e.g. "anthill.prelude.List")
     host_module : String                            -- host module (e.g. "std::vec::Vec" in Rust)
+  )
+
+  -- ================================================================
+  -- Language mapping: how anthill effects/types map to host syntax
+  -- ================================================================
+
+  -- Per-language codegen profile.
+  -- Codegen reads this from KB instead of hardcoding rules.
+  entity LanguageMapping(
+    language      : String,                         -- "rust", "scala", "python"
+    profile       : Option{T = String},             -- "std", "no_std", etc.
+    effect_map    : List{T = EffectMapping},
+    receiver_map  : List{T = ReceiverRule},          -- effect-independent receiver rules
+    type_map      : List{T = TypeMapping}
+  )
+
+  -- How a single effect kind maps to host-language syntax.
+  --   effect:    kernel effect name ("Modify", "Read", "Error", "Emit")
+  --   receiver:  what the effect means for the self parameter
+  entity EffectMapping(
+    effect    : String,
+    receiver  : ReceiverForm
+  )
+
+  -- Receiver-form rule independent of effects.
+  -- Host-language concern (e.g. Rust ownership) — not a kernel semantic.
+  --   condition: when this rule applies
+  --     "returns_same_type" — self type appears in return type → by-value
+  --   receiver:  host form to use when condition holds
+  entity ReceiverRule(
+    condition : String,
+    receiver  : ReceiverForm
+  )
+
+  -- Host-language receiver/parameter form for an effect.
+  sort ReceiverForm
+    entity SharedRef                    -- &self / shared borrow
+    entity MutRef                       -- &mut self / exclusive borrow
+    entity ByValue                      -- self / move (consuming)
+    entity ResultWrap                   -- wrap return in Result<R, Error>
+    entity ResultTyped(error: String)   -- wrap return in Result<R, E>
+    entity Callback                     -- add callback parameter
+  end
+
+  -- Maps an anthill prelude type to a host-language type.
+  entity TypeMapping(
+    anthill_type : String,                          -- e.g. "Int"
+    host_type    : String                           -- e.g. "i64"
   )
 
   -- Proof obligation generated from operation contracts

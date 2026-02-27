@@ -88,144 +88,427 @@ pub struct EqChange {
     pub rewritten: TermId,
 }
 
+// ── SearchStream (lazy resolution) ──────────────────────────────
+
+/// How the current frame handles delayed goals.
+#[derive(Clone, Debug)]
+enum DelayMode {
+    /// Normal resolution — no delayed goals seen yet.
+    Normal,
+    /// At least one goal has delayed; track consecutive delays.
+    Delayed { consecutive_delays: usize },
+}
+
+/// What phase of processing a frame is in.
+#[derive(Clone)]
+enum FrameState {
+    /// First visit: classify goals[0] (builtin? non-builtin? empty?).
+    Init { delay_mode: DelayMode },
+
+    /// Iterating over candidate rules/facts for a non-builtin goal.
+    ChoicePoint {
+        delay_mode: DelayMode,
+        original_goal: TermId,
+        candidates: Vec<(RuleId, Substitution)>,
+        next: usize,
+        any_delayed: bool,
+        child_solutions: usize,
+    },
+}
+
+/// A choice point on the explicit stack.
+#[derive(Clone)]
+struct Frame {
+    goals: Vec<TermId>,
+    subst: Substitution,
+    depth: usize,
+    state: FrameState,
+}
+
+/// Result of a single step in the search loop.
+enum StepResult {
+    /// Keep stepping.
+    Continue,
+    /// A solution has been found; yield it.
+    YieldSolution(Solution),
+}
+
+/// Lazy search stream that yields one solution at a time via
+/// `split_first`. Converts recursive DFS into an explicit choice-point
+/// stack.
+pub struct SearchStream {
+    stack: Vec<Frame>,
+    config: ResolveConfig,
+}
+
+impl SearchStream {
+    /// Yield the next solution, consuming self and returning the
+    /// continuation stream. Returns `None` when exhausted.
+    pub fn split_first(mut self, kb: &mut KnowledgeBase) -> Option<(Solution, SearchStream)> {
+        loop {
+            if self.stack.is_empty() {
+                return None;
+            }
+            match self.step(kb) {
+                Some(StepResult::Continue) => continue,
+                Some(StepResult::YieldSolution(sol)) => return Some((sol, self)),
+                None => return None,
+            }
+        }
+    }
+
+    /// Check if the stream is obviously exhausted (empty stack).
+    pub fn is_empty(&self) -> bool {
+        self.stack.is_empty()
+    }
+
+    /// Execute one step of the search. Returns `None` when the stack is
+    /// empty (no more work).
+    fn step(&mut self, kb: &mut KnowledgeBase) -> Option<StepResult> {
+        let frame = self.stack.last_mut()?;
+        match frame.state {
+            FrameState::Init { .. } => self.step_init(kb),
+            FrameState::ChoicePoint { .. } => self.step_choice_point(kb),
+        }
+    }
+
+    /// Handle a frame in `Init` state — classify the current goal.
+    fn step_init(&mut self, kb: &mut KnowledgeBase) -> Option<StepResult> {
+        let frame = self.stack.last().unwrap();
+        let depth = frame.depth;
+        let delay_mode = match &frame.state {
+            FrameState::Init { delay_mode } => delay_mode.clone(),
+            _ => unreachable!(),
+        };
+
+        // 1. Depth limit exceeded → pop
+        if depth > self.config.max_depth {
+            self.stack.pop();
+            return Some(StepResult::Continue);
+        }
+
+        // 2. In delayed mode and consecutive_delays >= goals.len() → residualize
+        if let DelayMode::Delayed { consecutive_delays } = &delay_mode {
+            if *consecutive_delays >= frame.goals.len() {
+                let sol = Solution {
+                    subst: frame.subst.clone(),
+                    residual: frame.goals.clone(),
+                };
+                self.stack.pop();
+                self.record_solution_in_ancestors();
+                return Some(StepResult::YieldSolution(sol));
+            }
+        }
+
+        // 3. Goals empty → yield solution
+        if frame.goals.is_empty() {
+            let sol = Solution {
+                subst: frame.subst.clone(),
+                residual: vec![],
+            };
+            self.stack.pop();
+            self.record_solution_in_ancestors();
+            return Some(StepResult::YieldSolution(sol));
+        }
+
+        let goal = frame.goals[0];
+
+        // 4. Builtin goal
+        if let Some(tag) = kb.get_builtin(goal) {
+            match kb.execute_builtin(tag, goal, &frame.subst) {
+                BuiltinResult::Success => {
+                    // Remove goals[0], bump depth, reset delay counter if delayed
+                    let new_goals = frame.goals[1..].to_vec();
+                    let new_subst = frame.subst.clone();
+                    let new_depth = depth + 1;
+                    let new_delay = match delay_mode {
+                        DelayMode::Normal => DelayMode::Normal,
+                        DelayMode::Delayed { .. } => DelayMode::Delayed { consecutive_delays: 0 },
+                    };
+                    // Replace current frame
+                    let f = self.stack.last_mut().unwrap();
+                    f.goals = new_goals;
+                    f.subst = new_subst;
+                    f.depth = new_depth;
+                    f.state = FrameState::Init { delay_mode: new_delay };
+                    return Some(StepResult::Continue);
+                }
+                BuiltinResult::Delay => {
+                    match delay_mode {
+                        DelayMode::Normal => {
+                            if frame.goals.len() == 1 {
+                                // Only goal — residualize
+                                let sol = Solution {
+                                    subst: frame.subst.clone(),
+                                    residual: vec![goal],
+                                };
+                                self.stack.pop();
+                                self.record_solution_in_ancestors();
+                                return Some(StepResult::YieldSolution(sol));
+                            } else {
+                                // Rotate to end, enter Delayed mode
+                                let mut rotated: Vec<TermId> = frame.goals[1..].to_vec();
+                                rotated.push(goal);
+                                let new_depth = depth + 1;
+                                let f = self.stack.last_mut().unwrap();
+                                f.goals = rotated;
+                                f.depth = new_depth;
+                                f.state = FrameState::Init {
+                                    delay_mode: DelayMode::Delayed { consecutive_delays: 1 },
+                                };
+                                return Some(StepResult::Continue);
+                            }
+                        }
+                        DelayMode::Delayed { consecutive_delays } => {
+                            // Rotate to end, increment consecutive_delays
+                            let mut rotated: Vec<TermId> = frame.goals[1..].to_vec();
+                            rotated.push(goal);
+                            let new_depth = depth + 1;
+                            let f = self.stack.last_mut().unwrap();
+                            f.goals = rotated;
+                            f.depth = new_depth;
+                            f.state = FrameState::Init {
+                                delay_mode: DelayMode::Delayed {
+                                    consecutive_delays: consecutive_delays + 1,
+                                },
+                            };
+                            return Some(StepResult::Continue);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. Non-builtin goal → query discrimination tree, build candidates
+        let mut candidates = kb.query(goal);
+
+        // Simplify fallback
+        if self.config.simplify {
+            let has_non_eq = candidates.iter().any(|(rid, _)| !kb.is_equation(*rid));
+            if !has_non_eq {
+                let (rewritten, changes) = kb.apply_eq_rules(goal, 100);
+                if !changes.is_empty() {
+                    candidates = kb.query(rewritten);
+                }
+            }
+        }
+
+        // Filter equations
+        candidates.retain(|(rid, _)| !kb.is_equation(*rid));
+
+        // Transition to ChoicePoint
+        let f = self.stack.last_mut().unwrap();
+        f.state = FrameState::ChoicePoint {
+            delay_mode,
+            original_goal: goal,
+            candidates,
+            next: 0,
+            any_delayed: false,
+            child_solutions: 0,
+        };
+        Some(StepResult::Continue)
+    }
+
+    /// Handle a frame in `ChoicePoint` state — try the next candidate.
+    fn step_choice_point(&mut self, kb: &mut KnowledgeBase) -> Option<StepResult> {
+        let frame = self.stack.last().unwrap();
+        let (delay_mode, original_goal, next, candidates_len, any_delayed, child_solutions) =
+            match &frame.state {
+                FrameState::ChoicePoint {
+                    delay_mode,
+                    original_goal,
+                    next,
+                    candidates,
+                    any_delayed,
+                    child_solutions,
+                } => (
+                    delay_mode.clone(),
+                    *original_goal,
+                    *next,
+                    candidates.len(),
+                    *any_delayed,
+                    *child_solutions,
+                ),
+                _ => unreachable!(),
+            };
+
+        // All candidates exhausted
+        if next >= candidates_len {
+            if child_solutions == 0 && any_delayed {
+                // Delay fallback: rotate goal to end, push new Init frame
+                let goals = &frame.goals;
+                let mut rotated: Vec<TermId> = goals[1..].to_vec();
+                rotated.push(original_goal);
+                let new_depth = frame.depth + 1;
+                let new_subst = frame.subst.clone();
+                let new_consecutive = match &delay_mode {
+                    DelayMode::Normal => 1,
+                    DelayMode::Delayed { consecutive_delays } => consecutive_delays + 1,
+                };
+                self.stack.pop();
+                self.stack.push(Frame {
+                    goals: rotated,
+                    subst: new_subst,
+                    depth: new_depth,
+                    state: FrameState::Init {
+                        delay_mode: DelayMode::Delayed {
+                            consecutive_delays: new_consecutive,
+                        },
+                    },
+                });
+                return Some(StepResult::Continue);
+            }
+            // Backtrack — pop this frame
+            self.stack.pop();
+            return Some(StepResult::Continue);
+        }
+
+        // Extract candidate data
+        let (rid, tree_subst) = {
+            let frame = self.stack.last().unwrap();
+            match &frame.state {
+                FrameState::ChoicePoint { candidates, next, .. } => {
+                    candidates[*next].clone()
+                }
+                _ => unreachable!(),
+            }
+        };
+
+        // Advance `next` in the current frame
+        {
+            let frame = self.stack.last_mut().unwrap();
+            match &mut frame.state {
+                FrameState::ChoicePoint { next, .. } => *next += 1,
+                _ => unreachable!(),
+            }
+        }
+
+        let frame = self.stack.last().unwrap();
+        let body = kb.rule_body(rid).to_vec();
+
+        if body.is_empty() {
+            // Ground fact
+            let remaining = kb.apply_subst_each(&frame.goals[1..], &tree_subst);
+            let mut merged = frame.subst.clone();
+            merged.bind_compressed(
+                tree_subst.bindings.into_iter(),
+                &kb.terms,
+            );
+
+            let new_delay = match &delay_mode {
+                DelayMode::Normal => DelayMode::Normal,
+                DelayMode::Delayed { .. } => DelayMode::Delayed { consecutive_delays: 0 },
+            };
+
+            self.stack.push(Frame {
+                goals: remaining,
+                subst: merged,
+                depth: frame.depth + 1,
+                state: FrameState::Init { delay_mode: new_delay },
+            });
+        } else {
+            // Rule with body
+            let (fresh_body, answer_links) = kb.with_fresh_vars(rid, &tree_subst);
+            let remaining = kb.apply_subst_each(&frame.goals[1..], &tree_subst);
+
+            let caller_fresh_vars: Vec<VarId> = answer_links
+                .bindings
+                .values()
+                .filter_map(|&tid| match kb.terms.get(tid) {
+                    Term::Var(vid) => Some(*vid),
+                    _ => None,
+                })
+                .collect();
+
+            let mut merged = frame.subst.clone();
+            merged.bind_compressed(
+                answer_links.bindings.into_iter(),
+                &kb.terms,
+            );
+
+            // Pre-check: delay propagation on caller vars
+            if !caller_fresh_vars.is_empty()
+                && kb.body_builtins_delay_on_caller_vars(&fresh_body, &caller_fresh_vars, &merged)
+            {
+                // Set any_delayed on current frame, skip this candidate
+                let f = self.stack.last_mut().unwrap();
+                match &mut f.state {
+                    FrameState::ChoicePoint { any_delayed, .. } => *any_delayed = true,
+                    _ => unreachable!(),
+                }
+                return Some(StepResult::Continue);
+            }
+
+            let mut new_goals = fresh_body;
+            new_goals.extend(remaining);
+
+            let new_delay = match &delay_mode {
+                DelayMode::Normal => DelayMode::Normal,
+                DelayMode::Delayed { .. } => DelayMode::Delayed { consecutive_delays: 0 },
+            };
+
+            self.stack.push(Frame {
+                goals: new_goals,
+                subst: merged,
+                depth: frame.depth + 1,
+                state: FrameState::Init { delay_mode: new_delay },
+            });
+        }
+
+        Some(StepResult::Continue)
+    }
+
+    /// When yielding a solution, walk the stack to find the nearest
+    /// `ChoicePoint` ancestor and increment its `child_solutions` counter.
+    fn record_solution_in_ancestors(&mut self) {
+        for frame in self.stack.iter_mut().rev() {
+            if let FrameState::ChoicePoint { child_solutions, .. } = &mut frame.state {
+                *child_solutions += 1;
+                return;
+            }
+        }
+    }
+}
+
 // ── SLD Resolution ──────────────────────────────────────────────
 
 impl KnowledgeBase {
+    /// Create a lazy search stream for the given goals.
+    pub fn resolve_lazy(&self, goals: &[TermId], config: &ResolveConfig) -> SearchStream {
+        let initial_frame = Frame {
+            goals: goals.to_vec(),
+            subst: Substitution::new(),
+            depth: 0,
+            state: FrameState::Init { delay_mode: DelayMode::Normal },
+        };
+        SearchStream {
+            stack: vec![initial_frame],
+            config: ResolveConfig {
+                max_depth: config.max_depth,
+                max_solutions: config.max_solutions,
+                simplify: config.simplify,
+            },
+        }
+    }
+
     /// Resolve a list of goals using SLD resolution.
     ///
     /// Returns all solutions (up to `config.max_solutions`) that satisfy all
     /// goals simultaneously. Each solution contains variable bindings from
     /// the original query variables to ground terms.
     pub fn resolve(&mut self, goals: &[TermId], config: &ResolveConfig) -> Vec<Solution> {
+        let mut stream = self.resolve_lazy(goals, config);
         let mut solutions = Vec::new();
-        let goals = goals.to_vec();
-        let subst = Substitution::new();
-        self.resolve_goals(&goals, &subst, 0, config, &mut solutions);
+        while let Some((sol, rest)) = stream.split_first(self) {
+            solutions.push(sol);
+            if config.max_solutions > 0 && solutions.len() >= config.max_solutions {
+                break;
+            }
+            stream = rest;
+        }
         solutions
     }
 
-    fn resolve_goals(
-        &mut self,
-        goals: &[TermId],
-        answer_subst: &Substitution,
-        depth: usize,
-        config: &ResolveConfig,
-        solutions: &mut Vec<Solution>,
-    ) {
-        // Check limits
-        if depth > config.max_depth {
-            return;
-        }
-        if config.max_solutions > 0 && solutions.len() >= config.max_solutions {
-            return;
-        }
-
-        // All goals solved — success
-        if goals.is_empty() {
-            solutions.push(Solution { subst: answer_subst.clone(), residual: vec![] });
-            return;
-        }
-
-        // Select first goal (already maximally concrete)
-        let goal = goals[0];
-
-        // Check if this goal is a builtin
-        if let Some(tag) = self.get_builtin(goal) {
-            match self.execute_builtin(tag, goal, answer_subst) {
-                BuiltinResult::Success => {
-                    // Builtin succeeded — continue with remaining goals
-                    self.resolve_goals(&goals[1..], answer_subst, depth + 1, config, solutions);
-                }
-                BuiltinResult::Delay => {
-                    // Builtin can't evaluate yet — switch to delay-aware resolution
-                    self.resolve_with_delay(goal, &goals[1..], answer_subst, depth, config, solutions);
-                }
-            }
-            return;
-        }
-
-        // Query discrimination tree for candidate rules/facts
-        let mut candidates = self.query(goal);
-
-        // Fallback: if no non-equation matches, try equational rewriting
-        if config.simplify {
-            let has_non_eq = candidates.iter().any(|(rid, _)| !self.is_equation(*rid));
-            if !has_non_eq {
-                let (rewritten, changes) = self.apply_eq_rules(goal, 100);
-                if !changes.is_empty() {
-                    candidates = self.query(rewritten);
-                }
-            }
-        }
-
-        let solutions_before = solutions.len();
-        let mut any_rule_delayed = false;
-
-        for (rid, tree_subst) in candidates {
-            if config.max_solutions > 0 && solutions.len() >= config.max_solutions {
-                return;
-            }
-
-            // Skip equations during resolution — they are used by simplify
-            if self.is_equation(rid) {
-                continue;
-            }
-
-            let body = self.rule_body(rid).to_vec();
-
-            if body.is_empty() {
-                // Ground fact — apply concrete bindings to remaining goals
-                let remaining = self.apply_subst_each(&goals[1..], &tree_subst);
-                let mut merged = answer_subst.clone();
-                merged.bind_compressed(
-                    tree_subst.bindings.into_iter(),
-                    &self.terms,
-                );
-                self.resolve_goals(&remaining, &merged, depth + 1, config, solutions);
-            } else {
-                // Rule with body — one walk: rename vars + substitute concrete values
-                let (fresh_body, answer_links) = self.with_fresh_vars(rid, &tree_subst);
-
-                // Apply tree_subst's query-var bindings to remaining goals
-                let remaining = self.apply_subst_each(&goals[1..], &tree_subst);
-
-                // Collect caller-originated fresh vars before consuming answer_links
-                let caller_fresh_vars: Vec<VarId> = answer_links.bindings.values()
-                    .filter_map(|&tid| match self.terms.get(tid) {
-                        Term::Var(vid) => Some(*vid),
-                        _ => None,
-                    })
-                    .collect();
-
-                // Merge answer links (query vars → fresh vars) into answer_subst
-                let mut merged = answer_subst.clone();
-                merged.bind_compressed(
-                    answer_links.bindings.into_iter(),
-                    &self.terms,
-                );
-
-                // Pre-check: if any builtin in the body would delay on a caller
-                // variable, skip this candidate — the original goal should delay
-                if !caller_fresh_vars.is_empty()
-                    && self.body_builtins_delay_on_caller_vars(&fresh_body, &caller_fresh_vars, &merged)
-                {
-                    any_rule_delayed = true;
-                    continue;
-                }
-
-                // Prepend fresh body goals before remaining goals
-                let mut new_goals = fresh_body;
-                new_goals.extend(remaining);
-                self.resolve_goals(&new_goals, &merged, depth + 1, config, solutions);
-            }
-        }
-
-        // If no solutions found and some rule delayed on caller vars,
-        // delay the original goal (move to end) instead of failing.
-        if solutions.len() == solutions_before && any_rule_delayed {
-            self.resolve_with_delay(goal, &goals[1..], answer_subst, depth, config, solutions);
-        }
-    }
 
     // ── Equational Rewriting ────────────────────────────────────
 
@@ -431,172 +714,6 @@ impl KnowledgeBase {
         false
     }
 
-    // ── Delay handling ─────────────────────────────────────────
-
-    /// Entry point when a goal delays: move it to end, resolve remaining,
-    /// then switch to delay-aware loop.
-    fn resolve_with_delay(
-        &mut self,
-        delayed_goal: TermId,
-        remaining: &[TermId],
-        answer_subst: &Substitution,
-        depth: usize,
-        config: &ResolveConfig,
-        solutions: &mut Vec<Solution>,
-    ) {
-        if remaining.is_empty() {
-            // No remaining goals to potentially bind the variable —
-            // residualize the delayed goal.
-            solutions.push(Solution {
-                subst: answer_subst.clone(),
-                residual: vec![delayed_goal],
-            });
-            return;
-        }
-
-        // Build goal list: remaining goals + delayed goal at end
-        let mut goals: Vec<TermId> = remaining.to_vec();
-        goals.push(delayed_goal);
-
-        // Start delay-aware resolution with 1 consecutive delay already counted
-        self.resolve_goals_delayed(&goals, answer_subst, depth + 1, config, solutions, 1);
-    }
-
-    /// Delay-aware resolution loop. Tracks consecutive delays to detect
-    /// when all remaining goals have delayed (no progress possible).
-    fn resolve_goals_delayed(
-        &mut self,
-        goals: &[TermId],
-        answer_subst: &Substitution,
-        depth: usize,
-        config: &ResolveConfig,
-        solutions: &mut Vec<Solution>,
-        consecutive_delays: usize,
-    ) {
-        // Check limits
-        if depth > config.max_depth {
-            return;
-        }
-        if config.max_solutions > 0 && solutions.len() >= config.max_solutions {
-            return;
-        }
-
-        // All goals solved — success (shouldn't happen with delayed goals, but handle it)
-        if goals.is_empty() {
-            solutions.push(Solution { subst: answer_subst.clone(), residual: vec![] });
-            return;
-        }
-
-        // All goals have delayed without progress — residualize everything
-        if consecutive_delays >= goals.len() {
-            solutions.push(Solution {
-                subst: answer_subst.clone(),
-                residual: goals.to_vec(),
-            });
-            return;
-        }
-
-        let goal = goals[0];
-
-        // Check if this goal is a builtin
-        if let Some(tag) = self.get_builtin(goal) {
-            match self.execute_builtin(tag, goal, answer_subst) {
-                BuiltinResult::Success => {
-                    // Builtin succeeded — continue with remaining goals, reset delay counter
-                    self.resolve_goals_delayed(
-                        &goals[1..], answer_subst, depth + 1, config, solutions, 0,
-                    );
-                }
-                BuiltinResult::Delay => {
-                    // Still can't evaluate — rotate to end
-                    let mut rotated: Vec<TermId> = goals[1..].to_vec();
-                    rotated.push(goal);
-                    self.resolve_goals_delayed(
-                        &rotated, answer_subst, depth + 1, config, solutions,
-                        consecutive_delays + 1,
-                    );
-                }
-            }
-            return;
-        }
-
-        // Non-builtin goal: resolve normally, then continue in delayed mode
-        let mut candidates = self.query(goal);
-
-        if config.simplify {
-            let has_non_eq = candidates.iter().any(|(rid, _)| !self.is_equation(*rid));
-            if !has_non_eq {
-                let (rewritten, changes) = self.apply_eq_rules(goal, 100);
-                if !changes.is_empty() {
-                    candidates = self.query(rewritten);
-                }
-            }
-        }
-
-        let solutions_before = solutions.len();
-        let mut any_rule_delayed = false;
-
-        for (rid, tree_subst) in candidates {
-            if config.max_solutions > 0 && solutions.len() >= config.max_solutions {
-                return;
-            }
-
-            if self.is_equation(rid) {
-                continue;
-            }
-
-            let body = self.rule_body(rid).to_vec();
-
-            if body.is_empty() {
-                let remaining = self.apply_subst_each(&goals[1..], &tree_subst);
-                let mut merged = answer_subst.clone();
-                merged.bind_compressed(
-                    tree_subst.bindings.into_iter(),
-                    &self.terms,
-                );
-                // Reset consecutive delays — a non-builtin goal succeeded
-                self.resolve_goals_delayed(&remaining, &merged, depth + 1, config, solutions, 0);
-            } else {
-                let (fresh_body, answer_links) = self.with_fresh_vars(rid, &tree_subst);
-                let remaining = self.apply_subst_each(&goals[1..], &tree_subst);
-
-                let caller_fresh_vars: Vec<VarId> = answer_links.bindings.values()
-                    .filter_map(|&tid| match self.terms.get(tid) {
-                        Term::Var(vid) => Some(*vid),
-                        _ => None,
-                    })
-                    .collect();
-
-                let mut merged = answer_subst.clone();
-                merged.bind_compressed(
-                    answer_links.bindings.into_iter(),
-                    &self.terms,
-                );
-
-                if !caller_fresh_vars.is_empty()
-                    && self.body_builtins_delay_on_caller_vars(&fresh_body, &caller_fresh_vars, &merged)
-                {
-                    any_rule_delayed = true;
-                    continue;
-                }
-
-                let mut new_goals = fresh_body;
-                new_goals.extend(remaining);
-                // Reset consecutive delays — a non-builtin goal succeeded
-                self.resolve_goals_delayed(&new_goals, &merged, depth + 1, config, solutions, 0);
-            }
-        }
-
-        // If no solutions and some rule delayed on caller vars → rotate this goal
-        if solutions.len() == solutions_before && any_rule_delayed {
-            let mut rotated: Vec<TermId> = goals[1..].to_vec();
-            rotated.push(goal);
-            self.resolve_goals_delayed(
-                &rotated, answer_subst, depth + 1, config, solutions,
-                consecutive_delays + 1,
-            );
-        }
-    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────
@@ -1811,5 +1928,242 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert!(results[0].residual.is_empty());
         assert_eq!(kb.reify(var_a, &results[0].subst), val_99);
+    }
+
+    // ── SearchStream (lazy) tests ───────────────────────────────
+
+    #[test]
+    fn search_stream_basic() {
+        // split_first yields solutions one at a time
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Fact");
+        let domain = kb.make_name_term("test");
+        let f_sym = kb.intern("f");
+
+        let v1 = kb.alloc(Term::Const(Literal::Int(1)));
+        let v2 = kb.alloc(Term::Const(Literal::Int(2)));
+        let f1 = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(v1, 1),
+            named_args: SmallVec::new(),
+        });
+        let f2 = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(v2, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(f1, sort, domain, None);
+        kb.assert_fact(f2, sort, domain, None);
+
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+        let goal = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig::default();
+        let stream = kb.resolve_lazy(&[goal], &config);
+        assert!(!stream.is_empty());
+
+        let (sol1, stream) = stream.split_first(&mut kb).expect("should have first solution");
+        assert!(sol1.residual.is_empty());
+
+        let (sol2, stream) = stream.split_first(&mut kb).expect("should have second solution");
+        assert!(sol2.residual.is_empty());
+
+        // Exhausted
+        assert!(stream.split_first(&mut kb).is_none());
+    }
+
+    #[test]
+    fn search_stream_lazy() {
+        // Consume only 2 of 5 solutions, verify stream not exhausted
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Fact");
+        let domain = kb.make_name_term("test");
+        let f_sym = kb.intern("f");
+
+        for i in 0..5 {
+            let val = kb.alloc(Term::Const(Literal::Int(i)));
+            let fact = kb.alloc(Term::Fn {
+                functor: f_sym,
+                pos_args: SmallVec::from_elem(val, 1),
+                named_args: SmallVec::new(),
+            });
+            kb.assert_fact(fact, sort, domain, None);
+        }
+
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+        let goal = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig::default();
+        let stream = kb.resolve_lazy(&[goal], &config);
+
+        let (_, stream) = stream.split_first(&mut kb).expect("sol 1");
+        let (_, stream) = stream.split_first(&mut kb).expect("sol 2");
+
+        // Stream should still have more solutions
+        assert!(!stream.is_empty());
+    }
+
+    #[test]
+    fn search_stream_empty() {
+        // No matches → None immediately
+        let mut kb = KnowledgeBase::new();
+        let g_sym = kb.intern("g");
+        let val = kb.alloc(Term::Const(Literal::Int(1)));
+        let goal = kb.alloc(Term::Fn {
+            functor: g_sym,
+            pos_args: SmallVec::from_elem(val, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig::default();
+        let stream = kb.resolve_lazy(&[goal], &config);
+        assert!(stream.split_first(&mut kb).is_none());
+    }
+
+    #[test]
+    fn search_stream_delay_residual() {
+        // nonvar(?x) alone → residualized solution via stream
+        let mut kb = kb_with_builtins();
+        let nonvar_sym = kb.intern("anthill.reflect.nonvar");
+
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+
+        let goal = kb.alloc(Term::Fn {
+            functor: nonvar_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig::default();
+        let stream = kb.resolve_lazy(&[goal], &config);
+
+        let (sol, stream) = stream.split_first(&mut kb).expect("should residualize");
+        assert_eq!(sol.residual.len(), 1);
+        assert_eq!(sol.residual[0], goal);
+
+        // No more solutions
+        assert!(stream.split_first(&mut kb).is_none());
+    }
+
+    #[test]
+    fn search_stream_recursive_rule() {
+        // ancestor via stream, both solutions yielded one at a time
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Rule");
+        let domain = kb.make_name_term("test");
+        let parent_sym = kb.intern("parent");
+        let ancestor_sym = kb.intern("ancestor");
+
+        let alice = kb.alloc(Term::Const(Literal::String("alice".into())));
+        let bob = kb.alloc(Term::Const(Literal::String("bob".into())));
+        let charlie = kb.alloc(Term::Const(Literal::String("charlie".into())));
+
+        // Facts
+        let f1 = kb.alloc(Term::Fn {
+            functor: parent_sym,
+            pos_args: SmallVec::from_slice(&[alice, bob]),
+            named_args: SmallVec::new(),
+        });
+        let f2 = kb.alloc(Term::Fn {
+            functor: parent_sym,
+            pos_args: SmallVec::from_slice(&[bob, charlie]),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(f1, sort, domain, None);
+        kb.assert_fact(f2, sort, domain, None);
+
+        // Rule 1: ancestor(?x, ?y) :- parent(?x, ?y)
+        {
+            let x_sym = kb.intern("x");
+            let y_sym = kb.intern("y");
+            let vx = kb.fresh_var(x_sym);
+            let vy = kb.fresh_var(y_sym);
+            let var_x = kb.alloc(Term::Var(vx));
+            let var_y = kb.alloc(Term::Var(vy));
+
+            let head = kb.alloc(Term::Fn {
+                functor: ancestor_sym,
+                pos_args: SmallVec::from_slice(&[var_x, var_y]),
+                named_args: SmallVec::new(),
+            });
+            let body = kb.alloc(Term::Fn {
+                functor: parent_sym,
+                pos_args: SmallVec::from_slice(&[var_x, var_y]),
+                named_args: SmallVec::new(),
+            });
+            kb.assert_rule(head, vec![body], sort, domain, None);
+        }
+
+        // Rule 2: ancestor(?x, ?z) :- parent(?x, ?y), ancestor(?y, ?z)
+        {
+            let x_sym = kb.intern("x");
+            let y_sym = kb.intern("y");
+            let z_sym = kb.intern("z");
+            let vx = kb.fresh_var(x_sym);
+            let vy = kb.fresh_var(y_sym);
+            let vz = kb.fresh_var(z_sym);
+            let var_x = kb.alloc(Term::Var(vx));
+            let var_y = kb.alloc(Term::Var(vy));
+            let var_z = kb.alloc(Term::Var(vz));
+
+            let head = kb.alloc(Term::Fn {
+                functor: ancestor_sym,
+                pos_args: SmallVec::from_slice(&[var_x, var_z]),
+                named_args: SmallVec::new(),
+            });
+            let b1 = kb.alloc(Term::Fn {
+                functor: parent_sym,
+                pos_args: SmallVec::from_slice(&[var_x, var_y]),
+                named_args: SmallVec::new(),
+            });
+            let b2 = kb.alloc(Term::Fn {
+                functor: ancestor_sym,
+                pos_args: SmallVec::from_slice(&[var_y, var_z]),
+                named_args: SmallVec::new(),
+            });
+            kb.assert_rule(head, vec![b1, b2], sort, domain, None);
+        }
+
+        // Query: ancestor("alice", ?w)
+        let w_sym = kb.intern("w");
+        let vw = kb.fresh_var(w_sym);
+        let var_w = kb.alloc(Term::Var(vw));
+        let goal = kb.alloc(Term::Fn {
+            functor: ancestor_sym,
+            pos_args: SmallVec::from_slice(&[alice, var_w]),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig { max_depth: 20, ..Default::default() };
+        let stream = kb.resolve_lazy(&[goal], &config);
+
+        let (sol1, stream) = stream.split_first(&mut kb).expect("first ancestor");
+        let r1 = kb.reify(var_w, &sol1.subst);
+
+        let (sol2, stream) = stream.split_first(&mut kb).expect("second ancestor");
+        let r2 = kb.reify(var_w, &sol2.subst);
+
+        // Should find bob and charlie (in some order)
+        let mut results = vec![r1, r2];
+        results.sort_by_key(|t| t.index());
+        assert!(results.contains(&bob));
+        assert!(results.contains(&charlie));
+
+        // No more solutions
+        assert!(stream.split_first(&mut kb).is_none());
     }
 }

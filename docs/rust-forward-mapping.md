@@ -19,6 +19,7 @@ The mapping is deterministic: given the same anthill source, the same Rust code 
 | Sort with constructors `sort S { entity C₁(...), entity C₂(...) }` | `enum S { C1 { fields }, C2 { fields } }` |
 | Standalone `entity E(fields)` | `struct E { fields }` |
 | `operation op(a: S, ...) -> R` (first arg is enclosing sort) | `fn op(&self, ...) -> R` on the trait or impl |
+| `operation op(a: S, ...) -> ...S...` (return contains S) | `fn op(self, ...) -> ...Self...` by-value (§9) |
 | `operation op(x: A, y: B) -> R` (no self-arg) | `fn op(x: A, y: B) -> R` free function |
 | `effects (Modifies X)` | `&mut self`, `Result<R, Error>` return |
 | `effects (Reads X)` | `&self`, `Result<R, Error>` return |
@@ -74,14 +75,18 @@ When the sort has a type parameter (`sort T` inside the body), the parameter bec
 
 ```
 sort Stream {                              trait Stream<T, E> {
-  sort T                        →              fn split_first(&self) -> Option<Pair<T, Self>>;
-  sort E                                       fn tail(&self) -> Self;
-  operation split_first(                   }
-    s: Stream) -> Option{...}
+  sort T                        →              fn split_first(self) -> Option<Pair<T, Self>>;
+  sort E                                       fn tail(self) -> Self;
+  operation split_first(                       fn is_empty(&self) -> bool;
+    s: Stream) -> Option{...}              }
   operation tail(s: Stream)
     -> Stream
+  operation isEmpty(s: Stream)
+    -> Bool
 }
 ```
+
+Note: `split_first` and `tail` take `self` by value (not `&self`) because the Rust/std profile's `returns_same_type` receiver rule detects that the return type contains `Self` — see §9. `is_empty` returns `Bool`, not `Stream`, so it stays as `&self`.
 
 ### 2.3 Sort with Constructors → Enum
 
@@ -195,7 +200,7 @@ Prelude types have special mappings (§2.9). Non-prelude parametric sorts map di
 
 ### 2.9 Prelude Type Mappings
 
-Anthill prelude sorts map to idiomatic Rust types:
+Anthill prelude sorts map to idiomatic Rust types. These mappings are defined in the `LanguageMapping` profile (§9) as `TypeMapping` facts, not hardcoded in the codegen. The default Rust/std profile (`stdlib/anthill/realization/rust_std.anthill`) declares:
 
 | Anthill type | Rust type |
 |---|---|
@@ -206,7 +211,9 @@ Anthill prelude sorts map to idiomatic Rust types:
 | `List{T = X}` | `Vec<X>` |
 | `Option{T = X}` | `Option<X>` |
 | `Duration` | `std::time::Duration` |
-| `Timestamp` | `String` (or chrono type if available) |
+| `Timestamp` | `String` |
+
+A different profile (e.g. Rust/no_std) could override these — `List` → `heapless::Vec`, `String` → `heapless::String`, etc.
 
 ### 2.10 Rules → Test Stubs
 
@@ -333,7 +340,7 @@ Every sort encountered during codegen falls into one of three categories:
 
 | Category | Condition | Codegen action |
 |---|---|---|
-| **Prelude** | Sort is in `anthill.prelude` | Use hardcoded Rust type (§2.9): `List` → `Vec`, `Option` → `Option`, etc. |
+| **Prelude** | Sort is in `anthill.prelude` | Use Rust type from profile (§2.9, §9): `List` → `Vec`, `Option` → `Option`, etc. |
 | **Implemented** | Has `Implementation` fact with `language: "rust"` | Skip generation, emit `use` import with types from carrier bindings |
 | **Unimplemented** | No matching `Implementation` fact | Generate skeleton |
 
@@ -441,17 +448,23 @@ sort Eq {
 sort Stream {
   sort T
   sort E
-  operation tail(s: Stream) -> Stream      →  fn tail(&self) -> Self;
+  operation tail(s: Stream) -> Stream      →  fn tail(self) -> Self;
+  operation isEmpty(s: Stream) -> Bool     →  fn is_empty(&self) -> bool;
 }
+-- Note: tail gets `self` (by-value) because the receiver_map
+-- "returns_same_type" rule matches (return is Self). isEmpty
+-- returns Bool, not Stream, so it stays as &self.
 
 -- Rule 1c: Enum — sort name matches as self, type params do NOT
 sort LogicalStream {
   sort T
   entity Empty
-  operation mplus(a: LogicalStream,        →  fn mplus(&self, b: Self) -> Self;
+  operation mplus(a: LogicalStream,        →  fn mplus(self, b: Self) -> Self;
     b: LogicalStream) -> LogicalStream
   operation pure(x: T) -> LogicalStream    →  fn pure(x: T) -> Self;   -- T ≠ self
 }
+-- mplus returns LogicalStream → returns_same_type → self by value.
+-- pure: first param is T, not LogicalStream — no self at all.
 
 -- Rule 1d: Sort name match in enum
 sort List {
@@ -461,24 +474,28 @@ sort List {
 -- Rule 2: In namespace config, first arg is Settings (an entity in config)
 namespace config {
   entity Settings(path: String, verbose: Bool)
-  operation load(s: Settings) -> Settings  →  impl Settings { fn load(&self) -> Settings { todo!() } }
+  operation load(s: Settings) -> Settings  →  impl Settings { fn load(self) -> Self { todo!() } }
 }
+-- load returns Settings → returns_same_type → self by value.
 
 -- Rule 3: No matching sort/entity
 operation route(fact: Term) -> Store       →  fn route(fact: Term) -> Store { todo!() }
 ```
 
-**Self-reference style.** The receiver is `&self` by default. `effects (Modifies ...)` on the enclosing sort's state upgrades it to `&mut self`. This mirrors Rust's borrowing semantics:
+**Self-reference style.** The receiver is determined by evaluating the `LanguageMapping` profile (§9) rules in order. The default Rust/std profile produces:
 
-| Effect on self | Rust receiver |
-|---|---|
-| No effects | `&self` |
-| `Reads(...)` on external state | `&self` |
-| `Modifies(...)` on the sort itself | `&mut self` |
+| Condition | Rust receiver | Source |
+|---|---|---|
+| `Modifies(...)` on the sort itself | `&mut self` | effect_map |
+| Return type contains `Self` | `self` (by value) | receiver_map `returns_same_type` |
+| `Reads(...)` on external state | `&self` | effect_map |
+| No effects / default | `&self` | — |
+
+Effect rules are checked first (they are semantic). Receiver rules are checked second (they are Rust-specific ownership optimizations). See §9 for details.
 
 ## 5. Effects → Rust Idioms
 
-The kernel's effect declarations (kernel spec §5.5) map to Rust idioms:
+The kernel's effect declarations (kernel spec §5.5) map to Rust idioms. These mappings are defined as data in the `LanguageMapping` profile (§9), not hardcoded in the codegen. The rules below describe the default Rust/std profile (`stdlib/anthill/realization/rust_std.anthill`):
 
 ### 5.1 Modifies
 
@@ -581,6 +598,32 @@ operation balance(a: Account) -> Money
 
 →  fn balance(&self) -> Money;
 ```
+
+### 5.8 Receiver Rules (Ownership)
+
+Beyond effects, the Rust profile defines **receiver rules** — host-language-specific conventions for how `self` is passed. These are not semantic properties of the operation; they are Rust ownership optimizations.
+
+The default Rust/std profile has one receiver rule:
+
+**`returns_same_type` → `ByValue`.** When the return type of a method contains the enclosing sort (i.e. `Self`), take `self` by value instead of `&self`. This avoids cloning: the caller gives up the old value and receives a new one.
+
+This rule applies to operations like `splitFirst`, `tail`, `collect` on `Stream` — all of which return (or contain) `Stream` in their output. Operations like `head` and `isEmpty` return `Option{T}` and `Bool` respectively (no `Stream`), so they stay as `&self`.
+
+```
+-- Stream operations at kernel level (no Modify — streams are immutable values):
+operation splitFirst(s: Stream) -> Option{T = Pair{A = T, B = Stream}}
+    effects (E)
+operation isEmpty(s: Stream) -> Bool
+    effects (E)
+
+-- Rust/std profile produces:
+fn split_first(self) -> Option<(T, Self)>;   -- returns_same_type → by value
+fn is_empty(&self) -> bool;                  -- no match → &self
+```
+
+**Why not `Modify(s)`?** Stream is semantically immutable. In Scala, `splitFirst` is a pure function on an immutable value — no mutation, no consumption, GC handles the old reference. The by-value receiver is a Rust-specific concern (ownership avoids cloning). Putting `Modify(s)` in the anthill spec would be wrong for non-Rust targets.
+
+Receiver rules are evaluated after effect rules. If an effect already determines the receiver (e.g. `Modify → &mut self`), receiver rules do not override it.
 
 ## 6. Concrete Examples
 
@@ -980,3 +1023,197 @@ fact Implementation("banking",
 4. **Verification**: The kernel generates proof obligations from operation contracts (`requires`/`ensures`). Agents discharge these obligations via testing, formal verification, or manual review, progressively upgrading the trust level.
 
 The forward mapping is optional — hand-written code that matches the spec works equally well. The `Implementation` fact is what matters for verification: it declares "this code intends to implement that spec." The forward mapping merely automates the boilerplate.
+
+## 9. LanguageMapping: Data-Driven Codegen
+
+The codegen rules described in §4 (self-arg heuristic), §5 (effects → Rust idioms), and §2.9 (type mappings) are not hardcoded. They are defined as `LanguageMapping` facts in the KB, declared in `anthill.realization`. The codegen reads the active profile and applies its rules.
+
+### 9.1 Architecture
+
+```
+┌─────────────────────────────────────┐
+│  Kernel effects (language-agnostic) │   Reads, Modify, Emit, Error
+│  — what happens semantically        │
+├─────────────────────────────────────┤
+│  LanguageMapping profile            │   "rust/std", "rust/no_std", "scala/cats"
+│  — how effects map to host syntax   │
+├─────────────────────────────────────┤
+│  Codegen                            │   reads profile, emits code
+└─────────────────────────────────────┘
+```
+
+The kernel spec says **what** happens (e.g. `Modify(store)` — this operation mutates the store). The profile says **how** to express that in the host language (e.g. `&mut self` in Rust, mutable state monad in Scala). This separation means:
+
+- The same anthill spec generates idiomatic Rust **and** idiomatic Scala
+- Rust-specific concerns (ownership, borrowing) don't pollute the spec
+- Changing codegen behavior is a profile change, not a code change
+
+### 9.2 LanguageMapping Entity
+
+Defined in `stdlib/anthill/realization/realization.anthill`:
+
+```anthill
+entity LanguageMapping(
+  language      : String,                    -- "rust", "scala", "python"
+  profile       : Option{T = String},        -- "std", "no_std", etc.
+  effect_map    : List{T = EffectMapping},   -- effect → host syntax
+  receiver_map  : List{T = ReceiverRule},    -- ownership rules (host-specific)
+  type_map      : List{T = TypeMapping}      -- prelude type → host type
+)
+```
+
+Three kinds of rules:
+
+**`effect_map`** — semantic: how kernel effects map to host syntax.
+
+```anthill
+entity EffectMapping(
+  effect    : String,        -- "Modify", "Read", "Error", "Emit"
+  receiver  : ReceiverForm   -- SharedRef, MutRef, ByValue, ResultWrap, Callback
+)
+```
+
+**`receiver_map`** — host-language-specific: how to pass `self` based on signature patterns. Not tied to any effect. Evaluated in order; first match wins.
+
+```anthill
+entity ReceiverRule(
+  condition : String,        -- "returns_same_type"
+  receiver  : ReceiverForm   -- ByValue, SharedRef, etc.
+)
+```
+
+**`type_map`** — prelude type mappings.
+
+```anthill
+entity TypeMapping(
+  anthill_type : String,     -- "Int", "List", "Option"
+  host_type    : String      -- "i64", "Vec", "Option"
+)
+```
+
+### 9.3 ReceiverForm
+
+The host-language forms available:
+
+```anthill
+sort ReceiverForm
+  entity SharedRef                    -- &self / shared borrow
+  entity MutRef                       -- &mut self / exclusive borrow
+  entity ByValue                      -- self / move (consuming)
+  entity ResultWrap                   -- wrap return in Result<R, Error>
+  entity ResultTyped(error: String)   -- wrap return in Result<R, E>
+  entity Callback                     -- add callback parameter
+end
+```
+
+### 9.4 Default Rust/std Profile
+
+The default profile is declared in `stdlib/anthill/realization/rust_std.anthill`:
+
+```anthill
+fact LanguageMapping(
+  language: "rust",
+  profile: some("std"),
+
+  effect_map: [
+    EffectMapping(effect: "Modify", receiver: MutRef),
+    EffectMapping(effect: "Read",   receiver: SharedRef),
+    EffectMapping(effect: "Error",  receiver: ResultWrap),
+    EffectMapping(effect: "Emit",   receiver: Callback)
+  ],
+
+  receiver_map: [
+    ReceiverRule(condition: "returns_same_type", receiver: ByValue)
+  ],
+
+  type_map: [
+    TypeMapping(anthill_type: "Int",       host_type: "i64"),
+    TypeMapping(anthill_type: "Float",     host_type: "f64"),
+    TypeMapping(anthill_type: "Bool",      host_type: "bool"),
+    TypeMapping(anthill_type: "String",    host_type: "String"),
+    TypeMapping(anthill_type: "Duration",  host_type: "std::time::Duration"),
+    TypeMapping(anthill_type: "Timestamp", host_type: "String"),
+    TypeMapping(anthill_type: "List",      host_type: "Vec"),
+    TypeMapping(anthill_type: "Option",    host_type: "Option")
+  ]
+)
+```
+
+### 9.5 Evaluation Order
+
+For a given operation, the codegen determines the receiver form as follows:
+
+1. **Effect rules** (from `effect_map`): if the operation has an effect whose target is the self parameter, use the corresponding receiver form. `Modify → MutRef`, `Read → SharedRef`.
+
+2. **Receiver rules** (from `receiver_map`): if no effect determined the receiver, evaluate receiver rules in order. For `returns_same_type`: check whether the enclosing sort name appears in the return type. If so, use `ByValue`.
+
+3. **Default**: `SharedRef` (`&self`).
+
+Effect rules take priority because they are semantic — `Modify` genuinely means mutation. Receiver rules are optimizations that apply when no semantic effect constrains the choice.
+
+**Example: Stream operations**
+
+```
+splitFirst(s: Stream) -> Option{Pair{T, Stream}}  effects (E)
+  1. E is abstract (Read{kb} for LogicalStream) — no Modify on s
+  2. receiver_map: Stream appears in return → ByValue
+  Result: fn split_first(self) -> Option<(T, Self)>
+
+isEmpty(s: Stream) -> Bool  effects (E)
+  1. No Modify on s
+  2. receiver_map: Stream does NOT appear in return (Bool)
+  3. Default: SharedRef
+  Result: fn is_empty(&self) -> bool
+
+persist(store: Store, fact: Term) -> FactId  effects (Modify(store))
+  1. Modify(store) → MutRef
+  Result: fn persist(&mut self, fact: Term) -> Result<FactId, Error>
+```
+
+### 9.6 Alternative Profiles
+
+A Rust/no_std profile might differ:
+
+```anthill
+fact LanguageMapping(
+  language: "rust", profile: some("no_std"),
+  effect_map: [
+    EffectMapping(effect: "Modify", receiver: MutRef),
+    EffectMapping(effect: "Read",   receiver: SharedRef),
+    EffectMapping(effect: "Error",  receiver: ResultWrap),
+    EffectMapping(effect: "Emit",   receiver: Callback)   -- or channel in no_std
+  ],
+  receiver_map: [
+    ReceiverRule(condition: "returns_same_type", receiver: ByValue)
+  ],
+  type_map: [
+    TypeMapping(anthill_type: "Int",    host_type: "i32"),
+    TypeMapping(anthill_type: "List",   host_type: "heapless::Vec"),
+    TypeMapping(anthill_type: "String", host_type: "heapless::String"),
+    ...
+  ]
+)
+```
+
+A Scala profile would have an empty `receiver_map` — no ownership concerns:
+
+```anthill
+fact LanguageMapping(
+  language: "scala", profile: some("cats"),
+  effect_map: [
+    EffectMapping(effect: "Modify", receiver: SharedRef),  -- immutable values, state monad
+    EffectMapping(effect: "Read",   receiver: SharedRef),
+    EffectMapping(effect: "Error",  receiver: ResultWrap),
+    EffectMapping(effect: "Emit",   receiver: Callback)
+  ],
+  receiver_map: [],
+  type_map: [
+    TypeMapping(anthill_type: "Int",    host_type: "Int"),
+    TypeMapping(anthill_type: "List",   host_type: "List"),
+    TypeMapping(anthill_type: "Option", host_type: "Option"),
+    ...
+  ]
+)
+```
+
+Here `splitFirst(s: Stream) -> ...Stream...` stays as a regular method call — no by-value, no consumption. The JVM GC handles the old reference.

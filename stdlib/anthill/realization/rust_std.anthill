@@ -1,0 +1,43 @@
+-- Default Rust/std language mapping profile.
+--
+-- Defines how anthill effects and prelude types map to Rust syntax.
+-- Codegen reads this from the KB; changing it changes generated code
+-- without touching the codegen implementation.
+namespace anthill.realization.rust_std
+  import anthill.realization.{LanguageMapping, EffectMapping, ReceiverRule,
+                              TypeMapping, ReceiverForm}
+  import anthill.prelude.Option.{some, none}
+
+  fact LanguageMapping(
+    language: "rust",
+    profile: some("std"),
+
+    -- Effect → host syntax (semantic: what the effect means)
+    effect_map: [
+      EffectMapping(effect: "Modify", receiver: MutRef),
+      EffectMapping(effect: "Read",   receiver: SharedRef),
+      EffectMapping(effect: "Error",  receiver: ResultWrap),
+      EffectMapping(effect: "Emit",   receiver: Callback)
+    ],
+
+    -- Receiver rules (Rust-specific ownership optimization, not semantic)
+    -- Evaluated in order; first match wins.
+    receiver_map: [
+      -- When self-type appears in return, take by value (avoid clone).
+      -- Applies to splitFirst(s: Stream) -> ...Stream...,
+      -- deposit(a: Account, m: Money) -> Account, etc.
+      ReceiverRule(condition: "returns_same_type", receiver: ByValue)
+    ],
+
+    type_map: [
+      TypeMapping(anthill_type: "Int",       host_type: "i64"),
+      TypeMapping(anthill_type: "Float",     host_type: "f64"),
+      TypeMapping(anthill_type: "Bool",      host_type: "bool"),
+      TypeMapping(anthill_type: "String",    host_type: "String"),
+      TypeMapping(anthill_type: "Duration",  host_type: "std::time::Duration"),
+      TypeMapping(anthill_type: "Timestamp", host_type: "String"),
+      TypeMapping(anthill_type: "List",      host_type: "Vec"),
+      TypeMapping(anthill_type: "Option",    host_type: "Option")
+    ]
+  )
+end

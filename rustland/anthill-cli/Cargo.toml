@@ -4,5 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Anthill CLI: validate, status, verify, decompose"
 
+[[bin]]
+name = "anthill"
+path = "src/main.rs"
+
 [dependencies]
 anthill-core = { path = "../anthill-core" }
+clap = { version = "4", features = ["derive"] }
