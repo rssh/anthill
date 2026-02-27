@@ -4,7 +4,7 @@
 
 ## Depends on: none (013 dependency resolved — abstract effect parameters implemented)
 
-## Blocks: 010 (Query System), 012 (Sort-Defined Syntax Sugar)
+## Blocks: 010 (Query System — syntax sugar only, core layers 0-1 unblocked), 012 (Sort-Defined Syntax Sugar)
 
 ## Motivation
 
@@ -120,6 +120,69 @@ Since SLD resolution already exists and handles exactly this (conjunctive goals 
 
 This means type application `List{T = Int}` is NOT a separate mechanism — it's a parameterized query. No new code needed for type instantiation; just express it as goals for the resolver.
 
+## What Is Typing?
+
+In Anthill, sorts are terms. A logical variable `?x` is a term, and it is also a valid sort (`sort T = ?`). This means every term always has a sort — the sort just might be `?` (fully unspecified).
+
+### Typing is a constraint expression
+
+The **typing of a term** is not a judgment ("typed or untyped") — it is a **constraint expression** over the term, composed from facts and rules in the KB.
+
+For example, the typing of `foo(?x)` with `requires gt(?x, 0)` is the constraint:
+
+```
+∃S: HasSort(?x, S), HasOperation(gt, S, Int, Bool), ...
+```
+
+This expression IS the typing. The question is not "is this typed?" but "what are the constraints?"
+
+### Three levels of typedness
+
+Since typing formulas may contain **free logical variables** (which is fundamental — `?` is central to Anthill), the typing status of a term falls into three categories:
+
+| Level | Condition | Meaning |
+|-------|-----------|---------|
+| **Ill-typed** | `¬∃ binding: constraints hold` | Contradiction found — no binding can satisfy the constraints |
+| **Well-typed** | `∃ binding: constraints hold` | Some binding satisfies constraints — the term is OK |
+| **Universally typed** | `∀ bindings: constraints hold` | All bindings satisfy constraints — fully resolved |
+
+Note: the middle state is **not** `¬¬typed(x)` (which under CWA collapses to `typed(x)`). It is genuinely the state where constraints have free variables and are satisfiable for some but not all bindings:
+
+```
+operation foo(x: ?T) -> ?T
+  requires gt(x, 0)
+```
+
+- `?T = Int` → well-typed (gt on Int exists)
+- `?T = String` → ill-typed (gt on String may not exist)
+- The formula has free variable `?T`, so typing is **indeterminate** until `?T` is bound
+
+### Typing and the development lifecycle
+
+This three-level classification maps directly to the specification workflow:
+
+- **During specification**: most terms are well-typed — constraints exist but free variables remain. The developer is still refining.
+- **Complete spec**: all constraints are internally consistent. This does NOT mean "no `?` remain" — abstract sort definitions like `sort Eq { sort T = ? }` are complete specs with intentional free variables. The `?` is a declared parameter, not an unfilled hole. A spec is complete when its constraints are satisfiable for all valid bindings of its declared parameters.
+- **Ill-typed at any stage**: contradiction detected — report error immediately.
+
+The distinction: a **well-typed** term has some bindings that work. A **complete spec** has constraints that work for all valid bindings of its declared parameters — the free variables are intentional (parameters), not accidental (holes).
+
+Conversational specification (see `docs/usage-scenarios/conversational-specification.md`) is the process of moving from accidental `?` (holes the developer hasn't thought about yet) to either concrete types or intentional `?` (declared parameters).
+
+### No separate type checker
+
+Since typing is a constraint expression over KB facts, **there is no separate type checker**. The KB query/resolution engine IS the type checker:
+
+- **Type inference** = constraint solving: find bindings for free sort variables that satisfy all constraints
+- **Type checking** = constraint verification: given concrete bindings, check that all constraints hold
+- **Type error** = unsatisfiable constraints: no binding exists
+
+The query engine already supports all three operations via SLD resolution with unification.
+
+### For each KB snapshot, typing is decidable
+
+For any concrete KB state (a finite set of facts and rules), `typed(t) ∨ ¬typed(t)` holds for each term — LEM applies because the KB is finite and the constraint language is decidable. The "indeterminate" state exists not because of logical incompleteness, but because the **formula itself has free variables**. At each snapshot, for each specific binding of free variables, the answer is definite.
+
 ## The Problem
 
 The kernel language spec says "types are terms" — sort identifiers are just terms. This is powerful but means there's no separate "type system" in the traditional sense. Instead, sort relationships are facts in the KB:
@@ -171,7 +234,11 @@ Key questions about this lattice:
 
 ## Open Questions
 
-### OQ1. When does type resolution happen?
+### OQ1. When does type resolution happen? (partially resolved)
+
+Since typing is constraint solving via KB queries, type resolution happens **whenever you query** — it is not a pipeline stage. See "Key Insight: Type Checking = Logic Procedures Against the KB" above.
+
+The remaining question is about **sugar desugaring** (OQ5.2/OQ5.3) which needs type info before full KB loading.
 
 **OQ1.1.** Current pipeline stages where type info is needed:
 
@@ -207,13 +274,16 @@ Where should type resolution fit? Options:
   - What operations are available? → need to know `Stream`'s operations
   - Does it satisfy any spec sorts? → need to check `fact SomeSpec{T = Stream}`
 
-### OQ3. Type inference vs type checking
+### OQ3. Type inference vs type checking (partially resolved)
 
-**OQ3.1.** Does Anthill have **type inference** (deduce types from usage) or only **type checking** (verify explicit annotations)?
+The "What Is Typing?" section above resolves the fundamental question: type inference and type checking are **the same operation** — constraint solving over sort variables via KB queries.
 
-In logic programming, unification IS a form of type inference — variables get bound to terms of specific sorts through unification. Is this sufficient, or do we need a separate inference pass?
+- **Type inference** = find bindings for free sort variables that satisfy all constraints (open-ended constraint solving)
+- **Type checking** = given specific bindings, verify all constraints hold (ground constraint checking)
 
-**OQ3.2.** How much inference is needed for sort-defined syntax sugar? If `[?x | ?x <- expr]` needs to know that `expr` is a `Stream` to desugar, then at minimum we need to infer the sort of `expr`. Options:
+Both reduce to SLD resolution against the KB. There is no separate inference pass — unification during query resolution IS type inference.
+
+**OQ3.2.** (Remaining) How much inference is needed for sort-defined syntax sugar? If `[?x | ?x <- expr]` needs to know that `expr` is a `Stream` to desugar, then at minimum we need to infer the sort of `expr`. Options:
   - Require explicit annotation: `[?x | ?x <- (expr : Stream{T = Int})]` — no inference needed
   - Infer from context: if `expr` is a call to an operation returning `Stream{T = Int}`, propagate that
   - Infer from operations: if `expr` supports `flatMap`/`guard`/`pure`, it's comprehension-compatible (structural typing)
@@ -866,8 +936,8 @@ This is the **minimal complete definition** pattern. Stream declares which opera
 
 ## Relationship to Other Proposals
 
-- **010 (Query System)**: Queries need type resolution for sort-query (`? : Color`), for comprehension syntax desugaring, and for checking that query patterns match fact sorts.
-- **012 (Sort-Defined Syntax Sugar)**: Sugar activation depends on type resolution — "does this sort support comprehension syntax?" requires knowing the sort and its operations.
+- **010 (Query System)**: Core query semantics (layers 0-1: pattern matching, conjunctive queries, unification) do **not** need type resolution — they work via unification and rule resolution against the KB directly. Sort annotations like `?x: Account` are user-provided labels that map to `by_sort` lookups, not type inference. The dependency on 011 is only through **syntax sugar** (comprehension desugaring in layer 2+, which is really 012's concern).
+- **012 (Sort-Defined Syntax Sugar)**: Sugar activation depends on type resolution — "does this sort support comprehension syntax?" requires knowing the sort and its operations. This is the primary consumer of type resolution.
 - **002 (Arrow Sorts)**: Arrow sorts (`A -> B`) introduce function types that need resolution in operation signatures and higher-order operations.
 
 ## References
