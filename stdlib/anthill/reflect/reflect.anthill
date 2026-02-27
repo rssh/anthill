@@ -12,14 +12,18 @@
 namespace anthill.reflect
   import anthill.prelude.{List}
   import anthill.prelude.{Option}
+  import anthill.prelude.{Pair}
+  import anthill.prelude.{Bool}
   import anthill.prelude.{LogicalStream}
   import anthill.prelude.{Map}
   import anthill.reflect.KB.{kb}
   export Term, FactId
   export TermRepr, SortInfo, OperationInfo, FieldInfo, DescriptionInfo
   export Substitution, apply_subst, compose
-  export LogicalQuery, pattern_query, sort_query, conjunction, disjunction
+  export LogicalQuery, QueryResult, empty_query, query_result
+  export pattern_query, sort_query, conjunction, disjunction
   export negation, guarded, projected, limited
+  export nonvar, ground
   export reify, reflect
   export sorts, operations, constructors, fields, rules, descriptions
   export execute, sort_template, instantiation_query
@@ -82,6 +86,44 @@ namespace anthill.reflect
     name         : String,
     type_name    : String
   )
+
+  -- ================================================================
+  -- Meta-level primitives (procedural — inspect variable state)
+  -- ================================================================
+
+  -- Succeeds if ?x is bound to a non-variable term (functor visible).
+  -- Returns DELAY during SLD resolution if ?x is unbound.
+  -- Use as a guard before operations that need to inspect term structure.
+  --
+  -- Example: rule entity_of(?x, ?sort) :- nonvar(?x), Subsort(?x, ?sort)
+  operation nonvar(x: Term) -> Bool
+
+  -- Succeeds if ?x is fully ground (no variables anywhere in the term).
+  -- Returns DELAY during SLD resolution if ?x contains variables.
+  -- Use as a guard before operations that need concrete values.
+  --
+  -- Example: rule can_compare(?x, ?y) :- ground(?x), ground(?y), gt(?x, ?y)
+  operation ground(x: Term) -> Bool
+
+  -- ================================================================
+  -- Typing rules (derivable from primitives + KB facts)
+  -- ================================================================
+
+  -- Entity-of: given a non-variable term, find its sort via Subsort index
+  -- rule entity_of(?x, ?sort) :- nonvar(?x), Subsort(?x, ?sort)
+
+  -- Has-sort: transitive closure through subtyping
+  -- rule has_sort(?t, ?s) :- entity_of(?t, ?s)
+  -- rule has_sort(?t, ?p) :- has_sort(?t, ?c), is_subtype(?c, ?p)
+
+  -- Subtyping: reflexive-transitive closure of Subsort
+  -- rule is_subtype(?A, ?A)
+  -- rule is_subtype(?A, ?C) :- is_subtype(?A, ?B), is_subtype(?B, ?C)
+  -- rule is_subtype(?Ctor, ?Sort) :- Subsort(?Ctor, ?Sort)
+
+  -- Operation dispatch: find which sort's operation applies
+  -- rule resolve_operation(?name, ?x, ?info)
+  --   :- has_sort(?x, ?S), OperationInfo(?name, ?S, ?info)
 
   -- ================================================================
   -- Bridge: opaque Term ↔ structural TermRepr
@@ -155,18 +197,33 @@ namespace anthill.reflect
   -- Queries as composable, storable, inspectable KB values.
   -- See proposal 010 (Query System) for design rationale.
   sort LogicalQuery {
-    entity pattern_query(term: Term)                              -- single pattern
-    entity sort_query(sort_name: String)                          -- all facts of a sort
-    entity conjunction(left: LogicalQuery, right: LogicalQuery)   -- AND (shared vars = join)
-    entity disjunction(left: LogicalQuery, right: LogicalQuery)   -- OR
-    entity negation(query: LogicalQuery)                          -- NOT (negation-as-failure)
-    entity guarded(query: LogicalQuery, condition: Term)          -- filter
-    entity projected(query: LogicalQuery, vars: List{T = String}) -- projection
-    entity limited(query: LogicalQuery, count: Int)               -- cardinality limit
+    entity empty_query                                             -- no constraints (always true)
+    entity pattern_query(term: Term)                               -- single pattern
+    entity sort_query(sort_name: String)                           -- all facts of a sort
+    entity conjunction(left: LogicalQuery, right: LogicalQuery)    -- AND (shared vars = join)
+    entity disjunction(left: LogicalQuery, right: LogicalQuery)    -- OR
+    entity negation(query: LogicalQuery)                           -- NOT (negation-as-failure)
+    entity guarded(query: LogicalQuery, condition: Term)           -- filter
+    entity projected(query: LogicalQuery, vars: List{T = String})  -- projection
+    entity limited(query: LogicalQuery, count: Int)                -- cardinality limit
   }
 
-  -- Execute a query against the KB
-  operation execute(query: LogicalQuery) -> LogicalStream{T = Substitution}
+  -- Result of query execution: residual (unresolved constraints) + solutions.
+  -- If residual is empty → fully resolved.
+  -- If residual is non-empty → solutions are conditional on the residual.
+  -- A constraint IS just a LogicalQuery that hasn't been resolved yet.
+  sort QueryResult {
+    entity query_result(
+      residual  : LogicalQuery,
+      solutions : LogicalStream{T = Substitution}
+    )
+  }
+
+  -- Execute a query against the KB.
+  -- Returns (residual, solutions): the residual contains any goals that
+  -- could not be resolved (e.g., guards on unbound variables that were
+  -- delayed). An empty residual means fully resolved.
+  operation execute(query: LogicalQuery) -> QueryResult
     effects (Read{kb})
 
   -- Extract a sort's fact template as a query

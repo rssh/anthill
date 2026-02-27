@@ -290,16 +290,61 @@ Both reduce to SLD resolution against the KB. There is no separate inference pas
 
 **OQ3.3.** Bidirectional type checking? Some systems propagate type info both top-down (expected type) and bottom-up (inferred type). E.g., `let s : Stream{T = Int} = query account(?, ?, ?bal)` — the expected type `Stream{T = Int}` constrains how `query` is desugared. Is bidirectional checking worth the complexity?
 
-### OQ4. Sort resolution for operations
+### OQ4. Sort resolution for operations (partially resolved)
 
-**OQ4.1.** When an operation name appears in a term, which sort's operation is it? E.g., both `List` and `Stream` might have a `map` operation. Resolution options:
-  - **Qualified names**: `Stream.map(s, f)` — explicit, no ambiguity
-  - **Receiver-based**: `map(s, f)` where the sort of `s` determines which `map`
-  - **Import-based**: the current scope's imports determine which `map` is visible
+Operation dispatch is a primary driver for typing. When an unresolved name `map(x, f)` appears, the system generates a constraint query:
 
-**OQ4.2.** Can operations be **overloaded** across sorts? If `add` exists on both `Int` and `Float`, is `add(1, 2)` resolved by argument types?
+```
+:- HasSort(x, ?S), HasOperation(?S, map, arity=2, ...)
+```
 
-**OQ4.3.** How does this interact with spec sorts? If `Numeric` declares `add`, and both `Int` and `Float` satisfy `Numeric`, then `add` is polymorphic. Resolution needs to know the concrete sort to dispatch.
+Then runs it against the KB:
+- **One answer** → resolved, rewrite `map` to the qualified form (e.g., `List.map`)
+- **Many answers** → ambiguity error (but see specificity below)
+- **Zero answers** → unknown operation error
+
+**Specificity ordering.** If both `List.map` and `Monad.map` match (because `fact Monad{F = List}`), prefer the more specific sort — the one that's a subsort of the other. Since `Subsort(List, Monad)` holds via the satisfaction fact, `List.map` wins.
+
+**Why this matters now.** Currently anthill has no unresolved operation calls — rules/facts use functors (just symbols), and declared operations resolve by scope/import. But operation dispatch becomes necessary in two cases:
+
+1. **Expressions** — once anthill has expressions (`let x = map(myList, f)`), ambiguous operation names require constraint solving to dispatch.
+2. **Host language realization** — generating interfaces for host languages (Rust, Java, etc.) requires concrete types. Even without expressions in anthill:
+
+```
+-- anthill:
+sort Eq {
+  sort T = ?
+  operation eq(a: T, b: T) -> Bool
+}
+```
+```rust
+// generated Rust — ? maps to generic parameter, OK:
+trait Eq { type T; fn eq(a: &Self::T, b: &Self::T) -> bool; }
+```
+
+But an accidental `?` (not a declared parameter):
+```
+operation process(x: ?V) -> ?V    -- ?V is not declared anywhere
+```
+cannot generate a host language signature — the host language needs an answer.
+
+**Two drivers for typing, two levels of resolution:**
+
+| Driver | When | Resolution needed |
+|---|---|---|
+| **Operation dispatch** | Expressions with ambiguous names | Well-typed — enough to pick one answer |
+| **Realization** | Generating host language interfaces | All accidental `?` eliminated — intentional parameters become host generics, everything else concrete |
+
+The realization boundary is where accidental `?` must be zero. Intentional `?` (declared sort parameters) map to host language generics/type parameters.
+
+**OQ4.1.** (Remaining) Fallback when constraint solving doesn't disambiguate. Options:
+  - **Qualified names**: `Stream.map(s, f)` — explicit, always available as escape hatch
+  - **Import-based priority**: the current scope's imports determine preference
+  - **Error**: require the user to disambiguate
+
+**OQ4.2.** Can operations be **overloaded** across sorts? If `add` exists on both `Int` and `Float`, is `add(1, 2)` resolved by argument types? (Yes — this is exactly the constraint query mechanism above.)
+
+**OQ4.3.** How does this interact with spec sorts? If `Numeric` declares `add`, and both `Int` and `Float` satisfy `Numeric`, then `add` is polymorphic. The specificity ordering handles this: if the argument is known to be `Int`, prefer `Int.add` over `Numeric.add`.
 
 ### OQ5. Types-are-terms implications
 
@@ -462,6 +507,119 @@ Each parameterized sort explicitly declares how subtyping propagates through its
 **OQ5c.2.** How to ensure soundness? In traditional type systems, the compiler checks that declared variance is consistent with usage (covariant parameters can't appear in input positions). With rules-as-variance, unsound rules are expressible. Options: (a) trust the author, (b) add a checking rule/constraint that validates variance declarations against operation signatures, (c) defer — soundness checking is a concern for a later iteration.
 
 **OQ5c.3.** Default variance: should parameterized sorts without explicit subtyping rules be **invariant** by default? This is the safe choice — `List{Int}` and `List{Nat}` are unrelated unless a rule says otherwise.
+
+### OQ5d. Execution Model: Primitives, Procedural Chunks, and Residuals
+
+#### Primitive classification
+
+Typing operations divide into **truly primitive** (require procedural/oracle access) and **derivable** (expressible as rules over KB facts):
+
+**Meta-level primitives** (procedural — inspect variable binding state):
+
+| Primitive | Meaning | Use case |
+|---|---|---|
+| `nonvar(?x)` | Top-level is not a variable — functor visible | `entity_of` needs to see the constructor |
+| `ground(?x)` | Fully concrete, no variables anywhere | `gt` needs actual values to compare |
+
+These cannot be expressed as KB queries because they inspect the **current state of resolution**, not KB content.
+
+**Oracle primitives** (access KB internals, defined in `anthill.reflect`):
+
+| Primitive | Meaning |
+|---|---|
+| `reify` / `reflect` | Term structure decomposition/construction |
+| `execute` | Run a query against the KB |
+| `sort_template` / `instantiation_query` | Extract/instantiate sort fact templates |
+| `sorts` / `operations` / `constructors` / `fields` / `rules` / `descriptions` | KB index access |
+| `apply_subst` / `compose` | Substitution operations |
+
+**Derivable as rules** (everything else):
+
+```
+-- Subtyping: rules over Subsort facts
+rule is_subtype(?A, ?A)
+rule is_subtype(?A, ?C) :- is_subtype(?A, ?B), is_subtype(?B, ?C)
+rule is_subtype(?Ctor, ?Sort) :- Subsort(?Ctor, ?Sort)
+
+-- Entity-of: guarded by nonvar, then functor lookup
+rule entity_of(?x, ?sort) :- nonvar(?x), Subsort(?x, ?sort)
+
+-- Has-sort: derived from entity_of + subtyping
+rule has_sort(?t, ?s) :- entity_of(?t, ?s)
+rule has_sort(?t, ?p) :- has_sort(?t, ?c), is_subtype(?c, ?p)
+
+-- Operation dispatch: constraint query
+rule resolve_operation(?name, ?x, ?op_info)
+  :- has_sort(?x, ?S), OperationInfo(?name, ?S, ?op_info)
+```
+
+#### Procedural chunks in Term
+
+The meta-level primitives (`nonvar`, `ground`) and oracle operations need a way to execute procedurally during SLD resolution. This requires a new `Term` variant — a **procedural chunk**: a term that, when encountered as a goal, calls a handler with the current resolution context.
+
+```
+-- Conceptually, a Term can be:
+--   Fn, Var, Ref, Literal, Quoted, Bottom   (existing)
+--   Procedure(handler, args)                 (new)
+```
+
+When SLD resolution encounters a `Procedure` goal, it invokes the handler with:
+- The current substitution (variable bindings)
+- The arguments
+
+The handler returns one of:
+- **Success** with substitution updates
+- **Failure** (goal cannot be satisfied)
+- **Delay** (goal cannot be evaluated yet — insufficient bindings)
+
+#### Delay handling in SLD resolution
+
+When a procedural chunk (or a `nonvar`/`ground` guard) returns DELAY, the SLD resolver has strategies:
+
+1. **Reorder**: put the delayed goal at the end of the goal list, try other goals first. If other goals bind the needed variables, retry succeeds.
+2. **Attach to variables**: associate the delayed goal with its unbound variables. When a variable gets bound (through unification elsewhere), wake up the delayed goal and re-evaluate.
+3. **Residualize**: if resolution completes with goals still delayed, return them as **residuals** — unresolved constraints.
+
+The `resolved(?x)` guard primitive provides a clean separation:
+
+```
+-- entity_of requires nonvar to inspect the functor:
+rule entity_of(?x, ?sort) :- nonvar(?x), Subsort(?x, ?sort)
+
+-- gt requires ground values to compare:
+rule can_compare(?x, ?y, ?result) :- ground(?x), ground(?y), gt(?x, ?y)
+```
+
+If `nonvar(?x)` encounters an unbound `?x`, it returns DELAY. The resolver reorders or attaches to `?x`. When `?x` gets bound through another goal, `nonvar(?x)` succeeds, and `entity_of` proceeds.
+
+#### Query execution returns residuals
+
+A query that completes with unresolved delayed goals returns them as a **residual** — the unresolved part of the original query:
+
+```
+sort QueryResult {
+  entity query_result(
+    residual  : LogicalQuery,    -- unresolved constraints (empty_query if none)
+    solutions : LogicalStream{T = Substitution}
+  )
+}
+
+operation execute(query: LogicalQuery) -> QueryResult
+  effects (Read{kb})
+```
+
+- **residual**: the unresolved LogicalQuery. `empty_query` if fully resolved.
+- **solutions**: the stream of solutions (subject to the residual constraints).
+
+This maps directly to typing levels:
+
+| Residual | Stream | Typing status |
+|---|---|---|
+| Empty | Non-empty | Universally typed — fully resolved |
+| Non-empty | Non-empty | Well-typed — solutions exist but carry constraints |
+| Any | Empty | Ill-typed — no solutions |
+
+The residual IS a LogicalQuery — not a separate "Constraint" type. An unresolved query returns itself (or its unresolved part) as the residual. This means constraint and query are the same concept: a constraint is just a query that hasn't been resolved yet.
 
 **OQ5b.1. Are there untyped terms?** Several cases where terms lack a known sort:
 
