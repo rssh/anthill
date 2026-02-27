@@ -34,7 +34,7 @@ sort anthill.prelude.LogicalStream
   -- Logic-specific construction
   -- ================================================================
 
-  entity empty                                             -- zero results (failure)
+  operation empty() -> LogicalStream{T = ?A}                 -- zero results (failure)
 
   operation pure(x: T) -> LogicalStream                    -- single result
 
