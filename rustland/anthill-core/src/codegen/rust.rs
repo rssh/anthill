@@ -6,15 +6,135 @@
 ///
 /// See `docs/rust-forward-mapping.md` for the full mapping specification.
 
+use std::collections::{HashMap, HashSet};
+
 use crate::intern::{SymbolTable, Symbol};
 use crate::kb::term::Term;
 use crate::parse::ir::*;
 
+// ── Codegen error ───────────────────────────────────────────────
+
+/// Error produced during Rust code generation.
+#[derive(Debug, Clone)]
+pub struct CodegenError {
+    pub message: String,
+}
+
+impl std::fmt::Display for CodegenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for CodegenError {}
+
+// ── Codegen configuration ───────────────────────────────────────
+
+/// Configuration for code generation output mode.
+///
+/// Default produces skeleton output (existing behavior).
+/// Non-default values produce compilable output for STL generation.
+pub struct CodegenConfig {
+    /// Skip the outer `pub mod name { }` wrapper (file IS the module).
+    pub flatten_top_namespace: bool,
+    /// Emit `{ todo!() }` for free functions and impl methods (compilable output).
+    pub emit_fn_bodies: bool,
+    /// CarrierBindings: opaque sort name → host type path.
+    /// E.g. "Term" → "anthill_core::kb::term::TermId"
+    pub carrier_bindings: HashMap<String, String>,
+    /// NamespaceMappings: anthill namespace prefix → host module prefix.
+    /// E.g. "anthill" → "crate" for intra-crate generation.
+    pub namespace_map: HashMap<String, String>,
+    /// Derive macros for structs/enums. E.g. ["Clone", "Debug"].
+    pub derives: Vec<String>,
+    /// Make all items public (for compilable library output).
+    pub default_pub: bool,
+}
+
+impl Default for CodegenConfig {
+    fn default() -> Self {
+        Self {
+            flatten_top_namespace: false,
+            emit_fn_bodies: false,
+            carrier_bindings: HashMap::new(),
+            namespace_map: HashMap::new(),
+            derives: Vec::new(),
+            default_pub: false,
+        }
+    }
+}
+
 /// Generate Rust skeleton code from a parsed anthill file.
-pub fn generate_rust(parsed: &ParsedFile) -> String {
-    let mut cg = RustCodegen::new(&parsed.symbols, &parsed.terms);
+pub fn generate_rust(parsed: &ParsedFile) -> Result<String, Vec<CodegenError>> {
+    generate_rust_with_context(parsed, &HashSet::new())
+}
+
+/// Generate Rust code with cross-file sort classification context.
+///
+/// `global_trait_sorts` contains sort names known to be traits from other files.
+/// This allows correct `impl Trait` wrapping for return types defined elsewhere.
+pub fn generate_rust_with_context(
+    parsed: &ParsedFile,
+    global_trait_sorts: &HashSet<String>,
+) -> Result<String, Vec<CodegenError>> {
+    let config = CodegenConfig::default();
+    generate_rust_with_config(parsed, global_trait_sorts, &config)
+}
+
+/// Generate Rust code with full configuration control.
+///
+/// Used by build scripts to produce compilable output with import remapping,
+/// carrier bindings, derive macros, etc.
+pub fn generate_rust_with_config(
+    parsed: &ParsedFile,
+    global_trait_sorts: &HashSet<String>,
+    config: &CodegenConfig,
+) -> Result<String, Vec<CodegenError>> {
+    let mut cg = RustCodegen::with_context(&parsed.symbols, &parsed.terms, global_trait_sorts, config);
     cg.emit_items(&parsed.items, None);
-    cg.output
+    if cg.errors.is_empty() {
+        Ok(cg.output)
+    } else {
+        Err(cg.errors)
+    }
+}
+
+/// Collect trait sort names across multiple parsed files.
+///
+/// A sort is a trait if it has operations and no entities (same heuristic
+/// used during single-file codegen). This pre-pass enables cross-file
+/// `impl Trait` wrapping.
+pub fn collect_trait_sorts(files: &[&ParsedFile]) -> HashSet<String> {
+    let mut traits = HashSet::new();
+    for file in files {
+        collect_trait_sorts_from_items(&file.items, &file.symbols, &mut traits);
+    }
+    traits
+}
+
+fn collect_trait_sorts_from_items(
+    items: &[Item],
+    symbols: &SymbolTable,
+    traits: &mut HashSet<String>,
+) {
+    for item in items {
+        match item {
+            Item::SortWithBody(s) => {
+                let has_ops = s.items.iter().any(|i| matches!(i,
+                    Item::Operation(_) | Item::OperationBlock(_)));
+                let has_entities = s.items.iter().any(|i| matches!(i, Item::Entity(_)));
+                if !has_entities && has_ops {
+                    traits.insert(symbols.name(s.name.last()).to_owned());
+                }
+                // Recurse into nested items (sub-namespaces, nested sorts)
+                collect_trait_sorts_from_items(&s.items, symbols, traits);
+            }
+            Item::Namespace(ns) => {
+                collect_trait_sorts_from_items(&ns.items, symbols, traits);
+            }
+            _ => {}
+        }
+    }
 }
 
 // ── Sort analysis ────────────────────────────────────────────────
@@ -97,17 +217,26 @@ struct RustCodegen<'a> {
     indent: usize,
     /// Sort names that generate as traits (not enums/structs).
     /// Used to wrap return types with `impl` when returning a trait.
-    trait_sorts: std::collections::HashSet<String>,
+    trait_sorts: HashSet<String>,
+    config: &'a CodegenConfig,
+    errors: Vec<CodegenError>,
 }
 
 impl<'a> RustCodegen<'a> {
-    fn new(symbols: &'a SymbolTable, terms: &'a SimpleTermStore) -> Self {
+    fn with_context(
+        symbols: &'a SymbolTable,
+        terms: &'a SimpleTermStore,
+        global_traits: &HashSet<String>,
+        config: &'a CodegenConfig,
+    ) -> Self {
         Self {
             symbols,
             terms,
             output: String::new(),
             indent: 0,
-            trait_sorts: std::collections::HashSet::new(),
+            trait_sorts: global_traits.clone(),
+            config,
+            errors: Vec::new(),
         }
     }
 
@@ -146,7 +275,9 @@ impl<'a> RustCodegen<'a> {
     fn visibility_prefix(&self, vis: Option<Visibility>) -> &'static str {
         match vis {
             Some(Visibility::Export) | Some(Visibility::Public) => "pub ",
-            _ => "",
+            _ => {
+                if self.config.default_pub { "pub " } else { "" }
+            }
         }
     }
 
@@ -161,6 +292,14 @@ impl<'a> RustCodegen<'a> {
             format!("impl {ret}")
         } else {
             ret.to_owned()
+        }
+    }
+
+    /// Emit `#[derive(...)]` attribute if configured.
+    fn emit_derive_attr(&mut self) {
+        if !self.config.derives.is_empty() {
+            let derives = self.config.derives.join(", ");
+            self.line(&format!("#[derive({derives})]"));
         }
     }
 
@@ -272,8 +411,10 @@ impl<'a> RustCodegen<'a> {
                     last_entity = Some(self.resolve(&e.name));
                 }
                 Item::Operation(o) => {
-                    if !first { self.blank(); }
-                    self.emit_free_function(o, _enclosing_ns);
+                    let op_name = self.resolve(&o.name);
+                    self.errors.push(CodegenError {
+                        message: format!("operation `{op_name}` has no enclosing namespace for module trait"),
+                    });
                 }
                 Item::Fact(f) => {
                     self.emit_namespace_fact(f, last_entity.as_deref());
@@ -312,8 +453,12 @@ impl<'a> RustCodegen<'a> {
 
     fn emit_namespace(&mut self, ns: &Namespace) {
         let name = to_snake_case(&self.resolve(&ns.name));
-        self.line(&format!("pub mod {name} {{"));
-        self.indent();
+        let flatten = self.config.flatten_top_namespace && self.indent == 0;
+
+        if !flatten {
+            self.line(&format!("pub mod {name} {{"));
+            self.indent();
+        }
 
         // Imports
         for imp in &ns.imports {
@@ -391,6 +536,7 @@ impl<'a> RustCodegen<'a> {
         // Emit items, handling sorts with aggregated operations and supertraits
         let mut first = true;
         let mut last_entity: Option<String> = None;
+        let mut orphan_ops: Vec<&Operation> = Vec::new();
         for (idx, item) in ns.items.iter().enumerate() {
             if consumed_ops.contains(&idx) || consumed_facts.contains(&idx) {
                 continue;
@@ -408,7 +554,12 @@ impl<'a> RustCodegen<'a> {
                     let sname = self.resolve(&s.name);
                     let extra_ops = sort_ops.remove(&sname);
                     let extra_supers = sort_supertraits.remove(&sname).unwrap_or_default();
-                    if let Some(ops) = extra_ops {
+                    if let Some(host_type) = self.config.carrier_bindings.get(&sname) {
+                        // Carrier binding: emit type alias instead of struct/trait
+                        if !first { self.blank(); }
+                        let vis = self.visibility_prefix(s.visibility);
+                        self.line(&format!("{vis}type {sname} = {host_type};"));
+                    } else if let Some(ops) = extra_ops {
                         if !first { self.blank(); }
                         self.emit_abstract_sort_as_trait(s, &ops, &extra_supers);
                     } else {
@@ -430,8 +581,8 @@ impl<'a> RustCodegen<'a> {
                     last_entity = Some(self.resolve(&e.name));
                 }
                 Item::Operation(o) => {
-                    if !first { self.blank(); }
-                    self.emit_free_function(o, Some(ns));
+                    // Collect orphan ops for module trait emission
+                    orphan_ops.push(o);
                 }
                 Item::Fact(f) => {
                     self.emit_namespace_fact(f, last_entity.as_deref());
@@ -448,6 +599,12 @@ impl<'a> RustCodegen<'a> {
             first = false;
         }
 
+        // Emit module trait for orphan operations (compilable mode only)
+        if !orphan_ops.is_empty() {
+            self.blank();
+            self.emit_module_trait(ns, &orphan_ops);
+        }
+
         // Test module for namespace-level rules
         let rules = collect_rules(&ns.items);
         if !rules.is_empty() {
@@ -455,8 +612,10 @@ impl<'a> RustCodegen<'a> {
             self.emit_test_module(&rules);
         }
 
-        self.dedent();
-        self.line("}");
+        if !flatten {
+            self.dedent();
+            self.line("}");
+        }
     }
 
     fn collect_sort_names(&self, items: &[Item]) -> Vec<String> {
@@ -519,6 +678,14 @@ impl<'a> RustCodegen<'a> {
         extra_ops: &[&Operation],
         extra_supers: &[String],
     ) {
+        // Emit sort-level imports (if the sort has its own imports)
+        for imp in &sort.imports {
+            self.emit_import(imp);
+        }
+        if !sort.imports.is_empty() {
+            self.blank();
+        }
+
         let sort_name = self.resolve(&sort.name);
         let mut info = SortInfo::from_items(&sort.items, self.symbols, self.terms);
 
@@ -546,9 +713,20 @@ impl<'a> RustCodegen<'a> {
     }
 
     fn emit_import(&mut self, imp: &Import) {
-        let segments: Vec<String> = imp.path.segments.iter()
+        let mut segments: Vec<String> = imp.path.segments.iter()
             .map(|s| to_snake_case(&self.resolve_sym(*s)))
             .collect();
+
+        // Apply namespace_map: if the first segment matches a key, replace it
+        if let Some(first) = segments.first() {
+            if let Some(replacement) = self.config.namespace_map.get(first.as_str()) {
+                segments[0] = replacement.clone();
+            }
+        }
+
+        if self.config.emit_fn_bodies {
+            self.line("#[allow(unused_imports)]");
+        }
 
         match &imp.kind {
             ImportKind::Plain => {
@@ -575,6 +753,7 @@ impl<'a> RustCodegen<'a> {
         let vis = self.visibility_prefix(entity.visibility);
         let name = self.resolve(&entity.name);
 
+        self.emit_derive_attr();
         if entity.fields.is_empty() {
             self.line(&format!("{vis}struct {name};"));
         } else {
@@ -593,6 +772,14 @@ impl<'a> RustCodegen<'a> {
     // ── Sort → enum or trait ─────────────────────────────────────
 
     fn emit_sort(&mut self, sort: &SortWithBody) {
+        // Emit sort-level imports (e.g. from `sort a.b.C` with imports inside)
+        for imp in &sort.imports {
+            self.emit_import(imp);
+        }
+        if !sort.imports.is_empty() {
+            self.blank();
+        }
+
         let sort_name = self.resolve(&sort.name);
         let info = SortInfo::from_items(&sort.items, self.symbols, self.terms);
 
@@ -621,6 +808,7 @@ impl<'a> RustCodegen<'a> {
             format!("<{}>", info.type_params.join(", "))
         };
 
+        self.emit_derive_attr();
         self.line(&format!("{vis}enum {sort_name}{generics} {{"));
         self.indent();
 
@@ -646,8 +834,9 @@ impl<'a> RustCodegen<'a> {
         self.dedent();
         self.line("}");
 
-        // If there are operations, emit an impl block
-        if !info.operations.is_empty() {
+        // If there are operations, emit an impl block (skeleton mode only).
+        // In compilable mode, impl methods need hand-written implementations.
+        if !info.operations.is_empty() && !self.config.emit_fn_bodies {
             self.blank();
             self.line(&format!("impl{generics} {sort_name}{generics} {{"));
             self.indent();
@@ -765,7 +954,7 @@ impl<'a> RustCodegen<'a> {
         collapse_self: bool,
     ) {
         let op_name = to_snake_case(&self.resolve(&op.name));
-        let effects = analyze_effects(&op.effects, self.symbols);
+        let effects = analyze_effects(&op.effects, self.symbols, type_params);
 
         // Determine self-arg
         let (has_self, is_mut) = self.check_self_arg(op, sort_name, type_params, &effects, collapse_self);
@@ -797,14 +986,6 @@ impl<'a> RustCodegen<'a> {
             params_str.push_str(&format!("{pname}: {ptype}"));
         }
 
-        // Emits effect → add callback param
-        if let Some(event_type) = &effects.emits_type {
-            if !params_str.is_empty() {
-                params_str.push_str(", ");
-            }
-            params_str.push_str(&format!("on_event: impl FnMut({event_type})"));
-        }
-
         // Return type
         let raw_ret = self.type_to_rust_in_sort(&op.return_type, sort_name, type_params, collapse_self);
         let raw_ret = self.wrap_trait_return(&raw_ret);
@@ -822,7 +1003,7 @@ impl<'a> RustCodegen<'a> {
     ) {
         let vis = if in_impl { self.visibility_prefix(op.visibility) } else { "" };
         let op_name = to_snake_case(&self.resolve(&op.name));
-        let effects = analyze_effects(&op.effects, self.symbols);
+        let effects = analyze_effects(&op.effects, self.symbols, type_params);
 
         let (has_self, is_mut) = self.check_self_arg(op, sort_name, type_params, &effects, false);
 
@@ -846,13 +1027,6 @@ impl<'a> RustCodegen<'a> {
             params_str.push_str(&format!("{pname}: {ptype}"));
         }
 
-        if let Some(event_type) = &effects.emits_type {
-            if !params_str.is_empty() {
-                params_str.push_str(", ");
-            }
-            params_str.push_str(&format!("on_event: impl FnMut({event_type})"));
-        }
-
         let raw_ret = self.type_to_rust_in_sort(&op.return_type, sort_name, type_params, false);
         let raw_ret = self.wrap_trait_return(&raw_ret);
         let ret = wrap_return_type(&raw_ret, &effects);
@@ -860,35 +1034,51 @@ impl<'a> RustCodegen<'a> {
         self.line(&format!("{vis}fn {op_name}({params_str}) -> {ret};"));
     }
 
-    /// Emit a free function (operation at namespace level).
-    fn emit_free_function(&mut self, op: &Operation, _enclosing_ns: Option<&Namespace>) {
-        let vis = self.visibility_prefix(op.visibility);
-        let op_name = to_snake_case(&self.resolve(&op.name));
-        let effects = analyze_effects(&op.effects, self.symbols);
+    /// Emit a module trait collecting orphan operations.
+    ///
+    /// Operations that don't match any sort/entity for self-arg (Rule 3) are
+    /// collected into a trait named `{Namespace}Ops` with `&self` on each method.
+    fn emit_module_trait(&mut self, ns: &Namespace, ops: &[&Operation]) {
+        let ns_name = self.resolve(&ns.name);
+        let trait_name = format!("{}Ops", to_pascal_case(&ns_name));
+        let vis = self.visibility_prefix(None);
 
-        // Check namespace entity rule: if first param type matches a local entity
-        let mut params_str = String::new();
+        self.line(&format!("{vis}trait {trait_name} {{"));
+        self.indent();
+
+        let mut first = true;
+        for op in ops {
+            if !first { self.blank(); }
+            self.emit_module_trait_method(op);
+            first = false;
+        }
+
+        self.dedent();
+        self.line("}");
+    }
+
+    /// Emit a single method inside a module trait.
+    ///
+    /// Like `emit_trait_method` but always adds `&self` as receiver and keeps
+    /// all original params (no sort-name matching for self-collapse).
+    fn emit_module_trait_method(&mut self, op: &Operation) {
+        let op_name = to_snake_case(&self.resolve(&op.name));
+        let effects = analyze_effects(&op.effects, self.symbols, &[]);
+
+        let mut params_str = String::from("&self");
+
         for param in &op.params {
-            if !params_str.is_empty() {
-                params_str.push_str(", ");
-            }
+            params_str.push_str(", ");
             let pname = to_snake_case(&self.resolve_sym(param.name));
             let ptype = self.type_to_rust(&param.ty);
             params_str.push_str(&format!("{pname}: {ptype}"));
-        }
-
-        if let Some(event_type) = &effects.emits_type {
-            if !params_str.is_empty() {
-                params_str.push_str(", ");
-            }
-            params_str.push_str(&format!("on_event: impl FnMut({event_type})"));
         }
 
         let raw_ret = self.type_to_rust(&op.return_type);
         let raw_ret = self.wrap_trait_return(&raw_ret);
         let ret = wrap_return_type(&raw_ret, &effects);
 
-        self.line(&format!("{vis}fn {op_name}({params_str}) -> {ret};"));
+        self.line(&format!("fn {op_name}({params_str}) -> {ret};"));
     }
 
     /// Check if the first param should become self.
@@ -994,20 +1184,14 @@ impl<'a> RustCodegen<'a> {
 // ── Effect analysis ──────────────────────────────────────────────
 
 struct EffectInfo {
-    has_modifies: bool,
-    has_reads: bool,
     modifies_targets: Vec<String>,
     errors_type: Option<String>,
-    emits_type: Option<String>,
 }
 
-fn analyze_effects(effects: &[Effect], symbols: &SymbolTable) -> EffectInfo {
+fn analyze_effects(effects: &[Effect], symbols: &SymbolTable, type_params: &[String]) -> EffectInfo {
     let mut info = EffectInfo {
-        has_modifies: false,
-        has_reads: false,
         modifies_targets: Vec::new(),
         errors_type: None,
-        emits_type: None,
     };
 
     for effect in effects {
@@ -1023,17 +1207,10 @@ fn analyze_effects(effects: &[Effect], symbols: &SymbolTable) -> EffectInfo {
 
                 match kind {
                     "Modify" => {
-                        info.has_modifies = true;
                         info.modifies_targets.push(target);
-                    }
-                    "Read" => {
-                        info.has_reads = true;
                     }
                     "Error" => {
                         info.errors_type = Some(map_primitive_type(&target));
-                    }
-                    "Emit" => {
-                        info.emits_type = Some(map_primitive_type(&target));
                     }
                     _ => {}
                 }
@@ -1045,7 +1222,14 @@ fn analyze_effects(effects: &[Effect], symbols: &SymbolTable) -> EffectInfo {
                         // Bare Error (no type param) → Result<R, Error>
                         info.errors_type = Some("Error".to_owned());
                     }
-                    _ => {} // Abstract effect — skip
+                    _ => {
+                        // Abstract effect: if the name is a type parameter of the
+                        // enclosing sort, treat it as an abstract error type.
+                        // E.g. `effects (E)` where `sort E = ?` → Result<R, E>
+                        if type_params.contains(&kind.to_owned()) {
+                            info.errors_type = Some(kind.to_owned());
+                        }
+                    }
                 }
             }
             TypeExpr::Variable { .. } => {}
@@ -1058,8 +1242,6 @@ fn analyze_effects(effects: &[Effect], symbols: &SymbolTable) -> EffectInfo {
 fn wrap_return_type(raw: &str, effects: &EffectInfo) -> String {
     if let Some(err_type) = &effects.errors_type {
         format!("Result<{raw}, {err_type}>")
-    } else if effects.has_modifies || effects.has_reads {
-        format!("Result<{raw}, Error>")
     } else {
         raw.to_owned()
     }

@@ -7,7 +7,9 @@ fn gen(source: &str) -> String {
     let parsed = parse::parse(source).unwrap_or_else(|e| {
         panic!("parse failed: {e:?}\nsource:\n{source}")
     });
-    generate_rust(&parsed)
+    generate_rust(&parsed).unwrap_or_else(|e| {
+        panic!("codegen failed: {e:?}\nsource:\n{source}")
+    })
 }
 
 // ── Test 1: Entity with fields → struct ──────────────────────────
@@ -97,51 +99,57 @@ fn fact_inside_sort_to_supertrait() {
     let out = gen(r#"sort QueryableStore {
   fact Store
   operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
-    effects (Read{store})
 }
 "#);
     assert!(out.contains("trait QueryableStore: Store {"), "output:\n{out}");
 }
 
-// ── Test 8: Effects: Modifies → &mut self + Result ───────────────
+// ── Test 8: Effects: Modify → &mut self (no Result without Error) ─
 
 #[test]
 fn effects_modifies_to_mut_self_result() {
+    // Modify alone → &mut self, no Result wrapping
     let out = gen(r#"sort Store {
   operation persist(store: Store, fact: Term, meta: Meta) -> FactId
     effects (Modify{store})
 }
 "#);
     assert!(out.contains("fn persist(&mut self"), "output:\n{out}");
-    assert!(out.contains("Result<"), "output:\n{out}");
+    assert!(!out.contains("Result<"), "Modify without Error should not wrap in Result:\n{out}");
+
+    // Modify + Error → &mut self + Result
+    let out2 = gen(r#"sort Store {
+  operation persist(store: Store, fact: Term, meta: Meta) -> FactId
+    effects (Modify{store}, Error)
+}
+"#);
+    assert!(out2.contains("fn persist(&mut self"), "output:\n{out2}");
+    assert!(out2.contains("Result<FactId, Error>"), "output:\n{out2}");
 }
 
-// ── Test 9: Effects: Reads → &self + Result ──────────────────────
+// ── Test 9: Effects: Error alone → &self + Result ────────────────
 
 #[test]
 fn effects_reads_to_self_result() {
+    // No effects → &self, no Result
     let out = gen(r#"sort QueryableStore {
   operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
-    effects (Read{store})
 }
 "#);
     assert!(out.contains("fn retrieve(&self"), "output:\n{out}");
-    assert!(out.contains("Result<"), "output:\n{out}");
-}
+    assert!(!out.contains("Result<"), "No effects should not wrap in Result:\n{out}");
 
-// ── Test 10: Effects: Emits → callback param ─────────────────────
-
-#[test]
-fn effects_emits_to_callback() {
-    let out = gen(r#"sort Processor {
-  operation process(p: Processor) -> Bool
-    effects (Emit{AuditEvent})
+    // Error alone → &self + Result (Read on parameter is a no-op)
+    let out2 = gen(r#"sort QueryableStore {
+  operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
+    effects (Error)
 }
 "#);
-    assert!(out.contains("on_event: impl FnMut(AuditEvent)"), "output:\n{out}");
+    assert!(out2.contains("fn retrieve(&self"), "output:\n{out2}");
+    assert!(out2.contains("Result<Vec<Term>, Error>"), "output:\n{out2}");
 }
 
-// ── Test 11: Prelude type mappings ───────────────────────────────
+// ── Test 10: Prelude type mappings ───────────────────────────────
 
 #[test]
 fn prelude_type_mappings() {
@@ -363,4 +371,24 @@ fn enum_self_in_return() {
 }
 "#);
     assert!(out.contains("-> Self"), "return type should be Self: {out}");
+}
+
+// ── Test 25: Abstract effect parameter → Result<R, E> ────────────
+
+#[test]
+fn abstract_effect_parameter_to_result() {
+    // sort E = ? used in effects (E) → Result<R, E>
+    let out = gen(r#"sort Stream {
+  sort T = ?
+  sort E = ?
+  operation head(s: Stream) -> Option{T = T}
+    effects (E)
+  operation isEmpty(s: Stream) -> Bool
+}
+"#);
+    // head has effects (E) → Result wrapping with abstract E
+    assert!(out.contains("fn head(&self) -> Result<Option<T>, E>"), "should wrap in Result<..., E>: {out}");
+    // isEmpty has no effects → no Result
+    assert!(out.contains("fn is_empty(&self) -> bool"), "no effects should not wrap: {out}");
+    assert!(!out.contains("is_empty(&self) -> Result"), "no effects should not wrap: {out}");
 }

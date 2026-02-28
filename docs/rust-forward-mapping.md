@@ -22,13 +22,11 @@ The mapping is deterministic: given the same anthill source, the same Rust code 
 | Standalone `entity E(fields)` | `struct E { fields }` |
 | `operation op(a: S, ...) -> R` (first arg is enclosing sort) | `fn op(&self, ...) -> R` on the trait or impl |
 | `operation op(a: S, ...) -> ...S...` (return contains S) | `fn op(self, ...) -> ...Self...` by-value (§9) |
-| `operation op(x: A, y: B) -> R` (no self-arg) | `fn op(x: A, y: B) -> R` free function |
-| `effects (Modifies X)` | `&mut self`, `Result<R, Error>` return |
-| `effects (Reads X)` | `&self`, `Result<R, Error>` return |
+| `operation op(x: A, y: B) -> R` (no self-arg) | method on `{Namespace}Ops` module trait |
+| `effects (Modify X)` | `&mut self` |
 | No effects | `&self` (if method), no `Result` wrapping |
-| `effects (Errors E)` | `Result<R, E>` return |
-| `effects (Emits E)` | callback parameter or channel |
-| `effects (Requires Cap)` | generic bound or runtime check |
+| `effects (Error)` or `effects (Error E)` | `Result<R, Error>` or `Result<R, E>` return |
+| `effects (Requires Cap)` | generic bound or runtime check (future) |
 | `sort T` (abstract sub-sort = type parameter) | generic `<T>` |
 | `requires Eq{T}` | trait bound: `where T: Eq` or supertrait |
 | `fact SortName` or `fact SortName{bindings}` (inside sort body) | supertrait: `trait S: SortName` |
@@ -369,7 +367,7 @@ Both sort definitions and `Implementation` facts carry a `last-modified` timesta
 -- Sort definition, last changed 2026-02-20:
 sort Store {
   operation persist(store: Store, fact: Term, meta: Meta) -> FactId
-    effects (Modifies store)
+    effects (Modify{store}, Error)
   ...
 }
 [last-modified: "2026-02-20T14:00:00Z"]
@@ -435,7 +433,7 @@ When mapping operations to Rust methods vs. free functions, the codegen must dec
 
 2. **Namespace entity rule.** If the operation is declared at namespace level, and its first argument type matches an entity or defined sort declared in the same namespace, it becomes a method in an `impl` block for that type.
 
-3. **No-self rule.** If neither rule applies, the operation becomes a free function.
+3. **No-self rule.** If neither rule applies, the operation is collected into a **module trait** named `{Namespace}Ops` with `&self` added as receiver. This makes them enforceable interfaces — implementations provide a unit struct with the trait impl.
 
 **Examples:**
 
@@ -480,17 +478,19 @@ namespace config {
 }
 -- load returns Settings → returns_same_type → self by value.
 
--- Rule 3: No matching sort/entity
-operation route(fact: Term) -> Store       →  fn route(fact: Term) -> Store { todo!() }
+-- Rule 3: No matching sort/entity → module trait
+namespace persistence {
+  operation route(fact: Term) -> Store     →  pub trait PersistenceOps {
+}                                                fn route(&self, fact: Term) -> impl Store;
+                                             }
 ```
 
 **Self-reference style.** The receiver is determined by evaluating the `LanguageMapping` profile (§9) rules in order. The default Rust/std profile produces:
 
 | Condition | Rust receiver | Source |
 |---|---|---|
-| `Modifies(...)` on the sort itself | `&mut self` | effect_map |
+| `Modify{...}` on the sort itself | `&mut self` | effect_map |
 | Return type contains `Self` | `self` (by value) | receiver_map `returns_same_type` |
-| `Reads(...)` on external state | `&self` | effect_map |
 | No effects / default | `&self` | — |
 
 Effect rules are checked first (they are semantic). Receiver rules are checked second (they are Rust-specific ownership optimizations). See §9 for details.
@@ -499,99 +499,84 @@ Effect rules are checked first (they are semantic). Receiver rules are checked s
 
 The kernel's effect declarations (kernel spec §5.5) map to Rust idioms. These mappings are defined as data in the `LanguageMapping` profile (§9), not hardcoded in the codegen. The rules below describe the default Rust/std profile (`stdlib/anthill/realization/rust_std.anthill`):
 
-### 5.1 Modifies
+### 5.1 Modify (Access Pattern)
 
-`effects (Modifies X)` indicates the operation mutates state. This maps to:
+`effects (Modify X)` indicates the operation mutates state. This affects only the **receiver form**:
 - `&mut self` if X is the enclosing sort
 - `&mut x: X` parameter if X is a different argument
-- `Result<R, Error>` return type (stateful operations should be fallible)
+
+Modify does **not** imply fallibility — it only declares the access pattern. If the operation can fail, declare `Error` explicitly:
 
 ```
 operation persist(store: Store, fact: Term, meta: Meta) -> FactId
-  effects (Modifies(store))
+  effects (Modify{store}, Error)
 
 →  fn persist(&mut self, fact: Term, meta: Meta) -> Result<FactId, Error>;
 ```
 
-### 5.2 Reads
-
-`effects (Reads X)` indicates a read dependency on external state. Maps to:
-- `&self` receiver (read-only borrow)
-- `Result<R, Error>` return type (I/O can fail)
+Without `Error`, the return is unwrapped:
 
 ```
-operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
-  effects (Reads(store))
+operation increment(counter: Counter) -> Int
+  effects (Modify{counter})
 
-→  fn retrieve(&self, pattern: Term) -> Result<Vec<Term>, Error>;
+→  fn increment(&mut self) -> i64;
 ```
 
-### 5.3 Errors
+### 5.2 Read — Not an Effect on Parameters
 
-`effects (Errors E)` declares a typed error. Maps to a `Result` return type with the specific error type:
+Reading a parameter is not a side effect — it's what operations do. Declaring `effects (Read{store})` when `store` is already a parameter is redundant and should be avoided.
+
+`Read` is reserved for future use in **capture tracking** — declaring that a returned closure or value captures a read reference to an external resource not in the parameter list. This is analogous to Scala 3's capture checking.
+
+For now, the receiver form (`&self` vs `&mut self`) is determined by:
+- `Modify{x}` on a parameter → `&mut self`
+- Default → `&self`
+
+An operation that takes the enclosing sort as its first parameter gets `&self` automatically — no effect declaration needed:
+
+```
+operation sorts(kb: KB, namespace: Option{T = String}) -> List{T = SortInfo}
+
+→  fn sorts(&self, namespace: Option<String>) -> Vec<SortInfo>;
+```
+
+### 5.3 Error (Fallibility)
+
+`effects (Error)` or `effects (Error E)` declares that the operation can fail. This is orthogonal to access patterns — a pure function, a read, or a mutation can each independently be fallible.
+
+Bare `Error` wraps in `Result<R, Error>`:
+
+```
+operation execute(kb: KB, query: LogicalQuery) -> Stream{T = Substitution}
+  effects (Error)
+
+→  fn execute(&self, query: LogicalQuery) -> Result<impl Stream<Substitution>, Error>;
+```
+
+Typed `Error E` uses the specific error type:
 
 ```
 operation withdraw(a: Account, m: Money) -> Account
-  effects (Errors InsufficientFunds)
+  effects (Error InsufficientFunds)
 
 →  fn withdraw(&self, m: Money) -> Result<Account, InsufficientFunds>;
 ```
 
-When both `Modifies` and `Errors` are present, the error type from `Errors` is used in the `Result`.
-
-### 5.4 Emits
-
-`effects (Emits E)` indicates event production. Two possible Rust mappings:
-
-**Callback style** (default):
-```
-operation process(order: Order) -> Receipt
-  effects (Emits AuditEvent)
-
-→  fn process(&self, on_event: impl FnMut(AuditEvent)) -> Receipt;
-```
-
-**Channel style** (when multiple emits are expected):
-```
-→  fn process(&self, events: &mpsc::Sender<AuditEvent>) -> Receipt;
-```
-
-The codegen defaults to the callback style. The channel style can be selected via a codegen option.
-
-### 5.5 Requires (Capability)
-
-`effects (Requires Cap)` declares a capability requirement. Maps to a generic bound or a runtime check:
-
-**Generic bound** (compile-time):
-```
-operation admin_action(a: Account) -> Account
-  effects (Requires AdminAccess)
-
-→  fn admin_action<C: AdminAccess>(&self, cap: &C) -> Account;
-```
-
-**Runtime check** (when capabilities are dynamic):
-```
-→  fn admin_action(&self, ctx: &Context) -> Result<Account, CapabilityError>;
-```
-
-### 5.6 Combined Effects
-
-When multiple effects are declared, they compose:
+When `Modify` and `Error` are both present, they compose independently — `Modify` determines the receiver, `Error` determines the return wrapping:
 
 ```
 operation transfer(from: Account, to: Account, m: Money) -> Account
-  effects (Modifies Ledger, Emits AuditEvent, Errors TransferError)
+  effects (Modify{Ledger}, Error TransferError)
 
 →  fn transfer(
        &mut self,
        to: &Account,
        m: Money,
-       on_event: impl FnMut(AuditEvent),
    ) -> Result<Account, TransferError>;
 ```
 
-### 5.7 Pure Operations
+### 5.4 Pure Operations
 
 Operations with no effects are pure functions. They use `&self` (if a method) and return the result directly — no `Result` wrapping:
 
@@ -600,6 +585,41 @@ operation balance(a: Account) -> Money
 
 →  fn balance(&self) -> Money;
 ```
+
+### 5.5 Effect Parameters on Sorts (E on Stream)
+
+Sorts may declare abstract effect parameters — e.g. `sort E = ?` on `Stream`. These represent what can happen when *consuming* elements, not when creating the stream. The interpretation of `E` depends on which concrete effects are bound at the use site.
+
+**Resolution rule**: For each concrete project, the set of effects is known. The LanguageMapping profile defines how each effect maps to a host-language construct. The effect parameter `E` is resolved by the same rules:
+
+| Binding | Rust interpretation |
+|---|---|
+| `E = Error` | Iterator yields `Result<T, ErrorType>` — iteration can fail |
+| `E` unbound (`= ?`) | Items are plain `T` — pure iteration |
+| `E = Suspend` (future) | `async fn next()` / `Future<Output = Option<T>>` |
+
+**Example: KB.execute**
+
+```
+operation execute(kb: KB, query: LogicalQuery)
+  -> Stream{T = Substitution, E = Error}
+  effects (Error)
+```
+
+This has two independent error points:
+- `effects (Error)` — **creation** can fail (invalid query). Maps to `Result<..., Error>` on the return.
+- `E = Error` on Stream — **iteration** can fail (residual errors, depth limits). Maps to items being `Result<Substitution, Error>`.
+
+Generated Rust:
+```rust
+fn execute(&self, query: LogicalQuery) -> Result<impl Stream<Substitution, Error>, Error>;
+```
+
+The outer `Result` is from `effects (Error)`. The `Error` type parameter on `Stream` is structural — the `Stream` trait's implementation decides how `E` affects item types. A concrete implementation (e.g. file-backed) would produce `Result<Substitution, Error>` items; a pure in-memory one might leave `E` unbound.
+
+**General principle**: With the current Rust/std profile, the only implemented effect is `Error`, which maps to `Result`. So `E` in practice resolves to "is there an error type or not." When more effects are implemented (Suspend → `async`, etc.), the LanguageMapping's `effect_map` determines the interpretation — no codegen changes needed, only profile updates.
+
+**MonadStack for non-direct languages**: In languages with monadic effect encoding (Scala/cats, Haskell), `E` resolves to a monad that encapsulates all bound effects. The `LanguageMapping` profile defines the monad stack composition order. For Rust, this is unnecessary — each effect has a direct encoding (`Result`, `&mut`, `async`), and they compose structurally rather than via monad transformers.
 
 ### 5.8 Receiver Rules (Ownership)
 
@@ -612,18 +632,16 @@ The default Rust/std profile has one receiver rule:
 This rule applies to operations like `splitFirst`, `tail`, `collect` on `Stream` — all of which return (or contain) `Stream` in their output. Operations like `head` and `isEmpty` return `Option{T}` and `Bool` respectively (no `Stream`), so they stay as `&self`.
 
 ```
--- Stream operations at kernel level (no Modify — streams are immutable values):
+-- Stream operations are pure (no effects):
 operation splitFirst(s: Stream) -> Option{T = Pair{A = T, B = Stream}}
-    effects (E)
 operation isEmpty(s: Stream) -> Bool
-    effects (E)
 
 -- Rust/std profile produces:
 fn split_first(self) -> Option<(T, Self)>;   -- returns_same_type → by value
 fn is_empty(&self) -> bool;                  -- no match → &self
 ```
 
-**Why not `Modify(s)`?** Stream is semantically immutable. In Scala, `splitFirst` is a pure function on an immutable value — no mutation, no consumption, GC handles the old reference. The by-value receiver is a Rust-specific concern (ownership avoids cloning). Putting `Modify(s)` in the anthill spec would be wrong for non-Rust targets.
+**Why not `Modify{s}`?** Stream is semantically immutable — `splitFirst` is a pure function. In Scala, it returns a new value without mutation. The by-value receiver (`self` instead of `&self`) is a Rust-specific optimization (ownership avoids cloning), driven by the `returns_same_type` receiver rule, not by any effect.
 
 Receiver rules are evaluated after effect rules. If an effect already determines the receiver (e.g. `Modify → &mut self`), receiver rules do not override it.
 
@@ -641,23 +659,23 @@ namespace anthill.persistence
 
   operation route(fact: Term) -> Store
   operation persist(store: Store, fact: Term, meta: Meta) -> FactId
-    effects (Modifies(store))
+    effects (Modify{store}, Error)
   operation retract(store: Store, id: FactId) -> Bool
-    effects (Modifies(store))
+    effects (Modify{store}, Error)
   operation flush(store: Store, delta: List{T = Term}) -> Bool
-    effects (Modifies(store))
+    effects (Modify{store}, Error)
 
   sort QueryableStore
     fact Store                                -- QueryableStore is-a Store
 
   operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
-    effects (Reads(store))
+    effects (Error)
 
   sort BulkStore
     fact Store                                -- BulkStore is-a Store
 
   operation pull(store: BulkStore) -> List{T = Term}
-    effects (Reads(store))
+    effects (Error)
 
 end
 
@@ -1034,7 +1052,7 @@ The codegen rules described in §4 (self-arg heuristic), §5 (effects → Rust i
 
 ```
 ┌─────────────────────────────────────┐
-│  Kernel effects (language-agnostic) │   Reads, Modify, Emit, Error
+│  Kernel effects (language-agnostic) │   Modify, Error
 │  — what happens semantically        │
 ├─────────────────────────────────────┤
 │  LanguageMapping profile            │   "rust/std", "rust/no_std", "scala/cats"
@@ -1070,8 +1088,8 @@ Three kinds of rules:
 
 ```anthill
 entity EffectMapping(
-  effect    : String,        -- "Modify", "Read", "Error", "Emit"
-  receiver  : ReceiverForm   -- SharedRef, MutRef, ByValue, ResultWrap, Callback
+  effect    : String,        -- "Modify", "Error"
+  receiver  : ReceiverForm   -- SharedRef, MutRef, ByValue, ResultWrap
 )
 ```
 
@@ -1104,7 +1122,6 @@ sort ReceiverForm
   entity ByValue                      -- self / move (consuming)
   entity ResultWrap                   -- wrap return in Result<R, Error>
   entity ResultTyped(error: String)   -- wrap return in Result<R, E>
-  entity Callback                     -- add callback parameter
 end
 ```
 
@@ -1119,9 +1136,9 @@ fact LanguageMapping(
 
   effect_map: [
     EffectMapping(effect: "Modify", receiver: MutRef),
-    EffectMapping(effect: "Read",   receiver: SharedRef),
+
     EffectMapping(effect: "Error",  receiver: ResultWrap),
-    EffectMapping(effect: "Emit",   receiver: Callback)
+
   ],
 
   receiver_map: [
@@ -1145,7 +1162,7 @@ fact LanguageMapping(
 
 For a given operation, the codegen determines the receiver form as follows:
 
-1. **Effect rules** (from `effect_map`): if the operation has an effect whose target is the self parameter, use the corresponding receiver form. `Modify → MutRef`, `Read → SharedRef`.
+1. **Effect rules** (from `effect_map`): if the operation has `Modify{x}` where x is the self parameter, use `MutRef` (`&mut self`).
 
 2. **Receiver rules** (from `receiver_map`): if no effect determined the receiver, evaluate receiver rules in order. For `returns_same_type`: check whether the enclosing sort name appears in the return type. If so, use `ByValue`.
 
@@ -1156,19 +1173,20 @@ Effect rules take priority because they are semantic — `Modify` genuinely mean
 **Example: Stream operations**
 
 ```
-splitFirst(s: Stream) -> Option{Pair{T, Stream}}  effects (E)
-  1. E is abstract (Read{kb} for LogicalStream) — no Modify on s
+splitFirst(s: Stream) -> Option{Pair{T, Stream}}
+  1. No Modify → default receiver
   2. receiver_map: Stream appears in return → ByValue
   Result: fn split_first(self) -> Option<(T, Self)>
 
-isEmpty(s: Stream) -> Bool  effects (E)
-  1. No Modify on s
+isEmpty(s: Stream) -> Bool
+  1. No Modify
   2. receiver_map: Stream does NOT appear in return (Bool)
   3. Default: SharedRef
   Result: fn is_empty(&self) -> bool
 
-persist(store: Store, fact: Term) -> FactId  effects (Modify(store))
-  1. Modify(store) → MutRef
+persist(store: Store, fact: Term) -> FactId  effects (Modify{store}, Error)
+  1. Modify{store} → MutRef
+  2. Error → ResultWrap
   Result: fn persist(&mut self, fact: Term) -> Result<FactId, Error>
 ```
 
@@ -1181,9 +1199,7 @@ fact LanguageMapping(
   language: "rust", profile: some("no_std"),
   effect_map: [
     EffectMapping(effect: "Modify", receiver: MutRef),
-    EffectMapping(effect: "Read",   receiver: SharedRef),
     EffectMapping(effect: "Error",  receiver: ResultWrap),
-    EffectMapping(effect: "Emit",   receiver: Callback)   -- or channel in no_std
   ],
   receiver_map: [
     ReceiverRule(condition: "returns_same_type", receiver: ByValue)
@@ -1204,9 +1220,9 @@ fact LanguageMapping(
   language: "scala", profile: some("cats"),
   effect_map: [
     EffectMapping(effect: "Modify", receiver: SharedRef),  -- immutable values, state monad
-    EffectMapping(effect: "Read",   receiver: SharedRef),
+
     EffectMapping(effect: "Error",  receiver: ResultWrap),
-    EffectMapping(effect: "Emit",   receiver: Callback)
+
   ],
   receiver_map: [],
   type_map: [

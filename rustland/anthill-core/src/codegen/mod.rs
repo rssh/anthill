@@ -4,4 +4,4 @@
 /// No CLI, no cross-file resolution, no KB boundary checking.
 
 pub mod rust;
-pub use rust::generate_rust;
+pub use rust::{generate_rust, generate_rust_with_context, generate_rust_with_config, collect_trait_sorts, CodegenConfig, CodegenError};

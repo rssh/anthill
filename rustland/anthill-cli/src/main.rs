@@ -150,7 +150,15 @@ fn run_codegen_rust(args: &RustCodegenArgs) -> Result<(), i32> {
             }
         };
 
-        let rust_code = generate_rust(&parsed);
+        let rust_code = match generate_rust(&parsed) {
+            Ok(code) => code,
+            Err(errs) => {
+                for e in &errs {
+                    errors.push(format!("{}: {e}", file.display()));
+                }
+                continue;
+            }
+        };
         let out_name = output_filename(file);
         let out_path = args.output_dir.join(&out_name);
 
