@@ -9,7 +9,7 @@ namespace anthill.realization
   import anthill.reflect.{Term}
   export Implementation, Obligation, CarrierBinding, NamespaceMapping,
          LanguageMapping, EffectMapping, ReceiverRule, TypeMapping,
-         ReceiverForm
+         ReceiverForm, TraitReturnForm
 
   -- Links host-language code to an anthill algebra spec
   entity Implementation(
@@ -44,7 +44,8 @@ namespace anthill.realization
     profile       : Option{T = String},             -- "std", "no_std", etc.
     effect_map    : List{T = EffectMapping},
     receiver_map  : List{T = ReceiverRule},          -- effect-independent receiver rules
-    type_map      : List{T = TypeMapping}
+    type_map      : List{T = TypeMapping},
+    trait_return  : TraitReturnForm                  -- how to return abstract sorts
   )
 
   -- How a single effect kind maps to host-language syntax.
@@ -73,6 +74,14 @@ namespace anthill.realization
     entity ResultWrap                   -- wrap return in Result<R, Error>
     entity ResultTyped(error: String)   -- wrap return in Result<R, E>
     entity Callback                     -- add callback parameter
+  end
+
+  -- How to return a trait/abstract sort from an operation.
+  -- Host-language concern: Rust has impl Trait, Box<dyn Trait>, associated types.
+  sort TraitReturnForm
+    entity ImplTrait                    -- -> impl Trait (Rust 1.75+ in trait methods)
+    entity BoxDyn                       -- -> Box<dyn Trait>
+    entity AssociatedType               -- associated type on the containing trait
   end
 
   -- Maps an anthill prelude type to a host-language type.

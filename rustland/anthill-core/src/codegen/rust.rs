@@ -95,6 +95,9 @@ struct RustCodegen<'a> {
     terms: &'a SimpleTermStore,
     output: String,
     indent: usize,
+    /// Sort names that generate as traits (not enums/structs).
+    /// Used to wrap return types with `impl` when returning a trait.
+    trait_sorts: std::collections::HashSet<String>,
 }
 
 impl<'a> RustCodegen<'a> {
@@ -104,6 +107,7 @@ impl<'a> RustCodegen<'a> {
             terms,
             output: String::new(),
             indent: 0,
+            trait_sorts: std::collections::HashSet::new(),
         }
     }
 
@@ -143,6 +147,20 @@ impl<'a> RustCodegen<'a> {
         match vis {
             Some(Visibility::Export) | Some(Visibility::Public) => "pub ",
             _ => "",
+        }
+    }
+
+    // ── Trait return wrapping ─────────────────────────────────────
+
+    /// If the outermost type of a return type is a known trait sort,
+    /// wrap it with `impl` (e.g. `Stream<T>` → `impl Stream<T>`).
+    fn wrap_trait_return(&self, ret: &str) -> String {
+        // Extract the outermost type name (before '<' if generic)
+        let base = ret.split('<').next().unwrap_or(ret).trim();
+        if self.trait_sorts.contains(base) {
+            format!("impl {ret}")
+        } else {
+            ret.to_owned()
         }
     }
 
@@ -472,6 +490,7 @@ impl<'a> RustCodegen<'a> {
     ) {
         let vis = self.visibility_prefix(sort.visibility);
         let sort_name = self.resolve(&sort.name);
+        self.trait_sorts.insert(sort_name.clone());
 
         let supertrait_clause = if supertraits.is_empty() {
             String::new()
@@ -656,6 +675,7 @@ impl<'a> RustCodegen<'a> {
     }
 
     fn emit_sort_as_trait(&mut self, sort: &SortWithBody, sort_name: &str, info: &SortInfo) {
+        self.trait_sorts.insert(sort_name.to_owned());
         let vis = self.visibility_prefix(sort.visibility);
 
         // Self-collapse heuristic: if exactly one type param and every op's
@@ -787,6 +807,7 @@ impl<'a> RustCodegen<'a> {
 
         // Return type
         let raw_ret = self.type_to_rust_in_sort(&op.return_type, sort_name, type_params, collapse_self);
+        let raw_ret = self.wrap_trait_return(&raw_ret);
         let ret = wrap_return_type(&raw_ret, &effects);
 
         self.line(&format!("fn {op_name}({params_str}) -> {ret};"));
@@ -833,6 +854,7 @@ impl<'a> RustCodegen<'a> {
         }
 
         let raw_ret = self.type_to_rust_in_sort(&op.return_type, sort_name, type_params, false);
+        let raw_ret = self.wrap_trait_return(&raw_ret);
         let ret = wrap_return_type(&raw_ret, &effects);
 
         self.line(&format!("{vis}fn {op_name}({params_str}) -> {ret};"));
@@ -863,6 +885,7 @@ impl<'a> RustCodegen<'a> {
         }
 
         let raw_ret = self.type_to_rust(&op.return_type);
+        let raw_ret = self.wrap_trait_return(&raw_ret);
         let ret = wrap_return_type(&raw_ret, &effects);
 
         self.line(&format!("{vis}fn {op_name}({params_str}) -> {ret};"));
@@ -1015,8 +1038,17 @@ fn analyze_effects(effects: &[Effect], symbols: &SymbolTable) -> EffectInfo {
                     _ => {}
                 }
             }
-            // Abstract effect (simple type or variable) — skip
-            TypeExpr::Simple(_) | TypeExpr::Variable { .. } => {}
+            TypeExpr::Simple(name) => {
+                let kind = symbols.name(name.last());
+                match kind {
+                    "Error" => {
+                        // Bare Error (no type param) → Result<R, Error>
+                        info.errors_type = Some("Error".to_owned());
+                    }
+                    _ => {} // Abstract effect — skip
+                }
+            }
+            TypeExpr::Variable { .. } => {}
         }
     }
 

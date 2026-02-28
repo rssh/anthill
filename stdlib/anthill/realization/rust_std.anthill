@@ -5,7 +5,7 @@
 -- without touching the codegen implementation.
 namespace anthill.realization.rust_std
   import anthill.realization.{LanguageMapping, EffectMapping, ReceiverRule,
-                              TypeMapping, ReceiverForm}
+                              TypeMapping, ReceiverForm, TraitReturnForm}
   import anthill.prelude.Option.{some, none}
 
   fact LanguageMapping(
@@ -38,6 +38,9 @@ namespace anthill.realization.rust_std
       TypeMapping(anthill_type: "Timestamp", host_type: "String"),
       TypeMapping(anthill_type: "List",      host_type: "Vec"),
       TypeMapping(anthill_type: "Option",    host_type: "Option")
-    ]
+    ],
+
+    -- Return abstract sorts via impl Trait (Rust 1.75+ supports RPITIT)
+    trait_return: ImplTrait
   )
 end
