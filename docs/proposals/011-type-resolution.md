@@ -592,34 +592,24 @@ rule can_compare(?x, ?y, ?result) :- ground(?x), ground(?y), gt(?x, ?y)
 
 If `nonvar(?x)` encounters an unbound `?x`, it returns DELAY. The resolver reorders or attaches to `?x`. When `?x` gets bound through another goal, `nonvar(?x)` succeeds, and `entity_of` proceeds.
 
-#### Query execution returns residuals
+#### Query execution
 
-A query that completes with unresolved delayed goals returns them as a **residual** — the unresolved part of the original query:
+A query returns a stream of fully-resolved substitutions. Unresolvable goals (delayed constraints on unbound variables) are reported via the `Error` effect — they are not silently mixed into the result stream.
 
 ```
-sort QueryResult {
-  entity query_result(
-    residual  : LogicalQuery,    -- unresolved constraints (empty_query if none)
-    solutions : LogicalStream{T = Substitution}
-  )
-}
-
-operation execute(query: LogicalQuery) -> QueryResult
-  effects (Read{kb})
+operation execute(query: LogicalQuery)
+  -> Stream{T = Substitution, E = Read{kb}}
+  effects (Read{kb}, Error)
 ```
 
-- **residual**: the unresolved LogicalQuery. `empty_query` if fully resolved.
-- **solutions**: the stream of solutions (subject to the residual constraints).
+- **Stream yields only fully-resolved substitutions** — each element is a complete answer.
+- **Unresolvable goals → Error** — if a goal cannot be resolved (e.g., `nonvar(?X)` where `?X` remains unbound after exhausting all rules), execution raises an error rather than returning a conditional answer the caller must inspect.
 
-This maps directly to typing levels:
-
-| Residual | Stream | Typing status |
+| Stream | Error | Typing status |
 |---|---|---|
-| Empty | Non-empty | Universally typed — fully resolved |
-| Non-empty | Non-empty | Well-typed — solutions exist but carry constraints |
-| Any | Empty | Ill-typed — no solutions |
-
-The residual IS a LogicalQuery — not a separate "Constraint" type. An unresolved query returns itself (or its unresolved part) as the residual. This means constraint and query are the same concept: a constraint is just a query that hasn't been resolved yet.
+| Non-empty | No | Fully typed — solutions exist |
+| Empty | No | Ill-typed — no solutions |
+| Any | Yes | Partially resolved — unresolvable constraints reported |
 
 **OQ5b.1. Are there untyped terms?** Several cases where terms lack a known sort:
 

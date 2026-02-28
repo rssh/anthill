@@ -14,13 +14,12 @@ namespace anthill.reflect
   import anthill.prelude.{Option}
   import anthill.prelude.{Pair}
   import anthill.prelude.{Bool}
-  import anthill.prelude.{LogicalStream}
-  import anthill.prelude.{Map}
-  import anthill.reflect.KB.{kb}
+  import anthill.prelude.{Stream}
   export Term, FactId
+  export KB
   export TermRepr, SortInfo, OperationInfo, FieldInfo, DescriptionInfo
-  export Substitution, apply_subst, compose
-  export LogicalQuery, QueryResult, empty_query, query_result
+  export Substitution, apply, compose
+  export LogicalQuery, empty_query
   export pattern_query, sort_query, conjunction, disjunction
   export negation, guarded, projected, limited
   export nonvar, ground
@@ -39,18 +38,58 @@ namespace anthill.reflect
   -- Handle to a stored fact. Returned by persist(), used by retract().
   sort FactId = ?
 
-  -- The knowledge base as a typed effect resource
-  sort KB {
-    export kb
-    entity kb
-  }
+  -- ================================================================
+  -- KB: the knowledge base
+  -- ================================================================
+  -- KB is a trait in Rust. Operations that need KB access take kb: KB
+  -- as the first parameter, which becomes &self via the self-arg heuristic.
+  -- Implementations (e.g. KnowledgeBase) impl this trait.
+
+  sort KB
+
+    -- Bridge: opaque Term ↔ structural TermRepr
+    operation reify(kb: KB, t: Term) -> TermRepr
+    operation reflect(kb: KB, r: TermRepr) -> Term
+
+    -- Query operations (KB introspection)
+    operation sorts(kb: KB, namespace: Option{T = String}) -> List{T = SortInfo}
+    operation operations(kb: KB, sort_name: String) -> List{T = OperationInfo}
+    operation constructors(kb: KB, sort_name: String) -> List{T = String}
+    operation fields(kb: KB, name: String) -> List{T = FieldInfo}
+    operation rules(kb: KB, sort_name: String) -> List{T = TermRepr}
+    operation descriptions(kb: KB, target: Option{T = String}) -> List{T = DescriptionInfo}
+
+    -- Meta-level primitives (inspect variable state)
+
+    -- Succeeds if ?x is bound to a non-variable term (functor visible).
+    -- Returns DELAY during SLD resolution if ?x is unbound.
+    operation nonvar(kb: KB, x: Term) -> Bool
+
+    -- Succeeds if ?x is fully ground (no variables anywhere in the term).
+    -- Returns DELAY during SLD resolution if ?x contains variables.
+    operation ground(kb: KB, x: Term) -> Bool
+
+    -- Query execution
+    -- Returns a stream of fully-resolved substitutions.
+    -- Unresolvable goals are reported via the Error effect.
+    operation execute(kb: KB, query: LogicalQuery)
+      -> Stream{T = Substitution}
+      effects (Error)
+
+    -- Extract a sort's fact template as a query
+    operation sort_template(kb: KB, sort_name: String) -> LogicalQuery
+
+    -- Instantiate a sort template with bindings → concrete query
+    operation instantiation_query(kb: KB, sort_name: String, bindings: Substitution)
+      -> LogicalQuery
+
+  end
 
   -- ================================================================
   -- Term representation (reified terms as data)
   -- ================================================================
 
   -- Structural decomposition of Term — for introspection.
-  -- Term is opaque; TermRepr is transparent.
   sort TermRepr {
     entity ConstRepr(type_name: String, value: String)
     entity VarRepr(type_name: String, name: String)
@@ -88,24 +127,6 @@ namespace anthill.reflect
   )
 
   -- ================================================================
-  -- Meta-level primitives (procedural — inspect variable state)
-  -- ================================================================
-
-  -- Succeeds if ?x is bound to a non-variable term (functor visible).
-  -- Returns DELAY during SLD resolution if ?x is unbound.
-  -- Use as a guard before operations that need to inspect term structure.
-  --
-  -- Example: rule entity_of(?x, ?sort) :- nonvar(?x), Subsort(?x, ?sort)
-  operation nonvar(x: Term) -> Bool
-
-  -- Succeeds if ?x is fully ground (no variables anywhere in the term).
-  -- Returns DELAY during SLD resolution if ?x contains variables.
-  -- Use as a guard before operations that need concrete values.
-  --
-  -- Example: rule can_compare(?x, ?y) :- ground(?x), ground(?y), gt(?x, ?y)
-  operation ground(x: Term) -> Bool
-
-  -- ================================================================
   -- Typing rules (derivable from primitives + KB facts)
   -- ================================================================
 
@@ -126,42 +147,6 @@ namespace anthill.reflect
   --   :- has_sort(?x, ?S), OperationInfo(?name, ?S, ?info)
 
   -- ================================================================
-  -- Bridge: opaque Term ↔ structural TermRepr
-  -- ================================================================
-
-  -- Decompose an opaque Term into its structural representation
-  operation reify(t: Term) -> TermRepr
-    effects (Read{kb})
-
-  -- Construct an opaque Term from a structural representation
-  operation reflect(r: TermRepr) -> Term
-    effects (Read{kb})
-
-  -- ================================================================
-  -- Query operations (KB introspection)
-  -- ================================================================
-
-  -- All sorts in a namespace (or globally)
-  operation sorts(namespace: Option{T = String}) -> List{T = SortInfo}
-    effects (Read{kb})
-
-  -- Operations of a sort
-  operation operations(sort_name: String) -> List{T = OperationInfo}
-    effects (Read{kb})
-
-  -- Constructors of a defined sort
-  operation constructors(sort_name: String) -> List{T = String}
-    effects (Read{kb})
-
-  -- Fields of an entity/constructor
-  operation fields(name: String) -> List{T = FieldInfo}
-    effects (Read{kb})
-
-  -- Rules (laws) associated with a sort
-  operation rules(sort_name: String) -> List{T = TermRepr}
-    effects (Read{kb})
-
-  -- ================================================================
   -- Descriptions
   -- ================================================================
 
@@ -170,32 +155,22 @@ namespace anthill.reflect
     content : String
   )
 
-  -- Query descriptions (optionally filtered by target name)
-  operation descriptions(target: Option{T = String}) -> List{T = DescriptionInfo}
-    effects (Read{kb})
-
   -- ================================================================
   -- Substitution: variable bindings from query/unification
   -- ================================================================
 
   -- A substitution maps variable names to terms: {?x → t1, ?y → t2, ...}
-  -- Produced by execute(query), used for type instantiation checking.
-  -- Lookup/keys/values/etc. come from Map operations.
-  sort Substitution = Map{K = String, V = Term}
-
-  -- Apply a substitution to a term (replace all bound variables)
-  operation apply_subst(s: Substitution, t: Term) -> Term
-    effects (Read{kb})
-
-  -- Compose two substitutions: apply s1 then s2
-  operation compose(s1: Substitution, s2: Substitution) -> Substitution
+  -- Not a Map alias — has its own structure (parent chain, contradiction tracking).
+  sort Substitution
+    operation apply(s: Substitution, t: Term) -> Term
+    operation compose(s1: Substitution, s2: Substitution) -> Substitution
+  end
 
   -- ================================================================
   -- LogicalQuery: first-class query representation
   -- ================================================================
 
   -- Queries as composable, storable, inspectable KB values.
-  -- See proposal 010 (Query System) for design rationale.
   sort LogicalQuery {
     entity empty_query                                             -- no constraints (always true)
     entity pattern_query(term: Term)                               -- single pattern
@@ -207,34 +182,5 @@ namespace anthill.reflect
     entity projected(query: LogicalQuery, vars: List{T = String})  -- projection
     entity limited(query: LogicalQuery, count: Int)                -- cardinality limit
   }
-
-  -- Result of query execution: residual (unresolved constraints) + solutions.
-  -- If residual is empty → fully resolved.
-  -- If residual is non-empty → solutions are conditional on the residual.
-  -- A constraint IS just a LogicalQuery that hasn't been resolved yet.
-  sort QueryResult {
-    entity query_result(
-      residual  : LogicalQuery,
-      solutions : LogicalStream{T = Substitution}
-    )
-  }
-
-  -- Execute a query against the KB.
-  -- Returns (residual, solutions): the residual contains any goals that
-  -- could not be resolved (e.g., guards on unbound variables that were
-  -- delayed). An empty residual means fully resolved.
-  operation execute(query: LogicalQuery) -> QueryResult
-    effects (Read{kb})
-
-  -- Extract a sort's fact template as a query
-  operation sort_template(sort_name: String) -> LogicalQuery
-    effects (Read{kb})
-
-  -- Apply bindings to a sort template → concrete conjunctive query.
-  -- E.g., instantiation_query("Eq", bind("T", reflect("Int"), empty_subst))
-  -- produces the query that checks whether Int satisfies Eq.
-  operation instantiation_query(sort_name: String, bindings: Substitution)
-    -> LogicalQuery
-    effects (Read{kb})
 
 end

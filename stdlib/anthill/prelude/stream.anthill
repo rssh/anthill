@@ -2,10 +2,7 @@
 -- Abstract — representation is implementation-defined.
 --
 -- E is the abstract effect required to observe the stream.
--- Concrete sorts bind E to their specific effect:
---   LogicalStream binds E = Read{kb}
---   a file reader might bind E = Reads(file)
---   a pure stream might bind E = Pure (no effects)
+-- Concrete sorts bind E to their specific effect.
 sort anthill.prelude.Stream
   import anthill.prelude.{Option, Pair, List, Bool, Int}
   export Stream, head, tail, splitFirst, takeN, collect, isEmpty

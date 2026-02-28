@@ -8,6 +8,8 @@ An anthill namespace declares an **algebra**: abstract sorts, operations with co
 
 The mapping is deterministic: given the same anthill source, the same Rust code is produced. The generated code serves as a starting point; once an implementation exists, an `Implementation` fact (§8) links the code back to the spec for verification.
 
+**Codegen correctness requirement**: The generated Rust code must be directly implementable — filling in `todo!()` bodies with real logic, without changing function signatures, types, or module structure. If a generated signature cannot be implemented as-is, the fix belongs in the codegen rules or the anthill spec, not in post-hoc edits to the generated output.
+
 ## 2. Mapping Rules
 
 ### Summary Table

@@ -16,12 +16,12 @@ sort anthill.prelude.LogicalStream
 
   sort T = ?
 
-  -- LogicalStream provides Stream for any T, with effect Read{kb}.
+  -- LogicalStream satisfies Stream for any T.
   -- Stream operations (head, tail, splitFirst, takeN, collect, isEmpty)
   -- are inherited — not redeclared here.
   -- LogicalStream must provide splitFirst (Stream's primitive);
   -- head, tail, isEmpty derive from Stream's rules.
-  fact Stream{T, E = Read{kb}}
+  fact Stream{T}
 
   -- ================================================================
   -- Stream primitive (required by fact Stream{T})
