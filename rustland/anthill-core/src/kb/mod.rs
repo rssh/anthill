@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 use smallvec::SmallVec;
 
-use crate::intern::{SymbolTable, Symbol};
+use crate::intern::{SymbolTable, SymbolDef, SymbolKind, Symbol};
 use term::{Term, TermId, TermStore, VarId};
 use discrim::SubstTree;
 use resolve::BuiltinTag;
@@ -85,6 +85,10 @@ pub struct KnowledgeBase {
     // Builtin dispatch: functor symbol → builtin tag
     builtins: HashMap<Symbol, BuiltinTag>,
 
+    // Entity field registry: functor symbol → ordered field names.
+    // Populated during load_entity, used by convert_term for partial named-arg expansion.
+    entity_fields: HashMap<Symbol, Vec<Symbol>>,
+
     // Variable counter for fresh VarId allocation
     next_var: u32,
 
@@ -109,6 +113,7 @@ impl KnowledgeBase {
             sort_info: HashMap::new(),
             discrim: SubstTree::new(),
             builtins: HashMap::new(),
+            entity_fields: HashMap::new(),
             next_var: 0,
             sort_sort: None,
             subsort_sort: None,
@@ -150,10 +155,6 @@ impl KnowledgeBase {
     /// Facts are rules with an empty body. Uses `insert_pattern` to handle
     /// variables in the head.
     ///
-    /// # Panics
-    ///
-    /// Panics if the head's functor is a registered builtin. Builtins cannot
-    /// be shadowed by user-defined rules or facts.
     pub fn assert_rule(
         &mut self,
         head: TermId,
@@ -162,16 +163,9 @@ impl KnowledgeBase {
         domain: TermId,
         meta: Option<TermId>,
     ) -> RuleId {
-        // Guard: reject assertions whose head functor is a registered builtin
-        if let Term::Fn { functor, .. } = self.terms.get(head) {
-            if let Some(tag) = self.builtins.get(functor) {
-                let name = self.symbols.name(*functor);
-                panic!(
-                    "cannot assert rule/fact with head functor {:?}: it is a registered builtin ({:?})",
-                    name, tag,
-                );
-            }
-        }
+        // Note: builtins always take precedence over rules at resolution time
+        // (checked first in step_init), so rules with builtin functors are
+        // allowed but effectively shadowed during resolution.
 
         let rule_id = RuleId(self.rules.len() as u32);
 
@@ -299,8 +293,8 @@ impl KnowledgeBase {
             .push(parent);
     }
 
-    /// Check if `sub` is a subtype of `sup` (transitive).
-    pub fn is_subtype(&self, sub: TermId, sup: TermId) -> bool {
+    /// Check if `sub` is an entity of `sup` (transitive through parent chain).
+    pub fn is_entity_of(&self, sub: TermId, sup: TermId) -> bool {
         if sub == sup {
             return true;
         }
@@ -779,9 +773,10 @@ impl KnowledgeBase {
     }
 
     /// Resolve a user-defined symbol and create a nullary Fn term.
+    /// Uses the most recently defined symbol (user > stdlib > kernel).
     /// Falls back to intern() if no resolved symbol exists.
     pub fn resolve_name_term(&mut self, name: &str) -> TermId {
-        let sym = if let Some(found) = self.symbols.find_resolved_symbol(name) {
+        let sym = if let Some(found) = self.symbols.find_preferred_symbol(name) {
             found
         } else {
             self.symbols.intern(name)
@@ -791,6 +786,45 @@ impl KnowledgeBase {
             pos_args: SmallVec::new(),
             named_args: SmallVec::new(),
         })
+    }
+
+    /// Look up a resolved symbol by short name or qualified name.
+    /// Prefers properly-scoped definitions (from .anthill files) over
+    /// kernel fallbacks (where qualified_name == short_name).
+    ///
+    /// Panics if no resolved symbol is found — all functor names must be
+    /// pre-defined in register_prelude() or scan_definitions().
+    /// Look up a resolved symbol by qualified name or short name.
+    /// For short names, returns the most recently defined symbol
+    /// (user > stdlib > kernel fallback).
+    ///
+    /// Panics if no resolved symbol is found — all functor names must be
+    /// pre-defined in register_prelude() or scan_definitions().
+    pub fn resolve_symbol(&self, name: &str) -> Symbol {
+        if let Some(found) = self.try_resolve_symbol(name) {
+            return found;
+        }
+        panic!(
+            "resolve_symbol: '{}' is not a resolved symbol. \
+             Define it in register_prelude() or ensure it is scanned.",
+            name
+        );
+    }
+
+    /// Try to look up a resolved symbol by short name or qualified name.
+    /// Returns `None` if no resolved symbol is found.
+    /// For short names, returns the most recently defined symbol
+    /// (user > stdlib > kernel fallback).
+    pub fn try_resolve_symbol(&self, name: &str) -> Option<Symbol> {
+        // Check by short name first (last defined wins: user > stdlib > kernel)
+        if let Some(found) = self.symbols.find_preferred_symbol(name) {
+            return Some(found);
+        }
+        // Then by qualified name (for dotted names like "anthill.reflect.nonvar")
+        if let Some(&found) = self.symbols.by_qualified_name.get(name) {
+            return Some(found);
+        }
+        None
     }
 
     /// Check if a qualified name has a defined symbol in the symbol table.
@@ -845,21 +879,58 @@ impl KnowledgeBase {
         term
     }
 
+    // ── Entity field registry ──────────────────────────────────
+
+    /// Register the ordered field names for an entity functor.
+    pub fn register_entity_fields(&mut self, functor: Symbol, fields: Vec<Symbol>) {
+        self.entity_fields.insert(functor, fields);
+    }
+
+    /// Look up the ordered field names for an entity functor.
+    pub fn entity_field_names(&self, functor: Symbol) -> Option<&[Symbol]> {
+        self.entity_fields.get(&functor).map(|v| v.as_slice())
+    }
+
     // ── Builtin dispatch ────────────────────────────────────────
 
     /// Register a builtin by its fully-qualified name.
-    pub fn register_builtin(&mut self, name: &str, tag: BuiltinTag) {
-        let sym = self.symbols.intern(name);
+    /// Creates a resolved definition if the name isn't already defined.
+    pub fn register_builtin(&mut self, qualified_name: &str, tag: BuiltinTag) {
+        let sym = if let Some(&resolved) = self.symbols.by_qualified_name.get(qualified_name) {
+            resolved
+        } else {
+            let short = qualified_name.rsplit('.').next().unwrap_or(qualified_name);
+            let global_raw = self.make_name_term("_global").raw();
+            self.symbols.define(short, qualified_name, SymbolKind::Operation, global_raw)
+        };
         self.builtins.insert(sym, tag);
     }
 
-    /// Register the standard builtins (`anthill.reflect.nonvar`, `anthill.reflect.ground`).
+    /// Register the standard builtins.
     pub fn register_standard_builtins(&mut self) {
         self.register_builtin("anthill.reflect.nonvar", BuiltinTag::NonVar);
         self.register_builtin("anthill.reflect.ground", BuiltinTag::Ground);
         self.register_builtin("anthill.reflect.qualified_name", BuiltinTag::QualifiedName);
         self.register_builtin("anthill.reflect.short_name", BuiltinTag::ShortName);
         self.register_builtin("anthill.reflect.lookup_symbol", BuiltinTag::LookupSymbol);
+        self.register_builtin("anthill.reflect.typing.is_entity_of", BuiltinTag::IsEntityOf);
+        self.register_builtin("anthill.reflect.typing.extract_sort_ref", BuiltinTag::ExtractSort);
+    }
+
+    /// Re-resolve builtins after scan_definitions().
+    /// If scan_definitions created a new resolved symbol for a builtin's
+    /// qualified name (from .anthill source), remap the builtin to use it.
+    pub fn resolve_builtins(&mut self) {
+        let old: Vec<(Symbol, BuiltinTag)> = self.builtins.drain().collect();
+        for (old_sym, tag) in old {
+            let qualified = match self.symbols.get(old_sym) {
+                SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
+                SymbolDef::Unresolved { name } => name.clone(),
+            };
+            let sym = self.symbols.by_qualified_name.get(&qualified)
+                .copied().unwrap_or(old_sym);
+            self.builtins.insert(sym, tag);
+        }
     }
 
     /// Check if a goal term's functor is a registered builtin.
@@ -926,9 +997,9 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], fid);
 
-        // is_subtype
-        assert!(kb.is_subtype(zero, nat));
-        assert!(!kb.is_subtype(nat, zero));
+        // is_entity_of
+        assert!(kb.is_entity_of(zero, nat));
+        assert!(!kb.is_entity_of(nat, zero));
     }
 
     #[test]

@@ -32,6 +32,10 @@ pub enum BuiltinTag {
     ShortName,
     /// `anthill.reflect.lookup_symbol(?name_str, ?result)` — String → Symbol (fails if not found).
     LookupSymbol,
+    /// `anthill.reflect.typing.is_entity_of(?sub, ?sup)` — succeeds if sub is entity of sup.
+    IsEntityOf,
+    /// `anthill.reflect.typing.extract_sort_ref(?inst, ?result)` — extract functor as Ref from instantiation term.
+    ExtractSort,
 }
 
 /// Result of executing a builtin.
@@ -644,6 +648,8 @@ impl KnowledgeBase {
             BuiltinTag::QualifiedName => self.builtin_qualified_name(goal, answer_subst),
             BuiltinTag::ShortName => self.builtin_short_name(goal, answer_subst),
             BuiltinTag::LookupSymbol => self.builtin_lookup_symbol(goal, answer_subst),
+            BuiltinTag::IsEntityOf => self.builtin_is_entity_of(goal, answer_subst),
+            BuiltinTag::ExtractSort => self.builtin_extract_sort(goal, answer_subst),
         }
     }
 
@@ -822,6 +828,81 @@ impl KnowledgeBase {
             }
             Term::Var(_) => BuiltinResult::Delay,
             _ => BuiltinResult::Failure,
+        }
+    }
+
+    /// `is_entity_of(?sub, ?sup)`: succeeds if sub is an entity of sup (via KB indexes).
+    /// Both args must be non-var (delay otherwise).
+    fn builtin_is_entity_of(&self, goal: TermId, subst: &Substitution) -> BuiltinResult {
+        let sub_arg = self.builtin_first_arg(goal);
+        let sup_arg = self.builtin_second_arg(goal);
+        let walked_sub = self.walk(sub_arg, subst);
+        let walked_sup = self.walk(sup_arg, subst);
+        match (self.terms.get(walked_sub), self.terms.get(walked_sup)) {
+            (Term::Var(_), _) | (_, Term::Var(_)) => BuiltinResult::Delay,
+            _ => {
+                if self.is_entity_of(walked_sub, walked_sup) {
+                    BuiltinResult::Success
+                } else {
+                    BuiltinResult::Failure
+                }
+            }
+        }
+    }
+
+    /// `extract_sort_ref(?inst, ?result)`: given a term like `Eq{T = Int}` (represented as
+    /// `ParameterizedType(Eq(), T=Int())`) or a simple `Ref(Eq)`, extract the sort symbol
+    /// and bind `?result` to `Ref(sort_sym)`. Delays if `?inst` is unbound.
+    fn builtin_extract_sort(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
+        let inst_arg = self.builtin_first_arg(goal);
+        let result_arg = self.builtin_second_arg(goal);
+        let walked_inst = self.walk(inst_arg, subst);
+
+        // Extract the sort symbol from various term shapes
+        let sort_sym = match self.terms.get(walked_inst).clone() {
+            Term::Var(_) => return BuiltinResult::Delay,
+            // Simple Ref: the sort itself
+            Term::Ref(sym) => Some(sym),
+            // ParameterizedType(sort_name_term, bindings...) — first pos arg is the sort name
+            Term::Fn { ref functor, ref pos_args, .. } => {
+                let functor_name = self.symbols.name(*functor);
+                if functor_name == "ParameterizedType" && !pos_args.is_empty() {
+                    // First pos arg is the sort name term (e.g. Eq())
+                    let name_term = pos_args[0];
+                    match self.terms.get(name_term) {
+                        Term::Fn { functor: inner_f, .. } => Some(*inner_f),
+                        Term::Ref(sym) => Some(*sym),
+                        _ => None,
+                    }
+                } else {
+                    // Direct functor (e.g. Eq() or SortInfo(...))
+                    Some(*functor)
+                }
+            }
+            _ => None,
+        };
+
+        match sort_sym {
+            Some(sym) => {
+                let ref_term = self.alloc(Term::Ref(sym));
+                let walked_result = self.walk(result_arg, subst);
+                match self.terms.get(walked_result) {
+                    Term::Var(vid) => {
+                        let vid = *vid;
+                        let mut extra = Substitution::new();
+                        extra.bind(vid, ref_term);
+                        BuiltinResult::SuccessWithBindings(extra)
+                    }
+                    _ => {
+                        if walked_result == ref_term {
+                            BuiltinResult::Success
+                        } else {
+                            BuiltinResult::Failure
+                        }
+                    }
+                }
+            }
+            None => BuiltinResult::Failure,
         }
     }
 
@@ -1649,7 +1730,7 @@ mod tests {
         let sort = kb.make_name_term("Fact");
         let domain = kb.make_name_term("test");
         let f_sym = kb.intern("f");
-        let nonvar_sym = kb.intern("anthill.reflect.nonvar");
+        let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
 
         let hello = kb.alloc(Term::Const(Literal::String("hello".into())));
         let f_hello = kb.alloc(Term::Fn {
@@ -1689,7 +1770,7 @@ mod tests {
         let sort = kb.make_name_term("Fact");
         let domain = kb.make_name_term("test");
         let f_sym = kb.intern("f");
-        let nonvar_sym = kb.intern("anthill.reflect.nonvar");
+        let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
 
         let hello = kb.alloc(Term::Const(Literal::String("hello".into())));
         let f_hello = kb.alloc(Term::Fn {
@@ -1726,7 +1807,7 @@ mod tests {
     fn nonvar_residualizes_when_permanently_unbound() {
         // anthill.reflect.nonvar(?x) alone → residual contains the goal
         let mut kb = kb_with_builtins();
-        let nonvar_sym = kb.intern("anthill.reflect.nonvar");
+        let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
 
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
@@ -1752,7 +1833,7 @@ mod tests {
         let sort = kb.make_name_term("Fact");
         let domain = kb.make_name_term("test");
         let f_sym = kb.intern("f");
-        let ground_sym = kb.intern("anthill.reflect.ground");
+        let ground_sym = kb.resolve_symbol("anthill.reflect.ground");
 
         let val = kb.alloc(Term::Const(Literal::Int(42)));
         let f_42 = kb.alloc(Term::Fn {
@@ -1791,7 +1872,7 @@ mod tests {
         let domain = kb.make_name_term("test");
         let f_sym = kb.intern("f");
         let pair_sym = kb.intern("pair");
-        let ground_sym = kb.intern("anthill.reflect.ground");
+        let ground_sym = kb.resolve_symbol("anthill.reflect.ground");
 
         // Fact: f(pair(?y)) — not ground, has an unbound variable inside
         let y_sym = kb.intern("y");
@@ -1863,12 +1944,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "cannot assert rule/fact with head functor")]
-    fn builtin_protection_rejects_shadowing() {
+    fn builtin_precedence_over_rules() {
+        // Rules can be asserted for builtin functors, but builtins always
+        // take precedence at resolution time.
         let mut kb = kb_with_builtins();
         let sort = kb.make_name_term("Fact");
         let domain = kb.make_name_term("test");
-        let nonvar_sym = kb.intern("anthill.reflect.nonvar");
+        let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
 
         let val = kb.alloc(Term::Const(Literal::Int(1)));
         let head = kb.alloc(Term::Fn {
@@ -1876,7 +1958,23 @@ mod tests {
             pos_args: SmallVec::from_elem(val, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_fact(head, sort, domain, None); // should panic
+        // Asserting a fact with a builtin functor is allowed
+        kb.assert_fact(head, sort, domain, None);
+
+        // But the builtin still handles resolution (not the fact)
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+        let goal = kb.alloc(Term::Fn {
+            functor: nonvar_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        // nonvar(?x) with unbound ?x should delay (builtin behavior),
+        // not succeed (which would happen if the ground fact were matched)
+        let results = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(results.len(), 1, "should residualize");
+        assert_eq!(results[0].residual.len(), 1, "nonvar(?x) should be in residual");
     }
 
     // ── Delay propagation through rules ────────────────────────
@@ -1894,7 +1992,7 @@ mod tests {
         let mut kb = kb_with_builtins();
         let sort = kb.make_name_term("Rule");
         let domain = kb.make_name_term("test");
-        let nonvar_sym = kb.intern("anthill.reflect.nonvar");
+        let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
         let check_sym = kb.intern("check");
         let is_thing_sym = kb.intern("is_thing");
         let bind_a_sym = kb.intern("bind_a");
@@ -1968,7 +2066,7 @@ mod tests {
         let mut kb = kb_with_builtins();
         let sort = kb.make_name_term("Rule");
         let domain = kb.make_name_term("test");
-        let nonvar_sym = kb.intern("anthill.reflect.nonvar");
+        let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
         let check_sym = kb.intern("check");
         let is_thing_sym = kb.intern("is_thing");
 
@@ -2028,7 +2126,7 @@ mod tests {
         let mut kb = kb_with_builtins();
         let sort = kb.make_name_term("Rule");
         let domain = kb.make_name_term("test");
-        let nonvar_sym = kb.intern("anthill.reflect.nonvar");
+        let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
         let foo_sym = kb.intern("foo");
         let bar_sym = kb.intern("bar");
         let baz_sym = kb.intern("baz");
@@ -2205,7 +2303,7 @@ mod tests {
     fn search_stream_delay_residual() {
         // nonvar(?x) alone → residualized solution via stream
         let mut kb = kb_with_builtins();
-        let nonvar_sym = kb.intern("anthill.reflect.nonvar");
+        let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
 
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
@@ -2355,7 +2453,7 @@ mod tests {
         let result_vid = kb.fresh_var(result_sym);
         let result_var = kb.alloc(Term::Var(result_vid));
 
-        let qn_sym = kb.intern("anthill.reflect.qualified_name");
+        let qn_sym = kb.resolve_symbol("anthill.reflect.qualified_name");
         let goal = kb.alloc(Term::Fn {
             functor: qn_sym,
             pos_args: SmallVec::from_slice(&[bar_ref, result_var]),
@@ -2388,7 +2486,7 @@ mod tests {
         let result_vid = kb.fresh_var(result_sym);
         let result_var = kb.alloc(Term::Var(result_vid));
 
-        let sn_sym = kb.intern("anthill.reflect.short_name");
+        let sn_sym = kb.resolve_symbol("anthill.reflect.short_name");
         let goal = kb.alloc(Term::Fn {
             functor: sn_sym,
             pos_args: SmallVec::from_slice(&[baz_ref, result_var]),
@@ -2419,7 +2517,7 @@ mod tests {
         let result_vid = kb.fresh_var(result_sym);
         let result_var = kb.alloc(Term::Var(result_vid));
 
-        let ls_sym = kb.intern("anthill.reflect.lookup_symbol");
+        let ls_sym = kb.resolve_symbol("anthill.reflect.lookup_symbol");
         let goal = kb.alloc(Term::Fn {
             functor: ls_sym,
             pos_args: SmallVec::from_slice(&[name_str, result_var]),
@@ -2446,7 +2544,7 @@ mod tests {
         let result_vid = kb.fresh_var(result_sym);
         let result_var = kb.alloc(Term::Var(result_vid));
 
-        let ls_sym = kb.intern("anthill.reflect.lookup_symbol");
+        let ls_sym = kb.resolve_symbol("anthill.reflect.lookup_symbol");
         let goal = kb.alloc(Term::Fn {
             functor: ls_sym,
             pos_args: SmallVec::from_slice(&[name_str, result_var]),
@@ -2470,7 +2568,7 @@ mod tests {
         let result_vid = kb.fresh_var(result_name);
         let result_var = kb.alloc(Term::Var(result_vid));
 
-        let qn_sym = kb.intern("anthill.reflect.qualified_name");
+        let qn_sym = kb.resolve_symbol("anthill.reflect.qualified_name");
         let goal = kb.alloc(Term::Fn {
             functor: qn_sym,
             pos_args: SmallVec::from_slice(&[sym_var, result_var]),

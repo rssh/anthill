@@ -329,8 +329,8 @@ fn load_sort_with_body_registers_subsorts() {
     let zero_term = kb.resolve_name_term("zero");
 
     // Check subsort relationship
-    assert!(kb.is_subtype(zero_term, nat_term), "zero should be a subtype of Nat");
-    assert!(!kb.is_subtype(nat_term, zero_term), "Nat should not be a subtype of zero");
+    assert!(kb.is_entity_of(zero_term, nat_term), "zero should be a subtype of Nat");
+    assert!(!kb.is_entity_of(nat_term, zero_term), "Nat should not be a subtype of zero");
 
     // Check sort kinds
     assert_eq!(kb.sort_kind(nat_term), Some(SortKind::Defined));
@@ -394,7 +394,7 @@ end
     // Check sort relationship: dollars < Money
     let money_term = kb.resolve_name_term("Money");
     let dollars_term = kb.resolve_name_term("dollars");
-    assert!(kb.is_subtype(dollars_term, money_term));
+    assert!(kb.is_entity_of(dollars_term, money_term));
 }
 
 #[test]
@@ -500,7 +500,7 @@ end
     assert_eq!(kb.sort_kind(account_term), Some(SortKind::Defined));
 
     let checking_term = kb.resolve_name_term("checking");
-    assert!(kb.is_subtype(checking_term, account_term),
+    assert!(kb.is_entity_of(checking_term, account_term),
         "checking should be a subtype of Account");
     assert_eq!(kb.sort_kind(checking_term), Some(SortKind::Constructor));
 }
@@ -800,13 +800,13 @@ sort Ordered {
         "requirement should be scoped to the Ordered sort"
     );
 
-    // The requirement term should be Requires(ParameterizedType(Eq(), T=T()))
+    // The requirement term should be Requires(Ordered_ref, Eq_ref, ParameterizedType(Eq(), T=T()))
     let fid = reqs[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
         Term::Fn { functor, pos_args, .. } => {
             assert_eq!(kb.resolve_sym(*functor), "Requires");
-            assert_eq!(pos_args.len(), 1);
+            assert_eq!(pos_args.len(), 3);  // (requiring_sort, base_sort, spec_term)
         }
         other => panic!("expected Fn term for Requirement, got {:?}", other),
     }
@@ -970,11 +970,11 @@ fn mutual_reference_load_order_independent() {
     // Both should have the same sort relationships
     let a1 = kb1.resolve_name_term("A");
     let mka1 = kb1.resolve_name_term("mkA");
-    assert!(kb1.is_subtype(mka1, a1));
+    assert!(kb1.is_entity_of(mka1, a1));
 
     let a2 = kb2.resolve_name_term("A");
     let mka2 = kb2.resolve_name_term("mkA");
-    assert!(kb2.is_subtype(mka2, a2));
+    assert!(kb2.is_entity_of(mka2, a2));
 }
 
 // ── Standard library parse tests ────────────────────────────────

@@ -297,6 +297,18 @@ impl SymbolTable {
             syms.first().copied()
         })
     }
+
+    /// Find a resolved symbol by short name, returning the most recently
+    /// defined one. Definitions are ordered: prelude (register_prelude)
+    /// → stdlib (scan_definitions) → user source, so "last wins" naturally
+    /// gives priority to the most specific definition.
+    /// Returns `None` if no resolved symbol exists for the name.
+    pub fn find_preferred_symbol(&self, name: &str) -> Option<Symbol> {
+        self.by_short_name.get(name).and_then(|syms| {
+            syms.last().copied()
+        })
+    }
+
 }
 
 // ── Backward-compatible type alias ──────────────────────────────

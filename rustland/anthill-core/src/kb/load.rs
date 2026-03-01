@@ -261,19 +261,26 @@ fn scan_items_pass1(
                 let name = join_segments(parse_sym, &s.name.segments);
                 let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
                 let qualified = make_qualified(prefix, &name);
-                let sym = kb.symbols.define(&short, &qualified, SymbolKind::Sort, actual_scope.raw());
+                // Reuse existing sort symbol if already defined (e.g. by register_prelude)
+                let (sym, is_new) = if let Some(&existing) = kb.symbols.by_qualified_name.get(&qualified) {
+                    (existing, false)
+                } else {
+                    (kb.symbols.define(&short, &qualified, SymbolKind::Sort, actual_scope.raw()), true)
+                };
                 let sort_term = kb.alloc(Term::Fn {
                     functor: sym,
                     pos_args: SmallVec::new(),
                     named_args: SmallVec::new(),
                 });
-                // Implicit parent: the enclosing scope is visible from within the sort
-                kb.symbols.add_parent(sort_term.raw(), ScopeInclusion {
-                    parent_scope_raw: actual_scope.raw(),
-                    instantiation_term_raw: actual_scope.raw(),
-                    is_enclosing: true,
-                });
-                // Record exports
+                if is_new {
+                    // Implicit parent: the enclosing scope is visible from within the sort
+                    kb.symbols.add_parent(sort_term.raw(), ScopeInclusion {
+                        parent_scope_raw: actual_scope.raw(),
+                        instantiation_term_raw: actual_scope.raw(),
+                        is_enclosing: true,
+                    });
+                }
+                // Record exports (additive — safe to re-apply)
                 for export_name in &s.exports {
                     let n = join_segments(parse_sym, &export_name.segments);
                     kb.symbols.add_export(sort_term.raw(), &n);
@@ -338,7 +345,10 @@ fn scan_items_pass1(
                 let name = join_segments(parse_sym, &e.name.segments);
                 let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
                 let qualified = make_qualified(prefix, &name);
-                kb.symbols.define(&short, &qualified, SymbolKind::Entity, actual_scope.raw());
+                // Reuse existing entity symbol if already defined (e.g. by register_prelude)
+                if !kb.symbols.by_qualified_name.contains_key(&qualified) {
+                    kb.symbols.define(&short, &qualified, SymbolKind::Entity, actual_scope.raw());
+                }
             }
             Item::Operation(o) => {
                 let name = join_segments(parse_sym, &o.name.segments);
@@ -603,15 +613,150 @@ fn process_imports(
 /// These correspond to the stdlib primitive types (Int, Float, String, Bool).
 pub const PRELUDE_SORTS: &[&str] = &["Int", "Float", "String", "Bool"];
 
-/// Register primitive sorts in the global scope so they are always resolvable.
+/// KB-internal meta-sort names. Used as sort-of-sort markers (e.g. the sort
+/// of a Fact entry is `Fact`). Not defined in any `.anthill` file.
+const KERNEL_META_SORTS: &[&str] = &[
+    "Sort", "Entity", "Fact", "Rule", "Operation", "Namespace",
+    "Requirement", "Description", "Constraint", "Member",
+    "Project", "Tool", "WorkItem", "Feedback",
+];
+
+/// KB-internal functor names used by the loader to construct fact terms.
+/// Not defined in any `.anthill` file.
+const KERNEL_FUNCTORS: &[&str] = &[
+    "EntityOf", "Requires", "SortAlias", "ParameterizedType",
+    "member", "meta",
+];
+
+/// Register primitive sorts and kernel vocabulary in the global scope,
+/// plus stdlib scope hierarchy for loader-referenced names.
 ///
 /// Call this before `scan_definitions` / `load` to ensure that references to
-/// `Int`, `Float`, `String`, `Bool` never produce unresolved-name errors.
+/// `Int`, `Float`, `String`, `Bool` never produce unresolved-name errors,
+/// and that all loader-internal functor names are resolvable.
+///
+/// Stdlib names (`cons`, `nil`, `some`, `none`, `SortInfo`, `FieldInfo`,
+/// `OperationInfo`) are defined in their correct scopes with proper
+/// qualified names, matching what `scan_definitions` would produce from
+/// the stdlib `.anthill` files.  `scan_definitions` is idempotent for these
+/// entries and will reuse the existing symbols.
 pub fn register_prelude(kb: &mut KnowledgeBase) {
     let global = kb.make_name_term("_global");
+    let global_raw = global.raw();
     for &name in PRELUDE_SORTS {
-        kb.symbols.define(name, name, SymbolKind::Sort, global.raw());
+        if !kb.symbols.by_qualified_name.contains_key(name) {
+            kb.symbols.define(name, name, SymbolKind::Sort, global_raw);
+        }
     }
+    for &name in KERNEL_META_SORTS {
+        if !kb.symbols.by_qualified_name.contains_key(name) {
+            kb.symbols.define(name, name, SymbolKind::Sort, global_raw);
+        }
+    }
+    for &name in KERNEL_FUNCTORS {
+        if !kb.symbols.by_qualified_name.contains_key(name) {
+            kb.symbols.define(name, name, SymbolKind::Entity, global_raw);
+        }
+    }
+    // Stdlib scope hierarchy: create scopes with correct qualified names
+    // so the loader's resolve_symbol() finds names in the right scopes.
+    // Idempotent: skipped on re-entry or when stdlib has already been scanned.
+    register_stdlib_scopes(kb, global_raw);
+}
+
+/// Create the stdlib scope hierarchy for names the loader references directly.
+///
+/// Mirrors the structure of `stdlib/anthill/prelude/{list,option}.anthill`
+/// and `stdlib/anthill/reflect/reflect.anthill` so that `resolve_symbol("cons")`
+/// etc. return properly-scoped symbols. When the real stdlib is loaded,
+/// `scan_definitions` reuses these symbols (idempotent by qualified name).
+fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
+    // Guard: if "anthill" already exists, the whole hierarchy is set up
+    if kb.symbols.by_qualified_name.contains_key("anthill") {
+        return;
+    }
+
+    // anthill namespace
+    let anthill_sym = kb.symbols.define("anthill", "anthill", SymbolKind::Namespace, global_raw);
+    let anthill_term = kb.alloc(Term::Fn {
+        functor: anthill_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(anthill_term.raw(), ScopeInclusion {
+        parent_scope_raw: global_raw,
+        instantiation_term_raw: global_raw,
+        is_enclosing: true,
+    });
+
+    // anthill.prelude namespace
+    let prelude_sym = kb.symbols.define("prelude", "anthill.prelude", SymbolKind::Namespace, anthill_term.raw());
+    let prelude_term = kb.alloc(Term::Fn {
+        functor: prelude_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(prelude_term.raw(), ScopeInclusion {
+        parent_scope_raw: anthill_term.raw(),
+        instantiation_term_raw: anthill_term.raw(),
+        is_enclosing: true,
+    });
+
+    // anthill.prelude.List sort
+    let list_sym = kb.symbols.define("List", "anthill.prelude.List", SymbolKind::Sort, prelude_term.raw());
+    let list_term = kb.alloc(Term::Fn {
+        functor: list_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(list_term.raw(), ScopeInclusion {
+        parent_scope_raw: prelude_term.raw(),
+        instantiation_term_raw: prelude_term.raw(),
+        is_enclosing: true,
+    });
+    let cons_sym = kb.symbols.define("cons", "anthill.prelude.List.cons", SymbolKind::Entity, list_term.raw());
+    let nil_sym = kb.symbols.define("nil", "anthill.prelude.List.nil", SymbolKind::Entity, list_term.raw());
+
+    // anthill.prelude.Option sort
+    let option_sym = kb.symbols.define("Option", "anthill.prelude.Option", SymbolKind::Sort, prelude_term.raw());
+    let option_term = kb.alloc(Term::Fn {
+        functor: option_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(option_term.raw(), ScopeInclusion {
+        parent_scope_raw: prelude_term.raw(),
+        instantiation_term_raw: prelude_term.raw(),
+        is_enclosing: true,
+    });
+    let some_sym = kb.symbols.define("some", "anthill.prelude.Option.some", SymbolKind::Entity, option_term.raw());
+    let none_sym = kb.symbols.define("none", "anthill.prelude.Option.none", SymbolKind::Entity, option_term.raw());
+
+    // anthill.reflect namespace
+    let reflect_sym = kb.symbols.define("reflect", "anthill.reflect", SymbolKind::Namespace, anthill_term.raw());
+    let reflect_term = kb.alloc(Term::Fn {
+        functor: reflect_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(reflect_term.raw(), ScopeInclusion {
+        parent_scope_raw: anthill_term.raw(),
+        instantiation_term_raw: anthill_term.raw(),
+        is_enclosing: true,
+    });
+    let sort_info_sym = kb.symbols.define("SortInfo", "anthill.reflect.SortInfo", SymbolKind::Entity, reflect_term.raw());
+    let field_info_sym = kb.symbols.define("FieldInfo", "anthill.reflect.FieldInfo", SymbolKind::Entity, reflect_term.raw());
+    let op_info_sym = kb.symbols.define("OperationInfo", "anthill.reflect.OperationInfo", SymbolKind::Entity, reflect_term.raw());
+
+    // Global imports: make fundamental constructors visible from any scope
+    // that walks up to _global (like Haskell's Prelude auto-import).
+    kb.symbols.add_import(global_raw, "cons", cons_sym);
+    kb.symbols.add_import(global_raw, "nil", nil_sym);
+    kb.symbols.add_import(global_raw, "some", some_sym);
+    kb.symbols.add_import(global_raw, "none", none_sym);
+    kb.symbols.add_import(global_raw, "SortInfo", sort_info_sym);
+    kb.symbols.add_import(global_raw, "FieldInfo", field_info_sym);
+    kb.symbols.add_import(global_raw, "OperationInfo", op_info_sym);
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -626,8 +771,11 @@ pub fn load(
     parsed: &ParsedFile,
     resolver: &dyn SourceResolver,
 ) -> Result<(), Vec<LoadError>> {
+    // Ensure kernel vocabulary is registered (idempotent)
+    register_prelude(kb);
     // Phase 1: Scan definitions from this file
     let mut all_errors = scan_definitions(kb, &[parsed]);
+    kb.resolve_builtins();
     // Phase 2: Load
     let mut loaded_paths = HashSet::new();
     if let Err(errs) = load_with_visited(kb, parsed, resolver, &mut loaded_paths) {
@@ -649,8 +797,11 @@ pub fn load_all(
     files: &[&ParsedFile],
     resolver: &dyn SourceResolver,
 ) -> Result<(), Vec<LoadError>> {
+    // Ensure kernel vocabulary is registered (idempotent)
+    register_prelude(kb);
     // Phase 1: Scan all definitions across all files
     let mut all_errors = scan_definitions(kb, files);
+    kb.resolve_builtins();
 
     // Phase 2: Load files with scope-aware resolution
     let mut loaded_paths = HashSet::new();
@@ -687,8 +838,8 @@ fn load_with_visited(
 /// Build a cons-list from a slice of TermIds: `cons(head: a, tail: cons(head: b, tail: nil()))`.
 /// Uses the `anthill.prelude.List` constructors so list operations work.
 fn build_list(kb: &mut KnowledgeBase, items: &[TermId]) -> TermId {
-    let nil_sym = kb.intern("nil");
-    let cons_sym = kb.intern("cons");
+    let nil_sym = kb.resolve_symbol("nil");
+    let cons_sym = kb.resolve_symbol("cons");
     let head_sym = kb.intern("head");
     let tail_sym = kb.intern("tail");
 
@@ -880,10 +1031,30 @@ impl<'a> Loader<'a> {
                     .iter()
                     .map(|&id| self.convert_term(id))
                     .collect();
-                let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
+                let mut new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
                     .iter()
                     .map(|&(sym, id)| (self.reintern(sym), self.convert_term(id)))
                     .collect();
+
+                // Expand partial named args: fill missing entity fields with fresh vars
+                if let Some(all_fields) = self.kb.entity_field_names(new_functor) {
+                    let all_fields = all_fields.to_vec(); // borrow-safe copy
+                    if !new_named.is_empty() && new_named.len() < all_fields.len() {
+                        let provided: HashSet<Symbol> = new_named.iter().map(|(s, _)| *s).collect();
+                        for &field_sym in &all_fields {
+                            if !provided.contains(&field_sym) {
+                                let fresh = self.kb.fresh_var(field_sym);
+                                let var_term = self.kb.alloc(Term::Var(fresh));
+                                new_named.push((field_sym, var_term));
+                            }
+                        }
+                        // Sort to match entity field order (discrimination tree is order-sensitive)
+                        let order: HashMap<Symbol, usize> = all_fields.iter().enumerate()
+                            .map(|(i, &s)| (s, i)).collect();
+                        new_named.sort_by_key(|(s, _)| order.get(s).copied().unwrap_or(usize::MAX));
+                    }
+                }
+
                 Term::Fn { functor: new_functor, pos_args: new_pos, named_args: new_named }
             }
             Term::Ref(sym) => {
@@ -939,7 +1110,7 @@ impl<'a> Loader<'a> {
                     named_args.push((param_sym, bound_term));
                 }
 
-                let param_type_sym = self.kb.intern("ParameterizedType");
+                let param_type_sym = self.kb.resolve_symbol("ParameterizedType");
                 self.kb.alloc(Term::Fn {
                     functor: param_type_sym,
                     pos_args: SmallVec::from_elem(name_term, 1),
@@ -1028,7 +1199,7 @@ impl<'a> Loader<'a> {
             TypeExpr::Variable { term_id, .. } => self.convert_term(*term_id),
             _ => self.type_expr_to_term(&s.definition),
         };
-        let alias_sym = self.kb.intern("SortAlias");
+        let alias_sym = self.kb.resolve_symbol("SortAlias");
         let alias_fact = self.kb.alloc(Term::Fn {
             functor: alias_sym,
             pos_args: SmallVec::from_slice(&[sort_term, target_term]),
@@ -1067,14 +1238,14 @@ impl<'a> Loader<'a> {
                 self.kb.register_sort(ctor_term, SortKind::Constructor);
                 self.kb.register_subsort(ctor_term, sort_term);
 
-                // Assert Subsort fact
-                let subsort_sym = self.kb.intern("Subsort");
-                let subsort_fact = self.kb.alloc(Term::Fn {
-                    functor: subsort_sym,
+                // Assert EntityOf fact
+                let entity_of_sym = self.kb.resolve_symbol("EntityOf");
+                let entity_of_fact = self.kb.alloc(Term::Fn {
+                    functor: entity_of_sym,
                     pos_args: SmallVec::from_slice(&[ctor_term, sort_term]),
                     named_args: SmallVec::new(),
                 });
-                self.kb.assert_fact(subsort_fact, sort_sort, parent_domain, None);
+                self.kb.assert_fact(entity_of_fact, sort_sort, parent_domain, None);
             }
         }
 
@@ -1141,13 +1312,19 @@ impl<'a> Loader<'a> {
         };
 
         // Assert SortInfo fact with named args
-        let sort_info_sym = self.kb.intern("SortInfo");
+        let sort_info_sym = self.kb.resolve_symbol("SortInfo");
         let name_sym = self.kb.intern("name");
         let definition_sym = self.kb.intern("definition");
         let constructors_sym = self.kb.intern("constructors");
         let operations_sym = self.kb.intern("operations");
         let parameters_sym = self.kb.intern("parameters");
         let requires_sym = self.kb.intern("requires");
+
+        // Register SortInfo fields for partial named-arg expansion
+        self.kb.register_entity_fields(sort_info_sym, vec![
+            name_sym, definition_sym, constructors_sym,
+            operations_sym, parameters_sym, requires_sym,
+        ]);
         let name_ref = self.kb.alloc(Term::Ref(sort_functor));
 
         let fact_term = self.kb.alloc(Term::Fn {
@@ -1179,6 +1356,10 @@ impl<'a> Loader<'a> {
                 (field_sym, type_term)
             })
             .collect();
+
+        // Register entity field names for partial named-arg expansion
+        let field_names: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
+        self.kb.register_entity_fields(functor, field_names);
 
         let entity_term = self.kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args });
         self.kb.assert_fact(entity_term, entity_sort, domain, None);
@@ -1227,7 +1408,7 @@ impl<'a> Loader<'a> {
         let return_term = self.type_expr_to_term(&o.return_type);
 
         // Build FieldInfo list for params
-        let field_info_sym = self.kb.intern("FieldInfo");
+        let field_info_sym = self.kb.resolve_symbol("FieldInfo");
         let fi_name_sym = self.kb.intern("name");
         let fi_type_sym = self.kb.intern("type_name");
         let param_terms: Vec<TermId> = o.params
@@ -1258,7 +1439,7 @@ impl<'a> Loader<'a> {
         self.current_scope = prev_scope;
 
         // Build OperationInfo term with named args matching the entity definition
-        let op_info_sym = self.kb.intern("OperationInfo");
+        let op_info_sym = self.kb.resolve_symbol("OperationInfo");
         let name_sym = self.kb.intern("name");
         let sort_context_sym = self.kb.intern("sort_context");
         let params_sym = self.kb.intern("params");
@@ -1274,7 +1455,7 @@ impl<'a> Loader<'a> {
             match self.kb.get_term(domain) {
                 Term::Fn { functor: domain_functor, .. } => {
                     let df = *domain_functor;
-                    let some_sym = self.kb.intern("some");
+                    let some_sym = self.kb.resolve_symbol("some");
                     let val_sym = self.kb.intern("value");
                     let ref_term = self.kb.alloc(Term::Ref(df));
                     self.kb.alloc(Term::Fn {
@@ -1284,7 +1465,7 @@ impl<'a> Loader<'a> {
                     })
                 }
                 _ => {
-                    let none_sym = self.kb.intern("none");
+                    let none_sym = self.kb.resolve_symbol("none");
                     self.kb.alloc(Term::Fn {
                         functor: none_sym,
                         pos_args: SmallVec::new(),
@@ -1293,7 +1474,7 @@ impl<'a> Loader<'a> {
                 }
             }
         } else {
-            let none_sym = self.kb.intern("none");
+            let none_sym = self.kb.resolve_symbol("none");
             self.kb.alloc(Term::Fn {
                 functor: none_sym,
                 pos_args: SmallVec::new(),
@@ -1317,7 +1498,7 @@ impl<'a> Loader<'a> {
 
     fn load_constraint(&mut self, c: &Constraint, domain: TermId) {
         let constraint_sort = self.kb.make_name_term("Constraint");
-        let constraint_sym = self.kb.intern("Constraint");
+        let constraint_sym = self.kb.resolve_symbol("Constraint");
 
         let head_pos: SmallVec<[TermId; 4]> = c.head
             .iter()
@@ -1359,11 +1540,19 @@ impl<'a> Loader<'a> {
 
     fn load_requires_decl(&mut self, r: &RequiresDecl, domain: TermId) {
         let requirement_sort = self.kb.make_name_term("Requirement");
-        let requires_sym = self.kb.intern("Requires");
+        let requires_sym = self.kb.resolve_symbol("Requires");
         let type_term = self.type_expr_to_term(&r.type_expr);
+
+        // Extract base sort reference from the type expression
+        let base_sort = match &r.type_expr {
+            TypeExpr::Simple(name) => self.name_to_sort_term(name),
+            TypeExpr::Parameterized { name, .. } => self.name_to_sort_term(name),
+            TypeExpr::Variable { .. } => type_term,
+        };
+
         let requires_term = self.kb.alloc(Term::Fn {
             functor: requires_sym,
-            pos_args: SmallVec::from_elem(type_term, 1),
+            pos_args: SmallVec::from_slice(&[domain, base_sort, type_term]),
             named_args: SmallVec::new(),
         });
         self.kb.assert_fact(requires_term, requirement_sort, domain, None);
@@ -1378,7 +1567,7 @@ impl<'a> Loader<'a> {
 
     fn emit_desc_fact(&mut self, target: TermId, text: &str, domain: TermId) {
         let desc_sort = self.kb.make_name_term("Description");
-        let desc_sym = self.kb.intern("Description");
+        let desc_sym = self.kb.resolve_symbol("Description");
         let text_term = self.kb.alloc(Term::Const(super::term::Literal::String(text.to_string())));
         let desc_fact = self.kb.alloc(Term::Fn {
             functor: desc_sym,
@@ -1456,7 +1645,7 @@ impl<'a> Loader<'a> {
 
     fn load_feedback(&mut self, f: &Feedback, domain: TermId) {
         let feedback_sort = self.kb.make_name_term("Feedback");
-        let feedback_sym = self.kb.intern("Feedback");
+        let feedback_sym = self.kb.resolve_symbol("Feedback");
 
         let wi_functor = self.reintern_name(&f.workitem);
         let wi_term = self.kb.alloc(Term::Fn {
@@ -1495,6 +1684,7 @@ impl<'a> Loader<'a> {
                         Ok(imported) => {
                             // Scan definitions from the imported file before loading
                             let scan_errs = scan_definitions(self.kb, &[&imported]);
+                            self.kb.resolve_builtins();
                             self.errors.extend(scan_errs);
                             if let Err(errs) = load_with_visited(
                                 self.kb, &imported, self.resolver, self.loaded_paths,
@@ -1523,7 +1713,7 @@ impl<'a> Loader<'a> {
     // ── Member fact emission ───────────────────────────────────
 
     fn emit_member_fact(&mut self, name_sym: Symbol, kind_str: &str, parent: TermId) {
-        let member_sym = self.kb.intern("member");
+        let member_sym = self.kb.resolve_symbol("member");
         let member_sort = self.kb.make_name_term("Member");
         let name_term = self.kb.make_name_term_from_sym(name_sym);
         let kind_sym = self.kb.intern(kind_str);
@@ -1585,7 +1775,7 @@ impl<'a> Loader<'a> {
     }
 
     fn load_meta_block(&mut self, mb: &MetaBlock) -> TermId {
-        let meta_sym = self.kb.intern("meta");
+        let meta_sym = self.kb.resolve_symbol("meta");
         let named_args: SmallVec<[(Symbol, TermId); 2]> = mb.entries
             .iter()
             .map(|e| {

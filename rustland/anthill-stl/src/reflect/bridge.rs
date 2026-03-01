@@ -215,9 +215,11 @@ impl KbBridge {
         }
 
         // Fall back: find any fact in the KB with matching functor and infer schema.
-        // Use intern to get the symbol, then by_functor to find matching facts.
+        // Use try_resolve_symbol first (loader uses resolved symbols for functor names),
+        // then fall back to intern for unknown names.
         let mut kb = self.kb.borrow_mut();
-        let plain_sym = kb.intern(sort_name);
+        let plain_sym = kb.try_resolve_symbol(sort_name)
+            .unwrap_or_else(|| kb.intern(sort_name));
         let rids = kb.by_functor(plain_sym);
         for rid in rids {
             let head = kb.fact_term(rid);
