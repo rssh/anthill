@@ -169,19 +169,18 @@ Pro: queries are composable, storable, passable, optimizable. Persistence backen
 Dedicated query syntax (e.g., `query { ... }` blocks or Prolog-style `?-`) that the kernel understands. For introspection, the reflect module has `QueryRepr`:
 
 ```
--- In reflect:
-sort QueryRepr {
-  entity PatternQ(term: TermRepr)
-  entity BySortQ(sort_name: String)
-  entity ConjunctionQ(left: QueryRepr, right: QueryRepr)
-  entity DisjunctionQ(left: QueryRepr, right: QueryRepr)
-  entity NegationQ(query: QueryRepr)
-  entity GuardedQ(query: QueryRepr, condition: TermRepr)
-  entity LimitedQ(query: QueryRepr, count: Int)
+-- Implemented in reflect as LogicalQuery:
+sort LogicalQuery {
+  entity empty_query
+  entity pattern_query(term: Term)
+  entity sort_query(sort_name: String)
+  entity conjunction(left: LogicalQuery, right: LogicalQuery)
+  entity disjunction(left: LogicalQuery, right: LogicalQuery)
+  entity negation(query: LogicalQuery)
+  entity guarded(query: LogicalQuery, condition: Term)
+  entity projected(query: LogicalQuery, vars: List{T = String})
+  entity limited(query: LogicalQuery, count: Int)
 }
-
-operation reify_query(q: Query) -> QueryRepr
-  effects (Reads(kb))
 ```
 
 Pro: clean surface syntax, structural introspection when needed. Con: queries are opaque at the kernel level (like `Term`), only transparent via reflect.

@@ -164,8 +164,8 @@ end
 Emits:
 
 ```
-SortInfo(Eq.T, Abstract)                              -- as before
-Desc(Eq.T, Eq, content: [text("The element type")])   -- new
+SortAlias(Eq.T, ?)                                    -- type parameter (Var)
+Description(Eq.T, "The element type")                 -- description fact
 ```
 
 ### 6. Merge `Term::Unspecified` into `Term::Var`

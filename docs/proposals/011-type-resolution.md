@@ -549,8 +549,9 @@ rule has_sort(?t, ?s) :- entity_of(?t, ?s)
 rule has_sort(?t, ?p) :- has_sort(?t, ?c), is_subtype(?c, ?p)
 
 -- Operation dispatch: constraint query
-rule resolve_operation(?name, ?x, ?op_info)
-  :- has_sort(?x, ?S), OperationInfo(?name, ?S, ?op_info)
+-- OperationInfo facts have named args: name (Symbol), sort_context, params, return_type, effects
+rule resolve_operation(?name, ?x, ?info)
+  :- has_sort(?x, ?S), OperationInfo(name: ?name, sort_context: some(value: ?S), params: ?_, return_type: ?_, effects: ?_)
 ```
 
 #### Procedural chunks in Term
@@ -639,7 +640,7 @@ Are these all the same relation (subtyping)? Or distinct relations with differen
   - `Int : Sort` — all sort names have sort `Sort`
   - `Int : Type` — with `Type` as a universe (á la Haskell's `Type` kind)
   - No meta-sort — sort names are just terms, not typed themselves
-  - Currently: sort declarations create `SortInfo(name, kind)` facts with sort `Sort` and domain = scope
+  - Currently: sort declarations create `SortInfo(name: Symbol, definition: Term, constructors: [...], operations: [...], parameters: [...], requires: [...])` facts with sort `Sort` and domain = enclosing scope
 
 **OQ5b.5. Spec sorts and the lattice.** Spec sorts (Eq, Ordered, Numeric) are at a different level — they classify sorts, not terms. `Eq{T = Int}` says "Int as a sort satisfies Eq." This is a **sort-level predicate**, not a term-level type. Should the lattice distinguish:
   - Term-level types: `42 : Int`, `red : Color`
@@ -666,16 +667,16 @@ This generates a fact template (a set of patterns with shared variable `T`):
 
 ```
 Template(Eq, T):
-  { SortInfo(T, ...),
-    Operation(eq, a: T, b: T, _returns: Bool) }
+  { SortInfo(name: T, ...),
+    OperationInfo(name: eq, sort_context: some(value: Eq), params: [FieldInfo(name: "a", type_name: T), FieldInfo(name: "b", type_name: T)], return_type: Bool, ...) }
 ```
 
 Asserting `fact Eq{T = Int}` means: apply substitution `{T → Int}` and check the KB:
 
 ```
 Check against KB:
-  SortInfo(Int, ...) ?                → ✓ Int is a declared sort
-  Operation(eq, a: Int, b: Int, _returns: Bool) ?  → ✓ or ✗ (obligation if missing)
+  SortInfo(name: Int, ...) ?          → ✓ Int is a declared sort
+  OperationInfo(name: eq, sort_context: some(value: Eq), params: [FieldInfo(name: "a", type_name: Int), ...], return_type: Bool, ...) ?  → ✓ or ✗
 ```
 
 This is fundamentally different from term unification:
@@ -745,22 +746,24 @@ Then the sort definition IS its fact template — a set of facts with logical va
 
 ```
 Template for Eq:
-  SortInfo(Eq.T, ?kind)                                  -- T's kind is unbound
-  Operation(eq, a: Eq.T, b: Eq.T, _returns: Bool)        -- eq takes two T's
+  SortInfo(name: Eq.T, definition: ?def, ...)             -- T's definition is unbound
+  OperationInfo(name: eq, sort_context: some(value: Eq),
+    params: [FieldInfo(name: "a", type_name: Eq.T), FieldInfo(name: "b", type_name: Eq.T)],
+    return_type: Bool, effects: [])
 
 Template for List:
-  SortInfo(List.T, ?kind)                                 -- T's kind is unbound
+  SortInfo(name: List.T, definition: ?def, ...)           -- T's definition is unbound
   Entity(nil)                                             -- nil constructor
   Entity(cons, head: List.T, tail: List)                  -- cons constructor
-  Operation(length, l: List, _returns: Int)               -- length operation
+  OperationInfo(name: length, ..., return_type: Int, ...) -- length operation
 ```
 
 Instantiation `Eq{T = Int}` applies `{Eq.T → Int}` and does fact-set matching:
 
 ```
 After substitution:
-  SortInfo(Int, ?kind)         → matches SortInfo(Int, Defined) ✓, binds ?kind = Defined
-  Operation(eq, a: Int, ...)   → check KB ✓ or generate obligation
+  SortInfo(name: Int, ...) ?   → matches SortInfo for Int ✓
+  OperationInfo(name: eq, ..., params: [FieldInfo(name: "a", type_name: Int), ...]) ?  → check KB ✓ or generate obligation
 ```
 
 Benefits:
@@ -996,7 +999,7 @@ The **type-to-query mapping**: `sort_template` extracts a sort's fact template. 
 ```
 -- "Does Int satisfy Eq?" becomes:
 execute(instantiation_query("Eq", bind("T", reflect("Int"), empty_subst)))
--- → checks KB for: SortInfo(Int, ?), Operation(eq, a: Int, b: Int, _returns: Bool)
+-- → checks KB for: SortInfo(name: Int, ...), OperationInfo(name: eq, sort_context: some(value: Eq), ...)
 -- → LogicalStream of substitutions (non-empty = satisfied, empty = obligations)
 ```
 

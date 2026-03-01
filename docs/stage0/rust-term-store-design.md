@@ -392,12 +392,19 @@ sort Nat { entity zero, entity succ(pred: Nat) }
 The loader asserts facts:
 
 ```
-fact Subsort("zero", "Nat")
-fact Subsort("succ", "Nat")
-fact SortInfo("Nat", Defined)
-fact SortInfo("zero", Constructor)
-fact SortInfo("succ", Constructor)
+fact Subsort(zero, Nat)
+fact Subsort(succ, Nat)
+fact SortInfo(
+  name: Nat,                       -- Symbol (Ref to interned name)
+  definition: Nat,                 -- sort term for defined sorts, Var for abstract
+  constructors: cons(zero, cons(succ, nil())),
+  operations: nil(),
+  parameters: nil(),
+  requires: nil()
+)
 ```
+
+Constructor sorts (`zero`, `succ`) are registered via `register_sort` / `register_subsort` — they don't get their own SortInfo facts.
 
 The KB maintains materialized indexes over these facts internally:
 
