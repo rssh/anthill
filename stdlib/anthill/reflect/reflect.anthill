@@ -19,6 +19,7 @@ namespace anthill.reflect
   export KB
   export qualified_name, short_name, lookup_symbol
   export LiteralRepr, TermRepr, SortInfo, OperationInfo, FieldInfo, DescriptionInfo
+  export EntityOf, Requires
   export Substitution, apply, compose
   export LogicalQuery, empty_query
   export pattern_query, sort_query, conjunction, disjunction
@@ -149,24 +150,41 @@ namespace anthill.reflect
   )
 
   -- ================================================================
+  -- Relationship facts emitted by the loader
+  -- ================================================================
+
+  -- EntityOf: 1-level entity → parent sort relationship.
+  -- Emitted for each entity declared inside a sort body.
+  entity EntityOf(
+    entity : Term,                                  -- entity constructor (sort term)
+    parent : Term                                   -- parent sort (sort term)
+  )
+
+  -- Requires: sort requires spec relationship.
+  -- Emitted for each `requires` clause on a sort.
+  entity Requires(
+    sort_ref  : Term,                               -- the sort that has the requirement
+    base_sort : Term,                               -- the required sort reference (e.g. Eq)
+    spec_inst : Term                                -- the instantiated spec (e.g. Eq{T = Int})
+  )
+
+  -- ================================================================
   -- Typing rules (derivable from primitives + KB facts)
   -- ================================================================
 
-  -- Entity-of: given a non-variable term, find its sort via Subsort index
-  -- rule entity_of(?x, ?sort) :- nonvar(?x), Subsort(?x, ?sort)
+  -- Entity-of: given a non-variable term, find its parent sort via EntityOf facts.
+  -- EntityOf(entity, parent) is emitted by the loader for each entity.
+  -- EntityOf is always 1-level (entity → parent sort). No transitive chains.
+  -- rule entity_of(?x, ?sort) :- nonvar(?x), EntityOf(entity: ?x, parent: ?sort)
 
-  -- Has-sort: transitive closure through subtyping
+  -- Has-sort: a term has sort S if it is an entity of S.
+  -- (No transitive closure needed — EntityOf is 1-level.)
+  -- Spec refinement is a separate relationship (see refines in typing.anthill).
   -- rule has_sort(?t, ?s) :- entity_of(?t, ?s)
-  -- rule has_sort(?t, ?p) :- has_sort(?t, ?c), is_subtype(?c, ?p)
-
-  -- Subtyping: reflexive-transitive closure of Subsort
-  -- rule is_subtype(?A, ?A)
-  -- rule is_subtype(?A, ?C) :- is_subtype(?A, ?B), is_subtype(?B, ?C)
-  -- rule is_subtype(?Ctor, ?Sort) :- Subsort(?Ctor, ?Sort)
 
   -- Operation dispatch: find which sort's operation applies
   -- rule resolve_operation(?name, ?x, ?info)
-  --   :- has_sort(?x, ?S), OperationInfo(?name, ?S, ?info)
+  --   :- has_sort(?x, ?S), OperationInfo(name: ?name, sort_context: ?S)
 
   -- ================================================================
   -- Descriptions

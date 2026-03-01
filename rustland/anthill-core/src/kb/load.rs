@@ -623,8 +623,9 @@ const KERNEL_META_SORTS: &[&str] = &[
 
 /// KB-internal functor names used by the loader to construct fact terms.
 /// Not defined in any `.anthill` file.
+/// (EntityOf and Requires are now declared in reflect.anthill.)
 const KERNEL_FUNCTORS: &[&str] = &[
-    "EntityOf", "Requires", "SortAlias", "ParameterizedType",
+    "SortAlias", "ParameterizedType",
     "member", "meta",
 ];
 
@@ -747,6 +748,8 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     let sort_info_sym = kb.symbols.define("SortInfo", "anthill.reflect.SortInfo", SymbolKind::Entity, reflect_term.raw());
     let field_info_sym = kb.symbols.define("FieldInfo", "anthill.reflect.FieldInfo", SymbolKind::Entity, reflect_term.raw());
     let op_info_sym = kb.symbols.define("OperationInfo", "anthill.reflect.OperationInfo", SymbolKind::Entity, reflect_term.raw());
+    let entity_of_sym = kb.symbols.define("EntityOf", "anthill.reflect.EntityOf", SymbolKind::Entity, reflect_term.raw());
+    let requires_sym = kb.symbols.define("Requires", "anthill.reflect.Requires", SymbolKind::Entity, reflect_term.raw());
 
     // Global imports: make fundamental constructors visible from any scope
     // that walks up to _global (like Haskell's Prelude auto-import).
@@ -757,6 +760,8 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.add_import(global_raw, "SortInfo", sort_info_sym);
     kb.symbols.add_import(global_raw, "FieldInfo", field_info_sym);
     kb.symbols.add_import(global_raw, "OperationInfo", op_info_sym);
+    kb.symbols.add_import(global_raw, "EntityOf", entity_of_sym);
+    kb.symbols.add_import(global_raw, "Requires", requires_sym);
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -966,6 +971,35 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// Strict scope-aware symbol resolution: errors on unresolved names.
+    /// Used for positions where a symbol *must* be defined (functor names,
+    /// explicit references). Unlike `remap_symbol`, does not silently intern.
+    fn remap_symbol_strict(&mut self, sym: Symbol) -> Symbol {
+        let name = self.parsed.symbols.name(sym);
+        let scope = self.current_scope.raw();
+        match self.kb.symbols.resolve_in_scope(name, scope) {
+            ResolveResult::Found(resolved) => resolved,
+            ResolveResult::Ambiguous(candidates) => {
+                self.errors.push(LoadError::AmbiguousSymbol {
+                    name: name.to_owned(),
+                    candidates: self.candidate_names(&candidates),
+                    span: Span::default(),
+                    scope_name: self.scope_display_name(),
+                });
+                self.kb.symbols.intern(name)
+            }
+            ResolveResult::NotFound => {
+                let sym = self.kb.symbols.intern(name);
+                self.errors.push(LoadError::UnresolvedName {
+                    name: name.to_owned(),
+                    span: Span::default(),
+                    scope_name: self.scope_display_name(),
+                });
+                sym
+            }
+        }
+    }
+
     /// Scope-aware name resolution for multi-segment names.
     fn remap_name(&mut self, name: &Name) -> Symbol {
         let lookup_name = if name.segments.len() == 1 {
@@ -1058,7 +1092,7 @@ impl<'a> Loader<'a> {
                 Term::Fn { functor: new_functor, pos_args: new_pos, named_args: new_named }
             }
             Term::Ref(sym) => {
-                let new_sym = self.remap_symbol(sym);
+                let new_sym = self.remap_symbol_strict(sym);
                 Term::Ref(new_sym)
             }
             Term::Bottom => Term::Bottom,
@@ -1231,19 +1265,22 @@ impl<'a> Loader<'a> {
         let prev_scope = self.current_scope;
         self.current_scope = sort_term;
 
-        // Register direct entity children as constructor subsorts
+        // Register direct entity children (entity → parent sort)
         for item in &s.items {
             if let Item::Entity(e) = item {
                 let ctor_term = self.name_to_sort_term(&e.name);
                 self.kb.register_sort(ctor_term, SortKind::Constructor);
-                self.kb.register_subsort(ctor_term, sort_term);
+                self.kb.register_entity_of(ctor_term, sort_term);
 
-                // Assert EntityOf fact
+                // Assert EntityOf fact (named args: entity, parent)
                 let entity_of_sym = self.kb.resolve_symbol("EntityOf");
+                let entity_field_sym = self.kb.intern("entity");
+                let parent_field_sym = self.kb.intern("parent");
+                self.kb.register_entity_fields(entity_of_sym, vec![entity_field_sym, parent_field_sym]);
                 let entity_of_fact = self.kb.alloc(Term::Fn {
                     functor: entity_of_sym,
-                    pos_args: SmallVec::from_slice(&[ctor_term, sort_term]),
-                    named_args: SmallVec::new(),
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::from_slice(&[(entity_field_sym, ctor_term), (parent_field_sym, sort_term)]),
                 });
                 self.kb.assert_fact(entity_of_fact, sort_sort, parent_domain, None);
             }
@@ -1550,10 +1587,19 @@ impl<'a> Loader<'a> {
             TypeExpr::Variable { .. } => type_term,
         };
 
+        // Named args: sort_ref, base_sort, spec_inst
+        let sort_ref_sym = self.kb.intern("sort_ref");
+        let base_sort_sym = self.kb.intern("base_sort");
+        let spec_inst_sym = self.kb.intern("spec_inst");
+        self.kb.register_entity_fields(requires_sym, vec![sort_ref_sym, base_sort_sym, spec_inst_sym]);
         let requires_term = self.kb.alloc(Term::Fn {
             functor: requires_sym,
-            pos_args: SmallVec::from_slice(&[domain, base_sort, type_term]),
-            named_args: SmallVec::new(),
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (sort_ref_sym, domain),
+                (base_sort_sym, base_sort),
+                (spec_inst_sym, type_term),
+            ]),
         });
         self.kb.assert_fact(requires_term, requirement_sort, domain, None);
     }

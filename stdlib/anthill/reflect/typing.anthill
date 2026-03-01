@@ -18,21 +18,21 @@ namespace anthill.reflect.typing
   -- EntityOf is always 1-level (entity → parent sort).
   -- EntityOf(entity, parent) facts are emitted by the loader for each entity.
 
-  rule is_entity_of(?A, ?B) :- EntityOf(?A, ?B)
+  rule is_entity_of(?A, ?B) :- EntityOf(entity: ?A, parent: ?B)
 
   -- ================================================================
   -- refines: spec refinement via Requires chain
   -- ================================================================
 
   -- Direct: sort A requires spec B_inst.
-  -- Requires(sort_ref, base_sort, spec_inst) — 3 positional args.
+  -- Requires(sort_ref, base_sort, spec_inst) — named args.
   -- base_sort is the sort reference (e.g. Eq), spec_inst carries bindings (e.g. Eq{T}).
-  rule refines(?A, ?B_inst) :- Requires(?A, ?, ?B_inst)
+  rule refines(?A, ?B_inst) :- Requires(sort_ref: ?A, spec_inst: ?B_inst)
 
   -- Transitive: A requires B_inst, and B itself refines C_inst.
   -- ?B is the base sort extracted from the Requires fact.
   rule refines(?A, ?C_inst)
-    :- Requires(?A, ?B, ?),
+    :- Requires(sort_ref: ?A, base_sort: ?B),
        refines(?B, ?C_inst)
 
   -- ================================================================

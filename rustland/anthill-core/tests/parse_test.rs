@@ -314,7 +314,7 @@ fn load_namespace_into_kb() {
 }
 
 #[test]
-fn load_sort_with_body_registers_subsorts() {
+fn load_sort_with_body_registers_entity_of() {
     let source = r#"sort Nat {
   entity zero
   entity succ(pred: Nat)
@@ -328,9 +328,9 @@ fn load_sort_with_body_registers_subsorts() {
     let nat_term = kb.resolve_name_term("Nat");
     let zero_term = kb.resolve_name_term("zero");
 
-    // Check subsort relationship
-    assert!(kb.is_entity_of(zero_term, nat_term), "zero should be a subtype of Nat");
-    assert!(!kb.is_entity_of(nat_term, zero_term), "Nat should not be a subtype of zero");
+    // Check entity-of relationship
+    assert!(kb.is_entity_of(zero_term, nat_term), "zero should be entity of Nat");
+    assert!(!kb.is_entity_of(nat_term, zero_term), "Nat should not be entity of zero");
 
     // Check sort kinds
     assert_eq!(kb.sort_kind(nat_term), Some(SortKind::Defined));
@@ -496,12 +496,12 @@ end
     assert!(op_names.contains(&"deposit".to_owned()), "should have deposit operation");
     assert!(op_names.contains(&"withdraw".to_owned()), "should have withdraw operation");
 
-    // The sort itself should be Defined (has entities) with constructors as subsorts
+    // The sort itself should be Defined (has entities) with constructors as entity children
     assert_eq!(kb.sort_kind(account_term), Some(SortKind::Defined));
 
     let checking_term = kb.resolve_name_term("checking");
     assert!(kb.is_entity_of(checking_term, account_term),
-        "checking should be a subtype of Account");
+        "checking should be entity of Account");
     assert_eq!(kb.sort_kind(checking_term), Some(SortKind::Constructor));
 }
 
@@ -800,13 +800,14 @@ sort Ordered {
         "requirement should be scoped to the Ordered sort"
     );
 
-    // The requirement term should be Requires(Ordered_ref, Eq_ref, ParameterizedType(Eq(), T=T()))
+    // The requirement term should be Requires(sort_ref: Ordered_ref, base_sort: Eq_ref, spec_inst: ParameterizedType(Eq(), T=T()))
     let fid = reqs[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
-        Term::Fn { functor, pos_args, .. } => {
+        Term::Fn { functor, pos_args, named_args, .. } => {
             assert_eq!(kb.resolve_sym(*functor), "Requires");
-            assert_eq!(pos_args.len(), 3);  // (requiring_sort, base_sort, spec_term)
+            assert_eq!(pos_args.len(), 0, "Requires should use named args, not positional");
+            assert_eq!(named_args.len(), 3, "Requires should have 3 named args: sort_ref, base_sort, spec_inst");
         }
         other => panic!("expected Fn term for Requirement, got {:?}", other),
     }

@@ -87,6 +87,20 @@ fn make_goal(kb: &mut KnowledgeBase, name: &str, pos_args: &[TermId]) -> TermId 
     })
 }
 
+/// Build a query goal using named args (for EntityOf, Requires, etc.).
+fn make_named_goal(kb: &mut KnowledgeBase, name: &str, named_args: &[(&str, TermId)]) -> TermId {
+    let sym = kb.try_resolve_symbol(name)
+        .unwrap_or_else(|| kb.intern(name));
+    let named: SmallVec<[(anthill_core::intern::Symbol, TermId); 2]> = named_args.iter()
+        .map(|(n, t)| (kb.intern(n), *t))
+        .collect();
+    kb.alloc(Term::Fn {
+        functor: sym,
+        pos_args: SmallVec::new(),
+        named_args: named,
+    })
+}
+
 fn default_config() -> ResolveConfig {
     ResolveConfig { max_solutions: 10, ..ResolveConfig::default() }
 }
@@ -158,12 +172,12 @@ sort Color {
 
     let color_term = kb.resolve_name_term("Color");
 
-    // Query: EntityOf(?x, Color) — should find red, green, blue
+    // Query: EntityOf(entity: ?x, parent: Color) — should find red, green, blue
     let x_sym = kb.intern("x");
     let vx = kb.fresh_var(x_sym);
     let var_x = kb.alloc(Term::Var(vx));
 
-    let goal = make_goal(&mut kb, "EntityOf", &[var_x, color_term]);
+    let goal = make_named_goal(&mut kb, "EntityOf", &[("entity", var_x), ("parent", color_term)]);
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 3, "Color should have 3 entities: red, green, blue");
 }
@@ -340,16 +354,16 @@ sort Ordered {
 
     let ordered_term = kb.resolve_name_term("Ordered");
 
-    // Query: Requires(Ordered_ref, ?, ?spec) — direct fact query (3 pos args now)
+    // Query: Requires(sort_ref: Ordered, base_sort: ?, spec_inst: ?spec) — direct fact query (named args)
     let spec_sym = kb.intern("spec");
     let vspec = kb.fresh_var(spec_sym);
     let var_spec = kb.alloc(Term::Var(vspec));
 
-    let anon1 = kb.intern("?");
-    let v_anon = kb.fresh_var(anon1);
+    let anon_sym = kb.intern("_anon");
+    let v_anon = kb.fresh_var(anon_sym);
     let var_anon = kb.alloc(Term::Var(v_anon));
 
-    let goal = make_goal(&mut kb, "Requires", &[ordered_term, var_anon, var_spec]);
+    let goal = make_named_goal(&mut kb, "Requires", &[("sort_ref", ordered_term), ("base_sort", var_anon), ("spec_inst", var_spec)]);
     let results = kb.resolve(&[goal], &default_config());
     assert!(!results.is_empty(), "Ordered should have at least 1 Requires fact");
 }
@@ -518,7 +532,7 @@ sort Eq {
         "sort_has_param(Eq, ?param) should find T via SortInfo partial expansion");
 }
 
-// ── EntityOf fact rename verification ────────────────────────────
+// ── EntityOf fact verification ───────────────────────────────────
 
 #[test]
 fn entity_of_fact_exists_in_kb() {
@@ -538,4 +552,282 @@ sort Color {
     let entity_of_sym = kb.resolve_symbol("EntityOf");
     let facts = kb.by_functor(entity_of_sym);
     assert_eq!(facts.len(), 3, "should have 3 EntityOf facts for red, green, blue");
+}
+
+// ── EntityOf is 1-level (non-transitive) ────────────────────────
+
+#[test]
+fn entity_of_is_not_transitive() {
+    // Nested sorts: entity inside sort inside sort.
+    // EntityOf should only link entity → immediate parent sort, not to grandparent.
+    let source = r#"
+sort Outer {
+    sort Inner {
+        entity leaf
+    }
+}
+"#;
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    load_source(&mut kb, source);
+
+    let leaf_term = kb.resolve_name_term("leaf");
+    let inner_term = kb.resolve_name_term("Inner");
+    let outer_term = kb.resolve_name_term("Outer");
+
+    // leaf is entity of Inner (direct)
+    assert!(kb.is_entity_of(leaf_term, inner_term), "leaf should be entity of Inner");
+
+    // EntityOf fact should exist for leaf → Inner
+    let x_sym = kb.intern("x");
+    let vx = kb.fresh_var(x_sym);
+    let var_x = kb.alloc(Term::Var(vx));
+    let goal = make_named_goal(&mut kb, "EntityOf", &[("entity", leaf_term), ("parent", var_x)]);
+    let results = kb.resolve(&[goal], &default_config());
+    assert_eq!(results.len(), 1, "leaf should have exactly 1 EntityOf fact (→ Inner only)");
+
+    // No EntityOf(leaf, Outer) — entity_of is 1-level
+    let goal_outer = make_named_goal(&mut kb, "EntityOf", &[("entity", leaf_term), ("parent", outer_term)]);
+    let results_outer = kb.resolve(&[goal_outer], &default_config());
+    assert_eq!(results_outer.len(), 0, "EntityOf(leaf, Outer) should NOT exist — 1-level only");
+}
+
+#[test]
+fn entity_of_sibling_entities_are_independent() {
+    let source = r#"
+sort Color {
+    entity red
+    entity green
+    entity blue
+}
+"#;
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    load_source(&mut kb, source);
+
+    let red_term = kb.resolve_name_term("red");
+    let green_term = kb.resolve_name_term("green");
+
+    // Siblings are not entity_of each other
+    assert!(!kb.is_entity_of(red_term, green_term), "red should NOT be entity of green");
+    assert!(!kb.is_entity_of(green_term, red_term), "green should NOT be entity of red");
+}
+
+#[test]
+fn entity_of_sort_is_not_entity_of_itself() {
+    let source = r#"
+sort Color {
+    entity red
+}
+"#;
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    load_source(&mut kb, source);
+
+    let color_term = kb.resolve_name_term("Color");
+
+    // No EntityOf(Color, Color)
+    let goal = make_named_goal(&mut kb, "EntityOf", &[("entity", color_term), ("parent", color_term)]);
+    let results = kb.resolve(&[goal], &default_config());
+    assert_eq!(results.len(), 0, "Color should NOT be entity of itself");
+}
+
+#[test]
+fn entity_of_standalone_entity_has_no_entity_of() {
+    // Standalone entity `entity Foo(...)` is loaded as an Entity fact only.
+    // It does NOT produce EntityOf facts (only sort-with-body entities do).
+    // The spec says standalone entity desugars to sort-with-body, but the
+    // current loader stores it as a plain Entity fact without sort registration.
+    let source = r#"
+entity Account(id: Int, balance: Int)
+"#;
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    load_source(&mut kb, source);
+
+    // No EntityOf facts for standalone entities
+    let entity_of_sym = kb.resolve_symbol("EntityOf");
+    let facts = kb.by_functor(entity_of_sym);
+    assert_eq!(facts.len(), 0, "standalone entity should not produce EntityOf facts");
+}
+
+#[test]
+fn entity_of_multiple_sorts() {
+    // Entities from different sorts should not cross-contaminate
+    let source = r#"
+sort Color {
+    entity red
+    entity green
+}
+
+sort Shape {
+    entity circle
+    entity square
+}
+"#;
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    load_source(&mut kb, source);
+
+    let red_term = kb.resolve_name_term("red");
+    let circle_term = kb.resolve_name_term("circle");
+    let color_term = kb.resolve_name_term("Color");
+    let shape_term = kb.resolve_name_term("Shape");
+
+    // red is entity of Color, NOT Shape
+    assert!(kb.is_entity_of(red_term, color_term), "red should be entity of Color");
+    assert!(!kb.is_entity_of(red_term, shape_term), "red should NOT be entity of Shape");
+
+    // circle is entity of Shape, NOT Color
+    assert!(kb.is_entity_of(circle_term, shape_term), "circle should be entity of Shape");
+    assert!(!kb.is_entity_of(circle_term, color_term), "circle should NOT be entity of Color");
+
+    // EntityOf facts: 2 for Color + 2 for Shape = 4
+    let entity_of_sym = kb.resolve_symbol("EntityOf");
+    let facts = kb.by_functor(entity_of_sym);
+    assert_eq!(facts.len(), 4, "should have 4 EntityOf facts total");
+}
+
+// ── is_entity_of via typing rule with various patterns ──────────
+
+#[test]
+fn entity_of_enumerates_all_entities() {
+    // EntityOf(?x, Color) enumerates all entities (via KB fact matching).
+    // Note: is_entity_of builtin delays when first arg is Var (needs nonvar),
+    // so enumeration should use EntityOf facts directly.
+    let source = r#"
+sort Color {
+    entity red
+    entity green
+    entity blue
+}
+"#;
+    let mut kb = load_stdlib_kb();
+    load_source(&mut kb, source);
+
+    let color_term = kb.resolve_name_term("Color");
+
+    let x_sym = kb.intern("x");
+    let vx = kb.fresh_var(x_sym);
+    let var_x = kb.alloc(Term::Var(vx));
+
+    // Use EntityOf directly for enumeration
+    let goal = make_named_goal(&mut kb, "EntityOf", &[("entity", var_x), ("parent", color_term)]);
+    let results = kb.resolve(&[goal], &default_config());
+    assert_eq!(results.len(), 3, "EntityOf(?x, Color) should find 3 entities");
+}
+
+#[test]
+fn entity_of_finds_parent() {
+    // Query: EntityOf(red, ?parent) should find Color.
+    // Note: is_entity_of builtin delays when second arg is Var,
+    // so use EntityOf facts directly for parent lookup.
+    let source = r#"
+sort Color {
+    entity red
+    entity green
+}
+"#;
+    let mut kb = load_stdlib_kb();
+    load_source(&mut kb, source);
+
+    let red_term = kb.resolve_name_term("red");
+
+    let p_sym = kb.intern("parent");
+    let vp = kb.fresh_var(p_sym);
+    let var_p = kb.alloc(Term::Var(vp));
+
+    let goal = make_named_goal(&mut kb, "EntityOf", &[("entity", red_term), ("parent", var_p)]);
+    let results = kb.resolve(&[goal], &default_config());
+    assert_eq!(results.len(), 1, "EntityOf(red, ?parent) should find exactly 1 parent");
+
+    // Verify the parent is Color
+    let bound = kb.reify(var_p, &results[0].subst);
+    let color_term = kb.resolve_name_term("Color");
+    assert_eq!(bound, color_term, "parent of red should be Color");
+}
+
+// ── type_compatible via entity_of ───────────────────────────────
+
+#[test]
+fn type_compatible_entity_not_compatible_with_wrong_sort() {
+    let source = r#"
+sort Color {
+    entity red
+}
+sort Shape {
+    entity circle
+}
+"#;
+    let mut kb = load_stdlib_kb();
+    load_source(&mut kb, source);
+
+    let red_term = kb.resolve_name_term("red");
+    let shape_term = kb.resolve_name_term("Shape");
+
+    // type_compatible(red, Shape) should fail — red is entity of Color, not Shape
+    let goal = make_goal(&mut kb, "type_compatible", &[red_term, shape_term]);
+    let results = kb.resolve(&[goal], &default_config());
+    assert!(results.is_empty(), "type_compatible(red, Shape) should fail");
+}
+
+#[test]
+fn type_compatible_entity_compatible_with_own_sort() {
+    let source = r#"
+sort Color {
+    entity red
+    entity green
+}
+"#;
+    let mut kb = load_stdlib_kb();
+    load_source(&mut kb, source);
+
+    let red_term = kb.resolve_name_term("red");
+    let green_term = kb.resolve_name_term("green");
+    let color_term = kb.resolve_name_term("Color");
+
+    // type_compatible(red, Color) — should succeed
+    let goal = make_goal(&mut kb, "type_compatible", &[red_term, color_term]);
+    let results = kb.resolve(&[goal], &default_config());
+    assert!(!results.is_empty(), "type_compatible(red, Color) should succeed");
+
+    // type_compatible(red, green) — should fail (siblings, not entity_of)
+    let goal2 = make_goal(&mut kb, "type_compatible", &[red_term, green_term]);
+    let results2 = kb.resolve(&[goal2], &default_config());
+    assert!(results2.is_empty(), "type_compatible(red, green) should fail — different entities");
+}
+
+#[test]
+fn type_compatible_entity_with_fields() {
+    let source = r#"
+sort Account {
+    entity checking(balance: Int)
+    entity savings(balance: Int, rate: Float)
+}
+"#;
+    let mut kb = load_stdlib_kb();
+    load_source(&mut kb, source);
+
+    let checking_term = kb.resolve_name_term("checking");
+    let savings_term = kb.resolve_name_term("savings");
+    let account_term = kb.resolve_name_term("Account");
+
+    // Both entities are compatible with Account
+    let goal1 = make_goal(&mut kb, "type_compatible", &[checking_term, account_term]);
+    let results1 = kb.resolve(&[goal1], &default_config());
+    assert!(!results1.is_empty(), "type_compatible(checking, Account) should succeed");
+
+    let goal2 = make_goal(&mut kb, "type_compatible", &[savings_term, account_term]);
+    let results2 = kb.resolve(&[goal2], &default_config());
+    assert!(!results2.is_empty(), "type_compatible(savings, Account) should succeed");
+
+    // Entities are NOT compatible with each other
+    let goal3 = make_goal(&mut kb, "type_compatible", &[checking_term, savings_term]);
+    let results3 = kb.resolve(&[goal3], &default_config());
+    assert!(results3.is_empty(), "type_compatible(checking, savings) should fail");
 }
