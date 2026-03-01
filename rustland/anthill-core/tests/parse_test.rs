@@ -324,9 +324,9 @@ fn load_sort_with_body_registers_entity_of() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    // Find the Nat and zero sort terms (use resolve_name_term for user-defined names)
-    let nat_term = kb.resolve_name_term("Nat");
-    let zero_term = kb.resolve_name_term("zero");
+    // Find the Nat and zero sort terms (use resolve_short_name_term for user-defined names)
+    let nat_term = kb.resolve_short_name_term("Nat");
+    let zero_term = kb.resolve_short_name_term("zero");
 
     // Check entity-of relationship
     assert!(kb.is_entity_of(zero_term, nat_term), "zero should be entity of Nat");
@@ -392,8 +392,8 @@ end
     assert!(!kb.by_sort(fact_sort).is_empty(), "should have Fact fact");
 
     // Check sort relationship: dollars < Money
-    let money_term = kb.resolve_name_term("Money");
-    let dollars_term = kb.resolve_name_term("dollars");
+    let money_term = kb.resolve_short_name_term("Money");
+    let dollars_term = kb.resolve_short_name_term("dollars");
     assert!(kb.is_entity_of(dollars_term, money_term));
 }
 
@@ -466,7 +466,7 @@ end
     assert_eq!(ops.len(), 2, "should have 2 Operation facts (deposit, withdraw)");
 
     // The operation facts should be scoped to the Account sort (not a separate domain)
-    let account_term = kb.resolve_name_term("Account");
+    let account_term = kb.resolve_short_name_term("Account");
     for &fid in &ops {
         assert_eq!(
             kb.fact_domain(fid), account_term,
@@ -499,7 +499,7 @@ end
     // The sort itself should be Defined (has entities) with constructors as entity children
     assert_eq!(kb.sort_kind(account_term), Some(SortKind::Defined));
 
-    let checking_term = kb.resolve_name_term("checking");
+    let checking_term = kb.resolve_short_name_term("checking");
     assert!(kb.is_entity_of(checking_term, account_term),
         "checking should be entity of Account");
     assert_eq!(kb.sort_kind(checking_term), Some(SortKind::Constructor));
@@ -667,7 +667,7 @@ end
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let member_sort = kb.make_name_term("Member");
-    let account_term = kb.resolve_name_term("Account");
+    let account_term = kb.resolve_short_name_term("Account");
 
     // Get member facts for Account specifically
     let account_facts = kb.by_domain(account_term);
@@ -695,7 +695,7 @@ fn member_facts_for_namespace() {
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let member_sort = kb.make_name_term("Member");
-    let banking_term = kb.resolve_name_term("banking");
+    let banking_term = kb.resolve_short_name_term("banking");
 
     let ns_facts = kb.by_domain(banking_term);
     let member_facts: Vec<_> = ns_facts
@@ -721,7 +721,7 @@ fn member_facts_queryable_by_domain() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let option_term = kb.resolve_name_term("Option");
+    let option_term = kb.resolve_short_name_term("Option");
     let member_sort = kb.make_name_term("Member");
 
     // Query by_domain for Option should include member facts
@@ -794,7 +794,7 @@ sort Ordered {
     assert_eq!(reqs.len(), 1, "should have 1 Requirement fact");
 
     // The requirement should be scoped to the Ordered sort
-    let ordered_term = kb.resolve_name_term("Ordered");
+    let ordered_term = kb.resolve_short_name_term("Ordered");
     assert_eq!(
         kb.fact_domain(reqs[0]), ordered_term,
         "requirement should be scoped to the Ordered sort"
@@ -905,12 +905,12 @@ end
     assert_eq!(namespaces.len(), 2, "should have 2 namespaces");
 
     // Geometry's facts should reference Measure (from Units)
-    let geometry_term = kb.resolve_name_term("Geometry");
+    let geometry_term = kb.resolve_short_name_term("Geometry");
     let geometry_facts = kb.by_domain(geometry_term);
     assert!(!geometry_facts.is_empty(), "Geometry should have facts");
 
     // Units' facts should reference Shape (from Geometry)
-    let units_term = kb.resolve_name_term("Units");
+    let units_term = kb.resolve_short_name_term("Units");
     let units_facts = kb.by_domain(units_term);
     assert!(!units_facts.is_empty(), "Units should have facts");
 
@@ -920,8 +920,8 @@ end
     assert_eq!(ops.len(), 2, "should have 2 operations (area, convert)");
 
     // Cross-namespace type references resolved via imports
-    let measure_term = kb.resolve_name_term("Measure");
-    let shape_term = kb.resolve_name_term("Shape");
+    let measure_term = kb.resolve_short_name_term("Measure");
+    let shape_term = kb.resolve_short_name_term("Shape");
 
     // area operation is in Geometry namespace but references Measure
     let mut area_refs_measure = false;
@@ -969,12 +969,12 @@ fn mutual_reference_load_order_independent() {
         "load order should not affect fact count");
 
     // Both should have the same sort relationships
-    let a1 = kb1.resolve_name_term("A");
-    let mka1 = kb1.resolve_name_term("mkA");
+    let a1 = kb1.resolve_short_name_term("A");
+    let mka1 = kb1.resolve_short_name_term("mkA");
     assert!(kb1.is_entity_of(mka1, a1));
 
-    let a2 = kb2.resolve_name_term("A");
-    let mka2 = kb2.resolve_name_term("mkA");
+    let a2 = kb2.resolve_short_name_term("A");
+    let mka2 = kb2.resolve_short_name_term("mkA");
     assert!(kb2.is_entity_of(mka2, a2));
 }
 
@@ -1653,8 +1653,8 @@ sort B {
         .expect("circular requires should not panic");
 
     // Both sorts should exist
-    let a_term = kb.resolve_name_term("A");
-    let b_term = kb.resolve_name_term("B");
+    let a_term = kb.resolve_short_name_term("A");
+    let b_term = kb.resolve_short_name_term("B");
     assert_ne!(a_term, b_term, "A and B should be distinct sorts");
 
     // Both should have requirements
@@ -1752,7 +1752,7 @@ fn dotted_name_creates_intermediate_namespaces() {
         "sort should have short name 'C'");
 
     // `C` should be a registered sort with constructor `mkC`
-    let c_term = kb.resolve_name_term("C");
+    let c_term = kb.resolve_short_name_term("C");
     assert_eq!(kb.sort_kind(c_term), Some(SortKind::Defined));
 
     // Entity `mkC` inside sort `a.b.C` gets fully-qualified name

@@ -169,22 +169,14 @@ namespace anthill.reflect
   )
 
   -- ================================================================
-  -- Typing rules (derivable from primitives + KB facts)
+  -- Typing rules (see typing.anthill for active rules)
   -- ================================================================
 
-  -- Entity-of: given a non-variable term, find its parent sort via EntityOf facts.
-  -- EntityOf(entity, parent) is emitted by the loader for each entity.
-  -- EntityOf is always 1-level (entity → parent sort). No transitive chains.
-  -- rule entity_of(?x, ?sort) :- nonvar(?x), EntityOf(entity: ?x, parent: ?sort)
-
-  -- Has-sort: a term has sort S if it is an entity of S.
-  -- (No transitive closure needed — EntityOf is 1-level.)
-  -- Spec refinement is a separate relationship (see refines in typing.anthill).
-  -- rule has_sort(?t, ?s) :- entity_of(?t, ?s)
-
-  -- Operation dispatch: find which sort's operation applies
+  -- Operation dispatch: find which sort's operation applies.
+  -- Uses is_entity_of directly (no has_sort indirection needed
+  -- since EntityOf is 1-level).
   -- rule resolve_operation(?name, ?x, ?info)
-  --   :- has_sort(?x, ?S), OperationInfo(name: ?name, sort_context: ?S)
+  --   :- is_entity_of(?x, ?S), OperationInfo(name: ?name, sort_context: ?S)
 
   -- ================================================================
   -- Descriptions

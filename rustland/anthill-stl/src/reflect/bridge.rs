@@ -822,11 +822,11 @@ sort Animal { entity dog entity cat }
 fact dog
 fact cat
 "#);
-        // Build a pattern query for dog — use resolve_name_term to get the
+        // Build a pattern query for dog — use resolve_short_name_term to get the
         // same symbol the loader used (dog is defined as entity)
         let goal = {
             let mut kb = bridge.kb.borrow_mut();
-            kb.resolve_name_term("dog")
+            kb.resolve_short_name_term("dog")
         };
         let query = LogicalQuery::PatternQuery { term: goal };
         let stream = bridge.execute(query).expect("execute failed");

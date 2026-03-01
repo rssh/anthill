@@ -1,7 +1,7 @@
 namespace anthill.reflect.typing
   import anthill.prelude.{List, Bool}
   import anthill.reflect.{Term, Symbol, KB, SortInfo, OperationInfo}
-  export is_entity_of, refines, type_compatible
+  export entity_of, is_entity_of, refines, type_compatible
   export list_contains
 
   -- ================================================================
@@ -19,6 +19,12 @@ namespace anthill.reflect.typing
   -- EntityOf(entity, parent) facts are emitted by the loader for each entity.
 
   rule is_entity_of(?A, ?B) :- EntityOf(entity: ?A, parent: ?B)
+
+  -- entity_of with nonvar guard: delays if ?x is unbound,
+  -- otherwise queries EntityOf facts to find the parent sort.
+  -- Use this when the entity is known and you need the parent;
+  -- use is_entity_of when both sides are ground (pure check).
+  rule entity_of(?x, ?sort) :- nonvar(?x), EntityOf(entity: ?x, parent: ?sort)
 
   -- ================================================================
   -- refines: spec refinement via Requires chain

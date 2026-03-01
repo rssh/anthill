@@ -751,10 +751,12 @@ impl KnowledgeBase {
         })
     }
 
-    /// Resolve a user-defined symbol and create a nullary Fn term.
-    /// Uses the most recently defined symbol (user > stdlib > kernel).
+    /// Look up a short name and create a nullary Fn term.
+    /// Picks the most recently registered symbol with that short name
+    /// (last wins: user > stdlib > kernel). Not scope-aware — use only
+    /// in tests where names are unambiguous.
     /// Falls back to intern() if no resolved symbol exists.
-    pub fn resolve_name_term(&mut self, name: &str) -> TermId {
+    pub fn resolve_short_name_term(&mut self, name: &str) -> TermId {
         let sym = if let Some(found) = self.symbols.find_preferred_symbol(name) {
             found
         } else {

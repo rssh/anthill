@@ -58,9 +58,6 @@ rule type_compatible(?A, ?A)                          -- same type (unification)
 rule type_compatible(?A, ?B) :- is_entity_of(?A, ?B)  -- entity subtyping
 rule type_compatible(?A, ?B) :- refines(?A, ?B)       -- spec refinement
 
--- Sort membership: term has sort S (via EntityOf, 1-level)
-rule has_sort(?term, ?sort) :- entity_of(?term, ?sort)
-
 -- Spec satisfaction: does Int satisfy Eq?
 -- = conjunctive query: apply {T → Int} to Eq's fact template, check all match
 rule satisfies(?Sort, ?Spec) :-
@@ -557,13 +554,10 @@ rule type_compatible(?A, ?B) :- refines(?A, ?B)       -- spec refinement
 -- Entity-of with nonvar guard (inspect functor first)
 rule entity_of(?x, ?sort) :- nonvar(?x), EntityOf(?x, ?sort)
 
--- Has-sort: derived from entity_of (1-level, no transitivity needed)
-rule has_sort(?t, ?s) :- entity_of(?t, ?s)
-
--- Operation dispatch: constraint query
+-- Operation dispatch: constraint query (uses is_entity_of directly)
 -- OperationInfo facts have named args: name (Symbol), sort_context, params, return_type, effects
 rule resolve_operation(?name, ?x, ?info)
-  :- has_sort(?x, ?S), OperationInfo(name: ?name, sort_context: some(value: ?S), params: ?_, return_type: ?_, effects: ?_)
+  :- is_entity_of(?x, ?S), OperationInfo(name: ?name, sort_context: some(value: ?S), params: ?_, return_type: ?_, effects: ?_)
 ```
 
 #### Procedural chunks in Term
