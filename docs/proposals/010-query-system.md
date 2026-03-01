@@ -37,7 +37,7 @@ Unification against the KB binds `?id`, `?owner`, `?bal` to concrete values for 
 
 ### R1. Query by sort
 
-**Decision: Yes.** Querying by sort returns facts of that sort and all subsorts (per §8.2 subsorting). If `red <: Color`, then a query for sort `Color` matches `red`, `green`, and `blue` facts.
+**Decision: Yes.** Querying by sort returns facts of that sort and all its entities (per §8.2 entity-of relationships). If `red` is an entity of `Color`, then a query for sort `Color` matches `red`, `green`, and `blue` facts.
 
 Syntax TBD — possibly `? : Color` or a dedicated `by_sort(Color)` form.
 
@@ -665,7 +665,7 @@ The query system can be layered, with each layer building on the previous:
 |---------|-------|-----------|
 | Terms with variables as patterns | Kernel | Fundamental to the types-are-terms principle |
 | Unification / match_fact | Kernel | Core reasoning primitive |
-| Query by sort, by domain | Kernel | Requires sort/subsort awareness |
+| Query by sort, by domain | Kernel | Requires sort/entity-of awareness |
 | `Stream` sort + `msplit` | Stdlib | Logic monad structure |
 | `Branches` effect | Stdlib (well-known) | Direct-style logic programming |
 | `guard`, `once`, `limit`, `interleave` | Stdlib | Derived from `msplit` |
@@ -685,7 +685,7 @@ This keeps the kernel minimal (queries are terms + unification), gives `Stream` 
 - Rust implementation: discrimination-tree queries in `rustland/anthill-core/src/kb/discrim.rs`
 - Reflect module: `stdlib/anthill/reflect/reflect.anthill` (typed query operations)
 - Persistence module: `stdlib/anthill/persistence/store.anthill` (`QueryableStore`)
-- kernel-language.md §8.2 (subsort querying), §8.3 (backward/forward chaining)
+- kernel-language.md §8.2 (entity-of querying), §8.3 (backward/forward chaining)
 - Logic monad: Kiselyov et al., "Backtracking, Interleaving, and Terminating Monad Transformers"
 - Scala logic monad: `dotty-cps-async/logic` — `LogicStreamT[F, A]`
 - Logic monad blog: https://github.com/rssh/notes/blob/master/2024_01_30_logic-monad-1.md

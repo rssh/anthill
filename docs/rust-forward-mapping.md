@@ -260,9 +260,9 @@ constraint non_negative: gte(balance(?a), zero-val)
 
 These are generated in a separate `invariants` submodule for test-time checking.
 
-### 2.13 Fact as Subsort Declaration → Supertrait or Impl
+### 2.13 Fact as Spec Satisfaction Declaration → Supertrait or Impl
 
-A `fact SortName` or `fact SortName{bindings}` declares a subsort (is-a) relationship. The bindings (if any) are used by the kernel for constraint checking but are ignored by the codegen — only the sort name matters for the Rust mapping. It maps differently depending on context:
+A `fact SortName` or `fact SortName{bindings}` declares a spec satisfaction (refinement) relationship. The bindings (if any) are used by the kernel for constraint checking but are ignored by the codegen — only the sort name matters for the Rust mapping. It maps differently depending on context:
 
 **Inside a sort body** — becomes a supertrait:
 

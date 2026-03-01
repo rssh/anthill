@@ -14,7 +14,7 @@ Several design questions converge on the need for a type resolution mechanism:
 2. **Sort-defined syntax sugar** (012) activates based on sort — the desugarer needs type information to know which sugar applies.
 3. **Logical variables in type position** (`?T`) need resolution to determine what sort a variable ranges over.
 4. **Operation dispatch** — when multiple sorts define an operation with the same name, the caller's argument types determine which one applies.
-5. **Subsort polymorphism** — querying by sort `S` should match subsorts; this requires knowing the sort lattice at resolution time.
+5. **Entity subtyping** — querying by sort `S` should match its entities; this requires knowing EntityOf relationships at resolution time.
 
 Currently, Anthill's pipeline is: parse (tree-sitter CST) → convert (parse IR) → scan definitions → load (KB). Type information is only fully available after loading. But desugaring and some resolution decisions need type info earlier.
 
@@ -44,15 +44,22 @@ Since types are terms and sort relationships are facts, **type checking is just 
 Concretely, all type-level operations reduce to KB queries/rules:
 
 ```
--- Subtyping: already in the Isabelle formalization as is_subtype
--- (reflexive-transitive closure of subsort facts)
-rule is_subtype(?A, ?A)
-rule is_subtype(?A, ?C) :- is_subtype(?A, ?B), is_subtype(?B, ?C)
-rule is_subtype(?Ctor, ?Sort) :- constructor_of(?Ctor, ?Sort)
+-- Entity-of: 1-level constructor → parent sort (non-transitive).
+-- EntityOf(entity, parent) facts are emitted by the loader.
+rule is_entity_of(?A, ?B) :- EntityOf(?A, ?B)
 
--- Sort membership: term has sort S
+-- Spec refinement: transitive closure of Requires chain.
+-- Requires(sort_ref, base_sort, spec_inst) facts are emitted by the loader.
+rule refines(?A, ?B_inst) :- Requires(?A, ?, ?B_inst)
+rule refines(?A, ?C_inst) :- Requires(?A, ?B, ?), refines(?B, ?C_inst)
+
+-- Type compatibility: can type A be used where type B is expected?
+rule type_compatible(?A, ?A)                          -- same type (unification)
+rule type_compatible(?A, ?B) :- is_entity_of(?A, ?B)  -- entity subtyping
+rule type_compatible(?A, ?B) :- refines(?A, ?B)       -- spec refinement
+
+-- Sort membership: term has sort S (via EntityOf, 1-level)
 rule has_sort(?term, ?sort) :- entity_of(?term, ?sort)
-rule has_sort(?term, ?parent) :- has_sort(?term, ?child), is_subtype(?child, ?parent)
 
 -- Spec satisfaction: does Int satisfy Eq?
 -- = conjunctive query: apply {T → Int} to Eq's fact template, check all match
@@ -74,7 +81,7 @@ This means:
 - **The typing lattice is emergent** from KB facts, not a separate data structure
 - **Incremental**: as agents assert new facts (implementations, sort relations), the typing landscape evolves dynamically
 
-The Isabelle formalization already works this way: `is_subtype` is defined as the reflexive-transitive closure of `subsort_rel` (which is just `set (kb_subsort kb)` — facts). Extending this to spec satisfaction and operation dispatch is natural.
+The Isabelle formalization already works this way: `is_subtype` is defined as the reflexive-transitive closure of entity-of relationships (which is just `set (kb_entity_of kb)` — facts). Extending this to spec satisfaction and operation dispatch is natural.
 
 This resolves the "when does type resolution happen?" question (OQ1): **whenever you query**. Type resolution is not a pipeline stage — it's a query against the current KB state. Early checks use the available facts; later checks use more facts. Missing facts = obligations, not errors.
 
@@ -89,7 +96,7 @@ The Rust implementation already has the core machinery for this approach:
 | Discrimination tree index | **Done** | `kb/discrim.rs` — structural matching |
 | Equational rewriting | **Done** | `kb/resolve.rs` — `simplify()` |
 | Indexes (by_sort, by_functor, by_domain) | **Done** | `kb/mod.rs` |
-| Subsort hierarchy | **Done** | materialized parent/child indexes |
+| Entity subtyping (EntityOf facts + in-memory indexes) | **Done** | `kb/mod.rs`, `kb/load.rs` |
 | Forward chaining | Missing | Automatic fact derivation |
 | Constraint/denial checking | Missing | Integrity enforcement |
 | Negation-as-failure | Missing | `not(pattern)` in queries |
@@ -303,7 +310,7 @@ Then runs it against the KB:
 - **Many answers** → ambiguity error (but see specificity below)
 - **Zero answers** → unknown operation error
 
-**Specificity ordering.** If both `List.map` and `Monad.map` match (because `fact Monad{F = List}`), prefer the more specific sort — the one that's a subsort of the other. Since `Subsort(List, Monad)` holds via the satisfaction fact, `List.map` wins.
+**Specificity ordering.** If both `List.map` and `Monad.map` match (because `fact Monad{F = List}`), prefer the more specific sort — the one that refines the other. Since `List` satisfies `Monad` via spec refinement, `List.map` wins.
 
 **Why this matters now.** Currently anthill has no unresolved operation calls — rules/facts use functors (just symbols), and declared operations resolve by scope/import. But operation dispatch becomes necessary in two cases:
 
@@ -348,7 +355,7 @@ The realization boundary is where accidental `?` must be zero. Intentional `?` (
 
 ### OQ5. Types-are-terms implications
 
-**OQ5.1.** Since sorts are terms, sort resolution IS term resolution in the KB. Checking "is `X` of sort `S`?" is equivalent to querying `fact X : S` (or the equivalent subsort chain). Should type resolution literally be a KB query?
+**OQ5.1.** Since sorts are terms, sort resolution IS term resolution in the KB. Checking "is `X` of sort `S`?" is equivalent to querying `fact X : S` (or checking the entity-of relationship). Should type resolution literally be a KB query?
 
 **OQ5.2.** If type resolution is a KB query, then it requires the KB to be loaded. This creates a chicken-and-egg problem for sugar desugaring — you need type info to desugar, but desugaring happens before (or during) KB loading.
 
@@ -409,25 +416,23 @@ A key design decision: **every entity instance is also a sort** — a singleton 
 
 **The rule, not the fact.** This property is expressed as a general law in the KB, not as per-entity fact assertions:
 
-The loader already emits `Subsort(entity, parent)` for every entity in a sort body. This single fact is sufficient — an entity is a valid sort if and only if it appears in the subsort index. No new predicate is needed.
+The loader already emits `EntityOf(entity, parent)` for every entity in a sort body. This single fact is sufficient — an entity is a valid sort if and only if an `EntityOf` fact exists for it. No new predicate is needed.
 
-The subtyping rules from §OQ5 already handle this:
+The `is_entity_of` rule (implemented in `typing.anthill`) handles this:
 
 ```
--- Already defined: reflexive-transitive closure of Subsort
-rule is_subtype(?A, ?A)
-rule is_subtype(?A, ?C) :- is_subtype(?A, ?B), is_subtype(?B, ?C)
-rule is_subtype(?Ctor, ?Sort) :- Subsort(?Ctor, ?Sort)
+-- 1-level entity → parent sort (non-transitive)
+rule is_entity_of(?A, ?B) :- EntityOf(?A, ?B)
 ```
 
-When type resolution checks whether `kb` is a valid sort (e.g., in `Modifies{kb}`), it queries `Subsort(kb, ?)`. If found, `kb` is a sort. This is already how the subsort index works — no additional `is_sort` predicate or `Sort(kb, Singleton)` facts are needed.
+When type resolution checks whether `kb` is a valid sort (e.g., in `Modifies{kb}`), it queries `EntityOf(kb, ?)`. If found, `kb` is an entity of some sort. No additional `is_sort` predicate or `Sort(kb, Singleton)` facts are needed.
 
-The critical point: this is **derived knowledge, not asserted facts**. The loader emits `Subsort(Draft, WorkStatus)` because `entity Draft` appears inside `sort WorkStatus`. If the entity declaration is retracted, the subsort fact disappears, and `Draft` ceases to be a valid sort. Compare:
+The critical point: this is **derived knowledge, not asserted facts**. The loader emits `EntityOf(Draft, WorkStatus)` because `entity Draft` appears inside `sort WorkStatus`. If the entity declaration is retracted, the `EntityOf` fact disappears, and `Draft` ceases to be a valid entity. Compare:
 
-| Approach | Per-entity `Sort(Draft, Singleton)` facts | `Subsort(Draft, WorkStatus)` (existing) |
+| Approach | Per-entity `Sort(Draft, Singleton)` facts | `EntityOf(Draft, WorkStatus)` (existing) |
 |----------|-------------------------------------------|----------------------------------------|
 | Mechanism | Loader emits N extra facts | Already emitted — no new facts |
-| Sort validity | Separate predicate to check | Query subsort index (existing) |
+| Sort validity | Separate predicate to check | Query EntityOf (existing) |
 | Retraction | Must track and retract separately | Automatic with entity retraction |
 | New entities | Must remember to emit | Already part of entity loading |
 
@@ -461,7 +466,7 @@ sort Stream {
 
 No special effect-target resolution needed — effect parameters are sort parameters, entity instances are sorts, and the existing sort instantiation / subtyping machinery handles everything:
 
-- `Modifies{kb}` is valid because `kb` appears in the subsort index (`Subsort(kb, KB)`)
+- `Modifies{kb}` is valid because `EntityOf(kb, KB)` exists
 - `effects (E)` where `E = Modifies{kb}` works by substitution
 - Whether `Modifies{kb} <: Modifies{KB}` holds depends on variance — see OQ5c below
 
@@ -476,7 +481,7 @@ The key insight: in a system where "type checking = KB querying" and "types are 
 
 ### OQ5c. Variance of Parameterized Sorts
 
-Anthill currently has no notion of variance. Given `Subsort(kb, KB)`, does `Modifies{kb} <: Modifies{KB}` hold? This depends on whether the sort parameter of `Modifies` is covariant.
+Anthill currently has no notion of variance. Given `EntityOf(kb, KB)`, does `Modifies{kb} <: Modifies{KB}` hold? This depends on whether the sort parameter of `Modifies` is covariant.
 
 Rather than introducing variance annotations (like Scala's `+T`/`-T`), variance can be expressed as **subtyping rules** — consistent with "type checking = KB querying":
 
@@ -536,17 +541,24 @@ These cannot be expressed as KB queries because they inspect the **current state
 **Derivable as rules** (everything else):
 
 ```
--- Subtyping: rules over Subsort facts
-rule is_subtype(?A, ?A)
-rule is_subtype(?A, ?C) :- is_subtype(?A, ?B), is_subtype(?B, ?C)
-rule is_subtype(?Ctor, ?Sort) :- Subsort(?Ctor, ?Sort)
+-- Entity-of: 1-level entity → parent sort (non-transitive).
+-- EntityOf(entity, parent) facts are emitted by the loader.
+rule is_entity_of(?A, ?B) :- EntityOf(?A, ?B)
 
--- Entity-of: guarded by nonvar, then functor lookup
-rule entity_of(?x, ?sort) :- nonvar(?x), Subsort(?x, ?sort)
+-- Spec refinement: transitive closure of Requires chain.
+rule refines(?A, ?B_inst) :- Requires(?A, ?, ?B_inst)
+rule refines(?A, ?C_inst) :- Requires(?A, ?B, ?), refines(?B, ?C_inst)
 
--- Has-sort: derived from entity_of + subtyping
+-- Type compatibility: can type A be used where type B is expected?
+rule type_compatible(?A, ?A)                          -- same type (unification)
+rule type_compatible(?A, ?B) :- is_entity_of(?A, ?B)  -- entity subtyping
+rule type_compatible(?A, ?B) :- refines(?A, ?B)       -- spec refinement
+
+-- Entity-of with nonvar guard (inspect functor first)
+rule entity_of(?x, ?sort) :- nonvar(?x), EntityOf(?x, ?sort)
+
+-- Has-sort: derived from entity_of (1-level, no transitivity needed)
 rule has_sort(?t, ?s) :- entity_of(?t, ?s)
-rule has_sort(?t, ?p) :- has_sort(?t, ?c), is_subtype(?c, ?p)
 
 -- Operation dispatch: constraint query
 -- OperationInfo facts have named args: name (Symbol), sort_context, params, return_type, effects
@@ -585,7 +597,7 @@ The `resolved(?x)` guard primitive provides a clean separation:
 
 ```
 -- entity_of requires nonvar to inspect the functor:
-rule entity_of(?x, ?sort) :- nonvar(?x), Subsort(?x, ?sort)
+rule entity_of(?x, ?sort) :- nonvar(?x), EntityOf(?x, ?sort)
 
 -- gt requires ground values to compare:
 rule can_compare(?x, ?y, ?result) :- ground(?x), ground(?y), gt(?x, ?y)
@@ -629,7 +641,7 @@ operation execute(query: LogicalQuery)
   - (c) **Everything is "Fact" by default.** Untyped terms have an implicit universal sort `Fact` or `Term`. Sorts provide refinement but aren't required.
 
 **OQ5b.3. How do sorts relate to each other?** The current relationships:
-  - **Subsort** (`<:`): `red <: Color` — constructors are subsorts of their enclosing sort
+  - **EntityOf** (`<:`): `red <: Color` — constructors are entities of their enclosing sort (1-level, non-transitive)
   - **Spec satisfaction**: `fact Eq{T = Int}` — Int satisfies the Eq spec
   - **Type parameter binding**: `List{T = Int}` — T is bound to Int
   - **Type alias**: `sort Money = Int` — Money is another name for Int
@@ -702,7 +714,7 @@ This is fundamentally different from term unification:
 2. Missing facts become **open obligations** — pheromone signals for agents to fulfill
 3. Full match = satisfaction verified
 
-**Subsort-aware matching.** When checking if `Operation(eq, a: Int, b: Int, _returns: Bool)` exists, allow subsort matches: if `Nat <: Int`, an operation `eq(a: Nat, b: Nat) -> Bool` could partially match (with subsort coercion).
+**Type-compatible matching.** When checking if `Operation(eq, a: Int, b: Int, _returns: Bool)` exists, allow compatible matches: if `red` is an entity of `Color`, an operation `eq(a: Color, b: Color) -> Bool` could match with `red` as argument (via `type_compatible`).
 
 #### Analogies in other systems
 
@@ -1095,6 +1107,6 @@ This is the **minimal complete definition** pattern. Stream declares which opera
 
 - Current symbol resolution: `rustland/anthill-core/src/intern.rs` (`SymbolTable`, `resolve_in_scope`)
 - Current scan-then-load pipeline: `rustland/anthill-core/src/parse/scan.rs`, `rustland/anthill-core/src/kb/load.rs`
-- Sort lattice: subsort facts in KB, `is_subtype` in `Anthill_Kernel.thy`
+- Sort lattice: entity-of facts in KB, `is_subtype` in `Anthill_Kernel.thy`
 - Spec sort satisfaction: `fact Eq{T = Int}` pattern in stdlib
 - kernel-language.md §3 (sorts), §5 (operations), §8 (semantics)

@@ -297,7 +297,7 @@ impl TermStore {
 
 ## 5. Sort Lattice and Subtype Relation
 
-The kernel has a type system (sorts). Unification must respect it — `?x : Nat` cannot unify with `Account(...)`. This requires a **sort lattice** with a subtype (subsort) relation.
+The kernel has a type system (sorts). Unification must respect it — `?x : Nat` cannot unify with `Account(...)`. This requires a **sort lattice** with an entity-of relationship (and future subtyping).
 
 ### 5.1 Sources of Subtyping
 
@@ -310,9 +310,9 @@ sort Nat { entity zero, entity succ(pred: Nat) }
   succ  : Nat    -- succ ≤ Nat
 ```
 
-This is exactly Maude's subsort relation: constructor sorts are subsorts of the declared sort. Pattern matching on `?x : Nat` can produce `zero` or `succ(...)`.
+This is the entity-of relationship: each entity constructor belongs to its parent sort (1-level, not transitive). In Maude's terminology, these would be subsorts of the declared sort. Pattern matching on `?x : Nat` can produce `zero` or `succ(...)`.
 
-**Parametric instantiation.** `List{T=Int}` is a ground instantiation of the parametric sort `List`. The relation between `List` (with abstract `T`) and `List{T=Int}` is **instantiation**, not subtyping. But the constructor subsort relation applies to the instantiated version too:
+**Parametric instantiation.** `List{T=Int}` is a ground instantiation of the parametric sort `List`. The relation between `List` (with abstract `T`) and `List{T=Int}` is **instantiation**, not subtyping. But the entity-of relationship applies to the instantiated version too:
 
 ```
 nil  ≤ List{T=Int}
@@ -381,7 +381,7 @@ rule has_numeric(?domain, ?sort) :-
 
 ### 5.3 Sort Relations Are Facts
 
-There is no separate `SortLattice` structure. Sort relationships are **facts in the KB**, and the subsort index is a **materialized index** maintained by the same `assert()` path as all other indexes.
+There is no separate `SortLattice` structure. Sort relationships are **facts in the KB**, and the entity-of index is a **materialized index** maintained by the same `assert()` path as all other indexes.
 
 When a sort with constructors is loaded:
 
@@ -392,8 +392,8 @@ sort Nat { entity zero, entity succ(pred: Nat) }
 The loader asserts facts:
 
 ```
-fact Subsort(zero, Nat)
-fact Subsort(succ, Nat)
+fact EntityOf(zero, Nat)
+fact EntityOf(succ, Nat)
 fact SortInfo(
   name: Nat,                       -- Symbol (Ref to interned name)
   definition: Nat,                 -- sort term for defined sorts, Var for abstract
@@ -404,23 +404,23 @@ fact SortInfo(
 )
 ```
 
-Constructor sorts (`zero`, `succ`) are registered via `register_sort` / `register_subsort` — they don't get their own SortInfo facts.
+Constructor sorts (`zero`, `succ`) are registered via `register_sort` / `register_entity_of` — they don't get their own SortInfo facts.
 
 The KB maintains materialized indexes over these facts internally:
 
 ```
 // Inside KnowledgeBase (not a separate struct):
-subsort_children: HashMap<TermId, Vec<TermId>>   // parent → children
-subsort_parents: HashMap<TermId, Vec<TermId>>    // child → parents
+sort_entities: HashMap<TermId, Vec<TermId>>   // parent → children
+entity_parent: HashMap<TermId, Vec<TermId>>    // child → parents
 sort_info: HashMap<TermId, SortKind>             // Abstract | Defined | Constructor
 ```
 
-These indexes are updated when sort facts are asserted, just like `by_sort` and `by_functor`. `kb.is_subtype(sub, sup)` reads the index. `kb.register_sort()` and `kb.register_subsort()` are convenience methods that assert the appropriate facts and update the indexes atomically.
+These indexes are updated when sort facts are asserted, just like `by_sort` and `by_functor`. `kb.is_entity_of(child, parent)` reads the index (1-level, not transitive). `kb.register_sort()` and `kb.register_entity_of()` are convenience methods that assert the appropriate facts and update the indexes atomically.
 
 Built during domain loading (after parsing):
 1. Parse all sort declarations
 2. Convert each sort's `TypeExpr` to a type-term in the store (hash-consed)
-3. For each sort with entity constructors, assert `Subsort` facts for constructors
+3. For each sort with entity constructors, assert `EntityOf` facts for constructors
 5. For each `import ... where`, instantiate parametric sorts — producing new type-terms like `ParameterizedType("List", [SortBinding("T", SimpleType("Int"))])`
 
 ### 5.4 Subtype Checking
@@ -429,9 +429,9 @@ There is no separate `SortLattice` struct — these are methods on `KnowledgeBas
 
 ```rust
 impl KnowledgeBase {
-    /// Is `sub` a subtype of `sup`?
-    /// Both are TermIds of type-terms. Checks the transitive closure of the subsort relation.
-    fn is_subtype(&self, sub: TermId, sup: TermId) -> bool { ... }
+    /// Is `child` an entity of `parent`? (1-level, not transitive)
+    /// Both are TermIds of type-terms.
+    fn is_entity_of(&self, child: TermId, parent: TermId) -> bool { ... }
 
     /// What are the immediate child sorts?
     /// For a sort with constructors, this returns its constructors.
@@ -452,7 +452,7 @@ Typed unification differs from standard first-order unification:
 
 1. **Variable binding checks sort compatibility.** When binding `?x : S` to term `t : T`, we require `T ≤ S` (the term's sort must be a subtype of the variable's declared sort). Otherwise, unification fails with a type error — not a structural mismatch.
 
-2. **Constructor matching respects the sort hierarchy.** Matching `?x : Nat` against `succ(zero)` succeeds because `succ ≤ Nat`. Matching `?x : Nat` against `Account(...)` fails because `Account` is not in the `Nat` subsort chain.
+2. **Constructor matching respects the sort hierarchy.** Matching `?x : Nat` against `succ(zero)` succeeds because `succ` is an entity of `Nat`. Matching `?x : Nat` against `Account(...)` fails because `Account` is not an entity of `Nat`.
 
 3. **Fn terms carry sort information.** `gt(balance(?a), zero-val)` — the engine needs to know that `gt` expects `Ordered` arguments, `balance` returns `Money`, and `Money` has `Numeric` (which extends `Ordered`). This is resolved via operation signatures in the domain.
 
@@ -480,10 +480,10 @@ impl Substitution {
 ### 5.7 Relation to Maude
 
 This is directly the **order-sorted algebra** approach from Maude/OBJ:
-- Sorts form a partial order (the subsort relation)
+- Sorts form a partial order (in Maude via the subsort relation; in Anthill via entity-of relationships)
 - Terms have a **least sort** — the most specific sort that contains them
 - Unification is **order-sorted unification** — respects the sort hierarchy
-- Constructors introduce subsort relationships
+- Constructors introduce entity-of relationships (entity belongs to parent sort)
 
 The key reference is Meseguer's order-sorted algebra papers and the Maude book (Chapter 3: Membership Equational Logic).
 
@@ -547,11 +547,11 @@ The previous sections described separate structures: TermStore, SortLattice, Fac
 
 - Assert a fact → must update term store (allocate), sort lattice (check type), fact indexes (by sort, functor), and trigger forward chaining (rule index). These aren't independent operations — they're one atomic `assert`.
 - Equational rules (`add(?a, ?b) = add(?b, ?a)`) establish equivalence classes. An e-graph merges equivalent terms, and congruence closure propagates: if `a = b` then `f(a) = f(b)`. This affects indexing (query by functor must respect equivalences) and unification (terms in the same e-class unify).
-- The subsort relation, fact indexing, and equational reasoning are all **views over the same data**. Maintaining them as separate structures means coordinating updates across all of them. A unified structure maintains consistency internally.
+- The entity-of relationship, fact indexing, and equational reasoning are all **views over the same data**. Maintaining them as separate structures means coordinating updates across all of them. A unified structure maintains consistency internally.
 
 ### 7.2 The KB Structure
 
-One struct, all indexes internal. Sort relations are facts; the subsort index is maintained alongside other indexes.
+One struct, all indexes internal. Sort relations are facts; the entity-of index is maintained alongside other indexes.
 
 ```
 KnowledgeBase
@@ -569,8 +569,8 @@ KnowledgeBase
   │     ├── by_sort: HashMap<TermId, Vec<FactId>>
   │     ├── by_functor: HashMap<Symbol, Vec<FactId>>
   │     ├── by_domain: HashMap<TermId, Vec<FactId>>
-  │     ├── subsort_children: HashMap<TermId, Vec<TermId>>  -- parent → child sorts
-  │     ├── subsort_parents: HashMap<TermId, Vec<TermId>>   -- child → parent sorts
+  │     ├── sort_entities: HashMap<TermId, Vec<TermId>>  -- parent → child entity sorts
+  │     ├── entity_parent: HashMap<TermId, Vec<TermId>>   -- child → parent sorts
   │     ├── sort_info: HashMap<TermId, SortKind>
   │     ├── discrim: SubstTree<FactId>                      -- substitution tree (§7.6)
   │     ├── by_body_functor: HashMap<Symbol, Vec<RuleId>>   -- for forward chaining (Layer 2)
@@ -614,7 +614,7 @@ impl KnowledgeBase {
     /// Retract a fact. Updates indexes, decrements refcounts.
     fn retract(&mut self, fact_id: FactId) { ... }
 
-    /// Query: all facts of a given sort (including subsorts).
+    /// Query: all facts of a given sort (including its entities).
     fn by_sort(&self, sort: TermId) -> Vec<FactId> { ... }
 
     /// Query: all facts with a given top-level functor.
@@ -753,7 +753,7 @@ KnowledgeBase
   ├── terms: hash-consed Vec<Term> with refcounting
   ├── facts: Vec<FactEntry> with by_sort, by_functor, and by_domain indexes
   ├── discrim: SubstTree<FactId> — substitution tree for structural matching (§7.6)
-  ├── sorts: subsort/supersort relations from parsed domain declarations
+  ├── sorts: entity-of relations from parsed domain declarations
   ├── next_var: u32 (counter for fresh VarId allocation)
   └── rules: stored but not evaluated
 ```

@@ -1047,16 +1047,16 @@ The kernel enforces a **structural type system**:
 - **Operations** have typed signatures: `operation op(x: A, y: B) -> C`. Parameters are named bindings; the kernel type-checks that actual arguments match declared types.
 - **Terms** are typed: `Const` carries its type, `Var` declares its type, `Fn` has the type of its sort's constructor, `Ref` refers to a named type.
 
-### 8.2 Subsorting
+### 8.2 Entity Subtyping
 
-Constructors of a sort are **subsorts** of that sort. If `sort S { entity C₁(...), entity C₂(...) }`, then `C₁ <: S` and `C₂ <: S`. A term classified as sort `C₁` is also of sort `S`.
+Constructors (entities) of a sort are subtypes of that sort. If `sort S { entity C₁(...), entity C₂(...) }`, then `C₁ <: S` and `C₂ <: S`. A term classified as sort `C₁` is also of sort `S`.
 
-This is the standard **order-sorted algebra** approach (as in Maude/OBJ):
+This relationship is **always 1-level** (entity → parent sort, non-transitive). When an entity is declared inside a sort body, the loader emits an `EntityOf(entity, parent)` fact in the KB. This is the only source of entity subtyping.
 
 - Each constructor name is a sort in its own right.
-- The subsort relation `C <: S` is registered when a sort with entity constructors is declared.
-- Subsorting is **transitive**: if `A <: B` and `B <: C`, then `A <: C`.
-- Querying by sort `S` returns facts of sort `S` and all subsorts of `S`.
+- The `EntityOf` relationship is registered when a sort with entity constructors is declared.
+- Entity subtyping is **1-level only**: if `C <: S`, that's because `C` is declared directly inside `S`. There are no multi-level entity chains.
+- Querying by sort `S` returns facts of sort `S` and all entities of `S`.
 
 ```
 sort Color {
@@ -1065,14 +1065,16 @@ sort Color {
   entity blue
 }
 
--- This establishes:
---   red   <: Color
---   green <: Color
---   blue  <: Color
+-- This establishes (as EntityOf facts in the KB):
+--   EntityOf(red, Color)
+--   EntityOf(green, Color)
+--   EntityOf(blue, Color)
 -- A query for sort Color matches terms of sort red, green, and blue.
 ```
 
-Subsorting does **not** arise from nesting. A sort `T` declared inside a namespace or sort body is a **parameter**, not a subsort. Only the constructor-of relationship creates subsorting.
+Entity subtyping does **not** arise from nesting. A sort `T` declared inside a namespace or sort body is a **parameter**, not an entity. Only the constructor-of relationship creates entity subtyping.
+
+Spec refinement (`requires` chains) is a separate relationship handled by `refines()` rules in `stdlib/anthill/reflect/typing.anthill`.
 
 ### 8.3 Rule Evaluation
 

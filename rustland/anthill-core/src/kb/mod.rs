@@ -1,6 +1,6 @@
 /// Unified KnowledgeBase — hash-consed terms, facts, indexes, sort lattice.
 ///
-/// One struct maintains everything. Sort relations are facts; subsort
+/// One struct maintains everything. Sort relations are facts; entity-of
 /// indexes are materialized alongside other indexes.
 ///
 /// See: docs/stage0/rust-term-store-design.md §7, §9 (Layer 0)
@@ -74,9 +74,10 @@ pub struct KnowledgeBase {
     by_functor: HashMap<Symbol, Vec<RuleId>>,
     by_domain: HashMap<TermId, Vec<RuleId>>,
 
-    // Sort indexes (subsort relations are facts; these are materialized indexes)
-    subsort_children: HashMap<TermId, Vec<TermId>>,
-    subsort_parents: HashMap<TermId, Vec<TermId>>,
+    // Entity-of indexes: entity → parent sort (1-level, non-transitive).
+    // Materialized indexes for EntityOf(entity, parent) facts.
+    sort_entities: HashMap<TermId, Vec<TermId>>,   // sort → its entity constructors
+    entity_parent: HashMap<TermId, TermId>,         // entity → its parent sort
     sort_info: HashMap<TermId, SortKind>,
 
     // Discrimination tree index for structural term matching
@@ -96,7 +97,7 @@ pub struct KnowledgeBase {
     #[allow(dead_code)]
     sort_sort: Option<TermId>,
     #[allow(dead_code)]
-    subsort_sort: Option<TermId>,
+    entity_of_sort: Option<TermId>,
 }
 
 impl KnowledgeBase {
@@ -108,15 +109,15 @@ impl KnowledgeBase {
             by_sort: HashMap::new(),
             by_functor: HashMap::new(),
             by_domain: HashMap::new(),
-            subsort_children: HashMap::new(),
-            subsort_parents: HashMap::new(),
+            sort_entities: HashMap::new(),
+            entity_parent: HashMap::new(),
             sort_info: HashMap::new(),
             discrim: SubstTree::new(),
             builtins: HashMap::new(),
             entity_fields: HashMap::new(),
             next_var: 0,
             sort_sort: None,
-            subsort_sort: None,
+            entity_of_sort: None,
         }
     }
 
@@ -280,45 +281,28 @@ impl KnowledgeBase {
         self.sort_info.insert(sort_term, kind);
     }
 
-    /// Register a subsort relationship: child < parent.
-    /// Also asserts a Subsort fact in the KB.
-    pub fn register_subsort(&mut self, child: TermId, parent: TermId) {
-        self.subsort_children
+    /// Register an entity-of relationship: entity is a constructor of parent sort.
+    /// Updates in-memory indexes (sort_entities, entity_parent).
+    /// The loader separately asserts EntityOf(entity, parent) facts in the KB.
+    pub fn register_entity_of(&mut self, entity: TermId, parent: TermId) {
+        self.sort_entities
             .entry(parent)
             .or_default()
-            .push(child);
-        self.subsort_parents
-            .entry(child)
-            .or_default()
-            .push(parent);
+            .push(entity);
+        self.entity_parent.insert(entity, parent);
     }
 
-    /// Check if `sub` is an entity of `sup` (transitive through parent chain).
+    /// Check if `sub` is an entity of `sup` (1-level entity → parent sort).
     pub fn is_entity_of(&self, sub: TermId, sup: TermId) -> bool {
         if sub == sup {
             return true;
         }
-        // BFS/DFS up the parent chain from sub
-        let mut visited = Vec::new();
-        let mut stack = vec![sub];
-        while let Some(current) = stack.pop() {
-            if current == sup {
-                return true;
-            }
-            if visited.contains(&current) {
-                continue;
-            }
-            visited.push(current);
-            if let Some(parents) = self.subsort_parents.get(&current) {
-                stack.extend(parents.iter().copied());
-            }
-        }
-        false
+        self.entity_parent.get(&sub) == Some(&sup)
     }
 
     // ── Query ───────────────────────────────────────────────────
 
-    /// All active rules/facts of a given sort (including subsorts).
+    /// All active rules/facts of a given sort (including entities of that sort).
     pub fn by_sort(&self, sort: TermId) -> Vec<RuleId> {
         let mut result = Vec::new();
 
@@ -331,21 +315,16 @@ impl KnowledgeBase {
             }
         }
 
-        // Entries of subsorts
-        let mut stack: Vec<TermId> = Vec::new();
-        if let Some(children) = self.subsort_children.get(&sort) {
-            stack.extend(children.iter().copied());
-        }
-        while let Some(child) = stack.pop() {
-            if let Some(ids) = self.by_sort.get(&child) {
-                for &rid in ids {
-                    if !self.rules[rid.index()].retracted {
-                        result.push(rid);
+        // Entries of entity children (1-level only)
+        if let Some(children) = self.sort_entities.get(&sort) {
+            for &child in children {
+                if let Some(ids) = self.by_sort.get(&child) {
+                    for &rid in ids {
+                        if !self.rules[rid.index()].retracted {
+                            result.push(rid);
+                        }
                     }
                 }
-            }
-            if let Some(grandchildren) = self.subsort_children.get(&child) {
-                stack.extend(grandchildren.iter().copied());
             }
         }
 
@@ -434,9 +413,9 @@ impl KnowledgeBase {
         self.sort_info.get(&sort_term).copied()
     }
 
-    /// Get immediate children sorts.
+    /// Get immediate entity children of a sort.
     pub fn sort_children(&self, sort_term: TermId) -> &[TermId] {
-        self.subsort_children
+        self.sort_entities
             .get(&sort_term)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
@@ -978,7 +957,7 @@ mod tests {
     }
 
     #[test]
-    fn subsort_query_includes_children() {
+    fn entity_of_query_includes_children() {
         let mut kb = KnowledgeBase::new();
         let nat = kb.make_name_term("Nat");
         let zero = kb.make_name_term("zero");
@@ -986,13 +965,13 @@ mod tests {
 
         kb.register_sort(nat, SortKind::Defined);
         kb.register_sort(zero, SortKind::Constructor);
-        kb.register_subsort(zero, nat);
+        kb.register_entity_of(zero, nat);
 
         // Assert a fact of sort `zero`
         let zero_val = kb.make_name_term("zero");
         let fid = kb.assert_fact(zero_val, zero, domain, None);
 
-        // Query by_sort(Nat) should include the zero fact
+        // Query by_sort(Nat) should include the zero fact (entity children)
         let results = kb.by_sort(nat);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], fid);
