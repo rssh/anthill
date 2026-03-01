@@ -684,6 +684,31 @@ fn load_with_visited(
     }
 }
 
+/// Build a cons-list from a slice of TermIds: `cons(head: a, tail: cons(head: b, tail: nil()))`.
+/// Uses the `anthill.prelude.List` constructors so list operations work.
+fn build_list(kb: &mut KnowledgeBase, items: &[TermId]) -> TermId {
+    let nil_sym = kb.intern("nil");
+    let cons_sym = kb.intern("cons");
+    let head_sym = kb.intern("head");
+    let tail_sym = kb.intern("tail");
+
+    let mut list = kb.alloc(Term::Fn {
+        functor: nil_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+
+    for &item in items.iter().rev() {
+        list = kb.alloc(Term::Fn {
+            functor: cons_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(head_sym, item), (tail_sym, list)]),
+        });
+    }
+
+    list
+}
+
 struct Loader<'a> {
     kb: &'a mut KnowledgeBase,
     parsed: &'a ParsedFile,
@@ -1026,18 +1051,6 @@ impl<'a> Loader<'a> {
         let kind = if has_entities { SortKind::Defined } else { SortKind::Abstract };
         self.kb.register_sort(sort_term, kind);
 
-        // Assert SortInfo fact
-        let sort_info_sym = self.kb.intern("SortInfo");
-        let kind_str = if has_entities { "Defined" } else { "Abstract" };
-        let kind_sym = self.kb.intern(kind_str);
-        let kind_term = self.kb.alloc(Term::Ident(kind_sym));
-        let fact_term = self.kb.alloc(Term::Fn {
-            functor: sort_info_sym,
-            pos_args: SmallVec::from_slice(&[sort_term, kind_term]),
-            named_args: SmallVec::new(),
-        });
-        self.kb.assert_fact(fact_term, sort_sort, parent_domain, None);
-
         // Emit Description facts for all description blocks
         for desc_text in &s.descriptions {
             self.emit_desc_fact(sort_term, desc_text, parent_domain);
@@ -1070,6 +1083,86 @@ impl<'a> Loader<'a> {
 
         // Load all items within this sort's domain scope
         self.load_items(&s.items, Some(sort_term));
+
+        // Now collect constructors, operations, parameters, requires from child items
+        // (after loading, so all names are resolved in sort scope)
+        let sort_functor = match self.kb.get_term(sort_term) {
+            Term::Fn { functor, .. } => *functor,
+            _ => self.kb.intern("_unknown"),
+        };
+
+        let mut ctor_refs = Vec::new();
+        let mut op_refs = Vec::new();
+        let mut param_refs = Vec::new();
+        let mut req_terms = Vec::new();
+
+        for item in &s.items {
+            match item {
+                Item::Entity(e) => {
+                    let sym = self.remap_name(&e.name);
+                    ctor_refs.push(self.kb.alloc(Term::Ref(sym)));
+                }
+                Item::Operation(o) => {
+                    let sym = self.remap_name(&o.name);
+                    op_refs.push(self.kb.alloc(Term::Ref(sym)));
+                }
+                Item::OperationBlock(ob) => {
+                    for op in &ob.entries {
+                        let sym = self.remap_name(&op.name);
+                        op_refs.push(self.kb.alloc(Term::Ref(sym)));
+                    }
+                }
+                Item::AbstractSort(abs) => {
+                    if matches!(abs.definition, TypeExpr::Variable { .. }) {
+                        let sym = self.remap_name(&abs.name);
+                        param_refs.push(self.kb.alloc(Term::Ref(sym)));
+                    }
+                }
+                Item::RequiresDecl(r) => {
+                    let req_term = self.type_expr_to_term(&r.type_expr);
+                    req_terms.push(req_term);
+                }
+                _ => {}
+            }
+        }
+
+        let ctors_list = build_list(self.kb, &ctor_refs);
+        let ops_list = build_list(self.kb, &op_refs);
+        let params_list = build_list(self.kb, &param_refs);
+        let requires_list = build_list(self.kb, &req_terms);
+
+        // definition: Var for abstract (no entities), sort_term for defined
+        let definition_term = if has_entities {
+            sort_term
+        } else {
+            let anon_sym = self.kb.intern("?");
+            let vid = self.kb.fresh_var(anon_sym);
+            self.kb.alloc(Term::Var(vid))
+        };
+
+        // Assert SortInfo fact with named args
+        let sort_info_sym = self.kb.intern("SortInfo");
+        let name_sym = self.kb.intern("name");
+        let definition_sym = self.kb.intern("definition");
+        let constructors_sym = self.kb.intern("constructors");
+        let operations_sym = self.kb.intern("operations");
+        let parameters_sym = self.kb.intern("parameters");
+        let requires_sym = self.kb.intern("requires");
+        let name_ref = self.kb.alloc(Term::Ref(sort_functor));
+
+        let fact_term = self.kb.alloc(Term::Fn {
+            functor: sort_info_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (name_sym, name_ref),
+                (definition_sym, definition_term),
+                (constructors_sym, ctors_list),
+                (operations_sym, ops_list),
+                (parameters_sym, params_list),
+                (requires_sym, requires_list),
+            ]),
+        });
+        self.kb.assert_fact(fact_term, sort_sort, parent_domain, None);
 
         self.current_scope = prev_scope;
     }
@@ -1133,38 +1226,93 @@ impl<'a> Loader<'a> {
 
         let return_term = self.type_expr_to_term(&o.return_type);
 
-        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = o.params
+        // Build FieldInfo list for params
+        let field_info_sym = self.kb.intern("FieldInfo");
+        let fi_name_sym = self.kb.intern("name");
+        let fi_type_sym = self.kb.intern("type_name");
+        let param_terms: Vec<TermId> = o.params
             .iter()
             .map(|p| {
-                let param_sym = self.reintern(p.name);
+                let param_name_str = self.parsed.symbols.name(p.name).to_owned();
+                let name_term = self.kb.alloc(Term::Const(super::term::Literal::String(param_name_str)));
                 let type_term = self.type_expr_to_term(&p.ty);
-                (param_sym, type_term)
+                self.kb.alloc(Term::Fn {
+                    functor: field_info_sym,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::from_slice(&[
+                        (fi_name_sym, name_term),
+                        (fi_type_sym, type_term),
+                    ]),
+                })
             })
             .collect();
+        let params_list = build_list(self.kb, &param_terms);
 
-        let ret_sym = self.kb.intern("_returns");
-        named_args.push((ret_sym, return_term));
-
-        // Store effects as _effects(E1, E2, ...) named arg
-        if !o.effects.is_empty() {
-            let effect_terms: SmallVec<[TermId; 4]> = o.effects
-                .iter()
-                .map(|e| self.type_expr_to_term(&e.type_expr))
-                .collect();
-            let effects_functor = self.kb.intern("_effects");
-            let effects_term = self.kb.alloc(Term::Fn {
-                functor: effects_functor,
-                pos_args: effect_terms,
-                named_args: SmallVec::new(),
-            });
-            let effects_sym = self.kb.intern("_effects");
-            named_args.push((effects_sym, effects_term));
-        }
+        // Build effects list
+        let effect_terms: Vec<TermId> = o.effects
+            .iter()
+            .map(|e| self.type_expr_to_term(&e.type_expr))
+            .collect();
+        let effects_list = build_list(self.kb, &effect_terms);
 
         self.current_scope = prev_scope;
 
-        let op_term = self.kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args });
-        self.kb.assert_fact(op_term, op_sort, domain, None);
+        // Build OperationInfo term with named args matching the entity definition
+        let op_info_sym = self.kb.intern("OperationInfo");
+        let name_sym = self.kb.intern("name");
+        let sort_context_sym = self.kb.intern("sort_context");
+        let params_sym = self.kb.intern("params");
+        let return_type_sym = self.kb.intern("return_type");
+        let effects_sym = self.kb.intern("effects");
+
+        // name: Ref to operation symbol
+        let name_ref = self.kb.alloc(Term::Ref(functor));
+
+        // sort_context: Ref to domain sort if it's a sort scope, else None
+        let sort_context_term = if is_sort_scope(self.kb, domain) {
+            // Extract the functor symbol from the domain term
+            match self.kb.get_term(domain) {
+                Term::Fn { functor: domain_functor, .. } => {
+                    let df = *domain_functor;
+                    let some_sym = self.kb.intern("some");
+                    let val_sym = self.kb.intern("value");
+                    let ref_term = self.kb.alloc(Term::Ref(df));
+                    self.kb.alloc(Term::Fn {
+                        functor: some_sym,
+                        pos_args: SmallVec::new(),
+                        named_args: SmallVec::from_slice(&[(val_sym, ref_term)]),
+                    })
+                }
+                _ => {
+                    let none_sym = self.kb.intern("none");
+                    self.kb.alloc(Term::Fn {
+                        functor: none_sym,
+                        pos_args: SmallVec::new(),
+                        named_args: SmallVec::new(),
+                    })
+                }
+            }
+        } else {
+            let none_sym = self.kb.intern("none");
+            self.kb.alloc(Term::Fn {
+                functor: none_sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::new(),
+            })
+        };
+
+        let op_info = self.kb.alloc(Term::Fn {
+            functor: op_info_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (name_sym, name_ref),
+                (sort_context_sym, sort_context_term),
+                (params_sym, params_list),
+                (return_type_sym, return_term),
+                (effects_sym, effects_list),
+            ]),
+        });
+        self.kb.assert_fact(op_info, op_sort, domain, None);
     }
 
     fn load_constraint(&mut self, c: &Constraint, domain: TermId) {

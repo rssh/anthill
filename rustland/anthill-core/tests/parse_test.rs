@@ -8,6 +8,33 @@ use anthill_core::kb::{KnowledgeBase, SortKind};
 use anthill_core::kb::term::{Term, TermId, Literal};
 use anthill_core::kb::load::{self, NullResolver};
 
+/// Count elements in a cons-list (cons/nil encoding).
+fn count_list_elements(kb: &KnowledgeBase, list_tid: TermId) -> usize {
+    let mut count = 0;
+    let mut current = list_tid;
+    loop {
+        match kb.get_term(current) {
+            Term::Fn { functor, named_args, .. } => {
+                let name = kb.resolve_sym(*functor);
+                if name == "nil" {
+                    break;
+                }
+                if name == "cons" {
+                    count += 1;
+                    match named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "tail") {
+                        Some(&(_, t)) => current = t,
+                        None => break,
+                    }
+                } else {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+    count
+}
+
 /// Collect all .anthill files under a directory, recursively.
 fn collect_anthill_files(dir: &std::path::Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
@@ -447,13 +474,25 @@ end
         );
     }
 
-    // Verify operation terms have the right functors (compare by name string)
-    let op_names: Vec<_> = ops.iter().map(|&fid| {
+    // Verify OperationInfo terms have "OperationInfo" functor and extract op names from "name" field
+    let mut op_names: Vec<String> = Vec::new();
+    for &fid in &ops {
         match kb.get_term(kb.fact_term(fid)) {
-            Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_owned(),
+            Term::Fn { functor, named_args, .. } => {
+                assert_eq!(kb.resolve_sym(*functor), "OperationInfo",
+                    "operation facts should use OperationInfo functor");
+                // Extract the "name" field (a Ref term)
+                let name_entry = named_args.iter().find(|(sym, _)| kb.resolve_sym(*sym) == "name");
+                assert!(name_entry.is_some(), "OperationInfo should have 'name' field");
+                let (_, name_tid) = name_entry.unwrap();
+                match kb.get_term(*name_tid) {
+                    Term::Ref(sym) => op_names.push(kb.resolve_sym(*sym).to_owned()),
+                    other => panic!("expected Ref for name, got {:?}", other),
+                }
+            }
             other => panic!("expected Fn term for operation, got {:?}", other),
         }
-    }).collect();
+    }
     assert!(op_names.contains(&"deposit".to_owned()), "should have deposit operation");
     assert!(op_names.contains(&"withdraw".to_owned()), "should have withdraw operation");
 
@@ -489,34 +528,39 @@ sort Store {
     let ops = kb.by_sort(op_sort);
     assert_eq!(ops.len(), 3, "should have 3 operations");
 
-    // Check each operation has effects stored
+    // Check each OperationInfo has effects stored as cons-list
     for &fid in &ops {
         let term = kb.get_term(kb.fact_term(fid));
         match term {
             Term::Fn { functor, named_args, .. } => {
-                let name = kb.resolve_sym(*functor).to_owned();
-                // Find _effects in named_args
+                assert_eq!(kb.resolve_sym(*functor), "OperationInfo");
+                // Extract operation name from "name" field
+                let name_entry = named_args.iter().find(|(sym, _)| kb.resolve_sym(*sym) == "name");
+                let name = match name_entry {
+                    Some((_, tid)) => match kb.get_term(*tid) {
+                        Term::Ref(sym) => kb.resolve_sym(*sym).to_owned(),
+                        _ => "?".to_owned(),
+                    },
+                    None => "?".to_owned(),
+                };
+                // Find "effects" cons-list
                 let effects_entry = named_args.iter().find(|(sym, _)| {
-                    kb.resolve_sym(*sym) == "_effects"
+                    kb.resolve_sym(*sym) == "effects"
                 });
                 assert!(effects_entry.is_some(),
-                    "operation '{}' should have _effects named arg", name);
+                    "operation '{}' should have 'effects' named arg", name);
 
-                // Check the effects term has the right number of positional args
-                let (_, effects_tid) = effects_entry.unwrap();
-                match kb.get_term(*effects_tid) {
-                    Term::Fn { pos_args, .. } => {
-                        let expected = match name.as_str() {
-                            "persist" => 1,
-                            "retrieve" => 1,
-                            "process" => 2,
-                            _ => panic!("unexpected operation: {}", name),
-                        };
-                        assert_eq!(pos_args.len(), expected,
-                            "operation '{}' should have {} effect(s)", name, expected);
-                    }
-                    other => panic!("expected Fn for _effects, got {:?}", other),
-                }
+                // Count elements in cons-list
+                let (_, effects_list_tid) = effects_entry.unwrap();
+                let count = count_list_elements(&kb, *effects_list_tid);
+                let expected = match name.as_str() {
+                    "persist" => 1,
+                    "retrieve" => 1,
+                    "process" => 2,
+                    _ => panic!("unexpected operation: {}", name),
+                };
+                assert_eq!(count, expected,
+                    "operation '{}' should have {} effect(s)", name, expected);
             }
             other => panic!("expected Fn term for operation, got {:?}", other),
         }
@@ -540,15 +584,20 @@ fn load_operation_with_abstract_effect() {
     let ops = kb.by_sort(op_sort);
     assert_eq!(ops.len(), 1, "should have 1 operation");
 
-    // Abstract effect E should still be stored
+    // Abstract effect E should still be stored in effects list
     let term = kb.get_term(kb.fact_term(ops[0]));
     match term {
-        Term::Fn { named_args, .. } => {
+        Term::Fn { functor, named_args, .. } => {
+            assert_eq!(kb.resolve_sym(*functor), "OperationInfo");
             let effects_entry = named_args.iter().find(|(sym, _)| {
-                kb.resolve_sym(*sym) == "_effects"
+                kb.resolve_sym(*sym) == "effects"
             });
             assert!(effects_entry.is_some(),
-                "operation should have _effects even for abstract effects");
+                "OperationInfo should have 'effects' even for abstract effects");
+            // Should have 1 effect element (abstract E)
+            let (_, effects_list_tid) = effects_entry.unwrap();
+            assert_eq!(count_list_elements(&kb, *effects_list_tid), 1,
+                "should have 1 abstract effect");
         }
         other => panic!("expected Fn term, got {:?}", other),
     }

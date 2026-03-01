@@ -1,0 +1,15 @@
+[package]
+name = "anthill-stl"
+version = "0.1.0"
+edition = "2021"
+description = "Anthill standard library: generated traits and bridge impls"
+
+[lib]
+name = "anthill"
+path = "src/lib.rs"
+
+[dependencies]
+anthill-core = { path = "../anthill-core" }
+
+[build-dependencies]
+anthill-core = { path = "../anthill-core" }

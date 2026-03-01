@@ -26,14 +26,24 @@ pub enum BuiltinTag {
     NonVar,
     /// `anthill.reflect.ground(?x)` — succeeds if `?x` is fully ground (no variables).
     Ground,
+    /// `anthill.reflect.qualified_name(?sym, ?result)` — Symbol → full qualified name string.
+    QualifiedName,
+    /// `anthill.reflect.short_name(?sym, ?result)` — Symbol → last segment string.
+    ShortName,
+    /// `anthill.reflect.lookup_symbol(?name_str, ?result)` — String → Symbol (fails if not found).
+    LookupSymbol,
 }
 
 /// Result of executing a builtin.
 enum BuiltinResult {
-    /// Builtin succeeded; continue with these substitution extensions.
+    /// Builtin succeeded; continue with current substitution unchanged.
     Success,
+    /// Builtin succeeded and produced new variable bindings to merge.
+    SuccessWithBindings(Substitution),
     /// Builtin cannot evaluate yet (argument still unbound); delay this goal.
     Delay,
+    /// Builtin definitively failed (e.g. lookup_symbol for non-existent name).
+    Failure,
 }
 
 /// Result of a recursive groundness check.
@@ -231,6 +241,30 @@ impl SearchStream {
                     f.subst = new_subst;
                     f.depth = new_depth;
                     f.state = FrameState::Init { delay_mode: new_delay };
+                    return Some(StepResult::Continue);
+                }
+                BuiltinResult::SuccessWithBindings(extra) => {
+                    // Merge extra bindings into the current substitution
+                    let new_goals = frame.goals[1..].to_vec();
+                    let mut new_subst = frame.subst.clone();
+                    for (var, tid) in extra.bindings.iter() {
+                        new_subst.bind(*var, *tid);
+                    }
+                    let new_depth = depth + 1;
+                    let new_delay = match delay_mode {
+                        DelayMode::Normal => DelayMode::Normal,
+                        DelayMode::Delayed { .. } => DelayMode::Delayed { consecutive_delays: 0 },
+                    };
+                    let f = self.stack.last_mut().unwrap();
+                    f.goals = new_goals;
+                    f.subst = new_subst;
+                    f.depth = new_depth;
+                    f.state = FrameState::Init { delay_mode: new_delay };
+                    return Some(StepResult::Continue);
+                }
+                BuiltinResult::Failure => {
+                    // Builtin definitively failed — no solutions from this branch
+                    self.stack.pop();
                     return Some(StepResult::Continue);
                 }
                 BuiltinResult::Delay => {
@@ -599,7 +633,7 @@ impl KnowledgeBase {
     /// Dispatch a builtin by tag. The goal has already been identified as a
     /// builtin; this evaluates it against the current substitution.
     fn execute_builtin(
-        &self,
+        &mut self,
         tag: BuiltinTag,
         goal: TermId,
         answer_subst: &Substitution,
@@ -607,6 +641,9 @@ impl KnowledgeBase {
         match tag {
             BuiltinTag::NonVar => self.builtin_nonvar(goal, answer_subst),
             BuiltinTag::Ground => self.builtin_ground(goal, answer_subst),
+            BuiltinTag::QualifiedName => self.builtin_qualified_name(goal, answer_subst),
+            BuiltinTag::ShortName => self.builtin_short_name(goal, answer_subst),
+            BuiltinTag::LookupSymbol => self.builtin_lookup_symbol(goal, answer_subst),
         }
     }
 
@@ -664,6 +701,130 @@ impl KnowledgeBase {
         }
     }
 
+    /// Extract the second positional argument from a builtin goal term.
+    fn builtin_second_arg(&self, goal: TermId) -> TermId {
+        match self.terms.get(goal) {
+            Term::Fn { pos_args, .. } => {
+                debug_assert!(pos_args.len() >= 2, "builtin goal must have at least two arguments");
+                pos_args[1]
+            }
+            _ => panic!("builtin_second_arg called on non-Fn term"),
+        }
+    }
+
+    /// `qualified_name(?sym, ?result)` — if `?sym` is bound to a Ref, bind `?result`
+    /// to the full qualified name string. Delay if `?sym` is unbound.
+    /// Return the fully-qualified name for a symbol.
+    /// Resolved symbols use their `qualified_name`; unresolved ones get `_unresolved.<name>`.
+    fn symbol_qualified_name(&self, sym: crate::intern::Symbol) -> String {
+        match self.symbols.get(sym) {
+            crate::intern::SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
+            crate::intern::SymbolDef::Unresolved { name } => format!("_unresolved.{}", name),
+        }
+    }
+
+    fn builtin_qualified_name(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
+        let sym_arg = self.builtin_first_arg(goal);
+        let result_arg = self.builtin_second_arg(goal);
+        let walked_sym = self.walk(sym_arg, subst);
+        match self.terms.get(walked_sym).clone() {
+            Term::Ref(sym) | Term::Ident(sym) => {
+                let name = self.symbol_qualified_name(sym);
+                let str_term = self.alloc(Term::Const(super::term::Literal::String(name)));
+                let walked_result = self.walk(result_arg, subst);
+                match self.terms.get(walked_result) {
+                    Term::Var(vid) => {
+                        let vid = *vid;
+                        let mut extra = Substitution::new();
+                        extra.bind(vid, str_term);
+                        BuiltinResult::SuccessWithBindings(extra)
+                    }
+                    _ => {
+                        // Result already bound — succeed if it matches
+                        if walked_result == str_term {
+                            BuiltinResult::Success
+                        } else {
+                            BuiltinResult::Failure
+                        }
+                    }
+                }
+            }
+            Term::Var(_) => BuiltinResult::Delay,
+            _ => BuiltinResult::Failure,
+        }
+    }
+
+    /// `short_name(?sym, ?result)` — if `?sym` is bound to a Ref, bind `?result`
+    /// to the last dot-separated segment. Delay if `?sym` is unbound.
+    fn builtin_short_name(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
+        let sym_arg = self.builtin_first_arg(goal);
+        let result_arg = self.builtin_second_arg(goal);
+        let walked_sym = self.walk(sym_arg, subst);
+        match self.terms.get(walked_sym).clone() {
+            Term::Ref(sym) | Term::Ident(sym) => {
+                let full = self.symbols.resolve(sym);
+                let short = full.rsplit('.').next().unwrap_or(full).to_string();
+                let str_term = self.alloc(Term::Const(super::term::Literal::String(short)));
+                let walked_result = self.walk(result_arg, subst);
+                match self.terms.get(walked_result) {
+                    Term::Var(vid) => {
+                        let vid = *vid;
+                        let mut extra = Substitution::new();
+                        extra.bind(vid, str_term);
+                        BuiltinResult::SuccessWithBindings(extra)
+                    }
+                    _ => {
+                        if walked_result == str_term {
+                            BuiltinResult::Success
+                        } else {
+                            BuiltinResult::Failure
+                        }
+                    }
+                }
+            }
+            Term::Var(_) => BuiltinResult::Delay,
+            _ => BuiltinResult::Failure,
+        }
+    }
+
+    /// `lookup_symbol(?name_str, ?result)` — if `?name_str` is a bound String,
+    /// search the symbol table for that qualified name. Bind `?result` to
+    /// `Term::Ref(symbol)` if found, fail if not. Delay if `?name_str` is unbound.
+    fn builtin_lookup_symbol(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
+        let name_arg = self.builtin_first_arg(goal);
+        let result_arg = self.builtin_second_arg(goal);
+        let walked_name = self.walk(name_arg, subst);
+        match self.terms.get(walked_name).clone() {
+            Term::Const(super::term::Literal::String(name)) => {
+                // Look up the symbol by qualified name (read-only)
+                match self.symbols.by_qualified_name.get(&name).copied() {
+                    Some(sym) => {
+                        let ref_term = self.alloc(Term::Ref(sym));
+                        let walked_result = self.walk(result_arg, subst);
+                        match self.terms.get(walked_result) {
+                            Term::Var(vid) => {
+                                let vid = *vid;
+                                let mut extra = Substitution::new();
+                                extra.bind(vid, ref_term);
+                                BuiltinResult::SuccessWithBindings(extra)
+                            }
+                            _ => {
+                                if walked_result == ref_term {
+                                    BuiltinResult::Success
+                                } else {
+                                    BuiltinResult::Failure
+                                }
+                            }
+                        }
+                    }
+                    None => BuiltinResult::Failure,
+                }
+            }
+            Term::Var(_) => BuiltinResult::Delay,
+            _ => BuiltinResult::Failure,
+        }
+    }
+
     /// Collect all unbound VarIds in a term, walking through the substitution.
     fn collect_unbound_vars(&self, term: TermId, subst: &Substitution, out: &mut Vec<VarId>) {
         let walked = self.walk(term, subst);
@@ -687,6 +848,14 @@ impl KnowledgeBase {
         }
     }
 
+    /// Check if a builtin would delay given the current substitution (read-only).
+    /// All builtins delay iff their first positional argument walks to a Var.
+    fn builtin_would_delay(&self, goal: TermId, subst: &Substitution) -> bool {
+        let arg = self.builtin_first_arg(goal);
+        let walked = self.walk(arg, subst);
+        matches!(self.terms.get(walked), Term::Var(_))
+    }
+
     /// Check if any builtin in a rule body would delay on a caller-originated
     /// variable (one that came from the query via answer_links).
     ///
@@ -700,8 +869,8 @@ impl KnowledgeBase {
         subst: &Substitution,
     ) -> bool {
         for &goal in body {
-            if let Some(tag) = self.get_builtin(goal) {
-                if matches!(self.execute_builtin(tag, goal, subst), BuiltinResult::Delay) {
+            if self.get_builtin(goal).is_some() {
+                if self.builtin_would_delay(goal, subst) {
                     let arg = self.builtin_first_arg(goal);
                     let mut unbound = Vec::new();
                     self.collect_unbound_vars(arg, subst, &mut unbound);
@@ -2165,5 +2334,152 @@ mod tests {
 
         // No more solutions
         assert!(stream.split_first(&mut kb).is_none());
+    }
+
+    // ── Symbol builtin tests ──────────────────────────────────────
+
+    #[test]
+    fn builtin_qualified_name_binds_result() {
+        let mut kb = KnowledgeBase::new();
+        kb.register_standard_builtins();
+
+        // Define a symbol "foo.Bar" via the symbol table
+        let global = kb.make_name_term("_global");
+        kb.symbols.define("Bar", "foo.Bar", crate::intern::SymbolKind::Sort, global.raw());
+
+        // Look up the symbol and build: qualified_name(Ref(Bar), ?result)
+        let bar_sym = *kb.symbols.by_qualified_name.get("foo.Bar").unwrap();
+        let bar_ref = kb.alloc(Term::Ref(bar_sym));
+
+        let result_sym = kb.intern("?result");
+        let result_vid = kb.fresh_var(result_sym);
+        let result_var = kb.alloc(Term::Var(result_vid));
+
+        let qn_sym = kb.intern("anthill.reflect.qualified_name");
+        let goal = kb.alloc(Term::Fn {
+            functor: qn_sym,
+            pos_args: SmallVec::from_slice(&[bar_ref, result_var]),
+            named_args: SmallVec::new(),
+        });
+
+        // (No fact needed — builtins are dispatched directly by the resolver)
+
+        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 1, "qualified_name should produce 1 solution");
+        let resolved = solutions[0].subst.resolve(result_vid).expect("result should be bound");
+        match kb.get_term(resolved) {
+            Term::Const(Literal::String(s)) => assert_eq!(s, "foo.Bar"),
+            other => panic!("expected String const 'foo.Bar', got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn builtin_short_name_binds_result() {
+        let mut kb = KnowledgeBase::new();
+        kb.register_standard_builtins();
+
+        let global = kb.make_name_term("_global");
+        kb.symbols.define("Baz", "alpha.beta.Baz", crate::intern::SymbolKind::Sort, global.raw());
+
+        let baz_sym = *kb.symbols.by_qualified_name.get("alpha.beta.Baz").unwrap();
+        let baz_ref = kb.alloc(Term::Ref(baz_sym));
+
+        let result_sym = kb.intern("?result");
+        let result_vid = kb.fresh_var(result_sym);
+        let result_var = kb.alloc(Term::Var(result_vid));
+
+        let sn_sym = kb.intern("anthill.reflect.short_name");
+        let goal = kb.alloc(Term::Fn {
+            functor: sn_sym,
+            pos_args: SmallVec::from_slice(&[baz_ref, result_var]),
+            named_args: SmallVec::new(),
+        });
+
+        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 1);
+        let resolved = solutions[0].subst.resolve(result_vid).expect("result should be bound");
+        match kb.get_term(resolved) {
+            Term::Const(Literal::String(s)) => assert_eq!(s, "Baz"),
+            other => panic!("expected String const 'Baz', got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn builtin_lookup_symbol_finds_existing() {
+        let mut kb = KnowledgeBase::new();
+        kb.register_standard_builtins();
+
+        let global = kb.make_name_term("_global");
+        kb.symbols.define("Qux", "ns.Qux", crate::intern::SymbolKind::Sort, global.raw());
+        let qux_sym = *kb.symbols.by_qualified_name.get("ns.Qux").unwrap();
+
+        let name_str = kb.alloc(Term::Const(Literal::String("ns.Qux".into())));
+
+        let result_sym = kb.intern("?result");
+        let result_vid = kb.fresh_var(result_sym);
+        let result_var = kb.alloc(Term::Var(result_vid));
+
+        let ls_sym = kb.intern("anthill.reflect.lookup_symbol");
+        let goal = kb.alloc(Term::Fn {
+            functor: ls_sym,
+            pos_args: SmallVec::from_slice(&[name_str, result_var]),
+            named_args: SmallVec::new(),
+        });
+
+        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 1);
+        let resolved = solutions[0].subst.resolve(result_vid).expect("result should be bound");
+        match kb.get_term(resolved) {
+            Term::Ref(sym) => assert_eq!(*sym, qux_sym),
+            other => panic!("expected Ref(Qux), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn builtin_lookup_symbol_fails_for_unknown() {
+        let mut kb = KnowledgeBase::new();
+        kb.register_standard_builtins();
+
+        let name_str = kb.alloc(Term::Const(Literal::String("does.not.Exist".into())));
+
+        let result_sym = kb.intern("?result");
+        let result_vid = kb.fresh_var(result_sym);
+        let result_var = kb.alloc(Term::Var(result_vid));
+
+        let ls_sym = kb.intern("anthill.reflect.lookup_symbol");
+        let goal = kb.alloc(Term::Fn {
+            functor: ls_sym,
+            pos_args: SmallVec::from_slice(&[name_str, result_var]),
+            named_args: SmallVec::new(),
+        });
+
+        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 0, "lookup_symbol for unknown name should fail");
+    }
+
+    #[test]
+    fn builtin_qualified_name_delays_on_unbound() {
+        let mut kb = KnowledgeBase::new();
+        kb.register_standard_builtins();
+
+        let sym_name = kb.intern("?sym");
+        let sym_vid = kb.fresh_var(sym_name);
+        let sym_var = kb.alloc(Term::Var(sym_vid));
+
+        let result_name = kb.intern("?result");
+        let result_vid = kb.fresh_var(result_name);
+        let result_var = kb.alloc(Term::Var(result_vid));
+
+        let qn_sym = kb.intern("anthill.reflect.qualified_name");
+        let goal = kb.alloc(Term::Fn {
+            functor: qn_sym,
+            pos_args: SmallVec::from_slice(&[sym_var, result_var]),
+            named_args: SmallVec::new(),
+        });
+
+        // With only one goal that delays, it should residualize
+        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 1, "should residualize");
+        assert!(!solutions[0].residual.is_empty(), "should have residual goal");
     }
 }

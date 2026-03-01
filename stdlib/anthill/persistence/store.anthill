@@ -18,15 +18,15 @@ namespace anthill.persistence
   sort Store {
     -- Persist a fact to its backing store
     operation persist(store: Store, fact: Term, meta: Meta) -> FactId
-      effects (Modify{store})
+      effects (Modify{store}, Error)
 
     -- Remove a fact from its backing store
     operation retract(store: Store, id: FactId) -> Bool
-      effects (Modify{store})
+      effects (Modify{store}, Error)
 
     -- Flush KB delta (new/changed/retracted facts) back to store
     operation flush(store: Store, delta: List{T = Term}) -> Bool
-      effects (Modify{store})
+      effects (Modify{store}, Error)
   }
 
   -- Given a fact, which store owns it?
@@ -41,7 +41,7 @@ namespace anthill.persistence
 
     -- Retrieve facts matching a pattern (delegates to backend query)
     operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
-      effects (Read{store})
+      effects (Error)
   }
 
   -- ================================================================
@@ -53,7 +53,7 @@ namespace anthill.persistence
 
     -- Pull all facts from store into the KB
     operation pull(store: BulkStore) -> List{T = Term}
-      effects (Read{store})
+      effects (Error)
   }
 
 end

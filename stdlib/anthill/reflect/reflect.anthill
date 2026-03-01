@@ -15,9 +15,10 @@ namespace anthill.reflect
   import anthill.prelude.{Pair}
   import anthill.prelude.{Bool}
   import anthill.prelude.{Stream}
-  export Term, FactId
+  export Term, FactId, Symbol
   export KB
-  export TermRepr, SortInfo, OperationInfo, FieldInfo, DescriptionInfo
+  export qualified_name, short_name, lookup_symbol
+  export LiteralRepr, TermRepr, SortInfo, OperationInfo, FieldInfo, DescriptionInfo
   export Substitution, apply, compose
   export LogicalQuery, empty_query
   export pattern_query, sort_query, conjunction, disjunction
@@ -37,6 +38,21 @@ namespace anthill.reflect
 
   -- Handle to a stored fact. Returned by persist(), used by retract().
   sort FactId = ?
+
+  -- Opaque handle to an interned name (stored as Term::Ref internally).
+  -- Use for identifiers/references; use Term for complex type expressions.
+  sort Symbol = ?
+
+  -- ================================================================
+  -- Symbol operations (builtins)
+  -- ================================================================
+
+  -- Symbol → full qualified name string
+  operation qualified_name(s: Symbol) -> String
+  -- Symbol → last segment (short name)
+  operation short_name(s: Symbol) -> String
+  -- Find existing symbol by qualified name (fails if not found)
+  operation lookup_symbol(name: String) -> Symbol
 
   -- ================================================================
   -- KB: the knowledge base
@@ -71,9 +87,10 @@ namespace anthill.reflect
 
     -- Query execution
     -- Returns a stream of fully-resolved substitutions.
-    -- Unresolvable goals are reported via the Error effect.
+    -- Creation can fail (invalid query). Iteration can also fail
+    -- (residual errors, depth limits) — captured by E = Error on the stream.
     operation execute(kb: KB, query: LogicalQuery)
-      -> Stream{T = Substitution}
+      -> Stream{T = Substitution, E = Error}
       effects (Error)
 
     -- Extract a sort's fact template as a query
@@ -90,11 +107,18 @@ namespace anthill.reflect
   -- ================================================================
 
   -- Structural decomposition of Term — for introspection.
+  sort LiteralRepr {
+    entity IntLiteral(value: Int)
+    entity FloatLiteral(value: Float)
+    entity StringLiteral(value: String)
+    entity BoolLiteral(value: Bool)
+  }
+
   sort TermRepr {
-    entity ConstRepr(type_name: String, value: String)
-    entity VarRepr(type_name: String, name: String)
-    entity FnRepr(name: String, args: List{T = TermRepr})
-    entity RefRepr(name: String)
+    entity ConstRepr(value: LiteralRepr)
+    entity VarRepr(name: String)
+    entity FnRepr(name: Symbol, args: List{T = TermRepr})
+    entity RefRepr(name: Symbol)
     entity QuotedRepr(language: String, source: String)
   }
 
@@ -103,27 +127,25 @@ namespace anthill.reflect
   -- ================================================================
 
   entity SortInfo(
-    name         : String,                          -- qualified name
-    is_abstract  : Bool,                            -- true if no body (type parameter)
-    constructors : List{T = String},                -- constructor names (empty if abstract)
-    operations   : List{T = String},                -- operation names in this sort
-    parameters   : List{T = String},                -- abstract sub-sort names (type params)
-    requires     : List{T = String}                 -- required sort constraints
+    name         : Symbol,                          -- qualified name (symbol reference)
+    definition   : Term,                            -- Var for abstract sorts, sort term for defined
+    constructors : List{T = Symbol},                -- constructor names (empty if abstract)
+    operations   : List{T = Symbol},                -- operation names in this sort
+    parameters   : List{T = Symbol},                -- abstract sub-sort names (type params)
+    requires     : List{T = Term}                   -- required sort constraints (type exprs)
   )
 
   entity OperationInfo(
-    name         : String,
-    sort_context : Option{T = String},              -- enclosing sort, if any
+    name         : Symbol,                          -- operation name (symbol reference)
+    sort_context : Option{T = Symbol},              -- enclosing sort, if any
     params       : List{T = FieldInfo},
-    return_type  : String,
-    has_requires : Bool,
-    has_ensures  : Bool,
-    effects      : List{T = String}
+    return_type  : Term,                            -- return type expression
+    effects      : List{T = Term}                   -- effect type expressions
   )
 
   entity FieldInfo(
-    name         : String,
-    type_name    : String
+    name         : String,                          -- param name (literal text)
+    type_name    : Term                             -- type expression
   )
 
   -- ================================================================
@@ -151,8 +173,8 @@ namespace anthill.reflect
   -- ================================================================
 
   entity DescriptionInfo(
-    target  : String,
-    content : String
+    target  : Symbol,                               -- target name (symbol reference)
+    content : String                                -- description text (literal)
   )
 
   -- ================================================================
@@ -162,8 +184,8 @@ namespace anthill.reflect
   -- A substitution maps variable names to terms: {?x → t1, ?y → t2, ...}
   -- Not a Map alias — has its own structure (parent chain, contradiction tracking).
   sort Substitution
-    operation apply(s: Substitution, t: Term) -> Term
-    operation compose(s1: Substitution, s2: Substitution) -> Substitution
+    operation apply(s: Substitution, t: Term, kb: KB) -> Term
+    operation compose(s1: Substitution, s2: Substitution, kb: KB) -> Substitution
   end
 
   -- ================================================================

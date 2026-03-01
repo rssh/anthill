@@ -308,18 +308,18 @@ fact Ordered{T = String}
 
 This follows the "types are terms" principle: sort instantiations are knowledge, expressible as facts. Different namespaces can provide different instantiations (see §5.1 on namespace scoping).
 
-**Entity instances and sort membership:** An entity constructor applied to arguments produces a term that inhabits the enclosing sort. For example, given `sort Read { sort T = ? entity Read(target: T) }`, the term `Read(kb)` is an instance of sort `Read{T = typeof(kb)}`. This means entity instances can appear in sort binding positions — `Read{kb}` is `Read` instantiated with target `kb`:
+**Entity instances and sort membership:** An entity constructor applied to arguments produces a term that inhabits the enclosing sort. For example, given `sort Modify { sort T = ? entity Modify(target: T) }`, the term `Modify(store)` is an instance of sort `Modify{T = typeof(store)}`. This means entity instances can appear in sort binding positions — `Modify{store}` is `Modify` instantiated with target `store`:
 
 ```
--- Sort-level: Read parameterized with any target
-fact Effect{T = Read{?}}
+-- Sort-level: Modify parameterized with any target
+fact Effect{T = Modify{?}}
 
--- Value-level: Read applied to a specific parameter
-operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
-  effects (Read{store})          -- store is an operation parameter (a value)
+-- Value-level: Modify applied to a specific parameter
+operation persist(store: Store, fact: Term, meta: Meta) -> FactId
+  effects (Modify{store}, Error)   -- store will be mutated; operation can fail
 ```
 
-Because types are terms and type checking is KB querying, referencing values in type positions requires no special dependent-type mechanism — it is simply a term appearing where a term is expected. The KB's unification machinery handles both abstract bindings (`Read{?}`) and concrete ones (`Read{store}`) uniformly.
+Because types are terms and type checking is KB querying, referencing values in type positions requires no special dependent-type mechanism — it is simply a term appearing where a term is expected. The KB's unification machinery handles both abstract bindings (`Modify{?}`) and concrete ones (`Modify{store}`) uniformly.
 
 Additional types are introduced via `sort` declarations (unspecified, type alias, or defined) in any namespace.
 
@@ -366,7 +366,7 @@ ImportPath ::= Name                               -- import a specific name
 NameList    ::= Name (',' Name)*
 SortBinding ::= Name '=' Type                   -- explicit: binds an unspecified sort to a concrete type
               | Name                             -- punning: Eq{T} is shorthand for Eq{T = T}
-              | VariableTerm                     -- anonymous/named variable: Read{?}, Read{?r}
+              | VariableTerm                     -- anonymous/named variable: Modify{?}, Modify{?r}
 ```
 
 When a sort binding omits the `= Type` part, the parameter name is used as both the binding name and the bound type. This **punning** shorthand (analogous to TypeScript's `{x}` for `{x: x}`) is useful when a sort parameter has the same name as a type in scope:
@@ -386,11 +386,11 @@ requires Numeric{T = Money}      -- T binds to Money
 A sort binding can also be a **logical variable** (`?` or `?name`). This is used to express existential quantification over type parameters — "for any instantiation":
 
 ```
--- Read{?} means "Read instantiated with any target type"
-fact Effect{T = Read{?}}         -- Read is an effect kind, for any target
+-- Modify{?} means "Modify instantiated with any target type"
+fact Effect{T = Modify{?}}       -- Modify is an effect kind, for any target
 
 -- Named variable binds across the term:
-rule Effect{T = Read{?r}} :- Effect{T = Modify{?r}}   -- Modify implies Read
+rule CanModify{?r} :- Effect{T = Modify{?r}}   -- extract modifiable resources
 ```
 
 Import makes names from another namespace visible in the current scope as local aliases. It does **not** add the imported sort's scope as a parent — importing `Eq` does not make `eq`/`neq` directly accessible. To access a sort's contents, use `requires Eq{T}` (sort composition) or wildcard import. Sort parameters remain unspecified — they are instantiated separately via inline type expressions (`Name{bindings}`), not at import time.
@@ -595,7 +595,7 @@ Parameters are **named bindings** — referenced by name (without `?`) in `requi
 operation deposit(a: Account, m: Money) -> Account
   requires gt(m, zero-val)
   ensures eq(balance(result), add(balance(a), m))
-  effects (modifies Ledger)
+  effects (Modify{Ledger})
 
 operation balance(a: Account) -> Money           -- pure, no contract
 ```
@@ -604,23 +604,39 @@ An operation without an implementation is an **open obligation** — it emits a 
 
 ### 5.5 Effects
 
-Effects are part of operation declarations, not standalone constructs. Effect kinds are **open** — any `Name(target)` pair is valid:
+Effects are part of operation declarations, not standalone constructs. An effect declares **non-obvious behavior** — something the operation does that is not visible from its parameter list alone. Reading a parameter is not an effect; mutating it is.
+
+Effect kinds are **open** — any `Name` or `Name{target}` pair is valid:
 
 ```
-Effect ::= Name '(' Name ')'            -- kind(target)
+Effect ::= Name                          -- bare effect (e.g. Error)
+         | Name '{' Name '}'             -- effect with target (e.g. Modify{store})
 ```
 
-> **Canonical source:** Well-known effect kinds are defined in `stdlib/anthill/prelude/effects.anthill` as the `EffectKind` sort. The kernel recognizes these for state-passing and monadic interpretations (§5.6-5.7):
+Currently implemented effect kinds:
 
 | Effect kind | Meaning |
 |-------------|---------|
-| `Modifies(target)` | Mutates a resource's state |
-| `Reads(source)` | Depends on a resource's state (implied by Modifies) |
-| `Emits(event)` | Produces events of a given type |
-| `Errors(error)` | Can fail with a typed error |
-| `Requires(capability)` | Needs a capability to execute |
-| `Suspends(resource)` | May suspend execution (async/coroutine) |
-| `Allocates(pool)` | Allocates from a resource pool |
+| `Modify{target}` | Mutates a parameter — non-obvious from the signature |
+| `Error` | Can fail with an untyped error |
+| `Error{type}` | Can fail with a typed error |
+
+Future effect kinds (not yet implemented in codegen):
+
+| Effect kind | Meaning |
+|-------------|---------|
+| `Suspend` | May suspend and resume execution (async/coroutine) |
+| `Branch` | May produce multiple results (nondeterminism, backtracking) |
+| `Requires{capability}` | Needs a capability to execute |
+| Concrete I/O effects | E.g. `Output{stdout}`, `Log{logger}` — ambient resources not in parameters |
+
+**Design principle:** Effects declare what is NOT visible from parameters. If something can be passed as a parameter, it should be a parameter, not an effect. Effects exist for:
+- **Mutation annotation** — `Modify{x}` tells the caller that parameter `x` will be mutated, which changes how it is passed in the host language.
+- **Failure** — `Error` declares the operation can fail, which is not expressed in the parameter list or return type.
+- **Control flow** — `Suspend` and `Branch` change how computation proceeds — suspension, nondeterminism.
+- **Ambient resources** — operations that access state not in the parameter list, e.g. writing to stdout.
+
+**Effect parameters on sorts.** A sort may declare an abstract effect parameter (`sort E = ?`) to express effect polymorphism. Concrete sorts bind `E` to specific effects. For example, `Stream{T, E}` declares that iterating the stream may have effect `E`; a file-backed stream would bind `E = Error`, while a pure in-memory stream leaves `E` unbound (no effects).
 
 Users can define additional effect kinds; the kernel stores and propagates them but only interprets the well-known ones.
 
@@ -630,68 +646,76 @@ Effects give operations a precise execution semantics via a state-passing interp
 
 ```
 operation op(x1: A1, ..., xm: Am) -> R
-  effects (Modifies S, Reads T, Emits E, Errors Err, Requires Cap)
+  effects (Modify{S}, Error Err, Suspend, Branch)
 ```
 
-is interpreted as a function that threads an **environment** — a mapping from resource names to their current state:
+is interpreted as a function that threads an **environment** and returns an **outcome**:
 
 ```
-op_e : Env × A1 × ... × Am → (R × Env × Event list) + Error
+op_e : Env × A1 × ... × Am → Outcome(R, Env, Err)
 ```
+
+The outcome type varies with the declared effects:
+
+| Effects | Outcome type |
+|---------|-------------|
+| (none) — pure | `R × Env` where `Env_after = Env_before` |
+| `Modify{S}` | `R × Env` (environment may change) |
+| `Error Err` | `(R × Env) + Err` |
+| `Branch` | `List(R × Env)` (zero or more results) |
+| `Suspend` | `(R × Env) + Suspended(Env, Continuation)` |
+| All combined | `List((R × Env) + Suspended(Env, K)) + Err` |
 
 where:
 - **`Env`** is a partial map from resource names (symbols) to terms representing their current state.
-- On success, the operation returns the result value `R`, an updated environment `Env`, and a list of emitted events.
-- On failure, the operation returns an error term.
+- **`Suspended(Env, K)`** is a paused computation — the current environment plus a continuation `K` that, when invoked, resumes execution.
+- On `Branch`, the operation returns a list of results — each with its own updated environment. An empty list means failure (backtrack).
+- On `Error`, the operation aborts with an error term. Errors are distinct from empty Branch (no results) — an error is an unexpected failure, empty results is a valid "no match."
 
-An operation without effects is **pure**: it receives the environment unchanged and must return it unchanged.
+An operation without effects is **pure**: it receives the environment unchanged and must return it unchanged. It cannot fail, branch, or suspend.
 
 #### Environment and Resources
 
-Each `Modifies(target)` and `Reads(source)` effect declares a **resource** — a named slot in the environment. The environment maps resource names to their current state as terms.
+Each `Modify{target}` effect declares a **resource** — a named slot in the environment that the operation may update.
 
-- `Reads(S)` — the operation may inspect `Env(S)` but must not change it.
-- `Modifies(S)` — the operation may inspect and update `Env(S)`. Every `Modifies` implicitly grants `Reads`.
-- `Emits(E)` — the operation may append events of type `E` to the output event list.
-- `Errors(Err)` — the operation may fail, returning an error of type `Err` instead of a result.
-- `Requires(Cap)` — the operation requires capability `Cap` to be present (non-`None`) in the environment.
+- `Modify{S}` — the operation may inspect and update `Env(S)`.
+- `Error` / `Error{Err}` — the operation may abort, returning an error instead of a result.
+- `Suspend` — the operation may return a suspension instead of a final result.
+- `Branch` — the operation may return multiple alternative results.
 
 #### Effect-Env Condition
 
-An effectful operation **respects its effect-env condition** if it only modifies the resources declared in its `Modifies` effects:
+An effectful operation **respects its effect-env condition** if it only modifies the resources declared in its `Modify` effects:
 
-> For all resource names `s` not in the `Modifies` set: `Env_after(s) = Env_before(s)`.
+> For all resource names `s` not in the `Modify` set: `Env_after(s) = Env_before(s)`.
 
 This is the fundamental correctness property: an operation's declared effects are an upper bound on what it may change. Pure operations (no effects) must preserve the entire environment.
 
 #### Composition
 
-Sequential composition of effectful operations threads the environment and concatenates emitted events:
+Sequential composition of effectful operations threads the environment. For the basic case (Modify + Error):
 
 ```
 (g ∘ f)(env, args) =
   case f(env, args) of
     Error err → Error err
-    Ok (r1, env1, events1) →
+    Ok (r1, env1) →
       case g(env1, [r1]) of
         Error err → Error err
-        Ok (r2, env2, events2) → Ok (r2, env2, events1 ++ events2)
+        Ok (r2, env2) → Ok (r2, env2)
 ```
 
+With `Branch`, composition distributes over alternatives — `g` is applied to each result of `f`, and the result lists are concatenated. With `Suspend`, composition chains the continuation — when resumed, the next operation runs on the resumed environment.
+
 If `f` respects effects `E1` and `g` respects effects `E2`, then `g ∘ f` respects effects `E1 ∪ E2`.
-
-#### Capability Checking
-
-Before executing an operation, the kernel verifies that all `Requires(Cap)` capabilities are present in the environment. If any required capability is absent (`Env(Cap) = None`), execution is rejected before the operation body runs.
 
 #### Verification Obligations
 
 When an `Implementation` fact links code to an operation with effects:
 
 1. The implementation must **respect the effect-env condition** — it may only modify declared resources.
-2. The implementation must **check capabilities** — all `Requires` resources must be present.
-3. `requires` clauses are checked against input parameters and the pre-environment.
-4. `ensures` clauses are checked against input parameters, the result, and the post-environment.
+2. `requires` clauses are checked against input parameters and the pre-environment.
+3. `ensures` clauses are checked against input parameters, the result, and the post-environment.
 
 These generate proof obligations (see §8.4) that can be discharged at various trust levels.
 
@@ -701,7 +725,7 @@ The same effects admit an equivalent **monadic interpretation**. An operation
 
 ```
 operation op(x1: A1, ..., xm: Am) -> R
-  effects (Modifies S, Reads T, Emits E, Errors Err, Requires Cap)
+  effects (Modify{S}, Error Err, Suspend, Branch)
 ```
 
 is interpreted as a computation in a combined monad `M_E`:
@@ -710,13 +734,16 @@ is interpreted as a computation in a combined monad `M_E`:
 op_m : A1 → ... → Am → M_E(R)
 ```
 
-where `M_E` layers:
-- **`StateT Env`** — for `Reads`/`Modifies` (thread mutable state),
-- **`WriterT (Event list)`** — for `Emits` (accumulate events),
-- **`ExceptT Error`** — for `Errors` (short-circuit on failure),
-- **`ReaderT Caps`** — for `Requires` (access capabilities).
+where `M_E` layers monad transformers corresponding to declared effects:
 
-Concretely, `M_E(R) = Env → (R × Env × Event list) + Error`.
+| Effect | Monad layer | Purpose |
+|--------|-------------|---------|
+| `Modify{S}` | `StateT Env` | Thread mutable state |
+| `Error{Err}` | `ExceptT Err` | Short-circuit on failure |
+| `Suspend` | `ContT R IO` | Suspend and resume execution |
+| `Branch` | `LogicT` | Produce multiple results (nondeterminism) |
+
+The full monad is the composition: `M_E = StateT Env (ExceptT Err (LogicT (ContT R IO)))`. In practice, most operations use only a subset. An operation with only `Modify` and `Error` has `M_E(R) = Env → (R × Env) + Err`.
 
 #### Monadic Operations
 
@@ -724,11 +751,12 @@ The monad provides primitive operations corresponding to each effect kind:
 
 | Effect | Monadic primitive | Type |
 |--------|-------------------|------|
-| `Reads(S)` | `get_resource(S)` | `M_E(Term option)` |
-| `Modifies(S)` | `put_resource(S, v)` | `M_E(Unit)` |
-| `Emits(E)` | `emit_event(e)` | `M_E(Unit)` |
-| `Errors(Err)` | `throw_error(err)` | `M_E(A)` for any `A` |
-| `Requires(Cap)` | `require_capability(Cap)` | `M_E(Unit)` |
+| `Modify{S}` | `get_resource(S)` | `M_E(Term option)` |
+| `Modify{S}` | `put_resource(S, v)` | `M_E(Unit)` |
+| `Error{Err}` | `throw_error(err)` | `M_E(A)` for any `A` |
+| `Suspend` | `suspend(k)` | `M_E(A)` — pause, resume via continuation `k` |
+| `Branch` | `choice(a, b)` | `M_E(A)` — nondeterministic choice |
+| `Branch` | `fail` | `M_E(A)` — no results (backtrack) |
 
 Sequencing is monadic bind:
 
@@ -737,23 +765,37 @@ bind : M_E(A) → (A → M_E(B)) → M_E(B)
 bind m f = λenv.
   case m env of
     Error err → Error err
-    Ok (a, env', events1) →
+    Ok (a, env') →
       case f a env' of
         Error err → Error err
-        Ok (b, env'', events2) → Ok (b, env'', events1 ++ events2)
+        Ok (b, env'') → Ok (b, env'')
 ```
 
 The monad laws hold: `bind (return x) f = f x`, `bind m return = m`, and `bind (bind m f) g = bind m (λx. bind (f x) g)`.
+
+#### Effect Categories
+
+Effects fall into two categories:
+
+**State effects** — thread data through computation:
+- `Modify{S}` — read and update a named resource in the environment.
+- `Error{Err}` — abort with an error value. The caller can catch and handle the error.
+
+**Control flow effects** — change how computation proceeds:
+- `Suspend` — the operation may suspend and resume later. This is `async`/`await` in direct style, or the continuation monad. Enables cooperative multitasking and I/O without blocking.
+- `Branch` — the operation may produce multiple results via nondeterministic choice. This is the list monad / `LogicT` in monadic style, or algebraic effect handlers with multi-shot continuations in direct style. LogicalStream encapsulates branching — consumers see a sequential stream interface.
+
+These categories are orthogonal. An operation can be both suspending and fallible (`Suspend, Error`), or branching and stateful (`Branch, Modify{S}`). The monad stack composes the corresponding layers.
 
 #### Equivalence of Interpretations
 
 The state-passing interpretation (§5.6) and the monadic interpretation are **isomorphic** — conversion functions `to_monad` and `from_monad` form a round-trip in both directions. The effect-env condition is preserved by the correspondence.
 
-The two interpretations have the **same expressivity** when the environment can contain:
-1. **Duplicated state** — the environment may hold copies of resource values, allowing the monad's internal state to be embedded in the environment representation.
-2. **Continuated expressions** — the environment may hold suspended computations (closures), allowing monadic bind/sequencing to be represented as data.
-
-Since the kernel language does not yet have execution semantics (flow expressions, sequencing), continuations cannot currently be expressed in the non-monadic form. The monadic interpretation therefore provides a natural way to reason about sequential composition of effectful operations — once execution semantics are introduced, both forms will be fully interchangeable.
+The correspondence holds for all effect kinds:
+- `Modify` ↔ `StateT Env`
+- `Error` ↔ `ExceptT Err`
+- `Branch` ↔ `LogicT` (list of alternatives ↔ nondeterminism monad)
+- `Suspend` ↔ `ContT R IO` (suspended continuations ↔ continuation monad)
 
 For the formal development of both interpretations and their equivalence proofs, see `isabelleland/kernel/Anthill_Kernel.thy`.
 
@@ -1348,7 +1390,7 @@ ImportPath  ::= Name                                           -- import a name
               | Name '.' '*'                                   -- wildcard import
 NameList    ::= Name (',' Name)*
 SortBinding ::= Name ['=' Type]                 -- without '= Type': punning (Eq{T} = Eq{T = T})
-              | VariableTerm                    -- variable binding: Read{?}, Read{?r}
+              | VariableTerm                    -- variable binding: Modify{?}, Modify{?r}
 
 NamespaceContent ::= Import | Export
                    | Sort | Rule | Operation
@@ -1407,7 +1449,8 @@ Operation   ::= DescriptionBlock*
 ParamList   ::= Param (',' Param)*
 Param       ::= Name ':' Type
 
-Effect      ::= Name '(' Name ')'         -- open: any kind(target) pair
+Effect      ::= Name                       -- bare effect (e.g. Error)
+              | Name '{' Name '}'         -- effect with target (e.g. Modify{store})
 
 RequiresDecl ::= 'requires' Type                -- sort-level constraint (in sort/namespace body)
 
@@ -1479,5 +1522,10 @@ Design questions discovered during implementation that need decisions.
 
 ### 12.1 Effect semantics
 
-Effect declarations (`effects (Reads(kb))`) are currently stored as-is — open `Name(target)` pairs with no resolution or checking. Before resolving effect target names through the scope pipeline, the broader effect semantics need design: what effect kinds exist (Reads/Modifies/Emits/...), how they compose across operation calls, whether they are checked or advisory, and how they interact with the sort/requires system.
+Effect declarations are stored as-is — open `Name` or `Name{target}` pairs. Currently implemented: `Modify{target}` (mutation) and `Error` / `Error{type}` (fallibility). Open questions:
+
+- **Effect checking**: Should declared effects be verified against implementations, or remain advisory?
+- **Control flow effects**: `Suspend` and `Branch` are described in §5.7 but not yet implemented. How should they interact with codegen?
+- **Effect polymorphism**: Sorts can declare abstract effect parameters (`sort E = ?`) — how should unbound effect parameters be propagated and resolved?
+- **Ambient resource effects**: Effects for resources not in the parameter list (e.g. `Output{stdout}`, `Log{logger}`) need concrete use cases before design.
 

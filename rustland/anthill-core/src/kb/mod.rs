@@ -857,6 +857,9 @@ impl KnowledgeBase {
     pub fn register_standard_builtins(&mut self) {
         self.register_builtin("anthill.reflect.nonvar", BuiltinTag::NonVar);
         self.register_builtin("anthill.reflect.ground", BuiltinTag::Ground);
+        self.register_builtin("anthill.reflect.qualified_name", BuiltinTag::QualifiedName);
+        self.register_builtin("anthill.reflect.short_name", BuiltinTag::ShortName);
+        self.register_builtin("anthill.reflect.lookup_symbol", BuiltinTag::LookupSymbol);
     }
 
     /// Check if a goal term's functor is a registered builtin.
