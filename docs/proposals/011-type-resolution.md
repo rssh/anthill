@@ -560,6 +560,49 @@ rule resolve_operation(?name, ?x, ?info)
   :- is_entity_of(?x, ?S), OperationInfo(name: ?name, sort_context: some(value: ?S), params: ?_, return_type: ?_, effects: ?_)
 ```
 
+#### Operation Auto-Binding
+
+Operations in parametric sorts are implicitly parameterized — like type parameters (`sort T = ?`), they are logical variables bound at instantiation. When a sort declares `fact S{T}` (spec satisfaction), operations with matching names and compatible signatures are **automatically unified**. No explicit binding is required.
+
+The `resolve_operation` rules extend to handle inherited operations:
+
+```
+-- Direct: operation declared on entity's own sort
+rule resolve_operation(?name, ?x, ?info)
+  :- is_entity_of(?x, ?S),
+     OperationInfo(name: ?name, sort_context: some(value: ?S),
+                   params: ?_, return_type: ?_, effects: ?_)
+
+-- Inherited: from spec via refines chain, not overridden locally
+rule resolve_operation(?name, ?x, ?info)
+  :- is_entity_of(?x, ?S),
+     refines(?S, ?Spec_inst),
+     spec_sort(?Spec_inst, ?Spec),
+     OperationInfo(name: ?name, sort_context: some(value: ?Spec),
+                   params: ?p, return_type: ?r, effects: ?e),
+     not(overrides(?S, ?name))
+
+-- overrides: sort S has its own version of operation ?name
+rule overrides(?S, ?name)
+  :- OperationInfo(name: ?name, sort_context: some(value: ?S),
+                   params: ?_, return_type: ?_, effects: ?_)
+```
+
+The `not(overrides(?S, ?name))` clause uses negation-as-failure (NAF): an operation is inherited only if the sort does not define its own version.
+
+**Trace: `resolve_operation(head, ls_entity, ?info)` through LogicalStream → Stream.**
+
+1. `is_entity_of(ls_entity, LogicalStream)` — succeeds (entity fact).
+2. Try direct rule: `OperationInfo(name: head, sort_context: some(value: LogicalStream), ...)` — **fails** (LogicalStream does not declare `head`).
+3. Try inherited rule:
+   - `refines(LogicalStream, Stream{T})` — succeeds (LogicalStream has `fact Stream{T}`).
+   - `spec_sort(Stream{T}, Stream)` — extracts base sort.
+   - `OperationInfo(name: head, sort_context: some(value: Stream), ...)` — **succeeds** (Stream declares `head`).
+   - `not(overrides(LogicalStream, head))` — succeeds (LogicalStream has no `head`).
+4. Result: `?info` binds to Stream's `head` operation info.
+
+Contrast with `splitFirst`: LogicalStream declares its own `splitFirst`, so `overrides(LogicalStream, splitFirst)` succeeds, and the inherited rule is blocked — the direct rule fires instead, returning LogicalStream's version.
+
 #### Procedural chunks in Term
 
 The meta-level primitives (`nonvar`, `ground`) and oracle operations need a way to execute procedurally during SLD resolution. This requires a new `Term` variant — a **procedural chunk**: a term that, when encountered as a goal, calls a handler with the current resolution context.
@@ -1048,6 +1091,10 @@ end
 fact Functor{F = LogicalStream}
 fact Monad{F = LogicalStream}
 fact LogicMonad{F = LogicalStream}
+-- Auto-binding: LogicalStream.guard auto-binds to LogicMonad.guard
+-- because both have compatible signature (cond: Bool) -> F{T = Unit}.
+-- LogicalStream.flatMap auto-binds to Monad.flatMap, etc.
+-- No explicit operation mapping needed — names match, signatures unify.
 ```
 
 These spec sorts enable sort-defined syntax sugar (proposal 012): any sort satisfying `Monad` gets comprehension syntax; any sort satisfying `LogicMonad` gets backtracking/choose syntax.
@@ -1081,15 +1128,50 @@ Functor/Monad/        ←── spec sorts (depend on arrow sorts / proposal 002
 
 **OQ9.3.** Resolved: LogicalStream declares `fact Stream{T}` inside its body — "I provide Stream for any element type T." Note: `fact Stream{T = LogicalStream}` would mean "Stream of LogicalStreams" (wrong). The fact goes inside the sort body, where `T` refers to the sort's own type parameter.
 
-**OQ9.3b.** Resolved: **Operation inheritance via fact.** When a sort declares `fact Stream{T}`, it does NOT redeclare Stream's operations. Stream's operations (`head`, `tail`, `splitFirst`, `takeN`, `collect`, `isEmpty`) are automatically available on the satisfying sort. Stream's derived rules (e.g., `head` from `splitFirst`) carry over. The satisfying sort only provides the **primitive** operations (e.g., `splitFirst`); derived operations come for free.
+**OQ9.3b.** Resolved: **Operation inheritance via fact (auto-binding).** When a sort declares `fact Stream{T}`, it does NOT redeclare Stream's operations. Operations with matching names are automatically unified via the auto-binding mechanism (see "Operation Auto-Binding" section above). Stream's operations (`head`, `tail`, `splitFirst`, `takeN`, `collect`, `isEmpty`) are automatically available on the satisfying sort. Stream's derived rules (e.g., `head` from `splitFirst`) carry over via the `inherited_operation` path in `resolve_operation`. The satisfying sort only provides the **primitive** operations (e.g., `splitFirst`); derived operations inherit via the refines chain.
 
-This is the **minimal complete definition** pattern. Stream declares which operations are primitive vs derived. LogicalStream implements `splitFirst`; `head`, `tail`, `isEmpty` derive from Stream's rules. This avoids duplication and keeps satisfying sorts focused on what's unique to them.
+This is the **minimal complete definition** pattern. Stream declares which operations are primitive vs derived. LogicalStream implements `splitFirst` (which `overrides` Stream's declaration); `head`, `tail`, `isEmpty` derive from Stream's rules and are inherited (no local override). This avoids duplication and keeps satisfying sorts focused on what's unique to them.
 
 **OQ9.4.** Should `Substitution` be generic over the value type? `Substitution{V = Term}` vs `Substitution{V = TermRepr}` vs always `Term`. Currently pinned to `Term` since that's what the KB stores.
 
 **OQ9.5.** The Monad spec sort hierarchy uses higher-kinded type parameter `F { sort T = ? }`. This requires the type resolution system to handle higher-kinded matching — checking that `LogicalStream` (which has `sort T = ?`) matches the shape expected by `Monad{F}`. How complex is this? The Stream spec sort has the same issue: `sort T = ?` in Stream means "the implementing sort", but the implementing sort itself has an element type parameter. Matching `Stream{T = LogicalStream}` needs to understand that LogicalStream's operations produce results parameterized by LogicalStream's own `T`.
 
 **OQ9.6.** Element type in the Stream spec sort. The Stream spec declares `msplit(s: T) -> Option{T = Pair{A = ?Elem, B = T}}` where `?Elem` is the element type. But `?Elem` is not a declared parameter of Stream — it's implicitly determined by the implementing sort's structure. Should `?Elem` be an explicit parameter? E.g., `sort Stream { sort T = ?; sort Elem = ? }` with `fact Stream{T = LogicalStream, Elem = Account}`? Or is `?Elem` resolved by unification when checking that the implementing sort's `msplit` matches the spec's signature?
+
+**OQ10. NAF vs priority for override semantics.** The inherited-operation rule uses `not(overrides(?S, ?name))` which requires negation-as-failure in the SLD resolver. Without NAF, override semantics need a different encoding: (a) priority ordering where direct rules take precedence over inherited rules, (b) separate `direct_operation`/`inherited_operation` queries where the consumer prefers direct over inherited, or (c) explicit `overrides` facts emitted by the loader when it detects a local operation shadowing a spec operation.
+
+**OQ11. Signature compatibility for auto-binding.** After applying the type substitution from `fact S{T}`, must the satisfying sort's operation signature *unify* with the spec's operation signature, or be *structurally identical*? Unification is more flexible (allows additional parameters or default values) but harder to check. Structural identity is simpler but more restrictive. A middle ground: signatures must be compatible modulo the substitution — same name, same arity, parameter types unify under the substitution.
+
+## Implementation Notes for Auto-Binding
+
+This section documents what code changes are needed to implement operation auto-binding.
+
+### 1. Loader: `fact S{T}` → Requires entity
+
+`load_fact()` in `kb/load.rs` needs to detect `fact S{T}` inside a sort body and also emit a `Requires(sort_ref: domain, base_sort: S, spec_inst: S{T})` fact, reusing the existing Requires entity. Currently `fact` only stores a generic Fact term, invisible to the `refines` chain. The loader must distinguish:
+
+- `fact S{T}` **inside a sort body** → emit both the Fact and a Requires, enabling the refines chain and operation inheritance.
+- `fact S{T = Int}` **at namespace level** → emit only the Fact (standalone spec satisfaction, no operation inheritance).
+
+### 2. Resolver: NAF support
+
+`not(overrides(?S, ?name))` requires negation-as-failure in the SLD resolver (`resolve.rs`). This is non-trivial: NAF requires that all variables in the negated goal be bound at the time of evaluation (ground check). Alternative: expose `direct_operation` and `inherited_operation` as separate queries, with the consumer preferring direct over inherited. This avoids NAF entirely at the cost of pushing the override logic to the query consumer.
+
+### 3. Grammar: operation bindings in fact
+
+`fact S{T, combine = add}` needs operation bindings distinguished from type parameter bindings in instantiation syntax. Currently `Name{named_args}` in the grammar only supports sort bindings. Options:
+
+- Reuse the same `named_arg` syntax — the loader distinguishes type vs operation bindings by looking up whether the name refers to a sub-sort or an operation in the spec.
+- Add explicit syntax, e.g., `fact S{T, op combine = add}` — more verbose but unambiguous at parse time.
+
+The first option (reuse existing syntax, disambiguate in the loader) is preferred to avoid grammar changes.
+
+### 4. Tests needed
+
+- `resolve_operation` through refines chain (inherited operation resolves correctly).
+- Auto-binding: same-named operation on satisfying sort overrides spec operation.
+- Explicit rename: `fact S{T, combine = add}` maps `combine` to local `add`.
+- Diamond inheritance: sort satisfies two specs that both define `op` — should produce an ambiguity error.
 
 ## Relationship to Other Proposals
 

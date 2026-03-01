@@ -1157,6 +1157,25 @@ rule eq(?_, ?_) = false
 
 Since facts are scoped to namespaces, different namespaces can provide different instantiations of the same spec for the same type (e.g. different orderings). A consumer chooses which instantiation to use via `import`.
 
+**Operation auto-binding.** Operations in parametric sorts are implicitly parameterized — like type parameters (`sort T = ?`), they are logical variables bound at instantiation. When a sort satisfies a spec via `fact S{T}`, operations with matching names and compatible signatures are **automatically unified** — no explicit binding needed.
+
+The binding gradient:
+
+```
+-- Full auto-binding: T=T and all same-named operations unified
+fact Monoid
+
+-- Explicit type, auto-bind operations (preferred style)
+fact Monoid{T}
+
+-- Explicit rename when names differ
+fact Monoid{T, combine = add}
+```
+
+When `fact S{T}` appears inside a sort body, it means both spec satisfaction AND operation inheritance: the sort gains all operations defined in the spec. Derived operations (defined by rules in the spec) carry over automatically; the satisfying sort only provides the primitive operations. For example, if `Stream` defines `head` as a derived rule from `splitFirst`, a sort declaring `fact Stream{T}` inherits `head` without redeclaring it.
+
+Note: namespace-level `fact Eq{T = Int}` (standalone, not inside a sort body) does NOT trigger auto-binding of operations — operations there are standalone rules associated with the fact.
+
 **Namespaces** group sorts, operations, and rules for encapsulation and visibility control, but do not introduce type parameters. A namespace may contain sorts (both parametric and concrete) and type aliases, but unspecified sorts (`sort T = ?`) appear only inside sort bodies as type parameters — never directly in a namespace.
 
 ## 9. Connections to Existing Systems
