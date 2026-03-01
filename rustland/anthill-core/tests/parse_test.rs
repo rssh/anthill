@@ -1,6 +1,6 @@
 /// Integration tests: parse .anthill source → verify IR structure → load into KB → query.
 
-use std::path::PathBuf;
+mod common;
 
 use anthill_core::parse;
 use anthill_core::parse::ir::*;
@@ -35,29 +35,7 @@ fn count_list_elements(kb: &KnowledgeBase, list_tid: TermId) -> usize {
     count
 }
 
-/// Collect all .anthill files under a directory, recursively.
-fn collect_anthill_files(dir: &std::path::Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    if dir.is_dir() {
-        for entry in std::fs::read_dir(dir).expect("read stdlib dir") {
-            let entry = entry.expect("read dir entry");
-            let path = entry.path();
-            if path.is_dir() {
-                files.extend(collect_anthill_files(&path));
-            } else if path.extension().is_some_and(|e| e == "anthill") {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    files
-}
-
-/// Path to stdlib/ relative to the test file.
-fn stdlib_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../stdlib/anthill")
-}
+use common::{collect_anthill_files, stdlib_dir};
 
 // ── Parsing tests ───────────────────────────────────────────────
 

@@ -4,7 +4,7 @@
 /// to verify typing rules: is_entity_of, refines, type_compatible, list_contains,
 /// extract_sort_ref, sort_requires, sort_has_param.
 
-use std::path::PathBuf;
+mod common;
 
 use anthill_core::parse;
 use anthill_core::kb::KnowledgeBase;
@@ -14,32 +14,10 @@ use anthill_core::kb::resolve::ResolveConfig;
 
 use smallvec::SmallVec;
 
-/// Collect all .anthill files under a directory, recursively.
-fn collect_anthill_files(dir: &std::path::Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    if dir.is_dir() {
-        for entry in std::fs::read_dir(dir).expect("read dir") {
-            let entry = entry.expect("read dir entry");
-            let path = entry.path();
-            if path.is_dir() {
-                files.extend(collect_anthill_files(&path));
-            } else if path.extension().is_some_and(|e| e == "anthill") {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    files
-}
-
-fn stdlib_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill")
-}
-
 /// Load stdlib + typing rules into a fresh KB with builtins registered.
 fn load_stdlib_kb() -> KnowledgeBase {
-    let dir = stdlib_dir();
-    let files = collect_anthill_files(&dir);
+    let dir = common::stdlib_dir();
+    let files = common::collect_anthill_files(&dir);
     assert!(!files.is_empty(), "no stdlib files found");
 
     let parsed: Vec<_> = files.iter()
@@ -103,6 +81,13 @@ fn make_named_goal(kb: &mut KnowledgeBase, name: &str, named_args: &[(&str, Term
 
 fn default_config() -> ResolveConfig {
     ResolveConfig { max_solutions: 10, ..ResolveConfig::default() }
+}
+
+/// Create a fresh logic variable term with the given debug name.
+fn make_var(kb: &mut KnowledgeBase, name: &str) -> TermId {
+    let sym = kb.intern(name);
+    let vid = kb.fresh_var(sym);
+    kb.alloc(Term::Var(vid))
 }
 
 // ── is_entity_of tests ──────────────────────────────────────────
@@ -173,9 +158,7 @@ sort Color {
     let color_term = kb.resolve_short_name_term("Color");
 
     // Query: EntityOf(entity: ?x, parent: Color) — should find red, green, blue
-    let x_sym = kb.intern("x");
-    let vx = kb.fresh_var(x_sym);
-    let var_x = kb.alloc(Term::Var(vx));
+    let var_x = make_var(&mut kb, "x");
 
     let goal = make_named_goal(&mut kb, "EntityOf", &[("entity", var_x), ("parent", color_term)]);
     let results = kb.resolve(&[goal], &default_config());
@@ -291,9 +274,7 @@ fn extract_sort_ref_from_parameterized_type() {
     });
 
     // Query: extract_sort_ref(inst, ?result)
-    let r_sym = kb.intern("result");
-    let vr = kb.fresh_var(r_sym);
-    let var_result = kb.alloc(Term::Var(vr));
+    let var_result = make_var(&mut kb, "result");
 
     let goal = make_goal(&mut kb, "anthill.reflect.typing.extract_sort_ref", &[inst, var_result]);
     let results = kb.resolve(&[goal], &default_config());
@@ -317,9 +298,7 @@ fn extract_sort_ref_from_simple_ref() {
     let eq_sym = kb.intern("Eq");
     let eq_ref = kb.alloc(Term::Ref(eq_sym));
 
-    let r_sym = kb.intern("result");
-    let vr = kb.fresh_var(r_sym);
-    let var_result = kb.alloc(Term::Var(vr));
+    let var_result = make_var(&mut kb, "result");
 
     let goal = make_goal(&mut kb, "anthill.reflect.typing.extract_sort_ref", &[eq_ref, var_result]);
     let results = kb.resolve(&[goal], &default_config());
@@ -355,13 +334,8 @@ sort Ordered {
     let ordered_term = kb.resolve_short_name_term("Ordered");
 
     // Query: Requires(sort_ref: Ordered, base_sort: ?, spec_inst: ?spec) — direct fact query (named args)
-    let spec_sym = kb.intern("spec");
-    let vspec = kb.fresh_var(spec_sym);
-    let var_spec = kb.alloc(Term::Var(vspec));
-
-    let anon_sym = kb.intern("_anon");
-    let v_anon = kb.fresh_var(anon_sym);
-    let var_anon = kb.alloc(Term::Var(v_anon));
+    let var_spec = make_var(&mut kb, "spec");
+    let var_anon = make_var(&mut kb, "_anon");
 
     let goal = make_named_goal(&mut kb, "Requires", &[("sort_ref", ordered_term), ("base_sort", var_anon), ("spec_inst", var_spec)]);
     let results = kb.resolve(&[goal], &default_config());
@@ -387,9 +361,7 @@ sort Ordered {
     let ordered_term = kb.resolve_short_name_term("Ordered");
 
     // Query: refines(Ordered, ?spec) via the typing rule
-    let spec_sym = kb.intern("spec");
-    let vspec = kb.fresh_var(spec_sym);
-    let var_spec = kb.alloc(Term::Var(vspec));
+    let var_spec = make_var(&mut kb, "spec");
 
     let goal = make_goal(&mut kb, "refines", &[ordered_term, var_spec]);
     let results = kb.resolve(&[goal], &default_config());
@@ -419,9 +391,7 @@ sort C {
     let c_term = kb.resolve_short_name_term("C");
 
     // Query: refines(C, ?spec) — should find both B{T=T} and A{T=T}
-    let spec_sym = kb.intern("spec");
-    let vspec = kb.fresh_var(spec_sym);
-    let var_spec = kb.alloc(Term::Var(vspec));
+    let var_spec = make_var(&mut kb, "spec");
 
     let goal = make_goal(&mut kb, "refines", &[c_term, var_spec]);
     let results = kb.resolve(&[goal], &default_config());
@@ -492,9 +462,7 @@ sort Ordered {
     let ordered_ref = kb.alloc(Term::Ref(ordered_functor));
 
     // Query: sort_requires(Ordered_ref, ?spec)
-    let spec_sym = kb.intern("spec");
-    let vspec = kb.fresh_var(spec_sym);
-    let var_spec = kb.alloc(Term::Var(vspec));
+    let var_spec = make_var(&mut kb, "spec");
 
     let goal = make_goal(&mut kb, "sort_requires", &[ordered_ref, var_spec]);
     let config = ResolveConfig { max_solutions: 5, ..ResolveConfig::default() };
@@ -521,9 +489,7 @@ sort Eq {
     let eq_ref = kb.alloc(Term::Ref(eq_functor));
 
     // Query: sort_has_param(Eq_ref, ?param)
-    let p_sym = kb.intern("param");
-    let vp = kb.fresh_var(p_sym);
-    let var_param = kb.alloc(Term::Var(vp));
+    let var_param = make_var(&mut kb, "param");
 
     let goal = make_goal(&mut kb, "sort_has_param", &[eq_ref, var_param]);
     let config = ResolveConfig { max_solutions: 5, ..ResolveConfig::default() };
@@ -580,9 +546,7 @@ sort Outer {
     assert!(kb.is_entity_of(leaf_term, inner_term), "leaf should be entity of Inner");
 
     // EntityOf fact should exist for leaf → Inner
-    let x_sym = kb.intern("x");
-    let vx = kb.fresh_var(x_sym);
-    let var_x = kb.alloc(Term::Var(vx));
+    let var_x = make_var(&mut kb, "x");
     let goal = make_named_goal(&mut kb, "EntityOf", &[("entity", leaf_term), ("parent", var_x)]);
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 1, "leaf should have exactly 1 EntityOf fact (→ Inner only)");
@@ -711,10 +675,7 @@ sort Color {
     load_source(&mut kb, source);
 
     let color_term = kb.resolve_short_name_term("Color");
-
-    let x_sym = kb.intern("x");
-    let vx = kb.fresh_var(x_sym);
-    let var_x = kb.alloc(Term::Var(vx));
+    let var_x = make_var(&mut kb, "x");
 
     // Use EntityOf directly for enumeration
     let goal = make_named_goal(&mut kb, "EntityOf", &[("entity", var_x), ("parent", color_term)]);
@@ -737,10 +698,7 @@ sort Color {
     load_source(&mut kb, source);
 
     let red_term = kb.resolve_short_name_term("red");
-
-    let p_sym = kb.intern("parent");
-    let vp = kb.fresh_var(p_sym);
-    let var_p = kb.alloc(Term::Var(vp));
+    let var_p = make_var(&mut kb, "parent");
 
     let goal = make_named_goal(&mut kb, "EntityOf", &[("entity", red_term), ("parent", var_p)]);
     let results = kb.resolve(&[goal], &default_config());
@@ -848,10 +806,7 @@ sort Color {
     load_source(&mut kb, source);
 
     let red_term = kb.resolve_short_name_term("red");
-
-    let s_sym = kb.intern("sort");
-    let vs = kb.fresh_var(s_sym);
-    let var_sort = kb.alloc(Term::Var(vs));
+    let var_sort = make_var(&mut kb, "sort");
 
     let goal = make_goal(&mut kb, "entity_of", &[red_term, var_sort]);
     let results = kb.resolve(&[goal], &default_config());
@@ -879,10 +834,7 @@ sort Color {
     load_source(&mut kb, source);
 
     let color_term = kb.resolve_short_name_term("Color");
-
-    let x_sym = kb.intern("x");
-    let vx = kb.fresh_var(x_sym);
-    let var_x = kb.alloc(Term::Var(vx));
+    let var_x = make_var(&mut kb, "x");
 
     let goal = make_goal(&mut kb, "entity_of", &[var_x, color_term]);
     let results = kb.resolve(&[goal], &default_config());
@@ -902,10 +854,7 @@ sort Color {
     load_source(&mut kb, source);
 
     let color_term = kb.resolve_short_name_term("Color");
-
-    let s_sym = kb.intern("sort");
-    let vs = kb.fresh_var(s_sym);
-    let var_sort = kb.alloc(Term::Var(vs));
+    let var_sort = make_var(&mut kb, "sort");
 
     let goal = make_goal(&mut kb, "entity_of", &[color_term, var_sort]);
     let results = kb.resolve(&[goal], &default_config());
@@ -934,11 +883,8 @@ sort Shape {
     let color_term = kb.resolve_short_name_term("Color");
     let shape_term = kb.resolve_short_name_term("Shape");
 
-    let s_sym = kb.intern("sort");
-
     // entity_of(red, ?sort) → Color
-    let vs1 = kb.fresh_var(s_sym);
-    let var_sort1 = kb.alloc(Term::Var(vs1));
+    let var_sort1 = make_var(&mut kb, "sort");
     let goal1 = make_goal(&mut kb, "entity_of", &[red_term, var_sort1]);
     let results1 = kb.resolve(&[goal1], &default_config());
     assert_eq!(results1.len(), 1);
@@ -946,8 +892,7 @@ sort Shape {
     assert_eq!(bound1, color_term, "red's parent should be Color");
 
     // entity_of(circle, ?sort) → Shape
-    let vs2 = kb.fresh_var(s_sym);
-    let var_sort2 = kb.alloc(Term::Var(vs2));
+    let var_sort2 = make_var(&mut kb, "sort");
     let goal2 = make_goal(&mut kb, "entity_of", &[circle_term, var_sort2]);
     let results2 = kb.resolve(&[goal2], &default_config());
     assert_eq!(results2.len(), 1);
@@ -990,10 +935,7 @@ entity Account(id: Int, balance: Int)
     load_source(&mut kb, source);
 
     let account_term = kb.resolve_short_name_term("Account");
-
-    let s_sym = kb.intern("sort");
-    let vs = kb.fresh_var(s_sym);
-    let var_sort = kb.alloc(Term::Var(vs));
+    let var_sort = make_var(&mut kb, "sort");
 
     let goal = make_goal(&mut kb, "entity_of", &[account_term, var_sort]);
     let results = kb.resolve(&[goal], &default_config());
