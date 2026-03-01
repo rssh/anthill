@@ -52,6 +52,105 @@ datatype sort_kind = Abstract | Defined | Constructor
 text \<open>Sort identifiers are just terms (types-are-terms).\<close>
 type_synonym sort_id = aterm
 
+subsection \<open>Reflect Types\<close>
+
+text \<open>
+  These types mirror the entities defined in @{verbatim \<open>stdlib/anthill/reflect/reflect.anthill\<close>}.
+  They specify the structured fact shapes emitted by the loader and queried
+  by the reflection API.
+\<close>
+
+text \<open>Cons-list encoding: terms are stored as @{text "cons(head: x, tail: ...)"} / @{text "nil()"}.\<close>
+
+fun list_to_cons :: "aterm list \<Rightarrow> aterm" where
+  "list_to_cons [] = Fn ''nil'' []"
+| "list_to_cons (x # xs) = Fn ''cons'' [Named ''head'' x, Named ''tail'' (list_to_cons xs)]"
+
+text \<open>
+  @{text LiteralRepr}: structural decomposition of constants without circularity.
+  Replaces the old @{text "ConstRepr(type_name, value)"} which stringified everything.
+\<close>
+
+datatype literal_repr =
+    IntLiteral int
+  | FloatLiteral rat
+  | StringLiteral string
+  | BoolLiteral bool
+
+text \<open>
+  @{text TermRepr}: structural decomposition of a term for introspection.
+  @{text name} fields in @{text FnRepr} and @{text RefRepr} are Symbol references
+  (stored as @{text "Ref sym"} terms), not plain strings.
+\<close>
+
+datatype term_repr =
+    ConstRepr literal_repr
+  | VarRepr string              \<comment> \<open>variable name\<close>
+  | FnRepr aterm "term_repr list"  \<comment> \<open>name is a Symbol (Ref term), args are children\<close>
+  | RefRepr aterm               \<comment> \<open>name is a Symbol (Ref term)\<close>
+  | QuotedRepr string string    \<comment> \<open>language, source\<close>
+
+text \<open>
+  @{text SortInfo}: structured fact emitted for each sort-with-body declaration.
+  All name fields are Symbol references; list fields use cons/nil encoding.
+\<close>
+
+record sort_info =
+  si_name         :: aterm       \<comment> \<open>Ref to sort symbol\<close>
+  si_definition   :: aterm       \<comment> \<open>Var for abstract, sort term for defined\<close>
+  si_constructors :: "aterm list"
+  si_operations   :: "aterm list"
+  si_parameters   :: "aterm list"
+  si_requires     :: "aterm list"
+
+text \<open>Build a @{text SortInfo} fact term with named arguments.\<close>
+
+definition sort_info_term :: "sort_info \<Rightarrow> aterm" where
+  "sort_info_term si \<equiv>
+     Fn ''SortInfo'' [
+       Named ''name'' (si_name si),
+       Named ''definition'' (si_definition si),
+       Named ''constructors'' (list_to_cons (si_constructors si)),
+       Named ''operations'' (list_to_cons (si_operations si)),
+       Named ''parameters'' (list_to_cons (si_parameters si)),
+       Named ''requires'' (list_to_cons (si_requires si))
+     ]"
+
+text \<open>
+  @{text FieldInfo}: parameter description within an @{text OperationInfo}.
+\<close>
+
+definition field_info_term :: "symbol \<Rightarrow> aterm \<Rightarrow> aterm" where
+  "field_info_term name type_term \<equiv>
+     Fn ''FieldInfo'' [
+       Named ''name'' (Const (LitString name)),
+       Named ''type_name'' type_term
+     ]"
+
+text \<open>
+  @{text OperationInfo}: structured fact emitted for each operation declaration.
+  @{text sort_context} is @{text "some(value: Ref(sort))"} or @{text "none()"}.
+\<close>
+
+definition op_info_term ::
+  "aterm \<Rightarrow> aterm \<Rightarrow> aterm list \<Rightarrow> aterm \<Rightarrow> aterm list \<Rightarrow> aterm" where
+  "op_info_term name_ref sort_ctx param_terms return_term effect_terms \<equiv>
+     Fn ''OperationInfo'' [
+       Named ''name'' name_ref,
+       Named ''sort_context'' sort_ctx,
+       Named ''params'' (list_to_cons param_terms),
+       Named ''return_type'' return_term,
+       Named ''effects'' (list_to_cons effect_terms)
+     ]"
+
+text \<open>Helpers for Option encoding.\<close>
+
+definition option_some :: "aterm \<Rightarrow> aterm" where
+  "option_some v \<equiv> Fn ''some'' [Named ''value'' v]"
+
+definition option_none :: aterm where
+  "option_none \<equiv> Fn ''none'' []"
+
 subsection \<open>Trust Levels\<close>
 
 text \<open>
@@ -781,7 +880,14 @@ where
 | "load_module_item kb sc (MI_Rule r) =
      fst (assert_fact kb (arule_head r) (Fn ''Rule'' []) sc None)"
 | "load_module_item kb sc (MI_Operation oper) =
-     fst (assert_fact kb (Fn (op_name oper) []) (Fn ''Operation'' []) sc None)"
+     (let name_ref = Ref (op_name oper);
+          sort_ctx = (case sc of
+                        Fn s [] \<Rightarrow> option_some (Ref s)
+                      | _ \<Rightarrow> option_none);
+          param_terms = map (\<lambda>(n, t). field_info_term n t) (op_params oper);
+          effect_terms = map (\<lambda>e. Fn (eff_kind e) [Positional (Ref (eff_target e))]) (op_effects oper);
+          oi = op_info_term name_ref sort_ctx param_terms (op_return oper) effect_terms
+      in fst (assert_fact kb oi (Fn ''Operation'' []) sc None))"
 | "load_module_item kb sc (MI_Requires t) =
      fst (assert_fact kb (Fn ''Requires'' [Positional t]) (Fn ''Requirement'' []) sc None)"
 | "load_module_item kb sc (MI_SubModule mb) =
@@ -795,8 +901,24 @@ where
                    None \<Rightarrow> fst (assert_fact kb scope (Fn ''Namespace'' []) scope None)
                  | Some s \<Rightarrow> register_constructor_subsorts
                                (register_sort kb s (determine_sort_kind items))
-                               s (direct_entities items))
-      in load_module_items kb1 scope items)"
+                               s (direct_entities items));
+          kb2 = load_module_items kb1 scope items;
+          \<comment> \<open>Emit SortInfo fact for sort-with-body declarations\<close>
+          kb3 = (case ps of
+                   None \<Rightarrow> kb2
+                 | Some s \<Rightarrow>
+                     let has_entities = direct_entities items \<noteq> [];
+                         def_term = (if has_entities then s else Var (kb_next_var kb2));
+                         ctor_refs = map (\<lambda>e. case e of Fn f _ \<Rightarrow> Ref f | _ \<Rightarrow> e)
+                                        (direct_entities items);
+                         si = \<lparr> si_name = Ref name,
+                                si_definition = def_term,
+                                si_constructors = ctor_refs,
+                                si_operations = [],
+                                si_parameters = [],
+                                si_requires = [] \<rparr>
+                     in fst (assert_fact kb2 (sort_info_term si) (Fn ''Sort'' []) scope None))
+      in kb3)"
 
 subsubsection \<open>Fresh variables\<close>
 
@@ -844,6 +966,34 @@ definition derivable_facts ::
         r \<in> set rules \<and> is_derivation r \<and>
         (\<forall>atom \<in> set (arule_body r).
            query kb (apply_subst \<sigma> atom) \<noteq> [])}"
+
+subsection \<open>Builtins\<close>
+
+text \<open>
+  Builtins are operations dispatched directly by the resolver, not via
+  KB fact matching.  Each builtin is identified by its qualified name and
+  has a specific execution semantics.
+\<close>
+
+datatype builtin_tag =
+    BT_NonVar         \<comment> \<open>@{text "anthill.reflect.nonvar(?x)"}: succeeds if ?x is non-variable\<close>
+  | BT_Ground         \<comment> \<open>@{text "anthill.reflect.ground(?x)"}: succeeds if ?x is fully ground\<close>
+  | BT_QualifiedName  \<comment> \<open>@{text "qualified_name(?sym, ?result)"}: Symbol \<rightarrow> full name string\<close>
+  | BT_ShortName      \<comment> \<open>@{text "short_name(?sym, ?result)"}: Symbol \<rightarrow> last segment string\<close>
+  | BT_LookupSymbol   \<comment> \<open>@{text "lookup_symbol(?name, ?result)"}: String \<rightarrow> Symbol (fails if not found)\<close>
+
+datatype builtin_result =
+    BR_Success
+  | BR_SuccessWithBindings subst
+  | BR_Delay
+  | BR_Failure
+
+text \<open>
+  All builtins delay when their first positional argument is an unbound variable.
+  @{text NonVar} and @{text Ground} produce no bindings (test-only).
+  @{text QualifiedName}, @{text ShortName}, and @{text LookupSymbol} bind the
+  second positional argument to the computed result.
+\<close>
 
 subsection \<open>Properties\<close>
 
