@@ -36,6 +36,11 @@ pub enum BuiltinTag {
     IsEntityOf,
     /// `anthill.reflect.typing.extract_sort_ref(?inst, ?result)` — extract functor as Ref from instantiation term.
     ExtractSort,
+    /// `anthill.reflect.not(goal)` — negation-as-failure.
+    Not,
+    /// `anthill.reflect.resolve_sort_instantiation_param(?spec_inst, ?param_name, ?value)` —
+    /// extract a named arg value from a ParameterizedType term by parameter name.
+    ResolveSortInstParam,
 }
 
 /// Result of executing a builtin.
@@ -229,6 +234,10 @@ impl SearchStream {
 
         // 4. Builtin goal
         if let Some(tag) = kb.get_builtin(goal) {
+            // NAF needs sub-resolution context — handle it specially
+            if tag == BuiltinTag::Not {
+                return self.step_naf(kb, goal, depth, delay_mode);
+            }
             match kb.execute_builtin(tag, goal, &frame.subst) {
                 BuiltinResult::Success => {
                     // Remove goals[0], bump depth, reset delay counter if delayed
@@ -345,6 +354,100 @@ impl SearchStream {
             child_solutions: 0,
         };
         Some(StepResult::Continue)
+    }
+
+    /// Handle `not(Goal)` — negation-as-failure.
+    ///
+    /// - If the inner goal is not ground after applying the current substitution,
+    ///   delay (floundering prevention).
+    /// - Otherwise, run sub-resolution: if the inner goal has ANY solution,
+    ///   `not(Goal)` fails; if it has NO solutions, `not(Goal)` succeeds.
+    fn step_naf(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        goal: TermId,
+        depth: usize,
+        delay_mode: DelayMode,
+    ) -> Option<StepResult> {
+        let frame = self.stack.last().unwrap();
+        let goals = frame.goals.clone();
+        let subst = frame.subst.clone();
+
+        let inner_goal = kb.builtin_first_arg(goal);
+        let reified = kb.reify(inner_goal, &subst);
+
+        // Groundness check: NAF on non-ground goals would be unsound
+        match kb.is_ground(reified, &Substitution::new()) {
+            GroundCheck::HasVar => {
+                // Delay — same mechanism as other builtins
+                match delay_mode {
+                    DelayMode::Normal => {
+                        if goals.len() == 1 {
+                            let sol = Solution {
+                                subst,
+                                residual: vec![goal],
+                            };
+                            self.stack.pop();
+                            self.record_solution_in_ancestors();
+                            return Some(StepResult::YieldSolution(sol));
+                        } else {
+                            let mut rotated: Vec<TermId> = goals[1..].to_vec();
+                            rotated.push(goal);
+                            let f = self.stack.last_mut().unwrap();
+                            f.goals = rotated;
+                            f.depth = depth + 1;
+                            f.state = FrameState::Init {
+                                delay_mode: DelayMode::Delayed { consecutive_delays: 1 },
+                            };
+                            return Some(StepResult::Continue);
+                        }
+                    }
+                    DelayMode::Delayed { consecutive_delays } => {
+                        let mut rotated: Vec<TermId> = goals[1..].to_vec();
+                        rotated.push(goal);
+                        let f = self.stack.last_mut().unwrap();
+                        f.goals = rotated;
+                        f.depth = depth + 1;
+                        f.state = FrameState::Init {
+                            delay_mode: DelayMode::Delayed {
+                                consecutive_delays: consecutive_delays + 1,
+                            },
+                        };
+                        return Some(StepResult::Continue);
+                    }
+                }
+            }
+            GroundCheck::Ground => {
+                // Sub-resolution: check if the inner goal has any solution
+                let remaining_depth = self.config.max_depth.saturating_sub(depth);
+                let sub_config = ResolveConfig {
+                    max_depth: remaining_depth,
+                    max_solutions: 1,
+                    simplify: self.config.simplify,
+                };
+                let sub_stream = kb.resolve_lazy(&[reified], &sub_config);
+                let has_solution = sub_stream.split_first(kb).is_some();
+
+                if has_solution {
+                    // Inner goal succeeded → not() FAILS — backtrack
+                    self.stack.pop();
+                    return Some(StepResult::Continue);
+                } else {
+                    // Inner goal has no solutions → not() SUCCEEDS
+                    let new_goals = goals[1..].to_vec();
+                    let new_delay = match delay_mode {
+                        DelayMode::Normal => DelayMode::Normal,
+                        DelayMode::Delayed { .. } => DelayMode::Delayed { consecutive_delays: 0 },
+                    };
+                    let f = self.stack.last_mut().unwrap();
+                    f.goals = new_goals;
+                    f.subst = subst;
+                    f.depth = depth + 1;
+                    f.state = FrameState::Init { delay_mode: new_delay };
+                    return Some(StepResult::Continue);
+                }
+            }
+        }
     }
 
     /// Handle a frame in `ChoicePoint` state — try the next candidate.
@@ -650,6 +753,8 @@ impl KnowledgeBase {
             BuiltinTag::LookupSymbol => self.builtin_lookup_symbol(goal, answer_subst),
             BuiltinTag::IsEntityOf => self.builtin_is_entity_of(goal, answer_subst),
             BuiltinTag::ExtractSort => self.builtin_extract_sort(goal, answer_subst),
+            BuiltinTag::Not => unreachable!("Not is handled in step_init, not execute_builtin"),
+            BuiltinTag::ResolveSortInstParam => self.builtin_resolve_sort_inst_param(goal, answer_subst),
         }
     }
 
@@ -906,6 +1011,74 @@ impl KnowledgeBase {
         }
     }
 
+    /// `resolve_sort_instantiation_param(?spec_inst, ?param_name, ?value)` —
+    /// given a ParameterizedType term and a Ref(sym) for the param name,
+    /// find the corresponding named arg value. Delays if either arg is unbound.
+    fn builtin_resolve_sort_inst_param(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
+        let (inst_arg, param_arg, value_arg) = match self.terms.get(goal) {
+            Term::Fn { pos_args, .. } if pos_args.len() >= 3 => {
+                (pos_args[0], pos_args[1], pos_args[2])
+            }
+            _ => return BuiltinResult::Failure,
+        };
+
+        let walked_inst = self.walk(inst_arg, subst);
+        let walked_param = self.walk(param_arg, subst);
+
+        // Delay if either arg is unbound
+        if matches!(self.terms.get(walked_inst), Term::Var(_)) {
+            return BuiltinResult::Delay;
+        }
+        if matches!(self.terms.get(walked_param), Term::Var(_)) {
+            return BuiltinResult::Delay;
+        }
+
+        // Extract the param symbol from the param arg (must be Ref)
+        let param_sym = match self.terms.get(walked_param) {
+            Term::Ref(sym) => *sym,
+            Term::Fn { functor, .. } => *functor,
+            _ => return BuiltinResult::Failure,
+        };
+
+        // Walk spec_inst — must be ParameterizedType(sort_name, named_args...)
+        let value_tid = match self.terms.get(walked_inst).clone() {
+            Term::Fn { ref functor, ref named_args, .. } => {
+                let functor_name = self.symbols.name(*functor);
+                if functor_name == "ParameterizedType" {
+                    // Search named_args for the matching param symbol
+                    named_args.iter()
+                        .find(|(sym, _)| *sym == param_sym)
+                        .map(|(_, tid)| *tid)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        match value_tid {
+            Some(val) => {
+                let walked_value = self.walk(value_arg, subst);
+                match self.terms.get(walked_value) {
+                    Term::Var(vid) => {
+                        let vid = *vid;
+                        let mut extra = Substitution::new();
+                        extra.bind(vid, val);
+                        BuiltinResult::SuccessWithBindings(extra)
+                    }
+                    _ => {
+                        if walked_value == val {
+                            BuiltinResult::Success
+                        } else {
+                            BuiltinResult::Failure
+                        }
+                    }
+                }
+            }
+            None => BuiltinResult::Failure,
+        }
+    }
+
     /// Collect all unbound VarIds in a term, walking through the substitution.
     fn collect_unbound_vars(&self, term: TermId, subst: &Substitution, out: &mut Vec<VarId>) {
         let walked = self.walk(term, subst);
@@ -930,11 +1103,19 @@ impl KnowledgeBase {
     }
 
     /// Check if a builtin would delay given the current substitution (read-only).
-    /// All builtins delay iff their first positional argument walks to a Var.
-    fn builtin_would_delay(&self, goal: TermId, subst: &Substitution) -> bool {
-        let arg = self.builtin_first_arg(goal);
-        let walked = self.walk(arg, subst);
-        matches!(self.terms.get(walked), Term::Var(_))
+    fn builtin_would_delay(&self, tag: BuiltinTag, goal: TermId, subst: &Substitution) -> bool {
+        match tag {
+            BuiltinTag::Not => {
+                let inner = self.builtin_first_arg(goal);
+                // NAF delays if inner goal is not ground after applying subst
+                matches!(self.is_ground(inner, subst), GroundCheck::HasVar)
+            }
+            _ => {
+                let arg = self.builtin_first_arg(goal);
+                let walked = self.walk(arg, subst);
+                matches!(self.terms.get(walked), Term::Var(_))
+            }
+        }
     }
 
     /// Check if any builtin in a rule body would delay on a caller-originated
@@ -950,8 +1131,13 @@ impl KnowledgeBase {
         subst: &Substitution,
     ) -> bool {
         for &goal in body {
-            if self.get_builtin(goal).is_some() {
-                if self.builtin_would_delay(goal, subst) {
+            if let Some(tag) = self.get_builtin(goal) {
+                // NAF handles delay via goal rotation at resolution time;
+                // other body goals may bind vars before not() is retried.
+                if tag == BuiltinTag::Not {
+                    continue;
+                }
+                if self.builtin_would_delay(tag, goal, subst) {
                     let arg = self.builtin_first_arg(goal);
                     let mut unbound = Vec::new();
                     self.collect_unbound_vars(arg, subst, &mut unbound);
@@ -2579,5 +2765,275 @@ mod tests {
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
         assert_eq!(solutions.len(), 1, "should residualize");
         assert!(!solutions[0].residual.is_empty(), "should have residual goal");
+    }
+
+    // ── NAF (negation-as-failure) tests ──────────────────────────
+
+    #[test]
+    fn not_succeeds_when_goal_fails() {
+        // not(p(a)) with no p(a) fact → succeeds
+        let mut kb = kb_with_builtins();
+        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let p_sym = kb.intern("p");
+        let a = kb.alloc(Term::Const(Literal::String("a".into())));
+
+        let p_a = kb.alloc(Term::Fn {
+            functor: p_sym,
+            pos_args: SmallVec::from_elem(a, 1),
+            named_args: SmallVec::new(),
+        });
+        let goal = kb.alloc(Term::Fn {
+            functor: not_sym,
+            pos_args: SmallVec::from_elem(p_a, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 1, "not(p(a)) should succeed when p(a) is absent");
+        assert!(solutions[0].residual.is_empty(), "should have no residual");
+    }
+
+    #[test]
+    fn not_fails_when_goal_succeeds() {
+        // not(p(a)) with p(a) fact → fails (no solutions)
+        let mut kb = kb_with_builtins();
+        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let p_sym = kb.intern("p");
+        let a = kb.alloc(Term::Const(Literal::String("a".into())));
+
+        let sort = kb.make_name_term("Fact");
+        let domain = kb.make_name_term("test");
+
+        // Assert p(a) as a fact
+        let p_a_fact = kb.alloc(Term::Fn {
+            functor: p_sym,
+            pos_args: SmallVec::from_elem(a, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(p_a_fact, sort, domain, None);
+
+        // Query: not(p(a))
+        let p_a_query = kb.alloc(Term::Fn {
+            functor: p_sym,
+            pos_args: SmallVec::from_elem(a, 1),
+            named_args: SmallVec::new(),
+        });
+        let goal = kb.alloc(Term::Fn {
+            functor: not_sym,
+            pos_args: SmallVec::from_elem(p_a_query, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 0, "not(p(a)) should fail when p(a) exists");
+    }
+
+    #[test]
+    fn not_delays_on_unbound_var() {
+        // not(p(?x)) with ?x unbound → residualizes
+        let mut kb = kb_with_builtins();
+        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let p_sym = kb.intern("p");
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+
+        let p_x = kb.alloc(Term::Fn {
+            functor: p_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let goal = kb.alloc(Term::Fn {
+            functor: not_sym,
+            pos_args: SmallVec::from_elem(p_x, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 1, "should residualize");
+        assert!(!solutions[0].residual.is_empty(), "should have residual not(p(?x))");
+    }
+
+    #[test]
+    fn not_succeeds_after_delay_reorder() {
+        // Goals: [not(p(?x)), f(?x)] where f(a) exists and p(a) does not.
+        // not(p(?x)) delays initially, f(?x) binds ?x=a, then not(p(a)) succeeds.
+        let mut kb = kb_with_builtins();
+        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let p_sym = kb.intern("p");
+        let f_sym = kb.intern("f");
+        let a = kb.alloc(Term::Const(Literal::String("a".into())));
+
+        let sort = kb.make_name_term("Fact");
+        let domain = kb.make_name_term("test");
+
+        // Assert f(a)
+        let f_a = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(a, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(f_a, sort, domain, None);
+
+        // Build goals
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+
+        let p_x = kb.alloc(Term::Fn {
+            functor: p_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let not_p_x = kb.alloc(Term::Fn {
+            functor: not_sym,
+            pos_args: SmallVec::from_elem(p_x, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let f_x = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let solutions = kb.resolve(&[not_p_x, f_x], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 1, "should have one solution");
+        assert!(solutions[0].residual.is_empty(), "no residual expected");
+        // ?x should be bound to a
+        let bound = solutions[0].subst.resolve(vx);
+        assert!(bound.is_some(), "?x should be bound");
+    }
+
+    #[test]
+    fn not_respects_depth_limit() {
+        // Recursive rule inside not() should terminate via depth limit.
+        // r(x) :- r(x)  (infinite loop)
+        // Query: not(r(a)) — sub-resolution should hit depth limit and find no solutions
+        let mut kb = kb_with_builtins();
+        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let r_sym = kb.intern("r");
+        let a = kb.alloc(Term::Const(Literal::String("a".into())));
+
+        let sort = kb.make_name_term("Fact");
+        let domain = kb.make_name_term("test");
+
+        // Assert recursive rule: r(?y) :- r(?y)
+        let y_sym = kb.intern("y");
+        let vy = kb.fresh_var(y_sym);
+        let var_y = kb.alloc(Term::Var(vy));
+        let r_y_head = kb.alloc(Term::Fn {
+            functor: r_sym,
+            pos_args: SmallVec::from_elem(var_y, 1),
+            named_args: SmallVec::new(),
+        });
+        let r_y_body = kb.alloc(Term::Fn {
+            functor: r_sym,
+            pos_args: SmallVec::from_elem(var_y, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule(r_y_head, vec![r_y_body], sort, domain, None);
+
+        // Query: not(r(a))
+        let r_a = kb.alloc(Term::Fn {
+            functor: r_sym,
+            pos_args: SmallVec::from_elem(a, 1),
+            named_args: SmallVec::new(),
+        });
+        let goal = kb.alloc(Term::Fn {
+            functor: not_sym,
+            pos_args: SmallVec::from_elem(r_a, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig { max_depth: 20, ..ResolveConfig::default() };
+        let solutions = kb.resolve(&[goal], &config);
+        // The recursive rule never produces a solution (depth limit), so not() succeeds
+        assert_eq!(solutions.len(), 1, "not(r(a)) should succeed since r(a) has no solutions");
+        assert!(solutions[0].residual.is_empty(), "no residual expected");
+    }
+
+    #[test]
+    fn not_in_rule_body() {
+        // safe(?x) :- thing(?x), not(dangerous(?x))
+        // Facts: thing(a), thing(b), dangerous(b)
+        // Expected: only ?x=a
+        let mut kb = kb_with_builtins();
+        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let thing_sym = kb.intern("thing");
+        let dangerous_sym = kb.intern("dangerous");
+        let safe_sym = kb.intern("safe");
+        let a = kb.alloc(Term::Const(Literal::String("a".into())));
+        let b = kb.alloc(Term::Const(Literal::String("b".into())));
+
+        let sort = kb.make_name_term("Fact");
+        let domain = kb.make_name_term("test");
+
+        // Assert facts
+        let thing_a = kb.alloc(Term::Fn {
+            functor: thing_sym,
+            pos_args: SmallVec::from_elem(a, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(thing_a, sort, domain, None);
+
+        let thing_b = kb.alloc(Term::Fn {
+            functor: thing_sym,
+            pos_args: SmallVec::from_elem(b, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(thing_b, sort, domain, None);
+
+        let dangerous_b = kb.alloc(Term::Fn {
+            functor: dangerous_sym,
+            pos_args: SmallVec::from_elem(b, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(dangerous_b, sort, domain, None);
+
+        // Assert rule: safe(?x) :- thing(?x), not(dangerous(?x))
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+
+        let safe_x = kb.alloc(Term::Fn {
+            functor: safe_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let thing_x = kb.alloc(Term::Fn {
+            functor: thing_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let dangerous_x = kb.alloc(Term::Fn {
+            functor: dangerous_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let not_dangerous_x = kb.alloc(Term::Fn {
+            functor: not_sym,
+            pos_args: SmallVec::from_elem(dangerous_x, 1),
+            named_args: SmallVec::new(),
+        });
+
+        kb.assert_rule(safe_x, vec![thing_x, not_dangerous_x], sort, domain, None);
+
+        // Query: safe(?q)
+        let q_sym = kb.intern("q");
+        let vq = kb.fresh_var(q_sym);
+        let var_q = kb.alloc(Term::Var(vq));
+        let safe_q = kb.alloc(Term::Fn {
+            functor: safe_sym,
+            pos_args: SmallVec::from_elem(var_q, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let solutions = kb.resolve(&[safe_q], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 1, "should have exactly one solution (safe(a))");
+        assert!(solutions[0].residual.is_empty(), "no residual expected");
+        // Reify to follow the full binding chain through fresh vars
+        let resolved = kb.reify(var_q, &solutions[0].subst);
+        assert_eq!(resolved, a, "?q should resolve to 'a'");
     }
 }

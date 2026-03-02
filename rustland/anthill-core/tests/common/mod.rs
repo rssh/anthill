@@ -24,3 +24,8 @@ pub fn collect_anthill_files(dir: &std::path::Path) -> Vec<PathBuf> {
 pub fn stdlib_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill")
 }
+
+/// Path to anthill-testcases/ relative to the anthill-core crate root.
+pub fn testcases_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../anthill-testcases")
+}

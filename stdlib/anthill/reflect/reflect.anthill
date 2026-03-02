@@ -24,7 +24,8 @@ namespace anthill.reflect
   export LogicalQuery, empty_query
   export pattern_query, sort_query, conjunction, disjunction
   export negation, guarded, projected, limited
-  export nonvar, ground
+  export nonvar, ground, not
+  export resolve_sort_instantiation_param
   export reify, reflect
   export sorts, operations, constructors, fields, rules, descriptions
   export execute, sort_template, instantiation_query
@@ -54,6 +55,15 @@ namespace anthill.reflect
   operation short_name(s: Symbol) -> String
   -- Find existing symbol by qualified name (fails if not found)
   operation lookup_symbol(name: String) -> Symbol
+
+  -- Negation-as-failure: succeeds if query has no solutions.
+  -- Delays if query contains unbound variables (floundering prevention).
+  operation not(query: Term) -> Bool
+
+  -- Extract a named binding from a ParameterizedType instantiation term.
+  -- Given spec_inst = ParameterizedType(Monoid(), T=Int(), combine=Ref(add)),
+  -- resolve_sort_instantiation_param(spec_inst, Ref(T), ?val) binds ?val to Int().
+  operation resolve_sort_instantiation_param(inst: Term, param: Term) -> Term
 
   -- ================================================================
   -- KB: the knowledge base

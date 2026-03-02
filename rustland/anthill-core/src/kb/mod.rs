@@ -93,6 +93,11 @@ pub struct KnowledgeBase {
     // Variable counter for fresh VarId allocation
     next_var: u32,
 
+    // Base substitution for each sort: maps all params + operations to themselves.
+    // Computed by resolve_instantiations() after loading.
+    // Key: sort functor symbol. Value: list of (slot_name, Ref(slot_name)) pairs.
+    sort_base_subst: HashMap<Symbol, Vec<(Symbol, TermId)>>,
+
     // Well-known sort terms (cached for future layers)
     #[allow(dead_code)]
     sort_sort: Option<TermId>,
@@ -116,6 +121,7 @@ impl KnowledgeBase {
             builtins: HashMap::new(),
             entity_fields: HashMap::new(),
             next_var: 0,
+            sort_base_subst: HashMap::new(),
             sort_sort: None,
             entity_of_sort: None,
         }
@@ -411,6 +417,16 @@ impl KnowledgeBase {
     /// Get sort kind info.
     pub fn sort_kind(&self, sort_term: TermId) -> Option<SortKind> {
         self.sort_info.get(&sort_term).copied()
+    }
+
+    /// Get the base substitution for a sort (maps all slots to themselves).
+    pub fn sort_base_subst(&self, sym: Symbol) -> Option<&[(Symbol, TermId)]> {
+        self.sort_base_subst.get(&sym).map(|v| v.as_slice())
+    }
+
+    /// Set the base substitution for a sort.
+    pub fn set_sort_base_subst(&mut self, sym: Symbol, subst: Vec<(Symbol, TermId)>) {
+        self.sort_base_subst.insert(sym, subst);
     }
 
     /// Get immediate entity children of a sort.
@@ -894,8 +910,10 @@ impl KnowledgeBase {
         self.register_builtin("anthill.reflect.qualified_name", BuiltinTag::QualifiedName);
         self.register_builtin("anthill.reflect.short_name", BuiltinTag::ShortName);
         self.register_builtin("anthill.reflect.lookup_symbol", BuiltinTag::LookupSymbol);
+        self.register_builtin("anthill.reflect.not", BuiltinTag::Not);
         self.register_builtin("anthill.reflect.typing.is_entity_of", BuiltinTag::IsEntityOf);
         self.register_builtin("anthill.reflect.typing.extract_sort_ref", BuiltinTag::ExtractSort);
+        self.register_builtin("anthill.reflect.resolve_sort_instantiation_param", BuiltinTag::ResolveSortInstParam);
     }
 
     /// Re-resolve builtins after scan_definitions().

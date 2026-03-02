@@ -786,6 +786,8 @@ pub fn load(
     if let Err(errs) = load_with_visited(kb, parsed, resolver, &mut loaded_paths) {
         all_errors.extend(errs);
     }
+    // Phase 3: Resolve instantiations
+    resolve_instantiations(kb);
     if all_errors.is_empty() {
         Ok(())
     } else {
@@ -815,6 +817,8 @@ pub fn load_all(
             all_errors.extend(errs);
         }
     }
+    // Phase 3: Resolve instantiations
+    resolve_instantiations(kb);
     if all_errors.is_empty() {
         Ok(())
     } else {
@@ -838,6 +842,389 @@ fn load_with_visited(
     } else {
         Err(loader.errors)
     }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Phase 3: Resolve instantiation bindings
+// ══════════════════════════════════════════════════════════════════
+
+/// Complete all ParameterizedType substitutions in Requires facts.
+///
+/// Called after load: (1) builds base substitutions from SortInfo facts,
+/// (2) for each Requires fact, completes spec_inst with explicit bindings
+/// and auto-bound same-named operations from the requiring sort's scope.
+pub fn resolve_instantiations(kb: &mut KnowledgeBase) {
+    build_base_substitutions(kb);
+    resolve_requires_bindings(kb);
+}
+
+/// Build base substitution for each sort from its SortInfo fact.
+///
+/// The base substitution maps every slot (parameter + operation) to itself:
+/// `{T → Ref(T), combine → Ref(combine), identity → Ref(identity)}`.
+fn build_base_substitutions(kb: &mut KnowledgeBase) {
+    let sort_info_sym = match kb.try_resolve_symbol("SortInfo") {
+        Some(sym) => sym,
+        None => return,
+    };
+
+    let rule_ids = kb.by_functor(sort_info_sym);
+    let mut sort_entries: Vec<(Symbol, Vec<(Symbol, TermId)>)> = Vec::new();
+
+    for rid in rule_ids {
+        if !kb.rule_body(rid).is_empty() {
+            continue; // skip rules, only process facts
+        }
+        let head = kb.rule_head(rid);
+        let term = kb.get_term(head).clone();
+        if let Term::Fn { named_args, .. } = term {
+            // Extract sort name symbol
+            let name_sym = kb.intern("name");
+            let parameters_sym = kb.intern("parameters");
+            let operations_sym = kb.intern("operations");
+
+            let sort_functor_sym = named_args.iter()
+                .find(|(s, _)| *s == name_sym)
+                .and_then(|(_, tid)| match kb.get_term(*tid) {
+                    Term::Ref(sym) => Some(*sym),
+                    _ => None,
+                });
+
+            let params_list_tid = named_args.iter()
+                .find(|(s, _)| *s == parameters_sym)
+                .map(|(_, tid)| *tid);
+
+            let ops_list_tid = named_args.iter()
+                .find(|(s, _)| *s == operations_sym)
+                .map(|(_, tid)| *tid);
+
+            if let Some(sort_sym) = sort_functor_sym {
+                let mut base_subst = Vec::new();
+
+                // Collect params
+                if let Some(list_tid) = params_list_tid {
+                    collect_ref_list(kb, list_tid, &mut base_subst);
+                }
+
+                // Collect operations
+                if let Some(list_tid) = ops_list_tid {
+                    collect_ref_list(kb, list_tid, &mut base_subst);
+                }
+
+                sort_entries.push((sort_sym, base_subst));
+            }
+        }
+    }
+
+    for (sym, subst) in sort_entries {
+        kb.set_sort_base_subst(sym, subst);
+    }
+}
+
+/// Walk a cons-list and collect (sym, Ref(sym)) pairs for each Ref element.
+fn collect_ref_list(kb: &mut KnowledgeBase, list_tid: TermId, out: &mut Vec<(Symbol, TermId)>) {
+    let head_sym = kb.intern("head");
+    let tail_sym = kb.intern("tail");
+    let nil_sym = kb.resolve_symbol("nil");
+    let cons_sym = kb.resolve_symbol("cons");
+    let mut current = list_tid;
+    loop {
+        match kb.get_term(current).clone() {
+            Term::Fn { ref functor, ref named_args, .. } => {
+                if *functor == nil_sym {
+                    break;
+                }
+                if *functor == cons_sym {
+                    let head_tid = named_args.iter()
+                        .find(|(s, _)| *s == head_sym)
+                        .map(|(_, t)| *t);
+                    let tail_tid = named_args.iter()
+                        .find(|(s, _)| *s == tail_sym)
+                        .map(|(_, t)| *t);
+
+                    if let Some(h) = head_tid {
+                        if let Term::Ref(sym) = kb.get_term(h) {
+                            out.push((*sym, h));
+                        }
+                    }
+
+                    match tail_tid {
+                        Some(t) => current = t,
+                        None => break,
+                    }
+                } else {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+}
+
+/// For each Requires fact with a ParameterizedType spec_inst, complete the
+/// instantiation by merging explicit bindings with auto-bound operations.
+fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
+    let requires_sym = match kb.try_resolve_symbol("Requires") {
+        Some(sym) => sym,
+        None => return,
+    };
+    let param_type_sym = match kb.try_resolve_symbol("ParameterizedType") {
+        Some(sym) => sym,
+        None => return,
+    };
+
+    let sort_ref_field = kb.intern("sort_ref");
+    let spec_inst_field = kb.intern("spec_inst");
+
+    let rule_ids = kb.by_functor(requires_sym);
+
+    // Collect facts to update: (rule_id, sort_ref_term, spec_sort_sym, explicit_named_args)
+    let mut updates: Vec<(super::RuleId, TermId, Symbol, SmallVec<[(Symbol, TermId); 2]>)> = Vec::new();
+
+    for rid in &rule_ids {
+        if !kb.rule_body(*rid).is_empty() {
+            continue;
+        }
+        let head = kb.rule_head(*rid);
+        let head_term = kb.get_term(head).clone();
+
+        if let Term::Fn { ref named_args, .. } = head_term {
+            let sort_ref_tid = named_args.iter()
+                .find(|(s, _)| *s == sort_ref_field)
+                .map(|(_, t)| *t);
+            let spec_inst_tid = named_args.iter()
+                .find(|(s, _)| *s == spec_inst_field)
+                .map(|(_, t)| *t);
+
+            if let (Some(sr_tid), Some(si_tid)) = (sort_ref_tid, spec_inst_tid) {
+                let si_term = kb.get_term(si_tid).clone();
+                if let Term::Fn { functor, pos_args, named_args: inst_named, .. } = si_term {
+                    if functor == param_type_sym && !pos_args.is_empty() {
+                        // Extract spec sort symbol from first pos_arg
+                        let spec_sym = match kb.get_term(pos_args[0]) {
+                            Term::Fn { functor: f, .. } => Some(*f),
+                            Term::Ref(s) => Some(*s),
+                            _ => None,
+                        };
+
+                        if let Some(ss) = spec_sym {
+                            updates.push((*rid, sr_tid, ss, inst_named.clone()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Now process each update
+    for (rid, sort_ref_tid, spec_sort_sym, explicit_bindings) in updates {
+        let base_subst = match kb.sort_base_subst(spec_sort_sym) {
+            Some(bs) => bs.to_vec(),
+            None => continue,
+        };
+
+        // Build complete bindings: start from base, override with explicit
+        let mut complete: Vec<(Symbol, TermId)> = Vec::new();
+
+        // Collect operation short names from the spec's SortInfo for auto-binding
+        let op_syms = collect_sort_operations(kb, spec_sort_sym);
+        let op_short_names: Vec<String> = op_syms.iter()
+            .map(|s| {
+                let name = kb.resolve_sym(*s);
+                name.rsplit('.').next().unwrap_or(name).to_owned()
+            })
+            .collect();
+
+        // Build a short-name lookup for explicit bindings.
+        // Explicit bindings may use plain symbols (e.g., "T") while base_subst
+        // uses scope-qualified symbols (e.g., "Monoid.T"). Match by short name.
+        let explicit_by_short: Vec<(String, TermId)> = explicit_bindings.iter()
+            .map(|(s, t)| {
+                let name = kb.resolve_sym(*s);
+                let short = name.rsplit('.').next().unwrap_or(name).to_owned();
+                (short, *t)
+            })
+            .collect();
+
+        for (slot_sym, default_tid) in &base_subst {
+            let slot_name = kb.resolve_sym(*slot_sym);
+            let slot_short = slot_name.rsplit('.').next().unwrap_or(slot_name).to_owned();
+
+            // Check if explicit binding overrides this slot (by short name)
+            let explicit_val = explicit_by_short.iter()
+                .find(|(name, _)| *name == slot_short)
+                .map(|(_, t)| *t);
+
+            if let Some(val) = explicit_val {
+                complete.push((*slot_sym, val));
+            } else if op_short_names.contains(&slot_short) {
+                // Auto-bind: look for same-named operation in the requiring sort's scope
+                let auto_bound = find_operation_in_scope(kb, sort_ref_tid, &slot_short);
+                match auto_bound {
+                    Some(bound_sym) => {
+                        let ref_term = kb.alloc(Term::Ref(bound_sym));
+                        complete.push((*slot_sym, ref_term));
+                    }
+                    None => {
+                        complete.push((*slot_sym, *default_tid));
+                    }
+                }
+            } else {
+                complete.push((*slot_sym, *default_tid));
+            }
+        }
+
+        // Now build a new ParameterizedType term with complete bindings
+        let old_head = kb.rule_head(rid);
+        let old_head_term = kb.get_term(old_head).clone();
+        if let Term::Fn { ref named_args, .. } = old_head_term {
+            let spec_inst_tid = named_args.iter()
+                .find(|(s, _)| *s == spec_inst_field)
+                .map(|(_, t)| *t)
+                .unwrap();
+
+            let old_inst = kb.get_term(spec_inst_tid).clone();
+            if let Term::Fn { pos_args, .. } = old_inst {
+                let new_named: SmallVec<[(Symbol, TermId); 2]> = complete.into_iter().collect();
+                let new_inst = kb.alloc(Term::Fn {
+                    functor: param_type_sym,
+                    pos_args: pos_args.clone(),
+                    named_args: new_named,
+                });
+
+                // Build new Requires fact with updated spec_inst
+                let new_named_args: SmallVec<[(Symbol, TermId); 2]> = named_args.iter()
+                    .map(|(s, t)| {
+                        if *s == spec_inst_field {
+                            (*s, new_inst)
+                        } else {
+                            (*s, *t)
+                        }
+                    })
+                    .collect();
+                let new_head = kb.alloc(Term::Fn {
+                    functor: requires_sym,
+                    pos_args: SmallVec::new(),
+                    named_args: new_named_args,
+                });
+
+                // Retract old, assert new
+                let sort = kb.rule_sort(rid);
+                let domain = kb.rule_domain(rid);
+                let meta = kb.rule_meta(rid);
+                kb.retract(rid);
+                kb.assert_fact(new_head, sort, domain, meta);
+            }
+        }
+    }
+}
+
+/// Collect the operation symbols from a sort's SortInfo.
+fn collect_sort_operations(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Symbol> {
+    let sort_info_sym = match kb.try_resolve_symbol("SortInfo") {
+        Some(sym) => sym,
+        None => return Vec::new(),
+    };
+    let name_field = kb.intern("name");
+    let operations_field = kb.intern("operations");
+
+    let rule_ids = kb.by_functor(sort_info_sym);
+    for rid in rule_ids {
+        if !kb.rule_body(rid).is_empty() {
+            continue;
+        }
+        let head = kb.rule_head(rid);
+        if let Term::Fn { ref named_args, .. } = kb.get_term(head).clone() {
+            let name_matches = named_args.iter()
+                .find(|(s, _)| *s == name_field)
+                .and_then(|(_, tid)| match kb.get_term(*tid) {
+                    Term::Ref(sym) => Some(*sym == sort_sym),
+                    _ => None,
+                })
+                .unwrap_or(false);
+
+            if name_matches {
+                let ops_tid = named_args.iter()
+                    .find(|(s, _)| *s == operations_field)
+                    .map(|(_, t)| *t);
+                if let Some(list_tid) = ops_tid {
+                    let mut ops = Vec::new();
+                    let mut entries = Vec::new();
+                    collect_ref_list(kb, list_tid, &mut entries);
+                    for (sym, _) in entries {
+                        ops.push(sym);
+                    }
+                    return ops;
+                }
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// Find an operation with the given short name in a sort's OperationInfo facts.
+fn find_operation_in_scope(kb: &mut KnowledgeBase, sort_ref_tid: TermId, short_name: &str) -> Option<Symbol> {
+    let op_info_sym = match kb.try_resolve_symbol("OperationInfo") {
+        Some(sym) => sym,
+        None => return None,
+    };
+    let name_field = kb.intern("name");
+    let sort_context_field = kb.intern("sort_context");
+
+    // Get the sort symbol from the sort_ref term
+    let sort_sym = match kb.get_term(sort_ref_tid) {
+        Term::Fn { functor, .. } => *functor,
+        Term::Ref(sym) => *sym,
+        _ => return None,
+    };
+
+    let value_field = kb.intern("value");
+
+    let rule_ids = kb.by_functor(op_info_sym);
+    for rid in rule_ids {
+        if !kb.rule_body(rid).is_empty() {
+            continue;
+        }
+        let head = kb.rule_head(rid);
+        if let Term::Fn { ref named_args, .. } = kb.get_term(head).clone() {
+            // Check sort_context matches: some(value: Ref(sort_sym))
+            let context_matches = named_args.iter()
+                .find(|(s, _)| *s == sort_context_field)
+                .and_then(|(_, tid)| {
+                    match kb.get_term(*tid).clone() {
+                        Term::Fn { named_args: inner_na, .. } => {
+                            inner_na.iter()
+                                .find(|(s, _)| *s == value_field)
+                                .and_then(|(_, vtid)| match kb.get_term(*vtid) {
+                                    Term::Ref(s) => Some(*s == sort_sym),
+                                    _ => None,
+                                })
+                        }
+                        _ => None,
+                    }
+                })
+                .unwrap_or(false);
+
+            if context_matches {
+                // Check name matches short_name
+                let op_sym = named_args.iter()
+                    .find(|(s, _)| *s == name_field)
+                    .and_then(|(_, tid)| match kb.get_term(*tid) {
+                        Term::Ref(sym) => Some(*sym),
+                        _ => None,
+                    });
+
+                if let Some(op_s) = op_sym {
+                    let op_name = kb.resolve_sym(op_s);
+                    let op_short = op_name.rsplit('.').next().unwrap_or(op_name);
+                    if op_short == short_name {
+                        return Some(op_s);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Build a cons-list from a slice of TermIds: `cons(head: a, tail: cons(head: b, tail: nil()))`.

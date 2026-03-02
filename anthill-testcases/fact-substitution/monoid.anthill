@@ -1,0 +1,31 @@
+sort Monoid {
+  sort T = ?
+  operation combine(a: T, b: T) -> T
+  operation identity() -> T
+}
+
+sort IntAdd {
+  sort T = Int
+  entity value(x: Int)
+  requires Monoid{T = Int, combine = add, identity = zero}
+  operation add(a: Int, b: Int) -> Int
+  operation zero() -> Int
+}
+
+sort IntMul {
+  sort T = Int
+  entity value(x: Int)
+  requires Monoid{T = Int, combine = multiply, identity = one}
+  operation multiply(a: Int, b: Int) -> Int
+  operation one() -> Int
+}
+
+-- Auto-bind test: sort with same-named operations as spec,
+-- no explicit binding for identity in requires
+sort AutoBindTest {
+  sort T = Int
+  entity data(x: Int)
+  requires Monoid{T = Int}
+  operation combine(a: Int, b: Int) -> Int
+  operation identity() -> Int
+}

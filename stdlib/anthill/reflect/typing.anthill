@@ -2,8 +2,8 @@ namespace anthill.reflect.typing
   import anthill.prelude.{List, Bool}
   import anthill.reflect.{Term, Symbol, KB, SortInfo, OperationInfo}
   export entity_of, is_entity_of, refines, type_compatible
-  export resolve_operation, direct_operation, inherited_operation, overrides
   export list_contains
+  export extract_sort_ref
 
   -- ================================================================
   -- Helper: cons-list membership
@@ -12,6 +12,13 @@ namespace anthill.reflect.typing
   rule list_contains(?x, cons(head: ?x, tail: ?))
   rule list_contains(?x, cons(head: ?, tail: ?rest))
     :- list_contains(?x, ?rest)
+
+  -- ================================================================
+  -- extract_sort_ref: extract sort symbol from instantiation term
+  -- ================================================================
+  -- Builtin: given ParameterizedType(Eq(), T=Int()) or Ref(Eq),
+  -- extracts the sort symbol as a Ref.
+  operation extract_sort_ref(inst: Term) -> Symbol
 
   -- ================================================================
   -- is_entity_of: entity subtyping via EntityOf (1-level only)
@@ -54,41 +61,6 @@ namespace anthill.reflect.typing
 
   -- Spec refinement: Ordered where Eq expected.
   rule type_compatible(?A, ?B) :- refines(?A, ?B)
-
-  -- ================================================================
-  -- resolve_operation: find the operation for an entity
-  -- ================================================================
-  -- Combines direct and inherited lookup. Direct takes priority.
-  -- Note: the unified resolve_operation uses not(overrides(...)) which
-  -- requires negation-as-failure (NAF). If the resolver doesn't support
-  -- NAF yet, use direct_operation / inherited_operation separately,
-  -- with the consumer preferring direct over inherited.
-
-  -- Direct: operation declared on entity's own sort
-  rule direct_operation(?name, ?x, ?info)
-    :- is_entity_of(?x, ?S),
-       OperationInfo(name: ?name, sort_context: some(value: ?S),
-                     params: ?_, return_type: ?_, effects: ?_)
-
-  -- Inherited: from a required/satisfied spec, not overridden locally
-  rule inherited_operation(?name, ?x, ?info)
-    :- is_entity_of(?x, ?S),
-       refines(?S, ?Spec_inst),
-       spec_sort(?Spec_inst, ?Spec),
-       OperationInfo(name: ?name, sort_context: some(value: ?Spec),
-                     params: ?p, return_type: ?r, effects: ?e),
-       not(overrides(?S, ?name))
-
-  -- overrides: sort S has its own version of operation ?name
-  rule overrides(?S, ?name)
-    :- OperationInfo(name: ?name, sort_context: some(value: ?S),
-                     params: ?_, return_type: ?_, effects: ?_)
-
-  -- Unified dispatch (requires NAF support in resolver)
-  rule resolve_operation(?name, ?x, ?info)
-    :- direct_operation(?name, ?x, ?info)
-  rule resolve_operation(?name, ?x, ?info)
-    :- inherited_operation(?name, ?x, ?info)
 
   -- ================================================================
   -- sort_requires: query what a sort requires (convenience)
