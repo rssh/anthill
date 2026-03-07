@@ -2,9 +2,9 @@
 
 ## Status: Brainstorming
 
-## Depends on: 011 (Type Resolution), 012 (Sort-Defined Syntax Sugar)
+## Depends on: 011 (Type Resolution), 016 (Extensible Operators)
 
-The query syntax (comprehensions, `?-`, `choose`/`guard`) likely instantiates sort-defined sugar mechanisms (012), which in turn require type resolution (011). Core query semantics (terms + unification, `Stream` as logic monad) can proceed independently, but surface syntax is blocked.
+The query syntax (comprehensions, `?-`, `choose`/`guard`) uses 016's pattern-based operator dictionary for surface syntax. Comprehension syntax `[ _ | _,.. ]` is a prefix nud entry in the dictionary; `?-` can be another prefix entry. Core query semantics (terms + unification, `Stream` as logic monad) can proceed independently, but surface syntax is blocked on 016's Pratt resolver.
 
 ## Motivation
 
@@ -248,9 +248,12 @@ Remaining sub-question: is `Stream` expressive enough for group-by (which produc
 
 ### OQ11. Syntax
 
+**Connection to 016 (Extensible Operators):** Proposal 016's pattern-based dictionary with `_` (argument slot) and `_,..` (repeated slot) can express most query syntax forms as Pratt nud entries. The dictionary is the activation mechanism — no grammar changes needed per syntax form.
+
 **OQ11.1.** Minimal approach — a term with variables in a query context IS a query, no new syntax needed beyond defining which contexts accept queries.
 
 **OQ11.2.** Prolog-style directive: `?- account(?id, ?owner, ?bal), gt(?bal, 0)`
+→ 016 dictionary: `?- _` as a prefix nud.
 
 **OQ11.3.** Named query declaration:
 ```
@@ -259,11 +262,13 @@ query high_balance {
   :- gt(?bal, 1000)
 }
 ```
+→ Delimited form — tree-sitter owned (matched `{}`), not a dictionary entry.
 
 **OQ11.4.** Comprehension-style (returns projected values):
 ```
 [?owner | account(?id, ?owner, ?bal), gt(?bal, 1000)]
 ```
+→ 016 dictionary: `[ _ | _,.. ]` as a prefix nud with repetition.
 
 **OQ11.5.** Query-as-operation — queries are just operations with `effects (Reads kb)` and the "implementation" is pattern matching:
 ```
@@ -540,6 +545,8 @@ Is this relevant to Anthill's design, or too specialized for the kernel?
 
 ### OQ15. Sort-Defined Syntax Sugar
 
+**Connection to 016 and 012:** Proposal 016's pattern dictionary provides the mechanism for extensible syntax. Sorts opt in to syntax forms via meta annotations (016) or by satisfying spec sorts (012). This section explores what sort-defined syntax means specifically for queries.
+
 Rather than hardcoding query syntax in the grammar, can sorts **declare** what syntactic forms they support? This makes sugar extensible — `Stream` gets comprehension syntax, `List` gets literal syntax, `Query` gets `?-` syntax, and user-defined sorts can opt in to the same mechanisms.
 
 #### Precedent in other languages
@@ -691,3 +698,5 @@ This keeps the kernel minimal (queries are terms + unification), gives `Stream` 
 - Logic monad blog: https://github.com/rssh/notes/blob/master/2024_01_30_logic-monad-1.md
 - Scored logic monad / RLLogic: `rl-logic` — `CpsScoredLogicMonad[F, R]`, `ScoredLogicStreamT`
 - Scored logic monad blog: https://github.com/rssh/notes/blob/master/2026_02_07_scored_logic_monad.md
+- Proposal 016 (Extensible Operators): pattern-based dictionary with `_` and `_,..` slots — provides syntax mechanism for comprehensions, `?-`, etc.
+- Proposal 012 (Sort-Defined Syntax Sugar): sorts opt in to syntax forms via spec satisfaction

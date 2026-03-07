@@ -73,6 +73,9 @@ All keywords are **context-dependent** (soft), following the Scala 3 approach: a
 | Visibility (prefix) | `internal`, `export`, `public` |
 | Operation | `requires`, `ensures`, `effects` |
 | Rule | `:-` (operator, not keyword) |
+| Infix operators (word) | `or`, `and`, `mod`, `div` |
+| Infix operators (symbol) | `@` (effect annotation on `->`) |
+| Prefix operators (word) | `not` |
 | Metadata | `trust`, `agent`, `iteration`, `source`, `supersedes` |
 | Trust levels | `proved`, `verified`, `tested`, `empirical`, `proposed`, `stale`, `axiom`, `decision` |
 | Block delimiters | `end` (only after a block body) |
@@ -220,8 +223,8 @@ sort anthill.prelude.Eq
 
   sort T = ?
   operation {
-    eq(a: T, b: T) -> Bool
-    neq(a: T, b: T) -> Bool
+    eq(a: T, b: T) -> Bool          -- =
+    neq(a: T, b: T) -> Bool         -- !=
   }
   rule neq(?a, ?b) = not(eq(?a, ?b))
 end
@@ -259,6 +262,9 @@ sort anthill.prelude.Numeric
     add(a: T, b: T) -> T           -- +
     sub(a: T, b: T) -> T           -- -
     mul(a: T, b: T) -> T           -- *
+    div(a: T, b: T) -> T           -- /
+    mod(a: T, b: T) -> T           -- %
+    pow(a: T, b: T) -> T           -- ^
     zero-val() -> T                -- additive identity
   }
 
@@ -270,7 +276,7 @@ sort anthill.prelude.Numeric
 end
 ```
 
-Infix operators `>`, `>=`, `<`, `<=`, `+`, `-`, `*`, `=` are sugar for the corresponding operations — `a > b` desugars to `gt(a, b)`, `a + b` to `add(a, b)`, etc. These are available when the corresponding prelude sort is required (e.g. `requires Numeric{T = Money}`).
+**Infix and prefix operators** are sugar for function application — `a + b` desugars to `add(a, b)`, `!a` desugars to `not(a)`, etc. The full operator table is in §6.6. The prelude sorts above define the operations that these operators desugar to; the operators are available when the corresponding sort is required (e.g. `requires Numeric{T = Money}`).
 
 **Instantiation** — via inline type expressions (`Name{bindings}`):
 
@@ -292,6 +298,7 @@ The inline form `List{T=Int}` refers to the sort `List` with unspecified sort pa
 Type ::= Name                                        -- simple type reference
        | Name '{' SortBinding (',' SortBinding)* '}' -- inline instantiation
        | VariableTerm                                 -- logical variable: ?, ?T, ?T {< desc >}+ ?
+       | TupleType                                    -- tuple type: (Int, String), (a: Int, b: String), ()
 ```
 
 Import and instantiation are separate concepts: `import` makes names visible, inline `Name{bindings}` instantiates sort parameters. They are not bundled together.
@@ -322,6 +329,54 @@ operation persist(store: Store, fact: Term, meta: Meta) -> FactId
 Because types are terms and type checking is KB querying, referencing values in type positions requires no special dependent-type mechanism — it is simply a term appearing where a term is expected. The KB's unification machinery handles both abstract bindings (`Modify{?}`) and concrete ones (`Modify{store}`) uniformly.
 
 Additional types are introduced via `sort` declarations (unspecified, type alias, or defined) in any namespace.
+
+### 4.5 Tuples and Parenthesized Expressions
+
+**Parenthesized expressions** `(a)` are grouping — `(a) = a`. They are valid wherever a term is expected.
+
+**Tuple sorts** are structurally-typed anonymous products. There is one concept: **named tuples**. Every element has a name. Positional syntax is sugar for auto-generated names `_1`, `_2`, `_3`, ...
+
+```
+-- Tuple types (in type position)
+TupleType ::= '(' ')'                                              -- unit
+            | '(' TupleTypeArg ',' TupleTypeArg (',' TupleTypeArg)* ')'  -- 2+ elements
+
+TupleTypeArg ::= Type | Name ':' Type
+
+-- Tuple literals (in term position)
+TupleLiteral ::= '(' ')'                                           -- unit value
+               | '(' FnArg ',' FnArg (',' FnArg)* ')'              -- 2+ elements
+```
+
+**Disambiguation:** `(a)` with no comma is a parenthesized expression (grouping). `(a, b)` with a comma is a tuple. `Name(...)` preceded by a name is function application. No lookahead needed.
+
+**All-or-nothing naming:** either all elements have explicit names or none do. Mixing `(a: Int, String)` is an error.
+
+**Desugaring:** Positional tuples desugar to named tuples with `_N` names:
+
+| Surface syntax | Desugared form |
+|---|---|
+| `(A, B)` | `(_1: A, _2: B)` |
+| `(1, "hello")` | `(_1: 1, _2: "hello")` |
+| `()` | `()` (unit, no fields) |
+
+**Representation:** Tuple literals are represented as `TupleLiteral(...)` terms with named args, analogous to `SetLiteral(...)` for sets. The `TupleLiteral` entity is defined in `anthill.reflect`.
+
+**Examples:**
+
+```
+-- Multi-value return
+operation divmod(a: Int, b: Int) -> (Int, Int)
+
+-- Named multi-value return
+operation divmod(a: Int, b: Int) -> (quotient: Int, remainder: Int)
+
+-- Tuple in rules
+rule swap((?x, ?y)) = (?y, ?x)
+
+-- Unit
+()
+```
 
 ## 5. Kernel Constructs
 
@@ -918,6 +973,67 @@ Since `meta: { ... }` has clear delimiters and `requires`/`ensures`/`effects` ar
 
 The `requires` and `ensures` clauses in operations are scoped constraints — they generate denials tied to the operation's input/output bindings. When an `Implementation` fact (from the `anthill.realization` standard namespace) pairs with an operation, the kernel generates corresponding obligation rules.
 
+### 6.6 Infix and Prefix Operators
+
+Operators are sugar for `Fn` terms. The tree-sitter grammar parses them as flat chains; a Pratt resolver in the converter applies precedence and associativity to produce nested `Fn` calls. Adding a new symbolic operator requires only a dictionary entry — no grammar change.
+
+**Operator tokens.** Any sequence of the characters `+`, `-`, `*`, `/`, `%`, `^`, `|`, `&`, `=`, `<`, `>`, `~` is a valid operator symbol. The character `!` is excluded from operator symbols and reserved as a prefix-only token; `!=` is an explicit two-character infix token.
+
+**Infix operators** appear between terms:
+
+| Operator | Priority | Assoc | Functor | Origin |
+|----------|----------|-------|---------|--------|
+| `\|` | 1 | Left | `or` | `Bool` |
+| `or` | 1 | Left | `or` | `Bool` (word form) |
+| `&` | 2 | Left | `and` | `Bool` |
+| `and` | 2 | Left | `and` | `Bool` (word form) |
+| `=` | 3 | None | `eq` | `Eq` |
+| `!=` | 3 | None | `neq` | `Eq` |
+| `<` | 4 | None | `lt` | `Ordered` |
+| `<=` | 4 | None | `lte` | `Ordered` |
+| `>` | 4 | None | `gt` | `Ordered` |
+| `>=` | 4 | None | `gte` | `Ordered` |
+| `+` | 5 | Left | `add` | `Numeric` |
+| `-` | 5 | Left | `sub` | `Numeric` |
+| `*` | 6 | Left | `mul` | `Numeric` |
+| `/` | 6 | Left | `div` | `Numeric` |
+| `%` | 6 | Left | `mod` | `Numeric` |
+| `mod` | 6 | Left | `mod` | `Numeric` (word form) |
+| `div` | 6 | Left | `div` | `Numeric` (word form) |
+| `^` | 7 | Right | `pow` | `Numeric` |
+| `->` | 8 | Right | `arrow` | type arrows |
+
+Higher priority binds tighter: `a + b * c` desugars to `add(a, mul(b, c))`. Left-associative: `a + b + c` desugars to `add(add(a, b), c)`. Right-associative: `a ^ b ^ c` desugars to `pow(a, pow(b, c))`. None-associative: `a = b = c` is an error.
+
+**Ternary operator.** The `->` operator has an optional continuation with `@` for effect annotation:
+
+```
+?a -> ?b               →  arrow(?a, ?b)
+?a -> ?b @ ?c          →  arrow_effect(?a, ?b, ?c)
+```
+
+**Prefix operators** appear before a term:
+
+| Operator | Priority | Functor |
+|----------|----------|---------|
+| `!` | 9 | `not` |
+| `not` | 9 | `not` |
+
+Prefix binds tighter than all infix operators: `!?a + ?b` desugars to `add(not(?a), ?b)`.
+
+**Desugaring examples:**
+
+```
+?a + ?b * ?c        →  add(?a, mul(?b, ?c))
+!?a + ?b            →  add(not(?a), ?b)
+?a | ?b & ?c        →  or(?a, and(?b, ?c))
+?a != ?b            →  neq(?a, ?b)
+?a -> ?b @ ?c       →  arrow_effect(?a, ?b, ?c)
+?a ^ ?b ^ ?c        →  pow(?a, pow(?b, ?c))
+```
+
+**Extensibility.** The operator dictionary is currently hardcoded. A future phase will allow sorts to declare operators via meta annotations (e.g. `[infix: "+"]` on `Numeric.add`), extending the dictionary at load time.
+
 ## 7. Metadata
 
 Every fact in the KB carries metadata. `Meta` is an **entity** in the `anthill.prelude` namespace — not a special grammar production. It is a regular Fn term with named arguments.
@@ -1386,15 +1502,29 @@ Body[F]     ::= '{' F '}'  |  F 'end'
 -- Terms
 -- =================================================================
 
-Term        ::= Const(type, value)
+Term        ::= AtomTerm
+              | InfixTerm
+
+AtomTerm    ::= Const(type, value)
               | VariableTerm                 -- variable with optional description
               | Fn(name, args: [Term])
               | Ref(Name)
               | Instantiation(Name, SortBinding+)  -- Eq{T = Int} in term position
+              | PrefixTerm
               | Quoted(language, source)
 
 VariableTerm ::= Var                          -- bare variable: ? or ?name
                | Var DescriptionBlock+ '?'    -- with description(s): ?name {< text >}+ ?
+
+-- Operators: flat parse → Pratt desugaring → nested Fn terms (see §6.6)
+OperatorSym ::= [+\-*/%^|&=<>~]+            -- any sequence of operator chars (no !)
+InfixOp     ::= OperatorSym | '!='
+              | '@'
+              | 'or' | 'and' | 'mod' | 'div'
+PrefixOp    ::= '!' | 'not'
+
+InfixTerm   ::= AtomTerm (InfixOp AtomTerm)+   -- desugars via Pratt to nested Fn
+PrefixTerm  ::= PrefixOp AtomTerm               -- desugars to Fn(functor, [operand])
 
 -- =================================================================
 -- Kernel Constructs (4)
