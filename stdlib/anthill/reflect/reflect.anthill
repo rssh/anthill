@@ -18,8 +18,8 @@ namespace anthill.reflect
   export Term, FactId, Symbol
   export KB
   export qualified_name, short_name, lookup_symbol
-  export LiteralRepr, TermRepr, SortInfo, OperationInfo, FieldInfo, DescriptionInfo
-  export EntityOf, Requires
+  export LiteralRepr, TermRepr, SetLiteral, TupleLiteral, SortInfo, OperationInfo, FieldInfo, DescriptionInfo
+  export EntityOf, Requires, SortView
   export Substitution, apply, compose
   export LogicalQuery, empty_query
   export pattern_query, sort_query, conjunction, disjunction
@@ -60,9 +60,9 @@ namespace anthill.reflect
   -- Delays if query contains unbound variables (floundering prevention).
   operation not(query: Term) -> Bool
 
-  -- Extract a named binding from a ParameterizedType instantiation term.
-  -- Given spec_inst = ParameterizedType(Monoid(), T=Int(), combine=Ref(add)),
-  -- resolve_sort_instantiation_param(spec_inst, Ref(T), ?val) binds ?val to Int().
+  -- Extract a named binding from a SortView instantiation term.
+  -- Given spec = SortView(Monoid(), T=Int(), combine=Ref(add)),
+  -- resolve_sort_instantiation_param(spec, Ref(T), ?val) binds ?val to Int().
   operation resolve_sort_instantiation_param(inst: Term, param: Term) -> Term
 
   -- ================================================================
@@ -133,6 +133,16 @@ namespace anthill.reflect
     entity QuotedRepr(language: String, source: String)
   }
 
+  -- Set literal syntax: {x, y, z} is represented as SetLiteral(x, y, z).
+  -- Desugaring to Set.insert/Set.empty happens at the resolver/codegen
+  -- layer, where scope determines which Set implementation applies.
+  entity SetLiteral
+
+  -- Tuple literal syntax: (x, y) is represented as TupleLiteral(_1: x, _2: y).
+  -- Named tuples: (name: "alice", age: 30) → TupleLiteral(name: "alice", age: 30).
+  -- Unit tuple: () → TupleLiteral().
+  entity TupleLiteral
+
   -- ================================================================
   -- Sort introspection
   -- ================================================================
@@ -170,12 +180,22 @@ namespace anthill.reflect
     parent : Term                                   -- parent sort (sort term)
   )
 
+  -- SortView: a sort reference with parameter bindings applied (a "view"
+  -- in Maude terminology). Represents the Name{bindings} syntax.
+  --
+  -- Term representation: SortView(sort_term, param1=val1, param2=val2, ...)
+  -- - Positional arg: the sort reference term (e.g. Monoid() for sort Monoid)
+  -- - Named args: parameter bindings (both type params and operations)
+  --
+  -- Example: requires Monoid{T = Int, combine = add}
+  -- becomes: SortView(Monoid(), T=Int(), combine=Ref(add))
+  entity SortView(sort: Term)
+
   -- Requires: sort requires spec relationship.
   -- Emitted for each `requires` clause on a sort.
   entity Requires(
-    sort_ref  : Term,                               -- the sort that has the requirement
-    base_sort : Term,                               -- the required sort reference (e.g. Eq)
-    spec_inst : Term                                -- the instantiated spec (e.g. Eq{T = Int})
+    sort_ref : Term,                                -- the sort that has the requirement
+    spec     : Term                                 -- the view: SortView(Ref(Monoid), T=Int(), ...)
   )
 
   -- ================================================================

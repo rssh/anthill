@@ -1,0 +1,11 @@
+-- Function: pure computation (Operation with empty effect set).
+sort anthill.prelude.Function
+  sort A = ?
+  sort B = ?
+
+  operation apply(f: Function{A, B}, x: A) -> B
+end
+
+-- Function is a pure Operation (E = empty effect set)
+-- The exact expression of this relationship depends on how
+-- empty() is referenced in sort bindings.

@@ -15,9 +15,7 @@ namespace anthill.realization.rust_std
     -- Effect → host syntax (semantic: what the effect means)
     effect_map: [
       EffectMapping(effect: "Modify", receiver: MutRef),
-      EffectMapping(effect: "Read",   receiver: SharedRef),
-      EffectMapping(effect: "Error",  receiver: ResultWrap),
-      EffectMapping(effect: "Emit",   receiver: Callback)
+      EffectMapping(effect: "Error",  receiver: ResultWrap)
     ],
 
     -- Receiver rules (Rust-specific ownership optimization, not semantic)

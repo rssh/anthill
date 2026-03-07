@@ -1,0 +1,6 @@
+{<
+  Sort: the type of types in the kernel.
+  Every `sort` declaration introduces a Sort.
+  Introspection via reflect module (SortInfo, KB.sorts()).
+>}
+sort anthill.prelude.Sort = ?

@@ -1,0 +1,25 @@
+-- Set: typeclass for set-like types.
+-- S is the set type, T is the element type.
+sort anthill.prelude.Set
+  sort S = ?         -- the set type
+  sort T = ?         -- element type
+  requires Eq{T}
+  export empty, insert, member, subset, union, intersection, difference
+
+  operation empty() -> S
+  operation insert(s: S, x: T) -> S
+  operation member(x: T, s: S) -> Bool
+  operation subset(s1: S, s2: S) -> Bool
+  operation union(s1: S, s2: S) -> S
+  operation intersection(s1: S, s2: S) -> S
+  operation difference(s1: S, s2: S) -> S
+
+  -- Laws
+  rule member(?x, insert(?s, ?x)) = true
+  rule insert(insert(?s, ?x), ?x) = insert(?s, ?x)              -- idempotent
+  rule insert(insert(?s, ?x), ?y) = insert(insert(?s, ?y), ?x)  -- commutative
+  rule member(?, empty()) = false
+  rule subset(empty(), ?) = true
+  rule union(empty(), ?s) = ?s
+  rule union(?s, empty()) = ?s
+end

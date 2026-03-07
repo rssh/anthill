@@ -49,7 +49,7 @@ namespace anthill.realization
   )
 
   -- How a single effect kind maps to host-language syntax.
-  --   effect:    kernel effect name ("Modify", "Read", "Error", "Emit")
+  --   effect:    kernel effect name ("Modify", "Error")
   --   receiver:  what the effect means for the self parameter
   entity EffectMapping(
     effect    : String,
