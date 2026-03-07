@@ -1,0 +1,129 @@
+=====================================
+Unit tuple
+=====================================
+
+rule r: ()
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (tuple_literal))))
+
+=====================================
+Positional tuple
+=====================================
+
+rule r: (1, 2, 3)
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (tuple_literal
+        (integer_literal)
+        (integer_literal)
+        (integer_literal)))))
+
+=====================================
+Named tuple
+=====================================
+
+rule r: (x: 1, y: 2)
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (tuple_literal
+        (named_arg
+          name: (identifier)
+          value: (integer_literal))
+        (named_arg
+          name: (identifier)
+          value: (integer_literal))))))
+
+=====================================
+Tuple with variables
+=====================================
+
+rule r: (?a, ?b)
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (tuple_literal
+        (variable_term (variable))
+        (variable_term (variable))))))
+
+=====================================
+Tuple type in operation return
+=====================================
+
+operation foo() -> (Int, String)
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name (identifier))
+    return_type: (tuple_type
+      (simple_type (name (identifier)))
+      (simple_type (name (identifier))))))
+
+=====================================
+Named tuple type
+=====================================
+
+operation bar() -> (name: String, age: Int)
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name (identifier))
+    return_type: (tuple_type
+      (field_decl
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      (field_decl
+        name: (identifier)
+        type: (simple_type (name (identifier)))))))
+
+=====================================
+Unit tuple type
+=====================================
+
+operation unit() -> ()
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name (identifier))
+    return_type: (tuple_type)))
+
+=====================================
+Tuple inside fn_term
+=====================================
+
+fact example((1, "hello"))
+
+---
+
+(source_file
+  (fact_declaration
+    term: (fn_term
+      name: (name (identifier))
+      (tuple_literal
+        (integer_literal)
+        (string_literal)))))

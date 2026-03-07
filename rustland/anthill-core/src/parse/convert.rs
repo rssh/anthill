@@ -100,6 +100,11 @@ impl<'a> Converter<'a> {
         }
     }
 
+    /// Intern a positional tuple label: _1, _2, _3, ...
+    fn intern_positional_label(&mut self, index: usize) -> Symbol {
+        self.intern(&format!("_{}", index + 1))
+    }
+
     /// Find the first named child of a given kind.
     fn child_by_kind<'t>(&self, node: Node<'t>, kind: &str) -> Option<Node<'t>> {
         let mut cursor = node.walk();
@@ -216,6 +221,9 @@ impl<'a> Converter<'a> {
                 let term_id = self.convert_variable_node(node);
                 TypeExpr::Variable { term_id, descriptions: Vec::new() }
             }
+            "tuple_type" => {
+                self.convert_tuple_type(node)
+            }
             _ => {
                 self.err(format!("unexpected type node: {}", node.kind()), node);
                 let sym = self.intern("?");
@@ -237,7 +245,7 @@ impl<'a> Converter<'a> {
                 let bound = TypeExpr::Simple(p.clone());
                 SortBinding { param: p, bound }
             }
-            // Variable: Read{?} or Read{?r} — no param name, just a variable type
+            // Variable: Modify{?} or Modify{?r} — no param name, just a variable type
             (None, Some(t)) => {
                 let bound = self.convert_type(t);
                 let sym = self.intern("?");
@@ -317,6 +325,14 @@ impl<'a> Converter<'a> {
                 self.terms.alloc(Term::Ref(sym))
             }
             "infix_term" => self.convert_infix(node),
+            "prefix_term" => self.convert_prefix(node),
+            "set_literal" => self.convert_set_literal(node),
+            "tuple_literal" => self.convert_tuple_literal(node),
+            "paren_expr" => {
+                // (a) = a — unwrap parenthesized expression
+                let inner = node.named_child(0).unwrap_or(node);
+                self.convert_term(inner)
+            }
             "identifier" => {
                 let sym = self.intern(self.text(node));
                 self.terms.alloc(Term::Ident(sym))
@@ -405,7 +421,7 @@ impl<'a> Converter<'a> {
                         named_args.push((param_sym, self.terms.alloc(Term::Ref(param_sym))));
                     }
                     (None, Some(t)) => {
-                        // Variable binding: Read{?} or Read{?r}
+                        // Variable binding: Modify{?} or Modify{?r}
                         let tid = self.convert_term(t);
                         pos_args.push(tid);
                     }
@@ -424,51 +440,181 @@ impl<'a> Converter<'a> {
         self.convert_name(name_node)
     }
 
-    /// Desugar infix syntax to a `Fn` term: `a + b` → `add(a, b)`.
+    /// Desugar infix syntax via Pratt parsing.
+    ///
+    /// Collects the flat chain of operands and operators from the CST node,
+    /// then delegates to the Pratt resolver for precedence/associativity.
     fn convert_infix(&mut self, node: Node) -> TermId {
-        let mut named_children = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            named_children.push(child);
-        }
+        use super::pratt::{InfixElement, desugar_infix_chain};
 
-        if named_children.len() < 2 {
-            self.err("infix term needs at least two operands", node);
-            return self.terms.alloc(Term::Bottom);
-        }
-
-        let lhs = self.convert_term(named_children[0]);
-        let rhs = self.convert_term(named_children[1]);
-        let functor_name = self.find_infix_functor(node);
-        let functor = self.intern(functor_name);
-
-        self.terms.alloc(Term::Fn {
-            functor,
-            pos_args: SmallVec::from_slice(&[lhs, rhs]),
-            named_args: SmallVec::new(),
-        })
-    }
-
-    /// Map an infix operator token to its functor name.
-    fn find_infix_functor(&self, node: Node) -> &'static str {
+        let mut elements = Vec::new();
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
-                if !child.is_named() {
-                    match self.text(child) {
-                        "=" => return "eq",
-                        ">" => return "gt",
-                        ">=" => return "gte",
-                        "<" => return "lt",
-                        "<=" => return "lte",
-                        "+" => return "add",
-                        "-" => return "sub",
-                        "*" => return "mul",
-                        _ => {}
+                let kind = child.kind();
+                if kind == "operator_symbol" {
+                    // Named operator_symbol node
+                    elements.push(InfixElement::Operator(self.text(child)));
+                } else if is_term_kind(kind) || kind == "prefix_term" {
+                    // Operand (a term node)
+                    elements.push(InfixElement::Operand(self.convert_term(child)));
+                } else if !child.is_named() {
+                    // Anonymous token = keyword operator (!=, or, and, @, etc.)
+                    // or word operator (mod, div)
+                    let text = self.text(child);
+                    if text != "," {
+                        elements.push(InfixElement::Operator(text));
                     }
                 }
             }
         }
-        "eq" // fallback
+
+        match desugar_infix_chain(&elements, &mut self.terms, &mut self.symbols) {
+            Ok(tid) => tid,
+            Err(msg) => {
+                self.err(format!("infix desugaring: {msg}"), node);
+                self.terms.alloc(Term::Bottom)
+            }
+        }
+    }
+
+    /// Convert a prefix_term node: `!?a` → `not(?a)`.
+    fn convert_prefix(&mut self, node: Node) -> TermId {
+        use super::pratt::prefix_entry;
+
+        let mut op_text = None;
+        let mut operand_tid = None;
+
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                let kind = child.kind();
+                if is_term_kind(kind) || kind == "prefix_term" {
+                    operand_tid = Some(self.convert_term(child));
+                } else if op_text.is_none() {
+                    // First non-term child is the operator
+                    op_text = Some(self.text(child));
+                }
+            }
+        }
+
+        let op = op_text.unwrap_or("!");
+        let operand = operand_tid.unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+
+        let functor_name = match prefix_entry(op) {
+            Some(entry) => entry.functor,
+            None => {
+                self.err(format!("unknown prefix operator: {op}"), node);
+                "not"
+            }
+        };
+        let functor = self.intern(functor_name);
+        self.terms.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::from_elem(operand, 1),
+            named_args: SmallVec::new(),
+        })
+    }
+
+    /// Convert set literal: `{x, y, z}` → `SetLiteral(x, y, z)`.
+    /// `{}` → `SetLiteral()`.
+    /// Desugaring to Set.insert/empty happens later when scope is known.
+    fn convert_set_literal(&mut self, node: Node) -> TermId {
+        let functor = self.intern("SetLiteral");
+
+        let mut elements: SmallVec<[TermId; 4]> = SmallVec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if is_term_kind(child.kind()) {
+                elements.push(self.convert_term(child));
+            }
+        }
+
+        self.terms.alloc(Term::Fn {
+            functor,
+            pos_args: elements,
+            named_args: SmallVec::new(),
+        })
+    }
+
+    fn convert_tuple_literal(&mut self, node: Node) -> TermId {
+        let functor = self.intern("TupleLiteral");
+
+        let mut positional: SmallVec<[TermId; 4]> = SmallVec::new();
+        let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "named_arg" => {
+                    let key_node = self.field(child, "name");
+                    let val_node = self.field(child, "value");
+                    if let (Some(k), Some(v)) = (key_node, val_node) {
+                        let sym = self.intern(self.text(k));
+                        let tid = self.convert_term(v);
+                        named.push((sym, tid));
+                    }
+                }
+                _ if is_term_kind(child.kind()) => {
+                    positional.push(self.convert_term(child));
+                }
+                _ => {}
+            }
+        }
+
+        // All-or-nothing: error if mixing positional and named
+        if !positional.is_empty() && !named.is_empty() {
+            self.err("tuple literal cannot mix positional and named arguments", node);
+        }
+
+        if !positional.is_empty() {
+            // Desugar positional to _1, _2, _3, ...
+            for (i, tid) in positional.into_iter().enumerate() {
+                let label = self.intern_positional_label(i);
+                named.push((label, tid));
+            }
+        }
+
+        self.terms.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::new(),
+            named_args: named,
+        })
+    }
+
+    fn convert_tuple_type(&mut self, node: Node) -> TypeExpr {
+        let mut positional: Vec<TypeExpr> = Vec::new();
+        let mut named: Vec<(Symbol, TypeExpr)> = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "field_decl" => {
+                    let name_node = self.field(child, "name");
+                    let type_node = self.field(child, "type");
+                    if let (Some(n), Some(t)) = (name_node, type_node) {
+                        let sym = self.intern(self.text(n));
+                        let ty = self.convert_type(t);
+                        named.push((sym, ty));
+                    }
+                }
+                "simple_type" | "parameterized_type" | "variable_term" | "variable" | "tuple_type" => {
+                    positional.push(self.convert_type(child));
+                }
+                _ => {}
+            }
+        }
+
+        // All-or-nothing: error if mixing positional and named
+        if !positional.is_empty() && !named.is_empty() {
+            self.err("tuple type cannot mix positional and named fields", node);
+        }
+
+        if !positional.is_empty() {
+            // Desugar positional to _1, _2, _3, ...
+            for (i, ty) in positional.into_iter().enumerate() {
+                let label = self.intern_positional_label(i);
+                named.push((label, ty));
+            }
+        }
+
+        TypeExpr::Tuple(named)
     }
 
     // ── Visibility ──────────────────────────────────────────────
@@ -1573,6 +1719,10 @@ fn is_term_kind(kind: &str) -> bool {
             | "instantiation_term"
             | "ref_term"
             | "infix_term"
+            | "prefix_term"
+            | "set_literal"
+            | "tuple_literal"
+            | "paren_expr"
             | "identifier"
     )
 }

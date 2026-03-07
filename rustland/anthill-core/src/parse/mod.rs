@@ -4,6 +4,7 @@
 
 pub mod ir;
 pub mod error;
+pub mod pratt;
 mod convert;
 
 use ir::ParsedFile;

@@ -139,7 +139,7 @@ fn effects_reads_to_self_result() {
     assert!(out.contains("fn retrieve(&self"), "output:\n{out}");
     assert!(!out.contains("Result<"), "No effects should not wrap in Result:\n{out}");
 
-    // Error alone → &self + Result (Read on parameter is a no-op)
+    // Error alone → &self + Result
     let out2 = gen(r#"sort QueryableStore {
   operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
     effects (Error)

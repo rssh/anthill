@@ -968,10 +968,10 @@ impl KnowledgeBase {
             Term::Var(_) => return BuiltinResult::Delay,
             // Simple Ref: the sort itself
             Term::Ref(sym) => Some(sym),
-            // ParameterizedType(sort_name_term, bindings...) — first pos arg is the sort name
+            // SortView(sort_name_term, bindings...) — first pos arg is the sort name
             Term::Fn { ref functor, ref pos_args, .. } => {
                 let functor_name = self.symbols.name(*functor);
-                if functor_name == "ParameterizedType" && !pos_args.is_empty() {
+                if functor_name == "SortView" && !pos_args.is_empty() {
                     // First pos arg is the sort name term (e.g. Eq())
                     let name_term = pos_args[0];
                     match self.terms.get(name_term) {
@@ -1011,8 +1011,8 @@ impl KnowledgeBase {
         }
     }
 
-    /// `resolve_sort_instantiation_param(?spec_inst, ?param_name, ?value)` —
-    /// given a ParameterizedType term and a Ref(sym) for the param name,
+    /// `resolve_sort_instantiation_param(?spec, ?param_name, ?value)` —
+    /// given a SortView term and a Ref(sym) for the param name,
     /// find the corresponding named arg value. Delays if either arg is unbound.
     fn builtin_resolve_sort_inst_param(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
         let (inst_arg, param_arg, value_arg) = match self.terms.get(goal) {
@@ -1040,11 +1040,11 @@ impl KnowledgeBase {
             _ => return BuiltinResult::Failure,
         };
 
-        // Walk spec_inst — must be ParameterizedType(sort_name, named_args...)
+        // Walk spec — must be SortView(sort_name, named_args...)
         let value_tid = match self.terms.get(walked_inst).clone() {
             Term::Fn { ref functor, ref named_args, .. } => {
                 let functor_name = self.symbols.name(*functor);
-                if functor_name == "ParameterizedType" {
+                if functor_name == "SortView" {
                     // Search named_args for the matching param symbol
                     named_args.iter()
                         .find(|(sym, _)| *sym == param_sym)

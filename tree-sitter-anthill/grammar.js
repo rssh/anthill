@@ -582,6 +582,13 @@ module.exports = grammar({
     // =========================================================
 
     _term: $ => choice(
+      $._atom_term,
+      $.infix_term,
+    ),
+
+    // Atomic terms: everything except infix_term. Used as operands in
+    // infix_term and prefix_term to force flat chains.
+    _atom_term: $ => choice(
       $.string_literal,
       $.integer_literal,
       $.float_literal,
@@ -589,9 +596,12 @@ module.exports = grammar({
       $.variable_term,
       $.fn_term,
       $.instantiation_term,
+      $.set_literal,
+      $.tuple_literal,
+      $.paren_expr,
       $.ref_term,
-      $.infix_term,
-      $.identifier,
+      $.prefix_term,
+      prec(-1, $.identifier),
     ),
 
     // Variable with optional inline description(s): ?x {< text >}?
@@ -638,15 +648,52 @@ module.exports = grammar({
       '}',
     ),
 
+    // Set literal: {x, y, z} desugars to add(add(add(empty(), x), y), z).
+    // {} desugars to empty().
+    // No ambiguity: bare {…} = set literal, Name{…} = instantiation_term.
+    // prec(-2) so block-level { (rule/operation blocks, sort/namespace bodies)
+    // takes precedence when ambiguous.
+    set_literal: $ => prec(-2, seq('{', commaSep($._term), '}')),
+
+    // Tuple literal: (1, 2) or (x: 1, y: 2) or () for unit.
+    // Uses _fn_arg to allow both positional and named args;
+    // all-or-nothing naming enforced in the converter.
+    // prec(-2) to avoid conflict with parenthesized expressions.
+    tuple_literal: $ => prec(-2, choice(
+      seq('(', ')'),                                                      // unit
+      seq('(', $._fn_arg, ',', commaSep1($._fn_arg), optional(','), ')'), // 2+ elements
+    )),
+
     ref_term: $ => seq('Ref', '(', $.name, ')'),
 
-    // Infix sugar: a > b, a + b, a = b, etc.
-    infix_term: $ => choice(
-      prec.left(1, seq($._term, '=', $._term)),
-      prec.left(2, seq($._term, choice('>', '>=', '<', '<='), $._term)),
-      prec.left(3, seq($._term, choice('+', '-'), $._term)),
-      prec.left(4, seq($._term, '*', $._term)),
+    // Operator token: any sequence of operator chars (maximal munch).
+    // prec(-1) ensures keywords and other tokens take priority.
+    // Note: `!` is excluded — it is a dedicated prefix token. `!=` is
+    // handled as an explicit anonymous token in `_infix_op`.
+    operator_symbol: $ => token(prec(-1, /[+\-*/%^|&=<>~]+/)),
+
+    // Flat infix: all operators at one grammar level, Pratt resolver handles precedence.
+    infix_term: $ => prec(1, seq(
+      $._atom_term,
+      repeat1(seq($._infix_op, $._atom_term)),
+    )),
+
+    _infix_op: $ => choice(
+      $.operator_symbol,                    // symbolic: +, ->, >=, ...
+      '!=',                                 // explicit (since ! not in operator_symbol)
+      '@',                                  // effect annotation on arrows
+      'or', 'and', 'mod', 'div',            // word operators
     ),
+
+    // Parenthesized expression: (a) = a. Grouping only, no tuple.
+    // Distinguished from tuple_literal by absence of comma.
+    paren_expr: $ => seq('(', $._term, ')'),
+
+    // Prefix operators: restricted to specific tokens that cannot
+    // start an _infix_op, avoiding ambiguity in flat chains.
+    prefix_term: $ => seq($._prefix_op, $._atom_term),
+
+    _prefix_op: $ => choice('!', 'not'),
 
     // =========================================================
     // Types
@@ -656,7 +703,15 @@ module.exports = grammar({
       $.simple_type,
       $.parameterized_type,
       $.variable_term,
+      $.tuple_type,
     ),
+
+    tuple_type: $ => choice(
+      seq('(', ')'),
+      seq('(', $._tuple_type_arg, ',', commaSep1($._tuple_type_arg), optional(','), ')'),
+    ),
+
+    _tuple_type_arg: $ => choice($._type, $.field_decl),
 
     simple_type: $ => $.name,
 

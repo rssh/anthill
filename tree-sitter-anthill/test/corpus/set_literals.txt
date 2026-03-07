@@ -1,0 +1,88 @@
+=====================================
+Empty set literal
+=====================================
+
+rule r: {}
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (set_literal))))
+
+=====================================
+Single-element set literal
+=====================================
+
+rule r: {?x}
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (set_literal
+        (variable_term (variable))))))
+
+=====================================
+Multi-element set literal
+=====================================
+
+rule r: {?a, ?b, ?c}
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (set_literal
+        (variable_term (variable))
+        (variable_term (variable))
+        (variable_term (variable))))))
+
+=====================================
+Set literal with instantiation elements
+=====================================
+
+fact member(Read{?r}, {Modify{?r}, Error{?e}})
+
+---
+
+(source_file
+  (fact_declaration
+    term: (fn_term
+      name: (name (identifier))
+      (instantiation_term
+        name: (name (identifier))
+        (sort_binding
+          type: (variable_term (variable))))
+      (set_literal
+        (instantiation_term
+          name: (name (identifier))
+          (sort_binding
+            type: (variable_term (variable))))
+        (instantiation_term
+          name: (name (identifier))
+          (sort_binding
+            type: (variable_term (variable))))))))
+
+=====================================
+Set literal with named values
+=====================================
+
+rule r: {1, 2, 3}
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (set_literal
+        (integer_literal)
+        (integer_literal)
+        (integer_literal)))))

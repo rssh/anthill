@@ -252,7 +252,7 @@ fn extract_sort_ref_from_parameterized_type() {
     load::register_prelude(&mut kb);
     kb.register_standard_builtins();
 
-    // Build ParameterizedType(Eq(), T=Int())
+    // Build SortView(Eq(), T=Int())
     let eq_sym = kb.intern("Eq");
     let eq_name = kb.alloc(Term::Fn {
         functor: eq_sym,
@@ -266,7 +266,7 @@ fn extract_sort_ref_from_parameterized_type() {
         named_args: SmallVec::new(),
     });
     let t_sym = kb.intern("T");
-    let pt_sym = kb.intern("ParameterizedType");
+    let pt_sym = kb.intern("SortView");
     let inst = kb.alloc(Term::Fn {
         functor: pt_sym,
         pos_args: SmallVec::from_elem(eq_name, 1),
@@ -283,7 +283,7 @@ fn extract_sort_ref_from_parameterized_type() {
     let bound = kb.reify(var_result, &results[0].subst);
     match kb.get_term(bound) {
         Term::Ref(sym) => {
-            assert_eq!(kb.resolve_sym(*sym), "Eq", "should extract Eq from ParameterizedType(Eq(), ...)");
+            assert_eq!(kb.resolve_sym(*sym), "Eq", "should extract Eq from SortView(Eq(), ...)");
         }
         other => panic!("expected Ref(Eq), got {:?}", other),
     }
@@ -333,11 +333,10 @@ sort Ordered {
 
     let ordered_term = kb.resolve_short_name_term("Ordered");
 
-    // Query: Requires(sort_ref: Ordered, base_sort: ?, spec_inst: ?spec) — direct fact query (named args)
+    // Query: Requires(sort_ref: Ordered, spec: ?spec) — direct fact query (named args)
     let var_spec = make_var(&mut kb, "spec");
-    let var_anon = make_var(&mut kb, "_anon");
 
-    let goal = make_named_goal(&mut kb, "Requires", &[("sort_ref", ordered_term), ("base_sort", var_anon), ("spec_inst", var_spec)]);
+    let goal = make_named_goal(&mut kb, "Requires", &[("sort_ref", ordered_term), ("spec", var_spec)]);
     let results = kb.resolve(&[goal], &default_config());
     assert!(!results.is_empty(), "Ordered should have at least 1 Requires fact");
 }
@@ -940,4 +939,80 @@ entity Account(id: Int, balance: Int)
     let goal = make_goal(&mut kb, "entity_of", &[account_term, var_sort]);
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 0, "entity_of(Account, ?sort) should fail — standalone entity has no parent");
+}
+
+// ── Universal type variable tests ────────────────────────────────
+
+#[test]
+fn variable_field_type_loads_as_var() {
+    // `entity Foo(x: ?)` — field type should be Term::Var in KB.
+    let source = r#"
+entity Foo(x: ?)
+"#;
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    load_source(&mut kb, source);
+
+    let foo_sym = kb.resolve_symbol("Foo");
+    let x_sym = kb.intern("x");
+    let facts = kb.by_functor(foo_sym);
+    // There should be an Entity fact for Foo
+    assert!(!facts.is_empty(), "Foo entity should exist in KB");
+
+    // The entity fact's field 'x' should be a Var term
+    let entity_fact = facts[0];
+    let entity_term = kb.fact_term(entity_fact);
+    match kb.get_term(entity_term) {
+        Term::Fn { named_args, .. } => {
+            let x_arg = named_args.iter().find(|(s, _)| *s == x_sym);
+            assert!(x_arg.is_some(), "entity should have field 'x'");
+            let (_, x_tid) = x_arg.unwrap();
+            assert!(matches!(kb.get_term(*x_tid), Term::Var(_)),
+                "field typed ? should load as Term::Var, got {:?}", kb.get_term(*x_tid));
+        }
+        other => panic!("expected Fn term for entity, got {:?}", other),
+    }
+}
+
+#[test]
+fn variable_field_type_unifies_with_concrete() {
+    // Verify that an entity with `?` field types produces Term::Var in the KB,
+    // and that the var unifies with a concrete term via match_term.
+    let source = r#"
+entity Box(contents: ?)
+"#;
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    load_source(&mut kb, source);
+
+    // Get the Box entity fact
+    let box_sym = kb.resolve_symbol("Box");
+    let contents_sym = kb.intern("contents");
+    let facts = kb.by_functor(box_sym);
+    assert!(!facts.is_empty(), "Box should exist in KB");
+
+    let entity_term = kb.fact_term(facts[0]);
+    let contents_tid = match kb.get_term(entity_term) {
+        Term::Fn { named_args, .. } => {
+            named_args.iter().find(|(s, _)| *s == contents_sym)
+                .expect("should have 'contents' field").1
+        }
+        other => panic!("expected Fn, got {:?}", other),
+    };
+
+    // The contents field should be a Var — meaning it can hold any type
+    assert!(matches!(kb.get_term(contents_tid), Term::Var(_)),
+        "field typed ? should be a logic variable in KB");
+
+    // A Var unifies with any concrete term via match_term
+    let int_sym = kb.intern("Int");
+    let int_term = kb.alloc(Term::Fn {
+        functor: int_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+    let result = kb.match_term(contents_tid, int_term);
+    assert!(result.is_some(), "Var should unify with any concrete term (Int)");
 }

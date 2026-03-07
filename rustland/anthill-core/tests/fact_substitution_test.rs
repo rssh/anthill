@@ -2,7 +2,7 @@
 ///
 /// Tests load source files into a KB and verify:
 /// - base_subst computed from SortInfo
-/// - Requires spec_inst completed with all bindings
+/// - Requires spec (SortView) completed with all bindings
 /// - resolve_sort_instantiation_param builtin extracts bindings
 /// - auto-bind works for same-named operations
 
@@ -58,25 +58,22 @@ fn make_var(kb: &mut KnowledgeBase, name: &str) -> TermId {
     kb.alloc(Term::Var(vid))
 }
 
-/// Build a Requires query with all 3 named args (sort_ref, base_sort, spec_inst).
+/// Build a Requires query with 2 named args (sort_ref, spec).
 /// Missing args are filled with fresh variables.
 fn make_requires_query(
     kb: &mut KnowledgeBase,
     sort_ref: TermId,
-    spec_inst: TermId,
+    spec: TermId,
 ) -> TermId {
     let requires_sym = kb.resolve_symbol("Requires");
     let sort_ref_sym = kb.intern("sort_ref");
-    let base_sort_sym = kb.intern("base_sort");
-    let spec_inst_sym = kb.intern("spec_inst");
-    let var_base = make_var(kb, "base");
+    let spec_sym = kb.intern("spec");
     kb.alloc(Term::Fn {
         functor: requires_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::from_slice(&[
             (sort_ref_sym, sort_ref),
-            (base_sort_sym, var_base),
-            (spec_inst_sym, spec_inst),
+            (spec_sym, spec),
         ]),
     })
 }
@@ -155,7 +152,7 @@ fn base_subst_computed_for_monoid() {
     }
 }
 
-// ── Requires spec_inst completion tests ──────────────────────────
+// ── Requires spec completion tests ──────────────────────────────
 
 #[test]
 fn requires_spec_inst_completed_for_int_add() {
@@ -172,16 +169,16 @@ fn requires_spec_inst_completed_for_int_add() {
     let sol = &solutions[0];
     let inst_tid = kb.reify(var_inst, &sol.subst);
 
-    // spec_inst should be ParameterizedType(Monoid(), T=Int(), combine=Ref(add), identity=Ref(zero))
+    // spec should be SortView(Monoid(), T=Int(), combine=Ref(add), identity=Ref(zero))
     match kb.get_term(inst_tid).clone() {
         Term::Fn { ref functor, ref named_args, .. } => {
             let functor_name = kb.resolve_sym(*functor);
             assert!(
-                functor_name == "ParameterizedType" || functor_name.ends_with(".ParameterizedType"),
-                "spec_inst should be ParameterizedType, got: {functor_name}"
+                functor_name == "SortView" || functor_name.ends_with(".SortView"),
+                "spec should be SortView, got: {functor_name}"
             );
             // Should have all 3 bindings
-            assert_eq!(named_args.len(), 3, "spec_inst should have 3 named args (T, combine, identity), got {}", named_args.len());
+            assert_eq!(named_args.len(), 3, "spec should have 3 named args (T, combine, identity), got {}", named_args.len());
 
             // Check T binding -> Int
             let t_tid = find_named_arg_by_short(&kb, &named_args, "T");
@@ -201,7 +198,7 @@ fn requires_spec_inst_completed_for_int_add() {
             let i_short = extract_short_name(&kb, i_tid.unwrap());
             assert_eq!(i_short, "zero", "identity should be bound to zero, got: {i_short}");
         }
-        _ => panic!("spec_inst should be Fn term"),
+        _ => panic!("spec should be Fn term"),
     }
 }
 
@@ -222,7 +219,7 @@ fn requires_spec_inst_completed_for_int_mul() {
 
     match kb.get_term(inst_tid).clone() {
         Term::Fn { ref named_args, .. } => {
-            assert_eq!(named_args.len(), 3, "spec_inst should have 3 named args");
+            assert_eq!(named_args.len(), 3, "spec should have 3 named args");
 
             // Check combine -> multiply
             let c_tid = find_named_arg_by_short(&kb, &named_args, "combine");
@@ -236,7 +233,7 @@ fn requires_spec_inst_completed_for_int_mul() {
             let i_short = extract_short_name(&kb, i_tid.unwrap());
             assert_eq!(i_short, "one", "identity should be bound to one, got: {i_short}");
         }
-        _ => panic!("spec_inst should be Fn term"),
+        _ => panic!("spec should be Fn term"),
     }
 }
 
@@ -246,7 +243,7 @@ fn requires_spec_inst_completed_for_int_mul() {
 fn resolve_sort_inst_param_extracts_type_binding() {
     let mut kb = load_monoid_kb();
 
-    // First get the spec_inst for IntAdd
+    // First get the spec for IntAdd
     let int_add_term = kb.resolve_short_name_term("IntAdd");
     let var_inst = make_var(&mut kb, "inst");
     let req_goal = make_requires_query(&mut kb, int_add_term, var_inst);
@@ -256,13 +253,13 @@ fn resolve_sort_inst_param_extracts_type_binding() {
     assert!(!solutions.is_empty());
     let inst_tid = kb.reify(var_inst, &solutions[0].subst);
 
-    // Extract the T named arg key from the spec_inst (it might be scoped as Monoid.T)
+    // Extract the T named arg key from the spec (it might be scoped as Monoid.T)
     let t_key_sym = match kb.get_term(inst_tid).clone() {
         Term::Fn { ref named_args, .. } => {
             find_named_arg_sym_by_short(&kb, named_args, "T")
-                .expect("spec_inst should have T")
+                .expect("spec should have T")
         }
-        _ => panic!("spec_inst should be Fn"),
+        _ => panic!("spec should be Fn"),
     };
     let t_ref = kb.alloc(Term::Ref(t_key_sym));
     let var_val = make_var(&mut kb, "val");
@@ -285,7 +282,7 @@ fn resolve_sort_inst_param_extracts_type_binding() {
 fn resolve_sort_inst_param_extracts_operation_binding() {
     let mut kb = load_monoid_kb();
 
-    // Get the spec_inst for IntAdd
+    // Get the spec for IntAdd
     let int_add_term = kb.resolve_short_name_term("IntAdd");
     let var_inst = make_var(&mut kb, "inst");
     let req_goal = make_requires_query(&mut kb, int_add_term, var_inst);
@@ -295,13 +292,13 @@ fn resolve_sort_inst_param_extracts_operation_binding() {
     assert!(!solutions.is_empty());
     let inst_tid = kb.reify(var_inst, &solutions[0].subst);
 
-    // Extract the combine named arg key from spec_inst
+    // Extract the combine named arg key from spec
     let combine_key_sym = match kb.get_term(inst_tid).clone() {
         Term::Fn { ref named_args, .. } => {
             find_named_arg_sym_by_short(&kb, named_args, "combine")
-                .expect("spec_inst should have combine")
+                .expect("spec should have combine")
         }
-        _ => panic!("spec_inst should be Fn"),
+        _ => panic!("spec should be Fn"),
     };
     let combine_ref = kb.alloc(Term::Ref(combine_key_sym));
     let var_val = make_var(&mut kb, "val");
@@ -337,7 +334,9 @@ fn auto_bind_same_named_operations() {
     match kb.get_term(inst_tid).clone() {
         Term::Fn { ref named_args, .. } => {
             // Should have all 3 bindings: T, combine, identity
-            assert_eq!(named_args.len(), 3, "spec_inst should have 3 named args after auto-bind, got {}", named_args.len());
+            assert_eq!(named_args.len(), 3, "spec should have 3 named args after auto-bind");
+
+
 
             // Check combine was auto-bound
             let c_tid = find_named_arg_by_short(&kb, &named_args, "combine");
@@ -351,6 +350,6 @@ fn auto_bind_same_named_operations() {
             let i_short = extract_short_name(&kb, i_tid.unwrap());
             assert_eq!(i_short, "identity", "auto-bound identity should point to AutoBindTest's identity, got: {i_short}");
         }
-        _ => panic!("spec_inst should be Fn term"),
+        _ => panic!("spec should be Fn term"),
     }
 }

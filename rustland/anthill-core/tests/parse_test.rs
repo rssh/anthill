@@ -485,16 +485,16 @@ end
 
 #[test]
 fn load_operation_with_effects() {
-    let source = r#"sort Read { sort T = ? entity Read(target: T) }
+    let source = r#"sort Error { sort T = ? entity Error(target: T) }
 sort Modify { sort T = ? entity Modify(target: T) }
 sort Store {
   entity store
   operation persist(s: Store, fact: Int) -> Int
     effects (Modify{store})
   operation retrieve(s: Store, pattern: Int) -> Int
-    effects (Read{store})
+    effects (Error{store})
   operation process(s: Store, x: Int) -> Int
-    effects (Read{store}, Modify{store})
+    effects (Error{store}, Modify{store})
 }
 "#;
     let parsed = parse::parse(source).expect("parse failed");
@@ -778,14 +778,14 @@ sort Ordered {
         "requirement should be scoped to the Ordered sort"
     );
 
-    // The requirement term should be Requires(sort_ref: Ordered_ref, base_sort: Eq_ref, spec_inst: ParameterizedType(Eq(), T=T()))
+    // The requirement term should be Requires(sort_ref: Ordered_ref, spec: SortView(Eq(), T=T()))
     let fid = reqs[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
         Term::Fn { functor, pos_args, named_args, .. } => {
             assert_eq!(kb.resolve_sym(*functor), "Requires");
             assert_eq!(pos_args.len(), 0, "Requires should use named args, not positional");
-            assert_eq!(named_args.len(), 3, "Requires should have 3 named args: sort_ref, base_sort, spec_inst");
+            assert_eq!(named_args.len(), 2, "Requires should have 2 named args: sort_ref, spec");
         }
         other => panic!("expected Fn term for Requirement, got {:?}", other),
     }
@@ -1991,4 +1991,345 @@ fn load_abstract_sort_shared_variables() {
     }).collect();
     assert_eq!(var_ids[0], var_ids[1],
         "?X should share the same VarId across both sort definitions");
+}
+
+// ── Universal type variable tests ─────────────────────────────────
+
+#[test]
+fn parse_entity_with_anonymous_variable_fields() {
+    // `entity Foo(x: ?, y: ?)` — each `?` should produce TypeExpr::Variable with distinct VarIds.
+    let source = "entity Foo(x: ?, y: ?)\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    assert_eq!(parsed.items.len(), 1);
+    match &parsed.items[0] {
+        Item::Entity(e) => {
+            assert_eq!(parsed.symbols.name(e.name.last()), "Foo");
+            assert_eq!(e.fields.len(), 2);
+            // Both fields should be TypeExpr::Variable
+            let vid0 = match &e.fields[0].ty {
+                TypeExpr::Variable { term_id, .. } => {
+                    match parsed.terms.get(*term_id) {
+                        Term::Var(vid) => vid.raw(),
+                        other => panic!("expected Var for field x, got {:?}", other),
+                    }
+                }
+                other => panic!("expected Variable type for field x, got {:?}", other),
+            };
+            let vid1 = match &e.fields[1].ty {
+                TypeExpr::Variable { term_id, .. } => {
+                    match parsed.terms.get(*term_id) {
+                        Term::Var(vid) => vid.raw(),
+                        other => panic!("expected Var for field y, got {:?}", other),
+                    }
+                }
+                other => panic!("expected Variable type for field y, got {:?}", other),
+            };
+            assert_ne!(vid0, vid1, "anonymous ? fields should have distinct VarIds");
+        }
+        other => panic!("expected Entity, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_entity_with_named_variable_fields_shared() {
+    // `entity Pair(a: ?T, b: ?T)` — both `?T` should share the same VarId.
+    let source = "entity Pair(a: ?T, b: ?T)\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    assert_eq!(parsed.items.len(), 1);
+    match &parsed.items[0] {
+        Item::Entity(e) => {
+            assert_eq!(parsed.symbols.name(e.name.last()), "Pair");
+            assert_eq!(e.fields.len(), 2);
+            let vid0 = match &e.fields[0].ty {
+                TypeExpr::Variable { term_id, .. } => {
+                    match parsed.terms.get(*term_id) {
+                        Term::Var(vid) => {
+                            assert_eq!(parsed.symbols.name(vid.name()), "T");
+                            vid.raw()
+                        }
+                        other => panic!("expected Var for field a, got {:?}", other),
+                    }
+                }
+                other => panic!("expected Variable type for field a, got {:?}", other),
+            };
+            let vid1 = match &e.fields[1].ty {
+                TypeExpr::Variable { term_id, .. } => {
+                    match parsed.terms.get(*term_id) {
+                        Term::Var(vid) => {
+                            assert_eq!(parsed.symbols.name(vid.name()), "T");
+                            vid.raw()
+                        }
+                        other => panic!("expected Var for field b, got {:?}", other),
+                    }
+                }
+                other => panic!("expected Variable type for field b, got {:?}", other),
+            };
+            assert_eq!(vid0, vid1, "named ?T fields should share the same VarId");
+        }
+        other => panic!("expected Entity, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_entity_with_distinct_named_variables() {
+    // `entity Pair(a: ?A, b: ?B)` — different names should have distinct VarIds.
+    let source = "entity Pair(a: ?A, b: ?B)\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    assert_eq!(parsed.items.len(), 1);
+    match &parsed.items[0] {
+        Item::Entity(e) => {
+            assert_eq!(e.fields.len(), 2);
+            let vid0 = match &e.fields[0].ty {
+                TypeExpr::Variable { term_id, .. } => {
+                    match parsed.terms.get(*term_id) {
+                        Term::Var(vid) => vid.raw(),
+                        other => panic!("expected Var for field a, got {:?}", other),
+                    }
+                }
+                other => panic!("expected Variable type for field a, got {:?}", other),
+            };
+            let vid1 = match &e.fields[1].ty {
+                TypeExpr::Variable { term_id, .. } => {
+                    match parsed.terms.get(*term_id) {
+                        Term::Var(vid) => vid.raw(),
+                        other => panic!("expected Var for field b, got {:?}", other),
+                    }
+                }
+                other => panic!("expected Variable type for field b, got {:?}", other),
+            };
+            assert_ne!(vid0, vid1, "?A and ?B should have distinct VarIds");
+        }
+        other => panic!("expected Entity, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+// ── Operator tests (Proposal 016) ─────────────────────────────────
+
+use anthill_core::parse::ir::SimpleTermStore;
+
+/// Helper: parse a rule and return the parse-IR term for the head.
+fn parse_rule_head_ir(expr: &str) -> (SimpleTermStore, anthill_core::intern::SymbolTable, TermId) {
+    let source = format!("rule r: {expr}\n");
+    let parsed = parse::parse(&source).expect("parse failed");
+    // Extract the head term from the first rule item
+    let head_tid = match &parsed.items[0] {
+        Item::Rule(r) => match &r.head {
+            anthill_core::parse::ir::RuleHead::Term(tid) => *tid,
+            _ => panic!("expected rule head term"),
+        },
+        other => panic!("expected Rule, got {:?}", std::mem::discriminant(other)),
+    };
+    (parsed.terms, parsed.symbols, head_tid)
+}
+
+/// Recursively format a parse-IR term for test assertions.
+fn fmt_ir_term(terms: &SimpleTermStore, symbols: &anthill_core::intern::SymbolTable, tid: TermId) -> String {
+    match terms.get(tid) {
+        Term::Var(vid) => format!("?{}", symbols.name(vid.name())),
+        Term::Ident(sym) => symbols.name(*sym).to_string(),
+        Term::Ref(sym) => symbols.name(*sym).to_string(),
+        Term::Const(Literal::Int(n)) => format!("{n}"),
+        Term::Const(Literal::String(s)) => format!("\"{s}\""),
+        Term::Fn { functor, pos_args, named_args } => {
+            let name = symbols.name(*functor);
+            let mut parts: Vec<String> = pos_args.iter()
+                .map(|&a| fmt_ir_term(terms, symbols, a))
+                .collect();
+            for (key, val) in named_args.iter() {
+                let key_name = symbols.name(*key);
+                let val_str = fmt_ir_term(terms, symbols, *val);
+                parts.push(format!("{key_name}: {val_str}"));
+            }
+            format!("{name}({})", parts.join(", "))
+        }
+        other => format!("{other:?}"),
+    }
+}
+
+#[test]
+fn parse_multi_operator_chain() {
+    // ?a + ?b * ?c → add(?a, mul(?b, ?c)): mul binds tighter than add
+    let (terms, symbols, head) = parse_rule_head_ir("?a + ?b * ?c");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "add(?a, mul(?b, ?c))");
+}
+
+#[test]
+fn parse_left_assoc_add() {
+    // ?a + ?b + ?c → add(add(?a, ?b), ?c): left-associative
+    let (terms, symbols, head) = parse_rule_head_ir("?a + ?b + ?c");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "add(add(?a, ?b), ?c)");
+}
+
+#[test]
+fn parse_right_assoc_pow() {
+    // ?a ^ ?b ^ ?c → pow(?a, pow(?b, ?c)): right-associative
+    let (terms, symbols, head) = parse_rule_head_ir("?a ^ ?b ^ ?c");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "pow(?a, pow(?b, ?c))");
+}
+
+#[test]
+fn parse_prefix_not() {
+    // add(!?a, ?b) → add(not(?a), ?b)
+    let (terms, symbols, head) = parse_rule_head_ir("add(!?a, ?b)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "add(not(?a), ?b)");
+}
+
+#[test]
+fn parse_prefix_in_infix() {
+    // !?a + ?b → add(not(?a), ?b): prefix binds tighter
+    let (terms, symbols, head) = parse_rule_head_ir("!?a + ?b");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "add(not(?a), ?b)");
+}
+
+#[test]
+fn parse_new_operators() {
+    let (terms, symbols, head) = parse_rule_head_ir("?a | ?b");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "or(?a, ?b)");
+
+    let (terms, symbols, head) = parse_rule_head_ir("?a != ?b");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "neq(?a, ?b)");
+}
+
+#[test]
+fn parse_ternary_arrow_effect() {
+    // ?a -> ?b @ ?c → arrow_effect(?a, ?b, ?c)
+    let (terms, symbols, head) = parse_rule_head_ir("?a -> ?b @ ?c");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "arrow_effect(?a, ?b, ?c)");
+}
+
+#[test]
+fn parse_binary_arrow() {
+    // ?a -> ?b (no continuation) → arrow(?a, ?b)
+    let (terms, symbols, head) = parse_rule_head_ir("?a -> ?b");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "arrow(?a, ?b)");
+}
+
+#[test]
+fn parse_existing_infix_unchanged() {
+    // Verify backward compatibility: single-operator expressions produce same output
+    let (t, s, h) = parse_rule_head_ir("?a + ?b");
+    assert_eq!(fmt_ir_term(&t, &s, h), "add(?a, ?b)");
+
+    let (t, s, h) = parse_rule_head_ir("?a * ?b");
+    assert_eq!(fmt_ir_term(&t, &s, h), "mul(?a, ?b)");
+
+    let (t, s, h) = parse_rule_head_ir("?a = ?b");
+    assert_eq!(fmt_ir_term(&t, &s, h), "eq(?a, ?b)");
+
+    let (t, s, h) = parse_rule_head_ir("?a > ?b");
+    assert_eq!(fmt_ir_term(&t, &s, h), "gt(?a, ?b)");
+
+    let (t, s, h) = parse_rule_head_ir("?a >= ?b");
+    assert_eq!(fmt_ir_term(&t, &s, h), "gte(?a, ?b)");
+
+    let (t, s, h) = parse_rule_head_ir("?a < ?b");
+    assert_eq!(fmt_ir_term(&t, &s, h), "lt(?a, ?b)");
+
+    let (t, s, h) = parse_rule_head_ir("?a <= ?b");
+    assert_eq!(fmt_ir_term(&t, &s, h), "lte(?a, ?b)");
+
+    let (t, s, h) = parse_rule_head_ir("?a - ?b");
+    assert_eq!(fmt_ir_term(&t, &s, h), "sub(?a, ?b)");
+}
+
+// ── Set literal tests ─────────────────────────────────────────
+
+#[test]
+fn parse_empty_set_literal() {
+    // {} → SetLiteral()
+    let (terms, symbols, head) = parse_rule_head_ir("{}");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "SetLiteral()");
+}
+
+#[test]
+fn parse_single_element_set_literal() {
+    // {?x} → SetLiteral(?x)
+    let (terms, symbols, head) = parse_rule_head_ir("{?x}");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "SetLiteral(?x)");
+}
+
+#[test]
+fn parse_multi_element_set_literal() {
+    // {?a, ?b, ?c} → SetLiteral(?a, ?b, ?c)
+    let (terms, symbols, head) = parse_rule_head_ir("{?a, ?b, ?c}");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "SetLiteral(?a, ?b, ?c)");
+}
+
+#[test]
+fn parse_set_literal_with_integers() {
+    // {1, 2, 3} → SetLiteral(1, 2, 3)
+    let (terms, symbols, head) = parse_rule_head_ir("{1, 2, 3}");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "SetLiteral(1, 2, 3)");
+}
+
+// ── Tuple tests (Proposal 004) ─────────────────────────────────
+
+#[test]
+fn parse_unit_tuple() {
+    // () → TupleLiteral()
+    let (terms, symbols, head) = parse_rule_head_ir("()");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "TupleLiteral()");
+}
+
+#[test]
+fn parse_positional_tuple() {
+    // (1, 2) → TupleLiteral(_1: 1, _2: 2)
+    let (terms, symbols, head) = parse_rule_head_ir("(1, 2)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "TupleLiteral(_1: 1, _2: 2)");
+}
+
+#[test]
+fn parse_named_tuple() {
+    // (x: 1, y: 2) → TupleLiteral(x: 1, y: 2)
+    let (terms, symbols, head) = parse_rule_head_ir("(x: 1, y: 2)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "TupleLiteral(x: 1, y: 2)");
+}
+
+#[test]
+fn parse_tuple_variables() {
+    // (?a, ?b) → TupleLiteral(_1: ?a, _2: ?b)
+    let (terms, symbols, head) = parse_rule_head_ir("(?a, ?b)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "TupleLiteral(_1: ?a, _2: ?b)");
+}
+
+#[test]
+fn parse_tuple_type_in_operation() {
+    let source = "operation foo() -> (Int, String)\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Operation(o) => {
+            match &o.return_type {
+                TypeExpr::Tuple(fields) => {
+                    assert_eq!(fields.len(), 2);
+                    let name1 = parsed.symbols.name(fields[0].0);
+                    let name2 = parsed.symbols.name(fields[1].0);
+                    assert_eq!(name1, "_1");
+                    assert_eq!(name2, "_2");
+                }
+                other => panic!("expected Tuple type, got {:?}", other),
+            }
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_named_tuple_type_in_operation() {
+    let source = "operation bar() -> (name: String, age: Int)\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Operation(o) => {
+            match &o.return_type {
+                TypeExpr::Tuple(fields) => {
+                    assert_eq!(fields.len(), 2);
+                    let name1 = parsed.symbols.name(fields[0].0);
+                    let name2 = parsed.symbols.name(fields[1].0);
+                    assert_eq!(name1, "name");
+                    assert_eq!(name2, "age");
+                }
+                other => panic!("expected Tuple type, got {:?}", other),
+            }
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
 }

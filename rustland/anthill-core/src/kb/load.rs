@@ -450,6 +450,7 @@ fn type_expr_base_name(parse_sym: &crate::intern::SymbolTable, ty: &TypeExpr) ->
         TypeExpr::Simple(name) => join_segments(parse_sym, &name.segments),
         TypeExpr::Parameterized { name, .. } => join_segments(parse_sym, &name.segments),
         TypeExpr::Variable { .. } => "?".to_owned(),
+        TypeExpr::Tuple(_) => "TupleLiteral".to_owned(),
     }
 }
 
@@ -510,6 +511,20 @@ fn build_instantiation_term(
         TypeExpr::Variable { .. } => {
             // Variable in type position → just use a placeholder name term
             kb.make_name_term("?")
+        }
+        TypeExpr::Tuple(fields) => {
+            let tuple_sym = kb.symbols.find_sort_symbol("TupleLiteral")
+                .unwrap_or_else(|| kb.symbols.intern("TupleLiteral"));
+            let named_args: SmallVec<[(Symbol, TermId); 2]> = fields.iter().map(|(sym, ty)| {
+                let key = kb.symbols.intern(parse_sym.name(*sym));
+                let val = build_instantiation_term(kb, parse_sym, ty, _current_scope);
+                (key, val)
+            }).collect();
+            kb.alloc(Term::Fn {
+                functor: tuple_sym,
+                pos_args: SmallVec::new(),
+                named_args,
+            })
         }
     }
 }
@@ -625,7 +640,7 @@ const KERNEL_META_SORTS: &[&str] = &[
 /// Not defined in any `.anthill` file.
 /// (EntityOf and Requires are now declared in reflect.anthill.)
 const KERNEL_FUNCTORS: &[&str] = &[
-    "SortAlias", "ParameterizedType",
+    "SortAlias",
     "member", "meta",
 ];
 
@@ -750,6 +765,9 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     let op_info_sym = kb.symbols.define("OperationInfo", "anthill.reflect.OperationInfo", SymbolKind::Entity, reflect_term.raw());
     let entity_of_sym = kb.symbols.define("EntityOf", "anthill.reflect.EntityOf", SymbolKind::Entity, reflect_term.raw());
     let requires_sym = kb.symbols.define("Requires", "anthill.reflect.Requires", SymbolKind::Entity, reflect_term.raw());
+    let sort_view_sym = kb.symbols.define("SortView", "anthill.reflect.SortView", SymbolKind::Entity, reflect_term.raw());
+    let set_literal_sym = kb.symbols.define("SetLiteral", "anthill.reflect.SetLiteral", SymbolKind::Entity, reflect_term.raw());
+    let tuple_literal_sym = kb.symbols.define("TupleLiteral", "anthill.reflect.TupleLiteral", SymbolKind::Entity, reflect_term.raw());
 
     // Global imports: make fundamental constructors visible from any scope
     // that walks up to _global (like Haskell's Prelude auto-import).
@@ -762,6 +780,9 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.add_import(global_raw, "OperationInfo", op_info_sym);
     kb.symbols.add_import(global_raw, "EntityOf", entity_of_sym);
     kb.symbols.add_import(global_raw, "Requires", requires_sym);
+    kb.symbols.add_import(global_raw, "SortView", sort_view_sym);
+    kb.symbols.add_import(global_raw, "SetLiteral", set_literal_sym);
+    kb.symbols.add_import(global_raw, "TupleLiteral", tuple_literal_sym);
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -961,20 +982,20 @@ fn collect_ref_list(kb: &mut KnowledgeBase, list_tid: TermId, out: &mut Vec<(Sym
     }
 }
 
-/// For each Requires fact with a ParameterizedType spec_inst, complete the
+/// For each Requires fact with a SortView spec, complete the
 /// instantiation by merging explicit bindings with auto-bound operations.
 fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
     let requires_sym = match kb.try_resolve_symbol("Requires") {
         Some(sym) => sym,
         None => return,
     };
-    let param_type_sym = match kb.try_resolve_symbol("ParameterizedType") {
+    let param_type_sym = match kb.try_resolve_symbol("SortView") {
         Some(sym) => sym,
         None => return,
     };
 
     let sort_ref_field = kb.intern("sort_ref");
-    let spec_inst_field = kb.intern("spec_inst");
+    let spec_field = kb.intern("spec");
 
     let rule_ids = kb.by_functor(requires_sym);
 
@@ -992,11 +1013,11 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
             let sort_ref_tid = named_args.iter()
                 .find(|(s, _)| *s == sort_ref_field)
                 .map(|(_, t)| *t);
-            let spec_inst_tid = named_args.iter()
-                .find(|(s, _)| *s == spec_inst_field)
+            let spec_tid = named_args.iter()
+                .find(|(s, _)| *s == spec_field)
                 .map(|(_, t)| *t);
 
-            if let (Some(sr_tid), Some(si_tid)) = (sort_ref_tid, spec_inst_tid) {
+            if let (Some(sr_tid), Some(si_tid)) = (sort_ref_tid, spec_tid) {
                 let si_term = kb.get_term(si_tid).clone();
                 if let Term::Fn { functor, pos_args, named_args: inst_named, .. } = si_term {
                     if functor == param_type_sym && !pos_args.is_empty() {
@@ -1074,16 +1095,16 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
             }
         }
 
-        // Now build a new ParameterizedType term with complete bindings
+        // Now build a new SortView term with complete bindings
         let old_head = kb.rule_head(rid);
         let old_head_term = kb.get_term(old_head).clone();
         if let Term::Fn { ref named_args, .. } = old_head_term {
-            let spec_inst_tid = named_args.iter()
-                .find(|(s, _)| *s == spec_inst_field)
+            let old_spec_tid = named_args.iter()
+                .find(|(s, _)| *s == spec_field)
                 .map(|(_, t)| *t)
                 .unwrap();
 
-            let old_inst = kb.get_term(spec_inst_tid).clone();
+            let old_inst = kb.get_term(old_spec_tid).clone();
             if let Term::Fn { pos_args, .. } = old_inst {
                 let new_named: SmallVec<[(Symbol, TermId); 2]> = complete.into_iter().collect();
                 let new_inst = kb.alloc(Term::Fn {
@@ -1092,10 +1113,10 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
                     named_args: new_named,
                 });
 
-                // Build new Requires fact with updated spec_inst
+                // Build new Requires fact with updated spec
                 let new_named_args: SmallVec<[(Symbol, TermId); 2]> = named_args.iter()
                     .map(|(s, t)| {
-                        if *s == spec_inst_field {
+                        if *s == spec_field {
                             (*s, new_inst)
                         } else {
                             (*s, *t)
@@ -1531,7 +1552,7 @@ impl<'a> Loader<'a> {
                     named_args.push((param_sym, bound_term));
                 }
 
-                let param_type_sym = self.kb.resolve_symbol("ParameterizedType");
+                let param_type_sym = self.kb.resolve_symbol("SortView");
                 self.kb.alloc(Term::Fn {
                     functor: param_type_sym,
                     pos_args: SmallVec::from_elem(name_term, 1),
@@ -1544,6 +1565,19 @@ impl<'a> Loader<'a> {
                     self.emit_desc_fact(kb_id, desc_text, self.current_scope);
                 }
                 kb_id
+            }
+            TypeExpr::Tuple(fields) => {
+                let tuple_sym = self.kb.resolve_symbol("TupleLiteral");
+                let named_args: SmallVec<[(Symbol, TermId); 2]> = fields.iter().map(|(sym, ty)| {
+                    let key = self.reintern(*sym);
+                    let val = self.type_expr_to_term(ty);
+                    (key, val)
+                }).collect();
+                self.kb.alloc(Term::Fn {
+                    functor: tuple_sym,
+                    pos_args: SmallVec::new(),
+                    named_args,
+                })
             }
         }
     }
@@ -1967,25 +2001,16 @@ impl<'a> Loader<'a> {
         let requires_sym = self.kb.resolve_symbol("Requires");
         let type_term = self.type_expr_to_term(&r.type_expr);
 
-        // Extract base sort reference from the type expression
-        let base_sort = match &r.type_expr {
-            TypeExpr::Simple(name) => self.name_to_sort_term(name),
-            TypeExpr::Parameterized { name, .. } => self.name_to_sort_term(name),
-            TypeExpr::Variable { .. } => type_term,
-        };
-
-        // Named args: sort_ref, base_sort, spec_inst
+        // Named args: sort_ref, spec
         let sort_ref_sym = self.kb.intern("sort_ref");
-        let base_sort_sym = self.kb.intern("base_sort");
-        let spec_inst_sym = self.kb.intern("spec_inst");
-        self.kb.register_entity_fields(requires_sym, vec![sort_ref_sym, base_sort_sym, spec_inst_sym]);
+        let spec_sym = self.kb.intern("spec");
+        self.kb.register_entity_fields(requires_sym, vec![sort_ref_sym, spec_sym]);
         let requires_term = self.kb.alloc(Term::Fn {
             functor: requires_sym,
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_slice(&[
                 (sort_ref_sym, domain),
-                (base_sort_sym, base_sort),
-                (spec_inst_sym, type_term),
+                (spec_sym, type_term),
             ]),
         });
         self.kb.assert_fact(requires_term, requirement_sort, domain, None);

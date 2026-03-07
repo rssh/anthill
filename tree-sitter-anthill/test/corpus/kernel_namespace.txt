@@ -400,6 +400,7 @@ rule first: frs(?a, ?) = ?a
           name: (name (identifier))
           (variable_term (variable))
           (variable_term (variable)))
+        (operator_symbol)
         (variable_term (variable))))))
 
 =====================================

@@ -312,6 +312,12 @@ impl<'a> RustCodegen<'a> {
                 map_primitive_type(&n)
             }
             TypeExpr::Variable { .. } => "T".to_owned(),
+            TypeExpr::Tuple(fields) => {
+                let parts: Vec<String> = fields.iter()
+                    .map(|(_, ty)| self.type_to_rust(ty))
+                    .collect();
+                format!("({})", parts.join(", "))
+            }
             TypeExpr::Parameterized { name, bindings } => {
                 let n = self.resolve(name);
                 match n.as_str() {
@@ -356,6 +362,12 @@ impl<'a> RustCodegen<'a> {
                 map_primitive_type(&n)
             }
             TypeExpr::Variable { .. } => "T".to_owned(),
+            TypeExpr::Tuple(fields) => {
+                let parts: Vec<String> = fields.iter()
+                    .map(|(_, ty)| self.type_to_rust_in_sort(ty, sort_name, type_params, collapse_type_params))
+                    .collect();
+                format!("({})", parts.join(", "))
+            }
             TypeExpr::Parameterized { name, bindings } => {
                 let n = self.resolve(name);
                 if n == sort_name {
@@ -921,11 +933,7 @@ impl<'a> RustCodegen<'a> {
         type_params: &[String],
     ) -> String {
         let rust_type = self.type_to_rust(ty);
-        let type_name = match ty {
-            TypeExpr::Simple(name) => self.resolve(name),
-            TypeExpr::Parameterized { name, .. } => self.resolve(name),
-            TypeExpr::Variable { .. } => "T".to_owned(),
-        };
+        let type_name = self.type_expr_short_name(ty);
         if type_name == sort_name {
             // Self-referential → Box
             let generics = if type_params.is_empty() {
@@ -1116,6 +1124,7 @@ impl<'a> RustCodegen<'a> {
             TypeExpr::Simple(name) => self.resolve(name),
             TypeExpr::Parameterized { name, .. } => self.resolve(name),
             TypeExpr::Variable { .. } => "T".to_owned(),
+            TypeExpr::Tuple(_) => "Tuple".to_owned(),
         }
     }
 
@@ -1233,6 +1242,7 @@ fn analyze_effects(effects: &[Effect], symbols: &SymbolTable, type_params: &[Str
                 }
             }
             TypeExpr::Variable { .. } => {}
+            TypeExpr::Tuple(_) => {}
         }
     }
 
@@ -1272,6 +1282,7 @@ fn should_collapse_self(info: &SortInfo, symbols: &SymbolTable) -> bool {
             TypeExpr::Simple(name) => symbols.name(name.last()).to_owned(),
             TypeExpr::Parameterized { name, .. } => symbols.name(name.last()).to_owned(),
             TypeExpr::Variable { .. } => "T".to_owned(),
+            TypeExpr::Tuple(_) => "Tuple".to_owned(),
         };
 
         if first_type != *param_name {
@@ -1347,6 +1358,7 @@ fn type_expr_name(symbols: &SymbolTable, ty: &TypeExpr) -> String {
         TypeExpr::Simple(name) => symbols.name(name.last()).to_owned(),
         TypeExpr::Parameterized { name, .. } => symbols.name(name.last()).to_owned(),
         TypeExpr::Variable { .. } => "T".to_owned(),
+        TypeExpr::Tuple(_) => "Tuple".to_owned(),
     }
 }
 

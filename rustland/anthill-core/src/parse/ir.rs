@@ -103,6 +103,9 @@ pub enum TypeExpr {
         term_id: TermId,
         descriptions: Vec<String>,
     },
+    /// Tuple type: `(Int, String)` or `(name: String, age: Int)`.
+    /// Always named; converter fills _1, _2 for positional.
+    Tuple(Vec<(Symbol, TypeExpr)>),
 }
 
 #[derive(Clone, Debug, PartialEq)]

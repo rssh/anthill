@@ -1,0 +1,170 @@
+=====================================
+Single infix operator
+=====================================
+
+rule r: ?a + ?b
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (infix_term
+        (variable_term (variable))
+        (operator_symbol)
+        (variable_term (variable))))))
+
+=====================================
+Multi-operator flat chain
+=====================================
+
+rule r: ?a + ?b * ?c
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (infix_term
+        (variable_term (variable))
+        (operator_symbol)
+        (variable_term (variable))
+        (operator_symbol)
+        (variable_term (variable))))))
+
+=====================================
+Prefix bang operator
+=====================================
+
+fact add(!?a, ?b)
+
+---
+
+(source_file
+  (fact_declaration
+    term: (fn_term
+      name: (name (identifier))
+      (prefix_term
+        (variable_term (variable)))
+      (variable_term (variable)))))
+
+=====================================
+Prefix word not
+=====================================
+
+rule r: not ?a
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (prefix_term
+        (variable_term (variable))))))
+
+=====================================
+New symbolic operators
+=====================================
+
+rule r: ?a | ?b & ?c
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (infix_term
+        (variable_term (variable))
+        (operator_symbol)
+        (variable_term (variable))
+        (operator_symbol)
+        (variable_term (variable))))))
+
+=====================================
+Multi-char operator !=
+=====================================
+
+rule r: ?a != ?b
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (infix_term
+        (variable_term (variable))
+        (variable_term (variable))))))
+
+=====================================
+Arrow operator
+=====================================
+
+rule r: ?a -> ?b
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (infix_term
+        (variable_term (variable))
+        (operator_symbol)
+        (variable_term (variable))))))
+
+=====================================
+Ternary arrow with effect
+=====================================
+
+rule r: ?a -> ?b @ ?c
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (infix_term
+        (variable_term (variable))
+        (operator_symbol)
+        (variable_term (variable))
+        (variable_term (variable))))))
+
+=====================================
+Prefix in infix chain
+=====================================
+
+rule r: !?a + ?b
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (infix_term
+        (prefix_term
+          (variable_term (variable)))
+        (operator_symbol)
+        (variable_term (variable))))))
+
+=====================================
+Word infix operator
+=====================================
+
+rule r: ?a mod ?b
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (infix_term
+        (variable_term (variable))
+        (variable_term (variable))))))

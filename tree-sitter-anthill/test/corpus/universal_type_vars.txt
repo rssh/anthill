@@ -1,0 +1,73 @@
+=====================================
+entity with anonymous variable type
+=====================================
+
+entity Foo(x: ?, y: ?)
+
+---
+
+(source_file
+  (entity_declaration
+    name: (name (identifier))
+    (field_decl
+      name: (identifier)
+      type: (variable_term (variable)))
+    (field_decl
+      name: (identifier)
+      type: (variable_term (variable)))))
+
+=====================================
+entity with named variable type
+=====================================
+
+entity Pair(a: ?A, b: ?B)
+
+---
+
+(source_file
+  (entity_declaration
+    name: (name (identifier))
+    (field_decl
+      name: (identifier)
+      type: (variable_term (variable)))
+    (field_decl
+      name: (identifier)
+      type: (variable_term (variable)))))
+
+=====================================
+entity with shared named variable
+=====================================
+
+entity Mapping(key: ?K, value: ?K)
+
+---
+
+(source_file
+  (entity_declaration
+    name: (name (identifier))
+    (field_decl
+      name: (identifier)
+      type: (variable_term (variable)))
+    (field_decl
+      name: (identifier)
+      type: (variable_term (variable)))))
+
+=====================================
+operation with variable types
+=====================================
+
+sort T
+  operation identity(x: ?A) -> ?A
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name (identifier))
+    (operation_declaration
+      name: (name (identifier))
+      (param
+        name: (identifier)
+        type: (variable_term (variable)))
+      return_type: (variable_term (variable)))))
