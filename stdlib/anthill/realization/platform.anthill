@@ -1,0 +1,186 @@
+-- Platform: execution platforms, codegen, toolchains, and build goals
+--
+-- Seven concepts for the spec→execution pipeline:
+--   ExecutionPlatform — property bag describing an execution environment
+--   Codegen           — reads specs from KB, emits host source files
+--   Toolchain         — compiles host source → artifact
+--   CommandShell      — execute external processes, read env vars
+--   Runtime           — anthill's own evaluator (no codegen needed)
+--   Filesystem        — paths, file status, filesystem oracle
+--   Goal              — what we want the system to do
+--
+-- ExecutionPlatform is role-neutral: becomes "target", "exec", or "runtime"
+-- platform depending on which field it occupies.
+--
+-- Inspired by Bazel/CMake/Nix/Gradle: platform = property bag,
+-- toolchain = tool + platform constraints.
+
+namespace anthill.realization.platform
+  import anthill.prelude.{List, String, Bool, Int, Option}
+  import anthill.prelude.{Timestamp}
+  import anthill.reflect.{Term, KB}
+  import anthill.realization.{LanguageMapping}
+  export ExecutionPlatform, execution_platform, has_property
+  export Codegen, codegen, generate
+  export Toolchain, toolchain, build
+  export ProcessResult, CommandShell, exec, env_var
+  export Builtin, Runtime, runtime, evaluate, trace
+  export Path, FileStatus, Filesystem, exists, status
+  export basename, dirname, extension, components, join
+  export file_extension, needs_rebuild
+  export Goal, check, verify, interpret
+
+  -- ================================================================
+  -- ExecutionPlatform
+  -- ================================================================
+
+  sort ExecutionPlatform
+    entity execution_platform(
+      name       : String,
+      properties : List{T = (String, String)}
+    )
+
+    operation has_property(p: ExecutionPlatform, key: String, value: String) -> Bool
+  end
+
+  -- ================================================================
+  -- Codegen
+  -- ================================================================
+
+  -- Reads specs from KB, emits host source files.
+  -- Parameterized by LanguageMapping. Each concrete codegen (Rust, Scala, C)
+  -- is a separate implementation.
+  sort Codegen
+    entity codegen(
+      name    : String,
+      mapping : LanguageMapping,
+      target  : ExecutionPlatform
+    )
+
+    operation generate(cg: Codegen, spec: Term, fs: Filesystem)
+      -> List{T = Path}
+      effects (Error, Modify{Filesystem})
+  end
+
+  -- ================================================================
+  -- Toolchain
+  -- ================================================================
+
+  -- Compiles host source → artifact. No anthill knowledge.
+  -- Selected by platform constraints.
+  sort Toolchain
+    entity toolchain(
+      name    : String,
+      command : String,
+      args    : List{T = String},
+      exec    : ExecutionPlatform,
+      target  : ExecutionPlatform
+    )
+
+    operation build(tc: Toolchain, sh: CommandShell, fs: Filesystem,
+                    inputs: List{T = Path},
+                    outputs: List{T = Path}) -> ProcessResult
+      effects (Error, Modify{Filesystem})
+  end
+
+  -- ================================================================
+  -- CommandShell
+  -- ================================================================
+
+  -- Execute external processes and read environment variables.
+  -- Together with Filesystem, these are the two OS interfaces anthill needs.
+
+  entity ProcessResult(
+    exit_code : Int,
+    stdout    : Path,
+    stderr    : Path
+  )
+
+  sort CommandShell
+    operation exec(sh: CommandShell, command: String, args: List{T = String},
+                   working_dir: Path, env: List{T = (String, String)})
+      -> ProcessResult
+      effects (Error, Modify{Filesystem})
+
+    operation env_var(sh: CommandShell, name: String) -> Option{T = String}
+  end
+
+  -- ================================================================
+  -- Runtime
+  -- ================================================================
+
+  -- The anthill evaluator. Evaluates KB terms directly — no codegen,
+  -- no toolchain. Needs builtins for host-language FFI.
+
+  entity Builtin(
+    name    : String,
+    host_fn : String,
+    host    : String
+  )
+
+  sort Runtime
+    entity runtime(
+      name     : String,
+      builtins : List{T = Builtin}
+    )
+
+    operation evaluate(rt: Runtime, term: Term, kb: KB) -> Term
+      effects (Error)
+
+    operation trace(rt: Runtime, term: Term, kb: KB) -> List{T = Term}
+      effects (Error)
+  end
+
+  -- ================================================================
+  -- Filesystem
+  -- ================================================================
+
+  sort Path = String
+
+  -- Path operations (free-standing, not in a nested namespace)
+  operation basename(p: Path) -> String
+  operation dirname(p: Path) -> Path
+  operation extension(p: Path) -> String
+  operation components(p: Path) -> List{T = String}
+  operation join(base: Path, child: String) -> Path
+
+  entity FileStatus(
+    size        : Int,
+    modified    : Timestamp,
+    is_dir      : Bool,
+    permissions : Int
+  )
+
+  sort Filesystem
+    operation exists(fs: Filesystem, path: Path) -> Bool
+    operation status(fs: Filesystem, path: Path) -> FileStatus
+      effects (Error)
+  end
+
+  fact file_extension("rs", "rust")
+  fact file_extension("scala", "scala")
+  fact file_extension("c", "c")
+  fact file_extension("h", "c")
+
+  rule needs_rebuild(?fs, ?input, ?output) :-
+    exists(?fs, ?input),
+    exists(?fs, ?output),
+    status(?fs, ?input, FileStatus(size: ?, modified: ?t_in, is_dir: ?, permissions: ?)),
+    status(?fs, ?output, FileStatus(size: ?, modified: ?t_out, is_dir: ?, permissions: ?)),
+    gt(?t_in, ?t_out)
+
+  -- ================================================================
+  -- Goal
+  -- ================================================================
+
+  -- What we want the system to do.
+  sort Goal
+    entity check
+    entity generate(target: ExecutionPlatform)
+    entity build(target: ExecutionPlatform)
+    entity test(target: ExecutionPlatform)
+    entity verify
+    entity interpret
+  end
+
+end

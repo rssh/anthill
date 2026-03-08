@@ -1,0 +1,47 @@
+-- Lattice: partial order with least upper bound and greatest lower bound
+sort anthill.prelude.Lattice
+  export lub, glb, less
+
+  sort T = ?
+  requires Eq{T}
+
+  operation {
+    lub(a: T, b: T) -> T
+    glb(a: T, b: T) -> T
+    less(a: T, b: T) -> Bool
+  }
+
+  rule {
+    lub_comm:  lub(?a, ?b) = lub(?b, ?a)
+    glb_comm:  glb(?a, ?b) = glb(?b, ?a)
+    lub_assoc: lub(lub(?a, ?b), ?c) = lub(?a, lub(?b, ?c))
+    glb_assoc: glb(glb(?a, ?b), ?c) = glb(?a, glb(?b, ?c))
+    lub_idem:  lub(?a, ?a) = ?a
+    glb_idem:  glb(?a, ?a) = ?a
+    lub_glb:   lub(?a, glb(?a, ?b)) = ?a
+    glb_lub:   glb(?a, lub(?a, ?b)) = ?a
+    less_lub:  less(?a, ?b) = eq(lub(?a, ?b), ?b)
+  }
+end
+
+-- BoundedLattice: lattice with top and bottom elements
+sort anthill.prelude.BoundedLattice
+  export top, bottom
+
+  sort T = ?
+  requires Lattice{T}
+
+  operation {
+    top() -> T
+    bottom() -> T
+  }
+
+  rule {
+    top_lub:     lub(?a, top) = top
+    bottom_lub:  lub(?a, bottom) = ?a
+    top_glb:     glb(?a, top) = ?a
+    bottom_glb:  glb(?a, bottom) = bottom
+    less_bottom: less(bottom, ?a)
+    less_top:    less(?a, top)
+  }
+end

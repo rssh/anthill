@@ -1,0 +1,6 @@
+{< Nothing: the bottom sort — uninhabited type.
+   No values of type Nothing exist.
+   Bottom of the sort lattice: less(Nothing, ?T) for all T.
+   Connected to denial rules: ⊥ in rule heads expresses non-existence. >}
+sort anthill.prelude.Nothing
+end
