@@ -1,6 +1,11 @@
-{<
-  Sort: the type of types in the kernel.
-  Every `sort` declaration introduces a Sort.
-  Introspection via reflect module (SortInfo, KB.sorts()).
->}
-sort anthill.prelude.Sort = ?
+{< Sort: the type of types in the kernel.
+   Every sort declaration introduces a Sort value.
+   Sort forms a lattice via entity_of and refines relationships.
+   No top sort exists (the lattice is unbounded above).
+   Nothing is the bottom (uninhabited, subtype of everything). >}
+sort anthill.prelude.Sort
+  import anthill.prelude.{Lattice, Eq}
+
+  fact Eq{T = Sort}
+  fact Lattice{T = Sort}
+end

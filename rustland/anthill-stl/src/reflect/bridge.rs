@@ -215,10 +215,10 @@ impl KbBridge {
         }
 
         // Fall back: find any fact in the KB with matching functor and infer schema.
-        // Use try_resolve_symbol first (loader uses resolved symbols for functor names),
+        // Use scope-aware resolution from _global (covers qualified names and imports),
         // then fall back to intern for unknown names.
         let mut kb = self.kb.borrow_mut();
-        let plain_sym = kb.try_resolve_symbol(sort_name)
+        let plain_sym = kb.resolve_name_in_global(sort_name)
             .unwrap_or_else(|| kb.intern(sort_name));
         let rids = kb.by_functor(plain_sym);
         for rid in rids {
@@ -822,11 +822,11 @@ sort Animal { entity dog entity cat }
 fact dog
 fact cat
 "#);
-        // Build a pattern query for dog — use resolve_short_name_term to get the
+        // Build a pattern query for dog — use resolve_qualified_name_term to get the
         // same symbol the loader used (dog is defined as entity)
         let goal = {
             let mut kb = bridge.kb.borrow_mut();
-            kb.resolve_short_name_term("dog")
+            kb.resolve_qualified_name_term("Animal.dog")
         };
         let query = LogicalQuery::PatternQuery { term: goal };
         let stream = bridge.execute(query).expect("execute failed");

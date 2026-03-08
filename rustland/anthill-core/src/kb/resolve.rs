@@ -1905,6 +1905,7 @@ mod tests {
     /// Helper: set up a KB with standard builtins registered.
     fn kb_with_builtins() -> KnowledgeBase {
         let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
         kb.register_standard_builtins();
         kb
     }
@@ -2625,6 +2626,7 @@ mod tests {
     #[test]
     fn builtin_qualified_name_binds_result() {
         let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
         kb.register_standard_builtins();
 
         // Define a symbol "foo.Bar" via the symbol table
@@ -2660,6 +2662,7 @@ mod tests {
     #[test]
     fn builtin_short_name_binds_result() {
         let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
         kb.register_standard_builtins();
 
         let global = kb.make_name_term("_global");
@@ -2691,6 +2694,7 @@ mod tests {
     #[test]
     fn builtin_lookup_symbol_finds_existing() {
         let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
         kb.register_standard_builtins();
 
         let global = kb.make_name_term("_global");
@@ -2722,6 +2726,7 @@ mod tests {
     #[test]
     fn builtin_lookup_symbol_fails_for_unknown() {
         let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
         kb.register_standard_builtins();
 
         let name_str = kb.alloc(Term::Const(Literal::String("does.not.Exist".into())));
@@ -2744,6 +2749,7 @@ mod tests {
     #[test]
     fn builtin_qualified_name_delays_on_unbound() {
         let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
         kb.register_standard_builtins();
 
         let sym_name = kb.intern("?sym");

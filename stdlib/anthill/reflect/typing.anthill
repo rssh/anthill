@@ -1,5 +1,6 @@
 namespace anthill.reflect.typing
   import anthill.prelude.{List, Bool}
+
   import anthill.reflect.{Term, Symbol, KB, SortInfo, OperationInfo}
   export entity_of, is_entity_of, refines, type_compatible
   export list_contains

@@ -1,4 +1,4 @@
--- Default Rust/std language mapping profile.
+-- Default Rust/std language mapping profile and execution platforms.
 --
 -- Defines how anthill effects and prelude types map to Rust syntax.
 -- Codegen reads this from the KB; changing it changes generated code
@@ -6,6 +6,7 @@
 namespace anthill.realization.rust_std
   import anthill.realization.{LanguageMapping, EffectMapping, ReceiverRule,
                               TypeMapping, ReceiverForm, TraitReturnForm}
+  import anthill.realization.platform.{ExecutionPlatform}
   import anthill.prelude.Option.{some, none}
 
   fact LanguageMapping(
@@ -40,5 +41,33 @@ namespace anthill.realization.rust_std
 
     -- Return abstract sorts via impl Trait (Rust 1.75+ supports RPITIT)
     trait_return: ImplTrait
+  )
+
+  -- ================================================================
+  -- Execution platforms
+  -- ================================================================
+
+  fact execution_platform(
+    name: "rust-std-linux-x86",
+    properties: [("os", "linux"), ("cpu", "x86_64"),
+                 ("std", "yes"), ("heap", "yes"), ("threads", "yes")]
+  )
+
+  fact execution_platform(
+    name: "rust-std-macos-arm64",
+    properties: [("os", "macos"), ("cpu", "aarch64"),
+                 ("std", "yes"), ("heap", "yes"), ("threads", "yes")]
+  )
+
+  fact execution_platform(
+    name: "rust-no_std-cortex-m4",
+    properties: [("os", "bare"), ("cpu", "cortex-m4"),
+                 ("std", "no"), ("heap", "no")]
+  )
+
+  fact execution_platform(
+    name: "rust-no_std-alloc-riscv",
+    properties: [("os", "bare"), ("cpu", "riscv32"),
+                 ("std", "no"), ("heap", "yes")]
   )
 end

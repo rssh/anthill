@@ -43,6 +43,7 @@ fn load_monoid_kb() -> KnowledgeBase {
         for e in errs {
             eprintln!("Load error: {}", e);
         }
+        panic!("stdlib load failed with {} errors", errs.len());
     }
     kb
 }
@@ -65,7 +66,7 @@ fn make_requires_query(
     sort_ref: TermId,
     spec: TermId,
 ) -> TermId {
-    let requires_sym = kb.resolve_symbol("Requires");
+    let requires_sym = kb.resolve_symbol("anthill.reflect.Requires");
     let sort_ref_sym = kb.intern("sort_ref");
     let spec_sym = kb.intern("spec");
     kb.alloc(Term::Fn {
@@ -158,7 +159,7 @@ fn base_subst_computed_for_monoid() {
 fn requires_spec_inst_completed_for_int_add() {
     let mut kb = load_monoid_kb();
 
-    let int_add_term = kb.resolve_short_name_term("IntAdd");
+    let int_add_term = kb.resolve_qualified_name_term("IntAdd");
     let var_inst = make_var(&mut kb, "inst");
     let goal = make_requires_query(&mut kb, int_add_term, var_inst);
 
@@ -206,7 +207,7 @@ fn requires_spec_inst_completed_for_int_add() {
 fn requires_spec_inst_completed_for_int_mul() {
     let mut kb = load_monoid_kb();
 
-    let int_mul_term = kb.resolve_short_name_term("IntMul");
+    let int_mul_term = kb.resolve_qualified_name_term("IntMul");
     let var_inst = make_var(&mut kb, "inst");
     let goal = make_requires_query(&mut kb, int_mul_term, var_inst);
 
@@ -244,7 +245,7 @@ fn resolve_sort_inst_param_extracts_type_binding() {
     let mut kb = load_monoid_kb();
 
     // First get the spec for IntAdd
-    let int_add_term = kb.resolve_short_name_term("IntAdd");
+    let int_add_term = kb.resolve_qualified_name_term("IntAdd");
     let var_inst = make_var(&mut kb, "inst");
     let req_goal = make_requires_query(&mut kb, int_add_term, var_inst);
 
@@ -263,7 +264,7 @@ fn resolve_sort_inst_param_extracts_type_binding() {
     };
     let t_ref = kb.alloc(Term::Ref(t_key_sym));
     let var_val = make_var(&mut kb, "val");
-    let param_goal = make_goal(&mut kb, "resolve_sort_instantiation_param", &[inst_tid, t_ref, var_val]);
+    let param_goal = make_goal(&mut kb, "anthill.reflect.resolve_sort_instantiation_param", &[inst_tid, t_ref, var_val]);
 
     let solutions2 = kb.resolve(&[param_goal], &config);
     assert!(!solutions2.is_empty(), "resolve_sort_instantiation_param should succeed for T");
@@ -283,7 +284,7 @@ fn resolve_sort_inst_param_extracts_operation_binding() {
     let mut kb = load_monoid_kb();
 
     // Get the spec for IntAdd
-    let int_add_term = kb.resolve_short_name_term("IntAdd");
+    let int_add_term = kb.resolve_qualified_name_term("IntAdd");
     let var_inst = make_var(&mut kb, "inst");
     let req_goal = make_requires_query(&mut kb, int_add_term, var_inst);
 
@@ -302,7 +303,7 @@ fn resolve_sort_inst_param_extracts_operation_binding() {
     };
     let combine_ref = kb.alloc(Term::Ref(combine_key_sym));
     let var_val = make_var(&mut kb, "val");
-    let param_goal = make_goal(&mut kb, "resolve_sort_instantiation_param", &[inst_tid, combine_ref, var_val]);
+    let param_goal = make_goal(&mut kb, "anthill.reflect.resolve_sort_instantiation_param", &[inst_tid, combine_ref, var_val]);
 
     let solutions2 = kb.resolve(&[param_goal], &config);
     assert!(!solutions2.is_empty(), "resolve_sort_instantiation_param should succeed for combine");
@@ -320,7 +321,7 @@ fn auto_bind_same_named_operations() {
 
     // AutoBindTest has `requires Monoid{T = Int}` with no explicit combine/identity.
     // Since AutoBindTest has same-named ops (combine, identity), they should auto-bind.
-    let auto_term = kb.resolve_short_name_term("AutoBindTest");
+    let auto_term = kb.resolve_qualified_name_term("AutoBindTest");
     let var_inst = make_var(&mut kb, "inst");
     let goal = make_requires_query(&mut kb, auto_term, var_inst);
 

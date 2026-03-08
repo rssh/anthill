@@ -33,7 +33,13 @@ fn load_stdlib_kb() -> KnowledgeBase {
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
     kb.register_standard_builtins();
-    let _ = load::load_all(&mut kb, &refs, &NullResolver);
+    let result = load::load_all(&mut kb, &refs, &NullResolver);
+    if let Err(errs) = &result {
+        for e in errs {
+            eprintln!("Load error: {}", e);
+        }
+        panic!("stdlib load failed with {} errors", errs.len());
+    }
     kb
 }
 
@@ -43,7 +49,7 @@ fn load_source(kb: &mut KnowledgeBase, source: &str) {
     load::load(kb, &parsed, &NullResolver).expect("load failed");
 }
 
-/// Get the functor symbol from a name term (resolve_short_name_term returns a nullary Fn).
+/// Get the functor symbol from a name term (resolve_qualified_name_term returns a nullary Fn).
 fn functor_of(kb: &KnowledgeBase, term: TermId) -> anthill_core::intern::Symbol {
     match kb.get_term(term) {
         Term::Fn { functor, .. } => *functor,
@@ -53,8 +59,8 @@ fn functor_of(kb: &KnowledgeBase, term: TermId) -> anthill_core::intern::Symbol 
 
 /// Build a query goal using a resolved symbol as functor.
 /// Works for kernel names ("EntityOf"), qualified builtins
-/// ("anthill.reflect.typing.is_entity_of"), and rule functor names
-/// ("refines", "list_contains") which fall back to intern.
+/// ("anthill.reflect.typing.is_entity_of"), and qualified rule functor names
+/// ("anthill.reflect.typing.refines", "anthill.reflect.typing.list_contains").
 fn make_goal(kb: &mut KnowledgeBase, name: &str, pos_args: &[TermId]) -> TermId {
     let sym = kb.try_resolve_symbol(name)
         .unwrap_or_else(|| kb.intern(name));
@@ -106,8 +112,8 @@ sort Color {
     kb.register_standard_builtins();
     load_source(&mut kb, source);
 
-    let red_term = kb.resolve_short_name_term("red");
-    let color_term = kb.resolve_short_name_term("Color");
+    let red_term = kb.resolve_qualified_name_term("Color.red");
+    let color_term = kb.resolve_qualified_name_term("Color");
 
     assert!(kb.is_entity_of(red_term, color_term), "red should be entity of Color");
     assert!(!kb.is_entity_of(color_term, red_term), "Color should NOT be entity of red");
@@ -127,8 +133,8 @@ sort Color {
     kb.register_standard_builtins();
     load_source(&mut kb, source);
 
-    let red_term = kb.resolve_short_name_term("red");
-    let color_term = kb.resolve_short_name_term("Color");
+    let red_term = kb.resolve_qualified_name_term("Color.red");
+    let color_term = kb.resolve_qualified_name_term("Color");
 
     // Query via the builtin (uses intern'd qualified name directly)
     let goal = make_goal(&mut kb, "anthill.reflect.typing.is_entity_of", &[red_term, color_term]);
@@ -155,12 +161,12 @@ sort Color {
     kb.register_standard_builtins();
     load_source(&mut kb, source);
 
-    let color_term = kb.resolve_short_name_term("Color");
+    let color_term = kb.resolve_qualified_name_term("Color");
 
     // Query: EntityOf(entity: ?x, parent: Color) — should find red, green, blue
     let var_x = make_var(&mut kb, "x");
 
-    let goal = make_named_goal(&mut kb, "EntityOf", &[("entity", var_x), ("parent", color_term)]);
+    let goal = make_named_goal(&mut kb, "anthill.reflect.EntityOf", &[("entity", var_x), ("parent", color_term)]);
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 3, "Color should have 3 entities: red, green, blue");
 }
@@ -179,11 +185,11 @@ sort Color {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let red_term = kb.resolve_short_name_term("red");
-    let color_term = kb.resolve_short_name_term("Color");
+    let red_term = kb.resolve_qualified_name_term("Color.red");
+    let color_term = kb.resolve_qualified_name_term("Color");
 
-    // Query via the typing rule (uses resolved symbol for is_entity_of)
-    let goal = make_goal(&mut kb, "is_entity_of", &[red_term, color_term]);
+    // Query via the typing rule (uses qualified name for is_entity_of builtin symbol)
+    let goal = make_goal(&mut kb, "anthill.reflect.typing.is_entity_of", &[red_term, color_term]);
     let results = kb.resolve(&[goal], &default_config());
     assert!(!results.is_empty(), "is_entity_of(red, Color) via typing rule should succeed");
 }
@@ -203,16 +209,16 @@ sort Color {
     load_source(&mut kb, source);
 
     // Build a cons list: cons(head: red, tail: cons(head: green, tail: nil()))
-    let red = kb.resolve_short_name_term("red");
-    let green = kb.resolve_short_name_term("green");
-    let nil_sym = kb.resolve_symbol("nil");
+    let red = kb.resolve_qualified_name_term("Color.red");
+    let green = kb.resolve_qualified_name_term("Color.green");
+    let nil_sym = kb.resolve_symbol("anthill.prelude.List.nil");
     let nil = kb.alloc(Term::Fn {
         functor: nil_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
     });
 
-    let cons_sym = kb.resolve_symbol("cons");
+    let cons_sym = kb.resolve_symbol("anthill.prelude.List.cons");
     let head_sym = kb.intern("head");
     let tail_sym = kb.intern("tail");
 
@@ -228,18 +234,18 @@ sort Color {
     });
 
     // list_contains(red, list) should succeed — using resolved symbol
-    let goal = make_goal(&mut kb, "list_contains", &[red, list]);
+    let goal = make_goal(&mut kb, "anthill.reflect.typing.list_contains", &[red, list]);
     let results = kb.resolve(&[goal], &default_config());
     assert!(!results.is_empty(), "list_contains(red, [red, green]) should succeed");
 
     // list_contains(green, list) should also succeed
-    let goal2 = make_goal(&mut kb, "list_contains", &[green, list]);
+    let goal2 = make_goal(&mut kb, "anthill.reflect.typing.list_contains", &[green, list]);
     let results2 = kb.resolve(&[goal2], &default_config());
     assert!(!results2.is_empty(), "list_contains(green, [red, green]) should succeed");
 
     // list_contains(blue, list) should fail (blue not in list)
-    let blue = kb.resolve_short_name_term("blue");
-    let goal3 = make_goal(&mut kb, "list_contains", &[blue, list]);
+    let blue = kb.resolve_qualified_name_term("Color.blue");
+    let goal3 = make_goal(&mut kb, "anthill.reflect.typing.list_contains", &[blue, list]);
     let results3 = kb.resolve(&[goal3], &default_config());
     assert!(results3.is_empty(), "list_contains(blue, [red, green]) should fail");
 }
@@ -331,12 +337,12 @@ sort Ordered {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let ordered_term = kb.resolve_short_name_term("Ordered");
+    let ordered_term = kb.resolve_qualified_name_term("Ordered");
 
     // Query: Requires(sort_ref: Ordered, spec: ?spec) — direct fact query (named args)
     let var_spec = make_var(&mut kb, "spec");
 
-    let goal = make_named_goal(&mut kb, "Requires", &[("sort_ref", ordered_term), ("spec", var_spec)]);
+    let goal = make_named_goal(&mut kb, "anthill.reflect.Requires", &[("sort_ref", ordered_term), ("spec", var_spec)]);
     let results = kb.resolve(&[goal], &default_config());
     assert!(!results.is_empty(), "Ordered should have at least 1 Requires fact");
 }
@@ -357,12 +363,12 @@ sort Ordered {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let ordered_term = kb.resolve_short_name_term("Ordered");
+    let ordered_term = kb.resolve_qualified_name_term("Ordered");
 
     // Query: refines(Ordered, ?spec) via the typing rule
     let var_spec = make_var(&mut kb, "spec");
 
-    let goal = make_goal(&mut kb, "refines", &[ordered_term, var_spec]);
+    let goal = make_goal(&mut kb, "anthill.reflect.typing.refines", &[ordered_term, var_spec]);
     let results = kb.resolve(&[goal], &default_config());
     assert!(!results.is_empty(), "refines(Ordered, ?spec) should find at least Eq{{T=T}}");
 }
@@ -387,12 +393,12 @@ sort C {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let c_term = kb.resolve_short_name_term("C");
+    let c_term = kb.resolve_qualified_name_term("C");
 
     // Query: refines(C, ?spec) — should find both B{T=T} and A{T=T}
     let var_spec = make_var(&mut kb, "spec");
 
-    let goal = make_goal(&mut kb, "refines", &[c_term, var_spec]);
+    let goal = make_goal(&mut kb, "anthill.reflect.typing.refines", &[c_term, var_spec]);
     let results = kb.resolve(&[goal], &default_config());
     assert!(results.len() >= 2, "C refines both B{{T=T}} (direct) and A{{T=T}} (transitive), got {} results", results.len());
 }
@@ -409,10 +415,10 @@ sort Color {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let color_term = kb.resolve_short_name_term("Color");
+    let color_term = kb.resolve_qualified_name_term("Color");
 
     // type_compatible(Color, Color) — same type via unification
-    let goal = make_goal(&mut kb, "type_compatible", &[color_term, color_term]);
+    let goal = make_goal(&mut kb, "anthill.reflect.typing.type_compatible", &[color_term, color_term]);
     let results = kb.resolve(&[goal], &default_config());
     assert!(!results.is_empty(), "type_compatible(Color, Color) should succeed");
 }
@@ -429,11 +435,11 @@ sort Color {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let red_term = kb.resolve_short_name_term("red");
-    let color_term = kb.resolve_short_name_term("Color");
+    let red_term = kb.resolve_qualified_name_term("Color.red");
+    let color_term = kb.resolve_qualified_name_term("Color");
 
     // type_compatible(red, Color) — via is_entity_of rule
-    let goal = make_goal(&mut kb, "type_compatible", &[red_term, color_term]);
+    let goal = make_goal(&mut kb, "anthill.reflect.typing.type_compatible", &[red_term, color_term]);
     let results = kb.resolve(&[goal], &default_config());
     assert!(!results.is_empty(), "type_compatible(red, Color) should succeed via entity_of");
 }
@@ -456,14 +462,14 @@ sort Ordered {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let ordered_name = kb.resolve_short_name_term("Ordered");
+    let ordered_name = kb.resolve_qualified_name_term("Ordered");
     let ordered_functor = functor_of(&kb, ordered_name);
     let ordered_ref = kb.alloc(Term::Ref(ordered_functor));
 
     // Query: sort_requires(Ordered_ref, ?spec)
     let var_spec = make_var(&mut kb, "spec");
 
-    let goal = make_goal(&mut kb, "sort_requires", &[ordered_ref, var_spec]);
+    let goal = make_goal(&mut kb, "anthill.reflect.typing.sort_requires", &[ordered_ref, var_spec]);
     let config = ResolveConfig { max_solutions: 5, ..ResolveConfig::default() };
     let results = kb.resolve(&[goal], &config);
     assert!(!results.is_empty(),
@@ -483,14 +489,14 @@ sort Eq {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let eq_name = kb.resolve_short_name_term("Eq");
+    let eq_name = kb.resolve_qualified_name_term("Eq");
     let eq_functor = functor_of(&kb, eq_name);
     let eq_ref = kb.alloc(Term::Ref(eq_functor));
 
     // Query: sort_has_param(Eq_ref, ?param)
     let var_param = make_var(&mut kb, "param");
 
-    let goal = make_goal(&mut kb, "sort_has_param", &[eq_ref, var_param]);
+    let goal = make_goal(&mut kb, "anthill.reflect.typing.sort_has_param", &[eq_ref, var_param]);
     let config = ResolveConfig { max_solutions: 5, ..ResolveConfig::default() };
     let results = kb.resolve(&[goal], &config);
     assert!(!results.is_empty(),
@@ -514,7 +520,7 @@ sort Color {
     load_source(&mut kb, source);
 
     // Query EntityOf facts by functor
-    let entity_of_sym = kb.resolve_symbol("EntityOf");
+    let entity_of_sym = kb.resolve_symbol("anthill.reflect.EntityOf");
     let facts = kb.by_functor(entity_of_sym);
     assert_eq!(facts.len(), 3, "should have 3 EntityOf facts for red, green, blue");
 }
@@ -537,21 +543,21 @@ sort Outer {
     kb.register_standard_builtins();
     load_source(&mut kb, source);
 
-    let leaf_term = kb.resolve_short_name_term("leaf");
-    let inner_term = kb.resolve_short_name_term("Inner");
-    let outer_term = kb.resolve_short_name_term("Outer");
+    let leaf_term = kb.resolve_qualified_name_term("Outer.Inner.leaf");
+    let inner_term = kb.resolve_qualified_name_term("Outer.Inner");
+    let outer_term = kb.resolve_qualified_name_term("Outer");
 
     // leaf is entity of Inner (direct)
     assert!(kb.is_entity_of(leaf_term, inner_term), "leaf should be entity of Inner");
 
     // EntityOf fact should exist for leaf → Inner
     let var_x = make_var(&mut kb, "x");
-    let goal = make_named_goal(&mut kb, "EntityOf", &[("entity", leaf_term), ("parent", var_x)]);
+    let goal = make_named_goal(&mut kb, "anthill.reflect.EntityOf", &[("entity", leaf_term), ("parent", var_x)]);
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 1, "leaf should have exactly 1 EntityOf fact (→ Inner only)");
 
     // No EntityOf(leaf, Outer) — entity_of is 1-level
-    let goal_outer = make_named_goal(&mut kb, "EntityOf", &[("entity", leaf_term), ("parent", outer_term)]);
+    let goal_outer = make_named_goal(&mut kb, "anthill.reflect.EntityOf", &[("entity", leaf_term), ("parent", outer_term)]);
     let results_outer = kb.resolve(&[goal_outer], &default_config());
     assert_eq!(results_outer.len(), 0, "EntityOf(leaf, Outer) should NOT exist — 1-level only");
 }
@@ -570,8 +576,8 @@ sort Color {
     kb.register_standard_builtins();
     load_source(&mut kb, source);
 
-    let red_term = kb.resolve_short_name_term("red");
-    let green_term = kb.resolve_short_name_term("green");
+    let red_term = kb.resolve_qualified_name_term("Color.red");
+    let green_term = kb.resolve_qualified_name_term("Color.green");
 
     // Siblings are not entity_of each other
     assert!(!kb.is_entity_of(red_term, green_term), "red should NOT be entity of green");
@@ -590,10 +596,10 @@ sort Color {
     kb.register_standard_builtins();
     load_source(&mut kb, source);
 
-    let color_term = kb.resolve_short_name_term("Color");
+    let color_term = kb.resolve_qualified_name_term("Color");
 
     // No EntityOf(Color, Color)
-    let goal = make_named_goal(&mut kb, "EntityOf", &[("entity", color_term), ("parent", color_term)]);
+    let goal = make_named_goal(&mut kb, "anthill.reflect.EntityOf", &[("entity", color_term), ("parent", color_term)]);
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 0, "Color should NOT be entity of itself");
 }
@@ -613,7 +619,7 @@ entity Account(id: Int, balance: Int)
     load_source(&mut kb, source);
 
     // No EntityOf facts for standalone entities
-    let entity_of_sym = kb.resolve_symbol("EntityOf");
+    let entity_of_sym = kb.resolve_symbol("anthill.reflect.EntityOf");
     let facts = kb.by_functor(entity_of_sym);
     assert_eq!(facts.len(), 0, "standalone entity should not produce EntityOf facts");
 }
@@ -637,10 +643,10 @@ sort Shape {
     kb.register_standard_builtins();
     load_source(&mut kb, source);
 
-    let red_term = kb.resolve_short_name_term("red");
-    let circle_term = kb.resolve_short_name_term("circle");
-    let color_term = kb.resolve_short_name_term("Color");
-    let shape_term = kb.resolve_short_name_term("Shape");
+    let red_term = kb.resolve_qualified_name_term("Color.red");
+    let circle_term = kb.resolve_qualified_name_term("Shape.circle");
+    let color_term = kb.resolve_qualified_name_term("Color");
+    let shape_term = kb.resolve_qualified_name_term("Shape");
 
     // red is entity of Color, NOT Shape
     assert!(kb.is_entity_of(red_term, color_term), "red should be entity of Color");
@@ -651,7 +657,7 @@ sort Shape {
     assert!(!kb.is_entity_of(circle_term, color_term), "circle should NOT be entity of Color");
 
     // EntityOf facts: 2 for Color + 2 for Shape = 4
-    let entity_of_sym = kb.resolve_symbol("EntityOf");
+    let entity_of_sym = kb.resolve_symbol("anthill.reflect.EntityOf");
     let facts = kb.by_functor(entity_of_sym);
     assert_eq!(facts.len(), 4, "should have 4 EntityOf facts total");
 }
@@ -673,11 +679,11 @@ sort Color {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let color_term = kb.resolve_short_name_term("Color");
+    let color_term = kb.resolve_qualified_name_term("Color");
     let var_x = make_var(&mut kb, "x");
 
     // Use EntityOf directly for enumeration
-    let goal = make_named_goal(&mut kb, "EntityOf", &[("entity", var_x), ("parent", color_term)]);
+    let goal = make_named_goal(&mut kb, "anthill.reflect.EntityOf", &[("entity", var_x), ("parent", color_term)]);
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 3, "EntityOf(?x, Color) should find 3 entities");
 }
@@ -696,16 +702,16 @@ sort Color {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let red_term = kb.resolve_short_name_term("red");
+    let red_term = kb.resolve_qualified_name_term("Color.red");
     let var_p = make_var(&mut kb, "parent");
 
-    let goal = make_named_goal(&mut kb, "EntityOf", &[("entity", red_term), ("parent", var_p)]);
+    let goal = make_named_goal(&mut kb, "anthill.reflect.EntityOf", &[("entity", red_term), ("parent", var_p)]);
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 1, "EntityOf(red, ?parent) should find exactly 1 parent");
 
     // Verify the parent is Color
     let bound = kb.reify(var_p, &results[0].subst);
-    let color_term = kb.resolve_short_name_term("Color");
+    let color_term = kb.resolve_qualified_name_term("Color");
     assert_eq!(bound, color_term, "parent of red should be Color");
 }
 
@@ -724,11 +730,11 @@ sort Shape {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let red_term = kb.resolve_short_name_term("red");
-    let shape_term = kb.resolve_short_name_term("Shape");
+    let red_term = kb.resolve_qualified_name_term("Color.red");
+    let shape_term = kb.resolve_qualified_name_term("Shape");
 
     // type_compatible(red, Shape) should fail — red is entity of Color, not Shape
-    let goal = make_goal(&mut kb, "type_compatible", &[red_term, shape_term]);
+    let goal = make_goal(&mut kb, "anthill.reflect.typing.type_compatible", &[red_term, shape_term]);
     let results = kb.resolve(&[goal], &default_config());
     assert!(results.is_empty(), "type_compatible(red, Shape) should fail");
 }
@@ -744,17 +750,17 @@ sort Color {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let red_term = kb.resolve_short_name_term("red");
-    let green_term = kb.resolve_short_name_term("green");
-    let color_term = kb.resolve_short_name_term("Color");
+    let red_term = kb.resolve_qualified_name_term("Color.red");
+    let green_term = kb.resolve_qualified_name_term("Color.green");
+    let color_term = kb.resolve_qualified_name_term("Color");
 
     // type_compatible(red, Color) — should succeed
-    let goal = make_goal(&mut kb, "type_compatible", &[red_term, color_term]);
+    let goal = make_goal(&mut kb, "anthill.reflect.typing.type_compatible", &[red_term, color_term]);
     let results = kb.resolve(&[goal], &default_config());
     assert!(!results.is_empty(), "type_compatible(red, Color) should succeed");
 
     // type_compatible(red, green) — should fail (siblings, not entity_of)
-    let goal2 = make_goal(&mut kb, "type_compatible", &[red_term, green_term]);
+    let goal2 = make_goal(&mut kb, "anthill.reflect.typing.type_compatible", &[red_term, green_term]);
     let results2 = kb.resolve(&[goal2], &default_config());
     assert!(results2.is_empty(), "type_compatible(red, green) should fail — different entities");
 }
@@ -770,21 +776,21 @@ sort Account {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let checking_term = kb.resolve_short_name_term("checking");
-    let savings_term = kb.resolve_short_name_term("savings");
-    let account_term = kb.resolve_short_name_term("Account");
+    let checking_term = kb.resolve_qualified_name_term("Account.checking");
+    let savings_term = kb.resolve_qualified_name_term("Account.savings");
+    let account_term = kb.resolve_qualified_name_term("Account");
 
     // Both entities are compatible with Account
-    let goal1 = make_goal(&mut kb, "type_compatible", &[checking_term, account_term]);
+    let goal1 = make_goal(&mut kb, "anthill.reflect.typing.type_compatible", &[checking_term, account_term]);
     let results1 = kb.resolve(&[goal1], &default_config());
     assert!(!results1.is_empty(), "type_compatible(checking, Account) should succeed");
 
-    let goal2 = make_goal(&mut kb, "type_compatible", &[savings_term, account_term]);
+    let goal2 = make_goal(&mut kb, "anthill.reflect.typing.type_compatible", &[savings_term, account_term]);
     let results2 = kb.resolve(&[goal2], &default_config());
     assert!(!results2.is_empty(), "type_compatible(savings, Account) should succeed");
 
     // Entities are NOT compatible with each other
-    let goal3 = make_goal(&mut kb, "type_compatible", &[checking_term, savings_term]);
+    let goal3 = make_goal(&mut kb, "anthill.reflect.typing.type_compatible", &[checking_term, savings_term]);
     let results3 = kb.resolve(&[goal3], &default_config());
     assert!(results3.is_empty(), "type_compatible(checking, savings) should fail");
 }
@@ -804,16 +810,16 @@ sort Color {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let red_term = kb.resolve_short_name_term("red");
+    let red_term = kb.resolve_qualified_name_term("Color.red");
     let var_sort = make_var(&mut kb, "sort");
 
-    let goal = make_goal(&mut kb, "entity_of", &[red_term, var_sort]);
+    let goal = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[red_term, var_sort]);
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 1, "entity_of(red, ?sort) should find exactly 1 parent");
 
     // Verify the parent is Color
     let bound = kb.reify(var_sort, &results[0].subst);
-    let color_term = kb.resolve_short_name_term("Color");
+    let color_term = kb.resolve_qualified_name_term("Color");
     assert_eq!(bound, color_term, "entity_of(red, ?sort) should bind ?sort to Color");
 }
 
@@ -832,10 +838,10 @@ sort Color {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let color_term = kb.resolve_short_name_term("Color");
+    let color_term = kb.resolve_qualified_name_term("Color");
     let var_x = make_var(&mut kb, "x");
 
-    let goal = make_goal(&mut kb, "entity_of", &[var_x, color_term]);
+    let goal = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[var_x, color_term]);
     let results = kb.resolve(&[goal], &default_config());
     assert!(!results.is_empty(),
         "entity_of(?x, Color) should find entities via delay/reorder");
@@ -852,10 +858,10 @@ sort Color {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let color_term = kb.resolve_short_name_term("Color");
+    let color_term = kb.resolve_qualified_name_term("Color");
     let var_sort = make_var(&mut kb, "sort");
 
-    let goal = make_goal(&mut kb, "entity_of", &[color_term, var_sort]);
+    let goal = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[color_term, var_sort]);
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 0, "entity_of(Color, ?sort) should fail — Color has no parent sort");
 }
@@ -877,14 +883,14 @@ sort Shape {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let red_term = kb.resolve_short_name_term("red");
-    let circle_term = kb.resolve_short_name_term("circle");
-    let color_term = kb.resolve_short_name_term("Color");
-    let shape_term = kb.resolve_short_name_term("Shape");
+    let red_term = kb.resolve_qualified_name_term("Color.red");
+    let circle_term = kb.resolve_qualified_name_term("Shape.circle");
+    let color_term = kb.resolve_qualified_name_term("Color");
+    let shape_term = kb.resolve_qualified_name_term("Shape");
 
     // entity_of(red, ?sort) → Color
     let var_sort1 = make_var(&mut kb, "sort");
-    let goal1 = make_goal(&mut kb, "entity_of", &[red_term, var_sort1]);
+    let goal1 = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[red_term, var_sort1]);
     let results1 = kb.resolve(&[goal1], &default_config());
     assert_eq!(results1.len(), 1);
     let bound1 = kb.reify(var_sort1, &results1[0].subst);
@@ -892,14 +898,14 @@ sort Shape {
 
     // entity_of(circle, ?sort) → Shape
     let var_sort2 = make_var(&mut kb, "sort");
-    let goal2 = make_goal(&mut kb, "entity_of", &[circle_term, var_sort2]);
+    let goal2 = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[circle_term, var_sort2]);
     let results2 = kb.resolve(&[goal2], &default_config());
     assert_eq!(results2.len(), 1);
     let bound2 = kb.reify(var_sort2, &results2[0].subst);
     assert_eq!(bound2, shape_term, "circle's parent should be Shape");
 
     // entity_of(red, Shape) should fail — wrong parent
-    let goal3 = make_goal(&mut kb, "entity_of", &[red_term, shape_term]);
+    let goal3 = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[red_term, shape_term]);
     let results3 = kb.resolve(&[goal3], &default_config());
     assert_eq!(results3.len(), 0, "entity_of(red, Shape) should fail");
 }
@@ -916,10 +922,10 @@ sort Color {
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let red_term = kb.resolve_short_name_term("red");
-    let color_term = kb.resolve_short_name_term("Color");
+    let red_term = kb.resolve_qualified_name_term("Color.red");
+    let color_term = kb.resolve_qualified_name_term("Color");
 
-    let goal = make_goal(&mut kb, "entity_of", &[red_term, color_term]);
+    let goal = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[red_term, color_term]);
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 1, "entity_of(red, Color) should succeed when both args are ground");
 }
@@ -933,10 +939,10 @@ entity Account(id: Int, balance: Int)
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
 
-    let account_term = kb.resolve_short_name_term("Account");
+    let account_term = kb.resolve_qualified_name_term("Account");
     let var_sort = make_var(&mut kb, "sort");
 
-    let goal = make_goal(&mut kb, "entity_of", &[account_term, var_sort]);
+    let goal = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[account_term, var_sort]);
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 0, "entity_of(Account, ?sort) should fail — standalone entity has no parent");
 }

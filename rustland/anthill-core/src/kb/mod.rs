@@ -767,13 +767,11 @@ impl KnowledgeBase {
         })
     }
 
-    /// Look up a short name and create a nullary Fn term.
-    /// Picks the most recently registered symbol with that short name
-    /// (last wins: user > stdlib > kernel). Not scope-aware — use only
-    /// in tests where names are unambiguous.
+    /// Look up a qualified name and create a nullary Fn term.
     /// Falls back to intern() if no resolved symbol exists.
-    pub fn resolve_short_name_term(&mut self, name: &str) -> TermId {
-        let sym = if let Some(found) = self.symbols.find_preferred_symbol(name) {
+    /// Callers should pass qualified names (e.g. "Color.red", not "red").
+    pub fn resolve_qualified_name_term(&mut self, name: &str) -> TermId {
+        let sym = if let Some(&found) = self.symbols.by_qualified_name.get(name) {
             found
         } else {
             self.symbols.intern(name)
@@ -785,15 +783,7 @@ impl KnowledgeBase {
         })
     }
 
-    /// Look up a resolved symbol by short name or qualified name.
-    /// Prefers properly-scoped definitions (from .anthill files) over
-    /// kernel fallbacks (where qualified_name == short_name).
-    ///
-    /// Panics if no resolved symbol is found — all functor names must be
-    /// pre-defined in register_prelude() or scan_definitions().
     /// Look up a resolved symbol by qualified name or short name.
-    /// For short names, returns the most recently defined symbol
-    /// (user > stdlib > kernel fallback).
     ///
     /// Panics if no resolved symbol is found — all functor names must be
     /// pre-defined in register_prelude() or scan_definitions().
@@ -808,20 +798,22 @@ impl KnowledgeBase {
         );
     }
 
-    /// Try to look up a resolved symbol by short name or qualified name.
-    /// Returns `None` if no resolved symbol is found.
-    /// For short names, returns the most recently defined symbol
-    /// (user > stdlib > kernel fallback).
+    /// Try to look up a resolved symbol by qualified name.
     pub fn try_resolve_symbol(&self, name: &str) -> Option<Symbol> {
-        // Check by short name first (last defined wins: user > stdlib > kernel)
-        if let Some(found) = self.symbols.find_preferred_symbol(name) {
-            return Some(found);
+        self.symbols.by_qualified_name.get(name).copied()
+    }
+
+    /// Resolve a name using scope-aware resolution from _global scope.
+    /// Tries qualified name first, then scope-aware parent chain.
+    pub fn resolve_name_in_global(&mut self, name: &str) -> Option<Symbol> {
+        if let Some(&sym) = self.symbols.by_qualified_name.get(name) {
+            return Some(sym);
         }
-        // Then by qualified name (for dotted names like "anthill.reflect.nonvar")
-        if let Some(&found) = self.symbols.by_qualified_name.get(name) {
-            return Some(found);
+        let global = self.make_name_term("_global");
+        match self.symbols.resolve_in_scope(name, global.raw()) {
+            crate::intern::ResolveResult::Found(s) => Some(s),
+            _ => None,
         }
-        None
     }
 
     /// Check if a qualified name has a defined symbol in the symbol table.
@@ -892,13 +884,34 @@ impl KnowledgeBase {
 
     /// Register a builtin by its fully-qualified name.
     /// Creates a resolved definition if the name isn't already defined.
+    /// Derives the proper scope from the namespace prefix of the qualified name.
     pub fn register_builtin(&mut self, qualified_name: &str, tag: BuiltinTag) {
         let sym = if let Some(&resolved) = self.symbols.by_qualified_name.get(qualified_name) {
             resolved
         } else {
             let short = qualified_name.rsplit('.').next().unwrap_or(qualified_name);
-            let global_raw = self.make_name_term("_global").raw();
-            self.symbols.define(short, qualified_name, SymbolKind::Operation, global_raw)
+            // Find scope from namespace prefix (e.g. "anthill.reflect.typing" for
+            // "anthill.reflect.typing.is_entity_of")
+            let ns_sym_opt = if let Some(dot_pos) = qualified_name.rfind('.') {
+                let ns_prefix = &qualified_name[..dot_pos];
+                self.symbols.by_qualified_name.get(ns_prefix).copied()
+            } else {
+                None
+            };
+            let scope_raw = if let Some(ns_sym) = ns_sym_opt {
+                self.alloc(Term::Fn {
+                    functor: ns_sym,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::new(),
+                }).raw()
+            } else {
+                panic!(
+                    "register_builtin: namespace prefix for '{}' not found. \
+                     Call register_prelude() first to create the namespace hierarchy.",
+                    qualified_name
+                )
+            };
+            self.symbols.define(short, qualified_name, SymbolKind::Operation, scope_raw)
         };
         self.builtins.insert(sym, tag);
     }
