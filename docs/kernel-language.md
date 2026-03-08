@@ -626,6 +626,8 @@ rule non_negative: ⊥ :- balance(?a, ?b), lt(?b, 0)
 
 Rules can optionally be **named** (e.g., `non_negative:`) for reference in error messages, retractions, and documentation.
 
+**Rule head functors are scoped definitions.** The functor (predicate name) of a rule's head term is defined as a named symbol in the enclosing scope, just like sorts, entities, and operations. Multiple rules with the same head functor in the same scope share a single symbol. This means rule predicates participate in the namespace import/export system — they can be exported from a namespace and imported elsewhere. For example, `refines` defined inside `anthill.reflect.typing` has the qualified name `anthill.reflect.typing.refines` and is visible from other scopes via import.
+
 ### 5.4 Operation
 
 A typed behavioral specification with contracts. Kernel-level because sorts + operations + laws = **algebra** — the foundation of the verification system. The kernel type-checks signatures and generates proof obligations from contracts.
