@@ -1,0 +1,26 @@
+-- KNOWN ISSUE: namespace with the same name as a sort in the same scope
+--
+-- When `sort Path = String` and `namespace Path` coexist in the same scope,
+-- the namespace symbol collides with the sort symbol. The namespace's scope
+-- replaces the sort's, so operations inside `namespace Path` cannot resolve
+-- any names — not even `Path` itself, `String`, or `List` from outer imports.
+--
+-- This is NOT an "outer imports invisible" issue. It's a name collision:
+-- the sort and namespace share the short name "Path", and the loader
+-- creates two scope entries with the same key, clobbering one.
+--
+-- Workaround: use a different namespace name (e.g. `namespace PathOps`)
+-- or declare Path operations as free-standing in the enclosing namespace.
+
+-- Uncomment to reproduce the error:
+--
+-- namespace test.name_collision
+--   import anthill.prelude.{List, String}
+--
+--   sort Path = String
+--
+--   namespace Path
+--     operation basename(p: Path) -> String      -- ERROR: unresolved 'Path', 'String'
+--     operation components(p: Path) -> List{T = String}
+--   end
+-- end

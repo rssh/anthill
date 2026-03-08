@@ -1,0 +1,24 @@
+-- Test: nested namespace visibility of outer imports
+--
+-- Verifies that a nested `namespace` block can resolve names
+-- imported at the enclosing namespace level.
+--
+-- The outer namespace imports List, String, Bool from prelude.
+-- Nested namespaces should see these via the enclosing scope chain.
+
+namespace test.nested_imports
+  import anthill.prelude.{List, String, Bool}
+
+  sort Path = String
+
+  -- Outer-level operations: baseline — always works
+  operation outer_check(p: Path) -> Bool
+
+  -- Nested namespace with a distinct name: imports from the
+  -- enclosing scope (List, String, Bool, Path) should resolve.
+  namespace PathOps
+    operation components(p: Path) -> List{T = String}
+    operation is_valid(p: Path) -> Bool
+  end
+
+end
