@@ -7,6 +7,7 @@
 /// resolves references during loading.
 
 use std::collections::{HashMap, HashSet};
+use smallvec::SmallVec;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Symbol(u32);
@@ -208,7 +209,9 @@ impl SymbolTable {
             return ResolveResult::NotFound; // cycle
         }
 
-        if let Some(scope) = self.scopes.get(&scope_raw) {
+        // Collect eligible parent scopes (filter + extract) while holding
+        // the borrow on self.scopes, then drop it before recursing.
+        let eligible_parents: SmallVec<[u32; 4]> = if let Some(scope) = self.scopes.get(&scope_raw) {
             // 1. Local: check locals defined in this scope — O(1) lookup
             if let Some(&sym) = scope.locals.get(name) {
                 return ResolveResult::Found(sym);
@@ -219,55 +222,43 @@ impl SymbolTable {
                 return ResolveResult::Found(sym);
             }
 
-            // 2. Parent scopes (recursively)
-            if !scope.parents.is_empty() {
-                let mut matches = Vec::new();
-                // Clone parents to avoid borrow conflict with recursive calls
-                let parents: Vec<_> = scope.parents.iter().map(|p| {
-                    (p.parent_scope_raw, p.is_enclosing)
-                }).collect();
-
-                for (parent_scope, is_enclosing) in parents {
-                    // Skip if name is a type param in the parent scope,
-                    // UNLESS this is an enclosing scope
-                    if !is_enclosing {
-                        if let Some(parent) = self.scopes.get(&parent_scope) {
-                            if parent.type_params.contains(name) {
-                                continue;
-                            }
+            // 2. Filter parent scopes by type_params and exports
+            scope.parents.iter().filter_map(|p| {
+                if !p.is_enclosing {
+                    if let Some(parent) = self.scopes.get(&p.parent_scope_raw) {
+                        if parent.type_params.contains(name) {
+                            return None;
+                        }
+                        if !parent.exports.is_empty() && !parent.exports.contains(name) {
+                            return None;
                         }
                     }
-
-                    // Check exports: if exports exist and are non-empty, name must be exported
-                    if !is_enclosing {
-                        if let Some(parent) = self.scopes.get(&parent_scope) {
-                            if !parent.exports.is_empty() && !parent.exports.contains(name) {
-                                continue;
-                            }
-                        }
-                    }
-
-                    // Find symbol in parent scope (recursively)
-                    match self.resolve_in_scope_recursive(name, parent_scope, visited) {
-                        ResolveResult::Found(sym) => matches.push(sym),
-                        ResolveResult::Ambiguous(mut candidates) => matches.append(&mut candidates),
-                        ResolveResult::NotFound => {}
-                    }
                 }
+                Some(p.parent_scope_raw)
+            }).collect()
+        } else {
+            return ResolveResult::NotFound;
+        };
+        // Borrow on self.scopes is dropped — safe to recurse.
 
-                // Deduplicate matches (same symbol may be reachable via multiple paths)
-                matches.sort_by_key(|s| s.0);
-                matches.dedup();
-
-                match matches.len() {
-                    0 => {}
-                    1 => return ResolveResult::Found(matches[0]),
-                    _ => return ResolveResult::Ambiguous(matches),
-                }
+        let mut matches = Vec::new();
+        for parent_scope in eligible_parents {
+            match self.resolve_in_scope_recursive(name, parent_scope, visited) {
+                ResolveResult::Found(sym) => matches.push(sym),
+                ResolveResult::Ambiguous(mut candidates) => matches.append(&mut candidates),
+                ResolveResult::NotFound => {}
             }
         }
 
-        ResolveResult::NotFound
+        // Deduplicate matches (same symbol may be reachable via multiple paths)
+        matches.sort_by_key(|s| s.0);
+        matches.dedup();
+
+        match matches.len() {
+            0 => ResolveResult::NotFound,
+            1 => ResolveResult::Found(matches[0]),
+            _ => ResolveResult::Ambiguous(matches),
+        }
     }
 
     /// Get the display name of a symbol (short_name for Resolved, name for Unresolved).

@@ -279,6 +279,26 @@ fn scan_operation_params(
 ///
 /// `prefix` is the fully-qualified path of the enclosing scope (empty at top level).
 /// Nested items get `qualified_name = prefix + "." + name`.
+/// Define a rule's label and head functor as scoped symbols.
+fn scan_rule(
+    kb: &mut KnowledgeBase,
+    r: &Rule,
+    parse_sym: &crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+    scope: TermId,
+    prefix: &str,
+) {
+    if let Some(ref label) = r.label {
+        let name = join_segments(parse_sym, &label.segments);
+        let qualified = make_qualified(prefix, &name);
+        kb.symbols.define(&name, &qualified, SymbolKind::Rule, scope.raw());
+    }
+    if let Some(functor_name) = rule_head_functor_name(r, parse_sym, parse_terms) {
+        let qualified = make_qualified(prefix, functor_name);
+        kb.symbols.define(functor_name, &qualified, SymbolKind::Goal, scope.raw());
+    }
+}
+
 /// Extract the head functor name from a rule, if the head is a Fn term.
 fn rule_head_functor_name<'a>(
     r: &Rule,
@@ -416,29 +436,11 @@ fn scan_items_pass1(
                 }
             }
             Item::Rule(r) => {
-                if let Some(ref label) = r.label {
-                    let name = join_segments(parse_sym, &label.segments);
-                    let qualified = make_qualified(prefix, &name);
-                    kb.symbols.define(&name, &qualified, SymbolKind::Rule, scope.raw());
-                }
-                // Define head functor as a Goal symbol in this scope
-                if let Some(functor_name) = rule_head_functor_name(r, parse_sym, parse_terms) {
-                    let qualified = make_qualified(prefix, functor_name);
-                    kb.symbols.define(functor_name, &qualified, SymbolKind::Goal, scope.raw());
-                }
+                scan_rule(kb, r, parse_sym, parse_terms, scope, prefix);
             }
             Item::RuleBlock(rb) => {
                 for rule in &rb.entries {
-                    if let Some(ref label) = rule.label {
-                        let name = join_segments(parse_sym, &label.segments);
-                        let qualified = make_qualified(prefix, &name);
-                        kb.symbols.define(&name, &qualified, SymbolKind::Rule, scope.raw());
-                    }
-                    // Define head functor as a Goal symbol in this scope
-                    if let Some(functor_name) = rule_head_functor_name(rule, parse_sym, parse_terms) {
-                        let qualified = make_qualified(prefix, functor_name);
-                        kb.symbols.define(functor_name, &qualified, SymbolKind::Goal, scope.raw());
-                    }
+                    scan_rule(kb, rule, parse_sym, parse_terms, scope, prefix);
                 }
             }
             Item::Constraint(_) => {

@@ -10,14 +10,6 @@ mod convert;
 use ir::ParsedFile;
 use error::ParseError;
 
-/// Parse a bare query pattern by wrapping it as `fact <pattern>`.
-///
-/// This lets CLI users write patterns like `EntityOf(?x, List)` without the
-/// `fact` keyword. The result is a `ParsedFile` with a single `Item::Fact`.
-pub fn parse_query(source: &str) -> Result<ParsedFile, Vec<ParseError>> {
-    parse(&format!("fact {source}"))
-}
-
 /// Parse an `.anthill` source string into a typed parse IR.
 pub fn parse(source: &str) -> Result<ParsedFile, Vec<ParseError>> {
     let mut parser = tree_sitter::Parser::new();

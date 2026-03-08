@@ -899,11 +899,7 @@ impl KnowledgeBase {
                 None
             };
             let scope_raw = if let Some(ns_sym) = ns_sym_opt {
-                self.alloc(Term::Fn {
-                    functor: ns_sym,
-                    pos_args: SmallVec::new(),
-                    named_args: SmallVec::new(),
-                }).raw()
+                self.make_name_term_from_sym(ns_sym).raw()
             } else {
                 panic!(
                     "register_builtin: namespace prefix for '{}' not found. \
