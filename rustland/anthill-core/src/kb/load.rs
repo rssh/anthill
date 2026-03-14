@@ -513,6 +513,8 @@ fn type_expr_base_name(parse_sym: &crate::intern::SymbolTable, ty: &TypeExpr) ->
         TypeExpr::Parameterized { name, .. } => join_segments(parse_sym, &name.segments),
         TypeExpr::Variable { .. } => "?".to_owned(),
         TypeExpr::Tuple(_) => "TupleLiteral".to_owned(),
+        TypeExpr::Arrow { effect: Some(_), .. } => "arrow_effect".to_owned(),
+        TypeExpr::Arrow { .. } => "arrow".to_owned(),
     }
 }
 
@@ -595,6 +597,27 @@ fn build_instantiation_term(
                 functor: tuple_sym,
                 pos_args: SmallVec::new(),
                 named_args,
+            })
+        }
+        TypeExpr::Arrow { params, return_type, effect } => {
+            let functor = if effect.is_some() {
+                kb.symbols.intern("arrow_effect")
+            } else {
+                kb.symbols.intern("arrow")
+            };
+            let mut pos_args: SmallVec<[TermId; 4]> = params.iter()
+                .map(|p| build_instantiation_term(kb, parse_sym, p, _current_scope))
+                .collect();
+            let ret = build_instantiation_term(kb, parse_sym, return_type, _current_scope);
+            pos_args.push(ret);
+            if let Some(eff) = effect {
+                let eff_term = build_instantiation_term(kb, parse_sym, eff, _current_scope);
+                pos_args.push(eff_term);
+            }
+            kb.alloc(Term::Fn {
+                functor,
+                pos_args,
+                named_args: SmallVec::new(),
             })
         }
     }
@@ -1752,6 +1775,22 @@ impl<'a> Loader<'a> {
                     functor: tuple_sym,
                     pos_args: SmallVec::new(),
                     named_args,
+                })
+            }
+            TypeExpr::Arrow { params, return_type, effect } => {
+                let functor_name = if effect.is_some() { "arrow_effect" } else { "arrow" };
+                let functor = self.kb.symbols.intern(functor_name);
+                let mut pos_args: SmallVec<[TermId; 4]> = params.iter()
+                    .map(|p| self.type_expr_to_term(p))
+                    .collect();
+                pos_args.push(self.type_expr_to_term(return_type));
+                if let Some(eff) = effect {
+                    pos_args.push(self.type_expr_to_term(eff));
+                }
+                self.kb.alloc(Term::Fn {
+                    functor,
+                    pos_args,
+                    named_args: SmallVec::new(),
                 })
             }
         }

@@ -179,10 +179,10 @@ No special expression form needed — the parser produces flat operator chains a
 ### Complete Example: Polymorphic Operations
 
 ```anthill
-sort Polynom{R = ?}
-  requires Ring{T = R}
+sort Polynom{R=?}
+  requires Ring{R}
 
-  entity polynom(coefficients: List{T = R})
+  entity polynom(coefficients: List{R})
 
   operation add(p1: Polynom{R}, p2: Polynom{R}) -> Polynom{R}
     let cs = zip_with(lambda a b -> Ring.add(a, b),

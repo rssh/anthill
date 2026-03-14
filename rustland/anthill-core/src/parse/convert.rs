@@ -224,6 +224,9 @@ impl<'a> Converter<'a> {
             "tuple_type" => {
                 self.convert_tuple_type(node)
             }
+            "arrow_type" => {
+                self.convert_arrow_type(node)
+            }
             _ => {
                 self.err(format!("unexpected type node: {}", node.kind()), node);
                 let sym = self.intern("?");
@@ -633,6 +636,40 @@ impl<'a> Converter<'a> {
         }
 
         TypeExpr::Tuple(named)
+    }
+
+    fn convert_arrow_type(&mut self, node: Node) -> TypeExpr {
+        let return_node = self.field(node, "return_type");
+        let effect_node = self.field(node, "effect");
+        let return_node_id = return_node.map(|n| n.id());
+        let effect_node_id = effect_node.map(|n| n.id());
+
+        // Collect param types: all type children except return_type and effect
+        let mut params = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if Some(child.id()) == return_node_id || Some(child.id()) == effect_node_id {
+                continue;
+            }
+            if matches!(child.kind(),
+                "simple_type" | "parameterized_type" | "variable_term"
+                | "variable" | "tuple_type" | "arrow_type"
+            ) {
+                params.push(self.convert_type(child));
+            }
+        }
+
+        let return_type = return_node
+            .map(|n| Box::new(self.convert_type(n)))
+            .unwrap_or_else(|| {
+                self.err("arrow type missing return type", node);
+                let sym = self.intern("?");
+                Box::new(TypeExpr::Simple(Name::simple(sym, self.span(node))))
+            });
+        let effect = effect_node
+            .map(|n| Box::new(self.convert_type(n)));
+
+        TypeExpr::Arrow { params, return_type, effect }
     }
 
     // ── Visibility ──────────────────────────────────────────────

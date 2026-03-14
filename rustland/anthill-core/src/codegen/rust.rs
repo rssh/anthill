@@ -349,6 +349,13 @@ impl<'a> RustCodegen<'a> {
                     }
                 }
             }
+            TypeExpr::Arrow { params, return_type, .. } => {
+                let param_types: Vec<String> = params.iter()
+                    .map(|p| self.type_to_rust(p))
+                    .collect();
+                let ret = self.type_to_rust(return_type);
+                format!("fn({}) -> {ret}", param_types.join(", "))
+            }
         }
     }
 
@@ -399,6 +406,13 @@ impl<'a> RustCodegen<'a> {
                         format!("{mapped}<{}>", args.join(", "))
                     }
                 }
+            }
+            TypeExpr::Arrow { params, return_type, .. } => {
+                let param_types: Vec<String> = params.iter()
+                    .map(|p| self.type_to_rust_in_sort(p, sort_name, type_params, collapse_type_params))
+                    .collect();
+                let ret = self.type_to_rust_in_sort(return_type, sort_name, type_params, collapse_type_params);
+                format!("fn({}) -> {ret}", param_types.join(", "))
             }
         }
     }
@@ -1123,12 +1137,7 @@ impl<'a> RustCodegen<'a> {
     }
 
     fn type_expr_short_name(&self, ty: &TypeExpr) -> String {
-        match ty {
-            TypeExpr::Simple(name) => self.resolve(name),
-            TypeExpr::Parameterized { name, .. } => self.resolve(name),
-            TypeExpr::Variable { .. } => "T".to_owned(),
-            TypeExpr::Tuple(_) => "Tuple".to_owned(),
-        }
+        type_expr_name(self.symbols, ty)
     }
 
     // ── Namespace fact → impl marker comment ─────────────────────
@@ -1249,6 +1258,7 @@ fn analyze_effects(effects: &[Effect], symbols: &SymbolTable, type_params: &[Str
             }
             TypeExpr::Variable { .. } => {}
             TypeExpr::Tuple(_) => {}
+            TypeExpr::Arrow { .. } => {}
         }
     }
 
@@ -1289,6 +1299,7 @@ fn should_collapse_self(info: &SortInfo, symbols: &SymbolTable) -> bool {
             TypeExpr::Parameterized { name, .. } => symbols.name(name.last()).to_owned(),
             TypeExpr::Variable { .. } => "T".to_owned(),
             TypeExpr::Tuple(_) => "Tuple".to_owned(),
+            TypeExpr::Arrow { .. } => "Fn".to_owned(),
         };
 
         if first_type != *param_name {
@@ -1365,6 +1376,7 @@ fn type_expr_name(symbols: &SymbolTable, ty: &TypeExpr) -> String {
         TypeExpr::Parameterized { name, .. } => symbols.name(name.last()).to_owned(),
         TypeExpr::Variable { .. } => "T".to_owned(),
         TypeExpr::Tuple(_) => "Tuple".to_owned(),
+        TypeExpr::Arrow { .. } => "Fn".to_owned(),
     }
 }
 

@@ -1,0 +1,107 @@
+==================
+Unary arrow type
+==================
+
+operation map(f: (A) -> B, l: List) -> List
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name (identifier))
+    (param
+      name: (identifier)
+      type: (arrow_type
+        (simple_type (name (identifier)))
+        return_type: (simple_type (name (identifier)))))
+    (param
+      name: (identifier)
+      type: (simple_type (name (identifier))))
+    return_type: (simple_type (name (identifier)))))
+
+==================
+Binary arrow type
+==================
+
+operation fold(f: (A, B) -> A, init: A, l: List) -> A
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name (identifier))
+    (param
+      name: (identifier)
+      type: (arrow_type
+        (simple_type (name (identifier)))
+        (simple_type (name (identifier)))
+        return_type: (simple_type (name (identifier)))))
+    (param
+      name: (identifier)
+      type: (simple_type (name (identifier))))
+    (param
+      name: (identifier)
+      type: (simple_type (name (identifier))))
+    return_type: (simple_type (name (identifier)))))
+
+==================
+Nullary arrow type (thunk)
+==================
+
+operation delay(f: () -> A) -> A
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name (identifier))
+    (param
+      name: (identifier)
+      type: (arrow_type
+        return_type: (simple_type (name (identifier)))))
+    return_type: (simple_type (name (identifier)))))
+
+==================
+Arrow type with effect
+==================
+
+operation run(f: (A) -> B @ Modifies) -> B
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name (identifier))
+    (param
+      name: (identifier)
+      type: (arrow_type
+        (simple_type (name (identifier)))
+        return_type: (simple_type (name (identifier)))
+        effect: (simple_type (name (identifier)))))
+    return_type: (simple_type (name (identifier)))))
+
+==================
+Arrow type with parameterized return
+==================
+
+operation flatMap(f: (A) -> List{T = B}) -> List{T = B}
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name (identifier))
+    (param
+      name: (identifier)
+      type: (arrow_type
+        (simple_type (name (identifier)))
+        return_type: (parameterized_type
+          (name (identifier))
+          (sort_binding
+            param: (name (identifier))
+            type: (simple_type (name (identifier)))))))
+    return_type: (parameterized_type
+      (name (identifier))
+      (sort_binding
+        param: (name (identifier))
+        type: (simple_type (name (identifier)))))))

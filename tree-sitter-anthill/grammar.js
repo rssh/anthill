@@ -40,6 +40,8 @@ module.exports = grammar({
     // After operation clauses, `requires` could be another clause or a standalone declaration
     [$.operation_declaration],
     [$.variable_term],
+    // (A, ...) can start both arrow_type params and tuple_type — disambiguated by ->
+    [$.arrow_type, $._tuple_type_arg],
   ],
 
   rules: {
@@ -714,7 +716,18 @@ module.exports = grammar({
       $.parameterized_type,
       $.variable_term,
       $.tuple_type,
+      $.arrow_type,
     ),
+
+    // Arrow type: (A) -> B  or  (A, B) -> C  or  () -> A  or  (A) -> B @ E
+    arrow_type: $ => prec.right(seq(
+      '(',
+      optional(commaSep1($._type)),
+      ')',
+      '->',
+      field('return_type', $._type),
+      optional(seq('@', field('effect', $._type))),
+    )),
 
     tuple_type: $ => choice(
       seq('(', ')'),

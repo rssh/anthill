@@ -106,6 +106,12 @@ pub enum TypeExpr {
     /// Tuple type: `(Int, String)` or `(name: String, age: Int)`.
     /// Always named; converter fills _1, _2 for positional.
     Tuple(Vec<(Symbol, TypeExpr)>),
+    /// Arrow type: `(A) -> B` or `(A, B) -> C @ E`.
+    Arrow {
+        params: Vec<TypeExpr>,
+        return_type: Box<TypeExpr>,
+        effect: Option<Box<TypeExpr>>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
