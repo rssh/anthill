@@ -299,18 +299,21 @@ Type ::= Name                                        -- simple type reference
        | Name '{' SortBinding (',' SortBinding)* '}' -- inline instantiation
        | VariableTerm                                 -- logical variable: ?, ?T, ?T {< desc >}+ ?
        | TupleType                                    -- tuple type: (Int, String), (a: Int, b: String), ()
-       | '(' TypeList ')' '->' Type                   -- arrow type (pure function)
-       | '(' TypeList ')' '->' Type '@' Type          -- arrow type with effect annotation
+       | ArrowType                                    -- arrow type (function sort)
 
-TypeList ::= (Type (',' Type)*)?
+ArrowType ::= '(' ArrowParams ')' '->' Type              -- pure function
+            | '(' ArrowParams ')' '->' Type '@' Type      -- effectful function
+
+ArrowParams ::= (TupleTypeArg (',' TupleTypeArg)*)?       -- reuses TupleTypeArg: Type or Name ':' Type
 ```
 
-**Arrow types** describe function-sorted values. `(A) -> B` is the sort of pure functions from `A` to `B`. The parameter list is always parenthesized, disambiguating `->` in type position from `->` in operation return type position:
+**Arrow types** describe function-sorted values. `(A) -> B` is the sort of pure functions from `A` to `B`. The parameter list is always parenthesized, disambiguating `->` in type position from `->` in operation return type position. Parameters can be named (using the same syntax as named tuple elements):
 
 ```
 (Int) -> String                         -- unary function
 (A, B) -> C                             -- binary function
 () -> A                                 -- thunk (nullary)
+(acc: A, elem: B) -> A                  -- named parameters
 (A) -> B @ Modifies(S)                  -- effectful function
 (A) -> B @ (Modifies(S), Errors(Err))   -- multiple effects
 ```
@@ -1640,9 +1643,9 @@ Field       ::= Name ':' Type
 Type        ::= Name                                           -- simple: Account, Int
               | Name '{' SortBinding (',' SortBinding)* '}'    -- inline instantiation: List{T=Int}
               | VariableTerm                                    -- logical variable: ?, ?T, ?T {< desc >}+ ?
-              | '(' TypeList ')' '->' Type                      -- arrow type: (A) -> B
-              | '(' TypeList ')' '->' Type '@' Type             -- effectful arrow: (A) -> B @ E
-TypeList    ::= (Type (',' Type)*)?
+              | '(' ArrowParams ')' '->' Type                    -- arrow type: (A) -> B
+              | '(' ArrowParams ')' '->' Type '@' Type          -- effectful arrow: (A) -> B @ E
+ArrowParams ::= (TupleTypeArg (',' TupleTypeArg)*)?             -- Type or Name ':' Type
 
 Rule        ::= DescriptionBlock*
                   'rule' [Name ':'] Head [':-' RuleBody]
