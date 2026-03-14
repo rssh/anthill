@@ -12,7 +12,7 @@ operation map(f: (A) -> B, l: List) -> List
     (param
       name: (identifier)
       type: (arrow_type
-        (simple_type (name (identifier)))
+        params: (simple_type (name (identifier)))
         return_type: (simple_type (name (identifier)))))
     (param
       name: (identifier)
@@ -33,8 +33,8 @@ operation fold(f: (A, B) -> A, init: A, l: List) -> A
     (param
       name: (identifier)
       type: (arrow_type
-        (simple_type (name (identifier)))
-        (simple_type (name (identifier)))
+        params: (simple_type (name (identifier)))
+        params: (simple_type (name (identifier)))
         return_type: (simple_type (name (identifier)))))
     (param
       name: (identifier)
@@ -75,7 +75,7 @@ operation run(f: (A) -> B @ Modifies) -> B
     (param
       name: (identifier)
       type: (arrow_type
-        (simple_type (name (identifier)))
+        params: (simple_type (name (identifier)))
         return_type: (simple_type (name (identifier)))
         effect: (simple_type (name (identifier)))))
     return_type: (simple_type (name (identifier)))))
@@ -94,7 +94,7 @@ operation flatMap(f: (A) -> List{T = B}) -> List{T = B}
     (param
       name: (identifier)
       type: (arrow_type
-        (simple_type (name (identifier)))
+        params: (simple_type (name (identifier)))
         return_type: (parameterized_type
           (name (identifier))
           (sort_binding
@@ -105,3 +105,26 @@ operation flatMap(f: (A) -> List{T = B}) -> List{T = B}
       (sort_binding
         param: (name (identifier))
         type: (simple_type (name (identifier)))))))
+
+==================
+Arrow type with named params
+==================
+
+operation fold(f: (acc: A, elem: B) -> A) -> A
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name (identifier))
+    (param
+      name: (identifier)
+      type: (arrow_type
+        params: (field_decl
+          name: (identifier)
+          type: (simple_type (name (identifier))))
+        params: (field_decl
+          name: (identifier)
+          type: (simple_type (name (identifier))))
+        return_type: (simple_type (name (identifier)))))
+    return_type: (simple_type (name (identifier)))))
