@@ -268,6 +268,13 @@ impl<'a> RustCodegen<'a> {
         self.symbols.name(name.last()).to_owned()
     }
 
+    /// Find a binding by named param, falling back to positional index.
+    fn find_binding<'b>(&self, bindings: &'b [SortBinding], param_name: &str, positional_index: usize) -> Option<&'b SortBinding> {
+        bindings.iter()
+            .find(|b| b.param.as_ref().map(|p| self.symbols.name(p.last()) == param_name).unwrap_or(false))
+            .or_else(|| bindings.iter().filter(|b| b.param.is_none()).nth(positional_index))
+    }
+
     fn resolve_sym(&self, sym: Symbol) -> String {
         self.symbols.name(sym).to_owned()
     }
@@ -322,15 +329,13 @@ impl<'a> RustCodegen<'a> {
                 let n = self.resolve(name);
                 match n.as_str() {
                     "List" => {
-                        let inner = bindings.iter()
-                            .find(|b| self.resolve(&b.param) == "T")
+                        let inner = self.find_binding(bindings, "T", 0)
                             .map(|b| self.type_to_rust(&b.bound))
                             .unwrap_or_else(|| "T".to_owned());
                         format!("Vec<{inner}>")
                     }
                     "Option" => {
-                        let inner = bindings.iter()
-                            .find(|b| self.resolve(&b.param) == "T")
+                        let inner = self.find_binding(bindings, "T", 0)
                             .map(|b| self.type_to_rust(&b.bound))
                             .unwrap_or_else(|| "T".to_owned());
                         format!("Option<{inner}>")
@@ -375,15 +380,13 @@ impl<'a> RustCodegen<'a> {
                 }
                 match n.as_str() {
                     "List" => {
-                        let inner = bindings.iter()
-                            .find(|b| self.resolve(&b.param) == "T")
+                        let inner = self.find_binding(bindings, "T", 0)
                             .map(|b| self.type_to_rust_in_sort(&b.bound, sort_name, type_params, collapse_type_params))
                             .unwrap_or_else(|| "T".to_owned());
                         format!("Vec<{inner}>")
                     }
                     "Option" => {
-                        let inner = bindings.iter()
-                            .find(|b| self.resolve(&b.param) == "T")
+                        let inner = self.find_binding(bindings, "T", 0)
                             .map(|b| self.type_to_rust_in_sort(&b.bound, sort_name, type_params, collapse_type_params))
                             .unwrap_or_else(|| "T".to_owned());
                         format!("Option<{inner}>")
@@ -1207,9 +1210,12 @@ fn analyze_effects(effects: &[Effect], symbols: &SymbolTable, type_params: &[Str
         match &effect.type_expr {
             TypeExpr::Parameterized { name, bindings } => {
                 let kind = symbols.name(name.last());
-                // Extract target from first binding's param name (the punned form)
+                // Extract target from first binding's bound value
                 let target = if let Some(b) = bindings.first() {
-                    symbols.name(b.param.last()).to_owned()
+                    match &b.bound {
+                        TypeExpr::Simple(n) => symbols.name(n.last()).to_owned(),
+                        _ => continue,
+                    }
                 } else {
                     continue;
                 };

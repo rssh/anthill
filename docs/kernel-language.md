@@ -419,24 +419,31 @@ ImportPath ::= Name                               -- import a specific name
              | Name '.' '*'                        -- wildcard: everything from a namespace
 
 NameList    ::= Name (',' Name)*
-SortBinding ::= Name '=' Type                   -- explicit: binds an unspecified sort to a concrete type
-              | Name                             -- punning: Eq{T} is shorthand for Eq{T = T}
+SortBinding ::= Name '=' Type                   -- named: binds a specific sort parameter to a type
+              | Type                             -- positional: binds to the next unfilled sort parameter
               | VariableTerm                     -- anonymous/named variable: Modify{?}, Modify{?r}
 ```
 
-When a sort binding omits the `= Type` part, the parameter name is used as both the binding name and the bound type. This **punning** shorthand (analogous to TypeScript's `{x}` for `{x: x}`) is useful when a sort parameter has the same name as a type in scope:
+When a sort binding omits the `Name =` part, it is a **positional** binding — the value is bound to the next unfilled sort parameter in declaration order. Named (`Name = Type`) and positional bindings can be mixed, with positional bindings first:
 
 ```
--- These are equivalent:
-requires Eq{T = T}       -- explicit
-requires Eq{T}           -- punned: T binds to T
+-- Positional bindings (bound to sort parameters in declaration order):
+List{Int}                -- List{T = Int} — Int binds to first param T
+Map{String, Int}         -- Map{K = String, V = Int} — positional for both
 
--- Mixed: punned and explicit bindings in the same type expression
-requires Bifunctor{A, B = Int}   -- A binds to A, B binds to Int
+-- Named bindings (explicit parameter name):
+List{T = Int}            -- explicit: T binds to Int
+Numeric{T = Money}       -- explicit: T binds to Money
 
--- Explicit is required when names differ:
-requires Numeric{T = Money}      -- T binds to Money
+-- Mixed: positional first, then named
+Bifunctor{String, B = Int}   -- A = String (positional), B = Int (named)
+
+-- Positional with type variables (common in parametric sort bodies):
+requires Eq{T}           -- Eq{T = T} — T positionally binds to first param
+sort C = SPair{B, A}     -- SPair{A = B, B = A} — positional, swaps params
 ```
+
+Note that `Eq{T}` inside a scope where `T` is a sort parameter works because `T` is positionally bound to `Eq`'s first parameter — which happens to be named `T`. This is a positional coincidence, not name-based punning.
 
 A sort binding can also be a **logical variable** (`?` or `?name`). This is used to express existential quantification over type parameters — "for any instantiation":
 

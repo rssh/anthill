@@ -559,14 +559,23 @@ fn build_instantiation_term(
             let sort_name = join_segments(parse_sym, &name.segments);
             let sort_sym = kb.symbols.by_qualified_name.get(&sort_name).copied()
                 .unwrap_or_else(|| kb.symbols.intern(&sort_name));
-            let named_args: SmallVec<[(Symbol, TermId); 2]> = bindings.iter().map(|b| {
-                let key = kb.symbols.intern(&join_segments(parse_sym, &b.param.segments));
+            let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
+            let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+            for b in bindings {
                 let val = build_instantiation_term(kb, parse_sym, &b.bound, _current_scope);
-                (key, val)
-            }).collect();
+                match &b.param {
+                    Some(p) => {
+                        let key = kb.symbols.intern(&join_segments(parse_sym, &p.segments));
+                        named_args.push((key, val));
+                    }
+                    None => {
+                        pos_args.push(val);
+                    }
+                }
+            }
             kb.alloc(Term::Fn {
                 functor: sort_sym,
-                pos_args: SmallVec::new(),
+                pos_args,
                 named_args,
             })
         }
@@ -1703,17 +1712,25 @@ impl<'a> Loader<'a> {
             TypeExpr::Simple(name) => self.name_to_sort_term(name),
             TypeExpr::Parameterized { name, bindings } => {
                 let name_term = self.name_to_sort_term(name);
+                let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::from_elem(name_term, 1);
                 let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
                 for b in bindings {
-                    let param_sym = self.reintern(b.param.last());
                     let bound_term = self.type_expr_to_term(&b.bound);
-                    named_args.push((param_sym, bound_term));
+                    match &b.param {
+                        Some(p) => {
+                            let param_sym = self.reintern(p.last());
+                            named_args.push((param_sym, bound_term));
+                        }
+                        None => {
+                            pos_args.push(bound_term);
+                        }
+                    }
                 }
 
                 let param_type_sym = self.kb.resolve_symbol("anthill.reflect.SortView");
                 self.kb.alloc(Term::Fn {
                     functor: param_type_sym,
-                    pos_args: SmallVec::from_elem(name_term, 1),
+                    pos_args,
                     named_args,
                 })
             }

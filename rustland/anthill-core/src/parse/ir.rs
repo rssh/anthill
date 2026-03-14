@@ -110,7 +110,8 @@ pub enum TypeExpr {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SortBinding {
-    pub param: Name,
+    /// Named binding: `Some(name)` for `T = Int`, `None` for positional `Int`.
+    pub param: Option<Name>,
     pub bound: TypeExpr,
 }
 

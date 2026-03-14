@@ -1,6 +1,6 @@
 # Proposal 003: Effect Annotations on Arrow Sorts
 
-**Status:** Draft
+**Status:** Merged into [002-arrow-sorts](002-arrow-sorts.md)
 **Depends on:** [002-arrow-sorts](002-arrow-sorts.md)
 **Affects:** Kernel Language Specification §5.4, §5.5, §5.6, §5.7, §11
 

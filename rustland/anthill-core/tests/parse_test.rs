@@ -737,7 +737,13 @@ fn parse_sort_with_requires() {
                         TypeExpr::Parameterized { name, bindings } => {
                             assert_eq!(parsed.symbols.name(name.last()), "Eq");
                             assert_eq!(bindings.len(), 1);
-                            assert_eq!(parsed.symbols.name(bindings[0].param.last()), "T");
+                            // Named binding: Eq{T = T}
+                            let p = bindings[0].param.as_ref().expect("named binding should have param");
+                            assert_eq!(parsed.symbols.name(p.last()), "T");
+                            match &bindings[0].bound {
+                                TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "T"),
+                                other => panic!("expected Simple bound, got {:?}", other),
+                            }
                         }
                         other => panic!("expected Parameterized type, got {:?}", other),
                     }
@@ -792,8 +798,8 @@ sort Ordered {
 }
 
 #[test]
-fn parse_requires_punned_binding() {
-    // `Eq{T}` should desugar to `Eq{T = T}`
+fn parse_requires_positional_binding() {
+    // `Eq{T}` is a positional binding — T binds to Eq's first param
     let source = r#"sort Ordered {
   sort T = ?
   requires Eq{T}
@@ -809,8 +815,8 @@ fn parse_requires_punned_binding() {
                             assert_eq!(parsed.symbols.name(name.last()), "Eq");
                             assert_eq!(bindings.len(), 1);
                             let b = &bindings[0];
-                            assert_eq!(parsed.symbols.name(b.param.last()), "T");
-                            // The bound should also be T (desugared from punning)
+                            // Positional binding: param is None, bound is Simple("T")
+                            assert!(b.param.is_none());
                             match &b.bound {
                                 TypeExpr::Simple(bound_name) => {
                                     assert_eq!(parsed.symbols.name(bound_name.last()), "T");

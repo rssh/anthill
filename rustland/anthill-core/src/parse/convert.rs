@@ -238,24 +238,23 @@ impl<'a> Converter<'a> {
         let type_field = self.field(node, "type");
 
         match (param, type_field) {
-            // Explicit: Eq{T = Int} — param and type both present
-            (Some(p), Some(t)) => SortBinding { param: p, bound: self.convert_type(t) },
-            // Punning: Eq{T} — param only, desugars to Eq{T = T}
+            // Named: Eq{T = Int} — param and type both present
+            (Some(p), Some(t)) => SortBinding { param: Some(p), bound: self.convert_type(t) },
+            // Positional: List{Int} or List{T} — no `=`, value binds to next param
             (Some(p), None) => {
-                let bound = TypeExpr::Simple(p.clone());
-                SortBinding { param: p, bound }
+                let bound = TypeExpr::Simple(p);
+                SortBinding { param: None, bound }
             }
-            // Variable: Modify{?} or Modify{?r} — no param name, just a variable type
+            // Variable: Modify{?} or Modify{?r} — positional with variable type
             (None, Some(t)) => {
                 let bound = self.convert_type(t);
-                let sym = self.intern("?");
-                SortBinding { param: Name::simple(sym, self.span(node)), bound }
+                SortBinding { param: None, bound }
             }
             // Fallback (shouldn't happen)
             (None, None) => {
                 let sym = self.intern("?");
                 let name = Name::simple(sym, self.span(node));
-                SortBinding { param: name.clone(), bound: TypeExpr::Simple(name) }
+                SortBinding { param: None, bound: TypeExpr::Simple(name) }
             }
         }
     }
@@ -416,10 +415,10 @@ impl<'a> Converter<'a> {
                         named_args.push((param_sym, self.terms.alloc(Term::Ref(type_sym))));
                     }
                     (Some(p), None) => {
-                        // Punned: Eq{Int} — param name IS the type
-                        let param_name = self.convert_name(p);
-                        let param_sym = self.intern_name(&param_name);
-                        named_args.push((param_sym, self.terms.alloc(Term::Ref(param_sym))));
+                        // Positional: List{Int} — value binds to next param in order
+                        let name = self.convert_name(p);
+                        let sym = self.intern_name(&name);
+                        pos_args.push(self.terms.alloc(Term::Ref(sym)));
                     }
                     (None, Some(t)) => {
                         // Variable binding: Modify{?} or Modify{?r}
