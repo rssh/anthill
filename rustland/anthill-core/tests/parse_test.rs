@@ -783,9 +783,9 @@ sort Ordered {
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
         Term::Fn { functor, pos_args, named_args, .. } => {
-            assert_eq!(kb.resolve_sym(*functor), "Requires");
-            assert_eq!(pos_args.len(), 0, "Requires should use named args, not positional");
-            assert_eq!(named_args.len(), 2, "Requires should have 2 named args: sort_ref, spec");
+            assert_eq!(kb.resolve_sym(*functor), "SortRequiresInfo");
+            assert_eq!(pos_args.len(), 0, "SortRequiresInfo should use named args, not positional");
+            assert_eq!(named_args.len(), 2, "SortRequiresInfo should have 2 named args: sort_ref, spec");
         }
         other => panic!("expected Fn term for Requirement, got {:?}", other),
     }
@@ -1159,19 +1159,26 @@ fn load_describe_emits_desc_fact() {
     let descs = kb.by_sort(desc_sort);
     assert_eq!(descs.len(), 1, "should have 1 Description fact");
 
-    // Verify the Desc fact structure: Desc(target, text)
+    // Verify the Desc fact structure: Desc(target, text, index)
     let fid = descs[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
         Term::Fn { functor, pos_args, .. } => {
             assert_eq!(kb.resolve_sym(*functor), "Description");
-            assert_eq!(pos_args.len(), 2);
+            assert_eq!(pos_args.len(), 3);
             // Second arg should be the description text
             match kb.get_term(pos_args[1]) {
                 Term::Const(Literal::String(s)) => {
                     assert_eq!(s, "A bank account holding funds");
                 }
                 other => panic!("expected String constant, got {:?}", other),
+            }
+            // Third arg should be the index (0)
+            match kb.get_term(pos_args[2]) {
+                Term::Const(Literal::Int(i)) => {
+                    assert_eq!(*i, 0);
+                }
+                other => panic!("expected Int constant for index, got {:?}", other),
             }
         }
         other => panic!("expected Fn term for Description, got {:?}", other),
@@ -1194,7 +1201,7 @@ fn load_abstract_sort_description_emits_desc_fact() {
     match kb.get_term(tid) {
         Term::Fn { functor, pos_args, .. } => {
             assert_eq!(kb.resolve_sym(*functor), "Description");
-            assert_eq!(pos_args.len(), 2);
+            assert_eq!(pos_args.len(), 3);
             match kb.get_term(pos_args[1]) {
                 Term::Const(Literal::String(s)) => {
                     assert_eq!(s, "Monetary amount");
@@ -1253,7 +1260,7 @@ fn load_variable_description_emits_fact() {
     match kb.get_term(tid) {
         Term::Fn { functor, pos_args, .. } => {
             assert_eq!(kb.resolve_sym(*functor), "Description");
-            assert_eq!(pos_args.len(), 2);
+            assert_eq!(pos_args.len(), 3);
             match kb.get_term(pos_args[1]) {
                 Term::Const(Literal::String(s)) => {
                     assert_eq!(s, "the x value");

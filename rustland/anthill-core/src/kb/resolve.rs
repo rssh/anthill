@@ -41,6 +41,10 @@ pub enum BuiltinTag {
     /// `anthill.reflect.resolve_sort_instantiation_param(?spec_inst, ?param_name, ?value)` —
     /// extract a named arg value from a ParameterizedType term by parameter name.
     ResolveSortInstParam,
+    /// `anthill.reflect.scope(?sym, ?result)` — Symbol → enclosing scope symbol.
+    Scope,
+    /// `anthill.reflect.kind(?sym, ?result)` — Symbol → kind string.
+    Kind,
 }
 
 /// Result of executing a builtin.
@@ -755,6 +759,8 @@ impl KnowledgeBase {
             BuiltinTag::ExtractSort => self.builtin_extract_sort(goal, answer_subst),
             BuiltinTag::Not => unreachable!("Not is handled in step_init, not execute_builtin"),
             BuiltinTag::ResolveSortInstParam => self.builtin_resolve_sort_inst_param(goal, answer_subst),
+            BuiltinTag::Scope => self.builtin_scope(goal, answer_subst),
+            BuiltinTag::Kind => self.builtin_kind(goal, answer_subst),
         }
     }
 
@@ -1077,6 +1083,98 @@ impl KnowledgeBase {
             }
             None => BuiltinResult::Failure,
         }
+    }
+
+    /// Try to bind a result argument to a computed value.
+    /// If the result is an unbound Var, bind it. If already bound, check equality.
+    fn try_bind_result(&self, result_arg: TermId, value: TermId, subst: &Substitution) -> BuiltinResult {
+        let walked_result = self.walk(result_arg, subst);
+        match self.terms.get(walked_result) {
+            Term::Var(vid) => {
+                let vid = *vid;
+                let mut extra = Substitution::new();
+                extra.bind(vid, value);
+                BuiltinResult::SuccessWithBindings(extra)
+            }
+            _ => {
+                if walked_result == value {
+                    BuiltinResult::Success
+                } else {
+                    BuiltinResult::Failure
+                }
+            }
+        }
+    }
+
+    /// `scope(?sym, ?result)` — if `?sym` is bound to a Ref or Fn, bind `?result`
+    /// to the enclosing scope term (Fn). Fails if scope is _global (top-level).
+    fn builtin_scope(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
+        let sym_arg = self.builtin_first_arg(goal);
+        let result_arg = self.builtin_second_arg(goal);
+
+        let walked_sym = self.walk(sym_arg, subst);
+        // Extract the symbol from Ref or Fn term
+        let sym = match self.terms.get(walked_sym) {
+            Term::Var(_) => return BuiltinResult::Delay,
+            Term::Ref(s) => *s,
+            Term::Fn { functor, .. } => *functor,
+            _ => return BuiltinResult::Failure,
+        };
+
+        let scope_raw = match self.symbols.get(sym) {
+            crate::intern::SymbolDef::Resolved { scope_raw, .. } => *scope_raw,
+            _ => return BuiltinResult::Failure,
+        };
+
+        let scope_tid = super::term::TermId::from_raw(scope_raw);
+        // The scope term is a Fn term — return it directly
+        match self.terms.get(scope_tid) {
+            Term::Fn { functor, .. } => {
+                let f = *functor;
+                // Check if scope is _global (top-level, no meaningful parent)
+                if self.symbols.name(f) == "_global" {
+                    return BuiltinResult::Failure;
+                }
+                self.try_bind_result(result_arg, scope_tid, subst)
+            }
+            _ => BuiltinResult::Failure,
+        }
+    }
+
+    /// `kind(?sym, ?result)` — if `?sym` is bound to a Ref, bind `?result`
+    /// to a string describing the symbol's kind ("Sort", "Entity", etc.).
+    fn builtin_kind(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
+        let sym_arg = self.builtin_first_arg(goal);
+        let result_arg = self.builtin_second_arg(goal);
+
+        let walked_sym = self.walk(sym_arg, subst);
+        let sym = match self.terms.get(walked_sym) {
+            Term::Var(_) => return BuiltinResult::Delay,
+            Term::Ref(s) => *s,
+            Term::Fn { functor, .. } => *functor,
+            _ => return BuiltinResult::Failure,
+        };
+
+        let kind_str = match self.symbols.get(sym) {
+            crate::intern::SymbolDef::Resolved { kind, .. } => {
+                match kind {
+                    crate::intern::SymbolKind::Sort => "Sort",
+                    crate::intern::SymbolKind::Entity => "Entity",
+                    crate::intern::SymbolKind::Operation => "Operation",
+                    crate::intern::SymbolKind::Namespace => "Namespace",
+                    crate::intern::SymbolKind::Fact => "Fact",
+                    crate::intern::SymbolKind::Rule => "Rule",
+                    crate::intern::SymbolKind::Constraint => "Constraint",
+                    crate::intern::SymbolKind::Param => "Param",
+                    crate::intern::SymbolKind::Field => "Field",
+                    crate::intern::SymbolKind::Goal => "Goal",
+                }
+            }
+            _ => return BuiltinResult::Failure,
+        };
+
+        let kind_term = self.alloc(Term::Const(super::term::Literal::String(kind_str.to_owned())));
+        self.try_bind_result(result_arg, kind_term, subst)
     }
 
     /// Collect all unbound VarIds in a term, walking through the substitution.

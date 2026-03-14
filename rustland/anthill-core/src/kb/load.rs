@@ -700,7 +700,7 @@ const KERNEL_META_SORTS: &[&str] = &[
 
 /// KB-internal functor names used by the loader to construct fact terms.
 /// Not defined in any `.anthill` file.
-/// (EntityOf and Requires are now declared in reflect.anthill.)
+/// (EntityInfo and SortRequiresInfo are now declared in reflect.anthill.)
 const KERNEL_FUNCTORS: &[&str] = &[
     "SortAlias",
     "member", "meta",
@@ -825,8 +825,8 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     let sort_info_sym = kb.symbols.define("SortInfo", "anthill.reflect.SortInfo", SymbolKind::Entity, reflect_term.raw());
     let field_info_sym = kb.symbols.define("FieldInfo", "anthill.reflect.FieldInfo", SymbolKind::Entity, reflect_term.raw());
     let op_info_sym = kb.symbols.define("OperationInfo", "anthill.reflect.OperationInfo", SymbolKind::Entity, reflect_term.raw());
-    let entity_of_sym = kb.symbols.define("EntityOf", "anthill.reflect.EntityOf", SymbolKind::Entity, reflect_term.raw());
-    let requires_sym = kb.symbols.define("Requires", "anthill.reflect.Requires", SymbolKind::Entity, reflect_term.raw());
+    let entity_info_sym = kb.symbols.define("EntityInfo", "anthill.reflect.EntityInfo", SymbolKind::Entity, reflect_term.raw());
+    let sort_requires_info_sym = kb.symbols.define("SortRequiresInfo", "anthill.reflect.SortRequiresInfo", SymbolKind::Entity, reflect_term.raw());
     let sort_view_sym = kb.symbols.define("SortView", "anthill.reflect.SortView", SymbolKind::Entity, reflect_term.raw());
     let set_literal_sym = kb.symbols.define("SetLiteral", "anthill.reflect.SetLiteral", SymbolKind::Entity, reflect_term.raw());
     let tuple_literal_sym = kb.symbols.define("TupleLiteral", "anthill.reflect.TupleLiteral", SymbolKind::Entity, reflect_term.raw());
@@ -853,8 +853,8 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.add_import(global_raw, "SortInfo", sort_info_sym);
     kb.symbols.add_import(global_raw, "FieldInfo", field_info_sym);
     kb.symbols.add_import(global_raw, "OperationInfo", op_info_sym);
-    kb.symbols.add_import(global_raw, "EntityOf", entity_of_sym);
-    kb.symbols.add_import(global_raw, "Requires", requires_sym);
+    kb.symbols.add_import(global_raw, "EntityInfo", entity_info_sym);
+    kb.symbols.add_import(global_raw, "SortRequiresInfo", sort_requires_info_sym);
     kb.symbols.add_import(global_raw, "SortView", sort_view_sym);
     kb.symbols.add_import(global_raw, "SetLiteral", set_literal_sym);
     kb.symbols.add_import(global_raw, "TupleLiteral", tuple_literal_sym);
@@ -944,10 +944,10 @@ fn load_with_visited(
 // Phase 3: Resolve instantiation bindings
 // ══════════════════════════════════════════════════════════════════
 
-/// Complete all ParameterizedType substitutions in Requires facts.
+/// Complete all ParameterizedType substitutions in SortRequiresInfo facts.
 ///
 /// Called after load: (1) builds base substitutions from SortInfo facts,
-/// (2) for each Requires fact, completes spec_inst with explicit bindings
+/// (2) for each SortRequiresInfo fact, completes spec_inst with explicit bindings
 /// and auto-bound same-named operations from the requiring sort's scope.
 pub fn resolve_instantiations(kb: &mut KnowledgeBase) {
     build_base_substitutions(kb);
@@ -1057,10 +1057,10 @@ fn collect_ref_list(kb: &mut KnowledgeBase, list_tid: TermId, out: &mut Vec<(Sym
     }
 }
 
-/// For each Requires fact with a SortView spec, complete the
+/// For each SortRequiresInfo fact with a SortView spec, complete the
 /// instantiation by merging explicit bindings with auto-bound operations.
 fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
-    let requires_sym = match kb.try_resolve_symbol("anthill.reflect.Requires") {
+    let requires_sym = match kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") {
         Some(sym) => sym,
         None => return,
     };
@@ -1188,7 +1188,7 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
                     named_args: new_named,
                 });
 
-                // Build new Requires fact with updated spec
+                // Build new SortRequiresInfo fact with updated spec
                 let new_named_args: SmallVec<[(Symbol, TermId); 2]> = named_args.iter()
                     .map(|(s, t)| {
                         if *s == spec_field {
@@ -1259,13 +1259,13 @@ fn collect_sort_operations(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Symb
 }
 
 /// Find an operation with the given short name in a sort's OperationInfo facts.
+/// Uses the symbol table's scope to check if the operation belongs to the sort.
 fn find_operation_in_scope(kb: &mut KnowledgeBase, sort_ref_tid: TermId, short_name: &str) -> Option<Symbol> {
     let op_info_sym = match kb.try_resolve_symbol("anthill.reflect.OperationInfo") {
         Some(sym) => sym,
         None => return None,
     };
     let name_field = kb.intern("name");
-    let sort_context_field = kb.intern("sort_context");
 
     // Get the sort symbol from the sort_ref term
     let sort_sym = match kb.get_term(sort_ref_tid) {
@@ -1274,8 +1274,6 @@ fn find_operation_in_scope(kb: &mut KnowledgeBase, sort_ref_tid: TermId, short_n
         _ => return None,
     };
 
-    let value_field = kb.intern("value");
-
     let rule_ids = kb.by_functor(op_info_sym);
     for rid in rule_ids {
         if !kb.rule_body(rid).is_empty() {
@@ -1283,34 +1281,29 @@ fn find_operation_in_scope(kb: &mut KnowledgeBase, sort_ref_tid: TermId, short_n
         }
         let head = kb.rule_head(rid);
         if let Term::Fn { ref named_args, .. } = kb.get_term(head).clone() {
-            // Check sort_context matches: some(value: Ref(sort_sym))
-            let context_matches = named_args.iter()
-                .find(|(s, _)| *s == sort_context_field)
-                .and_then(|(_, tid)| {
-                    match kb.get_term(*tid).clone() {
-                        Term::Fn { named_args: inner_na, .. } => {
-                            inner_na.iter()
-                                .find(|(s, _)| *s == value_field)
-                                .and_then(|(_, vtid)| match kb.get_term(*vtid) {
-                                    Term::Ref(s) => Some(*s == sort_sym),
-                                    _ => None,
-                                })
+            // Extract the operation symbol from the name field
+            let op_sym = named_args.iter()
+                .find(|(s, _)| *s == name_field)
+                .and_then(|(_, tid)| match kb.get_term(*tid) {
+                    Term::Ref(sym) => Some(*sym),
+                    _ => None,
+                });
+
+            if let Some(op_s) = op_sym {
+                // Check if the operation's scope is the sort
+                let op_scope_matches = match kb.symbols.get(op_s) {
+                    SymbolDef::Resolved { scope_raw, .. } => {
+                        // The operation's scope_raw should point to a term whose functor is sort_sym
+                        let scope_tid = TermId::from_raw(*scope_raw);
+                        match kb.get_term(scope_tid) {
+                            Term::Fn { functor, .. } => *functor == sort_sym,
+                            _ => false,
                         }
-                        _ => None,
                     }
-                })
-                .unwrap_or(false);
+                    _ => false,
+                };
 
-            if context_matches {
-                // Check name matches short_name
-                let op_sym = named_args.iter()
-                    .find(|(s, _)| *s == name_field)
-                    .and_then(|(_, tid)| match kb.get_term(*tid) {
-                        Term::Ref(sym) => Some(*sym),
-                        _ => None,
-                    });
-
-                if let Some(op_s) = op_sym {
+                if op_scope_matches {
                     let op_name = kb.resolve_sym(op_s);
                     let op_short = op_name.rsplit('.').next().unwrap_or(op_name);
                     if op_short == short_name {
@@ -1449,6 +1442,8 @@ struct Loader<'a> {
     errors: Vec<LoadError>,
     // Current scope for scope-aware resolution
     current_scope: TermId,
+    // Description index counter per target (keyed by TermId raw)
+    desc_index: HashMap<u32, i64>,
 }
 
 impl<'a> Loader<'a> {
@@ -1469,6 +1464,7 @@ impl<'a> Loader<'a> {
             var_map: HashMap::new(),
             errors: Vec::new(),
             current_scope: global_scope,
+            desc_index: HashMap::new(),
         }
     }
 
@@ -1848,6 +1844,14 @@ impl<'a> Loader<'a> {
         let prev_scope = self.current_scope;
         self.current_scope = sort_term;
 
+        // Pre-resolve symbols used for EntityInfo/FieldInfo (hoisted from loop)
+        let field_info_sym = self.kb.resolve_symbol("anthill.reflect.FieldInfo");
+        let entity_info_sym = self.kb.resolve_symbol("anthill.reflect.EntityInfo");
+        let fi_name_sym = self.kb.intern("name");
+        let fi_type_sym = self.kb.intern("type_name");
+        let fields_field_sym = self.kb.intern("fields");
+        self.kb.register_entity_fields(entity_info_sym, vec![fi_name_sym, fields_field_sym]);
+
         // Register direct entity children (entity → parent sort)
         for item in &s.items {
             if let Item::Entity(e) = item {
@@ -1855,17 +1859,46 @@ impl<'a> Loader<'a> {
                 self.kb.register_sort(ctor_term, SortKind::Constructor);
                 self.kb.register_entity_of(ctor_term, sort_term);
 
-                // Assert EntityOf fact (named args: entity, parent)
-                let entity_of_sym = self.kb.resolve_symbol("anthill.reflect.EntityOf");
-                let entity_field_sym = self.kb.intern("entity");
-                let parent_field_sym = self.kb.intern("parent");
-                self.kb.register_entity_fields(entity_of_sym, vec![entity_field_sym, parent_field_sym]);
-                let entity_of_fact = self.kb.alloc(Term::Fn {
-                    functor: entity_of_sym,
+                // Build FieldInfo list for entity fields
+                let ctor_functor = match self.kb.get_term(ctor_term) {
+                    Term::Fn { functor, .. } => *functor,
+                    _ => self.kb.intern("_unknown"),
+                };
+                let ctor_qualified = match self.kb.symbols.get(ctor_functor) {
+                    SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
+                    SymbolDef::Unresolved { name } => name.clone(),
+                };
+                let field_terms: Vec<TermId> = e.fields
+                    .iter()
+                    .map(|f| {
+                        let field_name_str = self.parsed.symbols.name(f.name).to_owned();
+                        let field_qualified = format!("{}.{}", ctor_qualified, field_name_str);
+                        let field_sym = if let Some(&existing) = self.kb.symbols.by_qualified_name.get(&field_qualified) {
+                            existing
+                        } else {
+                            self.kb.symbols.define(&field_name_str, &field_qualified, SymbolKind::Field, ctor_term.raw())
+                        };
+                        let name_term = self.kb.alloc(Term::Ref(field_sym));
+                        let type_term = self.type_expr_to_term(&f.ty);
+                        self.kb.alloc(Term::Fn {
+                            functor: field_info_sym,
+                            pos_args: SmallVec::new(),
+                            named_args: SmallVec::from_slice(&[
+                                (fi_name_sym, name_term),
+                                (fi_type_sym, type_term),
+                            ]),
+                        })
+                    })
+                    .collect();
+                let fields_list = build_list(self.kb, &field_terms);
+
+                // Assert EntityInfo fact (name stores sort term for entity_of compatibility)
+                let entity_info_fact = self.kb.alloc(Term::Fn {
+                    functor: entity_info_sym,
                     pos_args: SmallVec::new(),
-                    named_args: SmallVec::from_slice(&[(entity_field_sym, ctor_term), (parent_field_sym, sort_term)]),
+                    named_args: SmallVec::from_slice(&[(fi_name_sym, ctor_term), (fields_field_sym, fields_list)]),
                 });
-                self.kb.assert_fact(entity_of_fact, sort_sort, parent_domain, None);
+                self.kb.assert_fact(entity_info_fact, sort_sort, parent_domain, None);
             }
         }
 
@@ -2031,11 +2064,22 @@ impl<'a> Loader<'a> {
         let field_info_sym = self.kb.resolve_symbol("anthill.reflect.FieldInfo");
         let fi_name_sym = self.kb.intern("name");
         let fi_type_sym = self.kb.intern("type_name");
+        let op_qualified = match self.kb.symbols.get(functor) {
+            SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
+            SymbolDef::Unresolved { name } => name.clone(),
+        };
         let param_terms: Vec<TermId> = o.params
             .iter()
             .map(|p| {
                 let param_name_str = self.parsed.symbols.name(p.name).to_owned();
-                let name_term = self.kb.alloc(Term::Const(super::term::Literal::String(param_name_str)));
+                // Register field symbol for parameter
+                let field_qualified = format!("{}.{}", op_qualified, param_name_str);
+                let field_sym = if let Some(&existing) = self.kb.symbols.by_qualified_name.get(&field_qualified) {
+                    existing
+                } else {
+                    self.kb.symbols.define(&param_name_str, &field_qualified, SymbolKind::Field, self.current_scope.raw())
+                };
+                let name_term = self.kb.alloc(Term::Ref(field_sym));
                 let type_term = self.type_expr_to_term(&p.ty);
                 self.kb.alloc(Term::Fn {
                     functor: field_info_sym,
@@ -2056,61 +2100,34 @@ impl<'a> Loader<'a> {
             .collect();
         let effects_list = build_list(self.kb, &effect_terms);
 
+        // Build requires and ensures lists
+        let requires_list = self.convert_clause_list(&o.requires);
+        let ensures_list = self.convert_clause_list(&o.ensures);
+
         self.current_scope = prev_scope;
 
         // Build OperationInfo term with named args matching the entity definition
         let op_info_sym = self.kb.resolve_symbol("anthill.reflect.OperationInfo");
         let name_sym = self.kb.intern("name");
-        let sort_context_sym = self.kb.intern("sort_context");
         let params_sym = self.kb.intern("params");
         let return_type_sym = self.kb.intern("return_type");
         let effects_sym = self.kb.intern("effects");
+        let requires_sym = self.kb.intern("requires");
+        let ensures_sym = self.kb.intern("ensures");
 
         // name: Ref to operation symbol
         let name_ref = self.kb.alloc(Term::Ref(functor));
-
-        // sort_context: Ref to domain sort if it's a sort scope, else None
-        let sort_context_term = if is_sort_scope(self.kb, domain) {
-            // Extract the functor symbol from the domain term
-            match self.kb.get_term(domain) {
-                Term::Fn { functor: domain_functor, .. } => {
-                    let df = *domain_functor;
-                    let some_sym = self.kb.resolve_symbol("anthill.prelude.Option.some");
-                    let val_sym = self.kb.intern("value");
-                    let ref_term = self.kb.alloc(Term::Ref(df));
-                    self.kb.alloc(Term::Fn {
-                        functor: some_sym,
-                        pos_args: SmallVec::new(),
-                        named_args: SmallVec::from_slice(&[(val_sym, ref_term)]),
-                    })
-                }
-                _ => {
-                    let none_sym = self.kb.resolve_symbol("anthill.prelude.Option.none");
-                    self.kb.alloc(Term::Fn {
-                        functor: none_sym,
-                        pos_args: SmallVec::new(),
-                        named_args: SmallVec::new(),
-                    })
-                }
-            }
-        } else {
-            let none_sym = self.kb.resolve_symbol("anthill.prelude.Option.none");
-            self.kb.alloc(Term::Fn {
-                functor: none_sym,
-                pos_args: SmallVec::new(),
-                named_args: SmallVec::new(),
-            })
-        };
 
         let op_info = self.kb.alloc(Term::Fn {
             functor: op_info_sym,
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_slice(&[
                 (name_sym, name_ref),
-                (sort_context_sym, sort_context_term),
                 (params_sym, params_list),
                 (return_type_sym, return_term),
                 (effects_sym, effects_list),
+                (requires_sym, requires_list),
+                (ensures_sym, ensures_list),
             ]),
         });
         self.kb.assert_fact(op_info, op_sort, domain, None);
@@ -2160,7 +2177,7 @@ impl<'a> Loader<'a> {
 
     fn load_requires_decl(&mut self, r: &RequiresDecl, domain: TermId) {
         let requirement_sort = self.kb.make_name_term("Requirement");
-        let requires_sym = self.kb.resolve_symbol("anthill.reflect.Requires");
+        let requires_sym = self.kb.resolve_symbol("anthill.reflect.SortRequiresInfo");
         let type_term = self.type_expr_to_term(&r.type_expr);
 
         // Named args: sort_ref, spec
@@ -2189,12 +2206,40 @@ impl<'a> Loader<'a> {
         let desc_sort = self.kb.make_name_term("Description");
         let desc_sym = self.kb.resolve_symbol("Description");
         let text_term = self.kb.alloc(Term::Const(super::term::Literal::String(text.to_string())));
+
+        // Track description index per target
+        let idx = self.desc_index.entry(target.raw()).or_insert(0);
+        let index_term = self.kb.alloc(Term::Const(super::term::Literal::Int(*idx)));
+        *idx += 1;
+
         let desc_fact = self.kb.alloc(Term::Fn {
             functor: desc_sym,
-            pos_args: SmallVec::from_slice(&[target, text_term]),
+            pos_args: SmallVec::from_slice(&[target, text_term, index_term]),
             named_args: SmallVec::new(),
         });
         self.kb.assert_fact(desc_fact, desc_sort, domain, None);
+    }
+
+    /// Convert a list of clauses (each a Vec<TermId>) into a cons-list.
+    /// Multi-goal clauses are wrapped in a conjunction term.
+    fn convert_clause_list(&mut self, clauses: &[Vec<TermId>]) -> TermId {
+        let clause_terms: Vec<TermId> = clauses
+            .iter()
+            .map(|clause| {
+                let goal_terms: Vec<TermId> = clause.iter().map(|&tid| self.convert_term(tid)).collect();
+                if goal_terms.len() == 1 {
+                    goal_terms[0]
+                } else {
+                    let conj_sym = self.kb.intern("conjunction");
+                    self.kb.alloc(Term::Fn {
+                        functor: conj_sym,
+                        pos_args: SmallVec::from_vec(goal_terms),
+                        named_args: SmallVec::new(),
+                    })
+                }
+            })
+            .collect();
+        build_list(self.kb, &clause_terms)
     }
 
     fn load_project(&mut self, p: &Project, domain: TermId) {

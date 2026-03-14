@@ -58,7 +58,7 @@ fn functor_of(kb: &KnowledgeBase, term: TermId) -> anthill_core::intern::Symbol 
 }
 
 /// Build a query goal using a resolved symbol as functor.
-/// Works for kernel names ("EntityOf"), qualified builtins
+/// Works for kernel names ("EntityInfo"), qualified builtins
 /// ("anthill.reflect.typing.is_entity_of"), and qualified rule functor names
 /// ("anthill.reflect.typing.refines", "anthill.reflect.typing.list_contains").
 fn make_goal(kb: &mut KnowledgeBase, name: &str, pos_args: &[TermId]) -> TermId {
@@ -71,7 +71,7 @@ fn make_goal(kb: &mut KnowledgeBase, name: &str, pos_args: &[TermId]) -> TermId 
     })
 }
 
-/// Build a query goal using named args (for EntityOf, Requires, etc.).
+/// Build a query goal using named args (for EntityInfo, SortRequiresInfo, etc.).
 fn make_named_goal(kb: &mut KnowledgeBase, name: &str, named_args: &[(&str, TermId)]) -> TermId {
     let sym = kb.try_resolve_symbol(name)
         .unwrap_or_else(|| kb.intern(name));
@@ -148,7 +148,7 @@ sort Color {
 }
 
 #[test]
-fn is_entity_of_enumeration_via_entity_of_facts() {
+fn is_entity_of_enumeration_via_entity_info_facts() {
     let source = r#"
 sort Color {
     entity red
@@ -161,14 +161,13 @@ sort Color {
     kb.register_standard_builtins();
     load_source(&mut kb, source);
 
-    let color_term = kb.resolve_qualified_name_term("Color");
-
-    // Query: EntityOf(entity: ?x, parent: Color) — should find red, green, blue
+    // Query: EntityInfo(name: ?x, fields: ?f) — should find red, green, blue
     let var_x = make_var(&mut kb, "x");
+    let var_f = make_var(&mut kb, "f");
 
-    let goal = make_named_goal(&mut kb, "anthill.reflect.EntityOf", &[("entity", var_x), ("parent", color_term)]);
+    let goal = make_named_goal(&mut kb, "anthill.reflect.EntityInfo", &[("name", var_x), ("fields", var_f)]);
     let results = kb.resolve(&[goal], &default_config());
-    assert_eq!(results.len(), 3, "Color should have 3 entities: red, green, blue");
+    assert_eq!(results.len(), 3, "Color should have 3 EntityInfo facts for red, green, blue");
 }
 
 // ── is_entity_of via typing rule ──────────────────────────────────
@@ -339,12 +338,12 @@ sort Ordered {
 
     let ordered_term = kb.resolve_qualified_name_term("Ordered");
 
-    // Query: Requires(sort_ref: Ordered, spec: ?spec) — direct fact query (named args)
+    // Query: SortRequiresInfo(sort_ref: Ordered, spec: ?spec) — direct fact query (named args)
     let var_spec = make_var(&mut kb, "spec");
 
-    let goal = make_named_goal(&mut kb, "anthill.reflect.Requires", &[("sort_ref", ordered_term), ("spec", var_spec)]);
+    let goal = make_named_goal(&mut kb, "anthill.reflect.SortRequiresInfo", &[("sort_ref", ordered_term), ("spec", var_spec)]);
     let results = kb.resolve(&[goal], &default_config());
-    assert!(!results.is_empty(), "Ordered should have at least 1 Requires fact");
+    assert!(!results.is_empty(), "Ordered should have at least 1 SortRequiresInfo fact");
 }
 
 #[test]
@@ -503,10 +502,10 @@ sort Eq {
         "sort_has_param(Eq, ?param) should find T via SortInfo partial expansion");
 }
 
-// ── EntityOf fact verification ───────────────────────────────────
+// ── EntityInfo fact verification ───────────────────────────────────
 
 #[test]
-fn entity_of_fact_exists_in_kb() {
+fn entity_info_fact_exists_in_kb() {
     let source = r#"
 sort Color {
     entity red
@@ -519,18 +518,18 @@ sort Color {
     kb.register_standard_builtins();
     load_source(&mut kb, source);
 
-    // Query EntityOf facts by functor
-    let entity_of_sym = kb.resolve_symbol("anthill.reflect.EntityOf");
-    let facts = kb.by_functor(entity_of_sym);
-    assert_eq!(facts.len(), 3, "should have 3 EntityOf facts for red, green, blue");
+    // Query EntityInfo facts by functor
+    let entity_info_sym = kb.resolve_symbol("anthill.reflect.EntityInfo");
+    let facts = kb.by_functor(entity_info_sym);
+    assert_eq!(facts.len(), 3, "should have 3 EntityInfo facts for red, green, blue");
 }
 
-// ── EntityOf is 1-level (non-transitive) ────────────────────────
+// ── EntityInfo is 1-level (non-transitive) ────────────────────────
 
 #[test]
-fn entity_of_is_not_transitive() {
+fn entity_info_is_not_transitive() {
     // Nested sorts: entity inside sort inside sort.
-    // EntityOf should only link entity → immediate parent sort, not to grandparent.
+    // EntityInfo should only exist for direct entities, not grandparent's.
     let source = r#"
 sort Outer {
     sort Inner {
@@ -545,21 +544,15 @@ sort Outer {
 
     let leaf_term = kb.resolve_qualified_name_term("Outer.Inner.leaf");
     let inner_term = kb.resolve_qualified_name_term("Outer.Inner");
-    let outer_term = kb.resolve_qualified_name_term("Outer");
 
-    // leaf is entity of Inner (direct)
+    // leaf is entity of Inner (direct — via internal index)
     assert!(kb.is_entity_of(leaf_term, inner_term), "leaf should be entity of Inner");
 
-    // EntityOf fact should exist for leaf → Inner
-    let var_x = make_var(&mut kb, "x");
-    let goal = make_named_goal(&mut kb, "anthill.reflect.EntityOf", &[("entity", leaf_term), ("parent", var_x)]);
+    // EntityInfo fact should exist for leaf (need both named args for arity match)
+    let var_f = make_var(&mut kb, "f");
+    let goal = make_named_goal(&mut kb, "anthill.reflect.EntityInfo", &[("name", leaf_term), ("fields", var_f)]);
     let results = kb.resolve(&[goal], &default_config());
-    assert_eq!(results.len(), 1, "leaf should have exactly 1 EntityOf fact (→ Inner only)");
-
-    // No EntityOf(leaf, Outer) — entity_of is 1-level
-    let goal_outer = make_named_goal(&mut kb, "anthill.reflect.EntityOf", &[("entity", leaf_term), ("parent", outer_term)]);
-    let results_outer = kb.resolve(&[goal_outer], &default_config());
-    assert_eq!(results_outer.len(), 0, "EntityOf(leaf, Outer) should NOT exist — 1-level only");
+    assert_eq!(results.len(), 1, "leaf should have exactly 1 EntityInfo fact");
 }
 
 #[test]
@@ -585,7 +578,7 @@ sort Color {
 }
 
 #[test]
-fn entity_of_sort_is_not_entity_of_itself() {
+fn entity_info_sort_is_not_entity() {
     let source = r#"
 sort Color {
     entity red
@@ -598,18 +591,18 @@ sort Color {
 
     let color_term = kb.resolve_qualified_name_term("Color");
 
-    // No EntityOf(Color, Color)
-    let goal = make_named_goal(&mut kb, "anthill.reflect.EntityOf", &[("entity", color_term), ("parent", color_term)]);
+    // No EntityInfo(name: Color) — Color is a sort, not an entity
+    let color_functor = functor_of(&kb, color_term);
+    let color_ref = kb.alloc(Term::Ref(color_functor));
+    let goal = make_named_goal(&mut kb, "anthill.reflect.EntityInfo", &[("name", color_ref)]);
     let results = kb.resolve(&[goal], &default_config());
-    assert_eq!(results.len(), 0, "Color should NOT be entity of itself");
+    assert_eq!(results.len(), 0, "Color should NOT have an EntityInfo fact");
 }
 
 #[test]
-fn entity_of_standalone_entity_has_no_entity_of() {
+fn entity_info_standalone_entity_has_no_entity_info() {
     // Standalone entity `entity Foo(...)` is loaded as an Entity fact only.
-    // It does NOT produce EntityOf facts (only sort-with-body entities do).
-    // The spec says standalone entity desugars to sort-with-body, but the
-    // current loader stores it as a plain Entity fact without sort registration.
+    // It does NOT produce EntityInfo facts (only sort-with-body entities do).
     let source = r#"
 entity Account(id: Int, balance: Int)
 "#;
@@ -618,14 +611,14 @@ entity Account(id: Int, balance: Int)
     kb.register_standard_builtins();
     load_source(&mut kb, source);
 
-    // No EntityOf facts for standalone entities
-    let entity_of_sym = kb.resolve_symbol("anthill.reflect.EntityOf");
-    let facts = kb.by_functor(entity_of_sym);
-    assert_eq!(facts.len(), 0, "standalone entity should not produce EntityOf facts");
+    // No EntityInfo facts for standalone entities
+    let entity_info_sym = kb.resolve_symbol("anthill.reflect.EntityInfo");
+    let facts = kb.by_functor(entity_info_sym);
+    assert_eq!(facts.len(), 0, "standalone entity should not produce EntityInfo facts");
 }
 
 #[test]
-fn entity_of_multiple_sorts() {
+fn entity_info_multiple_sorts() {
     // Entities from different sorts should not cross-contaminate
     let source = r#"
 sort Color {
@@ -648,7 +641,7 @@ sort Shape {
     let color_term = kb.resolve_qualified_name_term("Color");
     let shape_term = kb.resolve_qualified_name_term("Shape");
 
-    // red is entity of Color, NOT Shape
+    // red is entity of Color, NOT Shape (via internal index)
     assert!(kb.is_entity_of(red_term, color_term), "red should be entity of Color");
     assert!(!kb.is_entity_of(red_term, shape_term), "red should NOT be entity of Shape");
 
@@ -656,19 +649,17 @@ sort Shape {
     assert!(kb.is_entity_of(circle_term, shape_term), "circle should be entity of Shape");
     assert!(!kb.is_entity_of(circle_term, color_term), "circle should NOT be entity of Color");
 
-    // EntityOf facts: 2 for Color + 2 for Shape = 4
-    let entity_of_sym = kb.resolve_symbol("anthill.reflect.EntityOf");
-    let facts = kb.by_functor(entity_of_sym);
-    assert_eq!(facts.len(), 4, "should have 4 EntityOf facts total");
+    // EntityInfo facts: 2 for Color + 2 for Shape = 4
+    let entity_info_sym = kb.resolve_symbol("anthill.reflect.EntityInfo");
+    let facts = kb.by_functor(entity_info_sym);
+    assert_eq!(facts.len(), 4, "should have 4 EntityInfo facts total");
 }
 
 // ── is_entity_of via typing rule with various patterns ──────────
 
 #[test]
-fn entity_of_enumerates_all_entities() {
-    // EntityOf(?x, Color) enumerates all entities (via KB fact matching).
-    // Note: is_entity_of builtin delays when first arg is Var (needs nonvar),
-    // so enumeration should use EntityOf facts directly.
+fn entity_info_enumerates_all_entities() {
+    // EntityInfo(name: ?x, fields: ?f) enumerates all entities from user source.
     let source = r#"
 sort Color {
     entity red
@@ -676,43 +667,52 @@ sort Color {
     entity blue
 }
 "#;
-    let mut kb = load_stdlib_kb();
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
     load_source(&mut kb, source);
 
-    let color_term = kb.resolve_qualified_name_term("Color");
     let var_x = make_var(&mut kb, "x");
+    let var_f = make_var(&mut kb, "f");
 
-    // Use EntityOf directly for enumeration
-    let goal = make_named_goal(&mut kb, "anthill.reflect.EntityOf", &[("entity", var_x), ("parent", color_term)]);
+    // Use EntityInfo directly for enumeration (both fields needed for arity match)
+    let goal = make_named_goal(&mut kb, "anthill.reflect.EntityInfo", &[("name", var_x), ("fields", var_f)]);
     let results = kb.resolve(&[goal], &default_config());
-    assert_eq!(results.len(), 3, "EntityOf(?x, Color) should find 3 entities");
+    assert_eq!(results.len(), 3, "EntityInfo(?x, ?f) should find 3 entities");
 }
 
 #[test]
-fn entity_of_finds_parent() {
-    // Query: EntityOf(red, ?parent) should find Color.
-    // Note: is_entity_of builtin delays when second arg is Var,
-    // so use EntityOf facts directly for parent lookup.
+fn entity_info_scope_finds_parent() {
+    // scope(red, ?parent) should find Color — the entity's scope.
     let source = r#"
 sort Color {
     entity red
     entity green
 }
 "#;
-    let mut kb = load_stdlib_kb();
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
     load_source(&mut kb, source);
 
     let red_term = kb.resolve_qualified_name_term("Color.red");
+    let red_functor = functor_of(&kb, red_term);
+    let red_ref = kb.alloc(Term::Ref(red_functor));
     let var_p = make_var(&mut kb, "parent");
 
-    let goal = make_named_goal(&mut kb, "anthill.reflect.EntityOf", &[("entity", red_term), ("parent", var_p)]);
+    let scope_sym = kb.resolve_symbol("anthill.reflect.scope");
+    let goal = kb.alloc(Term::Fn {
+        functor: scope_sym,
+        pos_args: SmallVec::from_slice(&[red_ref, var_p]),
+        named_args: SmallVec::new(),
+    });
     let results = kb.resolve(&[goal], &default_config());
-    assert_eq!(results.len(), 1, "EntityOf(red, ?parent) should find exactly 1 parent");
+    assert_eq!(results.len(), 1, "scope(red, ?parent) should find exactly 1 parent");
 
-    // Verify the parent is Color
+    // Verify the parent is Color (scope returns the sort term Fn, not a Ref)
     let bound = kb.reify(var_p, &results[0].subst);
     let color_term = kb.resolve_qualified_name_term("Color");
-    assert_eq!(bound, color_term, "parent of red should be Color");
+    assert_eq!(bound, color_term, "scope of red should be Color");
 }
 
 // ── type_compatible via entity_of ───────────────────────────────

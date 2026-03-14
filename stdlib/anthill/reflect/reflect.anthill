@@ -18,9 +18,9 @@ namespace anthill.reflect
   import anthill.prelude.{Sort}
   export Term, FactId, Symbol
   export KB
-  export qualified_name, short_name, lookup_symbol
-  export LiteralRepr, TermRepr, SetLiteral, TupleLiteral, SortInfo, OperationInfo, FieldInfo, DescriptionInfo
-  export EntityOf, Requires, SortView
+  export qualified_name, short_name, lookup_symbol, scope, kind
+  export LiteralRepr, TermRepr, SetLiteral, TupleLiteral, SortInfo, EntityInfo, OperationInfo, FieldInfo, DescriptionInfo
+  export SortRequiresInfo, SortView
   export Substitution, apply, compose
   export LogicalQuery, empty_query
   export pattern_query, sort_query, conjunction, disjunction
@@ -57,6 +57,10 @@ namespace anthill.reflect
   operation short_name(s: Symbol) -> String
   -- Find existing symbol by qualified name (fails if not found)
   operation lookup_symbol(name: String) -> Symbol
+  -- Symbol → enclosing scope symbol (None for top-level)
+  operation scope(s: Symbol) -> Option{T = Symbol}
+  -- Symbol → kind string ("Sort", "Entity", "Operation", "Field", etc.)
+  operation kind(s: Symbol) -> String
 
   -- Negation-as-failure: succeeds if query has no solutions.
   -- Delays if query contains unbound variables (floundering prevention).
@@ -171,14 +175,15 @@ namespace anthill.reflect
 
   entity OperationInfo(
     name         : Symbol,                          -- operation name (symbol reference)
-    sort_context : Option{T = Symbol},              -- enclosing sort, if any
     params       : List{T = FieldInfo},
     return_type  : Term,                            -- return type expression
-    effects      : List{T = Term}                   -- effect type expressions
+    effects      : List{T = Term},                  -- effect type expressions
+    requires     : List{T = Term},                  -- precondition expressions
+    ensures      : List{T = Term}                   -- postcondition expressions
   )
 
   entity FieldInfo(
-    name         : String,                          -- param name (literal text)
+    name         : Symbol,                          -- field/param name (symbol reference)
     type_name    : Term                             -- type expression
   )
 
@@ -186,11 +191,12 @@ namespace anthill.reflect
   -- Relationship facts emitted by the loader
   -- ================================================================
 
-  -- EntityOf: 1-level entity → parent sort relationship.
+  -- EntityInfo: metadata for an entity constructor.
   -- Emitted for each entity declared inside a sort body.
-  entity EntityOf(
-    entity : Term,                                  -- entity constructor (sort term)
-    parent : Term                                   -- parent sort (sort term)
+  -- Parent sort is accessible via scope(name).
+  entity EntityInfo(
+    name   : Symbol,                                -- entity name (symbol reference)
+    fields : List{T = FieldInfo}                    -- entity fields
   )
 
   -- SortView: a sort reference with parameter bindings applied (a "view"
@@ -204,9 +210,9 @@ namespace anthill.reflect
   -- becomes: SortView(Monoid(), T=Int(), combine=Ref(add))
   entity SortView(sort: Term)
 
-  -- Requires: sort requires spec relationship.
+  -- SortRequiresInfo: sort requires spec relationship.
   -- Emitted for each `requires` clause on a sort.
-  entity Requires(
+  entity SortRequiresInfo(
     sort_ref : Term,                                -- the sort that has the requirement
     spec     : Term                                 -- the view: SortView(Ref(Monoid), T=Int(), ...)
   )
@@ -216,10 +222,10 @@ namespace anthill.reflect
   -- ================================================================
 
   -- Operation dispatch: find which sort's operation applies.
-  -- Uses is_entity_of directly (no has_sort indirection needed
-  -- since EntityOf is 1-level).
+  -- Uses is_entity_of directly; operation's enclosing sort
+  -- is accessible via scope(name).
   -- rule resolve_operation(?name, ?x, ?info)
-  --   :- is_entity_of(?x, ?S), OperationInfo(name: ?name, sort_context: ?S)
+  --   :- is_entity_of(?x, ?S), OperationInfo(name: ?name), scope(?name, ?S)
 
   -- ================================================================
   -- Descriptions
@@ -227,7 +233,8 @@ namespace anthill.reflect
 
   entity DescriptionInfo(
     target  : Symbol,                               -- target name (symbol reference)
-    content : String                                -- description text (literal)
+    content : String,                               -- description text (literal)
+    index   : Int                                   -- description index (0-based)
   )
 
   -- ================================================================

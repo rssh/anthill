@@ -2,7 +2,7 @@
 ///
 /// Tests load source files into a KB and verify:
 /// - base_subst computed from SortInfo
-/// - Requires spec (SortView) completed with all bindings
+/// - SortRequiresInfo spec (SortView) completed with all bindings
 /// - resolve_sort_instantiation_param builtin extracts bindings
 /// - auto-bind works for same-named operations
 
@@ -59,14 +59,14 @@ fn make_var(kb: &mut KnowledgeBase, name: &str) -> TermId {
     kb.alloc(Term::Var(vid))
 }
 
-/// Build a Requires query with 2 named args (sort_ref, spec).
+/// Build a SortRequiresInfo query with 2 named args (sort_ref, spec).
 /// Missing args are filled with fresh variables.
 fn make_requires_query(
     kb: &mut KnowledgeBase,
     sort_ref: TermId,
     spec: TermId,
 ) -> TermId {
-    let requires_sym = kb.resolve_symbol("anthill.reflect.Requires");
+    let requires_sym = kb.resolve_symbol("anthill.reflect.SortRequiresInfo");
     let sort_ref_sym = kb.intern("sort_ref");
     let spec_sym = kb.intern("spec");
     kb.alloc(Term::Fn {

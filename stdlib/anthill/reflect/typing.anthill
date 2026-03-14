@@ -1,7 +1,7 @@
 namespace anthill.reflect.typing
   import anthill.prelude.{List, Bool}
 
-  import anthill.reflect.{Term, Symbol, KB, SortInfo, OperationInfo}
+  import anthill.reflect.{Term, Symbol, KB, SortInfo, OperationInfo, EntityInfo, SortRequiresInfo, scope}
   export entity_of, is_entity_of, refines, type_compatible
   export list_contains
   export extract_sort_ref
@@ -22,32 +22,32 @@ namespace anthill.reflect.typing
   operation extract_sort_ref(inst: Term) -> Symbol
 
   -- ================================================================
-  -- is_entity_of: entity subtyping via EntityOf (1-level only)
+  -- is_entity_of: entity subtyping via EntityInfo + scope (1-level only)
   -- ================================================================
-  -- EntityOf is always 1-level (entity → parent sort).
-  -- EntityOf(entity, parent) facts are emitted by the loader for each entity.
+  -- EntityInfo carries entity metadata; the parent sort is the entity's scope.
+  -- EntityInfo(name) facts are emitted by the loader for each entity.
 
-  rule is_entity_of(?A, ?B) :- EntityOf(entity: ?A, parent: ?B)
+  rule is_entity_of(?A, ?B) :- EntityInfo(name: ?A), scope(?A, ?B)
 
   -- entity_of with nonvar guard: delays if ?x is unbound,
-  -- otherwise queries EntityOf facts to find the parent sort.
+  -- otherwise queries EntityInfo facts and uses scope to find the parent sort.
   -- Use this when the entity is known and you need the parent;
   -- use is_entity_of when both sides are ground (pure check).
-  rule entity_of(?x, ?sort) :- nonvar(?x), EntityOf(entity: ?x, parent: ?sort)
+  rule entity_of(?x, ?sort) :- nonvar(?x), EntityInfo(name: ?x), scope(?x, ?sort)
 
   -- ================================================================
   -- refines: spec refinement via Requires chain
   -- ================================================================
 
   -- Direct: sort A requires spec B_inst.
-  -- Requires(sort_ref, spec) — named args.
+  -- SortRequiresInfo(sort_ref, spec) — named args.
   -- spec is the SortView carrying bindings (e.g. SortView(Eq(), T=Int())).
-  rule refines(?A, ?B_inst) :- Requires(sort_ref: ?A, spec: ?B_inst)
+  rule refines(?A, ?B_inst) :- SortRequiresInfo(sort_ref: ?A, spec: ?B_inst)
 
   -- Transitive: A requires B_inst, and B itself refines C_inst.
   -- Extract base sort from the SortView via extract_sort_ref.
   rule refines(?A, ?C_inst)
-    :- Requires(sort_ref: ?A, spec: ?B_inst),
+    :- SortRequiresInfo(sort_ref: ?A, spec: ?B_inst),
        extract_sort_ref(?B_inst, ?B),
        refines(?B, ?C_inst)
 
@@ -69,7 +69,7 @@ namespace anthill.reflect.typing
   -- ================================================================
 
   -- Uses partial named-arg expansion: only name + requires needed,
-  -- the other 4 SortInfo fields are auto-filled with fresh vars.
+  -- the other SortInfo fields are auto-filled with fresh vars.
   rule sort_requires(?sort, ?spec)
     :- SortInfo(name: ?sort, requires: ?reqs),
        list_contains(?spec, ?reqs)

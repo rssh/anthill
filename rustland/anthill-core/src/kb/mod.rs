@@ -923,6 +923,8 @@ impl KnowledgeBase {
         self.register_builtin("anthill.reflect.typing.is_entity_of", BuiltinTag::IsEntityOf);
         self.register_builtin("anthill.reflect.typing.extract_sort_ref", BuiltinTag::ExtractSort);
         self.register_builtin("anthill.reflect.resolve_sort_instantiation_param", BuiltinTag::ResolveSortInstParam);
+        self.register_builtin("anthill.reflect.scope", BuiltinTag::Scope);
+        self.register_builtin("anthill.reflect.kind", BuiltinTag::Kind);
     }
 
     /// Re-resolve builtins after scan_definitions().
