@@ -1004,6 +1004,7 @@ Operators are sugar for `Fn` terms. The tree-sitter grammar parses them as flat 
 | `div` | 6 | Left | `div` | `Numeric` (word form) |
 | `^` | 7 | Right | `pow` | `Numeric` |
 | `->` | 8 | Right | `arrow` | type arrows |
+| `.` | 10 | Left | `field_access` | `anthill.reflect` |
 
 Higher priority binds tighter: `a + b * c` desugars to `add(a, mul(b, c))`. Left-associative: `a + b + c` desugars to `add(add(a, b), c)`. Right-associative: `a ^ b ^ c` desugars to `pow(a, pow(b, c))`. None-associative: `a = b = c` is an error.
 
@@ -1035,6 +1036,32 @@ Prefix binds tighter than all infix operators: `!?a + ?b` desugars to `add(not(?
 ```
 
 **Extensibility.** The operator dictionary is currently hardcoded. A future phase will allow sorts to declare operators via meta annotations (e.g. `[infix: "+"]` on `Numeric.add`), extending the dictionary at load time.
+
+### 6.7 Field Access (Dot Projection)
+
+**Syntax:** `term.identifier` — dot projection for field/component access. Desugars to `field_access(term, identifier)`, a 2-arg `Fn` term, following the same pattern as `a + b` → `add(a, b)`.
+
+```
+?x.y             →  field_access(?x, y)
+?x.y.z           →  field_access(field_access(?x, y), z)
+f(?a.b, ?c)      →  f(field_access(?a, b), ?c)
+```
+
+**Precedence.** `.` has the highest precedence (10), above all other operators including prefix `!` (9). Left-associative: `a.b.c` desugars to `field_access(field_access(a, b), c)`.
+
+**Two dispatch modes** (runtime):
+
+1. **Entity field access:** if the object is a `Fn` term whose functor is a registered entity constructor, extract the named field from the entity's arguments. E.g., `env(fs: ?fs).fs` extracts `?fs`.
+
+2. **Sort component access:** if the object is a `Fn` term whose functor is a sort symbol, look up the field identifier in the sort's scope. E.g., `Monoid().Carrier` resolves to the `Carrier` sub-sort.
+
+**Disambiguation from qualified names.** At parse time, `a.b` in term position is parsed as `field_access(a, b)` — a variable or identifier followed by `.identifier`. Qualified names (`Namespace.Sort`) continue to be parsed as `name` nodes within `fn_term` and `instantiation_term`, which require `(...)` or `{...}` to follow the name. There is no ambiguity: `A.B(x)` parses as `fn_term(name: A.B, args: [x])`, while `A.B` alone in term position parses as `field_access(A, B)`.
+
+**Well-formedness rules:**
+- `t.f` requires `t` to have a known sort `S` with an entity that has field `f`
+- Single-constructor sorts: field lookup is unambiguous
+- Multi-constructor sorts: field `f` must appear in all constructors with the same sort
+- Abstract sorts (`sort T = ?`): field access is ill-formed (no fields)
 
 ## 7. Metadata
 

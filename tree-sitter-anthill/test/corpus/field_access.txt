@@ -1,0 +1,103 @@
+=====================================
+Variable field access
+=====================================
+
+rule r: ?x.y
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (field_access
+        object: (variable_term (variable))
+        field: (identifier)))))
+
+=====================================
+Chained field access
+=====================================
+
+rule r: ?x.y.z
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (field_access
+        object: (field_access
+          object: (variable_term (variable))
+          field: (identifier))
+        field: (identifier)))))
+
+=====================================
+Field access inside function call
+=====================================
+
+fact f(?a.b, ?c)
+
+---
+
+(source_file
+  (fact_declaration
+    term: (fn_term
+      name: (name (identifier))
+      (field_access
+        object: (variable_term (variable))
+        field: (identifier))
+      (variable_term (variable)))))
+
+=====================================
+Field access in rule body
+=====================================
+
+rule r: result(?val) :- ?val = ?env.fs
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (fn_term
+        name: (name (identifier))
+        (variable_term (variable))))
+    body: (rule_body
+      (infix_term
+        (variable_term (variable))
+        (operator_symbol)
+        (field_access
+          object: (variable_term (variable))
+          field: (identifier))))))
+
+=====================================
+Qualified name still parses in function call
+=====================================
+
+fact Namespace.Sort()
+
+---
+
+(source_file
+  (fact_declaration
+    term: (fn_term
+      name: (name (identifier) (identifier)))))
+
+=====================================
+Field access on parenthesized expression
+=====================================
+
+rule r: (?x).y
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name (identifier))
+    head: (rule_head
+      (field_access
+        object: (paren_expr
+          (variable_term (variable)))
+        field: (identifier)))))

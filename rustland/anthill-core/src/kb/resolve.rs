@@ -45,6 +45,8 @@ pub enum BuiltinTag {
     Scope,
     /// `anthill.reflect.kind(?sym, ?result)` — Symbol → kind string.
     Kind,
+    /// `anthill.reflect.field_access(?object, ?field, ?result)` — dot projection.
+    FieldAccess,
 }
 
 /// Result of executing a builtin.
@@ -761,6 +763,7 @@ impl KnowledgeBase {
             BuiltinTag::ResolveSortInstParam => self.builtin_resolve_sort_inst_param(goal, answer_subst),
             BuiltinTag::Scope => self.builtin_scope(goal, answer_subst),
             BuiltinTag::Kind => self.builtin_kind(goal, answer_subst),
+            BuiltinTag::FieldAccess => self.builtin_field_access(goal, answer_subst),
         }
     }
 
@@ -1175,6 +1178,89 @@ impl KnowledgeBase {
 
         let kind_term = self.alloc(Term::Const(super::term::Literal::String(kind_str.to_owned())));
         self.try_bind_result(result_arg, kind_term, subst)
+    }
+
+    /// `field_access(?object, ?field, ?result)` — dot projection builtin.
+    ///
+    /// Two dispatch modes based on the object term:
+    /// 1. Entity instance: object is `Fn { functor, named_args, .. }` where functor
+    ///    is in the `entity_fields` registry → extract the named field from args.
+    /// 2. Sort component: object is `Fn { functor, .. }` where functor is a sort →
+    ///    look up field in the sort's scope via qualified name.
+    ///
+    /// When the goal has only 2 args (from desugared `?x.y`), the builtin
+    /// cannot bind a result — it succeeds only for structural matching.
+    fn builtin_field_access(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
+        let (obj_arg, field_arg, result_arg) = match self.terms.get(goal) {
+            Term::Fn { pos_args, .. } if pos_args.len() >= 3 => {
+                (pos_args[0], pos_args[1], Some(pos_args[2]))
+            }
+            Term::Fn { pos_args, .. } if pos_args.len() >= 2 => {
+                (pos_args[0], pos_args[1], None)
+            }
+            _ => return BuiltinResult::Failure,
+        };
+
+        let walked_obj = self.walk(obj_arg, subst);
+        let walked_field = self.walk(field_arg, subst);
+
+        // Extract field symbol from Ref, Ident, or Fn
+        let field_sym = match self.terms.get(walked_field) {
+            Term::Ref(s) | Term::Ident(s) => *s,
+            Term::Fn { functor, .. } => *functor,
+            Term::Var(_) => return BuiltinResult::Delay,
+            _ => return BuiltinResult::Failure,
+        };
+
+        // Object must be a bound Fn term
+        let (functor, named_args) = match self.terms.get(walked_obj) {
+            Term::Var(_) => return BuiltinResult::Delay,
+            Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+            _ => return BuiltinResult::Failure,
+        };
+
+        // Get the field's short name for matching (owned to avoid borrow conflicts)
+        let field_name = self.symbols.name(field_sym).to_owned();
+
+        // Dispatch 1: Entity field access — functor is in entity_fields registry
+        if self.entity_fields.contains_key(&functor) {
+            // Look up by short name match in named_args
+            for &(arg_sym, arg_val) in named_args.iter() {
+                if self.symbols.name(arg_sym) == field_name {
+                    return self.bind_or_succeed(result_arg, arg_val, subst);
+                }
+            }
+            return BuiltinResult::Failure;
+        }
+
+        // Dispatch 2: Sort component access — look up field in functor's scope
+        let functor_qname = match self.symbols.get(functor) {
+            crate::intern::SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
+            _ => return BuiltinResult::Failure,
+        };
+        let target_qname = format!("{}.{}", functor_qname, field_name);
+        if let Some(&resolved_sym) = self.symbols.by_qualified_name.get(&target_qname) {
+            // Found the component — return as nullary Fn for sorts/entities, Ref otherwise
+            let result_term = match self.symbols.get(resolved_sym) {
+                crate::intern::SymbolDef::Resolved { kind, .. }
+                    if matches!(kind, crate::intern::SymbolKind::Sort | crate::intern::SymbolKind::Entity) =>
+                {
+                    self.make_name_term_from_sym(resolved_sym)
+                }
+                _ => self.alloc(Term::Ref(resolved_sym)),
+            };
+            return self.bind_or_succeed(result_arg, result_term, subst);
+        }
+
+        BuiltinResult::Failure
+    }
+
+    /// Bind a value to an optional result arg, or succeed if no result arg.
+    fn bind_or_succeed(&self, result_arg: Option<TermId>, value: TermId, subst: &Substitution) -> BuiltinResult {
+        match result_arg {
+            Some(ra) => self.try_bind_result(ra, value, subst),
+            None => BuiltinResult::Success,
+        }
     }
 
     /// Collect all unbound VarIds in a term, walking through the substitution.

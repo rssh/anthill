@@ -601,8 +601,18 @@ module.exports = grammar({
       $.paren_expr,
       $.ref_term,
       $.prefix_term,
+      $.field_access,
       prec(-1, $.identifier),
     ),
+
+    // Field access: ?x.y, expr.field — dot projection.
+    // Desugars to field_access(object, field) in the converter.
+    // Highest precedence, left-associative: ?x.y.z → (?x.y).z
+    field_access: $ => prec.left(10, seq(
+      field('object', $._atom_term),
+      '.',
+      field('field', $.identifier),
+    )),
 
     // Variable with optional inline description(s): ?x {< text >}?
     // If descriptions are present, the variable term must end with '?'.

@@ -326,6 +326,7 @@ impl<'a> Converter<'a> {
             }
             "infix_term" => self.convert_infix(node),
             "prefix_term" => self.convert_prefix(node),
+            "field_access" => self.convert_field_access(node),
             "set_literal" => self.convert_set_literal(node),
             "tuple_literal" => self.convert_tuple_literal(node),
             "paren_expr" => {
@@ -510,6 +511,24 @@ impl<'a> Converter<'a> {
         self.terms.alloc(Term::Fn {
             functor,
             pos_args: SmallVec::from_elem(operand, 1),
+            named_args: SmallVec::new(),
+        })
+    }
+
+    /// Convert field access: `?x.y` → `field_access(?x, Ident(y))`.
+    /// Desugars to `Fn { functor: "field_access", pos_args: [object, Ident(field)] }`.
+    fn convert_field_access(&mut self, node: Node) -> TermId {
+        let object_node = self.field(node, "object").unwrap_or(node);
+        let object_tid = self.convert_term(object_node);
+
+        let field_node = self.field(node, "field").unwrap_or(node);
+        let field_sym = self.intern(self.text(field_node));
+        let field_tid = self.terms.alloc(Term::Ident(field_sym));
+
+        let functor = self.intern("field_access");
+        self.terms.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::from_slice(&[object_tid, field_tid]),
             named_args: SmallVec::new(),
         })
     }
@@ -1720,6 +1739,7 @@ fn is_term_kind(kind: &str) -> bool {
             | "ref_term"
             | "infix_term"
             | "prefix_term"
+            | "field_access"
             | "set_literal"
             | "tuple_literal"
             | "paren_expr"

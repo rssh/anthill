@@ -2378,3 +2378,33 @@ fn parse_named_tuple_type_in_operation() {
         other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
     }
 }
+
+// ── Field access tests ───────────────────────────────────────
+
+#[test]
+fn parse_field_access_variable() {
+    // ?x.y → field_access(?x, y)
+    let (terms, symbols, head) = parse_rule_head_ir("?x.y");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "field_access(?x, y)");
+}
+
+#[test]
+fn parse_field_access_chained() {
+    // ?x.y.z → field_access(field_access(?x, y), z)
+    let (terms, symbols, head) = parse_rule_head_ir("?x.y.z");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "field_access(field_access(?x, y), z)");
+}
+
+#[test]
+fn parse_field_access_in_fn_arg() {
+    // f(?a.b, ?c) → f(field_access(?a, b), ?c)
+    let (terms, symbols, head) = parse_rule_head_ir("f(?a.b, ?c)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "f(field_access(?a, b), ?c)");
+}
+
+#[test]
+fn parse_field_access_in_infix() {
+    // ?x.y = ?z → eq(field_access(?x, y), ?z)
+    let (terms, symbols, head) = parse_rule_head_ir("?x.y = ?z");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "eq(field_access(?x, y), ?z)");
+}

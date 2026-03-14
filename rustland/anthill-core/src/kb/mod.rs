@@ -925,6 +925,7 @@ impl KnowledgeBase {
         self.register_builtin("anthill.reflect.resolve_sort_instantiation_param", BuiltinTag::ResolveSortInstParam);
         self.register_builtin("anthill.reflect.scope", BuiltinTag::Scope);
         self.register_builtin("anthill.reflect.kind", BuiltinTag::Kind);
+        self.register_builtin("anthill.reflect.field_access", BuiltinTag::FieldAccess);
     }
 
     /// Re-resolve builtins after scan_definitions().

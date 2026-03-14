@@ -1022,3 +1022,156 @@ entity Box(contents: ?)
     let result = kb.match_term(contents_tid, int_term);
     assert!(result.is_some(), "Var should unify with any concrete term (Int)");
 }
+
+// ── Field access builtin tests ───────────────────────────────
+
+#[test]
+fn field_access_entity_extracts_field() {
+    let mut kb = load_stdlib_kb();
+
+    // Define a sort with an entity that has fields
+    load_source(&mut kb, r#"
+        namespace test_fa
+          sort Env
+            entity env(platform: Int, fs: Int)
+          end
+        end
+    "#);
+
+    // Construct an entity instance: env(platform: 1, fs: 42)
+    let env_sym = kb.try_resolve_symbol("test_fa.Env.env").expect("env entity");
+    let platform_sym = kb.intern("platform");
+    let fs_sym = kb.intern("fs");
+    let val1 = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(1)));
+    let val42 = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(42)));
+    let env_term = kb.alloc(Term::Fn {
+        functor: env_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(platform_sym, val1), (fs_sym, val42)]),
+    });
+
+    // Build goal: field_access(env_instance, Ident(fs), ?result)
+    let fs_field_sym = kb.intern("fs");
+    let field_ident = kb.alloc(Term::Ident(fs_field_sym));
+    let result_name = kb.intern("result");
+    let result_var = kb.fresh_var(result_name);
+    let result_tid = kb.alloc(Term::Var(result_var));
+    let goal = make_goal(&mut kb, "anthill.reflect.field_access", &[env_term, field_ident, result_tid]);
+
+    let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+    assert!(!solutions.is_empty(), "field_access should produce a solution");
+    let sol = &solutions[0];
+    let resolved = sol.subst.resolve(result_var).expect("result should be bound");
+    // The resolved value should be 42 (the fs field)
+    match kb.get_term(resolved) {
+        Term::Const(anthill_core::kb::term::Literal::Int(n)) => {
+            assert_eq!(*n, 42);
+        }
+        other => panic!("expected Int literal 42, got {:?}", other),
+    }
+}
+
+#[test]
+fn field_access_delays_on_unbound_object() {
+    let mut kb = load_stdlib_kb();
+
+    // Build goal: field_access(?x, Ident(fs), ?result) where ?x is unbound
+    let obj_name = kb.intern("x");
+    let obj_var = kb.fresh_var(obj_name);
+    let obj_tid = kb.alloc(Term::Var(obj_var));
+    let fs_field_sym = kb.intern("fs");
+    let field_ident = kb.alloc(Term::Ident(fs_field_sym));
+    let result_name = kb.intern("result");
+    let result_var = kb.fresh_var(result_name);
+    let result_tid = kb.alloc(Term::Var(result_var));
+    let goal = make_goal(&mut kb, "anthill.reflect.field_access", &[obj_tid, field_ident, result_tid]);
+
+    let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+    // Should produce a residual (delayed) goal, not a solution with bound result
+    if !solutions.is_empty() {
+        assert!(!solutions[0].residual.is_empty(), "should have residual goals from delay");
+    }
+}
+
+#[test]
+fn field_access_fails_on_bad_field() {
+    let mut kb = load_stdlib_kb();
+
+    load_source(&mut kb, r#"
+        namespace test_fa2
+          sort Env
+            entity env(platform: Int, fs: Int)
+          end
+        end
+    "#);
+
+    let env_sym = kb.try_resolve_symbol("test_fa2.Env.env").expect("env entity");
+    let platform_sym = kb.intern("platform");
+    let fs_sym = kb.intern("fs");
+    let val1 = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(1)));
+    let val42 = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(42)));
+    let env_term = kb.alloc(Term::Fn {
+        functor: env_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(platform_sym, val1), (fs_sym, val42)]),
+    });
+
+    // Try to access a non-existent field "nonexistent"
+    let ne_field_sym = kb.intern("nonexistent");
+    let field_ident = kb.alloc(Term::Ident(ne_field_sym));
+    let result_name = kb.intern("result");
+    let result_var = kb.fresh_var(result_name);
+    let result_tid = kb.alloc(Term::Var(result_var));
+    let goal = make_goal(&mut kb, "anthill.reflect.field_access", &[env_term, field_ident, result_tid]);
+
+    let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+    assert!(solutions.is_empty(), "field_access with bad field should fail");
+}
+
+#[test]
+fn field_access_sort_component() {
+    let mut kb = load_stdlib_kb();
+
+    load_source(&mut kb, r#"
+        namespace test_sc
+          import anthill.prelude.*
+          sort Monoid
+            sort Carrier = ?
+            operation combine(a: Carrier, b: Carrier) -> Carrier
+          end
+        end
+    "#);
+
+    // Build a sort term for Monoid (nullary Fn)
+    let monoid_sym = kb.try_resolve_symbol("test_sc.Monoid").expect("Monoid sort");
+    let monoid_term = kb.alloc(Term::Fn {
+        functor: monoid_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+
+    // field_access(Monoid(), Ident(Carrier), ?result)
+    let carrier_sym = kb.intern("Carrier");
+    let field_ident = kb.alloc(Term::Ident(carrier_sym));
+    let result_name = kb.intern("result");
+    let result_var = kb.fresh_var(result_name);
+    let result_tid = kb.alloc(Term::Var(result_var));
+    let goal = make_goal(&mut kb, "anthill.reflect.field_access", &[monoid_term, field_ident, result_tid]);
+
+    let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+    assert!(!solutions.is_empty(), "field_access for sort component should succeed");
+    let sol = &solutions[0];
+    let resolved = sol.subst.resolve(result_var).expect("result should be bound");
+    // Should resolve to Carrier sort term (nullary Fn)
+    match kb.get_term(resolved) {
+        Term::Fn { functor, .. } => {
+            let name = kb.resolve_sym(*functor);
+            assert!(name.contains("Carrier"), "expected Carrier sort, got {}", name);
+        }
+        Term::Ref(sym) => {
+            let name = kb.resolve_sym(*sym);
+            assert!(name.contains("Carrier"), "expected Carrier ref, got {}", name);
+        }
+        other => panic!("expected Fn or Ref for Carrier, got {:?}", other),
+    }
+}

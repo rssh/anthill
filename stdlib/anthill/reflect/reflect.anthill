@@ -26,6 +26,7 @@ namespace anthill.reflect
   export pattern_query, sort_query, conjunction, disjunction
   export negation, guarded, projected, limited
   export nonvar, ground, not
+  export field_access
   export resolve_sort_instantiation_param
   export reify, reflect
   export sorts, operations, constructors, fields, rules, descriptions
@@ -61,6 +62,13 @@ namespace anthill.reflect
   operation scope(s: Symbol) -> Option{T = Symbol}
   -- Symbol → kind string ("Sort", "Entity", "Operation", "Field", etc.)
   operation kind(s: Symbol) -> String
+
+  -- Field access (dot projection): extract a field from a term.
+  -- ?x.y desugars to field_access(?x, y).
+  -- Two dispatch modes:
+  --   1. Entity instance: extract named field from entity constructor args.
+  --   2. Sort component: look up field in sort's scope (e.g., Monoid.Carrier).
+  operation field_access(object: Term, field: Symbol) -> Term
 
   -- Negation-as-failure: succeeds if query has no solutions.
   -- Delays if query contains unbound variables (floundering prevention).
