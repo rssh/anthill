@@ -718,15 +718,15 @@ module.exports = grammar({
     ),
 
     // Arrow type: (A) -> B  or  (a: A, b: B) -> C  or  () -> A  or  (A) -> B @ E
-    // Params use _arrow_params to avoid conflict with tuple_type's own repeat.
+    // Uses arrow_params (named, not hidden) to avoid field-bleeding on parens.
     arrow_type: $ => prec.right(seq(
-      field('params', $._arrow_params),
+      field('params', $.arrow_params),
       '->',
       field('return_type', $._type),
       optional(seq('@', field('effect', $._type))),
     )),
 
-    _arrow_params: $ => choice(
+    arrow_params: $ => choice(
       seq('(', ')'),                                                // () -> A
       seq('(', $._type, ')'),                                       // (A) -> B
       seq('(', $._tuple_type_arg, ',', commaSep1($._tuple_type_arg), ')'),  // (A, B) -> C

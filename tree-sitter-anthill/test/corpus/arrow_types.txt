@@ -8,16 +8,26 @@ operation map(f: (A) -> B, l: List) -> List
 
 (source_file
   (operation_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (param
       name: (identifier)
       type: (arrow_type
-        params: (simple_type (name (identifier)))
-        return_type: (simple_type (name (identifier)))))
+        params: (arrow_params
+          (simple_type
+            (name
+              (identifier))))
+        return_type: (simple_type
+          (name
+            (identifier)))))
     (param
       name: (identifier)
-      type: (simple_type (name (identifier))))
-    return_type: (simple_type (name (identifier)))))
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))))
 
 ==================
 Binary arrow type
@@ -29,20 +39,34 @@ operation fold(f: (A, B) -> A, init: A, l: List) -> A
 
 (source_file
   (operation_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (param
       name: (identifier)
       type: (arrow_type
-        params: (simple_type (name (identifier)))
-        params: (simple_type (name (identifier)))
-        return_type: (simple_type (name (identifier)))))
+        params: (arrow_params
+          (simple_type
+            (name
+              (identifier)))
+          (simple_type
+            (name
+              (identifier))))
+        return_type: (simple_type
+          (name
+            (identifier)))))
     (param
       name: (identifier)
-      type: (simple_type (name (identifier))))
+      type: (simple_type
+        (name
+          (identifier))))
     (param
       name: (identifier)
-      type: (simple_type (name (identifier))))
-    return_type: (simple_type (name (identifier)))))
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))))
 
 ==================
 Nullary arrow type (thunk)
@@ -54,12 +78,18 @@ operation delay(f: () -> A) -> A
 
 (source_file
   (operation_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (param
       name: (identifier)
       type: (arrow_type
-        return_type: (simple_type (name (identifier)))))
-    return_type: (simple_type (name (identifier)))))
+        params: (arrow_params)
+        return_type: (simple_type
+          (name
+            (identifier)))))
+    return_type: (simple_type
+      (name
+        (identifier)))))
 
 ==================
 Arrow type with effect
@@ -71,14 +101,24 @@ operation run(f: (A) -> B @ Modifies) -> B
 
 (source_file
   (operation_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (param
       name: (identifier)
       type: (arrow_type
-        params: (simple_type (name (identifier)))
-        return_type: (simple_type (name (identifier)))
-        effect: (simple_type (name (identifier)))))
-    return_type: (simple_type (name (identifier)))))
+        params: (arrow_params
+          (simple_type
+            (name
+              (identifier))))
+        return_type: (simple_type
+          (name
+            (identifier)))
+        effect: (simple_type
+          (name
+            (identifier)))))
+    return_type: (simple_type
+      (name
+        (identifier)))))
 
 ==================
 Arrow type with parameterized return
@@ -90,21 +130,33 @@ operation flatMap(f: (A) -> List{T = B}) -> List{T = B}
 
 (source_file
   (operation_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (param
       name: (identifier)
       type: (arrow_type
-        params: (simple_type (name (identifier)))
+        params: (arrow_params
+          (simple_type
+            (name
+              (identifier))))
         return_type: (parameterized_type
-          (name (identifier))
+          (name
+            (identifier))
           (sort_binding
-            param: (name (identifier))
-            type: (simple_type (name (identifier)))))))
+            param: (name
+              (identifier))
+            type: (simple_type
+              (name
+                (identifier)))))))
     return_type: (parameterized_type
-      (name (identifier))
+      (name
+        (identifier))
       (sort_binding
-        param: (name (identifier))
-        type: (simple_type (name (identifier)))))))
+        param: (name
+          (identifier))
+        type: (simple_type
+          (name
+            (identifier)))))))
 
 ==================
 Arrow type with named params
@@ -116,15 +168,25 @@ operation fold(f: (acc: A, elem: B) -> A) -> A
 
 (source_file
   (operation_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (param
       name: (identifier)
       type: (arrow_type
-        params: (field_decl
-          name: (identifier)
-          type: (simple_type (name (identifier))))
-        params: (field_decl
-          name: (identifier)
-          type: (simple_type (name (identifier))))
-        return_type: (simple_type (name (identifier)))))
-    return_type: (simple_type (name (identifier)))))
+        params: (arrow_params
+          (field_decl
+            name: (identifier)
+            type: (simple_type
+              (name
+                (identifier))))
+          (field_decl
+            name: (identifier)
+            type: (simple_type
+              (name
+                (identifier)))))
+        return_type: (simple_type
+          (name
+            (identifier)))))
+    return_type: (simple_type
+      (name
+        (identifier)))))

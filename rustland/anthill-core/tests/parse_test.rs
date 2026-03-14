@@ -2414,3 +2414,108 @@ fn parse_field_access_in_infix() {
     let (terms, symbols, head) = parse_rule_head_ir("?x.y = ?z");
     assert_eq!(fmt_ir_term(&terms, &symbols, head), "eq(field_access(?x, y), ?z)");
 }
+
+#[test]
+fn parse_arrow_type_unary() {
+    let source = "operation map(f: (A) -> B) -> C\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Operation(o) => {
+            match &o.params[0].ty {
+                TypeExpr::Arrow { params, return_type, effect } => {
+                    assert_eq!(params.len(), 1);
+                    match &params[0] {
+                        TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "A"),
+                        other => panic!("expected Simple param, got {:?}", other),
+                    }
+                    match return_type.as_ref() {
+                        TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "B"),
+                        other => panic!("expected Simple return, got {:?}", other),
+                    }
+                    assert!(effect.is_none());
+                }
+                other => panic!("expected Arrow type, got {:?}", other),
+            }
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_arrow_type_named_params() {
+    let source = "operation fold(f: (acc: A, elem: B) -> A) -> A\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Operation(o) => {
+            match &o.params[0].ty {
+                TypeExpr::Arrow { params, return_type, effect } => {
+                    // Named params (a: A, b: B) — names are discarded, types kept
+                    assert_eq!(params.len(), 2);
+                    match &params[0] {
+                        TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "A"),
+                        other => panic!("expected Simple param, got {:?}", other),
+                    }
+                    match &params[1] {
+                        TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "B"),
+                        other => panic!("expected Simple param, got {:?}", other),
+                    }
+                    match return_type.as_ref() {
+                        TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "A"),
+                        other => panic!("expected Simple return, got {:?}", other),
+                    }
+                    assert!(effect.is_none());
+                }
+                other => panic!("expected Arrow type, got {:?}", other),
+            }
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_arrow_type_with_effect() {
+    let source = "operation run(f: (A) -> B @ Modifies) -> B\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Operation(o) => {
+            match &o.params[0].ty {
+                TypeExpr::Arrow { params, return_type, effect } => {
+                    assert_eq!(params.len(), 1);
+                    match return_type.as_ref() {
+                        TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "B"),
+                        other => panic!("expected Simple return, got {:?}", other),
+                    }
+                    let eff = effect.as_ref().expect("expected effect annotation");
+                    match eff.as_ref() {
+                        TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "Modifies"),
+                        other => panic!("expected Simple effect, got {:?}", other),
+                    }
+                }
+                other => panic!("expected Arrow type, got {:?}", other),
+            }
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_arrow_type_nullary() {
+    let source = "operation delay(f: () -> A) -> A\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Operation(o) => {
+            match &o.params[0].ty {
+                TypeExpr::Arrow { params, return_type, effect } => {
+                    assert_eq!(params.len(), 0);
+                    match return_type.as_ref() {
+                        TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "A"),
+                        other => panic!("expected Simple return, got {:?}", other),
+                    }
+                    assert!(effect.is_none());
+                }
+                other => panic!("expected Arrow type, got {:?}", other),
+            }
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
