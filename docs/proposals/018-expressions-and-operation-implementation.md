@@ -221,8 +221,11 @@ sort Expr
   entity lambda(param: Pattern, body: Expr)
   entity apply(fn: Symbol, args: List{T = ApplyArg})
   entity constructor(name: Symbol, args: List{T = ApplyArg})
-  entity var_ref(name: Symbol)
-  entity literal(value: Term)
+  entity var_ref(name: Symbol)        -- lexical variable: x, acc
+  entity int_lit(value: Int)
+  entity float_lit(value: Float)
+  entity string_lit(value: String)
+  entity bool_lit(value: Bool)
 end
 
 entity MatchBranch(
@@ -249,6 +252,40 @@ entity NamedPattern(
   name: Symbol,
   pattern: Pattern
 )
+```
+
+### Logical Variables in Expressions
+
+Logical variables (`?x`) can appear anywhere in an expression. Since expressions are terms in the KB, and terms support logical variables and substitution, this requires no special mechanism — it already works the same way as in rules.
+
+```anthill
+-- ?x in a rule (already works):
+rule length(nil) :- 0
+
+-- ?T in an expression (works the same way — expressions are terms):
+rule gen_add(?T) :- Ring{?T},
+  OperationImpl{
+    operation: add,
+    body: lambda (a, b) -> apply(Ring.add, a, b)
+  }
+```
+
+Two kinds of variables in expressions:
+
+- **`x`** — lexical variable, bound by `let`, `lambda`, or `match`. Resolved by the evaluator via scope lookup.
+- **`?x`** — logical variable, bound by KB unification/substitution. Resolved by the standard term substitution machinery before evaluation.
+
+An expression containing unbound `?variables` is a **template** — a partially specified computation. When all logical variables are grounded through substitution, the expression becomes fully concrete and evaluable. This is anthill's equivalent of quasi-quotation in Lisp or splicing in Template Haskell/Scala 3 macros, but with no special syntax — just the standard `?` prefix that already works in rules.
+
+The evaluation pipeline reflects this:
+
+```
+Expr (may contain ?variables — template)
+  → substitution (KB unification grounds ?variables)
+  → Expr (ground — no unbound ?variables)
+  → typecheck
+  → TypedExpr
+  → evaluate (Runtime) or codegen (LanguageMapping)
 ```
 
 ### TypedExpr Sort
@@ -409,8 +446,12 @@ constructor_pattern: $ => seq(
 _simple_expr: $ => choice(
   $.call_expr,
   $.lambda_expr,
-  $.variable_ref,
-  $.literal,
+  $.variable_ref,                         // lexical: x, acc
+  $.variable_term,                        // logical: ?x, ?T (resolved by substitution)
+  $.int_literal,
+  $.float_literal,
+  $.string_literal,
+  $.boolean_literal,
   seq('(', $.expr_body, ')'),             // grouping
 ),
 
@@ -430,13 +471,15 @@ call_arg: $ => choice(
 ```
 source text
   → parse (tree-sitter)
-  → Expr (untyped expression tree)
+  → Expr (may contain ?variables — template)
+  → substitution (KB unification grounds ?variables)
+  → Expr (ground)
   → typecheck
   → TypedExpr (typed expression tree)
   → evaluate (Runtime) or codegen (LanguageMapping)
 ```
 
-Each phase has its own sort. The sorts enforce that you cannot skip type checking.
+Each phase has its own sort. The sorts enforce that you cannot skip type checking. Logical variables (`?x`) are resolved before type checking — they are part of the term layer, not the expression layer.
 
 ## Open Questions
 
@@ -456,7 +499,7 @@ Add expression syntax to `grammar.js`. Extend the parse IR (`ParsedFile`) with e
 
 ### Phase 2: Expr Sort in Reflect
 
-Add `Expr`, `TypedExpr`, `MatchBranch`, `LambdaParam`, `ApplyArg`, `OperationImpl` to `stdlib/anthill/reflect/`.
+Add `Expr`, `TypedExpr`, `Pattern`, `MatchBranch`, `ApplyArg`, `OperationImpl` to `stdlib/anthill/reflect/`.
 
 ### Phase 3: Loader
 
