@@ -1,0 +1,31 @@
+-- Ring: algebraic spec for a ring (additive group + multiplicative monoid)
+sort Ring
+  sort T = ?
+
+  operation add(a: T, b: T) -> T
+  operation mul(a: T, b: T) -> T
+  operation neg(a: T) -> T
+  operation zero() -> T
+  operation one() -> T
+
+  -- Additive identity
+  rule ?a + zero = ?a
+  rule zero + ?a = ?a
+
+  -- Additive inverse
+  rule ?a + neg(?a) = zero
+
+  -- Multiplicative identity
+  rule ?a * one = ?a
+  rule one * ?a = ?a
+
+  -- Commutativity of addition
+  rule ?a + ?b = ?b + ?a
+
+  -- Distributivity
+  rule (?a + ?b) * ?c = ?a * ?c + ?b * ?c
+  rule ?a * (?b + ?c) = ?a * ?b + ?a * ?c
+end
+
+-- Int satisfies Ring
+fact Ring{Int}

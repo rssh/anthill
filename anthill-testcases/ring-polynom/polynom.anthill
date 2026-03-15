@@ -1,0 +1,41 @@
+-- Polynom: polynomials over a ring, demonstrating:
+--   - requires with positional binding: Ring{R}
+--   - positional sort bindings: List{R}, Polynom{R}
+--   - arrow types: (R) -> R, (R, R) -> R
+
+sort List
+  sort T = ?
+  entity nil
+  entity cons(head: T, tail: List{T})
+end
+
+sort Polynom
+  sort R = ?
+  requires Ring{R}
+
+  entity polynom(coefficients: List{R})
+
+  -- Evaluate polynomial at point x (Horner's method)
+  operation eval(p: Polynom{R}, x: R) -> R
+
+  -- Map a function over coefficients
+  operation map_coeffs(p: Polynom{R}, f: (R) -> R) -> Polynom{R}
+
+  -- Zip two polynomials with a binary operation
+  operation zip_with(f: (R, R) -> R, p1: Polynom{R}, p2: Polynom{R}) -> Polynom{R}
+
+  -- Add two polynomials (uses + from Ring)
+  operation add(p1: Polynom{R}, p2: Polynom{R}) -> Polynom{R}
+
+  -- Scale by a constant
+  operation scale(c: R, p: Polynom{R}) -> Polynom{R}
+
+  -- Polynomial addition is commutative (uses infix + from Ring)
+  rule ?p1 + ?p2 = ?p2 + ?p1
+
+  -- Scaling distributes over addition
+  rule scale(?c, ?p1 + ?p2) = scale(?c, ?p1) + scale(?c, ?p2)
+end
+
+-- Polynom{Int} is a valid instantiation (Int satisfies Ring)
+fact Polynom{Int}

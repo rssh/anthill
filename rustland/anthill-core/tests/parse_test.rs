@@ -2519,3 +2519,186 @@ fn parse_arrow_type_nullary() {
         other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
     }
 }
+
+// ── Ring / Polynom examples with arrow types and infix operators ──
+
+#[test]
+fn parse_ring_spec_with_arrow_types() {
+    let source = r#"sort Ring
+  sort T = ?
+
+  operation add(a: T, b: T) -> T
+  operation mul(a: T, b: T) -> T
+  operation neg(a: T) -> T
+  operation zero() -> T
+  operation one() -> T
+
+  rule ?a + zero = ?a
+  rule ?a * one = ?a
+  rule ?a + neg(?a) = zero
+end
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    assert_eq!(parsed.items.len(), 1);
+    match &parsed.items[0] {
+        Item::SortWithBody(s) => {
+            assert_eq!(parsed.symbols.name(s.name.last()), "Ring");
+            let op_count = s.items.iter().filter(|i| matches!(i, Item::Operation(_))).count();
+            let rule_count = s.items.iter().filter(|i| matches!(i, Item::Rule(_))).count();
+            assert_eq!(op_count, 5, "Ring should have 5 operations");
+            assert_eq!(rule_count, 3, "Ring should have 3 rules (laws)");
+        }
+        other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn load_ring_spec_into_kb() {
+    let source = r#"sort Ring
+  sort T = ?
+
+  operation add(a: T, b: T) -> T
+  operation mul(a: T, b: T) -> T
+  operation neg(a: T) -> T
+  operation zero() -> T
+  operation one() -> T
+
+  rule ?a + zero = ?a
+  rule ?a * one = ?a
+end
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let ring_term = kb.resolve_qualified_name_term("Ring");
+    // Ring is an algebraic spec (no entity constructors), classified as Abstract
+    assert_eq!(kb.sort_kind(ring_term), Some(SortKind::Abstract));
+
+    // Ring has sort T + operations — verify it loaded successfully
+    assert!(kb.fact_count() > 0, "KB should have facts after loading Ring");
+}
+
+#[test]
+fn parse_polynom_with_requires_and_arrow_type() {
+    let source = r#"sort Polynom
+  sort R = ?
+  requires Ring{R}
+
+  entity polynom(coefficients: List{R})
+
+  operation eval(p: Polynom{R}, x: R) -> R
+  operation map_coeffs(p: Polynom{R}, f: (R) -> R) -> Polynom{R}
+end
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::SortWithBody(s) => {
+            assert_eq!(parsed.symbols.name(s.name.last()), "Polynom");
+
+            // Check requires Ring{R} — positional binding
+            let req = s.items.iter().find(|i| matches!(i, Item::RequiresDecl(_)));
+            assert!(req.is_some(), "should have requires declaration");
+            match req.unwrap() {
+                Item::RequiresDecl(r) => {
+                    match &r.type_expr {
+                        TypeExpr::Parameterized { name, bindings } => {
+                            assert_eq!(parsed.symbols.name(name.last()), "Ring");
+                            assert_eq!(bindings.len(), 1);
+                            assert!(bindings[0].param.is_none());
+                        }
+                        other => panic!("expected Parameterized, got {:?}", other),
+                    }
+                }
+                _ => unreachable!(),
+            }
+
+            // Check map_coeffs has arrow type param (R) -> R
+            let ops: Vec<_> = s.items.iter().filter_map(|i| match i {
+                Item::Operation(o) => Some(o),
+                _ => None,
+            }).collect();
+            let map_op = ops.iter().find(|o| parsed.symbols.name(o.name.last()) == "map_coeffs")
+                .expect("should have map_coeffs operation");
+            match &map_op.params[1].ty {
+                TypeExpr::Arrow { params, return_type, effect } => {
+                    assert_eq!(params.len(), 1);
+                    assert!(effect.is_none());
+                    match &params[0] {
+                        TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "R"),
+                        other => panic!("expected Simple param R, got {:?}", other),
+                    }
+                    match return_type.as_ref() {
+                        TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "R"),
+                        other => panic!("expected Simple return R, got {:?}", other),
+                    }
+                }
+                other => panic!("expected Arrow type, got {:?}", other),
+            }
+        }
+        other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn load_polynom_with_ring_requirement() {
+    let source = r#"sort List
+  sort T = ?
+end
+
+sort Ring
+  sort T = ?
+  operation add(a: T, b: T) -> T
+  operation mul(a: T, b: T) -> T
+  operation zero() -> T
+end
+
+sort Polynom
+  sort R = ?
+  requires Ring{R}
+  entity polynom(coefficients: List{R})
+  operation eval(p: Polynom{R}, x: R) -> R
+end
+
+fact Ring{Int}
+fact Polynom{Int}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let ring_term = kb.resolve_qualified_name_term("Ring");
+    let polynom_term = kb.resolve_qualified_name_term("Polynom");
+    assert_eq!(kb.sort_kind(ring_term), Some(SortKind::Abstract));
+    assert_eq!(kb.sort_kind(polynom_term), Some(SortKind::Defined));
+
+    // Both sorts loaded successfully into the KB
+    assert!(kb.fact_count() > 0, "KB should have facts after loading Ring + Polynom");
+}
+
+#[test]
+fn parse_infix_in_rules_with_ring() {
+    let source = r#"sort Ring
+  sort T = ?
+  operation add(a: T, b: T) -> T
+  operation mul(a: T, b: T) -> T
+
+  rule ?a + ?b = ?b + ?a
+  rule (?a + ?b) * ?c = ?a * ?c + ?b * ?c
+end
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::SortWithBody(s) => {
+            let rules: Vec<_> = s.items.iter().filter(|i| matches!(i, Item::Rule(_))).collect();
+            assert_eq!(rules.len(), 2, "Ring should have 2 rules (commutativity, distributivity)");
+        }
+        other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
+    }
+
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let ring_term = kb.resolve_qualified_name_term("Ring");
+    assert_eq!(kb.sort_kind(ring_term), Some(SortKind::Abstract));
+}
