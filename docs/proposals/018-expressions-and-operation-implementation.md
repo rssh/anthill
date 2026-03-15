@@ -325,10 +325,11 @@ The loader converts expression syntax in operation declarations to `OperationImp
 When the system needs to execute an operation:
 
 1. **External implementation**: `Implementation{target: op, language: current_target}` — delegate to host-language code via toolchain
-2. **Anthill implementation**: `OperationImpl{operation: op}` — evaluate the `Expr` tree via `Runtime`
-3. **Neither** — operation is abstract (only spec, no implementation)
+2. **Ensures sort**: a sort with `ensures Spec{Type}` that provides a body for the operation
+3. **Default implementation**: operation body in the spec sort itself
+4. **Neither** — operation is abstract (only spec, no implementation)
 
-For code generation, external `Implementation` takes priority. For the anthill runtime (interpreter/evaluator), `OperationImpl` is primary. Both are facts in the KB, both queryable.
+For code generation, external `Implementation` takes priority. For the anthill runtime (interpreter/evaluator), `ensures` sorts and defaults are primary. All are facts in the KB, all queryable.
 
 ## Relationship to Rules
 
@@ -350,6 +351,143 @@ end
 ```
 
 The rule `length(nil) :- 0` is a **specification** — it states a property that must hold. The expression body is an **implementation** — it says how to compute the result. The kernel can verify that the implementation satisfies the rule, but they are separate concerns.
+
+## Implementation Sorts
+
+A sort can separate its **specification** (operation signatures, laws) from its **implementation** (operation bodies). The spec sort defines *what*; the implementation sort provides *how*.
+
+### `ensures` — the dual of `requires`
+
+- `requires Ring{R}` — "I depend on Ring for R" (consumer)
+- `ensures Ring{Int}` — "I provide Ring for Int" (implementor)
+
+```anthill
+-- Spec sort (ring.anthill): defines the interface
+sort Ring
+  sort T = ?
+
+  -- Abstract operations (no body) — must be provided by implementors
+  operation add(a: T, b: T) -> T
+  operation mul(a: T, b: T) -> T
+  operation neg(a: T) -> T
+  operation zero() -> T
+  operation one() -> T
+
+  -- Default operations (have body) — inherited unless overridden
+  operation sub(a: T, b: T) -> T
+    add(a, neg(b))
+  end
+
+  operation square(a: T) -> T
+    mul(a, a)
+  end
+
+  -- Laws (hold for all implementations)
+  rule ?a + zero = ?a
+  rule ?a + neg(?a) = zero
+  rule ?a + ?b = ?b + ?a
+  rule (?a + ?b) * ?c = ?a * ?c + ?b * ?c
+end
+```
+
+```anthill
+-- Implementation sort (int_ring.anthill): provides the bodies
+sort IntRing
+  ensures Ring{Int}
+
+  -- Required: provide all abstract operations
+  operation add(a: Int, b: Int) -> Int
+    a + b
+  end
+
+  operation mul(a: Int, b: Int) -> Int
+    a * b
+  end
+
+  operation neg(a: Int) -> Int
+    -a
+  end
+
+  operation zero() -> Int
+    0
+  end
+
+  operation one() -> Int
+    1
+  end
+
+  -- sub and square are inherited from Ring's defaults
+  -- (can be overridden here if a more efficient version is needed)
+end
+```
+
+### Abstract vs Default vs Concrete
+
+The presence or absence of a body determines the operation's status:
+
+- **No body in spec sort** → abstract, `ensures` sort MUST provide it
+- **Body in spec sort** → default, `ensures` sort inherits it (can override)
+- **Body in `ensures` sort** → concrete implementation (or override of default)
+
+This follows the same convention as Rust traits and Haskell typeclasses — no new keywords needed beyond `ensures`.
+
+### Multiple Implementations
+
+Different sorts can provide different implementations for different types or profiles:
+
+```anthill
+sort IntRing
+  ensures Ring{Int}
+  -- ... Int operations using native arithmetic
+end
+
+sort FloatRing
+  ensures Ring{Float}
+  -- ... Float operations using floating-point arithmetic
+end
+
+sort MatrixRing
+  ensures Ring{Matrix}
+  -- ... Matrix operations using linear algebra
+end
+```
+
+Each `ensures` sort is a named entity in the KB — queryable, reflectable, selectable by profile.
+
+### Relationship to External Implementations
+
+An `ensures` sort provides anthill expression bodies. For host-language implementations, use `Implementation` facts as before:
+
+```anthill
+-- Anthill implementation (expression bodies)
+sort IntRing
+  ensures Ring{Int}
+  operation add(a: Int, b: Int) -> Int
+    a + b
+  end
+end
+
+-- External implementation (host-language file)
+fact Implementation{
+  target: "Ring",
+  artifact: "src/ring_simd.rs",
+  language: "rust",
+  profile: "simd",
+  carrier: [CarrierBinding("T", "f64")]
+}
+```
+
+Both are valid implementation strategies. The resolution order (§Resolution Order above) determines which takes priority.
+
+### Grammar
+
+`ensures` is a sort-level clause, syntactically parallel to `requires`:
+
+```
+EnsuresDecl ::= 'ensures' Type
+```
+
+The type expression is a parameterized sort reference: `Ring{Int}`, `Functor{List}`, etc. The `ensures` sort must provide bodies for all abstract operations of the referenced spec.
 
 ## Grammar Changes
 
