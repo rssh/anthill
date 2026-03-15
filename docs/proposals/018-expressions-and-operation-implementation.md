@@ -454,6 +454,62 @@ end
 
 Each `ensures` sort is a named entity in the KB — queryable, reflectable, selectable by profile.
 
+### Non-Coherent Implementations (Multiple for Same Type)
+
+A spec may have multiple valid implementations for the same type. Classic example: `Monoid{Int}` — both `(+, 0)` and `(*, 1)` are valid monoids.
+
+```anthill
+sort IntAddMonoid
+  ensures Monoid{Int}
+  operation combine(a: Int, b: Int) -> Int
+    a + b
+  end
+  operation identity() -> Int
+    0
+  end
+end
+
+sort IntMulMonoid
+  ensures Monoid{Int}
+  operation combine(a: Int, b: Int) -> Int
+    a * b
+  end
+  operation identity() -> Int
+    1
+  end
+end
+```
+
+**Selection** uses the named implementation sort in `requires`:
+
+```anthill
+-- Unambiguous: require the specific implementation, not the abstract spec
+sort SumReducer
+  requires IntAddMonoid    -- brings additive Monoid{Int} into scope
+end
+
+sort ProductReducer
+  requires IntMulMonoid    -- brings multiplicative Monoid{Int} into scope
+end
+```
+
+Since `IntAddMonoid` ensures `Monoid{Int}`, requiring `IntAddMonoid` transitively provides all `Monoid` operations — with the additive implementation.
+
+**Conflicting implementations in the same scope** — qualify by name:
+
+```anthill
+sort BothMonoids
+  requires IntAddMonoid
+  requires IntMulMonoid
+
+  operation sum_and_product(a: Int, b: Int) -> (Int, Int)
+    (IntAddMonoid.combine(a, b), IntMulMonoid.combine(a, b))
+  end
+end
+```
+
+`IntAddMonoid.combine` and `IntMulMonoid.combine` are distinct qualified names. Standard dotted name resolution handles disambiguation — no new syntax needed.
+
 ### Relationship to External Implementations
 
 An `ensures` sort provides anthill expression bodies. For host-language implementations, use `Implementation` facts as before:
