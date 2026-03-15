@@ -112,20 +112,25 @@ Scope: each `let` binding is visible in all subsequent expressions within the sa
 
 #### Lambda
 
+Lambda always takes **one** argument. Multiple parameters use tuple destructuring:
+
 ```anthill
-lambda x -> x
-lambda x y -> add(x, y)
+lambda x -> x                              -- single param
+lambda (a, b) -> add(a, b)                 -- tuple destructuring
+lambda (acc: A, elem: B) -> add(acc, elem) -- named tuple with type annotations
 ```
 
-With type annotations (parenthesized per param):
+This avoids comma ambiguity when lambdas are used as function arguments — the tuple parens naturally delimit the parameter pattern:
 
 ```anthill
-lambda (x: Int) (y: Int) -> add(x, y)
+map(lambda x -> x + 1, my_list)
+fold(lambda (acc, x) -> add(acc, x), zero, my_list)
+zip_with(lambda (a, b) -> Ring.add(a, b), xs, ys)
 ```
 
 Without type annotations, parameter types are logical variables (`?`) — inferred from context.
 
-Lambda expressions inherit the enclosing scope's `requires` constraints. A lambda inside an operation on `sort Polynom{R = ?} requires Ring{T = R}` can call `Ring.add` without declaring its own constraints.
+Lambda expressions inherit the enclosing scope's `requires` constraints. A lambda inside an operation on a sort with `requires Ring{R}` can call `Ring.add` without declaring its own constraints.
 
 #### Function application
 
@@ -179,20 +184,21 @@ No special expression form needed — the parser produces flat operator chains a
 ### Complete Example: Polymorphic Operations
 
 ```anthill
-sort Polynom{R=?}
+sort Polynom
+  sort R = ?
   requires Ring{R}
 
   entity polynom(coefficients: List{R})
 
   operation add(p1: Polynom{R}, p2: Polynom{R}) -> Polynom{R}
-    let cs = zip_with(lambda a b -> Ring.add(a, b),
+    let cs = zip_with(lambda (a, b) -> Ring.add(a, b),
                       coefficients(p1),
                       coefficients(p2))
     polynom(coefficients: cs)
   end
 
   operation evaluate(p: Polynom{R}, x: R) -> R
-    fold(lambda acc c -> Ring.add(Ring.mul(acc, x), c),
+    fold(lambda (acc, c) -> Ring.add(Ring.mul(acc, x), c),
          Ring.zero,
          coefficients(p))
   end
@@ -212,7 +218,7 @@ sort Expr
   entity match_expr(scrutinee: Expr, branches: List{T = MatchBranch})
   entity if_expr(cond: Expr, then_branch: Expr, else_branch: Expr)
   entity let_expr(name: Symbol, value: Expr, body: Expr)
-  entity lambda(params: List{T = LambdaParam}, body: Expr)
+  entity lambda(param: Pattern, body: Expr)
   entity apply(fn: Symbol, args: List{T = ApplyArg})
   entity constructor(name: Symbol, args: List{T = ApplyArg})
   entity var_ref(name: Symbol)
@@ -220,19 +226,28 @@ sort Expr
 end
 
 entity MatchBranch(
-  pattern: Term,
+  pattern: Pattern,
   guard: Option{T = Expr},
   body: Expr
-)
-
-entity LambdaParam(
-  name: Symbol,
-  type_ann: Option{T = Term}
 )
 
 entity ApplyArg(
   name: Option{T = Symbol},
   value: Expr
+)
+
+sort Pattern
+  entity var_pattern(name: Symbol, type_ann: Option{T = Term})
+  entity tuple_pattern(elements: List{T = Pattern})
+  entity named_tuple_pattern(fields: List{T = NamedPattern})
+  entity constructor_pattern(name: Symbol, args: List{T = Pattern})
+  entity literal_pattern(value: Term)
+  entity wildcard
+end
+
+entity NamedPattern(
+  name: Symbol,
+  pattern: Pattern
 )
 ```
 
@@ -363,14 +378,31 @@ let_binding: $ => seq(
 
 lambda_expr: $ => seq(
   'lambda',
-  repeat1($.lambda_param),
+  field('param', $._pattern),
   '->',
   field('body', $.expr_body),
 ),
 
-lambda_param: $ => choice(
-  $.identifier,                                         // untyped: x
-  seq('(', $.identifier, ':', $._type, ')'),            // typed: (x: Int)
+// Patterns (shared by lambda, match branches)
+_pattern: $ => choice(
+  $.identifier,                                         // variable: x
+  '_',                                                  // wildcard
+  $.literal,                                            // literal: 42, "hello"
+  $.tuple_pattern,                                      // (a, b) or (a: Int, b: Int)
+  $.constructor_pattern,                                // cons(h, t)
+),
+
+tuple_pattern: $ => seq(
+  '(', commaSep1($._pattern_arg), ')',
+),
+
+_pattern_arg: $ => choice(
+  $._pattern,                                           // positional: a
+  seq($.identifier, ':', $._type),                      // typed: a: Int
+),
+
+constructor_pattern: $ => seq(
+  $.name, '(', optional(commaSep1($._pattern)), ')',
 ),
 
 // Simple expressions: applications, constructors, variables, literals, lambdas
