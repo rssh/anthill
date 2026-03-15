@@ -545,6 +545,100 @@ EnsuresDecl ::= 'ensures' Type
 
 The type expression is a parameterized sort reference: `Ring{Int}`, `Functor{List}`, etc. The `ensures` sort must provide bodies for all abstract operations of the referenced spec.
 
+## Proof Obligations
+
+When an `ensures` sort provides an implementation, the kernel generates **proof obligations** — one for each law (rule) in the spec. These are `Obligation` facts in the KB (defined in `stdlib/anthill/realization/`).
+
+### Proofs are terms
+
+In anthill, `rule head :- body` already has proof semantics: "head holds because body holds." A proof obligation is a term; discharging it is providing a rule that derives it:
+
+```anthill
+sort IntRing
+  ensures Ring{Int}
+
+  operation add(a: Int, b: Int) -> Int
+    a + b
+  end
+
+  -- Kernel generates obligation: prove add(?a, zero) = ?a
+  -- Discharged by rule:
+  rule add(?a, zero) :- ?a + 0, ?a
+end
+```
+
+The `:-` IS the proof justification. This requires no new syntax — rules are already the proof language.
+
+### Discharge mechanisms
+
+Proof obligations can be discharged by:
+
+1. **Abstract interpretation** — mechanical symbolic evaluation. The kernel evaluates `add(a, zero)` using the body `a + 0`, simplifies to `a`. Automatic for arithmetic identities and simple structural cases.
+
+2. **KB resolution** — the obligation is a query. If the KB's existing rules/facts can derive it, it's discharged automatically.
+
+3. **Explicit rules** — the user writes a rule in the `ensures` sort that derives the obligation. The `:-` body is the proof.
+
+4. **Context propagation** — `if`/`match` guards and prior `let` bindings provide knowledge at call sites for precondition discharge.
+
+5. **External proofs** — reference a proof artifact (Lean, Coq, SMT solver output):
+```anthill
+sort IntRing
+  ensures Ring{Int}
+  -- ...
+end [proofs: "proofs/int_ring.lean"]
+```
+
+6. **Trust annotations** — mark as trusted with evidence level:
+```anthill
+sort IntRing
+  ensures Ring{Int}
+  -- ...
+end [trust: tested-1000]
+```
+
+### Preconditions at call sites
+
+When an operation has `requires`, each call site generates an obligation:
+
+```anthill
+operation divide(a: Int, b: Int) -> Int
+  requires b != 0
+
+-- Call site obligation: prove y != 0
+if y != 0 then
+  divide(x, y)     -- discharged by if-guard context
+else
+  0
+end
+```
+
+### Postcondition propagation
+
+After calling an operation with `ensures`, postconditions become available facts:
+
+```anthill
+operation abs(x: Int) -> Int
+  ensures result >= 0
+
+let y = abs(x)
+-- y >= 0 is now known in scope
+divide(1, y + 1)   -- precondition y + 1 != 0 discharged: y >= 0 implies y + 1 > 0
+```
+
+### Obligation lifecycle
+
+```
+ensures Ring{Int} → generates Obligation facts (status: Pending)
+  → automatic discharge (abstract interpretation, KB resolution)
+  → remaining Pending obligations surface to user
+  → user provides rules (proofs) or external evidence
+  → all Discharged → implementation is verified
+  → Failed → error, implementation does not satisfy spec
+```
+
+Detailed proof block syntax and integration with external provers is deferred to a future proposal.
+
 ## Grammar Changes
 
 ### Operation body
