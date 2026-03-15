@@ -75,7 +75,7 @@ With guards:
 
 ```anthill
 match expr
-  cons(h, t) | gt(h, 0) -> cons(h, filter_positive(t))
+  cons(h, t) | h > 0 -> cons(h, filter_positive(t))
   cons(_, t) -> filter_positive(t)
   nil -> nil
 end
@@ -90,12 +90,12 @@ if cond then expr1 else expr2
 Desugars to match on Bool. Nested:
 
 ```anthill
-if gt(x, 0) then
+if x > 0 then
   x
-else if eq(x, 0) then
+else if x = 0 then
   0
 else
-  neg(x)
+  -x
 ```
 
 #### Let bindings
@@ -191,14 +191,14 @@ sort Polynom
   entity polynom(coefficients: List{R})
 
   operation add(p1: Polynom{R}, p2: Polynom{R}) -> Polynom{R}
-    let cs = zip_with(lambda (a, b) -> Ring.add(a, b),
+    let cs = zip_with(lambda (a, b) -> a + b,
                       coefficients(p1),
                       coefficients(p2))
     polynom(coefficients: cs)
   end
 
   operation evaluate(p: Polynom{R}, x: R) -> R
-    fold(lambda (acc, c) -> Ring.add(Ring.mul(acc, x), c),
+    fold(lambda (acc, c) -> acc * x + c,
          Ring.zero,
          coefficients(p))
   end
