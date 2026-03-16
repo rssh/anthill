@@ -174,6 +174,11 @@ class KnowledgeBase:
     for (rid, subst) <- candidates do
       if !rules(rid.index).retracted && !subst.isContradiction then
         results += ((rid, subst))
+    // Stable-sort: facts (empty body) before rules (non-empty body).
+    // The discrimination tree uses HashMap internally, so candidate order
+    // is non-deterministic. DFS resolution depends on trying ground facts
+    // before recursive rules to find base-case solutions first.
+    results.sortInPlaceBy((rid, _) => if rules(rid.index).body.isEmpty then 0 else 1)
     results
 
   def queryRules(pattern: TermId): ArrayBuffer[(RuleId, Substitution)] =
