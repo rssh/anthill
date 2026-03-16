@@ -105,6 +105,16 @@ impl<'a> Converter<'a> {
         self.intern(&format!("_{}", index + 1))
     }
 
+    /// Allocate a Fn term with only positional args (no named args).
+    fn alloc_fn_term(&mut self, functor_name: &str, pos_args: SmallVec<[TermId; 4]>) -> TermId {
+        let functor = self.intern(functor_name);
+        self.terms.alloc(Term::Fn {
+            functor,
+            pos_args,
+            named_args: SmallVec::new(),
+        })
+    }
+
     /// Find the first named child of a given kind.
     fn child_by_kind<'t>(&self, node: Node<'t>, kind: &str) -> Option<Node<'t>> {
         let mut cursor = node.walk();
@@ -1009,6 +1019,7 @@ impl<'a> Converter<'a> {
             }
         }
 
+        let body = self.field(node, "body").map(|b| self.convert_expr_body(b));
         let meta = self.convert_meta_block(node);
 
         Some(Operation {
@@ -1019,6 +1030,7 @@ impl<'a> Converter<'a> {
             requires,
             ensures,
             effects,
+            body,
             meta,
             span,
         })
@@ -1154,6 +1166,7 @@ impl<'a> Converter<'a> {
             }
         }
 
+        let body = self.field(node, "body").map(|b| self.convert_expr_body(b));
         let meta = self.convert_meta_block(node);
 
         Some(Operation {
@@ -1164,6 +1177,7 @@ impl<'a> Converter<'a> {
             requires,
             ensures,
             effects,
+            body,
             meta,
             span,
         })
@@ -1756,6 +1770,143 @@ impl<'a> Converter<'a> {
 
         Some(Feedback { workitem, author, content, at, meta, span })
     }
+
+    // ── Expressions ──────────────────────────────────────────────
+
+    /// Convert an expression body node (match_expr, if_expr, let_expr,
+    /// lambda_expr, or a plain term).
+    fn convert_expr_body(&mut self, node: Node) -> TermId {
+        match node.kind() {
+            "match_expr" => self.convert_match_expr(node),
+            "if_expr" => self.convert_if_expr(node),
+            "let_expr" => self.convert_let_expr(node),
+            "lambda_expr" => self.convert_lambda_expr(node),
+            _ => self.convert_term(node),
+        }
+    }
+
+    fn convert_match_expr(&mut self, node: Node) -> TermId {
+        let scrutinee = self.field(node, "scrutinee")
+            .map(|n| self.convert_term(n))
+            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+
+        let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
+        pos_args.push(scrutinee);
+        for branch in self.children_by_kind(node, "match_branch") {
+            pos_args.push(self.convert_match_branch(branch));
+        }
+
+        self.alloc_fn_term("match_expr", pos_args)
+    }
+
+    fn convert_match_branch(&mut self, node: Node) -> TermId {
+        let pattern = self.field(node, "pattern")
+            .map(|p| self.convert_pattern(p))
+            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+
+        let body = self.field(node, "body")
+            .map(|b| self.convert_expr_body(b))
+            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+
+        self.alloc_fn_term("match_branch", SmallVec::from_slice(&[pattern, body]))
+    }
+
+    fn convert_if_expr(&mut self, node: Node) -> TermId {
+        let condition = self.field(node, "condition")
+            .map(|n| self.convert_term(n))
+            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+
+        let then_branch = self.field(node, "then")
+            .map(|n| self.convert_expr_body(n))
+            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+
+        let else_branch = self.field(node, "else")
+            .map(|n| self.convert_expr_body(n))
+            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+
+        self.alloc_fn_term("if_expr", SmallVec::from_slice(&[condition, then_branch, else_branch]))
+    }
+
+    fn convert_let_expr(&mut self, node: Node) -> TermId {
+        let pattern = self.field(node, "pattern")
+            .map(|p| self.convert_pattern(p))
+            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+
+        let value = self.field(node, "value")
+            .map(|v| self.convert_expr_body(v))
+            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+
+        let body = self.field(node, "body")
+            .map(|b| self.convert_expr_body(b))
+            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+
+        self.alloc_fn_term("let_expr", SmallVec::from_slice(&[pattern, value, body]))
+    }
+
+    fn convert_lambda_expr(&mut self, node: Node) -> TermId {
+        let param = self.field(node, "param")
+            .map(|p| self.convert_pattern(p))
+            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+
+        let body = self.field(node, "body")
+            .map(|b| self.convert_expr_body(b))
+            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+
+        self.alloc_fn_term("lambda", SmallVec::from_slice(&[param, body]))
+    }
+
+    // ── Patterns ─────────────────────────────────────────────────
+
+    fn convert_pattern(&mut self, node: Node) -> TermId {
+        match node.kind() {
+            "pattern_wildcard" => {
+                self.alloc_fn_term("pattern_wildcard", SmallVec::new())
+            }
+            "pattern_var" | "identifier" => {
+                let id_node = self.child_by_kind(node, "identifier").unwrap_or(node);
+                let sym = self.intern(self.text(id_node));
+                let name_tid = self.terms.alloc(Term::Ident(sym));
+                self.alloc_fn_term("pattern_var", SmallVec::from_elem(name_tid, 1))
+            }
+            "pattern_literal" => {
+                let child = node.named_child(0).unwrap_or(node);
+                let lit_tid = self.convert_term(child);
+                self.alloc_fn_term("pattern_literal", SmallVec::from_elem(lit_tid, 1))
+            }
+            "pattern_constructor" => {
+                let name_node = self.field(node, "name").unwrap_or(node);
+                let name = self.convert_name(name_node);
+                let name_sym = self.intern_name(&name);
+                let name_tid = self.terms.alloc(Term::Ident(name_sym));
+
+                let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
+                pos_args.push(name_tid);
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    if is_pattern_kind(child.kind()) {
+                        pos_args.push(self.convert_pattern(child));
+                    }
+                }
+
+                self.alloc_fn_term("pattern_constructor", pos_args)
+            }
+            "pattern_tuple" => {
+                let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    if is_pattern_kind(child.kind()) {
+                        pos_args.push(self.convert_pattern(child));
+                    }
+                }
+
+                self.alloc_fn_term("pattern_tuple", pos_args)
+            }
+            other => {
+                self.err(format!("unexpected pattern node: {other}"), node);
+                self.terms.alloc(Term::Bottom)
+            }
+        }
+    }
 }
 
 /// Check if a node kind is a term.
@@ -1778,6 +1929,18 @@ fn is_term_kind(kind: &str) -> bool {
             | "tuple_literal"
             | "paren_expr"
             | "identifier"
+    )
+}
+
+/// Check if a node kind is a pattern.
+fn is_pattern_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "pattern_wildcard"
+            | "pattern_var"
+            | "pattern_literal"
+            | "pattern_constructor"
+            | "pattern_tuple"
     )
 }
 

@@ -254,6 +254,7 @@ module.exports = grammar({
       '->',
       field('return_type', $._type),
       repeat($.operation_clause),
+      optional(seq('=', field('body', $._expr_body))),
       optional($.meta_block),
     ),
 
@@ -340,6 +341,7 @@ module.exports = grammar({
       '->',
       field('return_type', $._type),
       repeat($.operation_clause),
+      optional(seq('=', field('body', $._expr_body))),
       optional($.meta_block),
     ),
 
@@ -704,6 +706,81 @@ module.exports = grammar({
     prefix_term: $ => seq($._prefix_op, $._atom_term),
 
     _prefix_op: $ => choice('!', 'not'),
+
+    // =========================================================
+    // Expressions (operation bodies)
+    // =========================================================
+
+    _expr_body: $ => choice(
+      $.match_expr,
+      $.if_expr,
+      $.let_expr,
+      $.lambda_expr,
+      $._term,
+    ),
+
+    match_expr: $ => seq(
+      'match', field('scrutinee', $._term),
+      repeat1($.match_branch),
+      'end',
+    ),
+
+    match_branch: $ => seq(
+      'case', field('pattern', $._pattern),
+      '->', field('body', $._expr_body),
+    ),
+
+    if_expr: $ => prec.right(seq(
+      'if', field('condition', $._term),
+      'then', field('then', $._expr_body),
+      'else', field('else', $._expr_body),
+    )),
+
+    let_expr: $ => prec.right(seq(
+      'let', field('pattern', $._pattern),
+      '=', field('value', $._expr_body),
+      'in', field('body', $._expr_body),
+    )),
+
+    lambda_expr: $ => prec.right(seq(
+      'lambda', field('param', $._pattern),
+      '->', field('body', $._expr_body),
+    )),
+
+    // =========================================================
+    // Patterns
+    // =========================================================
+
+    _pattern: $ => choice(
+      $.pattern_constructor,
+      $.pattern_tuple,
+      $.pattern_literal,
+      $.pattern_wildcard,
+      $.pattern_var,
+    ),
+
+    pattern_wildcard: $ => prec(2, '_'),
+
+    pattern_var: $ => $.identifier,
+
+    pattern_literal: $ => choice(
+      $.string_literal,
+      $.integer_literal,
+      $.float_literal,
+      $.boolean_literal,
+    ),
+
+    pattern_constructor: $ => seq(
+      field('name', $.name),
+      '(',
+      commaSep($._pattern),
+      ')',
+    ),
+
+    pattern_tuple: $ => choice(
+      seq('(', ')'),
+      seq('(', $._pattern, ',', commaSep1($._pattern), ')'),
+    ),
 
     // =========================================================
     // Types

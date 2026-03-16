@@ -2702,3 +2702,341 @@ end
     let ring_term = kb.resolve_qualified_name_term("Ring");
     assert_eq!(kb.sort_kind(ring_term), Some(SortKind::Abstract));
 }
+
+// ── Expression body tests ──────────────────────────────────────
+
+#[test]
+fn parse_operation_with_simple_body() {
+    let source = "operation double(x: Int) -> Int = x + x\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    assert_eq!(parsed.items.len(), 1);
+    match &parsed.items[0] {
+        Item::Operation(op) => {
+            assert_eq!(parsed.symbols.name(op.name.last()), "double");
+            assert!(op.body.is_some(), "operation should have a body");
+            let body = op.body.unwrap();
+            // Body should be an infix term desugared to add(x, x)
+            match parsed.terms.get(body) {
+                Term::Fn { functor, pos_args, .. } => {
+                    assert_eq!(parsed.symbols.name(*functor), "add");
+                    assert_eq!(pos_args.len(), 2);
+                }
+                other => panic!("expected Fn term for body, got {:?}", other),
+            }
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_operation_without_body() {
+    let source = "operation foo(x: Int) -> Int\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    assert_eq!(parsed.items.len(), 1);
+    match &parsed.items[0] {
+        Item::Operation(op) => {
+            assert!(op.body.is_none(), "operation without = should have no body");
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_operation_with_match_body() {
+    let source = r#"operation length(l: List) -> Int =
+  match l
+    case nil -> 0
+    case cons(_, t) -> 1 + length(t)
+  end
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    assert_eq!(parsed.items.len(), 1);
+    match &parsed.items[0] {
+        Item::Operation(op) => {
+            assert_eq!(parsed.symbols.name(op.name.last()), "length");
+            assert!(op.body.is_some());
+            let body = op.body.unwrap();
+            match parsed.terms.get(body) {
+                Term::Fn { functor, pos_args, .. } => {
+                    assert_eq!(parsed.symbols.name(*functor), "match_expr");
+                    // pos_args[0] = scrutinee, pos_args[1..] = branches
+                    assert_eq!(pos_args.len(), 3, "1 scrutinee + 2 branches");
+
+                    // Check first branch: case nil -> 0
+                    match parsed.terms.get(pos_args[1]) {
+                        Term::Fn { functor: bf, pos_args: bargs, .. } => {
+                            assert_eq!(parsed.symbols.name(*bf), "match_branch");
+                            assert_eq!(bargs.len(), 2); // pattern, body
+                            // Pattern should be pattern_var(nil)
+                            match parsed.terms.get(bargs[0]) {
+                                Term::Fn { functor: pf, .. } => {
+                                    assert_eq!(parsed.symbols.name(*pf), "pattern_var");
+                                }
+                                other => panic!("expected pattern_var, got {:?}", other),
+                            }
+                        }
+                        other => panic!("expected match_branch, got {:?}", other),
+                    }
+                }
+                other => panic!("expected match_expr, got {:?}", other),
+            }
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_operation_with_if_body() {
+    let source = "operation abs(x: Int) -> Int = if x > 0 then x else 0 - x\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Operation(op) => {
+            assert!(op.body.is_some());
+            let body = op.body.unwrap();
+            match parsed.terms.get(body) {
+                Term::Fn { functor, pos_args, .. } => {
+                    assert_eq!(parsed.symbols.name(*functor), "if_expr");
+                    assert_eq!(pos_args.len(), 3); // condition, then, else
+                }
+                other => panic!("expected if_expr, got {:?}", other),
+            }
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_operation_with_let_body() {
+    let source = r#"operation f(a: Int, b: Int) -> Int =
+  let a2 = a * a in
+  let b2 = b * b in
+  a2 + b2
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Operation(op) => {
+            assert!(op.body.is_some());
+            let body = op.body.unwrap();
+            // Outer let
+            match parsed.terms.get(body) {
+                Term::Fn { functor, pos_args, .. } => {
+                    assert_eq!(parsed.symbols.name(*functor), "let_expr");
+                    assert_eq!(pos_args.len(), 3); // pattern, value, body
+                    // Inner body should be another let_expr
+                    match parsed.terms.get(pos_args[2]) {
+                        Term::Fn { functor: inner_f, pos_args: inner_args, .. } => {
+                            assert_eq!(parsed.symbols.name(*inner_f), "let_expr");
+                            assert_eq!(inner_args.len(), 3);
+                        }
+                        other => panic!("expected inner let_expr, got {:?}", other),
+                    }
+                }
+                other => panic!("expected let_expr, got {:?}", other),
+            }
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_operation_with_lambda_body() {
+    let source = "operation make_adder(x: Int) -> Fun = lambda y -> x + y\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Operation(op) => {
+            assert!(op.body.is_some());
+            let body = op.body.unwrap();
+            match parsed.terms.get(body) {
+                Term::Fn { functor, pos_args, .. } => {
+                    assert_eq!(parsed.symbols.name(*functor), "lambda");
+                    assert_eq!(pos_args.len(), 2); // param pattern, body
+                    // Param should be pattern_var(y)
+                    match parsed.terms.get(pos_args[0]) {
+                        Term::Fn { functor: pf, pos_args: pargs, .. } => {
+                            assert_eq!(parsed.symbols.name(*pf), "pattern_var");
+                            assert_eq!(pargs.len(), 1);
+                            match parsed.terms.get(pargs[0]) {
+                                Term::Ident(sym) => {
+                                    assert_eq!(parsed.symbols.name(*sym), "y");
+                                }
+                                other => panic!("expected Ident(y), got {:?}", other),
+                            }
+                        }
+                        other => panic!("expected pattern_var, got {:?}", other),
+                    }
+                }
+                other => panic!("expected lambda, got {:?}", other),
+            }
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_pattern_wildcard() {
+    let source = r#"operation f(x: T) -> Int =
+  match x
+    case _ -> 0
+  end
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Operation(op) => {
+            let body = op.body.unwrap();
+            match parsed.terms.get(body) {
+                Term::Fn { pos_args, .. } => {
+                    // Branch pattern should be pattern_wildcard
+                    let branch = parsed.terms.get(pos_args[1]);
+                    match branch {
+                        Term::Fn { pos_args: bargs, .. } => {
+                            match parsed.terms.get(bargs[0]) {
+                                Term::Fn { functor, pos_args: wargs, .. } => {
+                                    assert_eq!(parsed.symbols.name(*functor), "pattern_wildcard");
+                                    assert!(wargs.is_empty());
+                                }
+                                other => panic!("expected pattern_wildcard, got {:?}", other),
+                            }
+                        }
+                        other => panic!("expected match_branch, got {:?}", other),
+                    }
+                }
+                other => panic!("expected match_expr, got {:?}", other),
+            }
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_pattern_constructor() {
+    let source = r#"operation f(x: T) -> Int =
+  match x
+    case cons(h, t) -> 1
+  end
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Operation(op) => {
+            let body = op.body.unwrap();
+            match parsed.terms.get(body) {
+                Term::Fn { pos_args, .. } => {
+                    let branch = parsed.terms.get(pos_args[1]);
+                    match branch {
+                        Term::Fn { pos_args: bargs, .. } => {
+                            // Pattern = pattern_constructor(Ident(cons), pattern_var(h), pattern_var(t))
+                            match parsed.terms.get(bargs[0]) {
+                                Term::Fn { functor, pos_args: cargs, .. } => {
+                                    assert_eq!(parsed.symbols.name(*functor), "pattern_constructor");
+                                    assert_eq!(cargs.len(), 3); // name + 2 sub-patterns
+                                    // First arg is the constructor name
+                                    match parsed.terms.get(cargs[0]) {
+                                        Term::Ident(sym) => {
+                                            assert_eq!(parsed.symbols.name(*sym), "cons");
+                                        }
+                                        other => panic!("expected Ident(cons), got {:?}", other),
+                                    }
+                                }
+                                other => panic!("expected pattern_constructor, got {:?}", other),
+                            }
+                        }
+                        other => panic!("expected match_branch, got {:?}", other),
+                    }
+                }
+                other => panic!("expected match_expr, got {:?}", other),
+            }
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_pattern_literal() {
+    let source = r#"operation f(n: Int) -> String =
+  match n
+    case 0 -> "zero"
+  end
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Operation(op) => {
+            let body = op.body.unwrap();
+            match parsed.terms.get(body) {
+                Term::Fn { pos_args, .. } => {
+                    let branch = parsed.terms.get(pos_args[1]);
+                    match branch {
+                        Term::Fn { pos_args: bargs, .. } => {
+                            match parsed.terms.get(bargs[0]) {
+                                Term::Fn { functor, pos_args: largs, .. } => {
+                                    assert_eq!(parsed.symbols.name(*functor), "pattern_literal");
+                                    assert_eq!(largs.len(), 1);
+                                    match parsed.terms.get(largs[0]) {
+                                        Term::Const(Literal::Int(0)) => {}
+                                        other => panic!("expected Int(0), got {:?}", other),
+                                    }
+                                }
+                                other => panic!("expected pattern_literal, got {:?}", other),
+                            }
+                        }
+                        other => panic!("expected match_branch, got {:?}", other),
+                    }
+                }
+                other => panic!("expected match_expr, got {:?}", other),
+            }
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_operation_body_with_clauses() {
+    let source = r#"operation safe_div(a: Int, b: Int) -> Int
+  requires b != 0
+  = a / b
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Operation(op) => {
+            assert_eq!(op.requires.len(), 1, "should have one requires clause");
+            assert!(op.body.is_some(), "should have a body");
+            match parsed.terms.get(op.body.unwrap()) {
+                Term::Fn { functor, .. } => {
+                    assert_eq!(parsed.symbols.name(*functor), "div");
+                }
+                other => panic!("expected div Fn, got {:?}", other),
+            }
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_operation_body_in_block() {
+    let source = r#"sort Math
+  operation
+    double(x: Int) -> Int = x + x
+    triple(x: Int) -> Int = x + x + x
+  end
+end
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::SortWithBody(s) => {
+            match &s.items[0] {
+                Item::OperationBlock(ob) => {
+                    assert_eq!(ob.entries.len(), 2);
+                    assert!(ob.entries[0].body.is_some());
+                    assert!(ob.entries[1].body.is_some());
+                    // First op body is add(x, x)
+                    match parsed.terms.get(ob.entries[0].body.unwrap()) {
+                        Term::Fn { functor, .. } => {
+                            assert_eq!(parsed.symbols.name(*functor), "add");
+                        }
+                        other => panic!("expected add, got {:?}", other),
+                    }
+                }
+                other => panic!("expected OperationBlock, got {:?}", std::mem::discriminant(other)),
+            }
+        }
+        other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
+    }
+}

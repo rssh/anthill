@@ -242,6 +242,7 @@ pub struct Operation {
     pub requires: Vec<Vec<TermId>>,
     pub ensures: Vec<Vec<TermId>>,
     pub effects: Vec<Effect>,
+    pub body: Option<TermId>,
     pub meta: Option<MetaBlock>,
     pub span: Span,
 }
