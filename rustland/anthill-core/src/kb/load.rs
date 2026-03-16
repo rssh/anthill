@@ -772,6 +772,8 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
     // so the loader's resolve_symbol() finds names in the right scopes.
     // Idempotent: skipped on re-entry or when stdlib has already been scanned.
     register_stdlib_scopes(kb, global_raw);
+    // Register builtin operations (eq, gt, add, etc.) for the resolver.
+    kb.register_standard_builtins();
 }
 
 /// Create the stdlib scope hierarchy for names the loader references directly.
@@ -841,6 +843,49 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     });
     let some_sym = kb.symbols.define("some", "anthill.prelude.Option.some", SymbolKind::Entity, option_term.raw());
     let none_sym = kb.symbols.define("none", "anthill.prelude.Option.none", SymbolKind::Entity, option_term.raw());
+
+    // anthill.prelude.Eq sort (operations: eq, neq)
+    let eq_sort_sym = kb.symbols.define("Eq", "anthill.prelude.Eq", SymbolKind::Sort, prelude_term.raw());
+    let eq_sort_term = kb.alloc(Term::Fn {
+        functor: eq_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(eq_sort_term.raw(), ScopeInclusion {
+        parent_scope_raw: prelude_term.raw(),
+        instantiation_term_raw: prelude_term.raw(),
+        is_enclosing: true,
+    });
+    kb.symbols.define("eq", "anthill.prelude.Eq.eq", SymbolKind::Operation, eq_sort_term.raw());
+    kb.symbols.define("neq", "anthill.prelude.Eq.neq", SymbolKind::Operation, eq_sort_term.raw());
+
+    // anthill.prelude.Ordered sort (operations: compare, gt, lt, gte, lte, max, min)
+    let ord_sort_sym = kb.symbols.define("Ordered", "anthill.prelude.Ordered", SymbolKind::Sort, prelude_term.raw());
+    let ord_sort_term = kb.alloc(Term::Fn {
+        functor: ord_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(ord_sort_term.raw(), ScopeInclusion {
+        parent_scope_raw: prelude_term.raw(),
+        instantiation_term_raw: prelude_term.raw(),
+        is_enclosing: true,
+    });
+    kb.symbols.define("compare", "anthill.prelude.Ordered.compare", SymbolKind::Operation, ord_sort_term.raw());
+    kb.symbols.define("gt", "anthill.prelude.Ordered.gt", SymbolKind::Operation, ord_sort_term.raw());
+    kb.symbols.define("lt", "anthill.prelude.Ordered.lt", SymbolKind::Operation, ord_sort_term.raw());
+    kb.symbols.define("gte", "anthill.prelude.Ordered.gte", SymbolKind::Operation, ord_sort_term.raw());
+    kb.symbols.define("lte", "anthill.prelude.Ordered.lte", SymbolKind::Operation, ord_sort_term.raw());
+
+    // anthill.prelude.Numeric sort (operations: add, sub, mul)
+    let num_sort_sym = kb.symbols.define("Numeric", "anthill.prelude.Numeric", SymbolKind::Sort, prelude_term.raw());
+    let num_sort_term = kb.alloc(Term::Fn {
+        functor: num_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(num_sort_term.raw(), ScopeInclusion {
+        parent_scope_raw: prelude_term.raw(),
+        instantiation_term_raw: prelude_term.raw(),
+        is_enclosing: true,
+    });
+    kb.symbols.define("add", "anthill.prelude.Numeric.add", SymbolKind::Operation, num_sort_term.raw());
+    kb.symbols.define("sub", "anthill.prelude.Numeric.sub", SymbolKind::Operation, num_sort_term.raw());
+    kb.symbols.define("mul", "anthill.prelude.Numeric.mul", SymbolKind::Operation, num_sort_term.raw());
 
     // anthill.reflect namespace
     let reflect_sym = kb.symbols.define("reflect", "anthill.reflect", SymbolKind::Namespace, anthill_term.raw());
@@ -951,6 +996,22 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.add_import(global_raw, "SortView", sort_view_sym);
     kb.symbols.add_import(global_raw, "SetLiteral", set_literal_sym);
     kb.symbols.add_import(global_raw, "TupleLiteral", tuple_literal_sym);
+    // Arithmetic and comparison: globally importable (like Haskell Prelude).
+    // Qualified names are guaranteed present — defined above in this function.
+    for (qualified, short) in [
+        ("anthill.prelude.Eq.eq", "eq"),
+        ("anthill.prelude.Eq.neq", "neq"),
+        ("anthill.prelude.Ordered.gt", "gt"),
+        ("anthill.prelude.Ordered.lt", "lt"),
+        ("anthill.prelude.Ordered.gte", "gte"),
+        ("anthill.prelude.Ordered.lte", "lte"),
+        ("anthill.prelude.Numeric.add", "add"),
+        ("anthill.prelude.Numeric.sub", "sub"),
+        ("anthill.prelude.Numeric.mul", "mul"),
+    ] {
+        let sym = kb.symbols.by_qualified_name[qualified];
+        kb.symbols.add_import(global_raw, short, sym);
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════

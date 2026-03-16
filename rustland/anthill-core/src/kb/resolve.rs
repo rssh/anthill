@@ -47,6 +47,25 @@ pub enum BuiltinTag {
     Kind,
     /// `anthill.reflect.field_access(?object, ?field, ?result)` — dot projection.
     FieldAccess,
+    // ── Arithmetic and comparison builtins ───────────────────
+    /// `anthill.prelude.Eq.eq(?a, ?b)` — structural equality (succeeds/fails).
+    Eq,
+    /// `anthill.prelude.Eq.neq(?a, ?b)` — structural inequality (succeeds/fails).
+    Neq,
+    /// `anthill.prelude.Ordered.gt(?a, ?b)` — greater-than on Int/Float constants.
+    Gt,
+    /// `anthill.prelude.Ordered.lt(?a, ?b)` — less-than on Int/Float constants.
+    Lt,
+    /// `anthill.prelude.Ordered.gte(?a, ?b)` — greater-or-equal on Int/Float constants.
+    Gte,
+    /// `anthill.prelude.Ordered.lte(?a, ?b)` — less-or-equal on Int/Float constants.
+    Lte,
+    /// `anthill.prelude.Numeric.add(?a, ?b)` — arithmetic addition (equation builtin).
+    Add,
+    /// `anthill.prelude.Numeric.sub(?a, ?b)` — arithmetic subtraction (equation builtin).
+    Sub,
+    /// `anthill.prelude.Numeric.mul(?a, ?b)` — arithmetic multiplication (equation builtin).
+    Mul,
 }
 
 /// Result of executing a builtin.
@@ -759,6 +778,15 @@ impl KnowledgeBase {
             BuiltinTag::Scope => self.builtin_scope(goal, answer_subst),
             BuiltinTag::Kind => self.builtin_kind(goal, answer_subst),
             BuiltinTag::FieldAccess => self.builtin_field_access(goal, answer_subst),
+            BuiltinTag::Eq => self.builtin_eq(goal, answer_subst),
+            BuiltinTag::Neq => self.builtin_neq(goal, answer_subst),
+            BuiltinTag::Gt => self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Greater),
+            BuiltinTag::Lt => self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Less),
+            BuiltinTag::Gte => self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Less),
+            BuiltinTag::Lte => self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Greater),
+            BuiltinTag::Add => self.builtin_arith(goal, answer_subst, |a, b| a + b, |a, b| a + b),
+            BuiltinTag::Sub => self.builtin_arith(goal, answer_subst, |a, b| a - b, |a, b| a - b),
+            BuiltinTag::Mul => self.builtin_arith(goal, answer_subst, |a, b| a * b, |a, b| a * b),
         }
     }
 
@@ -1101,6 +1129,109 @@ impl KnowledgeBase {
                     BuiltinResult::Failure
                 }
             }
+        }
+    }
+
+    // ── Equality and comparison builtins ─────────────────────
+
+    /// `eq(?a, ?b)` — structural equality after walking. Succeeds if both
+    /// args resolve to the same TermId (hash-consed identity = structural equality).
+    fn builtin_eq(&self, goal: TermId, subst: &Substitution) -> BuiltinResult {
+        let a = self.walk(self.builtin_first_arg(goal), subst);
+        let b = self.walk(self.builtin_second_arg(goal), subst);
+        match (self.terms.get(a), self.terms.get(b)) {
+            (Term::Var(_), _) | (_, Term::Var(_)) => BuiltinResult::Delay,
+            _ => if a == b { BuiltinResult::Success } else { BuiltinResult::Failure },
+        }
+    }
+
+    /// `neq(?a, ?b)` — structural inequality after walking.
+    fn builtin_neq(&self, goal: TermId, subst: &Substitution) -> BuiltinResult {
+        let a = self.walk(self.builtin_first_arg(goal), subst);
+        let b = self.walk(self.builtin_second_arg(goal), subst);
+        match (self.terms.get(a), self.terms.get(b)) {
+            (Term::Var(_), _) | (_, Term::Var(_)) => BuiltinResult::Delay,
+            _ => if a != b { BuiltinResult::Success } else { BuiltinResult::Failure },
+        }
+    }
+
+    /// Generic comparison builtin for gt/lt/gte/lte.
+    /// Compares Int or Float constants; delays if unbound, fails on type mismatch.
+    fn builtin_cmp(
+        &self,
+        goal: TermId,
+        subst: &Substitution,
+        pred: impl Fn(std::cmp::Ordering) -> bool,
+    ) -> BuiltinResult {
+        let a = self.walk(self.builtin_first_arg(goal), subst);
+        let b = self.walk(self.builtin_second_arg(goal), subst);
+        match (self.terms.get(a), self.terms.get(b)) {
+            (Term::Var(_), _) | (_, Term::Var(_)) => BuiltinResult::Delay,
+            (Term::Const(super::term::Literal::Int(x)),
+             Term::Const(super::term::Literal::Int(y))) => {
+                if pred(x.cmp(y)) { BuiltinResult::Success } else { BuiltinResult::Failure }
+            }
+            (Term::Const(super::term::Literal::Float(x)),
+             Term::Const(super::term::Literal::Float(y))) => {
+                if pred(x.cmp(y)) { BuiltinResult::Success } else { BuiltinResult::Failure }
+            }
+            _ => BuiltinResult::Failure,
+        }
+    }
+
+    // ── Arithmetic builtins ──────────────────────────────────
+
+    /// Generic arithmetic builtin for add/sub/mul.
+    /// If 2 positional args: used as an equation builtin (reduces term to result).
+    /// If 3 positional args: binds the 3rd arg to the computed result.
+    /// Operates on Int or Float constants.
+    fn builtin_arith(
+        &mut self,
+        goal: TermId,
+        subst: &Substitution,
+        int_op: impl Fn(i64, i64) -> i64,
+        float_op: impl Fn(f64, f64) -> f64,
+    ) -> BuiltinResult {
+        let (arg_a, arg_b, result_arg) = match self.terms.get(goal) {
+            Term::Fn { pos_args, .. } if pos_args.len() >= 3 => {
+                (pos_args[0], pos_args[1], Some(pos_args[2]))
+            }
+            Term::Fn { pos_args, .. } if pos_args.len() >= 2 => {
+                (pos_args[0], pos_args[1], None)
+            }
+            _ => return BuiltinResult::Failure,
+        };
+
+        let a = self.walk(arg_a, subst);
+        let b = self.walk(arg_b, subst);
+
+        // Extract numeric values first (immutable borrow), then alloc (mutable).
+        enum NumPair { Ints(i64, i64), Floats(f64, f64) }
+        let pair = match (self.terms.get(a), self.terms.get(b)) {
+            (Term::Var(_), _) | (_, Term::Var(_)) => return BuiltinResult::Delay,
+            (Term::Const(super::term::Literal::Int(x)),
+             Term::Const(super::term::Literal::Int(y))) => NumPair::Ints(*x, *y),
+            (Term::Const(super::term::Literal::Float(x)),
+             Term::Const(super::term::Literal::Float(y))) => NumPair::Floats(x.0, y.0),
+            _ => return BuiltinResult::Failure,
+        };
+
+        let result_term = match pair {
+            NumPair::Ints(x, y) => {
+                self.alloc(Term::Const(super::term::Literal::Int(int_op(x, y))))
+            }
+            NumPair::Floats(x, y) => {
+                use ordered_float::OrderedFloat;
+                self.alloc(Term::Const(super::term::Literal::Float(
+                    OrderedFloat(float_op(x, y)),
+                )))
+            }
+        };
+
+        match result_arg {
+            Some(r) => self.try_bind_result(r, result_term, subst),
+            // 2-arg form: succeeds as a ground test (both args are concrete constants)
+            None => BuiltinResult::Success,
         }
     }
 
@@ -2950,6 +3081,121 @@ mod tests {
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
         assert_eq!(solutions.len(), 1, "should residualize");
         assert!(!solutions[0].residual.is_empty(), "should have residual goal");
+    }
+
+    // ── Arithmetic and comparison builtin tests ──────────────────
+
+    #[test]
+    fn builtin_eq_succeeds_on_equal_ints() {
+        let mut kb = kb_with_builtins();
+        let eq_sym = kb.resolve_symbol("anthill.prelude.Eq.eq");
+        let a = kb.alloc(Term::Const(Literal::Int(42)));
+        let b = kb.alloc(Term::Const(Literal::Int(42)));
+        let goal = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[a, b]),
+            named_args: SmallVec::new(),
+        });
+        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 1, "eq(42, 42) should succeed");
+    }
+
+    #[test]
+    fn builtin_eq_fails_on_different_ints() {
+        let mut kb = kb_with_builtins();
+        let eq_sym = kb.resolve_symbol("anthill.prelude.Eq.eq");
+        let a = kb.alloc(Term::Const(Literal::Int(1)));
+        let b = kb.alloc(Term::Const(Literal::Int(2)));
+        let goal = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[a, b]),
+            named_args: SmallVec::new(),
+        });
+        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 0, "eq(1, 2) should fail");
+    }
+
+    #[test]
+    fn builtin_neq_succeeds_on_different() {
+        let mut kb = kb_with_builtins();
+        let neq_sym = kb.resolve_symbol("anthill.prelude.Eq.neq");
+        let a = kb.alloc(Term::Const(Literal::String("hello".into())));
+        let b = kb.alloc(Term::Const(Literal::String("world".into())));
+        let goal = kb.alloc(Term::Fn {
+            functor: neq_sym,
+            pos_args: SmallVec::from_slice(&[a, b]),
+            named_args: SmallVec::new(),
+        });
+        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 1, "neq(\"hello\", \"world\") should succeed");
+    }
+
+    #[test]
+    fn builtin_gt_on_ints() {
+        let mut kb = kb_with_builtins();
+        let gt_sym = kb.resolve_symbol("anthill.prelude.Ordered.gt");
+        let five = kb.alloc(Term::Const(Literal::Int(5)));
+        let three = kb.alloc(Term::Const(Literal::Int(3)));
+
+        // gt(5, 3) should succeed
+        let goal = kb.alloc(Term::Fn {
+            functor: gt_sym,
+            pos_args: SmallVec::from_slice(&[five, three]),
+            named_args: SmallVec::new(),
+        });
+        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 1, "gt(5, 3) should succeed");
+
+        // gt(3, 5) should fail
+        let goal2 = kb.alloc(Term::Fn {
+            functor: gt_sym,
+            pos_args: SmallVec::from_slice(&[three, five]),
+            named_args: SmallVec::new(),
+        });
+        let solutions2 = kb.resolve(&[goal2], &ResolveConfig::default());
+        assert_eq!(solutions2.len(), 0, "gt(3, 5) should fail");
+    }
+
+    #[test]
+    fn builtin_add_three_arg_binds_result() {
+        let mut kb = kb_with_builtins();
+        let add_sym = kb.resolve_symbol("anthill.prelude.Numeric.add");
+        let three = kb.alloc(Term::Const(Literal::Int(3)));
+        let four = kb.alloc(Term::Const(Literal::Int(4)));
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+
+        // add(3, 4, ?x) → ?x = 7
+        let goal = kb.alloc(Term::Fn {
+            functor: add_sym,
+            pos_args: SmallVec::from_slice(&[three, four, var_x]),
+            named_args: SmallVec::new(),
+        });
+        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 1, "add(3, 4, ?x) should have 1 solution");
+        let result = kb.reify(var_x, &solutions[0].subst);
+        assert_eq!(kb.get_term(result), &Term::Const(Literal::Int(7)));
+    }
+
+    #[test]
+    fn builtin_comparison_delays_on_unbound() {
+        let mut kb = kb_with_builtins();
+        let gt_sym = kb.resolve_symbol("anthill.prelude.Ordered.gt");
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+        let three = kb.alloc(Term::Const(Literal::Int(3)));
+
+        // gt(?x, 3) with unbound ?x → should delay/residualize
+        let goal = kb.alloc(Term::Fn {
+            functor: gt_sym,
+            pos_args: SmallVec::from_slice(&[var_x, three]),
+            named_args: SmallVec::new(),
+        });
+        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(solutions.len(), 1, "should residualize");
+        assert!(!solutions[0].residual.is_empty(), "gt(?x, 3) should be in residual");
     }
 
     // ── NAF (negation-as-failure) tests ──────────────────────────

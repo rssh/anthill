@@ -1,6 +1,6 @@
 -- List: a parametric sort (T is the abstract sort parameter)
 sort anthill.prelude.List
-  export List, nil, cons, length
+  export List, nil, cons, length, member, append
 
   sort T = ?                                           -- type parameter (abstract)
   entity nil                                         -- empty list
@@ -9,4 +9,15 @@ sort anthill.prelude.List
   operation length(l: List) -> Int
   rule length(nil) = 0
   rule length(cons(?x, ?xs)) = add(1, length(?xs))
+
+  -- member(?x, ?list): succeeds if ?x is an element of ?list.
+  -- Backtracks over all matching elements.
+  operation member(x: T, l: List) -> Bool
+  rule member(?x, cons(head: ?x, tail: ?_))
+  rule member(?x, cons(head: ?_, tail: ?rest)) :- member(?x, ?rest)
+
+  -- append(?xs, ?ys, ?result): ?result is the concatenation of ?xs and ?ys.
+  operation append(xs: List, ys: List) -> List
+  rule append(nil, ?ys) = ?ys
+  rule append(cons(head: ?x, tail: ?xs), ?ys) = cons(head: ?x, tail: append(?xs, ?ys))
 end

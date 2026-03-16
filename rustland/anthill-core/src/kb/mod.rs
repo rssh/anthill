@@ -920,6 +920,16 @@ impl KnowledgeBase {
         self.register_builtin("anthill.reflect.scope", BuiltinTag::Scope);
         self.register_builtin("anthill.reflect.kind", BuiltinTag::Kind);
         self.register_builtin("anthill.reflect.field_access", BuiltinTag::FieldAccess);
+        // Arithmetic and comparison
+        self.register_builtin("anthill.prelude.Eq.eq", BuiltinTag::Eq);
+        self.register_builtin("anthill.prelude.Eq.neq", BuiltinTag::Neq);
+        self.register_builtin("anthill.prelude.Ordered.gt", BuiltinTag::Gt);
+        self.register_builtin("anthill.prelude.Ordered.lt", BuiltinTag::Lt);
+        self.register_builtin("anthill.prelude.Ordered.gte", BuiltinTag::Gte);
+        self.register_builtin("anthill.prelude.Ordered.lte", BuiltinTag::Lte);
+        self.register_builtin("anthill.prelude.Numeric.add", BuiltinTag::Add);
+        self.register_builtin("anthill.prelude.Numeric.sub", BuiltinTag::Sub);
+        self.register_builtin("anthill.prelude.Numeric.mul", BuiltinTag::Mul);
     }
 
     /// Re-resolve builtins after scan_definitions().
