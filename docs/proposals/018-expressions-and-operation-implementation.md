@@ -643,18 +643,74 @@ let y = abs(x)
 divide(1, y + 1)   -- precondition y + 1 != 0 discharged: y >= 0 implies y + 1 > 0
 ```
 
-### Obligation lifecycle
+### Minimal Proof Interface
+
+A proof obligation is a term. Discharging it produces a `ProofResult`:
+
+```anthill
+sort ProofResult
+  entity proved(obligation: Term, method: ProofMethod)
+  entity failed(obligation: Term, reason: String)
+  entity pending(obligation: Term)
+end
+
+sort ProofMethod
+  entity by_resolution                                -- KB resolution reduced to true
+  entity by_simplification                            -- abstract interpretation / rewriting
+  entity by_tool(name: String, artifact: String)      -- external prover (Lean, SMT, etc.)
+  entity by_trust(level: TrustLevel)                  -- manual annotation
+end
+```
+
+**Internal proof = query.** An obligation `P` is discharged if `?- P` succeeds in the KB. This is standard backward chaining — the existing `kb::resolve` machinery handles it:
+
+```anthill
+-- Obligation: add(?a, zero) = ?a
+-- KB has rule: rule ?a + zero = ?a
+-- Resolution: ?- add(?a, zero) = ?a → succeeds
+-- Result: proved(add(?a, zero) = ?a, by_resolution)
+```
+
+No new proof engine needed for the basic case — internal proof IS just a query.
+
+**External proof = tool call.** For obligations that can't be discharged internally, delegate to an external prover and record the result:
+
+```anthill
+-- Obligation too complex for KB resolution
+-- Delegate to Lean:
+fact ProofResult{
+  proved(
+    distributivity(Ring, Int),
+    by_tool("lean", "proofs/int_ring.lean")
+  )
+}
+```
+
+The proof check operation:
+
+```anthill
+operation check_obligation(obligation: Term, kb: KB) -> ProofResult
+  -- 1. Try KB resolution: ?- obligation → if succeeds, proved(by_resolution)
+  -- 2. Try simplification: rewrite using rules → if reduces to true, proved(by_simplification)
+  -- 3. Check for existing ProofResult fact (external proof already recorded)
+  -- 4. Otherwise: pending(obligation)
+end
+```
+
+### Obligation Lifecycle
 
 ```
-ensures Ring{Int} → generates Obligation facts (status: Pending)
-  → automatic discharge (abstract interpretation, KB resolution)
+ensures Ring{Int}
+  → kernel generates Obligation facts (status: Pending)
+  → check_obligation tries internal discharge (resolution, simplification)
+  → externally proved obligations recorded as ProofResult facts
   → remaining Pending obligations surface to user
-  → user provides rules (proofs) or external evidence
-  → all Discharged → implementation is verified
-  → Failed → error, implementation does not satisfy spec
+  → user provides rules (proofs), external evidence, or trust annotations
+  → all proved → implementation is verified
+  → any failed → error, implementation does not satisfy spec
 ```
 
-Detailed proof block syntax and integration with external provers is deferred to a future proposal.
+Detailed proof block syntax and integration with specific external provers is deferred to a future proposal.
 
 ## Grammar Changes
 
