@@ -50,6 +50,7 @@ object OrderedDouble:
 enum Literal:
   case StringLit(value: String)
   case IntLit(value: Long)
+  case BigIntLit(value: BigInt)
   case FloatLit(value: OrderedDouble)
   case BoolLit(value: Boolean)
 

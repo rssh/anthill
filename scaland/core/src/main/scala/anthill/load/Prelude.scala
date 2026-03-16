@@ -40,7 +40,7 @@ object Prelude:
 
   private def registerPrimitiveSorts(kb: KnowledgeBase): Unit =
     val preludeScope = kb.resolveQualifiedNameTerm("anthill.prelude")
-    for name <- IndexedSeq("Int", "Float", "String", "Bool") do
+    for name <- IndexedSeq("Int", "BigInt", "Float", "String", "Bool") do
       val qualName = s"anthill.prelude.$name"
       val sym = kb.symbols.define(name, qualName, SymbolKind.Sort, preludeScope.raw)
       val sortTerm = kb.makeNameTermFromSym(sym)
@@ -83,7 +83,7 @@ object Prelude:
     // anthill.reflect.Expr sort + entities
     val exprTerm = defineSort("Expr", "anthill.reflect.Expr", reflectScope)
     for name <- IndexedSeq("match_expr", "if_expr", "let_expr", "lambda", "apply",
-      "constructor", "var_ref", "int_lit", "float_lit", "string_lit", "bool_lit") do
+      "constructor", "var_ref", "int_lit", "bigint_lit", "float_lit", "string_lit", "bool_lit") do
       defineEntity(name, s"anthill.reflect.Expr.$name", exprTerm)
 
     // anthill.reflect.Pattern sort + entities
