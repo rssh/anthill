@@ -2,7 +2,7 @@ package anthill.load
 
 import anthill.kb.{KnowledgeBase, SortKind}
 import anthill.intern.{TermSymbol, SymbolTable, SymbolKind, SymbolDef, ScopeInclusion, ResolveResult}
-import anthill.term.{Term, TermId, VarId}
+import anthill.term.{Term, TermId, VarId, Literal}
 import anthill.parse.*
 import anthill.span.Span
 
@@ -364,3 +364,239 @@ object Loader:
 
   private def makeQualified(prefix: String, name: String): String =
     if prefix.isEmpty then name else s"$prefix.$name"
+
+  // ── List / Option builders ────────────────────────────────────
+
+  private def buildList(kb: KnowledgeBase, items: IndexedSeq[TermId]): TermId =
+    val nilSym = kb.tryResolveSymbol("anthill.prelude.List.nil").getOrElse(kb.intern("nil"))
+    val consSym = kb.tryResolveSymbol("anthill.prelude.List.cons").getOrElse(kb.intern("cons"))
+    val headKey = kb.intern("head")
+    val tailKey = kb.intern("tail")
+    var list = kb.alloc(Term.Fn(nilSym, IArray.empty, IArray.empty))
+    var i = items.length - 1
+    while i >= 0 do
+      list = kb.alloc(Term.Fn(consSym, IArray.empty, IArray((headKey, items(i)), (tailKey, list))))
+      i -= 1
+    list
+
+  private def buildNone(kb: KnowledgeBase): TermId =
+    val noneSym = kb.tryResolveSymbol("anthill.prelude.Option.none").getOrElse(kb.intern("none"))
+    kb.alloc(Term.Fn(noneSym, IArray.empty, IArray.empty))
+
+  private def buildSome(kb: KnowledgeBase, value: TermId): TermId =
+    val someSym = kb.tryResolveSymbol("anthill.prelude.Option.some").getOrElse(kb.intern("some"))
+    val valueKey = kb.intern("value")
+    kb.alloc(Term.Fn(someSym, IArray.empty, IArray((valueKey, value))))
+
+  // ── Expression conversion ─────────────────────────────────────
+
+  /** Convert a parse-time expression term into the KB's Expr representation.
+    * Dispatches on functor name to restructure positional args into named args.
+    */
+  private def convertExprTerm(
+    kb: KnowledgeBase, fileTerms: SimpleTermStore, fileSym: SymbolTable,
+    parseId: TermId, scopeTerm: TermId, errors: ArrayBuffer[LoadError],
+    varMap: HashMap[Int, VarId]
+  ): TermId =
+    fileTerms.get(parseId) match
+      case fn: Term.Fn =>
+        val name = fileSym.name(fn.functor)
+        name match
+          case "match_expr" => loadMatchExpr(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
+          case "match_branch" => loadMatchBranch(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
+          case "if_expr" => loadIfExpr(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
+          case "let_expr" => loadLetExpr(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
+          case "lambda" => loadLambdaExpr(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
+          case "pattern_var" => loadPatternVar(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
+          case "pattern_wildcard" => loadPatternWildcard(kb)
+          case "pattern_literal" => loadPatternLiteral(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
+          case "pattern_constructor" => loadPatternConstructor(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
+          case "pattern_tuple" => loadPatternTuple(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
+          case _ => loadApplyOrConstructor(kb, fileTerms, fileSym, fn.functor, fn.posArgs, fn.namedArgs, scopeTerm, errors, varMap)
+      case Term.Const(_) => loadLiteralExpr(kb, fileTerms, fileSym, parseId, scopeTerm, errors, varMap)
+      case Term.Ident(_) => loadVarRef(kb, fileTerms, fileSym, parseId, scopeTerm, errors, varMap)
+      case _ => reallocTerm(kb, fileTerms, fileSym, parseId, scopeTerm, errors, varMap)
+
+  // Shorthand for recursive call parameters
+  private type Ctx = (KnowledgeBase, SimpleTermStore, SymbolTable, TermId, ArrayBuffer[LoadError], HashMap[Int, VarId])
+  private def exprRec(ctx: Ctx, parseId: TermId): TermId =
+    convertExprTerm(ctx._1, ctx._2, ctx._3, parseId, ctx._4, ctx._5, ctx._6)
+
+  private def loadMatchExpr(
+    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
+    posArgs: IArray[TermId], scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+  ): TermId =
+    val ctx = (kb, ft, fs, scope, errors, vm)
+    val scrutinee = exprRec(ctx, posArgs(0))
+    val branches = IArray.tabulate(posArgs.length - 1)(i => exprRec(ctx, posArgs(i + 1)))
+    val branchList = buildList(kb, branches.toIndexedSeq)
+    val matchSym = kb.resolveSymbol("anthill.reflect.Expr.match_expr")
+    kb.alloc(Term.Fn(matchSym, IArray.empty,
+      IArray((kb.intern("scrutinee"), scrutinee), (kb.intern("branches"), branchList))))
+
+  private def loadMatchBranch(
+    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
+    posArgs: IArray[TermId], scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+  ): TermId =
+    val ctx = (kb, ft, fs, scope, errors, vm)
+    val pattern = exprRec(ctx, posArgs(0))
+    val body = exprRec(ctx, posArgs(1))
+    val guard = buildNone(kb)
+    val branchSym = kb.resolveSymbol("anthill.reflect.MatchBranch")
+    kb.alloc(Term.Fn(branchSym, IArray.empty,
+      IArray((kb.intern("pattern"), pattern), (kb.intern("guard"), guard), (kb.intern("body"), body))))
+
+  private def loadIfExpr(
+    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
+    posArgs: IArray[TermId], scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+  ): TermId =
+    val ctx = (kb, ft, fs, scope, errors, vm)
+    val cond = exprRec(ctx, posArgs(0))
+    val thenBranch = exprRec(ctx, posArgs(1))
+    val elseBranch = exprRec(ctx, posArgs(2))
+    val ifSym = kb.resolveSymbol("anthill.reflect.Expr.if_expr")
+    kb.alloc(Term.Fn(ifSym, IArray.empty,
+      IArray((kb.intern("cond"), cond), (kb.intern("then_branch"), thenBranch), (kb.intern("else_branch"), elseBranch))))
+
+  private def loadLetExpr(
+    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
+    posArgs: IArray[TermId], scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+  ): TermId =
+    val ctx = (kb, ft, fs, scope, errors, vm)
+    val pattern = exprRec(ctx, posArgs(0))
+    val value = exprRec(ctx, posArgs(1))
+    val body = exprRec(ctx, posArgs(2))
+    val letSym = kb.resolveSymbol("anthill.reflect.Expr.let_expr")
+    kb.alloc(Term.Fn(letSym, IArray.empty,
+      IArray((kb.intern("pattern"), pattern), (kb.intern("value"), value), (kb.intern("body"), body))))
+
+  private def loadLambdaExpr(
+    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
+    posArgs: IArray[TermId], scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+  ): TermId =
+    val ctx = (kb, ft, fs, scope, errors, vm)
+    val param = exprRec(ctx, posArgs(0))
+    val body = exprRec(ctx, posArgs(1))
+    val lambdaSym = kb.resolveSymbol("anthill.reflect.Expr.lambda")
+    kb.alloc(Term.Fn(lambdaSym, IArray.empty,
+      IArray((kb.intern("param"), param), (kb.intern("body"), body))))
+
+  private def loadVarRef(
+    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
+    parseId: TermId, scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+  ): TermId =
+    val nameRef = ft.get(parseId) match
+      case Term.Ident(sym) =>
+        val kbSym = kb.intern(fs.name(sym))
+        kb.alloc(Term.Ref(kbSym))
+      case _ => reallocTerm(kb, ft, fs, parseId, scope, errors, vm)
+    val varRefSym = kb.resolveSymbol("anthill.reflect.Expr.var_ref")
+    kb.alloc(Term.Fn(varRefSym, IArray.empty, IArray((kb.intern("name"), nameRef))))
+
+  private def loadLiteralExpr(
+    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
+    parseId: TermId, scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+  ): TermId =
+    ft.get(parseId) match
+      case Term.Const(lit) =>
+        val (entityName, valueTerm) = lit match
+          case Literal.IntLit(n) => ("anthill.reflect.Expr.int_lit", kb.alloc(Term.Const(Literal.IntLit(n))))
+          case Literal.FloatLit(f) => ("anthill.reflect.Expr.float_lit", kb.alloc(Term.Const(Literal.FloatLit(f))))
+          case Literal.StringLit(s) => ("anthill.reflect.Expr.string_lit", kb.alloc(Term.Const(Literal.StringLit(s))))
+          case Literal.BoolLit(b) => ("anthill.reflect.Expr.bool_lit", kb.alloc(Term.Const(Literal.BoolLit(b))))
+        val entitySym = kb.resolveSymbol(entityName)
+        kb.alloc(Term.Fn(entitySym, IArray.empty, IArray((kb.intern("value"), valueTerm))))
+      case _ => reallocTerm(kb, ft, fs, parseId, scope, errors, vm)
+
+  private def loadApplyOrConstructor(
+    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
+    parseFunctor: TermSymbol, posArgs: IArray[TermId], namedArgs: IArray[(TermSymbol, TermId)],
+    scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+  ): TermId =
+    val ctx = (kb, ft, fs, scope, errors, vm)
+    val kbFunctor = resolveName(kb, fs.name(parseFunctor), scope)
+    val isEntity = kb.symbols.get(kbFunctor) match
+      case SymbolDef.Resolved(_, _, SymbolKind.Entity, _) => true
+      case _ => false
+
+    val applyArgSym = kb.resolveSymbol("anthill.reflect.ApplyArg")
+    val argNameKey = kb.intern("name")
+    val argValueKey = kb.intern("value")
+
+    val argTerms = scala.collection.mutable.ArrayBuffer.empty[TermId]
+    for tid <- posArgs do
+      val value = exprRec(ctx, tid)
+      val none = buildNone(kb)
+      argTerms += kb.alloc(Term.Fn(applyArgSym, IArray.empty,
+        IArray((argNameKey, none), (argValueKey, value))))
+    for (sym, tid) <- namedArgs do
+      val value = exprRec(ctx, tid)
+      val nameRef = kb.alloc(Term.Ref(kb.intern(fs.name(sym))))
+      val someName = buildSome(kb, nameRef)
+      argTerms += kb.alloc(Term.Fn(applyArgSym, IArray.empty,
+        IArray((argNameKey, someName), (argValueKey, value))))
+    val argsList = buildList(kb, argTerms.toIndexedSeq)
+    val nameRef = kb.alloc(Term.Ref(kbFunctor))
+
+    if isEntity then
+      val ctorSym = kb.resolveSymbol("anthill.reflect.Expr.constructor")
+      kb.alloc(Term.Fn(ctorSym, IArray.empty,
+        IArray((kb.intern("name"), nameRef), (kb.intern("args"), argsList))))
+    else
+      val applySym = kb.resolveSymbol("anthill.reflect.Expr.apply")
+      kb.alloc(Term.Fn(applySym, IArray.empty,
+        IArray((kb.intern("fn"), nameRef), (kb.intern("args"), argsList))))
+
+  // ── Pattern conversion ───────────────────────────────────────
+
+  private def loadPatternVar(
+    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
+    posArgs: IArray[TermId], scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+  ): TermId =
+    val nameRef = ft.get(posArgs(0)) match
+      case Term.Ident(sym) =>
+        val kbSym = kb.intern(fs.name(sym))
+        kb.alloc(Term.Ref(kbSym))
+      case _ => reallocTerm(kb, ft, fs, posArgs(0), scope, errors, vm)
+    val typeAnn = buildNone(kb)
+    val varPatternSym = kb.resolveSymbol("anthill.reflect.Pattern.var_pattern")
+    kb.alloc(Term.Fn(varPatternSym, IArray.empty,
+      IArray((kb.intern("name"), nameRef), (kb.intern("type_ann"), typeAnn))))
+
+  private def loadPatternWildcard(kb: KnowledgeBase): TermId =
+    val wildcardSym = kb.resolveSymbol("anthill.reflect.Pattern.wildcard")
+    kb.alloc(Term.Fn(wildcardSym, IArray.empty, IArray.empty))
+
+  private def loadPatternLiteral(
+    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
+    posArgs: IArray[TermId], scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+  ): TermId =
+    val value = reallocTerm(kb, ft, fs, posArgs(0), scope, errors, vm)
+    val litPatternSym = kb.resolveSymbol("anthill.reflect.Pattern.literal_pattern")
+    kb.alloc(Term.Fn(litPatternSym, IArray.empty, IArray((kb.intern("value"), value))))
+
+  private def loadPatternConstructor(
+    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
+    posArgs: IArray[TermId], scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+  ): TermId =
+    val ctx = (kb, ft, fs, scope, errors, vm)
+    val nameRef = ft.get(posArgs(0)) match
+      case Term.Ident(sym) =>
+        val kbSym = resolveName(kb, fs.name(sym), scope)
+        kb.alloc(Term.Ref(kbSym))
+      case _ => reallocTerm(kb, ft, fs, posArgs(0), scope, errors, vm)
+    val subPatterns = IArray.tabulate(posArgs.length - 1)(i => exprRec(ctx, posArgs(i + 1)))
+    val argsList = buildList(kb, subPatterns.toIndexedSeq)
+    val ctorPatternSym = kb.resolveSymbol("anthill.reflect.Pattern.constructor_pattern")
+    kb.alloc(Term.Fn(ctorPatternSym, IArray.empty,
+      IArray((kb.intern("name"), nameRef), (kb.intern("args"), argsList))))
+
+  private def loadPatternTuple(
+    kb: KnowledgeBase, ft: SimpleTermStore, fs: SymbolTable,
+    posArgs: IArray[TermId], scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
+  ): TermId =
+    val ctx = (kb, ft, fs, scope, errors, vm)
+    val elements = IArray.tabulate(posArgs.length)(i => exprRec(ctx, posArgs(i)))
+    val elementsList = buildList(kb, elements.toIndexedSeq)
+    val tuplePatternSym = kb.resolveSymbol("anthill.reflect.Pattern.tuple_pattern")
+    kb.alloc(Term.Fn(tuplePatternSym, IArray.empty, IArray((kb.intern("elements"), elementsList))))

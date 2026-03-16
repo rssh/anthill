@@ -1,49 +1,42 @@
 package anthill.load
 
 import anthill.kb.{KnowledgeBase, SortKind, BuiltinTag}
-import anthill.intern.SymbolKind
+import anthill.intern.{SymbolKind, ScopeInclusion, TermSymbol}
+import anthill.term.{Term, TermId}
 
-/** Register prelude sorts and builtins into the KB.
-  *
-  * Creates the anthill namespace hierarchy and primitive sorts (Int, Float, String, Bool),
-  * then registers standard builtins.
-  */
+/** Register prelude sorts and builtins into the KB. */
 object Prelude:
 
-  /** Well-known kernel meta sorts. */
   private val kernelMetaSorts = IndexedSeq(
     "Sort", "Entity", "Fact", "Rule", "Operation", "Namespace",
     "Constraint", "EntityOf", "Param", "Field"
   )
 
-  /** Register the prelude: primitive sorts + namespace hierarchy + builtins. */
   def register(kb: KnowledgeBase): Unit =
     registerStdlibScopes(kb)
     registerPrimitiveSorts(kb)
     registerKernelMetaSorts(kb)
+    registerExprSorts(kb)
     registerStandardBuiltins(kb)
 
   private def registerStdlibScopes(kb: KnowledgeBase): Unit =
     val globalScope = kb.makeNameTerm("_global")
 
-    // anthill namespace
     val anthillSym = kb.symbols.define("anthill", "anthill", SymbolKind.Namespace, globalScope.raw)
     val anthillScope = kb.makeNameTermFromSym(anthillSym)
     kb.symbols.addExport(globalScope.raw, "anthill")
 
-    // anthill.prelude
     val preludeSym = kb.symbols.define("prelude", "anthill.prelude", SymbolKind.Namespace, anthillScope.raw)
-    val preludeScope = kb.makeNameTermFromSym(preludeSym)
+    kb.makeNameTermFromSym(preludeSym)
     kb.symbols.addExport(anthillScope.raw, "prelude")
 
-    // anthill.reflect
     val reflectSym = kb.symbols.define("reflect", "anthill.reflect", SymbolKind.Namespace, anthillScope.raw)
-    val reflectScope = kb.makeNameTermFromSym(reflectSym)
+    kb.makeNameTermFromSym(reflectSym)
     kb.symbols.addExport(anthillScope.raw, "reflect")
 
-    // anthill.reflect.typing
-    val typingSym = kb.symbols.define("typing", "anthill.reflect.typing", SymbolKind.Namespace, reflectScope.raw)
-    kb.symbols.addExport(reflectScope.raw, "typing")
+    val typingSym = kb.symbols.define("typing", "anthill.reflect.typing", SymbolKind.Namespace,
+      kb.resolveQualifiedNameTerm("anthill.reflect").raw)
+    kb.symbols.addExport(kb.resolveQualifiedNameTerm("anthill.reflect").raw, "typing")
 
   private def registerPrimitiveSorts(kb: KnowledgeBase): Unit =
     val preludeScope = kb.resolveQualifiedNameTerm("anthill.prelude")
@@ -55,14 +48,57 @@ object Prelude:
       kb.symbols.addExport(preludeScope.raw, name)
 
   private def registerKernelMetaSorts(kb: KnowledgeBase): Unit =
-    val globalScope = kb.makeNameTerm("_global")
+    val reflectScope = kb.resolveQualifiedNameTerm("anthill.reflect")
     for name <- kernelMetaSorts do
       val qualName = s"anthill.reflect.$name"
-      val reflectScope = kb.resolveQualifiedNameTerm("anthill.reflect")
       val sym = kb.symbols.define(name, qualName, SymbolKind.Sort, reflectScope.raw)
       val sortTerm = kb.makeNameTermFromSym(sym)
       kb.registerSort(sortTerm, SortKind.Defined)
       kb.symbols.addExport(reflectScope.raw, name)
+
+  /** Register Expr, Pattern, TypedExpr sorts and their entities. */
+  private def registerExprSorts(kb: KnowledgeBase): Unit =
+    val reflectScope = kb.resolveQualifiedNameTerm("anthill.reflect")
+
+    // Helper to define a sort with enclosing scope
+    def defineSort(shortName: String, qualName: String, parentScope: TermId): TermId =
+      val sym = kb.symbols.define(shortName, qualName, SymbolKind.Sort, parentScope.raw)
+      val sortTerm = kb.makeNameTermFromSym(sym)
+      kb.registerSort(sortTerm, SortKind.Defined)
+      kb.symbols.addExport(parentScope.raw, shortName)
+      kb.symbols.addParent(sortTerm.raw,
+        ScopeInclusion(parentScope.raw, parentScope.raw, isEnclosing = true))
+      sortTerm
+
+    // Helper to define an entity in a sort scope
+    def defineEntity(shortName: String, qualName: String, scopeTerm: TermId): Unit =
+      kb.symbols.define(shortName, qualName, SymbolKind.Entity, scopeTerm.raw)
+      kb.symbols.addExport(scopeTerm.raw, shortName)
+
+    // Helper to define a standalone entity in reflect scope
+    def defineReflectEntity(shortName: String): Unit =
+      kb.symbols.define(shortName, s"anthill.reflect.$shortName", SymbolKind.Entity, reflectScope.raw)
+      kb.symbols.addExport(reflectScope.raw, shortName)
+
+    // anthill.reflect.Expr sort + entities
+    val exprTerm = defineSort("Expr", "anthill.reflect.Expr", reflectScope)
+    for name <- IndexedSeq("match_expr", "if_expr", "let_expr", "lambda", "apply",
+      "constructor", "var_ref", "int_lit", "float_lit", "string_lit", "bool_lit") do
+      defineEntity(name, s"anthill.reflect.Expr.$name", exprTerm)
+
+    // anthill.reflect.Pattern sort + entities
+    val patternTerm = defineSort("Pattern", "anthill.reflect.Pattern", reflectScope)
+    for name <- IndexedSeq("var_pattern", "tuple_pattern", "named_tuple_pattern",
+      "constructor_pattern", "literal_pattern", "wildcard") do
+      defineEntity(name, s"anthill.reflect.Pattern.$name", patternTerm)
+
+    // Standalone entities
+    defineReflectEntity("MatchBranch")
+    defineReflectEntity("ApplyArg")
+
+    // anthill.reflect.TypedExpr sort
+    val typedExprTerm = defineSort("TypedExpr", "anthill.reflect.TypedExpr", reflectScope)
+    defineEntity("typed", "anthill.reflect.TypedExpr.typed", typedExprTerm)
 
   private def registerStandardBuiltins(kb: KnowledgeBase): Unit =
     val builtinDefs = IndexedSeq(
@@ -81,9 +117,7 @@ object Prelude:
     )
 
     for (qualName, tag) <- builtinDefs do
-      // Find or create the symbol
       val short = qualName.split('.').last
-      // Find the namespace scope
       val nsPrefix = qualName.substring(0, qualName.lastIndexOf('.'))
       kb.tryResolveSymbol(nsPrefix) match
         case Some(nsSym) =>
@@ -92,6 +126,5 @@ object Prelude:
           kb.symbols.addExport(nsScope.raw, short)
           kb.registerBuiltin(sym, tag)
         case None =>
-          // Namespace not found — fallback intern
           val sym = kb.intern(qualName)
           kb.registerBuiltin(sym, tag)

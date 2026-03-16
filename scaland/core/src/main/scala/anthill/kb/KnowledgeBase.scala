@@ -44,6 +44,11 @@ class KnowledgeBase:
 
   def resolveSym(sym: TermSymbol): String = symbols.name(sym)
 
+  def qualifiedNameOf(sym: TermSymbol): String =
+    symbols.get(sym) match
+      case SymbolDef.Resolved(_, qualifiedName, _, _) => qualifiedName
+      case SymbolDef.Unresolved(name) => name
+
   def getTerm(id: TermId): Term = terms.get(id)
 
   // ── Rule assertion / retraction ─────────────────────────────
