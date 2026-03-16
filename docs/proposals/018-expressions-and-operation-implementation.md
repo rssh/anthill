@@ -354,7 +354,24 @@ The rule `length(nil) :- 0` is a **specification** — it states a property that
 
 ## Implementation Sorts
 
-A sort can separate its **specification** (operation signatures, laws) from its **implementation** (operation bodies). The spec sort defines *what*; the implementation sort provides *how*.
+A sort can separate its **specification** (operation signatures, laws) from its **implementation** (operation bodies). The spec sort defines *what*; the implementation sort provides *how*. These can live in different files — like C++ headers vs source files, or Rust traits vs impls.
+
+### Spec/Implementation File Separation
+
+```
+stdlib/algebra/ring.anthill        -- spec: sort Ring with operations and laws
+stdlib/algebra/int_ring.anthill    -- impl: sort IntRing ensures Ring{Int}
+stdlib/algebra/float_ring.anthill  -- impl: sort FloatRing ensures Ring{Float}
+generated/matrix_ring.anthill      -- auto-generated implementation
+```
+
+The spec file defines the interface. Implementation files import the spec and provide bodies. Multiple implementation files can coexist — for different types, profiles, or generated vs hand-written code. The loader processes all files and connects `ensures` sorts to their specs via the KB.
+
+This enables three workflows:
+
+1. **Hand-written implementation** — developer writes both spec and impl files
+2. **Auto-generated implementation** — codegen reads the spec from KB, produces impl file with expression bodies
+3. **Host-language implementation** — external `Implementation` fact points to a Rust/Scala/C file; no anthill impl file needed
 
 ### `ensures` — the dual of `requires`
 
