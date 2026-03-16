@@ -930,6 +930,9 @@ impl KnowledgeBase {
         self.register_builtin("anthill.prelude.Numeric.add", BuiltinTag::Add);
         self.register_builtin("anthill.prelude.Numeric.sub", BuiltinTag::Sub);
         self.register_builtin("anthill.prelude.Numeric.mul", BuiltinTag::Mul);
+        // Conversions
+        self.register_builtin("anthill.prelude.BigInt.to_bigint", BuiltinTag::ToBigInt);
+        self.register_builtin("anthill.prelude.BigInt.to_int", BuiltinTag::ToInt);
     }
 
     /// Re-resolve builtins after scan_definitions().

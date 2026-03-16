@@ -66,6 +66,11 @@ pub enum BuiltinTag {
     Sub,
     /// `anthill.prelude.Numeric.mul(?a, ?b)` — arithmetic multiplication (equation builtin).
     Mul,
+    // ── Conversion builtins ─────────────────────────────────
+    /// `anthill.prelude.BigInt.to_bigint(?n, ?result)` — Int → BigInt.
+    ToBigInt,
+    /// `anthill.prelude.BigInt.to_int(?n, ?result)` — BigInt → Option{Int}.
+    ToInt,
 }
 
 /// Result of executing a builtin.
@@ -787,6 +792,8 @@ impl KnowledgeBase {
             BuiltinTag::Add => self.builtin_arith(goal, answer_subst, |a, b| a + b, |a, b| a + b, |a, b| a + b),
             BuiltinTag::Sub => self.builtin_arith(goal, answer_subst, |a, b| a - b, |a, b| a - b, |a, b| a - b),
             BuiltinTag::Mul => self.builtin_arith(goal, answer_subst, |a, b| a * b, |a, b| a * b, |a, b| a * b),
+            BuiltinTag::ToBigInt => self.builtin_to_bigint(goal, answer_subst),
+            BuiltinTag::ToInt => self.builtin_to_int(goal, answer_subst),
         }
     }
 
@@ -1242,6 +1249,54 @@ impl KnowledgeBase {
             Some(r) => self.try_bind_result(r, result_term, subst),
             // 2-arg form: succeeds as a ground test (both args are concrete constants)
             None => BuiltinResult::Success,
+        }
+    }
+
+    // ── Conversion builtins ────────────────────────────────────
+
+    /// `to_bigint(?n, ?result)` — convert Int to BigInt.
+    fn builtin_to_bigint(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
+        let arg = self.walk(self.builtin_first_arg(goal), subst);
+        let result_arg = self.builtin_second_arg(goal);
+        match self.terms.get(arg) {
+            Term::Var(_) => BuiltinResult::Delay,
+            Term::Const(super::term::Literal::Int(n)) => {
+                let n = *n;
+                let big = self.alloc(Term::Const(super::term::Literal::BigInt(
+                    num_bigint::BigInt::from(n),
+                )));
+                self.try_bind_result(result_arg, big, subst)
+            }
+            Term::Const(super::term::Literal::BigInt(_)) => {
+                // Already BigInt — pass through
+                self.try_bind_result(result_arg, arg, subst)
+            }
+            _ => BuiltinResult::Failure,
+        }
+    }
+
+    /// `to_int(?n, ?result)` — convert BigInt to Int. Wraps in some/none.
+    fn builtin_to_int(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
+        let arg = self.walk(self.builtin_first_arg(goal), subst);
+        let result_arg = self.builtin_second_arg(goal);
+        match self.terms.get(arg).clone() {
+            Term::Var(_) => BuiltinResult::Delay,
+            Term::Const(super::term::Literal::BigInt(n)) => {
+                use std::convert::TryFrom;
+                let result = if let Ok(small) = i64::try_from(&n) {
+                    let int_term = self.alloc(Term::Const(super::term::Literal::Int(small)));
+                    super::load::build_some(self, int_term)
+                } else {
+                    super::load::build_none(self)
+                };
+                self.try_bind_result(result_arg, result, subst)
+            }
+            Term::Const(super::term::Literal::Int(_)) => {
+                // Already Int — wrap in some
+                let result = super::load::build_some(self, arg);
+                self.try_bind_result(result_arg, result, subst)
+            }
+            _ => BuiltinResult::Failure,
         }
     }
 

@@ -887,6 +887,19 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.define("sub", "anthill.prelude.Numeric.sub", SymbolKind::Operation, num_sort_term.raw());
     kb.symbols.define("mul", "anthill.prelude.Numeric.mul", SymbolKind::Operation, num_sort_term.raw());
 
+    // anthill.prelude.BigInt namespace (conversion operations)
+    let bigint_ns_sym = kb.symbols.define("BigInt", "anthill.prelude.BigInt", SymbolKind::Namespace, prelude_term.raw());
+    let bigint_ns_term = kb.alloc(Term::Fn {
+        functor: bigint_ns_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(bigint_ns_term.raw(), ScopeInclusion {
+        parent_scope_raw: prelude_term.raw(),
+        instantiation_term_raw: prelude_term.raw(),
+        is_enclosing: true,
+    });
+    kb.symbols.define("to_bigint", "anthill.prelude.BigInt.to_bigint", SymbolKind::Operation, bigint_ns_term.raw());
+    kb.symbols.define("to_int", "anthill.prelude.BigInt.to_int", SymbolKind::Operation, bigint_ns_term.raw());
+
     // anthill.reflect namespace
     let reflect_sym = kb.symbols.define("reflect", "anthill.reflect", SymbolKind::Namespace, anthill_term.raw());
     let reflect_term = kb.alloc(Term::Fn {
@@ -1009,6 +1022,8 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
         ("anthill.prelude.Numeric.add", "add"),
         ("anthill.prelude.Numeric.sub", "sub"),
         ("anthill.prelude.Numeric.mul", "mul"),
+        ("anthill.prelude.BigInt.to_bigint", "to_bigint"),
+        ("anthill.prelude.BigInt.to_int", "to_int"),
     ] {
         let sym = kb.symbols.by_qualified_name[qualified];
         kb.symbols.add_import(global_raw, short, sym);
@@ -1497,7 +1512,7 @@ fn build_list(kb: &mut KnowledgeBase, items: &[TermId]) -> TermId {
 }
 
 /// Build `none()` — the Option.none constructor.
-fn build_none(kb: &mut KnowledgeBase) -> TermId {
+pub(crate) fn build_none(kb: &mut KnowledgeBase) -> TermId {
     let none_sym = kb.resolve_symbol("anthill.prelude.Option.none");
     kb.alloc(Term::Fn {
         functor: none_sym,
@@ -1507,7 +1522,7 @@ fn build_none(kb: &mut KnowledgeBase) -> TermId {
 }
 
 /// Build `some(value: v)` — the Option.some constructor wrapping a value.
-fn build_some(kb: &mut KnowledgeBase, value: TermId) -> TermId {
+pub(crate) fn build_some(kb: &mut KnowledgeBase, value: TermId) -> TermId {
     let some_sym = kb.resolve_symbol("anthill.prelude.Option.some");
     let value_sym = kb.intern("value");
     kb.alloc(Term::Fn {
