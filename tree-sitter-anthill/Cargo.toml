@@ -3,8 +3,9 @@ name = "tree-sitter-anthill"
 version = "0.1.0"
 edition = "2021"
 description = "Tree-sitter grammar for the Anthill kernel language"
-build = "bindings/rust/build.rs"
+build = "build.rs"
 include = [
+  "build.rs",
   "bindings/rust/*",
   "src/*",
 ]
