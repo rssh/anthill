@@ -1,5 +1,7 @@
 # Stage 0 Standard Library
 
+> **Example**: For a runnable example using these types, see [`examples/github-todo/`](../../examples/github-todo/).
+
 This document defines the `anthill.stage0` standard domain — entity types for projects, tools, and work items — and the syntactic sugar that makes them convenient to author.
 
 This is the **standard library layer** of the three-layer architecture:

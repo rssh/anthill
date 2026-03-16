@@ -1,5 +1,7 @@
 # Stage 0: The Practical Bootstrap — Structured Work Decomposition for the Anthill
 
+> **Example**: For a concrete, runnable example of Stage 0 usage (project config, work items, tools, feedback), see [`examples/github-todo/`](../../examples/github-todo/).
+
 ## 1. Introduction
 
 Stage 0 is the lightweight entry point to the anthill metasystem. It provides **structured work decomposition with machine-checkable acceptance criteria** — no proofs, no formal logic, no reasoning engine. Just tasks, tools, and tests.

@@ -1,0 +1,18 @@
+-- Example: Feedback on work items
+--
+-- Feedback facts accumulate (they are not superseded).
+-- The WorkItem itself is revised in response to feedback.
+
+feedback {
+  workitem: WI-AUTH-002
+  author: "rssh"
+  content: "Consider using the `jsonwebtoken` crate instead of rolling custom JWT parsing. It handles RS256/ES256 and has good error types."
+  at: "2027-03-15T10:30:00Z"
+}
+
+feedback {
+  workitem: WI-AUTH-003
+  author: "reviewer-1"
+  content: "The middleware should support both Bearer token and cookie-based auth for SSR pages."
+  at: "2027-03-15T14:00:00Z"
+}

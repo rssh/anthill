@@ -1,0 +1,12 @@
+-- Example: Custom tool definitions
+--
+-- Standard tools (cargo-build, cargo-test, cargo-clippy) are auto-imported
+-- from the std.cargo pack when `build: cargo` is declared.
+-- Only project-specific tools need explicit definition.
+
+tool lint-all {
+  command: "make"
+  args: ["lint"]
+  timeout: 3m
+  success: ExitZero
+}
