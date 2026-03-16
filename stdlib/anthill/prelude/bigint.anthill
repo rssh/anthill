@@ -5,10 +5,12 @@ namespace anthill.prelude.BigInt
   import anthill.prelude.{Eq, Ordered, Numeric}
   export to_bigint, to_int
 
-  -- BigInt satisfies the parametric algebra specs
-  fact Eq{T = BigInt}
-  fact Ordered{T = BigInt}
-  fact Numeric{T = BigInt}
+  -- BigInt satisfies the parametric algebra specs.
+  -- These facts declare that eq, neq, compare, gt, lt, gte, lte,
+  -- add, sub, mul are available for BigInt values (provided by builtins).
+  fact Eq{BigInt}
+  fact Ordered{BigInt}
+  fact Numeric{BigInt}
 
   -- Conversion operations
   operation to_bigint(n: Int) -> BigInt

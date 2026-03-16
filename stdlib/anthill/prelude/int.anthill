@@ -3,10 +3,12 @@ namespace anthill.prelude.Int
   import anthill.prelude.{Eq, Ordered, Numeric}
   export minValue, maxValue, abs, neg, mod, rem, sign, divExact
 
-  -- Int satisfies the parametric algebra specs
-  fact Eq{T = Int}
-  fact Ordered{T = Int}
-  fact Numeric{T = Int}
+  -- Int satisfies the parametric algebra specs.
+  -- These facts declare that eq, neq, compare, gt, lt, gte, lte,
+  -- add, sub, mul are available for Int values (provided by builtins).
+  fact Eq{Int}
+  fact Ordered{Int}
+  fact Numeric{Int}
 
   -- Bounds: Int is finite (platform-dependent, e.g. i64)
   operation minValue() -> Int
