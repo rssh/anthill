@@ -58,6 +58,7 @@ pub trait KB {
 #[derive(Clone, Debug)]
 pub enum LiteralRepr {
     IntLiteral(i64),
+    BigIntLiteral(num_bigint::BigInt),
     FloatLiteral(f64),
     StringLiteral(String),
     BoolLiteral(bool),

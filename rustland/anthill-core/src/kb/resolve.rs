@@ -784,9 +784,9 @@ impl KnowledgeBase {
             BuiltinTag::Lt => self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Less),
             BuiltinTag::Gte => self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Less),
             BuiltinTag::Lte => self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Greater),
-            BuiltinTag::Add => self.builtin_arith(goal, answer_subst, |a, b| a + b, |a, b| a + b),
-            BuiltinTag::Sub => self.builtin_arith(goal, answer_subst, |a, b| a - b, |a, b| a - b),
-            BuiltinTag::Mul => self.builtin_arith(goal, answer_subst, |a, b| a * b, |a, b| a * b),
+            BuiltinTag::Add => self.builtin_arith(goal, answer_subst, |a, b| a + b, |a, b| a + b, |a, b| a + b),
+            BuiltinTag::Sub => self.builtin_arith(goal, answer_subst, |a, b| a - b, |a, b| a - b, |a, b| a - b),
+            BuiltinTag::Mul => self.builtin_arith(goal, answer_subst, |a, b| a * b, |a, b| a * b, |a, b| a * b),
         }
     }
 
@@ -1171,6 +1171,10 @@ impl KnowledgeBase {
              Term::Const(super::term::Literal::Int(y))) => {
                 if pred(x.cmp(y)) { BuiltinResult::Success } else { BuiltinResult::Failure }
             }
+            (Term::Const(super::term::Literal::BigInt(x)),
+             Term::Const(super::term::Literal::BigInt(y))) => {
+                if pred(x.cmp(y)) { BuiltinResult::Success } else { BuiltinResult::Failure }
+            }
             (Term::Const(super::term::Literal::Float(x)),
              Term::Const(super::term::Literal::Float(y))) => {
                 if pred(x.cmp(y)) { BuiltinResult::Success } else { BuiltinResult::Failure }
@@ -1184,12 +1188,13 @@ impl KnowledgeBase {
     /// Generic arithmetic builtin for add/sub/mul.
     /// If 2 positional args: used as an equation builtin (reduces term to result).
     /// If 3 positional args: binds the 3rd arg to the computed result.
-    /// Operates on Int or Float constants.
+    /// Operates on Int, BigInt, or Float constants.
     fn builtin_arith(
         &mut self,
         goal: TermId,
         subst: &Substitution,
         int_op: impl Fn(i64, i64) -> i64,
+        bigint_op: impl Fn(&num_bigint::BigInt, &num_bigint::BigInt) -> num_bigint::BigInt,
         float_op: impl Fn(f64, f64) -> f64,
     ) -> BuiltinResult {
         let (arg_a, arg_b, result_arg) = match self.terms.get(goal) {
@@ -1206,11 +1211,13 @@ impl KnowledgeBase {
         let b = self.walk(arg_b, subst);
 
         // Extract numeric values first (immutable borrow), then alloc (mutable).
-        enum NumPair { Ints(i64, i64), Floats(f64, f64) }
+        enum NumPair { Ints(i64, i64), BigInts(num_bigint::BigInt, num_bigint::BigInt), Floats(f64, f64) }
         let pair = match (self.terms.get(a), self.terms.get(b)) {
             (Term::Var(_), _) | (_, Term::Var(_)) => return BuiltinResult::Delay,
             (Term::Const(super::term::Literal::Int(x)),
              Term::Const(super::term::Literal::Int(y))) => NumPair::Ints(*x, *y),
+            (Term::Const(super::term::Literal::BigInt(x)),
+             Term::Const(super::term::Literal::BigInt(y))) => NumPair::BigInts(x.clone(), y.clone()),
             (Term::Const(super::term::Literal::Float(x)),
              Term::Const(super::term::Literal::Float(y))) => NumPair::Floats(x.0, y.0),
             _ => return BuiltinResult::Failure,
@@ -1219,6 +1226,9 @@ impl KnowledgeBase {
         let result_term = match pair {
             NumPair::Ints(x, y) => {
                 self.alloc(Term::Const(super::term::Literal::Int(int_op(x, y))))
+            }
+            NumPair::BigInts(x, y) => {
+                self.alloc(Term::Const(super::term::Literal::BigInt(bigint_op(&x, &y))))
             }
             NumPair::Floats(x, y) => {
                 use ordered_float::OrderedFloat;

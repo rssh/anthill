@@ -141,6 +141,7 @@ impl Term {
 pub enum Literal {
     String(String),
     Int(i64),
+    BigInt(num_bigint::BigInt),
     Float(OrderedFloat<f64>),
     Bool(bool),
 }

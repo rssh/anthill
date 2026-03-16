@@ -285,12 +285,13 @@ impl<'a> Converter<'a> {
             }
             "integer_literal" => {
                 let text = self.text(node);
-                match text.parse::<i64>() {
-                    Ok(n) => self.terms.alloc(Term::Const(Literal::Int(n))),
-                    Err(_) => {
-                        self.err(format!("invalid integer: {text}"), node);
-                        self.terms.alloc(Term::Const(Literal::Int(0)))
-                    }
+                if let Ok(n) = text.parse::<i64>() {
+                    self.terms.alloc(Term::Const(Literal::Int(n)))
+                } else if let Ok(big) = text.parse::<num_bigint::BigInt>() {
+                    self.terms.alloc(Term::Const(Literal::BigInt(big)))
+                } else {
+                    self.err(format!("invalid integer: {text}"), node);
+                    self.terms.alloc(Term::Const(Literal::Int(0)))
                 }
             }
             "float_literal" => {

@@ -720,7 +720,7 @@ fn process_imports(
 
 /// Primitive sort names that are always available in the global scope.
 /// These correspond to the stdlib primitive types (Int, Float, String, Bool).
-pub const PRELUDE_SORTS: &[&str] = &["Int", "Float", "String", "Bool"];
+pub const PRELUDE_SORTS: &[&str] = &["Int", "BigInt", "Float", "String", "Bool"];
 
 /// KB-internal meta-sort names. Used as sort-of-sort markers (e.g. the sort
 /// of a Fact entry is `Fact`). Not defined in any `.anthill` file.
@@ -928,6 +928,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.define("constructor", "anthill.reflect.Expr.constructor", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("var_ref", "anthill.reflect.Expr.var_ref", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("int_lit", "anthill.reflect.Expr.int_lit", SymbolKind::Entity, expr_term.raw());
+    kb.symbols.define("bigint_lit", "anthill.reflect.Expr.bigint_lit", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("float_lit", "anthill.reflect.Expr.float_lit", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("string_lit", "anthill.reflect.Expr.string_lit", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("bool_lit", "anthill.reflect.Expr.bool_lit", SymbolKind::Entity, expr_term.raw());
@@ -2011,7 +2012,7 @@ impl<'a> Loader<'a> {
         })
     }
 
-    /// Literal constant → int_lit/float_lit/string_lit/bool_lit
+    /// Literal constant → int_lit/bigint_lit/float_lit/string_lit/bool_lit
     fn load_literal_expr(&mut self, parse_id: TermId) -> TermId {
         let parse_term = self.parsed.terms.get(parse_id).clone();
         if let Term::Const(ref lit) = parse_term {
@@ -2019,6 +2020,10 @@ impl<'a> Loader<'a> {
                 super::term::Literal::Int(n) => (
                     "anthill.reflect.Expr.int_lit",
                     self.kb.alloc(Term::Const(super::term::Literal::Int(*n))),
+                ),
+                super::term::Literal::BigInt(n) => (
+                    "anthill.reflect.Expr.bigint_lit",
+                    self.kb.alloc(Term::Const(super::term::Literal::BigInt(n.clone()))),
                 ),
                 super::term::Literal::Float(f) => (
                     "anthill.reflect.Expr.float_lit",

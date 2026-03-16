@@ -67,6 +67,9 @@ impl<'a> TermPrinter<'a> {
             Literal::Int(n) => {
                 buf.push_str(&n.to_string());
             }
+            Literal::BigInt(n) => {
+                buf.push_str(&n.to_string());
+            }
             Literal::Float(f) => {
                 let s = f.to_string();
                 buf.push_str(&s);

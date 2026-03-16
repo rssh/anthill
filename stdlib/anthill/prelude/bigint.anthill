@@ -1,0 +1,16 @@
+-- BigInt: arbitrary-precision integer operations
+-- Used for ZK field elements, cryptographic constants, and values exceeding i64.
+-- Literals that overflow i64 are automatically parsed as BigInt.
+namespace anthill.prelude.BigInt
+  import anthill.prelude.{Eq, Ordered, Numeric}
+  export to_bigint, to_int
+
+  -- BigInt satisfies the parametric algebra specs
+  fact Eq{T = BigInt}
+  fact Ordered{T = BigInt}
+  fact Numeric{T = BigInt}
+
+  -- Conversion operations
+  operation to_bigint(n: Int) -> BigInt
+  operation to_int(n: BigInt) -> Option{T = Int}
+end

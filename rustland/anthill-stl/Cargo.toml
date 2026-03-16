@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 anthill-core = { path = "../anthill-core" }
+num-bigint = "0.4"
 
 [build-dependencies]
 anthill-core = { path = "../anthill-core" }

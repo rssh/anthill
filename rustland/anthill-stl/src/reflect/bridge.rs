@@ -35,6 +35,7 @@ impl KbBridge {
                 value: match lit {
                     Literal::String(s) => LiteralRepr::StringLiteral(s),
                     Literal::Int(n) => LiteralRepr::IntLiteral(n),
+                    Literal::BigInt(n) => LiteralRepr::BigIntLiteral(n),
                     Literal::Float(f) => LiteralRepr::FloatLiteral(f.into()),
                     Literal::Bool(b) => LiteralRepr::BoolLiteral(b),
                 },
@@ -123,6 +124,7 @@ impl KbBridge {
             CoreTerm::Fn { functor, .. } => kb.resolve_sym(*functor).to_string(),
             CoreTerm::Const(Literal::String(s)) => s.clone(),
             CoreTerm::Const(Literal::Int(n)) => n.to_string(),
+            CoreTerm::Const(Literal::BigInt(n)) => n.to_string(),
             CoreTerm::Const(Literal::Float(f)) => f.to_string(),
             CoreTerm::Const(Literal::Bool(b)) => b.to_string(),
             CoreTerm::Var(vid) => format!("?{}", kb.resolve_sym(vid.name())),
@@ -413,6 +415,7 @@ impl KB for KbBridge {
             TermRepr::ConstRepr { value } => {
                 let lit = match value {
                     LiteralRepr::IntLiteral(n) => Literal::Int(n),
+                    LiteralRepr::BigIntLiteral(n) => Literal::BigInt(n),
                     LiteralRepr::FloatLiteral(f) => Literal::Float(f.into()),
                     LiteralRepr::StringLiteral(s) => Literal::String(s),
                     LiteralRepr::BoolLiteral(b) => Literal::Bool(b),

@@ -23,7 +23,7 @@ namespace anthill.reflect
   export SortRequiresInfo, SortView
   export Expr, Pattern, MatchBranch, ApplyArg, NamedPattern, TypedExpr
   export match_expr, if_expr, let_expr, lambda, constructor, var_ref
-  export int_lit, float_lit, string_lit, bool_lit
+  export int_lit, bigint_lit, float_lit, string_lit, bool_lit
   export var_pattern, tuple_pattern, named_tuple_pattern, constructor_pattern, literal_pattern, wildcard
   export typed
   export Substitution, apply, compose
@@ -186,6 +186,7 @@ namespace anthill.reflect
     entity constructor(name: Symbol, args: List{T = ApplyArg})
     entity var_ref(name: Symbol)
     entity int_lit(value: Int)
+    entity bigint_lit(value: BigInt)
     entity float_lit(value: Float)
     entity string_lit(value: String)
     entity bool_lit(value: Bool)
