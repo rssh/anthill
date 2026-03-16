@@ -124,6 +124,16 @@ enum DelayMode {
     Delayed { consecutive_delays: usize },
 }
 
+impl DelayMode {
+    /// Reset the consecutive delay counter (Normal stays Normal).
+    fn reset(&self) -> DelayMode {
+        match self {
+            DelayMode::Normal => DelayMode::Normal,
+            DelayMode::Delayed { .. } => DelayMode::Delayed { consecutive_delays: 0 },
+        }
+    }
+}
+
 /// What phase of processing a frame is in.
 #[derive(Clone)]
 enum FrameState {
@@ -250,10 +260,7 @@ impl SearchStream {
                     let new_goals = frame.goals[1..].to_vec();
                     let new_subst = frame.subst.clone();
                     let new_depth = depth + 1;
-                    let new_delay = match delay_mode {
-                        DelayMode::Normal => DelayMode::Normal,
-                        DelayMode::Delayed { .. } => DelayMode::Delayed { consecutive_delays: 0 },
-                    };
+                    let new_delay = delay_mode.reset();
                     // Replace current frame
                     let f = self.stack.last_mut().unwrap();
                     f.goals = new_goals;
@@ -270,10 +277,7 @@ impl SearchStream {
                         new_subst.bind(*var, *tid);
                     }
                     let new_depth = depth + 1;
-                    let new_delay = match delay_mode {
-                        DelayMode::Normal => DelayMode::Normal,
-                        DelayMode::Delayed { .. } => DelayMode::Delayed { consecutive_delays: 0 },
-                    };
+                    let new_delay = delay_mode.reset();
                     let f = self.stack.last_mut().unwrap();
                     f.goals = new_goals;
                     f.subst = new_subst;
@@ -441,10 +445,7 @@ impl SearchStream {
                 } else {
                     // Inner goal has no solutions → not() SUCCEEDS
                     let new_goals = goals[1..].to_vec();
-                    let new_delay = match delay_mode {
-                        DelayMode::Normal => DelayMode::Normal,
-                        DelayMode::Delayed { .. } => DelayMode::Delayed { consecutive_delays: 0 },
-                    };
+                    let new_delay = delay_mode.reset();
                     let f = self.stack.last_mut().unwrap();
                     f.goals = new_goals;
                     f.subst = subst;
@@ -542,10 +543,7 @@ impl SearchStream {
                 &kb.terms,
             );
 
-            let new_delay = match &delay_mode {
-                DelayMode::Normal => DelayMode::Normal,
-                DelayMode::Delayed { .. } => DelayMode::Delayed { consecutive_delays: 0 },
-            };
+            let new_delay = delay_mode.reset();
 
             self.stack.push(Frame {
                 goals: remaining,
@@ -589,10 +587,7 @@ impl SearchStream {
             let mut new_goals = fresh_body;
             new_goals.extend(remaining);
 
-            let new_delay = match &delay_mode {
-                DelayMode::Normal => DelayMode::Normal,
-                DelayMode::Delayed { .. } => DelayMode::Delayed { consecutive_delays: 0 },
-            };
+            let new_delay = delay_mode.reset();
 
             self.stack.push(Frame {
                 goals: new_goals,
@@ -3225,5 +3220,101 @@ mod tests {
         // Reify to follow the full binding chain through fresh vars
         let resolved = kb.reify(var_q, &solutions[0].subst);
         assert_eq!(resolved, a, "?q should resolve to 'a'");
+    }
+
+    /// Regression test for GitHub issue #1:
+    /// with_fresh_vars must rename variables inside structured answer_links terms.
+    ///
+    /// Peano naturals: nat(zero()), nat(succ(?n)) :- nat(?n)
+    /// Query: nat(?x) should yield zero(), succ(zero()), succ(succ(zero())), ...
+    #[test]
+    fn search_stream_infinite_rule() {
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Sort");
+        let domain = kb.make_name_term("test");
+
+        let nat_sym = kb.intern("nat");
+        let zero_sym = kb.intern("zero");
+        let succ_sym = kb.intern("succ");
+
+        // fact: nat(zero())
+        let zero_term = kb.alloc(Term::Fn {
+            functor: zero_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let nat_zero = kb.alloc(Term::Fn {
+            functor: nat_sym,
+            pos_args: SmallVec::from_elem(zero_term, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(nat_zero, sort, domain, None);
+
+        // rule: nat(succ(?n)) :- nat(?n)
+        let n_sym = kb.intern("n");
+        let vn = kb.fresh_var(n_sym);
+        let var_n = kb.alloc(Term::Var(vn));
+        let succ_n = kb.alloc(Term::Fn {
+            functor: succ_sym,
+            pos_args: SmallVec::from_elem(var_n, 1),
+            named_args: SmallVec::new(),
+        });
+        let nat_succ_n = kb.alloc(Term::Fn {
+            functor: nat_sym,
+            pos_args: SmallVec::from_elem(succ_n, 1),
+            named_args: SmallVec::new(),
+        });
+        let body_nat_n = kb.alloc(Term::Fn {
+            functor: nat_sym,
+            pos_args: SmallVec::from_elem(var_n, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule(nat_succ_n, vec![body_nat_n], sort, domain, None);
+
+        // query: nat(?x)
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(vx));
+        let query = kb.alloc(Term::Fn {
+            functor: nat_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig { max_depth: 20, max_solutions: 4, simplify: false };
+        let solutions = kb.resolve(&[query], &config);
+
+        assert_eq!(solutions.len(), 4, "should get 4 solutions");
+
+        // Solution 0: nat(zero()) → ?x = zero()
+        let r0 = kb.reify(var_x, &solutions[0].subst);
+        assert_eq!(r0, zero_term, "first solution should be zero()");
+
+        // Solution 1: nat(succ(zero())) → ?x = succ(zero())
+        let r1 = kb.reify(var_x, &solutions[1].subst);
+        match kb.get_term(r1) {
+            Term::Fn { functor, pos_args, .. } => {
+                assert_eq!(*functor, succ_sym);
+                assert_eq!(pos_args.len(), 1);
+                assert_eq!(pos_args[0], zero_term, "succ arg should be zero()");
+            }
+            other => panic!("expected succ(zero()), got {:?}", other),
+        }
+
+        // Solution 2: nat(succ(succ(zero()))) → ?x = succ(succ(zero()))
+        let r2 = kb.reify(var_x, &solutions[2].subst);
+        match kb.get_term(r2) {
+            Term::Fn { functor, pos_args, .. } => {
+                assert_eq!(*functor, succ_sym);
+                match kb.get_term(pos_args[0]) {
+                    Term::Fn { functor: f2, pos_args: p2, .. } => {
+                        assert_eq!(*f2, succ_sym);
+                        assert_eq!(p2[0], zero_term, "inner succ arg should be zero()");
+                    }
+                    other => panic!("expected succ(zero()), got {:?}", other),
+                }
+            }
+            other => panic!("expected succ(succ(zero())), got {:?}", other),
+        }
     }
 }

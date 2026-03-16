@@ -509,14 +509,15 @@ impl KnowledgeBase {
     /// Collect all VarIds occurring in a term (DFS, deduped).
     pub fn collect_vars(&self, term: TermId) -> Vec<VarId> {
         let mut vars = Vec::new();
-        self.collect_vars_rec(term, &mut vars);
+        let mut seen = std::collections::HashSet::new();
+        self.collect_vars_rec(term, &mut vars, &mut seen);
         vars
     }
 
-    fn collect_vars_rec(&self, term: TermId, vars: &mut Vec<VarId>) {
+    fn collect_vars_rec(&self, term: TermId, vars: &mut Vec<VarId>, seen: &mut std::collections::HashSet<u32>) {
         match self.terms.get(term) {
             Term::Var(vid) => {
-                if !vars.contains(vid) {
+                if seen.insert(vid.raw()) {
                     vars.push(*vid);
                 }
             }
@@ -524,13 +525,48 @@ impl KnowledgeBase {
                 let pos_args = pos_args.clone();
                 let named_args = named_args.clone();
                 for &id in pos_args.iter() {
-                    self.collect_vars_rec(id, vars);
+                    self.collect_vars_rec(id, vars, seen);
                 }
                 for &(_, id) in named_args.iter() {
-                    self.collect_vars_rec(id, vars);
+                    self.collect_vars_rec(id, vars, seen);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Collect all vars from a rule's head + body.
+    fn collect_rule_vars(&self, head: TermId, body: &[TermId]) -> Vec<VarId> {
+        let mut vars = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        self.collect_vars_rec(head, &mut vars, &mut seen);
+        for &b in body {
+            self.collect_vars_rec(b, &mut vars, &mut seen);
+        }
+        vars
+    }
+
+    /// Map a function over the children of an Fn term, returning the same TermId
+    /// if nothing changed (avoids unnecessary allocation and hash-consing).
+    fn map_fn_children(&mut self, term: TermId, mut f: impl FnMut(&mut Self, TermId) -> TermId) -> TermId {
+        match self.terms.get(term).clone() {
+            Term::Fn { functor, pos_args, named_args } => {
+                let mut changed = false;
+                let new_pos: SmallVec<[TermId; 4]> = pos_args
+                    .iter()
+                    .map(|&id| { let r = f(self, id); if r != id { changed = true; } r })
+                    .collect();
+                let new_named: SmallVec<[(crate::intern::Symbol, TermId); 2]> = named_args
+                    .iter()
+                    .map(|&(sym, id)| { let r = f(self, id); if r != id { changed = true; } (sym, r) })
+                    .collect();
+                if changed {
+                    self.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named })
+                } else {
+                    term
+                }
+            }
+            _ => term,
         }
     }
 
@@ -538,24 +574,8 @@ impl KnowledgeBase {
     /// Returns a new hash-consed TermId.
     pub fn apply_subst(&mut self, term: TermId, subst: &subst::Substitution) -> TermId {
         match self.terms.get(term).clone() {
-            Term::Var(vid) => {
-                if let Some(bound) = subst.resolve(vid) {
-                    bound
-                } else {
-                    term
-                }
-            }
-            Term::Fn { functor, pos_args, named_args } => {
-                let new_pos: SmallVec<[TermId; 4]> = pos_args
-                    .iter()
-                    .map(|&id| self.apply_subst(id, subst))
-                    .collect();
-                let new_named: SmallVec<[(crate::intern::Symbol, TermId); 2]> = named_args
-                    .iter()
-                    .map(|&(sym, id)| (sym, self.apply_subst(id, subst)))
-                    .collect();
-                self.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named })
-            }
+            Term::Var(vid) => subst.resolve(vid).unwrap_or(term),
+            Term::Fn { .. } => self.map_fn_children(term, |kb, id| kb.apply_subst(id, subst)),
             _ => term,
         }
     }
@@ -588,20 +608,10 @@ impl KnowledgeBase {
     /// which doesn't chase transitive variable chains.
     pub fn reify(&mut self, term: TermId, subst: &subst::Substitution) -> TermId {
         let walked = self.walk(term, subst);
-        match self.terms.get(walked).clone() {
-            Term::Var(_) => walked, // unbound variable, leave as-is
-            Term::Fn { functor, pos_args, named_args } => {
-                let new_pos: SmallVec<[TermId; 4]> = pos_args
-                    .iter()
-                    .map(|&id| self.reify(id, subst))
-                    .collect();
-                let new_named: SmallVec<[(crate::intern::Symbol, TermId); 2]> = named_args
-                    .iter()
-                    .map(|&(sym, id)| (sym, self.reify(id, subst)))
-                    .collect();
-                self.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named })
-            }
-            _ => walked, // Const, Ident, Ref, Bottom — no substructure
+        match self.terms.get(walked) {
+            Term::Var(_) => walked,
+            Term::Fn { .. } => self.map_fn_children(walked, |kb, id| kb.reify(id, subst)),
+            _ => walked,
         }
     }
 
@@ -627,16 +637,7 @@ impl KnowledgeBase {
     pub fn standardize_apart(&mut self, id: RuleId) -> (TermId, Vec<TermId>) {
         let head = self.rules[id.index()].head;
         let body = self.rules[id.index()].body.clone();
-
-        // Collect all vars from head + body
-        let mut all_vars = self.collect_vars(head);
-        for &b in &body {
-            for v in self.collect_vars(b) {
-                if !all_vars.contains(&v) {
-                    all_vars.push(v);
-                }
-            }
-        }
+        let all_vars = self.collect_rule_vars(head, &body);
 
         // Build a renaming substitution
         let mut rename = subst::Substitution::new();
@@ -678,16 +679,7 @@ impl KnowledgeBase {
     ) -> (Vec<TermId>, subst::Substitution) {
         let head = self.rules[id.index()].head;
         let body = self.rules[id.index()].body.clone();
-
-        // Collect all vars from head + body
-        let mut all_vars = self.collect_vars(head);
-        for &b in &body {
-            for v in self.collect_vars(b) {
-                if !all_vars.contains(&v) {
-                    all_vars.push(v);
-                }
-            }
-        }
+        let all_vars = self.collect_rule_vars(head, &body);
 
         // Step 1: Build rename map for rule variables
         // If tree_subst has a concrete binding for a rule var → use it directly
@@ -734,8 +726,10 @@ impl KnowledgeBase {
                     }
                 }
                 _ => {
-                    // query_var → concrete value: pass through directly
-                    answer_links.bind(*ts_vid, *bound_term);
+                    // query_var → structured term: apply rename to replace
+                    // any rule variables inside with their fresh copies
+                    let renamed_term = self.apply_subst(*bound_term, &rename);
+                    answer_links.bind(*ts_vid, renamed_term);
                 }
             }
         }
@@ -843,21 +837,7 @@ impl KnowledgeBase {
         if term == from {
             return to;
         }
-        match self.terms.get(term).clone() {
-            Term::Fn { functor, pos_args, named_args } => {
-                let new_pos: SmallVec<[TermId; 4]> = pos_args
-                    .iter()
-                    .map(|&id| self.subst_term(id, from, to))
-                    .collect();
-                let new_named: SmallVec<[(crate::intern::Symbol, TermId); 2]> = named_args
-                    .iter()
-                    .map(|&(sym, id)| (sym, self.subst_term(id, from, to)))
-                    .collect();
-                self.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named })
-            }
-            // Leaf terms: no substructure to recurse into
-            _ => term,
-        }
+        self.map_fn_children(term, |kb, id| kb.subst_term(id, from, to))
     }
 
     /// Apply multiple substitutions (from → to) to a term.
