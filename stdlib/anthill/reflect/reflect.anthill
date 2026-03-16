@@ -21,6 +21,11 @@ namespace anthill.reflect
   export qualified_name, short_name, lookup_symbol, scope, kind
   export LiteralRepr, TermRepr, SetLiteral, TupleLiteral, SortInfo, EntityInfo, OperationInfo, FieldInfo, DescriptionInfo
   export SortRequiresInfo, SortView
+  export Expr, Pattern, MatchBranch, ApplyArg, NamedPattern, TypedExpr
+  export match_expr, if_expr, let_expr, lambda, constructor, var_ref
+  export int_lit, float_lit, string_lit, bool_lit
+  export var_pattern, tuple_pattern, named_tuple_pattern, constructor_pattern, literal_pattern, wildcard
+  export typed
   export Substitution, apply, compose
   export LogicalQuery, empty_query
   export pattern_query, sort_query, conjunction, disjunction
@@ -169,6 +174,53 @@ namespace anthill.reflect
   entity TupleLiteral
 
   -- ================================================================
+  -- Expression representation (operation bodies)
+  -- ================================================================
+
+  sort Expr
+    entity match_expr(scrutinee: Expr, branches: List{T = MatchBranch})
+    entity if_expr(cond: Expr, then_branch: Expr, else_branch: Expr)
+    entity let_expr(pattern: Pattern, value: Expr, body: Expr)
+    entity lambda(param: Pattern, body: Expr)
+    entity apply(fn: Symbol, args: List{T = ApplyArg})
+    entity constructor(name: Symbol, args: List{T = ApplyArg})
+    entity var_ref(name: Symbol)
+    entity int_lit(value: Int)
+    entity float_lit(value: Float)
+    entity string_lit(value: String)
+    entity bool_lit(value: Bool)
+  end
+
+  entity MatchBranch(
+    pattern: Pattern,
+    guard: Option{T = Expr},
+    body: Expr
+  )
+
+  entity ApplyArg(
+    name: Option{T = Symbol},
+    value: Expr
+  )
+
+  sort Pattern
+    entity var_pattern(name: Symbol, type_ann: Option{T = Term})
+    entity tuple_pattern(elements: List{T = Pattern})
+    entity named_tuple_pattern(fields: List{T = NamedPattern})
+    entity constructor_pattern(name: Symbol, args: List{T = Pattern})
+    entity literal_pattern(value: Term)
+    entity wildcard
+  end
+
+  entity NamedPattern(
+    name: Symbol,
+    pattern: Pattern
+  )
+
+  sort TypedExpr
+    entity typed(expr: Expr, type: Term)
+  end
+
+  -- ================================================================
   -- Sort introspection
   -- ================================================================
 
@@ -187,7 +239,8 @@ namespace anthill.reflect
     return_type  : Term,                            -- return type expression
     effects      : List{T = Term},                  -- effect type expressions
     requires     : List{T = Term},                  -- precondition expressions
-    ensures      : List{T = Term}                   -- postcondition expressions
+    ensures      : List{T = Term},                  -- postcondition expressions
+    body         : Option{T = Expr}                 -- expression body (None if declaration only)
   )
 
   entity FieldInfo(

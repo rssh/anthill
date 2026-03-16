@@ -6,10 +6,10 @@
 namespace anthill.realization
   import anthill.prelude.{List, Option}
   import anthill.prelude.Meta.{ProofResult}
-  import anthill.reflect.{Term}
+  import anthill.reflect.{Term, Symbol}
   export Implementation, Obligation, CarrierBinding, NamespaceMapping,
          LanguageMapping, EffectMapping, ReceiverRule, TypeMapping,
-         ReceiverForm, TraitReturnForm
+         ReceiverForm, TraitReturnForm, OperationImpl
 
   -- Links host-language code to an anthill algebra spec
   entity Implementation(
@@ -88,6 +88,14 @@ namespace anthill.realization
   entity TypeMapping(
     anthill_type : String,                          -- e.g. "Int"
     host_type    : String                           -- e.g. "i64"
+  )
+
+  -- Operation implementation: captures expression body for codegen.
+  -- body: Term (not Expr) since Expr is a sub-sort of Term in the KB.
+  entity OperationImpl(
+    operation   : Symbol,                           -- operation name (symbol reference)
+    params      : List{T = Symbol},                 -- parameter names
+    body        : Term                              -- expression body (Expr-shaped term)
   )
 
   -- Proof obligation generated from operation contracts

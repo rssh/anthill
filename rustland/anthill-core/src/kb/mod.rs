@@ -146,9 +146,18 @@ impl KnowledgeBase {
         VarId::new(id, name)
     }
 
-    /// Resolve a Symbol back to a string.
+    /// Resolve a Symbol back to its short (display) name.
     pub fn resolve_sym(&self, sym: Symbol) -> &str {
         self.symbols.name(sym)
+    }
+
+    /// Get the qualified name for a resolved Symbol.
+    /// Returns the short name if the symbol is unresolved.
+    pub fn qualified_name_of(&self, sym: Symbol) -> &str {
+        match self.symbols.get(sym) {
+            SymbolDef::Resolved { qualified_name, .. } => qualified_name,
+            SymbolDef::Unresolved { name } => name,
+        }
     }
 
     /// Get the Term for a TermId.

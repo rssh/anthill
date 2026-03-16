@@ -863,6 +863,67 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     let set_literal_sym = kb.symbols.define("SetLiteral", "anthill.reflect.SetLiteral", SymbolKind::Entity, reflect_term.raw());
     let tuple_literal_sym = kb.symbols.define("TupleLiteral", "anthill.reflect.TupleLiteral", SymbolKind::Entity, reflect_term.raw());
 
+    // anthill.reflect.Expr sort + entities
+    let expr_sym = kb.symbols.define("Expr", "anthill.reflect.Expr", SymbolKind::Sort, reflect_term.raw());
+    let expr_term = kb.alloc(Term::Fn {
+        functor: expr_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(expr_term.raw(), ScopeInclusion {
+        parent_scope_raw: reflect_term.raw(),
+        instantiation_term_raw: reflect_term.raw(),
+        is_enclosing: true,
+    });
+    kb.symbols.define("match_expr", "anthill.reflect.Expr.match_expr", SymbolKind::Entity, expr_term.raw());
+    kb.symbols.define("if_expr", "anthill.reflect.Expr.if_expr", SymbolKind::Entity, expr_term.raw());
+    kb.symbols.define("let_expr", "anthill.reflect.Expr.let_expr", SymbolKind::Entity, expr_term.raw());
+    kb.symbols.define("lambda", "anthill.reflect.Expr.lambda", SymbolKind::Entity, expr_term.raw());
+    kb.symbols.define("apply", "anthill.reflect.Expr.apply", SymbolKind::Entity, expr_term.raw());
+    kb.symbols.define("constructor", "anthill.reflect.Expr.constructor", SymbolKind::Entity, expr_term.raw());
+    kb.symbols.define("var_ref", "anthill.reflect.Expr.var_ref", SymbolKind::Entity, expr_term.raw());
+    kb.symbols.define("int_lit", "anthill.reflect.Expr.int_lit", SymbolKind::Entity, expr_term.raw());
+    kb.symbols.define("float_lit", "anthill.reflect.Expr.float_lit", SymbolKind::Entity, expr_term.raw());
+    kb.symbols.define("string_lit", "anthill.reflect.Expr.string_lit", SymbolKind::Entity, expr_term.raw());
+    kb.symbols.define("bool_lit", "anthill.reflect.Expr.bool_lit", SymbolKind::Entity, expr_term.raw());
+
+    // anthill.reflect.Pattern sort + entities
+    let pattern_sym = kb.symbols.define("Pattern", "anthill.reflect.Pattern", SymbolKind::Sort, reflect_term.raw());
+    let pattern_term = kb.alloc(Term::Fn {
+        functor: pattern_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(pattern_term.raw(), ScopeInclusion {
+        parent_scope_raw: reflect_term.raw(),
+        instantiation_term_raw: reflect_term.raw(),
+        is_enclosing: true,
+    });
+    kb.symbols.define("var_pattern", "anthill.reflect.Pattern.var_pattern", SymbolKind::Entity, pattern_term.raw());
+    kb.symbols.define("tuple_pattern", "anthill.reflect.Pattern.tuple_pattern", SymbolKind::Entity, pattern_term.raw());
+    kb.symbols.define("named_tuple_pattern", "anthill.reflect.Pattern.named_tuple_pattern", SymbolKind::Entity, pattern_term.raw());
+    kb.symbols.define("constructor_pattern", "anthill.reflect.Pattern.constructor_pattern", SymbolKind::Entity, pattern_term.raw());
+    kb.symbols.define("literal_pattern", "anthill.reflect.Pattern.literal_pattern", SymbolKind::Entity, pattern_term.raw());
+    kb.symbols.define("wildcard", "anthill.reflect.Pattern.wildcard", SymbolKind::Entity, pattern_term.raw());
+
+    // anthill.reflect standalone entities for expressions
+    kb.symbols.define("MatchBranch", "anthill.reflect.MatchBranch", SymbolKind::Entity, reflect_term.raw());
+    kb.symbols.define("ApplyArg", "anthill.reflect.ApplyArg", SymbolKind::Entity, reflect_term.raw());
+
+    // anthill.reflect.TypedExpr sort
+    let typed_expr_sym = kb.symbols.define("TypedExpr", "anthill.reflect.TypedExpr", SymbolKind::Sort, reflect_term.raw());
+    let typed_expr_term = kb.alloc(Term::Fn {
+        functor: typed_expr_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(typed_expr_term.raw(), ScopeInclusion {
+        parent_scope_raw: reflect_term.raw(),
+        instantiation_term_raw: reflect_term.raw(),
+        is_enclosing: true,
+    });
+    kb.symbols.define("typed", "anthill.reflect.TypedExpr.typed", SymbolKind::Entity, typed_expr_term.raw());
+
     // anthill.reflect.typing namespace
     let typing_sym = kb.symbols.define("typing", "anthill.reflect.typing", SymbolKind::Namespace, reflect_term.raw());
     let typing_term = kb.alloc(Term::Fn {
@@ -1373,6 +1434,27 @@ fn build_list(kb: &mut KnowledgeBase, items: &[TermId]) -> TermId {
     list
 }
 
+/// Build `none()` — the Option.none constructor.
+fn build_none(kb: &mut KnowledgeBase) -> TermId {
+    let none_sym = kb.resolve_symbol("anthill.prelude.Option.none");
+    kb.alloc(Term::Fn {
+        functor: none_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    })
+}
+
+/// Build `some(value: v)` — the Option.some constructor wrapping a value.
+fn build_some(kb: &mut KnowledgeBase, value: TermId) -> TermId {
+    let some_sym = kb.resolve_symbol("anthill.prelude.Option.some");
+    let value_sym = kb.intern("value");
+    kb.alloc(Term::Fn {
+        functor: some_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_elem((value_sym, value), 1),
+    })
+}
+
 // ══════════════════════════════════════════════════════════════════
 // Public: convert a parse-time term into a KB term with scope-aware resolution
 // ══════════════════════════════════════════════════════════════════
@@ -1717,6 +1799,338 @@ impl<'a> Loader<'a> {
         }
 
         kb_id
+    }
+
+    // ── Expression conversion ─────────────────────────────────────
+    //
+    // Converts positional-arg expression terms (from the converter) into
+    // named-arg KB entity terms matching the Expr/Pattern sorts in reflect.anthill.
+
+    /// Convert a parse-time expression term into the KB's Expr representation.
+    /// Dispatches on the functor name to restructure positional args into named args.
+    fn convert_expr_term(&mut self, parse_id: TermId) -> TermId {
+        let parse_term = self.parsed.terms.get(parse_id).clone();
+        match parse_term {
+            Term::Fn { functor, pos_args, named_args } => {
+                let name = self.parsed.symbols.name(functor).to_owned();
+                match name.as_str() {
+                    "match_expr" => self.load_match_expr(&pos_args),
+                    "match_branch" => self.load_match_branch(&pos_args),
+                    "if_expr" => self.load_if_expr(&pos_args),
+                    "let_expr" => self.load_let_expr(&pos_args),
+                    "lambda" => self.load_lambda_expr(&pos_args),
+                    "pattern_var" => self.load_pattern_var(&pos_args),
+                    "pattern_wildcard" => self.load_pattern_wildcard(),
+                    "pattern_literal" => self.load_pattern_literal(&pos_args),
+                    "pattern_constructor" => self.load_pattern_constructor(&pos_args),
+                    "pattern_tuple" => self.load_pattern_tuple(&pos_args),
+                    _ => self.load_apply_or_constructor(functor, &pos_args, &named_args),
+                }
+            }
+            Term::Const(_) => self.load_literal_expr(parse_id),
+            Term::Ident(_) => self.load_var_ref(parse_id),
+            _ => self.convert_term(parse_id), // Var, Ref, Bottom — pass through
+        }
+    }
+
+    /// match_expr: pos_args[0] = scrutinee, pos_args[1..] = branches
+    fn load_match_expr(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
+        let scrutinee = self.convert_expr_term(pos_args[0]);
+        let mut branch_terms = Vec::new();
+        for &tid in &pos_args[1..] {
+            branch_terms.push(self.convert_expr_term(tid));
+        }
+        let branches = build_list(self.kb, &branch_terms);
+        let match_sym = self.kb.resolve_symbol("anthill.reflect.Expr.match_expr");
+        let scrutinee_key = self.kb.intern("scrutinee");
+        let branches_key = self.kb.intern("branches");
+        self.kb.alloc(Term::Fn {
+            functor: match_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (scrutinee_key, scrutinee),
+                (branches_key, branches),
+            ]),
+        })
+    }
+
+    /// match_branch: pos_args[0] = pattern, pos_args[1] = body
+    fn load_match_branch(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
+        let pattern = self.convert_expr_term(pos_args[0]);
+        let body = self.convert_expr_term(pos_args[1]);
+        let guard = build_none(self.kb);
+        let branch_sym = self.kb.resolve_symbol("anthill.reflect.MatchBranch");
+        let pattern_key = self.kb.intern("pattern");
+        let guard_key = self.kb.intern("guard");
+        let body_key = self.kb.intern("body");
+        self.kb.alloc(Term::Fn {
+            functor: branch_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (pattern_key, pattern),
+                (guard_key, guard),
+                (body_key, body),
+            ]),
+        })
+    }
+
+    /// if_expr: pos_args[0] = cond, pos_args[1] = then_branch, pos_args[2] = else_branch
+    fn load_if_expr(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
+        let cond = self.convert_expr_term(pos_args[0]);
+        let then_branch = self.convert_expr_term(pos_args[1]);
+        let else_branch = self.convert_expr_term(pos_args[2]);
+        let if_sym = self.kb.resolve_symbol("anthill.reflect.Expr.if_expr");
+        let cond_key = self.kb.intern("cond");
+        let then_key = self.kb.intern("then_branch");
+        let else_key = self.kb.intern("else_branch");
+        self.kb.alloc(Term::Fn {
+            functor: if_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (cond_key, cond),
+                (then_key, then_branch),
+                (else_key, else_branch),
+            ]),
+        })
+    }
+
+    /// let_expr: pos_args[0] = pattern, pos_args[1] = value, pos_args[2] = body
+    fn load_let_expr(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
+        let pattern = self.convert_expr_term(pos_args[0]);
+        let value = self.convert_expr_term(pos_args[1]);
+        let body = self.convert_expr_term(pos_args[2]);
+        let let_sym = self.kb.resolve_symbol("anthill.reflect.Expr.let_expr");
+        let pattern_key = self.kb.intern("pattern");
+        let value_key = self.kb.intern("value");
+        let body_key = self.kb.intern("body");
+        self.kb.alloc(Term::Fn {
+            functor: let_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (pattern_key, pattern),
+                (value_key, value),
+                (body_key, body),
+            ]),
+        })
+    }
+
+    /// lambda: pos_args[0] = param (pattern), pos_args[1] = body
+    fn load_lambda_expr(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
+        let param = self.convert_expr_term(pos_args[0]);
+        let body = self.convert_expr_term(pos_args[1]);
+        let lambda_sym = self.kb.resolve_symbol("anthill.reflect.Expr.lambda");
+        let param_key = self.kb.intern("param");
+        let body_key = self.kb.intern("body");
+        self.kb.alloc(Term::Fn {
+            functor: lambda_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (param_key, param),
+                (body_key, body),
+            ]),
+        })
+    }
+
+    /// var_ref: Term::Ident(sym) → var_ref(name: Ref(sym))
+    /// Uses reintern (plain) — lexical variables are NOT KB symbol references.
+    fn load_var_ref(&mut self, parse_id: TermId) -> TermId {
+        let parse_term = self.parsed.terms.get(parse_id).clone();
+        let name_ref = if let Term::Ident(sym) = parse_term {
+            let kb_sym = self.reintern(sym);
+            self.kb.alloc(Term::Ref(kb_sym))
+        } else {
+            self.convert_term(parse_id)
+        };
+        let var_ref_sym = self.kb.resolve_symbol("anthill.reflect.Expr.var_ref");
+        let name_key = self.kb.intern("name");
+        self.kb.alloc(Term::Fn {
+            functor: var_ref_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(name_key, name_ref)]),
+        })
+    }
+
+    /// Literal constant → int_lit/float_lit/string_lit/bool_lit
+    fn load_literal_expr(&mut self, parse_id: TermId) -> TermId {
+        let parse_term = self.parsed.terms.get(parse_id).clone();
+        if let Term::Const(ref lit) = parse_term {
+            let (entity_name, value_term) = match lit {
+                super::term::Literal::Int(n) => (
+                    "anthill.reflect.Expr.int_lit",
+                    self.kb.alloc(Term::Const(super::term::Literal::Int(*n))),
+                ),
+                super::term::Literal::Float(f) => (
+                    "anthill.reflect.Expr.float_lit",
+                    self.kb.alloc(Term::Const(super::term::Literal::Float(*f))),
+                ),
+                super::term::Literal::String(s) => (
+                    "anthill.reflect.Expr.string_lit",
+                    self.kb.alloc(Term::Const(super::term::Literal::String(s.clone()))),
+                ),
+                super::term::Literal::Bool(b) => (
+                    "anthill.reflect.Expr.bool_lit",
+                    self.kb.alloc(Term::Const(super::term::Literal::Bool(*b))),
+                ),
+            };
+            let entity_sym = self.kb.resolve_symbol(entity_name);
+            let value_key = self.kb.intern("value");
+            self.kb.alloc(Term::Fn {
+                functor: entity_sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[(value_key, value_term)]),
+            })
+        } else {
+            self.convert_term(parse_id)
+        }
+    }
+
+    /// General function call or constructor — any Fn term not recognized as an expression keyword.
+    fn load_apply_or_constructor(
+        &mut self,
+        parse_functor: Symbol,
+        pos_args: &SmallVec<[TermId; 4]>,
+        named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    ) -> TermId {
+        let kb_functor = self.remap_symbol(parse_functor);
+        let is_entity = matches!(
+            self.kb.symbols.get(kb_functor),
+            SymbolDef::Resolved { kind: SymbolKind::Entity, .. }
+        );
+
+        // Build ApplyArg list
+        let apply_arg_sym = self.kb.resolve_symbol("anthill.reflect.ApplyArg");
+        let arg_name_key = self.kb.intern("name");
+        let arg_value_key = self.kb.intern("value");
+
+        let mut arg_terms = Vec::new();
+        for &tid in pos_args.iter() {
+            let value = self.convert_expr_term(tid);
+            let none = build_none(self.kb);
+            let arg = self.kb.alloc(Term::Fn {
+                functor: apply_arg_sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[(arg_name_key, none), (arg_value_key, value)]),
+            });
+            arg_terms.push(arg);
+        }
+        for &(sym, tid) in named_args.iter() {
+            let value = self.convert_expr_term(tid);
+            let reinterned = self.reintern(sym);
+            let name_ref = self.kb.alloc(Term::Ref(reinterned));
+            let some_name = build_some(self.kb, name_ref);
+            let arg = self.kb.alloc(Term::Fn {
+                functor: apply_arg_sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[(arg_name_key, some_name), (arg_value_key, value)]),
+            });
+            arg_terms.push(arg);
+        }
+        let args_list = build_list(self.kb, &arg_terms);
+        let name_ref = self.kb.alloc(Term::Ref(kb_functor));
+
+        if is_entity {
+            let ctor_sym = self.kb.resolve_symbol("anthill.reflect.Expr.constructor");
+            let name_key = self.kb.intern("name");
+            let args_key = self.kb.intern("args");
+            self.kb.alloc(Term::Fn {
+                functor: ctor_sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[(name_key, name_ref), (args_key, args_list)]),
+            })
+        } else {
+            let apply_sym = self.kb.resolve_symbol("anthill.reflect.Expr.apply");
+            let fn_key = self.kb.intern("fn");
+            let args_key = self.kb.intern("args");
+            self.kb.alloc(Term::Fn {
+                functor: apply_sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[(fn_key, name_ref), (args_key, args_list)]),
+            })
+        }
+    }
+
+    // ── Pattern conversion ───────────────────────────────────────
+
+    /// pattern_var: pos_args[0] = Ident(name)
+    fn load_pattern_var(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
+        let name_term = self.parsed.terms.get(pos_args[0]).clone();
+        let name_ref = if let Term::Ident(sym) = name_term {
+            let kb_sym = self.reintern(sym);
+            self.kb.alloc(Term::Ref(kb_sym))
+        } else {
+            self.convert_term(pos_args[0])
+        };
+        let type_ann = build_none(self.kb);
+        let var_pattern_sym = self.kb.resolve_symbol("anthill.reflect.Pattern.var_pattern");
+        let name_key = self.kb.intern("name");
+        let type_ann_key = self.kb.intern("type_ann");
+        self.kb.alloc(Term::Fn {
+            functor: var_pattern_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(name_key, name_ref), (type_ann_key, type_ann)]),
+        })
+    }
+
+    /// pattern_wildcard: no args
+    fn load_pattern_wildcard(&mut self) -> TermId {
+        let wildcard_sym = self.kb.resolve_symbol("anthill.reflect.Pattern.wildcard");
+        self.kb.alloc(Term::Fn {
+            functor: wildcard_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        })
+    }
+
+    /// pattern_literal: pos_args[0] = literal term
+    fn load_pattern_literal(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
+        let value = self.convert_term(pos_args[0]);
+        let lit_pattern_sym = self.kb.resolve_symbol("anthill.reflect.Pattern.literal_pattern");
+        let value_key = self.kb.intern("value");
+        self.kb.alloc(Term::Fn {
+            functor: lit_pattern_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(value_key, value)]),
+        })
+    }
+
+    /// pattern_constructor: pos_args[0] = Ident(name), pos_args[1..] = sub-patterns
+    fn load_pattern_constructor(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
+        let name_term = self.parsed.terms.get(pos_args[0]).clone();
+        let name_ref = if let Term::Ident(sym) = name_term {
+            let kb_sym = self.remap_symbol(sym);
+            self.kb.alloc(Term::Ref(kb_sym))
+        } else {
+            self.convert_term(pos_args[0])
+        };
+        let mut sub_patterns = Vec::new();
+        for &tid in &pos_args[1..] {
+            sub_patterns.push(self.convert_expr_term(tid));
+        }
+        let args_list = build_list(self.kb, &sub_patterns);
+        let ctor_pattern_sym = self.kb.resolve_symbol("anthill.reflect.Pattern.constructor_pattern");
+        let name_key = self.kb.intern("name");
+        let args_key = self.kb.intern("args");
+        self.kb.alloc(Term::Fn {
+            functor: ctor_pattern_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(name_key, name_ref), (args_key, args_list)]),
+        })
+    }
+
+    /// pattern_tuple: all pos_args are sub-patterns
+    fn load_pattern_tuple(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
+        let mut elements = Vec::new();
+        for &tid in pos_args.iter() {
+            elements.push(self.convert_expr_term(tid));
+        }
+        let elements_list = build_list(self.kb, &elements);
+        let tuple_pattern_sym = self.kb.resolve_symbol("anthill.reflect.Pattern.tuple_pattern");
+        let elements_key = self.kb.intern("elements");
+        self.kb.alloc(Term::Fn {
+            functor: tuple_pattern_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(elements_key, elements_list)]),
+        })
     }
 
     /// Convert a Name to a sort term (nullary Fn term) using scope-aware resolution.
@@ -2160,6 +2574,15 @@ impl<'a> Loader<'a> {
         let requires_list = self.convert_clause_list(&o.requires);
         let ensures_list = self.convert_clause_list(&o.ensures);
 
+        // Convert expression body if present (within operation scope)
+        let (body_opt_term, body_expr_opt) = match o.body {
+            Some(body_tid) => {
+                let expr = self.convert_expr_term(body_tid);
+                (build_some(self.kb, expr), Some(expr))
+            }
+            None => (build_none(self.kb), None),
+        };
+
         self.current_scope = prev_scope;
 
         // Build OperationInfo term with named args matching the entity definition
@@ -2170,6 +2593,7 @@ impl<'a> Loader<'a> {
         let effects_sym = self.kb.intern("effects");
         let requires_sym = self.kb.intern("requires");
         let ensures_sym = self.kb.intern("ensures");
+        let body_sym = self.kb.intern("body");
 
         // name: Ref to operation symbol
         let name_ref = self.kb.alloc(Term::Ref(functor));
@@ -2184,9 +2608,39 @@ impl<'a> Loader<'a> {
                 (effects_sym, effects_list),
                 (requires_sym, requires_list),
                 (ensures_sym, ensures_list),
+                (body_sym, body_opt_term),
             ]),
         });
         self.kb.assert_fact(op_info, op_sort, domain, None);
+
+        // Emit OperationImpl fact for operations with expression bodies
+        if let Some(body_expr) = body_expr_opt {
+            if let Some(op_impl_sym) = self.kb.try_resolve_symbol("anthill.realization.OperationImpl") {
+                let impl_sort = self.kb.make_name_term("OperationImpl");
+                let operation_key = self.kb.intern("operation");
+                let params_key = self.kb.intern("params");
+                let body_key = self.kb.intern("body");
+
+                let op_name_ref = self.kb.alloc(Term::Ref(functor));
+                let param_syms: Vec<TermId> = o.params.iter().map(|p| {
+                    let name = self.parsed.symbols.name(p.name).to_owned();
+                    let sym = self.kb.intern(&name);
+                    self.kb.alloc(Term::Ref(sym))
+                }).collect();
+                let params_list_impl = build_list(self.kb, &param_syms);
+
+                let op_impl = self.kb.alloc(Term::Fn {
+                    functor: op_impl_sym,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::from_slice(&[
+                        (operation_key, op_name_ref),
+                        (params_key, params_list_impl),
+                        (body_key, body_expr),
+                    ]),
+                });
+                self.kb.assert_fact(op_impl, impl_sort, domain, None);
+            }
+        }
     }
 
     fn load_constraint(&mut self, c: &Constraint, domain: TermId) {

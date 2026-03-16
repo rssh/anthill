@@ -3040,3 +3040,281 @@ end
         other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
     }
 }
+
+// ── Expression body loading tests ───────────────────────────────
+//
+// These tests parse operations with expression bodies, load them
+// (together with the stdlib), and verify the KB contains properly
+// structured Expr/Pattern entity terms.
+
+/// Helper: load stdlib + extra source into a KB. Returns the KB.
+fn load_with_stdlib(extra_source: &str) -> KnowledgeBase {
+    let dir = stdlib_dir();
+    let files = collect_anthill_files(&dir);
+    let mut all_parsed: Vec<_> = files.iter()
+        .map(|path| {
+            let source = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            parse::parse(&source)
+                .unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
+        })
+        .collect();
+    let extra = parse::parse(extra_source).expect("parse extra source failed");
+    all_parsed.push(extra);
+
+    let refs: Vec<_> = all_parsed.iter().collect();
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    load::load_all(&mut kb, &refs, &NullResolver)
+        .expect("load failed");
+
+    kb
+}
+
+/// Helper: find the named arg value in a Fn term.
+fn get_named_arg<'a>(kb: &'a KnowledgeBase, term_id: TermId, field: &str) -> Option<TermId> {
+    match kb.get_term(term_id) {
+        Term::Fn { named_args, .. } => {
+            named_args.iter()
+                .find(|(sym, _)| kb.resolve_sym(*sym) == field)
+                .map(|&(_, tid)| tid)
+        }
+        _ => None,
+    }
+}
+
+/// Helper: get functor name of a Fn term.
+fn functor_name(kb: &KnowledgeBase, term_id: TermId) -> String {
+    match kb.get_term(term_id) {
+        Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_owned(),
+        _ => format!("{:?}", kb.get_term(term_id)),
+    }
+}
+
+/// Helper: unwrap some(value) → value, panicking if not some.
+fn unwrap_some(kb: &KnowledgeBase, term_id: TermId) -> TermId {
+    match kb.get_term(term_id) {
+        Term::Fn { functor, named_args, .. } => {
+            assert_eq!(kb.resolve_sym(*functor), "some",
+                "expected some(...), got {}", functor_name(kb, term_id));
+            named_args.iter()
+                .find(|(sym, _)| kb.resolve_sym(*sym) == "value")
+                .map(|&(_, tid)| tid)
+                .expect("some() should have a value field")
+        }
+        other => panic!("expected some(Fn), got {:?}", other),
+    }
+}
+
+/// Helper: assert a term is none().
+fn assert_none(kb: &KnowledgeBase, term_id: TermId) {
+    match kb.get_term(term_id) {
+        Term::Fn { functor, .. } => {
+            assert_eq!(kb.resolve_sym(*functor), "none",
+                "expected none(), got {}", functor_name(kb, term_id));
+        }
+        other => panic!("expected none(), got {:?}", other),
+    }
+}
+
+/// Helper: get the first element of a cons-list.
+fn list_head(kb: &KnowledgeBase, list_tid: TermId) -> Option<TermId> {
+    match kb.get_term(list_tid) {
+        Term::Fn { functor, named_args, .. } if kb.resolve_sym(*functor) == "cons" => {
+            named_args.iter()
+                .find(|(sym, _)| kb.resolve_sym(*sym) == "head")
+                .map(|&(_, tid)| tid)
+        }
+        _ => None,
+    }
+}
+
+/// Helper: find an OperationInfo by qualified name substring from op facts.
+/// Uses `contains` to match qualified names like "test.expr.max".
+fn find_op_info(kb: &mut KnowledgeBase, qualified_substr: &str) -> TermId {
+    let op_sort = kb.make_name_term("Operation");
+    let ops = kb.by_sort(op_sort);
+    for &fid in &ops {
+        let tid = kb.fact_term(fid);
+        if let Some(name_tid) = get_named_arg(kb, tid, "name") {
+            if let Term::Ref(sym) = kb.get_term(name_tid) {
+                let qname = kb.qualified_name_of(*sym);
+                if qname.contains(qualified_substr) {
+                    return tid;
+                }
+            }
+        }
+    }
+    panic!("OperationInfo matching '{}' not found", qualified_substr);
+}
+
+#[test]
+fn load_operation_with_if_body() {
+    let mut kb = load_with_stdlib(r#"
+namespace test.expr
+  operation max(a: Int, b: Int) -> Int =
+    if gt(a, b) then a else b
+end
+"#);
+
+    let op_info = find_op_info(&mut kb, "test.expr.max");
+
+    // body should be some(if_expr(...))
+    let body_opt = get_named_arg(&kb, op_info, "body").expect("body field missing");
+    let body = unwrap_some(&kb, body_opt);
+    assert_eq!(functor_name(&kb, body), "if_expr");
+
+    // cond should be apply(fn: gt, args: [a, b])
+    let cond = get_named_arg(&kb, body, "cond").expect("cond missing");
+    assert_eq!(functor_name(&kb, cond), "apply");
+
+    // then_branch and else_branch should be var_ref
+    let then_branch = get_named_arg(&kb, body, "then_branch").expect("then_branch missing");
+    assert_eq!(functor_name(&kb, then_branch), "var_ref");
+    let else_branch = get_named_arg(&kb, body, "else_branch").expect("else_branch missing");
+    assert_eq!(functor_name(&kb, else_branch), "var_ref");
+}
+
+#[test]
+fn load_operation_with_match_body() {
+    let mut kb = load_with_stdlib(r#"
+namespace test.expr
+  sort Nat
+    entity zero
+    entity succ(pred: Nat)
+    operation is_zero(n: Nat) -> Bool =
+      match n
+        case zero() -> true
+        case succ(_) -> false
+      end
+  end
+end
+"#);
+
+    let op_info = find_op_info(&mut kb, "test.expr.Nat.is_zero");
+
+    // body should be some(match_expr(...))
+    let body_opt = get_named_arg(&kb, op_info, "body").expect("body field missing");
+    let body = unwrap_some(&kb, body_opt);
+    assert_eq!(functor_name(&kb, body), "match_expr");
+
+    // scrutinee should be var_ref(name: n)
+    let scrutinee = get_named_arg(&kb, body, "scrutinee").expect("scrutinee missing");
+    assert_eq!(functor_name(&kb, scrutinee), "var_ref");
+
+    // branches should be a 2-element list
+    let branches = get_named_arg(&kb, body, "branches").expect("branches missing");
+    assert_eq!(count_list_elements(&kb, branches), 2);
+
+    // First branch: pattern = constructor_pattern(zero), body = bool_lit(true)
+    let branch1 = list_head(&kb, branches).expect("first branch missing");
+    assert_eq!(functor_name(&kb, branch1), "MatchBranch");
+    let pat1 = get_named_arg(&kb, branch1, "pattern").expect("pattern missing");
+    assert_eq!(functor_name(&kb, pat1), "constructor_pattern");
+    let body1 = get_named_arg(&kb, branch1, "body").expect("body missing");
+    assert_eq!(functor_name(&kb, body1), "bool_lit");
+
+    // Guard should be none
+    let guard1 = get_named_arg(&kb, branch1, "guard").expect("guard missing");
+    assert_none(&kb, guard1);
+}
+
+#[test]
+fn load_operation_with_let_body() {
+    let mut kb = load_with_stdlib(r#"
+namespace test.expr
+  operation double(x: Int) -> Int =
+    let y = x in add(y, y)
+end
+"#);
+
+    let op_info = find_op_info(&mut kb, "test.expr.double");
+    let body_opt = get_named_arg(&kb, op_info, "body").expect("body field missing");
+    let body = unwrap_some(&kb, body_opt);
+    assert_eq!(functor_name(&kb, body), "let_expr");
+
+    // pattern should be var_pattern
+    let pattern = get_named_arg(&kb, body, "pattern").expect("pattern missing");
+    assert_eq!(functor_name(&kb, pattern), "var_pattern");
+
+    // value should be var_ref (x)
+    let value = get_named_arg(&kb, body, "value").expect("value missing");
+    assert_eq!(functor_name(&kb, value), "var_ref");
+
+    // body should be apply (add)
+    let inner_body = get_named_arg(&kb, body, "body").expect("inner body missing");
+    assert_eq!(functor_name(&kb, inner_body), "apply");
+}
+
+#[test]
+fn load_operation_with_lambda_body() {
+    let mut kb = load_with_stdlib(r#"
+namespace test.expr
+  operation make_inc() -> Int =
+    lambda x -> add(x, 1)
+end
+"#);
+
+    let op_info = find_op_info(&mut kb, "test.expr.make_inc");
+    let body_opt = get_named_arg(&kb, op_info, "body").expect("body field missing");
+    let body = unwrap_some(&kb, body_opt);
+    assert_eq!(functor_name(&kb, body), "lambda");
+
+    // param should be var_pattern
+    let param = get_named_arg(&kb, body, "param").expect("param missing");
+    assert_eq!(functor_name(&kb, param), "var_pattern");
+
+    // body should be apply (add)
+    let lambda_body = get_named_arg(&kb, body, "body").expect("lambda body missing");
+    assert_eq!(functor_name(&kb, lambda_body), "apply");
+
+    // add should have 2 args: var_ref(x) and int_lit(1)
+    let args = get_named_arg(&kb, lambda_body, "args").expect("args missing");
+    assert_eq!(count_list_elements(&kb, args), 2);
+}
+
+#[test]
+fn load_operation_without_body() {
+    let mut kb = load_with_stdlib(r#"
+namespace test.expr
+  operation abstract_op(x: Int) -> Int
+end
+"#);
+
+    let op_info = find_op_info(&mut kb, "test.expr.abstract_op");
+    let body_opt = get_named_arg(&kb, op_info, "body").expect("body field missing");
+    assert_none(&kb, body_opt);
+}
+
+#[test]
+fn load_operation_impl_fact_emitted() {
+    let mut kb = load_with_stdlib(r#"
+namespace test.expr
+  operation incr(x: Int) -> Int =
+    add(x, 1)
+end
+"#);
+
+    // Check OperationImpl fact was emitted
+    let impl_sort = kb.make_name_term("OperationImpl");
+    let impls = kb.by_sort(impl_sort);
+    // Find the one for "incr"
+    let mut found = false;
+    for &fid in &impls {
+        let tid = kb.fact_term(fid);
+        if let Some(op_tid) = get_named_arg(&kb, tid, "operation") {
+            if let Term::Ref(sym) = kb.get_term(op_tid) {
+                if kb.qualified_name_of(*sym).contains("test.expr.incr") {
+                    found = true;
+                    // body should be apply(fn: add, args: [x, 1])
+                    let body = get_named_arg(&kb, tid, "body").expect("body missing");
+                    assert_eq!(functor_name(&kb, body), "apply");
+                    // params should be a 1-element list [x]
+                    let params = get_named_arg(&kb, tid, "params").expect("params missing");
+                    assert_eq!(count_list_elements(&kb, params), 1);
+                }
+            }
+        }
+    }
+    assert!(found, "OperationImpl for 'incr' not found");
+}
