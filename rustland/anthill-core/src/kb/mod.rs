@@ -494,7 +494,7 @@ impl KnowledgeBase {
 
         let mut results = Vec::new();
         for (rid, tree_subst) in candidates {
-            if self.rules[rid.index()].retracted {
+            if rules[rid.index()].retracted {
                 continue;
             }
             if tree_subst.is_contradiction() {
@@ -502,6 +502,11 @@ impl KnowledgeBase {
             }
             results.push((rid, tree_subst));
         }
+        // Stable-sort: facts (empty body) before rules (non-empty body).
+        // The discrimination tree uses HashMap internally, so candidate order
+        // is non-deterministic. DFS resolution depends on trying ground facts
+        // before recursive rules to find base-case solutions first.
+        results.sort_by_key(|(rid, _)| if rules[rid.index()].body.is_empty() { 0 } else { 1 });
         results
     }
 
