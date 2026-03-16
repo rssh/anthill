@@ -28,7 +28,38 @@ anthill codegen rust --include-implemented -- regenerate even if Implementation 
 anthill codegen rust --exclude graphics    -- skip a namespace
 ```
 
-### 1.2 Explicit File Mode
+### 1.2 Expression Evaluation
+
+Evaluate an expression against the KB. Queries and expressions are unified — both are terms evaluated against the KB:
+
+```
+anthill eval "<expression>"                   -- evaluate in project mode
+anthill eval --load <dir> "<expression>"      -- evaluate with explicit files
+```
+
+What comes back depends on the expression:
+
+```
+-- Ground expression → value
+anthill eval "1 + 2"
+3
+
+-- Expression with ?variables → bindings (query mode)
+anthill eval "?x :- Ring{?x}"
+?x = Int
+
+-- Equation → true/false (proof check)
+anthill eval "add(?a, zero) = ?a"
+true (discharged by KB resolution)
+
+-- Expression using loaded definitions
+anthill eval --load stdlib/ --load my_project/ "length(cons(1, cons(2, nil)))"
+2
+```
+
+This subsumes the existing `query` command — `query` is just `eval` with `?variables`.
+
+### 1.3 Explicit File Mode
 
 For ad-hoc use without a project (or in CI on specific files), pass files explicitly. An ephemeral in-memory KB is used with no persistence:
 
@@ -36,9 +67,10 @@ For ad-hoc use without a project (or in CI on specific files), pass files explic
 anthill load <files...>                    -- parse + load, report errors
 anthill check <files...>                   -- load + run constraints, report violations
 anthill query <query> <files...>           -- load + query, print results
+anthill eval <expression> <files...>       -- load + evaluate expression
 ```
 
-### 1.3 Common Options
+### 1.4 Common Options
 
 Exit code: 0 = success, 1 = errors/violations. Output is human-readable by default, `--json` for machine consumption.
 
@@ -125,9 +157,36 @@ anthill> assert operation distance(a: Point, b: Point) -> Int
 fact #51 asserted
 ```
 
-Changes are held in the in-memory KB and marked as pending. Use `flush` to write them to the backing stores (see §2.7).
+Changes are held in the in-memory KB and marked as pending. Use `flush` to write them to the backing stores (see §2.8).
 
-### 2.3 Querying
+### 2.3 Expression Evaluation
+
+The console can evaluate expressions directly. Since expressions are terms, and the KB handles both evaluation and queries, the same command handles values, queries, and proof checks:
+
+```
+anthill> 1 + 2
+3
+
+anthill> length(cons(1, cons(2, nil)))
+2
+
+anthill> ?x :- Ring{?x}
+?x = Int
+
+anthill> fact Ring{Float}
+OK
+
+anthill> ?x :- Ring{?x}
+?x = Int
+?x = Float
+
+anthill> add(?a, zero) = ?a
+true
+```
+
+Typing an expression evaluates it. Typing a declaration (`fact`, `sort`, `rule`, etc.) asserts it. The REPL unifies expression evaluation and KB interaction.
+
+### 2.4 Querying
 
 Queries work across all stores transparently. For facts in bulk stores, the query runs against the in-memory KB. For facts in queryable stores, the query is translated to a native query (e.g., SQL) and executed on demand:
 
@@ -157,7 +216,7 @@ AuditEntry("alice", "withdraw", 200, "2026-02-01T14:30:00Z")  [store: SqlStore, 
 (2 results from queryable store)
 ```
 
-### 2.4 Inspecting
+### 2.5 Inspecting
 
 ```
 anthill> sorts
@@ -180,7 +239,7 @@ anthill> stats
   stores: 2 (1 bulk, 1 queryable)  pending: 3 (2 asserted, 1 retracted)
 ```
 
-### 2.5 Checking Constraints
+### 2.6 Checking Constraints
 
 ```
 anthill> check
@@ -195,7 +254,7 @@ VIOLATION: non_negative
   bindings: ?a = account1, balance = -100
 ```
 
-### 2.6 Session Management
+### 2.7 Session Management
 
 ```
 anthill> reset                  -- clear the KB, start fresh
@@ -204,7 +263,7 @@ anthill> history                -- show command history
 anthill> help                   -- show available commands
 ```
 
-### 2.7 Persistence
+### 2.8 Persistence
 
 ```
 anthill> stores
@@ -267,6 +326,7 @@ The CLI is a thin layer over `anthill-core` and the persistence layer:
 | Console command | Core function |
 |----------------|---------------|
 | `load` | `parse::parse()` + `kb::load::load()` |
+| `eval` / expression | `parse::parse()` + `kb::resolve()` / `Runtime.evaluate()` |
 | `assert` | `parse::parse()` + `kb::load::load()` + `persistence::route()` |
 | `retract` | `kb.retract(fact_id)` + mark pending in store |
 | `query by_sort` | `kb.by_sort(sort_term)` — may trigger queryable store |
