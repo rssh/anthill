@@ -1,6 +1,8 @@
 -- List: a parametric sort (T is the abstract sort parameter)
 sort anthill.prelude.List
-  export List, nil, cons, length, member, append
+  import anthill.prelude.Collection
+  import anthill.prelude.Iteration
+  export List, nil, cons, length, member, append, insert, empty, split
 
   sort T = ?                                           -- type parameter (abstract)
   entity nil                                         -- empty list
@@ -20,4 +22,20 @@ sort anthill.prelude.List
   operation append(xs: List, ys: List) -> List
   rule append(nil, ?ys) = ?ys
   rule append(cons(head: ?x, tail: ?xs), ?ys) = cons(head: ?x, tail: append(?xs, ?ys))
+
+  -- List satisfies Collection (pure, no effects)
+  fact Collection[Collection = List[T], Element = T, Effect = {}]
+
+  -- Collection.insert for List: prepend element
+  rule insert(?c, ?elem) = cons(head: ?elem, tail: ?c)
+
+  -- Collection.empty for List
+  rule empty() = nil
+
+  -- List satisfies Iteration (pure, no effects)
+  fact Iteration[Iterator = List[T], Element = T, Effect = {}]
+
+  -- Iteration.split for List
+  rule split(cons(head: ?h, tail: ?t)) = some((?h, ?t))
+  rule split(nil) = none
 end

@@ -42,6 +42,8 @@ module.exports = grammar({
     [$.variable_term],
     // name [ could be parameterized_type or simple_type followed by something else
     [$.simple_type, $.parameterized_type],
+    // [ after rule head could be meta_block or start of next rule_entry with collection_literal
+    [$.rule_entry],
   ],
 
   rules: {
@@ -601,6 +603,7 @@ module.exports = grammar({
       $.fn_term,
       $.instantiation_term,
       $.set_literal,
+      $.collection_literal,
       $.tuple_literal,
       $.paren_expr,
       $.ref_term,
@@ -668,6 +671,14 @@ module.exports = grammar({
     // prec(-2) so block-level { (rule/operation blocks, sort/namespace bodies)
     // takes precedence when ambiguous.
     set_literal: $ => prec(-2, seq('{', commaSep($._term), '}')),
+
+    // Collection literal: [x, y, z] or [x, y | rest].
+    // Bare [...] = collection literal, Name[...] = instantiation_term (disambiguated by leading Name).
+    // prec(-2) like set_literal/tuple_literal to avoid conflicts with block-level constructs.
+    collection_literal: $ => prec(-2, choice(
+      seq('[', ']'),                                                          // empty
+      seq('[', commaSep1($._term), optional(seq('|', field('tail', $._term))), ']'),
+    )),
 
     // Tuple literal: (1, 2) or (x: 1, y: 2) or () for unit.
     // Uses _fn_arg to allow both positional and named args;

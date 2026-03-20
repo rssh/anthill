@@ -341,6 +341,7 @@ impl<'a> Converter<'a> {
             "prefix_term" => self.convert_prefix(node),
             "field_access" => self.convert_field_access(node),
             "set_literal" => self.convert_set_literal(node),
+            "collection_literal" => self.convert_collection_literal(node),
             "tuple_literal" => self.convert_tuple_literal(node),
             "paren_expr" => {
                 // (a) = a — unwrap parenthesized expression
@@ -564,6 +565,33 @@ impl<'a> Converter<'a> {
             functor,
             pos_args: elements,
             named_args: SmallVec::new(),
+        })
+    }
+
+    /// Convert collection literal: `[x, y, z]` → `ListLiteral(x, y, z)`.
+    /// `[]` → `ListLiteral()`.
+    /// `[x, y | t]` → `ListLiteral(x, y, tail: t)`.
+    fn convert_collection_literal(&mut self, node: Node) -> TermId {
+        let functor = self.intern("ListLiteral");
+        let tail_node = self.field(node, "tail");
+
+        let mut elements: SmallVec<[TermId; 4]> = SmallVec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if is_term_kind(child.kind()) && tail_node != Some(child) {
+                elements.push(self.convert_term(child));
+            }
+        }
+
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        if let Some(t) = tail_node {
+            named_args.push((self.intern("tail"), self.convert_term(t)));
+        }
+
+        self.terms.alloc(Term::Fn {
+            functor,
+            pos_args: elements,
+            named_args,
         })
     }
 
@@ -2168,6 +2196,7 @@ fn is_term_kind(kind: &str) -> bool {
             | "prefix_term"
             | "field_access"
             | "set_literal"
+            | "collection_literal"
             | "tuple_literal"
             | "paren_expr"
             | "identifier"

@@ -1,0 +1,17 @@
+-- Collection: algebra for building a sequence from elements.
+-- Collection (carrier) is the type being built.
+-- Requires Iteration — if you can build it, you can decompose it.
+sort anthill.prelude.Collection
+  import anthill.prelude.Iteration
+  export Collection, insert, empty
+
+  sort Collection = ?
+  sort Element = ?
+  sort Effect = ?
+
+  requires Iteration[Iterator = Collection, Element, Effect]
+
+  operation insert(c: Collection, elem: Element) -> Collection
+    effects (Effect)
+  operation empty() -> Collection
+end

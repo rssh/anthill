@@ -2460,6 +2460,44 @@ fn parse_named_tuple_type_in_operation() {
     }
 }
 
+// ── Collection literal tests (Proposal 019) ─────────────────
+
+#[test]
+fn parse_empty_collection_literal() {
+    let (terms, symbols, head) = parse_rule_head_ir("[]");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "ListLiteral()");
+}
+
+#[test]
+fn parse_single_element_collection_literal() {
+    let (terms, symbols, head) = parse_rule_head_ir("[?x]");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "ListLiteral(?x)");
+}
+
+#[test]
+fn parse_multi_element_collection_literal() {
+    let (terms, symbols, head) = parse_rule_head_ir("[?a, ?b, ?c]");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "ListLiteral(?a, ?b, ?c)");
+}
+
+#[test]
+fn parse_collection_literal_with_integers() {
+    let (terms, symbols, head) = parse_rule_head_ir("[1, 2, 3]");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "ListLiteral(1, 2, 3)");
+}
+
+#[test]
+fn parse_collection_head_tail() {
+    let (terms, symbols, head) = parse_rule_head_ir("[?h | ?t]");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "ListLiteral(?h, tail: ?t)");
+}
+
+#[test]
+fn parse_collection_multi_head_tail() {
+    let (terms, symbols, head) = parse_rule_head_ir("[?a, ?b | ?t]");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "ListLiteral(?a, ?b, tail: ?t)");
+}
+
 // ── Field access tests ───────────────────────────────────────
 
 #[test]

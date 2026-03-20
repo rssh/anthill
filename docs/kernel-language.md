@@ -176,7 +176,9 @@ The kernel has only four primitive types for `Const` values:
 |---------|------------|
 | `5m` | `Duration(5, "m")` |
 | `30s` | `Duration(30, "s")` |
-| `[a, b, c]` | `cons(a, cons(b, cons(c, nil)))` |
+| `[a, b, c]` | `ListLiteral(a, b, c)` — desugared by typing to concrete constructors via `Collection` |
+| `[h \| t]` | `ListLiteral(h, tail: t)` — head-tail destructuring via `Iteration` |
+| `{a, b, c}` | `SetLiteral(a, b, c)` — desugared by typing to concrete constructors |
 
 ### 4.4 The Prelude Namespaces
 
@@ -399,6 +401,40 @@ rule swap((?x, ?y)) = (?y, ?x)
 
 -- Unit
 ()
+```
+
+### 4.6 Collection Literals
+
+**Collection literals** use bracket syntax for constructing and destructuring ordered sequences.
+
+```
+-- Collection literals (in term position)
+CollectionLiteral ::= '[' ']'                                           -- empty
+                    | '[' Term (',' Term)* ('|' Term)? ']'              -- elements, optional tail
+```
+
+**Construction:** `[a, b, c]` is represented as `ListLiteral(a, b, c)` in the untyped term language. The typing process rewrites this to concrete constructors (`Collection.insert`/`Collection.empty`) based on the expected type.
+
+**Head-tail destructuring:** `[h | t]` is represented as `ListLiteral(h, tail: t)`. The typing process rewrites this via `Iteration.split`. Multiple heads are supported: `[a, b | t]` → `ListLiteral(a, b, tail: t)`.
+
+**Disambiguation:** Bare `[` starts a collection literal. `Name[` starts an instantiation term (`Eq[Int]`) or parameterized type (`List[T = Int]`). No lookahead needed — the presence of a leading `Name` disambiguates.
+
+**Representation:** Collection literals are represented as `ListLiteral(...)` terms, analogous to `SetLiteral(...)` for sets and `TupleLiteral(...)` for tuples. The `ListLiteral` entity is defined in `anthill.reflect`.
+
+**Examples:**
+
+```
+-- Empty collection
+rule empty_list: []
+
+-- Integer list
+rule digits: [1, 2, 3]
+
+-- Head-tail pattern matching
+rule first([?h | ?_]) = ?h
+
+-- Multi-head with tail
+rule take_two([?a, ?b | ?rest]) = ((?a, ?b), ?rest)
 ```
 
 ## 5. Kernel Constructs
@@ -1576,8 +1612,10 @@ FloatLit    ::= '-'? Digit+ '.' Digit+
 BoolLit     ::= 'true' | 'false'
 
 -- Literal sugar for compound types (desugars to Fn terms):
-DurationLit ::= IntLit ('ms' | 's' | 'm' | 'h' | 'd')   -- 5m → Duration(5, "m")
-ListLit     ::= '[' Term (',' Term)* ']'                  -- [a,b] → cons(a,cons(b,nil))
+DurationLit      ::= IntLit ('ms' | 's' | 'm' | 'h' | 'd')            -- 5m → Duration(5, "m")
+CollectionLit    ::= '[' ']'                                            -- [] → ListLiteral()
+                   | '[' Term (',' Term)* ('|' Term)? ']'               -- [a,b] → ListLiteral(a,b)
+SetLit           ::= '{' Term? (',' Term)* '}'                          -- {a,b} → SetLiteral(a,b)
 
 Body[F]     ::= '{' F '}'  |  F 'end'
 
@@ -1593,6 +1631,9 @@ AtomTerm    ::= Const(type, value)
               | Fn(name, args: [Term])
               | Ref(Name)
               | Instantiation(Name, SortBinding+)  -- Eq[T = Int] in term position
+              | CollectionLit                -- [a, b | t] → ListLiteral(a, b, tail: t)
+              | SetLit                       -- {a, b} → SetLiteral(a, b)
+              | TupleLiteral                 -- (a, b) → TupleLiteral(_1: a, _2: b)
               | PrefixTerm
               | Quoted(language, source)
 

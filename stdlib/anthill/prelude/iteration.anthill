@@ -1,0 +1,13 @@
+-- Iteration: algebra for decomposing a sequence into element + rest.
+-- Iterator is the carrier — the type being iterated.
+sort anthill.prelude.Iteration
+  import anthill.prelude.{Option}
+  export Iteration, split
+
+  sort Iterator = ?
+  sort Element = ?
+  sort Effect = ?
+
+  operation split(i: Iterator) -> Option[T = (Element, Iterator)]
+    effects (Effect)
+end

@@ -294,6 +294,11 @@ Both reduce to SLD resolution against the KB. There is no separate inference pas
 
 **OQ3.3.** Bidirectional type checking? Some systems propagate type info both top-down (expected type) and bottom-up (inferred type). E.g., `let s : Stream[T = Int] = query account(?, ?, ?bal)` — the expected type `Stream[T = Int]` constrains how `query` is desugared. Is bidirectional checking worth the complexity?
 
+**OQ3.4.** Literal desugaring. The untyped term language includes `SetLiteral`, `TupleLiteral`, and `ListLiteral` (Proposal 019) — syntactic forms that the typing process must rewrite into concrete operations. `[a, b, c]` desugars via `Collection.add`/`empty`, `[?h | ?t]` desugars via `Iteration.split`. Both algebras are parameterized by an effect set `Effect` (since effectful types like `Stream` also need literal support). The typing process must define:
+  - How expected types propagate to literal positions (field types, parameter types, return types)
+  - What happens when no expected type is available (default to `List`? error?)
+  - How effects propagate through literal desugaring (the `Effect` parameter of Collection/Iteration)
+
 ### OQ4. Sort resolution for operations (partially resolved)
 
 Operation dispatch is a primary driver for typing. When an unresolved name `map(x, f)` appears, the system generates a constraint query:

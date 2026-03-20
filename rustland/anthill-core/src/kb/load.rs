@@ -919,6 +919,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     let sort_view_sym = kb.symbols.define("SortView", "anthill.reflect.SortView", SymbolKind::Entity, reflect_term.raw());
     let set_literal_sym = kb.symbols.define("SetLiteral", "anthill.reflect.SetLiteral", SymbolKind::Entity, reflect_term.raw());
     let tuple_literal_sym = kb.symbols.define("TupleLiteral", "anthill.reflect.TupleLiteral", SymbolKind::Entity, reflect_term.raw());
+    let list_literal_sym = kb.symbols.define("ListLiteral", "anthill.reflect.ListLiteral", SymbolKind::Entity, reflect_term.raw());
 
     // anthill.reflect.Expr sort + entities
     let expr_sym = kb.symbols.define("Expr", "anthill.reflect.Expr", SymbolKind::Sort, reflect_term.raw());
@@ -1009,6 +1010,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.add_import(global_raw, "SortView", sort_view_sym);
     kb.symbols.add_import(global_raw, "SetLiteral", set_literal_sym);
     kb.symbols.add_import(global_raw, "TupleLiteral", tuple_literal_sym);
+    kb.symbols.add_import(global_raw, "ListLiteral", list_literal_sym);
     // Arithmetic and comparison: globally importable (like Haskell Prelude).
     // Qualified names are guaranteed present — defined above in this function.
     for (qualified, short) in [

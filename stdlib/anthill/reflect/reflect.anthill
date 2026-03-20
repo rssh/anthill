@@ -19,7 +19,7 @@ namespace anthill.reflect
   export Term, FactId, Symbol
   export KB
   export qualified_name, short_name, lookup_symbol, scope, kind
-  export LiteralRepr, TermRepr, SetLiteral, TupleLiteral, SortInfo, EntityInfo, OperationInfo, FieldInfo, DescriptionInfo
+  export LiteralRepr, TermRepr, SetLiteral, TupleLiteral, ListLiteral, SortInfo, EntityInfo, OperationInfo, FieldInfo, DescriptionInfo
   export SortRequiresInfo, SortView
   export Expr, Pattern, MatchBranch, ApplyArg, NamedPattern, TypedExpr
   export match_expr, if_expr, let_expr, lambda, constructor, var_ref
@@ -172,6 +172,12 @@ namespace anthill.reflect
   -- Named tuples: (name: "alice", age: 30) → TupleLiteral(name: "alice", age: 30).
   -- Unit tuple: () → TupleLiteral().
   entity TupleLiteral
+
+  -- Collection literal syntax: [x, y, z] is represented as ListLiteral(x, y, z)
+  -- in the untyped term language. The typing process rewrites this to concrete
+  -- constructors based on the expected type.
+  -- Head|tail form: [x, y | t] → ListLiteral(x, y, tail: t).
+  entity ListLiteral
 
   -- ================================================================
   -- Expression representation (operation bodies)
