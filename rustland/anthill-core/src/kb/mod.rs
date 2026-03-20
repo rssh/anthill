@@ -88,7 +88,13 @@ pub struct KnowledgeBase {
 
     // Entity field registry: functor symbol → ordered field names.
     // Populated during load_entity, used by convert_term for partial named-arg expansion.
-    entity_fields: HashMap<Symbol, Vec<Symbol>>,
+    pub(crate) entity_fields: HashMap<Symbol, Vec<Symbol>>,
+
+    // Entity short-name → qualified functor symbol.
+    // Allows remap_symbol to resolve unqualified entity names (e.g. "WorkItem")
+    // to their qualified symbols (e.g. anthill.stage0.WorkItem) when scope
+    // resolution fails. Populated during load_entity.
+    entity_short_to_qualified: HashMap<Symbol, Symbol>,
 
     // Variable counter for fresh VarId allocation
     next_var: u32,
@@ -120,6 +126,7 @@ impl KnowledgeBase {
             discrim: SubstTree::new(),
             builtins: HashMap::new(),
             entity_fields: HashMap::new(),
+            entity_short_to_qualified: HashMap::new(),
             next_var: 0,
             sort_base_subst: HashMap::new(),
             sort_sort: None,
@@ -807,8 +814,18 @@ impl KnowledgeBase {
     }
 
     /// Try to look up a resolved symbol by qualified name.
+    /// Also checks entity short-name → qualified mappings.
     pub fn try_resolve_symbol(&self, name: &str) -> Option<Symbol> {
-        self.symbols.by_qualified_name.get(name).copied()
+        if let Some(&sym) = self.symbols.by_qualified_name.get(name) {
+            return Some(sym);
+        }
+        // Fallback: check entity short-name index
+        if let Some(&short) = self.symbols.intern_map.get(name) {
+            if let Some(&qualified) = self.entity_short_to_qualified.get(&short) {
+                return Some(qualified);
+            }
+        }
+        None
     }
 
     /// Resolve a name using scope-aware resolution from _global scope.
@@ -872,6 +889,16 @@ impl KnowledgeBase {
     /// Look up the ordered field names for an entity functor.
     pub fn entity_field_names(&self, functor: Symbol) -> Option<&[Symbol]> {
         self.entity_fields.get(&functor).map(|v| v.as_slice())
+    }
+
+    /// Register a short-name → qualified-symbol mapping for an entity.
+    pub fn register_entity_short_name(&mut self, short_sym: Symbol, qualified_sym: Symbol) {
+        self.entity_short_to_qualified.insert(short_sym, qualified_sym);
+    }
+
+    /// Look up the qualified entity symbol for an unqualified short name.
+    pub fn entity_qualified_for_short(&self, short_sym: Symbol) -> Option<Symbol> {
+        self.entity_short_to_qualified.get(&short_sym).copied()
     }
 
     // ── Builtin dispatch ────────────────────────────────────────

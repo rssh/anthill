@@ -4,8 +4,8 @@ namespace anthill.prelude.String
   export concat, length, isEmpty, contains, startsWith, endsWith, substring, indexOf, replace, trim, toUpper, toLower, split
 
   -- String satisfies equality and lexicographic ordering
-  fact Eq{T = String}
-  fact Ordered{T = String}
+  fact Eq[T = String]
+  fact Ordered[T = String]
 
   operation {
     concat(a: String, b: String) -> String
@@ -20,7 +20,7 @@ namespace anthill.prelude.String
     trim(s: String) -> String
     toUpper(s: String) -> String
     toLower(s: String) -> String
-    split(s: String, sep: String) -> List{T = String}
+    split(s: String, sep: String) -> List[T = String]
   }
 
   -- Laws

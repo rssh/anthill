@@ -16,10 +16,10 @@ namespace anthill.realization
     target      : String,                           -- qualified name of the spec
     artifact    : String,                           -- path to source file
     language    : String,                           -- "rust", "scala", "python"
-    profile     : Option{T = String},               -- e.g. "cpu", "gpu", "memory-optimized"
-    description : Option{T = String},               -- free text for humans
-    carrier     : List{T = CarrierBinding},         -- maps abstract sorts to host types
-    namespace_map : List{T = NamespaceMapping}      -- maps anthill namespaces to host modules
+    profile     : Option[T = String],               -- e.g. "cpu", "gpu", "memory-optimized"
+    description : Option[T = String],               -- free text for humans
+    carrier     : List[T = CarrierBinding],         -- maps abstract sorts to host types
+    namespace_map : List[T = NamespaceMapping]      -- maps anthill namespaces to host modules
   )
 
   entity CarrierBinding(
@@ -41,10 +41,10 @@ namespace anthill.realization
   -- Codegen reads this from KB instead of hardcoding rules.
   entity LanguageMapping(
     language      : String,                         -- "rust", "scala", "python"
-    profile       : Option{T = String},             -- "std", "no_std", etc.
-    effect_map    : List{T = EffectMapping},
-    receiver_map  : List{T = ReceiverRule},          -- effect-independent receiver rules
-    type_map      : List{T = TypeMapping},
+    profile       : Option[T = String],             -- "std", "no_std", etc.
+    effect_map    : List[T = EffectMapping],
+    receiver_map  : List[T = ReceiverRule],          -- effect-independent receiver rules
+    type_map      : List[T = TypeMapping],
     trait_return  : TraitReturnForm                  -- how to return abstract sorts
   )
 
@@ -94,7 +94,7 @@ namespace anthill.realization
   -- body: Term (not Expr) since Expr is a sub-sort of Term in the KB.
   entity OperationImpl(
     operation   : Symbol,                           -- operation name (symbol reference)
-    params      : List{T = Symbol},                 -- parameter names
+    params      : List[T = Symbol],                 -- parameter names
     body        : Term                              -- expression body (Expr-shaped term)
   )
 

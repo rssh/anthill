@@ -166,10 +166,10 @@ impl<'a> Converter<'a> {
             "constraint_declaration" => self.convert_constraint(node).map(Item::Constraint),
             "operation_block" => self.convert_operation_block(node).map(Item::OperationBlock),
             "rule_block" => self.convert_rule_block(node).map(Item::RuleBlock),
-            "project_declaration" => self.convert_project(node).map(Item::Project),
-            "tool_declaration" => self.convert_tool(node).map(Item::Tool),
-            "workitem_declaration" => self.convert_workitem(node).map(Item::WorkItem),
-            "feedback_declaration" => self.convert_feedback(node).map(Item::Feedback),
+            "project_declaration" => self.convert_project_sugar(node).map(Item::Fact),
+            "tool_declaration" => self.convert_tool_sugar(node).map(Item::Fact),
+            "workitem_declaration" => self.convert_workitem_sugar(node).map(Item::Fact),
+            "feedback_declaration" => self.convert_feedback_sugar(node).map(Item::Fact),
             "import_tools_declaration" => self.convert_import_tools(node).map(Item::ImportTools),
             "describe_declaration" => self.convert_describe(node).map(Item::Describe),
             "line_comment" | "block_comment" => None,
@@ -251,14 +251,14 @@ impl<'a> Converter<'a> {
         let type_field = self.field(node, "type");
 
         match (param, type_field) {
-            // Named: Eq{T = Int} — param and type both present
+            // Named: Eq[T = Int] — param and type both present
             (Some(p), Some(t)) => SortBinding { param: Some(p), bound: self.convert_type(t) },
-            // Positional: List{Int} or List{T} — no `=`, value binds to next param
+            // Positional: List[Int] or List[T] — no `=`, value binds to next param
             (Some(p), None) => {
                 let bound = TypeExpr::Simple(p);
                 SortBinding { param: None, bound }
             }
-            // Variable: Modify{?} or Modify{?r} — positional with variable type
+            // Variable: Modify[?] or Modify[?r] — positional with variable type
             (None, Some(t)) => {
                 let bound = self.convert_type(t);
                 SortBinding { param: None, bound }
@@ -407,7 +407,7 @@ impl<'a> Converter<'a> {
     }
 
     fn convert_instantiation_term(&mut self, node: Node) -> TermId {
-        // Eq{Int} or Eq{T = Int} — parameterized type in term position
+        // Eq[Int] or Eq[T = Int] — parameterized type in term position
         let name_node = self.field(node, "name").unwrap_or(node);
         let name = self.convert_name(name_node);
         let functor = self.intern_name(&name);
@@ -421,7 +421,7 @@ impl<'a> Converter<'a> {
                 let type_node = self.field(child, "type");
                 match (param_node, type_node) {
                     (Some(p), Some(t)) => {
-                        // Explicit: Eq{T = Int} — convert the type to a Ref term
+                        // Explicit: Eq[T = Int] — convert the type to a Ref term
                         let param_name = self.convert_name(p);
                         let param_sym = self.intern_name(&param_name);
                         let type_name = self.convert_type_to_name(t);
@@ -429,13 +429,13 @@ impl<'a> Converter<'a> {
                         named_args.push((param_sym, self.terms.alloc(Term::Ref(type_sym))));
                     }
                     (Some(p), None) => {
-                        // Positional: List{Int} — value binds to next param in order
+                        // Positional: List[Int] — value binds to next param in order
                         let name = self.convert_name(p);
                         let sym = self.intern_name(&name);
                         pos_args.push(self.terms.alloc(Term::Ref(sym)));
                     }
                     (None, Some(t)) => {
-                        // Variable binding: Modify{?} or Modify{?r}
+                        // Variable binding: Modify[?] or Modify[?r]
                         let tid = self.convert_term(t);
                         pos_args.push(tid);
                     }
@@ -1084,7 +1084,7 @@ impl<'a> Converter<'a> {
         let term = self.field(node, "term")
             .map(|t| self.convert_term(t))?;
         let meta = self.convert_meta_block(node);
-        Some(Fact { term, meta, span })
+        Some(Fact { term, sort: None, meta, span })
     }
 
     fn convert_constraint(&mut self, node: Node) -> Option<Constraint> {
@@ -1220,168 +1220,74 @@ impl<'a> Converter<'a> {
         Some(Describe { target, contents, span })
     }
 
-    // ── Stage 0: project ────────────────────────────────────────
+    // ── Stage 0: helpers ────────────────────────────────────────
 
-    fn convert_project(&mut self, node: Node) -> Option<Project> {
-        let span = self.span(node);
-        let name = self.field(node, "name")
-            .map(|n| self.convert_name(n))?;
-
-        let fields_node = self.child_by_kind(node, "project_fields");
-
-        let mut structure = ProjectStructure::ToolsOnly;
-        let mut import_tools_list = Vec::new();
-        let mut tools = Vec::new();
-        let mut domains = Vec::new();
-        let mut meta = None;
-
-        if let Some(pf) = fields_node {
-            // Check for simple_project_fields
-            if let Some(spf) = self.child_by_kind(pf, "simple_project_fields") {
-                structure = ProjectStructure::Simple(self.convert_simple_project_fields(spf));
-            } else if let Some(ml) = self.child_by_kind(pf, "module_list") {
-                let modules = self.children_by_kind(ml, "module_declaration")
-                    .into_iter()
-                    .filter_map(|m| self.convert_module_decl(m))
-                    .collect();
-                structure = ProjectStructure::Modules(modules);
-            }
-
-            // Import tools declarations
-            for it in self.children_by_kind(pf, "import_tools_declaration") {
-                if let Some(imp) = self.convert_import_tools(it) {
-                    import_tools_list.push(imp);
-                }
-            }
-
-            // Tools and domains are just name lists — we need to find them
-            // by scanning for "name" children that appear after "tools:" or "domains:"
-            // For simplicity, collect all remaining name children
-            let all_names: Vec<_> = self.children_by_kind(pf, "name")
-                .into_iter()
-                .map(|n| self.convert_name(n))
-                .collect();
-
-            // Heuristic: names before "domains:" are tools, after are domains
-            // Actually, let's just look at the raw text structure
-            let pf_text = self.text(pf);
-            if let Some(tools_pos) = pf_text.find("tools") {
-                if let Some(domains_pos) = pf_text.find("domains") {
-                    // Split names into tools and domains based on position
-                    for n in &all_names {
-                        let name_start = n.span.start as usize - pf.start_byte();
-                        if name_start > domains_pos {
-                            domains.push(n.clone());
-                        } else if name_start > tools_pos {
-                            tools.push(n.clone());
-                        }
-                    }
-                } else {
-                    // All names after "tools:" are tools
-                    for n in &all_names {
-                        let name_start = n.span.start as usize - pf.start_byte();
-                        if name_start > tools_pos {
-                            tools.push(n.clone());
-                        }
-                    }
-                }
-            }
-
-            meta = self.convert_meta_block(pf);
+    /// Build a cons-list from a slice of TermIds.
+    /// `[a, b, c]` → `cons(head: a, tail: cons(head: b, tail: cons(head: c, tail: nil())))`
+    fn build_parse_list(&mut self, items: &[TermId]) -> TermId {
+        let nil_sym = self.intern("nil");
+        let mut list = self.terms.alloc(Term::Fn {
+            functor: nil_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let cons_sym = self.intern("cons");
+        let head_sym = self.intern("head");
+        let tail_sym = self.intern("tail");
+        for &item in items.iter().rev() {
+            list = self.terms.alloc(Term::Fn {
+                functor: cons_sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[(head_sym, item), (tail_sym, list)]),
+            });
         }
-
-        Some(Project {
-            name,
-            structure,
-            import_tools: import_tools_list,
-            tools,
-            domains,
-            meta,
-            span,
-        })
+        list
     }
 
-    fn convert_simple_project_fields(&mut self, node: Node) -> SimpleProjectFields {
-        let idents: Vec<_> = self.children_by_kind(node, "identifier")
-            .into_iter()
-            .map(|n| self.text(n).to_string())
-            .collect();
-
-        let language = idents.first().cloned().unwrap_or_default();
-        let build = idents.get(1).cloned();
-
-        let sources = self.children_by_kind(node, "source_root")
-            .into_iter()
-            .map(|s| self.convert_source_root(s))
-            .collect();
-
-        SimpleProjectFields { language, build, sources }
+    /// Allocate a string constant term.
+    fn alloc_string(&mut self, s: &str) -> TermId {
+        self.terms.alloc(Term::Const(Literal::String(s.to_string())))
     }
 
-    fn convert_module_decl(&mut self, node: Node) -> Option<ModuleDecl> {
-        let span = self.span(node);
-        let name = self.field(node, "name")
-            .map(|n| self.convert_name(n))?;
-
-        let fields = self.child_by_kind(node, "module_fields");
-        let (root, language, build, sources, meta) = if let Some(mf) = fields {
-            let strings: Vec<_> = self.children_by_kind(mf, "string_literal")
-                .into_iter()
-                .map(|s| {
-                    let raw = self.text(s);
-                    raw[1..raw.len() - 1].to_string()
-                })
-                .collect();
-            let root = strings.first().cloned().unwrap_or_default();
-
-            let idents: Vec<_> = self.children_by_kind(mf, "identifier")
-                .into_iter()
-                .map(|n| self.text(n).to_string())
-                .collect();
-            let language = idents.first().cloned().unwrap_or_default();
-            let build = idents.get(1).cloned();
-
-            let sources = self.children_by_kind(mf, "source_root")
-                .into_iter()
-                .map(|s| self.convert_source_root(s))
-                .collect();
-
-            let meta = self.convert_meta_block(mf);
-            (root, language, build, sources, meta)
-        } else {
-            (String::new(), String::new(), None, Vec::new(), None)
-        };
-
-        Some(ModuleDecl { name, root, language, build, sources, meta, span })
+    /// Allocate an ident term (unresolved name).
+    fn alloc_ident(&mut self, s: &str) -> TermId {
+        let sym = self.intern(s);
+        self.terms.alloc(Term::Ident(sym))
     }
 
-    fn convert_source_root(&mut self, node: Node) -> SourceRoot {
-        let strings: Vec<_> = self.children_by_kind(node, "string_literal")
-            .into_iter()
-            .map(|s| {
-                let raw = self.text(s);
-                raw[1..raw.len() - 1].to_string()
-            })
-            .collect();
-
-        let path = strings.first().cloned().unwrap_or_default();
-
-        let language = self.children_by_kind(node, "identifier")
-            .first()
-            .map(|n| self.text(*n).to_string());
-
-        let scope = self.child_by_kind(node, "source_scope")
-            .map(|s| match self.text(s) {
-                "Main" => SourceScope::Main,
-                "Test" => SourceScope::Test,
-                "Generated" => SourceScope::Generated,
-                "Docs" => SourceScope::Docs,
-                _ => SourceScope::Main,
-            })
-            .unwrap_or(SourceScope::Main);
-
-        SourceRoot { path, language, scope }
+    /// Extract the text of a string_literal node, stripping quotes.
+    fn string_literal_text(&self, node: Node) -> String {
+        let raw = self.text(node);
+        raw[1..raw.len() - 1].to_string()
     }
+
+    /// Extract key:value string pairs from a node like `Claimed(agent: "x", since: "y")`
+    fn extract_keyed_strings(&self, node: Node) -> HashMap<String, String> {
+        let mut result = HashMap::new();
+        let mut prev_key: Option<String> = None;
+
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if !child.is_named() {
+                    let t = self.text(child);
+                    match t {
+                        "agent" | "since" | "at" | "reason" => {
+                            prev_key = Some(t.to_string());
+                        }
+                        _ => {}
+                    }
+                } else if child.kind() == "string_literal" {
+                    if let Some(key) = prev_key.take() {
+                        let val = self.string_literal_text(child);
+                        result.insert(key, val);
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    // ── Stage 0: import tools ─────────────────────────────────────
 
     fn convert_import_tools(&mut self, node: Node) -> Option<ImportTools> {
         let span = self.span(node);
@@ -1392,120 +1298,346 @@ impl<'a> Converter<'a> {
         Some(ImportTools { names, span })
     }
 
-    // ── Stage 0: tool ───────────────────────────────────────────
+    // ── Stage 0: project → Fact ────────────────────────────────
 
-    fn convert_tool(&mut self, node: Node) -> Option<Tool> {
+    fn convert_project_sugar(&mut self, node: Node) -> Option<Fact> {
         let span = self.span(node);
-        let name = self.field(node, "name")
-            .map(|n| self.convert_name(n))?;
+        let name_node = self.field(node, "name")?;
+        let name_text = self.text(name_node);
+        let name_tid = self.alloc_string(name_text);
 
-        let fields_node = self.child_by_kind(node, "tool_fields");
+        let fields_node = self.child_by_kind(node, "project_fields");
 
-        let (command, args, working_dir, timeout, success, meta) =
-            if let Some(tf) = fields_node {
-                let strings: Vec<_> = self.children_by_kind(tf, "string_literal")
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        let name_sym = self.intern("name");
+        named_args.push((name_sym, name_tid));
+
+        let mut meta = None;
+
+        if let Some(pf) = fields_node {
+            // Language and build from simple_project_fields
+            if let Some(spf) = self.child_by_kind(pf, "simple_project_fields") {
+                let idents: Vec<_> = self.children_by_kind(spf, "identifier")
                     .into_iter()
-                    .map(|s| {
-                        let raw = self.text(s);
-                        raw[1..raw.len() - 1].to_string()
-                    })
+                    .map(|n| self.text(n).to_string())
                     .collect();
+                if let Some(lang) = idents.first() {
+                    let lang_sym = self.intern("language");
+                    let lang_tid = self.alloc_string(lang);
+                    named_args.push((lang_sym, lang_tid));
+                }
+                if let Some(build) = idents.get(1) {
+                    let build_sym = self.intern("build");
+                    let build_tid = self.alloc_string(build);
+                    named_args.push((build_sym, build_tid));
+                }
+                // Sources
+                let sources: Vec<_> = self.children_by_kind(spf, "source_root")
+                    .into_iter()
+                    .map(|s| self.convert_source_root_term(s))
+                    .collect();
+                if !sources.is_empty() {
+                    let sources_sym = self.intern("sources");
+                    let sources_tid = self.build_parse_list(&sources);
+                    named_args.push((sources_sym, sources_tid));
+                }
+            } else if let Some(ml) = self.child_by_kind(pf, "module_list") {
+                // Modules
+                let modules: Vec<_> = self.children_by_kind(ml, "module_declaration")
+                    .into_iter()
+                    .filter_map(|m| self.convert_module_term(m))
+                    .collect();
+                if !modules.is_empty() {
+                    let modules_sym = self.intern("modules");
+                    let modules_tid = self.build_parse_list(&modules);
+                    named_args.push((modules_sym, modules_tid));
+                }
+            }
 
-                let command = strings.first().cloned().unwrap_or_default();
+            // Tools names — collect name children that appear after "tools:" keyword
+            let all_names: Vec<_> = self.children_by_kind(pf, "name")
+                .into_iter()
+                .collect();
+            let pf_text = self.text(pf);
 
-                // args: all string literals after the first, until a non-string is found
-                // This is a simplification; proper handling would check positions
-                let args = if strings.len() > 1 {
-                    // Check if "args" keyword is in text
-                    let tf_text = self.text(tf);
-                    if tf_text.contains("args") {
-                        strings[1..].to_vec()
-                            .into_iter()
-                            .take_while(|_| true) // simplified
-                            .collect()
-                    } else {
-                        Vec::new()
+            let mut tool_tids = Vec::new();
+            let mut domain_tids = Vec::new();
+
+            if let Some(tools_pos) = pf_text.find("tools") {
+                if let Some(domains_pos) = pf_text.find("domains") {
+                    for n in &all_names {
+                        let name_start = n.start_byte() - pf.start_byte();
+                        if name_start > domains_pos {
+                            domain_tids.push(self.alloc_string(self.text(*n)));
+                        } else if name_start > tools_pos {
+                            tool_tids.push(self.alloc_string(self.text(*n)));
+                        }
                     }
                 } else {
-                    Vec::new()
-                };
-
-                let working_dir = {
-                    let tf_text = self.text(tf);
-                    if tf_text.contains("working_dir") {
-                        strings.last().cloned()
-                    } else {
-                        None
+                    for n in &all_names {
+                        let name_start = n.start_byte() - pf.start_byte();
+                        if name_start > tools_pos {
+                            tool_tids.push(self.alloc_string(self.text(*n)));
+                        }
                     }
-                };
+                }
+            }
 
-                let timeout = self.child_by_kind(tf, "duration_literal")
-                    .map(|d| self.text(d).to_string());
+            if !tool_tids.is_empty() {
+                let tools_sym = self.intern("tools");
+                let tools_tid = self.build_parse_list(&tool_tids);
+                named_args.push((tools_sym, tools_tid));
+            }
+            if !domain_tids.is_empty() {
+                let domains_sym = self.intern("domains");
+                let domains_tid = self.build_parse_list(&domain_tids);
+                named_args.push((domains_sym, domains_tid));
+            }
 
-                let success = self.child_by_kind(tf, "success_criterion")
-                    .map(|sc| self.convert_success_criterion(sc))
-                    .unwrap_or(SuccessCriterion::ExitZero);
+            meta = self.convert_meta_block(pf);
+        }
 
-                let meta = self.convert_meta_block(tf);
+        let functor = self.intern("Project");
+        let term = self.terms.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::new(),
+            named_args,
+        });
 
-                (command, args, working_dir, timeout, success, meta)
-            } else {
-                (String::new(), Vec::new(), None, None, SuccessCriterion::ExitZero, None)
-            };
-
-        Some(Tool { name, command, args, working_dir, timeout, success, meta, span })
+        Some(Fact { term, sort: Some("Project".to_string()), meta, span })
     }
 
-    fn convert_success_criterion(&mut self, node: Node) -> SuccessCriterion {
+    /// Convert a source_root CST node to a Term::Fn.
+    fn convert_source_root_term(&mut self, node: Node) -> TermId {
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+
+        let strings: Vec<_> = self.children_by_kind(node, "string_literal")
+            .into_iter()
+            .map(|s| self.string_literal_text(s))
+            .collect();
+        if let Some(path) = strings.first() {
+            let path_sym = self.intern("path");
+            let path_tid = self.alloc_string(path);
+            named_args.push((path_sym, path_tid));
+        }
+
+        if let Some(lang_node) = self.children_by_kind(node, "identifier").first().copied() {
+            let language_sym = self.intern("language");
+            let language_tid = self.alloc_string(self.text(lang_node));
+            named_args.push((language_sym, language_tid));
+        }
+
+        if let Some(scope_node) = self.child_by_kind(node, "source_scope") {
+            let scope_sym = self.intern("scope");
+            let scope_tid = self.alloc_ident(self.text(scope_node));
+            named_args.push((scope_sym, scope_tid));
+        }
+
+        let functor = self.intern("SourceRoot");
+        self.terms.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::new(),
+            named_args,
+        })
+    }
+
+    /// Convert a module_declaration CST node to a Term::Fn.
+    fn convert_module_term(&mut self, node: Node) -> Option<TermId> {
+        let name_node = self.field(node, "name")?;
+        let name_text = self.text(name_node);
+
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        let name_sym = self.intern("name");
+        named_args.push((name_sym, self.alloc_string(name_text)));
+
+        if let Some(mf) = self.child_by_kind(node, "module_fields") {
+            let strings: Vec<_> = self.children_by_kind(mf, "string_literal")
+                .into_iter()
+                .map(|s| self.string_literal_text(s))
+                .collect();
+            if let Some(root) = strings.first() {
+                let root_sym = self.intern("root");
+                named_args.push((root_sym, self.alloc_string(root)));
+            }
+
+            let idents: Vec<_> = self.children_by_kind(mf, "identifier")
+                .into_iter()
+                .map(|n| self.text(n).to_string())
+                .collect();
+            if let Some(lang) = idents.first() {
+                let lang_sym = self.intern("language");
+                named_args.push((lang_sym, self.alloc_string(lang)));
+            }
+            if let Some(build) = idents.get(1) {
+                let build_sym = self.intern("build");
+                named_args.push((build_sym, self.alloc_string(build)));
+            }
+
+            let sources: Vec<_> = self.children_by_kind(mf, "source_root")
+                .into_iter()
+                .map(|s| self.convert_source_root_term(s))
+                .collect();
+            if !sources.is_empty() {
+                let sources_sym = self.intern("sources");
+                named_args.push((sources_sym, self.build_parse_list(&sources)));
+            }
+        }
+
+        let functor = self.intern("Module");
+        Some(self.terms.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::new(),
+            named_args,
+        }))
+    }
+
+    // ── Stage 0: tool → Fact ────────────────────────────────────
+
+    fn convert_tool_sugar(&mut self, node: Node) -> Option<Fact> {
+        let span = self.span(node);
+        let name_node = self.field(node, "name")?;
+        let name_text = self.text(name_node);
+
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        let name_sym = self.intern("name");
+        named_args.push((name_sym, self.alloc_string(name_text)));
+
+        let mut meta = None;
+
+        if let Some(tf) = self.child_by_kind(node, "tool_fields") {
+            // command: first string literal
+            let strings: Vec<_> = self.children_by_kind(tf, "string_literal")
+                .into_iter()
+                .map(|s| self.string_literal_text(s))
+                .collect();
+
+            if let Some(cmd) = strings.first() {
+                let cmd_sym = self.intern("command");
+                named_args.push((cmd_sym, self.alloc_string(cmd)));
+            }
+
+            // args: string literals inside args section
+            let tf_text = self.text(tf);
+            if tf_text.contains("args") && strings.len() > 1 {
+                // Strings after the command, before working_dir
+                let arg_count = if tf_text.contains("working_dir") {
+                    strings.len() - 2 // last is working_dir
+                } else {
+                    strings.len() - 1
+                };
+                let arg_tids: Vec<_> = strings[1..=arg_count]
+                    .iter()
+                    .map(|s| self.alloc_string(s))
+                    .collect();
+                if !arg_tids.is_empty() {
+                    let args_sym = self.intern("args");
+                    named_args.push((args_sym, self.build_parse_list(&arg_tids)));
+                }
+            }
+
+            // working_dir
+            if tf_text.contains("working_dir") {
+                if let Some(wd) = strings.last() {
+                    let wd_sym = self.intern("working_dir");
+                    named_args.push((wd_sym, self.alloc_string(wd)));
+                }
+            }
+
+            // timeout
+            if let Some(d) = self.child_by_kind(tf, "duration_literal") {
+                let timeout_sym = self.intern("timeout");
+                let timeout_tid = self.alloc_string(self.text(d));
+                named_args.push((timeout_sym, timeout_tid));
+            }
+
+            // success criterion
+            if let Some(sc) = self.child_by_kind(tf, "success_criterion") {
+                let success_sym = self.intern("success");
+                let success_tid = self.convert_success_criterion_term(sc);
+                named_args.push((success_sym, success_tid));
+            }
+
+            meta = self.convert_meta_block(tf);
+        }
+
+        let functor = self.intern("Tool");
+        let term = self.terms.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::new(),
+            named_args,
+        });
+
+        Some(Fact { term, sort: Some("Tool".to_string()), meta, span })
+    }
+
+    /// Convert a success_criterion CST node to a term.
+    fn convert_success_criterion_term(&mut self, node: Node) -> TermId {
         let text = self.text(node);
         if text.starts_with("ExitZero") {
-            SuccessCriterion::ExitZero
+            self.alloc_ident("ExitZero")
         } else if text.starts_with("ExitCode") {
-            let int = self.child_by_kind(node, "integer_literal")
-                .and_then(|n| self.text(n).parse::<i64>().ok())
-                .unwrap_or(0);
-            SuccessCriterion::ExitCode(int)
+            let code = self.child_by_kind(node, "integer_literal")
+                .map(|n| self.convert_term(n))
+                .unwrap_or_else(|| self.terms.alloc(Term::Const(Literal::Int(0))));
+            let functor = self.intern("ExitCode");
+            self.terms.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::from_elem(code, 1),
+                named_args: SmallVec::new(),
+            })
         } else if text.starts_with("OutputMatches") {
             let s = self.child_by_kind(node, "string_literal")
-                .map(|n| {
-                    let raw = self.text(n);
-                    raw[1..raw.len() - 1].to_string()
-                })
-                .unwrap_or_default();
-            SuccessCriterion::OutputMatches(s)
+                .map(|n| self.alloc_string(&self.string_literal_text(n)))
+                .unwrap_or_else(|| self.alloc_string(""));
+            let functor = self.intern("OutputMatches");
+            self.terms.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::from_elem(s, 1),
+                named_args: SmallVec::new(),
+            })
         } else if text.starts_with("Custom") {
             let mut cursor = node.walk();
-            let term = node.named_children(&mut cursor)
+            let inner = node.named_children(&mut cursor)
                 .find(|c| is_term_kind(c.kind()))
                 .map(|c| self.convert_term(c))
                 .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
-            SuccessCriterion::Custom(term)
+            let functor = self.intern("Custom");
+            self.terms.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::from_elem(inner, 1),
+                named_args: SmallVec::new(),
+            })
         } else {
-            SuccessCriterion::ExitZero
+            self.alloc_ident("ExitZero")
         }
     }
 
-    // ── Stage 0: workitem ───────────────────────────────────────
+    // ── Stage 0: workitem → Fact ────────────────────────────────
 
-    fn convert_workitem(&mut self, node: Node) -> Option<WorkItem> {
+    fn convert_workitem_sugar(&mut self, node: Node) -> Option<Fact> {
         let span = self.span(node);
-        let id = self.field(node, "id")
-            .map(|n| self.convert_name(n))?;
+        let id_node = self.field(node, "id")?;
+        let id_text = self.text(id_node);
 
-        let fields_node = self.child_by_kind(node, "workitem_fields");
-        let wf = fields_node?;
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        let id_sym = self.intern("id");
+        named_args.push((id_sym, self.alloc_string(id_text)));
 
-        // Description
-        let description = {
-            let mut found = None;
+        let wf = self.child_by_kind(node, "workitem_fields")?;
+
+        // description: find the term after "description" keyword
+        {
+            let mut found = false;
             for i in 0..wf.child_count() {
                 if let Some(child) = wf.child(i) {
                     if !child.is_named() && self.text(child) == "description" {
-                        // Next named sibling should be the term
                         for j in (i+1)..wf.child_count() {
                             if let Some(next) = wf.child(j) {
                                 if next.is_named() && is_term_kind(next.kind()) {
-                                    found = Some(self.convert_term(next));
+                                    let desc_sym = self.intern("description");
+                                    let desc_tid = self.convert_term(next);
+                                    named_args.push((desc_sym, desc_tid));
+                                    found = true;
                                     break;
                                 }
                             }
@@ -1514,262 +1646,371 @@ impl<'a> Converter<'a> {
                     }
                 }
             }
-            found
-        };
+            let _ = found;
+        }
 
-        // Context refs
-        let context = self.children_by_kind(wf, "context_ref")
-            .into_iter()
-            .filter_map(|c| self.convert_context_ref(c))
-            .collect();
+        // context
+        let context_nodes = self.children_by_kind(wf, "context_ref");
+        if !context_nodes.is_empty() {
+            let context_tids: Vec<_> = context_nodes
+                .into_iter()
+                .map(|c| self.convert_context_ref_term(c))
+                .collect();
+            let ctx_sym = self.intern("context");
+            named_args.push((ctx_sym, self.build_parse_list(&context_tids)));
+        }
 
-        // Acceptance criteria
-        let acceptance = self.children_by_kind(wf, "acceptance_criterion")
-            .into_iter()
-            .filter_map(|a| self.convert_acceptance_criterion(a))
-            .collect();
+        // acceptance
+        let acc_nodes = self.children_by_kind(wf, "acceptance_criterion");
+        if !acc_nodes.is_empty() {
+            let acc_tids: Vec<_> = acc_nodes
+                .into_iter()
+                .map(|a| self.convert_acceptance_criterion_term(a))
+                .collect();
+            let acc_sym = self.intern("acceptance");
+            named_args.push((acc_sym, self.build_parse_list(&acc_tids)));
+        }
 
         // depends_on
-        let depends_on = Vec::new(); // simplified for now
+        {
+            let mut dep_tids = Vec::new();
+            let mut in_depends = false;
+            for i in 0..wf.child_count() {
+                if let Some(child) = wf.child(i) {
+                    if !child.is_named() && self.text(child) == "depends_on" {
+                        in_depends = true;
+                    } else if in_depends && child.is_named() && child.kind() == "name" {
+                        dep_tids.push(self.alloc_string(self.text(child)));
+                    } else if in_depends && !child.is_named() && self.text(child) == "]" {
+                        break;
+                    }
+                }
+            }
+            if !dep_tids.is_empty() {
+                let dep_sym = self.intern("depends_on");
+                named_args.push((dep_sym, self.build_parse_list(&dep_tids)));
+            }
+        }
 
         // generates
-        let generates = Vec::new(); // simplified for now
+        {
+            let mut gen_tids = Vec::new();
+            let mut in_generates = false;
+            for i in 0..wf.child_count() {
+                if let Some(child) = wf.child(i) {
+                    if !child.is_named() && self.text(child) == "generates" {
+                        in_generates = true;
+                    } else if in_generates && child.is_named() && is_term_kind(child.kind()) {
+                        gen_tids.push(self.convert_term(child));
+                    } else if in_generates && !child.is_named() && self.text(child) == "]" {
+                        break;
+                    }
+                }
+            }
+            if !gen_tids.is_empty() {
+                let gen_sym = self.intern("generates");
+                named_args.push((gen_sym, self.build_parse_list(&gen_tids)));
+            }
+        }
 
-        // capabilities
-        let requires_capability = self.children_by_kind(wf, "capability")
-            .into_iter()
-            .filter_map(|c| self.convert_capability(c))
-            .collect();
+        // requires_capability
+        let cap_nodes = self.children_by_kind(wf, "capability");
+        if !cap_nodes.is_empty() {
+            let cap_tids: Vec<_> = cap_nodes
+                .into_iter()
+                .map(|c| self.convert_capability_term(c))
+                .collect();
+            let cap_sym = self.intern("requires_capability");
+            named_args.push((cap_sym, self.build_parse_list(&cap_tids)));
+        }
 
         // status
-        let status = self.child_by_kind(wf, "work_status")
-            .map(|s| self.convert_work_status(s))
-            .unwrap_or(WorkStatus::Draft);
+        if let Some(s) = self.child_by_kind(wf, "work_status") {
+            let status_sym = self.intern("status");
+            let status_tid = self.convert_work_status_term(s);
+            named_args.push((status_sym, status_tid));
+        }
 
         let meta = self.convert_meta_block(wf);
 
-        Some(WorkItem {
-            id,
-            description,
-            context,
-            acceptance,
-            depends_on,
-            generates,
-            requires_capability,
-            status,
-            meta,
-            span,
-        })
+        let functor = self.intern("WorkItem");
+        let term = self.terms.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::new(),
+            named_args,
+        });
+
+        Some(Fact { term, sort: Some("WorkItem".to_string()), meta, span })
     }
 
-    fn convert_context_ref(&mut self, node: Node) -> Option<ContextRef> {
+    /// Convert a context_ref CST node to a term.
+    fn convert_context_ref_term(&mut self, node: Node) -> TermId {
         let text = self.text(node);
         if text.starts_with("FileRef") {
             let strings: Vec<_> = self.children_by_kind(node, "string_literal")
                 .into_iter()
-                .map(|s| {
-                    let raw = self.text(s);
-                    raw[1..raw.len() - 1].to_string()
-                })
+                .map(|s| self.string_literal_text(s))
                 .collect();
-            let path = strings.first().cloned().unwrap_or_default();
+            let path_tid = self.alloc_string(strings.first().map(|s| s.as_str()).unwrap_or(""));
 
             let ints: Vec<_> = self.children_by_kind(node, "integer_literal")
                 .into_iter()
                 .filter_map(|n| self.text(n).parse::<i64>().ok())
                 .collect();
-            let lines = if ints.len() >= 2 {
-                Some((ints[0], ints[1]))
-            } else {
-                None
-            };
 
-            Some(ContextRef::FileRef { path, lines })
+            let functor = self.intern("FileRef");
+            if ints.len() >= 2 {
+                let lines_sym = self.intern("lines");
+                let from = self.terms.alloc(Term::Const(Literal::Int(ints[0])));
+                let to = self.terms.alloc(Term::Const(Literal::Int(ints[1])));
+                let range_functor = self.intern("Range");
+                let range = self.terms.alloc(Term::Fn {
+                    functor: range_functor,
+                    pos_args: SmallVec::from_slice(&[from, to]),
+                    named_args: SmallVec::new(),
+                });
+                self.terms.alloc(Term::Fn {
+                    functor,
+                    pos_args: SmallVec::from_elem(path_tid, 1),
+                    named_args: SmallVec::from_slice(&[(lines_sym, range)]),
+                })
+            } else {
+                self.terms.alloc(Term::Fn {
+                    functor,
+                    pos_args: SmallVec::from_elem(path_tid, 1),
+                    named_args: SmallVec::new(),
+                })
+            }
         } else if text.starts_with("FactRef") {
-            let name = self.child_by_kind(node, "name")
-                .map(|n| self.convert_name(n))?;
+            let name_text = self.child_by_kind(node, "name")
+                .map(|n| self.text(n))
+                .unwrap_or("?");
+            let name_tid = self.alloc_string(name_text);
+
             let mut cursor = node.walk();
             let term = node.named_children(&mut cursor)
                 .find(|c| is_term_kind(c.kind()))
                 .map(|c| self.convert_term(c))
                 .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
-            Some(ContextRef::FactRef { name, term })
+
+            let functor = self.intern("FactRef");
+            self.terms.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::from_slice(&[name_tid, term]),
+                named_args: SmallVec::new(),
+            })
         } else if text.starts_with("WorkItemRef") {
-            let name = self.child_by_kind(node, "name")
-                .map(|n| self.convert_name(n))?;
-            Some(ContextRef::WorkItemRef(name))
+            let name_text = self.child_by_kind(node, "name")
+                .map(|n| self.text(n))
+                .unwrap_or("?");
+            let name_tid = self.alloc_string(name_text);
+
+            let functor = self.intern("WorkItemRef");
+            self.terms.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::from_elem(name_tid, 1),
+                named_args: SmallVec::new(),
+            })
         } else {
-            None
+            self.err(format!("unexpected context_ref: {text}"), node);
+            self.terms.alloc(Term::Bottom)
         }
     }
 
-    fn convert_acceptance_criterion(&mut self, node: Node) -> Option<AcceptanceCriterion> {
+    /// Convert an acceptance_criterion CST node to a term.
+    fn convert_acceptance_criterion_term(&mut self, node: Node) -> TermId {
         let text = self.text(node);
         if text.starts_with("ToolPasses") {
-            let name = self.child_by_kind(node, "name")
-                .map(|n| self.convert_name(n))?;
-            Some(AcceptanceCriterion::ToolPasses { tool: name, bindings: None })
+            let name_text = self.child_by_kind(node, "name")
+                .map(|n| self.text(n))
+                .unwrap_or("?");
+            let name_tid = self.alloc_ident(name_text);
+            let functor = self.intern("ToolPasses");
+            self.terms.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::from_elem(name_tid, 1),
+                named_args: SmallVec::new(),
+            })
         } else if text.starts_with("FactHolds") {
-            let name = self.child_by_kind(node, "name")
-                .map(|n| self.convert_name(n))?;
+            let name_text = self.child_by_kind(node, "name")
+                .map(|n| self.text(n))
+                .unwrap_or("?");
+            let name_tid = self.alloc_ident(name_text);
+
             let mut cursor = node.walk();
             let term = node.named_children(&mut cursor)
                 .find(|c| is_term_kind(c.kind()))
                 .map(|c| self.convert_term(c))
                 .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
-            Some(AcceptanceCriterion::FactHolds { name, term })
+
+            let functor = self.intern("FactHolds");
+            self.terms.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::from_slice(&[name_tid, term]),
+                named_args: SmallVec::new(),
+            })
         } else if text.starts_with("Compiles") {
+            let functor = self.intern("Compiles");
             if let Some(sr) = self.child_by_kind(node, "source_root") {
-                Some(AcceptanceCriterion::Compiles(
-                    CompileTarget::SourceRoot(self.convert_source_root(sr))
-                ))
+                let sr_tid = self.convert_source_root_term(sr);
+                self.terms.alloc(Term::Fn {
+                    functor,
+                    pos_args: SmallVec::from_elem(sr_tid, 1),
+                    named_args: SmallVec::new(),
+                })
             } else if let Some(n) = self.child_by_kind(node, "name") {
-                Some(AcceptanceCriterion::Compiles(
-                    CompileTarget::Module(self.convert_name(n))
-                ))
+                let mod_tid = self.alloc_ident(self.text(n));
+                let module_sym = self.intern("module");
+                self.terms.alloc(Term::Fn {
+                    functor,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::from_slice(&[(module_sym, mod_tid)]),
+                })
             } else {
-                None
+                self.alloc_ident("Compiles")
             }
         } else if text.starts_with("Constraint") {
             let mut cursor = node.walk();
-            let term = node.named_children(&mut cursor)
+            let inner = node.named_children(&mut cursor)
                 .find(|c| is_term_kind(c.kind()))
                 .map(|c| self.convert_term(c))
                 .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
-            Some(AcceptanceCriterion::Constraint(term))
+            let functor = self.intern("Constraint");
+            self.terms.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::from_elem(inner, 1),
+                named_args: SmallVec::new(),
+            })
         } else {
-            None
+            self.err(format!("unexpected acceptance criterion: {text}"), node);
+            self.terms.alloc(Term::Bottom)
         }
     }
 
-    fn convert_capability(&mut self, node: Node) -> Option<Capability> {
+    /// Convert a capability CST node to a term.
+    fn convert_capability_term(&mut self, node: Node) -> TermId {
         let text = self.text(node);
         if text.starts_with("Code") {
             let strings: Vec<_> = self.children_by_kind(node, "string_literal")
                 .into_iter()
                 .map(|s| {
-                    let raw = self.text(s);
-                    raw[1..raw.len() - 1].to_string()
+                    let val = self.string_literal_text(s);
+                    self.alloc_string(&val)
                 })
                 .collect();
-            Some(Capability::Code { languages: strings })
+            let langs_tid = self.build_parse_list(&strings);
+            let lang_sym = self.intern("languages");
+            let functor = self.intern("Code");
+            self.terms.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[(lang_sym, langs_tid)]),
+            })
         } else {
-            match text.trim() {
-                "Test" => Some(Capability::Test),
-                "Refine" => Some(Capability::Refine),
-                "Review" => Some(Capability::Review),
-                "Decompose" => Some(Capability::Decompose),
-                "Architect" => Some(Capability::Architect),
-                "HumanJudgment" => Some(Capability::HumanJudgment),
-                _ => None,
-            }
+            // Simple capability: Test, Refine, Review, etc.
+            self.alloc_ident(text.trim())
         }
     }
 
-    fn convert_work_status(&mut self, node: Node) -> WorkStatus {
-        let text = self.text(node).trim();
-        if text == "Draft" {
-            WorkStatus::Draft
-        } else if text == "Open" {
-            WorkStatus::Open
-        } else if text.starts_with("Claimed") {
-            let strings = self.extract_keyed_strings(node);
-            WorkStatus::Claimed {
-                agent: strings.get("agent").cloned().unwrap_or_default(),
-                since: strings.get("since").cloned().unwrap_or_default(),
-            }
-        } else if text.starts_with("Delivered") {
-            let strings = self.extract_keyed_strings(node);
-            WorkStatus::Delivered {
-                agent: strings.get("agent").cloned().unwrap_or_default(),
-                at: strings.get("at").cloned().unwrap_or_default(),
-            }
-        } else if text.starts_with("Verified") {
-            let strings = self.extract_keyed_strings(node);
-            WorkStatus::Verified {
-                at: strings.get("at").cloned().unwrap_or_default(),
-            }
-        } else if text.starts_with("Rejected") {
-            let strings = self.extract_keyed_strings(node);
-            WorkStatus::Rejected {
-                reason: strings.get("reason").cloned().unwrap_or_default(),
-                at: strings.get("at").cloned().unwrap_or_default(),
-            }
-        } else if text.starts_with("ProposalRejected") {
-            let strings = self.extract_keyed_strings(node);
-            WorkStatus::ProposalRejected {
-                reason: strings.get("reason").cloned().unwrap_or_default(),
-                at: strings.get("at").cloned().unwrap_or_default(),
-            }
-        } else if text.starts_with("Stale") {
-            let strings = self.extract_keyed_strings(node);
-            WorkStatus::Stale {
-                reason: strings.get("reason").cloned().unwrap_or_default(),
-                since: strings.get("since").cloned().unwrap_or_default(),
-            }
+    /// Convert a work_status CST node to a term.
+    fn convert_work_status_term(&mut self, node: Node) -> TermId {
+        let text = self.text(node).trim().to_string();
+        if text == "Draft" || text == "Open" {
+            self.alloc_ident(&text)
         } else {
-            WorkStatus::Draft
+            // Statuses with fields: Claimed, Delivered, Verified, Rejected, etc.
+            let variant = if text.starts_with("Claimed") { "Claimed" }
+                else if text.starts_with("Delivered") { "Delivered" }
+                else if text.starts_with("Verified") { "Verified" }
+                else if text.starts_with("ProposalRejected") { "ProposalRejected" }
+                else if text.starts_with("Rejected") { "Rejected" }
+                else if text.starts_with("Stale") { "Stale" }
+                else { return self.alloc_ident("Draft"); };
+
+            let keyed = self.extract_keyed_strings(node);
+            let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+            for (k, v) in &keyed {
+                let k_sym = self.intern(k);
+                let v_tid = self.alloc_string(v);
+                named_args.push((k_sym, v_tid));
+            }
+
+            let functor = self.intern(variant);
+            self.terms.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::new(),
+                named_args,
+            })
         }
     }
 
-    /// Extract key:value string pairs from a node like `Claimed(agent: "x", since: "y")`
-    fn extract_keyed_strings(&self, node: Node) -> std::collections::HashMap<String, String> {
-        let mut result = std::collections::HashMap::new();
-        let mut prev_key: Option<String> = None;
+    // ── Stage 0: feedback → Fact ────────────────────────────────
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
+    fn convert_feedback_sugar(&mut self, node: Node) -> Option<Fact> {
+        let span = self.span(node);
+        let fields_node = self.child_by_kind(node, "feedback_fields")?;
+
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+
+        // workitem
+        if let Some(n) = self.child_by_kind(fields_node, "name") {
+            let wi_sym = self.intern("workitem");
+            named_args.push((wi_sym, self.alloc_string(self.text(n))));
+        }
+
+        // author and at: keyed string literals
+        // Grammar: 'author' ':' string_literal, 'content' ':' _term, 'at' ':' string_literal
+        // Walk children to find author/at strings and the content term
+        let mut prev_key: Option<&str> = None;
+        for i in 0..fields_node.child_count() {
+            if let Some(child) = fields_node.child(i) {
                 if !child.is_named() {
                     let t = self.text(child);
-                    // Keys are anonymous tokens like "agent", "since", "at", "reason"
                     match t {
-                        "agent" | "since" | "at" | "reason" => {
-                            prev_key = Some(t.to_string());
+                        "author" | "at" | "content" => {
+                            prev_key = Some(t);
                         }
                         _ => {}
                     }
-                } else if child.kind() == "string_literal" {
-                    if let Some(key) = prev_key.take() {
-                        let raw = self.text(child);
-                        let val = raw[1..raw.len() - 1].to_string();
-                        result.insert(key, val);
+                } else if let Some(key) = prev_key.take() {
+                    match key {
+                        "author" => {
+                            if child.kind() == "string_literal" {
+                                let author_sym = self.intern("author");
+                                let val = self.string_literal_text(child);
+                                named_args.push((author_sym, self.alloc_string(&val)));
+                            }
+                        }
+                        "at" => {
+                            if child.kind() == "string_literal" {
+                                let at_sym = self.intern("at");
+                                let val = self.string_literal_text(child);
+                                named_args.push((at_sym, self.alloc_string(&val)));
+                            }
+                        }
+                        "content" => {
+                            if is_term_kind(child.kind()) {
+                                let content_sym = self.intern("content");
+                                let content_tid = self.convert_term(child);
+                                named_args.push((content_sym, content_tid));
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
         }
-        result
-    }
-
-    // ── Stage 0: feedback ───────────────────────────────────────
-
-    fn convert_feedback(&mut self, node: Node) -> Option<Feedback> {
-        let span = self.span(node);
-        let fields_node = self.child_by_kind(node, "feedback_fields")?;
-
-        let workitem = self.child_by_kind(fields_node, "name")
-            .map(|n| self.convert_name(n))
-            .unwrap_or_else(|| Name::simple(self.intern("?"), span));
-
-        let strings: Vec<_> = self.children_by_kind(fields_node, "string_literal")
-            .into_iter()
-            .map(|s| {
-                let raw = self.text(s);
-                raw[1..raw.len() - 1].to_string()
-            })
-            .collect();
-
-        let author = strings.first().cloned().unwrap_or_default();
-        let at = strings.get(1).cloned().unwrap_or_default();
-
-        let mut cursor = fields_node.walk();
-        let content = fields_node.named_children(&mut cursor)
-            .find(|c| is_term_kind(c.kind()))
-            .map(|c| self.convert_term(c))
-            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
 
         let meta = self.convert_meta_block(fields_node);
 
-        Some(Feedback { workitem, author, content, at, meta, span })
+        let functor = self.intern("Feedback");
+        let term = self.terms.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::new(),
+            named_args,
+        });
+
+        Some(Fact { term, sort: Some("Feedback".to_string()), meta, span })
     }
 
     // ── Expressions ──────────────────────────────────────────────

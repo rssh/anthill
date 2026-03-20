@@ -6,6 +6,6 @@
 sort anthill.prelude.Sort
   import anthill.prelude.{Lattice, Eq}
 
-  fact Eq{T = Sort}
-  fact Lattice{T = Sort}
+  fact Eq[T = Sort]
+  fact Lattice[T = Sort]
 end

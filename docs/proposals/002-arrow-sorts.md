@@ -9,14 +9,14 @@
 
 Operations like `map` and `flatMap` take function arguments. In the current kernel, all operation parameters must be sort-typed — there are no function sorts. This forces **defunctionalization**: introducing auxiliary sorts and explicit `apply` operations for every function-passing pattern.
 
-The stdlib already provides `Function{A, B}` with an `apply` operation — this works but obscures intent:
+The stdlib already provides `Function[A, B]` with an `apply` operation — this works but obscures intent:
 
 ```anthill
 -- Without arrow sorts (defunctionalized, current):
-operation flatMap(fa: F{T = A}, k: Function{A = A, B = F{T = B}}) -> F{T = B}
+operation flatMap(fa: F[T = A], k: Function[A = A, B = F[T = B]]) -> F[T = B]
 
 -- With arrow sorts (direct):
-operation flatMap(fa: F{T = A}, f: (A) -> F{T = B}) -> F{T = B}
+operation flatMap(fa: F[T = A], f: (A) -> F[T = B]) -> F[T = B]
 ```
 
 Additionally, operations carry effect annotations. When functions become first-class values via arrow sorts, effect annotations should be expressible on arrow sorts too — unifying operation signatures with function types.
@@ -52,7 +52,7 @@ operation f(x: (A) -> B) -> C
 (A) -> B                                -- polymorphic function
 (A, B) -> C                             -- binary function
 () -> A                                 -- thunk (nullary)
-(A) -> F{T = B}                         -- Kleisli arrow
+(A) -> F[T = B]                         -- Kleisli arrow
 ((A) -> B) -> (A) -> B                  -- higher-order function
 (A) -> B @ Modifies(S)                  -- stateful function
 (A) -> B @ Errors(Err)                  -- fallible function
@@ -65,14 +65,14 @@ Arrow sorts associate to the right: `(A) -> (B) -> C` is `(A) -> ((B) -> C)`.
 
 A pure arrow `(A) -> B` has an empty effect set. It is a subtype of any effectful arrow.
 
-### Relationship to `Function{A, B}`
+### Relationship to `Function[A, B]`
 
-The arrow sort `(A) -> B` is sugar for `Function{A, B}` from stdlib. The existing `apply(f, x)` operation works on arrow-sorted values. The type checker treats them as equivalent:
+The arrow sort `(A) -> B` is sugar for `Function[A, B]` from stdlib. The existing `apply(f, x)` operation works on arrow-sorted values. The type checker treats them as equivalent:
 
 ```anthill
 -- These are the same sort:
 (Int) -> String
-Function{A = Int, B = String}
+Function[A = Int, B = String]
 ```
 
 ## Term Application
@@ -102,9 +102,9 @@ Existing named function application `name(args)` is unchanged — it is a specia
 An operation name, used in a term position where an arrow sort is expected, denotes the operation as a function value:
 
 ```anthill
-operation pure(a: A) -> F{T = A}
+operation pure(a: A) -> F[T = A]
 
--- 'pure' in term position has sort (A) -> F{T = A}:
+-- 'pure' in term position has sort (A) -> F[T = A]:
 rule right_id: flatMap(?m, pure) = ?m
 ```
 
@@ -147,14 +147,14 @@ In particular, a pure function `(A) -> B` (empty effect set) is a subtype of any
 
 - Pure functions can be passed wherever effectful functions are expected.
 - A `map` expecting `(A) -> B` (pure) rejects effectful functions — the caller must ensure purity.
-- A `flatMap` expecting `(A) -> F{T = B}` accepts pure continuations — the effects are inside `F`, not on the arrow.
+- A `flatMap` expecting `(A) -> F[T = B]` accepts pure continuations — the effects are inside `F`, not on the arrow.
 
 ```anthill
-operation map(fa: F{T = A}, f: (A) -> B) -> F{T = B}
+operation map(fa: F[T = A], f: (A) -> B) -> F[T = B]
 -- f must be pure — no effects allowed
 
-operation flatMap(fa: F{T = A}, f: (A) -> F{T = B}) -> F{T = B}
--- f is pure but returns an effectful computation F{T = B}
+operation flatMap(fa: F[T = A], f: (A) -> F[T = B]) -> F[T = B]
+-- f is pure but returns an effectful computation F[T = B]
 -- the effects are inside F, not on the arrow
 ```
 
@@ -242,7 +242,7 @@ sort Functor
   sort A = ?
   sort B = ?
 
-  operation map(fa: F{T = A}, f: (A) -> B) -> F{T = B}
+  operation map(fa: F[T = A], f: (A) -> B) -> F[T = B]
 
   -- Laws
   rule identity:    map(?fa, lambda x -> x) = ?fa
@@ -263,17 +263,17 @@ sort CpsMonad
   sort B = ?
   sort C = ?
 
-  operation pure(a: A) -> F{T = A}
-  operation map(fa: F{T = A}, f: (A) -> B) -> F{T = B}
-  operation flatMap(fa: F{T = A}, f: (A) -> F{T = B}) -> F{T = B}
+  operation pure(a: A) -> F[T = A]
+  operation map(fa: F[T = A], f: (A) -> B) -> F[T = B]
+  operation flatMap(fa: F[T = A], f: (A) -> F[T = B]) -> F[T = B]
 
   -- Derived
-  operation flatten(ffa: F{T = F{T = A}}) -> F{T = A}
+  operation flatten(ffa: F[T = F[T = A]]) -> F[T = A]
   rule flatten(?ffa) = flatMap(?ffa, lambda x -> x)
 
   -- Kleisli composition
-  operation bind-then(f: (A) -> F{T = B}, g: (B) -> F{T = C})
-    -> (A) -> F{T = C}
+  operation bind-then(f: (A) -> F[T = B], g: (B) -> F[T = C])
+    -> (A) -> F[T = C]
   rule bind-then(?f, ?g)(?x) = flatMap(?f(?x), ?g)
 
   -- Laws
@@ -292,9 +292,9 @@ sort CpsTryMonad
   import CpsMonad
   sort Err = ?
 
-  operation error(e: Err) -> F{T = A}
-  operation flatMapTry(fa: F{T = A}, f: (Try{T = A}) -> F{T = B}) -> F{T = B}
-  operation restore(fa: F{T = A}, handler: (Err) -> F{T = A}) -> F{T = A}
+  operation error(e: Err) -> F[T = A]
+  operation flatMapTry(fa: F[T = A], f: (Try[T = A]) -> F[T = B]) -> F[T = B]
+  operation restore(fa: F[T = A], handler: (Err) -> F[T = A]) -> F[T = A]
 
   -- Laws
   rule error_left:    flatMap(error(?e), ?f) = error(?e)
@@ -354,7 +354,7 @@ The arrow type grammar mirrors the existing Pratt operator table:
 ## Semantic Rules
 
 1. `(A1, ..., An) -> R` is a sort when all `Ai` and `R` are sorts.
-2. `(A) -> B` is equivalent to `Function{A, B}` from stdlib.
+2. `(A) -> B` is equivalent to `Function[A, B]` from stdlib.
 3. Arrow sorts associate to the right: `(A) -> (B) -> C` = `(A) -> ((B) -> C)`.
 4. An operation name in term position, where an arrow sort is expected, denotes the operation as a function value (eta-expansion).
 5. Rules with function-sorted variables are restricted to the Miller pattern fragment. The kernel rejects non-pattern rules at declaration time.
@@ -369,7 +369,7 @@ The arrow type grammar mirrors the existing Pratt operator table:
 All existing syntax remains valid:
 
 - `Fn(name, args)` term form — unchanged, is a special case of term application where the head is a name.
-- `Function{A, B}` — unchanged, is the desugared form of `(A) -> B`.
+- `Function[A, B]` — unchanged, is the desugared form of `(A) -> B`.
 - Operation declarations — unchanged. An operation `op(x: A) -> B` now also implicitly has the arrow sort `(A) -> B`.
 - `effects (...)` on operations — unchanged. The declaration-level `effects` clause and the type-level `@` annotation express the same information.
 - `->` and `@` in the Pratt table — unchanged. The same tokens work in both term and type position.

@@ -4,9 +4,9 @@ namespace anthill.prelude.Float
   export abs, neg, floor, ceil, round, recip
 
   -- Float satisfies the parametric algebra specs
-  fact Eq{T = Float}
-  fact Ordered{T = Float}
-  fact Numeric{T = Float}
+  fact Eq[T = Float]
+  fact Ordered[T = Float]
+  fact Numeric[T = Float]
 
   -- Operations beyond what Numeric provides
   operation {

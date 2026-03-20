@@ -85,7 +85,7 @@ fn self_collapse_heuristic() {
 fn requires_to_supertrait() {
     let out = gen(r#"sort Ordered {
   sort T = ?
-  requires Eq{T = T}
+  requires Eq[T = T]
   operation compare(a: T, b: T) -> Int
 }
 "#);
@@ -98,7 +98,7 @@ fn requires_to_supertrait() {
 fn fact_inside_sort_to_supertrait() {
     let out = gen(r#"sort QueryableStore {
   fact Store
-  operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
+  operation retrieve(store: QueryableStore, pattern: Term) -> List[T = Term]
 }
 "#);
     assert!(out.contains("trait QueryableStore: Store {"), "output:\n{out}");
@@ -111,7 +111,7 @@ fn effects_modifies_to_mut_self_result() {
     // Modify alone → &mut self, no Result wrapping
     let out = gen(r#"sort Store {
   operation persist(store: Store, fact: Term, meta: Meta) -> FactId
-    effects (Modify{store})
+    effects (Modify[store])
 }
 "#);
     assert!(out.contains("fn persist(&mut self"), "output:\n{out}");
@@ -120,7 +120,7 @@ fn effects_modifies_to_mut_self_result() {
     // Modify + Error → &mut self + Result
     let out2 = gen(r#"sort Store {
   operation persist(store: Store, fact: Term, meta: Meta) -> FactId
-    effects (Modify{store}, Error)
+    effects (Modify[store], Error)
 }
 "#);
     assert!(out2.contains("fn persist(&mut self"), "output:\n{out2}");
@@ -133,7 +133,7 @@ fn effects_modifies_to_mut_self_result() {
 fn effects_reads_to_self_result() {
     // No effects → &self, no Result
     let out = gen(r#"sort QueryableStore {
-  operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
+  operation retrieve(store: QueryableStore, pattern: Term) -> List[T = Term]
 }
 "#);
     assert!(out.contains("fn retrieve(&self"), "output:\n{out}");
@@ -141,7 +141,7 @@ fn effects_reads_to_self_result() {
 
     // Error alone → &self + Result
     let out2 = gen(r#"sort QueryableStore {
-  operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
+  operation retrieve(store: QueryableStore, pattern: Term) -> List[T = Term]
     effects (Error)
 }
 "#);
@@ -157,8 +157,8 @@ fn prelude_type_mappings() {
   count: Int,
   ratio: Float,
   flag: Bool,
-  items: List{T = Int},
-  maybe: Option{T = String}
+  items: List[T = Int],
+  maybe: Option[T = String]
 )
 "#);
     assert!(out.contains("i64"), "should have i64: {out}");
@@ -324,8 +324,8 @@ fn fact_with_bindings_to_supertrait() {
     let out = gen(r#"sort Stream {
   sort S = ?
   sort E = ?
-  fact Streamable{T = S}
-  operation head(s: S) -> Option{T = S}
+  fact Streamable[T = S]
+  operation head(s: S) -> Option[T = S]
 }
 "#);
     assert!(out.contains("Streamable"), "should have supertrait Streamable: {out}");
@@ -381,7 +381,7 @@ fn abstract_effect_parameter_to_result() {
     let out = gen(r#"sort Stream {
   sort T = ?
   sort E = ?
-  operation head(s: Stream) -> Option{T = T}
+  operation head(s: Stream) -> Option[T = T]
     effects (E)
   operation isEmpty(s: Stream) -> Bool
 }

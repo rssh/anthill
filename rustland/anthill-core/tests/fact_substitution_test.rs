@@ -319,7 +319,7 @@ fn resolve_sort_inst_param_extracts_operation_binding() {
 fn auto_bind_same_named_operations() {
     let mut kb = load_monoid_kb();
 
-    // AutoBindTest has `requires Monoid{T = Int}` with no explicit combine/identity.
+    // AutoBindTest has `requires Monoid[T = Int]` with no explicit combine/identity.
     // Since AutoBindTest has same-named ops (combine, identity), they should auto-bind.
     let auto_term = kb.resolve_qualified_name_term("AutoBindTest");
     let var_inst = make_var(&mut kb, "inst");

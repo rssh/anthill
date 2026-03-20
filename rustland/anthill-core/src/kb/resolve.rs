@@ -69,7 +69,7 @@ pub enum BuiltinTag {
     // ── Conversion builtins ─────────────────────────────────
     /// `anthill.prelude.BigInt.to_bigint(?n, ?result)` — Int → BigInt.
     ToBigInt,
-    /// `anthill.prelude.BigInt.to_int(?n, ?result)` — BigInt → Option{Int}.
+    /// `anthill.prelude.BigInt.to_int(?n, ?result)` — BigInt → Option[Int].
     ToInt,
 }
 
@@ -994,7 +994,7 @@ impl KnowledgeBase {
         }
     }
 
-    /// `extract_sort_ref(?inst, ?result)`: given a term like `Eq{T = Int}` (represented as
+    /// `extract_sort_ref(?inst, ?result)`: given a term like `Eq[T = Int]` (represented as
     /// `ParameterizedType(Eq(), T=Int())`) or a simple `Ref(Eq)`, extract the sort symbol
     /// and bind `?result` to `Ref(sort_sym)`. Delays if `?inst` is unbound.
     fn builtin_extract_sort(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {

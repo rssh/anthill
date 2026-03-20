@@ -28,4 +28,4 @@ sort Ring
 end
 
 -- Int satisfies Ring
-fact Ring{Int}
+fact Ring[Int]

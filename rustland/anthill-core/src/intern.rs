@@ -88,7 +88,7 @@ pub struct Scope {
 pub struct SymbolTable {
     defs: Vec<SymbolDef>,
     /// Dedup map for Unresolved symbols: name → Symbol
-    intern_map: HashMap<String, Symbol>,
+    pub(crate) intern_map: HashMap<String, Symbol>,
     /// Qualified name → unique resolved Symbol
     pub by_qualified_name: HashMap<String, Symbol>,
     /// All per-scope data: scope_raw → Scope

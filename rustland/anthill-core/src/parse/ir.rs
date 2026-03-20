@@ -93,7 +93,7 @@ impl Name {
 pub enum TypeExpr {
     /// Simple type: `Account`, `Int`
     Simple(Name),
-    /// Parameterized type: `List{T=Int}`
+    /// Parameterized type: `List[T=Int]`
     Parameterized {
         name: Name,
         bindings: Vec<SortBinding>,
@@ -149,11 +149,7 @@ pub enum Item {
     OperationBlock(OperationBlock),
     RuleBlock(RuleBlock),
     Describe(Describe),
-    // Stage 0
-    Project(Project),
-    Tool(Tool),
-    WorkItem(WorkItem),
-    Feedback(Feedback),
+    // Stage 0 (import_tools needs special handling — it triggers file loading)
     ImportTools(ImportTools),
 }
 
@@ -275,6 +271,10 @@ pub struct Entity {
 #[derive(Debug)]
 pub struct Fact {
     pub term: TermId,
+    /// Optional sort hint for the KB. Stage0 sugar (workitem, tool, etc.)
+    /// desugars to facts with a specific sort (e.g. "WorkItem") rather than
+    /// the generic "Fact" sort. `None` means sort "Fact".
+    pub sort: Option<String>,
     pub meta: Option<MetaBlock>,
     pub span: Span,
 }
@@ -336,169 +336,10 @@ pub struct MetaEntry {
     pub value: TermId,
 }
 
-// ── Stage 0: project ────────────────────────────────────────────
-
-#[derive(Debug)]
-pub struct Project {
-    pub name: Name,
-    pub structure: ProjectStructure,
-    pub import_tools: Vec<ImportTools>,
-    pub tools: Vec<Name>,
-    pub domains: Vec<Name>,
-    pub meta: Option<MetaBlock>,
-    pub span: Span,
-}
-
-#[derive(Debug)]
-pub enum ProjectStructure {
-    Simple(SimpleProjectFields),
-    Modules(Vec<ModuleDecl>),
-    ToolsOnly,
-}
-
-#[derive(Debug)]
-pub struct SimpleProjectFields {
-    pub language: String,
-    pub build: Option<String>,
-    pub sources: Vec<SourceRoot>,
-}
-
-#[derive(Debug)]
-pub struct ModuleDecl {
-    pub name: Name,
-    pub root: String,
-    pub language: String,
-    pub build: Option<String>,
-    pub sources: Vec<SourceRoot>,
-    pub meta: Option<MetaBlock>,
-    pub span: Span,
-}
-
-#[derive(Debug)]
-pub struct SourceRoot {
-    pub path: String,
-    pub language: Option<String>,
-    pub scope: SourceScope,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SourceScope {
-    Main,
-    Test,
-    Generated,
-    Docs,
-}
-
 // ── Stage 0: import tools ───────────────────────────────────────
 
 #[derive(Debug)]
 pub struct ImportTools {
     pub names: Vec<Name>,
-    pub span: Span,
-}
-
-// ── Stage 0: tool ───────────────────────────────────────────────
-
-#[derive(Debug)]
-pub struct Tool {
-    pub name: Name,
-    pub command: String,
-    pub args: Vec<String>,
-    pub working_dir: Option<String>,
-    pub timeout: Option<String>,
-    pub success: SuccessCriterion,
-    pub meta: Option<MetaBlock>,
-    pub span: Span,
-}
-
-#[derive(Debug)]
-pub enum SuccessCriterion {
-    ExitZero,
-    ExitCode(i64),
-    OutputMatches(String),
-    Custom(TermId),
-}
-
-// ── Stage 0: workitem ───────────────────────────────────────────
-
-#[derive(Debug)]
-pub struct WorkItem {
-    pub id: Name,
-    pub description: Option<TermId>,
-    pub context: Vec<ContextRef>,
-    pub acceptance: Vec<AcceptanceCriterion>,
-    pub depends_on: Vec<Name>,
-    pub generates: Vec<TermId>,
-    pub requires_capability: Vec<Capability>,
-    pub status: WorkStatus,
-    pub meta: Option<MetaBlock>,
-    pub span: Span,
-}
-
-#[derive(Debug)]
-pub enum ContextRef {
-    FileRef {
-        path: String,
-        lines: Option<(i64, i64)>,
-    },
-    FactRef {
-        name: Name,
-        term: TermId,
-    },
-    WorkItemRef(Name),
-}
-
-#[derive(Debug)]
-pub enum AcceptanceCriterion {
-    ToolPasses {
-        tool: Name,
-        bindings: Option<Vec<(String, TermId)>>,
-    },
-    FactHolds {
-        name: Name,
-        term: TermId,
-    },
-    Compiles(CompileTarget),
-    Constraint(TermId),
-}
-
-#[derive(Debug)]
-pub enum CompileTarget {
-    SourceRoot(SourceRoot),
-    Module(Name),
-}
-
-#[derive(Debug)]
-pub enum Capability {
-    Code { languages: Vec<String> },
-    Test,
-    Refine,
-    Review,
-    Decompose,
-    Architect,
-    HumanJudgment,
-}
-
-#[derive(Debug)]
-pub enum WorkStatus {
-    Draft,
-    Open,
-    Claimed { agent: String, since: String },
-    Delivered { agent: String, at: String },
-    Verified { at: String },
-    Rejected { reason: String, at: String },
-    ProposalRejected { reason: String, at: String },
-    Stale { reason: String, since: String },
-}
-
-// ── Stage 0: feedback ───────────────────────────────────────────
-
-#[derive(Debug)]
-pub struct Feedback {
-    pub workitem: Name,
-    pub author: String,
-    pub content: TermId,
-    pub at: String,
-    pub meta: Option<MetaBlock>,
     pub span: Span,
 }

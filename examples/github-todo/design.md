@@ -1,6 +1,6 @@
 # Stage 0: The Practical Bootstrap — Structured Work Decomposition for the Anthill
 
-> **Example**: For a concrete, runnable example of Stage 0 usage (project config, work items, tools, feedback), see [`examples/github-todo/`](../../examples/github-todo/).
+> **Example**: For a concrete, runnable example of Stage 0 usage (project config, work items, tools, feedback), see [`examples/github-todo/`](./).
 
 ## 1. Introduction
 
@@ -8,7 +8,7 @@ Stage 0 is the lightweight entry point to the anthill metasystem. It provides **
 
 Where the full anthill (see [metasystem-design-draft.md](../metasystem-design-draft.md)) describes a system of domains, proof obligations, trust levels, and stigmergic agents operating over a language-independent knowledge base, Stage 0 asks a simpler question: **can we decompose work into structured items with verifiable acceptance, and run those checks automatically?**
 
-The answer is three entity types defined in the `anthill.stage0` standard domain of the core language (see [stage0-standard-library.md §2](stage0-standard-library.md#2-the-standard-domain-anthillstage0) for the full domain definition):
+The answer is three entity types defined in the `anthill.stage0` standard domain of the core language (see [standard-library.md §2](standard-library.md#2-the-standard-domain-anthillstage0) for the full domain definition):
 
 - **Project** — binds a knowledge base to a real codebase (source roots, tools, domains)
 - **ToolDef** — binds an external command (compiler, test runner, linter) to the KB world
@@ -38,33 +38,11 @@ Real projects cannot start there. Consider:
 
 These projects can benefit from structured decomposition **today**, without any formalization overhead. Stage 0 provides this: define what needs to be done, define how to check it's done, let agents work in parallel, verify automatically.
 
-The key insight: **structured work decomposition with acceptance criteria is itself a form of knowledge accumulation**. Every verified WorkItem is a fact: "this acceptance criterion was met at this point in time." That fact persists. As the project matures, these facts become the foundation for stronger guarantees.
-
-## 3. Relationship to the Full Anthill
-
-Stage 0 is not a separate system — it is the **foundation layer** of the anthill. Every Stage 0 construct has a natural growth path into the full metasystem:
-
-| Stage 0 Construct | Full Anthill Evolution |
-|---|---|
-| **WorkItem** (structured task) | Grows into **Requirement** + **Obligation** (formal specification + proof obligation) |
-| **AcceptanceCriterion.ToolPasses** (external tool check) | Grows into **Constraint** + **Obligation** (formal invariant + proof) |
-| **AcceptanceCriterion.FactHolds** (KB fact check) | Already IS a KB query — the lightest bridge to formal reasoning |
-| **WorkItem.generates** (what verified items produce) | Becomes persistent **Fact** entries in the KB |
-| **WorkItem.depends_on** (task dependencies) | Becomes the **dependency graph** used for contamination propagation |
-| **WorkItem.requires_capability** (what the task needs) | Becomes `Requires(capability)` **Effect** on operations |
-| **Capability** (agent capabilities) | Grows into **Castes** with trust levels (see [metasystem-design-draft.md §6.3](../metasystem-design-draft.md#63-ant-castes-capabilities-and-trust)) |
-| **Feedback** (refinement comments) | Grows into **Review** facts with structured verdicts |
-| **ToolDef** (external command binding) | Becomes an **Implementation** verification backend |
-| **Project** (codebase binding) | Already IS the top-level Project construct of the full anthill |
-| **WorkStatus.Verified** | Corresponds to `trust: tested-N` or `trust: verified` in the full system |
-
-The growth is **incremental**: a project using only Stage 0 constructs can, at any point, start adding domain declarations, formal requirements, and proof obligations. The existing WorkItems and their verification history remain valid — they just gain a richer context.
-
 ## 4. Stage 0 Entity Types
 
-Entity types and sorts in the `anthill.stage0` standard domain, with syntactic sugar for convenient authoring. The kernel language ([kernel-language.md](kernel-language.md)) provides four constructs: `domain`, `sort` (abstract and defined/ADT), `rule`, and `operation`; `entity` is syntactic sugar for a single-constructor defined sort. Stage 0 uses `entity` and `fact` to define these types and their instances. The three primary entities are **Project**, **ToolDef**, and **WorkItem**; supporting types include **Feedback** (refinement comments) and the **Capability** sort (what agents can do).
+Entity types and sorts in the `anthill.stage0` standard domain, with syntactic sugar for convenient authoring. The kernel language ([kernel-language.md](../../docs/kernel-language.md)) provides four constructs: `domain`, `sort` (abstract and defined/ADT), `rule`, and `operation`; `entity` is syntactic sugar for a single-constructor defined sort. Stage 0 uses `entity` and `fact` to define these types and their instances. The three primary entities are **Project**, **ToolDef**, and **WorkItem**; supporting types include **Feedback** (refinement comments) and the **Capability** sort (what agents can do).
 
-For the full domain definition, see [stage0-standard-library.md §2](stage0-standard-library.md#2-the-standard-domain-anthillstage0). For the sugar grammar and file organization, see [stage0-standard-library.md §3–§8](stage0-standard-library.md#3-syntactic-sugar).
+For the full domain definition, see [standard-library.md §2](standard-library.md#2-the-standard-domain-anthillstage0). For the sugar grammar and file organization, see [standard-library.md §3–§8](standard-library.md#3-syntactic-sugar).
 
 ### 4.1 Project
 
@@ -78,7 +56,7 @@ Modules are referenced by name elsewhere: `$module` in tool args resolves to the
 
 A **ToolDef** binds an external command to the KB world — the bridge between the knowledge base and real builds, tests, and checks.
 
-Common tools (sbt, npm, pytest, flyway, etc.) are provided as **standard packs** shipped with anthill and auto-imported via the `build` field or explicit `import tools` (see [stage0-standard-library.md §3.4](stage0-standard-library.md#34-tool-sugar)). Projects only define project-specific tools. The `$param` placeholders in args are substituted when the tool is invoked. Standard packs can be **overridden** per-project — declare a `tool` with the same name to replace the imported definition.
+Common tools (sbt, npm, pytest, flyway, etc.) are provided as **standard packs** shipped with anthill and auto-imported via the `build` field or explicit `import tools` (see [standard-library.md §3.4](standard-library.md#34-tool-sugar)). Projects only define project-specific tools. The `$param` placeholders in args are substituted when the tool is invoked. Standard packs can be **overridden** per-project — declare a `tool` with the same name to replace the imported definition.
 
 ### 4.3 WorkItem
 
@@ -94,7 +72,7 @@ The **WorkItem** is the key entity type — lighter than a Requirement (no forma
 
 4. **`depends_on`** — creates a partial order over work items. Independent items can be worked in parallel. This is the lightweight precursor to the full dependency graph used for contamination propagation.
 
-5. **`requires_capability`** — optional list of `Capability` values needed to work on this item. The spawner matches agent capabilities against this field. Capabilities are: `Code(languages)`, `Test`, `Refine`, `Review`, `Decompose`, `Architect`, `HumanJudgment`. See [stage0-standard-library.md §2](stage0-standard-library.md#2-the-standard-domain-anthillstage0) for the `Capability` sort.
+5. **`requires_capability`** — optional list of `Capability` values needed to work on this item. The spawner matches agent capabilities against this field. Capabilities are: `Code(languages)`, `Test`, `Refine`, `Review`, `Decompose`, `Architect`, `HumanJudgment`. See [standard-library.md §2](standard-library.md#2-the-standard-domain-anthillstage0) for the `Capability` sort.
 
 6. **`status` transitions** follow a state machine with **refinement loops** — most transitions can cycle through feedback and revision before advancing:
 ```
@@ -109,9 +87,9 @@ The **WorkItem** is the key entity type — lighter than a Requirement (no forma
   Any status ──(environment change)──▶ Stale
 ```
 
-**Refinement loops** are driven by `Feedback` facts (see [stage0-standard-library.md §3.6](stage0-standard-library.md#36-feedback-sugar)). An agent with `Refine` capability attaches feedback to a WorkItem; the responsible agent revises and produces a new fact (via `meta.supersedes`). This cycle repeats N times until the reviewer (with `Review` capability) accepts or rejects. Feedback facts persist as history — they show why the design evolved.
+**Refinement loops** are driven by `Feedback` facts (see [standard-library.md §3.6](standard-library.md#36-feedback-sugar)). An agent with `Refine` capability attaches feedback to a WorkItem; the responsible agent revises and produces a new fact (via `meta.supersedes`). This cycle repeats N times until the reviewer (with `Review` capability) accepts or rejects. Feedback facts persist as history — they show why the design evolved.
 
-At Stage 0, the `trust` metadata field is simpler: typically `proposed` (for new items), `tested-N` (for items verified by tools), or `axiom` (for items asserted by humans). The full trust hierarchy (`proved`, `verified`, `empirical`, etc.) becomes relevant as the project grows. For metadata details, see [kernel-language.md §7](kernel-language.md#7-metadata).
+At Stage 0, the `trust` metadata field is simpler: typically `proposed` (for new items), `tested-N` (for items verified by tools), or `axiom` (for items asserted by humans). The full trust hierarchy (`proved`, `verified`, `empirical`, etc.) becomes relevant as the project grows. For metadata details, see [kernel-language.md §7](../../docs/kernel-language.md#7-metadata).
 
 ## 5. The Development Workflow
 
@@ -142,7 +120,7 @@ In an MCP/LLM session, the agent calls `anthill_decompose(description)` or uses 
 It writes WorkItems with `status: Draft` to a `.anthill.draft` file:
 
 ```
--- .anthill/workitems/match-support.anthill.draft
+-- anthill/workitems/match-support.anthill.draft
 workitem WI-CPS2-MATCH-001 {
   description: "Add AST pattern matching for match expressions"
   context: FileRef("compiler-plugin/src/main/scala/cps/plugin/CpsTransformPhase.scala")
@@ -559,10 +537,10 @@ These capabilities are added incrementally as the project grows through stages.
 
 ### 9.1 The Anthill Ecosystem
 
-The anthill is not a monolithic tool — it is a set of **cooperating tools sharing `.anthill/` state**. All tools read and write the same `.anthill` files in the git repository. No tool is "primary" — they observe and modify the anthill independently. This IS stigmergy: the tools themselves follow the ant pattern.
+The anthill is not a monolithic tool — it is a set of **cooperating tools sharing `anthill/` state**. All tools read and write the same `anthill/` files in the git repository. No tool is "primary" — they observe and modify the anthill independently. This IS stigmergy: the tools themselves follow the ant pattern.
 
 ```
-                       .anthill/  (git-committed, shared state)
+                       anthill/  (git-committed, shared state)
                       ╱     │      ╲           ╲
                 ╱           │           ╲            ╲
   Claude Code        anthill CLI      anthill-ui      anthill-spawn
@@ -581,7 +559,7 @@ The layers are additive — a project can start with Layer 0 alone (just the ski
 | **2** | `anthill-ui` | Web dashboard, interactive dependency graph, kanban | When ASCII isn't enough |
 | **3** | `anthill-spawn` | Multi-agent coordination, git worktrees, merge | When parallel agents are needed |
 
-All layers produce identical results — they implement the same state machine over the same files. The `.anthill` file format (defined in [stage0-standard-library.md](stage0-standard-library.md)) is the integration point.
+All layers produce identical results — they implement the same state machine over the same files. The `.anthill` file format (defined in [standard-library.md](standard-library.md)) is the integration point.
 
 ### 9.2 Layer 0: Claude Code Integration
 
@@ -603,8 +581,8 @@ The most immediate way to use anthill. No binary to install — just a Claude Co
 
 What the skill does on each command:
 
-1. Reads `.anthill/project.anthill` — project structure, tools, modules
-2. Reads `.anthill/workitems/*.anthill` (+ `.draft`, `.rejected`) — current state
+1. Reads `anthill/project.anthill` — project structure, tools, modules
+2. Reads `anthill/workitems/*.anthill` (+ `.draft`, `.rejected`) — current state
 3. Performs the requested action (list, decompose, transition, verify)
 4. Validates consistency (suffix matches status, deps exist, no cycles)
 5. Writes updated `.anthill` files
@@ -617,7 +595,7 @@ The skill runs acceptance checks by invoking tools via Bash — `sbt test`, `npm
 ## Anthill
 
 This project uses anthill for work decomposition.
-Configuration: .anthill/project.anthill
+Configuration: anthill/project.anthill
 Use /anthill commands to interact.
 
 Project conventions:
@@ -633,7 +611,7 @@ The split: skill = generic anthill agent behavior (reusable, installed once); CL
 A standalone binary for validation, CI integration, and non-LLM workflows. Implements the same operations as the skill but with structured input/output:
 
 ```
-anthill init                          -- initialize .anthill/ in current directory
+anthill init                          -- initialize anthill/ in current directory
 anthill project show                  -- display project configuration
 
 -- Decomposition (see §5.1)
@@ -676,13 +654,13 @@ This exposes the same operations as MCP tools (`anthill_list_workitems`, `anthil
 
 ### 9.4 Layer 2: Web UI (`anthill-ui`)
 
-A local web server for visualization. Reads `.anthill/` files, watches for filesystem changes, renders:
+A local web server for visualization. Reads `anthill/` files, watches for filesystem changes, renders:
 
 - **Dependency graph** — interactive, zoomable (D3 or similar)
 - **Kanban board** — columns: Draft | Open | Claimed | Delivered | Verified | Rejected
 - **Agent activity log** — who claimed what, when, results
 - **Acceptance run results** — tool output, pass/fail, duration
-- **Live updates** — watches `.anthill/` for changes, auto-refreshes
+- **Live updates** — watches `anthill/` for changes, auto-refreshes
 
 ```
 anthill ui                            -- starts http://localhost:3000
@@ -694,7 +672,7 @@ The UI is read-mostly — it may support drag-drop status changes (which write b
 For quick one-shot visualization without a persistent server, Claude Code can generate and open an HTML file:
 
 ```
-/anthill graph --browser              -- generates .anthill/graph.html, opens in browser
+/anthill graph --browser              -- generates anthill/graph.html, opens in browser
 ```
 
 ### 9.5 Layer 3: Agent Spawner (`anthill-spawn`)
@@ -706,15 +684,15 @@ A paired tool that watches the anthill for unclaimed work and spawns LLM agents 
 ```
 my-project/                           ← main worktree (human + Claude Code)
   .git/
-  .anthill/
+  anthill/
   src/
 
 ../my-project-wi-002/                 ← agent A's worktree (spawned)
-  .anthill/                            ← own branch: work/wi-002
+  anthill/                             ← own branch: work/wi-002
   src/
 
 ../my-project-wi-003/                 ← agent B's worktree (spawned)
-  .anthill/                            ← own branch: work/wi-003
+  anthill/                             ← own branch: work/wi-003
   src/
 ```
 
@@ -744,7 +722,7 @@ agent-pool:
 
 ```
 loop:
-  state = read .anthill/workitems/*.anthill from main branch
+  state = read anthill/workitems/*.anthill from main branch
   claimable = items where status == Open
               AND all deps Verified
               AND not assigned to an active worktree
@@ -771,7 +749,7 @@ loop:
 **Merge strategy.** When an agent's branch merges back to main:
 
 - Code changes merge normally via git
-- `.anthill/` status updates merge (item goes Open → Verified in one merge)
+- `anthill/` status updates merge (item goes Open → Verified in one merge)
 - Independent items in separate files — no conflict
 - **Post-merge re-verification** is essential: the main branch may have changed since the agent branched. The spawner (or a CI hook) runs `anthill verify --all-delivered` on main after each merge
 
@@ -779,19 +757,19 @@ loop:
 
 ### 9.6 Data Model
 
-WorkItem, ToolDef, Project, and their associated types (ContextRef, AcceptanceCriterion, WorkStatus, SuccessCriterion, etc.) as host-language data structures mirroring the entity definitions in [stage0-standard-library.md §2](stage0-standard-library.md#2-the-standard-domain-anthillstage0). Implementation in Scala (primary) and/or Python.
+WorkItem, ToolDef, Project, and their associated types (ContextRef, AcceptanceCriterion, WorkStatus, SuccessCriterion, etc.) as host-language data structures mirroring the entity definitions in [standard-library.md §2](standard-library.md#2-the-standard-domain-anthillstage0). Implementation in Scala (primary) and/or Python.
 
 ### 9.7 Storage
 
 Two options, both suitable for Stage 0:
 
-**Option A: File-based (`.anthill/` directory)**
+**Option A: File-based (`anthill/` directory)**
 
-Uses `.anthill` files with the sugar grammar defined in [stage0-standard-library.md §8](stage0-standard-library.md#8-grammar-of-the-sugar). See [stage0-standard-library.md §6](stage0-standard-library.md#6-file-organization) for directory structure.
+Uses `.anthill` files with the sugar grammar defined in [standard-library.md §8](standard-library.md#8-grammar-of-the-sugar). See [standard-library.md §6](standard-library.md#6-file-organization) for directory structure.
 
 Advantages: human-readable, git-friendly, easy to inspect and edit manually. Natural integration with git worktrees (each worktree has its own copy). Works well for small-to-medium projects.
 
-**Option B: SQLite (`.anthill/anthill.db`)**
+**Option B: SQLite (`anthill/anthill.db`)**
 
 Advantages: efficient querying, atomic transactions, handles large numbers of items. Better for projects with hundreds of WorkItems.
 
@@ -840,6 +818,6 @@ Stage 0 is where the anthill begins. It provides:
 3. **Natural growth path** — every Stage 0 construct evolves into its full anthill counterpart
 4. **Agent-agnostic** — humans, LLMs, and automated tools all interact through the same `.anthill` files
 5. **Stigmergic** — no orchestrator; the WorkItem list IS the work queue; the dependency graph IS the coordination mechanism
-6. **Ecosystem of paired tools** — skill, CLI, web UI, spawner share `.anthill/` state; add layers as the project grows
+6. **Ecosystem of paired tools** — skill, CLI, web UI, spawner share `anthill/` state; add layers as the project grows
 
 Start with `/anthill decompose`. Review and accept. Let agents work — in the main worktree or in spawned worktrees. Verify automatically. The anthill grows from here.

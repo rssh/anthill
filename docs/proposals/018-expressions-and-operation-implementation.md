@@ -2,7 +2,7 @@
 
 **Status:** Draft
 **Depends on:** [016-extensible-infix-operators](016-extensible-infix-operators.md)
-**Related:** [002-arrow-sorts](002-arrow-sorts.md) (arrow sort `(A) -> B` syntax, not yet implemented; `Function{A, B}` from stdlib available now)
+**Related:** [002-arrow-sorts](002-arrow-sorts.md) (arrow sort `(A) -> B` syntax, not yet implemented; `Function[A, B]` from stdlib available now)
 **Affects:** Kernel Language Specification §5, §8; Grammar; Reflect stdlib
 
 ## Motivation
@@ -26,25 +26,25 @@ These three coexist. An operation may have rules (spec), an expression body (ant
 An operation may have an expression body after its signature and clauses:
 
 ```anthill
-sort List{T = ?}
+sort List[T = ?]
   entity nil
-  entity cons(head: T, tail: List{T})
+  entity cons(head: T, tail: List[T])
 
-  operation length(l: List{T}) -> Int
+  operation length(l: List[T]) -> Int
     match l
       nil -> 0
       cons(_, tail) -> 1 + length(tail)
     end
   end
 
-  operation append(l1: List{T}, l2: List{T}) -> List{T}
+  operation append(l1: List[T], l2: List[T]) -> List[T]
     match l1
       nil -> l2
       cons(h, t) -> cons(h, append(t, l2))
     end
   end
 
-  operation map(f: (T) -> U, l: List{T}) -> List{U}
+  operation map(f: (T) -> U, l: List[T]) -> List[U]
     match l
       nil -> nil
       cons(h, t) ->
@@ -130,7 +130,7 @@ zip_with(lambda (a, b) -> Ring.add(a, b), xs, ys)
 
 Without type annotations, parameter types are logical variables (`?`) — inferred from context.
 
-Lambda expressions inherit the enclosing scope's `requires` constraints. A lambda inside an operation on a sort with `requires Ring{R}` can call `Ring.add` without declaring its own constraints.
+Lambda expressions inherit the enclosing scope's `requires` constraints. A lambda inside an operation on a sort with `requires Ring[R]` can call `Ring.add` without declaring its own constraints.
 
 #### Function application
 
@@ -186,18 +186,18 @@ No special expression form needed — the parser produces flat operator chains a
 ```anthill
 sort Polynom
   sort R = ?
-  requires Ring{R}
+  requires Ring[R]
 
-  entity polynom(coefficients: List{R})
+  entity polynom(coefficients: List[R])
 
-  operation add(p1: Polynom{R}, p2: Polynom{R}) -> Polynom{R}
+  operation add(p1: Polynom[R], p2: Polynom[R]) -> Polynom[R]
     let cs = zip_with(lambda (a, b) -> a + b,
                       coefficients(p1),
                       coefficients(p2))
     polynom(coefficients: cs)
   end
 
-  operation evaluate(p: Polynom{R}, x: R) -> R
+  operation evaluate(p: Polynom[R], x: R) -> R
     fold(lambda (acc, c) -> acc * x + c,
          Ring.zero,
          coefficients(p))
@@ -205,7 +205,7 @@ sort Polynom
 end
 ```
 
-Here `Ring.add`, `Ring.mul`, `Ring.zero` resolve through the `requires Ring{T = R}` constraint. The concrete dispatch target is determined at instantiation time (when `R` is bound to a specific sort).
+Here `Ring.add`, `Ring.mul`, `Ring.zero` resolve through the `requires Ring[T = R]` constraint. The concrete dispatch target is determined at instantiation time (when `R` is bound to a specific sort).
 
 ## Reflect Representation
 
@@ -215,12 +215,12 @@ Expressions are represented as terms in the KB via sorts in `anthill.reflect`.
 
 ```anthill
 sort Expr
-  entity match_expr(scrutinee: Expr, branches: List{T = MatchBranch})
+  entity match_expr(scrutinee: Expr, branches: List[T = MatchBranch])
   entity if_expr(cond: Expr, then_branch: Expr, else_branch: Expr)
   entity let_expr(name: Symbol, value: Expr, body: Expr)
   entity lambda(param: Pattern, body: Expr)
-  entity apply(fn: Symbol, args: List{T = ApplyArg})
-  entity constructor(name: Symbol, args: List{T = ApplyArg})
+  entity apply(fn: Symbol, args: List[T = ApplyArg])
+  entity constructor(name: Symbol, args: List[T = ApplyArg])
   entity var_ref(name: Symbol)        -- lexical variable: x, acc
   entity int_lit(value: Int)
   entity float_lit(value: Float)
@@ -230,20 +230,20 @@ end
 
 entity MatchBranch(
   pattern: Pattern,
-  guard: Option{T = Expr},
+  guard: Option[T = Expr],
   body: Expr
 )
 
 entity ApplyArg(
-  name: Option{T = Symbol},
+  name: Option[T = Symbol],
   value: Expr
 )
 
 sort Pattern
-  entity var_pattern(name: Symbol, type_ann: Option{T = Term})
-  entity tuple_pattern(elements: List{T = Pattern})
-  entity named_tuple_pattern(fields: List{T = NamedPattern})
-  entity constructor_pattern(name: Symbol, args: List{T = Pattern})
+  entity var_pattern(name: Symbol, type_ann: Option[T = Term])
+  entity tuple_pattern(elements: List[T = Pattern])
+  entity named_tuple_pattern(fields: List[T = NamedPattern])
+  entity constructor_pattern(name: Symbol, args: List[T = Pattern])
   entity literal_pattern(value: Term)
   entity wildcard
 end
@@ -263,11 +263,11 @@ Logical variables (`?x`) can appear anywhere in an expression. Since expressions
 rule length(nil) :- 0
 
 -- ?T in an expression (works the same way — expressions are terms):
-rule gen_add(?T) :- Ring{?T},
-  OperationImpl{
+rule gen_add(?T) :- Ring[?T],
+  OperationImpl[
     operation: add,
     body: lambda (a, b) -> apply(Ring.add, a, b)
-  }
+  ]
 ```
 
 Two kinds of variables in expressions:
@@ -313,7 +313,7 @@ Links an operation to its anthill expression body:
 ```anthill
 entity OperationImpl(
   operation: Symbol,
-  params: List{T = Symbol},
+  params: List[T = Symbol],
   body: Expr
 )
 ```
@@ -324,8 +324,8 @@ The loader converts expression syntax in operation declarations to `OperationImp
 
 When the system needs to execute an operation:
 
-1. **External implementation**: `Implementation{target: op, language: current_target}` — delegate to host-language code via toolchain
-2. **Ensures sort**: a sort with `ensures Spec{Type}` that provides a body for the operation
+1. **External implementation**: `Implementation[target: op, language: current_target]` — delegate to host-language code via toolchain
+2. **Ensures sort**: a sort with `ensures Spec[Type]` that provides a body for the operation
 3. **Default implementation**: operation body in the spec sort itself
 4. **Neither** — operation is abstract (only spec, no implementation)
 
@@ -336,12 +336,12 @@ For code generation, external `Implementation` takes priority. For the anthill r
 Rules and expression bodies serve different purposes:
 
 ```anthill
-sort List{T = ?}
+sort List[T = ?]
   -- Rule: universal property, any implementation must satisfy this
   rule length(nil) :- 0
 
   -- Expression body: one specific implementation
-  operation length(l: List{T}) -> Int
+  operation length(l: List[T]) -> Int
     match l
       nil -> 0
       cons(_, tail) -> 1 + length(tail)
@@ -360,8 +360,8 @@ A sort can separate its **specification** (operation signatures, laws) from its 
 
 ```
 stdlib/algebra/ring.anthill        -- spec: sort Ring with operations and laws
-stdlib/algebra/int_ring.anthill    -- impl: sort IntRing ensures Ring{Int}
-stdlib/algebra/float_ring.anthill  -- impl: sort FloatRing ensures Ring{Float}
+stdlib/algebra/int_ring.anthill    -- impl: sort IntRing ensures Ring[Int]
+stdlib/algebra/float_ring.anthill  -- impl: sort FloatRing ensures Ring[Float]
 generated/matrix_ring.anthill      -- auto-generated implementation
 ```
 
@@ -375,8 +375,8 @@ This enables three workflows:
 
 ### `ensures` — the dual of `requires`
 
-- `requires Ring{R}` — "I depend on Ring for R" (consumer)
-- `ensures Ring{Int}` — "I provide Ring for Int" (implementor)
+- `requires Ring[R]` — "I depend on Ring for R" (consumer)
+- `ensures Ring[Int]` — "I provide Ring for Int" (implementor)
 
 ```anthill
 -- Spec sort (ring.anthill): defines the interface
@@ -410,7 +410,7 @@ end
 ```anthill
 -- Implementation sort (int_ring.anthill): provides the bodies
 sort IntRing
-  ensures Ring{Int}
+  ensures Ring[Int]
 
   -- Required: provide all abstract operations
   operation add(a: Int, b: Int) -> Int
@@ -454,17 +454,17 @@ Different sorts can provide different implementations for different types or pro
 
 ```anthill
 sort IntRing
-  ensures Ring{Int}
+  ensures Ring[Int]
   -- ... Int operations using native arithmetic
 end
 
 sort FloatRing
-  ensures Ring{Float}
+  ensures Ring[Float]
   -- ... Float operations using floating-point arithmetic
 end
 
 sort MatrixRing
-  ensures Ring{Matrix}
+  ensures Ring[Matrix]
   -- ... Matrix operations using linear algebra
 end
 ```
@@ -473,11 +473,11 @@ Each `ensures` sort is a named entity in the KB — queryable, reflectable, sele
 
 ### Non-Coherent Implementations (Multiple for Same Type)
 
-A spec may have multiple valid implementations for the same type. Classic example: `Monoid{Int}` — both `(+, 0)` and `(*, 1)` are valid monoids.
+A spec may have multiple valid implementations for the same type. Classic example: `Monoid[Int]` — both `(+, 0)` and `(*, 1)` are valid monoids.
 
 ```anthill
 sort IntAddMonoid
-  ensures Monoid{Int}
+  ensures Monoid[Int]
   operation combine(a: Int, b: Int) -> Int
     a + b
   end
@@ -487,7 +487,7 @@ sort IntAddMonoid
 end
 
 sort IntMulMonoid
-  ensures Monoid{Int}
+  ensures Monoid[Int]
   operation combine(a: Int, b: Int) -> Int
     a * b
   end
@@ -502,15 +502,15 @@ end
 ```anthill
 -- Unambiguous: require the specific implementation, not the abstract spec
 sort SumReducer
-  requires IntAddMonoid    -- brings additive Monoid{Int} into scope
+  requires IntAddMonoid    -- brings additive Monoid[Int] into scope
 end
 
 sort ProductReducer
-  requires IntMulMonoid    -- brings multiplicative Monoid{Int} into scope
+  requires IntMulMonoid    -- brings multiplicative Monoid[Int] into scope
 end
 ```
 
-Since `IntAddMonoid` ensures `Monoid{Int}`, requiring `IntAddMonoid` transitively provides all `Monoid` operations — with the additive implementation.
+Since `IntAddMonoid` ensures `Monoid[Int]`, requiring `IntAddMonoid` transitively provides all `Monoid` operations — with the additive implementation.
 
 **Conflicting implementations in the same scope** — qualify by name:
 
@@ -534,7 +534,7 @@ An `ensures` sort provides anthill expression bodies. For host-language implemen
 ```anthill
 -- Anthill implementation (expression bodies)
 sort IntRing
-  ensures Ring{Int}
+  ensures Ring[Int]
   operation add(a: Int, b: Int) -> Int
     a + b
   end
@@ -560,7 +560,7 @@ Both are valid implementation strategies. The resolution order (§Resolution Ord
 EnsuresDecl ::= 'ensures' Type
 ```
 
-The type expression is a parameterized sort reference: `Ring{Int}`, `Functor{List}`, etc. The `ensures` sort must provide bodies for all abstract operations of the referenced spec.
+The type expression is a parameterized sort reference: `Ring[Int]`, `Functor[List]`, etc. The `ensures` sort must provide bodies for all abstract operations of the referenced spec.
 
 ## Proof Obligations
 
@@ -572,7 +572,7 @@ In anthill, `rule head :- body` already has proof semantics: "head holds because
 
 ```anthill
 sort IntRing
-  ensures Ring{Int}
+  ensures Ring[Int]
 
   operation add(a: Int, b: Int) -> Int
     a + b
@@ -601,7 +601,7 @@ Proof obligations can be discharged by:
 5. **External proofs** — reference a proof artifact (Lean, Coq, SMT solver output):
 ```anthill
 sort IntRing
-  ensures Ring{Int}
+  ensures Ring[Int]
   -- ...
 end [proofs: "proofs/int_ring.lean"]
 ```
@@ -609,7 +609,7 @@ end [proofs: "proofs/int_ring.lean"]
 6. **Trust annotations** — mark as trusted with evidence level:
 ```anthill
 sort IntRing
-  ensures Ring{Int}
+  ensures Ring[Int]
   -- ...
 end [trust: tested-1000]
 ```
@@ -700,7 +700,7 @@ end
 ### Obligation Lifecycle
 
 ```
-ensures Ring{Int}
+ensures Ring[Int]
   → kernel generates Obligation facts (status: Pending)
   → check_obligation tries internal discharge (resolution, simplification)
   → externally proved obligations recorded as ProofResult facts

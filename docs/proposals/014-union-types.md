@@ -17,7 +17,7 @@ entity Requires(
 )
 ```
 
-The `spec` field is typed `Term` but actually holds either a `Ref` (simple requires like `requires Eq`) or a `SortView` (parameterized requires like `requires Eq{T = Int}`). The type `Term` says nothing about this constraint. What we want is:
+The `spec` field is typed `Term` but actually holds either a `Ref` (simple requires like `requires Eq`) or a `SortView` (parameterized requires like `requires Eq[T = Int]`). The type `Term` says nothing about this constraint. What we want is:
 
 ```anthill
 entity Requires(
@@ -45,10 +45,10 @@ operation extract(t: Ref | SortView) -> Symbol
 sort SpecRef = Ref | SortView
 ```
 
-The `|` operator is left-associative and has lower precedence than `Name{bindings}`:
+The `|` operator is left-associative and has lower precedence than `Name[bindings]`:
 
 ```anthill
-sort T = A | B{X = Int} | C    -- (A | B{X = Int}) | C
+sort T = A | B[X = Int] | C    -- (A | B[X = Int]) | C
 ```
 
 ### Grammar
@@ -188,7 +188,7 @@ sort Result {
 }
 
 -- Multiple error types without a wrapper sort
-operation connect(url: String) -> Result{T = Connection, E = Timeout | Refused | DnsError}
+operation connect(url: String) -> Result[T = Connection, E = Timeout | Refused | DnsError]
 ```
 
 ## Alternatives Considered

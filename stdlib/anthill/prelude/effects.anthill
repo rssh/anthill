@@ -3,22 +3,22 @@
 -- Each effect kind is a sort with an entity constructor:
 --   sort Modify { sort T = ?  entity Modify(target: T) }
 --
--- Type level:  Modify{T = store}   — sort instantiation, used in effects clauses
--- Term level:  Modify(store)       — entity instance, has type Modify{T = Store}
+-- Type level:  Modify[T = store]   — sort instantiation, used in effects clauses
+-- Term level:  Modify(store)       — entity instance, has type Modify[T = Store]
 --
--- Effect kinds are registered via `fact Effect{T = Kind{?}}`.
+-- Effect kinds are registered via `fact Effect[T = Kind[?]]`.
 -- The kernel checks effect declarations; interpretation is provided
 -- by the realization layer (host-language, unsafe).
 -- See kernel-language.md §5.5 (Effects).
 --
 -- Design principle: effects declare what is NOT visible from parameters.
 -- Currently implemented:
---   Modify{target} — mutates a parameter (non-obvious from signature)
+--   Modify[target] — mutates a parameter (non-obvious from signature)
 --   Error          — can fail with an untyped error
---   Error{type}    — can fail with a typed error
+--   Error[type]    — can fail with a typed error
 
 -- Effect: meta-sort for effect registration.
--- fact Effect{T = Modify{?}} means "Modify{target} for any target is a valid effect."
+-- fact Effect[T = Modify[?]] means "Modify[target] for any target is a valid effect."
 sort anthill.prelude.Effect {
   sort T = ?
 }
@@ -28,5 +28,5 @@ sort Modify   { sort T = ? entity Modify(target: T) }     -- mutates a resource'
 sort Error    { sort T = ? entity Error(target: T) }       -- can fail with a typed error
 
 -- Register as effects
-fact Effect{T = Modify{?}}
-fact Effect{T = Error{?}}
+fact Effect[T = Modify[?]]
+fact Effect[T = Error[?]]

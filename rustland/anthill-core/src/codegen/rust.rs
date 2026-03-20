@@ -462,8 +462,7 @@ impl<'a> RustCodegen<'a> {
                     // Skip — only meaningful inside sort bodies
                 }
                 // Stage 0 items — skip
-                Item::Project(_) | Item::Tool(_) | Item::WorkItem(_)
-                | Item::Feedback(_) | Item::ImportTools(_)
+                Item::ImportTools(_)
                 | Item::OperationBlock(_) | Item::RequiresDecl(_)
                 | Item::Describe(_) => {}
             }

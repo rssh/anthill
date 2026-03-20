@@ -243,7 +243,7 @@ fn ensure_intermediate_namespaces(
 /// Create an operation scope and define its parameters.
 ///
 /// Operations get their own scope so that parameter names are resolvable
-/// in effects clauses (e.g., `effects (Modify{store})` where `store` is a parameter).
+/// in effects clauses (e.g., `effects (Modify[store])` where `store` is a parameter).
 fn scan_operation_params(
     kb: &mut KnowledgeBase,
     parse_sym: &crate::intern::SymbolTable,
@@ -544,7 +544,7 @@ fn find_scope_by_name(kb: &mut KnowledgeBase, qualified: &str) -> Option<TermId>
     }))
 }
 
-/// Build an instantiation term for `requires Eq{T}`.
+/// Build an instantiation term for `requires Eq[T]`.
 fn build_instantiation_term(
     kb: &mut KnowledgeBase,
     parse_sym: &crate::intern::SymbolTable,
@@ -727,7 +727,6 @@ pub const PRELUDE_SORTS: &[&str] = &["Int", "BigInt", "Float", "String", "Bool"]
 const KERNEL_META_SORTS: &[&str] = &[
     "Sort", "Entity", "Fact", "Rule", "Operation", "Namespace",
     "Requirement", "Description", "Constraint", "Member",
-    "Project", "Tool", "WorkItem", "Feedback",
 ];
 
 /// KB-internal functor names used by the loader to construct fact terms.
@@ -1573,7 +1572,7 @@ pub fn convert_query_term(
                 .iter()
                 .map(|&id| convert_query_term(kb, parse_terms, parse_symbols, id, scope_raw, var_map))
                 .collect();
-            let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
+            let mut new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
                 .iter()
                 .map(|&(sym, id)| {
                     let n = parse_symbols.name(sym);
@@ -1581,6 +1580,25 @@ pub fn convert_query_term(
                     (kb_sym, convert_query_term(kb, parse_terms, parse_symbols, id, scope_raw, var_map))
                 })
                 .collect();
+
+            // Expand partial named args: fill missing entity fields with fresh vars
+            if let Some(all_fields) = kb.entity_field_names(kb_functor) {
+                let all_fields = all_fields.to_vec();
+                if new_named.len() < all_fields.len() {
+                    let provided: HashSet<Symbol> = new_named.iter().map(|(s, _)| *s).collect();
+                    for &field_sym in &all_fields {
+                        if !provided.contains(&field_sym) {
+                            let fresh = kb.fresh_var(field_sym);
+                            let var_term = kb.alloc(Term::Var(fresh));
+                            new_named.push((field_sym, var_term));
+                        }
+                    }
+                    let order: HashMap<Symbol, usize> = all_fields.iter().enumerate()
+                        .map(|(i, &s)| (s, i)).collect();
+                    new_named.sort_by_key(|(s, _)| order.get(s).copied().unwrap_or(usize::MAX));
+                }
+            }
+
             kb.alloc(Term::Fn { functor: kb_functor, pos_args: new_pos, named_args: new_named })
         }
         Term::Ident(sym) => {
@@ -1608,15 +1626,52 @@ fn resolve_name_in_kb(kb: &mut KnowledgeBase, name: &str, scope_raw: u32) -> Sym
         .unwrap_or_else(|| kb.intern(name))
 }
 
-/// Try to resolve a name in the KB: qualified name first, then scope-aware resolution.
+/// Try to resolve a name in the KB: qualified name first, then scope-aware resolution,
+/// then fallback search by short name across all defined symbols.
 fn resolve_name_in_kb_opt(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> Option<Symbol> {
     if let Some(&sym) = kb.symbols.by_qualified_name.get(name) {
         return Some(sym);
     }
     match kb.symbols.resolve_in_scope(name, scope_raw) {
         ResolveResult::Found(sym) => Some(sym),
-        _ => None,
+        _ => resolve_by_short_name(kb, name),
     }
+}
+
+/// Search all qualified names for one whose short name matches.
+/// Returns the unique match, or None if not found or ambiguous.
+fn resolve_by_short_name(kb: &KnowledgeBase, name: &str) -> Option<Symbol> {
+    // First check entity short-name index (fast path)
+    if let Some(&short) = kb.symbols.intern_map.get(name) {
+        if let Some(qualified) = kb.entity_qualified_for_short(short) {
+            return Some(qualified);
+        }
+    }
+    // General fallback: scan by_qualified_name for matching short name.
+    // When ambiguous, prefer builtins (e.g. anthill.reflect.not over anthill.prelude.Bool.not).
+    let mut found: Option<Symbol> = None;
+    let mut found_is_builtin = false;
+    for (qname, &sym) in &kb.symbols.by_qualified_name {
+        let short = qname.rsplit('.').next().unwrap_or(qname);
+        if short == name {
+            let is_builtin = kb.builtins.contains_key(&sym);
+            if found.is_some() {
+                if is_builtin && !found_is_builtin {
+                    // New match is a builtin, replace the non-builtin
+                    found = Some(sym);
+                    found_is_builtin = true;
+                } else if !is_builtin && found_is_builtin {
+                    // Keep the existing builtin
+                } else {
+                    return None; // truly ambiguous
+                }
+            } else {
+                found = Some(sym);
+                found_is_builtin = is_builtin;
+            }
+        }
+    }
+    found
 }
 
 struct Loader<'a> {
@@ -1724,7 +1779,18 @@ impl<'a> Loader<'a> {
                 });
                 self.kb.symbols.intern(name)
             }
-            ResolveResult::NotFound => self.kb.symbols.intern(name),
+            ResolveResult::NotFound => {
+                // Fallback 1: check entity short-name index
+                let interned = self.kb.symbols.intern(name);
+                if let Some(qualified) = self.kb.entity_qualified_for_short(interned) {
+                    qualified
+                } else if let Some(sym) = resolve_by_short_name(self.kb, name) {
+                    // Fallback 2: search all qualified names by short name
+                    sym
+                } else {
+                    interned
+                }
+            }
         }
     }
 
@@ -1830,7 +1896,7 @@ impl<'a> Loader<'a> {
                 // Expand partial named args: fill missing entity fields with fresh vars
                 if let Some(all_fields) = self.kb.entity_field_names(new_functor) {
                     let all_fields = all_fields.to_vec(); // borrow-safe copy
-                    if !new_named.is_empty() && new_named.len() < all_fields.len() {
+                    if new_named.len() < all_fields.len() {
                         let provided: HashSet<Symbol> = new_named.iter().map(|(s, _)| *s).collect();
                         for &field_sym in &all_fields {
                             if !provided.contains(&field_sym) {
@@ -2319,10 +2385,6 @@ impl<'a> Loader<'a> {
                     }
                 }
                 Item::Describe(d) => self.load_describe(d, domain),
-                Item::Project(p) => self.load_project(p, domain),
-                Item::Tool(t) => self.load_tool(t, domain),
-                Item::WorkItem(w) => self.load_workitem(w, domain),
-                Item::Feedback(f) => self.load_feedback(f, domain),
                 Item::ImportTools(it) => self.load_import_tools(it, domain),
             }
         }
@@ -2561,16 +2623,32 @@ impl<'a> Loader<'a> {
             })
             .collect();
 
-        // Register entity field names for partial named-arg expansion
+        // Register entity field names for partial named-arg expansion.
+        // Register under both the qualified symbol (from remap_name) and
+        // the short name, so that sugar-generated facts (which use unqualified
+        // functor names like "WorkItem") can also look up entity fields.
         let field_names: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
-        self.kb.register_entity_fields(functor, field_names);
+        self.kb.register_entity_fields(functor, field_names.clone());
+        let short_name = if e.name.segments.len() == 1 {
+            self.parsed.symbols.name(e.name.segments[0]).to_owned()
+        } else {
+            // For multi-segment names, use the last segment as short name
+            self.parsed.symbols.name(*e.name.segments.last().unwrap()).to_owned()
+        };
+        let short_sym = self.kb.intern(&short_name);
+        if short_sym != functor {
+            self.kb.register_entity_fields(short_sym, field_names);
+            // Map short name → qualified symbol so remap_symbol can redirect
+            self.kb.register_entity_short_name(short_sym, functor);
+        }
 
         let entity_term = self.kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args });
         self.kb.assert_fact(entity_term, entity_sort, domain, None);
     }
 
     fn load_fact(&mut self, f: &Fact, domain: TermId) {
-        let fact_sort = self.kb.make_name_term("Fact");
+        let sort_name = f.sort.as_deref().unwrap_or("Fact");
+        let fact_sort = self.kb.make_name_term(sort_name);
         let term = self.convert_term(f.term);
 
         let meta = f.meta.as_ref().map(|mb| self.load_meta_block(mb));
@@ -2831,99 +2909,6 @@ impl<'a> Loader<'a> {
             })
             .collect();
         build_list(self.kb, &clause_terms)
-    }
-
-    fn load_project(&mut self, p: &Project, domain: TermId) {
-        let project_sort = self.kb.make_name_term("Project");
-        let functor = self.reintern_name(&p.name);
-
-        let project_term = self.kb.alloc(Term::Fn {
-            functor,
-            pos_args: SmallVec::new(),
-            named_args: SmallVec::new(),
-        });
-
-        self.kb.assert_fact(project_term, project_sort, domain, None);
-    }
-
-    fn load_tool(&mut self, t: &Tool, domain: TermId) {
-        let tool_sort = self.kb.make_name_term("Tool");
-        let functor = self.reintern_name(&t.name);
-
-        let cmd_term = self.kb.alloc(Term::Const(super::term::Literal::String(t.command.clone())));
-        let cmd_sym = self.kb.intern("command");
-
-        let tool_term = self.kb.alloc(Term::Fn {
-            functor,
-            pos_args: SmallVec::new(),
-            named_args: SmallVec::from_slice(&[(cmd_sym, cmd_term)]),
-        });
-
-        self.kb.assert_fact(tool_term, tool_sort, domain, None);
-    }
-
-    fn load_workitem(&mut self, w: &WorkItem, domain: TermId) {
-        let wi_sort = self.kb.make_name_term("WorkItem");
-        let functor = self.reintern_name(&w.id);
-
-        let status_term = self.load_work_status(&w.status);
-        let status_sym = self.kb.intern("status");
-
-        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-        named_args.push((status_sym, status_term));
-
-        if let Some(desc_id) = w.description {
-            let desc = self.convert_term(desc_id);
-            let desc_sym = self.kb.intern("description");
-            named_args.push((desc_sym, desc));
-        }
-
-        let wi_term = self.kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args });
-
-        let meta = w.meta.as_ref().map(|mb| self.load_meta_block(mb));
-        self.kb.assert_fact(wi_term, wi_sort, domain, meta);
-    }
-
-    fn load_work_status(&mut self, status: &WorkStatus) -> TermId {
-        let status_str = match status {
-            WorkStatus::Draft => "Draft",
-            WorkStatus::Open => "Open",
-            WorkStatus::Claimed { .. } => "Claimed",
-            WorkStatus::Delivered { .. } => "Delivered",
-            WorkStatus::Verified { .. } => "Verified",
-            WorkStatus::Rejected { .. } => "Rejected",
-            WorkStatus::ProposalRejected { .. } => "ProposalRejected",
-            WorkStatus::Stale { .. } => "Stale",
-        };
-        let sym = self.kb.intern(status_str);
-        self.kb.alloc(Term::Ident(sym))
-    }
-
-    fn load_feedback(&mut self, f: &Feedback, domain: TermId) {
-        let feedback_sort = self.kb.make_name_term("Feedback");
-        let feedback_sym = self.kb.resolve_symbol("Feedback");
-
-        let wi_functor = self.reintern_name(&f.workitem);
-        let wi_term = self.kb.alloc(Term::Fn {
-            functor: wi_functor,
-            pos_args: SmallVec::new(),
-            named_args: SmallVec::new(),
-        });
-
-        let content_term = self.convert_term(f.content);
-        let wi_arg_sym = self.kb.intern("workitem");
-        let content_sym = self.kb.intern("content");
-
-        let feedback_term = self.kb.alloc(Term::Fn {
-            functor: feedback_sym,
-            pos_args: SmallVec::new(),
-            named_args: SmallVec::from_slice(&[
-                (wi_arg_sym, wi_term),
-                (content_sym, content_term),
-            ]),
-        });
-
-        self.kb.assert_fact(feedback_term, feedback_sort, domain, None);
     }
 
     fn load_import_tools(&mut self, it: &ImportTools, _domain: TermId) {

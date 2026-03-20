@@ -210,10 +210,25 @@ fn parse_simple_project() {
     let parsed = parse::parse(source).expect("parse failed");
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
-        Item::Project(p) => {
-            assert_eq!(parsed.symbols.name(p.name.last()), "cps2");
+        Item::Fact(f) => {
+            assert_eq!(f.sort.as_deref(), Some("Project"));
+            // The term should be Fn { functor: "Project", named: [name: "cps2", ...] }
+            match parsed.terms.get(f.term) {
+                Term::Fn { functor, named_args, .. } => {
+                    assert_eq!(parsed.symbols.name(*functor), "Project");
+                    // Find "name" arg
+                    let name_sym = named_args.iter()
+                        .find(|(k, _)| parsed.symbols.name(*k) == "name")
+                        .expect("missing 'name' arg");
+                    match parsed.terms.get(name_sym.1) {
+                        Term::Const(Literal::String(s)) => assert_eq!(s, "cps2"),
+                        other => panic!("expected String const for name, got {:?}", other),
+                    }
+                }
+                other => panic!("expected Fn term, got {:?}", other),
+            }
         }
-        other => panic!("expected Project, got {:?}", std::mem::discriminant(other)),
+        other => panic!("expected Fact, got {:?}", std::mem::discriminant(other)),
     }
 }
 
@@ -229,12 +244,40 @@ fn parse_tool_declaration() {
     let parsed = parse::parse(source).expect("parse failed");
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
-        Item::Tool(t) => {
-            assert_eq!(parsed.symbols.name(t.name.last()), "sbt-test-only");
-            assert_eq!(t.command, "sbt");
-            assert!(matches!(t.success, SuccessCriterion::ExitZero));
+        Item::Fact(f) => {
+            assert_eq!(f.sort.as_deref(), Some("Tool"));
+            match parsed.terms.get(f.term) {
+                Term::Fn { functor, named_args, .. } => {
+                    assert_eq!(parsed.symbols.name(*functor), "Tool");
+                    // Check name
+                    let name_arg = named_args.iter()
+                        .find(|(k, _)| parsed.symbols.name(*k) == "name")
+                        .expect("missing 'name' arg");
+                    match parsed.terms.get(name_arg.1) {
+                        Term::Const(Literal::String(s)) => assert_eq!(s, "sbt-test-only"),
+                        other => panic!("expected String const for name, got {:?}", other),
+                    }
+                    // Check command
+                    let cmd_arg = named_args.iter()
+                        .find(|(k, _)| parsed.symbols.name(*k) == "command")
+                        .expect("missing 'command' arg");
+                    match parsed.terms.get(cmd_arg.1) {
+                        Term::Const(Literal::String(s)) => assert_eq!(s, "sbt"),
+                        other => panic!("expected String const for command, got {:?}", other),
+                    }
+                    // Check success is ExitZero ident
+                    let success_arg = named_args.iter()
+                        .find(|(k, _)| parsed.symbols.name(*k) == "success")
+                        .expect("missing 'success' arg");
+                    match parsed.terms.get(success_arg.1) {
+                        Term::Ident(sym) => assert_eq!(parsed.symbols.name(*sym), "ExitZero"),
+                        other => panic!("expected Ident(ExitZero) for success, got {:?}", other),
+                    }
+                }
+                other => panic!("expected Fn term, got {:?}", other),
+            }
         }
-        other => panic!("expected Tool, got {:?}", std::mem::discriminant(other)),
+        other => panic!("expected Fact, got {:?}", std::mem::discriminant(other)),
     }
 }
 
@@ -250,12 +293,36 @@ fn parse_workitem() {
     let parsed = parse::parse(source).expect("parse failed");
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
-        Item::WorkItem(w) => {
-            assert_eq!(parsed.symbols.name(w.id.last()), "WI-CPS2-MATCH-001");
-            assert!(matches!(w.status, WorkStatus::Open));
-            assert_eq!(w.acceptance.len(), 1);
+        Item::Fact(f) => {
+            assert_eq!(f.sort.as_deref(), Some("WorkItem"));
+            match parsed.terms.get(f.term) {
+                Term::Fn { functor, named_args, .. } => {
+                    assert_eq!(parsed.symbols.name(*functor), "WorkItem");
+                    // Check id
+                    let id_arg = named_args.iter()
+                        .find(|(k, _)| parsed.symbols.name(*k) == "id")
+                        .expect("missing 'id' arg");
+                    match parsed.terms.get(id_arg.1) {
+                        Term::Const(Literal::String(s)) => assert_eq!(s, "WI-CPS2-MATCH-001"),
+                        other => panic!("expected String const for id, got {:?}", other),
+                    }
+                    // Check status is Ident(Open)
+                    let status_arg = named_args.iter()
+                        .find(|(k, _)| parsed.symbols.name(*k) == "status")
+                        .expect("missing 'status' arg");
+                    match parsed.terms.get(status_arg.1) {
+                        Term::Ident(sym) => assert_eq!(parsed.symbols.name(*sym), "Open"),
+                        other => panic!("expected Ident(Open) for status, got {:?}", other),
+                    }
+                    // Check acceptance list exists
+                    let _acc_arg = named_args.iter()
+                        .find(|(k, _)| parsed.symbols.name(*k) == "acceptance")
+                        .expect("missing 'acceptance' arg");
+                }
+                other => panic!("expected Fn term, got {:?}", other),
+            }
         }
-        other => panic!("expected WorkItem, got {:?}", std::mem::discriminant(other)),
+        other => panic!("expected Fact, got {:?}", std::mem::discriminant(other)),
     }
 }
 
@@ -392,13 +459,21 @@ fn load_workitem_and_query() {
     let workitems = kb.by_sort(wi_sort);
     assert_eq!(workitems.len(), 1, "should have one WorkItem");
 
-    // Check the term has the expected structure
+    // Check the term has the expected structure: WorkItem(id: "WI-001", ...)
     let fid = workitems[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
         Term::Fn { functor, named_args, .. } => {
-            assert_eq!(kb.resolve_sym(*functor), "WI-001");
+            assert_eq!(kb.resolve_sym(*functor), "WorkItem");
             assert!(!named_args.is_empty());
+            // Check id arg
+            let id_arg = named_args.iter()
+                .find(|(k, _)| kb.resolve_sym(*k) == "id")
+                .expect("missing 'id' arg");
+            match kb.get_term(id_arg.1) {
+                Term::Const(Literal::String(s)) => assert_eq!(s, "WI-001"),
+                other => panic!("expected String const for id, got {:?}", other),
+            }
         }
         other => panic!("expected Fn term for WorkItem, got {:?}", other),
     }
@@ -490,11 +565,11 @@ sort Modify { sort T = ? entity Modify(target: T) }
 sort Store {
   entity store
   operation persist(s: Store, fact: Int) -> Int
-    effects (Modify{store})
+    effects (Modify[store])
   operation retrieve(s: Store, pattern: Int) -> Int
-    effects (Error{store})
+    effects (Error[store])
   operation process(s: Store, x: Int) -> Int
-    effects (Error{store}, Modify{store})
+    effects (Error[store], Modify[store])
 }
 "#;
     let parsed = parse::parse(source).expect("parse failed");
@@ -720,7 +795,7 @@ fn member_facts_queryable_by_domain() {
 fn parse_sort_with_requires() {
     let source = r#"sort Ordered {
   sort T = ?
-  requires Eq{T = T}
+  requires Eq[T = T]
   operation gt(a: T, b: T) -> Bool
 }
 "#;
@@ -729,7 +804,7 @@ fn parse_sort_with_requires() {
     match &parsed.items[0] {
         Item::SortWithBody(s) => {
             assert_eq!(parsed.symbols.name(s.name.last()), "Ordered");
-            // Items: AbstractSort(T), RequiresDecl(Eq{T=T}), Operation(gt)
+            // Items: AbstractSort(T), RequiresDecl(Eq[T=T]), Operation(gt)
             assert_eq!(s.items.len(), 3);
             match &s.items[1] {
                 Item::RequiresDecl(r) => {
@@ -737,7 +812,7 @@ fn parse_sort_with_requires() {
                         TypeExpr::Parameterized { name, bindings } => {
                             assert_eq!(parsed.symbols.name(name.last()), "Eq");
                             assert_eq!(bindings.len(), 1);
-                            // Named binding: Eq{T = T}
+                            // Named binding: Eq[T = T]
                             let p = bindings[0].param.as_ref().expect("named binding should have param");
                             assert_eq!(parsed.symbols.name(p.last()), "T");
                             match &bindings[0].bound {
@@ -763,7 +838,7 @@ fn load_sort_with_requires() {
 
 sort Ordered {
   sort T = ?
-  requires Eq{T = T}
+  requires Eq[T = T]
   operation gt(a: T, b: T) -> Bool
 }
 "#;
@@ -799,10 +874,10 @@ sort Ordered {
 
 #[test]
 fn parse_requires_positional_binding() {
-    // `Eq{T}` is a positional binding — T binds to Eq's first param
+    // `Eq[T]` is a positional binding — T binds to Eq's first param
     let source = r#"sort Ordered {
   sort T = ?
-  requires Eq{T}
+  requires Eq[T]
 }
 "#;
     let parsed = parse::parse(source).expect("parse failed");
@@ -1625,7 +1700,7 @@ fn all_names_resolved_no_errors() {
 
 sort Ordered {
   sort T = ?
-  requires Eq{T = T}
+  requires Eq[T = T]
   operation compare(a: T, b: T) -> Int
 }
 "#;
@@ -1666,13 +1741,13 @@ fn circular_requires_does_not_panic() {
     let source = r#"
 sort A {
   sort T = ?
-  requires B{T}
+  requires B[T]
   operation use_b(x: T) -> T
 }
 
 sort B {
   sort T = ?
-  requires A{T}
+  requires A[T]
   operation use_a(x: T) -> T
 }
 "#;
@@ -2583,12 +2658,12 @@ end
 fn parse_polynom_with_requires_and_arrow_type() {
     let source = r#"sort Polynom
   sort R = ?
-  requires Ring{R}
+  requires Ring[R]
 
-  entity polynom(coefficients: List{R})
+  entity polynom(coefficients: List[R])
 
-  operation eval(p: Polynom{R}, x: R) -> R
-  operation map_coeffs(p: Polynom{R}, f: (R) -> R) -> Polynom{R}
+  operation eval(p: Polynom[R], x: R) -> R
+  operation map_coeffs(p: Polynom[R], f: (R) -> R) -> Polynom[R]
 end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
@@ -2596,7 +2671,7 @@ end
         Item::SortWithBody(s) => {
             assert_eq!(parsed.symbols.name(s.name.last()), "Polynom");
 
-            // Check requires Ring{R} — positional binding
+            // Check requires Ring[R] — positional binding
             let req = s.items.iter().find(|i| matches!(i, Item::RequiresDecl(_)));
             assert!(req.is_some(), "should have requires declaration");
             match req.unwrap() {
@@ -2655,13 +2730,13 @@ end
 
 sort Polynom
   sort R = ?
-  requires Ring{R}
-  entity polynom(coefficients: List{R})
-  operation eval(p: Polynom{R}, x: R) -> R
+  requires Ring[R]
+  entity polynom(coefficients: List[R])
+  operation eval(p: Polynom[R], x: R) -> R
 end
 
-fact Ring{Int}
-fact Polynom{Int}
+fact Ring[Int]
+fact Polynom[Int]
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();

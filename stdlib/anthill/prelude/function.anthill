@@ -3,7 +3,7 @@ sort anthill.prelude.Function
   sort A = ?
   sort B = ?
 
-  operation apply(f: Function{A, B}, x: A) -> B
+  operation apply(f: Function[A, B], x: A) -> B
 end
 
 -- Function is a pure Operation (E = empty effect set)

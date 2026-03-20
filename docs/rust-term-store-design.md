@@ -312,11 +312,11 @@ sort Nat { entity zero, entity succ(pred: Nat) }
 
 This is the entity-of relationship: each entity constructor belongs to its parent sort (1-level, not transitive). In Maude's terminology, these would be subsorts of the declared sort. Pattern matching on `?x : Nat` can produce `zero` or `succ(...)`.
 
-**Parametric instantiation.** `List{T=Int}` is a ground instantiation of the parametric sort `List`. The relation between `List` (with abstract `T`) and `List{T=Int}` is **instantiation**, not subtyping. But the entity-of relationship applies to the instantiated version too:
+**Parametric instantiation.** `List[T=Int]` is a ground instantiation of the parametric sort `List`. The relation between `List` (with abstract `T`) and `List[T=Int]` is **instantiation**, not subtyping. But the entity-of relationship applies to the instantiated version too:
 
 ```
-nil  ≤ List{T=Int}
-cons ≤ List{T=Int}    -- where head : Int, tail : List{T=Int}
+nil  ≤ List[T=Int]
+cons ≤ List[T=Int]    -- where head : Int, tail : List[T=Int]
 ```
 
 **Abstract sorts.** `sort Scalar` has no constructors and no subtypes — it's opaque until bound via `where { Scalar = float }`. An abstract sort is a **type variable** in the sort lattice.
@@ -329,7 +329,7 @@ In a reflective system, the language describes itself. A standard domain `anthil
 domain anthill.reflect.syntax
   sort Type {
     entity SimpleType(name: Name)
-    entity ParameterizedType(name: Name, bindings: List{T = SortBinding})
+    entity ParameterizedType(name: Name, bindings: List[T = SortBinding])
   }
   sort SortBinding {
     entity SortBinding(param: Name, bound: Type)
@@ -337,7 +337,7 @@ domain anthill.reflect.syntax
 end
 ```
 
-This means types ARE terms — terms of sort `anthill.reflect.syntax.Type`. The type `List{T = List{T = Int}}` is:
+This means types ARE terms — terms of sort `anthill.reflect.syntax.Type`. The type `List[T = List[T = Int]]` is:
 
 ```
 ParameterizedType("List", [
@@ -349,7 +349,7 @@ ParameterizedType("List", [
 
 This is a regular `Fn` term in the term store, hash-consed like any other term.
 
-**Consequence: `SortId` is just `TermId`.** A sort in the lattice is identified by the `TermId` of its type-term in the store. Hash-consing gives us identity: `List{T=Int}` in two places → same `TermId` → same sort. No separate sort representation needed.
+**Consequence: `SortId` is just `TermId`.** A sort in the lattice is identified by the `TermId` of its type-term in the store. Hash-consing gives us identity: `List[T=Int]` in two places → same `TermId` → same sort. No separate sort representation needed.
 
 **In the Rust parser IR**, `TypeExpr` remains a convenient enum for building the parse tree. But when loading into the KB, each `TypeExpr` is converted to a term:
 

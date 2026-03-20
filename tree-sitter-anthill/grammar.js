@@ -40,6 +40,8 @@ module.exports = grammar({
     // After operation clauses, `requires` could be another clause or a standalone declaration
     [$.operation_declaration],
     [$.variable_term],
+    // name [ could be parameterized_type or simple_type followed by something else
+    [$.simple_type, $.parameterized_type],
   ],
 
   rules: {
@@ -650,14 +652,14 @@ module.exports = grammar({
       field('value', $._term),
     ),
 
-    // Instantiation term: Eq{Int}, List{T = Int}, etc.
+    // Instantiation term: Eq[Int], List[T = Int], etc.
     // Same syntax as parameterized_type but in term position.
-    // Used for: fact Eq{Int}, fact Numeric{Int}, etc.
+    // Used for: fact Eq[Int], fact Numeric[Int], etc.
     instantiation_term: $ => seq(
       field('name', $.name),
-      '{',
+      '[',
       commaSep1($.sort_binding),
-      '}',
+      ']',
     ),
 
     // Set literal: {x, y, z} desugars to add(add(add(empty(), x), y), z).
@@ -820,9 +822,9 @@ module.exports = grammar({
 
     parameterized_type: $ => seq(
       $.name,
-      '{',
+      '[',
       commaSep1($.sort_binding),
-      '}',
+      ']',
     ),
 
     // =========================================================

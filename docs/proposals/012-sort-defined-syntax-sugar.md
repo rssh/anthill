@@ -29,9 +29,9 @@ A sort doesn't define arbitrary syntax. Instead, the kernel defines a fixed set 
 -- A sort that has these operations gets comprehensions:
 
 sort Stream {
-  operation pure(x: ?T) -> Stream{T = ?T}
-  operation flatMap(s: Stream{T = ?A}, f: ?A -> Stream{T = ?B}) -> Stream{T = ?B}
-  operation guard(cond: Bool) -> Stream{T = Unit}
+  operation pure(x: ?T) -> Stream[T = ?T]
+  operation flatMap(s: Stream[T = ?A], f: ?A -> Stream[T = ?B]) -> Stream[T = ?B]
+  operation guard(cond: Bool) -> Stream[T = Unit]
   -- ^ these three unlock: [?x | ?x <- stream, guard(cond)]
 }
 ```
@@ -52,7 +52,7 @@ Con: magic — not obvious which operations unlock which syntax. Name collisions
 ```
 sort Stream {
   ...
-  fact Comprehension{T = Stream}    -- "I support comprehension syntax"
+  fact Comprehension[T = Stream]    -- "I support comprehension syntax"
 }
 ```
 
@@ -67,13 +67,13 @@ Con: boilerplate — asserting the fact AND having the operations.
 -- In stdlib:
 sort Comprehension {
   sort T = ?
-  operation pure(x: ?A) -> T{?A}          -- abstract signature
-  operation flatMap(s: T{?A}, f: ...) -> T{?B}
-  operation guard(cond: Bool) -> T{Unit}
+  operation pure(x: ?A) -> T[?A]          -- abstract signature
+  operation flatMap(s: T[?A], f: ...) -> T[?B]
+  operation guard(cond: Bool) -> T[Unit]
 }
 
 -- A sort satisfies it:
-fact Comprehension{T = Stream}
+fact Comprehension[T = Stream]
 -- Kernel verifies Stream has the required operations
 ```
 
@@ -110,7 +110,7 @@ Desugars to `append(append(append(empty, 1), 2), 3)` or similar. Available to so
 **OQ2.3. Direct-style branching (choose/guard/fail).**
 
 ```
-operation find_pairs() -> Stream{T = Pair}
+operation find_pairs() -> Stream[T = Pair]
   effects (Branches(result))
 {
   ?x = choose(xs)
@@ -243,7 +243,7 @@ Extensible: more power, but risks fragmentation (every library defines its own s
 
 1. The kernel defines a **fixed set of syntax forms**: comprehension, builder, for-each, operator, pipe.
 2. Each form has a **spec sort** with required operations (e.g., `Comprehension` requires `pure`/`flatMap`/`guard`).
-3. A sort **opts in** by asserting `fact Comprehension{T = MySort}` (or it's detected structurally).
+3. A sort **opts in** by asserting `fact Comprehension[T = MySort]` (or it's detected structurally).
 4. Desugaring happens **during loading** (after sort declarations are scanned, before facts/rules are loaded), using the sort skeleton for type resolution.
 5. Desugaring rules are **fixed per form** — sorts provide the operations, not the rules.
 6. The set of forms is **fixed but growable**: new forms can be added to the kernel in future versions, but user-defined forms are not supported initially.

@@ -124,7 +124,7 @@ operation run(f: (A) -> B @ Modifies) -> B
 Arrow type with parameterized return
 ==================
 
-operation flatMap(f: (A) -> List{T = B}) -> List{T = B}
+operation flatMap(f: (A) -> List[T = B]) -> List[T = B]
 
 ---
 

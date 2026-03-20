@@ -3,7 +3,7 @@ sort anthill.prelude.Lattice
   export lub, glb, less
 
   sort T = ?
-  requires Eq{T}
+  requires Eq[T]
 
   operation {
     lub(a: T, b: T) -> T
@@ -29,7 +29,7 @@ sort anthill.prelude.BoundedLattice
   export top, bottom
 
   sort T = ?
-  requires Lattice{T}
+  requires Lattice[T]
 
   operation {
     top() -> T

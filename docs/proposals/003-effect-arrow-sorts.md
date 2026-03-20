@@ -84,14 +84,14 @@ In particular, a pure function `(A) => B` (empty effect set) is a subtype of any
 
 - Pure functions can be passed wherever effectful functions are expected.
 - A `map` operation expecting `(A) => B` (pure) rejects effectful functions — the caller must ensure purity.
-- A `flatMap` operation expecting `(A) => F{T=B} effect [E]` accepts both pure and effectful continuations with effects contained in `E`.
+- A `flatMap` operation expecting `(A) => F[T=B] effect [E]` accepts both pure and effectful continuations with effects contained in `E`.
 
 ```
-operation map(fa: F{T = A}, f: (A) => B) -> F{T = B}
+operation map(fa: F[T = A], f: (A) => B) -> F[T = B]
 -- f must be pure — no effects allowed
 
-operation flatMap(fa: F{T = A}, f: (A) => F{T = B}) -> F{T = B}
--- f is pure but returns an effectful computation F{T=B}
+operation flatMap(fa: F[T = A], f: (A) => F[T = B]) -> F[T = B]
+-- f is pure but returns an effectful computation F[T=B]
 -- the effects are inside F, not on the arrow
 ```
 

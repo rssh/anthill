@@ -48,7 +48,7 @@ rule r: {?a, ?b, ?c}
 Set literal with instantiation elements
 =====================================
 
-fact member(Read{?r}, {Modify{?r}, Error{?e}})
+fact member(Read[?r], {Modify[?r], Error[?e]})
 
 ---
 

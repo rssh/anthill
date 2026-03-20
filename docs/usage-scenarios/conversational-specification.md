@@ -97,7 +97,7 @@ sort TicketSales {
   operation purchase(c: Customer, e: Event, qty: Int) -> Order
     requires gt(qty, 0)
     requires lte(add(sold(?e), qty), capacity(?e))
-    effects (Modify{orders}, Emit{Notification})
+    effects (Modify[orders], Emit[Notification])
 
   operation refund(t: Ticket) -> Ticket
     requires before(now(), date(event(?t)))

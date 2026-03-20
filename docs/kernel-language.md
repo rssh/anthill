@@ -180,7 +180,7 @@ The kernel has only four primitive types for `Const` values:
 
 ### 4.4 The Prelude Namespaces
 
-Common compound types are defined in standard prelude sorts using the kernel's own constructs. **Parametric types are sorts with unspecified sub-sorts** — instantiated via **inline type expressions** `Name{bindings}`. **Sum types are sorts with entity constructors** — `sort S { entity C₁(...), entity C₂(...) }` enumerates constructors (see §5.2).
+Common compound types are defined in standard prelude sorts using the kernel's own constructs. **Parametric types are sorts with unspecified sub-sorts** — instantiated via **inline type expressions** `Name[bindings]`. **Sum types are sorts with entity constructors** — `sort S { entity C₁(...), entity C₂(...) }` enumerates constructors (see §5.2).
 
 > **Canonical source:** The prelude definitions below are extracted from `stdlib/anthill/prelude/`. Those `.anthill` files are the canonical source; this section is for reference.
 
@@ -234,7 +234,7 @@ sort anthill.prelude.Ordered
   export gt, gte, lt, lte
 
   sort T = ?
-  requires Eq{T}
+  requires Eq[T]
 
   operation {
     gt(a: T, b: T) -> Bool          -- >
@@ -256,7 +256,7 @@ sort anthill.prelude.Numeric
   export add, sub, mul, zero-val
 
   sort T = ?
-  requires Ordered{T}
+  requires Ordered[T]
 
   operation {
     add(a: T, b: T) -> T           -- +
@@ -276,27 +276,27 @@ sort anthill.prelude.Numeric
 end
 ```
 
-**Infix and prefix operators** are sugar for function application — `a + b` desugars to `add(a, b)`, `!a` desugars to `not(a)`, etc. The full operator table is in §6.6. The prelude sorts above define the operations that these operators desugar to; the operators are available when the corresponding sort is required (e.g. `requires Numeric{T = Money}`).
+**Infix and prefix operators** are sugar for function application — `a + b` desugars to `add(a, b)`, `!a` desugars to `not(a)`, etc. The full operator table is in §6.6. The prelude sorts above define the operations that these operators desugar to; the operators are available when the corresponding sort is required (e.g. `requires Numeric[T = Money]`).
 
-**Instantiation** — via inline type expressions (`Name{bindings}`):
+**Instantiation** — via inline type expressions (`Name[bindings]`):
 
 ```
 entity Project(
   name   : String,
-  tools  : List{T = String},
-  modules: Option{T = Module}
+  tools  : List[T = String],
+  modules: Option[T = Module]
 )
 
-operation lookup(key: String) -> Option{T = Account}
+operation lookup(key: String) -> Option[T = Account]
 ```
 
-The inline form `List{T=Int}` refers to the sort `List` with unspecified sort parameter `T` bound to `Int`. This is the Maude view mechanism expressed as a type expression.
+The inline form `List[T=Int]` refers to the sort `List` with unspecified sort parameter `T` bound to `Int`. This is the Maude view mechanism expressed as a type expression.
 
 **Grammar:**
 
 ```
 Type ::= Name                                        -- simple type reference
-       | Name '{' SortBinding (',' SortBinding)* '}' -- inline instantiation
+       | Name '[' SortBinding (',' SortBinding)* ']' -- inline instantiation
        | VariableTerm                                 -- logical variable: ?, ?T, ?T {< desc >}+ ?
        | TupleType                                    -- tuple type: (Int, String), (a: Int, b: String), ()
        | ArrowType                                    -- arrow type (function sort)
@@ -322,34 +322,34 @@ Arrow sorts associate to the right: `(A) -> (B) -> C` is `(A) -> ((B) -> C)`.
 
 The `@` token annotates effects on the arrow, consistent with the term-level Pratt operator where `a -> b @ c` desugars to `arrow_effect(a, b, c)`. A pure arrow `(A) -> B` desugars to `arrow(params..., B)` in the KB; an effectful arrow `(A) -> B @ E` desugars to `arrow_effect(params..., B, E)`.
 
-The arrow sort `(A) -> B` is equivalent to `Function{A, B}` from stdlib. Effect subtyping applies: a pure function can be passed where an effectful function is expected (`(A) -> B <: (A) -> B @ E` for any `E`).
+The arrow sort `(A) -> B` is equivalent to `Function[A, B]` from stdlib. Effect subtyping applies: a pure function can be passed where an effectful function is expected (`(A) -> B <: (A) -> B @ E` for any `E`).
 
-Import and instantiation are separate concepts: `import` makes names visible, inline `Name{bindings}` instantiates sort parameters. They are not bundled together.
+Import and instantiation are separate concepts: `import` makes names visible, inline `Name[bindings]` instantiates sort parameters. They are not bundled together.
 
-**Instantiation as term:** The `Name{bindings}` syntax is valid both in type position and in term position. In term position, it represents a sort instantiation as a first-class value — used to assert that a type satisfies a parametric spec:
+**Instantiation as term:** The `Name[bindings]` syntax is valid both in type position and in term position. In term position, it represents a sort instantiation as a first-class value — used to assert that a type satisfies a parametric spec:
 
 ```
 -- "Int satisfies Eq" — a fact in the KB
-fact Eq{T = Int}
+fact Eq[T = Int]
 
 -- "String satisfies Ordered" — scoped to the declaring namespace
-fact Ordered{T = String}
+fact Ordered[T = String]
 ```
 
 This follows the "types are terms" principle: sort instantiations are knowledge, expressible as facts. Different namespaces can provide different instantiations (see §5.1 on namespace scoping).
 
-**Entity instances and sort membership:** An entity constructor applied to arguments produces a term that inhabits the enclosing sort. For example, given `sort Modify { sort T = ? entity Modify(target: T) }`, the term `Modify(store)` is an instance of sort `Modify{T = typeof(store)}`. This means entity instances can appear in sort binding positions — `Modify{store}` is `Modify` instantiated with target `store`:
+**Entity instances and sort membership:** An entity constructor applied to arguments produces a term that inhabits the enclosing sort. For example, given `sort Modify { sort T = ? entity Modify(target: T) }`, the term `Modify(store)` is an instance of sort `Modify[T = typeof(store)]`. This means entity instances can appear in sort binding positions — `Modify[store]` is `Modify` instantiated with target `store`:
 
 ```
 -- Sort-level: Modify parameterized with any target
-fact Effect{T = Modify{?}}
+fact Effect[T = Modify[?]]
 
 -- Value-level: Modify applied to a specific parameter
 operation persist(store: Store, fact: Term, meta: Meta) -> FactId
-  effects (Modify{store}, Error)   -- store will be mutated; operation can fail
+  effects (Modify[store], Error)   -- store will be mutated; operation can fail
 ```
 
-Because types are terms and type checking is KB querying, referencing values in type positions requires no special dependent-type mechanism — it is simply a term appearing where a term is expected. The KB's unification machinery handles both abstract bindings (`Modify{?}`) and concrete ones (`Modify{store}`) uniformly.
+Because types are terms and type checking is KB querying, referencing values in type positions requires no special dependent-type mechanism — it is simply a term appearing where a term is expected. The KB's unification machinery handles both abstract bindings (`Modify[?]`) and concrete ones (`Modify[store]`) uniformly.
 
 Additional types are introduced via `sort` declarations (unspecified, type alias, or defined) in any namespace.
 
@@ -444,41 +444,41 @@ ImportPath ::= Name                               -- import a specific name
 NameList    ::= Name (',' Name)*
 SortBinding ::= Name '=' Type                   -- named: binds a specific sort parameter to a type
               | Type                             -- positional: binds to the next unfilled sort parameter
-              | VariableTerm                     -- anonymous/named variable: Modify{?}, Modify{?r}
+              | VariableTerm                     -- anonymous/named variable: Modify[?], Modify[?r]
 ```
 
 When a sort binding omits the `Name =` part, it is a **positional** binding — the value is bound to the next unfilled sort parameter in declaration order. Named (`Name = Type`) and positional bindings can be mixed, with positional bindings first:
 
 ```
 -- Positional bindings (bound to sort parameters in declaration order):
-List{Int}                -- List{T = Int} — Int binds to first param T
-Map{String, Int}         -- Map{K = String, V = Int} — positional for both
+List[Int]                -- List[T = Int] — Int binds to first param T
+Map[String, Int]         -- Map[K = String, V = Int] — positional for both
 
 -- Named bindings (explicit parameter name):
-List{T = Int}            -- explicit: T binds to Int
-Numeric{T = Money}       -- explicit: T binds to Money
+List[T = Int]            -- explicit: T binds to Int
+Numeric[T = Money]       -- explicit: T binds to Money
 
 -- Mixed: positional first, then named
-Bifunctor{String, B = Int}   -- A = String (positional), B = Int (named)
+Bifunctor[String, B = Int]   -- A = String (positional), B = Int (named)
 
 -- Positional with type variables (common in parametric sort bodies):
-requires Eq{T}           -- Eq{T = T} — T positionally binds to first param
-sort C = SPair{B, A}     -- SPair{A = B, B = A} — positional, swaps params
+requires Eq[T]           -- Eq[T = T] — T positionally binds to first param
+sort C = SPair[B, A]     -- SPair[A = B, B = A] — positional, swaps params
 ```
 
-Note that `Eq{T}` inside a scope where `T` is a sort parameter works because `T` is positionally bound to `Eq`'s first parameter — which happens to be named `T`. This is a positional coincidence, not name-based punning.
+Note that `Eq[T]` inside a scope where `T` is a sort parameter works because `T` is positionally bound to `Eq`'s first parameter — which happens to be named `T`. This is a positional coincidence, not name-based punning.
 
 A sort binding can also be a **logical variable** (`?` or `?name`). This is used to express existential quantification over type parameters — "for any instantiation":
 
 ```
--- Modify{?} means "Modify instantiated with any target type"
-fact Effect{T = Modify{?}}       -- Modify is an effect kind, for any target
+-- Modify[?] means "Modify instantiated with any target type"
+fact Effect[T = Modify[?]]       -- Modify is an effect kind, for any target
 
 -- Named variable binds across the term:
-rule CanModify{?r} :- Effect{T = Modify{?r}}   -- extract modifiable resources
+rule CanModify[?r] :- Effect[T = Modify[?r]]   -- extract modifiable resources
 ```
 
-Import makes names from another namespace visible in the current scope as local aliases. It does **not** add the imported sort's scope as a parent — importing `Eq` does not make `eq`/`neq` directly accessible. To access a sort's contents, use `requires Eq{T}` (sort composition) or wildcard import. Sort parameters remain unspecified — they are instantiated separately via inline type expressions (`Name{bindings}`), not at import time.
+Import makes names from another namespace visible in the current scope as local aliases. It does **not** add the imported sort's scope as a parent — importing `Eq` does not make `eq`/`neq` directly accessible. To access a sort's contents, use `requires Eq[T]` (sort composition) or wildcard import. Sort parameters remain unspecified — they are instantiated separately via inline type expressions (`Name[bindings]`), not at import time.
 
 Three import forms:
 
@@ -603,14 +603,14 @@ The `requires` declaration takes a type expression — either a simple sort name
 ```
 sort Ordered {
   sort T = ?
-  requires Eq{T}                     -- this sort depends on Eq over T
+  requires Eq[T]                     -- this sort depends on Eq over T
 
   operation gt(a: T, b: T) -> Bool
 }
 
 sort banking {
   sort Money = ?
-  requires Numeric{T = Money}         -- this sort (algebra) depends on Numeric over Money
+  requires Numeric[T = Money]         -- this sort (algebra) depends on Numeric over Money
 }
 ```
 
@@ -682,7 +682,7 @@ Parameters are **named bindings** — referenced by name (without `?`) in `requi
 operation deposit(a: Account, m: Money) -> Account
   requires gt(m, zero-val)
   ensures eq(balance(result), add(balance(a), m))
-  effects (Modify{Ledger})
+  effects (Modify[Ledger])
 
 operation balance(a: Account) -> Money           -- pure, no contract
 ```
@@ -693,20 +693,20 @@ An operation without an implementation is an **open obligation** — it emits a 
 
 Effects are part of operation declarations, not standalone constructs. An effect declares **non-obvious behavior** — something the operation does that is not visible from its parameter list alone. Reading a parameter is not an effect; mutating it is.
 
-Effect kinds are **open** — any `Name` or `Name{target}` pair is valid:
+Effect kinds are **open** — any `Name` or `Name[target]` pair is valid:
 
 ```
 Effect ::= Name                          -- bare effect (e.g. Error)
-         | Name '{' Name '}'             -- effect with target (e.g. Modify{store})
+         | Name '[' Name ']'             -- effect with target (e.g. Modify[store])
 ```
 
 Currently implemented effect kinds:
 
 | Effect kind | Meaning |
 |-------------|---------|
-| `Modify{target}` | Mutates a parameter — non-obvious from the signature |
+| `Modify[target]` | Mutates a parameter — non-obvious from the signature |
 | `Error` | Can fail with an untyped error |
-| `Error{type}` | Can fail with a typed error |
+| `Error[type]` | Can fail with a typed error |
 
 Future effect kinds (not yet implemented in codegen):
 
@@ -714,16 +714,16 @@ Future effect kinds (not yet implemented in codegen):
 |-------------|---------|
 | `Suspend` | May suspend and resume execution (async/coroutine) |
 | `Branch` | May produce multiple results (nondeterminism, backtracking) |
-| `Requires{capability}` | Needs a capability to execute |
-| Concrete I/O effects | E.g. `Output{stdout}`, `Log{logger}` — ambient resources not in parameters |
+| `Requires[capability]` | Needs a capability to execute |
+| Concrete I/O effects | E.g. `Output[stdout]`, `Log[logger]` — ambient resources not in parameters |
 
 **Design principle:** Effects declare what is NOT visible from parameters. If something can be passed as a parameter, it should be a parameter, not an effect. Effects exist for:
-- **Mutation annotation** — `Modify{x}` tells the caller that parameter `x` will be mutated, which changes how it is passed in the host language.
+- **Mutation annotation** — `Modify[x]` tells the caller that parameter `x` will be mutated, which changes how it is passed in the host language.
 - **Failure** — `Error` declares the operation can fail, which is not expressed in the parameter list or return type.
 - **Control flow** — `Suspend` and `Branch` change how computation proceeds — suspension, nondeterminism.
 - **Ambient resources** — operations that access state not in the parameter list, e.g. writing to stdout.
 
-**Effect parameters on sorts.** A sort may declare an abstract effect parameter (`sort E = ?`) to express effect polymorphism. Concrete sorts bind `E` to specific effects. For example, `Stream{T, E}` declares that iterating the stream may have effect `E`; a file-backed stream would bind `E = Error`, while a pure in-memory stream leaves `E` unbound (no effects).
+**Effect parameters on sorts.** A sort may declare an abstract effect parameter (`sort E = ?`) to express effect polymorphism. Concrete sorts bind `E` to specific effects. For example, `Stream[T, E]` declares that iterating the stream may have effect `E`; a file-backed stream would bind `E = Error`, while a pure in-memory stream leaves `E` unbound (no effects).
 
 Users can define additional effect kinds; the kernel stores and propagates them but only interprets the well-known ones.
 
@@ -733,7 +733,7 @@ Effects give operations a precise execution semantics via a state-passing interp
 
 ```
 operation op(x1: A1, ..., xm: Am) -> R
-  effects (Modify{S}, Error Err, Suspend, Branch)
+  effects (Modify[S], Error Err, Suspend, Branch)
 ```
 
 is interpreted as a function that threads an **environment** and returns an **outcome**:
@@ -747,7 +747,7 @@ The outcome type varies with the declared effects:
 | Effects | Outcome type |
 |---------|-------------|
 | (none) — pure | `R × Env` where `Env_after = Env_before` |
-| `Modify{S}` | `R × Env` (environment may change) |
+| `Modify[S]` | `R × Env` (environment may change) |
 | `Error Err` | `(R × Env) + Err` |
 | `Branch` | `List(R × Env)` (zero or more results) |
 | `Suspend` | `(R × Env) + Suspended(Env, Continuation)` |
@@ -763,10 +763,10 @@ An operation without effects is **pure**: it receives the environment unchanged 
 
 #### Environment and Resources
 
-Each `Modify{target}` effect declares a **resource** — a named slot in the environment that the operation may update.
+Each `Modify[target]` effect declares a **resource** — a named slot in the environment that the operation may update.
 
-- `Modify{S}` — the operation may inspect and update `Env(S)`.
-- `Error` / `Error{Err}` — the operation may abort, returning an error instead of a result.
+- `Modify[S]` — the operation may inspect and update `Env(S)`.
+- `Error` / `Error[Err]` — the operation may abort, returning an error instead of a result.
 - `Suspend` — the operation may return a suspension instead of a final result.
 - `Branch` — the operation may return multiple alternative results.
 
@@ -812,7 +812,7 @@ The same effects admit an equivalent **monadic interpretation**. An operation
 
 ```
 operation op(x1: A1, ..., xm: Am) -> R
-  effects (Modify{S}, Error Err, Suspend, Branch)
+  effects (Modify[S], Error Err, Suspend, Branch)
 ```
 
 is interpreted as a computation in a combined monad `M_E`:
@@ -825,8 +825,8 @@ where `M_E` layers monad transformers corresponding to declared effects:
 
 | Effect | Monad layer | Purpose |
 |--------|-------------|---------|
-| `Modify{S}` | `StateT Env` | Thread mutable state |
-| `Error{Err}` | `ExceptT Err` | Short-circuit on failure |
+| `Modify[S]` | `StateT Env` | Thread mutable state |
+| `Error[Err]` | `ExceptT Err` | Short-circuit on failure |
 | `Suspend` | `ContT R IO` | Suspend and resume execution |
 | `Branch` | `LogicT` | Produce multiple results (nondeterminism) |
 
@@ -838,9 +838,9 @@ The monad provides primitive operations corresponding to each effect kind:
 
 | Effect | Monadic primitive | Type |
 |--------|-------------------|------|
-| `Modify{S}` | `get_resource(S)` | `M_E(Term option)` |
-| `Modify{S}` | `put_resource(S, v)` | `M_E(Unit)` |
-| `Error{Err}` | `throw_error(err)` | `M_E(A)` for any `A` |
+| `Modify[S]` | `get_resource(S)` | `M_E(Term option)` |
+| `Modify[S]` | `put_resource(S, v)` | `M_E(Unit)` |
+| `Error[Err]` | `throw_error(err)` | `M_E(A)` for any `A` |
 | `Suspend` | `suspend(k)` | `M_E(A)` — pause, resume via continuation `k` |
 | `Branch` | `choice(a, b)` | `M_E(A)` — nondeterministic choice |
 | `Branch` | `fail` | `M_E(A)` — no results (backtrack) |
@@ -865,14 +865,14 @@ The monad laws hold: `bind (return x) f = f x`, `bind m return = m`, and `bind (
 Effects fall into two categories:
 
 **State effects** — thread data through computation:
-- `Modify{S}` — read and update a named resource in the environment.
-- `Error{Err}` — abort with an error value. The caller can catch and handle the error.
+- `Modify[S]` — read and update a named resource in the environment.
+- `Error[Err]` — abort with an error value. The caller can catch and handle the error.
 
 **Control flow effects** — change how computation proceeds:
 - `Suspend` — the operation may suspend and resume later. This is `async`/`await` in direct style, or the continuation monad. Enables cooperative multitasking and I/O without blocking.
 - `Branch` — the operation may produce multiple results via nondeterministic choice. This is the list monad / `LogicT` in monadic style, or algebraic effect handlers with multi-shot continuations in direct style. LogicalStream encapsulates branching — consumers see a sequential stream interface.
 
-These categories are orthogonal. An operation can be both suspending and fallible (`Suspend, Error`), or branching and stateful (`Branch, Modify{S}`). The monad stack composes the corresponding layers.
+These categories are orthogonal. An operation can be both suspending and fallible (`Suspend, Error`), or branching and stateful (`Branch, Modify[S]`). The monad stack composes the corresponding layers.
 
 #### Equivalence of Interpretations
 
@@ -1261,6 +1261,8 @@ The kernel's reasoning engine supports:
 
 **Unification:** Standard first-order unification. `Var` terms unify with any term of the same type. `Fn` terms unify if their names match and all arguments unify pairwise.
 
+**Partial entity patterns:** When an entity term appears with fewer named arguments than the entity declares, the missing fields are automatically generalized to fresh anonymous variables. This means `account(owner: "Alice")` is equivalent to `account(id: ?, owner: "Alice", balance: ?)`, and `account()` is equivalent to `account(id: ?, owner: ?, balance: ?)`. The expansion applies whenever the functor is a registered entity — including the zero-argument case, where parentheses signal pattern-matching intent (bare `account` without parens remains a reference to the entity/sort). This convention avoids requiring the user to explicitly list unneeded fields with `?`.
+
 **Termination:** The kernel uses stratification and loop detection to ensure rule evaluation terminates. Recursive rules must be stratifiable (no negation through recursion in the basic mode; stratified negation is supported for constrained cases).
 
 ### 8.4 Constraint Enforcement
@@ -1307,7 +1309,7 @@ An algebra is not a separate syntactic construct — it is the **typing structur
 
 A sort-with-body that contains unspecified sub-sorts, operations, and laws IS an algebra. When an `Implementation` fact provides carrier bindings (`carrier: { Scalar = float, Vector = CudaDeviceBuffer[float] }`), it instantiates the algebra for a specific host language.
 
-**Parametric structure:** Unspecified sorts inside a sort body serve as type parameters. A sort with unspecified sub-sort `T` is a parametric module — instantiated via inline type expressions `List{T = Int}`. For example, `anthill.prelude.List` has unspecified sub-sort `T`; using `List{T = Int}` inline produces a list-of-integers.
+**Parametric structure:** Unspecified sorts inside a sort body serve as type parameters. A sort with unspecified sub-sort `T` is a parametric module — instantiated via inline type expressions `List[T = Int]`. For example, `anthill.prelude.List` has unspecified sub-sort `T`; using `List[T = Int]` inline produces a list-of-integers.
 
 This also supports type class-like patterns: a sort declaring `sort A = ?` and `operation combine(x: A, y: A) -> A` with laws is a specification that any type with a `combine` operation must satisfy. Using `MyType` in place of `A` via inline binding instantiates the specification for a concrete type.
 
@@ -1315,15 +1317,15 @@ This also supports type class-like patterns: a sort declaring `sort A = ?` and `
 
 ```
 -- Int satisfies Eq, Ordered, and Numeric
-fact Eq{T = Int}
-fact Ordered{T = Int}
-fact Numeric{T = Int}
+fact Eq[T = Int]
+fact Ordered[T = Int]
+fact Numeric[T = Int]
 ```
 
 For built-in types, the operations are primitive (provided by the runtime). For user-defined types, rules define the operations:
 
 ```
-fact Eq{T = Color}
+fact Eq[T = Color]
 rule eq(red, red) = true
 rule eq(green, green) = true
 rule eq(blue, blue) = true
@@ -1332,7 +1334,7 @@ rule eq(?_, ?_) = false
 
 Since facts are scoped to namespaces, different namespaces can provide different instantiations of the same spec for the same type (e.g. different orderings). A consumer chooses which instantiation to use via `import`.
 
-**Operation auto-binding.** Operations in parametric sorts are implicitly parameterized — like type parameters (`sort T = ?`), they are logical variables bound at instantiation. When a sort satisfies a spec via `fact S{T}`, operations with matching names and compatible signatures are **automatically unified** — no explicit binding needed.
+**Operation auto-binding.** Operations in parametric sorts are implicitly parameterized — like type parameters (`sort T = ?`), they are logical variables bound at instantiation. When a sort satisfies a spec via `fact S[T]`, operations with matching names and compatible signatures are **automatically unified** — no explicit binding needed.
 
 The binding gradient:
 
@@ -1341,23 +1343,45 @@ The binding gradient:
 fact Monoid
 
 -- Explicit type, auto-bind operations (preferred style)
-fact Monoid{T}
+fact Monoid[T]
 
 -- Explicit rename when names differ
-fact Monoid{T, combine = add}
+fact Monoid[T, combine = add]
 ```
 
-When `fact S{T}` appears inside a sort body, it means both spec satisfaction AND operation inheritance: the sort gains all operations defined in the spec. Derived operations (defined by rules in the spec) carry over automatically; the satisfying sort only provides the primitive operations. For example, if `Stream` defines `head` as a derived rule from `splitFirst`, a sort declaring `fact Stream{T}` inherits `head` without redeclaring it.
+When `fact S[T]` appears inside a sort body, it means both spec satisfaction AND operation inheritance: the sort gains all operations defined in the spec. Derived operations (defined by rules in the spec) carry over automatically; the satisfying sort only provides the primitive operations. For example, if `Stream` defines `head` as a derived rule from `splitFirst`, a sort declaring `fact Stream[T]` inherits `head` without redeclaring it.
 
-Note: namespace-level `fact Eq{T = Int}` (standalone, not inside a sort body) does NOT trigger auto-binding of operations — operations there are standalone rules associated with the fact.
+Note: namespace-level `fact Eq[T = Int]` (standalone, not inside a sort body) does NOT trigger auto-binding of operations — operations there are standalone rules associated with the fact.
 
 **Namespaces** group sorts, operations, and rules for encapsulation and visibility control, but do not introduce type parameters. A namespace may contain sorts (both parametric and concrete) and type aliases, but unspecified sorts (`sort T = ?`) appear only inside sort bodies as type parameters — never directly in a namespace.
+
+### 8.8 Persistence and Store-Aware Resolution
+
+The KB is not purely in-memory. Facts can be backed by **persistent stores** — filesystem directories, SQL databases, or other external backends. The persistence model is defined as an abstract algebra in `anthill.persistence` (see [proposal 007](proposals/007-persistence-layer.md) for the full design).
+
+**Store capabilities** determine how the reasoning engine interacts with each store:
+
+- **`bulk`** stores (e.g., filesystem) — all facts are loaded into memory at startup via `pull()`. Backward chaining works entirely in-KB. The `.anthill/` directory with its `workitems/`, `tools/`, and `facts/` subdirectories is a bulk store.
+
+- **`queryable`** stores (e.g., PostgreSQL) — patterns are translated to native queries on demand. During backward chaining, when the engine encounters a goal whose sort is routed to a queryable store, it calls `retrieve(store, pattern)` instead of searching in-memory facts. The store acts as an **external oracle** — a well-known pattern in logic programming (Datalog with external data sources, Prolog foreign predicates).
+
+**Routing** maps fact sorts to stores via ordinary rules:
+
+```
+rule route(WorkItem(?))  = FileStore(".anthill", stage0)
+rule route(AuditEntry(?)) = SqlStore("postgresql://...", "anthill", Postgresql)
+rule route(?)             = FileStore(".anthill", stage0)   -- default
+```
+
+**Bootstrap.** Store configuration is itself expressed as KB facts, creating a chicken-and-egg problem. The solution: `project.anthill` at a well-known filesystem path is always loaded first (the bootstrap store). It declares other stores and routing rules. Those stores are then pulled or registered as oracles.
+
+The reasoning engine is store-agnostic: it sees facts, some from memory (bulk stores), some fetched on demand (queryable stores). Rules, constraints, and backward chaining work uniformly across both.
 
 ## 9. Connections to Existing Systems
 
 The kernel language connects to three traditions:
 
-**ML-style modules.** A sort-with-body (containing unspecified sub-sorts and operations) ≈ signature (declares abstract types and operations), Implementation with carrier bindings ≈ structure (provides concrete types), inline `Name{bindings}` ≈ functor application. But anthill sorts are richer — they contain rules (logic) and contracts (requires/ensures), making them algebraic specifications rather than pure type signatures. Namespaces provide encapsulation and visibility control (like ML structures), but type parameters live in sort bodies, not namespaces.
+**ML-style modules.** A sort-with-body (containing unspecified sub-sorts and operations) ≈ signature (declares abstract types and operations), Implementation with carrier bindings ≈ structure (provides concrete types), inline `Name[bindings]` ≈ functor application. But anthill sorts are richer — they contain rules (logic) and contracts (requires/ensures), making them algebraic specifications rather than pure type signatures. Namespaces provide encapsulation and visibility control (like ML structures), but type parameters live in sort bodies, not namespaces.
 
 **Maude / OBJ / CafeOBJ.** The closest match:
 
@@ -1370,7 +1394,7 @@ The kernel language connects to three traditions:
 | `rule` (derivation) | equation (`eq`) or rewrite rule (`rl`) |
 | `constraint` (denial) | membership axiom / conditional axiom |
 | `Implementation.carrier` | view (maps theory sorts to module sorts) |
-| `List{T = X}` (inline instantiation) | view instantiation (binds sort parameter) |
+| `List[T = X]` (inline instantiation) | view instantiation (binds sort parameter) |
 | sort with unspecified sub-sort | parameterized module (`fmod X{Y :: TRIV}`) |
 
 The anthill adds: description blocks (partial formalization as KB facts), metadata (trust, provenance, agent), host-language embeddings (bidirectional mapping to Scala/Python/etc.), and the stigmergic agent layer.
@@ -1388,7 +1412,7 @@ sort banking
   export Account, Money, deposit, withdraw, balance
 
   sort Money = ?                                     -- type parameter (unspecified)
-  requires Numeric{T = Money}                        -- gives us +, -, >, >=, = for Money
+  requires Numeric[T = Money]                        -- gives us +, -, >, >=, = for Money
 
   entity Account(                                    -- sugar: sort Account { entity Account(...) }
     id      : AccountId,
@@ -1423,7 +1447,7 @@ sort banking
   export Account, Money, deposit, withdraw, balance
 
   sort Money = ?
-  requires Numeric{T = Money}
+  requires Numeric[T = Money]
 
   entity Account(id: AccountId, balance: Money)
 
@@ -1568,7 +1592,7 @@ AtomTerm    ::= Const(type, value)
               | VariableTerm                 -- variable with optional description
               | Fn(name, args: [Term])
               | Ref(Name)
-              | Instantiation(Name, SortBinding+)  -- Eq{T = Int} in term position
+              | Instantiation(Name, SortBinding+)  -- Eq[T = Int] in term position
               | PrefixTerm
               | Quoted(language, source)
 
@@ -1599,8 +1623,8 @@ ImportPath  ::= Name                                           -- import a name
               | Name '.' '{' NameList '}'                      -- selective import
               | Name '.' '*'                                   -- wildcard import
 NameList    ::= Name (',' Name)*
-SortBinding ::= Name ['=' Type]                 -- without '= Type': punning (Eq{T} = Eq{T = T})
-              | VariableTerm                    -- variable binding: Modify{?}, Modify{?r}
+SortBinding ::= Name ['=' Type]                 -- without '= Type': punning (Eq[T] = Eq[T = T])
+              | VariableTerm                    -- variable binding: Modify[?], Modify[?r]
 
 NamespaceContent ::= Import | Export
                    | Sort | Rule | Operation
@@ -1641,7 +1665,7 @@ FieldList   ::= Field (',' Field)*
 Field       ::= Name ':' Type
 
 Type        ::= Name                                           -- simple: Account, Int
-              | Name '{' SortBinding (',' SortBinding)* '}'    -- inline instantiation: List{T=Int}
+              | Name '[' SortBinding (',' SortBinding)* ']'    -- inline instantiation: List[T=Int]
               | VariableTerm                                    -- logical variable: ?, ?T, ?T {< desc >}+ ?
               | '(' ArrowParams ')' '->' Type                    -- arrow type: (A) -> B
               | '(' ArrowParams ')' '->' Type '@' Type          -- effectful arrow: (A) -> B @ E
@@ -1663,7 +1687,7 @@ ParamList   ::= Param (',' Param)*
 Param       ::= Name ':' Type
 
 Effect      ::= Name                       -- bare effect (e.g. Error)
-              | Name '{' Name '}'         -- effect with target (e.g. Modify{store})
+              | Name '[' Name ']'         -- effect with target (e.g. Modify[store])
 
 RequiresDecl ::= 'requires' Type                -- sort-level constraint (in sort/namespace body)
 
@@ -1735,7 +1759,7 @@ Design questions discovered during implementation that need decisions.
 
 ### 12.1 Effect semantics
 
-Effect declarations are stored as-is — open `Name` or `Name{target}` pairs. Currently implemented: `Modify{target}` (mutation) and `Error` / `Error{type}` (fallibility). Open questions:
+Effect declarations are stored as-is — open `Name` or `Name[target]` pairs. Currently implemented: `Modify[target]` (mutation) and `Error` / `Error[type]` (fallibility). Open questions:
 
 - **Effect checking**: Should declared effects be verified against implementations, or remain advisory?
 - **Control flow effects**: `Suspend` and `Branch` are described in §5.7 but not yet implemented. How should they interact with codegen?

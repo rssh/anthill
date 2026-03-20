@@ -28,11 +28,11 @@ The mapping is deterministic: given the same anthill source, the same Rust code 
 | `effects (Error)` or `effects (Error E)` | `Result<R, Error>` or `Result<R, E>` return |
 | `effects (Requires Cap)` | generic bound or runtime check (future) |
 | `sort T` (abstract sub-sort = type parameter) | generic `<T>` |
-| `requires Eq{T}` | trait bound: `where T: Eq` or supertrait |
-| `fact SortName` or `fact SortName{bindings}` (inside sort body) | supertrait: `trait S: SortName` |
-| `fact SortName` or `fact SortName{bindings}` (in entity's namespace) | `impl SortName for Entity` |
-| `List{T = X}` | `Vec<X>` |
-| `Option{T = X}` | `Option<X>` |
+| `requires Eq[T]` | trait bound: `where T: Eq` or supertrait |
+| `fact SortName` or `fact SortName[bindings]` (inside sort body) | supertrait: `trait S: SortName` |
+| `fact SortName` or `fact SortName[bindings]` (in entity's namespace) | `impl SortName for Entity` |
+| `List[T = X]` | `Vec<X>` |
+| `Option[T = X]` | `Option<X>` |
 | `rule` (law) | `#[cfg(test)]` property-based test stub |
 | `Quoted("rust", source)` | verbatim Rust code inserted as-is |
 | `constraint` (denial) | `debug_assert!` or test-time check |
@@ -170,7 +170,7 @@ A `requires` declaration maps to a trait bound — either as a supertrait (on a 
 ```
 sort Ordered {                             pub trait Ordered: Eq {
   sort T                        →              fn gt(&self, other: &Self) -> bool;
-  requires Eq{T}                               ...
+  requires Eq[T]                               ...
   operation gt(a: T,                       }
     b: T) -> Bool
 }
@@ -181,22 +181,22 @@ When the requires binds a specific type, it becomes a where clause:
 ```
 sort Container {                           pub trait Container<T>
   sort T                        →              where T: Numeric {
-  requires Numeric{T}                          ...
+  requires Numeric[T]                          ...
   ...                                      }
 }
 ```
 
 ### 2.8 Parametric Instantiation → Generic Application
 
-Inline type expressions `Name{T = X}` map to generic type application in Rust:
+Inline type expressions `Name[T = X]` map to generic type application in Rust:
 
 ```
-List{T = Int}                   →  Vec<i32>        (prelude type)
-Option{T = Account}             →  Option<Account>  (prelude type)
-List{T = ContextRef}            →  Vec<ContextRef>  (prelude type)
+List[T = Int]                   →  Vec<i32>        (prelude type)
+Option[T = Account]             →  Option<Account>  (prelude type)
+List[T = ContextRef]            →  Vec<ContextRef>  (prelude type)
 ```
 
-Prelude types have special mappings (§2.9). Non-prelude parametric sorts map directly: `MyContainer{T = Foo}` → `MyContainer<Foo>`.
+Prelude types have special mappings (§2.9). Non-prelude parametric sorts map directly: `MyContainer[T = Foo]` → `MyContainer<Foo>`.
 
 ### 2.9 Prelude Type Mappings
 
@@ -208,8 +208,8 @@ Anthill prelude sorts map to idiomatic Rust types. These mappings are defined in
 | `Float` | `f64` |
 | `Bool` | `bool` |
 | `String` | `String` |
-| `List{T = X}` | `Vec<X>` |
-| `Option{T = X}` | `Option<X>` |
+| `List[T = X]` | `Vec<X>` |
+| `Option[T = X]` | `Option<X>` |
 | `Duration` | `std::time::Duration` |
 | `Timestamp` | `String` |
 
@@ -262,7 +262,7 @@ These are generated in a separate `invariants` submodule for test-time checking.
 
 ### 2.13 Fact as Spec Satisfaction Declaration → Supertrait or Impl
 
-A `fact SortName` or `fact SortName{bindings}` declares a spec satisfaction (refinement) relationship. The bindings (if any) are used by the kernel for constraint checking but are ignored by the codegen — only the sort name matters for the Rust mapping. It maps differently depending on context:
+A `fact SortName` or `fact SortName[bindings]` declares a spec satisfaction (refinement) relationship. The bindings (if any) are used by the kernel for constraint checking but are ignored by the codegen — only the sort name matters for the Rust mapping. It maps differently depending on context:
 
 **Inside a sort body** — becomes a supertrait:
 
@@ -271,18 +271,18 @@ sort QueryableStore {                      pub trait QueryableStore: Store {
   fact Store                      →            fn retrieve(&self, ...) -> ...;
   operation retrieve(                      }
     store: QueryableStore,
-    pattern: Term) -> List{T = Term}
+    pattern: Term) -> List[T = Term]
 }
 
 sort Stream {                              trait Stream<T, E>: Streamable {
   sort T                          →            ...
   sort E                                   }
-  fact Streamable{T = T}
+  fact Streamable[T = T]
   ...
 }
 ```
 
-`fact Store` inside `sort QueryableStore` means "every QueryableStore is-a Store". `fact Streamable{T = T}` inside `sort Stream` means "every Stream is-a Streamable" — the bindings are stripped, only the sort name `Streamable` becomes a supertrait.
+`fact Store` inside `sort QueryableStore` means "every QueryableStore is-a Store". `fact Streamable[T = T]` inside `sort Stream` means "every Stream is-a Streamable" — the bindings are stripped, only the sort name `Streamable` becomes a supertrait.
 
 **In an entity's namespace** — becomes a trait implementation:
 
@@ -312,7 +312,7 @@ fact Implementation("graphics.Renderer",
 -- B depends on A, has no Implementation fact:
 namespace scene
   import graphics.Renderer
-  entity Scene(renderer: Renderer, objects: List{T = SceneObject})
+  entity Scene(renderer: Renderer, objects: List[T = SceneObject])
   operation render(s: Scene) -> Frame
 end
 ```
@@ -536,7 +536,7 @@ For now, the receiver form (`&self` vs `&mut self`) is determined by:
 An operation that takes the enclosing sort as its first parameter gets `&self` automatically — no effect declaration needed:
 
 ```
-operation sorts(kb: KB, namespace: Option{T = String}) -> List{T = SortInfo}
+operation sorts(kb: KB, namespace: Option[T = String]) -> List[T = SortInfo]
 
 →  fn sorts(&self, namespace: Option<String>) -> Vec<SortInfo>;
 ```
@@ -548,7 +548,7 @@ operation sorts(kb: KB, namespace: Option{T = String}) -> List{T = SortInfo}
 Bare `Error` wraps in `Result<R, Error>`:
 
 ```
-operation execute(kb: KB, query: LogicalQuery) -> Stream{T = Substitution}
+operation execute(kb: KB, query: LogicalQuery) -> Stream[T = Substitution]
   effects (Error)
 
 →  fn execute(&self, query: LogicalQuery) -> Result<impl Stream<Substitution>, Error>;
@@ -567,7 +567,7 @@ When `Modify` and `Error` are both present, they compose independently — `Modi
 
 ```
 operation transfer(from: Account, to: Account, m: Money) -> Account
-  effects (Modify{Ledger}, Error TransferError)
+  effects (Modify[Ledger], Error TransferError)
 
 →  fn transfer(
        &mut self,
@@ -602,7 +602,7 @@ Sorts may declare abstract effect parameters — e.g. `sort E = ?` on `Stream`. 
 
 ```
 operation execute(kb: KB, query: LogicalQuery)
-  -> Stream{T = Substitution, E = Error}
+  -> Stream[T = Substitution, E = Error]
   effects (Error)
 ```
 
@@ -629,11 +629,11 @@ The default Rust/std profile has one receiver rule:
 
 **`returns_same_type` → `ByValue`.** When the return type of a method contains the enclosing sort (i.e. `Self`), take `self` by value instead of `&self`. This avoids cloning: the caller gives up the old value and receives a new one.
 
-This rule applies to operations like `splitFirst`, `tail`, `collect` on `Stream` — all of which return (or contain) `Stream` in their output. Operations like `head` and `isEmpty` return `Option{T}` and `Bool` respectively (no `Stream`), so they stay as `&self`.
+This rule applies to operations like `splitFirst`, `tail`, `collect` on `Stream` — all of which return (or contain) `Stream` in their output. Operations like `head` and `isEmpty` return `Option[T]` and `Bool` respectively (no `Stream`), so they stay as `&self`.
 
 ```
 -- Stream operations are pure (no effects):
-operation splitFirst(s: Stream) -> Option{T = Pair{A = T, B = Stream}}
+operation splitFirst(s: Stream) -> Option[T = Pair[A = T, B = Stream]]
 operation isEmpty(s: Stream) -> Bool
 
 -- Rust/std profile produces:
@@ -662,19 +662,19 @@ namespace anthill.persistence
     effects (Modify{store}, Error)
   operation retract(store: Store, id: FactId) -> Bool
     effects (Modify{store}, Error)
-  operation flush(store: Store, delta: List{T = Term}) -> Bool
+  operation flush(store: Store, delta: List[T = Term]) -> Bool
     effects (Modify{store}, Error)
 
   sort QueryableStore
     fact Store                                -- QueryableStore is-a Store
 
-  operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
+  operation retrieve(store: QueryableStore, pattern: Term) -> List[T = Term]
     effects (Error)
 
   sort BulkStore
     fact Store                                -- BulkStore is-a Store
 
-  operation pull(store: BulkStore) -> List{T = Term}
+  operation pull(store: BulkStore) -> List[T = Term]
     effects (Error)
 
 end
@@ -796,14 +796,14 @@ end
 
 sort anthill.prelude.Ordered
   sort T
-  requires Eq{T}
+  requires Eq[T]
   operation gt(a: T, b: T) -> Bool
   ...
 end
 
 sort anthill.prelude.Numeric
   sort T
-  requires Ordered{T}
+  requires Ordered[T]
   operation add(a: T, b: T) -> T
   operation sub(a: T, b: T) -> T
   operation mul(a: T, b: T) -> T
@@ -838,7 +838,7 @@ pub trait Numeric: Ordered {
 }
 ```
 
-Note: `requires Eq{T}` on `Ordered` becomes a supertrait `: Eq`. `requires Ordered{T}` on `Numeric` becomes `: Ordered`. The `rule neq(?a, ?b) = not(eq(?a, ?b))` generates a default method implementation.
+Note: `requires Eq[T]` on `Ordered` becomes a supertrait `: Eq`. `requires Ordered[T]` on `Numeric` becomes `: Ordered`. The `rule neq(?a, ?b) = not(eq(?a, ?b))` generates a default method implementation.
 
 ### 6.4 Stage 0 WorkStatus
 
@@ -898,7 +898,7 @@ sort banking
   import anthill.prelude.Numeric.{Numeric, add, sub, gt, gte, zero-val}
 
   sort Money                                         -- type parameter (abstract)
-  requires Numeric{T = Money}
+  requires Numeric[T = Money]
 
   entity Account(id: AccountId, balance: Money)
 
@@ -957,10 +957,10 @@ mod tests {
 -- Anthill:
 entity WorkItem(
   id          : String,
-  description : Option{T = Term},
-  context     : Option{T = List{T = ContextRef}},
-  acceptance  : List{T = AcceptanceCriterion},
-  depends_on  : Option{T = List{T = String}},
+  description : Option[T = Term],
+  context     : Option[T = List[T = ContextRef]],
+  acceptance  : List[T = AcceptanceCriterion],
+  depends_on  : Option[T = List[T = String]],
   status      : WorkStatus
 )
 ```
@@ -1075,10 +1075,10 @@ Defined in `stdlib/anthill/realization/realization.anthill`:
 ```anthill
 entity LanguageMapping(
   language      : String,                    -- "rust", "scala", "python"
-  profile       : Option{T = String},        -- "std", "no_std", etc.
-  effect_map    : List{T = EffectMapping},   -- effect → host syntax
-  receiver_map  : List{T = ReceiverRule},    -- ownership rules (host-specific)
-  type_map      : List{T = TypeMapping}      -- prelude type → host type
+  profile       : Option[T = String],        -- "std", "no_std", etc.
+  effect_map    : List[T = EffectMapping],   -- effect → host syntax
+  receiver_map  : List[T = ReceiverRule],    -- ownership rules (host-specific)
+  type_map      : List[T = TypeMapping]      -- prelude type → host type
 )
 ```
 
@@ -1173,7 +1173,7 @@ Effect rules take priority because they are semantic — `Modify` genuinely mean
 **Example: Stream operations**
 
 ```
-splitFirst(s: Stream) -> Option{Pair{T, Stream}}
+splitFirst(s: Stream) -> Option[Pair[T, Stream]]
   1. No Modify → default receiver
   2. receiver_map: Stream appears in return → ByValue
   Result: fn split_first(self) -> Option<(T, Self)>

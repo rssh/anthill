@@ -140,7 +140,7 @@ Sort with requires declaration
 
 sort Ordered {
   sort T = ?
-  requires Eq{T = T}
+  requires Eq[T = T]
   operation gt(a: T, b: T) -> Bool
 }
 
@@ -208,7 +208,7 @@ Namespace with requires declaration
 
 namespace banking {
   sort Money = ?
-  requires Numeric{T = Money}
+  requires Numeric[T = Money]
 }
 
 ---
@@ -232,7 +232,7 @@ Requires with punned sort binding
 
 sort Ordered {
   sort T = ?
-  requires Eq{T}
+  requires Eq[T]
 }
 
 ---
@@ -330,7 +330,7 @@ end
 Fact with instantiation term
 =====================================
 
-fact Eq{T = Int}
+fact Eq[T = Int]
 
 ---
 
@@ -448,7 +448,7 @@ sort Money = Int
 Sort type alias (parameterized)
 =====================================
 
-sort IntList = List{T = Int}
+sort IntList = List[T = Int]
 
 ---
 
@@ -588,7 +588,7 @@ Effects with parameterized type
 
 sort Store {
   operation persist(store: Store, fact: Term) -> FactId
-    effects (Modify{store})
+    effects (Modify[store])
 }
 
 ---
@@ -617,7 +617,7 @@ Effects with multiple types
 =====================================
 
 operation process(store: Store) -> Bool
-  effects (Read{store}, Emit{AuditEvent})
+  effects (Read[store], Emit[AuditEvent])
 
 ---
 
@@ -663,7 +663,7 @@ operation run(x: Int) -> Int
 Variable in sort binding (anonymous)
 =====================================
 
-fact Effect{T = Read{?}}
+fact Effect[T = Read[?]]
 
 ---
 
@@ -682,7 +682,7 @@ fact Effect{T = Read{?}}
 Variable in sort binding (named)
 =====================================
 
-rule Effect{T = Read{?r}} :- Effect{T = Modify{?r}}
+rule Effect[T = Read[?r]] :- Effect[T = Modify[?r]]
 
 ---
 

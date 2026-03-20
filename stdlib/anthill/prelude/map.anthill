@@ -6,23 +6,23 @@ sort anthill.prelude.Map
 
   sort K = ?
   sort V = ?
-  requires Eq{T = K}
+  requires Eq[T = K]
 
   -- Construction
   operation empty() -> Map
   operation put(m: Map, key: K, value: V) -> Map
 
   -- Lookup
-  operation get(m: Map, key: K) -> Option{T = V}
+  operation get(m: Map, key: K) -> Option[T = V]
   operation contains(m: Map, key: K) -> Bool
 
   -- Removal
   operation remove(m: Map, key: K) -> Map
 
   -- Projections
-  operation keys(m: Map) -> List{T = K}
-  operation values(m: Map) -> List{T = V}
-  operation entries(m: Map) -> List{T = Pair{A = K, B = V}}
+  operation keys(m: Map) -> List[T = K]
+  operation values(m: Map) -> List[T = V]
+  operation entries(m: Map) -> List[T = Pair[A = K, B = V]]
   operation size(m: Map) -> Int
 
   -- Laws (algebraic specification)

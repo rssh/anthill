@@ -329,7 +329,7 @@ sort Eq {
 
 sort Ordered {
     sort T = ?
-    requires Eq{T = T}
+    requires Eq[T = T]
     operation compare(a: T, b: T) -> Int
 }
 "#;
@@ -355,7 +355,7 @@ sort Eq {
 
 sort Ordered {
     sort T = ?
-    requires Eq{T = T}
+    requires Eq[T = T]
     operation compare(a: T, b: T) -> Int
 }
 "#;
@@ -369,7 +369,7 @@ sort Ordered {
 
     let goal = make_goal(&mut kb, "anthill.reflect.typing.refines", &[ordered_term, var_spec]);
     let results = kb.resolve(&[goal], &default_config());
-    assert!(!results.is_empty(), "refines(Ordered, ?spec) should find at least Eq{{T=T}}");
+    assert!(!results.is_empty(), "refines(Ordered, ?spec) should find at least Eq[T=T]");
 }
 
 #[test]
@@ -381,12 +381,12 @@ sort A {
 
 sort B {
     sort T = ?
-    requires A{T = T}
+    requires A[T = T]
 }
 
 sort C {
     sort T = ?
-    requires B{T = T}
+    requires B[T = T]
 }
 "#;
     let mut kb = load_stdlib_kb();
@@ -394,12 +394,12 @@ sort C {
 
     let c_term = kb.resolve_qualified_name_term("C");
 
-    // Query: refines(C, ?spec) — should find both B{T=T} and A{T=T}
+    // Query: refines(C, ?spec) — should find both B[T=T] and A[T=T]
     let var_spec = make_var(&mut kb, "spec");
 
     let goal = make_goal(&mut kb, "anthill.reflect.typing.refines", &[c_term, var_spec]);
     let results = kb.resolve(&[goal], &default_config());
-    assert!(results.len() >= 2, "C refines both B{{T=T}} (direct) and A{{T=T}} (transitive), got {} results", results.len());
+    assert!(results.len() >= 2, "C refines both B[T=T] (direct) and A[T=T] (transitive), got {} results", results.len());
 }
 
 // ── type_compatible tests ────────────────────────────────────────
@@ -454,7 +454,7 @@ sort Eq {
 
 sort Ordered {
     sort T = ?
-    requires Eq{T = T}
+    requires Eq[T = T]
     operation compare(a: T, b: T) -> Int
 }
 "#;

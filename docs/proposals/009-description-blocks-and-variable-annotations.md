@@ -224,7 +224,7 @@ Desc(T, Eq, content: [text("The type supporting equality")])
 
 -- Substitution: {T → Int}
 -- After (derived automatically):
-Desc(Int, Eq{T=Int}, content: [ref(Eq.T)])
+Desc(Int, Eq[T=Int], content: [ref(Eq.T)])
 ```
 
 The derived description for `Int` is a **reference list** — not a copy of the text, but pointers back to the original descriptions. This avoids duplication and keeps the provenance chain navigable.
@@ -240,16 +240,16 @@ The derived description for `Int` is a **reference list** — not a copy of the 
 ```anthill
 sort List
   sort T = ? {< The element type >}
-  requires Eq{T = T}
+  requires Eq[T = T]
 end
 
 sort Eq
   sort T = ? {< The type supporting equality >}
 end
 
--- After: fact List{T = Int}
+-- After: fact List[T = Int]
 -- Derived description for Int in this context:
-Desc(Int, List{T=Int}, content: [ref(List.T), ref(Eq.T)])
+Desc(Int, List[T=Int], content: [ref(List.T), ref(Eq.T)])
 ```
 
 Tooling resolves the references on demand: hovering over `Int` shows "The element type (List.T); The type supporting equality (Eq.T)".

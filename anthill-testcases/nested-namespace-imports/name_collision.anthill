@@ -21,6 +21,6 @@
 --
 --   namespace Path
 --     operation basename(p: Path) -> String      -- ERROR: unresolved 'Path', 'String'
---     operation components(p: Path) -> List{T = String}
+--     operation components(p: Path) -> List[T = String]
 --   end
 -- end

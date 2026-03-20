@@ -119,11 +119,11 @@ entity Point(x: Int, y: Int)            -- nominal: only Point values match
 
 ### Named tuples and Operation
 
-Operation parameter lists are named tuples. This means `Operation{A, B, E}` can use a named tuple for `A`:
+Operation parameter lists are named tuples. This means `Operation[A, B, E]` can use a named tuple for `A`:
 
 ```
 -- operation deposit(account: Account, amount: Money) -> Account
--- is an Operation{A = (account: Account, amount: Money), B = Account, E = ...}
+-- is an Operation[A = (account: Account, amount: Money), B = Account, E = ...]
 
 rule apply(?op, (account: ?a, amount: ?m)) = ...
 ```
@@ -188,7 +188,7 @@ rule divmod(?a, ?b) = (quotient: div(?a, ?b), remainder: mod(?a, ?b))
 
 ### Operation as first-class sort
 
-With tuples, `Operation{A = (Int, String), B = Bool, E = ...}` naturally represents multi-argument operations:
+With tuples, `Operation[A = (Int, String), B = Bool, E = ...]` naturally represents multi-argument operations:
 
 ```
 rule apply(?op, (?x, ?y)) = ...
@@ -208,7 +208,7 @@ The state-passing interpretation of effectful operations (§5.6) uses products i
 -- op_e : Env × A → (R × Env × Event list) + Error
 
 -- With tuple sorts:
-operation op_e(env: Env, a: A) -> (R, Env, List{T = Event})
+operation op_e(env: Env, a: A) -> (R, Env, List[T = Event])
   effects (Error)
 ```
 

@@ -48,12 +48,12 @@ Import ::= 'import' Name ['.' '{' NameList '}']
 
 ### 3. Instantiation is purely sort-level via `Name{bindings}`
 
-The inline type expression `Name{bindings}` is the sole mechanism for sort parameter binding in type positions:
+The inline type expression `Name[bindings]` is the sole mechanism for sort parameter binding in type positions:
 
 ```
 entity Project(
-  tools  : List{T = String},
-  modules: Option{T = Module}
+  tools  : List[T = String],
+  modules: Option[T = Module]
 )
 ```
 
@@ -71,7 +71,7 @@ The same keyword works at the sort level — a **precondition for instantiation*
 ```
 sort Ordered {
   sort T
-  requires Eq{T}              -- to instantiate Ordered, T must have Eq
+  requires Eq[T]              -- to instantiate Ordered, T must have Eq
   operation gt(a: T, b: T) -> Bool
   ...
 }
@@ -82,9 +82,9 @@ This is uniform: `requires` = "this must be satisfied before you can use this."
 | Level | Syntax | Meaning |
 |-------|--------|---------|
 | Operation | `requires gt(m, zero-val)` | Precondition to **call** the operation |
-| Sort | `requires Eq{T}` | Precondition to **instantiate** the sort |
+| Sort | `requires Eq[T]` | Precondition to **instantiate** the sort |
 
-Note the distinction from `sort T` (which **declares** a new abstract parameter). `requires Eq{T}` **references** an existing sort with bindings — it's a constraint, not a declaration. The punned form `Eq{T}` is shorthand for `Eq{T = T}` when the parameter name matches a type in scope.
+Note the distinction from `sort T` (which **declares** a new abstract parameter). `requires Eq[T]` **references** an existing sort with bindings — it's a constraint, not a declaration. The punned form `Eq[T]` is shorthand for `Eq[T = T]` when the parameter name matches a type in scope.
 
 ### 5. Typeclass-like patterns are expressible as sorts
 
@@ -100,7 +100,7 @@ sort Eq {
 
 sort Ordered {
   sort T
-  requires Eq{T}
+  requires Eq[T]
   operation gt(a: T, b: T) -> Bool
   operation gte(a: T, b: T) -> Bool
   operation lt(a: T, b: T) -> Bool
@@ -113,7 +113,7 @@ sort Ordered {
 
 sort Numeric {
   sort T
-  requires Ordered{T}
+  requires Ordered[T]
   operation add(a: T, b: T) -> T
   operation sub(a: T, b: T) -> T
   operation mul(a: T, b: T) -> T
@@ -145,7 +145,7 @@ This is a KB query, not a built-in mechanism. It can be refined, extended, or ov
 ```
 namespace banking {
   sort Money {
-    requires Numeric{T = Money}
+    requires Numeric[T = Money]
     entity dollars(amount: Int)
   }
 
@@ -177,7 +177,7 @@ namespace anthill.prelude {
 }
 ```
 
-Usage: `List{T = Int}` in type position.
+Usage: `List[T = Int]` in type position.
 
 ### Functor / Monad
 
@@ -186,16 +186,16 @@ sort Functor {
   sort F
     sort T
   end
-  operation map(c: F, f: T -> U) -> F{T = U}
+  operation map(c: F, f: T -> U) -> F[T = U]
 }
 
 sort Monad {
   sort M
     sort T
   end
-  requires Functor{F = M}           -- Monad requires Functor
+  requires Functor[F = M]           -- Monad requires Functor
   operation return(x: T) -> M
-  operation bind(m: M, f: T -> M{T = U}) -> M{T = U}
+  operation bind(m: M, f: T -> M[T = U]) -> M[T = U]
   rule bind(return(?x), ?f) = ?f(?x)
 }
 ```
@@ -225,15 +225,15 @@ Import ::= 'import' Name ['.' '{' NameList '}']
 
 Soft keywords: replace `domain` with `namespace`.
 
-The `requires` keyword is already a soft keyword (used in operations). At sort level, `requires Eq{T}` is a sort-level constraint — a precondition for instantiation. Sort bindings support punning: `Eq{T}` = `Eq{T = T}`.
+The `requires` keyword is already a soft keyword (used in operations). At sort level, `requires Eq[T]` is a sort-level constraint — a precondition for instantiation. Sort bindings support punning: `Eq[T]` = `Eq[T = T]`.
 
 ## Relationship to existing systems
 
 | Anthill | Maude | Scala 3 | Haskell |
 |---------|-------|---------|---------|
 | `sort Eq { sort T; ... }` | `fth EQ { sort T; ... }` | `trait Eq[T]` | `class Eq a` |
-| `requires Eq{T = Money}` | `view Eq(Money)` | `given Eq[Money]` | `instance Eq Money` |
-| `Name{T=Int}` (type expr) | sort instantiation | `List[Int]` | `List Int` |
+| `requires Eq[T = Money]` | `view Eq(Money)` | `given Eq[Money]` | `instance Eq Money` |
+| `Name[T=Int]` (type expr) | sort instantiation | `List[Int]` | `List Int` |
 | `namespace` | `fmod` (flat module) | `package` / `object` | `module` |
 | `import` | `protecting` / `including` | `import` | `import` |
 
@@ -241,7 +241,7 @@ The `requires` keyword is already a soft keyword (used in operations). At sort l
 
 1. **Rename `domain` → `namespace`** in grammar, parser, converter, loader — **done** (31b05f0)
 2. **Move prelude specs from `domain` to `sort`** (Eq, Ordered, Numeric) — **done** (b925da4)
-3. **Add `requires` at sort level** — parse as sort-level constraint, loader emits `Requirement` facts — **done** (e005ede). Also added sort-binding punning: `Eq{T}` = `Eq{T = T}` (d7dbcb3).
+3. **Add `requires` at sort level** — parse as sort-level constraint, loader emits `Requirement` facts — **done** (e005ede). Also added sort-binding punning: `Eq[T]` = `Eq[T = T]` (d7dbcb3).
 4. **Validate `Name{bindings}` and `requires` constraints** — not a separate compiler pass; well-formedness checks (valid sort references, valid parameter names, arity) are expressed as constraint rules in the KB. Errors surface through the standard denial/constraint mechanism.
 
 Steps 1–3 are complete. Step 4 is prelude content (constraint rules), not a compiler change.

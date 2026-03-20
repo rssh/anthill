@@ -8,9 +8,9 @@
 
 ## Motivation
 
-Stream operations need effects (at minimum `Read{kb}` for KB queries), but the Stream sort doesn't know *which* effect — that depends on the concrete stream source. This requires **abstract effect parameters**: a sort declares `sort E = ?` and uses `E` in effect clauses.
+Stream operations need effects (at minimum `Read[kb]` for KB queries), but the Stream sort doesn't know *which* effect — that depends on the concrete stream source. This requires **abstract effect parameters**: a sort declares `sort E = ?` and uses `E` in effect clauses.
 
-More broadly: effects are sorts. An effect like `Read{kb}` is a sort instantiation — `Read` parameterized with target `kb`. The kernel treats effects as opaque labels for composition and checking. It never interprets them. The interpretation (what "reading the KB" actually does) lives outside, in the realization layer.
+More broadly: effects are sorts. An effect like `Read[kb]` is a sort instantiation — `Read` parameterized with target `kb`. The kernel treats effects as opaque labels for composition and checking. It never interprets them. The interpretation (what "reading the KB" actually does) lives outside, in the realization layer.
 
 ## The Insight: Effects as Sorts and Facts
 
@@ -24,19 +24,19 @@ sort Emit     { sort T = ? entity Emit(target: T) }
 sort Error    { sort T = ? entity Error(target: T) }
 
 -- Registration: each kind is a valid effect
-fact Effect{T = Read{?}}
-fact Effect{T = Modify{?}}
-fact Effect{T = Emit{?}}
-fact Effect{T = Error{?}}
+fact Effect[T = Read[?]]
+fact Effect[T = Modify[?]]
+fact Effect[T = Emit[?]]
+fact Effect[T = Error[?]]
 
 -- Relationships: Modify implies Read
-rule Effect{T = Read{?r}} :- Effect{T = Modify{?r}}
+rule Effect[T = Read[?r]] :- Effect[T = Modify[?r]]
 ```
 
 This means:
-- **New effect kinds are just sorts + fact assertions.** `sort Audits { sort T = ? entity Audits(target: T) }` + `fact Effect{T = Audits{?}}` declares a user-defined effect kind — no grammar or kernel change needed.
-- **Effect checking is KB querying.** When an operation declares `effects (Foo{bar})`, the kernel checks `fact Effect{T = Foo{?}}` in the KB. Unknown effect kind = missing fact.
-- **Effect relationships are rules.** `Read` implied by `Modify` is: `rule Effect{T = Read{?r}} :- Effect{T = Modify{?r}}`.
+- **New effect kinds are just sorts + fact assertions.** `sort Audits { sort T = ? entity Audits(target: T) }` + `fact Effect[T = Audits[?]]` declares a user-defined effect kind — no grammar or kernel change needed.
+- **Effect checking is KB querying.** When an operation declares `effects (Foo[bar])`, the kernel checks `fact Effect[T = Foo[?]]` in the KB. Unknown effect kind = missing fact.
+- **Effect relationships are rules.** `Read` implied by `Modify` is: `rule Effect[T = Read[?r]] :- Effect[T = Modify[?r]]`.
 - **Effects are queryable.** "What effects exist?" is a KB query.
 
 ```
@@ -45,7 +45,7 @@ This means:
 │  - Effect sort + fact declarations  │
 │  - effect composition (union, §5.6) │
 │  - checking via KB query:           │
-│    fact Effect{T = Kind{?}} exists? │
+│    fact Effect[T = Kind[?]] exists? │
 │  - abstract effect parameters       │
 └──────────────┬──────────────────────┘
                │ abstract boundary
@@ -53,18 +53,18 @@ This means:
 │  Realization (unsafe, host-language)│
 │  - effect interpretation            │
 │  - state passing, IO, FFI          │
-│  - Rust impl of Read{kb}, etc.    │
+│  - Rust impl of Read[kb], etc.    │
 └─────────────────────────────────────┘
 ```
 
 The kernel knows:
-- Which effect kinds exist (via `fact Effect{T = Kind{?}}` in KB)
+- Which effect kinds exist (via `fact Effect[T = Kind[?]]` in KB)
 - Effects compose (sequential = union, see §5.6)
 - Effect relationships (`Read` implied by `Modify` — a rule)
 - Operations declare their effects
 
 The kernel does NOT know:
-- What `Read{kb}` means at runtime
+- What `Read[kb]` means at runtime
 - How state is threaded through effectful operations
 - How effects map to host-language constructs
 
@@ -80,10 +80,10 @@ sort MyApp {
 
   -- Declare a new effect kind
   sort Audits { sort T = ? entity Audits(target: T) }
-  fact Effect{T = Audits{?}}
+  fact Effect[T = Audits[?]]
 
   operation create_account(name: String) -> Account
-    effects (Modify{store}, Audits{audit_log})
+    effects (Modify[store], Audits[audit_log])
 }
 ```
 
@@ -104,18 +104,18 @@ effects_clause: $ => seq('effects', '(', commaSep1($._type), ')'),
 
 Where `_type` is `simple_type | parameterized_type | variable_term`. This accepts:
 ```
-effects (Read{kb})                 -- parameterized_type: sort instantiation
+effects (Read[kb])                 -- parameterized_type: sort instantiation
 effects (E)                        -- simple_type: abstract sort parameter
 effects (?E)                       -- variable_term: logical variable
-effects (Read{kb}, E)              -- mix of concrete and abstract
-effects (Read{kb}, ?extra)         -- mix with logical variable
+effects (Read[kb], E)              -- mix of concrete and abstract
+effects (Read[kb], ?extra)         -- mix with logical variable
 ```
 
 ### Why types, not terms?
 
-Effects in operation signatures are **sort instantiations** — `Read{store}` is `Read` parameterized with `store`. This is `Name{bindings}` syntax, which is a type expression (`parameterized_type`). The same syntax works in type position (`List{T = Int}`) and in fact position (`fact Eq{T = Int}`).
+Effects in operation signatures are **sort instantiations** — `Read[store]` is `Read` parameterized with `store`. This is `Name[bindings]` syntax, which is a type expression (`parameterized_type`). The same syntax works in type position (`List[T = Int]`) and in fact position (`fact Eq[T = Int]`).
 
-Values can appear in sort binding positions because types are terms. `Read{store}` where `store` is an operation parameter is a sort instantiation referencing a concrete value — a natural form of value-dependent typing that requires no special mechanism. The KB's unification handles abstract bindings (`Read{?}`) and concrete ones (`Read{store}`) uniformly. This is equivalent in power to dependent type theory (DOT, Martin-Löf), expressed as Horn clause resolution instead of typing judgments — the complexity is inherent in what's being checked, not in the formalism.
+Values can appear in sort binding positions because types are terms. `Read[store]` where `store` is an operation parameter is a sort instantiation referencing a concrete value — a natural form of value-dependent typing that requires no special mechanism. The KB's unification handles abstract bindings (`Read[?]`) and concrete ones (`Read[store]`) uniformly. This is equivalent in power to dependent type theory (DOT, Martin-Löf), expressed as Horn clause resolution instead of typing judgments — the complexity is inherent in what's being checked, not in the formalism.
 
 ### Sort bindings accept variables
 
@@ -124,11 +124,11 @@ Sort bindings were extended to accept logical variables as standalone bindings:
 ```js
 sort_binding: $ => choice(
   seq(field('param', $.name), optional(seq('=', field('type', $._type)))),
-  field('type', $.variable_term),  // Read{?}, Read{?r}
+  field('type', $.variable_term),  // Read[?], Read[?r]
 ),
 ```
 
-This enables effect registration facts like `fact Effect{T = Read{?}}` where `?` means "for any target".
+This enables effect registration facts like `fact Effect[T = Read[?]]` where `?` means "for any target".
 
 ## Usage in Sort Definitions
 
@@ -139,15 +139,15 @@ sort Stream {
   sort T = ?         -- element type (abstract)
   sort E = ?         -- effect (abstract)
 
-  operation splitFirst(s: Stream) -> Option{T = Pair{A = T, B = Stream}}
+  operation splitFirst(s: Stream) -> Option[T = Pair[A = T, B = Stream]]
     effects (E)
-  operation head(s: Stream) -> Option{T = T}
+  operation head(s: Stream) -> Option[T = T]
     effects (E)
   operation tail(s: Stream) -> Stream
     effects (E)
-  operation takeN(s: Stream, n: Int) -> List{T = T}
+  operation takeN(s: Stream, n: Int) -> List[T = T]
     effects (E)
-  operation collect(s: Stream) -> List{T = T}
+  operation collect(s: Stream) -> List[T = T]
     effects (E)
 }
 ```
@@ -157,11 +157,11 @@ Concrete sorts bind `E` when satisfying the spec:
 ```
 sort LogicalStream {
   sort T = ?
-  fact Stream{T, E = Read{kb}}    -- bind E to a concrete effect
+  fact Stream[T, E = Read[kb]]    -- bind E to a concrete effect
 
-  operation splitFirst(s: LogicalStream{T = ?A})
-    -> Option{T = Pair{A = ?A, B = LogicalStream{T = ?A}}}
-    effects (Read{kb})            -- concrete here
+  operation splitFirst(s: LogicalStream[T = ?A])
+    -> Option[T = Pair[A = ?A, B = LogicalStream[T = ?A]]]
+    effects (Read[kb])            -- concrete here
 }
 ```
 
@@ -169,7 +169,7 @@ A file reader:
 ```
 sort FileStream {
   sort T = ?
-  fact Stream{T, E = Read{file}}
+  fact Stream[T, E = Read[file]]
   ...
 }
 ```
@@ -183,7 +183,7 @@ The interpretation of effects is provided by the host language via the realizati
 sort KB { entity kb }
 sort FileSystem { entity file }
 
--- In Rust realization: implement what Read{kb} means
+-- In Rust realization: implement what Read[kb] means
 impl ReadEffect for KBReader {
     fn read(&self, kb: &KnowledgeBase) -> ... { ... }
 }
@@ -209,7 +209,7 @@ pub struct Effect {
 ```
 
 Each effect is a `TypeExpr`:
-- `Read{kb}` → `TypeExpr::Parameterized { name: "Read", bindings: [{param: "kb", bound: Simple("kb")}] }`
+- `Read[kb]` → `TypeExpr::Parameterized { name: "Read", bindings: [{param: "kb", bound: Simple("kb")}] }`
 - `E` → `TypeExpr::Simple(Name("E"))`
 - `?E` → `TypeExpr::Variable { term_id, description: None }`
 
@@ -247,7 +247,7 @@ match &effect.type_expr {
 
 ## What's Not Yet Implemented
 
-- **Effect checking via KB query** — the kernel does not yet verify `fact Effect{T = Kind{?}}` exists when an operation declares an effect
+- **Effect checking via KB query** — the kernel does not yet verify `fact Effect[T = Kind[?]]` exists when an operation declares an effect
 - **Effect composition** — sequential composition (union of effect sets) is not yet enforced
 - **Effect polymorphism with constraints** (`E includes Read`) — see proposal 003
 - **Arrow sorts with effects** — see proposal 003

@@ -60,12 +60,12 @@ Note: implicit multiple-return (as in Icon's generators or Prolog's backtracking
 
 ### R4. Aggregation is Stream operations
 
-**Decision: Yes.** If query results are `Stream{T = S}`, then aggregation (count, sum, min, max, group-by) is just operations on the `Stream` sort. No special aggregation syntax in the query system:
+**Decision: Yes.** If query results are `Stream[T = S]`, then aggregation (count, sum, min, max, group-by) is just operations on the `Stream` sort. No special aggregation syntax in the query system:
 
 ```
 -- count is an operation on Stream, not a query primitive
-operation count(s: Stream{T = ?S}) -> Int
-operation sum_by(s: Stream{T = ?S}, f: ?S -> Int) -> Int  -- (pending arrow sorts)
+operation count(s: Stream[T = ?S]) -> Int
+operation sum_by(s: Stream[T = ?S], f: ?S -> Int) -> Int  -- (pending arrow sorts)
 ```
 
 This keeps the kernel query mechanism minimal (terms + unification) and pushes composition to stdlib.
@@ -140,7 +140,7 @@ No new sort. A `Term` containing `Var` nodes IS a query pattern. Conjunction, gu
 
 ```
 -- retrieve already takes a Term as pattern:
-operation retrieve(store: QueryableStore, pattern: Term) -> List{T = Term}
+operation retrieve(store: QueryableStore, pattern: Term) -> List[T = Term]
 ```
 
 Pro: simplest, consistent with types-are-terms. Con: can't express conjunction, negation, guards, sort constraints as a single passable value. `retrieve(store, pattern)` is limited to single-pattern matching.
@@ -158,7 +158,7 @@ sort Query {
   entity negation(query: Query)                    -- NOT (negation-as-failure)
   entity guarded(query: Query, condition: Term)    -- filter
   entity limited(query: Query, count: Int)         -- cardinality limit
-  entity projected(query: Query, vars: List{T = String})  -- projection
+  entity projected(query: Query, vars: List[T = String])  -- projection
 }
 ```
 
@@ -178,7 +178,7 @@ sort LogicalQuery {
   entity disjunction(left: LogicalQuery, right: LogicalQuery)
   entity negation(query: LogicalQuery)
   entity guarded(query: LogicalQuery, condition: Term)
-  entity projected(query: LogicalQuery, vars: List{T = String})
+  entity projected(query: LogicalQuery, vars: List[T = String])
   entity limited(query: LogicalQuery, count: Int)
 }
 ```
@@ -196,7 +196,7 @@ Pro: best of both worlds — nice syntax AND first-class values. Con: two ways t
 No `Query` sort or syntax. A "query" is just an operation with `effects (Branches, Reads kb)`. Complex queries are composed by calling such operations. Named queries = named operations returning `Stream`.
 
 ```
-operation high_balance_accounts() -> Stream{T = Account}
+operation high_balance_accounts() -> Stream[T = Account]
   effects (Reads(kb), Branches(result))
 ```
 
@@ -226,9 +226,9 @@ Pro: no new sort or syntax — reuses the operation + effect system. Con: can't 
 
 ### ~~OQ8. Aggregation and Computation Over Results~~
 
-**Resolved — see R4.** Aggregation is operations on the `Stream` sort, not a query primitive. The pattern is: query produces `Stream{T = S}`, stdlib provides `count`, `fold`, `sum_by`, `group_by`, etc. as operations on `Stream`.
+**Resolved — see R4.** Aggregation is operations on the `Stream` sort, not a query primitive. The pattern is: query produces `Stream[T = S]`, stdlib provides `count`, `fold`, `sum_by`, `group_by`, etc. as operations on `Stream`.
 
-Remaining sub-question: is `Stream` expressive enough for group-by (which produces `Stream{T = Pair{fst = K, snd = Stream{T = V}}}` or similar nested structure)? This is a `Stream` design question, not a query question.
+Remaining sub-question: is `Stream` expressive enough for group-by (which produces `Stream[T = Pair[fst = K, snd = Stream[T = V]]]` or similar nested structure)? This is a `Stream` design question, not a query question.
 
 ### OQ9. Effects and Queries
 
@@ -272,7 +272,7 @@ query high_balance {
 
 **OQ11.5.** Query-as-operation — queries are just operations with `effects (Reads kb)` and the "implementation" is pattern matching:
 ```
-operation high_balances() -> Stream{T = Account}
+operation high_balances() -> Stream[T = Account]
   effects (Reads kb)
 ```
 
@@ -330,13 +330,13 @@ The crucial primitive is `msplit`: it decomposes a stream into "head + tail" *wi
 
 #### Open questions
 
-**OQ13.1. Is `Stream` a logic monad at the kernel level?** If `Stream{T = S}` is the query result type and it supports `mplus`, `flatMap`, `guard`, `msplit` — then it IS a logic monad. Should this be stated in the kernel spec, or is it a stdlib concern?
+**OQ13.1. Is `Stream` a logic monad at the kernel level?** If `Stream[T = S]` is the query result type and it supports `mplus`, `flatMap`, `guard`, `msplit` — then it IS a logic monad. Should this be stated in the kernel spec, or is it a stdlib concern?
 
 **OQ13.2. Effect composition — `LogicStreamT[F, A]`.** The Scala implementation parameterizes the logic stream over an effect monad `F`. In Anthill terms: a query that reads from KB has `effects (Reads kb)`. A query inside an operation might also have `effects (Modifies store)`. How does the logic monad compose with the effect system?
 
 Options:
   - (a) Queries are always pure (`Reads kb` is implicit, no other effects inside stream processing)
-  - (b) Streams are parameterized over effects: `Stream{T = S, E = Effects}` — a logic monad transformer
+  - (b) Streams are parameterized over effects: `Stream[T = S, E = Effects]` — a logic monad transformer
   - (c) Effects are tracked per-element: each result in the stream carries its effect footprint
 
 **OQ13.3. Backtracking and state.** If a computation within a stream modifies state (e.g., `effects (Modifies store)`) and then the stream backtracks to try the next alternative, is the state modification rolled back? This is the classic `LogicT + StateT` interaction:
@@ -353,7 +353,7 @@ Options:
 
 ```
 -- msplit decomposes a stream into first result + rest
-operation msplit(s: Stream{T = ?S}) -> Option{T = Pair{fst = ?S, snd = Stream{T = ?S}}}
+operation msplit(s: Stream[T = ?S]) -> Option[T = Pair[fst = ?S, snd = Stream[T = ?S]]]
   effects (Reads kb)
 ```
 
@@ -377,7 +377,7 @@ The idea: a new effect kind `Branches` (or `Spawns`, `Backtracks`) declares that
 
 ```
 -- An operation that searches for high-balance accounts
-operation high_balance_owners() -> Stream{T = String}
+operation high_balance_owners() -> Stream[T = String]
   effects (Reads kb, Branches result)
 {
   -- 'choose' picks one element from a stream, branching the computation
@@ -436,10 +436,10 @@ For Anthill, the safest default may be: `Branches + Reads` is free, `Branches + 
 
 **`Branches + Branches`** — nested branching. This is nested `LogicT` — a stream of streams. Options:
   - Flatten automatically (`flatMap` semantics) — inner branching extends outer branching
-  - Keep nested (`Stream{T = Stream{T = S}}`) — caller decides how to flatten
+  - Keep nested (`Stream[T = Stream[T = S]]`) — caller decides how to flatten
   - Anthill should probably flatten by default (inner `choose` extends the outer search), with explicit `Stream` nesting when needed.
 
-**OQ13.9d.** Is the result type of a `Branches` operation always `Stream{T = R}`? I.e., does `effects (Branches result)` imply that the declared return type `R` gets wrapped into `Stream{T = R}` automatically?
+**OQ13.9d.** Is the result type of a `Branches` operation always `Stream[T = R]`? I.e., does `effects (Branches result)` imply that the declared return type `R` gets wrapped into `Stream[T = R]` automatically?
 
 **OQ13.9e.** Can `Branches` be nested? An operation with `Branches` calls another operation with `Branches` — does this produce a stream of streams, or are they flattened (like nested `flatMap`)?
 
@@ -494,9 +494,9 @@ The internal representation uses a **priority queue of streams** — `msplit` al
 #### Open questions
 
 **OQ14.1. Should `Stream` support scores?** Options:
-  - (a) `Stream{T = S}` is always unscored (standard logic monad). Scoring is a separate `ScoredStream{T = S, R = Score}` sort.
+  - (a) `Stream[T = S]` is always unscored (standard logic monad). Scoring is a separate `ScoredStream[T = S, R = Score]` sort.
   - (b) `Stream` is always scored, with a default "uniform" score (all branches equal) as the unscored case.
-  - (c) Scoring is a parameter: `Stream{T = S, scoring = None}` vs `Stream{T = S, scoring = Float}`.
+  - (c) Scoring is a parameter: `Stream[T = S, scoring = None]` vs `Stream[T = S, scoring = Float]`.
 
 **OQ14.2. Relationship between scores and trust levels.** Anthill already has trust levels on facts (Proved > Verified > Tested > Empirical > Proposed > Stale). Trust is a scoring mechanism. Should query result ordering use trust levels as scores? E.g., when multiple rules derive the same fact, prefer the one with higher trust.
 
@@ -566,9 +566,9 @@ Rather than hardcoding query syntax in the grammar, can sorts **declare** what s
 ```
 sort Stream {
   -- By having these operations, Stream qualifies for comprehension syntax:
-  operation pure(x: ?T) -> Stream{T = ?T}
-  operation flatMap(s: Stream{T = ?A}, f: ?A -> Stream{T = ?B}) -> Stream{T = ?B}
-  operation guard(cond: Bool) -> Stream{T = Unit}
+  operation pure(x: ?T) -> Stream[T = ?T]
+  operation flatMap(s: Stream[T = ?A], f: ?A -> Stream[T = ?B]) -> Stream[T = ?B]
+  operation guard(cond: Bool) -> Stream[T = Unit]
 }
 
 -- Because Stream satisfies Monad-like interface, this syntax works:
@@ -597,7 +597,7 @@ sort Stream {
 
 This is more explicit but requires a mini-language for describing desugaring rules.
 
-**Option C: Fact-based syntax activation.** Syntax is activated by KB facts — asserting `fact SyntaxComprehension{T = Stream}` enables comprehension syntax for `Stream`:
+**Option C: Fact-based syntax activation.** Syntax is activated by KB facts — asserting `fact SyntaxComprehension[T = Stream]` enables comprehension syntax for `Stream`:
 
 ```
 -- In stdlib:
@@ -606,8 +606,8 @@ sort SyntaxComprehension {
   -- Requires T to have: pure, flatMap, guard
 }
 
-fact SyntaxComprehension{T = Stream}   -- Stream gets comprehensions
-fact SyntaxComprehension{T = List}     -- List gets comprehensions too
+fact SyntaxComprehension[T = Stream]   -- Stream gets comprehensions
+fact SyntaxComprehension[T = List]     -- List gets comprehensions too
 ```
 
 This is the most Anthill-native approach — syntax activation is just a fact in the KB, queryable and modifiable.
@@ -650,13 +650,13 @@ The query system can be layered, with each layer building on the previous:
 3. `query(kb, pattern)` = scan active facts, collect unifiers.
 
 **Layer 1 — Stream as logic monad (stdlib)**
-4. `Stream{T = S}` is a logic monad over sort `S`.
+4. `Stream[T = S]` is a logic monad over sort `S`.
 5. `msplit` is the primitive; `mplus`, `flatMap`, `guard`, `once`, `limit` derived.
 6. `Branches` is an effect kind: direct-style logic via `choose`/`guard`/`fail`.
 7. Aggregation/projection: `map`, `filter`, `fold`, `count`, `collect` on `Stream`.
 
 **Layer 2 — Scored streams (stdlib or extension)**
-8. `ScoredStream{T = S, R = Score}` extends `Stream` with priority-queue exploration.
+8. `ScoredStream[T = S, R = Score]` extends `Stream` with priority-queue exploration.
 9. `ScalingGroup` (multiplicative/additive) determines score composition.
 10. Search strategy configurable: best-first, beam search, bounded.
 11. Trust levels on facts can serve as default scores.

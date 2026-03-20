@@ -10,15 +10,15 @@ sort anthill.prelude.Stream
   sort T = ?              -- element type
   sort E = ?              -- effect required to observe
 
-  operation splitFirst(s: Stream) -> Option{T = Pair{A = T, B = Stream}}
+  operation splitFirst(s: Stream) -> Option[T = Pair[A = T, B = Stream]]
     effects (E)
-  operation head(s: Stream) -> Option{T = T}
+  operation head(s: Stream) -> Option[T = T]
     effects (E)
   operation tail(s: Stream) -> Stream
     effects (E)
-  operation takeN(s: Stream, n: Int) -> List{T = T}
+  operation takeN(s: Stream, n: Int) -> List[T = T]
     effects (E)
-  operation collect(s: Stream) -> List{T = T}
+  operation collect(s: Stream) -> List[T = T]
     effects (E)
   operation isEmpty(s: Stream) -> Bool
     effects (E)

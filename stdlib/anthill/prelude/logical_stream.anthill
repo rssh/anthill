@@ -1,10 +1,10 @@
 -- LogicalStream: the logic monad for multi-valued computation.
 --
--- A LogicalStream{T = S} represents a computation producing zero or more
+-- A LogicalStream[T = S] represents a computation producing zero or more
 -- values of sort S, with backtracking. This is LogicT from Kiselyov et al.
 --
 -- Satisfies Stream — head, tail, splitFirst, takeN, collect, isEmpty
--- are inherited via fact Stream{T}. LogicalStream provides splitFirst
+-- are inherited via fact Stream[T]. LogicalStream provides splitFirst
 -- as the primitive; the rest derive from Stream's rules.
 --
 -- Pending arrow sorts (proposal 002): flatMap, map, filter, fairFlatMap, ifte
@@ -21,30 +21,30 @@ sort anthill.prelude.LogicalStream
   -- are inherited — not redeclared here.
   -- LogicalStream must provide splitFirst (Stream's primitive);
   -- head, tail, isEmpty derive from Stream's rules.
-  fact Stream{T}
+  fact Stream[T]
 
   -- ================================================================
-  -- Stream primitive (required by fact Stream{T})
+  -- Stream primitive (required by fact Stream[T])
   -- ================================================================
 
-  operation splitFirst(s: LogicalStream{T = ?A})
-    -> Option{T = Pair{A = ?A, B = LogicalStream{T = ?A}}}
+  operation splitFirst(s: LogicalStream[T = ?A])
+    -> Option[T = Pair[A = ?A, B = LogicalStream[T = ?A]]]
 
   -- ================================================================
   -- Logic-specific construction
   -- ================================================================
 
-  operation empty() -> LogicalStream{T = ?A}                 -- zero results (failure)
+  operation empty() -> LogicalStream[T = ?A]                 -- zero results (failure)
 
   operation pure(x: T) -> LogicalStream                    -- single result
 
-  operation mplus(a: LogicalStream{T = ?A}, b: LogicalStream{T = ?A})
-    -> LogicalStream{T = ?A}                               -- disjunction
+  operation mplus(a: LogicalStream[T = ?A], b: LogicalStream[T = ?A])
+    -> LogicalStream[T = ?A]                               -- disjunction
 
-  operation guard(cond: Bool) -> LogicalStream{T = Unit}   -- filter
+  operation guard(cond: Bool) -> LogicalStream[T = Unit]   -- filter
 
-  operation interleave(a: LogicalStream{T = ?A}, b: LogicalStream{T = ?A})
-    -> LogicalStream{T = ?A}                               -- fair disjunction
+  operation interleave(a: LogicalStream[T = ?A], b: LogicalStream[T = ?A])
+    -> LogicalStream[T = ?A]                               -- fair disjunction
 
   -- ================================================================
   -- Derived rules

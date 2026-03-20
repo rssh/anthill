@@ -38,7 +38,7 @@ namespace anthill.realization.platform
   sort ExecutionPlatform
     entity execution_platform(
       name       : String,
-      properties : List{T = (String, String)}
+      properties : List[T = (String, String)]
     )
 
     operation has_property(p: ExecutionPlatform, key: String, value: String) -> Bool
@@ -54,15 +54,15 @@ namespace anthill.realization.platform
     entity toolchain(
       name    : String,
       command : String,
-      args    : List{T = String},
+      args    : List[T = String],
       exec    : ExecutionPlatform,
       target  : ExecutionPlatform
     )
 
     operation build(tc: Toolchain, env: ExecutionEnvironment,
-                    inputs: List{T = Path},
-                    outputs: List{T = Path}) -> ProcessResult
-      effects (Error, Modify{env})
+                    inputs: List[T = Path],
+                    outputs: List[T = Path]) -> ProcessResult
+      effects (Error, Modify[env])
   end
 
   -- ================================================================
@@ -85,13 +85,13 @@ namespace anthill.realization.platform
     )
 
     operation exec(env: ExecutionEnvironment, command: String,
-                   args: List{T = String}, working_dir: Path,
-                   extra_env: List{T = (String, String)})
+                   args: List[T = String], working_dir: Path,
+                   extra_env: List[T = (String, String)])
       -> ProcessResult
-      effects (Error, Modify{env})
+      effects (Error, Modify[env])
 
     operation env_var(env: ExecutionEnvironment, name: String)
-      -> Option{T = String}
+      -> Option[T = String]
   end
 
   -- ================================================================
@@ -110,13 +110,13 @@ namespace anthill.realization.platform
   sort Runtime
     entity runtime(
       name     : String,
-      builtins : List{T = Builtin}
+      builtins : List[T = Builtin]
     )
 
     operation evaluate(rt: Runtime, term: Term, kb: KB) -> Term
       effects (Error)
 
-    operation trace(rt: Runtime, term: Term, kb: KB) -> List{T = Term}
+    operation trace(rt: Runtime, term: Term, kb: KB) -> List[T = Term]
       effects (Error)
   end
 
@@ -130,7 +130,7 @@ namespace anthill.realization.platform
   operation basename(p: Path) -> String
   operation dirname(p: Path) -> Path
   operation extension(p: Path) -> String
-  operation components(p: Path) -> List{T = String}
+  operation components(p: Path) -> List[T = String]
   operation join(base: Path, child: String) -> Path
 
   entity FileStatus(
@@ -166,8 +166,8 @@ namespace anthill.realization.platform
   entity Tool(
     name    : String,
     command : String,
-    args    : List{T = String},
-    env     : List{T = (String, String)}
+    args    : List[T = String],
+    env     : List[T = (String, String)]
   )
 
   -- ================================================================
@@ -178,7 +178,7 @@ namespace anthill.realization.platform
   entity ExternalProject(
     name  : String,
     root  : Path,
-    tools : List{T = Tool}
+    tools : List[T = Tool]
   )
 
   -- ================================================================
@@ -192,11 +192,11 @@ namespace anthill.realization.platform
     entity anthill_project(
       name        : String,
       root        : Path,
-      source_dirs : List{T = Path},
+      source_dirs : List[T = Path],
       mapping     : LanguageMapping,
       target      : ExecutionPlatform,
-      subprojects : List{T = ExternalProject},
-      tools       : List{T = Tool}
+      subprojects : List[T = ExternalProject],
+      tools       : List[T = Tool]
     )
   end
 

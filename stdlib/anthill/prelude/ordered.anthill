@@ -3,7 +3,7 @@ sort anthill.prelude.Ordered
   export compare, gt, gte, lt, lte, max, min
 
   sort T = ?
-  requires Eq{T}
+  requires Eq[T]
 
   -- Primary operation: compare returns -1, 0, or 1
   operation compare(a: T, b: T) -> Int

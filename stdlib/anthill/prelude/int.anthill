@@ -6,9 +6,9 @@ namespace anthill.prelude.Int
   -- Int satisfies the parametric algebra specs.
   -- These facts declare that eq, neq, compare, gt, lt, gte, lte,
   -- add, sub, mul are available for Int values (provided by builtins).
-  fact Eq{Int}
-  fact Ordered{Int}
-  fact Numeric{Int}
+  fact Eq[Int]
+  fact Ordered[Int]
+  fact Numeric[Int]
 
   -- Bounds: Int is finite (platform-dependent, e.g. i64)
   operation minValue() -> Int

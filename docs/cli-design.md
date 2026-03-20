@@ -45,7 +45,7 @@ anthill eval "1 + 2"
 3
 
 -- Expression with ?variables → bindings (query mode)
-anthill eval "?x :- Ring{?x}"
+anthill eval "?x :- Ring[?x]"
 ?x = Int
 
 -- Equation → true/false (proof check)
@@ -170,13 +170,13 @@ anthill> 1 + 2
 anthill> length(cons(1, cons(2, nil)))
 2
 
-anthill> ?x :- Ring{?x}
+anthill> ?x :- Ring[?x]
 ?x = Int
 
-anthill> fact Ring{Float}
+anthill> fact Ring[Float]
 OK
 
-anthill> ?x :- Ring{?x}
+anthill> ?x :- Ring[?x]
 ?x = Int
 ?x = Float
 
@@ -197,7 +197,7 @@ withdraw(a: Account, m: Money) -> Account [domain: Account]
 balance(a: Account) -> Money              [domain: Account]
 
 anthill> query by_sort Requirement
-Requires(Numeric{T = Money})  [domain: banking]
+Requires(Numeric[T = Money])  [domain: banking]
 
 anthill> query by_functor parent
 parent("alice", "bob")    [#42, sort: Fact, domain: _global]
@@ -232,7 +232,7 @@ anthill> members Account
   withdraw  (Operation)
 
 anthill> requirements Ordered
-  Eq{T}  [domain: Ordered]
+  Eq[T]  [domain: Ordered]
 
 anthill> stats
   sorts: 9  facts: 51  active: 50  retracted: 1

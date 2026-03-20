@@ -8,11 +8,11 @@ namespace anthill.prelude.BigInt
   -- BigInt satisfies the parametric algebra specs.
   -- These facts declare that eq, neq, compare, gt, lt, gte, lte,
   -- add, sub, mul are available for BigInt values (provided by builtins).
-  fact Eq{BigInt}
-  fact Ordered{BigInt}
-  fact Numeric{BigInt}
+  fact Eq[BigInt]
+  fact Ordered[BigInt]
+  fact Numeric[BigInt]
 
   -- Conversion operations
   operation to_bigint(n: Int) -> BigInt
-  operation to_int(n: BigInt) -> Option{T = Int}
+  operation to_int(n: BigInt) -> Option[T = Int]
 end

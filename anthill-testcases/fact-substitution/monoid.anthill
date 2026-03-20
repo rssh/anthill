@@ -7,7 +7,7 @@ sort Monoid {
 sort IntAdd {
   sort T = Int
   entity value(x: Int)
-  requires Monoid{T = Int, combine = add, identity = zero}
+  requires Monoid[T = Int, combine = add, identity = zero]
   operation add(a: Int, b: Int) -> Int
   operation zero() -> Int
 }
@@ -15,7 +15,7 @@ sort IntAdd {
 sort IntMul {
   sort T = Int
   entity value(x: Int)
-  requires Monoid{T = Int, combine = multiply, identity = one}
+  requires Monoid[T = Int, combine = multiply, identity = one]
   operation multiply(a: Int, b: Int) -> Int
   operation one() -> Int
 }
@@ -25,7 +25,7 @@ sort IntMul {
 sort AutoBindTest {
   sort T = Int
   entity data(x: Int)
-  requires Monoid{T = Int}
+  requires Monoid[T = Int]
   operation combine(a: Int, b: Int) -> Int
   operation identity() -> Int
 }

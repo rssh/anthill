@@ -64,7 +64,7 @@ namespace anthill.reflect
   -- Find existing symbol by qualified name (fails if not found)
   operation lookup_symbol(name: String) -> Symbol
   -- Symbol → enclosing scope symbol (None for top-level)
-  operation scope(s: Symbol) -> Option{T = Symbol}
+  operation scope(s: Symbol) -> Option[T = Symbol]
   -- Symbol → kind string ("Sort", "Entity", "Operation", "Field", etc.)
   operation kind(s: Symbol) -> String
 
@@ -91,7 +91,7 @@ namespace anthill.reflect
   -- Convert a Sort value to its Term representation
   operation sort_as_term(s: Sort) -> Term
   -- Try to interpret a Term as a Sort (None if not a valid sort)
-  operation term_as_sort(t: Term) -> Option{T = Sort}
+  operation term_as_sort(t: Term) -> Option[T = Sort]
   -- Check whether a Term represents a valid sort
   operation can_be_sort(t: Term) -> Bool
 
@@ -109,12 +109,12 @@ namespace anthill.reflect
     operation reflect(kb: KB, r: TermRepr) -> Term
 
     -- Query operations (KB introspection)
-    operation sorts(kb: KB, namespace: Option{T = String}) -> List{T = SortInfo}
-    operation operations(kb: KB, sort_name: String) -> List{T = OperationInfo}
-    operation constructors(kb: KB, sort_name: String) -> List{T = String}
-    operation fields(kb: KB, name: String) -> List{T = FieldInfo}
-    operation rules(kb: KB, sort_name: String) -> List{T = TermRepr}
-    operation descriptions(kb: KB, target: Option{T = String}) -> List{T = DescriptionInfo}
+    operation sorts(kb: KB, namespace: Option[T = String]) -> List[T = SortInfo]
+    operation operations(kb: KB, sort_name: String) -> List[T = OperationInfo]
+    operation constructors(kb: KB, sort_name: String) -> List[T = String]
+    operation fields(kb: KB, name: String) -> List[T = FieldInfo]
+    operation rules(kb: KB, sort_name: String) -> List[T = TermRepr]
+    operation descriptions(kb: KB, target: Option[T = String]) -> List[T = DescriptionInfo]
 
     -- Meta-level primitives (inspect variable state)
 
@@ -131,7 +131,7 @@ namespace anthill.reflect
     -- Creation can fail (invalid query). Iteration can also fail
     -- (residual errors, depth limits) — captured by E = Error on the stream.
     operation execute(kb: KB, query: LogicalQuery)
-      -> Stream{T = Substitution, E = Error}
+      -> Stream[T = Substitution, E = Error]
       effects (Error)
 
     -- Extract a sort's fact template as a query
@@ -158,7 +158,7 @@ namespace anthill.reflect
   sort TermRepr {
     entity ConstRepr(value: LiteralRepr)
     entity VarRepr(name: String)
-    entity FnRepr(name: Symbol, args: List{T = TermRepr})
+    entity FnRepr(name: Symbol, args: List[T = TermRepr])
     entity RefRepr(name: Symbol)
     entity QuotedRepr(language: String, source: String)
   }
@@ -178,12 +178,12 @@ namespace anthill.reflect
   -- ================================================================
 
   sort Expr
-    entity match_expr(scrutinee: Expr, branches: List{T = MatchBranch})
+    entity match_expr(scrutinee: Expr, branches: List[T = MatchBranch])
     entity if_expr(cond: Expr, then_branch: Expr, else_branch: Expr)
     entity let_expr(pattern: Pattern, value: Expr, body: Expr)
     entity lambda(param: Pattern, body: Expr)
-    entity apply(fn: Symbol, args: List{T = ApplyArg})
-    entity constructor(name: Symbol, args: List{T = ApplyArg})
+    entity apply(fn: Symbol, args: List[T = ApplyArg])
+    entity constructor(name: Symbol, args: List[T = ApplyArg])
     entity var_ref(name: Symbol)
     entity int_lit(value: Int)
     entity bigint_lit(value: BigInt)
@@ -194,20 +194,20 @@ namespace anthill.reflect
 
   entity MatchBranch(
     pattern: Pattern,
-    guard: Option{T = Expr},
+    guard: Option[T = Expr],
     body: Expr
   )
 
   entity ApplyArg(
-    name: Option{T = Symbol},
+    name: Option[T = Symbol],
     value: Expr
   )
 
   sort Pattern
-    entity var_pattern(name: Symbol, type_ann: Option{T = Term})
-    entity tuple_pattern(elements: List{T = Pattern})
-    entity named_tuple_pattern(fields: List{T = NamedPattern})
-    entity constructor_pattern(name: Symbol, args: List{T = Pattern})
+    entity var_pattern(name: Symbol, type_ann: Option[T = Term])
+    entity tuple_pattern(elements: List[T = Pattern])
+    entity named_tuple_pattern(fields: List[T = NamedPattern])
+    entity constructor_pattern(name: Symbol, args: List[T = Pattern])
     entity literal_pattern(value: Term)
     entity wildcard
   end
@@ -228,20 +228,20 @@ namespace anthill.reflect
   entity SortInfo(
     name         : Symbol,                          -- qualified name (symbol reference)
     definition   : Term,                            -- Var for abstract sorts, sort term for defined
-    constructors : List{T = Symbol},                -- constructor names (empty if abstract)
-    operations   : List{T = Symbol},                -- operation names in this sort
-    parameters   : List{T = Symbol},                -- abstract sub-sort names (type params)
-    requires     : List{T = Term}                   -- required sort constraints (type exprs)
+    constructors : List[T = Symbol],                -- constructor names (empty if abstract)
+    operations   : List[T = Symbol],                -- operation names in this sort
+    parameters   : List[T = Symbol],                -- abstract sub-sort names (type params)
+    requires     : List[T = Term]                   -- required sort constraints (type exprs)
   )
 
   entity OperationInfo(
     name         : Symbol,                          -- operation name (symbol reference)
-    params       : List{T = FieldInfo},
+    params       : List[T = FieldInfo],
     return_type  : Term,                            -- return type expression
-    effects      : List{T = Term},                  -- effect type expressions
-    requires     : List{T = Term},                  -- precondition expressions
-    ensures      : List{T = Term},                  -- postcondition expressions
-    body         : Option{T = Expr}                 -- expression body (None if declaration only)
+    effects      : List[T = Term],                  -- effect type expressions
+    requires     : List[T = Term],                  -- precondition expressions
+    ensures      : List[T = Term],                  -- postcondition expressions
+    body         : Option[T = Expr]                 -- expression body (None if declaration only)
   )
 
   entity FieldInfo(
@@ -258,17 +258,17 @@ namespace anthill.reflect
   -- Parent sort is accessible via scope(name).
   entity EntityInfo(
     name   : Symbol,                                -- entity name (symbol reference)
-    fields : List{T = FieldInfo}                    -- entity fields
+    fields : List[T = FieldInfo]                    -- entity fields
   )
 
   -- SortView: a sort reference with parameter bindings applied (a "view"
-  -- in Maude terminology). Represents the Name{bindings} syntax.
+  -- in Maude terminology). Represents the Name[bindings] syntax.
   --
   -- Term representation: SortView(sort_term, param1=val1, param2=val2, ...)
   -- - Positional arg: the sort reference term (e.g. Monoid() for sort Monoid)
   -- - Named args: parameter bindings (both type params and operations)
   --
-  -- Example: requires Monoid{T = Int, combine = add}
+  -- Example: requires Monoid[T = Int, combine = add]
   -- becomes: SortView(Monoid(), T=Int(), combine=Ref(add))
   entity SortView(sort: Term)
 
@@ -323,7 +323,7 @@ namespace anthill.reflect
     entity disjunction(left: LogicalQuery, right: LogicalQuery)    -- OR
     entity negation(query: LogicalQuery)                           -- NOT (negation-as-failure)
     entity guarded(query: LogicalQuery, condition: Term)           -- filter
-    entity projected(query: LogicalQuery, vars: List{T = String})  -- projection
+    entity projected(query: LogicalQuery, vars: List[T = String])  -- projection
     entity limited(query: LogicalQuery, count: Int)                -- cardinality limit
   }
 

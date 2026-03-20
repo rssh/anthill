@@ -17,7 +17,7 @@ namespace test.nested_imports
   -- Nested namespace with a distinct name: imports from the
   -- enclosing scope (List, String, Bool, Path) should resolve.
   namespace PathOps
-    operation components(p: Path) -> List{T = String}
+    operation components(p: Path) -> List[T = String]
     operation is_valid(p: Path) -> Bool
   end
 

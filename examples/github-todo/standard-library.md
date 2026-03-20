@@ -1,18 +1,18 @@
 # Stage 0 Standard Library
 
-> **Example**: For a runnable example using these types, see [`examples/github-todo/`](../../examples/github-todo/).
+> **Example**: For a runnable example using these types, see [`examples/github-todo/`](./).
 
 This document defines the `anthill.stage0` standard domain — entity types for projects, tools, and work items — and the syntactic sugar that makes them convenient to author.
 
 This is the **standard library layer** of the three-layer architecture:
 
-1. **Kernel language** ([kernel-language.md](kernel-language.md)) — `domain`, `sort`, `rule`, `operation` — the formal foundation
-2. **Syntactic sugar** ([kernel-language.md §6](kernel-language.md#6-syntactic-sugar)) — `entity` (single-constructor sort), `fact` (bodyless rule), `constraint` (headless rule)
+1. **Kernel language** ([kernel-language.md](../../docs/kernel-language.md)) — `domain`, `sort`, `rule`, `operation` — the formal foundation
+2. **Syntactic sugar** ([kernel-language.md §6](../../docs/kernel-language.md#6-syntactic-sugar)) — `entity` (single-constructor sort), `fact` (bodyless rule), `constraint` (headless rule)
 3. **Standard library** (this document) — entity types in the `anthill.stage0` domain, with additional sugar for `.anthill` files
 
 Stage 0 does not introduce a separate language. It uses `entity` and `fact` from the kernel language to define its types and instances. What looks like "Stage 0 syntax" (`project`, `tool`, `workitem` blocks) is sugar that desugars to `fact` assertions in the `anthill.stage0` domain.
 
-For design rationale and growth path, see [stage0-metasystem-design.md](stage0-metasystem-design.md).
+For design rationale and growth path, see [design.md](design.md).
 
 ## 1. Design Principle: Everything Is a Fact
 
@@ -349,7 +349,7 @@ Feedback facts accumulate — they are not superseded. The WorkItem itself is re
 
 ### 3.7 Metadata
 
-Metadata blocks `[trust: ..., agent: ..., iteration: ...]` are sugar for `Meta(...)` Fn terms (see [kernel-language.md §7](kernel-language.md#7-metadata)). `Meta` is an entity in `anthill.prelude.Meta` with **open keys** — any `Name : Term` pair is accepted. Well-known keys (`trust`, `agent`, `timestamp`, `iteration`, `source`, `supersedes`) have semantic meaning to the kernel; additional keys are project-defined and pass through.
+Metadata blocks `[trust: ..., agent: ..., iteration: ...]` are sugar for `Meta(...)` Fn terms (see [kernel-language.md §7](../../docs/kernel-language.md#7-metadata)). `Meta` is an entity in `anthill.prelude.Meta` with **open keys** — any `Name : Term` pair is accepted. Well-known keys (`trust`, `agent`, `timestamp`, `iteration`, `source`, `supersedes`) have semantic meaning to the kernel; additional keys are project-defined and pass through.
 
 ```
 -- Sugar:
@@ -444,7 +444,7 @@ At Stage 0, these queries are simple pattern matches over facts — no unificati
 ### 5.1 Simple Project (brace style)
 
 ```
--- .anthill/project.anthill
+-- anthill/project.anthill
 
 project cps-async-connect {
   language: scala
@@ -459,7 +459,7 @@ project cps-async-connect {
 ```
 
 ```
--- .anthill/workitems/connection-pool.anthill
+-- anthill/workitems/connection-pool.anthill
 
 workitem WI-POOL-001 {
   description: "Define ConnectionPool trait with acquire/release semantics"
@@ -500,7 +500,7 @@ workitem WI-POOL-003 {
 ### 5.2 Composite Project (end-marker style)
 
 ```
--- .anthill/project.anthill
+-- anthill/project.anthill
 
 project inventory-app
   modules:
@@ -532,7 +532,7 @@ end
 ```
 
 ```
--- .anthill/workitems/batch-import.anthill
+-- anthill/workitems/batch-import.anthill
 
 workitem WI-BATCH-001
   description: "DB migration: create import_jobs table with status tracking"
@@ -689,7 +689,7 @@ workitem WI-DEPLOY-001 {
 
 ```
 my-project/
-  .anthill/
+  anthill/
     project.anthill                       -- Project fact (required, exactly one)
     tools/
       custom-tools.anthill                -- Project-specific ToolDef facts (if any)
@@ -728,11 +728,11 @@ The system reads all `.anthill`, `.anthill.draft`, and `.anthill.rejected` files
 
 ### 6.4 Version Control
 
-All `.anthill/` files are checked into git, including `.draft` and `.rejected` files. The `facts/verified.anthill` file is auto-generated but also committed — it records the persistent knowledge produced by verified work items.
+All `anthill/` files are checked into git, including `.draft` and `.rejected` files. The `facts/verified.anthill` file is auto-generated but also committed — it records the persistent knowledge produced by verified work items.
 
 ## 7. Relationship to the Kernel Language
 
-The kernel language (see [kernel-language.md](kernel-language.md)) defines 4 constructs plus syntactic sugar. Stage 0 uses a subset:
+The kernel language (see [kernel-language.md](../../docs/kernel-language.md)) defines 4 constructs plus syntactic sugar. Stage 0 uses a subset:
 
 | Layer | Construct | Used at Stage 0? | How |
 |---|---|---|---|

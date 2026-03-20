@@ -35,7 +35,7 @@ namespace anthill.persistence.sql
   entity QueryBinding(
     sort_pattern : Term,                      -- which facts this binding handles
     table        : String,
-    columns      : List{T = ColumnDef},
+    columns      : List[T = ColumnDef],
     retrieve_sql : Term,                      -- Quoted("sql", "...") pattern -> SELECT
     persist_sql  : Term,                      -- Quoted("sql", "...") fact -> INSERT/UPSERT
     retract_sql  : Term                       -- Quoted("sql", "...") id -> DELETE

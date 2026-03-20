@@ -3,7 +3,7 @@ sort anthill.prelude.Numeric
   export add, sub, mul, zero-val
 
   sort T = ?
-  requires Ordered{T}
+  requires Ordered[T]
 
   operation {
     add(a: T, b: T) -> T           -- +

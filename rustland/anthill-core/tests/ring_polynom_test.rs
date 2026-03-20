@@ -2,7 +2,7 @@
 ///
 /// Verifies:
 /// - Ring spec with infix operators (+, *) in rules
-/// - Polynom sort with `requires Ring{R}` (positional binding)
+/// - Polynom sort with `requires Ring[R]` (positional binding)
 /// - Arrow types `(R) -> R` and `(R, R) -> R` in operation params
 /// - All files parse and load into KB without errors
 

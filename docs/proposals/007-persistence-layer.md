@@ -18,7 +18,7 @@ This creates a gap between the language's capabilities and what can be realized:
 
 3. **Proof results** — `ProofResult` captures solver output, duration, counterexamples. These are expensive to produce and must survive restarts.
 
-4. **Agent collaboration** — the stigmergic model requires a persistent substrate for agents to leave traces on. Stage 0 already assumes this: `.anthill/` files in a git repo, shared by multiple tools.
+4. **Agent collaboration** — the stigmergic model requires a persistent substrate for agents to leave traces on. Stage 0 already assumes this: `anthill/` files in a git repo, shared by multiple tools.
 
 5. **Scale** — a project may have millions of facts (audit records, metrics, logs). Loading everything into memory is not viable. Some facts must remain in an external store and be queried on demand.
 
@@ -75,9 +75,9 @@ Routing rules are expressed as ordinary rules with precedence — specific patte
 
 ```
 -- WorkItems go to the file store
-rule route(WorkItem(?))  = FileStore(".anthill", stage0)
-rule route(Project(?))   = FileStore(".anthill", stage0)
-rule route(Feedback(?))  = FileStore(".anthill", stage0)
+rule route(WorkItem(?))  = FileStore("anthill", stage0)
+rule route(Project(?))   = FileStore("anthill", stage0)
+rule route(Feedback(?))  = FileStore("anthill", stage0)
 
 -- Everything else goes to the database
 rule route(?)            = SqlStore("postgresql://localhost/myproject", "anthill", Postgresql)
@@ -101,7 +101,7 @@ namespace anthill.persistence
   -- Retrieve facts matching a pattern
   -- For queryable stores: translates pattern to native query
   -- For bulk stores: no-op (facts already in KB from pull)
-  operation retrieve(store: Store, pattern: Term) -> List{T = Term}
+  operation retrieve(store: Store, pattern: Term) -> List[T = Term]
     effects (Reads store)
 
   -- Remove a fact from its backing store
@@ -113,11 +113,11 @@ namespace anthill.persistence
   -- ================================================================
 
   -- Pull all facts from a bulk store into the KB
-  operation pull(store: Store) -> List{T = Term}
+  operation pull(store: Store) -> List[T = Term]
     effects (Reads store)
 
   -- Flush KB delta (new/changed/retracted facts) back to store
-  operation flush(store: Store, delta: List{T = Term})
+  operation flush(store: Store, delta: List[T = Term])
     effects (Modifies store)
 
 end
@@ -167,11 +167,11 @@ namespace anthill.persistence.filesystem
 
   -- Stage 0 convention routing:
   -- WorkItem(id: "WI-001", status: Draft, ...)
-  --   → .anthill/workitems/WI-001.anthill.draft
+  --   → anthill/workitems/WI-001.anthill.draft
   -- Project(...)
-  --   → .anthill/project.anthill
+  --   → anthill/project.anthill
   -- Feedback(workitem: "WI-001", ...)
-  --   → .anthill/workitems/WI-001.feedback.anthill
+  --   → anthill/workitems/WI-001.feedback.anthill
 
   operation file_path(fact: Term, meta: Meta, conv: FileConvention) -> String
 
@@ -220,7 +220,7 @@ namespace anthill.persistence.sql
   entity QueryBinding(
     sort_pattern : Term,                      -- which facts this binding handles
     table        : String,
-    columns      : List{T = ColumnDef},
+    columns      : List[T = ColumnDef],
     retrieve_sql : Term,                      -- Quoted("sql", "...") pattern → SELECT
     persist_sql  : Term,                      -- Quoted("sql", "...") fact → INSERT/UPSERT
     retract_sql  : Term                       -- Quoted("sql", "...") id → DELETE
@@ -291,7 +291,7 @@ If storage configuration is in the KB, and you need storage to load the KB, ther
 #### Startup sequence
 
 ```
-1. Read .anthill/project.anthill from disk (hardcoded filesystem path)
+1. Read anthill/project.anthill from disk (hardcoded filesystem path)
    → Parse project configuration, store declarations, routing rules
 
 2. For each declared bulk store:
@@ -316,7 +316,7 @@ namespace my-project
   import anthill.persistence.sql.*
 
   -- Bootstrap store: always filesystem, always loaded first
-  fact bootstrap(FileStore(root: ".anthill", convention: stage0))
+  fact bootstrap(FileStore(root: "anthill", convention: stage0))
 
   -- Secondary store: queryable, for large-scale data
   fact project_db(SqlStore(
@@ -327,17 +327,17 @@ namespace my-project
 
   -- Routing with precedence:
   -- Stage 0 artifacts go to files (git-friendly, human-readable)
-  rule route(WorkItem(?))    = FileStore(".anthill", stage0)
-  rule route(Project(?))     = FileStore(".anthill", stage0)
-  rule route(Feedback(?))    = FileStore(".anthill", stage0)
-  rule route(ToolDef(?))     = FileStore(".anthill", stage0)
+  rule route(WorkItem(?))    = FileStore("anthill", stage0)
+  rule route(Project(?))     = FileStore("anthill", stage0)
+  rule route(Feedback(?))    = FileStore("anthill", stage0)
+  rule route(ToolDef(?))     = FileStore("anthill", stage0)
 
   -- Large-scale operational data goes to postgres (queryable)
   rule route(AuditEntry(?))  = SqlStore("postgresql://localhost/myproject", "anthill", Postgresql)
   rule route(Metric(?))      = SqlStore("postgresql://localhost/myproject", "anthill", Postgresql)
 
   -- Default: everything else goes to files
-  rule route(?)              = FileStore(".anthill", stage0)
+  rule route(?)              = FileStore("anthill", stage0)
 end
 ```
 
@@ -400,6 +400,6 @@ A store that can do both is just `queryable` — the engine queries on demand, w
 
 ### Why bootstrap from filesystem?
 
-The bootstrap store must be available without configuration — you can't read config from a database before you know the database connection string. The filesystem is universally available. `.anthill/project.anthill` at a well-known path is the seed from which the full storage topology is loaded.
+The bootstrap store must be available without configuration — you can't read config from a database before you know the database connection string. The filesystem is universally available. `anthill/project.anthill` at a well-known path is the seed from which the full storage topology is loaded.
 
 This mirrors how every database-backed application works: the connection string lives in a config file on disk.

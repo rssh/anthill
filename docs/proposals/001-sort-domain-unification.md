@@ -7,7 +7,7 @@
 
 The kernel language has two parallel structuring mechanisms: **sorts** (type declarations) and **domains** (modules). The same-name convention (§4.4) allows a domain and its primary sort to share a name, but this is a naming pattern, not a language rule.
 
-This creates a gap. The inline type expression `Name{T=X}` (§4.4) is a **domain-level** mechanism — it binds abstract sorts declared within a domain. An abstract sort `sort F` has no associated domain, so `F{T=A}` is meaningless: there is no domain to look up `T` in.
+This creates a gap. The inline type expression `Name[T=X]` (§4.4) is a **domain-level** mechanism — it binds abstract sorts declared within a domain. An abstract sort `sort F` has no associated domain, so `F[T=A]` is meaningless: there is no domain to look up `T` in.
 
 This prevents expressing type constructors. A parametric type like `List` works with `{...}` because it is defined inside a domain (`domain anthill.prelude.List`). But an **abstract** type constructor — "some type `F` parameterized by `T`" — cannot be expressed, because abstract sorts are not domains.
 
@@ -20,7 +20,7 @@ This elevates the same-name convention from a naming pattern to a language rule:
 - Sorts declared inside `sort X`'s body are sorts within `domain X` (parameters).
 - Entities inside `sort X`'s body are constructors of sort `X`.
 - Operations and rules inside `sort X`'s body belong to `domain X`.
-- `X{T=A}` is valid inline binding because `X` is a domain with sort `T`.
+- `X[T=A]` is valid inline binding because `X` is a domain with sort `T`.
 
 ## Grammar Changes
 
@@ -219,10 +219,10 @@ end
 
 ## Kind Checking
 
-With sort/domain unification, inline bindings `X{T=A}` require kind compatibility:
+With sort/domain unification, inline bindings `X[T=A]` require kind compatibility:
 
 - If `sort X` has no sub-sorts (no parameters), `X{...}` is an error — nothing to bind.
-- If `sort X` has `sort T`, then `X{T=A}` is valid when `A` has the correct kind.
+- If `sort X` has `sort T`, then `X[T=A]` is valid when `A` has the correct kind.
 - Binding a parameterized sort to another: `where { F = Option }` requires `F` and `Option` to have the same parameter structure.
 
 Kind inference: a sort's kind is determined by its parameter declarations.
@@ -231,11 +231,11 @@ Kind inference: a sort's kind is determined by its parameter declarations.
 - `sort F` with `sort T` inside has kind `* -> *`.
 - `sort G` with `sort A, sort B` inside has kind `* -> * -> *`.
 
-The parameter name is part of the interface — `F{T=A}` requires `F`'s domain to have a sort named `T`.
+The parameter name is part of the interface — `F[T=A]` requires `F`'s domain to have a sort named `T`.
 
 ## Parameter Name Coupling
 
-The inline binding `F{T=A}` depends on the parameter name `T`. When binding `F` to a concrete sort, the parameter names must align.
+The inline binding `F[T=A]` depends on the parameter name `T`. When binding `F` to a concrete sort, the parameter names must align.
 
 **Convention (recommended):** parametric sorts use `T` for single type parameters. The prelude already follows this convention.
 
@@ -313,12 +313,12 @@ sort F
 end
 
 -- Apply it via inline binding:
-F{T = Int}                              -- F applied to Int
-F{T = F{T = Int}}                       -- F applied to F(Int) — nested application
+F[T = Int]                              -- F applied to Int
+F[T = F[T = Int]]                       -- F applied to F(Int) — nested application
 
 -- Bind it in 'where' clauses:
 import SomeSpec where { F = Option }
--- Now F{T=A} resolves to Option{T=A}
+-- Now F[T=A] resolves to Option[T=A]
 ```
 
 This is the key enabler for higher-order sort specifications (monads, functors, etc.), developed in Proposals 002 and 003.
@@ -356,7 +356,7 @@ All existing syntax remains valid:
 - `sort X` (abstract) — unchanged.
 - ~~`sort X = { entity ... }` (defined ADT)~~ — removed, use `sort X { entity ... }` body form instead.
 - `domain D { ... }` — unchanged, remains available for multi-sort modules.
-- `Name{T=X}` inline binding — unchanged in syntax, now works uniformly because every sort is a domain.
+- `Name[T=X]` inline binding — unchanged in syntax, now works uniformly because every sort is a domain.
 - `import D where { T = X }` — unchanged, extended to support sort-constructor binding.
 
 No existing valid program is invalidated by this change.
