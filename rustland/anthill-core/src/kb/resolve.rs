@@ -71,6 +71,15 @@ pub enum BuiltinTag {
     ToBigInt,
     /// `anthill.prelude.BigInt.to_int(?n, ?result)` — BigInt → Option[Int].
     ToInt,
+    // ── Occurrence builtins (stubs) ──────────────────────────
+    /// `anthill.reflect.occurrence_term(occ)` → Term
+    OccurrenceTerm,
+    /// `anthill.reflect.occurrence_span(occ)` → SourceSpan
+    OccurrenceSpan,
+    /// `anthill.reflect.occurrence_owner(occ)` → Symbol
+    OccurrenceOwner,
+    /// `anthill.reflect.sub_occurrences(occ)` → List[Occurrence]
+    SubOccurrences,
 }
 
 /// Result of executing a builtin.
@@ -794,6 +803,11 @@ impl KnowledgeBase {
             BuiltinTag::Mul => self.builtin_arith(goal, answer_subst, |a, b| a * b, |a, b| a * b, |a, b| a * b),
             BuiltinTag::ToBigInt => self.builtin_to_bigint(goal, answer_subst),
             BuiltinTag::ToInt => self.builtin_to_int(goal, answer_subst),
+            // Occurrence builtins — stubs returning Delay until Phase 2
+            BuiltinTag::OccurrenceTerm
+            | BuiltinTag::OccurrenceSpan
+            | BuiltinTag::OccurrenceOwner
+            | BuiltinTag::SubOccurrences => BuiltinResult::Delay,
         }
     }
 

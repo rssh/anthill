@@ -16,7 +16,7 @@ use smallvec::SmallVec;
 
 use crate::intern::{Symbol, SymbolDef, SymbolKind, ScopeInclusion, ResolveResult};
 use crate::parse::ir::*;
-use crate::span::Span;
+use crate::span::{Span, SourceId, SourceSpan};
 use super::{KnowledgeBase, SortKind};
 use super::term::{Term, TermId, VarId};
 
@@ -1698,6 +1698,11 @@ struct Loader<'a> {
     current_scope: TermId,
     // Description index counter per target (keyed by TermId raw)
     desc_index: HashMap<u32, i64>,
+    // ── Occurrence tracking ─────────────────────────────────────
+    // Source file id for this file's occurrences
+    source_id: SourceId,
+    // Symbol of the current owning declaration (operation, rule, etc.)
+    current_owner: Option<Symbol>,
 }
 
 impl<'a> Loader<'a> {
@@ -1708,6 +1713,7 @@ impl<'a> Loader<'a> {
         loaded_paths: &'a mut HashSet<String>,
         global_scope: TermId,
     ) -> Self {
+        let source_id = kb.sources.register("<unknown>".to_string());
         Self {
             kb,
             parsed,
@@ -1719,6 +1725,8 @@ impl<'a> Loader<'a> {
             errors: Vec::new(),
             current_scope: global_scope,
             desc_index: HashMap::new(),
+            source_id,
+            current_owner: None,
         }
     }
 
@@ -1870,6 +1878,20 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// Create an occurrence for a parse-time term, if it has a recorded span.
+    fn maybe_create_occurrence(
+        &mut self,
+        parse_id: TermId,
+        kb_id: TermId,
+    ) {
+        if let Some(&span) = self.parsed.terms.spans.get(&parse_id) {
+            let source_span = SourceSpan::from_span(self.source_id, span);
+            self.kb.occurrences.alloc(
+                kb_id, source_span, self.current_owner, true,
+            );
+        }
+    }
+
     /// Convert a parse-time TermId to a KB TermId, re-allocating into the hash-consed store.
     fn convert_term(&mut self, parse_id: TermId) -> TermId {
         if let Some(&mapped) = self.term_map.get(&parse_id.raw()) {
@@ -1981,9 +2003,10 @@ impl<'a> Loader<'a> {
 
     /// Convert a parse-time expression term into the KB's Expr representation.
     /// Dispatches on the functor name to restructure positional args into named args.
+    /// Also creates an occurrence in the OccurrenceStore if the term has a span.
     fn convert_expr_term(&mut self, parse_id: TermId) -> TermId {
         let parse_term = self.parsed.terms.get(parse_id).clone();
-        match parse_term {
+        let kb_id = match parse_term {
             Term::Fn { functor, pos_args, named_args } => {
                 let name = self.parsed.symbols.name(functor).to_owned();
                 match name.as_str() {
@@ -2003,7 +2026,9 @@ impl<'a> Loader<'a> {
             Term::Const(_) => self.load_literal_expr(parse_id),
             Term::Ident(_) => self.load_var_ref(parse_id),
             _ => self.convert_term(parse_id), // Var, Ref, Bottom — pass through
-        }
+        };
+        self.maybe_create_occurrence(parse_id, kb_id);
+        kb_id
     }
 
     /// match_expr: pos_args[0] = scrutinee, pos_args[1..] = branches
@@ -2678,14 +2703,31 @@ impl<'a> Loader<'a> {
     fn load_fact(&mut self, f: &Fact, domain: TermId) {
         let sort_name = f.sort.as_deref().unwrap_or("Fact");
         let fact_sort = self.kb.make_name_term(sort_name);
+
+        // Set owner: use the fact's head functor symbol if available
+        let prev_owner = self.current_owner;
+        if let Term::Fn { functor, .. } = self.parsed.terms.get(f.term) {
+            self.current_owner = Some(self.remap_symbol(*functor));
+        }
+
         let term = self.convert_term(f.term);
+        // Create occurrence for the fact's top-level term
+        self.maybe_create_occurrence(f.term, term);
 
         let meta = f.meta.as_ref().map(|mb| self.load_meta_block(mb));
         self.kb.assert_fact(term, fact_sort, domain, meta);
+
+        self.current_owner = prev_owner;
     }
 
     fn load_rule(&mut self, r: &Rule, domain: TermId) {
         let rule_sort = self.kb.make_name_term("Rule");
+
+        // Set owner for body occurrences (use rule label if available)
+        let prev_owner = self.current_owner;
+        if let Some(ref label) = r.label {
+            self.current_owner = Some(self.remap_name(label));
+        }
 
         let head_term = match &r.head {
             RuleHead::Term(tid) => self.convert_term(*tid),
@@ -2698,11 +2740,17 @@ impl<'a> Loader<'a> {
 
         let meta = r.meta.as_ref().map(|mb| self.load_meta_block(mb));
         self.kb.assert_rule(head_term, body, rule_sort, domain, meta);
+
+        self.current_owner = prev_owner;
     }
 
     fn load_operation(&mut self, o: &Operation, domain: TermId) {
         let op_sort = self.kb.make_name_term("Operation");
         let functor = self.remap_name(&o.name);
+
+        // Set owner for expression occurrences
+        let prev_owner = self.current_owner;
+        self.current_owner = Some(functor);
 
         // Enter operation scope if params exist (scope created during scanning).
         // Operations without params don't get their own scope.
@@ -2772,6 +2820,7 @@ impl<'a> Loader<'a> {
         };
 
         self.current_scope = prev_scope;
+        self.current_owner = prev_owner;
 
         // Build OperationInfo term with named args matching the entity definition
         let op_info_sym = self.kb.resolve_symbol("anthill.reflect.OperationInfo");

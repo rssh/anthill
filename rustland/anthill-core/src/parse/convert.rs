@@ -269,6 +269,22 @@ impl<'a> Converter<'a> {
 
     // ── Terms ───────────────────────────────────────────────────
 
+    /// Convert a term node and record its source span.
+    fn convert_term_with_span(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
+        let tid = self.convert_term(node);
+        self.terms.spans.insert(tid, span);
+        tid
+    }
+
+    /// Convert a pattern node and record its source span.
+    fn convert_pattern_with_span(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
+        let tid = self.convert_pattern(node);
+        self.terms.spans.insert(tid, span);
+        tid
+    }
+
     fn convert_term(&mut self, node: Node) -> TermId {
         match node.kind() {
             "string_literal" => {
@@ -1313,20 +1329,23 @@ impl<'a> Converter<'a> {
     // ── Expressions ──────────────────────────────────────────────
 
     /// Convert an expression body node (match_expr, if_expr, let_expr,
-    /// lambda_expr, or a plain term).
+    /// lambda_expr, or a plain term). Records source spans for all terms.
     fn convert_expr_body(&mut self, node: Node) -> TermId {
-        match node.kind() {
+        let span = self.span(node);
+        let tid = match node.kind() {
             "match_expr" => self.convert_match_expr(node),
             "if_expr" => self.convert_if_expr(node),
             "let_expr" => self.convert_let_expr(node),
             "lambda_expr" => self.convert_lambda_expr(node),
             _ => self.convert_term(node),
-        }
+        };
+        self.terms.spans.insert(tid, span);
+        tid
     }
 
     fn convert_match_expr(&mut self, node: Node) -> TermId {
         let scrutinee = self.field(node, "scrutinee")
-            .map(|n| self.convert_term(n))
+            .map(|n| self.convert_term_with_span(n))
             .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
 
         let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
@@ -1340,7 +1359,7 @@ impl<'a> Converter<'a> {
 
     fn convert_match_branch(&mut self, node: Node) -> TermId {
         let pattern = self.field(node, "pattern")
-            .map(|p| self.convert_pattern(p))
+            .map(|p| self.convert_pattern_with_span(p))
             .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
 
         let body = self.field(node, "body")
@@ -1352,7 +1371,7 @@ impl<'a> Converter<'a> {
 
     fn convert_if_expr(&mut self, node: Node) -> TermId {
         let condition = self.field(node, "condition")
-            .map(|n| self.convert_term(n))
+            .map(|n| self.convert_term_with_span(n))
             .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
 
         let then_branch = self.field(node, "then")
@@ -1368,7 +1387,7 @@ impl<'a> Converter<'a> {
 
     fn convert_let_expr(&mut self, node: Node) -> TermId {
         let pattern = self.field(node, "pattern")
-            .map(|p| self.convert_pattern(p))
+            .map(|p| self.convert_pattern_with_span(p))
             .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
 
         let value = self.field(node, "value")
@@ -1384,7 +1403,7 @@ impl<'a> Converter<'a> {
 
     fn convert_lambda_expr(&mut self, node: Node) -> TermId {
         let param = self.field(node, "param")
-            .map(|p| self.convert_pattern(p))
+            .map(|p| self.convert_pattern_with_span(p))
             .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
 
         let body = self.field(node, "body")

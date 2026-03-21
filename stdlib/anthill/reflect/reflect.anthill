@@ -17,15 +17,16 @@ namespace anthill.reflect
   import anthill.prelude.{Stream}
   import anthill.prelude.{Sort}
   export Term, FactId, Symbol
+  export SourceId, SourceSpan, Occurrence, ExprOccurrence
+  export occurrence_term, occurrence_span, occurrence_owner, sub_occurrences
   export KB
   export qualified_name, short_name, lookup_symbol, scope, kind
   export LiteralRepr, TermRepr, SetLiteral, TupleLiteral, ListLiteral, SortInfo, EntityInfo, OperationInfo, FieldInfo, DescriptionInfo
   export SortRequiresInfo, SortView
-  export Expr, Pattern, MatchBranch, ApplyArg, NamedPattern, TypedExpr
+  export Expr, Pattern, MatchBranch, ApplyArg, NamedPattern
   export match_expr, if_expr, let_expr, lambda, constructor, var_ref
   export int_lit, bigint_lit, float_lit, string_lit, bool_lit
   export var_pattern, tuple_pattern, named_tuple_pattern, constructor_pattern, literal_pattern, wildcard
-  export typed
   export Substitution, apply, compose
   export LogicalQuery, empty_query
   export pattern_query, sort_query, conjunction, disjunction
@@ -52,6 +53,30 @@ namespace anthill.reflect
   -- Opaque handle to an interned name (stored as Term::Ref internally).
   -- Use for identifiers/references; use Term for complex type expressions.
   sort Symbol = ?
+
+  -- ================================================================
+  -- Source positions and occurrences (Proposal 022)
+  -- ================================================================
+
+  -- Source file identifier (opaque, sequential)
+  sort SourceId = ?
+
+  -- Source span with file identity
+  sort SourceSpan
+    entity source_span(file: SourceId, start_byte: Int, end_byte: Int)
+  end
+
+  -- Opaque handle to a positioned term (not hash-consed)
+  sort Occurrence = ?
+
+  -- Positioned expression node — the subject of typing judgments
+  sort ExprOccurrence = ?
+
+  -- Builtin operations on occurrences
+  operation occurrence_term(occ: Occurrence) -> Term
+  operation occurrence_span(occ: Occurrence) -> SourceSpan
+  operation occurrence_owner(occ: Occurrence) -> Symbol
+  operation sub_occurrences(occ: Occurrence) -> List[Occurrence]
 
   -- ================================================================
   -- Symbol operations (builtins)
@@ -184,12 +209,12 @@ namespace anthill.reflect
   -- ================================================================
 
   sort Expr
-    entity match_expr(scrutinee: Expr, branches: List[T = MatchBranch])
-    entity if_expr(cond: Expr, then_branch: Expr, else_branch: Expr)
-    entity let_expr(pattern: Pattern, value: Expr, body: Expr)
-    entity lambda(param: Pattern, body: Expr)
-    entity apply(fn: Symbol, args: List[T = ApplyArg])
-    entity constructor(name: Symbol, args: List[T = ApplyArg])
+    entity match_expr(scrutinee: ExprOccurrence, branches: List[MatchBranch])
+    entity if_expr(cond: ExprOccurrence, then_branch: ExprOccurrence, else_branch: ExprOccurrence)
+    entity let_expr(pattern: Pattern, value: ExprOccurrence, body: ExprOccurrence)
+    entity lambda(param: Pattern, body: ExprOccurrence)
+    entity apply(fn: Symbol, args: List[ApplyArg])
+    entity constructor(name: Symbol, args: List[ApplyArg])
     entity var_ref(name: Symbol)
     entity int_lit(value: Int)
     entity bigint_lit(value: BigInt)
@@ -200,20 +225,20 @@ namespace anthill.reflect
 
   entity MatchBranch(
     pattern: Pattern,
-    guard: Option[T = Expr],
-    body: Expr
+    guard: Option[ExprOccurrence],
+    body: ExprOccurrence
   )
 
   entity ApplyArg(
-    name: Option[T = Symbol],
-    value: Expr
+    name: Option[Symbol],
+    value: ExprOccurrence
   )
 
   sort Pattern
-    entity var_pattern(name: Symbol, type_ann: Option[T = Term])
-    entity tuple_pattern(elements: List[T = Pattern])
-    entity named_tuple_pattern(fields: List[T = NamedPattern])
-    entity constructor_pattern(name: Symbol, args: List[T = Pattern])
+    entity var_pattern(name: Symbol, type_ann: Option[Term])
+    entity tuple_pattern(elements: List[Pattern])
+    entity named_tuple_pattern(fields: List[NamedPattern])
+    entity constructor_pattern(name: Symbol, args: List[Pattern])
     entity literal_pattern(value: Term)
     entity wildcard
   end
@@ -223,8 +248,9 @@ namespace anthill.reflect
     pattern: Pattern
   )
 
-  sort TypedExpr
-    entity typed(expr: Expr, type: Term)
+  -- TypeOf: typing judgment — expression occurrence has type S (Proposal 022)
+  sort TypeOf
+    entity type_of(occ: ExprOccurrence, type: Sort)
   end
 
   -- ================================================================
@@ -234,20 +260,20 @@ namespace anthill.reflect
   entity SortInfo(
     name         : Symbol,                          -- qualified name (symbol reference)
     definition   : Term,                            -- Var for abstract sorts, sort term for defined
-    constructors : List[T = Symbol],                -- constructor names (empty if abstract)
-    operations   : List[T = Symbol],                -- operation names in this sort
-    parameters   : List[T = Symbol],                -- abstract sub-sort names (type params)
-    requires     : List[T = Term]                   -- required sort constraints (type exprs)
+    constructors : List[Symbol],                    -- constructor names (empty if abstract)
+    operations   : List[Symbol],                    -- operation names in this sort
+    parameters   : List[Symbol],                    -- abstract sub-sort names (type params)
+    requires     : List[Term]                       -- required sort constraints (type exprs)
   )
 
   entity OperationInfo(
     name         : Symbol,                          -- operation name (symbol reference)
-    params       : List[T = FieldInfo],
+    params       : List[FieldInfo],
     return_type  : Term,                            -- return type expression
-    effects      : List[T = Term],                  -- effect type expressions
-    requires     : List[T = Term],                  -- precondition expressions
-    ensures      : List[T = Term],                  -- postcondition expressions
-    body         : Option[T = Expr]                 -- expression body (None if declaration only)
+    effects      : List[Term],                      -- effect type expressions
+    requires     : List[ExprOccurrence],            -- precondition expressions (positioned)
+    ensures      : List[ExprOccurrence],            -- postcondition expressions (positioned)
+    body         : Option[ExprOccurrence]           -- expression body (None if declaration only)
   )
 
   entity FieldInfo(

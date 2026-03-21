@@ -1,7 +1,7 @@
 # Proposal 018: Expressions and Operation Implementation
 
 **Status:** Draft
-**Depends on:** [016-extensible-infix-operators](016-extensible-infix-operators.md)
+**Depends on:** [016-extensible-infix-operators](016-extensible-infix-operators.md), [022-typing-as-facts](022-typing-as-facts.md) (Occurrences, TypeOf)
 **Related:** [002-arrow-sorts](002-arrow-sorts.md) (arrow sort `(A) -> B` syntax, not yet implemented; `Function[A, B]` from stdlib available now)
 **Affects:** Kernel Language Specification §5, §8; Grammar; Reflect stdlib
 
@@ -209,16 +209,18 @@ Here `Ring.add`, `Ring.mul`, `Ring.zero` resolve through the `requires Ring[T = 
 
 ## Reflect Representation
 
-Expressions are represented as terms in the KB via sorts in `anthill.reflect`.
+Expressions are represented as ExprOccurrences in the KB (see [Proposal 022](022-typing-as-facts.md) for the Occurrence/ExprOccurrence concept). Each expression node is an ExprOccurrence — it has a unique OccurrenceId, a hash-consed TermId (for structural pattern matching), a Span (source position), and an owner (the containing declaration — operation, rule, or fact). Children are referenced by ExprOccurrence, enabling tree navigation with position tracking.
+
+Expr entities are stored in the OccurrenceStore and queried via builtins (not as regular KB facts). This keeps the fact base lean while making expressions fully queryable from anthill rules.
 
 ### Expr Sort
 
 ```anthill
 sort Expr
-  entity match_expr(scrutinee: Expr, branches: List[T = MatchBranch])
-  entity if_expr(cond: Expr, then_branch: Expr, else_branch: Expr)
-  entity let_expr(name: Symbol, value: Expr, body: Expr)
-  entity lambda(param: Pattern, body: Expr)
+  entity match_expr(scrutinee: ExprOccurrence, branches: List[T = MatchBranch])
+  entity if_expr(cond: ExprOccurrence, then_branch: ExprOccurrence, else_branch: ExprOccurrence)
+  entity let_expr(pattern: Pattern, value: ExprOccurrence, body: ExprOccurrence)
+  entity lambda(param: Pattern, body: ExprOccurrence)
   entity apply(fn: Symbol, args: List[T = ApplyArg])
   entity constructor(name: Symbol, args: List[T = ApplyArg])
   entity var_ref(name: Symbol)        -- lexical variable: x, acc
@@ -230,13 +232,13 @@ end
 
 entity MatchBranch(
   pattern: Pattern,
-  guard: Option[T = Expr],
-  body: Expr
+  guard: Option[T = ExprOccurrence],
+  body: ExprOccurrence
 )
 
 entity ApplyArg(
   name: Option[T = Symbol],
-  value: Expr
+  value: ExprOccurrence
 )
 
 sort Pattern
@@ -277,34 +279,38 @@ Two kinds of variables in expressions:
 
 An expression containing unbound `?variables` is a **template** — a partially specified computation. When all logical variables are grounded through substitution, the expression becomes fully concrete and evaluable. This is anthill's equivalent of quasi-quotation in Lisp or splicing in Template Haskell/Scala 3 macros, but with no special syntax — just the standard `?` prefix that already works in rules.
 
-The evaluation pipeline reflects this:
+### Typing: TypeOf facts over Occurrences (Proposal 022)
+
+Typing is no longer a transformation from `Expr` to a separate `TypedExpr`. Instead, the typing pass emits `TypeOf(occ, type)` facts for each expression occurrence. The expression itself stays unchanged — types are external annotations.
+
+```anthill
+sort TypeOf {
+    entity TypeOf(occ: ExprOccurrence, type: Sort)
+}
+```
+
+This means:
+- **No TypedExpr sort** — replaced by TypeOf facts
+- **No `typecheck(Expr) -> TypedExpr` operation** — the typing pass walks occurrence trees and emits facts
+- **Gradual typing** — some occurrences may be typed, others not yet
+- **Types are queryable** — `TypeOf(occ: ?occ, type: ?type)` is a regular KB query
+- **Errors carry positions** — TypeOf references ExprOccurrences, which have Spans
+- **Owner provides context** — the occurrence's owner links to the containing operation/rule/fact, giving the typing pass its top-down context (expected return type, parameter types, etc.)
+
+See [Proposal 022](022-typing-as-facts.md) for details on bidirectional type propagation, type-directed desugaring, and constraint-based error reporting.
+
+The evaluation pipeline:
 
 ```
-Expr (may contain ?variables — template)
+source text
+  → parse (tree-sitter) → ExprOccurrence tree (expressions with positions + owners)
   → substitution (KB unification grounds ?variables)
-  → Expr (ground — no unbound ?variables)
-  → typecheck
-  → TypedExpr
+  → typing pass → TypeOf facts emitted into KB
+  → constraint checking (type_mismatch fires on errors)
   → evaluate (Runtime) or codegen (LanguageMapping)
 ```
 
-### TypedExpr Sort
-
-Type checking transforms `Expr` to `TypedExpr`:
-
-```anthill
-sort TypedExpr
-  entity typed(expr: Expr, type: Term)
-end
-```
-
-Typing is an operation — a pure transformation from `Expr` to `TypedExpr`:
-
-```anthill
-operation typecheck(expr: Expr, scope: Scope) -> TypedExpr
-```
-
-Phase distinction is enforced by the sort system: you cannot pass an unchecked `Expr` where a `TypedExpr` is expected.
+Phase distinction: an operation can only be evaluated when all its ExprOccurrences have TypeOf facts and no type_mismatch constraints fire.
 
 ### OperationImpl Entity
 
@@ -314,11 +320,11 @@ Links an operation to its anthill expression body:
 entity OperationImpl(
   operation: Symbol,
   params: List[T = Symbol],
-  body: Expr
+  body: ExprOccurrence
 )
 ```
 
-The loader converts expression syntax in operation declarations to `OperationImpl` facts in the KB.
+The `body` is an ExprOccurrence (root of the expression tree in the OccurrenceStore, owned by this operation). The loader converts expression syntax in operation declarations to `OperationImpl` facts in the KB.
 
 ## Resolution Order
 
@@ -831,16 +837,14 @@ call_arg: $ => choice(
 
 ```
 source text
-  → parse (tree-sitter)
-  → Expr (may contain ?variables — template)
+  → parse (tree-sitter) → ExprOccurrence tree (Expr nodes with OccurrenceIds + Spans + owners)
   → substitution (KB unification grounds ?variables)
-  → Expr (ground)
-  → typecheck
-  → TypedExpr (typed expression tree)
+  → typing pass → TypeOf(occ, type) facts emitted into KB
+  → constraint checking (type_mismatch fires on errors)
   → evaluate (Runtime) or codegen (LanguageMapping)
 ```
 
-Each phase has its own sort. The sorts enforce that you cannot skip type checking. Logical variables (`?x`) are resolved before type checking — they are part of the term layer, not the expression layer.
+Expressions are ExprOccurrence trees, not separate Expr terms. Each occurrence knows its owner (the operation/rule/fact it belongs to), providing typing context. Typing produces TypeOf facts per occurrence — no intermediate TypedExpr. Logical variables (`?x`) are resolved before typing — they are part of the term layer, not the expression layer. See [Proposal 022](022-typing-as-facts.md) for the full typing design.
 
 ## Open Questions
 
@@ -860,16 +864,16 @@ Add expression syntax to `grammar.js`. Extend the parse IR (`ParsedFile`) with e
 
 ### Phase 2: Expr Sort in Reflect
 
-Add `Expr`, `TypedExpr`, `Pattern`, `MatchBranch`, `ApplyArg`, `OperationImpl` to `stdlib/anthill/reflect/`.
+Add `Expr`, `Pattern`, `MatchBranch`, `ApplyArg`, `OperationImpl` to `stdlib/anthill/reflect/`. Add `Occurrence`, `Span`, `TypeOf` sorts (Proposal 022). Remove `TypedExpr`.
 
-### Phase 3: Loader
+### Phase 3: Loader + OccurrenceStore
 
-Extend the loader to convert parsed expression trees into `Expr` terms and emit `OperationImpl` facts into the KB.
+Extend the loader to create Occurrence trees from parsed expressions and emit `OperationImpl` facts into the KB. Implement `OccurrenceStore` (Proposal 022).
 
-### Phase 4: Type Checker
+### Phase 4: Typing Pass (Proposal 022)
 
-Implement `Expr → TypedExpr` transformation with sort inference and constraint resolution.
+Implement the typing pass: walk expression occurrence trees, emit `TypeOf(occ, type)` facts, run constraint checking for type errors.
 
 ### Phase 5: Evaluator
 
-Extend `Runtime.evaluate` to handle `TypedExpr` trees — pattern matching, let scoping, lambda closures, operation dispatch (including dispatch through spec constraints).
+Extend `Runtime.evaluate` to handle expression occurrence trees with TypeOf facts — pattern matching, let scoping, lambda closures, operation dispatch (including dispatch through spec constraints).

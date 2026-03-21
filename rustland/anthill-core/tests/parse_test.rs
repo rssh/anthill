@@ -3299,3 +3299,77 @@ end
     }
     assert!(found, "OperationImpl for 'incr' not found");
 }
+
+// ── Occurrence infrastructure tests ─────────────────────────────
+
+#[test]
+fn parse_records_term_spans() {
+    let source = "operation double(x: Int) -> Int = x + x\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Operation(op) => {
+            let body = op.body.unwrap();
+            assert!(
+                parsed.terms.spans.contains_key(&body),
+                "expression body should have a span recorded"
+            );
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn load_operation_body_creates_occurrences() {
+    let source = r#"
+sort Math {
+  operation double(x: Int) -> Int = add(x, x)
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    assert!(
+        !kb.occurrence_store().is_empty(),
+        "OccurrenceStore should have occurrences from expression body"
+    );
+}
+
+#[test]
+fn load_if_expr_creates_occurrences() {
+    let source = r#"
+sort Math {
+  operation abs(x: Int) -> Int = if gt(x, 0) then x else sub(0, x)
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let occ_count = kb.occurrence_store().len();
+    assert!(
+        occ_count >= 3,
+        "expected at least 3 occurrences from if expression, got {}",
+        occ_count,
+    );
+}
+
+#[test]
+fn occurrence_has_owner_symbol() {
+    let source = r#"
+sort Math {
+  operation double(x: Int) -> Int = add(x, x)
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let store = kb.occurrence_store();
+    let has_owner = (0..store.len())
+        .any(|i| {
+            let occ = anthill_core::kb::occurrence::OccurrenceId::from_raw(i as u32);
+            store.owner(occ).is_some()
+        });
+    assert!(has_owner, "at least one occurrence should have an owner symbol");
+}

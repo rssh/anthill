@@ -9,6 +9,7 @@ pub mod term;
 pub mod subst;
 pub mod load;
 pub mod resolve;
+pub mod occurrence;
 pub(crate) mod persist_subst;
 pub(crate) mod discrim;
 
@@ -17,7 +18,9 @@ use std::collections::{HashMap, HashSet};
 use smallvec::SmallVec;
 
 use crate::intern::{SymbolTable, SymbolDef, SymbolKind, Symbol};
+use crate::span::SourceRegistry;
 use term::{Term, TermId, TermStore, VarId};
+use occurrence::OccurrenceStore;
 use discrim::SubstTree;
 use resolve::BuiltinTag;
 
@@ -33,6 +36,14 @@ impl RuleId {
 
     pub fn from_index(index: usize) -> Self {
         RuleId(index as u32)
+    }
+
+    pub fn from_raw(raw: u32) -> Self {
+        RuleId(raw)
+    }
+
+    pub fn raw(self) -> u32 {
+        self.0
     }
 }
 
@@ -113,6 +124,12 @@ pub struct KnowledgeBase {
     sort_sort: Option<TermId>,
     #[allow(dead_code)]
     entity_of_sort: Option<TermId>,
+
+    // Occurrence store (positioned terms, not hash-consed)
+    pub(crate) occurrences: OccurrenceStore,
+
+    // Source registry (file names/paths)
+    pub(crate) sources: SourceRegistry,
 }
 
 impl KnowledgeBase {
@@ -136,7 +153,23 @@ impl KnowledgeBase {
             sort_base_subst: HashMap::new(),
             sort_sort: None,
             entity_of_sort: None,
+            occurrences: OccurrenceStore::new(),
+            sources: SourceRegistry::new(),
         }
+    }
+
+    // ── Source & occurrence access ─────────────────────────────
+
+    pub fn register_source(&mut self, name: String) -> crate::span::SourceId {
+        self.sources.register(name)
+    }
+
+    pub fn source_name(&self, id: crate::span::SourceId) -> &str {
+        self.sources.name(id)
+    }
+
+    pub fn occurrence_store(&self) -> &OccurrenceStore {
+        &self.occurrences
     }
 
     // ── Term allocation ─────────────────────────────────────────
@@ -979,6 +1012,12 @@ impl KnowledgeBase {
         // Conversions
         self.register_builtin("anthill.prelude.BigInt.to_bigint", BuiltinTag::ToBigInt);
         self.register_builtin("anthill.prelude.BigInt.to_int", BuiltinTag::ToInt);
+
+        // Occurrence builtins (stubs — full implementations in future phases)
+        self.register_builtin("anthill.reflect.occurrence_term", BuiltinTag::OccurrenceTerm);
+        self.register_builtin("anthill.reflect.occurrence_span", BuiltinTag::OccurrenceSpan);
+        self.register_builtin("anthill.reflect.occurrence_owner", BuiltinTag::OccurrenceOwner);
+        self.register_builtin("anthill.reflect.sub_occurrences", BuiltinTag::SubOccurrences);
     }
 
     /// Re-resolve builtins after scan_definitions().

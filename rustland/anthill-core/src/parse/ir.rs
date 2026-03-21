@@ -23,6 +23,9 @@ pub struct SimpleTermStore {
     terms: Vec<Term>,
     /// Inline description blocks attached to variables: TermId → description texts.
     pub descriptions: HashMap<TermId, Vec<String>>,
+    /// Byte-offset spans for terms.
+    /// Populated by the converter for each term node that has a source position.
+    pub spans: HashMap<TermId, Span>,
 }
 
 impl SimpleTermStore {
