@@ -25,6 +25,7 @@ class KnowledgeBase:
 
   private val builtins_ = HashMap.empty[Int, BuiltinTag]
   private val entityFields_ = HashMap.empty[Int, IndexedSeq[TermSymbol]]
+  private val constructorSymbols_ = HashSet.empty[Int]
   private var nextVar: Int = 0
   private val sortBaseSubst_ = HashMap.empty[Int, IndexedSeq[(TermSymbol, TermId)]]
 
@@ -105,10 +106,21 @@ class KnowledgeBase:
   def registerEntityOf(entity: TermId, parent: TermId): Unit =
     sortEntities_.getOrElseUpdate(TermId.raw(parent), ArrayBuffer.empty) += entity
     entityParent_(TermId.raw(entity)) = parent
+    terms.get(entity) match
+      case fn: Term.Fn => constructorSymbols_ += TermSymbol.raw(fn.functor)
+      case _ =>
 
   def isEntityOf(sub: TermId, sup: TermId): Boolean =
     TermId.raw(sub) == TermId.raw(sup) ||
     entityParent_.get(TermId.raw(sub)).exists(p => TermId.raw(p) == TermId.raw(sup))
+
+  /** Get the parent sort of an entity (1-level, non-transitive). */
+  def entityParentSort(entity: TermId): Option[TermId] =
+    entityParent_.get(TermId.raw(entity))
+
+  /** Check if a functor symbol is a constructor (entity with a parent sort). */
+  def isConstructorSymbol(functor: TermSymbol): Boolean =
+    constructorSymbols_.contains(TermSymbol.raw(functor))
 
   // ── Query ───────────────────────────────────────────────────
 

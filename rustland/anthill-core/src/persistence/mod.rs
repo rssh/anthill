@@ -7,6 +7,7 @@
 
 pub mod print;
 pub mod file_store;
+pub mod term_ser;
 
 use crate::kb::{RuleId, KnowledgeBase};
 use crate::kb::term::TermId;

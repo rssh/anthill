@@ -190,3 +190,103 @@ class LoaderTest extends munit.FunSuite:
     assertEquals(kb.sortKind(natTerm), Some(SortKind.Defined))
     assertEquals(kb.sortKind(zeroTerm), Some(SortKind.Constructor))
   }
+
+  test("prelude registers collection literal entities") {
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+
+    assert(kb.hasQualifiedName("anthill.reflect.ListLiteral"))
+    assert(kb.hasQualifiedName("anthill.reflect.SetLiteral"))
+    assert(kb.hasQualifiedName("anthill.reflect.TupleLiteral"))
+    assert(kb.hasQualifiedName("anthill.reflect.SortInfo"))
+    assert(kb.hasQualifiedName("anthill.reflect.FieldInfo"))
+  }
+
+  test("ListLiteral term loads into KB") {
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+
+    val symbols = anthill.intern.SymbolTable()
+    val terms = SimpleTermStore()
+
+    // Build: fact Task("T-001", tags: ListLiteral("rust", "core"))
+    // First define namespace test with sort Status + entity Task
+    val testNs = Name.simple(symbols.intern("test"), emptySpan)
+    val taskName = Name.simple(symbols.intern("Task"), emptySpan)
+    val idField = FieldDecl(symbols.intern("id"), TypeExpr.Simple(Name.simple(symbols.intern("String"), emptySpan)))
+    val tagsField = FieldDecl(symbols.intern("tags"), TypeExpr.Simple(Name.simple(symbols.intern("List"), emptySpan)))
+    val taskEntity = Entity(None, taskName, IndexedSeq(idField, tagsField), None, emptySpan)
+    val taskSortName = Name.simple(symbols.intern("TaskSort"), emptySpan)
+    val taskSort = SortWithBody(None, taskSortName, IndexedSeq.empty, IndexedSeq.empty, IndexedSeq.empty,
+      IndexedSeq(Item.EntityItem(taskEntity)), None, emptySpan)
+    val ns = Namespace(testNs, IndexedSeq.empty, IndexedSeq.empty,
+      IndexedSeq(Item.SortWithBodyItem(taskSort)), emptySpan)
+
+    // Build the ListLiteral term
+    val listLitSym = symbols.intern("ListLiteral")
+    val rust = terms.alloc(Term.Const(Literal.StringLit("rust")))
+    val core = terms.alloc(Term.Const(Literal.StringLit("core")))
+    val listTerm = terms.alloc(Term.Fn(listLitSym, IArray(rust, core), IArray.empty))
+
+    // Build fact: Task("T-001", tags: ListLiteral("rust", "core"))
+    val taskSym = symbols.intern("Task")
+    val idSym = symbols.intern("id")
+    val tagsSym = symbols.intern("tags")
+    val idVal = terms.alloc(Term.Const(Literal.StringLit("T-001")))
+    val factTerm = terms.alloc(Term.Fn(taskSym, IArray.empty,
+      IArray((idSym, idVal), (tagsSym, listTerm))))
+    val fact = Fact(factTerm, None, emptySpan)
+
+    val items = ArrayBuffer[Item](
+      Item.NamespaceItem(ns),
+      Item.FactItem(fact)
+    )
+    val parsed = ParsedFile(items, symbols, terms)
+
+    val errors = Loader.loadAll(kb, IndexedSeq(parsed))
+    assert(kb.factCount > 0, s"should have loaded facts, got ${kb.factCount}, errors: $errors")
+
+    // Verify the ListLiteral functor resolved to the global import
+    val listLitResolved = kb.tryResolveSymbol("anthill.reflect.ListLiteral")
+    assert(listLitResolved.isDefined, "ListLiteral should be a resolved symbol")
+  }
+
+  test("entityParentSort and isConstructorSymbol") {
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+
+    val symbols = anthill.intern.SymbolTable()
+    val terms = SimpleTermStore()
+
+    val colorName = Name.simple(symbols.intern("Color"), emptySpan)
+    val redName = Name.simple(symbols.intern("Red"), emptySpan)
+    val blueName = Name.simple(symbols.intern("Blue"), emptySpan)
+
+    val redEntity = Entity(None, redName, IndexedSeq.empty, None, emptySpan)
+    val blueEntity = Entity(None, blueName, IndexedSeq.empty, None, emptySpan)
+    val colorSort = SortWithBody(None, colorName, IndexedSeq.empty, IndexedSeq.empty, IndexedSeq.empty,
+      IndexedSeq(Item.EntityItem(redEntity), Item.EntityItem(blueEntity)), None, emptySpan)
+
+    val items = ArrayBuffer[Item](Item.SortWithBodyItem(colorSort))
+    val parsed = ParsedFile(items, symbols, terms)
+
+    val errors = Loader.loadAll(kb, IndexedSeq(parsed))
+    assert(errors.isEmpty, s"Load errors: $errors")
+
+    val colorSym = kb.tryResolveSymbol("Color").get
+    val colorTerm = kb.makeNameTermFromSym(colorSym)
+    val redSym = kb.tryResolveSymbol("Color.Red").get
+    val redTerm = kb.makeNameTermFromSym(redSym)
+    val blueSym = kb.tryResolveSymbol("Color.Blue").get
+    val blueTerm = kb.makeNameTermFromSym(blueSym)
+
+    // entityParentSort
+    assertEquals(kb.entityParentSort(redTerm), Some(colorTerm))
+    assertEquals(kb.entityParentSort(blueTerm), Some(colorTerm))
+    assertEquals(kb.entityParentSort(colorTerm), None)
+
+    // isConstructorSymbol
+    assert(kb.isConstructorSymbol(redSym), "Red should be a constructor symbol")
+    assert(kb.isConstructorSymbol(blueSym), "Blue should be a constructor symbol")
+    assert(!kb.isConstructorSymbol(colorSym), "Color should not be a constructor symbol")
+  }

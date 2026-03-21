@@ -96,9 +96,31 @@ object Prelude:
     defineReflectEntity("MatchBranch")
     defineReflectEntity("ApplyArg")
 
+    // Reflect metadata entities (mirrors Rust register_prelude)
+    defineReflectEntity("SortInfo")
+    defineReflectEntity("FieldInfo")
+    defineReflectEntity("OperationInfo")
+    defineReflectEntity("EntityInfo")
+    defineReflectEntity("SortRequiresInfo")
+    defineReflectEntity("SortView")
+
+    // Collection literal entities (Proposal 019)
+    // Used by the parser; the typing process (Proposal 011) desugars to concrete constructors
+    defineReflectEntity("SetLiteral")
+    defineReflectEntity("TupleLiteral")
+    defineReflectEntity("ListLiteral")
+
     // anthill.reflect.TypedExpr sort
     val typedExprTerm = defineSort("TypedExpr", "anthill.reflect.TypedExpr", reflectScope)
     defineEntity("typed", "anthill.reflect.TypedExpr.typed", typedExprTerm)
+
+    // Global imports for reflect entities
+    val globalScope = kb.makeNameTerm("_global")
+    for name <- IndexedSeq("SortInfo", "FieldInfo", "OperationInfo", "EntityInfo",
+        "SortRequiresInfo", "SortView", "SetLiteral", "TupleLiteral", "ListLiteral") do
+      kb.tryResolveSymbol(s"anthill.reflect.$name").foreach { sym =>
+        kb.symbols.addImport(globalScope.raw, name, sym)
+      }
 
   private def registerStandardBuiltins(kb: KnowledgeBase): Unit =
     val builtinDefs = IndexedSeq(

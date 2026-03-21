@@ -13,6 +13,7 @@ use anthill_core::kb::{KnowledgeBase, RuleId};
 use anthill_core::parse;
 use anthill_core::parse::ir::{Item, ParsedFile};
 use anthill_core::persistence::print::TermPrinter;
+use anthill_core::persistence::term_ser;
 
 // ── CLI types ───────────────────────────────────────────────────────
 
@@ -139,8 +140,8 @@ fn collect_anthill_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, Vec<String>>
             continue;
         }
         if path.is_dir() {
-            collect_from_dir(path, &mut files);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("anthill") {
+            collect_files_recursive(path, &mut files, &["anthill"]);
+        } else if has_extension(path, &["anthill"]) {
             files.push(path.clone());
         } else {
             errors.push(format!("not an .anthill file: {}", path.display()));
@@ -156,7 +157,16 @@ fn collect_anthill_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, Vec<String>>
     Ok(files)
 }
 
-fn collect_from_dir(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Check if a file path has one of the given extensions.
+fn has_extension(path: &Path, extensions: &[&str]) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| extensions.contains(&e))
+        .unwrap_or(false)
+}
+
+/// Recursively collect files with matching extensions from a directory.
+fn collect_files_recursive(dir: &Path, out: &mut Vec<PathBuf>, extensions: &[&str]) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) => {
@@ -167,11 +177,29 @@ fn collect_from_dir(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_from_dir(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("anthill") {
+            collect_files_recursive(&path, out, extensions);
+        } else if has_extension(&path, extensions) {
             out.push(path);
         }
     }
+}
+
+/// Collect `.toml` and `.json` data files from paths (directories or individual files).
+fn collect_data_files(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        if path.is_dir() {
+            collect_files_recursive(path, &mut files, &["toml", "json"]);
+        } else if has_extension(path, &["toml", "json"]) {
+            files.push(path.clone());
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
 }
 
 // ── Output naming ───────────────────────────────────────────────────
@@ -262,6 +290,39 @@ fn load_kb(paths: &[PathBuf], verbose: bool) -> Result<KnowledgeBase, i32> {
         // when loading without the full stdlib
         for e in &load_errors {
             eprintln!("warning: {e}");
+        }
+    }
+
+    // Load .toml and .json data files (after entity definitions are available)
+    let data_files = collect_data_files(paths);
+    if !data_files.is_empty() {
+        let domain = kb.make_name_term("_data");
+        for file in &data_files {
+            let source = match fs::read_to_string(file) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("warning: {}: read error: {e}", file.display());
+                    continue;
+                }
+            };
+            let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let result = match ext {
+                "toml" => term_ser::load_toml(&mut kb, &source, domain),
+                "json" => term_ser::load_json(&mut kb, &source, domain),
+                _ => continue,
+            };
+            match result {
+                Ok(n) => {
+                    if verbose {
+                        eprintln!("loaded {} fact(s) from {}", n, file.display());
+                    }
+                }
+                Err(errs) => {
+                    for e in &errs {
+                        eprintln!("warning: {}: {e}", file.display());
+                    }
+                }
+            }
         }
     }
 

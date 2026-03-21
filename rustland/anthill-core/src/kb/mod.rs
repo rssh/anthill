@@ -12,7 +12,7 @@ pub mod resolve;
 pub(crate) mod persist_subst;
 pub(crate) mod discrim;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use smallvec::SmallVec;
 
@@ -96,6 +96,10 @@ pub struct KnowledgeBase {
     // resolution fails. Populated during load_entity.
     entity_short_to_qualified: HashMap<Symbol, Symbol>,
 
+    // Set of functor symbols that are constructors (entities with a parent sort).
+    // Populated by register_entity_of, used by is_constructor_symbol for O(1) lookup.
+    constructor_symbols: HashSet<Symbol>,
+
     // Variable counter for fresh VarId allocation
     next_var: u32,
 
@@ -127,6 +131,7 @@ impl KnowledgeBase {
             builtins: HashMap::new(),
             entity_fields: HashMap::new(),
             entity_short_to_qualified: HashMap::new(),
+            constructor_symbols: HashSet::new(),
             next_var: 0,
             sort_base_subst: HashMap::new(),
             sort_sort: None,
@@ -312,6 +317,9 @@ impl KnowledgeBase {
             .or_default()
             .push(entity);
         self.entity_parent.insert(entity, parent);
+        if let Term::Fn { functor, .. } = *self.terms.get(entity) {
+            self.constructor_symbols.insert(functor);
+        }
     }
 
     /// Check if `sub` is an entity of `sup` (1-level entity → parent sort).
@@ -320,6 +328,11 @@ impl KnowledgeBase {
             return true;
         }
         self.entity_parent.get(&sub) == Some(&sup)
+    }
+
+    /// Get the parent sort of an entity (1-level, non-transitive).
+    pub fn entity_parent_sort(&self, entity: TermId) -> Option<TermId> {
+        self.entity_parent.get(&entity).copied()
     }
 
     // ── Query ───────────────────────────────────────────────────
@@ -899,6 +912,12 @@ impl KnowledgeBase {
     /// Look up the qualified entity symbol for an unqualified short name.
     pub fn entity_qualified_for_short(&self, short_sym: Symbol) -> Option<Symbol> {
         self.entity_short_to_qualified.get(&short_sym).copied()
+    }
+
+    /// Check if a functor symbol is a constructor (entity with a parent sort).
+    /// O(1) lookup via pre-built index populated by register_entity_of.
+    pub fn is_constructor_symbol(&self, functor: Symbol) -> bool {
+        self.constructor_symbols.contains(&functor)
     }
 
     // ── Builtin dispatch ────────────────────────────────────────
