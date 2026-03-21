@@ -1,0 +1,15 @@
+[package]
+name = "anthill-todo"
+version = "0.1.0"
+edition = "2021"
+description = "Anthill TODO: structured work management CLI"
+
+[[bin]]
+name = "anthill-todo"
+path = "src/main.rs"
+
+[dependencies]
+anthill-core = { path = "../anthill-core" }
+clap = { version = "4", features = ["derive"] }
+chrono = "0.4"
+smallvec = "1"

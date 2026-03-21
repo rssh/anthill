@@ -149,8 +149,6 @@ pub enum Item {
     OperationBlock(OperationBlock),
     RuleBlock(RuleBlock),
     Describe(Describe),
-    // Stage 0 (import_tools needs special handling — it triggers file loading)
-    ImportTools(ImportTools),
 }
 
 // ── Namespace ───────────────────────────────────────────────────
@@ -337,9 +335,3 @@ pub struct MetaEntry {
 }
 
 // ── Stage 0: import tools ───────────────────────────────────────
-
-#[derive(Debug)]
-pub struct ImportTools {
-    pub names: Vec<Name>,
-    pub span: Span,
-}

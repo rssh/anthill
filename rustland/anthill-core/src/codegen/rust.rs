@@ -461,9 +461,7 @@ impl<'a> RustCodegen<'a> {
                 Item::AbstractSort(_) => {
                     // Skip — only meaningful inside sort bodies
                 }
-                // Stage 0 items — skip
-                Item::ImportTools(_)
-                | Item::OperationBlock(_) | Item::RequiresDecl(_)
+                Item::OperationBlock(_) | Item::RequiresDecl(_)
                 | Item::Describe(_) => {}
             }
             first = false;

@@ -1490,16 +1490,22 @@ fn find_operation_in_scope(kb: &mut KnowledgeBase, sort_ref_tid: TermId, short_n
 /// Build a cons-list from a slice of TermIds: `cons(head: a, tail: cons(head: b, tail: nil()))`.
 /// Uses the `anthill.prelude.List` constructors so list operations work.
 fn build_list(kb: &mut KnowledgeBase, items: &[TermId]) -> TermId {
+    build_list_with_tail(kb, items, None)
+}
+
+/// Build a cons/nil list with an optional tail (for `[a, b | t]` patterns).
+/// If tail is None, terminates with nil.
+fn build_list_with_tail(kb: &mut KnowledgeBase, items: &[TermId], tail: Option<TermId>) -> TermId {
     let nil_sym = kb.resolve_symbol("anthill.prelude.List.nil");
     let cons_sym = kb.resolve_symbol("anthill.prelude.List.cons");
     let head_sym = kb.intern("head");
     let tail_sym = kb.intern("tail");
 
-    let mut list = kb.alloc(Term::Fn {
+    let mut list = tail.unwrap_or_else(|| kb.alloc(Term::Fn {
         functor: nil_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
-    });
+    }));
 
     for &item in items.iter().rev() {
         list = kb.alloc(Term::Fn {
@@ -1886,6 +1892,28 @@ impl<'a> Loader<'a> {
             }
             Term::Fn { functor, pos_args, named_args } => {
                 let new_functor = self.remap_symbol(functor);
+
+                // Desugar ListLiteral → cons/nil list
+                // ListLiteral(a, b, c) → cons(a, cons(b, cons(c, nil)))
+                // ListLiteral(a, b, tail: t) → cons(a, cons(b, t))
+                if self.kb.qualified_name_of(new_functor) == "anthill.reflect.ListLiteral" {
+                    let items: Vec<TermId> = pos_args.iter()
+                        .map(|&id| self.convert_term(id))
+                        .collect();
+                    let tail_term = named_args.iter()
+                        .find(|(sym, _)| self.parsed.symbols.name(*sym) == "tail")
+                        .map(|&(_, id)| self.convert_term(id));
+                    let kb_id = build_list_with_tail(self.kb, &items, tail_term);
+                    self.term_map.insert(parse_id.raw(), kb_id);
+                    if let Some(desc_texts) = self.parsed.terms.descriptions.get(&parse_id) {
+                        let desc_texts = desc_texts.clone();
+                        for desc_text in &desc_texts {
+                            self.emit_desc_fact(kb_id, desc_text, self.current_scope);
+                        }
+                    }
+                    return kb_id;
+                }
+
                 let new_pos: SmallVec<[TermId; 4]> = pos_args
                     .iter()
                     .map(|&id| self.convert_term(id))
@@ -2387,7 +2415,6 @@ impl<'a> Loader<'a> {
                     }
                 }
                 Item::Describe(d) => self.load_describe(d, domain),
-                Item::ImportTools(it) => self.load_import_tools(it, domain),
             }
         }
 
@@ -2911,46 +2938,6 @@ impl<'a> Loader<'a> {
             })
             .collect();
         build_list(self.kb, &clause_terms)
-    }
-
-    fn load_import_tools(&mut self, it: &ImportTools, _domain: TermId) {
-        for name in &it.names {
-            let path = join_segments(&self.parsed.symbols, &name.segments);
-            if self.loaded_paths.contains(&path) {
-                continue;
-            }
-            self.loaded_paths.insert(path.clone());
-
-            match self.resolver.resolve(&path) {
-                Ok(source) => {
-                    match crate::parse::parse(&source) {
-                        Ok(imported) => {
-                            // Scan definitions from the imported file before loading
-                            let scan_errs = scan_definitions(self.kb, &[&imported]);
-                            self.kb.resolve_builtins();
-                            self.errors.extend(scan_errs);
-                            if let Err(errs) = load_with_visited(
-                                self.kb, &imported, self.resolver, self.loaded_paths,
-                            ) {
-                                self.errors.extend(errs);
-                            }
-                        }
-                        Err(parse_errs) => {
-                            for pe in parse_errs {
-                                self.errors.push(LoadError::Other {
-                                    message: format!("parse error in import '{}': {}", path, pe.message),
-                                });
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    self.errors.push(LoadError::Other {
-                        message: format!("cannot resolve import '{}': {}", path, e),
-                    });
-                }
-            }
-        }
     }
 
     // ── Member fact emission ───────────────────────────────────

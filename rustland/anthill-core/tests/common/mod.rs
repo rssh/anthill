@@ -29,3 +29,8 @@ pub fn stdlib_dir() -> PathBuf {
 pub fn testcases_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../anthill-testcases")
 }
+
+/// Path to examples/ relative to the anthill-core crate root.
+pub fn examples_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples")
+}

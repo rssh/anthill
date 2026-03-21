@@ -1,8 +1,7 @@
-/// Tree-sitter grammar for the Anthill kernel language + Stage 0 sugar.
+/// Tree-sitter grammar for the Anthill kernel language.
 ///
 /// The kernel has 4 constructs: namespace, sort, rule, operation.
 /// Sugar adds: entity, fact, constraint, operation/rule blocks.
-/// Stage 0 adds: project, tool, workitem, feedback blocks.
 ///
 /// All keywords except `true`/`false` are soft (context-dependent).
 /// See: docs/kernel-language.md
@@ -56,7 +55,6 @@ module.exports = grammar({
 
     _top_level: $ => choice(
       $._declaration,
-      $._stage0_declaration,
     ),
 
     // =========================================================
@@ -77,18 +75,6 @@ module.exports = grammar({
       $.operation_block,
       $.rule_block,
       $.describe_declaration,
-    ),
-
-    // =========================================================
-    // Stage 0 sugar declarations
-    // =========================================================
-
-    _stage0_declaration: $ => choice(
-      $.project_declaration,
-      $.tool_declaration,
-      $.workitem_declaration,
-      $.feedback_declaration,
-      $.import_tools_declaration,
     ),
 
     // =========================================================
@@ -367,183 +353,6 @@ module.exports = grammar({
     // =========================================================
     // Stage 0: project
     // =========================================================
-
-    project_declaration: $ => seq(
-      'project',
-      field('name', $.name),
-      choice(
-        seq('{', $.project_fields, '}'),
-        seq($.project_fields, 'end'),
-      ),
-    ),
-
-    project_fields: $ => seq(
-      choice(
-        $._project_structure,
-        seq('tools', ':', commaSep1($.name)),
-        $.import_tools_declaration,
-      ),
-      repeat($.import_tools_declaration),
-      optional(seq('tools', ':', commaSep1($.name))),
-      optional(seq('domains', ':', commaSep1($.name))),
-      optional($.meta_block),
-    ),
-
-    _project_structure: $ => choice(
-      $.simple_project_fields,
-      $.module_list,
-    ),
-
-    simple_project_fields: $ => seq(
-      'language', ':', $.identifier,
-      optional(seq('build', ':', $.identifier)),
-      optional(seq('sources', ':', commaSep1($.source_root))),
-    ),
-
-    module_list: $ => seq(
-      'modules', ':',
-      repeat1($.module_declaration),
-    ),
-
-    module_declaration: $ => seq(
-      'module',
-      field('name', $.name),
-      choice(
-        seq('{', $.module_fields, '}'),
-        seq($.module_fields, 'end'),
-      ),
-    ),
-
-    module_fields: $ => seq(
-      'root', ':', $.string_literal,
-      'language', ':', $.identifier,
-      optional(seq('build', ':', $.identifier)),
-      optional(seq('sources', ':', commaSep1($.source_root))),
-      optional($.meta_block),
-    ),
-
-    source_root: $ => seq(
-      '{',
-      'path', ':', $.string_literal, ',',
-      optional(seq('language', ':', $.identifier, ',')),
-      'scope', ':', $.source_scope,
-      '}',
-    ),
-
-    source_scope: $ => choice('Main', 'Test', 'Generated', 'Docs'),
-
-    import_tools_declaration: $ => seq(
-      'import', 'tools', ':', commaSep1($.name),
-    ),
-
-    // =========================================================
-    // Stage 0: tool
-    // =========================================================
-
-    tool_declaration: $ => seq(
-      'tool',
-      field('name', $.name),
-      choice(
-        seq('{', $.tool_fields, '}'),
-        seq($.tool_fields, 'end'),
-      ),
-    ),
-
-    tool_fields: $ => seq(
-      'command', ':', $.string_literal,
-      optional(seq('args', ':', '[', commaSep1($.string_literal), ']')),
-      optional(seq('working_dir', ':', $.string_literal)),
-      optional(seq('timeout', ':', $.duration_literal)),
-      'success', ':', $.success_criterion,
-      optional($.meta_block),
-    ),
-
-    success_criterion: $ => choice(
-      'ExitZero',
-      seq('ExitCode', '(', $.integer_literal, ')'),
-      seq('OutputMatches', '(', $.string_literal, ')'),
-      seq('Custom', '(', $._term, ')'),
-    ),
-
-    // =========================================================
-    // Stage 0: workitem
-    // =========================================================
-
-    workitem_declaration: $ => seq(
-      'workitem',
-      field('id', $.name),
-      choice(
-        seq('{', $.workitem_fields, '}'),
-        seq($.workitem_fields, 'end'),
-      ),
-    ),
-
-    workitem_fields: $ => seq(
-      optional(seq('description', ':', $._term)),
-      optional(seq('context', ':', repeat1($.context_ref))),
-      seq('acceptance', ':', repeat1($.acceptance_criterion)),
-      optional(seq('depends_on', ':', '[', commaSep($.name), ']')),
-      optional(seq('generates', ':', '[', commaSep1($._term), ']')),
-      optional(seq('requires_capability', ':', commaSep1($.capability))),
-      seq('status', ':', $.work_status),
-      optional($.meta_block),
-    ),
-
-    context_ref: $ => choice(
-      seq('FileRef', '(', $.string_literal,
-        optional(seq(',', 'lines', ':', $.integer_literal, '..', $.integer_literal)),
-        ')'),
-      seq('FactRef', '(', $.name, ',', $._term, ')'),
-      seq('WorkItemRef', '(', $.name, ')'),
-    ),
-
-    acceptance_criterion: $ => choice(
-      seq('ToolPasses', '(', $.name, optional(seq(',', $.bindings)), ')'),
-      seq('FactHolds', '(', $.name, ',', $._term, ')'),
-      seq('Compiles', '(', choice($.source_root, seq('module', ':', $.name)), ')'),
-      seq('Constraint', '(', $._term, ')'),
-    ),
-
-    work_status: $ => choice(
-      'Draft',
-      'Open',
-      seq('Claimed', '(', 'agent', ':', $.string_literal, ',', 'since', ':', $.string_literal, ')'),
-      seq('Delivered', '(', 'agent', ':', $.string_literal, ',', 'at', ':', $.string_literal, ')'),
-      seq('Verified', '(', 'at', ':', $.string_literal, ')'),
-      seq('Rejected', '(', 'reason', ':', $.string_literal, ',', 'at', ':', $.string_literal, ')'),
-      seq('ProposalRejected', '(', 'reason', ':', $.string_literal, ',', 'at', ':', $.string_literal, ')'),
-      seq('Stale', '(', 'reason', ':', $.string_literal, ',', 'since', ':', $.string_literal, ')'),
-    ),
-
-    capability: $ => choice(
-      seq('Code', '(', 'languages', ':', '[', commaSep1($.string_literal), ']', ')'),
-      'Test',
-      'Refine',
-      'Review',
-      'Decompose',
-      'Architect',
-      'HumanJudgment',
-    ),
-
-    // =========================================================
-    // Stage 0: feedback
-    // =========================================================
-
-    feedback_declaration: $ => seq(
-      'feedback',
-      choice(
-        seq('{', $.feedback_fields, '}'),
-        seq($.feedback_fields, 'end'),
-      ),
-    ),
-
-    feedback_fields: $ => seq(
-      'workitem', ':', $.name,
-      'author', ':', $.string_literal,
-      'content', ':', $._term,
-      'at', ':', $.string_literal,
-      optional($.meta_block),
-    ),
 
     // =========================================================
     // Metadata

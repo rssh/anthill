@@ -1,3 +1,3 @@
 [workspace]
-members = ["anthill-core", "anthill-cli", "anthill-stl"]
+members = ["anthill-core", "anthill-cli", "anthill-stl", "anthill-todo"]
 resolver = "2"

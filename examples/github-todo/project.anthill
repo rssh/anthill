@@ -1,10 +1,7 @@
 -- Example: GitHub-style project configuration
---
--- This declares a Rust web application project with standard cargo tools
--- plus a custom linting tool.
 
-project my-github-app {
-  language: rust
-  build: cargo
-  tools: cargo-build, cargo-test, cargo-clippy, lint-all
-}
+fact Project(
+  name: "my-github-app",
+  language: "rust",
+  build: "cargo",
+  tools: ["cargo-build", "cargo-test", "cargo-clippy", "lint-all"])

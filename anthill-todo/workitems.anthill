@@ -1,0 +1,51 @@
+-- Work items
+
+fact WorkItem(
+  id: "WI-001",
+  description: "define typing rules",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-002",
+  description: "implement rust embedding",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-003",
+  description: "think about using data in algebraic datatypes or continue using sort",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-004",
+  description: "think about changing effect to @ in operation syntax",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+
+
+fact WorkItem(
+  id: "WI-007",
+  description: "remove default desugaring of ListLiteral",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-001"],
+  status: Open)
+fact WorkItem(
+  id: "WI-008",
+  description: "implement expressions",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-001"],
+  status: Open)
+fact WorkItem(
+  id: "WI-009",
+  description: "port todo-app to anthill",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-008"],
+  status: Open)
+

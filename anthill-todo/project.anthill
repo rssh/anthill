@@ -1,0 +1,7 @@
+-- Project configuration
+
+fact Project(
+  name: "anthill",
+  language: "rust",
+  build: "cargo",
+  tools: ["cargo-test"])

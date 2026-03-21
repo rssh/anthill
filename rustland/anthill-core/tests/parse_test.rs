@@ -199,132 +199,6 @@ end
     }
 }
 
-#[test]
-fn parse_simple_project() {
-    let source = r#"project cps2 {
-  language: scala
-  build: sbt
-  tools: sbt-compile, sbt-test
-}
-"#;
-    let parsed = parse::parse(source).expect("parse failed");
-    assert_eq!(parsed.items.len(), 1);
-    match &parsed.items[0] {
-        Item::Fact(f) => {
-            assert_eq!(f.sort.as_deref(), Some("Project"));
-            // The term should be Fn { functor: "Project", named: [name: "cps2", ...] }
-            match parsed.terms.get(f.term) {
-                Term::Fn { functor, named_args, .. } => {
-                    assert_eq!(parsed.symbols.name(*functor), "Project");
-                    // Find "name" arg
-                    let name_sym = named_args.iter()
-                        .find(|(k, _)| parsed.symbols.name(*k) == "name")
-                        .expect("missing 'name' arg");
-                    match parsed.terms.get(name_sym.1) {
-                        Term::Const(Literal::String(s)) => assert_eq!(s, "cps2"),
-                        other => panic!("expected String const for name, got {:?}", other),
-                    }
-                }
-                other => panic!("expected Fn term, got {:?}", other),
-            }
-        }
-        other => panic!("expected Fact, got {:?}", std::mem::discriminant(other)),
-    }
-}
-
-#[test]
-fn parse_tool_declaration() {
-    let source = r#"tool sbt-test-only {
-  command: "sbt"
-  args: ["cps2/testOnly", "$testClass"]
-  timeout: 10m
-  success: ExitZero
-}
-"#;
-    let parsed = parse::parse(source).expect("parse failed");
-    assert_eq!(parsed.items.len(), 1);
-    match &parsed.items[0] {
-        Item::Fact(f) => {
-            assert_eq!(f.sort.as_deref(), Some("Tool"));
-            match parsed.terms.get(f.term) {
-                Term::Fn { functor, named_args, .. } => {
-                    assert_eq!(parsed.symbols.name(*functor), "Tool");
-                    // Check name
-                    let name_arg = named_args.iter()
-                        .find(|(k, _)| parsed.symbols.name(*k) == "name")
-                        .expect("missing 'name' arg");
-                    match parsed.terms.get(name_arg.1) {
-                        Term::Const(Literal::String(s)) => assert_eq!(s, "sbt-test-only"),
-                        other => panic!("expected String const for name, got {:?}", other),
-                    }
-                    // Check command
-                    let cmd_arg = named_args.iter()
-                        .find(|(k, _)| parsed.symbols.name(*k) == "command")
-                        .expect("missing 'command' arg");
-                    match parsed.terms.get(cmd_arg.1) {
-                        Term::Const(Literal::String(s)) => assert_eq!(s, "sbt"),
-                        other => panic!("expected String const for command, got {:?}", other),
-                    }
-                    // Check success is ExitZero ident
-                    let success_arg = named_args.iter()
-                        .find(|(k, _)| parsed.symbols.name(*k) == "success")
-                        .expect("missing 'success' arg");
-                    match parsed.terms.get(success_arg.1) {
-                        Term::Ident(sym) => assert_eq!(parsed.symbols.name(*sym), "ExitZero"),
-                        other => panic!("expected Ident(ExitZero) for success, got {:?}", other),
-                    }
-                }
-                other => panic!("expected Fn term, got {:?}", other),
-            }
-        }
-        other => panic!("expected Fact, got {:?}", std::mem::discriminant(other)),
-    }
-}
-
-#[test]
-fn parse_workitem() {
-    let source = r#"workitem WI-CPS2-MATCH-001 {
-  description: "Add AST pattern matching"
-  acceptance:
-    Compiles({ path: "src/main/scala", scope: Main })
-  status: Open
-}
-"#;
-    let parsed = parse::parse(source).expect("parse failed");
-    assert_eq!(parsed.items.len(), 1);
-    match &parsed.items[0] {
-        Item::Fact(f) => {
-            assert_eq!(f.sort.as_deref(), Some("WorkItem"));
-            match parsed.terms.get(f.term) {
-                Term::Fn { functor, named_args, .. } => {
-                    assert_eq!(parsed.symbols.name(*functor), "WorkItem");
-                    // Check id
-                    let id_arg = named_args.iter()
-                        .find(|(k, _)| parsed.symbols.name(*k) == "id")
-                        .expect("missing 'id' arg");
-                    match parsed.terms.get(id_arg.1) {
-                        Term::Const(Literal::String(s)) => assert_eq!(s, "WI-CPS2-MATCH-001"),
-                        other => panic!("expected String const for id, got {:?}", other),
-                    }
-                    // Check status is Ident(Open)
-                    let status_arg = named_args.iter()
-                        .find(|(k, _)| parsed.symbols.name(*k) == "status")
-                        .expect("missing 'status' arg");
-                    match parsed.terms.get(status_arg.1) {
-                        Term::Ident(sym) => assert_eq!(parsed.symbols.name(*sym), "Open"),
-                        other => panic!("expected Ident(Open) for status, got {:?}", other),
-                    }
-                    // Check acceptance list exists
-                    let _acc_arg = named_args.iter()
-                        .find(|(k, _)| parsed.symbols.name(*k) == "acceptance")
-                        .expect("missing 'acceptance' arg");
-                }
-                other => panic!("expected Fn term, got {:?}", other),
-            }
-        }
-        other => panic!("expected Fact, got {:?}", std::mem::discriminant(other)),
-    }
-}
 
 #[test]
 fn parse_line_comment() {
@@ -444,29 +318,23 @@ end
 
 #[test]
 fn load_workitem_and_query() {
-    let source = r#"workitem WI-001 {
-  description: "Implement feature X"
-  acceptance:
-    Compiles({ path: "src/main", scope: Main })
-  status: Open
-}
+    let source = r#"fact WorkItem(id: "WI-001", description: "Implement feature X", status: Open)
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let wi_sort = kb.make_name_term("WorkItem");
-    let workitems = kb.by_sort(wi_sort);
+    // Check the term has the expected structure: WorkItem(id: "WI-001", ...)
+    let wi_sym = kb.intern("WorkItem");
+    let workitems = kb.by_functor(wi_sym);
     assert_eq!(workitems.len(), 1, "should have one WorkItem");
 
-    // Check the term has the expected structure: WorkItem(id: "WI-001", ...)
     let fid = workitems[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
         Term::Fn { functor, named_args, .. } => {
             assert_eq!(kb.resolve_sym(*functor), "WorkItem");
             assert!(!named_args.is_empty());
-            // Check id arg
             let id_arg = named_args.iter()
                 .find(|(k, _)| kb.resolve_sym(*k) == "id")
                 .expect("missing 'id' arg");
