@@ -4,7 +4,22 @@
    No top sort exists (the lattice is unbounded above).
    Nothing is the bottom (uninhabited, subtype of everything). >}
 sort anthill.prelude.Sort
-  import anthill.prelude.{Lattice, Eq}
+  import anthill.prelude.{Lattice, Eq, List, Option}
+  import anthill.reflect.{Symbol}
+
+  -- Type constructors: all type forms in the language
+  entity sort_ref(name: Symbol)
+  entity parameterized(sort: Sort, bindings: List[SortBinding])
+  entity named_tuple(fields: List[SortField])
+  entity arrow(param: Sort, result: Sort)
+  entity type_var(name: Symbol)
+  entity nothing
+
+  {< Sort field: a named component in a named tuple type. >}
+  entity SortField(name: Symbol, type: Sort)
+
+  {< Sort binding: a named parameter binding in a parameterized sort. >}
+  entity SortBinding(param: Symbol, value: Sort)
 
   fact Eq[T = Sort]
   fact Lattice[T = Sort]
