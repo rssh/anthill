@@ -27,24 +27,24 @@ sort anthill.prelude.LogicalStream
   -- Stream primitive (required by fact Stream[T])
   -- ================================================================
 
-  operation splitFirst(s: LogicalStream[T = ?A])
-    -> Option[T = Pair[A = ?A, B = LogicalStream[T = ?A]]]
+  operation splitFirst(s: LogicalStream[?A])
+    -> Option[Pair[?A,  LogicalStream[?A]]]
 
   -- ================================================================
   -- Logic-specific construction
   -- ================================================================
 
-  operation empty() -> LogicalStream[T = ?A]                 -- zero results (failure)
+  operation empty() -> LogicalStream[?A]                 -- zero results (failure)
 
   operation pure(x: T) -> LogicalStream                    -- single result
 
-  operation mplus(a: LogicalStream[T = ?A], b: LogicalStream[T = ?A])
-    -> LogicalStream[T = ?A]                               -- disjunction
+  operation mplus(a: LogicalStream[?A], b: LogicalStream[?A])
+    -> LogicalStream[?A]                               -- disjunction
 
-  operation guard(cond: Bool) -> LogicalStream[T = Unit]   -- filter
+  operation guard(cond: Bool) -> LogicalStream[Unit]   -- filter
 
-  operation interleave(a: LogicalStream[T = ?A], b: LogicalStream[T = ?A])
-    -> LogicalStream[T = ?A]                               -- fair disjunction
+  operation interleave(a: LogicalStream[?A], b: LogicalStream[?A])
+    -> LogicalStream[?A]                               -- fair disjunction
 
   -- ================================================================
   -- Derived rules

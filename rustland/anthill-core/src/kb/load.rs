@@ -1886,9 +1886,14 @@ impl<'a> Loader<'a> {
     ) {
         if let Some(&span) = self.parsed.terms.spans.get(&parse_id) {
             let source_span = SourceSpan::from_span(self.source_id, span);
-            self.kb.occurrences.alloc(
+            let occ_id = self.kb.occurrences.alloc(
                 kb_id, source_span, self.current_owner, true,
             );
+            // Index by functor for query routing
+            if let Term::Fn { functor, .. } = self.kb.terms.get(kb_id) {
+                let functor = *functor;
+                self.kb.occurrences.index_by_functor(occ_id, functor);
+            }
         }
     }
 

@@ -66,6 +66,9 @@ pub struct OccurrenceStore {
     entries: Vec<OccurrenceEntry>,
     /// Index: TermId → list of occurrences sharing that structural term.
     by_term: HashMap<TermId, Vec<OccurrenceId>>,
+    /// Index: functor Symbol → list of occurrences with that head functor.
+    /// Used by the resolver to route Expr-typed queries to the OccurrenceStore.
+    by_functor: HashMap<Symbol, Vec<OccurrenceId>>,
 }
 
 impl OccurrenceStore {
@@ -73,6 +76,7 @@ impl OccurrenceStore {
         Self {
             entries: Vec::new(),
             by_term: HashMap::new(),
+            by_functor: HashMap::new(),
         }
     }
 
@@ -124,11 +128,23 @@ impl OccurrenceStore {
         self.entries[id.index()].is_expr
     }
 
+    // ── Indexing ──────────────────────────────────────────────────
+
+    /// Register an occurrence under a functor symbol for query routing.
+    pub fn index_by_functor(&mut self, id: OccurrenceId, functor: Symbol) {
+        self.by_functor.entry(functor).or_default().push(id);
+    }
+
     // ── Index queries ───────────────────────────────────────────
 
     /// All occurrences that share the given structural term.
     pub fn by_term(&self, term: TermId) -> &[OccurrenceId] {
         self.by_term.get(&term).map_or(&[], |v| v.as_slice())
+    }
+
+    /// All occurrences with the given head functor.
+    pub fn by_functor(&self, functor: Symbol) -> &[OccurrenceId] {
+        self.by_functor.get(&functor).map_or(&[], |v| v.as_slice())
     }
 
     pub fn len(&self) -> usize {

@@ -14,6 +14,7 @@ use smallvec::SmallVec;
 
 use super::subst::Substitution;
 use super::term::{Term, TermId, VarId};
+use super::occurrence::OccurrenceId;
 use super::RuleId;
 use super::KnowledgeBase;
 
@@ -92,6 +93,15 @@ enum BuiltinResult {
     Delay,
     /// Builtin definitively failed (e.g. lookup_symbol for non-existent name).
     Failure,
+}
+
+/// A resolution candidate — either a regular KB rule/fact or an occurrence.
+#[derive(Clone)]
+enum Candidate {
+    /// Regular KB rule or fact.
+    Rule(RuleId, Substitution),
+    /// Occurrence (always a ground fact — no body).
+    Occurrence(OccurrenceId, Substitution),
 }
 
 /// Result of a recursive groundness check.
@@ -177,7 +187,7 @@ enum FrameState {
     ChoicePoint {
         delay_mode: DelayMode,
         original_goal: TermId,
-        candidates: Vec<(RuleId, Substitution)>,
+        candidates: Vec<Candidate>,
         next: usize,
         any_delayed: bool,
         child_solutions: usize,
@@ -369,22 +379,39 @@ impl SearchStream {
             }
         }
 
-        // 5. Non-builtin goal → query discrimination tree, build candidates
-        let mut candidates = kb.query(goal);
+        // 5. Check OccurrenceStore for expression-typed goals
+        let mut candidates: Vec<Candidate> = Vec::new();
+
+        if let Term::Fn { functor, .. } = kb.terms.get(goal) {
+            let functor = *functor;
+            let occ_ids = kb.occurrences.by_functor(functor);
+            for &occ_id in occ_ids {
+                let head = kb.occurrences.term(occ_id);
+                if let Some(subst) = kb.match_term(goal, head) {
+                    candidates.push(Candidate::Occurrence(occ_id, subst));
+                }
+            }
+        }
+
+        // 6. Non-builtin goal → query discrimination tree, build candidates
+        let mut rule_candidates = kb.query(goal);
 
         // Simplify fallback
         if self.config.simplify {
-            let has_non_eq = candidates.iter().any(|(rid, _)| !kb.is_equation(*rid));
+            let has_non_eq = rule_candidates.iter().any(|(rid, _)| !kb.is_equation(*rid));
             if !has_non_eq {
                 let (rewritten, changes) = kb.apply_eq_rules(goal, 100);
                 if !changes.is_empty() {
-                    candidates = kb.query(rewritten);
+                    rule_candidates = kb.query(rewritten);
                 }
             }
         }
 
         // Filter equations
-        candidates.retain(|(rid, _)| !kb.is_equation(*rid));
+        rule_candidates.retain(|(rid, _)| !kb.is_equation(*rid));
+
+        // Merge occurrence + rule candidates
+        candidates.extend(rule_candidates.into_iter().map(|(rid, s)| Candidate::Rule(rid, s)));
 
         // Transition to ChoicePoint
         let f = self.stack.last_mut().unwrap();
@@ -545,7 +572,7 @@ impl SearchStream {
         }
 
         // Extract candidate data
-        let (rid, tree_subst) = {
+        let candidate = {
             let frame = self.stack.last().unwrap();
             match &frame.state {
                 FrameState::ChoicePoint { candidates, next, .. } => {
@@ -564,20 +591,22 @@ impl SearchStream {
             }
         }
 
+        // Extract components from candidate
+        let (opt_rid, tree_subst) = match candidate {
+            Candidate::Occurrence(_occ_id, subst) => (None, subst),
+            Candidate::Rule(rid, subst) => (Some(rid), subst),
+        };
+
+        let body = opt_rid.map_or(Vec::new(), |rid| kb.rule_body(rid).to_vec());
+
         let frame = self.stack.last().unwrap();
-        let body = kb.rule_body(rid).to_vec();
 
         if body.is_empty() {
-            // Ground fact
+            // Ground fact (occurrence or rule with empty body)
             let remaining = kb.apply_subst_each(&frame.goals[1..], &tree_subst);
             let mut merged = frame.subst.clone();
-            merged.bind_compressed(
-                tree_subst.bindings.into_iter(),
-                &kb.terms,
-            );
-
+            merged.bind_compressed(tree_subst.bindings.into_iter(), &kb.terms);
             let new_delay = delay_mode.reset();
-
             self.stack.push(Frame {
                 goals: remaining,
                 subst: merged,
@@ -586,6 +615,7 @@ impl SearchStream {
             });
         } else {
             // Rule with body
+            let rid = opt_rid.unwrap();
             let (fresh_body, answer_links) = kb.with_fresh_vars(rid, &tree_subst);
             let remaining = kb.apply_subst_each(&frame.goals[1..], &tree_subst);
 
@@ -608,7 +638,6 @@ impl SearchStream {
             if !caller_fresh_vars.is_empty()
                 && kb.body_builtins_delay_on_caller_vars(&fresh_body, &caller_fresh_vars, &merged)
             {
-                // Set any_delayed on current frame, skip this candidate
                 let f = self.stack.last_mut().unwrap();
                 match &mut f.state {
                     FrameState::ChoicePoint { any_delayed, .. } => *any_delayed = true,
@@ -619,9 +648,7 @@ impl SearchStream {
 
             let mut new_goals = fresh_body;
             new_goals.extend(remaining);
-
             let new_delay = delay_mode.reset();
-
             self.stack.push(Frame {
                 goals: new_goals,
                 subst: merged,

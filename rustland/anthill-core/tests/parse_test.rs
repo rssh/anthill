@@ -3373,3 +3373,62 @@ sort Math {
         });
     assert!(has_owner, "at least one occurrence should have an owner symbol");
 }
+
+#[test]
+fn occurrences_indexed_by_functor() {
+    let source = r#"
+sort Math {
+  operation abs(x: Int) -> Int = if gt(x, 0) then x else sub(0, x)
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    // The if_expr functor should be indexed in the OccurrenceStore
+    let if_expr_sym = kb.try_resolve_symbol("anthill.reflect.Expr.if_expr")
+        .expect("if_expr symbol should exist");
+    let occurrences = kb.occurrence_store().by_functor(if_expr_sym);
+    assert!(
+        !occurrences.is_empty(),
+        "if_expr should be indexed by functor in OccurrenceStore"
+    );
+}
+
+#[test]
+fn resolve_finds_occurrence_candidates() {
+    let source = r#"
+sort Math {
+  operation double(x: Int) -> Int = add(x, x)
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    // Build a query pattern: apply(fn: ?f, args: ?a)
+    let apply_sym = kb.try_resolve_symbol("anthill.reflect.Expr.apply")
+        .expect("apply symbol should exist");
+    let fn_key = kb.intern("fn");
+    let args_key = kb.intern("args");
+    let f_sym = kb.intern("f");
+    let a_sym = kb.intern("a");
+    let f_var = kb.fresh_var(f_sym);
+    let a_var = kb.fresh_var(a_sym);
+    let f_term = kb.alloc(Term::Var(f_var));
+    let a_term = kb.alloc(Term::Var(a_var));
+
+    use smallvec::SmallVec;
+    let pattern = kb.alloc(Term::Fn {
+        functor: apply_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(fn_key, f_term), (args_key, a_term)]),
+    });
+
+    // Resolve the pattern — should find occurrence candidates
+    let solutions = kb.resolve(&[pattern], &Default::default());
+    assert!(
+        !solutions.is_empty(),
+        "resolver should find apply(...) occurrence from expression body"
+    );
+}

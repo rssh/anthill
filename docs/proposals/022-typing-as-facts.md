@@ -135,13 +135,13 @@ sort Expr
 end
 
 entity ApplyArg(
-  name: Option[T = Symbol],
+  name: Option[Symbol],
   value: ExprOccurrence
 )
 
 entity MatchBranch(
   pattern: Pattern,
-  guard: Option[T = ExprOccurrence],
+  guard: Option[ExprOccurrence],
   body: ExprOccurrence
 )
 ```
