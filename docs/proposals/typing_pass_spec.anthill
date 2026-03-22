@@ -11,10 +11,10 @@ namespace anthill.reflect.typing_pass
   import anthill.reflect.{KB, ExprOccurrence, Occurrence, TypeOf, type_of}
   import anthill.reflect.{Expr, Pattern, MatchBranch, ApplyArg, FieldInfo}
   import anthill.reflect.{OperationInfo, EntityInfo, SortInfo}
-  import anthill.reflect.{Symbol, Term, FactId, Sort}
+  import anthill.reflect.{Symbol, Term, FactId}
   import anthill.reflect.typing.{is_entity_of, type_compatible}
   import anthill.reflect.{occurrence_term, occurrence_owner}
-  import anthill.prelude.{Int, Float, String, Bool, List, Option}
+  import anthill.prelude.{Int, Float, String, Bool, List, Option, Type}
 
   export TypingEnv, type_check, type_check_operation, assert_compatible
 
@@ -27,20 +27,20 @@ namespace anthill.reflect.typing_pass
   sort TypingEnv
     operation empty() -> TypingEnv
     -- Variable bindings (let, lambda, match, params)
-    operation bind_var(env: TypingEnv, name: Symbol, type: Sort) -> TypingEnv
-    operation lookup_var(env: TypingEnv, name: Symbol) -> Option[Sort]
+    operation bind_var(env: TypingEnv, name: Symbol, type: Type) -> TypingEnv
+    operation lookup_var(env: TypingEnv, name: Symbol) -> Option[Type]
     -- Type parameter substitutions (T → Int from sort instantiation)
-    operation bind_type(env: TypingEnv, param: Symbol, type: Sort) -> TypingEnv
-    operation lookup_type(env: TypingEnv, param: Symbol) -> Option[Sort]
+    operation bind_type(env: TypingEnv, param: Symbol, type: Type) -> TypingEnv
+    operation lookup_type(env: TypingEnv, param: Symbol) -> Option[Type]
     -- Apply all type substitutions to a sort expression
-    operation apply_subst(env: TypingEnv, sort_expr: Sort) -> Sort
+    operation apply_subst(env: TypingEnv, sort_expr: Type) -> Type
   end
 
   -- ================================================================
   -- Helpers
   -- ================================================================
 
-  operation assert_compatible(kb: KB, actual: Sort, expected: Sort) -> Sort =
+  operation assert_compatible(kb: KB, actual: Type, expected: Type) -> Type =
     if type_compatible(actual, expected) then actual
     else error("type mismatch: expected " + expected + ", got " + actual)
 
@@ -54,7 +54,7 @@ namespace anthill.reflect.typing_pass
   -- The typing function
   -- ================================================================
 
-  operation type_check(kb: KB, env: TypingEnv, expr: ExprOccurrence) -> Sort
+  operation type_check(kb: KB, env: TypingEnv, expr: ExprOccurrence) -> Type
     effects Modifies[kb] =
     let result = match occurrence_term(kb, expr)
       case int_lit(value: _)    -> Int
@@ -98,7 +98,7 @@ namespace anthill.reflect.typing_pass
   -- Match branch checking
   -- ================================================================
 
-  operation check_branches(kb: KB, env: TypingEnv, scrutinee_type: Sort, branches: List[MatchBranch]) -> Sort
+  operation check_branches(kb: KB, env: TypingEnv, scrutinee_type: Type, branches: List[MatchBranch]) -> Type
     effects Modifies[kb] =
     match branches
       case cons(head: MatchBranch(pattern: p, guard: _, body: b), tail: nil) ->
@@ -110,7 +110,7 @@ namespace anthill.reflect.typing_pass
         let t2 = check_branches(kb, env, scrutinee_type, rest)
         assert_compatible(kb, t1, t2)
 
-  operation extend_env_from_pattern(env: TypingEnv, pat: Pattern, scrutinee_type: Sort) -> TypingEnv =
+  operation extend_env_from_pattern(env: TypingEnv, pat: Pattern, scrutinee_type: Type) -> TypingEnv =
     match pat
       case var_pattern(name: n, type_ann: _) -> TypingEnv.bind_var(env, n, scrutinee_type)
       case wildcard -> env
@@ -123,29 +123,29 @@ namespace anthill.reflect.typing_pass
   -- Generic function support: type variable unification via KB queries
   -- ================================================================
 
-  operation check_args(kb: KB, env: TypingEnv, args: List[ApplyArg]) -> List[Sort]
+  operation check_args(kb: KB, env: TypingEnv, args: List[ApplyArg]) -> List[Type]
     effects Modifies[kb] =
     match args
       case nil -> nil
       case cons(head: ApplyArg(name: _, value: arg_occ), tail: rest) ->
         cons(head: type_check(kb, env, arg_occ), tail: check_args(kb, env, rest))
 
-  operation extract_param_types(info: OperationInfo) -> List[Sort] =
+  operation extract_param_types(info: OperationInfo) -> List[Type] =
     match info
       case OperationInfo(params: params) -> map_field_types(params)
 
-  operation map_field_types(fields: List[FieldInfo]) -> List[Sort] =
+  operation map_field_types(fields: List[FieldInfo]) -> List[Type] =
     match fields
       case nil -> nil
       case cons(head: FieldInfo(name: _, type_name: t), tail: rest) ->
         cons(head: t, tail: map_field_types(rest))
 
-  operation unify_param_types(kb: KB, param_types: List[Sort], arg_types: List[Sort]) -> TypingEnv =
+  operation unify_param_types(kb: KB, param_types: List[Type], arg_types: List[Type]) -> TypingEnv =
     let query = build_unification_query(param_types, arg_types)
     let solutions = KB.execute(kb, query)
     extract_type_bindings(solutions)
 
-  operation apply_type_subst(subst: TypingEnv, sort_expr: Sort) -> Sort =
+  operation apply_type_subst(subst: TypingEnv, sort_expr: Type) -> Type =
     TypingEnv.apply_subst(subst, sort_expr)
 
   -- ================================================================

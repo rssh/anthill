@@ -15,7 +15,7 @@ namespace anthill.reflect
   import anthill.prelude.{Pair}
   import anthill.prelude.{Bool}
   import anthill.prelude.{Stream}
-  import anthill.prelude.{Sort}
+  import anthill.prelude.{Type}
   export Term, FactId, Symbol
   export SourceId, SourceSpan, Occurrence, ExprOccurrence
   export occurrence_term, occurrence_span, occurrence_owner, sub_occurrences
@@ -113,10 +113,10 @@ namespace anthill.reflect
   -- Sort ↔ Term conversion (builtins)
   -- ================================================================
 
-  -- Convert a Sort value to its Term representation
-  operation sort_as_term(s: Sort) -> Term
-  -- Try to interpret a Term as a Sort (None if not a valid sort)
-  operation term_as_sort(t: Term) -> Option[T = Sort]
+  -- Convert a Type value to its Term representation
+  operation sort_as_term(s: Type) -> Term
+  -- Try to interpret a Term as a Type (None if not a valid sort)
+  operation term_as_sort(t: Term) -> Option[T = Type]
   -- Check whether a Term represents a valid sort
   operation can_be_sort(t: Term) -> Bool
 
@@ -250,7 +250,7 @@ namespace anthill.reflect
 
   -- TypeOf: typing judgment — expression occurrence has type S (Proposal 022)
   sort TypeOf
-    entity type_of(occ: ExprOccurrence, type: Sort)
+    entity type_of(occ: ExprOccurrence, type: Type)
   end
 
   -- ================================================================

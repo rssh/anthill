@@ -1,26 +1,26 @@
-{< Sort: the type of types in the kernel.
-   Every sort declaration introduces a Sort value.
-   Sort forms a lattice via entity_of and refines relationships.
-   No top sort exists (the lattice is unbounded above).
+{< Type: the type of types in the kernel.
+   Every sort declaration introduces a Type value.
+   Type forms a lattice via entity_of and refines relationships.
+   No top type exists (the lattice is unbounded above).
    Nothing is the bottom (uninhabited, subtype of everything). >}
-sort anthill.prelude.Sort
+sort anthill.prelude.Type
   import anthill.prelude.{Lattice, Eq, List, Option}
   import anthill.reflect.{Symbol}
 
   -- Type constructors: all type forms in the language
   entity sort_ref(name: Symbol)
-  entity parameterized(sort: Sort, bindings: List[SortBinding])
-  entity named_tuple(fields: List[SortField])
-  entity arrow(param: Sort, result: Sort)
+  entity parameterized(base: Type, bindings: List[TypeBinding])
+  entity named_tuple(fields: List[TypeField])
+  entity arrow(param: Type, result: Type)
   entity type_var(name: Symbol)
   entity nothing
 
-  {< Sort field: a named component in a named tuple type. >}
-  entity SortField(name: Symbol, type: Sort)
+  {< Type field: a named component in a named tuple type. >}
+  entity TypeField(name: Symbol, type: Type)
 
-  {< Sort binding: a named parameter binding in a parameterized sort. >}
-  entity SortBinding(param: Symbol, value: Sort)
+  {< Type binding: a named parameter binding in a parameterized type. >}
+  entity TypeBinding(param: Symbol, value: Type)
 
-  fact Eq[T = Sort]
-  fact Lattice[T = Sort]
+  fact Eq[T = Type]
+  fact Lattice[T = Type]
 end
