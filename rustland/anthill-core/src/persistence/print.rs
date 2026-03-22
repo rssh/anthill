@@ -95,6 +95,9 @@ impl<'a> TermPrinter<'a> {
             Literal::Bool(b) => {
                 buf.push_str(if *b { "true" } else { "false" });
             }
+            Literal::Handle(kind, id) => {
+                buf.push_str(&format!("<handle:{:?}:{}>", kind, id));
+            }
         }
     }
 }

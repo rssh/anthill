@@ -3053,6 +3053,19 @@ fn load_with_stdlib(extra_source: &str) -> KnowledgeBase {
 }
 
 /// Helper: find the named arg value in a Fn term.
+/// Helper: if term is a Handle(Occurrence, id), dereference to the occurrence's structural term.
+/// Otherwise return the term as-is.
+fn deref_occ(kb: &KnowledgeBase, term_id: TermId) -> TermId {
+    use anthill_core::kb::term::HandleKind;
+    match kb.get_term(term_id) {
+        Term::Const(anthill_core::kb::term::Literal::Handle(HandleKind::Occurrence, id)) => {
+            let occ_id = anthill_core::kb::occurrence::OccurrenceId::from_raw(*id);
+            kb.occurrence_store().term(occ_id)
+        }
+        _ => term_id,
+    }
+}
+
 fn get_named_arg<'a>(kb: &'a KnowledgeBase, term_id: TermId, field: &str) -> Option<TermId> {
     match kb.get_term(term_id) {
         Term::Fn { named_args, .. } => {
@@ -3140,20 +3153,22 @@ end
 
     let op_info = find_op_info(&mut kb, "test.expr.max");
 
-    // body should be some(if_expr(...))
+    // body should be some(ExprOccurrence handle → if_expr(...))
     let body_opt = get_named_arg(&kb, op_info, "body").expect("body field missing");
-    let body = unwrap_some(&kb, body_opt);
+    let body_handle = unwrap_some(&kb, body_opt);
+    let body = deref_occ(&kb, body_handle);
     assert_eq!(functor_name(&kb, body), "if_expr");
 
-    // cond should be apply(fn: gt, args: [a, b])
-    let cond = get_named_arg(&kb, body, "cond").expect("cond missing");
+    // cond should be ExprOccurrence handle → apply(fn: gt, args: [a, b])
+    let cond_handle = get_named_arg(&kb, body, "cond").expect("cond missing");
+    let cond = deref_occ(&kb, cond_handle);
     assert_eq!(functor_name(&kb, cond), "apply");
 
-    // then_branch and else_branch should be var_ref
-    let then_branch = get_named_arg(&kb, body, "then_branch").expect("then_branch missing");
-    assert_eq!(functor_name(&kb, then_branch), "var_ref");
-    let else_branch = get_named_arg(&kb, body, "else_branch").expect("else_branch missing");
-    assert_eq!(functor_name(&kb, else_branch), "var_ref");
+    // then_branch and else_branch should be ExprOccurrence handles → var_ref
+    let then_handle = get_named_arg(&kb, body, "then_branch").expect("then_branch missing");
+    assert_eq!(functor_name(&kb, deref_occ(&kb, then_handle)), "var_ref");
+    let else_handle = get_named_arg(&kb, body, "else_branch").expect("else_branch missing");
+    assert_eq!(functor_name(&kb, deref_occ(&kb, else_handle)), "var_ref");
 }
 
 #[test]
@@ -3174,13 +3189,13 @@ end
 
     let op_info = find_op_info(&mut kb, "test.expr.Nat.is_zero");
 
-    // body should be some(match_expr(...))
+    // body should be some(ExprOccurrence handle → match_expr(...))
     let body_opt = get_named_arg(&kb, op_info, "body").expect("body field missing");
-    let body = unwrap_some(&kb, body_opt);
+    let body = deref_occ(&kb, unwrap_some(&kb, body_opt));
     assert_eq!(functor_name(&kb, body), "match_expr");
 
-    // scrutinee should be var_ref(name: n)
-    let scrutinee = get_named_arg(&kb, body, "scrutinee").expect("scrutinee missing");
+    // scrutinee should be ExprOccurrence handle → var_ref(name: n)
+    let scrutinee = deref_occ(&kb, get_named_arg(&kb, body, "scrutinee").expect("scrutinee missing"));
     assert_eq!(functor_name(&kb, scrutinee), "var_ref");
 
     // branches should be a 2-element list
@@ -3192,7 +3207,7 @@ end
     assert_eq!(functor_name(&kb, branch1), "MatchBranch");
     let pat1 = get_named_arg(&kb, branch1, "pattern").expect("pattern missing");
     assert_eq!(functor_name(&kb, pat1), "constructor_pattern");
-    let body1 = get_named_arg(&kb, branch1, "body").expect("body missing");
+    let body1 = deref_occ(&kb, get_named_arg(&kb, branch1, "body").expect("body missing"));
     assert_eq!(functor_name(&kb, body1), "bool_lit");
 
     // Guard should be none
@@ -3211,19 +3226,19 @@ end
 
     let op_info = find_op_info(&mut kb, "test.expr.double");
     let body_opt = get_named_arg(&kb, op_info, "body").expect("body field missing");
-    let body = unwrap_some(&kb, body_opt);
+    let body = deref_occ(&kb, unwrap_some(&kb, body_opt));
     assert_eq!(functor_name(&kb, body), "let_expr");
 
-    // pattern should be var_pattern
+    // pattern should be var_pattern (not ExprOccurrence — it's a Pattern)
     let pattern = get_named_arg(&kb, body, "pattern").expect("pattern missing");
     assert_eq!(functor_name(&kb, pattern), "var_pattern");
 
-    // value should be var_ref (x)
-    let value = get_named_arg(&kb, body, "value").expect("value missing");
+    // value should be ExprOccurrence handle → var_ref (x)
+    let value = deref_occ(&kb, get_named_arg(&kb, body, "value").expect("value missing"));
     assert_eq!(functor_name(&kb, value), "var_ref");
 
-    // body should be apply (add)
-    let inner_body = get_named_arg(&kb, body, "body").expect("inner body missing");
+    // body should be ExprOccurrence handle → apply (add)
+    let inner_body = deref_occ(&kb, get_named_arg(&kb, body, "body").expect("inner body missing"));
     assert_eq!(functor_name(&kb, inner_body), "apply");
 }
 
@@ -3238,18 +3253,18 @@ end
 
     let op_info = find_op_info(&mut kb, "test.expr.make_inc");
     let body_opt = get_named_arg(&kb, op_info, "body").expect("body field missing");
-    let body = unwrap_some(&kb, body_opt);
+    let body = deref_occ(&kb, unwrap_some(&kb, body_opt));
     assert_eq!(functor_name(&kb, body), "lambda");
 
-    // param should be var_pattern
+    // param should be var_pattern (Pattern, not ExprOccurrence)
     let param = get_named_arg(&kb, body, "param").expect("param missing");
     assert_eq!(functor_name(&kb, param), "var_pattern");
 
-    // body should be apply (add)
-    let lambda_body = get_named_arg(&kb, body, "body").expect("lambda body missing");
+    // body should be ExprOccurrence handle → apply (add)
+    let lambda_body = deref_occ(&kb, get_named_arg(&kb, body, "body").expect("lambda body missing"));
     assert_eq!(functor_name(&kb, lambda_body), "apply");
 
-    // add should have 2 args: var_ref(x) and int_lit(1)
+    // add should have 2 args
     let args = get_named_arg(&kb, lambda_body, "args").expect("args missing");
     assert_eq!(count_list_elements(&kb, args), 2);
 }

@@ -137,6 +137,15 @@ impl Term {
 
 // ── Literal ─────────────────────────────────────────────────────
 
+/// Kind of opaque handle stored as a literal value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HandleKind {
+    /// OccurrenceId — positional identity for source expressions.
+    Occurrence,
+    /// FactId/RuleId — identity of an asserted fact.
+    Fact,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Literal {
     String(String),
@@ -144,6 +153,8 @@ pub enum Literal {
     BigInt(num_bigint::BigInt),
     Float(OrderedFloat<f64>),
     Bool(bool),
+    /// Opaque handle (OccurrenceId, FactId, etc.) representable as a term value.
+    Handle(HandleKind, u32),
 }
 
 // ── TermStore (hash-consed, refcounted) ─────────────────────────

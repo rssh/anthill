@@ -732,5 +732,6 @@ fn literal_to_json(lit: &Literal) -> Result<serde_json::Value, SerError> {
                 .ok_or_else(|| SerError::InvalidValue(format!("non-finite float: {f}")))
         }
         Literal::Bool(b) => Ok(serde_json::Value::Bool(*b)),
+        Literal::Handle(kind, id) => Ok(serde_json::Value::String(format!("<handle:{:?}:{}>", kind, id))),
     }
 }

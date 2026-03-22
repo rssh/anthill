@@ -38,6 +38,7 @@ impl KbBridge {
                     Literal::BigInt(n) => LiteralRepr::BigIntLiteral(n),
                     Literal::Float(f) => LiteralRepr::FloatLiteral(f.into()),
                     Literal::Bool(b) => LiteralRepr::BoolLiteral(b),
+                    Literal::Handle(_, id) => LiteralRepr::IntLiteral(id as i64),
                 },
             },
             CoreTerm::Var(vid) => TermRepr::VarRepr {
@@ -127,6 +128,7 @@ impl KbBridge {
             CoreTerm::Const(Literal::BigInt(n)) => n.to_string(),
             CoreTerm::Const(Literal::Float(f)) => f.to_string(),
             CoreTerm::Const(Literal::Bool(b)) => b.to_string(),
+            CoreTerm::Const(Literal::Handle(kind, id)) => format!("<{:?}:{}>", kind, id),
             CoreTerm::Var(vid) => format!("?{}", kb.resolve_sym(vid.name())),
             CoreTerm::Bottom => "⊥".into(),
         }

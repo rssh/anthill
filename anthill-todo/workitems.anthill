@@ -49,3 +49,17 @@ fact WorkItem(
   depends_on: ["WI-008"],
   status: Open)
 
+fact WorkItem(
+  id: "WI-010",
+  description: "Sort in unifications: enable Sort values to participate in term unification, so that typing rules like type_of(?env, ?occ, ?type) can carry and match Sort-typed arguments in the env term. Currently Sort is opaque (sort_as_term/term_as_sort boundary). Extending unification to handle Sort terms would allow typing to be expressed purely as rules with TypingEnv as a data sort.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-011",
+  description: "Typing as rules: express the typing pass as anthill rules (not just operations) using type_of(?env, ?occ, ?type) 3-arg relation. TypingEnv as data sort with constructors (empty, bind). Requires: (1) Sort in unifications (WI-010), (2) forward chaining or materialization to persist derived TypeOf facts, (3) tabling/memoization for recursive derivations. See Proposal 022 and 011 discussion.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-010"],
+  status: Open)
+

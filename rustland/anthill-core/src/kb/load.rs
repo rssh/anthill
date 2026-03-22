@@ -18,7 +18,8 @@ use crate::intern::{Symbol, SymbolDef, SymbolKind, ScopeInclusion, ResolveResult
 use crate::parse::ir::*;
 use crate::span::{Span, SourceId, SourceSpan};
 use super::{KnowledgeBase, SortKind};
-use super::term::{Term, TermId, VarId};
+use super::term::{Term, TermId, VarId, HandleKind, Literal};
+use super::occurrence::OccurrenceId;
 
 // ── Source resolution ──────────────────────────────────────────
 
@@ -1883,17 +1884,19 @@ impl<'a> Loader<'a> {
         &mut self,
         parse_id: TermId,
         kb_id: TermId,
-    ) {
+    ) -> Option<OccurrenceId> {
         if let Some(&span) = self.parsed.terms.spans.get(&parse_id) {
             let source_span = SourceSpan::from_span(self.source_id, span);
             let occ_id = self.kb.occurrences.alloc(
                 kb_id, source_span, self.current_owner, true,
             );
-            // Index by functor for query routing
             if let Term::Fn { functor, .. } = self.kb.terms.get(kb_id) {
                 let functor = *functor;
                 self.kb.occurrences.index_by_functor(occ_id, functor);
             }
+            Some(occ_id)
+        } else {
+            None
         }
     }
 
@@ -2009,7 +2012,11 @@ impl<'a> Loader<'a> {
     /// Convert a parse-time expression term into the KB's Expr representation.
     /// Dispatches on the functor name to restructure positional args into named args.
     /// Also creates an occurrence in the OccurrenceStore if the term has a span.
-    fn convert_expr_term(&mut self, parse_id: TermId) -> TermId {
+    /// Convert an expression term and create an occurrence.
+    /// Returns (kb_term_id, occurrence_id). The occurrence_id is used by
+    /// parent expressions to put Literal::Handle(Occurrence, occ_id) in
+    /// ExprOccurrence-typed fields.
+    fn convert_expr_term(&mut self, parse_id: TermId) -> (TermId, Option<OccurrenceId>) {
         let parse_term = self.parsed.terms.get(parse_id).clone();
         let kb_id = match parse_term {
             Term::Fn { functor, pos_args, named_args } => {
@@ -2030,18 +2037,30 @@ impl<'a> Loader<'a> {
             }
             Term::Const(_) => self.load_literal_expr(parse_id),
             Term::Ident(_) => self.load_var_ref(parse_id),
-            _ => self.convert_term(parse_id), // Var, Ref, Bottom — pass through
+            _ => self.convert_term(parse_id),
         };
-        self.maybe_create_occurrence(parse_id, kb_id);
-        kb_id
+        let occ_id = self.maybe_create_occurrence(parse_id, kb_id);
+        (kb_id, occ_id)
+    }
+
+    /// Helper: convert child expression and return a Handle literal term
+    /// containing its OccurrenceId (for ExprOccurrence-typed fields).
+    /// Falls back to the raw TermId if no occurrence was created.
+    fn convert_expr_child(&mut self, parse_id: TermId) -> TermId {
+        let (kb_id, occ_id) = self.convert_expr_term(parse_id);
+        match occ_id {
+            Some(occ) => self.kb.alloc(Term::Const(Literal::Handle(HandleKind::Occurrence, occ.raw()))),
+            None => kb_id,
+        }
     }
 
     /// match_expr: pos_args[0] = scrutinee, pos_args[1..] = branches
     fn load_match_expr(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
-        let scrutinee = self.convert_expr_term(pos_args[0]);
+        let scrutinee = self.convert_expr_child(pos_args[0]); // ExprOccurrence
         let mut branch_terms = Vec::new();
         for &tid in &pos_args[1..] {
-            branch_terms.push(self.convert_expr_term(tid));
+            let (branch_kb_id, _) = self.convert_expr_term(tid); // MatchBranch (not ExprOccurrence)
+            branch_terms.push(branch_kb_id);
         }
         let branches = build_list(self.kb, &branch_terms);
         let match_sym = self.kb.resolve_symbol("anthill.reflect.Expr.match_expr");
@@ -2059,8 +2078,8 @@ impl<'a> Loader<'a> {
 
     /// match_branch: pos_args[0] = pattern, pos_args[1] = body
     fn load_match_branch(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
-        let pattern = self.convert_expr_term(pos_args[0]);
-        let body = self.convert_expr_term(pos_args[1]);
+        let (pattern, _) = self.convert_expr_term(pos_args[0]); // Pattern (not ExprOccurrence)
+        let body = self.convert_expr_child(pos_args[1]); // ExprOccurrence
         let guard = build_none(self.kb);
         let branch_sym = self.kb.resolve_symbol("anthill.reflect.MatchBranch");
         let pattern_key = self.kb.intern("pattern");
@@ -2079,9 +2098,9 @@ impl<'a> Loader<'a> {
 
     /// if_expr: pos_args[0] = cond, pos_args[1] = then_branch, pos_args[2] = else_branch
     fn load_if_expr(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
-        let cond = self.convert_expr_term(pos_args[0]);
-        let then_branch = self.convert_expr_term(pos_args[1]);
-        let else_branch = self.convert_expr_term(pos_args[2]);
+        let cond = self.convert_expr_child(pos_args[0]); // ExprOccurrence
+        let then_branch = self.convert_expr_child(pos_args[1]); // ExprOccurrence
+        let else_branch = self.convert_expr_child(pos_args[2]); // ExprOccurrence
         let if_sym = self.kb.resolve_symbol("anthill.reflect.Expr.if_expr");
         let cond_key = self.kb.intern("cond");
         let then_key = self.kb.intern("then_branch");
@@ -2099,9 +2118,9 @@ impl<'a> Loader<'a> {
 
     /// let_expr: pos_args[0] = pattern, pos_args[1] = value, pos_args[2] = body
     fn load_let_expr(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
-        let pattern = self.convert_expr_term(pos_args[0]);
-        let value = self.convert_expr_term(pos_args[1]);
-        let body = self.convert_expr_term(pos_args[2]);
+        let (pattern, _) = self.convert_expr_term(pos_args[0]); // Pattern
+        let value = self.convert_expr_child(pos_args[1]); // ExprOccurrence
+        let body = self.convert_expr_child(pos_args[2]); // ExprOccurrence
         let let_sym = self.kb.resolve_symbol("anthill.reflect.Expr.let_expr");
         let pattern_key = self.kb.intern("pattern");
         let value_key = self.kb.intern("value");
@@ -2119,8 +2138,8 @@ impl<'a> Loader<'a> {
 
     /// lambda: pos_args[0] = param (pattern), pos_args[1] = body
     fn load_lambda_expr(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
-        let param = self.convert_expr_term(pos_args[0]);
-        let body = self.convert_expr_term(pos_args[1]);
+        let (param, _) = self.convert_expr_term(pos_args[0]); // Pattern
+        let body = self.convert_expr_child(pos_args[1]); // ExprOccurrence
         let lambda_sym = self.kb.resolve_symbol("anthill.reflect.Expr.lambda");
         let param_key = self.kb.intern("param");
         let body_key = self.kb.intern("body");
@@ -2178,6 +2197,10 @@ impl<'a> Loader<'a> {
                     "anthill.reflect.Expr.bool_lit",
                     self.kb.alloc(Term::Const(super::term::Literal::Bool(*b))),
                 ),
+                super::term::Literal::Handle(kind, id) => (
+                    "anthill.reflect.Expr.int_lit", // Handle literals shouldn't appear in source expressions
+                    self.kb.alloc(Term::Const(super::term::Literal::Handle(*kind, *id))),
+                ),
             };
             let entity_sym = self.kb.resolve_symbol(entity_name);
             let value_key = self.kb.intern("value");
@@ -2211,7 +2234,7 @@ impl<'a> Loader<'a> {
 
         let mut arg_terms = Vec::new();
         for &tid in pos_args.iter() {
-            let value = self.convert_expr_term(tid);
+            let value = self.convert_expr_child(tid); // ExprOccurrence
             let none = build_none(self.kb);
             let arg = self.kb.alloc(Term::Fn {
                 functor: apply_arg_sym,
@@ -2221,7 +2244,7 @@ impl<'a> Loader<'a> {
             arg_terms.push(arg);
         }
         for &(sym, tid) in named_args.iter() {
-            let value = self.convert_expr_term(tid);
+            let value = self.convert_expr_child(tid); // ExprOccurrence
             let reinterned = self.reintern(sym);
             let name_ref = self.kb.alloc(Term::Ref(reinterned));
             let some_name = build_some(self.kb, name_ref);
@@ -2311,7 +2334,8 @@ impl<'a> Loader<'a> {
         };
         let mut sub_patterns = Vec::new();
         for &tid in &pos_args[1..] {
-            sub_patterns.push(self.convert_expr_term(tid));
+            let (pat_id, _) = self.convert_expr_term(tid); // Pattern
+            sub_patterns.push(pat_id);
         }
         let args_list = build_list(self.kb, &sub_patterns);
         let ctor_pattern_sym = self.kb.resolve_symbol("anthill.reflect.Pattern.constructor_pattern");
@@ -2328,7 +2352,8 @@ impl<'a> Loader<'a> {
     fn load_pattern_tuple(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
         let mut elements = Vec::new();
         for &tid in pos_args.iter() {
-            elements.push(self.convert_expr_term(tid));
+            let (elem_id, _) = self.convert_expr_term(tid); // Pattern
+            elements.push(elem_id);
         }
         let elements_list = build_list(self.kb, &elements);
         let tuple_pattern_sym = self.kb.resolve_symbol("anthill.reflect.Pattern.tuple_pattern");
@@ -2816,10 +2841,15 @@ impl<'a> Loader<'a> {
         let ensures_list = self.convert_clause_list(&o.ensures);
 
         // Convert expression body if present (within operation scope)
+        // body is Option[ExprOccurrence] — store OccurrenceId handle
         let (body_opt_term, body_expr_opt) = match o.body {
             Some(body_tid) => {
-                let expr = self.convert_expr_term(body_tid);
-                (build_some(self.kb, expr), Some(expr))
+                let (kb_id, occ_id) = self.convert_expr_term(body_tid);
+                let handle = match occ_id {
+                    Some(occ) => self.kb.alloc(Term::Const(Literal::Handle(HandleKind::Occurrence, occ.raw()))),
+                    None => kb_id,
+                };
+                (build_some(self.kb, handle), Some(kb_id))
             }
             None => (build_none(self.kb), None),
         };
