@@ -11,17 +11,17 @@ sort anthill.prelude.Stream
   sort E = ?              -- effect required to observe
 
   operation splitFirst(s: Stream) -> Option[T = Pair[A = T, B = Stream]]
-    effects (E)
+    effects E
   operation head(s: Stream) -> Option[T = T]
-    effects (E)
+    effects E
   operation tail(s: Stream) -> Stream
-    effects (E)
+    effects E
   operation takeN(s: Stream, n: Int) -> List[T = T]
-    effects (E)
+    effects E
   operation collect(s: Stream) -> List[T = T]
-    effects (E)
+    effects E
   operation isEmpty(s: Stream) -> Bool
-    effects (E)
+    effects E
 
   -- Laws (derived from splitFirst)
   rule head(?s) = some(fst(?p)) :- splitFirst(?s) = some(?p)

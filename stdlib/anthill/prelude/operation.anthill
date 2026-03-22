@@ -6,5 +6,5 @@ sort anthill.prelude.Operation
   sort E = ?
   requires EffectSet[E]
 
-  operation apply(op: Operation[A, B, E], x: A) -> B effects (E)
+  operation apply(op: Operation[A, B, E], x: A) -> B effects E
 end

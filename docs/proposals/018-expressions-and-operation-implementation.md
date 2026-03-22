@@ -848,7 +848,7 @@ Expressions are ExprOccurrence trees, not separate Expr terms. Each occurrence k
 
 ## Open Questions
 
-1. **Effects in expressions.** When an operation has `effects (Modifies(store))`, how do expression bodies handle effectful operations? This likely needs a sequencing mechanism (monadic do-notation or effect handlers). Deferred to a future proposal.
+1. **Effects in expressions.** When an operation has `effects Modifies[store]`, how do expression bodies handle effectful operations? This likely needs a sequencing mechanism (monadic do-notation or effect handlers). Deferred to a future proposal.
 
 2. **Recursion.** The examples above use direct recursion (`length` calls `length`). Should there be a totality checker to ensure termination? For now, no restriction — the runtime allows general recursion.
 

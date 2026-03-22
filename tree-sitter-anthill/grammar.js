@@ -267,7 +267,10 @@ module.exports = grammar({
 
     requires_clause: $ => seq('requires', $.rule_body),
     ensures_clause: $ => seq('ensures', $.rule_body),
-    effects_clause: $ => seq('effects', '(', commaSep1($._type), ')'),
+    effects_clause: $ => seq('effects', choice(
+      $._type,                                          // single: effects Modifies[kb]
+      seq('{', commaSep1($._type), '}'),                // multiple: effects {A, B}
+    )),
 
     // =========================================================
     // Sugar: entity, fact, constraint

@@ -55,7 +55,7 @@ namespace anthill.reflect.typing_pass
   -- ================================================================
 
   operation type_check(kb: KB, env: TypingEnv, expr: ExprOccurrence) -> Sort
-    effects (Modifies[kb]) =
+    effects Modifies[kb] =
     let result = match occurrence_term(kb, expr)
       case int_lit(value: _)    -> Int
       case float_lit(value: _)  -> Float
@@ -99,7 +99,7 @@ namespace anthill.reflect.typing_pass
   -- ================================================================
 
   operation check_branches(kb: KB, env: TypingEnv, scrutinee_type: Sort, branches: List[MatchBranch]) -> Sort
-    effects (Modifies[kb]) =
+    effects Modifies[kb] =
     match branches
       case cons(head: MatchBranch(pattern: p, guard: _, body: b), tail: nil) ->
         let branch_env = extend_env_from_pattern(env, p, scrutinee_type)
@@ -124,7 +124,7 @@ namespace anthill.reflect.typing_pass
   -- ================================================================
 
   operation check_args(kb: KB, env: TypingEnv, args: List[ApplyArg]) -> List[Sort]
-    effects (Modifies[kb]) =
+    effects Modifies[kb] =
     match args
       case nil -> nil
       case cons(head: ApplyArg(name: _, value: arg_occ), tail: rest) ->
@@ -153,7 +153,7 @@ namespace anthill.reflect.typing_pass
   -- ================================================================
 
   operation type_check_operation(kb: KB, op: OperationInfo) -> TypeOf
-    effects (Modifies[kb]) =
+    effects Modifies[kb] =
     match op
       case OperationInfo(name: _, params: params, return_type: ret, body: some(value: body_occ)) ->
         let env = env_from_params(TypingEnv.empty(), params)

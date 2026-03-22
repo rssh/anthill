@@ -1175,3 +1175,48 @@ fn field_access_sort_component() {
         other => panic!("expected Fn or Ref for Carrier, got {:?}", other),
     }
 }
+
+// ── Typing pass spec loading ─────────────────────────────────────
+
+#[test]
+fn typing_pass_spec_parses_and_loads() {
+    let mut kb = load_stdlib_kb();
+
+    // Parse typing_pass_spec.anthill
+    let spec_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/proposals/typing_pass_spec.anthill");
+    let source = std::fs::read_to_string(&spec_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", spec_path.display()));
+    let parsed = parse::parse(&source)
+        .unwrap_or_else(|errs| {
+            for e in &errs {
+                eprintln!("parse error: {}", e.format_with_source(&source));
+            }
+            panic!("typing_pass_spec.anthill has {} parse errors", errs.len());
+        });
+
+    // Load into KB on top of stdlib
+    let result = load::load(&mut kb, &parsed, &NullResolver);
+    if let Err(errs) = &result {
+        for e in errs {
+            eprintln!("load error: {e}");
+        }
+        // Don't panic — some symbols may be undefined (TypingEnv is abstract).
+        // Just report. The test verifies the spec PARSES and loads without hard failures.
+        eprintln!("typing_pass_spec.anthill had {} load warnings", errs.len());
+    }
+
+    // Verify key definitions were scanned
+    assert!(
+        kb.try_resolve_symbol("anthill.reflect.typing_pass.TypingEnv").is_some(),
+        "TypingEnv sort should be defined"
+    );
+    assert!(
+        kb.try_resolve_symbol("anthill.reflect.typing_pass.type_check").is_some(),
+        "type_check operation should be defined"
+    );
+    assert!(
+        kb.try_resolve_symbol("anthill.reflect.typing_pass.assert_compatible").is_some(),
+        "assert_compatible operation should be defined"
+    );
+}

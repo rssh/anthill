@@ -9,5 +9,5 @@ sort anthill.prelude.Iteration
   sort Effect = ?
 
   operation split(i: Iterator) -> Option[T = (Element, Iterator)]
-    effects (Effect)
+    effects Effect
 end

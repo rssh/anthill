@@ -348,7 +348,7 @@ fact Effect[T = Modify[?]]
 
 -- Value-level: Modify applied to a specific parameter
 operation persist(store: Store, fact: Term, meta: Meta) -> FactId
-  effects (Modify[store], Error)   -- store will be mutated; operation can fail
+  effects {Modify[store], Error}   -- store will be mutated; operation can fail
 ```
 
 Because types are terms and type checking is KB querying, referencing values in type positions requires no special dependent-type mechanism — it is simply a term appearing where a term is expected. The KB's unification machinery handles both abstract bindings (`Modify[?]`) and concrete ones (`Modify[store]`) uniformly.
@@ -718,7 +718,7 @@ Parameters are **named bindings** — referenced by name (without `?`) in `requi
 operation deposit(a: Account, m: Money) -> Account
   requires gt(m, zero-val)
   ensures eq(balance(result), add(balance(a), m))
-  effects (Modify[Ledger])
+  effects Modify[Ledger]
 
 operation balance(a: Account) -> Money           -- pure, no contract
 ```
@@ -769,7 +769,7 @@ Effects give operations a precise execution semantics via a state-passing interp
 
 ```
 operation op(x1: A1, ..., xm: Am) -> R
-  effects (Modify[S], Error Err, Suspend, Branch)
+  effects {Modify[S], Error Err, Suspend, Branch}
 ```
 
 is interpreted as a function that threads an **environment** and returns an **outcome**:
@@ -848,7 +848,7 @@ The same effects admit an equivalent **monadic interpretation**. An operation
 
 ```
 operation op(x1: A1, ..., xm: Am) -> R
-  effects (Modify[S], Error Err, Suspend, Branch)
+  effects {Modify[S], Error Err, Suspend, Branch}
 ```
 
 is interpreted as a computation in a combined monad `M_E`:

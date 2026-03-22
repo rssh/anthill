@@ -62,7 +62,7 @@ namespace anthill.realization.platform
     operation build(tc: Toolchain, env: ExecutionEnvironment,
                     inputs: List[T = Path],
                     outputs: List[T = Path]) -> ProcessResult
-      effects (Error, Modify[env])
+      effects {Error, Modify[env]}
   end
 
   -- ================================================================
@@ -88,7 +88,7 @@ namespace anthill.realization.platform
                    args: List[T = String], working_dir: Path,
                    extra_env: List[T = (String, String)])
       -> ProcessResult
-      effects (Error, Modify[env])
+      effects {Error, Modify[env]}
 
     operation env_var(env: ExecutionEnvironment, name: String)
       -> Option[T = String]
@@ -114,10 +114,10 @@ namespace anthill.realization.platform
     )
 
     operation evaluate(rt: Runtime, term: Term, kb: KB) -> Term
-      effects (Error)
+      effects Error
 
     operation trace(rt: Runtime, term: Term, kb: KB) -> List[T = Term]
-      effects (Error)
+      effects Error
   end
 
   -- ================================================================
@@ -143,7 +143,7 @@ namespace anthill.realization.platform
   sort Filesystem
     operation exists(fs: Filesystem, path: Path) -> Bool
     operation status(fs: Filesystem, path: Path) -> FileStatus
-      effects (Error)
+      effects Error
   end
 
   fact file_extension("rs", "rust")

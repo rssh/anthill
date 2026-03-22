@@ -12,6 +12,6 @@ sort anthill.prelude.Collection
   requires Iteration[Iterator = Collection, Element, Effect]
 
   operation insert(c: Collection, elem: Element) -> Collection
-    effects (Effect)
+    effects Effect
   operation empty() -> Collection
 end

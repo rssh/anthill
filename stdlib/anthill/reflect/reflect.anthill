@@ -157,7 +157,7 @@ namespace anthill.reflect
     -- (residual errors, depth limits) — captured by E = Error on the stream.
     operation execute(kb: KB, query: LogicalQuery)
       -> Stream[T = Substitution, E = Error]
-      effects (Error)
+      effects Error
 
     -- Extract a sort's fact template as a query
     operation sort_template(kb: KB, sort_name: String) -> LogicalQuery

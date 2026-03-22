@@ -588,7 +588,7 @@ Effects with parameterized type
 
 sort Store {
   operation persist(store: Store, fact: Term) -> FactId
-    effects (Modify[store])
+    effects Modify[store]
 }
 
 ---
@@ -617,7 +617,7 @@ Effects with multiple types
 =====================================
 
 operation process(store: Store) -> Bool
-  effects (Read[store], Emit[AuditEvent])
+  effects {Read[store], Emit[AuditEvent]}
 
 ---
 
@@ -644,7 +644,7 @@ Effects with abstract effect type
 =====================================
 
 operation run(x: Int) -> Int
-  effects (E)
+  effects E
 
 ---
 

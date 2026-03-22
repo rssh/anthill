@@ -433,11 +433,11 @@ sort Modify { sort T = ? entity Modify(target: T) }
 sort Store {
   entity store
   operation persist(s: Store, fact: Int) -> Int
-    effects (Modify[store])
+    effects Modify[store]
   operation retrieve(s: Store, pattern: Int) -> Int
-    effects (Error[store])
+    effects Error[store]
   operation process(s: Store, x: Int) -> Int
-    effects (Error[store], Modify[store])
+    effects {Error[store], Modify[store]}
 }
 "#;
     let parsed = parse::parse(source).expect("parse failed");
@@ -493,7 +493,7 @@ fn load_operation_with_abstract_effect() {
     let source = r#"sort MySort {
   sort E = ?
   operation doSomething(x: Int) -> Int
-    effects (E)
+    effects E
 }
 "#;
     let parsed = parse::parse(source).expect("parse failed");

@@ -111,7 +111,7 @@ fn effects_modifies_to_mut_self_result() {
     // Modify alone → &mut self, no Result wrapping
     let out = gen(r#"sort Store {
   operation persist(store: Store, fact: Term, meta: Meta) -> FactId
-    effects (Modify[store])
+    effects Modify[store]
 }
 "#);
     assert!(out.contains("fn persist(&mut self"), "output:\n{out}");
@@ -120,7 +120,7 @@ fn effects_modifies_to_mut_self_result() {
     // Modify + Error → &mut self + Result
     let out2 = gen(r#"sort Store {
   operation persist(store: Store, fact: Term, meta: Meta) -> FactId
-    effects (Modify[store], Error)
+    effects {Modify[store], Error}
 }
 "#);
     assert!(out2.contains("fn persist(&mut self"), "output:\n{out2}");
@@ -142,7 +142,7 @@ fn effects_reads_to_self_result() {
     // Error alone → &self + Result
     let out2 = gen(r#"sort QueryableStore {
   operation retrieve(store: QueryableStore, pattern: Term) -> List[T = Term]
-    effects (Error)
+    effects Error
 }
 "#);
     assert!(out2.contains("fn retrieve(&self"), "output:\n{out2}");
@@ -377,16 +377,16 @@ fn enum_self_in_return() {
 
 #[test]
 fn abstract_effect_parameter_to_result() {
-    // sort E = ? used in effects (E) → Result<R, E>
+    // sort E = ? used in effects E → Result<R, E>
     let out = gen(r#"sort Stream {
   sort T = ?
   sort E = ?
   operation head(s: Stream) -> Option[T = T]
-    effects (E)
+    effects E
   operation isEmpty(s: Stream) -> Bool
 }
 "#);
-    // head has effects (E) → Result wrapping with abstract E
+    // head has effects E → Result wrapping with abstract E
     assert!(out.contains("fn head(&self) -> Result<Option<T>, E>"), "should wrap in Result<..., E>: {out}");
     // isEmpty has no effects → no Result
     assert!(out.contains("fn is_empty(&self) -> bool"), "no effects should not wrap: {out}");
