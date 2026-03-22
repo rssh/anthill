@@ -2197,10 +2197,9 @@ impl<'a> Loader<'a> {
                     "anthill.reflect.Expr.bool_lit",
                     self.kb.alloc(Term::Const(super::term::Literal::Bool(*b))),
                 ),
-                super::term::Literal::Handle(kind, id) => (
-                    "anthill.reflect.Expr.int_lit", // Handle literals shouldn't appear in source expressions
-                    self.kb.alloc(Term::Const(super::term::Literal::Handle(*kind, *id))),
-                ),
+                super::term::Literal::Handle(_, _) => {
+                    unreachable!("Handle literals cannot appear in source expressions")
+                }
             };
             let entity_sym = self.kb.resolve_symbol(entity_name);
             let value_key = self.kb.intern("value");
@@ -2844,12 +2843,8 @@ impl<'a> Loader<'a> {
         // body is Option[ExprOccurrence] — store OccurrenceId handle
         let (body_opt_term, body_expr_opt) = match o.body {
             Some(body_tid) => {
-                let (kb_id, occ_id) = self.convert_expr_term(body_tid);
-                let handle = match occ_id {
-                    Some(occ) => self.kb.alloc(Term::Const(Literal::Handle(HandleKind::Occurrence, occ.raw()))),
-                    None => kb_id,
-                };
-                (build_some(self.kb, handle), Some(kb_id))
+                let handle = self.convert_expr_child(body_tid);
+                (build_some(self.kb, handle), Some(handle))
             }
             None => (build_none(self.kb), None),
         };

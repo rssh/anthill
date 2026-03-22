@@ -18,7 +18,9 @@ Types themselves (sort definitions, field declarations) already live in the KB. 
 
 A typing judgment is always about an expression *at a source position*. The same hash-consed term `gt(x, 0)` can appear at multiple positions with potentially different types. Without position, a typing judgment is either trivially derivable (literals) or ambiguous (which occurrence?). Therefore, typing judgments must reference positioned expressions — not bare terms.
 
-The answer: **typing judgments are facts over ExprOccurrences**. We introduce `Occurrence` as the concept of a term at a source position, with its own non-hash-consed identity, and `ExprOccurrence` as a specialized occurrence that represents a positioned expression node. Each ExprOccurrence knows its *owner* — the declaration (operation, rule, fact) it belongs to, providing scope and typing context. A typing pass walks expression occurrences, checks them against declared types, and emits `TypeOf(occ, type)` facts. Type checking, inference, and desugaring are all rules that query `TypeOf` facts and navigate occurrence trees.
+The answer: **typing judgments are facts over ExprOccurrences**. We introduce `Occurrence` as the concept of a term at a source position, with its own non-hash-consed identity, and `ExprOccurrence` as a specialized occurrence that represents a positioned expression node. Each ExprOccurrence knows its *owner* — the declaration (operation, rule, fact) it belongs to, providing scope and typing context. A typing function (`type_check` operation) walks expression occurrences, checks them against declared types, and emits `TypeOf(occ, type)` facts into the KB. The typing function carries a `TypingEnv` to track variable bindings and type substitutions across scopes. See `docs/proposals/typing_pass_spec.anthill` for the reference specification.
+
+**Future direction (WI-011):** If Sort can participate in term unification, the typing function could be expressed entirely as rules (`type_of(?env, ?occ, ?type)`) rather than an operation. This requires forward chaining and tabling (not yet implemented).
 
 ## Design
 
@@ -152,7 +154,7 @@ Expr entities are stored in the OccurrenceStore and queried via builtins. Each E
 
 ```anthill
 sort TypeOf {
-    entity TypeOf(occ: ExprOccurrence, type: Sort)
+    entity TypeOf(occ: ExprOccurrence, type: Type)
 }
 ```
 
@@ -227,101 +229,67 @@ Collection literal `[a, b, c]` is syntactically ambiguous — it could be `List`
 - **Collection type** — from top-down context (the field or parameter expects `List[T=?]` vs `Array[T=?]`)
 - **Element type** — from bottom-up inference (literals, constructors) or from the collection type parameter
 
-The collection type determines *how* to desugar:
-
-```anthill
--- Context expects List → desugar to cons/nil
-rule desugar_list(?occ, List[T=?t])
-  :- TypeOf(occ: ?occ, type: List[T=?t]),
-     occurrence(occ: ?occ, term: ListLiteral())
-
-rule desugar_list(?occ, List[T=?t])
-  :- TypeOf(occ: ?occ, type: List[T=?t]),
-     occurrence(occ: ?occ, term: ListLiteral(?h, ?rest...)),
-     sub_occurrence(parent: ?occ, position: 0, child: ?h_occ),
-     TypeOf(occ: ?h_occ, type: ?t)
-
--- Context expects Vector → different construction
-rule desugar_vector(?occ, Vector[T=?t])
-  :- TypeOf(occ: ?occ, type: Vector[T=?t]),
-     occurrence(occ: ?occ, term: ListLiteral(?items...))
-```
+The typing function handles desugaring as part of the `type_check` operation: when it encounters a `ListLiteral` occurrence with a known expected type from context, it replaces the literal with the appropriate constructor calls (e.g., `cons`/`nil` for `List`).
 
 Without context (no expected collection type), `[1, 2, 3]` is ambiguous — a default or an error.
 
-The temporary `build_list_with_tail` desugaring in the loader is replaced by these rules once the typing pass exists.
+The temporary `build_list_with_tail` desugaring in the loader is replaced by the typing function once it exists.
 
-### Typing as constraint checking
+### Type error detection
 
-A type error is a contradiction between inferred type and expected type at an occurrence:
+The typing function (`type_check`) detects type errors during its walk via `assert_compatible(kb, actual, expected)`. When the inferred type doesn't match the expected type from context, the function reports an error with the source position (from the ExprOccurrence's span).
 
-```anthill
--- Type error: inferred type doesn't match expected type at a position
-constraint type_mismatch
-  :- TypeOf(occ: ?occ, type: ?actual),
-     expected_type(occ: ?occ, type: ?expected),
-     not(type_compatible(?actual, ?expected))
-```
-
-Where `expected_type` is derived from the occurrence's owner and position — e.g., for a field value, the owner is the fact assertion and the expected type comes from `FieldInfo`; for an operation body, the owner is the operation and the expected type is its return type. This is a standard anthill constraint — the same mechanism used for any other invariant checking. Because TypeOf references ExprOccurrences, the error message includes the exact source position.
+The `type_compatible` rule (from `typing.anthill`) determines compatibility: same type (unification), entity subtyping (`is_entity_of`), or spec refinement (`refines`). Type variables are resolved via KB query unification.
 
 ### No separate typed AST
 
 The untyped terms (hash-consed in TermStore) stay unchanged. `TypeOf` facts annotate occurrences externally. This means:
 
-- **Rules work on untyped terms** — structural pattern matching via `occurrence(occ: ?, term: <pattern>)`
-- **Type info is queryable** — `TypeOf(occ: ?occ, type: ?type)` is a regular query
+- **Rules work on untyped terms** — structural pattern matching via occurrence queries
+- **Type info is queryable** — `TypeOf(occ: ?occ, type: ?type)` is a regular KB query
 - **Gradual typing** — some occurrences may have `TypeOf`, others may not
-- **Types are derivable** — rules can infer types, not just check them
-- **Errors carry source positions** — TypeOf references Occurrences, which have Spans
+- **Types are asserted** — the `type_check` operation asserts TypeOf facts via `KB.assert`
+- **Errors carry source positions** — TypeOf references ExprOccurrences, which have Spans
 
 ## Implementation plan
 
-### Phase 1: OccurrenceStore infrastructure
-- Define `Occurrence`, `Span` sorts in `anthill.reflect`
-- Implement `OccurrenceStore` in Rust (sequential ids, `(TermId, Span)` entries, parent→child links)
-- Add builtin handlers for `occurrence(occ:, term:)` and `sub_occurrence(parent:, position:, child:)` queries
-- Modify parser/converter to create Occurrences (preserving tree-sitter spans)
+### Phase 1: OccurrenceStore infrastructure (DONE)
+- `OccurrenceStore` with `OccurrenceId`, `ExprOccurrenceId`, by_term and by_functor indexes
+- `SourceId`, `SourceSpan`, `SourceRegistry` for cross-file span tracking
+- Per-term span tracking in parse converter
+- Occurrence creation in loader for expression bodies, facts, rules
 
-### Phase 2: Expr on Occurrences
-- Rebuild `Expr` entities to use `Occurrence` for children
-- Store Expr nodes in OccurrenceStore
-- Route Expr queries through builtin occurrence handlers
-- Remove old `TypedExpr` sort
+### Phase 2: Expr on Occurrences + query routing (DONE)
+- Expr entity children use `ExprOccurrence` (via `Literal::Handle(Occurrence, id)`)
+- OccurrenceStore routes expression queries via by_functor index in resolver
+- `Candidate` enum in resolver (Rule/Occurrence variants)
+- `TypeOf` sort defined in reflect.anthill
 
-### Phase 3: TypeOf infrastructure
-- Define `TypeOf` sort in `anthill.reflect`
-- Add typing pass (after `load_all`, before constraint checking)
-- Read entity field declarations (`FieldInfo`) as type context
-- Emit `TypeOf` for literal occurrences (bottom-up)
-- Emit `TypeOf` for nullary constructor occurrences (from entity parent sort)
+### Phase 3: Typing function specification (DONE)
+- `typing_pass_spec.anthill` — reference spec as anthill operation with expression body
+- `type_check(kb, env, expr)` operation with `TypingEnv` (abstract algebra)
+- Handles variable shadowing via scoped `TypingEnv.bind_var`/`lookup_var`
+- Type variable unification via KB queries (not reimplemented)
+- `Type` sort with constructors: `sort_ref`, `parameterized`, `named_tuple`, `arrow`, `type_var`, `nothing`
 
-### Phase 4: Fact typing
-- Walk each asserted fact's field value occurrences
-- Match against declared field types (via `FieldInfo`)
-- Emit `TypeOf` for each field value occurrence
-- Detect type mismatches (field type ≠ value type)
+### Phase 4: Rust typing implementation (NEXT)
+- Implement `type_check` in Rust following the spec
+- Implement `TypingEnv` as a Rust struct
+- Emit `TypeOf` facts via `KB.assert`
+- Integrate into load pipeline (after `load_all`)
 
 ### Phase 5: ListLiteral desugaring
-- When `TypeOf(<occ>, List[T=?t])` is derived for a ListLiteral occurrence
-- Replace with cons/nil in the KB
-- Remove temporary desugaring from loader's `convert_term`
+- When `type_check` encounters a `ListLiteral` with known expected type
+- Replace with concrete constructors (cons/nil for List, etc.)
+- Remove temporary desugaring from loader
 
-### Phase 6: Rule variable typing
-- For each rule body literal, match variable occurrences against entity field types
-- Infer variable types from field position
-- Emit `TypeOf` for each variable occurrence
+### Phase 6: Constraint integration
+- `assert_compatible` reports type errors with source positions
+- Integration with IDE diagnostics via ExprOccurrence spans
 
-### Phase 7: Expression typing
-- Walk expression occurrence trees (match, if, let, lambda, apply)
-- Propagate types through occurrence nodes (bidirectional)
-- Emit `TypeOf` for each subexpression occurrence
-- Enable expression evaluation with type safety
-
-### Phase 8: Constraint integration
-- Define `type_mismatch` constraint
-- Run constraint checker after typing pass
-- Report type errors as constraint violations (with source positions from Occurrences)
+### Future: Typing as rules (WI-011)
+- Express typing as `type_of(?env, ?occ, ?type)` rules instead of operation
+- Requires: Sort in unifications (WI-010), forward chaining, tabling
 
 ## Examples
 
@@ -371,12 +339,10 @@ fact TypeOf(occ: occ#10, type: Bool)    -- from operation return type
 fact TypeOf(occ: occ#11, type: Int)     -- from parameter declaration
 fact TypeOf(occ: occ#12, type: Int)     -- literal
 
--- Query: "find all comparisons with literal arguments"
-rule gt_with_literal(?call, ?lit, ?val)
-  :- occurrence(occ: ?call, term: apply(fn: gt, args: ?)),
-     sub_occurrence(parent: ?call, position: 1, child: ?lit),
-     occurrence(occ: ?lit, term: int_lit(value: ?val))
--- Binds: ?call = occ#10, ?lit = occ#12, ?val = 0
+-- Query: "find all apply expressions with gt functor"
+rule gt_call(?call)
+  :- apply(fn: ?fn_name, args: ?),
+     qualified_name(?fn_name, "gt")
 ```
 
 ### ListLiteral desugaring
@@ -399,11 +365,12 @@ fact WorkItem(depends_on: ["WI-001", "WI-002"])
 ## Relationship to existing work
 
 - **Proposal 011** (Type Resolution): This proposal is the concrete implementation of Proposal 011's philosophy ("type checking = KB querying"). The Occurrence layer adds the positional identity that 011's constraint-based approach needs. Path B (syntactic instantiation) is kept.
-- **Proposal 019** (Collection Literals): ListLiteral desugaring moves from the loader hack to type-directed rules over occurrence trees.
-- **typing.anthill**: Existing `type_compatible`, `refines`, `is_entity_of` rules are used by the typing pass.
-- **SortView**: Parameterized types (`List[T=String]`) are already SortView terms — `TypeOf` types reference them.
-- **rust-term-store-design.md**: OccurrenceStore is a new store alongside TermStore. Terms stay hash-consed and immutable. Occurrences are sequential and not hash-consed — different design trade-offs for different purposes.
-- **reflect.anthill**: `Expr` sort is rebuilt with `Occurrence` children instead of `Expr` self-references. `TypedExpr` is replaced by `TypeOf(occ, type)` facts.
+- **Proposal 018** (Expressions): The typing function is itself an anthill operation with expression body. See `typing_pass_spec.anthill` for the reference specification.
+- **Proposal 019** (Collection Literals): ListLiteral desugaring moves from the loader hack to the typing function.
+- **typing.anthill**: Existing `type_compatible`, `refines`, `is_entity_of` rules are used by the typing function via KB queries.
+- **Type sort** (`anthill.prelude.Type`): Type constructors — `sort_ref`, `parameterized`, `named_tuple`, `arrow`, `type_var`, `nothing`.
+- **reflect.anthill**: `Expr` sort uses `ExprOccurrence` children (via `Literal::Handle`). `TypedExpr` replaced by `TypeOf(occ, type)` facts.
+- **WI-010/WI-011**: Future work — typing as rules (requires Sort in unifications, forward chaining, tabling).
 
 ## Design rationale: why Occurrences?
 

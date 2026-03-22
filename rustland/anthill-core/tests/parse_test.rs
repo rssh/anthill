@@ -3298,8 +3298,8 @@ end
             if let Term::Ref(sym) = kb.get_term(op_tid) {
                 if kb.qualified_name_of(*sym).contains("test.expr.incr") {
                     found = true;
-                    // body should be apply(fn: add, args: [x, 1])
-                    let body = get_named_arg(&kb, tid, "body").expect("body missing");
+                    // body should be ExprOccurrence handle → apply(fn: add, args: [x, 1])
+                    let body = deref_occ(&kb, get_named_arg(&kb, tid, "body").expect("body missing"));
                     assert_eq!(functor_name(&kb, body), "apply");
                     // params should be a 1-element list [x]
                     let params = get_named_arg(&kb, tid, "params").expect("params missing");
