@@ -244,7 +244,10 @@ module.exports = grammar({
       '->',
       field('return_type', $._type),
       repeat($.operation_clause),
-      optional(seq('=', field('body', $._expr_body))),
+      optional(seq('=', choice(
+        seq('{', field('body', $._expr_body), '}'),
+        field('body', $._expr_body),
+      ))),
       optional($.meta_block),
     ),
 
@@ -334,7 +337,10 @@ module.exports = grammar({
       '->',
       field('return_type', $._type),
       repeat($.operation_clause),
-      optional(seq('=', field('body', $._expr_body))),
+      optional(seq('=', choice(
+        seq('{', field('body', $._expr_body), '}'),
+        field('body', $._expr_body),
+      ))),
       optional($.meta_block),
     ),
 
