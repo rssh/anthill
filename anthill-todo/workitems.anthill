@@ -62,4 +62,10 @@ fact WorkItem(
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-010"],
   status: Open)
+fact WorkItem(
+  id: "WI-012",
+  description: "Bug: deliver/claim commands don't update status in workitems.anthill file — claim reports success but list still shows Open",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
 

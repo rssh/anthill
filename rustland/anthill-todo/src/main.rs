@@ -173,13 +173,36 @@ fn find_project_dir(explicit: Option<&Path>) -> Result<PathBuf, String> {
     let cwd = std::env::current_dir()
         .map_err(|e| format!("cannot determine current directory: {e}"))?;
 
-    // Check for anthill-todo/ subdirectory
     let subdir = cwd.join("anthill-todo");
     if subdir.is_dir() {
-        return Ok(subdir);
+        eprintln!("warning: no -d flag specified, using current directory: {}", cwd.display());
+        return Ok(cwd);
     }
 
-    Err("no anthill-todo/ directory found.\n  Run `anthill-todo init` to create one.".into())
+    // Maybe we're already inside an anthill-todo dir
+    let has_anthill = cwd.read_dir()
+        .map(|entries| entries.flatten().any(|e| {
+            e.path().extension().map_or(false, |ext| ext == "anthill")
+        }))
+        .unwrap_or(false);
+    if has_anthill {
+        eprintln!("warning: no -d flag specified, using current directory: {}", cwd.display());
+        return Ok(cwd);
+    }
+
+    Err("no anthill-todo/ directory found.\n  Run `anthill-todo init` or use -d <project-dir>.".into())
+}
+
+/// Determine the directory to scan for workitem files.
+/// If the project dir has an anthill-todo/ subdirectory, scan only there.
+/// Otherwise scan the project dir itself.
+fn scan_dir(project_dir: &Path) -> PathBuf {
+    let subdir = project_dir.join("anthill-todo");
+    if subdir.is_dir() {
+        subdir
+    } else {
+        project_dir.to_path_buf()
+    }
 }
 
 // ── KB loading ──────────────────────────────────────────────────
@@ -210,8 +233,9 @@ fn load_kb(project_dir: &Path, stdlib_path: Option<&Path>) -> Result<KnowledgeBa
         }
     }
 
-    // Phase 2: Parse project files
-    let project_files = collect_anthill_files(&[project_dir.to_path_buf()]);
+    // Phase 2: Parse project files (only from anthill-todo/ subdir, not whole project)
+    let scan = scan_dir(project_dir);
+    let project_files = collect_anthill_files(&[scan.clone()]);
     for file in &project_files {
         let source = fs::read_to_string(file)
             .map_err(|e| format!("{}: {e}", file.display()))?;
@@ -219,7 +243,7 @@ fn load_kb(project_dir: &Path, stdlib_path: Option<&Path>) -> Result<KnowledgeBa
             Ok(p) => parsed_files.push(p),
             Err(errs) => {
                 for e in &errs {
-                    eprintln!("warning: {}: {e}", file.display());
+                    eprintln!("warning: {}:{}", file.display(), e.format_with_source(&source));
                 }
             }
         }
@@ -249,8 +273,8 @@ fn load_kb(project_dir: &Path, stdlib_path: Option<&Path>) -> Result<KnowledgeBa
         }
     }
 
-    // Load .toml/.json data files
-    let data_files = collect_data_files(paths);
+    // Load .toml/.json data files (only from scan dir, not whole project)
+    let data_files = collect_data_files(&[scan]);
     if !data_files.is_empty() {
         let domain = kb.make_name_term("_data");
         for file in &data_files {
@@ -743,7 +767,7 @@ fn append_to_file(path: &Path, text: &str) {
 // ── Delete command ───────────────────────────────────────────────
 
 fn run_delete(project_dir: &Path, id: &str) {
-    let files = collect_anthill_files(&[project_dir.to_path_buf()]);
+    let files = collect_anthill_files(&[scan_dir(project_dir)]);
     let id_marker = format!("id: \"{id}\"");
 
     for file in &files {
@@ -921,7 +945,7 @@ fn run_add(kb: &KnowledgeBase, project_dir: &Path, description: &str, depends_on
         "fact WorkItem(\n  id: \"{id}\",\n  description: \"{desc_escaped}\",\n  acceptance: {acc},\n  depends_on: {deps},\n  status: Open)\n\n"
     );
 
-    let workitems_file = project_dir.join("workitems.anthill");
+    let workitems_file = scan_dir(project_dir).join("workitems.anthill");
     append_to_file(&workitems_file, &block);
 
     println!("added: {id} — {description}");

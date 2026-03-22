@@ -2728,7 +2728,6 @@ fn parse_operation_with_match_body() {
   match l
     case nil -> 0
     case cons(_, t) -> 1 + length(t)
-  end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     assert_eq!(parsed.items.len(), 1);
@@ -2789,8 +2788,8 @@ fn parse_operation_with_if_body() {
 #[test]
 fn parse_operation_with_let_body() {
     let source = r#"operation f(a: Int, b: Int) -> Int =
-  let a2 = a * a in
-  let b2 = b * b in
+  let a2 = a * a
+  let b2 = b * b
   a2 + b2
 "#;
     let parsed = parse::parse(source).expect("parse failed");
@@ -2798,12 +2797,12 @@ fn parse_operation_with_let_body() {
         Item::Operation(op) => {
             assert!(op.body.is_some());
             let body = op.body.unwrap();
-            // Outer let
+            // Outer let_chain
             match parsed.terms.get(body) {
                 Term::Fn { functor, pos_args, .. } => {
                     assert_eq!(parsed.symbols.name(*functor), "let_expr");
                     assert_eq!(pos_args.len(), 3); // pattern, value, body
-                    // Inner body should be another let_expr
+                    // Inner body should be another let_chain
                     match parsed.terms.get(pos_args[2]) {
                         Term::Fn { functor: inner_f, pos_args: inner_args, .. } => {
                             assert_eq!(parsed.symbols.name(*inner_f), "let_expr");
@@ -2858,7 +2857,6 @@ fn parse_pattern_wildcard() {
     let source = r#"operation f(x: T) -> Int =
   match x
     case _ -> 0
-  end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     match &parsed.items[0] {
@@ -2893,7 +2891,6 @@ fn parse_pattern_constructor() {
     let source = r#"operation f(x: T) -> Int =
   match x
     case cons(h, t) -> 1
-  end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     match &parsed.items[0] {
@@ -2935,7 +2932,6 @@ fn parse_pattern_literal() {
     let source = r#"operation f(n: Int) -> String =
   match n
     case 0 -> "zero"
-  end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     match &parsed.items[0] {
@@ -3182,7 +3178,6 @@ namespace test.expr
       match n
         case zero() -> true
         case succ(_) -> false
-      end
   end
 end
 "#);
@@ -3220,7 +3215,8 @@ fn load_operation_with_let_body() {
     let mut kb = load_with_stdlib(r#"
 namespace test.expr
   operation double(x: Int) -> Int =
-    let y = x in add(y, y)
+    let y = x
+    add(y, y)
 end
 "#);
 

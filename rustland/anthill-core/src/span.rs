@@ -24,6 +24,31 @@ impl Span {
             end: a.end.max(b.end),
         }
     }
+
+    /// Convert byte offset to (line, col), both 1-based.
+    pub fn line_col(source: &str, byte_offset: u32) -> (usize, usize) {
+        let offset = byte_offset as usize;
+        let mut line = 1;
+        let mut col = 1;
+        for (i, ch) in source.char_indices() {
+            if i >= offset {
+                break;
+            }
+            if ch == '\n' {
+                line += 1;
+                col = 1;
+            } else {
+                col += 1;
+            }
+        }
+        (line, col)
+    }
+
+    /// Format as "line:col" for error reporting.
+    pub fn format_start(source: &str, span: Span) -> String {
+        let (line, col) = Span::line_col(source, span.start);
+        format!("{}:{}", line, col)
+    }
 }
 
 // ── Source identification ──────────────────────────────────────

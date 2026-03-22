@@ -22,37 +22,40 @@ operation double(x: Int) -> Int = x + x
 Operation with match body
 =====================================
 
-operation length(l: List) -> Int =
-  match l
-    case nil -> 0
-    case cons(_, t) -> 1 + length(t)
-  end
+sort S
+  operation length(l: List) -> Int =
+    match l
+      case nil -> 0
+      case cons(_, t) -> 1 + length(t)
+end
 
 ---
 
 (source_file
-  (operation_declaration
+  (sort_with_body
     name: (name (identifier))
-    (param
-      name: (identifier)
-      type: (simple_type (name (identifier))))
-    return_type: (simple_type (name (identifier)))
-    body: (match_expr
-      scrutinee: (identifier)
-      (match_branch
-        pattern: (pattern_var (identifier))
-        body: (integer_literal))
-      (match_branch
-        pattern: (pattern_constructor
-          name: (name (identifier))
-          (pattern_wildcard)
-          (pattern_var (identifier)))
-        body: (infix_term
-          (integer_literal)
-          (operator_symbol)
-          (fn_term
+    (operation_declaration
+      name: (name (identifier))
+      (param
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      return_type: (simple_type (name (identifier)))
+      body: (match_expr
+        scrutinee: (identifier)
+        (match_branch
+          pattern: (pattern_var (identifier))
+          body: (integer_literal))
+        (match_branch
+          pattern: (pattern_constructor
             name: (name (identifier))
-            (identifier)))))))
+            (pattern_wildcard)
+            (pattern_var (identifier)))
+          body: (infix_term
+            (integer_literal)
+            (operator_symbol)
+            (fn_term
+              name: (name (identifier))
+              (identifier))))))))
 
 =====================================
 Operation with if/then/else body
@@ -85,41 +88,45 @@ operation abs(x: Int) -> Int =
 Operation with let body
 =====================================
 
-operation hypotenuse(a: Int, b: Int) -> Int =
-  let a2 = a * a in
-  let b2 = b * b in
-  sqrt(a2 + b2)
+sort S
+  operation hypotenuse(a: Int, b: Int) -> Int =
+    let a2 = a * a
+    let b2 = b * b
+    sqrt(a2 + b2)
+end
 
 ---
 
 (source_file
-  (operation_declaration
+  (sort_with_body
     name: (name (identifier))
-    (param
-      name: (identifier)
-      type: (simple_type (name (identifier))))
-    (param
-      name: (identifier)
-      type: (simple_type (name (identifier))))
-    return_type: (simple_type (name (identifier)))
-    body: (let_expr
-      pattern: (pattern_var (identifier))
-      value: (infix_term
-        (identifier)
-        (operator_symbol)
-        (identifier))
-      body: (let_expr
+    (operation_declaration
+      name: (name (identifier))
+      (param
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      (param
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      return_type: (simple_type (name (identifier)))
+      body: (let_chain
         pattern: (pattern_var (identifier))
         value: (infix_term
           (identifier)
           (operator_symbol)
           (identifier))
-        body: (fn_term
-          name: (name (identifier))
-          (infix_term
+        body: (let_chain
+          pattern: (pattern_var (identifier))
+          value: (infix_term
             (identifier)
             (operator_symbol)
-            (identifier)))))))
+            (identifier))
+          body: (fn_term
+            name: (name (identifier))
+            (infix_term
+              (identifier)
+              (operator_symbol)
+              (identifier))))))))
 
 =====================================
 Operation with lambda body
@@ -147,146 +154,161 @@ operation make_adder(x: Int) -> Fun = lambda y -> x + y
 Pattern: wildcard
 =====================================
 
-operation f(x: T) -> Int =
-  match x
-    case _ -> 0
-  end
+sort S
+  operation f(x: T) -> Int =
+    match x
+      case _ -> 0
+end
 
 ---
 
 (source_file
-  (operation_declaration
+  (sort_with_body
     name: (name (identifier))
-    (param
-      name: (identifier)
-      type: (simple_type (name (identifier))))
-    return_type: (simple_type (name (identifier)))
-    body: (match_expr
-      scrutinee: (identifier)
-      (match_branch
-        pattern: (pattern_wildcard)
-        body: (integer_literal)))))
+    (operation_declaration
+      name: (name (identifier))
+      (param
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      return_type: (simple_type (name (identifier)))
+      body: (match_expr
+        scrutinee: (identifier)
+        (match_branch
+          pattern: (pattern_wildcard)
+          body: (integer_literal))))))
 
 =====================================
 Pattern: tuple
 =====================================
 
-operation swap(p: Pair) -> Pair =
-  match p
-    case (a, b) -> mk_pair(b, a)
-  end
+sort S
+  operation swap(p: Pair) -> Pair =
+    match p
+      case (a, b) -> mk_pair(b, a)
+end
 
 ---
 
 (source_file
-  (operation_declaration
+  (sort_with_body
     name: (name (identifier))
-    (param
-      name: (identifier)
-      type: (simple_type (name (identifier))))
-    return_type: (simple_type (name (identifier)))
-    body: (match_expr
-      scrutinee: (identifier)
-      (match_branch
-        pattern: (pattern_tuple
-          (pattern_var (identifier))
-          (pattern_var (identifier)))
-        body: (fn_term
-          name: (name (identifier))
-          (identifier)
-          (identifier))))))
+    (operation_declaration
+      name: (name (identifier))
+      (param
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      return_type: (simple_type (name (identifier)))
+      body: (match_expr
+        scrutinee: (identifier)
+        (match_branch
+          pattern: (pattern_tuple
+            (pattern_var (identifier))
+            (pattern_var (identifier)))
+          body: (fn_term
+            name: (name (identifier))
+            (identifier)
+            (identifier)))))))
 
 =====================================
 Pattern: literal
 =====================================
 
-operation describe(n: Int) -> String =
-  match n
-    case 0 -> "zero"
-    case 1 -> "one"
-    case _ -> "other"
-  end
-
----
-
-(source_file
-  (operation_declaration
-    name: (name (identifier))
-    (param
-      name: (identifier)
-      type: (simple_type (name (identifier))))
-    return_type: (simple_type (name (identifier)))
-    body: (match_expr
-      scrutinee: (identifier)
-      (match_branch
-        pattern: (pattern_literal (integer_literal))
-        body: (string_literal))
-      (match_branch
-        pattern: (pattern_literal (integer_literal))
-        body: (string_literal))
-      (match_branch
-        pattern: (pattern_wildcard)
-        body: (string_literal)))))
-
-=====================================
-Pattern: empty tuple (unit)
-=====================================
-
-operation unit_match(u: Unit) -> Int =
-  match u
-    case () -> 42
-  end
-
----
-
-(source_file
-  (operation_declaration
-    name: (name (identifier))
-    (param
-      name: (identifier)
-      type: (simple_type (name (identifier))))
-    return_type: (simple_type (name (identifier)))
-    body: (match_expr
-      scrutinee: (identifier)
-      (match_branch
-        pattern: (pattern_tuple)
-        body: (integer_literal)))))
-
-=====================================
-Nested expressions
-=====================================
-
-operation classify(x: Int) -> String =
-  if x > 0 then
-    match x
+sort S
+  operation describe(n: Int) -> String =
+    match n
+      case 0 -> "zero"
       case 1 -> "one"
-      case _ -> "positive"
-    end
-  else "non-positive"
+      case _ -> "other"
+end
 
 ---
 
 (source_file
-  (operation_declaration
+  (sort_with_body
     name: (name (identifier))
-    (param
-      name: (identifier)
-      type: (simple_type (name (identifier))))
-    return_type: (simple_type (name (identifier)))
-    body: (if_expr
-      condition: (infix_term
-        (identifier)
-        (operator_symbol)
-        (integer_literal))
-      then: (match_expr
+    (operation_declaration
+      name: (name (identifier))
+      (param
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      return_type: (simple_type (name (identifier)))
+      body: (match_expr
         scrutinee: (identifier)
         (match_branch
           pattern: (pattern_literal (integer_literal))
           body: (string_literal))
         (match_branch
+          pattern: (pattern_literal (integer_literal))
+          body: (string_literal))
+        (match_branch
           pattern: (pattern_wildcard)
-          body: (string_literal)))
-      else: (string_literal))))
+          body: (string_literal))))))
+
+=====================================
+Pattern: empty tuple (unit)
+=====================================
+
+sort S
+  operation unit_match(u: Unit) -> Int =
+    match u
+      case () -> 42
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name (identifier))
+    (operation_declaration
+      name: (name (identifier))
+      (param
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      return_type: (simple_type (name (identifier)))
+      body: (match_expr
+        scrutinee: (identifier)
+        (match_branch
+          pattern: (pattern_tuple)
+          body: (integer_literal))))))
+
+=====================================
+Nested expressions
+=====================================
+
+sort S
+  operation classify(x: Int) -> String =
+    if x > 0 then
+      match x
+        case 1 -> "one"
+        case _ -> "positive"
+    else "non-positive"
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name (identifier))
+    (operation_declaration
+      name: (name (identifier))
+      (param
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      return_type: (simple_type (name (identifier)))
+      body: (if_expr
+        condition: (infix_term
+          (identifier)
+          (operator_symbol)
+          (integer_literal))
+        then: (match_expr
+          scrutinee: (identifier)
+          (match_branch
+            pattern: (pattern_literal (integer_literal))
+            body: (string_literal))
+          (match_branch
+            pattern: (pattern_wildcard)
+            body: (string_literal)))
+        else: (string_literal)))))
 
 =====================================
 Operation with clauses and body

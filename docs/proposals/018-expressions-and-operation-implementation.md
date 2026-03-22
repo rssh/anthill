@@ -66,8 +66,8 @@ Pattern matching on entity constructors:
 
 ```anthill
 match expr
-  pattern1 -> body1
-  pattern2 -> body2
+  case pattern1 -> body1
+  case pattern2 -> body2
 end
 ```
 
@@ -75,9 +75,9 @@ With guards:
 
 ```anthill
 match expr
-  cons(h, t) | h > 0 -> cons(h, filter_positive(t))
-  cons(_, t) -> filter_positive(t)
-  nil -> nil
+  case cons(h, t) | h > 0 -> cons(h, filter_positive(t))
+  case cons(_, t) -> filter_positive(t)
+  case nil -> nil
 end
 ```
 
@@ -736,7 +736,7 @@ operation_declaration: $ => seq(
   '->',
   field('return_type', $._type),
   repeat($.operation_clause),
-  optional(field('body', $.expr_body)),    // <-- new
+  optional(seq('=', field('body', $.expr_body))),
   optional($.meta_block),
 ),
 ```
@@ -748,17 +748,17 @@ expr_body: $ => choice(
   $.match_expr,
   $.if_expr,
   $.let_chain,
+  $.lambda_expr,
   $._simple_expr,
 ),
 
-match_expr: $ => seq(
+match_expr: $ => prec.right(seq(
   'match', field('scrutinee', $._simple_expr),
   repeat1($.match_branch),
-  'end',
-),
+)),
 
 match_branch: $ => seq(
-  field('pattern', $._pattern),
+  'case', field('pattern', $._pattern),
   optional(seq('|', field('guard', $._simple_expr))),
   '->',
   field('body', $.expr_body),

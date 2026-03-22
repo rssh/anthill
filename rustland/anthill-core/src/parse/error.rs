@@ -17,6 +17,14 @@ impl ParseError {
     }
 }
 
+impl ParseError {
+    /// Format with line:col using source text.
+    pub fn format_with_source(&self, source: &str) -> String {
+        let (line, col) = Span::line_col(source, self.span.start);
+        format!("{}:{}: {}", line, col, self.message)
+    }
+}
+
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(

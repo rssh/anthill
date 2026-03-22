@@ -536,19 +536,19 @@ module.exports = grammar({
     _expr_body: $ => choice(
       $.match_expr,
       $.if_expr,
-      $.let_expr,
+      $.let_chain,
       $.lambda_expr,
       $._term,
     ),
 
-    match_expr: $ => seq(
+    match_expr: $ => prec.right(seq(
       'match', field('scrutinee', $._term),
       repeat1($.match_branch),
-      'end',
-    ),
+    )),
 
     match_branch: $ => seq(
       'case', field('pattern', $._pattern),
+      optional(seq('|', field('guard', $._term))),
       '->', field('body', $._expr_body),
     ),
 
@@ -558,10 +558,11 @@ module.exports = grammar({
       'else', field('else', $._expr_body),
     )),
 
-    let_expr: $ => prec.right(seq(
+    // Block-style let: let x = value \n body (no 'in' keyword)
+    let_chain: $ => prec.right(seq(
       'let', field('pattern', $._pattern),
       '=', field('value', $._expr_body),
-      'in', field('body', $._expr_body),
+      field('body', $._expr_body),
     )),
 
     lambda_expr: $ => prec.right(seq(
@@ -595,8 +596,20 @@ module.exports = grammar({
     pattern_constructor: $ => seq(
       field('name', $.name),
       '(',
-      commaSep($._pattern),
+      commaSep($._pattern_arg),
       ')',
+    ),
+
+    // Pattern argument: positional or named (name: pattern)
+    _pattern_arg: $ => choice(
+      $.named_pattern_field,
+      $._pattern,
+    ),
+
+    named_pattern_field: $ => seq(
+      field('field_name', $.identifier),
+      ':',
+      field('field_pattern', $._pattern),
     ),
 
     pattern_tuple: $ => choice(

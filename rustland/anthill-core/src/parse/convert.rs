@@ -1328,14 +1328,14 @@ impl<'a> Converter<'a> {
 
     // ── Expressions ──────────────────────────────────────────────
 
-    /// Convert an expression body node (match_expr, if_expr, let_expr,
+    /// Convert an expression body node (match_expr, if_expr, let_chain,
     /// lambda_expr, or a plain term). Records source spans for all terms.
     fn convert_expr_body(&mut self, node: Node) -> TermId {
         let span = self.span(node);
         let tid = match node.kind() {
             "match_expr" => self.convert_match_expr(node),
             "if_expr" => self.convert_if_expr(node),
-            "let_expr" => self.convert_let_expr(node),
+            "let_chain" => self.convert_let_expr(node),
             "lambda_expr" => self.convert_lambda_expr(node),
             _ => self.convert_term(node),
         };
@@ -1438,15 +1438,29 @@ impl<'a> Converter<'a> {
                 let name_tid = self.terms.alloc(Term::Ident(name_sym));
 
                 let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
+                let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
                 pos_args.push(name_tid);
                 let mut cursor = node.walk();
                 for child in node.named_children(&mut cursor) {
-                    if is_pattern_kind(child.kind()) {
+                    if child.kind() == "named_pattern_field" {
+                        let field_name = self.field(child, "field_name")
+                            .map(|n| self.intern(self.text(n)))
+                            .unwrap_or_else(|| self.intern("_"));
+                        let field_pattern = self.field(child, "field_pattern")
+                            .map(|p| self.convert_pattern(p))
+                            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+                        named_args.push((field_name, field_pattern));
+                    } else if is_pattern_kind(child.kind()) {
                         pos_args.push(self.convert_pattern(child));
                     }
                 }
 
-                self.alloc_fn_term("pattern_constructor", pos_args)
+                if named_args.is_empty() {
+                    self.alloc_fn_term("pattern_constructor", pos_args)
+                } else {
+                    let functor = self.intern("pattern_constructor");
+                    self.terms.alloc(Term::Fn { functor, pos_args, named_args })
+                }
             }
             "pattern_tuple" => {
                 let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
@@ -1500,6 +1514,7 @@ fn is_pattern_kind(kind: &str) -> bool {
             | "pattern_literal"
             | "pattern_constructor"
             | "pattern_tuple"
+            | "named_pattern_field"
     )
 }
 

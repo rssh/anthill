@@ -40,46 +40,33 @@ namespace anthill.reflect.typing_pass
   -- Helpers
   -- ================================================================
 
-  -- Check type compatibility; return the type if OK, error if mismatch.
-  -- Wraps the type_compatible rule for use in expressions.
-  operation assert_compatible(kb: KB, actual: Sort, expected: Sort) -> Sort
+  operation assert_compatible(kb: KB, actual: Sort, expected: Sort) -> Sort =
     if type_compatible(actual, expected) then actual
     else error("type mismatch: expected " + expected + ", got " + actual)
-  end
 
-  -- Build initial env from operation parameters
-  operation env_from_params(env: TypingEnv, params: List[FieldInfo]) -> TypingEnv
+  operation env_from_params(env: TypingEnv, params: List[FieldInfo]) -> TypingEnv =
     match params
       case nil -> env
       case cons(head: FieldInfo(name: n, type_name: t), tail: rest) ->
         env_from_params(TypingEnv.bind_var(env, n, t), rest)
-    end
-  end
 
   -- ================================================================
   -- The typing function
   -- ================================================================
 
-  -- Takes env + expression occurrence, computes type,
-  -- asserts TypeOf(occ, type) fact into KB, and returns the type.
   operation type_check(kb: KB, env: TypingEnv, expr: ExprOccurrence) -> Sort
-    effects (Modifies(kb))
+    effects (Modifies[kb]) =
     let result = match occurrence_term(kb, expr)
-      -- Literals (bottom-up)
       case int_lit(value: _)    -> Int
       case float_lit(value: _)  -> Float
       case string_lit(value: _) -> String
       case bool_lit(value: _)   -> Bool
 
-      -- Variable reference (lookup in env)
       case var_ref(name: n) -> TypingEnv.lookup_var(env, n)
 
-      -- Constructor (entity → parent sort)
       case constructor(name: name, args: _) ->
         entity_sort(name)
 
-      -- Function application
-      -- Unify arg types with param types via KB query, apply subst to return type
       case apply(fn: fn_name, args: args) ->
         let info = lookup_operation(fn_name)
         let arg_types = check_args(kb, env, args)
@@ -87,40 +74,32 @@ namespace anthill.reflect.typing_pass
         let type_subst = unify_param_types(kb, param_types, arg_types)
         apply_type_subst(type_subst, return_type(info))
 
-      -- If-then-else (condition must be Bool, branches compatible)
       case if_expr(cond: c, then_branch: t, else_branch: e) ->
         let _ = assert_compatible(kb, type_check(kb, env, c), Bool)
         let t1 = type_check(kb, env, t)
         let t2 = type_check(kb, env, e)
         assert_compatible(kb, t1, t2)
 
-      -- Let binding (extend env with bound variable)
       case let_expr(pattern: var_pattern(name: n, type_ann: _), value: v, body: b) ->
         let val_type = type_check(kb, env, v)
         type_check(kb, TypingEnv.bind_var(env, n, val_type), b)
 
-      -- Lambda (extend env with parameter, produce arrow type)
       case lambda(param: var_pattern(name: n, type_ann: some(value: param_type)), body: b) ->
         let ret_type = type_check(kb, TypingEnv.bind_var(env, n, param_type), b)
         arrow(param_type, ret_type)
 
-      -- Match expression (scrutinee + branches)
       case match_expr(scrutinee: s, branches: bs) ->
         let scrutinee_type = type_check(kb, env, s)
         check_branches(kb, env, scrutinee_type, bs)
-    end
-    -- Assert TypeOf fact into KB for this occurrence
     let _ = KB.assert(kb, type_of(occ: expr, type: result), TypeOf)
     result
-  end
 
   -- ================================================================
   -- Match branch checking
   -- ================================================================
 
-  -- All branches must return compatible types
   operation check_branches(kb: KB, env: TypingEnv, scrutinee_type: Sort, branches: List[MatchBranch]) -> Sort
-    effects (Modifies(kb))
+    effects (Modifies[kb]) =
     match branches
       case cons(head: MatchBranch(pattern: p, guard: _, body: b), tail: nil) ->
         let branch_env = extend_env_from_pattern(env, p, scrutinee_type)
@@ -130,11 +109,8 @@ namespace anthill.reflect.typing_pass
         let t1 = type_check(kb, branch_env, b)
         let t2 = check_branches(kb, env, scrutinee_type, rest)
         assert_compatible(kb, t1, t2)
-    end
-  end
 
-  -- Extend env from a pattern (binds pattern variables)
-  operation extend_env_from_pattern(env: TypingEnv, pat: Pattern, scrutinee_type: Sort) -> TypingEnv
+  operation extend_env_from_pattern(env: TypingEnv, pat: Pattern, scrutinee_type: Sort) -> TypingEnv =
     match pat
       case var_pattern(name: n, type_ann: _) -> TypingEnv.bind_var(env, n, scrutinee_type)
       case wildcard -> env
@@ -142,66 +118,47 @@ namespace anthill.reflect.typing_pass
         -- TODO: decompose constructor fields, extend env for each sub-pattern
         env
       case _ -> env
-    end
-  end
 
   -- ================================================================
   -- Generic function support: type variable unification via KB queries
   -- ================================================================
 
-  -- Type-check argument list, return list of types
   operation check_args(kb: KB, env: TypingEnv, args: List[ApplyArg]) -> List[Sort]
-    effects (Modifies(kb))
+    effects (Modifies[kb]) =
     match args
       case nil -> nil
       case cons(head: ApplyArg(name: _, value: arg_occ), tail: rest) ->
         cons(head: type_check(kb, env, arg_occ), tail: check_args(kb, env, rest))
-    end
-  end
 
-  -- Extract param types from OperationInfo
-  operation extract_param_types(info: OperationInfo) -> List[Sort]
+  operation extract_param_types(info: OperationInfo) -> List[Sort] =
     match info
       case OperationInfo(params: params) -> map_field_types(params)
-    end
-  end
 
-  operation map_field_types(fields: List[FieldInfo]) -> List[Sort]
+  operation map_field_types(fields: List[FieldInfo]) -> List[Sort] =
     match fields
       case nil -> nil
       case cons(head: FieldInfo(name: _, type_name: t), tail: rest) ->
         cons(head: t, tail: map_field_types(rest))
-    end
-  end
 
-  -- Unify param types (with type vars like T, U) against concrete arg types.
-  -- Uses KB.execute to leverage the resolver's existing unification.
-  -- Returns the type substitution (type var bindings).
-  operation unify_param_types(kb: KB, param_types: List[Sort], arg_types: List[Sort]) -> TypingEnv
+  operation unify_param_types(kb: KB, param_types: List[Sort], arg_types: List[Sort]) -> TypingEnv =
     let query = build_unification_query(param_types, arg_types)
     let solutions = KB.execute(kb, query)
     extract_type_bindings(solutions)
-  end
 
-  -- Apply type substitution to a sort expression (resolve type vars)
-  operation apply_type_subst(subst: TypingEnv, sort_expr: Sort) -> Sort
+  operation apply_type_subst(subst: TypingEnv, sort_expr: Sort) -> Sort =
     TypingEnv.apply_subst(subst, sort_expr)
-  end
 
   -- ================================================================
   -- Entry point
   -- ================================================================
 
-  -- Type-check an operation body against its declared return type
   operation type_check_operation(kb: KB, op: OperationInfo) -> TypeOf
-    effects (Modifies(kb))
+    effects (Modifies[kb]) =
     match op
       case OperationInfo(name: _, params: params, return_type: ret, body: some(value: body_occ)) ->
         let env = env_from_params(TypingEnv.empty(), params)
         let body_type = type_check(kb, env, body_occ)
         let _ = assert_compatible(kb, body_type, ret)
         type_of(occ: body_occ, type: body_type)
-      case _ -> ?  -- no body, nothing to check
-    end
-  end
+      case _ -> ?
 end
