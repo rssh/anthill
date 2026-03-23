@@ -4,6 +4,11 @@
 -- It serves as the reference specification — Rust and Scala implementations
 -- will be created from this.
 --
+-- type_check returns TypeResult(type, env) — both the expression's type and
+-- the updated env with any discovered type parameter bindings.
+-- Local variable bindings (let/lambda) stay in the returned env but are
+-- harmless — subsequent code never references them.
+--
 -- See: docs/proposals/022-typing-as-facts.md
 --      docs/proposals/011-type-resolution.md
 
@@ -16,25 +21,32 @@ namespace anthill.reflect.typing_pass
   import anthill.reflect.{occurrence_term, occurrence_owner}
   import anthill.prelude.{Int, Float, String, Bool, List, Option, Type}
 
-  export TypingEnv, type_check, type_check_operation, assert_compatible
+  export TypingEnv, TypeResult, type_check, type_check_operation, assert_compatible
 
   -- ================================================================
-  -- TypingEnv: abstract algebra for the typing environment
+  -- TypingEnv + TypeResult
   -- ================================================================
 
-  -- Tracks variable bindings (lexical scope) and type substitutions
-  -- (sort instantiation). Implementation is target-specific.
   sort TypingEnv
     operation empty() -> TypingEnv
-    -- Variable bindings (let, lambda, match, params)
     operation bind_var(env: TypingEnv, name: Symbol, type: Type) -> TypingEnv
     operation lookup_var(env: TypingEnv, name: Symbol) -> Option[Type]
-    -- Type parameter substitutions (T → Int from sort instantiation)
     operation bind_type(env: TypingEnv, param: Symbol, type: Type) -> TypingEnv
     operation lookup_type(env: TypingEnv, param: Symbol) -> Option[Type]
-    -- Apply all type substitutions to a sort expression
     operation apply_subst(env: TypingEnv, sort_expr: Type) -> Type
   end
+
+  -- Result of type_check: expression's type + updated env
+  entity TypeResult(type: Type, env: TypingEnv)
+
+  -- Accessors (until field access syntax works in expressions)
+  operation result_type(r: TypeResult) -> Type =
+    match r
+      case TypeResult(type: t, env: _) -> t
+
+  operation result_env(r: TypeResult) -> TypingEnv =
+    match r
+      case TypeResult(type: _, env: e) -> e
 
   -- ================================================================
   -- Helpers
@@ -50,55 +62,71 @@ namespace anthill.reflect.typing_pass
       case cons(head: FieldInfo(name: n, type_name: t), tail: rest) ->
         env_from_params(TypingEnv.bind_var(env, n, t), rest)
 
+  operation env_from_sort_scope(kb: KB, name: Symbol) -> TypingEnv =
+    let sort_scope = scope(name)
+    match sort_scope
+      case some(value: sort_sym) ->
+        let sort_info = lookup_sort(kb, sort_sym)
+        env_from_sort_bindings(TypingEnv.empty(), sort_info)
+      case none -> TypingEnv.empty()
+
+  operation env_from_sort_bindings(env: TypingEnv, info: SortInfo) -> TypingEnv =
+    match info
+      case SortInfo(name: _, definition: _, constructors: _, operations: _, parameters: params, requires: reqs) ->
+        env
+
   -- ================================================================
   -- The typing function
   -- ================================================================
 
-  operation type_check(kb: KB, env: TypingEnv, expr: ExprOccurrence) -> Type
+  operation type_check(kb: KB, env: TypingEnv, expr: ExprOccurrence) -> TypeResult
     effects Modifies[kb] =
-    let result = match occurrence_term(kb, expr)
-      case int_lit(value: _)    -> Int
-      case float_lit(value: _)  -> Float
-      case string_lit(value: _) -> String
-      case bool_lit(value: _)   -> Bool
+    let r = match occurrence_term(kb, expr)
+      case int_lit(value: _)    -> TypeResult(type: Int, env: env)
+      case float_lit(value: _)  -> TypeResult(type: Float, env: env)
+      case string_lit(value: _) -> TypeResult(type: String, env: env)
+      case bool_lit(value: _)   -> TypeResult(type: Bool, env: env)
 
-      case var_ref(name: n) -> TypingEnv.lookup_var(env, n)
+      case var_ref(name: n) ->
+        TypeResult(type: TypingEnv.lookup_var(env, n), env: env)
 
       case constructor(name: name, args: _) ->
-        entity_sort(name)
+        TypeResult(type: entity_sort(name), env: env)
 
       case apply(fn: fn_name, args: args) ->
+        let ar = check_args(kb, env, args)
         let info = lookup_operation(fn_name)
-        let arg_types = check_args(kb, env, args)
         let param_types = extract_param_types(info)
-        let type_subst = unify_param_types(kb, param_types, arg_types)
-        apply_type_subst(type_subst, return_type(info))
+        let type_subst = unify_param_types(kb, param_types, ar)
+        let ret = apply_type_subst(type_subst, return_type(info))
+        TypeResult(type: ret, env: result_env(ar))
 
       case if_expr(cond: c, then_branch: t, else_branch: e) ->
-        let _ = assert_compatible(kb, type_check(kb, env, c), Bool)
-        let t1 = type_check(kb, env, t)
-        let t2 = type_check(kb, env, e)
-        assert_compatible(kb, t1, t2)
+        let cr = type_check(kb, env, c)
+        let _ = assert_compatible(kb, result_type(cr), Bool)
+        let tr = type_check(kb, result_env(cr), t)
+        let er = type_check(kb, result_env(tr), e)
+        TypeResult(type: assert_compatible(kb, result_type(tr), result_type(er)), env: result_env(er))
 
       case let_expr(pattern: var_pattern(name: n, type_ann: _), value: v, body: b) ->
-        let val_type = type_check(kb, env, v)
-        type_check(kb, TypingEnv.bind_var(env, n, val_type), b)
+        let vr = type_check(kb, env, v)
+        type_check(kb, TypingEnv.bind_var(result_env(vr), n, result_type(vr)), b)
 
       case lambda(param: var_pattern(name: n, type_ann: some(value: param_type)), body: b) ->
-        let ret_type = type_check(kb, TypingEnv.bind_var(env, n, param_type), b)
-        arrow(param_type, ret_type)
+        let br = type_check(kb, TypingEnv.bind_var(env, n, param_type), b)
+        TypeResult(type: arrow(param_type, result_type(br)), env: result_env(br))
 
       case match_expr(scrutinee: s, branches: bs) ->
-        let scrutinee_type = type_check(kb, env, s)
-        check_branches(kb, env, scrutinee_type, bs)
-    let _ = KB.assert(kb, type_of(occ: expr, type: result), TypeOf)
-    result
+        let sr = type_check(kb, env, s)
+        check_branches(kb, result_env(sr), result_type(sr), bs)
+    let _ = KB.assert(kb, type_of(occ: expr, type: result_type(r)), TypeOf)
+    r
 
   -- ================================================================
   -- Match branch checking
   -- ================================================================
 
-  operation check_branches(kb: KB, env: TypingEnv, scrutinee_type: Type, branches: List[MatchBranch]) -> Type
+  operation check_branches(kb: KB, env: TypingEnv, scrutinee_type: Type, branches: List[MatchBranch]) -> TypeResult
     effects Modifies[kb] =
     match branches
       case cons(head: MatchBranch(pattern: p, guard: _, body: b), tail: nil) ->
@@ -106,9 +134,9 @@ namespace anthill.reflect.typing_pass
         type_check(kb, branch_env, b)
       case cons(head: MatchBranch(pattern: p, guard: _, body: b), tail: rest) ->
         let branch_env = extend_env_from_pattern(env, p, scrutinee_type)
-        let t1 = type_check(kb, branch_env, b)
-        let t2 = check_branches(kb, env, scrutinee_type, rest)
-        assert_compatible(kb, t1, t2)
+        let br = type_check(kb, branch_env, b)
+        let rest_r = check_branches(kb, result_env(br), scrutinee_type, rest)
+        TypeResult(type: assert_compatible(kb, result_type(br), result_type(rest_r)), env: result_env(rest_r))
 
   operation extend_env_from_pattern(env: TypingEnv, pat: Pattern, scrutinee_type: Type) -> TypingEnv =
     match pat
@@ -120,15 +148,16 @@ namespace anthill.reflect.typing_pass
       case _ -> env
 
   -- ================================================================
-  -- Generic function support: type variable unification via KB queries
+  -- Generic function support
   -- ================================================================
 
-  operation check_args(kb: KB, env: TypingEnv, args: List[ApplyArg]) -> List[Type]
+  operation check_args(kb: KB, env: TypingEnv, args: List[ApplyArg]) -> TypeResult
     effects Modifies[kb] =
     match args
-      case nil -> nil
+      case nil -> TypeResult(type: nothing, env: env)
       case cons(head: ApplyArg(name: _, value: arg_occ), tail: rest) ->
-        cons(head: type_check(kb, env, arg_occ), tail: check_args(kb, env, rest))
+        let ar = type_check(kb, env, arg_occ)
+        check_args(kb, result_env(ar), rest)
 
   operation extract_param_types(info: OperationInfo) -> List[Type] =
     match info
@@ -140,8 +169,8 @@ namespace anthill.reflect.typing_pass
       case cons(head: FieldInfo(name: _, type_name: t), tail: rest) ->
         cons(head: t, tail: map_field_types(rest))
 
-  operation unify_param_types(kb: KB, param_types: List[Type], arg_types: List[Type]) -> TypingEnv =
-    let query = build_unification_query(param_types, arg_types)
+  operation unify_param_types(kb: KB, param_types: List[Type], args_result: TypeResult) -> TypingEnv =
+    let query = build_unification_query(param_types, args_result)
     let solutions = KB.execute(kb, query)
     extract_type_bindings(solutions)
 
@@ -149,16 +178,72 @@ namespace anthill.reflect.typing_pass
     TypingEnv.apply_subst(subst, sort_expr)
 
   -- ================================================================
-  -- Entry point
+  -- Fact typing
+  -- ================================================================
+
+  operation type_check_fact(kb: KB, env: TypingEnv, fact_occ: ExprOccurrence) -> TypingEnv
+    effects Modifies[kb] =
+    let fact_term = occurrence_term(kb, fact_occ)
+    let entity_name = functor_of(fact_term)
+    let entity_info = lookup_entity(kb, entity_name)
+    let fields = entity_fields(entity_info)
+    type_check_fields(kb, env, fact_occ, fields)
+
+  operation type_check_fields(kb: KB, env: TypingEnv, fact_occ: ExprOccurrence, fields: List[FieldInfo]) -> TypingEnv
+    effects Modifies[kb] =
+    match fields
+      case nil -> env
+      case cons(head: FieldInfo(name: field_name, type_name: declared_type), tail: rest) ->
+        let value_occ = field_value(fact_occ, field_name)
+        let vr = type_check(kb, env, value_occ)
+        let new_env = unify_types(kb, result_env(vr), result_type(vr), declared_type)
+        type_check_fields(kb, new_env, fact_occ, rest)
+
+  operation unify_types(kb: KB, env: TypingEnv, actual: Type, declared: Type) -> TypingEnv =
+    match declared
+      case type_var(name: param) ->
+        match TypingEnv.lookup_type(env, param)
+          case some(value: bound) -> let _ = assert_compatible(kb, actual, bound)
+                                     env
+          case none -> TypingEnv.bind_type(env, param, actual)
+      case _ -> let _ = assert_compatible(kb, actual, declared)
+                env
+
+  -- ================================================================
+  -- Rule typing
+  -- ================================================================
+
+  operation type_check_rule(kb: KB, env: TypingEnv, head_occ: ExprOccurrence, body: List[ExprOccurrence], equation_rhs: Option[ExprOccurrence]) -> TypingEnv
+    effects Modifies[kb] =
+    let env_after_body = type_check_goals(kb, env, body)
+    let hr = type_check(kb, env_after_body, head_occ)
+    match equation_rhs
+      case some(value: rhs_occ) ->
+        let rr = type_check(kb, result_env(hr), rhs_occ)
+        let _ = assert_compatible(kb, result_type(rr), result_type(hr))
+        result_env(rr)
+      case none -> result_env(hr)
+
+  operation type_check_goals(kb: KB, env: TypingEnv, goals: List[ExprOccurrence]) -> TypingEnv
+    effects Modifies[kb] =
+    match goals
+      case nil -> env
+      case cons(head: goal_occ, tail: rest) ->
+        let gr = type_check(kb, env, goal_occ)
+        type_check_goals(kb, result_env(gr), rest)
+
+  -- ================================================================
+  -- Entry points
   -- ================================================================
 
   operation type_check_operation(kb: KB, op: OperationInfo) -> TypeOf
     effects Modifies[kb] =
     match op
-      case OperationInfo(name: _, params: params, return_type: ret, body: some(value: body_occ)) ->
-        let env = env_from_params(TypingEnv.empty(), params)
-        let body_type = type_check(kb, env, body_occ)
-        let _ = assert_compatible(kb, body_type, ret)
-        type_of(occ: body_occ, type: body_type)
+      case OperationInfo(name: op_name, params: params, return_type: ret, body: some(value: body_occ)) ->
+        let sort_env = env_from_sort_scope(kb, op_name)
+        let env = env_from_params(sort_env, params)
+        let br = type_check(kb, env, body_occ)
+        let _ = assert_compatible(kb, result_type(br), ret)
+        type_of(occ: body_occ, type: result_type(br))
       case _ -> ?
 end

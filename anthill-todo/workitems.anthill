@@ -69,3 +69,10 @@ fact WorkItem(
   depends_on: [],
   status: Open)
 
+fact WorkItem(
+  id: "WI-013",
+  description: "Fix field access (dot projection) in expression bodies: p.fst after = doesn't parse. field_access works in rule bodies but not expression context. Likely conflict between identifier.identifier as qualified name vs field access.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
