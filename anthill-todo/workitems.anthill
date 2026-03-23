@@ -36,11 +36,12 @@ fact WorkItem(
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
   status: Open)
+
 fact WorkItem(
   id: "WI-008",
   description: "implement expressions",
   acceptance: [ToolPasses("cargo-test")],
-  depends_on: [],
+  depends_on: ["WI-001"],
   status: Open)
 fact WorkItem(
   id: "WI-009",
@@ -67,7 +68,7 @@ fact WorkItem(
   description: "Bug: deliver/claim commands don't update status in workitems.anthill file — claim reports success but list still shows Open",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "user", at: "2026-03-23T11:22:37Z"))
 
 fact WorkItem(
   id: "WI-013",
@@ -78,31 +79,31 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-014",
-  description: "Lambda without type annotation: infer parameter type from context. Currently type_check only handles lambda(param: var_pattern(name: n, type_ann: some(value: param_type)), ...). Need to handle none case where param type is inferred from expected type (top-down).",
+  description: "Lambda without type annotation: infer parameter type from context. Specified in typing_pass_spec.anthill: fresh_type_var + unify_types with LUB-based unification. Unresolved vars = polymorphism (not an error). Added is_ground for introspection.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-03-23T00:00:00Z"))
 
 fact WorkItem(
   id: "WI-015",
   description: "Constructor pattern decomposition in extend_env_from_pattern: currently a TODO stub. Need to look up entity fields, match sub-patterns against field types, extend env for each.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "user", at: "2026-03-23T14:38:36Z"))
 
 fact WorkItem(
   id: "WI-016",
   description: "Define undefined helper operations in typing spec: entity_sort, lookup_operation, return_type, lookup_entity, entity_fields, field_value, functor_of, lookup_sort, build_unification_query, extract_type_bindings. These are used in typing_pass_spec.anthill but not defined.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "user", at: "2026-03-23T14:56:54Z"))
 
 fact WorkItem(
   id: "WI-017",
   description: "Add KB.assert operation to reflect.anthill: operation assert(kb: KB, term: Term, sort: Type) -> FactId effects Modifies[kb]. Needed by typing pass to emit TypeOf facts. Rust builtin implementation in resolve.rs.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "user", at: "2026-03-23T15:32:17Z"))
 
 fact WorkItem(
   id: "WI-018",
@@ -114,6 +115,41 @@ fact WorkItem(
 fact WorkItem(
   id: "WI-019",
   description: "Error collection and reporting in typing pass: assert_compatible calls error() but how errors are gathered with source positions from ExprOccurrence spans and reported to the user.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-020",
+  description: "Guard analysis: recognize FunctionalDep and CardinalityBound patterns in analyze_guard(). Extract key fields from lone_q/one_q guard terms for fast-path pre-checking via discrimination tree.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-021",
+  description: "Fast-path pre-checks in assert_checked(): for FunctionalDep guards, query discrim tree before insert (no rollback needed). For CardinalityBound, count existing facts.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-020"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-022",
+  description: "Auto-extract trigger sorts from guard term: walk LogicalQuery tree, find pattern_query atoms, extract functor, look up sort. Simplifies add_guard API.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-023",
+  description: "Parse/load integration for quantified constraints: extend Constraint IR with ConstraintBody enum (Quantified, Aggregation), update converter for quantified_constraint and aggregation_constraint nodes, update load_constraint to build LogicalQuery term and call add_guard.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-024",
+  description: "Write tests for KB guards: unit tests for add_guard/assert_checked with lone_q uniqueness, no_q denial, forall_q universal. Integration test parsing constraint from .anthill file.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
   status: Open)

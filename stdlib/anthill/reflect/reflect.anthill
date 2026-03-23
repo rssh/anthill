@@ -34,6 +34,7 @@ namespace anthill.reflect
   export nonvar, ground, not
   export field_access
   export resolve_sort_instantiation_param
+  export ConstraintId
   export reify, reflect
   export sorts, operations, constructors, fields, rules, descriptions
   export execute, sort_template, instantiation_query
@@ -166,7 +167,22 @@ namespace anthill.reflect
     operation instantiation_query(kb: KB, sort_name: String, bindings: Substitution)
       -> LogicalQuery
 
+    -- Mutation: assert a fact and check registered constraints.
+    -- If a constraint is violated, returns none.
+    -- The KB analyzes constraint clauses and optimizes recognizable
+    -- patterns (e.g. functional dependencies → unique index check).
+    operation assert(kb: KB, term: Term, sort: Type) -> Option[T = FactId]
+
+    -- Register a guard on the KB: a LogicalQuery that must always hold.
+    -- Denials use negation(...) at the top — the inner query must never
+    -- be satisfiable. The KB recognizes patterns (e.g. functional
+    -- dependencies) and optimizes checking via discrimination tree.
+    operation add_guard(kb: KB, guard: LogicalQuery) -> ConstraintId
+
   end
+
+  -- Opaque handle to a registered constraint.
+  sort ConstraintId = ?
 
   -- ================================================================
   -- Term representation (reified terms as data)
@@ -357,6 +373,19 @@ namespace anthill.reflect
     entity guarded(query: LogicalQuery, condition: Term)           -- filter
     entity projected(query: LogicalQuery, vars: List[T = String])  -- projection
     entity limited(query: LogicalQuery, count: Int)                -- cardinality limit
+
+    -- Quantifiers: condition -: body (Alloy-inspired)
+    entity forall_q(var: Symbol, condition: LogicalQuery, body: LogicalQuery)
+    entity some_q(var: Symbol, condition: LogicalQuery, body: LogicalQuery)
+    entity one_q(var: Symbol, condition: LogicalQuery, body: LogicalQuery)
+    entity lone_q(var: Symbol, condition: LogicalQuery, body: LogicalQuery)
+    entity no_q(var: Symbol, condition: LogicalQuery, body: LogicalQuery)
+
+    -- Aggregation: reduce query results to a value
+    entity count_q(var: Symbol, condition: LogicalQuery, body: LogicalQuery)
+    entity sum_q(var: Symbol, condition: LogicalQuery, body: LogicalQuery)
+    entity min_q(var: Symbol, condition: LogicalQuery, body: LogicalQuery)
+    entity max_q(var: Symbol, condition: LogicalQuery, body: LogicalQuery)
   }
 
 end

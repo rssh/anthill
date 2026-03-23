@@ -299,10 +299,58 @@ module.exports = grammar({
       repeat(field('description', $.description_block)),
       'constraint',
       optional(seq(field('label', $.name), ':')),
-      field('head', $.rule_body),
-      optional(seq(':-', field('guard', $.rule_body))),
+      field('head', $._constraint_body),
       optional($.meta_block),
     ),
+
+    _constraint_body: $ => choice(
+      $.quantified_constraint,
+      $.aggregation_constraint,
+      seq($.rule_body, optional(choice(
+        seq(':-', field('guard', $.rule_body)),
+        seq('-:', field('conclusion', $.rule_body)),
+      ))),
+    ),
+
+    quantified_constraint: $ => prec.right(seq(
+      field('quantifier', $.quantifier_keyword),
+      choice(
+        // Typed binding: forall (?x: T) -: body
+        // Sugar for: forall ?x: TypeOf(occ: ?x, type: T) -: body
+        seq(field('typed_binding', $.typed_constraint_binding), '-:', field('body', $._constraint_body)),
+        // Explicit condition: forall ?x: condition -: body
+        seq(field('var', $.variable), ':', field('condition', $.rule_body), '-:', field('body', $._constraint_body)),
+        // Bare variable (condition is the body itself): forall ?x -: body
+        seq(field('var', $.variable), '-:', field('body', $._constraint_body)),
+      ),
+    )),
+
+    typed_constraint_binding: $ => seq(
+      '(',
+      field('var', $.variable),
+      ':',
+      field('type', $._term),
+      ')',
+    ),
+
+    quantifier_keyword: $ => choice('forall', 'some', 'one', 'lone', 'no'),
+
+    aggregation_constraint: $ => seq(
+      field('aggregate', $.aggregate_keyword),
+      '(',
+      field('var', $.variable),
+      ':',
+      field('condition', $.rule_body),
+      '-:',
+      field('body', $.rule_body),
+      ')',
+      field('op', $.comparison_op),
+      field('bound', $._term),
+    ),
+
+    aggregate_keyword: $ => choice('count', 'sum', 'min', 'max'),
+
+    comparison_op: $ => choice('<=', '>=', '<', '>', '=', '!='),
 
     // =========================================================
     // Description blocks

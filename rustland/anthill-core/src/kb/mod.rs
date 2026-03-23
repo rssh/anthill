@@ -50,6 +50,46 @@ impl RuleId {
 /// Backwards-compatible alias.
 pub type FactId = RuleId;
 
+// ── Constraint handle ───────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ConstraintId(u32);
+
+impl ConstraintId {
+    pub fn index(self) -> usize { self.0 as usize }
+    pub fn raw(self) -> u32 { self.0 }
+}
+
+// ── Guard types ─────────────────────────────────────────────────
+
+/// Classification of a guard for optimized checking.
+#[derive(Clone, Debug)]
+enum GuardKind {
+    /// Functional dependency: at most one fact with these key field values.
+    /// Pre-check: query discrim tree for existing fact with same key.
+    FunctionalDep {
+        sort_functor: Symbol,
+        key_fields: Vec<Symbol>,
+    },
+    /// Cardinality bound: count of matching facts <= max_count.
+    CardinalityBound {
+        sort_functor: Symbol,
+        max_count: usize,
+    },
+    /// General guard: insert, evaluate full LogicalQuery, retract on failure.
+    General,
+}
+
+/// A registered integrity guard.
+struct Guard {
+    #[allow(dead_code)]
+    id: ConstraintId,
+    term: TermId,
+    kind: GuardKind,
+    #[allow(dead_code)]
+    trigger_sorts: Vec<TermId>,
+}
+
 // ── Rule entry ──────────────────────────────────────────────────
 
 struct RuleEntry {
@@ -125,6 +165,10 @@ pub struct KnowledgeBase {
     #[allow(dead_code)]
     entity_of_sort: Option<TermId>,
 
+    // Guards — integrity constraints checked on assert
+    guards: Vec<Guard>,
+    guards_by_sort: HashMap<TermId, Vec<usize>>,
+
     // Occurrence store (positioned terms, not hash-consed)
     pub(crate) occurrences: OccurrenceStore,
 
@@ -153,6 +197,8 @@ impl KnowledgeBase {
             sort_base_subst: HashMap::new(),
             sort_sort: None,
             entity_of_sort: None,
+            guards: Vec::new(),
+            guards_by_sort: HashMap::new(),
             occurrences: OccurrenceStore::new(),
             sources: SourceRegistry::new(),
         }
@@ -269,6 +315,258 @@ impl KnowledgeBase {
 
     /// Assert a ground fact (rule with empty body). Idempotent: if an identical
     /// fact (same head, sort, domain) already exists, returns the existing RuleId.
+    // ── Guards ───────────────────────────────────────────────────
+
+    /// Register a guard on the KB. The guard_term is a LogicalQuery term
+    /// that must always hold. trigger_sorts lists which sorts trigger
+    /// this guard when a fact of that sort is asserted.
+    pub fn add_guard(&mut self, guard_term: TermId, trigger_sorts: Vec<TermId>) -> ConstraintId {
+        let id = ConstraintId(self.guards.len() as u32);
+        self.terms.incref(guard_term);
+        for &s in &trigger_sorts {
+            self.guards_by_sort.entry(s).or_default().push(id.index());
+        }
+        self.guards.push(Guard {
+            id,
+            term: guard_term,
+            kind: GuardKind::General,
+            trigger_sorts,
+        });
+        id
+    }
+
+    /// Number of registered guards.
+    pub fn guard_count(&self) -> usize {
+        self.guards.len()
+    }
+
+    /// Assert a fact with guard checking.
+    /// Returns Some(rule_id) if all guards pass, None if any guard is violated.
+    pub fn assert_checked(
+        &mut self,
+        term: TermId,
+        sort: TermId,
+        domain: TermId,
+        meta: Option<TermId>,
+    ) -> Option<RuleId> {
+        let guard_indices: Vec<usize> = self.guards_by_sort
+            .get(&sort)
+            .cloned()
+            .unwrap_or_default();
+
+        if guard_indices.is_empty() {
+            return Some(self.assert_fact(term, sort, domain, meta));
+        }
+
+        // General path: insert tentatively, check guards, retract on failure
+        let rule_id = self.assert_fact(term, sort, domain, meta);
+
+        for &idx in &guard_indices {
+            let guard_term = self.guards[idx].term;
+            if !self.evaluate_guard(guard_term) {
+                self.retract(rule_id);
+                return None;
+            }
+        }
+
+        Some(rule_id)
+    }
+
+    /// Evaluate a LogicalQuery guard term. Returns true if the guard holds.
+    fn evaluate_guard(&mut self, guard_term: TermId) -> bool {
+        let term = self.terms.get(guard_term).clone();
+        match term {
+            Term::Fn { functor, named_args, .. } => {
+                let name = self.resolve_sym(functor);
+                match name {
+                    "lone_q" => self.eval_count_guard(&named_args, 0, 1),
+                    "one_q" => self.eval_count_guard(&named_args, 1, 1),
+                    "some_q" => self.eval_count_guard(&named_args, 1, usize::MAX),
+                    "no_q" => self.eval_count_guard(&named_args, 0, 0),
+                    "forall_q" => self.eval_forall_guard(&named_args),
+                    "negation" => self.eval_negation_guard(&named_args),
+                    _ => true, // unknown guard kind: vacuously true
+                }
+            }
+            _ => true,
+        }
+    }
+
+    /// Evaluate a counting quantifier guard (lone_q, one_q, some_q, no_q).
+    /// Named args: (var: Symbol, condition: LogicalQuery, body: LogicalQuery)
+    fn eval_count_guard(
+        &mut self,
+        named_args: &SmallVec<[(Symbol, TermId); 2]>,
+        min: usize,
+        max: usize,
+    ) -> bool {
+        // Extract condition and body from named args
+        let condition = named_args.iter()
+            .find(|(s, _)| self.resolve_sym(*s) == "condition")
+            .map(|(_, t)| *t);
+        let body = named_args.iter()
+            .find(|(s, _)| self.resolve_sym(*s) == "body")
+            .map(|(_, t)| *t);
+
+        // Lower condition + body to resolution goals
+        let mut goals = Vec::new();
+        if let Some(cond) = condition {
+            goals.extend(self.lower_logical_query(cond));
+        }
+        if let Some(b) = body {
+            let body_goals = self.lower_logical_query(b);
+            // empty_query produces no goals — treat as trivially true
+            goals.extend(body_goals);
+        }
+
+        if goals.is_empty() {
+            // No goals means trivially satisfied; count depends on context
+            return min == 0;
+        }
+
+        let config = resolve::ResolveConfig {
+            max_solutions: max + 1, // one extra to detect overflow
+            ..resolve::ResolveConfig::default()
+        };
+        let solutions = self.resolve(&goals, &config);
+        let count = solutions.len();
+        count >= min && count <= max
+    }
+
+    /// Evaluate forall_q(var, condition, body): condition AND body must hold
+    /// for all solutions. Equivalent to: no solutions of (condition AND NOT body).
+    fn eval_forall_guard(
+        &mut self,
+        named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    ) -> bool {
+        let condition = named_args.iter()
+            .find(|(s, _)| self.resolve_sym(*s) == "condition")
+            .map(|(_, t)| *t);
+        let body = named_args.iter()
+            .find(|(s, _)| self.resolve_sym(*s) == "body")
+            .map(|(_, t)| *t);
+
+        // forall x: P -: Q ≡ no x: P -: not(Q)
+        // Check: condition goals + negation of body goals must have no solutions
+        let mut goals = Vec::new();
+        if let Some(c) = condition {
+            goals.extend(self.lower_logical_query(c));
+        }
+        if let Some(b) = body {
+            let body_goals = self.lower_logical_query(b);
+            if !body_goals.is_empty() {
+                // Negate the body: build not(body_goal) for each
+                let not_sym = self.intern("not");
+                for g in body_goals {
+                    let not_term = self.alloc(Term::Fn {
+                        functor: not_sym,
+                        pos_args: SmallVec::from_elem(g, 1),
+                        named_args: SmallVec::new(),
+                    });
+                    goals.push(not_term);
+                }
+            }
+        }
+
+        if goals.is_empty() {
+            return true;
+        }
+
+        // If any solution exists, the forall is violated
+        let config = resolve::ResolveConfig {
+            max_solutions: 1,
+            ..resolve::ResolveConfig::default()
+        };
+        let solutions = self.resolve(&goals, &config);
+        solutions.is_empty()
+    }
+
+    /// Evaluate negation(query): the inner query must have no solutions.
+    fn eval_negation_guard(
+        &mut self,
+        named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    ) -> bool {
+        // negation has a single positional arg or named "query"
+        let inner = named_args.iter()
+            .find(|(s, _)| self.resolve_sym(*s) == "query")
+            .map(|(_, t)| *t);
+
+        if let Some(inner_term) = inner {
+            let goals = self.lower_logical_query(inner_term);
+            if goals.is_empty() {
+                return false; // negation of empty_query (always true) = false
+            }
+            let config = resolve::ResolveConfig {
+                max_solutions: 1,
+                ..resolve::ResolveConfig::default()
+            };
+            let solutions = self.resolve(&goals, &config);
+            solutions.is_empty() // negation holds if no solutions
+        } else {
+            true
+        }
+    }
+
+    /// Convert a LogicalQuery term to resolution goals.
+    fn lower_logical_query(&mut self, lq_term: TermId) -> Vec<TermId> {
+        let term = self.terms.get(lq_term).clone();
+        match term {
+            Term::Fn { functor, pos_args, named_args } => {
+                let name = self.resolve_sym(functor).to_string();
+                match name.as_str() {
+                    "pattern_query" => {
+                        let pattern = named_args.iter()
+                            .find(|(s, _)| self.resolve_sym(*s) == "term")
+                            .map(|(_, t)| *t)
+                            .or_else(|| pos_args.first().copied());
+                        pattern.into_iter().collect()
+                    }
+                    "conjunction" => {
+                        let left = named_args.iter()
+                            .find(|(s, _)| self.resolve_sym(*s) == "left")
+                            .map(|(_, t)| *t);
+                        let right = named_args.iter()
+                            .find(|(s, _)| self.resolve_sym(*s) == "right")
+                            .map(|(_, t)| *t);
+                        let mut goals = Vec::new();
+                        if let Some(l) = left { goals.extend(self.lower_logical_query(l)); }
+                        if let Some(r) = right { goals.extend(self.lower_logical_query(r)); }
+                        goals
+                    }
+                    "empty_query" => Vec::new(),
+                    "negation" => {
+                        let inner = named_args.iter()
+                            .find(|(s, _)| self.resolve_sym(*s) == "query")
+                            .map(|(_, t)| *t);
+                        if let Some(inner_term) = inner {
+                            let inner_goals = self.lower_logical_query(inner_term);
+                            if inner_goals.is_empty() {
+                                return Vec::new();
+                            }
+                            if inner_goals.len() == 1 {
+                                let not_sym = self.intern("not");
+                                let not_term = self.alloc(Term::Fn {
+                                    functor: not_sym,
+                                    pos_args: SmallVec::from_slice(&inner_goals),
+                                    named_args: SmallVec::new(),
+                                });
+                                vec![not_term]
+                            } else {
+                                // Multiple goals: negate as conjunction
+                                // TODO: proper conjunction wrapping
+                                inner_goals
+                            }
+                        } else {
+                            Vec::new()
+                        }
+                    }
+                    _ => vec![lq_term],
+                }
+            }
+            _ => vec![lq_term],
+        }
+    }
+
     pub fn assert_fact(
         &mut self,
         term: TermId,

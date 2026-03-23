@@ -60,11 +60,14 @@ enum TodoCommand {
     },
     /// Show work item counts by status
     Status,
-    /// List work items
+    /// List work items (hides delivered/verified by default)
     List {
         /// Filter by status (e.g. open, claimed, verified)
         #[arg(long)]
         status: Option<String>,
+        /// Show all items including delivered/verified
+        #[arg(long)]
+        all: bool,
     },
     /// Show next claimable work item
     Next {
@@ -423,10 +426,19 @@ fn run_status(kb: &KnowledgeBase) {
     }
 }
 
-fn run_list(kb: &KnowledgeBase, status_filter: Option<&str>) {
+fn run_list(kb: &KnowledgeBase, status_filter: Option<&str>, show_all: bool) {
     let items = collect_workitems(kb);
+    let closed = |s: &str| s == "Delivered" || s == "Verified";
     let filtered: Vec<_> = items.iter()
-        .filter(|i| status_filter.map_or(true, |f| i.status.eq_ignore_ascii_case(f)))
+        .filter(|i| {
+            if let Some(f) = status_filter {
+                i.status.eq_ignore_ascii_case(f)
+            } else if show_all {
+                true
+            } else {
+                !closed(&i.status)
+            }
+        })
         .collect();
 
     if filtered.is_empty() {
@@ -434,14 +446,75 @@ fn run_list(kb: &KnowledgeBase, status_filter: Option<&str>) {
         return;
     }
 
-    for item in &filtered {
-        let deps = if item.depends_on.is_empty() {
-            String::new()
-        } else {
-            format!(" (depends: {})", item.depends_on.join(", "))
-        };
-        println!("  {} [{}] {}{}", item.id, item.status, item.description, deps);
+    // Build dependents count: how many items depend on each item
+    let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
+    for item in &items {
+        for dep in &item.depends_on {
+            dependents.entry(dep.clone()).or_default().push(item.id.clone());
+        }
     }
+
+    // Count transitive dependents (items transitively unblocked)
+    fn count_transitive(id: &str, dependents: &HashMap<String, Vec<String>>, visited: &mut std::collections::HashSet<String>) -> usize {
+        if !visited.insert(id.to_string()) { return 0; }
+        let direct = dependents.get(id).cloned().unwrap_or_default();
+        let mut count = direct.len();
+        for dep in &direct {
+            count += count_transitive(dep, dependents, visited);
+        }
+        count
+    }
+
+    // Partition: has unmet deps vs ready (no deps or all deps delivered/verified)
+    let delivered = |status: &str| status == "Delivered" || status == "Verified";
+    let status_map: HashMap<&str, &str> = items.iter().map(|i| (i.id.as_str(), i.status.as_str())).collect();
+
+    let has_unmet_deps = |item: &WorkItemInfo| -> bool {
+        item.depends_on.iter().any(|dep| {
+            status_map.get(dep.as_str()).map_or(true, |s| !delivered(s))
+        })
+    };
+
+    let mut ready: Vec<_> = filtered.iter().filter(|i| !has_unmet_deps(i)).collect();
+    let mut blocked: Vec<_> = filtered.iter().filter(|i| has_unmet_deps(i)).collect();
+
+    // Sort ready: most transitive dependents first
+    ready.sort_by(|a, b| {
+        let mut va = std::collections::HashSet::new();
+        let mut vb = std::collections::HashSet::new();
+        let ca = count_transitive(&a.id, &dependents, &mut va);
+        let cb = count_transitive(&b.id, &dependents, &mut vb);
+        cb.cmp(&ca).then(a.id.cmp(&b.id))
+    });
+
+    // Sort blocked by id
+    blocked.sort_by(|a, b| a.id.cmp(&b.id));
+
+    if !ready.is_empty() {
+        for item in &ready {
+            let deps_info = if item.depends_on.is_empty() {
+                String::new()
+            } else {
+                format!(" (depends: {})", item.depends_on.join(", "))
+            };
+            let unblocks = {
+                let mut v = std::collections::HashSet::new();
+                let c = count_transitive(&item.id, &dependents, &mut v);
+                if c > 0 { format!(" [unblocks {c}]") } else { String::new() }
+            };
+            println!("  {} [{}] {}{}{}", item.id, item.status, item.description, deps_info, unblocks);
+        }
+    }
+
+    if !blocked.is_empty() {
+        if !ready.is_empty() { println!(); }
+        println!("  -- blocked --");
+        for item in &blocked {
+            let deps = format!(" (depends: {})", item.depends_on.join(", "));
+            println!("  {} [{}] {}{}", item.id, item.status, item.description, deps);
+        }
+    }
+
     println!("{} item(s)", filtered.len());
 }
 
@@ -544,7 +617,7 @@ fn run_show(kb: &KnowledgeBase, id: &str) {
     }
 }
 
-fn run_claim(kb: &mut KnowledgeBase, id: &str, agent: &str, output: Option<&Path>) {
+fn run_claim(kb: &mut KnowledgeBase, id: &str, agent: &str, project_dir: &Path, output: Option<&Path>) {
     // Verify claimable
     let claimable_sym = match kb.try_resolve_symbol("anthill.stage0.workflow.claimable") {
         Some(s) => s,
@@ -596,7 +669,13 @@ fn run_claim(kb: &mut KnowledgeBase, id: &str, agent: &str, output: Option<&Path
     let domain = kb.rule_domain(item.rule_id);
     kb.assert_fact(new_head, sort, domain, None);
 
-    println!("claimed: {id} by {agent}");
+    let status_text = format!("Claimed(agent: \"{agent}\", since: \"{}\")", now_timestamp());
+    if update_status_in_source(project_dir, id, &status_text) {
+        println!("claimed: {id} by {agent}");
+    } else {
+        eprintln!("warning: could not update source file for {id}");
+        println!("claimed: {id} by {agent} (in-memory only)");
+    }
 
     if let Some(out) = output {
         let text = anthill_core::persistence::print::print_fact(kb, new_head, None);
@@ -604,7 +683,7 @@ fn run_claim(kb: &mut KnowledgeBase, id: &str, agent: &str, output: Option<&Path
     }
 }
 
-fn run_deliver(kb: &mut KnowledgeBase, id: &str, agent: &str, output: Option<&Path>) {
+fn run_deliver(kb: &mut KnowledgeBase, id: &str, agent: &str, project_dir: &Path, output: Option<&Path>) {
     let items = collect_workitems(kb);
     let item = match items.iter().find(|i| i.id == id) {
         Some(i) => i,
@@ -638,7 +717,13 @@ fn run_deliver(kb: &mut KnowledgeBase, id: &str, agent: &str, output: Option<&Pa
     let domain = kb.rule_domain(item.rule_id);
     kb.assert_fact(new_head, sort, domain, None);
 
-    println!("delivered: {id} by {agent}");
+    let status_text = format!("Delivered(agent: \"{agent}\", at: \"{}\")", now_timestamp());
+    if update_status_in_source(project_dir, id, &status_text) {
+        println!("delivered: {id} by {agent}");
+    } else {
+        eprintln!("warning: could not update source file for {id}");
+        println!("delivered: {id} by {agent} (in-memory only)");
+    }
 
     if let Some(out) = output {
         let text = anthill_core::persistence::print::print_fact(kb, new_head, None);
@@ -751,6 +836,74 @@ fn replace_named_arg(kb: &mut KnowledgeBase, term: TermId, field: &str, new_valu
         }
         _ => term,
     }
+}
+
+/// Update the `status:` field of a WorkItem in source .anthill files.
+/// Finds the `fact WorkItem(...)` block with the given `id` and replaces
+/// the `status: <old>)` with `status: <new_status>)`.
+fn update_status_in_source(project_dir: &Path, id: &str, new_status: &str) -> bool {
+    let files = collect_anthill_files(&[scan_dir(project_dir)]);
+    let id_marker = format!("id: \"{id}\"");
+
+    for file in &files {
+        let source = match fs::read_to_string(&file) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        if !source.contains(&id_marker) {
+            continue;
+        }
+
+        // Find the fact block containing this ID by tracking parens
+        let mut pos = 0;
+        while let Some(fact_start) = source[pos..].find("fact ") {
+            let abs_start = pos + fact_start;
+            // Find the balanced closing paren for this fact
+            let mut depth: i32 = 0;
+            let mut in_fact = false;
+            let mut abs_end = abs_start;
+            for (i, ch) in source[abs_start..].char_indices() {
+                match ch {
+                    '(' => { depth += 1; in_fact = true; }
+                    ')' => {
+                        depth -= 1;
+                        if in_fact && depth == 0 {
+                            abs_end = abs_start + i + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let fact_text = &source[abs_start..abs_end];
+            if fact_text.contains(&id_marker) {
+                // Found it. Replace status: ... at the end of the fact.
+                // The status field ends at the closing ')' of the fact.
+                // Find "status: " within this block
+                if let Some(status_offset) = fact_text.find("status: ") {
+                    let status_abs = abs_start + status_offset;
+                    // Everything from "status: " up to (but not including) the closing ')'
+                    let old_end = abs_end - 1; // position of ')'
+                    let mut result = String::new();
+                    result.push_str(&source[..status_abs]);
+                    result.push_str("status: ");
+                    result.push_str(new_status);
+                    result.push_str(&source[old_end..]);
+
+                    if let Err(e) = fs::write(&file, &result) {
+                        eprintln!("warning: cannot write {}: {e}", file.display());
+                        return false;
+                    }
+                    return true;
+                }
+            }
+
+            pos = abs_end;
+        }
+    }
+    false
 }
 
 fn append_to_file(path: &Path, text: &str) {
@@ -992,11 +1145,11 @@ fn main() -> ExitCode {
             run_add(&kb, &project_dir, description, depends_on, acceptance);
         }
         TodoCommand::Status => run_status(&kb),
-        TodoCommand::List { status } => run_list(&kb, status.as_deref()),
+        TodoCommand::List { status, all } => run_list(&kb, status.as_deref(), *all),
         TodoCommand::Next { all } => run_next(&mut kb, *all),
         TodoCommand::Show { id } => run_show(&kb, id),
-        TodoCommand::Claim { id } => run_claim(&mut kb, id, &cli.agent, Some(&output_file)),
-        TodoCommand::Deliver { id } => run_deliver(&mut kb, id, &cli.agent, Some(&output_file)),
+        TodoCommand::Claim { id } => run_claim(&mut kb, id, &cli.agent, &project_dir, Some(&output_file)),
+        TodoCommand::Deliver { id } => run_deliver(&mut kb, id, &cli.agent, &project_dir, Some(&output_file)),
         TodoCommand::Feedback { id, text } => run_feedback(&mut kb, id, text, &cli.agent, Some(&output_file)),
         TodoCommand::Graph => run_graph(&kb),
     }
