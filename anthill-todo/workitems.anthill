@@ -4,7 +4,7 @@ fact WorkItem(
   id: "WI-001",
   description: "define typing rules",
   acceptance: [ToolPasses("cargo-test")],
-  depends_on: [],
+  depends_on: ["WI-014", "WI-015", "WI-016", "WI-017", "WI-018", "WI-019"],
   status: Open)
 
 fact WorkItem(
@@ -34,13 +34,13 @@ fact WorkItem(
   id: "WI-007",
   description: "remove default desugaring of ListLiteral",
   acceptance: [ToolPasses("cargo-test")],
-  depends_on: ["WI-001"],
+  depends_on: [],
   status: Open)
 fact WorkItem(
   id: "WI-008",
   description: "implement expressions",
   acceptance: [ToolPasses("cargo-test")],
-  depends_on: ["WI-001"],
+  depends_on: [],
   status: Open)
 fact WorkItem(
   id: "WI-009",
@@ -72,6 +72,48 @@ fact WorkItem(
 fact WorkItem(
   id: "WI-013",
   description: "Fix field access (dot projection) in expression bodies: p.fst after = doesn't parse. field_access works in rule bodies but not expression context. Likely conflict between identifier.identifier as qualified name vs field access.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-014",
+  description: "Lambda without type annotation: infer parameter type from context. Currently type_check only handles lambda(param: var_pattern(name: n, type_ann: some(value: param_type)), ...). Need to handle none case where param type is inferred from expected type (top-down).",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-015",
+  description: "Constructor pattern decomposition in extend_env_from_pattern: currently a TODO stub. Need to look up entity fields, match sub-patterns against field types, extend env for each.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-016",
+  description: "Define undefined helper operations in typing spec: entity_sort, lookup_operation, return_type, lookup_entity, entity_fields, field_value, functor_of, lookup_sort, build_unification_query, extract_type_bindings. These are used in typing_pass_spec.anthill but not defined.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-017",
+  description: "Add KB.assert operation to reflect.anthill: operation assert(kb: KB, term: Term, sort: Type) -> FactId effects Modifies[kb]. Needed by typing pass to emit TypeOf facts. Rust builtin implementation in resolve.rs.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-018",
+  description: "Top-level typing entry point: walk ALL operations, facts, rules in the KB and invoke type_check_operation/type_check_fact/type_check_rule. Integrate into load pipeline (after load_all, before constraint checking).",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-019",
+  description: "Error collection and reporting in typing pass: assert_compatible calls error() but how errors are gathered with source positions from ExprOccurrence spans and reported to the user.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
   status: Open)
