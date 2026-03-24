@@ -11,23 +11,28 @@ namespace anthill.stage0.workflow
   -- Dependency checking
   -- ================================================================
 
-  -- A work item has all dependencies verified if:
-  --   1. It has an empty depends_on list, or
-  --   2. All items in the depends_on list are Verified.
+  -- A dependency is satisfied if Delivered or Verified.
+  rule dep_satisfied(?dep)
+    :- WorkItem(id: ?dep, status: Delivered(agent: ?, at: ?))
+  rule dep_satisfied(?dep)
+    :- WorkItem(id: ?dep, status: Verified(at: ?))
 
-  rule all_deps_verified(?wi)
+  -- A work item has all dependencies satisfied if:
+  --   1. It has an empty depends_on list, or
+  --   2. All items in depends_on are Delivered or Verified.
+  rule all_deps_satisfied(?wi)
     :- WorkItem(id: ?wi, depends_on: nil())
 
-  rule all_deps_verified(?wi)
+  rule all_deps_satisfied(?wi)
     :- WorkItem(id: ?wi, depends_on: cons(head: ?dep, tail: ?rest)),
-       WorkItem(id: ?dep, status: Verified(?_)),
-       all_deps_verified_rest(?rest)
+       dep_satisfied(?dep),
+       all_deps_satisfied_rest(?rest)
 
-  rule all_deps_verified_rest(nil())
+  rule all_deps_satisfied_rest(nil())
 
-  rule all_deps_verified_rest(cons(head: ?dep, tail: ?rest))
-    :- WorkItem(id: ?dep, status: Verified(?_)),
-       all_deps_verified_rest(?rest)
+  rule all_deps_satisfied_rest(cons(head: ?dep, tail: ?rest))
+    :- dep_satisfied(?dep),
+       all_deps_satisfied_rest(?rest)
 
   -- ================================================================
   -- Status queries (convenience rules)
@@ -38,15 +43,19 @@ namespace anthill.stage0.workflow
     :- WorkItem(id: ?id, status: Open, description: ?desc)
 
   -- Find all work items ready to be claimed
-  -- (Open + all dependencies verified)
+  -- (Open + all dependencies satisfied)
   rule claimable(?id, ?desc)
     :- WorkItem(id: ?id, status: Open, description: ?desc),
-       all_deps_verified(?id)
+       all_deps_satisfied(?id)
 
   -- Find blocked work items
-  -- (Open but dependencies NOT all verified)
+  -- (Open but dependencies NOT all satisfied)
   rule blocked(?id, ?desc)
     :- WorkItem(id: ?id, status: Open, description: ?desc),
-       not(all_deps_verified(?id))
+       not(all_deps_satisfied(?id))
+
+  -- Find delivered items awaiting review
+  rule needs_review(?id, ?desc)
+    :- WorkItem(id: ?id, status: Delivered(agent: ?, at: ?), description: ?desc)
 
 end

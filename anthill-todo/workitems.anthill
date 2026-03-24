@@ -2,10 +2,10 @@
 
 fact WorkItem(
   id: "WI-001",
-  description: "define typing rules",
+  description: "define typing rules — spec complete in typing_pass_spec.anthill: all expression forms, collection literals, constructor patterns, error reporting, guards, SourceUnit entry point.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-014", "WI-015", "WI-016", "WI-017", "WI-018", "WI-019", "WI-025"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-03-24T16:00:00Z"))
 
 fact WorkItem(
   id: "WI-002",
@@ -160,4 +160,11 @@ fact WorkItem(
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
   status: Delivered(agent: "user", at: "2026-03-24T15:36:05Z"))
+
+fact WorkItem(
+  id: "WI-026",
+  description: "Bug: dep_satisfied/all_deps_satisfied rules produce combinatorial explosion in claimable query. Also Delivered(agent: ?, at: ?) pattern may not unify correctly with Delivered facts. Investigate resolver named-arg matching in rule bodies and fix max_solutions handling in next command.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
 

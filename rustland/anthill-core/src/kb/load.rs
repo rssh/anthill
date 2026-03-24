@@ -1591,6 +1591,9 @@ pub fn convert_query_term(
                 .collect();
 
             // Expand partial named args: fill missing entity fields with fresh vars
+            // Always sort named args to match entity field order (required for
+            // discrimination tree matching — both facts and patterns must have
+            // named args in the same order).
             if let Some(all_fields) = kb.entity_field_names(kb_functor) {
                 let all_fields = all_fields.to_vec();
                 if new_named.len() < all_fields.len() {
@@ -1602,10 +1605,10 @@ pub fn convert_query_term(
                             new_named.push((field_sym, var_term));
                         }
                     }
-                    let order: HashMap<Symbol, usize> = all_fields.iter().enumerate()
-                        .map(|(i, &s)| (s, i)).collect();
-                    new_named.sort_by_key(|(s, _)| order.get(s).copied().unwrap_or(usize::MAX));
                 }
+                let order: HashMap<Symbol, usize> = all_fields.iter().enumerate()
+                    .map(|(i, &s)| (s, i)).collect();
+                new_named.sort_by_key(|(s, _)| order.get(s).copied().unwrap_or(usize::MAX));
             }
 
             kb.alloc(Term::Fn { functor: kb_functor, pos_args: new_pos, named_args: new_named })
@@ -1954,6 +1957,7 @@ impl<'a> Loader<'a> {
                     .collect();
 
                 // Expand partial named args: fill missing entity fields with fresh vars
+                // Always sort named args to match entity field order.
                 if let Some(all_fields) = self.kb.entity_field_names(new_functor) {
                     let all_fields = all_fields.to_vec(); // borrow-safe copy
                     if new_named.len() < all_fields.len() {
@@ -1965,11 +1969,10 @@ impl<'a> Loader<'a> {
                                 new_named.push((field_sym, var_term));
                             }
                         }
-                        // Sort to match entity field order (discrimination tree is order-sensitive)
-                        let order: HashMap<Symbol, usize> = all_fields.iter().enumerate()
-                            .map(|(i, &s)| (s, i)).collect();
-                        new_named.sort_by_key(|(s, _)| order.get(s).copied().unwrap_or(usize::MAX));
                     }
+                    let order: HashMap<Symbol, usize> = all_fields.iter().enumerate()
+                        .map(|(i, &s)| (s, i)).collect();
+                    new_named.sort_by_key(|(s, _)| order.get(s).copied().unwrap_or(usize::MAX));
                 }
 
                 Term::Fn { functor: new_functor, pos_args: new_pos, named_args: new_named }

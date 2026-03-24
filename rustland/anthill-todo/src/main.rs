@@ -535,7 +535,7 @@ fn run_next(kb: &mut KnowledgeBase, show_all: bool) {
         named_args: SmallVec::new(),
     });
 
-    let config = ResolveConfig { max_solutions: if show_all { 100 } else { 1 }, ..ResolveConfig::default() };
+    let config = ResolveConfig { max_solutions: if show_all { 1000 } else { 1 }, ..ResolveConfig::default() };
     let solutions = kb.resolve(&[query], &config);
 
     if solutions.is_empty() {
@@ -544,12 +544,14 @@ fn run_next(kb: &mut KnowledgeBase, show_all: bool) {
     }
 
     let query_vars = kb.collect_vars(query);
+    let mut seen = std::collections::HashSet::new();
     for sol in &solutions {
         let id = query_vars.iter()
             .find(|v| kb.resolve_sym(v.name()) == "id")
             .and_then(|v| sol.subst.resolve(*v))
             .and_then(|t| extract_string(kb, t))
             .unwrap_or_else(|| "?".into());
+        if !seen.insert(id.clone()) { continue; }
         let desc = query_vars.iter()
             .find(|v| kb.resolve_sym(v.name()) == "desc")
             .and_then(|v| sol.subst.resolve(*v))
