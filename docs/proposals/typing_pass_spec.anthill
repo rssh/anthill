@@ -21,14 +21,49 @@
 namespace anthill.reflect.typing_pass
   import anthill.reflect.{KB, ExprOccurrence, Occurrence, TypeOf, type_of}
   import anthill.reflect.{Expr, Pattern, MatchBranch, ApplyArg, FieldInfo}
-  import anthill.reflect.{OperationInfo, EntityInfo, SortInfo}
+  import anthill.reflect.{OperationInfo, EntityInfo, SortInfo, SourceUnit}
   import anthill.reflect.{Symbol, Term, FactId, ConstraintId}
   import anthill.reflect.typing.{is_entity_of, type_compatible}
-  import anthill.reflect.{occurrence_term, occurrence_owner}
+  import anthill.reflect.{occurrence_term, occurrence_owner, occurrences_of}
   import anthill.prelude.{Int, Float, String, Bool, List, Option, Type, Nothing}
 
+  import anthill.prelude.{Error}
+
   export TypingEnv, TypeResult, type_check, type_check_operation
+  export type_check_unit
   export unify_types, assert_compatible, fresh_type_var, is_ground
+  export TypeError, error_span, error_message
+
+  -- ================================================================
+  -- TypeError: typed error for the typing pass
+  -- ================================================================
+
+  sort TypeError
+    entity type_mismatch(occ: ExprOccurrence, expected: Type, actual: Type)
+    entity unknown_field(occ: ExprOccurrence, entity_name: Symbol, field: Symbol)
+    entity no_parent_sort(name: Symbol)
+    entity unresolved_name(occ: ExprOccurrence, name: Symbol)
+  end
+
+  -- Extract source position from any TypeError variant.
+  operation error_span(e: TypeError) -> Option[SourceSpan] =
+    match e
+      case type_mismatch(occ: o, expected: _, actual: _) -> some(value: occurrence_span(o))
+      case unknown_field(occ: o, entity_name: _, field: _) -> some(value: occurrence_span(o))
+      case unresolved_name(occ: o, name: _) -> some(value: occurrence_span(o))
+      case no_parent_sort(name: _) -> none
+
+  -- Human-readable error message.
+  operation error_message(e: TypeError) -> String =
+    match e
+      case type_mismatch(occ: _, expected: exp, actual: act) ->
+        "type mismatch: expected " + exp + ", got " + act
+      case unknown_field(occ: _, entity_name: ent, field: f) ->
+        "unknown field '" + f + "' in entity " + ent
+      case no_parent_sort(name: n) ->
+        "entity has no parent sort: " + n
+      case unresolved_name(occ: _, name: n) ->
+        "unresolved name: " + n
 
   -- ================================================================
   -- TypingEnv + TypeResult
@@ -41,6 +76,11 @@ namespace anthill.reflect.typing_pass
     operation bind_type(env: TypingEnv, param: Symbol, type: Type) -> TypingEnv
     operation lookup_type(env: TypingEnv, param: Symbol) -> Option[Type]
     operation apply_subst(env: TypingEnv, sort_expr: Type) -> Type
+    -- Expected collection type from context (field type, param type).
+    -- Used by collection literals to determine target collection kind.
+    -- Accepts Option: none leaves env unchanged, some(t) sets the expected type.
+    operation with_expected_collection_type(env: TypingEnv, t: Option[Type]) -> TypingEnv
+    operation expected_collection_type(env: TypingEnv) -> Option[Type]
   end
 
   -- Fresh type variable: creates a new unbound type_var with a unique name
@@ -83,11 +123,12 @@ namespace anthill.reflect.typing_pass
           then TypeResult(type: a_resolved, env: env)
           else TypeResult(type: Nothing, env: env)
 
-  -- Assert that two types unify. Error if LUB is Nothing.
-  operation assert_compatible(kb: KB, env: TypingEnv, actual: Type, expected: Type) -> TypeResult =
+  -- Assert that two types unify. Raises TypeError if LUB is Nothing.
+  operation assert_compatible(kb: KB, env: TypingEnv, occ: ExprOccurrence, actual: Type, expected: Type) -> TypeResult
+    effects Error[TypeError] =
     let r = unify_types(kb, env, actual, expected)
     if result_type(r) = Nothing
-      then error("type mismatch: expected " + expected + ", got " + actual)
+      then error(type_mismatch(occ: occ, expected: expected, actual: actual))
       else r
 
   operation env_from_params(env: TypingEnv, params: List[FieldInfo]) -> TypingEnv =
@@ -124,10 +165,11 @@ namespace anthill.reflect.typing_pass
   operation lookup_operation(kb: KB, name: Symbol) -> OperationInfo
 
   -- Get the parent sort of an entity (via scope).
-  operation entity_sort(kb: KB, name: Symbol) -> Type =
+  operation entity_sort(kb: KB, name: Symbol) -> Type
+    effects Error[TypeError] =
     match scope(name)
       case some(value: sort_sym) -> sort_sym
-      case none -> error("entity has no parent sort: " + name)
+      case none -> error(no_parent_sort(name: name))
 
   -- Get entity fields from EntityInfo.
   operation entity_fields(info: EntityInfo) -> List[FieldInfo] =
@@ -155,8 +197,13 @@ namespace anthill.reflect.typing_pass
   -- The typing function
   -- ================================================================
 
+  -- expected_collection_type is carried in TypingEnv.
+  -- Collection literals read it to determine the target collection kind.
+  -- Callers use with_expected_collection_type before recursing into
+  -- sub-expressions where context determines the collection type
+  -- (e.g. field values with declared collection types).
   operation type_check(kb: KB, env: TypingEnv, expr: ExprOccurrence) -> TypeResult
-    effects Modifies[kb] =
+    effects {Modifies[kb], Error[TypeError]} =
     let r = match occurrence_term(kb, expr)
       case int_lit(value: _)    -> TypeResult(type: Int, env: env)
       case float_lit(value: _)  -> TypeResult(type: Float, env: env)
@@ -181,10 +228,10 @@ namespace anthill.reflect.typing_pass
 
       case if_expr(cond: c, then_branch: t, else_branch: e) ->
         let cr = type_check(kb, env, c)
-        let cr2 = assert_compatible(kb, result_env(cr), result_type(cr), Bool)
+        let cr2 = assert_compatible(kb, result_env(cr), c, result_type(cr), Bool)
         let tr = type_check(kb, result_env(cr2), t)
         let er = type_check(kb, result_env(tr), e)
-        assert_compatible(kb, result_env(er), result_type(tr), result_type(er))
+        assert_compatible(kb, result_env(er), expr, result_type(tr), result_type(er))
 
       case let_expr(pattern: var_pattern(name: n, type_ann: _), value: v, body: b) ->
         let vr = type_check(kb, env, v)
@@ -202,35 +249,106 @@ namespace anthill.reflect.typing_pass
 
       case match_expr(scrutinee: s, branches: bs) ->
         let sr = type_check(kb, env, s)
-        check_branches(kb, result_env(sr), result_type(sr), bs)
+        check_branches(kb, result_env(sr), s, result_type(sr), bs)
+
+      -- Collection literals: read expected_collection_type from env
+      case ListLiteral(elements: elems, tail: t) ->
+        let expected = TypingEnv.expected_collection_type(env)
+        type_check_collection(kb, env, expr, expected, elems, t)
+
+      case SetLiteral(elements: elems) ->
+        let expected = TypingEnv.expected_collection_type(env)
+        type_check_collection(kb, env, expr, expected, elems, none)
+
+      case TupleLiteral(fields: fs) ->
+        let expected = TypingEnv.expected_collection_type(env)
+        type_check_tuple(kb, env, expr, expected, fs)
+
     let _ = KB.assert(kb, type_of(occ: expr, type: result_type(r)), TypeOf)
     r
+
+  -- ================================================================
+  -- Collection literal typing
+  -- ================================================================
+
+  -- Resolve a collection literal [a, b, c] or [a, b | t].
+  -- The expected type determines the target collection kind.
+  -- Falls back to List if no expected type.
+  operation type_check_collection(kb: KB, env: TypingEnv, occ: ExprOccurrence, expected: Option[Type], elements: List[ExprOccurrence], tail: Option[ExprOccurrence]) -> TypeResult
+    effects {Modifies[kb], Error[TypeError]} =
+    -- Extract element type from expected type, or use fresh var
+    let elem_type = match expected
+      case some(value: coll_type) -> extract_element_type(kb, coll_type)
+      case none -> fresh_type_var(kb, intern("elem"))
+    -- Type-check each element with expected element type in env
+    let elem_env = TypingEnv.with_expected_collection_type(env, some(value: elem_type))
+    let env2 = type_check_elements(kb, elem_env, occ, elem_type, elements)
+    -- Type-check tail if present (must be same collection type)
+    let env3 = match tail
+      case some(value: tail_occ) ->
+        let tail_env = TypingEnv.with_expected_collection_type(result_env(env2), expected)
+        let tr = type_check(kb, tail_env, tail_occ)
+        result_env(tr)
+      case none -> result_env(env2)
+    -- Determine result type: expected if given, else List[elem_type]
+    let result = match expected
+      case some(value: coll_type) -> coll_type
+      case none -> List[T = TypingEnv.apply_subst(env3, elem_type)]
+    TypeResult(type: result, env: env3)
+
+  -- Type-check each element of a collection against the expected element type.
+  operation type_check_elements(kb: KB, env: TypingEnv, occ: ExprOccurrence, elem_type: Type, elements: List[ExprOccurrence]) -> TypeResult
+    effects {Modifies[kb], Error[TypeError]} =
+    match elements
+      case nil -> TypeResult(type: elem_type, env: env)
+      case cons(head: elem_occ, tail: rest) ->
+        let er = type_check(kb, env, elem_occ)
+        let ur = assert_compatible(kb, result_env(er), elem_occ, result_type(er), elem_type)
+        type_check_elements(kb, result_env(ur), occ, result_type(ur), rest)
+
+  -- Extract element type T from a collection type like List[T = Int].
+  -- Uses Collection fact to find the element type parameter.
+  operation extract_element_type(kb: KB, coll_type: Type) -> Type
+
+  -- Type-check a tuple literal (a, b). Each position has its own type.
+  operation type_check_tuple(kb: KB, env: TypingEnv, occ: ExprOccurrence, expected: Option[Type], fields: List[ExprOccurrence]) -> TypeResult
+    effects {Modifies[kb], Error[TypeError]} =
+    let tr = type_check_tuple_fields(kb, env, occ, fields, 0)
+    TypeResult(type: result_type(tr), env: result_env(tr))
+
+  operation type_check_tuple_fields(kb: KB, env: TypingEnv, occ: ExprOccurrence, fields: List[ExprOccurrence], index: Int) -> TypeResult
+    effects {Modifies[kb], Error[TypeError]} =
+    match fields
+      case nil -> TypeResult(type: TupleLiteral, env: env)
+      case cons(head: field_occ, tail: rest) ->
+        let fr = type_check(kb, env, field_occ)
+        type_check_tuple_fields(kb, result_env(fr), occ, rest, index + 1)
 
   -- ================================================================
   -- Match branch checking
   -- ================================================================
 
-  operation check_branches(kb: KB, env: TypingEnv, scrutinee_type: Type, branches: List[MatchBranch]) -> TypeResult
-    effects Modifies[kb] =
+  operation check_branches(kb: KB, env: TypingEnv, scrutinee_occ: ExprOccurrence, scrutinee_type: Type, branches: List[MatchBranch]) -> TypeResult
+    effects {Modifies[kb], Error[TypeError]} =
     match branches
       case cons(head: MatchBranch(pattern: p, guard: _, body: b), tail: nil) ->
-        let branch_env = extend_env_from_pattern(kb, env, p, scrutinee_type)
-        type_check(kb, branch_env, b)
+        let branch_env = extend_env_from_pattern(kb, env, scrutinee_occ, p, scrutinee_type)
+        type_check(kb, branch_env, b, none)
       case cons(head: MatchBranch(pattern: p, guard: _, body: b), tail: rest) ->
-        let branch_env = extend_env_from_pattern(kb, env, p, scrutinee_type)
-        let br = type_check(kb, branch_env, b)
-        let rest_r = check_branches(kb, result_env(br), scrutinee_type, rest)
-        assert_compatible(kb, result_env(rest_r), result_type(br), result_type(rest_r))
+        let branch_env = extend_env_from_pattern(kb, env, scrutinee_occ, p, scrutinee_type)
+        let br = type_check(kb, branch_env, b, none)
+        let rest_r = check_branches(kb, result_env(br), scrutinee_occ, scrutinee_type, rest)
+        assert_compatible(kb, result_env(rest_r), b, result_type(br), result_type(rest_r))
 
-  operation extend_env_from_pattern(kb: KB, env: TypingEnv, pat: Pattern, scrutinee_type: Type) -> TypingEnv =
+  operation extend_env_from_pattern(kb: KB, env: TypingEnv, occ: ExprOccurrence, pat: Pattern, scrutinee_type: Type) -> TypingEnv
+    effects Error[TypeError] =
     match pat
       case var_pattern(name: n, type_ann: _) -> TypingEnv.bind_var(env, n, scrutinee_type)
       case wildcard -> env
       case constructor_pattern(name: ctor, args: sub_pats) ->
         let entity_info = lookup_entity(kb, ctor)
         let parent_sort = entity_sort(kb, ctor)
-        -- verify scrutinee is compatible with this constructor's sort
-        let _ = assert_compatible(kb, env, scrutinee_type, parent_sort)
+        let _ = assert_compatible(kb, env, occ, scrutinee_type, parent_sort)
         let fields = entity_fields(entity_info)
         extend_env_from_fields(kb, env, pat, fields)
       case _ -> env
@@ -248,11 +366,11 @@ namespace anthill.reflect.typing_pass
         extend_env_from_fields(kb, env2, sub_pat_term, rest)
 
   -- Find the type of a field by name in a list of FieldInfo.
-  operation lookup_field_type(fields: List[FieldInfo], name: Symbol) -> Type =
+  operation lookup_field_type(fields: List[FieldInfo], name: Symbol) -> Option[Type] =
     match fields
-      case nil -> error("unknown field: " + name)
+      case nil -> none
       case cons(head: FieldInfo(name: n, type_name: t), tail: rest) ->
-        if n = name then t
+        if n = name then some(value: t)
         else lookup_field_type(rest, name)
 
   -- ================================================================
@@ -268,7 +386,7 @@ namespace anthill.reflect.typing_pass
     match args
       case nil -> ArgsResult(types: nil, env: env)
       case cons(head: ApplyArg(name: _, value: arg_occ), tail: rest) ->
-        let ar = type_check(kb, env, arg_occ)
+        let ar = type_check(kb, env, arg_occ, none)
         let rest_r = check_args(kb, result_env(ar), rest)
         match rest_r
           case ArgsResult(types: rest_types, env: rest_env) ->
@@ -307,13 +425,14 @@ namespace anthill.reflect.typing_pass
     type_check_fields(kb, env, fact_occ, fields)
 
   operation type_check_fields(kb: KB, env: TypingEnv, fact_occ: ExprOccurrence, fields: List[FieldInfo]) -> TypingEnv
-    effects Modifies[kb] =
+    effects {Modifies[kb], Error[TypeError]} =
     match fields
       case nil -> env
       case cons(head: FieldInfo(name: field_name, type_name: declared_type), tail: rest) ->
         let value_occ = field_value(kb, fact_occ, field_name)
-        let vr = type_check(kb, env, value_occ)
-        let ur = assert_compatible(kb, result_env(vr), result_type(vr), declared_type)
+        let field_env = TypingEnv.with_expected_collection_type(env, some(value: declared_type))
+        let vr = type_check(kb, field_env, value_occ)
+        let ur = assert_compatible(kb, result_env(vr), value_occ, result_type(vr), declared_type)
         type_check_fields(kb, result_env(ur), fact_occ, rest)
 
   -- ================================================================
@@ -321,13 +440,13 @@ namespace anthill.reflect.typing_pass
   -- ================================================================
 
   operation type_check_rule(kb: KB, env: TypingEnv, head_occ: ExprOccurrence, body: List[ExprOccurrence], equation_rhs: Option[ExprOccurrence]) -> TypingEnv
-    effects Modifies[kb] =
+    effects {Modifies[kb], Error[TypeError]} =
     let env_after_body = type_check_goals(kb, env, body)
-    let hr = type_check(kb, env_after_body, head_occ)
+    let hr = type_check(kb, env_after_body, head_occ, none)
     match equation_rhs
       case some(value: rhs_occ) ->
-        let rr = type_check(kb, result_env(hr), rhs_occ)
-        let ur = assert_compatible(kb, result_env(rr), result_type(rr), result_type(hr))
+        let rr = type_check(kb, result_env(hr), rhs_occ, none)
+        let ur = assert_compatible(kb, result_env(rr), rhs_occ, result_type(rr), result_type(hr))
         result_env(ur)
       case none -> result_env(hr)
 
@@ -336,7 +455,7 @@ namespace anthill.reflect.typing_pass
     match goals
       case nil -> env
       case cons(head: goal_occ, tail: rest) ->
-        let gr = type_check(kb, env, goal_occ)
+        let gr = type_check(kb, env, goal_occ, none)
         type_check_goals(kb, result_env(gr), rest)
 
   -- ================================================================
@@ -356,14 +475,85 @@ namespace anthill.reflect.typing_pass
           pattern_query(TypeOf(occ: ?o, type: ?t2)),
           guarded(empty_query, ?t1 != ?t2)))))
 
+  -- Type-check a single operation (if it has a body).
   operation type_check_operation(kb: KB, op: OperationInfo) -> TypeOf
-    effects Modifies[kb] =
+    effects {Modifies[kb], Error[TypeError]} =
     match op
       case OperationInfo(name: op_name, params: params, return_type: ret, body: some(value: body_occ)) ->
         let sort_env = env_from_sort_scope(kb, op_name)
         let env = env_from_params(sort_env, params)
         let br = type_check(kb, env, body_occ)
-        let ur = assert_compatible(kb, result_env(br), result_type(br), ret)
+        let ur = assert_compatible(kb, result_env(br), body_occ, result_type(br), ret)
         type_of(occ: body_occ, type: result_type(ur))
       case _ -> ?
+
+  -- ================================================================
+  -- Per-unit entry point
+  -- ================================================================
+
+  -- Type-check all definitions in a source unit.
+  -- Called after loading, on demand per SourceUnit.
+  -- Collects TypeError errors — does not abort on first error.
+  -- Returns (type judgments, errors) pair.
+  entity TypeCheckResult(judgments: List[TypeOf], errors: List[TypeError])
+
+  operation type_check_unit(kb: KB, unit: SourceUnit) -> TypeCheckResult
+    effects Modifies[kb] =
+    let _ = init_typing(kb)
+    match unit
+      case SourceUnit(source: _, path: _, operations: ops, facts: fcts, rules: rls) ->
+        let env = TypingEnv.empty()
+        let op_results = type_check_operations(kb, ops)
+        let fact_results = type_check_facts(kb, env, fcts)
+        let rule_results = type_check_rules(kb, env, rls)
+        op_results
+
+  -- Walk operation symbols, look up OperationInfo, type-check each.
+  operation type_check_operations(kb: KB, ops: List[Symbol]) -> List[TypeOf]
+    effects Modifies[kb] =
+    match ops
+      case nil -> nil
+      case cons(head: op_sym, tail: rest) ->
+        let info = lookup_operation(kb, op_sym)
+        match info
+          case OperationInfo(body: some(_)) ->
+            let result = type_check_operation(kb, info)
+            cons(head: result, tail: type_check_operations(kb, rest))
+          case _ -> type_check_operations(kb, rest)
+
+  -- Walk fact symbols, get occurrences, type-check each.
+  operation type_check_facts(kb: KB, env: TypingEnv, facts: List[Symbol]) -> TypingEnv
+    effects Modifies[kb] =
+    match facts
+      case nil -> env
+      case cons(head: fact_sym, tail: rest) ->
+        let occs = occurrences_of(fact_sym)
+        let env2 = type_check_fact_occs(kb, env, occs)
+        type_check_facts(kb, env2, rest)
+
+  operation type_check_fact_occs(kb: KB, env: TypingEnv, occs: List[ExprOccurrence]) -> TypingEnv
+    effects Modifies[kb] =
+    match occs
+      case nil -> env
+      case cons(head: occ, tail: rest) ->
+        let env2 = type_check_fact(kb, env, occ)
+        type_check_fact_occs(kb, env2, rest)
+
+  -- Walk rule symbols, get occurrences, type-check each.
+  operation type_check_rules(kb: KB, env: TypingEnv, rules: List[Symbol]) -> TypingEnv
+    effects Modifies[kb] =
+    match rules
+      case nil -> env
+      case cons(head: rule_sym, tail: rest) ->
+        let occs = occurrences_of(rule_sym)
+        let env2 = type_check_rule_occs(kb, env, occs)
+        type_check_rules(kb, env2, rest)
+
+  operation type_check_rule_occs(kb: KB, env: TypingEnv, occs: List[ExprOccurrence]) -> TypingEnv
+    effects Modifies[kb] =
+    match occs
+      case nil -> env
+      case cons(head: occ, tail: rest) ->
+        -- TODO: decompose occurrence into head, body, equation_rhs
+        type_check_rule_occs(kb, env, rest)
 end

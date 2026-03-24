@@ -18,7 +18,8 @@ namespace anthill.reflect
   import anthill.prelude.{Type}
   export Term, FactId, Symbol
   export SourceId, SourceSpan, Occurrence, ExprOccurrence
-  export occurrence_term, occurrence_span, occurrence_owner, sub_occurrences
+  export occurrence_term, occurrence_span, occurrence_owner, sub_occurrences, occurrences_of
+  export SourceUnit
   export KB
   export qualified_name, short_name, lookup_symbol, scope, kind
   export LiteralRepr, TermRepr, SetLiteral, TupleLiteral, ListLiteral, SortInfo, EntityInfo, OperationInfo, FieldInfo, DescriptionInfo
@@ -78,6 +79,23 @@ namespace anthill.reflect
   operation occurrence_span(occ: Occurrence) -> SourceSpan
   operation occurrence_owner(occ: Occurrence) -> Symbol
   operation sub_occurrences(occ: Occurrence) -> List[Occurrence]
+
+  -- Find occurrences owned by a symbol (operation body, fact head, rule head/body).
+  -- Returns all ExprOccurrences registered under this owner during loading.
+  operation occurrences_of(owner: Symbol) -> List[ExprOccurrence]
+
+  -- ================================================================
+  -- Source unit: a loaded file and the definitions it contributed.
+  -- Emitted by the loader after processing each file.
+  -- ================================================================
+
+  entity SourceUnit(
+    source: SourceId,
+    path: String,
+    operations: List[Symbol],
+    facts: List[Symbol],
+    rules: List[Symbol]
+  )
 
   -- ================================================================
   -- Symbol operations (builtins)

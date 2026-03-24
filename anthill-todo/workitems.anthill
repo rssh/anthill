@@ -4,7 +4,7 @@ fact WorkItem(
   id: "WI-001",
   description: "define typing rules",
   acceptance: [ToolPasses("cargo-test")],
-  depends_on: ["WI-014", "WI-015", "WI-016", "WI-017", "WI-018", "WI-019"],
+  depends_on: ["WI-014", "WI-015", "WI-016", "WI-017", "WI-018", "WI-019", "WI-025"],
   status: Open)
 
 fact WorkItem(
@@ -110,14 +110,14 @@ fact WorkItem(
   description: "Top-level typing entry point: walk ALL operations, facts, rules in the KB and invoke type_check_operation/type_check_fact/type_check_rule. Integrate into load pipeline (after load_all, before constraint checking).",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "user", at: "2026-03-24T11:34:20Z"))
 
 fact WorkItem(
   id: "WI-019",
   description: "Error collection and reporting in typing pass: assert_compatible calls error() but how errors are gathered with source positions from ExprOccurrence spans and reported to the user.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "user", at: "2026-03-24T12:57:22Z"))
 
 fact WorkItem(
   id: "WI-020",
@@ -153,4 +153,11 @@ fact WorkItem(
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
   status: Open)
+
+fact WorkItem(
+  id: "WI-025",
+  description: "Type-check collection literals: ListLiteral [a, b, c], SetLiteral {a, b, c}, TupleLiteral (a, b), head|tail [h | t]. Infer element type from contents, check all elements are compatible. Add cases to type_check in typing_pass_spec.anthill.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "user", at: "2026-03-24T15:36:05Z"))
 
