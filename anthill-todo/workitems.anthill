@@ -163,7 +163,28 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-026",
-  description: "Bug: dep_satisfied/all_deps_satisfied rules produce combinatorial explosion in claimable query. Also Delivered(agent: ?, at: ?) pattern may not unify correctly with Delivered facts. Investigate resolver named-arg matching in rule bodies and fix max_solutions handling in next command.",
+  description: "Bug: combinatorial explosion in claimable query — dep_satisfied produces redundant solutions for each anonymous variable binding. Named-arg sort order fixed. Remaining fix: per-query caching (needs WI-029 de Bruijn for proper cache keys).",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-029"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-027",
+  description: "forall quantifier in rule bodies: forall ?x in list: P(?x) eliminates recursive list walking. Extend grammar and resolver to support quantified goals in rule bodies, not just constraints.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-029"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-028",
+  description: "Resolver uses key/functional-dep info from guards to skip backtracking. When a goal matches a sort with a key constraint and the key arg is ground, stop after first solution.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-029",
+  description: "De Bruijn variable representation: DeBruijn(u32) for bound vars in stored terms, Global(VarId) for instantiated vars during resolution. Enables canonical hash-consing, per-query caching, and proper quantifier scoping. See Proposal 024. Prerequisite for WI-027 (forall in rule bodies).",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
   status: Open)
