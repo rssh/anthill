@@ -10,7 +10,7 @@ mod common;
 
 use anthill_core::parse;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::term::{Term, TermId};
+use anthill_core::kb::term::{Term, TermId, Var};
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 
@@ -56,7 +56,7 @@ fn default_config() -> ResolveConfig {
 fn make_var(kb: &mut KnowledgeBase, name: &str) -> TermId {
     let sym = kb.intern(name);
     let vid = kb.fresh_var(sym);
-    kb.alloc(Term::Var(vid))
+    kb.alloc(Term::Var(Var::Global(vid)))
 }
 
 /// Build a SortRequiresInfo query with 2 named args (sort_ref, spec).

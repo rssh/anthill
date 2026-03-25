@@ -7,7 +7,7 @@ mod common;
 
 use anthill_core::parse;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::term::{Term, TermId};
+use anthill_core::kb::term::{Term, TermId, Var};
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::persistence::print::TermPrinter;
@@ -52,7 +52,7 @@ fn resolve_config() -> ResolveConfig {
 fn make_var(kb: &mut KnowledgeBase, name: &str) -> TermId {
     let sym = kb.intern(name);
     let vid = kb.fresh_var(sym);
-    kb.alloc(Term::Var(vid))
+    kb.alloc(Term::Var(Var::Global(vid)))
 }
 
 /// Build a query term: functor(?arg1, ?arg2), resolving functor by qualified name.

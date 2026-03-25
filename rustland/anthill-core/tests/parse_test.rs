@@ -5,7 +5,7 @@ mod common;
 use anthill_core::parse;
 use anthill_core::parse::ir::*;
 use anthill_core::kb::{KnowledgeBase, SortKind};
-use anthill_core::kb::term::{Term, TermId, Literal};
+use anthill_core::kb::term::{Term, TermId, Literal, Var};
 use anthill_core::kb::load::{self, NullResolver};
 
 /// Count elements in a cons-list (cons/nil encoding).
@@ -81,7 +81,7 @@ fn parse_abstract_sort_named_variable() {
                 TypeExpr::Variable { term_id, .. } => {
                     let term = parsed.terms.get(*term_id);
                     match term {
-                        anthill_core::kb::term::Term::Var(vid) => {
+                        anthill_core::kb::term::Term::Var(Var::Global(vid)) => {
                             assert_eq!(parsed.symbols.name(vid.name()), "Element");
                         }
                         other => panic!("expected Var term, got {:?}", other),
@@ -1385,7 +1385,7 @@ fn parse_operation_with_variable_types() {
                     assert!(descriptions.is_empty());
                     // Verify it's a named variable (not anonymous)
                     match parsed.terms.get(*term_id) {
-                        Term::Var(vid) => {
+                        Term::Var(Var::Global(vid)) => {
                             assert_eq!(parsed.symbols.name(vid.name()), "T");
                         }
                         other => panic!("expected Var, got {:?}", other),
@@ -1396,7 +1396,7 @@ fn parse_operation_with_variable_types() {
             match &o.return_type {
                 TypeExpr::Variable { term_id, .. } => {
                     match parsed.terms.get(*term_id) {
-                        Term::Var(vid) => {
+                        Term::Var(Var::Global(vid)) => {
                             assert_eq!(parsed.symbols.name(vid.name()), "T");
                         }
                         other => panic!("expected Var, got {:?}", other),
@@ -1426,11 +1426,11 @@ fn variable_types_share_scope_in_operation() {
             };
             // Both should be the same variable (same VarId)
             let param_var = match parsed.terms.get(param_tid) {
-                Term::Var(vid) => vid.raw(),
+                Term::Var(Var::Global(vid)) => vid.raw(),
                 _ => panic!("expected Var"),
             };
             let ret_var = match parsed.terms.get(ret_tid) {
-                Term::Var(vid) => vid.raw(),
+                Term::Var(Var::Global(vid)) => vid.raw(),
                 _ => panic!("expected Var"),
             };
             assert_eq!(param_var, ret_var,
@@ -1918,7 +1918,7 @@ fn load_abstract_sort_variable_emits_sort_alias() {
             assert_eq!(pos_args.len(), 2);
             // Second arg should be a Var term (the logical variable ?Element)
             match kb.get_term(pos_args[1]) {
-                Term::Var(vid) => {
+                Term::Var(Var::Global(vid)) => {
                     assert_eq!(kb.resolve_sym(vid.name()), "Element");
                 }
                 other => panic!("expected Var term for ?Element, got {:?}", other),
@@ -1976,7 +1976,7 @@ fn load_abstract_sort_shared_variables() {
         match kb.get_term(tid) {
             Term::Fn { pos_args, .. } => {
                 match kb.get_term(pos_args[1]) {
-                    Term::Var(vid) => vid.raw(),
+                    Term::Var(Var::Global(vid)) => vid.raw(),
                     other => panic!("expected Var, got {:?}", other),
                 }
             }
@@ -2003,7 +2003,7 @@ fn parse_entity_with_anonymous_variable_fields() {
             let vid0 = match &e.fields[0].ty {
                 TypeExpr::Variable { term_id, .. } => {
                     match parsed.terms.get(*term_id) {
-                        Term::Var(vid) => vid.raw(),
+                        Term::Var(Var::Global(vid)) => vid.raw(),
                         other => panic!("expected Var for field x, got {:?}", other),
                     }
                 }
@@ -2012,7 +2012,7 @@ fn parse_entity_with_anonymous_variable_fields() {
             let vid1 = match &e.fields[1].ty {
                 TypeExpr::Variable { term_id, .. } => {
                     match parsed.terms.get(*term_id) {
-                        Term::Var(vid) => vid.raw(),
+                        Term::Var(Var::Global(vid)) => vid.raw(),
                         other => panic!("expected Var for field y, got {:?}", other),
                     }
                 }
@@ -2037,7 +2037,7 @@ fn parse_entity_with_named_variable_fields_shared() {
             let vid0 = match &e.fields[0].ty {
                 TypeExpr::Variable { term_id, .. } => {
                     match parsed.terms.get(*term_id) {
-                        Term::Var(vid) => {
+                        Term::Var(Var::Global(vid)) => {
                             assert_eq!(parsed.symbols.name(vid.name()), "T");
                             vid.raw()
                         }
@@ -2049,7 +2049,7 @@ fn parse_entity_with_named_variable_fields_shared() {
             let vid1 = match &e.fields[1].ty {
                 TypeExpr::Variable { term_id, .. } => {
                     match parsed.terms.get(*term_id) {
-                        Term::Var(vid) => {
+                        Term::Var(Var::Global(vid)) => {
                             assert_eq!(parsed.symbols.name(vid.name()), "T");
                             vid.raw()
                         }
@@ -2076,7 +2076,7 @@ fn parse_entity_with_distinct_named_variables() {
             let vid0 = match &e.fields[0].ty {
                 TypeExpr::Variable { term_id, .. } => {
                     match parsed.terms.get(*term_id) {
-                        Term::Var(vid) => vid.raw(),
+                        Term::Var(Var::Global(vid)) => vid.raw(),
                         other => panic!("expected Var for field a, got {:?}", other),
                     }
                 }
@@ -2085,7 +2085,7 @@ fn parse_entity_with_distinct_named_variables() {
             let vid1 = match &e.fields[1].ty {
                 TypeExpr::Variable { term_id, .. } => {
                     match parsed.terms.get(*term_id) {
-                        Term::Var(vid) => vid.raw(),
+                        Term::Var(Var::Global(vid)) => vid.raw(),
                         other => panic!("expected Var for field b, got {:?}", other),
                     }
                 }
@@ -2119,7 +2119,8 @@ fn parse_rule_head_ir(expr: &str) -> (SimpleTermStore, anthill_core::intern::Sym
 /// Recursively format a parse-IR term for test assertions.
 fn fmt_ir_term(terms: &SimpleTermStore, symbols: &anthill_core::intern::SymbolTable, tid: TermId) -> String {
     match terms.get(tid) {
-        Term::Var(vid) => format!("?{}", symbols.name(vid.name())),
+        Term::Var(Var::Global(vid)) => format!("?{}", symbols.name(vid.name())),
+        Term::Var(Var::DeBruijn(n)) => format!("?#{n}"),
         Term::Ident(sym) => symbols.name(*sym).to_string(),
         Term::Ref(sym) => symbols.name(*sym).to_string(),
         Term::Const(Literal::Int(n)) => format!("{n}"),
@@ -3426,8 +3427,8 @@ sort Math {
     let a_sym = kb.intern("a");
     let f_var = kb.fresh_var(f_sym);
     let a_var = kb.fresh_var(a_sym);
-    let f_term = kb.alloc(Term::Var(f_var));
-    let a_term = kb.alloc(Term::Var(a_var));
+    let f_term = kb.alloc(Term::Var(Var::Global(f_var)));
+    let a_term = kb.alloc(Term::Var(Var::Global(a_var)));
 
     use smallvec::SmallVec;
     let pattern = kb.alloc(Term::Fn {

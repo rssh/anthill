@@ -12,7 +12,7 @@ use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 
 use crate::intern::Symbol;
-use crate::kb::term::{Literal, Term, TermId, VarId};
+use crate::kb::term::{Literal, Term, TermId, Var, VarId};
 use crate::kb::{KnowledgeBase, RuleId};
 
 // ── Error type ─────────────────────────────────────────────────
@@ -357,7 +357,7 @@ fn string_to_term(
             // Anonymous variable `?`
             let anon_sym = kb.intern("_");
             let vid = kb.fresh_var(anon_sym);
-            Ok(kb.alloc(Term::Var(vid)))
+            Ok(kb.alloc(Term::Var(Var::Global(vid))))
         } else {
             let vid = var_map
                 .entry(var_name.to_string())
@@ -365,7 +365,7 @@ fn string_to_term(
                     let sym = kb.intern(var_name);
                     kb.fresh_var(sym)
                 });
-            Ok(kb.alloc(Term::Var(*vid)))
+            Ok(kb.alloc(Term::Var(Var::Global(*vid))))
         }
     } else if let Some(rest) = s.strip_prefix("\\?") {
         // Escaped: literal string starting with ?
@@ -554,13 +554,16 @@ fn facts_to_value(
 fn term_to_value(kb: &KnowledgeBase, term: TermId) -> Result<serde_json::Value, SerError> {
     match kb.get_term(term) {
         Term::Const(lit) => literal_to_json(lit),
-        Term::Var(vid) => {
+        Term::Var(Var::Global(vid)) => {
             let name = kb.resolve_sym(vid.name());
             if name == "_" {
                 Ok(serde_json::Value::String("?".into()))
             } else {
                 Ok(serde_json::Value::String(format!("?{name}")))
             }
+        }
+        Term::Var(Var::DeBruijn(n)) => {
+            Ok(serde_json::Value::String(format!("?#{n}")))
         }
         Term::Fn { functor, pos_args, named_args } => {
             let functor = *functor;

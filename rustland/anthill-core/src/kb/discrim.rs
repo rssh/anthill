@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use crate::intern::Symbol;
 use super::persist_subst::{ArgPos, BindValue, PersistSubst, SmallSubst, VarPath};
 use super::subst::Substitution;
-use super::term::{Literal, Term, TermId, TermStore, VarId};
+use super::term::{Literal, Term, TermId, TermStore, Var, VarId};
 
 // ── DiscrimKey — concrete edge labels ───────────────────────────
 
@@ -140,7 +140,7 @@ impl<L> SubstTree<L> {
         term_id: TermId,
     ) -> &'a mut DiscrimNode<L> {
         match terms.get(term_id) {
-            Term::Var(vid) => {
+            Term::Var(Var::Global(vid)) => {
                 let vid = *vid;
                 let pos = node.var_edges.iter().position(|(v, _)| *v == vid);
                 if let Some(idx) = pos {
@@ -151,6 +151,7 @@ impl<L> SubstTree<L> {
                     &mut node.var_edges[last].1
                 }
             }
+            Term::Var(Var::DeBruijn(_)) => node,
             Term::Fn { functor, pos_args, named_args } => {
                 let functor = *functor;
                 let pos_args = pos_args.clone();
@@ -413,9 +414,12 @@ impl<L: Clone> SubstTree<L> {
         results: &mut Vec<(L, SmallSubst)>,
     ) {
         match terms.get(query_term) {
-            Term::Var(vid) => {
+            Term::Var(Var::Global(vid)) => {
                 let s = subst.with_binding(*vid, BindValue::Path(path));
                 Self::collect_all_leaves(node, s, results);
+            }
+            Term::Var(Var::DeBruijn(_)) => {
+                // DeBruijn vars don't participate in substitution tree queries
             }
 
             Term::Fn { functor, pos_args, named_args } => {
@@ -536,7 +540,7 @@ impl<L: Clone> SubstTree<L> {
         on_done: &dyn Fn(&DiscrimNode<L>, SmallSubst, &mut Vec<(L, SmallSubst)>),
     ) {
         match terms.get(arg_term_id) {
-            Term::Var(vid) => {
+            Term::Var(Var::Global(vid)) => {
                 let s = match arg_path {
                     Some(path) => subst.with_binding(*vid, BindValue::Path(path)),
                     None => subst,
@@ -544,6 +548,13 @@ impl<L: Clone> SubstTree<L> {
                 Self::skip_subtree_then_continue(
                     node, terms, remaining_pos, remaining_named, pos_offset,
                     bind_paths, s, results, on_done,
+                );
+            }
+            Term::Var(Var::DeBruijn(_)) => {
+                // DeBruijn vars: skip subtree like a wildcard, no binding
+                Self::skip_subtree_then_continue(
+                    node, terms, remaining_pos, remaining_named, pos_offset,
+                    bind_paths, subst, results, on_done,
                 );
             }
 
@@ -771,7 +782,7 @@ mod tests {
         tree.insert_ground(&env.terms, t2, 2);
 
         let vid = env.fresh_var("x");
-        let var = env.alloc(Term::Var(vid));
+        let var = env.alloc(Term::Var(Var::Global(vid)));
         let pat = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(var, 1), named_args: SmallVec::new() });
         let res = make_resolver(vec![(1, t1), (2, t2)]);
         let results = tree.query_resolved(&env.terms, pat, &res);
@@ -799,7 +810,7 @@ mod tests {
         tree.insert_ground(&env.terms, fact, 1);
 
         let xv = env.fresh_var("x");
-        let var_x = env.alloc(Term::Var(xv));
+        let var_x = env.alloc(Term::Var(Var::Global(xv)));
         let pat = env.alloc(Term::Fn {
             functor: f,
             pos_args: SmallVec::new(),
@@ -823,7 +834,7 @@ mod tests {
         tree.insert_ground(&env.terms, tg, 2);
 
         let vid = env.fresh_var("x");
-        let var_q = env.alloc(Term::Var(vid));
+        let var_q = env.alloc(Term::Var(Var::Global(vid)));
         let res = make_resolver(vec![(1, tf), (2, tg)]);
         let results = tree.query_resolved(&env.terms, var_q, &res);
         assert_eq!(results.len(), 2);
@@ -896,7 +907,7 @@ mod tests {
         let mut tree: SubstTree<u32> = SubstTree::new();
         let f = env.intern("f");
         let vid = env.fresh_var("x");
-        let var_term = env.alloc(Term::Var(vid));
+        let var_term = env.alloc(Term::Var(Var::Global(vid)));
         let pat = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(var_term, 1), named_args: SmallVec::new() });
         tree.insert_pattern(&env.terms, pat, 100);
         let val = env.alloc(Term::Const(Literal::Int(42)));
@@ -916,7 +927,7 @@ mod tests {
         tree.insert_ground(&env.terms, ground, 1);
 
         let vid = env.fresh_var("x");
-        let var_term = env.alloc(Term::Var(vid));
+        let var_term = env.alloc(Term::Var(Var::Global(vid)));
         let pat = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(var_term, 1), named_args: SmallVec::new() });
         tree.insert_pattern(&env.terms, pat, 2);
 

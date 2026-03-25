@@ -8,7 +8,7 @@ mod common;
 
 use anthill_core::parse;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::term::{Term, TermId};
+use anthill_core::kb::term::{Term, TermId, Var};
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 
@@ -93,7 +93,7 @@ fn default_config() -> ResolveConfig {
 fn make_var(kb: &mut KnowledgeBase, name: &str) -> TermId {
     let sym = kb.intern(name);
     let vid = kb.fresh_var(sym);
-    kb.alloc(Term::Var(vid))
+    kb.alloc(Term::Var(Var::Global(vid)))
 }
 
 // ── is_entity_of tests ──────────────────────────────────────────
@@ -1055,7 +1055,7 @@ fn field_access_entity_extracts_field() {
     let field_ident = kb.alloc(Term::Ident(fs_field_sym));
     let result_name = kb.intern("result");
     let result_var = kb.fresh_var(result_name);
-    let result_tid = kb.alloc(Term::Var(result_var));
+    let result_tid = kb.alloc(Term::Var(Var::Global(result_var)));
     let goal = make_goal(&mut kb, "anthill.reflect.field_access", &[env_term, field_ident, result_tid]);
 
     let solutions = kb.resolve(&[goal], &ResolveConfig::default());
@@ -1078,12 +1078,12 @@ fn field_access_delays_on_unbound_object() {
     // Build goal: field_access(?x, Ident(fs), ?result) where ?x is unbound
     let obj_name = kb.intern("x");
     let obj_var = kb.fresh_var(obj_name);
-    let obj_tid = kb.alloc(Term::Var(obj_var));
+    let obj_tid = kb.alloc(Term::Var(Var::Global(obj_var)));
     let fs_field_sym = kb.intern("fs");
     let field_ident = kb.alloc(Term::Ident(fs_field_sym));
     let result_name = kb.intern("result");
     let result_var = kb.fresh_var(result_name);
-    let result_tid = kb.alloc(Term::Var(result_var));
+    let result_tid = kb.alloc(Term::Var(Var::Global(result_var)));
     let goal = make_goal(&mut kb, "anthill.reflect.field_access", &[obj_tid, field_ident, result_tid]);
 
     let solutions = kb.resolve(&[goal], &ResolveConfig::default());
@@ -1121,7 +1121,7 @@ fn field_access_fails_on_bad_field() {
     let field_ident = kb.alloc(Term::Ident(ne_field_sym));
     let result_name = kb.intern("result");
     let result_var = kb.fresh_var(result_name);
-    let result_tid = kb.alloc(Term::Var(result_var));
+    let result_tid = kb.alloc(Term::Var(Var::Global(result_var)));
     let goal = make_goal(&mut kb, "anthill.reflect.field_access", &[env_term, field_ident, result_tid]);
 
     let solutions = kb.resolve(&[goal], &ResolveConfig::default());
@@ -1155,7 +1155,7 @@ fn field_access_sort_component() {
     let field_ident = kb.alloc(Term::Ident(carrier_sym));
     let result_name = kb.intern("result");
     let result_var = kb.fresh_var(result_name);
-    let result_tid = kb.alloc(Term::Var(result_var));
+    let result_tid = kb.alloc(Term::Var(Var::Global(result_var)));
     let goal = make_goal(&mut kb, "anthill.reflect.field_access", &[monoid_term, field_ident, result_tid]);
 
     let solutions = kb.resolve(&[goal], &ResolveConfig::default());

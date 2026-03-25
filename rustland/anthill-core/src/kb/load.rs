@@ -18,7 +18,7 @@ use crate::intern::{Symbol, SymbolDef, SymbolKind, ScopeInclusion, ResolveResult
 use crate::parse::ir::*;
 use crate::span::{Span, SourceId, SourceSpan};
 use super::{KnowledgeBase, SortKind};
-use super::term::{Term, TermId, VarId, HandleKind, Literal};
+use super::term::{Term, TermId, Var, VarId, HandleKind, Literal};
 use super::occurrence::OccurrenceId;
 
 // ── Source resolution ──────────────────────────────────────────
@@ -1562,7 +1562,7 @@ pub fn convert_query_term(
     let parse_term = parse_terms.get(parse_id).clone();
     match parse_term {
         Term::Const(lit) => kb.alloc(Term::Const(lit)),
-        Term::Var(vid) => {
+        Term::Var(Var::Global(vid)) => {
             let kb_vid = if let Some(&mapped) = var_map.get(&vid.raw()) {
                 mapped
             } else {
@@ -1572,8 +1572,9 @@ pub fn convert_query_term(
                 var_map.insert(vid.raw(), new_vid);
                 new_vid
             };
-            kb.alloc(Term::Var(kb_vid))
+            kb.alloc(Term::Var(Var::Global(kb_vid)))
         }
+        Term::Var(Var::DeBruijn(n)) => kb.alloc(Term::Var(Var::DeBruijn(n))),
         Term::Fn { functor, pos_args, named_args } => {
             let functor_name = parse_symbols.name(functor);
             let kb_functor = resolve_name_in_kb(kb, functor_name, scope_raw);
@@ -1601,7 +1602,7 @@ pub fn convert_query_term(
                     for &field_sym in &all_fields {
                         if !provided.contains(&field_sym) {
                             let fresh = kb.fresh_var(field_sym);
-                            let var_term = kb.alloc(Term::Var(fresh));
+                            let var_term = kb.alloc(Term::Var(Var::Global(fresh)));
                             new_named.push((field_sym, var_term));
                         }
                     }
@@ -1912,7 +1913,7 @@ impl<'a> Loader<'a> {
         let parse_term = self.parsed.terms.get(parse_id).clone();
         let kb_term = match parse_term {
             Term::Const(lit) => Term::Const(lit),
-            Term::Var(vid) => {
+            Term::Var(Var::Global(vid)) => {
                 let kb_vid = if let Some(&mapped) = self.var_map.get(&vid.raw()) {
                     mapped
                 } else {
@@ -1921,8 +1922,9 @@ impl<'a> Loader<'a> {
                     self.var_map.insert(vid.raw(), new_vid);
                     new_vid
                 };
-                Term::Var(kb_vid)
+                Term::Var(Var::Global(kb_vid))
             }
+            Term::Var(Var::DeBruijn(n)) => Term::Var(Var::DeBruijn(n)),
             Term::Fn { functor, pos_args, named_args } => {
                 let new_functor = self.remap_symbol(functor);
 
@@ -1965,7 +1967,7 @@ impl<'a> Loader<'a> {
                         for &field_sym in &all_fields {
                             if !provided.contains(&field_sym) {
                                 let fresh = self.kb.fresh_var(field_sym);
-                                let var_term = self.kb.alloc(Term::Var(fresh));
+                                let var_term = self.kb.alloc(Term::Var(Var::Global(fresh)));
                                 new_named.push((field_sym, var_term));
                             }
                         }
@@ -2660,7 +2662,7 @@ impl<'a> Loader<'a> {
         } else {
             let anon_sym = self.kb.intern("?");
             let vid = self.kb.fresh_var(anon_sym);
-            self.kb.alloc(Term::Var(vid))
+            self.kb.alloc(Term::Var(Var::Global(vid)))
         };
 
         // Assert SortInfo fact with named args

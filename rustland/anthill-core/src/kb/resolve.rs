@@ -13,7 +13,7 @@
 use smallvec::SmallVec;
 
 use super::subst::Substitution;
-use super::term::{Term, TermId, VarId};
+use super::term::{Term, TermId, Var, VarId};
 use super::occurrence::OccurrenceId;
 use super::RuleId;
 use super::KnowledgeBase;
@@ -623,7 +623,7 @@ impl SearchStream {
                 .bindings
                 .values()
                 .filter_map(|&tid| match kb.terms.get(tid) {
-                    Term::Var(vid) => Some(*vid),
+                    Term::Var(Var::Global(vid)) => Some(*vid),
                     _ => None,
                 })
                 .collect();
@@ -762,7 +762,7 @@ impl KnowledgeBase {
         // 2. Try rewriting at top level using eq(current, ?result) pattern
         let r_sym = self.intern("_r");
         let r_vid = self.fresh_var(r_sym);
-        let result_var = self.alloc(Term::Var(r_vid));
+        let result_var = self.alloc(Term::Var(Var::Global(r_vid)));
 
         let eq_sym = self.intern("eq");
         let pattern = self.alloc(Term::Fn {
@@ -924,7 +924,7 @@ impl KnowledgeBase {
                 let str_term = self.alloc(Term::Const(super::term::Literal::String(name)));
                 let walked_result = self.walk(result_arg, subst);
                 match self.terms.get(walked_result) {
-                    Term::Var(vid) => {
+                    Term::Var(Var::Global(vid)) => {
                         let vid = *vid;
                         let mut extra = Substitution::new();
                         extra.bind(vid, str_term);
@@ -958,7 +958,7 @@ impl KnowledgeBase {
                 let str_term = self.alloc(Term::Const(super::term::Literal::String(short)));
                 let walked_result = self.walk(result_arg, subst);
                 match self.terms.get(walked_result) {
-                    Term::Var(vid) => {
+                    Term::Var(Var::Global(vid)) => {
                         let vid = *vid;
                         let mut extra = Substitution::new();
                         extra.bind(vid, str_term);
@@ -993,7 +993,7 @@ impl KnowledgeBase {
                         let ref_term = self.alloc(Term::Ref(sym));
                         let walked_result = self.walk(result_arg, subst);
                         match self.terms.get(walked_result) {
-                            Term::Var(vid) => {
+                            Term::Var(Var::Global(vid)) => {
                                 let vid = *vid;
                                 let mut extra = Substitution::new();
                                 extra.bind(vid, ref_term);
@@ -1072,7 +1072,7 @@ impl KnowledgeBase {
                 let ref_term = self.alloc(Term::Ref(sym));
                 let walked_result = self.walk(result_arg, subst);
                 match self.terms.get(walked_result) {
-                    Term::Var(vid) => {
+                    Term::Var(Var::Global(vid)) => {
                         let vid = *vid;
                         let mut extra = Substitution::new();
                         extra.bind(vid, ref_term);
@@ -1140,7 +1140,7 @@ impl KnowledgeBase {
             Some(val) => {
                 let walked_value = self.walk(value_arg, subst);
                 match self.terms.get(walked_value) {
-                    Term::Var(vid) => {
+                    Term::Var(Var::Global(vid)) => {
                         let vid = *vid;
                         let mut extra = Substitution::new();
                         extra.bind(vid, val);
@@ -1164,7 +1164,7 @@ impl KnowledgeBase {
     fn try_bind_result(&self, result_arg: TermId, value: TermId, subst: &Substitution) -> BuiltinResult {
         let walked_result = self.walk(result_arg, subst);
         match self.terms.get(walked_result) {
-            Term::Var(vid) => {
+            Term::Var(Var::Global(vid)) => {
                 let vid = *vid;
                 let mut extra = Substitution::new();
                 extra.bind(vid, value);
@@ -1499,11 +1499,12 @@ impl KnowledgeBase {
     fn collect_unbound_vars(&self, term: TermId, subst: &Substitution, out: &mut Vec<VarId>) {
         let walked = self.walk(term, subst);
         match self.terms.get(walked) {
-            Term::Var(vid) => {
+            Term::Var(Var::Global(vid)) => {
                 if !out.contains(vid) {
                     out.push(*vid);
                 }
             }
+            Term::Var(Var::DeBruijn(_)) => {}
             Term::Fn { pos_args, named_args, .. } => {
                 let pos_args = pos_args.clone();
                 let named_args = named_args.clone();
@@ -1583,7 +1584,7 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         let x_sym = kb.intern("x");
         let vid = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vid));
+        let var_x = kb.alloc(Term::Var(Var::Global(vid)));
         let val = kb.alloc(Term::Const(Literal::Int(42)));
 
         let s = kb.match_term(var_x, val).expect("should match");
@@ -1596,7 +1597,7 @@ mod tests {
         let f_sym = kb.intern("f");
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
         let val = kb.alloc(Term::Const(Literal::Int(1)));
 
         let t1 = kb.alloc(Term::Fn {
@@ -1636,8 +1637,8 @@ mod tests {
         let vx = kb.fresh_var(x_sym);
         let vy = kb.fresh_var(y_sym);
         let vz = kb.fresh_var(z_sym);
-        let var_y = kb.alloc(Term::Var(vy));
-        let var_z = kb.alloc(Term::Var(vz));
+        let var_y = kb.alloc(Term::Var(Var::Global(vy)));
+        let var_z = kb.alloc(Term::Var(Var::Global(vz)));
         let val = kb.alloc(Term::Const(Literal::Int(99)));
 
         let mut s = Substitution::new();
@@ -1668,8 +1669,8 @@ mod tests {
         let y_sym = kb.intern("y");
         let vx = kb.fresh_var(x_sym);
         let vy = kb.fresh_var(y_sym);
-        let var_x = kb.alloc(Term::Var(vx));
-        let var_y = kb.alloc(Term::Var(vy));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let var_y = kb.alloc(Term::Var(Var::Global(vy)));
         let val = kb.alloc(Term::Const(Literal::Int(42)));
 
         // f(?x) where x -> y -> 42
@@ -1760,7 +1761,7 @@ mod tests {
         // Query: parent(?x, "bob")
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
         let goal = kb.alloc(Term::Fn {
             functor: parent_sym,
             pos_args: SmallVec::from_slice(&[var_x, bob]),
@@ -1807,9 +1808,9 @@ mod tests {
         let vx = kb.fresh_var(x_sym);
         let vy = kb.fresh_var(y_sym);
         let vz = kb.fresh_var(z_sym);
-        let var_x = kb.alloc(Term::Var(vx));
-        let var_y = kb.alloc(Term::Var(vy));
-        let var_z = kb.alloc(Term::Var(vz));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let var_y = kb.alloc(Term::Var(Var::Global(vy)));
+        let var_z = kb.alloc(Term::Var(Var::Global(vz)));
 
         let head = kb.alloc(Term::Fn {
             functor: grandparent_sym,
@@ -1833,8 +1834,8 @@ mod tests {
         let b_sym = kb.intern("b");
         let va = kb.fresh_var(a_sym);
         let vb = kb.fresh_var(b_sym);
-        let var_a = kb.alloc(Term::Var(va));
-        let var_b = kb.alloc(Term::Var(vb));
+        let var_a = kb.alloc(Term::Var(Var::Global(va)));
+        let var_b = kb.alloc(Term::Var(Var::Global(vb)));
         let goal = kb.alloc(Term::Fn {
             functor: grandparent_sym,
             pos_args: SmallVec::from_slice(&[var_a, var_b]),
@@ -1881,8 +1882,8 @@ mod tests {
             let y_sym = kb.intern("y");
             let vx = kb.fresh_var(x_sym);
             let vy = kb.fresh_var(y_sym);
-            let var_x = kb.alloc(Term::Var(vx));
-            let var_y = kb.alloc(Term::Var(vy));
+            let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+            let var_y = kb.alloc(Term::Var(Var::Global(vy)));
 
             let head = kb.alloc(Term::Fn {
                 functor: ancestor_sym,
@@ -1905,9 +1906,9 @@ mod tests {
             let vx = kb.fresh_var(x_sym);
             let vy = kb.fresh_var(y_sym);
             let vz = kb.fresh_var(z_sym);
-            let var_x = kb.alloc(Term::Var(vx));
-            let var_y = kb.alloc(Term::Var(vy));
-            let var_z = kb.alloc(Term::Var(vz));
+            let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+            let var_y = kb.alloc(Term::Var(Var::Global(vy)));
+            let var_z = kb.alloc(Term::Var(Var::Global(vz)));
 
             let head = kb.alloc(Term::Fn {
                 functor: ancestor_sym,
@@ -1930,7 +1931,7 @@ mod tests {
         // Query: ancestor("alice", ?w)
         let w_sym = kb.intern("w");
         let vw = kb.fresh_var(w_sym);
-        let var_w = kb.alloc(Term::Var(vw));
+        let var_w = kb.alloc(Term::Var(Var::Global(vw)));
         let goal = kb.alloc(Term::Fn {
             functor: ancestor_sym,
             pos_args: SmallVec::from_slice(&[alice, var_w]),
@@ -1976,7 +1977,7 @@ mod tests {
         // Query: likes("alice", ?what)
         let w_sym = kb.intern("what");
         let vw = kb.fresh_var(w_sym);
-        let var_w = kb.alloc(Term::Var(vw));
+        let var_w = kb.alloc(Term::Var(Var::Global(vw)));
         let goal = kb.alloc(Term::Fn {
             functor: likes_sym,
             pos_args: SmallVec::from_slice(&[alice, var_w]),
@@ -2007,7 +2008,7 @@ mod tests {
 
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
         let goal = kb.alloc(Term::Fn {
             functor: f_sym,
             pos_args: SmallVec::from_elem(var_x, 1),
@@ -2029,7 +2030,7 @@ mod tests {
         // Infinite loop: loop(?x) :- loop(?x)
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
         let head = kb.alloc(Term::Fn {
             functor: loop_sym,
             pos_args: SmallVec::from_elem(var_x, 1),
@@ -2123,7 +2124,7 @@ mod tests {
         let negate_sym = kb.intern("negate");
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
 
         let inner_neg = kb.alloc(Term::Fn {
             functor: negate_sym,
@@ -2170,7 +2171,7 @@ mod tests {
         let twice_sym = kb.intern("twice");
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
 
         let lhs = kb.alloc(Term::Fn {
             functor: double_sym,
@@ -2247,7 +2248,7 @@ mod tests {
         // Equation: eq(f(?x), g(?x)) — f rewrites to g
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
         let f_x = kb.alloc(Term::Fn {
             functor: f_sym,
             pos_args: SmallVec::from_elem(var_x, 1),
@@ -2346,7 +2347,7 @@ mod tests {
         // Query: f(?x), anthill.reflect.nonvar(?x)
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
 
         let goal_f = kb.alloc(Term::Fn {
             functor: f_sym,
@@ -2386,7 +2387,7 @@ mod tests {
         // Query: anthill.reflect.nonvar(?x), f(?x)
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
 
         let goal_nonvar = kb.alloc(Term::Fn {
             functor: nonvar_sym,
@@ -2414,7 +2415,7 @@ mod tests {
 
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
 
         let goal = kb.alloc(Term::Fn {
             functor: nonvar_sym,
@@ -2448,7 +2449,7 @@ mod tests {
 
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
 
         let goal_f = kb.alloc(Term::Fn {
             functor: f_sym,
@@ -2480,7 +2481,7 @@ mod tests {
         // Fact: f(pair(?y)) — not ground, has an unbound variable inside
         let y_sym = kb.intern("y");
         let vy = kb.fresh_var(y_sym);
-        let var_y = kb.alloc(Term::Var(vy));
+        let var_y = kb.alloc(Term::Var(Var::Global(vy)));
         let pair_y = kb.alloc(Term::Fn {
             functor: pair_sym,
             pos_args: SmallVec::from_elem(var_y, 1),
@@ -2495,7 +2496,7 @@ mod tests {
 
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
 
         let goal_f = kb.alloc(Term::Fn {
             functor: f_sym,
@@ -2532,7 +2533,7 @@ mod tests {
 
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
         let goal = kb.alloc(Term::Fn {
             functor: f_sym,
             pos_args: SmallVec::from_elem(var_x, 1),
@@ -2567,7 +2568,7 @@ mod tests {
         // But the builtin still handles resolution (not the fact)
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
         let goal = kb.alloc(Term::Fn {
             functor: nonvar_sym,
             pos_args: SmallVec::from_elem(var_x, 1),
@@ -2620,7 +2621,7 @@ mod tests {
         // Rule: check(?x) :- nonvar(?x), is_thing(?x)
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
 
         let check_head = kb.alloc(Term::Fn {
             functor: check_sym,
@@ -2642,7 +2643,7 @@ mod tests {
         // Query: check(?a), bind_a(?a)
         let a_sym = kb.intern("a");
         let va = kb.fresh_var(a_sym);
-        let var_a = kb.alloc(Term::Var(va));
+        let var_a = kb.alloc(Term::Var(Var::Global(va)));
 
         let q_check = kb.alloc(Term::Fn {
             functor: check_sym,
@@ -2685,7 +2686,7 @@ mod tests {
         // Rule: check(?x) :- nonvar(?x), is_thing(?x)
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
 
         let check_head = kb.alloc(Term::Fn {
             functor: check_sym,
@@ -2707,7 +2708,7 @@ mod tests {
         // Query: check(?a) alone — ?a never bound
         let a_sym = kb.intern("a");
         let va = kb.fresh_var(a_sym);
-        let var_a = kb.alloc(Term::Var(va));
+        let var_a = kb.alloc(Term::Var(Var::Global(va)));
 
         let q_check = kb.alloc(Term::Fn {
             functor: check_sym,
@@ -2757,8 +2758,8 @@ mod tests {
         let y_sym = kb.intern("y");
         let vx = kb.fresh_var(x_sym);
         let vy = kb.fresh_var(y_sym);
-        let var_x = kb.alloc(Term::Var(vx));
-        let var_y = kb.alloc(Term::Var(vy));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let var_y = kb.alloc(Term::Var(Var::Global(vy)));
 
         let foo_head = kb.alloc(Term::Fn {
             functor: foo_sym,
@@ -2785,7 +2786,7 @@ mod tests {
         // Query: foo(?a) — ?y is internal, bar binds it, nonvar reorders within body
         let a_sym = kb.intern("a");
         let va = kb.fresh_var(a_sym);
-        let var_a = kb.alloc(Term::Var(va));
+        let var_a = kb.alloc(Term::Var(Var::Global(va)));
 
         let q_foo = kb.alloc(Term::Fn {
             functor: foo_sym,
@@ -2827,7 +2828,7 @@ mod tests {
 
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
         let goal = kb.alloc(Term::Fn {
             functor: f_sym,
             pos_args: SmallVec::from_elem(var_x, 1),
@@ -2868,7 +2869,7 @@ mod tests {
 
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
         let goal = kb.alloc(Term::Fn {
             functor: f_sym,
             pos_args: SmallVec::from_elem(var_x, 1),
@@ -2910,7 +2911,7 @@ mod tests {
 
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
 
         let goal = kb.alloc(Term::Fn {
             functor: nonvar_sym,
@@ -2962,8 +2963,8 @@ mod tests {
             let y_sym = kb.intern("y");
             let vx = kb.fresh_var(x_sym);
             let vy = kb.fresh_var(y_sym);
-            let var_x = kb.alloc(Term::Var(vx));
-            let var_y = kb.alloc(Term::Var(vy));
+            let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+            let var_y = kb.alloc(Term::Var(Var::Global(vy)));
 
             let head = kb.alloc(Term::Fn {
                 functor: ancestor_sym,
@@ -2986,9 +2987,9 @@ mod tests {
             let vx = kb.fresh_var(x_sym);
             let vy = kb.fresh_var(y_sym);
             let vz = kb.fresh_var(z_sym);
-            let var_x = kb.alloc(Term::Var(vx));
-            let var_y = kb.alloc(Term::Var(vy));
-            let var_z = kb.alloc(Term::Var(vz));
+            let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+            let var_y = kb.alloc(Term::Var(Var::Global(vy)));
+            let var_z = kb.alloc(Term::Var(Var::Global(vz)));
 
             let head = kb.alloc(Term::Fn {
                 functor: ancestor_sym,
@@ -3011,7 +3012,7 @@ mod tests {
         // Query: ancestor("alice", ?w)
         let w_sym = kb.intern("w");
         let vw = kb.fresh_var(w_sym);
-        let var_w = kb.alloc(Term::Var(vw));
+        let var_w = kb.alloc(Term::Var(Var::Global(vw)));
         let goal = kb.alloc(Term::Fn {
             functor: ancestor_sym,
             pos_args: SmallVec::from_slice(&[alice, var_w]),
@@ -3055,7 +3056,7 @@ mod tests {
 
         let result_sym = kb.intern("?result");
         let result_vid = kb.fresh_var(result_sym);
-        let result_var = kb.alloc(Term::Var(result_vid));
+        let result_var = kb.alloc(Term::Var(Var::Global(result_vid)));
 
         let qn_sym = kb.resolve_symbol("anthill.reflect.qualified_name");
         let goal = kb.alloc(Term::Fn {
@@ -3089,7 +3090,7 @@ mod tests {
 
         let result_sym = kb.intern("?result");
         let result_vid = kb.fresh_var(result_sym);
-        let result_var = kb.alloc(Term::Var(result_vid));
+        let result_var = kb.alloc(Term::Var(Var::Global(result_vid)));
 
         let sn_sym = kb.resolve_symbol("anthill.reflect.short_name");
         let goal = kb.alloc(Term::Fn {
@@ -3121,7 +3122,7 @@ mod tests {
 
         let result_sym = kb.intern("?result");
         let result_vid = kb.fresh_var(result_sym);
-        let result_var = kb.alloc(Term::Var(result_vid));
+        let result_var = kb.alloc(Term::Var(Var::Global(result_vid)));
 
         let ls_sym = kb.resolve_symbol("anthill.reflect.lookup_symbol");
         let goal = kb.alloc(Term::Fn {
@@ -3149,7 +3150,7 @@ mod tests {
 
         let result_sym = kb.intern("?result");
         let result_vid = kb.fresh_var(result_sym);
-        let result_var = kb.alloc(Term::Var(result_vid));
+        let result_var = kb.alloc(Term::Var(Var::Global(result_vid)));
 
         let ls_sym = kb.resolve_symbol("anthill.reflect.lookup_symbol");
         let goal = kb.alloc(Term::Fn {
@@ -3170,11 +3171,11 @@ mod tests {
 
         let sym_name = kb.intern("?sym");
         let sym_vid = kb.fresh_var(sym_name);
-        let sym_var = kb.alloc(Term::Var(sym_vid));
+        let sym_var = kb.alloc(Term::Var(Var::Global(sym_vid)));
 
         let result_name = kb.intern("?result");
         let result_vid = kb.fresh_var(result_name);
-        let result_var = kb.alloc(Term::Var(result_vid));
+        let result_var = kb.alloc(Term::Var(Var::Global(result_vid)));
 
         let qn_sym = kb.resolve_symbol("anthill.reflect.qualified_name");
         let goal = kb.alloc(Term::Fn {
@@ -3270,7 +3271,7 @@ mod tests {
         let four = kb.alloc(Term::Const(Literal::Int(4)));
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
 
         // add(3, 4, ?x) → ?x = 7
         let goal = kb.alloc(Term::Fn {
@@ -3290,7 +3291,7 @@ mod tests {
         let gt_sym = kb.resolve_symbol("anthill.prelude.Ordered.gt");
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
         let three = kb.alloc(Term::Const(Literal::Int(3)));
 
         // gt(?x, 3) with unbound ?x → should delay/residualize
@@ -3373,7 +3374,7 @@ mod tests {
         let p_sym = kb.intern("p");
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
 
         let p_x = kb.alloc(Term::Fn {
             functor: p_sym,
@@ -3415,7 +3416,7 @@ mod tests {
         // Build goals
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
 
         let p_x = kb.alloc(Term::Fn {
             functor: p_sym,
@@ -3458,7 +3459,7 @@ mod tests {
         // Assert recursive rule: r(?y) :- r(?y)
         let y_sym = kb.intern("y");
         let vy = kb.fresh_var(y_sym);
-        let var_y = kb.alloc(Term::Var(vy));
+        let var_y = kb.alloc(Term::Var(Var::Global(vy)));
         let r_y_head = kb.alloc(Term::Fn {
             functor: r_sym,
             pos_args: SmallVec::from_elem(var_y, 1),
@@ -3531,7 +3532,7 @@ mod tests {
         // Assert rule: safe(?x) :- thing(?x), not(dangerous(?x))
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
 
         let safe_x = kb.alloc(Term::Fn {
             functor: safe_sym,
@@ -3559,7 +3560,7 @@ mod tests {
         // Query: safe(?q)
         let q_sym = kb.intern("q");
         let vq = kb.fresh_var(q_sym);
-        let var_q = kb.alloc(Term::Var(vq));
+        let var_q = kb.alloc(Term::Var(Var::Global(vq)));
         let safe_q = kb.alloc(Term::Fn {
             functor: safe_sym,
             pos_args: SmallVec::from_elem(var_q, 1),
@@ -3605,7 +3606,7 @@ mod tests {
         // rule: nat(succ(?n)) :- nat(?n)
         let n_sym = kb.intern("n");
         let vn = kb.fresh_var(n_sym);
-        let var_n = kb.alloc(Term::Var(vn));
+        let var_n = kb.alloc(Term::Var(Var::Global(vn)));
         let succ_n = kb.alloc(Term::Fn {
             functor: succ_sym,
             pos_args: SmallVec::from_elem(var_n, 1),
@@ -3626,7 +3627,7 @@ mod tests {
         // query: nat(?x)
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
         let query = kb.alloc(Term::Fn {
             functor: nat_sym,
             pos_args: SmallVec::from_elem(var_x, 1),

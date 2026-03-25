@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use super::term::{Term, TermId, TermStore, VarId};
+use super::term::{Term, TermId, TermStore, Var, VarId};
 
 #[derive(Clone, Debug)]
 pub struct Substitution {
@@ -77,7 +77,7 @@ impl Substitution {
         for (vid, term) in new_bindings {
             // Compress: update any existing binding that pointed to Var(vid)
             for (_, existing_term) in self.bindings.iter_mut() {
-                if let Term::Var(ev) = terms.get(*existing_term) {
+                if let Term::Var(Var::Global(ev)) = terms.get(*existing_term) {
                     if *ev == vid {
                         *existing_term = term;
                     }

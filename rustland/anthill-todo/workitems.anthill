@@ -1,0 +1,21 @@
+fact WorkItem(
+  id: "WI-001",
+  description: "Update kernel-language.md with expression grammar: match/if/let/lambda expression syntax, patterns, operation bodies. Grammar is implemented in tree-sitter and described in Proposal 018, but kernel-language.md (the spec) does not include it.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-001",
+  description: "Change let expression syntax from 'let x = value in body' to block-style 'let x = value' (next expression is body). Update grammar.js, converter, and tests. See Proposal 018 let_chain.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-001",
+  description: "Add 'end' keyword after operation expression bodies. Needed for block-style let (no 'in' keyword) to delimit where the body ends. Consistent with sort/namespace which also use 'end'. Update grammar.js, converter, and tests.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+

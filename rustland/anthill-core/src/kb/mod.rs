@@ -19,7 +19,7 @@ use smallvec::SmallVec;
 
 use crate::intern::{SymbolTable, SymbolDef, SymbolKind, Symbol};
 use crate::span::SourceRegistry;
-use term::{Term, TermId, TermStore, VarId};
+use term::{Term, TermId, TermStore, Var, VarId};
 use occurrence::OccurrenceStore;
 use discrim::SubstTree;
 use resolve::BuiltinTag;
@@ -881,11 +881,12 @@ impl KnowledgeBase {
 
     fn collect_vars_rec(&self, term: TermId, vars: &mut Vec<VarId>, seen: &mut std::collections::HashSet<u32>) {
         match self.terms.get(term) {
-            Term::Var(vid) => {
+            Term::Var(Var::Global(vid)) => {
                 if seen.insert(vid.raw()) {
                     vars.push(*vid);
                 }
             }
+            Term::Var(Var::DeBruijn(_)) => {}
             Term::Fn { pos_args, named_args, .. } => {
                 let pos_args = pos_args.clone();
                 let named_args = named_args.clone();
@@ -939,7 +940,8 @@ impl KnowledgeBase {
     /// Returns a new hash-consed TermId.
     pub fn apply_subst(&mut self, term: TermId, subst: &subst::Substitution) -> TermId {
         match self.terms.get(term).clone() {
-            Term::Var(vid) => subst.resolve(vid).unwrap_or(term),
+            Term::Var(Var::Global(vid)) => subst.resolve(vid).unwrap_or(term),
+            Term::Var(Var::DeBruijn(_)) => term,
             Term::Fn { .. } => self.map_fn_children(term, |kb, id| kb.apply_subst(id, subst)),
             _ => term,
         }
@@ -953,7 +955,7 @@ impl KnowledgeBase {
         let mut current = term;
         loop {
             match self.terms.get(current) {
-                Term::Var(vid) => {
+                Term::Var(Var::Global(vid)) => {
                     if let Some(bound) = subst.resolve(*vid) {
                         if bound == current {
                             return current; // self-referential, stop
@@ -1008,7 +1010,7 @@ impl KnowledgeBase {
         let mut rename = subst::Substitution::new();
         for vid in all_vars {
             let fresh = self.fresh_var(vid.name());
-            let fresh_term = self.alloc(Term::Var(fresh));
+            let fresh_term = self.alloc(Term::Var(Var::Global(fresh)));
             rename.bind(vid, fresh_term);
         }
 
@@ -1061,7 +1063,7 @@ impl KnowledgeBase {
             }
             // No concrete binding — create fresh var
             let fresh = self.fresh_var(vid.name());
-            let fresh_term = self.alloc(Term::Var(fresh));
+            let fresh_term = self.alloc(Term::Var(Var::Global(fresh)));
             rename.bind(*vid, fresh_term);
         }
 
@@ -1083,7 +1085,7 @@ impl KnowledgeBase {
             }
             // This is a query var entry
             match self.terms.get(*bound_term) {
-                Term::Var(rule_vid) => {
+                Term::Var(Var::Global(rule_vid)) => {
                     // query_var → Var(rule_vid): find what rename mapped rule_vid to
                     let rule_vid = *rule_vid;
                     if let Some(renamed) = rename.resolve(rule_vid) {
@@ -1433,7 +1435,7 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         let x_sym = kb.intern("x");
         let vid = kb.fresh_var(x_sym);
-        let var_term = kb.alloc(Term::Var(vid));
+        let var_term = kb.alloc(Term::Var(Var::Global(vid)));
         let target = kb.alloc(Term::Const(Literal::Int(42)));
 
         let s = kb.match_term(var_term, target).expect("should match");
@@ -1446,7 +1448,7 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         let x_sym = kb.intern("x");
         let vid = kb.fresh_var(x_sym);
-        let var_term = kb.alloc(Term::Var(vid));
+        let var_term = kb.alloc(Term::Var(Var::Global(vid)));
 
         let f_sym = kb.intern("f");
         let val = kb.alloc(Term::Const(Literal::Int(1)));
@@ -1592,7 +1594,7 @@ mod tests {
         // Query: parent(?x, "bob") — should find only fact1
         let x_sym = kb.intern("x");
         let vid = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vid));
+        let var_x = kb.alloc(Term::Var(Var::Global(vid)));
         let pattern = kb.alloc(Term::Fn {
             functor: parent_sym,
             pos_args: SmallVec::from_slice(&[var_x, bob]),
@@ -1619,9 +1621,9 @@ mod tests {
         let vx = kb.fresh_var(x_sym);
         let vy = kb.fresh_var(y_sym);
         let vz = kb.fresh_var(z_sym);
-        let var_x = kb.alloc(Term::Var(vx));
-        let var_y = kb.alloc(Term::Var(vy));
-        let var_z = kb.alloc(Term::Var(vz));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let var_y = kb.alloc(Term::Var(Var::Global(vy)));
+        let var_z = kb.alloc(Term::Var(Var::Global(vz)));
 
         // grandparent(?x, ?z) :- parent(?x, ?y), parent(?y, ?z)
         let head = kb.alloc(Term::Fn {
@@ -1670,7 +1672,7 @@ mod tests {
         // Assert a rule f(?x) :- g(?x)
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
         let rule_head = kb.alloc(Term::Fn {
             functor: f_sym,
             pos_args: SmallVec::from_elem(var_x, 1),
@@ -1687,7 +1689,7 @@ mod tests {
         // query() should find both
         let q_sym = kb.intern("q");
         let qv = kb.fresh_var(q_sym);
-        let var_q = kb.alloc(Term::Var(qv));
+        let var_q = kb.alloc(Term::Var(Var::Global(qv)));
         let pattern = kb.alloc(Term::Fn {
             functor: f_sym,
             pos_args: SmallVec::from_elem(var_q, 1),
@@ -1705,7 +1707,7 @@ mod tests {
         let f_sym = kb.intern("f");
         let x_sym = kb.intern("x");
         let vid = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vid));
+        let var_x = kb.alloc(Term::Var(Var::Global(vid)));
         let val = kb.alloc(Term::Const(Literal::Int(42)));
 
         let term = kb.alloc(Term::Fn {
@@ -1736,7 +1738,7 @@ mod tests {
 
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(vx));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
 
         let head = kb.alloc(Term::Fn {
             functor: f_sym,
@@ -1773,8 +1775,8 @@ mod tests {
         let y_sym = kb.intern("y");
         let vx = kb.fresh_var(x_sym);
         let vy = kb.fresh_var(y_sym);
-        let var_x = kb.alloc(Term::Var(vx));
-        let var_y = kb.alloc(Term::Var(vy));
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let var_y = kb.alloc(Term::Var(Var::Global(vy)));
 
         let term = kb.alloc(Term::Fn {
             functor: f_sym,

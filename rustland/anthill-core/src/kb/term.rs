@@ -76,6 +76,68 @@ impl Hash for VarId {
     }
 }
 
+/// Variable representation: either a de Bruijn index (stored terms)
+/// or a global id (during resolution).
+#[derive(Clone, Copy, Debug)]
+pub enum Var {
+    /// De Bruijn index — canonical representation in stored terms.
+    /// Index 0 = bound by innermost enclosing binder.
+    DeBruijn(u32),
+    /// Global variable id — used during resolution after opening binders.
+    Global(VarId),
+}
+
+impl Var {
+    pub fn is_debruijn(&self) -> bool {
+        matches!(self, Var::DeBruijn(_))
+    }
+
+    pub fn is_global(&self) -> bool {
+        matches!(self, Var::Global(_))
+    }
+
+    pub fn as_global(&self) -> Option<VarId> {
+        match self {
+            Var::Global(vid) => Some(*vid),
+            _ => None,
+        }
+    }
+
+    pub fn debruijn_index(&self) -> Option<u32> {
+        match self {
+            Var::DeBruijn(n) => Some(*n),
+            _ => None,
+        }
+    }
+}
+
+impl PartialEq for Var {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Var::DeBruijn(a), Var::DeBruijn(b)) => a == b,
+            (Var::Global(a), Var::Global(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Var {}
+
+impl Hash for Var {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Var::DeBruijn(n) => {
+                0u8.hash(state);
+                n.hash(state);
+            }
+            Var::Global(vid) => {
+                1u8.hash(state);
+                vid.hash(state);
+            }
+        }
+    }
+}
+
 // ── Term ────────────────────────────────────────────────────────
 
 /// A term in the knowledge base. Implements `Eq + Hash` for hash-consing.
@@ -92,9 +154,9 @@ impl Hash for VarId {
 pub enum Term {
     /// Literal constant: string, int, float, bool
     Const(Literal),
-    /// Logic variable: `?x`. Identity is the `VarId` index;
-    /// the human-readable name is carried inside `VarId` for display only.
-    Var(VarId),
+    /// Logic variable: `?x`. Uses `Var` representation — either a de Bruijn
+    /// index (canonical in stored terms) or a global `VarId` (during resolution).
+    Var(Var),
     /// Function application: `f(arg1, arg2, key: arg3)`.
     /// `functor` is the fully-qualified interned name of the function symbol.
     /// Positional args are stored in `pos_args`, named args in `named_args`

@@ -11,7 +11,7 @@ use tree_sitter::Node;
 
 use crate::intern::{SymbolTable, Symbol};
 use crate::span::Span;
-use crate::kb::term::{Term, TermId, Literal, VarId};
+use crate::kb::term::{Term, TermId, Literal, Var, VarId};
 
 /// Join name segments into a single dot-separated string for interning.
 fn join_name_segments(symbols: &crate::intern::SymbolTable, segments: &[Symbol]) -> String {
@@ -377,13 +377,13 @@ impl<'a> Converter<'a> {
             let name = &text[1..]; // strip leading '?'
             let sym = self.intern(name);
             let vid = self.get_or_create_var(sym);
-            self.terms.alloc(Term::Var(vid))
+            self.terms.alloc(Term::Var(Var::Global(vid)))
         } else {
             // Bare ? — anonymous variable (always fresh, like _ in Prolog)
             let sym = self.intern("_");
             let vid = VarId::new(self.next_var, sym);
             self.next_var += 1;
-            self.terms.alloc(Term::Var(vid))
+            self.terms.alloc(Term::Var(Var::Global(vid)))
         }
     }
 
@@ -879,7 +879,7 @@ impl<'a> Converter<'a> {
                 let sym = self.intern("_");
                 let vid = crate::kb::term::VarId::new(self.next_var, sym);
                 self.next_var += 1;
-                let tid = self.terms.alloc(Term::Var(vid));
+                let tid = self.terms.alloc(Term::Var(Var::Global(vid)));
                 TypeExpr::Variable { term_id: tid, descriptions: Vec::new() }
             });
 

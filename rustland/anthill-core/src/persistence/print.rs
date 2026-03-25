@@ -4,7 +4,7 @@
 /// produce the textual representation suitable for writing to `.anthill` files.
 
 use crate::kb::KnowledgeBase;
-use crate::kb::term::{Literal, Term, TermId};
+use crate::kb::term::{Literal, Term, TermId, Var};
 
 /// Prints KB terms as `.anthill` source text.
 pub struct TermPrinter<'a> {
@@ -26,9 +26,12 @@ impl<'a> TermPrinter<'a> {
     fn write_term(&self, id: TermId, buf: &mut String) {
         match self.kb.get_term(id) {
             Term::Const(lit) => self.write_literal(lit, buf),
-            Term::Var(vid) => {
+            Term::Var(Var::Global(vid)) => {
                 buf.push('?');
                 buf.push_str(self.kb.resolve_sym(vid.name()));
+            }
+            Term::Var(Var::DeBruijn(n)) => {
+                buf.push_str(&format!("?#{n}"));
             }
             Term::Fn { functor, pos_args, named_args } => {
                 buf.push_str(self.kb.resolve_sym(*functor));
@@ -162,7 +165,7 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         let sym = kb.intern("x");
         let vid = kb.fresh_var(sym);
-        let t = kb.alloc(Term::Var(vid));
+        let t = kb.alloc(Term::Var(Var::Global(vid)));
         let printer = TermPrinter::new(&kb);
         assert_eq!(printer.print_term(t), "?x");
     }

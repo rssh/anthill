@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::term::{Term as CoreTerm, TermId, Literal};
+use anthill_core::kb::term::{Term as CoreTerm, TermId, Literal, Var};
 use anthill_core::kb::resolve::{SearchStream, ResolveConfig};
 
 use crate::prelude::Stream;
@@ -41,8 +41,11 @@ impl KbBridge {
                     Literal::Handle(_, id) => LiteralRepr::IntLiteral(id as i64),
                 },
             },
-            CoreTerm::Var(vid) => TermRepr::VarRepr {
+            CoreTerm::Var(Var::Global(vid)) => TermRepr::VarRepr {
                 name: kb.resolve_sym(vid.name()).to_string(),
+            },
+            CoreTerm::Var(Var::DeBruijn(n)) => TermRepr::VarRepr {
+                name: format!("_{n}"),
             },
             CoreTerm::Fn { functor, pos_args, named_args } => {
                 let name_term = kb.alloc(CoreTerm::Ref(functor));
@@ -129,7 +132,8 @@ impl KbBridge {
             CoreTerm::Const(Literal::Float(f)) => f.to_string(),
             CoreTerm::Const(Literal::Bool(b)) => b.to_string(),
             CoreTerm::Const(Literal::Handle(kind, id)) => format!("<{:?}:{}>", kind, id),
-            CoreTerm::Var(vid) => format!("?{}", kb.resolve_sym(vid.name())),
+            CoreTerm::Var(Var::Global(vid)) => format!("?{}", kb.resolve_sym(vid.name())),
+            CoreTerm::Var(Var::DeBruijn(n)) => format!("?_{n}"),
             CoreTerm::Bottom => "⊥".into(),
         }
     }
@@ -273,7 +277,7 @@ impl KbBridge {
                                 let sym_name = format!("?_{}", kb.resolve_sym(field_sym));
                                 let var_name = kb.intern(&sym_name);
                                 let vid = kb.fresh_var(var_name);
-                                let var_term = kb.alloc(CoreTerm::Var(vid));
+                                let var_term = kb.alloc(CoreTerm::Var(Var::Global(vid)));
                                 (field_sym, var_term)
                             })
                             .collect();
@@ -289,7 +293,7 @@ impl KbBridge {
                         let sort_sym = kb.intern(sort_name);
                         let query_var_sym = kb.intern("?_query");
                         let vid = kb.fresh_var(query_var_sym);
-                        let var_term = kb.alloc(CoreTerm::Var(vid));
+                        let var_term = kb.alloc(CoreTerm::Var(Var::Global(vid)));
                         let goal = kb.alloc(CoreTerm::Fn {
                             functor: sort_sym,
                             pos_args: vec![var_term].into(),
@@ -427,7 +431,7 @@ impl KB for KbBridge {
             TermRepr::VarRepr { name } => {
                 let sym = kb.intern(&name);
                 let vid = kb.fresh_var(sym);
-                kb.alloc(CoreTerm::Var(vid))
+                kb.alloc(CoreTerm::Var(Var::Global(vid)))
             }
             TermRepr::FnRepr { name, args } => {
                 let functor = expect_symbol(&kb, name, "FnRepr.name");

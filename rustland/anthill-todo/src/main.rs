@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 
 use anthill_core::kb::load::{self, FileSourceResolver};
 use anthill_core::kb::resolve::ResolveConfig;
-use anthill_core::kb::term::{Literal, Term, TermId};
+use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::{KnowledgeBase, RuleId};
 use anthill_core::parse;
 use anthill_core::parse::ir::ParsedFile;
@@ -527,8 +527,8 @@ fn run_next(kb: &mut KnowledgeBase, show_all: bool) {
         }
     };
 
-    let id_var = { let s = kb.intern("id"); let v = kb.fresh_var(s); kb.alloc(Term::Var(v)) };
-    let desc_var = { let s = kb.intern("desc"); let v = kb.fresh_var(s); kb.alloc(Term::Var(v)) };
+    let id_var = { let s = kb.intern("id"); let v = kb.fresh_var(s); kb.alloc(Term::Var(Var::Global(v))) };
+    let desc_var = { let s = kb.intern("desc"); let v = kb.fresh_var(s); kb.alloc(Term::Var(Var::Global(v))) };
     let query = kb.alloc(Term::Fn {
         functor: claimable_sym,
         pos_args: SmallVec::from_slice(&[id_var, desc_var]),
@@ -627,7 +627,7 @@ fn run_claim(kb: &mut KnowledgeBase, id: &str, agent: &str, project_dir: &Path, 
     };
 
     let id_term = kb.alloc(Term::Const(Literal::String(id.to_string())));
-    let desc_var = { let s = kb.intern("desc"); let v = kb.fresh_var(s); kb.alloc(Term::Var(v)) };
+    let desc_var = { let s = kb.intern("desc"); let v = kb.fresh_var(s); kb.alloc(Term::Var(Var::Global(v))) };
     let query = kb.alloc(Term::Fn {
         functor: claimable_sym,
         pos_args: SmallVec::from_slice(&[id_term, desc_var]),
