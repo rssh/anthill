@@ -1150,20 +1150,27 @@ impl KnowledgeBase {
                 .map(|&b| self.term_from_debruijn(b, &fresh_vars))
                 .collect();
 
-            // Build answer_links from tree_subst.
+            // Build answer_links (query var → fresh var) and body_rename
+            // (fresh var → concrete value from head match).
+            //
             // tree_subst contains two kinds of entries:
-            // 1. Synthetic VarId(u32::MAX - n): DeBruijn var n matched a concrete value.
-            //    Bind the corresponding fresh var to that concrete value.
+            // 1. Synthetic VarId(u32::MAX - n): DeBruijn var n matched a
+            //    concrete query value. These are substituted directly into
+            //    the body via body_rename. NOT added to answer_links — the
+            //    fresh var is eliminated from the body, so adding it to the
+            //    caller's substitution via bind_compressed would be dead
+            //    work (O(n²) scan for nothing).
             // 2. Query VarId: query var matched a subterm of the rule head.
             //    Open any DeBruijn vars in the value to their fresh globals.
             let mut answer_links = subst::Substitution::new();
+            let mut body_rename = subst::Substitution::new();
             for (ts_vid, bound_term) in &tree_subst.bindings {
                 let is_synthetic = ts_vid.raw() > u32::MAX - arity - 1;
                 if is_synthetic {
-                    // Synthetic VarId for DeBruijn(n) — bind fresh var to matched value
+                    // Synthetic VarId for DeBruijn(n) — substitute into body
                     let db_index = (u32::MAX - ts_vid.raw()) as usize;
                     if let Some(&fresh_vid) = fresh_vars.get(db_index) {
-                        answer_links.bind(fresh_vid, *bound_term);
+                        body_rename.bind(fresh_vid, *bound_term);
                     }
                 } else {
                     // Query var — open any DeBruijn in the bound value
@@ -1172,7 +1179,18 @@ impl KnowledgeBase {
                 }
             }
 
-            (fresh_body, answer_links)
+            // Apply rename to body: replace fresh vars with concrete values
+            // from the head match. Unmatched fresh vars stay as variables
+            // (will be bound during body resolution).
+            let final_body = if body_rename.bindings.is_empty() {
+                fresh_body
+            } else {
+                fresh_body.iter()
+                    .map(|&b| self.apply_subst(b, &body_rename))
+                    .collect()
+            };
+
+            (final_body, answer_links)
         } else {
             // Legacy path: Global vars (ground facts or rules not yet converted)
             let all_vars = self.collect_rule_vars(head, &body);

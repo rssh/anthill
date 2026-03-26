@@ -1574,6 +1574,7 @@ impl KnowledgeBase {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::intern::Symbol;
     use crate::kb::term::{Literal, Term};
     use smallvec::SmallVec;
 
@@ -3669,5 +3670,201 @@ mod tests {
             }
             other => panic!("expected succ(succ(zero())), got {:?}", other),
         }
+    }
+
+    /// Regression: de Bruijn body substitution with multi-occurrence variable.
+    ///
+    /// Rule: shared(?x) :- check_a(?x), check_b(?x)
+    /// Facts: check_a("yes"), check_a("no"), check_b("yes")
+    ///
+    /// Query shared("yes") → 1 solution (both body goals match "yes")
+    /// Query shared("no")  → 0 solutions (check_b("no") doesn't exist)
+    /// Query shared(?q)    → 1 solution (?q = "yes")
+    ///
+    /// Without body_concrete substitution, shared("no") would wrongly succeed:
+    /// the fresh var acts as wildcard in check_a, matches "yes", then check_b("yes")
+    /// succeeds — a false positive.
+    #[test]
+    fn debruijn_multi_occurrence_concrete_query() {
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Sort");
+        let domain = kb.make_name_term("test");
+
+        let shared_sym = kb.intern("shared");
+        let check_a_sym = kb.intern("check_a");
+        let check_b_sym = kb.intern("check_b");
+
+        // Facts
+        let yes = kb.alloc(Term::Const(Literal::String("yes".into())));
+        let no = kb.alloc(Term::Const(Literal::String("no".into())));
+
+        let ca_yes = kb.alloc(Term::Fn {
+            functor: check_a_sym,
+            pos_args: SmallVec::from_elem(yes, 1),
+            named_args: SmallVec::new(),
+        });
+        let ca_no = kb.alloc(Term::Fn {
+            functor: check_a_sym,
+            pos_args: SmallVec::from_elem(no, 1),
+            named_args: SmallVec::new(),
+        });
+        let cb_yes = kb.alloc(Term::Fn {
+            functor: check_b_sym,
+            pos_args: SmallVec::from_elem(yes, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(ca_yes, sort, domain, None);
+        kb.assert_fact(ca_no, sort, domain, None);
+        kb.assert_fact(cb_yes, sort, domain, None);
+
+        // Rule: shared(?x) :- check_a(?x), check_b(?x)
+        let x_sym = kb.intern("x");
+        let vx = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
+        let head = kb.alloc(Term::Fn {
+            functor: shared_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let body_a = kb.alloc(Term::Fn {
+            functor: check_a_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        let body_b = kb.alloc(Term::Fn {
+            functor: check_b_sym,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule_debruijn(head, vec![body_a, body_b], sort, domain, None);
+
+        let config = ResolveConfig::default();
+
+        // Query 1: shared("yes") → should succeed
+        let q_yes = kb.alloc(Term::Fn {
+            functor: shared_sym,
+            pos_args: SmallVec::from_elem(yes, 1),
+            named_args: SmallVec::new(),
+        });
+        let sols = kb.resolve(&[q_yes], &config);
+        assert_eq!(sols.len(), 1, "shared(\"yes\") should have 1 solution");
+
+        // Query 2: shared("no") → should fail (check_b("no") doesn't exist)
+        let q_no = kb.alloc(Term::Fn {
+            functor: shared_sym,
+            pos_args: SmallVec::from_elem(no, 1),
+            named_args: SmallVec::new(),
+        });
+        let sols = kb.resolve(&[q_no], &config);
+        assert_eq!(sols.len(), 0, "shared(\"no\") should have 0 solutions");
+
+        // Query 3: shared(?q) → should yield 1 solution: ?q = "yes"
+        let q_sym = kb.intern("q");
+        let vq = kb.fresh_var(q_sym);
+        let var_q = kb.alloc(Term::Var(Var::Global(vq)));
+        let q_var = kb.alloc(Term::Fn {
+            functor: shared_sym,
+            pos_args: SmallVec::from_elem(var_q, 1),
+            named_args: SmallVec::new(),
+        });
+        let sols = kb.resolve(&[q_var], &config);
+        assert_eq!(sols.len(), 1, "shared(?q) should have 1 solution");
+        let bound = kb.reify(var_q, &sols[0].subst);
+        assert_eq!(bound, yes, "?q should resolve to \"yes\"");
+    }
+
+    /// Stress test: rule with N=1000 head args and N body goals.
+    ///
+    /// Validates DeBruijn opening + body_rename correctness at scale.
+    /// The answer_links optimization (not leaking synthetic entries)
+    /// prevents an O(n²) bind_compressed scan; the remaining O(n²) is
+    /// inherent SLD (apply_subst_each on remaining goals after each match).
+    ///
+    /// Uses a spawned thread with large stack because the discrim tree
+    /// query recurses once per positional arg.
+    #[test]
+    fn debruijn_large_head_and_body() {
+        let result = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let n: usize = 1000;
+
+                let mut kb = KnowledgeBase::new();
+                let sort = kb.make_name_term("Sort");
+                let domain = kb.make_name_term("test");
+
+                let big_sym = kb.intern("big");
+
+                let f_syms: Vec<Symbol> = (0..n)
+                    .map(|i| kb.intern(&format!("f_{i}")))
+                    .collect();
+                let vals: Vec<TermId> = (0..n)
+                    .map(|i| kb.alloc(Term::Const(Literal::String(format!("v{i}")))))
+                    .collect();
+                let var_terms: Vec<TermId> = (0..n).map(|i| {
+                    let sym = kb.intern(&format!("x{i}"));
+                    let vid = kb.fresh_var(sym);
+                    kb.alloc(Term::Var(Var::Global(vid)))
+                }).collect();
+
+                // Rule head: big(?v0, ..., ?v999)
+                let head = kb.alloc(Term::Fn {
+                    functor: big_sym,
+                    pos_args: SmallVec::from_vec(var_terms.clone()),
+                    named_args: SmallVec::new(),
+                });
+
+                // Body: f_i(?v_i) for each i
+                let body: Vec<TermId> = (0..n).map(|i| {
+                    kb.alloc(Term::Fn {
+                        functor: f_syms[i],
+                        pos_args: SmallVec::from_elem(var_terms[i], 1),
+                        named_args: SmallVec::new(),
+                    })
+                }).collect();
+
+                kb.assert_rule_debruijn(head, body, sort, domain, None);
+
+                // Facts: f_i("val_i")
+                for i in 0..n {
+                    let fact = kb.alloc(Term::Fn {
+                        functor: f_syms[i],
+                        pos_args: SmallVec::from_elem(vals[i], 1),
+                        named_args: SmallVec::new(),
+                    });
+                    kb.assert_fact(fact, sort, domain, None);
+                }
+
+                // Query: big("v0", ..., "v999") — all concrete
+                let query = kb.alloc(Term::Fn {
+                    functor: big_sym,
+                    pos_args: SmallVec::from_vec(vals.clone()),
+                    named_args: SmallVec::new(),
+                });
+
+                let config = ResolveConfig {
+                    max_depth: usize::MAX,
+                    max_solutions: 1,
+                    simplify: false,
+                };
+
+                let start = std::time::Instant::now();
+                let solutions = kb.resolve(&[query], &config);
+                let elapsed = start.elapsed();
+
+                assert_eq!(solutions.len(), 1, "should find exactly 1 solution");
+                eprintln!("  1000-head-arg rule resolved in {}ms", elapsed.as_millis());
+
+                // Debug build: ~800ms (dominated by SLD O(n²) apply_subst_each).
+                // If DeBruijn adds extra O(n²), would exceed 5s.
+                assert!(
+                    elapsed.as_millis() < 5000,
+                    "1000-head-arg rule took {}ms",
+                    elapsed.as_millis()
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }
