@@ -109,6 +109,18 @@ impl Var {
             _ => None,
         }
     }
+
+    /// Get a VarId for use in substitutions.
+    /// For Global: returns the VarId directly.
+    /// For DeBruijn(n): returns a synthetic VarId with id = u32::MAX - n
+    /// (reserved range, won't conflict with fresh vars that count up from 0).
+    /// The name is only for display — VarId equality uses id only.
+    pub fn as_vid(&self) -> VarId {
+        match self {
+            Var::Global(vid) => *vid,
+            Var::DeBruijn(n) => VarId::new(u32::MAX - n, Symbol::from_raw(0)),
+        }
+    }
 }
 
 impl PartialEq for Var {

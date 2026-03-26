@@ -99,6 +99,9 @@ struct RuleEntry {
     domain: TermId,
     meta: Option<TermId>,
     retracted: bool,
+    /// Number of de Bruijn-encoded free variables in head+body.
+    /// Zero for ground facts. Used by resolver to allocate fresh globals.
+    arity: u32,
 }
 
 // ── Sort kind ───────────────────────────────────────────────────
@@ -294,6 +297,7 @@ impl KnowledgeBase {
             domain,
             meta,
             retracted: false,
+            arity: 0, // set by to_debruijn after loading
         });
 
         // Update indexes
@@ -982,6 +986,91 @@ impl KnowledgeBase {
         }
     }
 
+    // ── De Bruijn conversion ────────────────────────────────────
+
+    /// Convert a rule's head and body from Global vars to DeBruijn indices.
+    /// Called after loading a rule. Sets the rule's arity.
+    /// `var_order`: free variables in order of first occurrence (from collect_rule_vars).
+    /// Convention: first var = highest index (outermost binder).
+    /// Convert head and body terms to de Bruijn BEFORE asserting.
+    /// Returns (new_head, new_body, arity).
+    pub fn terms_to_debruijn(
+        &mut self,
+        head: TermId,
+        body: &[TermId],
+    ) -> (TermId, Vec<TermId>, u32) {
+        let vars = if body.is_empty() {
+            self.collect_vars(head)
+        } else {
+            self.collect_rule_vars(head, body)
+        };
+
+        if vars.is_empty() {
+            return (head, body.to_vec(), 0);
+        }
+
+        let new_head = self.term_to_debruijn(head, &vars);
+        let new_body: Vec<TermId> = body.iter()
+            .map(|&b| self.term_to_debruijn(b, &vars))
+            .collect();
+        (new_head, new_body, vars.len() as u32)
+    }
+
+    /// Assert a rule with de Bruijn conversion applied.
+    pub fn assert_rule_debruijn(
+        &mut self,
+        head: TermId,
+        body: Vec<TermId>,
+        sort: TermId,
+        domain: TermId,
+        meta: Option<TermId>,
+    ) -> RuleId {
+        let (db_head, db_body, arity) = self.terms_to_debruijn(head, &body);
+        let rule_id = self.assert_rule(db_head, db_body, sort, domain, meta);
+        self.rules[rule_id.index()].arity = arity;
+        rule_id
+    }
+
+    /// Convert a single term: replace Global(vid) with DeBruijn(index).
+    /// Index is `var_order.len() - 1 - position_in_var_order`.
+    fn term_to_debruijn(&mut self, term: TermId, var_order: &[VarId]) -> TermId {
+        match self.terms.get(term).clone() {
+            Term::Var(Var::Global(vid)) => {
+                if let Some(pos) = var_order.iter().position(|v| *v == vid) {
+                    let idx = (var_order.len() - 1 - pos) as u32;
+                    self.alloc(Term::Var(Var::DeBruijn(idx)))
+                } else {
+                    term // not in var_order, keep as Global
+                }
+            }
+            Term::Var(Var::DeBruijn(_)) => term,
+            Term::Fn { .. } => self.map_fn_children(term, |kb, id| kb.term_to_debruijn(id, var_order)),
+            _ => term,
+        }
+    }
+
+    /// Open a de Bruijn term: replace DeBruijn(i) with Global(fresh_vars[i]).
+    /// `fresh_vars`: array of fresh VarIds, indexed by de Bruijn index.
+    pub fn term_from_debruijn(&mut self, term: TermId, fresh_vars: &[VarId]) -> TermId {
+        match self.terms.get(term).clone() {
+            Term::Var(Var::DeBruijn(idx)) => {
+                if let Some(&vid) = fresh_vars.get(idx as usize) {
+                    self.alloc(Term::Var(Var::Global(vid)))
+                } else {
+                    term // index out of range, keep as DeBruijn
+                }
+            }
+            Term::Var(Var::Global(_)) => term,
+            Term::Fn { .. } => self.map_fn_children(term, |kb, id| kb.term_from_debruijn(id, fresh_vars)),
+            _ => term,
+        }
+    }
+
+    /// Get the arity (number of de Bruijn variables) of a rule.
+    pub fn rule_arity(&self, id: RuleId) -> u32 {
+        self.rules[id.index()].arity
+    }
+
     // ── Rule classification ─────────────────────────────────────
 
     /// Check if a rule is an equation: head functor is "eq" with 2 positional
@@ -1044,64 +1133,89 @@ impl KnowledgeBase {
         id: RuleId,
         tree_subst: &subst::Substitution,
     ) -> (Vec<TermId>, subst::Substitution) {
+        let arity = self.rules[id.index()].arity;
         let head = self.rules[id.index()].head;
         let body = self.rules[id.index()].body.clone();
-        let all_vars = self.collect_rule_vars(head, &body);
 
-        // Step 1: Build rename map for rule variables
-        // If tree_subst has a concrete binding for a rule var → use it directly
-        // Otherwise → create a fresh var
-        let mut rename = subst::Substitution::new();
+        if arity > 0 {
+            // De Bruijn path: allocate N fresh vars, open DeBruijn to Global
+            let name_sym = self.intern("_");
+            let fresh_vars: Vec<VarId> = (0..arity)
+                .map(|_| self.fresh_var(name_sym))
+                .collect();
 
-        for vid in &all_vars {
-            if let Some(bound) = tree_subst.resolve(*vid) {
-                if !matches!(self.terms.get(bound), Term::Var(_)) {
-                    // tree_subst has rule_var → concrete: substitute directly
-                    rename.bind(*vid, bound);
-                    continue;
+            // Open head and body
+            let fresh_head = self.term_from_debruijn(head, &fresh_vars);
+            let fresh_body: Vec<TermId> = body.iter()
+                .map(|&b| self.term_from_debruijn(b, &fresh_vars))
+                .collect();
+
+            // Build answer_links from tree_subst.
+            // tree_subst contains two kinds of entries:
+            // 1. Synthetic VarId(u32::MAX - n): DeBruijn var n matched a concrete value.
+            //    Bind the corresponding fresh var to that concrete value.
+            // 2. Query VarId: query var matched a subterm of the rule head.
+            //    Open any DeBruijn vars in the value to their fresh globals.
+            let mut answer_links = subst::Substitution::new();
+            for (ts_vid, bound_term) in &tree_subst.bindings {
+                let is_synthetic = ts_vid.raw() > u32::MAX - arity - 1;
+                if is_synthetic {
+                    // Synthetic VarId for DeBruijn(n) — bind fresh var to matched value
+                    let db_index = (u32::MAX - ts_vid.raw()) as usize;
+                    if let Some(&fresh_vid) = fresh_vars.get(db_index) {
+                        answer_links.bind(fresh_vid, *bound_term);
+                    }
+                } else {
+                    // Query var — open any DeBruijn in the bound value
+                    let opened = self.term_from_debruijn(*bound_term, &fresh_vars);
+                    answer_links.bind(*ts_vid, opened);
                 }
             }
-            // No concrete binding — create fresh var
-            let fresh = self.fresh_var(vid.name());
-            let fresh_term = self.alloc(Term::Var(Var::Global(fresh)));
-            rename.bind(*vid, fresh_term);
-        }
 
-        // Step 2: Apply rename to rule body → fresh_body
-        let fresh_body: Vec<TermId> = body
-            .iter()
-            .map(|&b| self.apply_subst(b, &rename))
-            .collect();
+            (fresh_body, answer_links)
+        } else {
+            // Legacy path: Global vars (ground facts or rules not yet converted)
+            let all_vars = self.collect_rule_vars(head, &body);
 
-        // Step 3: Build answer_links from tree_subst
-        // For each tree_subst entry whose key is a query var (not a rule var),
-        // map it to the appropriate fresh var or concrete value
-        let mut answer_links = subst::Substitution::new();
-
-        for (ts_vid, bound_term) in &tree_subst.bindings {
-            // Skip entries keyed by rule vars — they're already in rename
-            if all_vars.contains(ts_vid) {
-                continue;
-            }
-            // This is a query var entry
-            match self.terms.get(*bound_term) {
-                Term::Var(Var::Global(rule_vid)) => {
-                    // query_var → Var(rule_vid): find what rename mapped rule_vid to
-                    let rule_vid = *rule_vid;
-                    if let Some(renamed) = rename.resolve(rule_vid) {
-                        answer_links.bind(*ts_vid, renamed);
+            let mut rename = subst::Substitution::new();
+            for vid in &all_vars {
+                if let Some(bound) = tree_subst.resolve(*vid) {
+                    if !matches!(self.terms.get(bound), Term::Var(_)) {
+                        rename.bind(*vid, bound);
+                        continue;
                     }
                 }
-                _ => {
-                    // query_var → structured term: apply rename to replace
-                    // any rule variables inside with their fresh copies
-                    let renamed_term = self.apply_subst(*bound_term, &rename);
-                    answer_links.bind(*ts_vid, renamed_term);
+                let fresh = self.fresh_var(vid.name());
+                let fresh_term = self.alloc(Term::Var(Var::Global(fresh)));
+                rename.bind(*vid, fresh_term);
+            }
+
+            let fresh_body: Vec<TermId> = body
+                .iter()
+                .map(|&b| self.apply_subst(b, &rename))
+                .collect();
+
+            let mut answer_links = subst::Substitution::new();
+            for (ts_vid, bound_term) in &tree_subst.bindings {
+                if all_vars.contains(ts_vid) {
+                    continue;
+                }
+                match self.terms.get(*bound_term) {
+                    Term::Var(Var::Global(rule_vid)) => {
+                        let rule_vid = *rule_vid;
+                        if let Some(renamed) = rename.resolve(rule_vid) {
+                            answer_links.bind(*ts_vid, renamed);
+                        }
+                    }
+                    _ => {
+                        let renamed_term = self.apply_subst(*bound_term, &rename);
+                        answer_links.bind(*ts_vid, renamed_term);
+                    }
                 }
             }
-        }
 
-        (fresh_body, answer_links)
+            (fresh_body, answer_links)
+        }
     }
 
     /// Apply a substitution to each goal in a list, returning new goal terms.

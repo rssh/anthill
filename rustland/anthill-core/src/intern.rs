@@ -16,6 +16,11 @@ impl Symbol {
     pub fn index(self) -> u32 {
         self.0
     }
+
+    /// Create from raw index. Used for synthetic VarIds (de Bruijn).
+    pub fn from_raw(raw: u32) -> Self {
+        Symbol(raw)
+    }
 }
 
 // ── Symbol metadata ─────────────────────────────────────────────

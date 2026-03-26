@@ -36,7 +36,7 @@ pub(crate) enum DiscrimKey {
 
 struct DiscrimNode<L> {
     concrete: HashMap<DiscrimKey, DiscrimNode<L>>,
-    var_edges: Vec<(VarId, DiscrimNode<L>)>,
+    var_edges: Vec<(Var, DiscrimNode<L>)>,
     leaves: Vec<L>,
 }
 
@@ -140,18 +140,17 @@ impl<L> SubstTree<L> {
         term_id: TermId,
     ) -> &'a mut DiscrimNode<L> {
         match terms.get(term_id) {
-            Term::Var(Var::Global(vid)) => {
-                let vid = *vid;
-                let pos = node.var_edges.iter().position(|(v, _)| *v == vid);
+            Term::Var(var) => {
+                let var = *var;
+                let pos = node.var_edges.iter().position(|(v, _)| *v == var);
                 if let Some(idx) = pos {
                     &mut node.var_edges[idx].1
                 } else {
-                    node.var_edges.push((vid, DiscrimNode::new()));
+                    node.var_edges.push((var, DiscrimNode::new()));
                     let last = node.var_edges.len() - 1;
                     &mut node.var_edges[last].1
                 }
             }
-            Term::Var(Var::DeBruijn(_)) => node,
             Term::Fn { functor, pos_args, named_args } => {
                 let functor = *functor;
                 let pos_args = pos_args.clone();
@@ -439,9 +438,9 @@ impl<L: Clone> SubstTree<L> {
                     }
                 }
 
-                for (tree_vid, child) in &node.var_edges {
+                for (tree_var, child) in &node.var_edges {
                     let branch = subst.clone()
-                        .with_binding(*tree_vid, BindValue::Term(query_term));
+                        .with_binding(tree_var.as_vid(), BindValue::Term(query_term));
                     Self::collect_all_leaves(child, branch, results);
                 }
             }
@@ -473,9 +472,9 @@ impl<L: Clone> SubstTree<L> {
                 results.push((leaf.clone(), subst.clone()));
             }
         }
-        for (tree_vid, child) in &node.var_edges {
+        for (tree_var, child) in &node.var_edges {
             let branch = subst.clone()
-                .with_binding(*tree_vid, BindValue::Term(query_term));
+                .with_binding(tree_var.as_vid(), BindValue::Term(query_term));
             Self::collect_all_leaves(child, branch, results);
         }
     }
@@ -579,9 +578,9 @@ impl<L: Clone> SubstTree<L> {
                     }
                 }
                 // var_edges: tree variable matches this nested Fn
-                for (tree_vid, child) in &node.var_edges {
+                for (tree_var, child) in &node.var_edges {
                     let branch = subst.clone()
-                        .with_binding(*tree_vid, BindValue::Term(arg_term_id));
+                        .with_binding(tree_var.as_vid(), BindValue::Term(arg_term_id));
                     Self::query_args(
                         child, terms, remaining_pos, remaining_named, pos_offset,
                         bind_paths, branch, results, on_done,
@@ -638,9 +637,9 @@ impl<L: Clone> SubstTree<L> {
             Self::query_args(child, terms, remaining_pos, remaining_named, pos_offset,
                 bind_paths, subst.clone(), results, on_done);
         }
-        for (tree_vid, child) in &node.var_edges {
+        for (tree_var, child) in &node.var_edges {
             let branch = subst.clone()
-                .with_binding(*tree_vid, BindValue::Term(query_term));
+                .with_binding(tree_var.as_vid(), BindValue::Term(query_term));
             Self::query_args(child, terms, remaining_pos, remaining_named, pos_offset,
                 bind_paths, branch, results, on_done);
         }

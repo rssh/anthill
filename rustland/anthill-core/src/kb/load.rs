@@ -2773,7 +2773,7 @@ impl<'a> Loader<'a> {
             .unwrap_or_default();
 
         let meta = r.meta.as_ref().map(|mb| self.load_meta_block(mb));
-        self.kb.assert_rule(head_term, body, rule_sort, domain, meta);
+        self.kb.assert_rule_debruijn(head_term, body, rule_sort, domain, meta);
 
         self.current_owner = prev_owner;
     }
