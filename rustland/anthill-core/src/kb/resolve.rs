@@ -10,6 +10,8 @@
 /// Goals are always maximally concrete (no unresolved var chains). The answer
 /// substitution is always flat (path-compressed on merge) — no `walk` needed.
 
+use std::collections::HashMap;
+
 use smallvec::SmallVec;
 
 use super::subst::Substitution;
@@ -217,6 +219,9 @@ enum StepResult {
 pub struct SearchStream {
     stack: Vec<Frame>,
     config: ResolveConfig,
+    /// Per-query cache: goal TermId → discrim tree query results.
+    /// Safe because facts/rules don't change during a single resolve call.
+    query_cache: HashMap<TermId, Vec<(RuleId, Substitution)>>,
 }
 
 impl SearchStream {
@@ -393,22 +398,43 @@ impl SearchStream {
             }
         }
 
-        // 6. Non-builtin goal → query discrimination tree, build candidates
-        let mut rule_candidates = kb.query(goal);
-
-        // Simplify fallback
-        if self.config.simplify {
-            let has_non_eq = rule_candidates.iter().any(|(rid, _)| !kb.is_equation(*rid));
-            if !has_non_eq {
-                let (rewritten, changes) = kb.apply_eq_rules(goal, 100);
-                if !changes.is_empty() {
-                    rule_candidates = kb.query(rewritten);
+        // 6. Non-builtin goal → query discrimination tree.
+        // Cache ground goals (no variables) — their TermId is stable and
+        // may recur. Goals with variables get unique fresh VarIds so
+        // caching them wastes memory without hits.
+        let is_ground = kb.collect_vars(goal).is_empty();
+        let rule_candidates = if is_ground {
+            if let Some(cached) = self.query_cache.get(&goal) {
+                cached.clone()
+            } else {
+                let mut rc = kb.query(goal);
+                if self.config.simplify {
+                    let has_non_eq = rc.iter().any(|(rid, _)| !kb.is_equation(*rid));
+                    if !has_non_eq {
+                        let (rewritten, changes) = kb.apply_eq_rules(goal, 100);
+                        if !changes.is_empty() {
+                            rc = kb.query(rewritten);
+                        }
+                    }
+                }
+                rc.retain(|(rid, _)| !kb.is_equation(*rid));
+                self.query_cache.insert(goal, rc.clone());
+                rc
+            }
+        } else {
+            let mut rc = kb.query(goal);
+            if self.config.simplify {
+                let has_non_eq = rc.iter().any(|(rid, _)| !kb.is_equation(*rid));
+                if !has_non_eq {
+                    let (rewritten, changes) = kb.apply_eq_rules(goal, 100);
+                    if !changes.is_empty() {
+                        rc = kb.query(rewritten);
+                    }
                 }
             }
-        }
-
-        // Filter equations
-        rule_candidates.retain(|(rid, _)| !kb.is_equation(*rid));
+            rc.retain(|(rid, _)| !kb.is_equation(*rid));
+            rc
+        };
 
         // Merge occurrence + rule candidates
         candidates.extend(rule_candidates.into_iter().map(|(rid, s)| Candidate::Rule(rid, s)));
@@ -690,6 +716,7 @@ impl KnowledgeBase {
                 max_solutions: config.max_solutions,
                 simplify: config.simplify,
             },
+            query_cache: HashMap::new(),
         }
     }
 
@@ -3771,6 +3798,91 @@ mod tests {
         assert_eq!(sols.len(), 1, "shared(?q) should have 1 solution");
         let bound = kb.reify(var_q, &sols[0].subst);
         assert_eq!(bound, yes, "?q should resolve to \"yes\"");
+    }
+
+    /// Multiple anonymous variables get distinct DeBruijn indices.
+    ///
+    /// Rule: pair(?) :- left(?), right(?)
+    /// Each ? is independent. With facts left("a"), left("b"), right("x"),
+    /// right("y"), query pair(?) should yield 4 solutions (2×2 cross product),
+    /// NOT 2 (which would happen if all ? shared an index).
+    #[test]
+    fn debruijn_multiple_anonymous_vars_independent() {
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Sort");
+        let domain = kb.make_name_term("test");
+
+        let pair_sym = kb.intern("pair");
+        let left_sym = kb.intern("left");
+        let right_sym = kb.intern("right");
+
+        // Three anonymous variables — each gets a fresh VarId
+        let anon = |kb: &mut KnowledgeBase| {
+            let sym = kb.intern("_");
+            let vid = kb.fresh_var(sym);
+            kb.alloc(Term::Var(Var::Global(vid)))
+        };
+
+        let v1 = anon(&mut kb);
+        let v2 = anon(&mut kb);
+        let v3 = anon(&mut kb);
+
+        // Rule: pair(?) :- left(?), right(?)
+        let head = kb.alloc(Term::Fn {
+            functor: pair_sym,
+            pos_args: SmallVec::from_elem(v1, 1),
+            named_args: SmallVec::new(),
+        });
+        let body_l = kb.alloc(Term::Fn {
+            functor: left_sym,
+            pos_args: SmallVec::from_elem(v2, 1),
+            named_args: SmallVec::new(),
+        });
+        let body_r = kb.alloc(Term::Fn {
+            functor: right_sym,
+            pos_args: SmallVec::from_elem(v3, 1),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule_debruijn(head, vec![body_l, body_r], sort, domain, None);
+
+        // Facts
+        for val in &["a", "b"] {
+            let v = kb.alloc(Term::Const(Literal::String(val.to_string())));
+            let fact = kb.alloc(Term::Fn {
+                functor: left_sym,
+                pos_args: SmallVec::from_elem(v, 1),
+                named_args: SmallVec::new(),
+            });
+            kb.assert_fact(fact, sort, domain, None);
+        }
+        for val in &["x", "y"] {
+            let v = kb.alloc(Term::Const(Literal::String(val.to_string())));
+            let fact = kb.alloc(Term::Fn {
+                functor: right_sym,
+                pos_args: SmallVec::from_elem(v, 1),
+                named_args: SmallVec::new(),
+            });
+            kb.assert_fact(fact, sort, domain, None);
+        }
+
+        // Query: pair(?q)
+        let q_sym = kb.intern("q");
+        let vq = kb.fresh_var(q_sym);
+        let var_q = kb.alloc(Term::Var(Var::Global(vq)));
+        let query = kb.alloc(Term::Fn {
+            functor: pair_sym,
+            pos_args: SmallVec::from_elem(var_q, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig { max_solutions: 10, ..ResolveConfig::default() };
+        let solutions = kb.resolve(&[query], &config);
+        // 3 independent anonymous vars → left has 2 facts, right has 2 facts
+        // head ? is independent from body, so pair(?) matches any.
+        // Body: left(?) × right(?) = 2 × 2 = 4 solutions.
+        assert_eq!(solutions.len(), 4,
+            "3 independent anonymous vars should yield 2×2=4 solutions, got {}",
+            solutions.len());
     }
 
     /// Stress test: rule with N=1000 head args and N body goals.

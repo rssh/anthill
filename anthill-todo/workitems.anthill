@@ -189,3 +189,10 @@ fact WorkItem(
   depends_on: [],
   status: Open)
 
+fact WorkItem(
+  id: "WI-030",
+  description: "SLD O(n²) optimization: lazy substitution in resolve.rs. Replace eager apply_subst_each on remaining goals after each match with lazy walk — apply_subst goal[0] through frame.subst at selection time in step_init, skip apply_subst_each in step_choice_point. Reduces O(n²) to O(n × goal_size).",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-029"],
+  status: Open)
+
