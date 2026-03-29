@@ -1,0 +1,34 @@
+-- Test: anonymous variables must flow through rule chaining.
+--
+-- f(?x) :- p(?x, ?, ?)
+-- p(?a, ?b, ?c) :- gen_less(add(?a, ?b), ?c)
+--
+-- The ? in f's body are anonymous to f, but p's rule needs them
+-- as ?b and ?c for gen_less. Anonymous means "caller doesn't care",
+-- not "skip binding" — the callee may still use those positions.
+
+namespace test.anon_chaining
+  import anthill.prelude.{Int}
+
+  -- Data: triples where a+b < c
+  fact triple(1, 2, 10)
+  fact triple(1, 3, 10)
+  fact triple(1, 2, 2)
+
+  -- p checks the constraint: a+b < c
+  rule valid_triple(?a, ?b, ?c)
+    :- triple(?a, ?b, ?c),
+       lt(add(?a, ?b), ?c)
+
+  -- f only cares about the first element
+  -- The two ? must still unify with p's ?b and ?c
+  rule has_valid(?x)
+    :- valid_triple(?x, ?, ?)
+
+  -- Also test: anonymous vars producing redundant solutions
+  -- found(?x) should yield 1 distinct result per ?x value,
+  -- but currently yields N (one per matching triple)
+  rule found(?x)
+    :- triple(?x, ?, ?)
+
+end

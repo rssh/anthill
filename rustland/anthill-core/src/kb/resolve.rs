@@ -10,7 +10,7 @@
 /// Goals are always maximally concrete (no unresolved var chains). The answer
 /// substitution is always flat (path-compressed on merge) — no `walk` needed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use smallvec::SmallVec;
 
@@ -193,6 +193,9 @@ enum FrameState {
         next: usize,
         any_delayed: bool,
         child_solutions: usize,
+        /// Seen ground goals: reified goal TermIds from yielded solutions.
+        /// Hash-consing guarantees same structure = same TermId.
+        seen_goals: HashSet<TermId>,
     },
 }
 
@@ -283,13 +286,20 @@ impl SearchStream {
             }
         }
 
-        // 3. Goals empty → yield solution
+        // 3. Goals empty → yield solution (with head-var dedup)
         if frame.goals.is_empty() {
             let sol = Solution {
                 subst: frame.subst.clone(),
                 residual: vec![],
             };
             self.stack.pop();
+
+            // Head-var dedup: project solution onto each ancestor ChoicePoint's
+            // goal vars. If the projection was already seen, skip this solution.
+            if self.is_duplicate_projection(kb, &sol) {
+                return Some(StepResult::Continue);
+            }
+
             self.record_solution_in_ancestors();
             return Some(StepResult::YieldSolution(sol));
         }
@@ -448,6 +458,7 @@ impl SearchStream {
             next: 0,
             any_delayed: false,
             child_solutions: 0,
+            seen_goals: HashSet::new(),
         };
         Some(StepResult::Continue)
     }
@@ -555,6 +566,7 @@ impl SearchStream {
                     candidates,
                     any_delayed,
                     child_solutions,
+                    ..
                 } => (
                     delay_mode.clone(),
                     *original_goal,
@@ -684,6 +696,19 @@ impl SearchStream {
         }
 
         Some(StepResult::Continue)
+    }
+
+    /// Check if a solution is a duplicate by reifying the nearest ancestor
+    /// ChoicePoint's goal through the solution substitution. The reified
+    /// goal is a ground TermId (hash-consed) — same structure = same id.
+    fn is_duplicate_projection(&mut self, kb: &mut KnowledgeBase, sol: &Solution) -> bool {
+        for frame in self.stack.iter_mut().rev() {
+            if let FrameState::ChoicePoint { original_goal, seen_goals, .. } = &mut frame.state {
+                let reified = kb.reify(*original_goal, &sol.subst);
+                return !seen_goals.insert(reified);
+            }
+        }
+        false // no ChoicePoint ancestor — no dedup
     }
 
     /// When yielding a solution, walk the stack to find the nearest
@@ -3978,5 +4003,124 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    /// Anonymous vars flow through rule chaining.
+    ///
+    /// f(?x) :- p(?x, ?, ?)
+    /// p(?a, ?b, ?c) :- check(?a, ?b, ?c)
+    ///
+    /// The ? in f are anonymous to f, but p needs them as ?b, ?c.
+    /// Verifies that anonymous vars participate in unification with
+    /// called rules — they are "don't care" for the caller, not
+    /// wildcards that skip binding.
+    ///
+    /// Also documents the redundant-solutions issue:
+    /// found(?x) :- item(?x, ?, ?) with multiple items sharing ?x
+    /// produces N solutions instead of 1 (WI-026).
+    #[test]
+    fn anonymous_vars_chain_through_rules() {
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Sort");
+        let domain = kb.make_name_term("test");
+
+        let check_sym = kb.intern("check");
+        let p_sym = kb.intern("p");
+        let f_sym = kb.intern("f");
+        let item_sym = kb.intern("item");
+        let found_sym = kb.intern("found");
+
+        // Helper: make a fresh anonymous var
+        let anon = |kb: &mut KnowledgeBase| {
+            let s = kb.intern("_");
+            let v = kb.fresh_var(s);
+            kb.alloc(Term::Var(Var::Global(v)))
+        };
+        let named = |kb: &mut KnowledgeBase, name: &str| {
+            let s = kb.intern(name);
+            let v = kb.fresh_var(s);
+            (v, kb.alloc(Term::Var(Var::Global(v))))
+        };
+
+        // Facts: check("ok", 1, 10), check("ok", 2, 20), check("fail", 1, 1)
+        let ok = kb.alloc(Term::Const(Literal::String("ok".into())));
+        let fail = kb.alloc(Term::Const(Literal::String("fail".into())));
+        for (s, n1, n2) in [
+            (ok, 1i64, 10i64),
+            (ok, 2, 20),
+            (fail, 1, 1),
+        ] {
+            let v1 = kb.alloc(Term::Const(Literal::Int(n1)));
+            let v2 = kb.alloc(Term::Const(Literal::Int(n2)));
+            let fact = kb.alloc(Term::Fn {
+                functor: check_sym,
+                pos_args: SmallVec::from_slice(&[s, v1, v2]),
+                named_args: SmallVec::new(),
+            });
+            kb.assert_fact(fact, sort, domain, None);
+        }
+
+        // Rule: p(?a, ?b, ?c) :- check(?a, ?b, ?c)
+        let (_, va) = named(&mut kb, "a");
+        let (_, vb) = named(&mut kb, "b");
+        let (_, vc) = named(&mut kb, "c");
+        let p_head = kb.alloc(Term::Fn {
+            functor: p_sym,
+            pos_args: SmallVec::from_slice(&[va, vb, vc]),
+            named_args: SmallVec::new(),
+        });
+        let p_body = kb.alloc(Term::Fn {
+            functor: check_sym,
+            pos_args: SmallVec::from_slice(&[va, vb, vc]),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule_debruijn(p_head, vec![p_body], sort, domain, None);
+
+        // Rule: f(?x) :- p(?x, ?, ?)
+        let (_, vx) = named(&mut kb, "x");
+        let a1 = anon(&mut kb);
+        let a2 = anon(&mut kb);
+        let f_head = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(vx, 1),
+            named_args: SmallVec::new(),
+        });
+        let f_body = kb.alloc(Term::Fn {
+            functor: p_sym,
+            pos_args: SmallVec::from_slice(&[vx, a1, a2]),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_rule_debruijn(f_head, vec![f_body], sort, domain, None);
+
+        // Query: f(?q)
+        let (vq, var_q) = named(&mut kb, "q");
+        let query = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(var_q, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let config = ResolveConfig { max_solutions: 10, ..ResolveConfig::default() };
+        let solutions = kb.resolve(&[query], &config);
+
+        // Anonymous ? in f's body correctly flow through to p's ?b, ?c.
+        // check has 3 facts → p matches all 3 → f gets all 3.
+        // Two have ?x="ok", one has ?x="fail".
+        assert!(solutions.len() >= 2, "should find at least 2 solutions (ok + fail)");
+
+        let mut xs: Vec<String> = solutions.iter()
+            .filter_map(|sol| {
+                let t = kb.reify(var_q, &sol.subst);
+                match kb.get_term(t) {
+                    Term::Const(Literal::String(s)) => Some(s.clone()),
+                    _ => None,
+                }
+            })
+            .collect();
+        xs.sort();
+        xs.dedup();
+        // Head-var dedup: "ok" and "fail" each appear once
+        assert_eq!(xs, vec!["fail", "ok"],
+            "head-var dedup should yield exactly 2 distinct solutions");
     }
 }
