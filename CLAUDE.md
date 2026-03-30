@@ -96,3 +96,12 @@ Variables: `?name` (named, shared within scope), `?` (anonymous, each occurrence
 - **SLD resolution**: depth-first search with negation-as-failure, delay/rotation for unbound vars
 - **Facts are rules**: a fact is a rule with empty body; constraints are integrity guards
 - **Named args**: always sorted by field name for canonical ordering
+
+
+# Repository rules
+
+- before commit, check - if all test passed.  Remind if simplicity was not runned.
+- do not add attribution to commit.
+
+
+

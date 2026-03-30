@@ -23,5 +23,9 @@ tree-sitter-anthill/target/
 # OS
 .DS_Store
 
+# Local/generated docs
+docs/local/
+pdf/
+
 # Claude
 .claude/
