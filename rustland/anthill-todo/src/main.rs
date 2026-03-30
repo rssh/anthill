@@ -90,6 +90,11 @@ enum TodoCommand {
         /// Work item ID
         id: String,
     },
+    /// Mark a delivered work item as verified
+    Verify {
+        /// Work item ID
+        id: String,
+    },
     /// Add feedback to a work item
     Feedback {
         /// Work item ID
@@ -417,6 +422,22 @@ fn collect_workitems(kb: &KnowledgeBase) -> Vec<WorkItemInfo> {
     items
 }
 
+/// Collect the set of work item IDs that have at least one Feedback fact.
+fn items_with_feedback(kb: &KnowledgeBase) -> std::collections::HashSet<String> {
+    let mut result = std::collections::HashSet::new();
+    if let Some(fb_sym) = kb.try_resolve_symbol("anthill.stage0.Feedback") {
+        for rid in kb.by_functor(fb_sym) {
+            let fh = kb.rule_head(rid);
+            if let Some(wi_id) = extract_named_arg(kb, fh, "workitem")
+                .and_then(|t| extract_string(kb, t))
+            {
+                result.insert(wi_id);
+            }
+        }
+    }
+    result
+}
+
 // ── Command implementations ─────────────────────────────────────
 
 fn run_status(kb: &KnowledgeBase) {
@@ -504,6 +525,8 @@ fn run_list(kb: &KnowledgeBase, status_filter: Option<&str>, show_all: bool) {
     // Sort blocked by id
     blocked.sort_by(|a, b| a.id.cmp(&b.id));
 
+    let fb_set = items_with_feedback(kb);
+
     if !ready.is_empty() {
         for item in &ready {
             let deps_info = if item.depends_on.is_empty() {
@@ -516,7 +539,8 @@ fn run_list(kb: &KnowledgeBase, status_filter: Option<&str>, show_all: bool) {
                 let c = count_transitive(&item.id, &dependents, &mut v);
                 if c > 0 { format!(" [unblocks {c}]") } else { String::new() }
             };
-            println!("  {} [{}] {}{}{}", item.id, item.status, item.description, deps_info, unblocks);
+            let fb = if fb_set.contains(&item.id) { " [has feedback]" } else { "" };
+            println!("  {} [{}] {}{}{}{}", item.id, item.status, item.description, deps_info, unblocks, fb);
         }
     }
 
@@ -525,7 +549,8 @@ fn run_list(kb: &KnowledgeBase, status_filter: Option<&str>, show_all: bool) {
         println!("  -- blocked --");
         for item in &blocked {
             let deps = format!(" (depends: {})", item.depends_on.join(", "));
-            println!("  {} [{}] {}{}", item.id, item.status, item.description, deps);
+            let fb = if fb_set.contains(&item.id) { " [has feedback]" } else { "" };
+            println!("  {} [{}] {}{}{}", item.id, item.status, item.description, deps, fb);
         }
     }
 
@@ -633,7 +658,7 @@ fn run_show(kb: &KnowledgeBase, id: &str) {
     }
 }
 
-fn run_claim(kb: &mut KnowledgeBase, id: &str, agent: &str, project_dir: &Path, output: Option<&Path>) {
+fn run_claim(kb: &mut KnowledgeBase, id: &str, agent: &str, project_dir: &Path) {
     // Verify claimable
     let claimable_sym = match kb.try_resolve_symbol("anthill.stage0.workflow.claimable") {
         Some(s) => s,
@@ -692,14 +717,9 @@ fn run_claim(kb: &mut KnowledgeBase, id: &str, agent: &str, project_dir: &Path, 
         eprintln!("warning: could not update source file for {id}");
         println!("claimed: {id} by {agent} (in-memory only)");
     }
-
-    if let Some(out) = output {
-        let text = anthill_core::persistence::print::print_fact(kb, new_head, None);
-        append_to_file(out, &text);
-    }
 }
 
-fn run_deliver(kb: &mut KnowledgeBase, id: &str, agent: &str, project_dir: &Path, output: Option<&Path>) {
+fn run_deliver(kb: &mut KnowledgeBase, id: &str, agent: &str, project_dir: &Path) {
     let items = collect_workitems(kb);
     let item = match items.iter().find(|i| i.id == id) {
         Some(i) => i,
@@ -740,14 +760,48 @@ fn run_deliver(kb: &mut KnowledgeBase, id: &str, agent: &str, project_dir: &Path
         eprintln!("warning: could not update source file for {id}");
         println!("delivered: {id} by {agent} (in-memory only)");
     }
+}
 
-    if let Some(out) = output {
-        let text = anthill_core::persistence::print::print_fact(kb, new_head, None);
-        append_to_file(out, &text);
+fn run_verify(kb: &mut KnowledgeBase, id: &str, project_dir: &Path) {
+    let items = collect_workitems(kb);
+    let item = match items.iter().find(|i| i.id == id) {
+        Some(i) => i,
+        None => { eprintln!("error: work item '{id}' not found"); return; }
+    };
+    if item.status != "Delivered" {
+        eprintln!("error: '{id}' is not Delivered (status: {})", item.status);
+        return;
+    }
+
+    let verified_sym = kb.try_resolve_symbol("anthill.stage0.WorkStatus.Verified")
+        .unwrap_or_else(|| kb.intern("Verified"));
+    let at_key = kb.intern("at");
+    let at_val = kb.alloc(Term::Const(Literal::String(now_timestamp())));
+    let mut ver_args: SmallVec<[(anthill_core::intern::Symbol, TermId); 2]> = SmallVec::new();
+    ver_args.push((at_key, at_val));
+    let ver_term = kb.alloc(Term::Fn {
+        functor: verified_sym,
+        pos_args: SmallVec::new(),
+        named_args: ver_args,
+    });
+
+    let old_head = kb.rule_head(item.rule_id);
+    let new_head = replace_named_arg(kb, old_head, "status", ver_term);
+
+    let sort = kb.rule_sort(item.rule_id);
+    let domain = kb.rule_domain(item.rule_id);
+    kb.assert_fact(new_head, sort, domain, None);
+
+    let status_text = format!("Verified(at: \"{}\")", now_timestamp());
+    if update_status_in_source(project_dir, id, &status_text) {
+        println!("verified: {id}");
+    } else {
+        eprintln!("warning: could not update source file for {id}");
+        println!("verified: {id} (in-memory only)");
     }
 }
 
-fn run_feedback(kb: &mut KnowledgeBase, id: &str, text: &str, agent: &str, output: Option<&Path>) {
+fn run_feedback(kb: &mut KnowledgeBase, id: &str, text: &str, agent: &str, project_dir: &Path) {
     let fb_sym = kb.try_resolve_symbol("anthill.stage0.Feedback")
         .unwrap_or_else(|| kb.intern("Feedback"));
 
@@ -778,12 +832,11 @@ fn run_feedback(kb: &mut KnowledgeBase, id: &str, text: &str, agent: &str, outpu
     let domain = kb.make_name_term("anthill.stage0");
     kb.assert_fact(term, sort, domain, None);
 
-    println!("feedback on {id}: {text}");
+    let fact_text = anthill_core::persistence::print::print_fact(kb, term, None);
+    let workitems_file = scan_dir(project_dir).join("workitems.anthill");
+    append_to_file(&workitems_file, &fact_text);
 
-    if let Some(out) = output {
-        let fact_text = anthill_core::persistence::print::print_fact(kb, term, None);
-        append_to_file(out, &fact_text);
-    }
+    println!("feedback on {id}: {text}");
 }
 
 fn run_graph(kb: &KnowledgeBase) {
@@ -1095,6 +1148,7 @@ fn run_delete(project_dir: &Path, id: &str) {
 // ── Dependency commands ─────────────────────────────────────────
 
 /// Check if `from` transitively depends on `target` via the dependency graph.
+/// Uses only the `id` and `depends_on` fields of WorkItemInfo.
 fn has_transitive_dep(items: &[WorkItemInfo], from: &str, target: &str) -> bool {
     let mut visited = std::collections::HashSet::new();
     let mut stack = vec![from];
@@ -1281,8 +1335,6 @@ fn main() -> ExitCode {
         }
     };
 
-    let output_file = project_dir.join("transitions.anthill");
-
     match &cli.command {
         TodoCommand::Init { .. } | TodoCommand::Delete { .. } => unreachable!(),
         TodoCommand::Add { description, depends_on, acceptance } => {
@@ -1292,13 +1344,95 @@ fn main() -> ExitCode {
         TodoCommand::List { status, all } => run_list(&kb, status.as_deref(), *all),
         TodoCommand::Next { all } => run_next(&mut kb, *all),
         TodoCommand::Show { id } => run_show(&kb, id),
-        TodoCommand::Claim { id } => run_claim(&mut kb, id, &cli.agent, &project_dir, Some(&output_file)),
-        TodoCommand::Deliver { id } => run_deliver(&mut kb, id, &cli.agent, &project_dir, Some(&output_file)),
-        TodoCommand::Feedback { id, text } => run_feedback(&mut kb, id, text, &cli.agent, Some(&output_file)),
+        TodoCommand::Claim { id } => run_claim(&mut kb, id, &cli.agent, &project_dir),
+        TodoCommand::Deliver { id } => run_deliver(&mut kb, id, &cli.agent, &project_dir),
+        TodoCommand::Verify { id } => run_verify(&mut kb, id, &project_dir),
+        TodoCommand::Feedback { id, text } => run_feedback(&mut kb, id, text, &cli.agent, &project_dir),
         TodoCommand::AddDependency { id, dependency } => run_add_dependency(&kb, &project_dir, id, dependency),
         TodoCommand::RemoveDependency { id, dependency } => run_remove_dependency(&kb, &project_dir, id, dependency),
         TodoCommand::Graph => run_graph(&kb),
     }
 
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_item(id: &str, deps: &[&str]) -> WorkItemInfo {
+        WorkItemInfo {
+            rule_id: RuleId::from_raw(0),
+            id: id.to_string(),
+            description: String::new(),
+            status: "Open".to_string(),
+            depends_on: deps.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn transitive_dep_direct() {
+        let items = vec![
+            make_item("A", &["B"]),
+            make_item("B", &[]),
+        ];
+        assert!(has_transitive_dep(&items, "A", "B"));
+        assert!(!has_transitive_dep(&items, "B", "A"));
+    }
+
+    #[test]
+    fn transitive_dep_chain() {
+        let items = vec![
+            make_item("A", &["B"]),
+            make_item("B", &["C"]),
+            make_item("C", &[]),
+        ];
+        assert!(has_transitive_dep(&items, "A", "C"));
+        assert!(!has_transitive_dep(&items, "C", "A"));
+    }
+
+    #[test]
+    fn transitive_dep_diamond() {
+        // A -> B -> D
+        // A -> C -> D
+        let items = vec![
+            make_item("A", &["B", "C"]),
+            make_item("B", &["D"]),
+            make_item("C", &["D"]),
+            make_item("D", &[]),
+        ];
+        assert!(has_transitive_dep(&items, "A", "D"));
+        assert!(!has_transitive_dep(&items, "D", "A"));
+        assert!(!has_transitive_dep(&items, "B", "C"));
+    }
+
+    #[test]
+    fn transitive_dep_no_relation() {
+        let items = vec![
+            make_item("A", &[]),
+            make_item("B", &[]),
+        ];
+        assert!(!has_transitive_dep(&items, "A", "B"));
+        assert!(!has_transitive_dep(&items, "B", "A"));
+    }
+
+    #[test]
+    fn transitive_dep_existing_cycle() {
+        // Already-cyclic graph shouldn't infinite loop
+        let items = vec![
+            make_item("A", &["B"]),
+            make_item("B", &["A"]),
+        ];
+        assert!(has_transitive_dep(&items, "A", "B"));
+        assert!(has_transitive_dep(&items, "B", "A"));
+    }
+
+    #[test]
+    fn transitive_dep_missing_target() {
+        let items = vec![
+            make_item("A", &["X"]),
+        ];
+        // X not in items — should not panic, just not found
+        assert!(!has_transitive_dep(&items, "A", "Z"));
+    }
 }

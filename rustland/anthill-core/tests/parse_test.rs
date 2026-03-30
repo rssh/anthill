@@ -3444,3 +3444,27 @@ sort Math {
         "resolver should find apply(...) occurrence from expression body"
     );
 }
+
+#[test]
+fn incorrect_program_error_includes_line_number() {
+    // Entity with a field of unknown type — should produce an error pointing to line 2.
+    let source = "sort Shapes {\n  entity Box(width: Nonexistent)\n}\n";
+    //            line 1              line 2                          line 3
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    let result = load::load(&mut kb, &parsed, &NullResolver);
+    let errors = result.expect_err("expected load errors for unresolved type");
+
+    let unresolved: Vec<_> = errors.iter().filter(|e| {
+        matches!(e, load::LoadError::UnresolvedName { name, .. } if name == "Nonexistent")
+    }).collect();
+    assert!(!unresolved.is_empty(),
+        "should report UnresolvedName for 'Nonexistent', got: {:?}", errors);
+
+    // Verify format_with_source produces "line:col: ..." with correct line
+    let formatted = unresolved[0].format_with_source(source);
+    assert!(formatted.starts_with("2:"),
+        "error should point to line 2, got: {}", formatted);
+    assert!(formatted.contains("Nonexistent"),
+        "error should mention the unresolved name, got: {}", formatted);
+}

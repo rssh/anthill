@@ -64,6 +64,7 @@ impl ConstraintId {
 
 /// Classification of a guard for optimized checking.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 enum GuardKind {
     /// Functional dependency: at most one fact with these key field values.
     /// Pre-check: query discrim tree for existing fact with same key.
@@ -85,6 +86,7 @@ struct Guard {
     #[allow(dead_code)]
     id: ConstraintId,
     term: TermId,
+    #[allow(dead_code)]
     kind: GuardKind,
     #[allow(dead_code)]
     trigger_sorts: Vec<TermId>,
@@ -1145,7 +1147,7 @@ impl KnowledgeBase {
                 .collect();
 
             // Open head and body
-            let fresh_head = self.term_from_debruijn(head, &fresh_vars);
+            let _fresh_head = self.term_from_debruijn(head, &fresh_vars);
             let fresh_body: Vec<TermId> = body.iter()
                 .map(|&b| self.term_from_debruijn(b, &fresh_vars))
                 .collect();

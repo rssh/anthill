@@ -116,6 +116,29 @@ pub enum LoadError {
     },
 }
 
+impl LoadError {
+    /// Format with line:col using source text, like ParseError::format_with_source.
+    pub fn format_with_source(&self, source: &str) -> String {
+        match self {
+            LoadError::UnresolvedName { name, span, scope_name } => {
+                let (line, col) = Span::line_col(source, span.start);
+                format!("{}:{}: unresolved name '{}' in scope '{}'", line, col, name, scope_name)
+            }
+            LoadError::UnresolvedImport { path, span } => {
+                let (line, col) = Span::line_col(source, span.start);
+                format!("{}:{}: unresolved import '{}'", line, col, path)
+            }
+            LoadError::AmbiguousSymbol { name, candidates, span, scope_name } => {
+                let (line, col) = Span::line_col(source, span.start);
+                format!("{}:{}: ambiguous symbol '{}' in scope '{}': candidates {:?}", line, col, name, scope_name, candidates)
+            }
+            LoadError::Other { message } => {
+                format!("load error: {}", message)
+            }
+        }
+    }
+}
+
 impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1690,7 +1713,9 @@ fn resolve_by_short_name(kb: &KnowledgeBase, name: &str) -> Option<Symbol> {
 struct Loader<'a> {
     kb: &'a mut KnowledgeBase,
     parsed: &'a ParsedFile,
+    #[allow(dead_code)]
     resolver: &'a dyn SourceResolver,
+    #[allow(dead_code)]
     loaded_paths: &'a mut HashSet<String>,
     // Map from parse-time TermId → KB TermId
     term_map: HashMap<u32, TermId>,
@@ -1746,17 +1771,6 @@ impl<'a> Loader<'a> {
         let new_sym = self.kb.intern(s);
         self.sym_map.insert(sym.index(), new_sym);
         new_sym
-    }
-
-    /// Re-intern a parse IR Name as a single dot-joined KB Symbol.
-    /// Plain intern — no scope-aware resolution.
-    fn reintern_name(&mut self, name: &Name) -> Symbol {
-        if name.segments.len() == 1 {
-            self.reintern(name.segments[0])
-        } else {
-            let joined = join_segments(&self.parsed.symbols, &name.segments);
-            self.kb.intern(&joined)
-        }
     }
 
     /// Human-readable name for the current scope (for error messages).

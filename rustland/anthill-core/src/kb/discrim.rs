@@ -16,7 +16,9 @@ use std::collections::HashMap;
 use crate::intern::Symbol;
 use super::persist_subst::{ArgPos, BindValue, PersistSubst, SmallSubst, VarPath};
 use super::subst::Substitution;
-use super::term::{Literal, Term, TermId, TermStore, Var, VarId};
+use super::term::{Literal, Term, TermId, TermStore, Var};
+#[cfg(test)]
+use super::term::VarId;
 
 // ── DiscrimKey — concrete edge labels ───────────────────────────
 
