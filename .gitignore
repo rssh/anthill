@@ -26,6 +26,7 @@ tree-sitter-anthill/target/
 # Local/generated docs
 docs/local/
 pdf/
+transitions.anthill
 
 # Claude
 .claude/
