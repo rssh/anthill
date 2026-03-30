@@ -1094,6 +1094,22 @@ fn run_delete(project_dir: &Path, id: &str) {
 
 // ── Dependency commands ─────────────────────────────────────────
 
+/// Check if `from` transitively depends on `target` via the dependency graph.
+fn has_transitive_dep(items: &[WorkItemInfo], from: &str, target: &str) -> bool {
+    let mut visited = std::collections::HashSet::new();
+    let mut stack = vec![from];
+    while let Some(current) = stack.pop() {
+        if !visited.insert(current) { continue; }
+        if let Some(item) = items.iter().find(|i| i.id == current) {
+            for dep in &item.depends_on {
+                if dep == target { return true; }
+                stack.push(dep);
+            }
+        }
+    }
+    false
+}
+
 fn run_add_dependency(kb: &KnowledgeBase, project_dir: &Path, id: &str, dep_id: &str) {
     let items = collect_workitems(kb);
     let item = match items.iter().find(|i| i.id == id) {
@@ -1113,6 +1129,11 @@ fn run_add_dependency(kb: &KnowledgeBase, project_dir: &Path, id: &str, dep_id: 
 
     if item.depends_on.iter().any(|d| d == dep_id) {
         eprintln!("error: '{id}' already depends on '{dep_id}'");
+        return;
+    }
+
+    if has_transitive_dep(&items, dep_id, id) {
+        eprintln!("error: adding {id} -> {dep_id} would create a cycle ({dep_id} already transitively depends on {id})");
         return;
     }
 
