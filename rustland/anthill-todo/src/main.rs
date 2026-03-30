@@ -102,6 +102,20 @@ enum TodoCommand {
         /// Work item ID
         id: String,
     },
+    /// Add a dependency to a work item
+    AddDependency {
+        /// Work item ID
+        id: String,
+        /// Dependency work item ID
+        dependency: String,
+    },
+    /// Remove a dependency from a work item
+    RemoveDependency {
+        /// Work item ID
+        id: String,
+        /// Dependency work item ID to remove
+        dependency: String,
+    },
     /// Show dependency graph
     Graph,
 }
@@ -840,10 +854,9 @@ fn replace_named_arg(kb: &mut KnowledgeBase, term: TermId, field: &str, new_valu
     }
 }
 
-/// Update the `status:` field of a WorkItem in source .anthill files.
-/// Finds the `fact WorkItem(...)` block with the given `id` and replaces
-/// the `status: <old>)` with `status: <new_status>)`.
-fn update_status_in_source(project_dir: &Path, id: &str, new_status: &str) -> bool {
+/// Find the `fact ...()` block in source files whose body contains the given id.
+/// Returns (file_path, source_text, block_start, block_end).
+fn find_fact_block(project_dir: &Path, id: &str) -> Option<(PathBuf, String, usize, usize)> {
     let files = collect_anthill_files(&[scan_dir(project_dir)]);
     let id_marker = format!("id: \"{id}\"");
 
@@ -857,11 +870,9 @@ fn update_status_in_source(project_dir: &Path, id: &str, new_status: &str) -> bo
             continue;
         }
 
-        // Find the fact block containing this ID by tracking parens
         let mut pos = 0;
         while let Some(fact_start) = source[pos..].find("fact ") {
             let abs_start = pos + fact_start;
-            // Find the balanced closing paren for this fact
             let mut depth: i32 = 0;
             let mut in_fact = false;
             let mut abs_end = abs_start;
@@ -879,33 +890,90 @@ fn update_status_in_source(project_dir: &Path, id: &str, new_status: &str) -> bo
                 }
             }
 
-            let fact_text = &source[abs_start..abs_end];
-            if fact_text.contains(&id_marker) {
-                // Found it. Replace status: ... at the end of the fact.
-                // The status field ends at the closing ')' of the fact.
-                // Find "status: " within this block
-                if let Some(status_offset) = fact_text.find("status: ") {
-                    let status_abs = abs_start + status_offset;
-                    // Everything from "status: " up to (but not including) the closing ')'
-                    let old_end = abs_end - 1; // position of ')'
-                    let mut result = String::new();
-                    result.push_str(&source[..status_abs]);
-                    result.push_str("status: ");
-                    result.push_str(new_status);
-                    result.push_str(&source[old_end..]);
-
-                    if let Err(e) = fs::write(&file, &result) {
-                        eprintln!("warning: cannot write {}: {e}", file.display());
-                        return false;
-                    }
-                    return true;
-                }
+            if source[abs_start..abs_end].contains(&id_marker) {
+                return Some((file.clone(), source, abs_start, abs_end));
             }
 
             pos = abs_end;
         }
     }
+    None
+}
+
+fn update_status_in_source(project_dir: &Path, id: &str, new_status: &str) -> bool {
+    let (file, source, abs_start, abs_end) = match find_fact_block(project_dir, id) {
+        Some(t) => t,
+        None => return false,
+    };
+
+    let fact_text = &source[abs_start..abs_end];
+    if let Some(status_offset) = fact_text.find("status: ") {
+        let status_abs = abs_start + status_offset;
+        let old_end = abs_end - 1;
+        let mut result = String::new();
+        result.push_str(&source[..status_abs]);
+        result.push_str("status: ");
+        result.push_str(new_status);
+        result.push_str(&source[old_end..]);
+
+        if let Err(e) = fs::write(&file, &result) {
+            eprintln!("warning: cannot write {}: {e}", file.display());
+            return false;
+        }
+        return true;
+    }
     false
+}
+
+fn update_depends_in_source(project_dir: &Path, id: &str, new_deps: &[String]) -> bool {
+    let (file, source, abs_start, abs_end) = match find_fact_block(project_dir, id) {
+        Some(t) => t,
+        None => return false,
+    };
+
+    let deps_text = format_string_list(new_deps);
+    let fact_text = &source[abs_start..abs_end];
+    if let Some(deps_offset) = fact_text.find("depends_on: ") {
+        let deps_abs = abs_start + deps_offset;
+        let list_start = deps_abs + "depends_on: ".len();
+        let mut bracket_depth = 0;
+        let mut list_end = list_start;
+        for (i, ch) in source[list_start..].char_indices() {
+            match ch {
+                '[' => bracket_depth += 1,
+                ']' => {
+                    bracket_depth -= 1;
+                    if bracket_depth == 0 {
+                        list_end = list_start + i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut result = String::new();
+        result.push_str(&source[..deps_abs]);
+        result.push_str("depends_on: ");
+        result.push_str(&deps_text);
+        result.push_str(&source[list_end..]);
+
+        if let Err(e) = fs::write(&file, &result) {
+            eprintln!("warning: cannot write {}: {e}", file.display());
+            return false;
+        }
+        return true;
+    }
+    false
+}
+
+fn format_string_list(items: &[String]) -> String {
+    if items.is_empty() {
+        "[]".to_string()
+    } else {
+        let quoted: Vec<String> = items.iter().map(|s| format!("\"{s}\"")).collect();
+        format!("[{}]", quoted.join(", "))
+    }
 }
 
 fn append_to_file(path: &Path, text: &str) {
@@ -1024,6 +1092,64 @@ fn run_delete(project_dir: &Path, id: &str) {
     eprintln!("error: work item '{id}' not found in source files");
 }
 
+// ── Dependency commands ─────────────────────────────────────────
+
+fn run_add_dependency(kb: &KnowledgeBase, project_dir: &Path, id: &str, dep_id: &str) {
+    let items = collect_workitems(kb);
+    let item = match items.iter().find(|i| i.id == id) {
+        Some(i) => i,
+        None => { eprintln!("error: work item '{id}' not found"); return; }
+    };
+
+    if id == dep_id {
+        eprintln!("error: work item cannot depend on itself");
+        return;
+    }
+
+    if !items.iter().any(|i| i.id == dep_id) {
+        eprintln!("error: dependency target '{dep_id}' not found");
+        return;
+    }
+
+    if item.depends_on.iter().any(|d| d == dep_id) {
+        eprintln!("error: '{id}' already depends on '{dep_id}'");
+        return;
+    }
+
+    let mut new_deps = item.depends_on.clone();
+    new_deps.push(dep_id.to_string());
+
+    if update_depends_in_source(project_dir, id, &new_deps) {
+        println!("added dependency: {id} -> {dep_id}");
+    } else {
+        eprintln!("error: could not update source file for {id}");
+    }
+}
+
+fn run_remove_dependency(kb: &KnowledgeBase, project_dir: &Path, id: &str, dep_id: &str) {
+    let items = collect_workitems(kb);
+    let item = match items.iter().find(|i| i.id == id) {
+        Some(i) => i,
+        None => { eprintln!("error: work item '{id}' not found"); return; }
+    };
+
+    if !item.depends_on.iter().any(|d| d == dep_id) {
+        eprintln!("error: '{id}' does not depend on '{dep_id}'");
+        return;
+    }
+
+    let new_deps: Vec<String> = item.depends_on.iter()
+        .filter(|d| d.as_str() != dep_id)
+        .cloned()
+        .collect();
+
+    if update_depends_in_source(project_dir, id, &new_deps) {
+        println!("removed dependency: {id} -> {dep_id}");
+    } else {
+        eprintln!("error: could not update source file for {id}");
+    }
+}
+
 // ── Init command ────────────────────────────────────────────────
 
 fn run_init(project_name: Option<&str>) {
@@ -1082,12 +1208,7 @@ fn run_add(kb: &KnowledgeBase, project_dir: &Path, description: &str, depends_on
     let id = next_workitem_id(kb);
     let desc_escaped = description.replace('"', "\\\"");
 
-    let deps = if depends_on.is_empty() {
-        "[]".to_string()
-    } else {
-        let items: Vec<String> = depends_on.iter().map(|d| format!("\"{d}\"")).collect();
-        format!("[{}]", items.join(", "))
-    };
+    let deps = format_string_list(depends_on);
 
     let acc = if acceptance.is_empty() {
         "[ToolPasses(\"cargo-test\")]".to_string()
@@ -1153,6 +1274,8 @@ fn main() -> ExitCode {
         TodoCommand::Claim { id } => run_claim(&mut kb, id, &cli.agent, &project_dir, Some(&output_file)),
         TodoCommand::Deliver { id } => run_deliver(&mut kb, id, &cli.agent, &project_dir, Some(&output_file)),
         TodoCommand::Feedback { id, text } => run_feedback(&mut kb, id, text, &cli.agent, Some(&output_file)),
+        TodoCommand::AddDependency { id, dependency } => run_add_dependency(&kb, &project_dir, id, dependency),
+        TodoCommand::RemoveDependency { id, dependency } => run_remove_dependency(&kb, &project_dir, id, dependency),
         TodoCommand::Graph => run_graph(&kb),
     }
 
