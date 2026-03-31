@@ -396,6 +396,7 @@ pub fn type_check_facts(kb: &KnowledgeBase) -> Vec<LoadError> {
 // ══════════════════════════════════════════════════════════════════
 
 /// Typing environment: variable name (string) → type name bindings.
+#[derive(Clone)]
 struct TypingEnv {
     var_bindings: HashMap<String, String>,
 }
@@ -468,7 +469,16 @@ fn type_check_expr(
                     let fn_sym = extract_sym_arg(kb, named_args, pos_args, "fn")?;
                     lookup_operation_return_type_name(kb, fn_sym)
                 }
-                "match_expr" | "if_expr" | "let_expr" | "lambda" => None,
+                "if_expr" => {
+                    type_check_if_expr(kb, env, named_args)
+                }
+                "let_expr" => {
+                    type_check_let_expr(kb, env, named_args)
+                }
+                "match_expr" => {
+                    type_check_match_expr(kb, env, named_args)
+                }
+                "lambda" => None, // Phase 3
                 _ => {
                     // Direct constructor or operation call
                     if kb.is_constructor_symbol(*functor) {
@@ -480,6 +490,175 @@ fn type_check_expr(
             }
         }
         _ => None,
+    }
+}
+
+/// Resolve an occurrence handle to its underlying expression term.
+fn resolve_handle(kb: &KnowledgeBase, handle_tid: TermId) -> TermId {
+    match kb.get_term(handle_tid) {
+        Term::Const(Literal::Handle(HandleKind::Occurrence, occ_raw)) => {
+            let occ_id = crate::kb::occurrence::OccurrenceId::from_raw(*occ_raw);
+            kb.occurrences.term(occ_id)
+        }
+        _ => handle_tid,
+    }
+}
+
+/// Extract a named_arg value by key name.
+fn get_named_arg(kb: &KnowledgeBase, named_args: &SmallVec<[(Symbol, TermId); 2]>, key: &str) -> Option<TermId> {
+    named_args.iter()
+        .find(|(s, _)| kb.resolve_sym(*s) == key)
+        .map(|(_, v)| *v)
+}
+
+/// Type-check if_expr(cond, then_branch, else_branch).
+fn type_check_if_expr(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+) -> Option<String> {
+    let cond = get_named_arg(kb, named_args, "cond")?;
+    let then_branch = get_named_arg(kb, named_args, "then_branch")?;
+    let else_branch = get_named_arg(kb, named_args, "else_branch")?;
+
+    // Type-check condition — should be Bool (but don't block on it)
+    let _cond_type = type_check_expr(kb, env, resolve_handle(kb, cond));
+
+    // Type-check both branches
+    let then_type = type_check_expr(kb, env, resolve_handle(kb, then_branch));
+    let else_type = type_check_expr(kb, env, resolve_handle(kb, else_branch));
+
+    // Return the common type (if both match, use then_branch; otherwise first available)
+    match (then_type, else_type) {
+        (Some(t), Some(e)) => {
+            if names_compatible(&t, &e) { Some(t) } else { Some(t) }
+        }
+        (Some(t), None) => Some(t),
+        (None, Some(e)) => Some(e),
+        (None, None) => None,
+    }
+}
+
+/// Type-check let_expr(pattern, value, body).
+fn type_check_let_expr(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+) -> Option<String> {
+    let pattern = get_named_arg(kb, named_args, "pattern")?;
+    let value = get_named_arg(kb, named_args, "value")?;
+    let body = get_named_arg(kb, named_args, "body")?;
+
+    // Type-check value expression
+    let value_type = type_check_expr(kb, env, resolve_handle(kb, value));
+
+    // Extend env from pattern
+    let mut extended_env = env.clone();
+    extend_env_from_pattern(kb, &mut extended_env, pattern, value_type.as_deref());
+
+    // Type-check body with extended env
+    type_check_expr(kb, &extended_env, resolve_handle(kb, body))
+}
+
+/// Type-check match_expr(scrutinee, branches).
+fn type_check_match_expr(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+) -> Option<String> {
+    let scrutinee = get_named_arg(kb, named_args, "scrutinee")?;
+    let branches = get_named_arg(kb, named_args, "branches")?;
+
+    // Type-check scrutinee
+    let scrutinee_type = type_check_expr(kb, env, resolve_handle(kb, scrutinee));
+
+    // Type-check each branch
+    let branch_list = list_to_vec_immut(kb, branches);
+    let mut result_type: Option<String> = None;
+
+    for branch_tid in &branch_list {
+        if let Term::Fn { named_args: br_args, .. } = kb.get_term(*branch_tid) {
+            let pattern = get_named_arg(kb, br_args, "pattern");
+            let body = get_named_arg(kb, br_args, "body");
+
+            if let (Some(pat), Some(bod)) = (pattern, body) {
+                // Extend env from pattern with scrutinee type
+                let mut branch_env = env.clone();
+                extend_env_from_pattern(kb, &mut branch_env, pat, scrutinee_type.as_deref());
+
+                // Type-check branch body
+                if let Some(body_type) = type_check_expr(kb, &branch_env, resolve_handle(kb, bod)) {
+                    if result_type.is_none() {
+                        result_type = Some(body_type);
+                    }
+                    // If branches disagree, keep the first — mismatch reporting is future work
+                }
+            }
+        }
+    }
+
+    result_type
+}
+
+/// Extend typing env from a pattern, binding variable names to types.
+fn extend_env_from_pattern(
+    kb: &KnowledgeBase,
+    env: &mut TypingEnv,
+    pattern: TermId,
+    scrutinee_type: Option<&str>,
+) {
+    let pat_term = kb.get_term(pattern);
+    if let Term::Fn { functor, named_args, pos_args } = pat_term {
+        let functor_name = kb.resolve_sym(*functor);
+        match functor_name {
+            "var_pattern" => {
+                // Bind variable name to scrutinee type
+                let name_sym = extract_sym_arg(kb, named_args, pos_args, "name");
+                if let (Some(sym), Some(ty)) = (name_sym, scrutinee_type) {
+                    env.bind_var(kb.resolve_sym(sym).to_string(), ty.to_string());
+                }
+            }
+            "wildcard" => {
+                // No binding
+            }
+            "literal_pattern" => {
+                // No binding — just a match check
+            }
+            "constructor_pattern" => {
+                // Extract constructor name and sub-patterns
+                let name_sym = extract_sym_arg(kb, named_args, pos_args, "name");
+                let args_tid = get_named_arg(kb, named_args, "args");
+
+                if let (Some(ctor_sym), Some(args)) = (name_sym, args_tid) {
+                    // Look up constructor's field types
+                    let field_types = kb.entity_field_types(ctor_sym);
+                    let sub_patterns = list_to_vec_immut(kb, args);
+
+                    if let Some(fields) = field_types {
+                        for (i, sub_pat) in sub_patterns.iter().enumerate() {
+                            let field_type = fields.get(i).map(|(_, ty)| type_name(kb, *ty));
+                            extend_env_from_pattern(kb, env, *sub_pat, field_type.as_deref());
+                        }
+                    } else {
+                        // No field types — bind sub-patterns without type info
+                        for sub_pat in &sub_patterns {
+                            extend_env_from_pattern(kb, env, *sub_pat, None);
+                        }
+                    }
+                }
+            }
+            "tuple_pattern" => {
+                // Sub-patterns without type info for now
+                let args_tid = get_named_arg(kb, named_args, "args")
+                    .or_else(|| pos_args.first().copied());
+                if let Some(args) = args_tid {
+                    for sub_pat in &list_to_vec_immut(kb, args) {
+                        extend_env_from_pattern(kb, env, *sub_pat, None);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 

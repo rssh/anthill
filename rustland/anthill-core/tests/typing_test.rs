@@ -1528,3 +1528,81 @@ fn type_check_op_stdlib_no_spurious_errors() {
     let errors = load::type_check_operations(&kb);
     assert!(errors.is_empty(), "stdlib operations should produce no type errors, got: {:?}", errors);
 }
+
+// ══════════════════════════════════════════════════════════════════
+// Phase 2: if_expr, let_expr, match_expr
+// ══════════════════════════════════════════════════════════════════
+
+#[test]
+fn type_check_op_if_expr_correct() {
+    let source = r#"
+sort Logic
+  operation pick(b: Bool) -> Int = if b then 1 else 0
+end
+"#;
+    let kb = load_with_source(source);
+    let errors = load::type_check_operations(&kb);
+    assert!(errors.is_empty(), "correct if_expr should produce no errors, got: {:?}", errors);
+}
+
+#[test]
+fn type_check_op_if_expr_wrong_return() {
+    let source = r#"
+sort Logic
+  operation pick(b: Bool) -> String = if b then 1 else 0
+end
+"#;
+    let kb = load_with_source(source);
+    let errors = load::type_check_operations(&kb);
+    assert!(!errors.is_empty(), "should detect Int branches vs String return, got: {:?}", errors);
+}
+
+#[test]
+fn type_check_op_let_expr_correct() {
+    let source = r#"
+sort Math
+  operation double(x: Int) -> Int = let ?y = x in add(?y, ?y)
+end
+"#;
+    let kb = load_with_source(source);
+    let errors = load::type_check_operations(&kb);
+    assert!(errors.is_empty(), "correct let_expr should produce no errors, got: {:?}", errors);
+}
+
+#[test]
+fn type_check_op_match_correct() {
+    let source = r#"
+sort Color
+  entity Red
+  entity Blue
+end
+
+sort Palette
+  operation rank(c: Color) -> Int = match c
+    case Red -> 1
+    case Blue -> 2
+end
+"#;
+    let kb = load_with_source(source);
+    let errors = load::type_check_operations(&kb);
+    assert!(errors.is_empty(), "correct match should produce no errors, got: {:?}", errors);
+}
+
+#[test]
+fn type_check_op_match_wrong_return() {
+    let source = r#"
+sort Color
+  entity Red
+  entity Blue
+end
+
+sort Palette
+  operation rank(c: Color) -> String = match c
+    case Red -> 1
+    case Blue -> 2
+end
+"#;
+    let kb = load_with_source(source);
+    let errors = load::type_check_operations(&kb);
+    assert!(!errors.is_empty(), "should detect Int match body vs String return, got: {:?}", errors);
+}
