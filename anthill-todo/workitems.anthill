@@ -201,7 +201,7 @@ fact WorkItem(
   description: "Implement typing pass in Rust: walk operations/facts/rules in KB after load_all, invoke type checking, report errors with file:line. The typing spec rules exist in typing_pass_spec.anthill but are not yet executed by the Rust pipeline.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-001"],
-  status: Open)
+  status: Delivered(agent: "user", at: "2026-03-31T15:27:44Z"))
 
 fact Feedback(content: "Spec only - Rust implementation needed, see WI-031", at: "2026-03-30T19:11:02Z", workitem: "WI-018", author: "user")
 fact WorkItem(
@@ -215,7 +215,7 @@ fact WorkItem(
   id: "WI-033",
   description: "Operation body type-checking: verify operation bodies against declared return types, build typing env from params",
   acceptance: [ToolPasses("cargo-test")],
-  depends_on: ["WI-031"],
+  depends_on: ["WI-031", "WI-032"],
   status: Open)
 
 fact WorkItem(
@@ -244,5 +244,5 @@ fact WorkItem(
   description: "Bug: convert_term_with_span on fact terms causes duplicate solutions in resolution. Recording fact term spans in parse IR somehow produces duplicate claimable results. Blocks type error line:col reporting for facts.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "user", at: "2026-03-31T15:27:45Z"))
 
