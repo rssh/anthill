@@ -392,6 +392,332 @@ pub fn type_check_facts(kb: &KnowledgeBase) -> Vec<LoadError> {
 }
 
 // ══════════════════════════════════════════════════════════════════
+// Expression type-checking (operations)
+// ══════════════════════════════════════════════════════════════════
+
+/// Typing environment: variable name (string) → type name bindings.
+struct TypingEnv {
+    var_bindings: HashMap<String, String>,
+}
+
+impl TypingEnv {
+    fn empty() -> Self {
+        Self { var_bindings: HashMap::new() }
+    }
+
+    fn bind_var(&mut self, name: String, ty: String) {
+        self.var_bindings.insert(name, ty);
+    }
+
+    fn lookup_var(&self, name: &str) -> Option<String> {
+        self.var_bindings.get(name).cloned()
+    }
+}
+
+/// Infer the type of an expression term.
+/// Returns Ok(Some(type_name)) or Ok(None) if type cannot be inferred.
+fn type_check_expr(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    expr: TermId,
+) -> Option<String> {
+    let term = kb.get_term(expr);
+    match term {
+        // Literals → primitive types
+        Term::Const(Literal::Int(_)) => Some("Int".to_string()),
+        Term::Const(Literal::Float(_)) => Some("Float".to_string()),
+        Term::Const(Literal::String(_)) => Some("String".to_string()),
+        Term::Const(Literal::Bool(_)) => Some("Bool".to_string()),
+        // Handle — occurrence reference, resolve to underlying term
+        Term::Const(Literal::Handle(HandleKind::Occurrence, occ_raw)) => {
+            let occ_id = crate::kb::occurrence::OccurrenceId::from_raw(*occ_raw);
+            let inner = kb.occurrences.term(occ_id);
+            type_check_expr(kb, env, inner)
+        }
+        // Variable reference → lookup in env
+        Term::Ref(sym) => {
+            let name = kb.resolve_sym(*sym);
+            if let Some(ty_name) = env.lookup_var(name) {
+                Some(ty_name)
+            } else if kb.is_constructor_symbol(*sym) {
+                constructor_sort_name(kb, *sym)
+            } else {
+                None
+            }
+        }
+        Term::Ident(sym) => {
+            env.lookup_var(kb.resolve_sym(*sym))
+        }
+        // Function application or constructor
+        Term::Fn { functor, named_args, pos_args } => {
+            let functor_name = kb.resolve_sym(*functor);
+            match functor_name {
+                "int_lit" => Some("Int".to_string()),
+                "float_lit" => Some("Float".to_string()),
+                "string_lit" => Some("String".to_string()),
+                "bool_lit" => Some("Bool".to_string()),
+                "var_ref" => {
+                    let name_sym = extract_sym_arg(kb, named_args, pos_args, "name")?;
+                    env.lookup_var(kb.resolve_sym(name_sym))
+                }
+                "constructor" => {
+                    let name_sym = extract_sym_arg(kb, named_args, pos_args, "name")?;
+                    constructor_sort_name(kb, name_sym)
+                }
+                "apply" => {
+                    let fn_sym = extract_sym_arg(kb, named_args, pos_args, "fn")?;
+                    lookup_operation_return_type_name(kb, fn_sym)
+                }
+                "match_expr" | "if_expr" | "let_expr" | "lambda" => None,
+                _ => {
+                    // Direct constructor or operation call
+                    if kb.is_constructor_symbol(*functor) {
+                        constructor_sort_name(kb, *functor)
+                    } else {
+                        lookup_operation_return_type_name(kb, *functor)
+                    }
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract a Symbol from named_args (by key name) or first pos_arg.
+fn extract_sym_arg(
+    kb: &KnowledgeBase,
+    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    pos_args: &SmallVec<[TermId; 4]>,
+    key: &str,
+) -> Option<Symbol> {
+    named_args.iter()
+        .find(|(s, _)| kb.resolve_sym(*s) == key)
+        .and_then(|(_, v)| match kb.get_term(*v) {
+            Term::Ref(s) | Term::Ident(s) => Some(*s),
+            _ => None,
+        })
+        .or_else(|| pos_args.first().and_then(|v| match kb.get_term(*v) {
+            Term::Ref(s) | Term::Ident(s) => Some(*s),
+            _ => None,
+        }))
+}
+
+/// Get the parent sort name of a constructor symbol.
+fn constructor_sort_name(kb: &KnowledgeBase, sym: Symbol) -> Option<String> {
+    let parent = kb.constructor_parent_sort(sym)?;
+    Some(type_name(kb, parent))
+}
+
+/// Look up an operation's return type name from its OperationInfo fact.
+fn lookup_operation_return_type_name(kb: &KnowledgeBase, functor: Symbol) -> Option<String> {
+    let ret_tid = lookup_operation_return_type(kb, functor)?;
+    Some(type_name(kb, ret_tid))
+}
+
+/// Look up an operation's return type TermId from its OperationInfo fact.
+fn lookup_operation_return_type(kb: &KnowledgeBase, functor: Symbol) -> Option<TermId> {
+    let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo")?;
+    for rid in kb.by_functor(op_info_sym) {
+        if !kb.rule_body(rid).is_empty() { continue; }
+        let head = kb.rule_head(rid);
+        if let Term::Fn { named_args, .. } = kb.get_term(head) {
+            let name_val = named_args.iter()
+                .find(|(s, _)| kb.resolve_sym(*s) == "name")
+                .map(|(_, v)| *v);
+            if let Some(name_tid) = name_val {
+                let matches = match kb.get_term(name_tid) {
+                    Term::Ref(s) => *s == functor,
+                    _ => false,
+                };
+                if matches {
+                    return named_args.iter()
+                        .find(|(s, _)| kb.resolve_sym(*s) == "return_type")
+                        .map(|(_, v)| *v);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Type-check all operations with expression bodies.
+/// Returns errors for type mismatches between body type and declared return type.
+pub fn type_check_operations(kb: &KnowledgeBase) -> Vec<LoadError> {
+    use crate::kb::term::{Literal, Term};
+
+    let mut errors = Vec::new();
+
+    let op_info_sym = match kb.try_resolve_symbol("anthill.reflect.OperationInfo") {
+        Some(s) => s,
+        None => return errors,
+    };
+
+    for rid in kb.by_functor(op_info_sym) {
+        if !kb.rule_body(rid).is_empty() { continue; }
+        let head = kb.rule_head(rid);
+        let named_args = match kb.get_term(head) {
+            Term::Fn { named_args, .. } => named_args.clone(),
+            _ => continue,
+        };
+
+        // Extract operation name
+        let op_name_sym = match named_args.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "name")
+            .and_then(|(_, v)| match kb.get_term(*v) { Term::Ref(s) => Some(*s), _ => None })
+        {
+            Some(s) => s,
+            None => continue,
+        };
+        let op_name = kb.resolve_sym(op_name_sym).to_string();
+
+        // Extract return type
+        let return_type = match named_args.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "return_type")
+            .map(|(_, v)| *v)
+        {
+            Some(t) => t,
+            None => continue,
+        };
+
+        // Extract body — it's an Option[ExprOccurrence], i.e. some(handle) or none()
+        let body_opt = match named_args.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "body")
+            .map(|(_, v)| *v)
+        {
+            Some(t) => t,
+            None => continue,
+        };
+
+        // Unwrap Option: some(value) → value, none() → skip
+        let body_handle = match kb.get_term(body_opt) {
+            Term::Fn { functor, pos_args, named_args } => {
+                let fname = kb.resolve_sym(*functor);
+                if fname == "some" {
+                    // Value may be positional or named
+                    if !pos_args.is_empty() {
+                        pos_args[0]
+                    } else if !named_args.is_empty() {
+                        named_args[0].1
+                    } else {
+                        continue;
+                    }
+                } else {
+                    continue; // none() or unknown — no body
+                }
+            }
+            _ => continue,
+        };
+
+        // The body handle might be a Handle literal pointing to an occurrence,
+        // or it might be a direct term. Try both.
+        let body_expr = match kb.get_term(body_handle) {
+            Term::Const(Literal::Handle(_, occ_raw)) => {
+                // It's an occurrence handle — get the underlying term
+                let occ_id = crate::kb::occurrence::OccurrenceId::from_raw(*occ_raw);
+                kb.occurrences.term(occ_id)
+            }
+            _ => body_handle, // Direct term
+        };
+
+        // Build typing env from operation parameters
+        let mut env = TypingEnv::empty();
+        if let Some(params_tid) = named_args.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "params")
+            .map(|(_, v)| *v)
+        {
+            // params is a List[FieldInfo] — walk the cons-list
+            let param_items = list_to_vec_immut(kb, params_tid);
+            for param_tid in &param_items {
+                // Each FieldInfo has name: Symbol, type_name: Term
+                if let Term::Fn { named_args: pargs, .. } = kb.get_term(*param_tid) {
+                    let pname = pargs.iter()
+                        .find(|(s, _)| kb.resolve_sym(*s) == "name")
+                        .and_then(|(_, v)| match kb.get_term(*v) {
+                            Term::Ref(s) => Some(*s),
+                            _ => None,
+                        });
+                    let ptype = pargs.iter()
+                        .find(|(s, _)| kb.resolve_sym(*s) == "type_name")
+                        .map(|(_, v)| *v);
+                    if let (Some(name_sym), Some(ty)) = (pname, ptype) {
+                        env.bind_var(kb.resolve_sym(name_sym).to_string(), type_name(kb, ty));
+                    }
+                }
+            }
+        }
+
+        // Get span for the operation (from occurrence store)
+        let span = kb.occurrences.by_functor(op_name_sym)
+            .first()
+            .map(|&occ_id| kb.occurrences.span(occ_id).span);
+
+        // Type-check the body expression
+        if let Some(inferred_name) = type_check_expr(kb, &env, body_expr) {
+            let expected_name = type_name(kb, return_type);
+            if !names_compatible(&inferred_name, &expected_name) {
+                errors.push(LoadError::TypeMismatch {
+                    entity_name: op_name.clone(),
+                    field_name: "return".to_string(),
+                    expected_type: expected_name,
+                    actual_type: inferred_name,
+                    span,
+                });
+            }
+        }
+    }
+
+    errors
+}
+
+/// Check if two type names are compatible.
+fn names_compatible(a: &str, b: &str) -> bool {
+    a == b
+}
+
+/// Get a human-readable name for a type term.
+fn type_name(kb: &KnowledgeBase, ty: TermId) -> String {
+    match kb.get_term(ty) {
+        Term::Fn { functor, pos_args, named_args } if pos_args.is_empty() && named_args.is_empty() => {
+            kb.resolve_sym(*functor).to_string()
+        }
+        Term::Ref(s) => kb.resolve_sym(*s).to_string(),
+        _ => format!("{:?}", ty),
+    }
+}
+
+/// Walk a cons-list term and return elements as a Vec (immutable KB version).
+fn list_to_vec_immut(kb: &KnowledgeBase, mut term: TermId) -> Vec<TermId> {
+    let mut items = Vec::new();
+    loop {
+        match kb.get_term(term) {
+            Term::Fn { functor, named_args, pos_args } => {
+                let name = kb.resolve_sym(*functor);
+                if name == "nil" { break; }
+                if name == "cons" {
+                    // Try named args first (head/tail), then positional
+                    let head = named_args.iter()
+                        .find(|(s, _)| kb.resolve_sym(*s) == "head")
+                        .map(|(_, v)| *v)
+                        .or_else(|| pos_args.first().copied());
+                    let tail = named_args.iter()
+                        .find(|(s, _)| kb.resolve_sym(*s) == "tail")
+                        .map(|(_, v)| *v)
+                        .or_else(|| pos_args.get(1).copied());
+                    if let Some(h) = head {
+                        items.push(h);
+                    }
+                    if let Some(t) = tail {
+                        term = t;
+                    } else { break; }
+                } else { break; }
+            }
+            _ => break,
+        }
+    }
+    items
+}
+
+// ══════════════════════════════════════════════════════════════════
 // Phase 1: Scan definitions
 // ══════════════════════════════════════════════════════════════════
 

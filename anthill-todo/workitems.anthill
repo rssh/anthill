@@ -222,7 +222,7 @@ fact WorkItem(
   id: "WI-034",
   description: "Rule body type-checking: verify rule body goals have compatible argument types",
   acceptance: [ToolPasses("cargo-test")],
-  depends_on: ["WI-031"],
+  depends_on: ["WI-031", "WI-032"],
   status: Open)
 
 fact WorkItem(
@@ -245,4 +245,11 @@ fact WorkItem(
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
   status: Delivered(agent: "user", at: "2026-03-31T15:27:45Z"))
+
+fact WorkItem(
+  id: "WI-038",
+  description: "Expression type-checking phase 2: if_expr, let_expr, match_expr, lambda, collection literals. Requires pattern matching, env extension, type inference with fresh type vars.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-032"],
+  status: Open)
 

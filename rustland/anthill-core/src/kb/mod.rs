@@ -803,6 +803,11 @@ impl KnowledgeBase {
         self.sort_info.get(&sort_term).copied()
     }
 
+    /// Iterate sort_info entries (sort term → kind).
+    pub fn sort_info_iter(&self) -> impl Iterator<Item = (&TermId, &SortKind)> {
+        self.sort_info.iter()
+    }
+
     /// Get the base substitution for a sort (maps all slots to themselves).
     pub fn sort_base_subst(&self, sym: Symbol) -> Option<&[(Symbol, TermId)]> {
         self.sort_base_subst.get(&sym).map(|v| v.as_slice())

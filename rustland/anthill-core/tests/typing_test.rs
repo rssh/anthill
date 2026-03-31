@@ -8,7 +8,7 @@ mod common;
 
 use anthill_core::parse;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::term::{Term, TermId, Var};
+use anthill_core::kb::term::{Term, TermId, Literal, Var};
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 
@@ -1364,4 +1364,87 @@ fn type_check_stdlib_no_spurious_errors() {
     let kb = load_stdlib_kb();
     let errors = load::type_check_facts(&kb);
     assert!(errors.is_empty(), "stdlib should produce no type errors, got: {:?}", errors);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// type_check_operations tests
+// ══════════════════════════════════════════════════════════════════
+
+#[test]
+fn type_check_op_literal_body_correct() {
+    let source = r#"
+sort Math
+  operation one() -> Int = 1
+end
+"#;
+    let kb = load_with_source(source);
+    let errors = load::type_check_operations(&kb);
+    assert!(errors.is_empty(), "correct literal body should produce no errors, got: {:?}", errors);
+}
+
+#[test]
+fn type_check_op_literal_body_wrong_return() {
+    let source = r#"
+sort Math
+  operation one() -> String = 1
+end
+"#;
+    let kb = load_with_source(source);
+    let errors = load::type_check_operations(&kb);
+    assert!(!errors.is_empty(), "should detect Int body vs String return type");
+    match &errors[0] {
+        load::LoadError::TypeMismatch { entity_name, field_name, .. } => {
+            assert!(entity_name.contains("one"), "should mention operation name: {entity_name}");
+            assert_eq!(field_name, "return");
+        }
+        _ => panic!("expected TypeMismatch, got: {:?}", errors[0]),
+    }
+}
+
+#[test]
+fn type_check_op_var_ref_correct() {
+    let source = r#"
+sort Math
+  operation id(x: Int) -> Int = x
+end
+"#;
+    let kb = load_with_source(source);
+    let errors = load::type_check_operations(&kb);
+    assert!(errors.is_empty(), "correct var ref should produce no errors, got: {:?}", errors);
+}
+
+#[test]
+fn type_check_op_var_ref_wrong_return() {
+    let source = r#"
+sort Math
+  operation wrong(x: Int) -> String = x
+end
+"#;
+    let kb = load_with_source(source);
+    let errors = load::type_check_operations(&kb);
+    assert!(!errors.is_empty(), "should detect Int var vs String return type, got: {:?}", errors);
+}
+
+#[test]
+fn type_check_op_constructor_correct() {
+    let source = r#"
+sort Color
+  entity Red
+  entity Blue
+end
+
+sort Factory
+  operation make_red() -> Color = Red
+end
+"#;
+    let kb = load_with_source(source);
+    let errors = load::type_check_operations(&kb);
+    assert!(errors.is_empty(), "correct constructor return should produce no errors, got: {:?}", errors);
+}
+
+#[test]
+fn type_check_op_stdlib_no_spurious_errors() {
+    let kb = load_stdlib_kb();
+    let errors = load::type_check_operations(&kb);
+    assert!(errors.is_empty(), "stdlib operations should produce no type errors, got: {:?}", errors);
 }
