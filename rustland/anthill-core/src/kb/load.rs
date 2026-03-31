@@ -478,7 +478,9 @@ fn type_check_expr(
                 "match_expr" => {
                     type_check_match_expr(kb, env, named_args)
                 }
-                "lambda" => None, // Phase 3
+                "lambda" => {
+                    type_check_lambda(kb, env, named_args)
+                }
                 _ => {
                     // Direct constructor or operation call
                     if kb.is_constructor_symbol(*functor) {
@@ -598,6 +600,51 @@ fn type_check_match_expr(
     }
 
     result_type
+}
+
+/// Type-check lambda(param, body) → Function[A, B].
+fn type_check_lambda(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+) -> Option<String> {
+    let param = get_named_arg(kb, named_args, "param")?;
+    let body = get_named_arg(kb, named_args, "body")?;
+
+    // Extract param type from type annotation if available
+    let param_type = extract_pattern_type_ann(kb, param);
+
+    // Extend env from param pattern
+    let mut lambda_env = env.clone();
+    extend_env_from_pattern(kb, &mut lambda_env, param, param_type.as_deref());
+
+    // Type-check body
+    let body_type = type_check_expr(kb, &lambda_env, resolve_handle(kb, body));
+
+    // Return Function[A, B]
+    match (param_type, body_type) {
+        (Some(a), Some(b)) => Some(format!("Function[{}, {}]", a, b)),
+        (None, Some(b)) => Some(format!("Function[?, {}]", b)),
+        (Some(a), None) => Some(format!("Function[{}, ?]", a)),
+        (None, None) => Some("Function".to_string()),
+    }
+}
+
+/// Extract type annotation from a pattern (if var_pattern with type_ann).
+fn extract_pattern_type_ann(kb: &KnowledgeBase, pattern: TermId) -> Option<String> {
+    if let Term::Fn { named_args, .. } = kb.get_term(pattern) {
+        // Check type_ann field — it's Option[Term], i.e. some(type) or none()
+        let type_ann = get_named_arg(kb, named_args, "type_ann")?;
+        if let Term::Fn { functor, named_args: some_args, pos_args, .. } = kb.get_term(type_ann) {
+            if kb.resolve_sym(*functor) == "some" {
+                let inner = if !pos_args.is_empty() { pos_args[0] }
+                    else if !some_args.is_empty() { some_args[0].1 }
+                    else { return None; };
+                return Some(type_name(kb, inner));
+            }
+        }
+    }
+    None
 }
 
 /// Extend typing env from a pattern, binding variable names to types.
