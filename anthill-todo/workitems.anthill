@@ -4,7 +4,7 @@ fact WorkItem(
   id: "WI-001",
   description: "define typing rules — spec complete in typing_pass_spec.anthill: all expression forms, collection literals, constructor patterns, error reporting, guards, SourceUnit entry point.",
   acceptance: [ToolPasses("cargo-test")],
-  depends_on: ["WI-014", "WI-015", "WI-016", "WI-017", "WI-018", "WI-019", "WI-025"],
+  depends_on: ["WI-014", "WI-015", "WI-016", "WI-017", "WI-018", "WI-025"],
   status: Delivered(agent: "claude", at: "2026-03-24T16:00:00Z"))
 
 fact WorkItem(
@@ -116,7 +116,7 @@ fact WorkItem(
   id: "WI-019",
   description: "Error collection and reporting in typing pass: assert_compatible calls error() but how errors are gathered with source positions from ExprOccurrence spans and reported to the user.",
   acceptance: [ToolPasses("cargo-test")],
-  depends_on: ["WI-031"],
+  depends_on: ["WI-031", "WI-032", "WI-038"],
   status: Open)
 
 fact WorkItem(
@@ -258,5 +258,13 @@ fact WorkItem(
   description: "Bug: resolve_by_short_name fallback masks missing imports in scope chain. Names like Effect, not, max, ite, pair, neg, fst, snd, file_extension, exists, status fail scope resolution and fall through to global short-name scan. Fix scan_definitions to properly propagate these names via scope chain.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
+  status: Delivered(agent: "user", at: "2026-03-31T17:13:40Z"))
+
+fact WorkItem(
+  id: "WI-040",
+  description: "Design: eliminate global imports in _global scope. Parser/loader should use qualified names (anthill.prelude.List.cons, anthill.prelude.Eq.eq, etc.) instead of relying on short-name global imports. Currently cons, nil, some, none, eq, gt, add, sub, mul, not are injected into _global as a workaround for scope resolution.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
   status: Open)
 
+fact Feedback(content: "cons/nil are especially clear: they come from ListLiteral desugaring, never written by user. Loader should use kb.resolve_symbol(\"anthill.prelude.List.cons\") directly when building cons chains, not go through scope resolution.", at: "2026-03-31T17:16:57Z", workitem: "WI-040", author: "user")
