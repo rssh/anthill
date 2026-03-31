@@ -9,6 +9,7 @@ mod common;
 use anthill_core::parse;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::term::{Term, TermId, Literal, Var};
+use anthill_core::intern::Symbol;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 
@@ -1440,6 +1441,85 @@ end
     let kb = load_with_source(source);
     let errors = load::type_check_operations(&kb);
     assert!(errors.is_empty(), "correct constructor return should produce no errors, got: {:?}", errors);
+}
+
+#[test]
+fn param_and_body_var_share_same_symbol() {
+    // A parameter name "x" used in the operation body should resolve to the
+    // same KB Symbol as the parameter declaration in FieldInfo.
+    let source = r#"
+sort Math
+  operation id(x: Int) -> Int = x
+end
+"#;
+    let kb = load_with_source(source);
+    let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo")
+        .expect("OperationInfo should be defined");
+
+    // Find the "id" operation's FieldInfo param symbol and body var_ref symbol
+    let mut param_sym: Option<Symbol> = None;
+    let mut body_var_sym: Option<Symbol> = None;
+
+    for rid in kb.by_functor(op_info_sym) {
+        if !kb.rule_body(rid).is_empty() { continue; }
+        let head = kb.rule_head(rid);
+        if let Term::Fn { named_args, .. } = kb.get_term(head) {
+            // Check if this is the "id" operation
+            let is_id = named_args.iter()
+                .find(|(s, _)| kb.resolve_sym(*s) == "name")
+                .and_then(|(_, v)| match kb.get_term(*v) { Term::Ref(s) => Some(*s), _ => None })
+                .map(|s| kb.resolve_sym(s) == "id")
+                .unwrap_or(false);
+            if !is_id { continue; }
+
+            // Extract param name symbol from FieldInfo
+            if let Some(params_tid) = named_args.iter()
+                .find(|(s, _)| kb.resolve_sym(*s) == "params")
+                .map(|(_, v)| *v)
+            {
+                // Walk cons-list to first FieldInfo
+                if let Term::Fn { named_args: cons_args, .. } = kb.get_term(params_tid) {
+                    if let Some((_, head_tid)) = cons_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "head") {
+                        if let Term::Fn { named_args: fi_args, .. } = kb.get_term(*head_tid) {
+                            param_sym = fi_args.iter()
+                                .find(|(s, _)| kb.resolve_sym(*s) == "name")
+                                .and_then(|(_, v)| match kb.get_term(*v) { Term::Ref(s) => Some(*s), _ => None });
+                        }
+                    }
+                }
+            }
+
+            // Extract body var_ref name symbol
+            if let Some(body_tid) = named_args.iter()
+                .find(|(s, _)| kb.resolve_sym(*s) == "body")
+                .map(|(_, v)| *v)
+            {
+                // Unwrap some(handle)
+                if let Term::Fn { named_args: some_args, .. } = kb.get_term(body_tid) {
+                    if let Some((_, handle_tid)) = some_args.first() {
+                        if let Term::Const(Literal::Handle(_, occ_raw)) = kb.get_term(*handle_tid) {
+                            let occ_id = anthill_core::kb::occurrence::OccurrenceId::from_raw(*occ_raw);
+                            let expr = kb.occurrence_store().term(occ_id);
+                            // expr should be var_ref(name: Ref(x))
+                            if let Term::Fn { named_args: vr_args, .. } = kb.get_term(expr) {
+                                body_var_sym = vr_args.iter()
+                                    .find(|(s, _)| kb.resolve_sym(*s) == "name")
+                                    .and_then(|(_, v)| match kb.get_term(*v) { Term::Ref(s) => Some(*s), _ => None });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let ps = param_sym.expect("should find param symbol for x");
+    let bs = body_var_sym.expect("should find body var_ref symbol for x");
+    assert_eq!(kb.resolve_sym(ps), "x", "param symbol should resolve to x");
+    assert_eq!(kb.resolve_sym(bs), "x", "body symbol should resolve to x");
+    assert_eq!(ps, bs,
+        "param symbol ({}: {}) and body var_ref symbol ({}: {}) for 'x' should be the same KB Symbol",
+        ps.index(), kb.resolve_sym(ps), bs.index(), kb.resolve_sym(bs));
 }
 
 #[test]

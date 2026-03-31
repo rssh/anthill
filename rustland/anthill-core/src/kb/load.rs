@@ -2743,7 +2743,7 @@ impl<'a> Loader<'a> {
     fn load_var_ref(&mut self, parse_id: TermId) -> TermId {
         let parse_term = self.parsed.terms.get(parse_id).clone();
         let name_ref = if let Term::Ident(sym) = parse_term {
-            let kb_sym = self.reintern(sym);
+            let kb_sym = self.remap_symbol(sym);
             self.kb.alloc(Term::Ref(kb_sym))
         } else {
             self.convert_term(parse_id)
