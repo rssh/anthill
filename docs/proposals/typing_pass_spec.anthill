@@ -91,7 +91,7 @@ namespace anthill.reflect.typing_pass
 
   -- Filter effects: remove effects on local resources, keep only external effects.
   -- Used before check_effects to exclude implementation-internal effects.
-  operation external_effects(env: TypingEnv, effects: List[T = Term]) -> List[T = Term]
+  operation external_effects(env: TypingEnv, effects: List[Type]) -> List[Type]
 
   -- Fresh type variable: creates a new unbound type_var with a unique name
   -- derived from the hint (e.g. hint "x" → type_var(name: ?T_x_0)).
@@ -106,7 +106,7 @@ namespace anthill.reflect.typing_pass
   -- Result of type_check: expression's type + updated env + tracked effects.
   -- Effects are collected during type-checking and propagated upward.
   -- The caller (type_check_operation) verifies body effects ⊆ declared effects.
-  entity TypeResult(type: Type, env: TypingEnv, effects: List[T = Term])
+  entity TypeResult(type: Type, env: TypingEnv, effects: List[Type])
 
   -- Accessors (until field access syntax works in expressions)
   operation result_type(r: TypeResult) -> Type =
@@ -117,7 +117,7 @@ namespace anthill.reflect.typing_pass
     match r
       case TypeResult(type: _, env: e, effects: _) -> e
 
-  operation result_effects(r: TypeResult) -> List[T = Term] =
+  operation result_effects(r: TypeResult) -> List[Type] =
     match r
       case TypeResult(type: _, env: _, effects: e) -> e
 
@@ -219,14 +219,14 @@ namespace anthill.reflect.typing_pass
   -- sub-expressions where context determines the collection type
   -- (e.g. field values with declared collection types).
   -- Helper: merge effect lists (set union, no duplicates).
-  operation merge_effects(a: List[T = Term], b: List[T = Term]) -> List[T = Term]
+  operation merge_effects(a: List[Type], b: List[Type]) -> List[Type]
 
   -- Helper: construct pure result (no effects).
   operation pure_result(type: Type, env: TypingEnv) -> TypeResult =
     TypeResult(type: type, env: env, effects: [])
 
   -- Helper: merge effects from two results.
-  operation merge_result_effects(a: TypeResult, b: TypeResult) -> List[T = Term] =
+  operation merge_result_effects(a: TypeResult, b: TypeResult) -> List[Type] =
     merge_effects(result_effects(a), result_effects(b))
 
   operation type_check(kb: KB, env: TypingEnv, expr: ExprOccurrence) -> TypeResult
@@ -524,7 +524,7 @@ namespace anthill.reflect.typing_pass
 
   -- Type-check a single operation (if it has a body).
   -- Extract declared effects from an OperationInfo.
-  operation operation_effects(info: OperationInfo) -> List[T = Term] =
+  operation operation_effects(info: OperationInfo) -> List[Type] =
     match info
       case OperationInfo(name: _, params: _, return_type: _, effects: e,
                          requires: _, ensures: _, body: _) -> e
@@ -532,7 +532,7 @@ namespace anthill.reflect.typing_pass
   -- Check that actual effects ⊆ declared effects.
   -- Reports TypeError for each undeclared effect.
   operation check_effects(kb: KB, occ: ExprOccurrence,
-                          actual: List[T = Term], declared: List[T = Term])
+                          actual: List[Type], declared: List[Type])
     effects Error[TypeError]
 
   operation type_check_operation(kb: KB, op: OperationInfo) -> TypeOf
