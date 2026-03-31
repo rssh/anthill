@@ -1592,6 +1592,12 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.add_import(global_raw, "SetLiteral", set_literal_sym);
     kb.symbols.add_import(global_raw, "TupleLiteral", tuple_literal_sym);
     kb.symbols.add_import(global_raw, "ListLiteral", list_literal_sym);
+
+    // Kernel builtins: globally visible (language primitives, not importable names)
+    if let Some(&not_sym) = kb.symbols.by_qualified_name.get("anthill.reflect.not") {
+        kb.symbols.add_import(global_raw, "not", not_sym);
+    }
+
     // Arithmetic and comparison: globally importable (like Haskell Prelude).
     // Qualified names are guaranteed present — defined above in this function.
     for (qualified, short) in [
