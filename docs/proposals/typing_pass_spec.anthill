@@ -81,7 +81,17 @@ namespace anthill.reflect.typing_pass
     -- Accepts Option: none leaves env unchanged, some(t) sets the expected type.
     operation with_expected_collection_type(env: TypingEnv, t: Option[Type]) -> TypingEnv
     operation expected_collection_type(env: TypingEnv) -> Option[Type]
+    -- Effect scoping: track locally-created resources.
+    -- Effects on local resources are internal implementation details
+    -- and don't propagate to the enclosing operation's declared effects.
+    -- Effects on parameters or global resources DO propagate.
+    operation declare_local_resource(env: TypingEnv, name: Symbol) -> TypingEnv
+    operation is_local_resource(env: TypingEnv, name: Symbol) -> Bool
   end
+
+  -- Filter effects: remove effects on local resources, keep only external effects.
+  -- Used before check_effects to exclude implementation-internal effects.
+  operation external_effects(env: TypingEnv, effects: List[T = Term]) -> List[T = Term]
 
   -- Fresh type variable: creates a new unbound type_var with a unique name
   -- derived from the hint (e.g. hint "x" → type_var(name: ?T_x_0)).
@@ -93,17 +103,23 @@ namespace anthill.reflect.typing_pass
   -- polymorphic — not an error.
   operation is_ground(env: TypingEnv, t: Type) -> Bool
 
-  -- Result of type_check: expression's type + updated env
-  entity TypeResult(type: Type, env: TypingEnv)
+  -- Result of type_check: expression's type + updated env + tracked effects.
+  -- Effects are collected during type-checking and propagated upward.
+  -- The caller (type_check_operation) verifies body effects ⊆ declared effects.
+  entity TypeResult(type: Type, env: TypingEnv, effects: List[T = Term])
 
   -- Accessors (until field access syntax works in expressions)
   operation result_type(r: TypeResult) -> Type =
     match r
-      case TypeResult(type: t, env: _) -> t
+      case TypeResult(type: t, env: _, effects: _) -> t
 
   operation result_env(r: TypeResult) -> TypingEnv =
     match r
-      case TypeResult(type: _, env: e) -> e
+      case TypeResult(type: _, env: e, effects: _) -> e
+
+  operation result_effects(r: TypeResult) -> List[T = Term] =
+    match r
+      case TypeResult(type: _, env: _, effects: e) -> e
 
   -- ================================================================
   -- Unification and compatibility
@@ -202,54 +218,85 @@ namespace anthill.reflect.typing_pass
   -- Callers use with_expected_collection_type before recursing into
   -- sub-expressions where context determines the collection type
   -- (e.g. field values with declared collection types).
+  -- Helper: merge effect lists (set union, no duplicates).
+  operation merge_effects(a: List[T = Term], b: List[T = Term]) -> List[T = Term]
+
+  -- Helper: construct pure result (no effects).
+  operation pure_result(type: Type, env: TypingEnv) -> TypeResult =
+    TypeResult(type: type, env: env, effects: [])
+
+  -- Helper: merge effects from two results.
+  operation merge_result_effects(a: TypeResult, b: TypeResult) -> List[T = Term] =
+    merge_effects(result_effects(a), result_effects(b))
+
   operation type_check(kb: KB, env: TypingEnv, expr: ExprOccurrence) -> TypeResult
     effects {Modifies[kb], Error[TypeError]} =
     let r = match occurrence_term(kb, expr)
-      case int_lit(value: _)    -> TypeResult(type: Int, env: env)
-      case float_lit(value: _)  -> TypeResult(type: Float, env: env)
-      case string_lit(value: _) -> TypeResult(type: String, env: env)
-      case bool_lit(value: _)   -> TypeResult(type: Bool, env: env)
+      -- Literals: pure, no effects
+      case int_lit(value: _)    -> pure_result(Int, env)
+      case float_lit(value: _)  -> pure_result(Float, env)
+      case string_lit(value: _) -> pure_result(String, env)
+      case bool_lit(value: _)   -> pure_result(Bool, env)
 
+      -- Variable reference: pure
       case var_ref(name: n) ->
-        TypeResult(type: TypingEnv.lookup_var(env, n), env: env)
+        pure_result(TypingEnv.lookup_var(env, n), env)
 
+      -- Constructor: pure
       case constructor(name: name, args: _) ->
-        TypeResult(type: entity_sort(kb, name), env: env)
+        pure_result(entity_sort(kb, name), env)
 
+      -- Operation call: inherits callee's declared effects
       case apply(fn: fn_name, args: args) ->
         let ar = check_args(kb, env, args)
         let info = lookup_operation(kb, fn_name)
         let param_types = extract_param_types(info)
+        let callee_effects = operation_effects(info)
         match ar
           case ArgsResult(types: arg_types, env: arg_env) ->
             let ur = unify_param_types(kb, arg_env, param_types, arg_types)
             let ret = apply_type_subst(result_env(ur), return_type(info))
-            TypeResult(type: ret, env: result_env(ur))
+            -- Effects = arg effects ∪ callee's declared effects
+            let all_effects = merge_effects(result_effects(ur), callee_effects)
+            TypeResult(type: ret, env: result_env(ur), effects: all_effects)
 
+      -- If: effects = cond ∪ then ∪ else
       case if_expr(cond: c, then_branch: t, else_branch: e) ->
         let cr = type_check(kb, env, c)
         let cr2 = assert_compatible(kb, result_env(cr), c, result_type(cr), Bool)
         let tr = type_check(kb, result_env(cr2), t)
         let er = type_check(kb, result_env(tr), e)
-        assert_compatible(kb, result_env(er), expr, result_type(tr), result_type(er))
+        let compat = assert_compatible(kb, result_env(er), expr, result_type(tr), result_type(er))
+        let all_effects = merge_effects(merge_result_effects(cr, tr), result_effects(er))
+        TypeResult(type: result_type(compat), env: result_env(compat), effects: all_effects)
 
+      -- Let: effects = value ∪ body
       case let_expr(pattern: var_pattern(name: n, type_ann: _), value: v, body: b) ->
         let vr = type_check(kb, env, v)
-        type_check(kb, TypingEnv.bind_var(result_env(vr), n, result_type(vr)), b)
+        let br = type_check(kb, TypingEnv.bind_var(result_env(vr), n, result_type(vr)), b)
+        TypeResult(type: result_type(br), env: result_env(br),
+                   effects: merge_result_effects(vr, br))
 
+      -- Lambda with annotation: body effects become part of the function contract,
+      -- NOT propagated to the enclosing expression.
       case lambda(param: var_pattern(name: n, type_ann: some(value: param_type)), body: b) ->
         let br = type_check(kb, TypingEnv.bind_var(env, n, param_type), b)
-        TypeResult(type: arrow(param_type, result_type(br)), env: result_env(br))
+        -- Lambda itself is pure; body effects are the lambda's contract
+        pure_result(arrow(param_type, result_type(br)), result_env(br))
 
+      -- Lambda without annotation: infer param type
       case lambda(param: var_pattern(name: n, type_ann: none), body: b) ->
         let param_type = fresh_type_var(kb, n)
         let br = type_check(kb, TypingEnv.bind_var(env, n, param_type), b)
         let inferred = TypingEnv.apply_subst(result_env(br), param_type)
-        TypeResult(type: arrow(inferred, result_type(br)), env: result_env(br))
+        pure_result(arrow(inferred, result_type(br)), result_env(br))
 
+      -- Match: effects = scrutinee ∪ all branches
       case match_expr(scrutinee: s, branches: bs) ->
         let sr = type_check(kb, env, s)
-        check_branches(kb, result_env(sr), s, result_type(sr), bs)
+        let br = check_branches(kb, result_env(sr), s, result_type(sr), bs)
+        TypeResult(type: result_type(br), env: result_env(br),
+                   effects: merge_result_effects(sr, br))
 
       -- Collection literals: read expected_collection_type from env
       case ListLiteral(elements: elems, tail: t) ->
@@ -476,14 +523,30 @@ namespace anthill.reflect.typing_pass
           guarded(empty_query, ?t1 != ?t2)))))
 
   -- Type-check a single operation (if it has a body).
+  -- Extract declared effects from an OperationInfo.
+  operation operation_effects(info: OperationInfo) -> List[T = Term] =
+    match info
+      case OperationInfo(name: _, params: _, return_type: _, effects: e,
+                         requires: _, ensures: _, body: _) -> e
+
+  -- Check that actual effects ⊆ declared effects.
+  -- Reports TypeError for each undeclared effect.
+  operation check_effects(kb: KB, occ: ExprOccurrence,
+                          actual: List[T = Term], declared: List[T = Term])
+    effects Error[TypeError]
+
   operation type_check_operation(kb: KB, op: OperationInfo) -> TypeOf
     effects {Modifies[kb], Error[TypeError]} =
     match op
-      case OperationInfo(name: op_name, params: params, return_type: ret, body: some(value: body_occ)) ->
+      case OperationInfo(name: op_name, params: params, return_type: ret,
+                         effects: declared_effects, body: some(value: body_occ)) ->
         let sort_env = env_from_sort_scope(kb, op_name)
         let env = env_from_params(sort_env, params)
         let br = type_check(kb, env, body_occ)
         let ur = assert_compatible(kb, result_env(br), body_occ, result_type(br), ret)
+        -- Verify body effects ⊆ declared effects (only external effects)
+        let ext_effects = external_effects(result_env(br), result_effects(br))
+        let _ = check_effects(kb, body_occ, ext_effects, declared_effects)
         type_of(occ: body_occ, type: result_type(ur))
       case _ -> ?
 
