@@ -10,6 +10,7 @@ pub mod subst;
 pub mod load;
 pub mod resolve;
 pub mod occurrence;
+pub mod typing;
 pub(crate) mod persist_subst;
 pub(crate) mod discrim;
 

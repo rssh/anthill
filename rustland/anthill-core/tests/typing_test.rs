@@ -1378,8 +1378,8 @@ sort Math
   operation one() -> Int = 1
 end
 "#;
-    let kb = load_with_source(source);
-    let errors = load::type_check_operations(&kb);
+    let mut kb = load_with_source(source);
+    let errors = load::type_check_operations(&mut kb);
     assert!(errors.is_empty(), "correct literal body should produce no errors, got: {:?}", errors);
 }
 
@@ -1390,8 +1390,8 @@ sort Math
   operation one() -> String = 1
 end
 "#;
-    let kb = load_with_source(source);
-    let errors = load::type_check_operations(&kb);
+    let mut kb = load_with_source(source);
+    let errors = load::type_check_operations(&mut kb);
     assert!(!errors.is_empty(), "should detect Int body vs String return type");
     match &errors[0] {
         load::LoadError::TypeMismatch { entity_name, field_name, .. } => {
@@ -1409,8 +1409,8 @@ sort Math
   operation id(x: Int) -> Int = x
 end
 "#;
-    let kb = load_with_source(source);
-    let errors = load::type_check_operations(&kb);
+    let mut kb = load_with_source(source);
+    let errors = load::type_check_operations(&mut kb);
     assert!(errors.is_empty(), "correct var ref should produce no errors, got: {:?}", errors);
 }
 
@@ -1421,8 +1421,8 @@ sort Math
   operation wrong(x: Int) -> String = x
 end
 "#;
-    let kb = load_with_source(source);
-    let errors = load::type_check_operations(&kb);
+    let mut kb = load_with_source(source);
+    let errors = load::type_check_operations(&mut kb);
     assert!(!errors.is_empty(), "should detect Int var vs String return type, got: {:?}", errors);
 }
 
@@ -1438,8 +1438,8 @@ sort Factory
   operation make_red() -> Color = Red
 end
 "#;
-    let kb = load_with_source(source);
-    let errors = load::type_check_operations(&kb);
+    let mut kb = load_with_source(source);
+    let errors = load::type_check_operations(&mut kb);
     assert!(errors.is_empty(), "correct constructor return should produce no errors, got: {:?}", errors);
 }
 
@@ -1524,8 +1524,8 @@ end
 
 #[test]
 fn type_check_op_stdlib_no_spurious_errors() {
-    let kb = load_stdlib_kb();
-    let errors = load::type_check_operations(&kb);
+    let mut kb = load_stdlib_kb();
+    let errors = load::type_check_operations(&mut kb);
     assert!(errors.is_empty(), "stdlib operations should produce no type errors, got: {:?}", errors);
 }
 
@@ -1540,8 +1540,8 @@ sort Logic
   operation pick(b: Bool) -> Int = if b then 1 else 0
 end
 "#;
-    let kb = load_with_source(source);
-    let errors = load::type_check_operations(&kb);
+    let mut kb = load_with_source(source);
+    let errors = load::type_check_operations(&mut kb);
     assert!(errors.is_empty(), "correct if_expr should produce no errors, got: {:?}", errors);
 }
 
@@ -1552,8 +1552,8 @@ sort Logic
   operation pick(b: Bool) -> String = if b then 1 else 0
 end
 "#;
-    let kb = load_with_source(source);
-    let errors = load::type_check_operations(&kb);
+    let mut kb = load_with_source(source);
+    let errors = load::type_check_operations(&mut kb);
     assert!(!errors.is_empty(), "should detect Int branches vs String return, got: {:?}", errors);
 }
 
@@ -1564,8 +1564,8 @@ sort Math
   operation double(x: Int) -> Int = let ?y = x in add(?y, ?y)
 end
 "#;
-    let kb = load_with_source(source);
-    let errors = load::type_check_operations(&kb);
+    let mut kb = load_with_source(source);
+    let errors = load::type_check_operations(&mut kb);
     assert!(errors.is_empty(), "correct let_expr should produce no errors, got: {:?}", errors);
 }
 
@@ -1583,8 +1583,8 @@ sort Palette
     case Blue -> 2
 end
 "#;
-    let kb = load_with_source(source);
-    let errors = load::type_check_operations(&kb);
+    let mut kb = load_with_source(source);
+    let errors = load::type_check_operations(&mut kb);
     assert!(errors.is_empty(), "correct match should produce no errors, got: {:?}", errors);
 }
 
@@ -1602,7 +1602,7 @@ sort Palette
     case Blue -> 2
 end
 "#;
-    let kb = load_with_source(source);
-    let errors = load::type_check_operations(&kb);
+    let mut kb = load_with_source(source);
+    let errors = load::type_check_operations(&mut kb);
     assert!(!errors.is_empty(), "should detect Int match body vs String return, got: {:?}", errors);
 }
