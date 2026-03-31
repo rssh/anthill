@@ -2221,6 +2221,7 @@ fn resolve_name_in_kb(kb: &mut KnowledgeBase, name: &str, scope_raw: u32) -> Sym
 
 /// Try to resolve a name in the KB: qualified name first, then scope-aware resolution,
 /// then fallback search by short name across all defined symbols.
+/// TODO: The short-name fallback masks missing imports. Track as a bug to fix scope chain.
 fn resolve_name_in_kb_opt(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> Option<Symbol> {
     if let Some(&sym) = kb.symbols.by_qualified_name.get(name) {
         return Some(sym);
@@ -2232,16 +2233,16 @@ fn resolve_name_in_kb_opt(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> Opt
 }
 
 /// Search all qualified names for one whose short name matches.
-/// Returns the unique match, or None if not found or ambiguous.
+/// This is a workaround for incomplete scope resolution — names should
+/// be resolvable via the scope chain without this fallback.
 fn resolve_by_short_name(kb: &KnowledgeBase, name: &str) -> Option<Symbol> {
-    // First check entity short-name index (fast path)
+    // Check entity short-name index
     if let Some(&short) = kb.symbols.intern_map.get(name) {
         if let Some(qualified) = kb.entity_qualified_for_short(short) {
             return Some(qualified);
         }
     }
-    // General fallback: scan by_qualified_name for matching short name.
-    // When ambiguous, prefer builtins (e.g. anthill.reflect.not over anthill.prelude.Bool.not).
+    // Scan by_qualified_name for matching short name
     let mut found: Option<Symbol> = None;
     let mut found_is_builtin = false;
     for (qname, &sym) in &kb.symbols.by_qualified_name {
@@ -2250,13 +2251,12 @@ fn resolve_by_short_name(kb: &KnowledgeBase, name: &str) -> Option<Symbol> {
             let is_builtin = kb.builtins.contains_key(&sym);
             if found.is_some() {
                 if is_builtin && !found_is_builtin {
-                    // New match is a builtin, replace the non-builtin
                     found = Some(sym);
                     found_is_builtin = true;
                 } else if !is_builtin && found_is_builtin {
-                    // Keep the existing builtin
+                    // Keep existing builtin
                 } else {
-                    return None; // truly ambiguous
+                    return None; // ambiguous
                 }
             } else {
                 found = Some(sym);
@@ -2372,12 +2372,11 @@ impl<'a> Loader<'a> {
                 self.kb.symbols.intern(name)
             }
             ResolveResult::NotFound => {
-                // Fallback 1: check entity short-name index
+                // Fallback: check entity short-name index, then global short-name search
                 let interned = self.kb.symbols.intern(name);
                 if let Some(qualified) = self.kb.entity_qualified_for_short(interned) {
                     qualified
                 } else if let Some(sym) = resolve_by_short_name(self.kb, name) {
-                    // Fallback 2: search all qualified names by short name
                     sym
                 } else {
                     interned

@@ -253,3 +253,10 @@ fact WorkItem(
   depends_on: ["WI-032"],
   status: Open)
 
+fact WorkItem(
+  id: "WI-039",
+  description: "Bug: resolve_by_short_name fallback masks missing imports in scope chain. Names like Effect, not, max, ite, pair, neg, fst, snd, file_extension, exists, status fail scope resolution and fall through to global short-name scan. Fix scan_definitions to properly propagate these names via scope chain.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
