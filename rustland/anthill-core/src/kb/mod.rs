@@ -177,6 +177,10 @@ pub struct KnowledgeBase {
     // Occurrence store (positioned terms, not hash-consed)
     pub(crate) occurrences: OccurrenceStore,
 
+    // Entity field type registry: functor symbol → [(field_name, type_term)].
+    // Populated during load_entity, used by type_check_facts.
+    entity_field_types: HashMap<Symbol, Vec<(Symbol, TermId)>>,
+
     // Source registry (file names/paths)
     pub(crate) sources: SourceRegistry,
 }
@@ -205,6 +209,7 @@ impl KnowledgeBase {
             guards: Vec::new(),
             guards_by_sort: HashMap::new(),
             occurrences: OccurrenceStore::new(),
+            entity_field_types: HashMap::new(),
             sources: SourceRegistry::new(),
         }
     }
@@ -670,6 +675,19 @@ impl KnowledgeBase {
     /// Get the parent sort of an entity (1-level, non-transitive).
     pub fn entity_parent_sort(&self, entity: TermId) -> Option<TermId> {
         self.entity_parent.get(&entity).copied()
+    }
+
+    /// Get the parent sort of a constructor by its functor symbol.
+    /// Searches entity_parent for any entity whose functor matches.
+    pub fn constructor_parent_sort(&self, functor: Symbol) -> Option<TermId> {
+        for (&entity_tid, &parent_tid) in &self.entity_parent {
+            if let Term::Fn { functor: f, .. } = *self.terms.get(entity_tid) {
+                if f == functor {
+                    return Some(parent_tid);
+                }
+            }
+        }
+        None
     }
 
     // ── Query ───────────────────────────────────────────────────
@@ -1369,6 +1387,21 @@ impl KnowledgeBase {
     /// Look up the ordered field names for an entity functor.
     pub fn entity_field_names(&self, functor: Symbol) -> Option<&[Symbol]> {
         self.entity_fields.get(&functor).map(|v| v.as_slice())
+    }
+
+    /// Register entity field types: functor → [(field_name, type_term)].
+    pub fn register_entity_field_types(&mut self, functor: Symbol, fields: Vec<(Symbol, TermId)>) {
+        self.entity_field_types.insert(functor, fields);
+    }
+
+    /// Look up the field types for an entity functor.
+    pub fn entity_field_types(&self, functor: Symbol) -> Option<&[(Symbol, TermId)]> {
+        self.entity_field_types.get(&functor).map(|v| v.as_slice())
+    }
+
+    /// Iterate all functor symbols that have registered field types.
+    pub fn entity_field_type_functors(&self) -> impl Iterator<Item = &Symbol> {
+        self.entity_field_types.keys()
     }
 
     /// Register a short-name → qualified-symbol mapping for an entity.

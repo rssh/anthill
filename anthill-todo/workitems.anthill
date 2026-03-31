@@ -239,3 +239,10 @@ fact WorkItem(
   depends_on: ["WI-031"],
   status: Open)
 
+fact WorkItem(
+  id: "WI-037",
+  description: "Bug: convert_term_with_span on fact terms causes duplicate solutions in resolution. Recording fact term spans in parse IR somehow produces duplicate claimable results. Blocks type error line:col reporting for facts.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+

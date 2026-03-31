@@ -111,6 +111,13 @@ pub enum LoadError {
         span: Span,
         scope_name: String,
     },
+    TypeMismatch {
+        entity_name: String,
+        field_name: String,
+        expected_type: String,
+        actual_type: String,
+        span: Option<Span>,
+    },
     Other {
         message: String,
     },
@@ -132,6 +139,14 @@ impl LoadError {
                 let (line, col) = Span::line_col(source, span.start);
                 format!("{}:{}: ambiguous symbol '{}' in scope '{}': candidates {:?}", line, col, name, scope_name, candidates)
             }
+            LoadError::TypeMismatch { entity_name, field_name, expected_type, actual_type, span } => {
+                if let Some(sp) = span {
+                    let (line, col) = Span::line_col(source, sp.start);
+                    format!("{}:{}: type mismatch in {}.{}: expected {}, got {}", line, col, entity_name, field_name, expected_type, actual_type)
+                } else {
+                    format!("type mismatch in {}.{}: expected {}, got {}", entity_name, field_name, expected_type, actual_type)
+                }
+            }
             LoadError::Other { message } => {
                 format!("load error: {}", message)
             }
@@ -151,6 +166,13 @@ impl std::fmt::Display for LoadError {
             LoadError::AmbiguousSymbol { name, candidates, span, scope_name } => {
                 write!(f, "ambiguous symbol '{}' in scope '{}' at {}..{}: candidates {:?}", name, scope_name, span.start, span.end, candidates)
             }
+            LoadError::TypeMismatch { entity_name, field_name, expected_type, actual_type, span } => {
+                if let Some(sp) = span {
+                    write!(f, "type mismatch in {}.{}: expected {}, got {} at {}..{}", entity_name, field_name, expected_type, actual_type, sp.start, sp.end)
+                } else {
+                    write!(f, "type mismatch in {}.{}: expected {}, got {}", entity_name, field_name, expected_type, actual_type)
+                }
+            }
             LoadError::Other { message } => {
                 write!(f, "load error: {}", message)
             }
@@ -159,6 +181,215 @@ impl std::fmt::Display for LoadError {
 }
 
 impl std::error::Error for LoadError {}
+
+// ══════════════════════════════════════════════════════════════════
+// Type-check entity facts against entity definitions
+// ══════════════════════════════════════════════════════════════════
+
+/// Check that entity fact field values match declared field types.
+/// Call after load_all completes. Returns errors for mismatched fields.
+pub fn type_check_facts(kb: &KnowledgeBase) -> Vec<LoadError> {
+    use crate::kb::term::{Literal, Term, Var};
+
+    let mut errors = Vec::new();
+
+    // Well-known type names for literal checking (both qualified and short)
+    let is_string_type = |sym: Symbol| -> bool {
+        let name = kb.resolve_sym(sym);
+        name == "String" || name == "anthill.prelude.String"
+    };
+    let is_int_type = |sym: Symbol| -> bool {
+        let name = kb.resolve_sym(sym);
+        name == "Int" || name == "anthill.prelude.Int"
+    };
+    let is_float_type = |sym: Symbol| -> bool {
+        let name = kb.resolve_sym(sym);
+        name == "Float" || name == "anthill.prelude.Float"
+    };
+    let is_bool_type = |sym: Symbol| -> bool {
+        let name = kb.resolve_sym(sym);
+        name == "Bool" || name == "anthill.prelude.Bool"
+    };
+
+    // Sort names to skip (entity definitions and reflection metadata)
+    let skip_sort_names: &[&str] = &["Entity", "EntityInfo", "SortInfo", "OperationInfo", "FieldInfo", "SortRequiresInfo"];
+    // Functor names to skip (metadata entities themselves)
+    let skip_functor_names: &[&str] = &["EntityInfo", "SortInfo", "OperationInfo", "FieldInfo",
+        "SortRequiresInfo", "DescriptionInfo", "SortView"];
+
+    // Collect functors to check
+    let functors: Vec<Symbol> = kb.entity_field_type_functors().copied().collect();
+
+    for functor in &functors {
+        // Skip metadata entity functors
+        let functor_name = kb.resolve_sym(*functor);
+        if skip_functor_names.contains(&functor_name) {
+            continue;
+        }
+
+        let field_types = match kb.entity_field_types(*functor) {
+            Some(ft) => ft.to_vec(),
+            None => continue,
+        };
+
+        if field_types.is_empty() {
+            continue;
+        }
+
+        for rid in kb.by_functor(*functor) {
+            // Only check facts (empty body)
+            if !kb.rule_body(rid).is_empty() {
+                continue;
+            }
+
+            // Skip entity definitions and metadata facts
+            let fact_sort = kb.rule_sort(rid);
+            let fact_sort_name = match kb.get_term(fact_sort) {
+                Term::Fn { functor: f, .. } => kb.resolve_sym(*f),
+                Term::Ref(s) => kb.resolve_sym(*s),
+                _ => "",
+            };
+            if skip_sort_names.contains(&fact_sort_name) {
+                continue;
+            }
+
+            let head = kb.rule_head(rid);
+            let head_term = kb.get_term(head);
+            let named_args = match head_term {
+                Term::Fn { named_args, .. } => named_args.clone(),
+                _ => continue,
+            };
+
+            let entity_name = kb.resolve_sym(*functor);
+
+            // Get span from occurrence store if available
+            let span: Option<Span> = kb.occurrences.by_term(head)
+                .first()
+                .or_else(|| {
+                    kb.occurrences.by_functor(*functor).iter()
+                        .find(|&&occ_id| kb.occurrences.term(occ_id) == head)
+                })
+                .map(|&occ_id| kb.occurrences.span(occ_id).span);
+
+            for &(field_sym, declared_type) in &field_types {
+                let field_value = match named_args.iter().find(|(s, _)| *s == field_sym) {
+                    Some((_, v)) => *v,
+                    None => continue,
+                };
+
+                // Skip unspecified fields (variables)
+                if matches!(kb.get_term(field_value), Term::Var(Var::Global(_) | Var::DeBruijn(_))) {
+                    continue;
+                }
+
+                let declared_type_term = kb.get_term(declared_type);
+
+                // Get declared type symbol: Ref(sym) or Fn { functor: sym, no args } (name term)
+                // Skip parameterized types (Fn with args) — WI-035
+                let declared_type_sym = match declared_type_term {
+                    Term::Ref(sym) => *sym,
+                    Term::Fn { functor, pos_args, named_args }
+                        if pos_args.is_empty() && named_args.is_empty() => *functor,
+                    _ => continue, // parameterized type or complex term — skip
+                };
+
+                // Skip abstract/spec sorts — WI-036
+                // entity_parent uses TermId keys, but declared_type is a Ref term.
+                // The sort_info map uses the sort's name-term (Fn { functor, ..}) as key.
+                // We can check sort_kind only if we can find the sort term.
+                // For now: if the declared type has no registered entities and no literal match, skip.
+
+                let field_name = kb.resolve_sym(field_sym);
+                match kb.get_term(field_value) {
+                    Term::Const(lit) => {
+                        let ok = match lit {
+                            Literal::String(_) => is_string_type(declared_type_sym),
+                            Literal::Int(_) => is_int_type(declared_type_sym),
+                            Literal::Float(_) => is_float_type(declared_type_sym),
+                            Literal::Bool(_) => is_bool_type(declared_type_sym),
+                            _ => true,
+                        };
+                        if !ok {
+                            let actual = match lit {
+                                Literal::String(_) => "String",
+                                Literal::Int(_) => "Int",
+                                Literal::Float(_) => "Float",
+                                Literal::Bool(_) => "Bool",
+                                _ => "?",
+                            };
+                            errors.push(LoadError::TypeMismatch {
+                                entity_name: entity_name.to_string(),
+                                field_name: field_name.to_string(),
+                                expected_type: kb.resolve_sym(declared_type_sym).to_string(),
+                                actual_type: actual.to_string(),
+                                span,
+                            });
+                        }
+                    }
+                    Term::Fn { functor: val_functor, .. } => {
+                        // Value is an entity constructor — check parent sort by functor symbol
+                        if let Some(parent) = kb.constructor_parent_sort(*val_functor) {
+                            let parent_sym = match kb.get_term(parent) {
+                                Term::Fn { functor: f, .. } => Some(*f),
+                                Term::Ref(s) => Some(*s),
+                                _ => None,
+                            };
+                            let declared_name = kb.resolve_sym(declared_type_sym);
+                            let parent_matches = parent_sym.map_or(false, |ps| {
+                                let pn = kb.resolve_sym(ps);
+                                pn == declared_name || pn.ends_with(&format!(".{}", declared_name))
+                                    || declared_name.ends_with(&format!(".{}", pn))
+                            });
+                            if !parent_matches {
+                                let parent_name = parent_sym.map(|s| kb.resolve_sym(s).to_string())
+                                    .unwrap_or_else(|| "?".to_string());
+                                errors.push(LoadError::TypeMismatch {
+                                    entity_name: entity_name.to_string(),
+                                    field_name: field_name.to_string(),
+                                    expected_type: kb.resolve_sym(declared_type_sym).to_string(),
+                                    actual_type: parent_name,
+                                    span,
+                                });
+                            }
+                        }
+                    }
+                    Term::Ref(val_sym) => {
+                        // Nullary entity reference — look up parent sort by symbol
+                        if kb.is_constructor_symbol(*val_sym) {
+                            if let Some(parent) = kb.constructor_parent_sort(*val_sym) {
+                                let parent_sym = match kb.get_term(parent) {
+                                    Term::Fn { functor: f, .. } => Some(*f),
+                                    Term::Ref(s) => Some(*s),
+                                    _ => None,
+                                };
+                                let declared_name = kb.resolve_sym(declared_type_sym);
+                                let parent_matches = parent_sym.map_or(false, |ps| {
+                                    let pn = kb.resolve_sym(ps);
+                                    pn == declared_name || pn.ends_with(&format!(".{}", declared_name))
+                                        || declared_name.ends_with(&format!(".{}", pn))
+                                });
+                                if !parent_matches {
+                                    let parent_name = parent_sym.map(|s| kb.resolve_sym(s).to_string())
+                                        .unwrap_or_else(|| "?".to_string());
+                                    errors.push(LoadError::TypeMismatch {
+                                        entity_name: entity_name.to_string(),
+                                        field_name: field_name.to_string(),
+                                        expected_type: kb.resolve_sym(declared_type_sym).to_string(),
+                                        actual_type: parent_name,
+                                        span,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    errors
+}
 
 // ══════════════════════════════════════════════════════════════════
 // Phase 1: Scan definitions
@@ -1903,10 +2134,19 @@ impl<'a> Loader<'a> {
         parse_id: TermId,
         kb_id: TermId,
     ) -> Option<OccurrenceId> {
+        self.maybe_create_occurrence_ex(parse_id, kb_id, true)
+    }
+
+    fn maybe_create_occurrence_ex(
+        &mut self,
+        parse_id: TermId,
+        kb_id: TermId,
+        is_expr: bool,
+    ) -> Option<OccurrenceId> {
         if let Some(&span) = self.parsed.terms.spans.get(&parse_id) {
             let source_span = SourceSpan::from_span(self.source_id, span);
             let occ_id = self.kb.occurrences.alloc(
-                kb_id, source_span, self.current_owner, true,
+                kb_id, source_span, self.current_owner, is_expr,
             );
             if let Term::Fn { functor, .. } = self.kb.terms.get(kb_id) {
                 let functor = *functor;
@@ -2730,7 +2970,9 @@ impl<'a> Loader<'a> {
         // the short name, so that sugar-generated facts (which use unqualified
         // functor names like "WorkItem") can also look up entity fields.
         let field_names: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
+        let field_types: Vec<(Symbol, TermId)> = named_args.iter().map(|&(s, t)| (s, t)).collect();
         self.kb.register_entity_fields(functor, field_names.clone());
+        self.kb.register_entity_field_types(functor, field_types.clone());
         let short_name = if e.name.segments.len() == 1 {
             self.parsed.symbols.name(e.name.segments[0]).to_owned()
         } else {
@@ -2759,8 +3001,8 @@ impl<'a> Loader<'a> {
         }
 
         let term = self.convert_term(f.term);
-        // Create occurrence for the fact's top-level term
-        self.maybe_create_occurrence(f.term, term);
+        // Create occurrence for the fact's top-level term (not an expression)
+        self.maybe_create_occurrence_ex(f.term, term, false);
 
         let meta = f.meta.as_ref().map(|mb| self.load_meta_block(mb));
         self.kb.assert_fact(term, fact_sort, domain, meta);

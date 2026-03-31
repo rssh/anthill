@@ -1121,7 +1121,7 @@ impl<'a> Converter<'a> {
     fn convert_fact(&mut self, node: Node) -> Option<Fact> {
         let span = self.span(node);
         let term = self.field(node, "term")
-            .map(|t| self.convert_term(t))?;
+            .map(|t| self.convert_term_with_span(t))?;
         let meta = self.convert_meta_block(node);
         Some(Fact { term, sort: None, meta, span })
     }

@@ -396,14 +396,17 @@ impl SearchStream {
 
         // 5. Check OccurrenceStore for expression-typed goals
         let mut candidates: Vec<Candidate> = Vec::new();
+        let mut occurrence_terms: HashSet<TermId> = HashSet::new();
 
         if let Term::Fn { functor, .. } = kb.terms.get(goal) {
             let functor = *functor;
             let occ_ids = kb.occurrences.by_functor(functor);
             for &occ_id in occ_ids {
+                if !kb.occurrences.is_expr(occ_id) { continue; }
                 let head = kb.occurrences.term(occ_id);
                 if let Some(subst) = kb.match_term(goal, head) {
                     candidates.push(Candidate::Occurrence(occ_id, subst));
+                    occurrence_terms.insert(head);
                 }
             }
         }
@@ -446,7 +449,6 @@ impl SearchStream {
             rc
         };
 
-        // Merge occurrence + rule candidates
         candidates.extend(rule_candidates.into_iter().map(|(rid, s)| Candidate::Rule(rid, s)));
 
         // Transition to ChoicePoint

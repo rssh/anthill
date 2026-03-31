@@ -1220,3 +1220,148 @@ fn typing_pass_spec_parses_and_loads() {
         "assert_compatible operation should be defined"
     );
 }
+
+// ══════════════════════════════════════════════════════════════════
+// type_check_facts tests
+// ══════════════════════════════════════════════════════════════════
+
+/// Helper: load stdlib + custom source, return KB.
+fn load_with_source(source: &str) -> KnowledgeBase {
+    let mut kb = load_stdlib_kb();
+    let parsed = parse::parse(source).expect("parse failed");
+    let refs = vec![&parsed];
+    if let Err(errs) = load::load_all(&mut kb, &refs, &NullResolver) {
+        for e in &errs {
+            eprintln!("warning: {e}");
+        }
+    }
+    kb
+}
+
+#[test]
+fn type_check_correct_fact_no_errors() {
+    let source = r#"
+sort Color
+  entity Red
+  entity Blue
+end
+
+sort Shape
+  entity Circle(color: Color, radius: Int)
+end
+
+fact Circle(color: Red, radius: 42)
+"#;
+    let kb = load_with_source(source);
+    let errors = load::type_check_facts(&kb);
+    assert!(errors.is_empty(), "correct fact should produce no errors, got: {:?}", errors);
+}
+
+#[test]
+fn type_check_string_field_with_int_literal() {
+    let source = r#"
+sort Item
+  entity Thing(name: String)
+end
+
+fact Thing(name: 42)
+"#;
+    let kb = load_with_source(source);
+    let errors = load::type_check_facts(&kb);
+    assert!(!errors.is_empty(), "should detect Int where String expected");
+    let err = &errors[0];
+    match err {
+        load::LoadError::TypeMismatch { field_name, expected_type, actual_type, .. } => {
+            assert_eq!(field_name, "name");
+            assert!(expected_type.contains("String"), "expected String, got: {expected_type}");
+            assert_eq!(actual_type, "Int");
+        }
+        _ => panic!("expected TypeMismatch, got: {err:?}"),
+    }
+}
+
+#[test]
+fn type_check_int_field_with_string_literal() {
+    let source = r#"
+sort Item
+  entity Thing(count: Int)
+end
+
+fact Thing(count: "hello")
+"#;
+    let kb = load_with_source(source);
+    let errors = load::type_check_facts(&kb);
+    assert!(!errors.is_empty(), "should detect String where Int expected");
+    match &errors[0] {
+        load::LoadError::TypeMismatch { field_name, actual_type, .. } => {
+            assert_eq!(field_name, "count");
+            assert_eq!(actual_type, "String");
+        }
+        _ => panic!("expected TypeMismatch"),
+    }
+}
+
+#[test]
+fn type_check_wrong_entity_sort() {
+    let source = r#"
+sort Color
+  entity Red
+  entity Blue
+end
+
+sort Shape
+  entity Square
+  entity Circle
+end
+
+sort Item
+  entity Box(color: Color)
+end
+
+fact Box(color: Square)
+"#;
+    let kb = load_with_source(source);
+    let errors = load::type_check_facts(&kb);
+    assert!(!errors.is_empty(), "should detect Shape entity where Color expected, got: {:?}", errors);
+    match &errors[0] {
+        load::LoadError::TypeMismatch { field_name, expected_type, actual_type, .. } => {
+            assert_eq!(field_name, "color");
+            assert!(expected_type.contains("Color"), "expected Color, got: {expected_type}");
+            assert!(actual_type.contains("Shape"), "actual should be Shape, got: {actual_type}");
+        }
+        _ => panic!("expected TypeMismatch"),
+    }
+}
+
+#[test]
+fn type_check_variable_field_skipped() {
+    let source = r#"
+sort Item
+  entity Thing(name: String)
+end
+"#;
+    // Entity definition itself has type terms, not instances — no facts to check
+    let kb = load_with_source(source);
+    let errors = load::type_check_facts(&kb);
+    assert!(errors.is_empty(), "entity definitions should not produce errors, got: {:?}", errors);
+}
+
+#[test]
+fn type_check_error_reports_line_number() {
+    let source = "sort Item\n  entity Thing(count: Int)\nend\n\nfact Thing(count: \"hello\")\n";
+    //            line 1        line 2                    line 3  line 4  line 5
+    let kb = load_with_source(source);
+    let errors = load::type_check_facts(&kb);
+    assert!(!errors.is_empty(), "should detect String where Int expected");
+    let formatted = errors[0].format_with_source(source);
+    assert!(formatted.contains("type mismatch"), "should say type mismatch: {formatted}");
+    assert!(formatted.contains("Thing"), "should mention entity name: {formatted}");
+    assert!(formatted.starts_with("5:"), "error should point to line 5, got: {formatted}");
+}
+
+#[test]
+fn type_check_stdlib_no_spurious_errors() {
+    let kb = load_stdlib_kb();
+    let errors = load::type_check_facts(&kb);
+    assert!(errors.is_empty(), "stdlib should produce no type errors, got: {:?}", errors);
+}
