@@ -356,7 +356,9 @@ pub fn type_check_expr(
 
 // ── Expression form checkers ───────────────────────────────────
 
-/// apply(fn, args): return type from OperationInfo + callee's declared effects.
+/// apply(fn, args): two paths —
+/// 1. fn is a known operation → return type + effects from OperationInfo
+/// 2. fn is a variable with Function[A, B, E] type → extract B and E
 fn check_apply(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -364,9 +366,40 @@ fn check_apply(
     pos_args: &SmallVec<[TermId; 4]>,
 ) -> Option<TypeResult> {
     let fn_sym = extract_sym_arg(kb, named_args, pos_args, "fn")?;
-    let ret_type = lookup_operation_return_type(kb, fn_sym)?;
-    let callee_effects = lookup_operation_effects(kb, fn_sym);
-    Some(TypeResult { ty: ret_type, env: env.clone(), effects: callee_effects })
+
+    // Path 1: known operation
+    if let Some(ret_type) = lookup_operation_return_type(kb, fn_sym) {
+        let callee_effects = lookup_operation_effects(kb, fn_sym);
+        return Some(TypeResult { ty: ret_type, env: env.clone(), effects: callee_effects });
+    }
+
+    // Path 2: variable with Function type
+    let fn_name = kb.resolve_sym(fn_sym).to_string();
+    if let Some(fn_type_tid) = env.lookup_var(&fn_name) {
+        if let Some((ret_type, effects)) = extract_function_type_parts(kb, fn_type_tid) {
+            return Some(TypeResult { ty: ret_type, env: env.clone(), effects });
+        }
+    }
+
+    None
+}
+
+/// Extract return type (B) and effects (E) from a Function[A, B, E] type term.
+fn extract_function_type_parts(kb: &KnowledgeBase, fn_type: TermId) -> Option<(TermId, Vec<TermId>)> {
+    if let Term::Fn { functor, named_args, .. } = kb.get_term(fn_type) {
+        let name = kb.resolve_sym(*functor);
+        if name == "Function" || name == "anthill.prelude.Function" {
+            let ret_type = named_args.iter()
+                .find(|(s, _)| kb.resolve_sym(*s) == "B")
+                .map(|(_, v)| *v)?;
+            let effects = named_args.iter()
+                .find(|(s, _)| kb.resolve_sym(*s) == "E")
+                .map(|(_, v)| list_to_vec(kb, *v))
+                .unwrap_or_default();
+            return Some((ret_type, effects));
+        }
+    }
+    None
 }
 
 /// if_expr: effects = cond ∪ then ∪ else
