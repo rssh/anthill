@@ -1,11 +1,15 @@
--- Function: pure computation (Operation with empty effect set).
+-- Function: computation with optional effects.
+-- E is the effect set (empty for pure functions).
+-- Replaces separate Function (pure) and Operation (effectful) sorts.
+-- PureFunction is Function[A, B] with E unbound (= empty).
 sort anthill.prelude.Function
   sort A = ?
   sort B = ?
+  sort E = ?
 
-  operation apply(f: Function[A, B], x: A) -> B
+  operation apply(f: Function[A, B, E], x: A) -> B effects E
 end
 
--- Function is a pure Operation (E = empty effect set)
--- The exact expression of this relationship depends on how
--- empty() is referenced in sort bindings.
+-- PureFunction: Function with no effects.
+-- fact PureFunction[A, B] = Function[A, B, E = {}]
+-- (Exact encoding depends on how empty effect sets are represented)

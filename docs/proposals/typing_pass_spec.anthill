@@ -277,19 +277,21 @@ namespace anthill.reflect.typing_pass
         TypeResult(type: result_type(br), env: result_env(br),
                    effects: merge_result_effects(vr, br))
 
-      -- Lambda with annotation: body effects become part of the function contract,
-      -- NOT propagated to the enclosing expression.
+      -- Lambda with annotation: body effects are encoded in the Function type.
+      -- Creating a lambda is pure — effects happen when it's called.
       case lambda(param: var_pattern(name: n, type_ann: some(value: param_type)), body: b) ->
         let br = type_check(kb, TypingEnv.bind_var(env, n, param_type), b)
-        -- Lambda itself is pure; body effects are the lambda's contract
-        pure_result(arrow(param_type, result_type(br)), result_env(br))
+        -- Function[A, B, E] where E = body effects (empty for pure lambdas)
+        pure_result(Function[A = param_type, B = result_type(br), E = result_effects(br)],
+                    result_env(br))
 
       -- Lambda without annotation: infer param type
       case lambda(param: var_pattern(name: n, type_ann: none), body: b) ->
         let param_type = fresh_type_var(kb, n)
         let br = type_check(kb, TypingEnv.bind_var(env, n, param_type), b)
         let inferred = TypingEnv.apply_subst(result_env(br), param_type)
-        pure_result(arrow(inferred, result_type(br)), result_env(br))
+        pure_result(Function[A = inferred, B = result_type(br), E = result_effects(br)],
+                    result_env(br))
 
       -- Match: effects = scrutinee ∪ all branches
       case match_expr(scrutinee: s, branches: bs) ->

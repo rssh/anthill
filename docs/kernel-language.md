@@ -324,7 +324,7 @@ Arrow sorts associate to the right: `(A) -> (B) -> C` is `(A) -> ((B) -> C)`.
 
 The `@` token annotates effects on the arrow, consistent with the term-level Pratt operator where `a -> b @ c` desugars to `arrow_effect(a, b, c)`. A pure arrow `(A) -> B` desugars to `arrow(params..., B)` in the KB; an effectful arrow `(A) -> B @ E` desugars to `arrow_effect(params..., B, E)`.
 
-The arrow sort `(A) -> B` is equivalent to `Function[A, B]` from stdlib. Effect subtyping applies: a pure function can be passed where an effectful function is expected (`(A) -> B <: (A) -> B @ E` for any `E`).
+The arrow sort `(A) -> B` is equivalent to `Function[A, B]` from stdlib (with empty effect set). The effectful arrow `(A) -> B @ E` is equivalent to `Function[A, B, E]`. `Function` is the unified sort for all callable values — pure and effectful. Effect subtyping applies: a pure function can be passed where an effectful function is expected (`Function[A, B] <: Function[A, B, E]` for any `E`).
 
 Import and instantiation are separate concepts: `import` makes names visible, inline `Name[bindings]` instantiates sort parameters. They are not bundled together.
 

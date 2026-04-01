@@ -255,6 +255,32 @@ pub fn list_to_vec(kb: &KnowledgeBase, mut term: TermId) -> Vec<TermId> {
     items
 }
 
+/// Build a cons-list term from a slice of TermIds.
+fn build_list(kb: &mut KnowledgeBase, items: &[TermId]) -> TermId {
+    let nil_sym = kb.intern("nil");
+    let cons_sym = kb.intern("cons");
+    let head_sym = kb.intern("head");
+    let tail_sym = kb.intern("tail");
+
+    let mut list = kb.alloc(Term::Fn {
+        functor: nil_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+    for &item in items.iter().rev() {
+        let mut args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        args.push((head_sym, item));
+        args.push((tail_sym, list));
+        args.sort_by_key(|(s, _)| s.index());
+        list = kb.alloc(Term::Fn {
+            functor: cons_sym,
+            pos_args: SmallVec::new(),
+            named_args: args,
+        });
+    }
+    list
+}
+
 // ── type_check_expr ────────────────────────────────────────────
 
 /// Infer the type of an expression. Returns TypeResult with type, env, and effects.
@@ -429,7 +455,9 @@ fn check_match_expr(
     result_ty.map(|ty| TypeResult { ty, env: env.clone(), effects })
 }
 
-/// lambda: body effects are NOT propagated — they're the lambda's contract.
+/// lambda: body effects are encoded in the function type per proposal 003.
+/// Pure lambda → Function[A, B]. Effectful lambda → Function[A, B, E = effects].
+/// Creating a lambda is itself pure (no effects propagated to enclosing expr).
 fn check_lambda(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -444,15 +472,25 @@ fn check_lambda(
 
     let body_r = type_check_expr(kb, &lambda_env, resolve_handle(kb, body));
 
-    // Build Function[A, B] type term
+    // Build Function[A, B] or Function[A, B, E] type term
     let function_sym = kb.intern("Function");
     let a_key = kb.intern("A");
     let b_key = kb.intern("B");
     let a_val = param_type.unwrap_or_else(|| kb.make_name_term("?"));
     let b_val = body_r.as_ref().map(|r| r.ty).unwrap_or_else(|| kb.make_name_term("?"));
+    let body_effects = body_r.as_ref().map(|r| r.effects.clone()).unwrap_or_default();
+
     let mut fn_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
     fn_args.push((a_key, a_val));
     fn_args.push((b_key, b_val));
+
+    // If body has effects, encode them in the function type as E parameter
+    if !body_effects.is_empty() {
+        let e_key = kb.intern("E");
+        let effects_list = build_list(kb, &body_effects);
+        fn_args.push((e_key, effects_list));
+    }
+
     fn_args.sort_by_key(|(s, _)| s.index());
     let fn_type = kb.alloc(Term::Fn {
         functor: function_sym,
@@ -460,7 +498,7 @@ fn check_lambda(
         named_args: fn_args,
     });
 
-    // Lambda itself is pure — body effects stay internal
+    // Creating a lambda is pure — effects are in the type, not in the evaluation
     Some(TypeResult::pure(fn_type, env.clone()))
 }
 
