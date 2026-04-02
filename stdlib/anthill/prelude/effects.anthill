@@ -24,9 +24,18 @@ sort anthill.prelude.Effect {
 }
 
 -- Well-known effect kinds
-sort Modify   { sort T = ? entity Modify(target: T) }     -- mutates a resource's state
-sort Error    { sort T = ? entity Error(target: T) }       -- can fail with a typed error
+sort Modify     { sort T = ? entity Modify(target: T) }     -- mutates a resource's state
+sort Error      { sort T = ? entity Error(target: T) }       -- can fail with a typed error
+sort Suspension { entity Suspension }  -- computation can suspend, continuation can be captured
+sort Branch     { entity Branch }      -- computation can produce multiple results (non-determinism)
 
 -- Register as effects
 fact Effect[T = Modify[?]]
 fact Effect[T = Error[?]]
+fact Effect[T = Suspension]
+fact Effect[T = Branch]
+
+-- Effect relationships:
+-- Modify implies the ability to read
+-- (Read is not a separate effect kind — it's implied by Modify
+--  and operations that only read should take immutable parameters)
