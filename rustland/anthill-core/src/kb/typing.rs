@@ -340,6 +340,15 @@ pub fn type_check_expr(
                 "let_expr" => check_let_expr(kb, env, &named_args),
                 "match_expr" => check_match_expr(kb, env, &named_args),
                 "lambda" => check_lambda(kb, env, &named_args),
+                "ListLiteral" | "anthill.reflect.ListLiteral" => {
+                    check_list_literal(kb, env, &pos_args, &named_args)
+                }
+                "SetLiteral" | "anthill.reflect.SetLiteral" => {
+                    check_set_literal(kb, env, &pos_args)
+                }
+                "TupleLiteral" | "anthill.reflect.TupleLiteral" => {
+                    check_tuple_literal(kb, env, &pos_args)
+                }
                 _ => {
                     let f_sym = *functor;
                     if kb.is_constructor_symbol(f_sym) {
@@ -533,6 +542,139 @@ fn check_lambda(
 
     // Creating a lambda is pure — effects are in the type, not in the evaluation
     Some(TypeResult::pure(fn_type, env.clone()))
+}
+
+// ── Collection literals ────────────────────────────────────────
+
+/// ListLiteral: pos_args are elements, named_arg "tail" is optional tail.
+/// Type = List[T = element_type], using expected_collection_type from env if available.
+fn check_list_literal(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    pos_args: &SmallVec<[TermId; 4]>,
+    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+) -> Option<TypeResult> {
+    let mut effects = Vec::new();
+    let mut element_type: Option<TermId> = None;
+
+    // Try to get expected element type from context
+    if let Some(expected) = env.expected_collection_type() {
+        element_type = extract_type_param(kb, expected, "T");
+    }
+
+    // Type-check each element
+    for &elem in pos_args.iter() {
+        if let Some(r) = type_check_expr(kb, env, resolve_handle(kb, elem)) {
+            if element_type.is_none() {
+                element_type = Some(r.ty);
+            }
+            effects = merge_effects(&effects, &r.effects);
+        }
+    }
+
+    // Type-check tail if present
+    let tail = get_named_arg(kb, named_args, "tail");
+    if let Some(tail_tid) = tail {
+        if let Some(r) = type_check_expr(kb, env, resolve_handle(kb, tail_tid)) {
+            effects = merge_effects(&effects, &r.effects);
+        }
+    }
+
+    // Build List[T = element_type]
+    let list_sym = kb.intern("List");
+    let t_key = kb.intern("T");
+    let t_val = element_type.unwrap_or_else(|| kb.make_name_term("?"));
+    let mut list_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    list_args.push((t_key, t_val));
+    let list_type = kb.alloc(Term::Fn {
+        functor: list_sym,
+        pos_args: SmallVec::new(),
+        named_args: list_args,
+    });
+
+    Some(TypeResult { ty: list_type, env: env.clone(), effects })
+}
+
+/// SetLiteral: pos_args are elements.
+/// Type = Set[T = element_type].
+fn check_set_literal(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    pos_args: &SmallVec<[TermId; 4]>,
+) -> Option<TypeResult> {
+    let mut effects = Vec::new();
+    let mut element_type: Option<TermId> = None;
+
+    if let Some(expected) = env.expected_collection_type() {
+        element_type = extract_type_param(kb, expected, "T");
+    }
+
+    for &elem in pos_args.iter() {
+        if let Some(r) = type_check_expr(kb, env, resolve_handle(kb, elem)) {
+            if element_type.is_none() {
+                element_type = Some(r.ty);
+            }
+            effects = merge_effects(&effects, &r.effects);
+        }
+    }
+
+    let set_sym = kb.intern("Set");
+    let t_key = kb.intern("T");
+    let t_val = element_type.unwrap_or_else(|| kb.make_name_term("?"));
+    let mut set_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    set_args.push((t_key, t_val));
+    let set_type = kb.alloc(Term::Fn {
+        functor: set_sym,
+        pos_args: SmallVec::new(),
+        named_args: set_args,
+    });
+
+    Some(TypeResult { ty: set_type, env: env.clone(), effects })
+}
+
+/// TupleLiteral: pos_args are fields. Type = Tuple with per-field types.
+fn check_tuple_literal(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    pos_args: &SmallVec<[TermId; 4]>,
+) -> Option<TypeResult> {
+    let mut effects = Vec::new();
+    let mut field_types = Vec::new();
+
+    for &elem in pos_args.iter() {
+        if let Some(r) = type_check_expr(kb, env, resolve_handle(kb, elem)) {
+            field_types.push(r.ty);
+            effects = merge_effects(&effects, &r.effects);
+        } else {
+            field_types.push(kb.make_name_term("?"));
+        }
+    }
+
+    // Build Tuple type as a named_tuple with positional fields
+    let tuple_sym = kb.intern("Tuple");
+    let fields_list = build_list(kb, &field_types);
+    let fields_key = kb.intern("fields");
+    let mut tuple_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    tuple_args.push((fields_key, fields_list));
+    let tuple_type = kb.alloc(Term::Fn {
+        functor: tuple_sym,
+        pos_args: SmallVec::new(),
+        named_args: tuple_args,
+    });
+
+    Some(TypeResult { ty: tuple_type, env: env.clone(), effects })
+}
+
+/// Extract a named type parameter from a parameterized type term.
+/// e.g. extract_type_param(kb, List[T = Int], "T") → Some(Int)
+fn extract_type_param(kb: &KnowledgeBase, ty: TermId, param: &str) -> Option<TermId> {
+    if let Term::Fn { named_args, .. } = kb.get_term(ty) {
+        named_args.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == param)
+            .map(|(_, v)| *v)
+    } else {
+        None
+    }
 }
 
 // ── Pattern env extension ──────────────────────────────────────
