@@ -23,11 +23,29 @@ sort anthill.prelude.Effect {
   sort T = ?
 }
 
--- Well-known effect kinds
-sort Modify     { sort T = ? entity Modify(target: T) }     -- mutates a resource's state
-sort Error      { sort T = ? entity Error(target: T) }       -- can fail with a typed error
-sort Suspension { entity Suspension }  -- computation can suspend, continuation can be captured
-sort Branch     { entity Branch }      -- computation can produce multiple results (non-determinism)
+-- Well-known effect kinds.
+-- Each sort defines its operations — the "pseudo API" that the effect provides.
+
+sort Modify
+  import anthill.prelude.{Unit}
+  sort T = ?
+  operation get(target: T) -> T
+  operation set(target: T, value: T) -> Unit effects Modify[T]
+end
+
+sort Error
+  import anthill.prelude.{Nothing}
+  sort T = ?
+  operation raise(error: T) -> Nothing effects Error[T]
+end
+
+sort Suspension
+end
+
+sort Branch
+  import anthill.prelude.{Nothing}
+  operation fail() -> Nothing effects Branch
+end
 
 -- Register as effects
 fact Effect[T = Modify[?]]

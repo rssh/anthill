@@ -11,7 +11,7 @@ sort anthill.prelude.Type
   entity sort_ref(name: Symbol)
   entity parameterized(base: Type, bindings: List[TypeBinding])
   entity named_tuple(fields: List[TypeField])
-  entity arrow(param: Type, result: Type)
+  entity arrow(param: Type, result: Type, effects: List[Type])
   entity type_var(name: Symbol)
   entity singleton(value: Occurrence)
   entity nothing
