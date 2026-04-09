@@ -217,7 +217,13 @@ The induction rule is available to any proof in the sort's scope, and to any sor
 
 **Note on higher-order features:** The induction rules use predicate variables (`?P`) and nested implication (`:-` within `forall` goals). This extends anthill beyond first-order Horn clauses into the **hereditary Harrop formula** fragment (the same fragment λProlog uses). The variable `?P` ranges over predicates — anthill already has this implicitly (variables in type positions range over types, which are terms). Making predicate variables explicit in rules is a natural extension.
 
-**Resolvability:** Higher-order unification is generally undecidable, but the **pattern fragment** (Miller, 1991) is decidable. The kernel checks this restriction at load time.
+**Resolvability:** Higher-order unification is generally undecidable, but the **pattern fragment** is decidable. The key references:
+
+- Dale Miller. *A Logic Programming Language with Lambda-Abstraction, Function Variables, and Simple Unification.* Journal of Logic and Computation, 1(4):497–536, 1991.
+- Gopalan Nadathur and Dale Miller. *Higher-Order Logic Programming.* Handbook of Logic in Artificial Intelligence and Logic Programming, Vol. 5, Oxford University Press, 1998.
+- The λProlog language (implementations: Teyjus, ELPI) uses this fragment as its computational core.
+
+The kernel checks this restriction at load time.
 
 **Pattern fragment rules:**
 
