@@ -565,6 +565,152 @@ enum List
 end
 ```
 
+## Source organization: `provides`
+
+Specs, implementations, and proofs can live in separate files. The `provides` keyword supports both declaration and delivery.
+
+### `provides` in a sort body — declaration
+
+A sort declares that it satisfies a spec:
+
+```anthill
+-- int_stack.anthill
+sort IntStack
+  provides Stack[T = Int]
+end
+```
+
+This declares the relationship and creates an obligation: all Stack operations and laws must be provided.
+
+### `provides` as a standalone block — delivery
+
+A standalone `provides` block delivers the work — operation bodies, proofs, or host-language bindings:
+
+```anthill
+-- Anthill-internal: rules + proofs
+provides Stack[T = Int]
+  language anthill
+
+  rule push(?s, ?x) = cons(head: ?x, tail: ?s)
+  rule pop(cons(head: ?, tail: ?t)) = ?t
+  rule top(cons(head: ?x, tail: ?)) = ?x
+
+  proof push_pop by derivation
+  proof push.ensures by derivation
+end
+```
+
+```anthill
+-- Host-language: Rust implementation
+provides Stack[T = Int]
+  language rust
+  artifact "src/stack.rs"
+  carrier { T = i64 }
+  namespace_map { Stack = "crate::stack" }
+end
+```
+
+The `language` field determines the content:
+
+| Language | Content | Emits |
+|----------|---------|-------|
+| `anthill` | Rules, proofs (inline) | `Provides` fact + rules/proofs in KB |
+| `rust`, `scala`, `python` | Artifact path, carrier/namespace mappings | `Implementation` fact (existing realization) |
+
+### Full example: spec / implementation / proofs in separate files
+
+```anthill
+-- stack/spec.anthill
+sort Stack
+  sort T = ?
+  operation push(s: Stack, x: T) -> Stack
+    ensures eq(top(result), x)
+  operation pop(s: Stack) -> Stack
+  operation top(s: Stack) -> T
+
+  rule push_pop(?s, ?x) :- eq(pop(push(?s, ?x)), ?s)
+end
+```
+
+```anthill
+-- stack/impl.anthill
+provides Stack[T = Int]
+  language anthill
+
+  rule push(?s, ?x) = cons(head: ?x, tail: ?s)
+  rule pop(cons(head: ?, tail: ?t)) = ?t
+  rule top(cons(head: ?x, tail: ?)) = ?x
+end
+```
+
+```anthill
+-- stack/proofs.anthill
+provides Stack[T = Int]
+  language anthill
+
+  proof push_pop by derivation
+  proof push.ensures by derivation
+end
+```
+
+```anthill
+-- stack/impl_rust.anthill
+provides Stack[T = Int]
+  language rust
+  artifact "src/stack.rs"
+  carrier { T = i64 }
+  namespace_map { Stack = "crate::stack" }
+end
+```
+
+Multiple `provides` blocks can target the same spec — one for anthill rules, one for proofs, one for Rust code. They're additive.
+
+### `provides` vs `requires`
+
+| | `requires` | `provides` |
+|--|--|--|
+| Direction | Consumer: "I need this spec" | Producer: "I satisfy this spec" |
+| Effect | Makes spec's rules available in scope | Creates obligation to supply spec's operations |
+| Subtyping | Yes: `Ordered <: Eq` via requires | Yes: `IntStack <: Stack` via provides |
+| Proof context | Spec's rules are assumptions | Spec's contracts must be proved |
+
+### KB representation
+
+`provides` in a sort body emits:
+
+```anthill
+fact Provides(
+  source: IntStack,
+  spec: Stack,
+  bindings: [TypeBinding(param: T, value: sort_ref(Int))]
+)
+```
+
+Standalone `provides` with `language anthill` emits the same `Provides` fact plus asserts the rules and proofs into the KB.
+
+Standalone `provides` with a host language emits the existing `Implementation` fact from `anthill.realization`.
+
+### Grammar
+
+```
+-- Inside sort/enum body:
+provides_clause ::= 'provides' name ['[' binding_list ']']
+
+-- Standalone block:
+provides_block ::= 'provides' name ['[' binding_list ']']
+                    'language' name
+                    [provides_content]
+                    'end'
+
+provides_content ::= rule_declaration
+                   | proof_declaration
+                   | 'artifact' string_literal
+                   | 'carrier' '{' mapping_list '}'
+                   | 'namespace_map' '{' mapping_list '}'
+```
+
+`provides` as a clause is valid inside sort/enum bodies. `provides` as a block is valid at top level and inside namespaces.
+
 ## Summary
 
 - `proof` attaches to a `rule`, providing evidence
@@ -573,4 +719,7 @@ end
 - Staleness propagates through dependency graph
 - Internal proofs (SLD traces) are kernel-verifiable
 - External proofs are trusted at `verified` level
-- Integrates with existing `Trust`, `ProofResult`, metadata system
+- `provides` declares spec satisfaction, `implement` delivers the work
+- `implement` supports both anthill-internal and host-language implementations
+- Logic axioms are sorts (`Logic.Classical`, `Logic.Constructive`) chosen via `requires`
+- Integrates with existing `Trust`, `ProofResult`, realization framework
