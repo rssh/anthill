@@ -184,7 +184,7 @@ end
 -- Auto-generated:
 rule List.induction(?P)
   :- ?P(nil),
-     (forall(?h, ?rest), ?P(cons(head: ?h, tail: ?rest)) :- ?P(?rest))
+     (forall(?h, ?rest), ?P(?rest) -: ?P(cons(head: ?h, tail: ?rest)))
 ```
 
 **Multi-recursive enum (multiple induction hypotheses):**
@@ -198,7 +198,7 @@ end
 -- Auto-generated:
 rule Tree.induction(?P)
   :- (forall(?v), ?P(leaf(value: ?v))),
-     (forall(?l, ?r), ?P(branch(left: ?l, right: ?r)) :- ?P(?l), ?P(?r))
+     (forall(?l, ?r), ?P(?l), ?P(?r) -: ?P(branch(left: ?l, right: ?r)))
 ```
 
 **Bounded numeric (Int):**
@@ -206,7 +206,7 @@ rule Tree.induction(?P)
 -- Int has bounded well-founded induction:
 rule Int.induction(?P, ?lo, ?hi)
   :- ?P(?lo),
-     (forall(?n), gte(?n, ?lo), lt(?n, ?hi), ?P(add(?n, 1)) :- ?P(?n))
+     (forall(?n), gte(?n, ?lo), lt(?n, ?hi), ?P(?n) -: ?P(add(?n, 1)))
 ```
 
 **Unbounded numeric (BigInt):**
@@ -214,7 +214,7 @@ rule Int.induction(?P, ?lo, ?hi)
 -- BigInt has strong induction:
 rule BigInt.induction(?P)
   :- ?P(0),
-     (forall(?n), ?P(?n) :- gt(?n, 0), ?P(sub(?n, 1)))
+     (forall(?n), gt(?n, 0), ?P(sub(?n, 1)) -: ?P(?n))
 ```
 
 The generation rules:
@@ -232,18 +232,37 @@ The induction rule is available to any proof in the sort's scope, and to any sor
 
 **Note on higher-order features:** The induction rules use predicate variables (`?P`) and nested implication (`:-` within `forall` goals). This extends anthill beyond first-order Horn clauses into the **hereditary Harrop formula** fragment (the same fragment λProlog uses). The variable `?P` ranges over predicates — anthill already has this implicitly (variables in type positions range over types, which are terms). Making predicate variables explicit in rules is a natural extension.
 
-**Resolvability:** Higher-order unification is generally undecidable, but the **pattern fragment** (Miller, 1991) — where predicate variables are applied to distinct first-order terms — is decidable. The induction rules above are in this fragment. The kernel checks the restriction at load time:
+**Resolvability:** Higher-order unification is generally undecidable, but the **pattern fragment** (Miller, 1991) is decidable. The kernel checks this restriction at load time.
 
-- Predicate variables (variables in functor position) may only appear in **body** position, not rule heads
-- Arguments to predicate variables must be first-order (no nested predicate variables)
-- `?P(nil)`, `?P(cons(?h, ?rest))` — OK (applied to first-order terms)
-- `?P(?Q)` — rejected (predicate applied to predicate)
+**Pattern fragment rules:**
+
+1. Predicate variables (variables in functor position) may only appear in **body** position, never in rule heads
+2. A predicate variable may have any arity: `?P(x)`, `?P(x, y)`, `?P(x, y, z)`
+3. Arguments to predicate variables must be **distinct first-order** terms or variables
+4. No predicate variable may appear as argument to another predicate variable
+
+| Expression | Status | Reason |
+|-----------|--------|--------|
+| `?P(nil)` | OK | first-order argument |
+| `?P(?a, ?b)` | OK | distinct variables |
+| `?P(cons(?h, ?t), nil)` | OK | distinct first-order terms |
+| `?P(?a, ?a)` | Rejected | same variable twice |
+| `?P(?Q(x))` | Rejected | predicate variable as argument |
+| `?P(?Q)` | Rejected | predicate variable as argument |
+| `?P(x) :- head` | Rejected | predicate variable in head position |
+
+The kernel checks these restrictions syntactically during loading — a rule with a predicate variable that violates the pattern fragment is a load error.
 
 **Resolution for nested goals:**
 - `forall(?x, G)` → create fresh variable for `?x`, prove `G`
 - `conclusion :- premise` (nested `:-`) → add `premise` as temporary assumption, prove `conclusion`
 
-The `:-` operator serves double duty: at top level it separates rule head from body; inside `forall` goals it expresses implication. Same semantics — "the left holds if the right holds."
+`:-` and `-:` are interchangeable — both express implication, just in opposite reading directions:
+
+- `Q :- P` — "Q if P" (conclusion first, Prolog style)
+- `P -: Q` — "P then Q" (premise first, natural reading)
+
+Both mean P → Q. The author picks whichever reads better in context. At top level, `:-` is conventional (rule head `:-` body). Inside `forall` goals, `-:` often reads more naturally (premise `-:` conclusion).
 
 ### Proof for operation contracts
 
