@@ -264,6 +264,54 @@ The kernel checks these restrictions syntactically during loading — a rule wit
 
 Both mean P → Q. The author picks whichever reads better in context. At top level, `:-` is conventional (rule head `:-` body). Inside `forall` goals, `-:` often reads more naturally (premise `-:` conclusion).
 
+### Logic as sorts
+
+The logical axioms available in a proof are not hardcoded — they are named rules in sorts. A proof context is determined by which logic sort you `requires`.
+
+```anthill
+sort Logic.Minimal
+  -- Just SLD resolution over Horn clauses (always available)
+end
+
+sort Logic.Constructive
+  requires Logic.Minimal
+  rule identity(?P) :- ?P -: ?P
+  rule modus_ponens(?P, ?Q) :- ?P, (?P -: ?Q) -: ?Q
+  rule conjunction_intro(?P, ?Q) :- ?P, ?Q -: and(?P, ?Q)
+  rule conjunction_elim_l(?P, ?Q) :- and(?P, ?Q) -: ?P
+  rule conjunction_elim_r(?P, ?Q) :- and(?P, ?Q) -: ?Q
+  rule disjunction_intro_l(?P, ?Q) :- ?P -: or(?P, ?Q)
+  rule disjunction_intro_r(?P, ?Q) :- ?Q -: or(?P, ?Q)
+  rule ex_falso(?P) :- false -: ?P
+end
+
+sort Logic.Classical
+  requires Logic.Constructive
+  rule excluded_middle(?P) :- or(?P, not(?P))
+  rule contradiction(?P) :- (not(?P) -: false) -: ?P
+  rule double_negation(?P) :- not(not(?P)) -: ?P
+end
+```
+
+A sort chooses its logic via `requires`:
+
+```anthill
+sort NatProofs
+  requires Logic.Classical
+  requires Numeric[T = Int]
+  
+  rule add_comm(?a, ?b) :- eq(add(?a, ?b), add(?b, ?a))
+  
+  proof add_comm
+    by derivation
+  end
+end
+```
+
+The kernel doesn't distinguish "logical" rules from "domain" rules — they're all rules in the proof context. The logic sorts just organize which axioms are available. Different sorts can use different logics.
+
+This mirrors Isabelle's architecture: `Isabelle/Pure` is the minimal kernel, `Isabelle/HOL` adds classical axioms as a named theory. You choose your logic by importing a theory.
+
 ### Proof for operation contracts
 
 Operation contracts generate implicit rules. A `proof` can target them:
@@ -287,169 +335,154 @@ The naming convention `<operation>.<clause>` identifies which contract clause is
 
 ## Internal proof theory
 
-### What we can prove
+### Proof = SLD resolution trace
 
-Anthill's kernel has three reasoning mechanisms:
+An internal proof is a **log of resolution steps** — a record of which rule was applied at each step, with what substitution, producing which subgoals. This is the standard SLD trace, extended with HO resolution for `forall` and `-:`/`:-` goals.
 
-1. **SLD resolution** — backward chaining over Horn clauses. Can prove any goal that follows from the rules in the KB.
-2. **Equational reasoning** — operations with expression bodies define equalities (`operation double(x: Int) -> Int = add(x, x)` means `double(x) = add(x, x)`). Rewriting by these equalities.
-3. **Structural induction** — for enums with recursive entities (List, Tree), prove a property holds for all values by proving it for each entity constructor, assuming it holds for recursive sub-terms.
+Each step in the trace records:
 
-These cover the common proof patterns for algebraic specifications:
-- Laws like `eq(add(a, b), add(b, a))` — equational reasoning
-- Properties like `eq(length(append(xs, ys)), add(length(xs), length(ys)))` — induction + rewriting
-- Derived rules like `lt(?a, ?b) :- ...` — SLD resolution
+| Field | Type | Meaning |
+|-------|------|---------|
+| `goal` | `Term` | The goal being proved |
+| `rule` | `Symbol` | Which rule was applied |
+| `substitution` | `Substitution` | The unifier for this step |
+| `subgoals` | `List[Term]` | Remaining goals after this step |
 
-What we **cannot** prove internally:
-- Properties requiring arithmetic decision procedures (delegated to Z3/SMT)
-- Properties about infinite structures (requires coinduction — future work)
-- Properties requiring higher-order reasoning
+A proof is complete when no subgoals remain.
 
-### Proof context
+### Proof context and `assume`
 
-A proof operates in a **context** — the set of available assumptions. The context consists of:
+A proof operates in a **context** — the set of available assumptions. The context is a list of rules that can be used during resolution.
 
-1. **Axioms**: rules in the current sort's scope
+The context starts with:
+1. **Scope rules**: rules in the current sort's scope
 2. **Inherited rules**: rules from required sorts (via `requires` chain)
-3. **Definitions**: operation bodies as equalities
-4. **Induction hypotheses**: when proving by induction, the property applied to structurally smaller terms
+3. **Definitions**: operation bodies as equalities (e.g., `double(x) = add(x, x)`)
 
-The context is computed by the kernel, not declared by the author. It is determined by the sort scope and the proof method.
+The context grows during proof via `assume` — an operation that adds a rule to the local context:
 
-### Proof tree
-
-A proof is a **tree** where:
-- The root is the **goal** — the proposition to prove
-- Each internal node is a **proof step** — applying a rule, rewriting, or case split
-- Leaves are **closed** — the goal matches an axiom, a definition, or an induction hypothesis
-
-```
-ProofTree = 
-  | Axiom(rule: Symbol, subst: Substitution)         -- goal matches a rule directly
-  | Resolution(rule: Symbol, subst: Substitution,     -- apply rule, prove subgoals
-               subproofs: List[ProofTree])
-  | Rewrite(equation: Symbol, direction: Direction,    -- rewrite goal using equation
-            subproof: ProofTree)
-  | Induction(variable: Symbol, enum: Symbol,          -- structural induction
-              cases: List[InductionCase])
-  | Assumption(index: Int)                             -- reference to assumption in scope
-
-InductionCase =
-  | Case(entity: Symbol,                               -- constructor pattern
-         ih: List[Symbol],                             -- induction hypothesis names
-         subproof: ProofTree)
-
-Direction = LeftToRight | RightToLeft
+```anthill
+-- assume adds a rule to the proof context, returns the updated context
+operation assume(ctx: ProofContext, rule: Term) -> ProofContext
 ```
 
-### Proof steps in detail
+`assume` is used by the resolution engine when processing `-:` and `forall` goals:
 
-**Axiom**: the goal unifies with a rule head that has no body (a fact). Proof is complete.
-```
-Goal: eq(length(nil), 0)
-Step: Axiom(rule: length_nil, subst: {})
--- because: rule length(nil) = 0
-```
+| Goal form | Resolution action |
+|-----------|-------------------|
+| `A -: B` | `assume(ctx, A)`, then prove `B` in extended context |
+| `B :- A` | `assume(ctx, A)`, then prove `B` in extended context |
+| `forall(?x, G)` | Create fresh variable for `?x`, prove `G` |
+| `forall(?x, P -: Q)` | Create fresh `?x`, `assume(ctx, P)`, prove `Q` |
 
-**Resolution**: the goal unifies with a rule head. Prove each body goal.
-```
-Goal: lt(1, 2)
-Step: Resolution(rule: lt_def, subst: {?a → 1, ?b → 2},
-        subproofs: [proof of eq(sign(compare(1, 2)), neg-one)])
--- because: rule lt(?a, ?b) :- eq(sign(compare(?a, ?b)), neg-one)
-```
+### How induction works
 
-**Rewrite**: replace a subterm using an equation (operation definition or proved equality).
-```
-Goal: eq(double(3), 6)
-Step: Rewrite(equation: double_def, direction: LeftToRight,
-        subproof: proof of eq(add(3, 3), 6))
--- because: operation double(x) = add(x, x), so double(3) → add(3, 3)
+Induction is not a special proof step — it's **resolution against the auto-generated induction rule**. The induction rule for List:
+
+```anthill
+rule List.induction(?P)
+  :- ?P(nil),
+     forall(?h, ?rest, ?P(?rest) -: ?P(cons(head: ?h, tail: ?rest)))
 ```
 
-**Induction**: for a goal `forall xs: List[T], P(xs)`, split into cases by constructor.
+When proving `eq(length(append(?xs, ?ys)), add(length(?xs), length(?ys)))` by induction on `?xs`:
+
+1. Unify `?P` with the property: `?P = rule ?xs :- eq(length(append(?xs, ?ys)), add(length(?xs), length(?ys)))`
+2. Resolve `List.induction(?P)` — produces two subgoals:
+   - `?P(nil)` → prove `eq(length(append(nil, ?ys)), add(length(nil), length(?ys)))`
+   - `forall(?h, ?rest, ?P(?rest) -: ?P(cons(head: ?h, tail: ?rest)))` → for fresh `?h`, `?rest`: assume the induction hypothesis `?P(?rest)`, prove `?P(cons(head: ?h, tail: ?rest))`
+3. The `assume` introduces the IH into the context — it's a rule that can be used in subsequent resolution steps
+
+The SLD trace records all of this: which rule was applied (List.induction), how `?P` was bound, and the sub-traces for each subgoal.
+
+### Example: full trace
+
+Goal: `eq(length(nil), 0)`
+
 ```
-Goal: eq(length(append(?xs, ?ys)), add(length(?xs), length(?ys)))
-Step: Induction(variable: ?xs, enum: List,
-        cases: [
-          Case(entity: nil, ih: [],
-            subproof: proof of eq(length(append(nil, ?ys)), add(length(nil), length(?ys)))),
-          Case(entity: cons, ih: [ih_rest],
-            subproof: proof of eq(length(append(cons(?h, ?rest), ?ys)),
-                                  add(length(cons(?h, ?rest)), length(?ys)))
-            -- where ih_rest: eq(length(append(?rest, ?ys)), add(length(?rest), length(?ys))))
-        ])
+Trace:
+  Step 1: goal = eq(length(nil), 0)
+          rule = length_nil        -- rule length(nil) = 0
+          subst = {}
+          subgoals = []            -- complete
 ```
 
-**Assumption**: reference an assumption by index in the current proof scope. Used for induction hypotheses and local assumptions introduced by case analysis.
+Goal: `lt(1, 2)`
+
+```
+Trace:
+  Step 1: goal = lt(1, 2)
+          rule = lt_def            -- rule lt(?a, ?b) :- eq(sign(compare(?a, ?b)), neg-one)
+          subst = {?a → 1, ?b → 2}
+          subgoals = [eq(sign(compare(1, 2)), neg-one)]
+  Step 2: goal = eq(sign(compare(1, 2)), neg-one)
+          rule = <builtin eval>
+          subst = {}
+          subgoals = []            -- complete
+```
+
+Goal: prove `forall ?xs, eq(length(append(?xs, nil)), length(?xs))` by induction
+
+```
+Trace:
+  Step 1: goal = forall(?xs, eq(length(append(?xs, nil)), length(?xs)))
+          rule = List.induction
+          subst = {?P → ...}
+          subgoals = [
+            ?P(nil),                              -- base case
+            forall(?h, ?rest, ?P(?rest) -: ?P(cons(?h, ?rest)))  -- step case
+          ]
+  Step 2: goal = ?P(nil) = eq(length(append(nil, nil)), length(nil))
+          rule = append_nil, length_nil
+          subst = ...
+          subgoals = []            -- base case done
+  Step 3: goal = forall(?h, ?rest, ?P(?rest) -: ?P(cons(?h, ?rest)))
+          action = fresh ?h_0, ?rest_0
+          action = assume(?P(?rest_0))   -- IH: eq(length(append(?rest_0, nil)), length(?rest_0))
+          goal = ?P(cons(?h_0, ?rest_0)) = eq(length(append(cons(?h_0, ?rest_0), nil)), length(cons(?h_0, ?rest_0)))
+          rule = append_cons, length_cons, IH
+          subst = ...
+          subgoals = []            -- step case done, using assumed IH
+```
+
+### Equational reasoning
+
+Operation definitions create equalities: `operation double(x: Int) -> Int = add(x, x)` generates a rule `eq(double(?x), add(?x, ?x))`. This rule is in the proof context and can be applied during resolution like any other rule.
+
+Rewriting is just resolution against an equality rule — not a separate mechanism. The resolver applies `eq(double(?x), add(?x, ?x))` to replace `double(3)` with `add(3, 3)` during unification.
 
 ### Verification
 
-The kernel **verifies** a proof tree by checking each node:
+The kernel **verifies** a proof by replaying the trace:
 
-1. **Axiom**: verify the rule exists, head unifies with goal under the given substitution
-2. **Resolution**: verify rule exists, head unifies, each subproof proves the corresponding body goal
-3. **Rewrite**: verify the equation holds (operation definition or proved rule), the rewritten goal is correct, subproof proves the rewritten goal
-4. **Induction**: verify the variable has an enum type, cases cover all entities (exhaustiveness), each case's subproof is valid with the induction hypothesis added to context
-5. **Assumption**: verify the index refers to a valid assumption in the current scope
+1. For each step: check the rule exists in the context, head unifies with the goal, substitution is correct
+2. For `assume` steps: verify the assumption comes from a `-:` or `forall` goal
+3. For induction: verify the induction rule was correctly generated from an enum, predicate variable binding is in the pattern fragment
+4. Final state: no remaining subgoals
 
-Verification is **linear** in proof tree size — each node is checked independently against its children.
-
-### Guided proof syntax
-
-The author can provide a proof tree explicitly using a body:
-
-```anthill
-proof append_assoc
-  by derivation
-  :- induction(?xs, List,
-       case nil :- rewrite(append_nil, reflexivity),
-       case cons(?h, ?rest) :-
-         rewrite(append_cons,
-           rewrite(append_assoc.ih,
-             reflexivity)))
-end
-```
-
-The body mirrors the proof tree structure using term syntax:
-- `induction(?var, enum, case ..., case ...)` — structural induction
-- `case <pattern> :- <proof>` — case in induction
-- `rewrite(<equation>, <subproof>)` — equational rewriting
-- `apply(<rule>, <subproof1>, ...)` — resolution step
-- `reflexivity` — prove `eq(?x, ?x)`
-- `assumption` or `<rule>.ih` — reference an assumption
-
-Without a body, the kernel searches for a proof tree automatically.
+Verification is **linear** in trace length — each step is checked independently.
 
 ### Automatic proof search
 
-When no body is given (`by derivation` with no `:-`), the kernel searches for a proof tree:
+When no body is given (`by derivation`), the kernel searches for a proof:
 
-1. Try direct resolution (depth-bounded SLD search)
-2. Try rewriting with available equations
-3. If the goal is universally quantified over an enum, try induction
+1. Depth-bounded SLD resolution
+2. When a `forall` or `-:` goal is encountered, apply the HO resolution rules (`assume`, fresh variables)
+3. When no first-order rules apply and the goal involves an enum-typed variable, try the enum's induction rule
 
-The search is bounded by depth and time limits (configurable). If search fails, the proof remains an open obligation (`trust: proposed`).
+Search is bounded by depth and time limits (configurable). If search fails, the proof remains an open obligation.
 
 ### Proof representation in the KB
 
-A verified proof tree is stored as a term:
-
 ```anthill
-enum ProofTree
-  entity axiom_step(rule: Symbol, subst: Term)
-  entity resolution_step(rule: Symbol, subst: Term, subproofs: List[ProofTree])
-  entity rewrite_step(equation: Symbol, direction: Symbol, subproof: ProofTree)
-  entity induction_step(variable: Symbol, enum_sort: Symbol, cases: List[InductionCase])
-  entity assumption_step(index: Int)
-end
-
-enum InductionCase
-  entity proof_case(entity: Symbol, ih_names: List[Symbol], subproof: ProofTree)
+enum ProofTrace
+  entity step(goal: Term, rule: Symbol, subst: Term, subgoals: List[Term])
+  entity assume_step(assumption: Term)
+  entity fresh_step(variable: Symbol)
 end
 ```
 
-This is a regular anthill enum — proof trees are terms in the KB, hash-consed and queryable.
+A complete proof is stored as `List[ProofTrace]` — a flat sequence of steps. The kernel can replay this sequence to verify.
 
 ### External: tool certificate
 
