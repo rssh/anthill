@@ -55,31 +55,16 @@ end
 **Guided** — body provides proof steps that narrow the search:
 
 ```anthill
+-- Guided: body is a sequence of rule names to apply
 proof append_assoc
   by derivation
-  :- induction(?xs),
-     case nil :- reflexivity,
-     case cons(head: ?x, tail: ?rest) :- 
-       apply(append_assoc, ?rest), reflexivity
+  :- List.induction, append_nil, append_cons
 end
 ```
 
-The body is a sequence of **tactics** — directives that guide the kernel's search. Without a body, the kernel explores all resolution paths. With a body, it follows the given strategy and verifies each step.
+The body is a sequence of **rule names** — hints that tell the kernel which rules to apply. Without a body, the kernel explores all resolution paths. With a body, it applies the listed rules in order and verifies each step.
 
-**Tactics** reuse the rule body syntax (goals separated by `,`) with additional proof-specific forms:
-
-| Tactic | Meaning |
-|--------|---------|
-| `induction(?var)` | Structural induction on a variable |
-| `case <pattern> :- <goals>` | Prove a specific case |
-| `apply(<rule>, <args>)` | Apply a named rule |
-| `reflexivity` | Goal is `eq(?x, ?x)` |
-| `symmetry` | Swap sides of an equality |
-| `unfold(<operation>)` | Replace operation call with its body |
-| `rewrite(<rule>)` | Rewrite using an equality rule |
-| `by_assumption` | Goal matches an assumption in scope |
-
-Tactics are themselves terms in the KB — extensible by defining new tactic rules.
+This is not a tactic language — it's just naming the rules that appear in the SLD trace. The kernel still does the unification and subgoal generation; the hints narrow the search space.
 
 **External** — delegated to a tool. The body specifies the query in the tool's language and any parameters:
 
