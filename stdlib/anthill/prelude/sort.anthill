@@ -3,7 +3,7 @@
    Type forms a lattice via entity_of and refines relationships.
    No top type exists (the lattice is unbounded above).
    Nothing is the bottom (uninhabited, subtype of everything). >}
-sort anthill.prelude.Type
+enum anthill.prelude.Type
   import anthill.prelude.{Lattice, Eq, List, Option}
   import anthill.reflect.{Symbol, Occurrence}
 

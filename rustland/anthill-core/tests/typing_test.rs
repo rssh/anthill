@@ -10,7 +10,7 @@ use anthill_core::parse;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::term::{Term, TermId, Literal, Var};
 use anthill_core::intern::Symbol;
-use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::load::{self, NullResolver, LoadResult};
 use anthill_core::kb::resolve::ResolveConfig;
 
 use smallvec::SmallVec;
@@ -1223,7 +1223,7 @@ fn typing_pass_spec_parses_and_loads() {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// type_check_facts tests
+// type_check_sorts tests (facts)
 // ══════════════════════════════════════════════════════════════════
 
 /// Helper: load stdlib + custom source, return KB.
@@ -1237,6 +1237,37 @@ fn load_with_source(source: &str) -> KnowledgeBase {
         }
     }
     kb
+}
+
+/// Helper: load only stdlib, returning both KB and LoadResult (all stdlib sorts).
+fn load_stdlib_kb_with_result() -> (KnowledgeBase, LoadResult) {
+    let dir = common::stdlib_dir();
+    let files = common::collect_anthill_files(&dir);
+    assert!(!files.is_empty(), "no stdlib files found");
+
+    let parsed: Vec<_> = files.iter()
+        .map(|path| {
+            let source = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            parse::parse(&source)
+                .unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
+        })
+        .collect();
+
+    let refs: Vec<_> = parsed.iter().collect();
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    let result = load::load_all(&mut kb, &refs, &NullResolver);
+    match result {
+        Ok(load_result) => (kb, load_result),
+        Err(errs) => {
+            for e in &errs {
+                eprintln!("Load error: {}", e);
+            }
+            panic!("stdlib load failed with {} errors", errs.len());
+        }
+    }
 }
 
 #[test]
@@ -1253,8 +1284,8 @@ end
 
 fact Circle(color: Red, radius: 42)
 "#;
-    let kb = load_with_source(source);
-    let errors = load::type_check_facts(&kb);
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(errors.is_empty(), "correct fact should produce no errors, got: {:?}", errors);
 }
 
@@ -1267,8 +1298,8 @@ end
 
 fact Thing(name: 42)
 "#;
-    let kb = load_with_source(source);
-    let errors = load::type_check_facts(&kb);
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(!errors.is_empty(), "should detect Int where String expected");
     let err = &errors[0];
     match err {
@@ -1290,8 +1321,8 @@ end
 
 fact Thing(count: "hello")
 "#;
-    let kb = load_with_source(source);
-    let errors = load::type_check_facts(&kb);
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(!errors.is_empty(), "should detect String where Int expected");
     match &errors[0] {
         load::LoadError::TypeMismatch { field_name, actual_type, .. } => {
@@ -1321,8 +1352,8 @@ end
 
 fact Box(color: Square)
 "#;
-    let kb = load_with_source(source);
-    let errors = load::type_check_facts(&kb);
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(!errors.is_empty(), "should detect Shape entity where Color expected, got: {:?}", errors);
     match &errors[0] {
         load::LoadError::TypeMismatch { field_name, expected_type, actual_type, .. } => {
@@ -1342,8 +1373,8 @@ sort Item
 end
 "#;
     // Entity definition itself has type terms, not instances — no facts to check
-    let kb = load_with_source(source);
-    let errors = load::type_check_facts(&kb);
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(errors.is_empty(), "entity definitions should not produce errors, got: {:?}", errors);
 }
 
@@ -1351,8 +1382,8 @@ end
 fn type_check_error_reports_line_number() {
     let source = "sort Item\n  entity Thing(count: Int)\nend\n\nfact Thing(count: \"hello\")\n";
     //            line 1        line 2                    line 3  line 4  line 5
-    let kb = load_with_source(source);
-    let errors = load::type_check_facts(&kb);
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(!errors.is_empty(), "should detect String where Int expected");
     let formatted = errors[0].format_with_source(source);
     assert!(formatted.contains("type mismatch"), "should say type mismatch: {formatted}");
@@ -1362,13 +1393,13 @@ fn type_check_error_reports_line_number() {
 
 #[test]
 fn type_check_stdlib_no_spurious_errors() {
-    let kb = load_stdlib_kb();
-    let errors = load::type_check_facts(&kb);
+    let (mut kb, result) = load_stdlib_kb_with_result();
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(errors.is_empty(), "stdlib should produce no type errors, got: {:?}", errors);
 }
 
 // ══════════════════════════════════════════════════════════════════
-// type_check_operations tests
+// type_check_sorts tests (operations)
 // ══════════════════════════════════════════════════════════════════
 
 #[test]
@@ -1378,8 +1409,8 @@ sort Math
   operation one() -> Int = 1
 end
 "#;
-    let mut kb = load_with_source(source);
-    let errors = load::type_check_operations(&mut kb);
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(errors.is_empty(), "correct literal body should produce no errors, got: {:?}", errors);
 }
 
@@ -1390,8 +1421,8 @@ sort Math
   operation one() -> String = 1
 end
 "#;
-    let mut kb = load_with_source(source);
-    let errors = load::type_check_operations(&mut kb);
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(!errors.is_empty(), "should detect Int body vs String return type");
     match &errors[0] {
         load::LoadError::TypeMismatch { entity_name, field_name, .. } => {
@@ -1409,8 +1440,8 @@ sort Math
   operation id(x: Int) -> Int = x
 end
 "#;
-    let mut kb = load_with_source(source);
-    let errors = load::type_check_operations(&mut kb);
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(errors.is_empty(), "correct var ref should produce no errors, got: {:?}", errors);
 }
 
@@ -1421,8 +1452,8 @@ sort Math
   operation wrong(x: Int) -> String = x
 end
 "#;
-    let mut kb = load_with_source(source);
-    let errors = load::type_check_operations(&mut kb);
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(!errors.is_empty(), "should detect Int var vs String return type, got: {:?}", errors);
 }
 
@@ -1438,8 +1469,8 @@ sort Factory
   operation make_red() -> Color = Red
 end
 "#;
-    let mut kb = load_with_source(source);
-    let errors = load::type_check_operations(&mut kb);
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(errors.is_empty(), "correct constructor return should produce no errors, got: {:?}", errors);
 }
 
@@ -1524,8 +1555,8 @@ end
 
 #[test]
 fn type_check_op_stdlib_no_spurious_errors() {
-    let mut kb = load_stdlib_kb();
-    let errors = load::type_check_operations(&mut kb);
+    let (mut kb, result) = load_stdlib_kb_with_result();
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(errors.is_empty(), "stdlib operations should produce no type errors, got: {:?}", errors);
 }
 
@@ -1540,8 +1571,8 @@ sort Logic
   operation pick(b: Bool) -> Int = if b then 1 else 0
 end
 "#;
-    let mut kb = load_with_source(source);
-    let errors = load::type_check_operations(&mut kb);
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(errors.is_empty(), "correct if_expr should produce no errors, got: {:?}", errors);
 }
 
@@ -1552,8 +1583,8 @@ sort Logic
   operation pick(b: Bool) -> String = if b then 1 else 0
 end
 "#;
-    let mut kb = load_with_source(source);
-    let errors = load::type_check_operations(&mut kb);
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(!errors.is_empty(), "should detect Int branches vs String return, got: {:?}", errors);
 }
 
@@ -1564,8 +1595,8 @@ sort Math
   operation double(x: Int) -> Int = let ?y = x in add(?y, ?y)
 end
 "#;
-    let mut kb = load_with_source(source);
-    let errors = load::type_check_operations(&mut kb);
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(errors.is_empty(), "correct let_expr should produce no errors, got: {:?}", errors);
 }
 
@@ -1583,8 +1614,8 @@ sort Palette
     case Blue -> 2
 end
 "#;
-    let mut kb = load_with_source(source);
-    let errors = load::type_check_operations(&mut kb);
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(errors.is_empty(), "correct match should produce no errors, got: {:?}", errors);
 }
 
@@ -1602,7 +1633,746 @@ sort Palette
     case Blue -> 2
 end
 "#;
-    let mut kb = load_with_source(source);
-    let errors = load::type_check_operations(&mut kb);
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(!errors.is_empty(), "should detect Int match body vs String return, got: {:?}", errors);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// types_compatible tests
+// ══════════════════════════════════════════════════════════════════
+
+use anthill_core::kb::typing::{types_compatible, is_subtype, requires_chain, check_obligations, type_check_sorts};
+
+#[test]
+fn subtype_same_sort_ref() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    assert!(types_compatible(&kb, int_ty, int_ty), "Int <: Int");
+}
+
+#[test]
+fn subtype_different_sort_ref_incompatible() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let string_ty = kb.make_sort_ref_by_name("String");
+    assert!(!types_compatible(&kb, int_ty, string_ty), "Int not <: String");
+}
+
+#[test]
+fn subtype_entity_of_enum() {
+    // red <: Color (entity of enum)
+    let source = r#"
+enum Color
+  entity red
+  entity blue
+end
+"#;
+    let mut kb = load_with_source(source);
+    let red_sym = kb.resolve_symbol("Color.red");
+    let color_sym = kb.resolve_symbol("Color");
+    let red_ty = kb.make_sort_ref(red_sym);
+    let color_ty = kb.make_sort_ref(color_sym);
+    assert!(types_compatible(&kb, red_ty, color_ty), "red <: Color");
+    assert!(!types_compatible(&kb, color_ty, red_ty), "Color not <: red");
+}
+
+#[test]
+fn subtype_entity_same_parent() {
+    // red not <: blue (both entities of Color, but not subtypes of each other)
+    let source = r#"
+enum Color
+  entity red
+  entity blue
+end
+"#;
+    let mut kb = load_with_source(source);
+    let red_sym = kb.resolve_symbol("Color.red");
+    let blue_sym = kb.resolve_symbol("Color.blue");
+    let red_ty = kb.make_sort_ref(red_sym);
+    let blue_ty = kb.make_sort_ref(blue_sym);
+    assert!(!types_compatible(&kb, red_ty, blue_ty), "red not <: blue");
+}
+
+#[test]
+fn subtype_named_tuple_width() {
+    // (a: Int, b: String) <: (a: Int) — extra fields OK
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let string_ty = kb.make_sort_ref_by_name("String");
+    let a_sym = kb.intern("a");
+    let b_sym = kb.intern("b");
+    let wider = kb.make_named_tuple_type(&[(a_sym, int_ty), (b_sym, string_ty)]);
+    let narrower = kb.make_named_tuple_type(&[(a_sym, int_ty)]);
+    assert!(types_compatible(&kb, wider, narrower), "(a: Int, b: String) <: (a: Int)");
+    assert!(!types_compatible(&kb, narrower, wider), "(a: Int) not <: (a: Int, b: String)");
+}
+
+#[test]
+fn subtype_named_tuple_depth() {
+    // (color: sort_ref(red)) <: (color: sort_ref(Color))
+    let source = r#"
+enum Color
+  entity red
+end
+"#;
+    let mut kb = load_with_source(source);
+    let red_sym = kb.resolve_symbol("Color.red");
+    let color_sym = kb.resolve_symbol("Color");
+    let red_ty = kb.make_sort_ref(red_sym);
+    let color_ty = kb.make_sort_ref(color_sym);
+    let field_sym = kb.intern("color");
+    let specific = kb.make_named_tuple_type(&[(field_sym, red_ty)]);
+    let general = kb.make_named_tuple_type(&[(field_sym, color_ty)]);
+    assert!(types_compatible(&kb, specific, general), "(color: red) <: (color: Color)");
+}
+
+#[test]
+fn subtype_arrow_covariant_result() {
+    // (Int -> red) <: (Int -> Color) — covariant result
+    let source = r#"
+enum Color
+  entity red
+end
+"#;
+    let mut kb = load_with_source(source);
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let red_sym = kb.resolve_symbol("Color.red");
+    let color_sym = kb.resolve_symbol("Color");
+    let red_ty = kb.make_sort_ref(red_sym);
+    let color_ty = kb.make_sort_ref(color_sym);
+    let specific = kb.make_arrow_type(int_ty, red_ty, &[]);
+    let general = kb.make_arrow_type(int_ty, color_ty, &[]);
+    assert!(types_compatible(&kb, specific, general), "(Int -> red) <: (Int -> Color)");
+}
+
+#[test]
+fn subtype_arrow_contravariant_param() {
+    // (Color -> Int) <: (red -> Int) — contravariant param
+    let source = r#"
+enum Color
+  entity red
+end
+"#;
+    let mut kb = load_with_source(source);
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let red_sym = kb.resolve_symbol("Color.red");
+    let color_sym = kb.resolve_symbol("Color");
+    let red_ty = kb.make_sort_ref(red_sym);
+    let color_ty = kb.make_sort_ref(color_sym);
+    let general_param = kb.make_arrow_type(color_ty, int_ty, &[]);
+    let specific_param = kb.make_arrow_type(red_ty, int_ty, &[]);
+    assert!(types_compatible(&kb, general_param, specific_param), "(Color -> Int) <: (red -> Int)");
+    assert!(!types_compatible(&kb, specific_param, general_param), "(red -> Int) not <: (Color -> Int)");
+}
+
+#[test]
+fn subtype_parameterized_same() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let t_sym = kb.intern("T");
+    let list_base = kb.make_sort_ref_by_name("List");
+    let list_int = kb.make_parameterized_type(list_base, &[(t_sym, int_ty)]);
+    assert!(types_compatible(&kb, list_int, list_int), "List[T=Int] <: List[T=Int]");
+}
+
+#[test]
+fn subtype_parameterized_different_binding_incompatible() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let string_ty = kb.make_sort_ref_by_name("String");
+    let t_sym = kb.intern("T");
+    let list_base = kb.make_sort_ref_by_name("List");
+    let list_int = kb.make_parameterized_type(list_base, &[(t_sym, int_ty)]);
+    let list_str = kb.make_parameterized_type(list_base, &[(t_sym, string_ty)]);
+    assert!(!types_compatible(&kb, list_int, list_str), "List[T=Int] not <: List[T=String]");
+}
+
+#[test]
+fn subtype_type_var_compatible_with_anything() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let fresh = kb.intern("?X");
+    let var_ty = kb.make_type_var(fresh);
+    assert!(types_compatible(&kb, var_ty, int_ty), "type_var <: Int");
+    assert!(types_compatible(&kb, int_ty, var_ty), "Int <: type_var");
+}
+
+#[test]
+fn subtype_nothing_compatible_with_anything() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let nothing = kb.make_nothing_type();
+    assert!(types_compatible(&kb, nothing, int_ty), "nothing <: Int");
+}
+
+#[test]
+fn subtype_arrow_pure_subtype_of_effectful() {
+    // (Int -> Int @ []) <: (Int -> Int @ [E]) — pure function usable where effects declared
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e_sym = kb.intern("SomeEffect");
+    let effect = kb.make_sort_ref(e_sym);
+    let pure_fn = kb.make_arrow_type(int_ty, int_ty, &[]);
+    let effectful_fn = kb.make_arrow_type(int_ty, int_ty, &[effect]);
+    assert!(types_compatible(&kb, pure_fn, effectful_fn), "pure <: effectful");
+}
+
+#[test]
+fn subtype_arrow_fewer_effects() {
+    // (Int -> Int @ [E1]) <: (Int -> Int @ [E1, E2]) — fewer effects OK
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e1_sym = kb.intern("E1");
+    let e2_sym = kb.intern("E2");
+    let e1 = kb.make_sort_ref(e1_sym);
+    let e2 = kb.make_sort_ref(e2_sym);
+    let fewer = kb.make_arrow_type(int_ty, int_ty, &[e1]);
+    let more = kb.make_arrow_type(int_ty, int_ty, &[e1, e2]);
+    assert!(types_compatible(&kb, fewer, more), "fewer effects <: more effects");
+    assert!(!types_compatible(&kb, more, fewer), "more effects not <: fewer effects");
+}
+
+#[test]
+fn subtype_arrow_different_effects_incompatible() {
+    // (Int -> Int @ [E1]) not <: (Int -> Int @ [E2]) — different effects
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e1_sym = kb.intern("E1");
+    let e2_sym = kb.intern("E2");
+    let e1 = kb.make_sort_ref(e1_sym);
+    let e2 = kb.make_sort_ref(e2_sym);
+    let fn1 = kb.make_arrow_type(int_ty, int_ty, &[e1]);
+    let fn2 = kb.make_arrow_type(int_ty, int_ty, &[e2]);
+    assert!(!types_compatible(&kb, fn1, fn2), "different effects not compatible");
+}
+
+// ── is_subtype tests (strict, irreflexive) ─────────────────────
+
+#[test]
+fn is_subtype_not_reflexive() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    assert!(!is_subtype(&kb, int_ty, int_ty), "Int is not a strict subtype of Int");
+}
+
+#[test]
+fn is_subtype_entity_of() {
+    let source = r#"
+enum Color
+  entity red
+end
+"#;
+    let mut kb = load_with_source(source);
+    let red_sym = kb.resolve_symbol("Color.red");
+    let color_sym = kb.resolve_symbol("Color");
+    let red_ty = kb.make_sort_ref(red_sym);
+    let color_ty = kb.make_sort_ref(color_sym);
+    assert!(is_subtype(&kb, red_ty, color_ty), "red is a strict subtype of Color");
+    assert!(!is_subtype(&kb, color_ty, red_ty), "Color is not a subtype of red");
+}
+
+#[test]
+fn is_subtype_requires_direct() {
+    // Ordered requires Eq — Ordered is a subtype of Eq
+    let mut kb = load_stdlib_kb();
+    let ordered_sym = kb.resolve_symbol("anthill.prelude.Ordered");
+    let eq_sym = kb.resolve_symbol("anthill.prelude.Eq");
+    let ordered_ty = kb.make_sort_ref(ordered_sym);
+    let eq_ty = kb.make_sort_ref(eq_sym);
+    assert!(is_subtype(&kb, ordered_ty, eq_ty), "Ordered <: Eq via requires");
+    assert!(!is_subtype(&kb, eq_ty, ordered_ty), "Eq is not <: Ordered");
+}
+
+#[test]
+fn requires_compatible() {
+    // types_compatible should also accept requires relationships
+    let mut kb = load_stdlib_kb();
+    let ordered_sym = kb.resolve_symbol("anthill.prelude.Ordered");
+    let eq_sym = kb.resolve_symbol("anthill.prelude.Eq");
+    let ordered_ty = kb.make_sort_ref(ordered_sym);
+    let eq_ty = kb.make_sort_ref(eq_sym);
+    assert!(types_compatible(&kb, ordered_ty, eq_ty), "Ordered compatible with Eq");
+}
+
+// ── requires_chain and obligation checking tests ───────────────
+
+#[test]
+fn requires_chain_ordered_includes_eq() {
+    let kb = load_stdlib_kb();
+    let ordered_sym = kb.resolve_symbol("anthill.prelude.Ordered");
+    let chain = requires_chain(&kb, ordered_sym);
+    let eq_name = "Eq";
+    assert!(chain.iter().any(|e| kb.resolve_sym(e.required_sort) == eq_name),
+        "Ordered's requires chain should include Eq");
+}
+
+#[test]
+fn obligations_spec_sort_not_checked() {
+    // Spec sorts (like Ordered requires Eq) don't need to provide the required operations.
+    // They declare a transitive requirement — obligation checking applies to concrete sorts.
+    let kb = load_stdlib_kb();
+    let ordered_sym = kb.resolve_symbol("anthill.prelude.Ordered");
+    let chain = requires_chain(&kb, ordered_sym);
+    assert!(!chain.is_empty(), "Ordered should have requires entries");
+    // Ordered itself is a spec — it doesn't need to implement Eq's operations.
+    // A concrete sort that requires Ordered would need to provide both.
+}
+
+#[test]
+fn obligations_missing_operation() {
+    // Sort declares requires but doesn't provide the required operation.
+    let source = r#"
+sort Showable
+  sort T = ?
+  operation show(x: T) -> String
+end
+
+sort MySort requires Showable[T = MySort]
+  entity foo
+end
+"#;
+    let mut kb = load_with_source(source);
+    let my_sort_sym = kb.resolve_symbol("MySort");
+    let missing = check_obligations(&kb, my_sort_sym);
+    assert!(!missing.is_empty(), "MySort should be missing 'show' obligation");
+    assert!(missing.iter().any(|m| m.operation == "show"),
+        "should report 'show' as missing, got: {:?}", missing);
+}
+
+#[test]
+fn obligations_satisfied_when_operation_provided() {
+    let source = r#"
+sort Showable
+  sort T = ?
+  operation show(x: T) -> String
+end
+
+sort MySort requires Showable[T = MySort]
+  entity foo
+  operation show(x: MySort) -> String
+end
+"#;
+    let mut kb = load_with_source(source);
+    let my_sort_sym = kb.resolve_symbol("MySort");
+    let missing = check_obligations(&kb, my_sort_sym);
+    assert!(missing.is_empty(),
+        "MySort provides show, should have no missing obligations, got: {:?}", missing);
+}
+
+#[test]
+fn subtype_op_entity_return_compatible() {
+    // Operation returns red, declared return type is Color — should be compatible
+    let source = r#"
+enum Color
+  entity red
+  entity blue
+end
+operation get_color() -> Color = red
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "red <: Color, should be no errors, got: {:?}", errors);
+}
+
+#[test]
+fn subtype_sort_requires_enum() {
+    // Sort with operation that returns an enum entity — compatible via requires chain
+    let source = r#"
+enum Color
+  entity red
+  entity blue
+end
+
+sort Paintable
+  operation paint() -> Color
+end
+
+sort Canvas
+  requires Paintable
+  operation paint() -> Color = red
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "Canvas.paint returns red <: Color, got: {:?}", errors);
+    // Canvas requires Paintable — compatible
+    let canvas_sym = kb.resolve_symbol("Canvas");
+    let paintable_sym = kb.resolve_symbol("Paintable");
+    let canvas_ty = kb.make_sort_ref(canvas_sym);
+    let paintable_ty = kb.make_sort_ref(paintable_sym);
+    assert!(types_compatible(&kb, canvas_ty, paintable_ty), "Canvas <: Paintable via requires");
+}
+
+#[test]
+fn subtype_entity_in_enum_requires_sort() {
+    // Entity `circle` in `enum Shape` which requires `sort Drawable`.
+    // circle <: Shape <: Drawable — transitively, circle is compatible with Drawable.
+    let source = r#"
+sort Drawable
+  operation draw() -> String
+end
+
+sort Printable
+  operation print() -> String
+end
+
+enum Shape
+  requires Drawable
+  entity circle(radius: Int)
+  entity rect(w: Int, h: Int)
+  operation draw() -> String
+end
+"#;
+    let mut kb = load_with_source(source);
+    let circle_sym = kb.resolve_symbol("Shape.circle");
+    let shape_sym = kb.resolve_symbol("Shape");
+    let drawable_sym = kb.resolve_symbol("Drawable");
+    let circle_ty = kb.make_sort_ref(circle_sym);
+    let shape_ty = kb.make_sort_ref(shape_sym);
+    let drawable_ty = kb.make_sort_ref(drawable_sym);
+
+    // circle <: Shape (entity_of)
+    assert!(is_subtype(&kb, circle_ty, shape_ty), "circle <: Shape");
+    // Shape <: Drawable (requires)
+    assert!(is_subtype(&kb, shape_ty, drawable_ty), "Shape <: Drawable");
+    // circle <: Drawable (transitively: entity_of + requires)
+    assert!(types_compatible(&kb, circle_ty, drawable_ty), "circle compatible with Drawable");
+    // NOT compatible with unrelated sort
+    let printable_sym = kb.resolve_symbol("Printable");
+    let printable_ty = kb.make_sort_ref(printable_sym);
+    assert!(!types_compatible(&kb, circle_ty, printable_ty), "circle not compatible with Printable");
+    assert!(!types_compatible(&kb, shape_ty, printable_ty), "Shape not compatible with Printable");
+    assert!(!types_compatible(&kb, drawable_ty, printable_ty), "Drawable not compatible with Printable");
+}
+
+// ══════════════════════════════════════════════════════════════════
+// enum tests
+// ══════════════════════════════════════════════════════════════════
+
+#[test]
+fn enum_parses_and_loads() {
+    let source = r#"
+enum Color
+  entity red
+  entity blue(shade: Int)
+end
+"#;
+    let mut kb = load_with_source(source);
+    let color_sym = kb.resolve_symbol("Color");
+    // Enum entities should be registered
+    let red_sym = kb.resolve_symbol("Color.red");
+    assert!(kb.is_constructor_symbol(red_sym), "red should be a constructor");
+    let blue_sym = kb.resolve_symbol("Color.blue");
+    assert!(kb.is_constructor_symbol(blue_sym), "blue should be a constructor");
+    // Enum should have SortKind::Enum
+    let color_term = kb.resolve_qualified_name_term("Color");
+    assert_eq!(kb.sort_kind(color_term), Some(anthill_core::kb::SortKind::Enum));
+}
+
+#[test]
+fn enum_with_type_param() {
+    let source = r#"
+enum Option
+  sort T = ?
+  entity some(value: T)
+  entity none
+end
+"#;
+    let mut kb = load_with_source(source);
+    let some_sym = kb.resolve_symbol("Option.some");
+    assert!(kb.is_constructor_symbol(some_sym), "some should be a constructor");
+    let none_sym = kb.resolve_symbol("Option.none");
+    assert!(kb.is_constructor_symbol(none_sym), "none should be a constructor");
+}
+
+#[test]
+fn enum_entity_subtyping() {
+    let source = r#"
+enum Color
+  entity red
+  entity blue
+end
+"#;
+    let mut kb = load_with_source(source);
+    let red_sym = kb.resolve_symbol("Color.red");
+    let color_sym = kb.resolve_symbol("Color");
+    let red_ty = kb.make_sort_ref(red_sym);
+    let color_ty = kb.make_sort_ref(color_sym);
+    assert!(types_compatible(&kb, red_ty, color_ty), "enum: red <: Color");
+}
+
+#[test]
+fn enum_sort_info_has_kind() {
+    let source = r#"
+enum Color
+  entity red
+end
+"#;
+    let mut kb = load_with_source(source);
+    // Check that SortInfo for Color has kind = "enum"
+    let si_sym = kb.resolve_symbol("anthill.reflect.SortInfo");
+    for rid in kb.by_functor(si_sym) {
+        if !kb.rule_body(rid).is_empty() { continue; }
+        let head = kb.rule_head(rid);
+        if let Term::Fn { named_args, .. } = kb.get_term(head) {
+            let name = named_args.iter()
+                .find(|(s, _)| kb.resolve_sym(*s) == "name")
+                .and_then(|(_, v)| match kb.get_term(*v) {
+                    Term::Ref(s) => Some(kb.resolve_sym(*s).to_string()),
+                    _ => None,
+                });
+            if name.as_deref() == Some("Color") {
+                let kind = named_args.iter()
+                    .find(|(s, _)| kb.resolve_sym(*s) == "kind")
+                    .and_then(|(_, v)| match kb.get_term(*v) {
+                        Term::Ident(s) => Some(kb.resolve_sym(*s).to_string()),
+                        _ => None,
+                    });
+                assert_eq!(kind.as_deref(), Some("enum"), "SortInfo kind should be 'enum'");
+                return;
+            }
+        }
+    }
+    panic!("SortInfo for Color not found");
+}
+
+// ══════════════════════════════════════════════════════════════════
+// unify_types tests
+// ══════════════════════════════════════════════════════════════════
+
+use anthill_core::kb::typing::unify_types;
+use anthill_core::kb::subst::Substitution;
+
+#[test]
+fn unify_identical_types() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let mut subst = Substitution::new();
+    assert!(unify_types(&kb, &mut subst, int_ty, int_ty), "Int unifies with Int");
+}
+
+#[test]
+fn unify_var_binds_to_type() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let sym = kb.intern("?X");
+    let vid = kb.fresh_var(sym);
+    let var_term = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(vid)));
+    let mut subst = Substitution::new();
+    assert!(unify_types(&kb, &mut subst, var_term, int_ty), "Var unifies with Int");
+    assert_eq!(subst.resolve(vid), Some(int_ty), "Var should be bound to Int");
+}
+
+#[test]
+fn unify_both_vars_bind() {
+    let mut kb = load_stdlib_kb();
+    let sym1 = kb.intern("?A");
+    let sym2 = kb.intern("?B");
+    let vid1 = kb.fresh_var(sym1);
+    let vid2 = kb.fresh_var(sym2);
+    let var1 = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(vid1)));
+    let var2 = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(vid2)));
+    let mut subst = Substitution::new();
+    assert!(unify_types(&kb, &mut subst, var1, var2), "two vars unify");
+    // One should be bound to the other
+    assert!(subst.resolve(vid1).is_some() || subst.resolve(vid2).is_some(),
+        "at least one var should be bound");
+}
+
+#[test]
+fn unify_incompatible_ground_types() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let str_ty = kb.make_sort_ref_by_name("String");
+    let mut subst = Substitution::new();
+    assert!(!unify_types(&kb, &mut subst, int_ty, str_ty), "Int does not unify with String");
+}
+
+#[test]
+fn unify_parameterized_with_var_binding() {
+    // List[T=?X] unified with List[T=Int] → ?X = Int
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let t_sym = kb.intern("T");
+    let list_base = kb.make_sort_ref_by_name("List");
+
+    let x_sym = kb.intern("?X");
+    let x_vid = kb.fresh_var(x_sym);
+    let x_var = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(x_vid)));
+
+    let list_var = kb.make_parameterized_type(list_base, &[(t_sym, x_var)]);
+    let list_int = kb.make_parameterized_type(list_base, &[(t_sym, int_ty)]);
+
+    let mut subst = Substitution::new();
+    assert!(unify_types(&kb, &mut subst, list_var, list_int), "List[T=?X] unifies with List[T=Int]");
+    assert_eq!(subst.resolve(x_vid), Some(int_ty), "?X should be bound to Int");
+}
+
+#[test]
+fn unify_arrow_with_var_binding() {
+    // (?A -> ?B) unified with (Int -> String) → ?A=Int, ?B=String
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let str_ty = kb.make_sort_ref_by_name("String");
+
+    let a_sym = kb.intern("?A");
+    let b_sym = kb.intern("?B");
+    let a_vid = kb.fresh_var(a_sym);
+    let b_vid = kb.fresh_var(b_sym);
+    let a_var = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(a_vid)));
+    let b_var = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(b_vid)));
+
+    let arrow_var = kb.make_arrow_type(a_var, b_var, &[]);
+    let arrow_concrete = kb.make_arrow_type(int_ty, str_ty, &[]);
+
+    let mut subst = Substitution::new();
+    assert!(unify_types(&kb, &mut subst, arrow_var, arrow_concrete), "(?A -> ?B) unifies with (Int -> String)");
+    assert_eq!(subst.resolve(a_vid), Some(int_ty), "?A = Int");
+    assert_eq!(subst.resolve(b_vid), Some(str_ty), "?B = String");
+}
+
+#[test]
+fn unify_sort_ref_type_param_resolves() {
+    // sort T = ? inside a sort creates SortAlias(T, Var).
+    // sort_ref(name: T) should resolve through SortAlias during unification.
+    let source = r#"
+sort Container
+  sort T = ?
+  entity box(value: T)
+end
+"#;
+    let mut kb = load_with_source(source);
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let t_sym = kb.resolve_symbol("Container.T");
+    let t_ref = kb.make_sort_ref(t_sym);
+
+    let mut subst = Substitution::new();
+    assert!(unify_types(&kb, &mut subst, t_ref, int_ty),
+        "sort_ref(T) should unify with Int via SortAlias");
+}
+
+// ══════════════════════════════════════════════════════════════════
+// type_check_sorts (unified pass) tests
+// ══════════════════════════════════════════════════════════════════
+
+fn load_with_result(source: &str) -> (KnowledgeBase, LoadResult) {
+    let mut kb = load_stdlib_kb();
+    let parsed = parse::parse(source).expect("parse failed");
+    let result = load::load(&mut kb, &parsed, &NullResolver)
+        .expect("load failed");
+    (kb, result)
+}
+
+#[test]
+fn type_check_sorts_correct_fact_no_errors() {
+    let source = r#"
+enum Color
+  entity red
+  entity blue
+end
+sort Item
+  entity Thing(name: String, color: Color)
+end
+fact Thing(name: "hello", color: red)
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "correct fact should produce no errors, got: {:?}", errors);
+}
+
+#[test]
+fn type_check_sorts_wrong_field_type() {
+    let source = r#"
+sort Item
+  entity Thing(count: Int)
+end
+fact Thing(count: "hello")
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(!errors.is_empty(), "should detect String where Int expected");
+}
+
+#[test]
+fn type_check_sorts_operation_body() {
+    let source = r#"
+sort Math
+  operation get_answer() -> Int = 42
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "correct literal body should produce no errors, got: {:?}", errors);
+}
+
+#[test]
+fn type_check_sorts_op_with_type_param_instantiation() {
+    // add(x, x) where x: Int should resolve Numeric.T to Int, return Int
+    let source = r#"
+sort Math
+  operation double(x: Int) -> Int = add(x, x)
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "add(x,x) with x:Int should return Int via type param instantiation, got: {:?}", errors);
+}
+
+#[test]
+fn type_check_sorts_operation_wrong_return() {
+    let source = r#"
+sort Math
+  operation get_name() -> String = 42
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(!errors.is_empty(), "should detect Int body vs String return");
+}
+
+#[test]
+fn type_check_sorts_parameterized_field_correct() {
+    // List[T=Int] field with correct cons(head: 1, tail: nil) — no errors
+    let source = r#"
+sort Container
+  import anthill.prelude.List
+  entity Box(items: List[T = Int])
+end
+fact Box(items: cons(head: 42, tail: nil))
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "correct List[T=Int] value should produce no errors, got: {:?}", errors);
+}
+
+#[test]
+fn type_check_sorts_parameterized_field_wrong_element() {
+    // List[T=Int] field with wrong element type (String instead of Int)
+    let source = r#"
+sort Container
+  import anthill.prelude.List
+  entity Box(items: List[T = Int])
+end
+fact Box(items: cons(head: "hello", tail: nil))
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(!errors.is_empty(), "String in List[T=Int] should be detected, got: {:?}", errors);
+}
+
+#[test]
+fn type_check_sorts_only_checks_given_sorts() {
+    // Load stdlib, then a user file. Only check the user sorts.
+    let source = r#"
+sort MySort
+  entity Foo(x: Int)
+end
+fact Foo(x: "wrong")
+"#;
+    let (mut kb, result) = load_with_result(source);
+    // Only check user sorts, not stdlib
+    assert!(!result.defined_sorts.is_empty(), "should have defined sorts");
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(!errors.is_empty(), "should detect type error in user sort");
 }

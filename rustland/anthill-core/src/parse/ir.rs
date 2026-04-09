@@ -193,8 +193,16 @@ pub struct AbstractSort {
     pub span: Span,
 }
 
+/// Sort or enum declaration kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortDeclKind {
+    Sort,
+    Enum,
+}
+
 #[derive(Debug)]
 pub struct SortWithBody {
+    pub kind: SortDeclKind,
     pub visibility: Option<Visibility>,
     pub name: Name,
     pub descriptions: Vec<String>,
@@ -204,6 +212,9 @@ pub struct SortWithBody {
     pub meta: Option<MetaBlock>,
     pub span: Span,
 }
+
+/// Backwards-compatible alias.
+pub type EnumDecl = SortWithBody;
 
 #[derive(Debug)]
 pub struct FieldDecl {

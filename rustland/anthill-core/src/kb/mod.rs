@@ -111,9 +111,8 @@ struct RuleEntry {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SortKind {
-    Abstract,
-    Defined,
-    Constructor,
+    Sort,
+    Enum,
 }
 
 // ── KnowledgeBase ───────────────────────────────────────────────
@@ -179,7 +178,7 @@ pub struct KnowledgeBase {
     pub(crate) occurrences: OccurrenceStore,
 
     // Entity field type registry: functor symbol → [(field_name, type_term)].
-    // Populated during load_entity, used by type_check_facts.
+    // Populated during load_entity, used by type_check_sorts.
     entity_field_types: HashMap<Symbol, Vec<(Symbol, TermId)>>,
 
     // Source registry (file names/paths)
@@ -1364,6 +1363,168 @@ impl KnowledgeBase {
         })
     }
 
+    // ── List construction ────────────────────────────────────────
+
+    /// Build a cons-list term from a slice of TermIds.
+    pub fn build_list(&mut self, items: &[TermId]) -> TermId {
+        let nil_sym = self.resolve_symbol("anthill.prelude.List.nil");
+        let cons_sym = self.resolve_symbol("anthill.prelude.List.cons");
+        let head_sym = self.intern("head");
+        let tail_sym = self.intern("tail");
+
+        let mut list = self.alloc(Term::Fn {
+            functor: nil_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        for &item in items.iter().rev() {
+            let mut args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+            args.push((head_sym, item));
+            args.push((tail_sym, list));
+            args.sort_by_key(|(s, _)| s.index());
+            list = self.alloc(Term::Fn {
+                functor: cons_sym,
+                pos_args: SmallVec::new(),
+                named_args: args,
+            });
+        }
+        list
+    }
+
+    // ── Type term constructors (anthill.prelude.Type entities) ───
+
+    /// sort_ref(name: <sym>) — reference to a named sort.
+    pub fn make_sort_ref(&mut self, sort_sym: Symbol) -> TermId {
+        let sort_ref_sym = self.resolve_symbol("anthill.prelude.Type.sort_ref");
+        let name_key = self.intern("name");
+        let name_val = self.alloc(Term::Ref(sort_sym));
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named_args.push((name_key, name_val));
+        self.alloc(Term::Fn {
+            functor: sort_ref_sym,
+            pos_args: SmallVec::new(),
+            named_args,
+        })
+    }
+
+    /// Convenience: sort_ref from a name string (resolves or interns the name).
+    pub fn make_sort_ref_by_name(&mut self, name: &str) -> TermId {
+        let sym = if let Some(s) = self.try_resolve_symbol(name) { s } else { self.intern(name) };
+        self.make_sort_ref(sym)
+    }
+
+    /// parameterized(base: <type>, bindings: List[TypeBinding]).
+    pub fn make_parameterized_type(&mut self, base: TermId, bindings: &[(Symbol, TermId)]) -> TermId {
+        let parameterized_sym = self.resolve_symbol("anthill.prelude.Type.parameterized");
+        let type_binding_sym = self.resolve_symbol("anthill.prelude.Type.TypeBinding");
+        let base_key = self.intern("base");
+        let bindings_key = self.intern("bindings");
+        let param_key = self.intern("param");
+        let value_key = self.intern("value");
+
+        let binding_terms: Vec<TermId> = bindings.iter().map(|(param_sym, value_term)| {
+            let param_ref = self.alloc(Term::Ref(*param_sym));
+            let mut args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+            args.push((param_key, param_ref));
+            args.push((value_key, *value_term));
+            args.sort_by_key(|(s, _)| s.index());
+            self.alloc(Term::Fn {
+                functor: type_binding_sym,
+                pos_args: SmallVec::new(),
+                named_args: args,
+            })
+        }).collect();
+
+        let bindings_list = self.build_list(&binding_terms);
+
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named_args.push((base_key, base));
+        named_args.push((bindings_key, bindings_list));
+        named_args.sort_by_key(|(s, _)| s.index());
+        self.alloc(Term::Fn {
+            functor: parameterized_sym,
+            pos_args: SmallVec::new(),
+            named_args,
+        })
+    }
+
+    /// arrow(param: <type>, result: <type>, effects: List[Type]).
+    pub fn make_arrow_type(&mut self, param: TermId, result: TermId, effects: &[TermId]) -> TermId {
+        let arrow_sym = self.resolve_symbol("anthill.prelude.Type.arrow");
+        let param_key = self.intern("param");
+        let result_key = self.intern("result");
+        let effects_key = self.intern("effects");
+
+        let effects_list = self.build_list(effects);
+
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named_args.push((effects_key, effects_list));
+        named_args.push((param_key, param));
+        named_args.push((result_key, result));
+        named_args.sort_by_key(|(s, _)| s.index());
+        self.alloc(Term::Fn {
+            functor: arrow_sym,
+            pos_args: SmallVec::new(),
+            named_args,
+        })
+    }
+
+    /// type_var(name: <sym>) — a type variable for inference.
+    pub fn make_type_var(&mut self, name: Symbol) -> TermId {
+        let type_var_sym = self.resolve_symbol("anthill.prelude.Type.type_var");
+        let name_key = self.intern("name");
+        let name_val = self.alloc(Term::Ref(name));
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named_args.push((name_key, name_val));
+        self.alloc(Term::Fn {
+            functor: type_var_sym,
+            pos_args: SmallVec::new(),
+            named_args,
+        })
+    }
+
+    /// named_tuple(fields: List[TypeField]).
+    pub fn make_named_tuple_type(&mut self, fields: &[(Symbol, TermId)]) -> TermId {
+        let named_tuple_sym = self.resolve_symbol("anthill.prelude.Type.named_tuple");
+        let type_field_sym = self.resolve_symbol("anthill.prelude.Type.TypeField");
+        let fields_key = self.intern("fields");
+        let name_key = self.intern("name");
+        let type_key = self.intern("type");
+
+        let field_terms: Vec<TermId> = fields.iter().map(|(field_name, field_type)| {
+            let name_ref = self.alloc(Term::Ref(*field_name));
+            let mut args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+            args.push((name_key, name_ref));
+            args.push((type_key, *field_type));
+            args.sort_by_key(|(s, _)| s.index());
+            self.alloc(Term::Fn {
+                functor: type_field_sym,
+                pos_args: SmallVec::new(),
+                named_args: args,
+            })
+        }).collect();
+
+        let fields_list = self.build_list(&field_terms);
+
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named_args.push((fields_key, fields_list));
+        self.alloc(Term::Fn {
+            functor: named_tuple_sym,
+            pos_args: SmallVec::new(),
+            named_args,
+        })
+    }
+
+    /// nothing — bottom type.
+    pub fn make_nothing_type(&mut self) -> TermId {
+        let nothing_sym = self.resolve_symbol("anthill.prelude.Type.nothing");
+        self.alloc(Term::Fn {
+            functor: nothing_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        })
+    }
+
     // ── Name-level substitution ──────────────────────────────────
 
     /// Replace all occurrences of `from` with `to` throughout a term's structure.
@@ -1560,8 +1721,7 @@ mod tests {
         let zero = kb.make_name_term("zero");
         let domain = kb.make_name_term("test");
 
-        kb.register_sort(nat, SortKind::Defined);
-        kb.register_sort(zero, SortKind::Constructor);
+        kb.register_sort(nat, SortKind::Sort);
         kb.register_entity_of(zero, nat);
 
         // Assert a fact of sort `zero`

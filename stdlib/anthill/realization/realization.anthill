@@ -67,7 +67,7 @@ namespace anthill.realization
   )
 
   -- Host-language receiver/parameter form for an effect.
-  sort ReceiverForm
+  enum ReceiverForm
     entity SharedRef                    -- &self / shared borrow
     entity MutRef                       -- &mut self / exclusive borrow
     entity ByValue                      -- self / move (consuming)
@@ -78,7 +78,7 @@ namespace anthill.realization
 
   -- How to return a trait/abstract sort from an operation.
   -- Host-language concern: Rust has impl Trait, Box<dyn Trait>, associated types.
-  sort TraitReturnForm
+  enum TraitReturnForm
     entity ImplTrait                    -- -> impl Trait (Rust 1.75+ in trait methods)
     entity BoxDyn                       -- -> Box<dyn Trait>
     entity AssociatedType               -- associated type on the containing trait
@@ -107,14 +107,14 @@ namespace anthill.realization
     status      : ObligationStatus
   )
 
-  sort ObligationKind {
+  enum ObligationKind {
     entity Precondition                              -- from requires clause
     entity Postcondition                             -- from ensures clause
     entity EffectEnvCondition                        -- from effects declaration
     entity Law                                       -- from rule (law)
   }
 
-  sort ObligationStatus {
+  enum ObligationStatus {
     entity Pending
     entity Discharged(result: ProofResult)
     entity Failed(result: ProofResult)

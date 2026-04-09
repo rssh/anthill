@@ -1,5 +1,5 @@
 -- List: a parametric sort (T is the abstract sort parameter)
-sort anthill.prelude.List
+enum anthill.prelude.List
   import anthill.prelude.Collection
   import anthill.prelude.Iteration
   export List, nil, cons, length, member, append, insert, empty, split

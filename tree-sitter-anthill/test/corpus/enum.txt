@@ -1,0 +1,123 @@
+=====================================
+Simple enum with end
+=====================================
+
+enum Color
+  entity red
+  entity blue
+end
+
+---
+
+(source_file
+  (enum_declaration
+    name: (name (identifier))
+    (entity_declaration
+      name: (name (identifier)))
+    (entity_declaration
+      name: (name (identifier)))))
+
+=====================================
+Enum with fields
+=====================================
+
+enum Shape
+  entity circle(radius: Float)
+  entity rect(w: Float, h: Float)
+end
+
+---
+
+(source_file
+  (enum_declaration
+    name: (name (identifier))
+    (entity_declaration
+      name: (name (identifier))
+      (field_decl
+        name: (identifier)
+        type: (simple_type (name (identifier)))))
+    (entity_declaration
+      name: (name (identifier))
+      (field_decl
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      (field_decl
+        name: (identifier)
+        type: (simple_type (name (identifier)))))))
+
+=====================================
+Enum with braces
+=====================================
+
+enum Color {
+  entity red
+  entity blue
+}
+
+---
+
+(source_file
+  (enum_declaration
+    name: (name (identifier))
+    (entity_declaration
+      name: (name (identifier)))
+    (entity_declaration
+      name: (name (identifier)))))
+
+=====================================
+Enum with requires
+=====================================
+
+enum BasicShape
+  requires Shape
+  entity circle(radius: Float)
+  entity rect(w: Float, h: Float)
+end
+
+---
+
+(source_file
+  (enum_declaration
+    name: (name (identifier))
+    (requires_declaration
+      type: (simple_type (name (identifier))))
+    (entity_declaration
+      name: (name (identifier))
+      (field_decl
+        name: (identifier)
+        type: (simple_type (name (identifier)))))
+    (entity_declaration
+      name: (name (identifier))
+      (field_decl
+        name: (identifier)
+        type: (simple_type (name (identifier))))
+      (field_decl
+        name: (identifier)
+        type: (simple_type (name (identifier)))))))
+
+=====================================
+Enum with type parameter
+=====================================
+
+enum Option
+  sort T = ?
+  entity some(value: T)
+  entity none
+end
+
+---
+
+(source_file
+  (enum_declaration
+    name: (name (identifier))
+    (abstract_sort
+      name: (name (identifier))
+      definition: (variable_term
+        (variable)))
+    (entity_declaration
+      name: (name (identifier))
+      (field_decl
+        name: (identifier)
+        type: (simple_type (name (identifier)))))
+    (entity_declaration
+      name: (name (identifier)))))

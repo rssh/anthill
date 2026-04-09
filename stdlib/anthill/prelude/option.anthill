@@ -1,5 +1,5 @@
 -- Option: a parametric sort
-sort anthill.prelude.Option
+enum anthill.prelude.Option
   export Option, none, some
 
   sort T = ?                                           -- type parameter (abstract)

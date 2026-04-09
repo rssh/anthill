@@ -157,7 +157,8 @@ impl<'a> Converter<'a> {
         match node.kind() {
             "namespace_declaration" => self.convert_namespace(node).map(Item::Namespace),
             "abstract_sort" => self.convert_abstract_sort(node).map(Item::AbstractSort),
-            "sort_with_body" => self.convert_sort_with_body(node).map(Item::SortWithBody),
+            "sort_with_body" => self.convert_sort_like(node, SortDeclKind::Sort).map(Item::SortWithBody),
+            "enum_declaration" => self.convert_sort_like(node, SortDeclKind::Enum).map(Item::SortWithBody),
             "rule_declaration" => self.convert_rule(node).map(Item::Rule),
             "operation_declaration" => self.convert_operation(node).map(Item::Operation),
             "requires_declaration" => self.convert_requires_decl(node).map(Item::RequiresDecl),
@@ -898,7 +899,7 @@ impl<'a> Converter<'a> {
         Some(AbstractSort { visibility, name, definition, descriptions, meta, span })
     }
 
-    fn convert_sort_with_body(&mut self, node: Node) -> Option<SortWithBody> {
+    fn convert_sort_like(&mut self, node: Node, kind: SortDeclKind) -> Option<SortWithBody> {
         let name = self.field(node, "name")
             .map(|n| self.convert_name(n))?;
         let visibility = self.convert_visibility(node);
@@ -937,6 +938,7 @@ impl<'a> Converter<'a> {
         }
 
         Some(SortWithBody {
+            kind,
             visibility,
             name,
             descriptions,

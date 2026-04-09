@@ -65,6 +65,7 @@ module.exports = grammar({
       $.namespace_declaration,
       $.abstract_sort,
       $.sort_with_body,
+      $.enum_declaration,
       $.rule_declaration,
       $.operation_declaration,
       $.requires_declaration,
@@ -139,6 +140,7 @@ module.exports = grammar({
       $.namespace_declaration,
       $.abstract_sort,
       $.sort_with_body,
+      $.enum_declaration,
       $.rule_declaration,
       $.operation_declaration,
       $.requires_declaration,
@@ -161,6 +163,7 @@ module.exports = grammar({
       $.namespace_declaration,
       $.abstract_sort,
       $.sort_with_body,
+      $.enum_declaration,
       $.rule_declaration,
       $.operation_declaration,
       $.requires_declaration,
@@ -195,6 +198,35 @@ module.exports = grammar({
       field('name', $.name),
       $._body_sort,
       optional($.meta_block),
+    ),
+
+    enum_declaration: $ => seq(
+      repeat(field('description', $.description_block)),
+      optional($.visibility),
+      'enum',
+      field('name', $.name),
+      $._body_enum,
+      optional($.meta_block),
+    ),
+
+    _body_enum: $ => choice(
+      seq('{', repeat($._enum_content), '}'),
+      seq(repeat($._enum_content), 'end', optional($.name)),
+    ),
+
+    _enum_content: $ => choice(
+      $.abstract_sort,
+      $.requires_declaration,
+      $.entity_declaration,
+      $.operation_declaration,
+      $.operation_block,
+      $.fact_declaration,
+      $.constraint_declaration,
+      $.rule_declaration,
+      $.rule_block,
+      $.describe_declaration,
+      $.import_clause,
+      $.export_clause,
     ),
 
     constructor: $ => seq(

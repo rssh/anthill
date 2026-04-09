@@ -11,7 +11,7 @@ namespace anthill.persistence.filesystem
   -- File conventions: how facts map to files
   -- ================================================================
 
-  sort FileConvention {
+  enum FileConvention {
     entity stage0                             -- Stage 0 layout:
                                               --   workitems/ dir, project.anthill, etc.
     entity by_namespace                       -- one directory per namespace

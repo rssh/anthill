@@ -252,8 +252,8 @@ fn load_sort_with_body_registers_entity_of() {
     assert!(!kb.is_entity_of(nat_term, zero_term), "Nat should not be entity of zero");
 
     // Check sort kinds
-    assert_eq!(kb.sort_kind(nat_term), Some(SortKind::Defined));
-    assert_eq!(kb.sort_kind(zero_term), Some(SortKind::Constructor));
+    assert_eq!(kb.sort_kind(nat_term), Some(SortKind::Sort));
+    assert_eq!(kb.sort_kind(zero_term), None); // entities aren't sorts
 
     // Check children
     let children = kb.sort_children(nat_term);
@@ -418,12 +418,12 @@ end
     assert!(op_names.contains(&"withdraw".to_owned()), "should have withdraw operation");
 
     // The sort itself should be Defined (has entities) with constructors as entity children
-    assert_eq!(kb.sort_kind(account_term), Some(SortKind::Defined));
+    assert_eq!(kb.sort_kind(account_term), Some(SortKind::Sort));
 
     let checking_term = kb.resolve_qualified_name_term("Account.checking");
     assert!(kb.is_entity_of(checking_term, account_term),
         "checking should be entity of Account");
-    assert_eq!(kb.sort_kind(checking_term), Some(SortKind::Constructor));
+    assert_eq!(kb.sort_kind(checking_term), None); // entities aren't sorts
 }
 
 #[test]
@@ -846,15 +846,18 @@ end
     let ops = kb.by_sort(op_sort);
     assert_eq!(ops.len(), 2, "should have 2 operations (area, convert)");
 
-    // Cross-namespace type references resolved via imports
-    let measure_term = kb.resolve_qualified_name_term("Units.Measure");
-    let shape_term = kb.resolve_qualified_name_term("Geometry.Shape");
+    // Cross-namespace type references resolved via imports.
+    // Types are now sort_ref(name: Ref(sym)) — look for the Ref(sym) form.
+    let measure_sym = kb.resolve_symbol("Units.Measure");
+    let measure_ref = kb.alloc(Term::Ref(measure_sym));
+    let shape_sym = kb.resolve_symbol("Geometry.Shape");
+    let shape_ref = kb.alloc(Term::Ref(shape_sym));
 
     // area operation is in Geometry namespace but references Measure
     let mut area_refs_measure = false;
     for &fid in &geometry_facts {
         let term = kb.fact_term(fid);
-        check_term_contains(&kb, term, measure_term, &mut area_refs_measure);
+        check_term_contains(&kb, term, measure_ref, &mut area_refs_measure);
     }
     assert!(area_refs_measure, "Geometry's area should reference Measure");
 
@@ -862,7 +865,7 @@ end
     let mut convert_refs_shape = false;
     for &fid in &units_facts {
         let term = kb.fact_term(fid);
-        check_term_contains(&kb, term, shape_term, &mut convert_refs_shape);
+        check_term_contains(&kb, term, shape_ref, &mut convert_refs_shape);
     }
     assert!(convert_refs_shape, "Units' convert should reference Shape");
 }
@@ -1725,7 +1728,7 @@ fn dotted_name_creates_intermediate_namespaces() {
 
     // `C` should be a registered sort with constructor `mkC`
     let c_term = kb.resolve_qualified_name_term("a.b.C");
-    assert_eq!(kb.sort_kind(c_term), Some(SortKind::Defined));
+    assert_eq!(kb.sort_kind(c_term), Some(SortKind::Sort));
 
     // Entity `mkC` inside sort `a.b.C` gets fully-qualified name
     assert!(kb.has_qualified_name("a.b.C.mkC"),
@@ -2555,7 +2558,7 @@ end
 
     let ring_term = kb.resolve_qualified_name_term("Ring");
     // Ring is an algebraic spec (no entity constructors), classified as Abstract
-    assert_eq!(kb.sort_kind(ring_term), Some(SortKind::Abstract));
+    assert_eq!(kb.sort_kind(ring_term), Some(SortKind::Sort));
 
     // Ring has sort T + operations — verify it loaded successfully
     assert!(kb.fact_count() > 0, "KB should have facts after loading Ring");
@@ -2651,8 +2654,8 @@ fact Polynom[Int]
 
     let ring_term = kb.resolve_qualified_name_term("Ring");
     let polynom_term = kb.resolve_qualified_name_term("Polynom");
-    assert_eq!(kb.sort_kind(ring_term), Some(SortKind::Abstract));
-    assert_eq!(kb.sort_kind(polynom_term), Some(SortKind::Defined));
+    assert_eq!(kb.sort_kind(ring_term), Some(SortKind::Sort));
+    assert_eq!(kb.sort_kind(polynom_term), Some(SortKind::Sort));
 
     // Both sorts loaded successfully into the KB
     assert!(kb.fact_count() > 0, "KB should have facts after loading Ring + Polynom");
@@ -2682,7 +2685,7 @@ end
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let ring_term = kb.resolve_qualified_name_term("Ring");
-    assert_eq!(kb.sort_kind(ring_term), Some(SortKind::Abstract));
+    assert_eq!(kb.sort_kind(ring_term), Some(SortKind::Sort));
 }
 
 // ── Expression body tests ──────────────────────────────────────

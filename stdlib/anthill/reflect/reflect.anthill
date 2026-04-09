@@ -64,7 +64,7 @@ namespace anthill.reflect
   sort SourceId = ?
 
   -- Source span with file identity
-  sort SourceSpan
+  enum SourceSpan
     entity source_span(file: SourceId, start_byte: Int, end_byte: Int)
   end
 
@@ -207,14 +207,14 @@ namespace anthill.reflect
   -- ================================================================
 
   -- Structural decomposition of Term — for introspection.
-  sort LiteralRepr {
+  enum LiteralRepr {
     entity IntLiteral(value: Int)
     entity FloatLiteral(value: Float)
     entity StringLiteral(value: String)
     entity BoolLiteral(value: Bool)
   }
 
-  sort TermRepr {
+  enum TermRepr {
     entity ConstRepr(value: LiteralRepr)
     entity VarRepr(name: String)
     entity FnRepr(name: Symbol, args: List[T = TermRepr])
@@ -242,7 +242,7 @@ namespace anthill.reflect
   -- Expression representation (operation bodies)
   -- ================================================================
 
-  sort Expr
+  enum Expr
     entity match_expr(scrutinee: ExprOccurrence, branches: List[MatchBranch])
     entity if_expr(cond: ExprOccurrence, then_branch: ExprOccurrence, else_branch: ExprOccurrence)
     entity let_expr(pattern: Pattern, value: ExprOccurrence, body: ExprOccurrence)
@@ -268,7 +268,7 @@ namespace anthill.reflect
     value: ExprOccurrence
   )
 
-  sort Pattern
+  enum Pattern
     entity var_pattern(name: Symbol, type_ann: Option[Term])
     entity tuple_pattern(elements: List[Pattern])
     entity named_tuple_pattern(fields: List[NamedPattern])
@@ -283,7 +283,7 @@ namespace anthill.reflect
   )
 
   -- TypeOf: typing judgment — expression occurrence has type S (Proposal 022)
-  sort TypeOf
+  enum TypeOf
     entity type_of(occ: ExprOccurrence, type: Type)
   end
 
@@ -293,6 +293,7 @@ namespace anthill.reflect
 
   entity SortInfo(
     name         : Symbol,                          -- qualified name (symbol reference)
+    kind         : Symbol,                          -- "sort", "enum", or "abstract"
     definition   : Term,                            -- Var for abstract sorts, sort term for defined
     constructors : List[Symbol],                    -- constructor names (empty if abstract)
     operations   : List[Symbol],                    -- operation names in this sort
@@ -381,7 +382,7 @@ namespace anthill.reflect
   -- ================================================================
 
   -- Queries as composable, storable, inspectable KB values.
-  sort LogicalQuery {
+  enum LogicalQuery {
     entity empty_query                                             -- no constraints (always true)
     entity pattern_query(term: Term)                               -- single pattern
     entity sort_query(sort_name: String)                           -- all facts of a sort

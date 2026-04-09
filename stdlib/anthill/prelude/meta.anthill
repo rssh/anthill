@@ -26,7 +26,7 @@ namespace anthill.prelude.Meta
     -- The kernel recognizes well-known keys; all others pass through.
 
   -- Trust: verification status of a fact
-  sort Trust {
+  enum Trust {
     entity proved                        -- formally proved (Lean/Isabelle kernel)
     entity verified                      -- mechanically verified (Z3, ctproof)
     entity tested(n: Int)                -- passed n test runs (Hypothesis, sbt-test)
@@ -38,7 +38,7 @@ namespace anthill.prelude.Meta
   }
 
   -- ProofResult: outcome of discharging an obligation
-  sort ProofResult {
+  enum ProofResult {
     entity Proved(witness: Term, solver: String, duration: Duration)
     entity Disproved(counterexample: Term, solver: String)
     entity Timeout(strategies: Term)

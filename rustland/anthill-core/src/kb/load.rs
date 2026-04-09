@@ -21,6 +21,16 @@ use super::{KnowledgeBase, SortKind};
 use super::term::{Term, TermId, Var, VarId, HandleKind, Literal};
 use super::occurrence::OccurrenceId;
 
+// ── Load result ──────────────────────────────────────────────
+
+/// Result of loading a file or set of files.
+/// Contains the sort/enum terms defined, for targeted type checking.
+#[derive(Debug)]
+pub struct LoadResult {
+    /// Sort and enum terms defined during this load.
+    pub defined_sorts: Vec<TermId>,
+}
+
 // ── Source resolution ──────────────────────────────────────────
 
 /// Abstraction over the filesystem for resolving import paths to source text.
@@ -183,224 +193,7 @@ impl std::fmt::Display for LoadError {
 impl std::error::Error for LoadError {}
 
 // ══════════════════════════════════════════════════════════════════
-// Type-check entity facts against entity definitions
-// ══════════════════════════════════════════════════════════════════
-
-/// Check that entity fact field values match declared field types.
-/// Call after load_all completes. Returns errors for mismatched fields.
-pub fn type_check_facts(kb: &KnowledgeBase) -> Vec<LoadError> {
-    use crate::kb::term::{Literal, Term, Var};
-
-    let mut errors = Vec::new();
-
-    // Well-known type names for literal checking (both qualified and short)
-    let is_string_type = |sym: Symbol| -> bool {
-        let name = kb.resolve_sym(sym);
-        name == "String" || name == "anthill.prelude.String"
-    };
-    let is_int_type = |sym: Symbol| -> bool {
-        let name = kb.resolve_sym(sym);
-        name == "Int" || name == "anthill.prelude.Int"
-    };
-    let is_float_type = |sym: Symbol| -> bool {
-        let name = kb.resolve_sym(sym);
-        name == "Float" || name == "anthill.prelude.Float"
-    };
-    let is_bool_type = |sym: Symbol| -> bool {
-        let name = kb.resolve_sym(sym);
-        name == "Bool" || name == "anthill.prelude.Bool"
-    };
-
-    // Sort names to skip (entity definitions and reflection metadata)
-    let skip_sort_names: &[&str] = &["Entity", "EntityInfo", "SortInfo", "OperationInfo", "FieldInfo", "SortRequiresInfo"];
-    // Functor names to skip (metadata entities themselves)
-    let skip_functor_names: &[&str] = &["EntityInfo", "SortInfo", "OperationInfo", "FieldInfo",
-        "SortRequiresInfo", "DescriptionInfo", "SortView"];
-
-    // Collect functors to check
-    let functors: Vec<Symbol> = kb.entity_field_type_functors().copied().collect();
-
-    for functor in &functors {
-        // Skip metadata entity functors
-        let functor_name = kb.resolve_sym(*functor);
-        if skip_functor_names.contains(&functor_name) {
-            continue;
-        }
-
-        let field_types = match kb.entity_field_types(*functor) {
-            Some(ft) => ft.to_vec(),
-            None => continue,
-        };
-
-        if field_types.is_empty() {
-            continue;
-        }
-
-        for rid in kb.by_functor(*functor) {
-            // Only check facts (empty body)
-            if !kb.rule_body(rid).is_empty() {
-                continue;
-            }
-
-            // Skip entity definitions and metadata facts
-            let fact_sort = kb.rule_sort(rid);
-            let fact_sort_name = match kb.get_term(fact_sort) {
-                Term::Fn { functor: f, .. } => kb.resolve_sym(*f),
-                Term::Ref(s) => kb.resolve_sym(*s),
-                _ => "",
-            };
-            if skip_sort_names.contains(&fact_sort_name) {
-                continue;
-            }
-
-            let head = kb.rule_head(rid);
-            let head_term = kb.get_term(head);
-            let named_args = match head_term {
-                Term::Fn { named_args, .. } => named_args.clone(),
-                _ => continue,
-            };
-
-            let entity_name = kb.resolve_sym(*functor);
-
-            // Get span from occurrence store if available
-            let span: Option<Span> = kb.occurrences.by_term(head)
-                .first()
-                .or_else(|| {
-                    kb.occurrences.by_functor(*functor).iter()
-                        .find(|&&occ_id| kb.occurrences.term(occ_id) == head)
-                })
-                .map(|&occ_id| kb.occurrences.span(occ_id).span);
-
-            for &(field_sym, declared_type) in &field_types {
-                let field_value = match named_args.iter().find(|(s, _)| *s == field_sym) {
-                    Some((_, v)) => *v,
-                    None => continue,
-                };
-
-                // Skip unspecified fields (variables)
-                if matches!(kb.get_term(field_value), Term::Var(Var::Global(_) | Var::DeBruijn(_))) {
-                    continue;
-                }
-
-                let declared_type_term = kb.get_term(declared_type);
-
-                // Get declared type symbol: Ref(sym) or Fn { functor: sym, no args } (name term)
-                // Skip parameterized types (Fn with args) — WI-035
-                let declared_type_sym = match declared_type_term {
-                    Term::Ref(sym) => *sym,
-                    Term::Fn { functor, pos_args, named_args }
-                        if pos_args.is_empty() && named_args.is_empty() => *functor,
-                    _ => continue, // parameterized type or complex term — skip
-                };
-
-                // Skip abstract/spec sorts — WI-036
-                // entity_parent uses TermId keys, but declared_type is a Ref term.
-                // The sort_info map uses the sort's name-term (Fn { functor, ..}) as key.
-                // We can check sort_kind only if we can find the sort term.
-                // For now: if the declared type has no registered entities and no literal match, skip.
-
-                let field_name = kb.resolve_sym(field_sym);
-                match kb.get_term(field_value) {
-                    Term::Const(lit) => {
-                        let ok = match lit {
-                            Literal::String(_) => is_string_type(declared_type_sym),
-                            Literal::Int(_) => is_int_type(declared_type_sym),
-                            Literal::Float(_) => is_float_type(declared_type_sym),
-                            Literal::Bool(_) => is_bool_type(declared_type_sym),
-                            _ => true,
-                        };
-                        if !ok {
-                            let actual = match lit {
-                                Literal::String(_) => "String",
-                                Literal::Int(_) => "Int",
-                                Literal::Float(_) => "Float",
-                                Literal::Bool(_) => "Bool",
-                                _ => "?",
-                            };
-                            errors.push(LoadError::TypeMismatch {
-                                entity_name: entity_name.to_string(),
-                                field_name: field_name.to_string(),
-                                expected_type: kb.resolve_sym(declared_type_sym).to_string(),
-                                actual_type: actual.to_string(),
-                                span,
-                            });
-                        }
-                    }
-                    Term::Fn { functor: val_functor, .. } => {
-                        // Value is an entity constructor — check parent sort by functor symbol
-                        if let Some(parent) = kb.constructor_parent_sort(*val_functor) {
-                            let parent_sym = match kb.get_term(parent) {
-                                Term::Fn { functor: f, .. } => Some(*f),
-                                Term::Ref(s) => Some(*s),
-                                _ => None,
-                            };
-                            let declared_name = kb.resolve_sym(declared_type_sym);
-                            let parent_matches = parent_sym.map_or(false, |ps| {
-                                let pn = kb.resolve_sym(ps);
-                                pn == declared_name || pn.ends_with(&format!(".{}", declared_name))
-                                    || declared_name.ends_with(&format!(".{}", pn))
-                            });
-                            if !parent_matches {
-                                let parent_name = parent_sym.map(|s| kb.resolve_sym(s).to_string())
-                                    .unwrap_or_else(|| "?".to_string());
-                                errors.push(LoadError::TypeMismatch {
-                                    entity_name: entity_name.to_string(),
-                                    field_name: field_name.to_string(),
-                                    expected_type: kb.resolve_sym(declared_type_sym).to_string(),
-                                    actual_type: parent_name,
-                                    span,
-                                });
-                            }
-                        }
-                    }
-                    Term::Ref(val_sym) => {
-                        // Nullary entity reference — look up parent sort by symbol
-                        if kb.is_constructor_symbol(*val_sym) {
-                            if let Some(parent) = kb.constructor_parent_sort(*val_sym) {
-                                let parent_sym = match kb.get_term(parent) {
-                                    Term::Fn { functor: f, .. } => Some(*f),
-                                    Term::Ref(s) => Some(*s),
-                                    _ => None,
-                                };
-                                let declared_name = kb.resolve_sym(declared_type_sym);
-                                let parent_matches = parent_sym.map_or(false, |ps| {
-                                    let pn = kb.resolve_sym(ps);
-                                    pn == declared_name || pn.ends_with(&format!(".{}", declared_name))
-                                        || declared_name.ends_with(&format!(".{}", pn))
-                                });
-                                if !parent_matches {
-                                    let parent_name = parent_sym.map(|s| kb.resolve_sym(s).to_string())
-                                        .unwrap_or_else(|| "?".to_string());
-                                    errors.push(LoadError::TypeMismatch {
-                                        entity_name: entity_name.to_string(),
-                                        field_name: field_name.to_string(),
-                                        expected_type: kb.resolve_sym(declared_type_sym).to_string(),
-                                        actual_type: parent_name,
-                                        span,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    errors
-}
-
-// ══════════════════════════════════════════════════════════════════
-// Expression type-checking — delegated to typing.rs
-// ══════════════════════════════════════════════════════════════════
-
-/// Type-check all operations with expression bodies.
-/// Delegates to `typing::type_check_operations`.
-pub fn type_check_operations(kb: &mut KnowledgeBase) -> Vec<LoadError> {
-    super::typing::type_check_operations(kb)
-}
-
+// Phase 1: Scan definitions
 // ══════════════════════════════════════════════════════════════════
 // Phase 1: Scan definitions
 // ══════════════════════════════════════════════════════════════════
@@ -628,7 +421,7 @@ fn scan_items_pass1(
                 let (short, actual_scope) = ensure_intermediate_namespaces(kb, &name, scope, prefix);
                 let qualified = make_qualified(prefix, &name);
                 let _sym = kb.symbols.define(&short, &qualified, SymbolKind::Sort, actual_scope.raw());
-                // `sort T = ?` inside a SortWithBody = type parameter
+                // `sort T = ?` inside a SortWithBody or EnumDecl = type parameter
                 if matches!(s.definition, TypeExpr::Variable { .. }) && is_sort_scope(kb, scope) {
                     kb.symbols.add_type_param(scope.raw(), &short);
                 }
@@ -734,9 +527,7 @@ fn scan_items_pass2(
                 let name = join_segments(parse_sym, &s.name.segments);
                 let qualified = make_qualified(prefix, &name);
                 if let Some(sort_term) = find_scope_by_name(kb, &qualified) {
-                    // Process sort-level imports
                     process_imports(kb, parse_sym, &s.imports, sort_term, errors);
-                    // Recurse
                     scan_items_pass2(kb, &s.items, parse_sym, sort_term, &qualified, errors);
                 }
             }
@@ -1093,6 +884,25 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     let cons_sym = kb.symbols.define("cons", "anthill.prelude.List.cons", SymbolKind::Entity, list_term.raw());
     let nil_sym = kb.symbols.define("nil", "anthill.prelude.List.nil", SymbolKind::Entity, list_term.raw());
 
+    // anthill.prelude.Type sort — type constructors for the typing pass
+    let type_sort_sym = kb.symbols.define("Type", "anthill.prelude.Type", SymbolKind::Sort, prelude_term.raw());
+    let type_sort_term = kb.alloc(Term::Fn {
+        functor: type_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(type_sort_term.raw(), ScopeInclusion {
+        parent_scope_raw: prelude_term.raw(),
+        instantiation_term_raw: prelude_term.raw(),
+        is_enclosing: true,
+    });
+    kb.symbols.define("sort_ref", "anthill.prelude.Type.sort_ref", SymbolKind::Entity, type_sort_term.raw());
+    kb.symbols.define("parameterized", "anthill.prelude.Type.parameterized", SymbolKind::Entity, type_sort_term.raw());
+    kb.symbols.define("arrow", "anthill.prelude.Type.arrow", SymbolKind::Entity, type_sort_term.raw());
+    kb.symbols.define("type_var", "anthill.prelude.Type.type_var", SymbolKind::Entity, type_sort_term.raw());
+    kb.symbols.define("named_tuple", "anthill.prelude.Type.named_tuple", SymbolKind::Entity, type_sort_term.raw());
+    kb.symbols.define("nothing", "anthill.prelude.Type.nothing", SymbolKind::Entity, type_sort_term.raw());
+    kb.symbols.define("TypeField", "anthill.prelude.Type.TypeField", SymbolKind::Entity, type_sort_term.raw());
+    kb.symbols.define("TypeBinding", "anthill.prelude.Type.TypeBinding", SymbolKind::Entity, type_sort_term.raw());
+
     // anthill.prelude.Option sort
     let option_sym = kb.symbols.define("Option", "anthill.prelude.Option", SymbolKind::Sort, prelude_term.raw());
     let option_term = kb.alloc(Term::Fn {
@@ -1313,21 +1123,19 @@ pub fn load(
     kb: &mut KnowledgeBase,
     parsed: &ParsedFile,
     resolver: &dyn SourceResolver,
-) -> Result<(), Vec<LoadError>> {
-    // Ensure kernel vocabulary is registered (idempotent)
+) -> Result<LoadResult, Vec<LoadError>> {
     register_prelude(kb);
-    // Phase 1: Scan definitions from this file
     let mut all_errors = scan_definitions(kb, &[parsed]);
     kb.resolve_builtins();
-    // Phase 2: Load
     let mut loaded_paths = HashSet::new();
-    if let Err(errs) = load_with_visited(kb, parsed, resolver, &mut loaded_paths) {
-        all_errors.extend(errs);
+    let mut all_sorts = Vec::new();
+    match load_with_visited(kb, parsed, resolver, &mut loaded_paths) {
+        Ok(result) => all_sorts.extend(result.defined_sorts),
+        Err(errs) => all_errors.extend(errs),
     }
-    // Phase 3: Resolve instantiations
     resolve_instantiations(kb);
     if all_errors.is_empty() {
-        Ok(())
+        Ok(LoadResult { defined_sorts: all_sorts })
     } else {
         Err(all_errors)
     }
@@ -1341,24 +1149,22 @@ pub fn load_all(
     kb: &mut KnowledgeBase,
     files: &[&ParsedFile],
     resolver: &dyn SourceResolver,
-) -> Result<(), Vec<LoadError>> {
-    // Ensure kernel vocabulary is registered (idempotent)
+) -> Result<LoadResult, Vec<LoadError>> {
     register_prelude(kb);
-    // Phase 1: Scan all definitions across all files
     let mut all_errors = scan_definitions(kb, files);
     kb.resolve_builtins();
 
-    // Phase 2: Load files with scope-aware resolution
     let mut loaded_paths = HashSet::new();
+    let mut all_sorts = Vec::new();
     for parsed in files {
-        if let Err(errs) = load_with_visited(kb, parsed, resolver, &mut loaded_paths) {
-            all_errors.extend(errs);
+        match load_with_visited(kb, parsed, resolver, &mut loaded_paths) {
+            Ok(result) => all_sorts.extend(result.defined_sorts),
+            Err(errs) => all_errors.extend(errs),
         }
     }
-    // Phase 3: Resolve instantiations
     resolve_instantiations(kb);
     if all_errors.is_empty() {
-        Ok(())
+        Ok(LoadResult { defined_sorts: all_sorts })
     } else {
         Err(all_errors)
     }
@@ -1370,13 +1176,14 @@ fn load_with_visited(
     parsed: &ParsedFile,
     resolver: &dyn SourceResolver,
     loaded_paths: &mut HashSet<String>,
-) -> Result<(), Vec<LoadError>> {
+) -> Result<LoadResult, Vec<LoadError>> {
     let global = kb.make_name_term("_global");
     let mut loader = Loader::new(kb, parsed, resolver, loaded_paths, global);
     loader.load_items(&parsed.items, None);
 
+    let result = LoadResult { defined_sorts: loader.defined_sorts };
     if loader.errors.is_empty() {
-        Ok(())
+        Ok(result)
     } else {
         Err(loader.errors)
     }
@@ -1980,6 +1787,8 @@ struct Loader<'a> {
     source_id: SourceId,
     // Symbol of the current owning declaration (operation, rule, etc.)
     current_owner: Option<Symbol>,
+    // Sort/enum terms defined in this file (for targeted type checking)
+    defined_sorts: Vec<TermId>,
 }
 
 impl<'a> Loader<'a> {
@@ -2002,6 +1811,7 @@ impl<'a> Loader<'a> {
             errors: Vec::new(),
             current_scope: global_scope,
             desc_index: HashMap::new(),
+            defined_sorts: Vec::new(),
             source_id,
             current_owner: None,
         }
@@ -2639,6 +2449,7 @@ impl<'a> Loader<'a> {
     }
 
     /// Convert a Name to a sort term (nullary Fn term) using scope-aware resolution.
+    /// Used for KB-internal sort references (entity_parent, by_sort), NOT for type terms.
     fn name_to_sort_term(&mut self, name: &Name) -> TermId {
         let functor = self.remap_name(name);
         self.kb.alloc(Term::Fn {
@@ -2648,8 +2459,70 @@ impl<'a> Loader<'a> {
         })
     }
 
-    /// Convert a TypeExpr to a type-term in the KB.
+    /// Convert a TypeExpr to a Type entity term in the KB.
+    /// Produces sort_ref, parameterized, arrow, type_var, named_tuple terms.
     fn type_expr_to_term(&mut self, ty: &TypeExpr) -> TermId {
+        match ty {
+            TypeExpr::Simple(name) => {
+                let sort_sym = self.remap_name(name);
+                self.kb.make_sort_ref(sort_sym)
+            }
+            TypeExpr::Parameterized { name, bindings } => {
+                let sort_sym = self.remap_name(name);
+                let base = self.kb.make_sort_ref(sort_sym);
+                let mut type_bindings: Vec<(Symbol, TermId)> = Vec::new();
+                for b in bindings {
+                    let bound_term = self.type_expr_to_term(&b.bound);
+                    if let Some(p) = &b.param {
+                        let param_sym = self.reintern(p.last());
+                        type_bindings.push((param_sym, bound_term));
+                    }
+                    // Positional bindings without param name — skip for now
+                }
+                self.kb.make_parameterized_type(base, &type_bindings)
+            }
+            TypeExpr::Variable { term_id, descriptions } => {
+                let kb_id = self.convert_term(*term_id);
+                for desc_text in descriptions {
+                    self.emit_desc_fact(kb_id, desc_text, self.current_scope);
+                }
+                // Keep as Term::Var — entity facts need variables for unification.
+                // The typing pass creates type_var() terms when needed for inference.
+                kb_id
+            }
+            TypeExpr::Tuple(fields) => {
+                let type_fields: Vec<(Symbol, TermId)> = fields.iter().map(|(sym, ty)| {
+                    let key = self.reintern(*sym);
+                    let val = self.type_expr_to_term(ty);
+                    (key, val)
+                }).collect();
+                self.kb.make_named_tuple_type(&type_fields)
+            }
+            TypeExpr::Arrow { params, return_type, effect } => {
+                // For single-param arrows, use param directly.
+                // For multi-param, build a named_tuple of param types.
+                let param_type = if params.len() == 1 {
+                    self.type_expr_to_term(&params[0])
+                } else {
+                    let param_fields: Vec<(Symbol, TermId)> = params.iter().enumerate().map(|(i, p)| {
+                        let key = self.kb.intern(&format!("_{}", i));
+                        let val = self.type_expr_to_term(p);
+                        (key, val)
+                    }).collect();
+                    self.kb.make_named_tuple_type(&param_fields)
+                };
+                let result_type = self.type_expr_to_term(return_type);
+                let effects: Vec<TermId> = effect.iter()
+                    .map(|e| self.type_expr_to_term(e))
+                    .collect();
+                self.kb.make_arrow_type(param_type, result_type, &effects)
+            }
+        }
+    }
+
+    /// Convert a TypeExpr to a sort instantiation term (SortView) for `requires` clauses.
+    /// Unlike type_expr_to_term, this preserves operation bindings alongside type bindings.
+    fn sort_inst_to_term(&mut self, ty: &TypeExpr) -> TermId {
         match ty {
             TypeExpr::Simple(name) => self.name_to_sort_term(name),
             TypeExpr::Parameterized { name, bindings } => {
@@ -2657,7 +2530,7 @@ impl<'a> Loader<'a> {
                 let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::from_elem(name_term, 1);
                 let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
                 for b in bindings {
-                    let bound_term = self.type_expr_to_term(&b.bound);
+                    let bound_term = self.sort_inst_to_term(&b.bound);
                     match &b.param {
                         Some(p) => {
                             let param_sym = self.reintern(p.last());
@@ -2668,7 +2541,6 @@ impl<'a> Loader<'a> {
                         }
                     }
                 }
-
                 let param_type_sym = self.kb.resolve_symbol("anthill.reflect.SortView");
                 self.kb.alloc(Term::Fn {
                     functor: param_type_sym,
@@ -2676,42 +2548,7 @@ impl<'a> Loader<'a> {
                     named_args,
                 })
             }
-            TypeExpr::Variable { term_id, descriptions } => {
-                let kb_id = self.convert_term(*term_id);
-                for desc_text in descriptions {
-                    self.emit_desc_fact(kb_id, desc_text, self.current_scope);
-                }
-                kb_id
-            }
-            TypeExpr::Tuple(fields) => {
-                let tuple_sym = self.kb.resolve_symbol("anthill.reflect.TupleLiteral");
-                let named_args: SmallVec<[(Symbol, TermId); 2]> = fields.iter().map(|(sym, ty)| {
-                    let key = self.reintern(*sym);
-                    let val = self.type_expr_to_term(ty);
-                    (key, val)
-                }).collect();
-                self.kb.alloc(Term::Fn {
-                    functor: tuple_sym,
-                    pos_args: SmallVec::new(),
-                    named_args,
-                })
-            }
-            TypeExpr::Arrow { params, return_type, effect } => {
-                let functor_name = if effect.is_some() { "arrow_effect" } else { "arrow" };
-                let functor = self.kb.symbols.intern(functor_name);
-                let mut pos_args: SmallVec<[TermId; 4]> = params.iter()
-                    .map(|p| self.type_expr_to_term(p))
-                    .collect();
-                pos_args.push(self.type_expr_to_term(return_type));
-                if let Some(eff) = effect {
-                    pos_args.push(self.type_expr_to_term(eff));
-                }
-                self.kb.alloc(Term::Fn {
-                    functor,
-                    pos_args,
-                    named_args: SmallVec::new(),
-                })
-            }
+            _ => self.type_expr_to_term(ty),
         }
     }
 
@@ -2773,7 +2610,7 @@ impl<'a> Loader<'a> {
         let sort_term = self.name_to_sort_term(&s.name);
         let sort_sort = self.kb.make_name_term("Sort");
 
-        self.kb.register_sort(sort_term, SortKind::Abstract);
+        self.kb.register_sort(sort_term, SortKind::Sort);
 
         // Both variable (sort T = ?Element) and alias (sort T = Int) emit SortAlias.
         // For variables, use convert_term directly to avoid double-emitting descriptions
@@ -2798,12 +2635,15 @@ impl<'a> Loader<'a> {
 
     fn load_sort_with_body(&mut self, s: &SortWithBody, parent_domain: TermId) {
         let sort_term = self.name_to_sort_term(&s.name);
+        self.defined_sorts.push(sort_term);
         let sort_sort = self.kb.make_name_term("Sort");
 
-        // Determine kind: Defined if it has direct entity children, Abstract otherwise
         let has_entities = s.items.iter().any(|item| matches!(item, Item::Entity(_)));
-        let kind = if has_entities { SortKind::Defined } else { SortKind::Abstract };
-        self.kb.register_sort(sort_term, kind);
+        let (sort_kind, kind_str) = match s.kind {
+            SortDeclKind::Enum => (SortKind::Enum, "enum"),
+            SortDeclKind::Sort => (SortKind::Sort, "sort"),
+        };
+        self.kb.register_sort(sort_term, sort_kind);
 
         // Emit Description facts for all description blocks
         for desc_text in &s.descriptions {
@@ -2826,7 +2666,6 @@ impl<'a> Loader<'a> {
         for item in &s.items {
             if let Item::Entity(e) = item {
                 let ctor_term = self.name_to_sort_term(&e.name);
-                self.kb.register_sort(ctor_term, SortKind::Constructor);
                 self.kb.register_entity_of(ctor_term, sort_term);
 
                 // Build FieldInfo list for entity fields
@@ -2913,58 +2752,80 @@ impl<'a> Loader<'a> {
                     }
                 }
                 Item::RequiresDecl(r) => {
-                    let req_term = self.type_expr_to_term(&r.type_expr);
+                    let req_term = self.sort_inst_to_term(&r.type_expr);
                     req_terms.push(req_term);
                 }
                 _ => {}
             }
         }
 
-        let ctors_list = build_list(self.kb, &ctor_refs);
-        let ops_list = build_list(self.kb, &op_refs);
-        let params_list = build_list(self.kb, &param_refs);
-        let requires_list = build_list(self.kb, &req_terms);
+        self.emit_sort_info(sort_functor, has_entities, kind_str,
+            &ctor_refs, &op_refs, &param_refs, &req_terms,
+            sort_sort, parent_domain);
 
-        // definition: Var for abstract (no entities), sort_term for defined
-        let definition_term = if has_entities {
-            sort_term
-        } else {
-            let anon_sym = self.kb.intern("?");
-            let vid = self.kb.fresh_var(anon_sym);
-            self.kb.alloc(Term::Var(Var::Global(vid)))
-        };
+        self.current_scope = prev_scope;
+    }
 
-        // Assert SortInfo fact with named args
+    /// Emit a SortInfo fact with the given components.
+    fn emit_sort_info(
+        &mut self,
+        sort_functor: Symbol,
+        has_entities: bool,
+        kind_str: &str,
+        ctor_refs: &[TermId],
+        op_refs: &[TermId],
+        param_refs: &[TermId],
+        req_terms: &[TermId],
+        sort_sort: TermId,
+        parent_domain: TermId,
+    ) {
         let sort_info_sym = self.kb.resolve_symbol("anthill.reflect.SortInfo");
         let name_sym = self.kb.intern("name");
+        let kind_field_sym = self.kb.intern("kind");
         let definition_sym = self.kb.intern("definition");
         let constructors_sym = self.kb.intern("constructors");
         let operations_sym = self.kb.intern("operations");
         let parameters_sym = self.kb.intern("parameters");
         let requires_sym = self.kb.intern("requires");
 
-        // Register SortInfo fields for partial named-arg expansion
         self.kb.register_entity_fields(sort_info_sym, vec![
-            name_sym, definition_sym, constructors_sym,
+            name_sym, kind_field_sym, definition_sym, constructors_sym,
             operations_sym, parameters_sym, requires_sym,
         ]);
-        let name_ref = self.kb.alloc(Term::Ref(sort_functor));
 
+        let name_ref = self.kb.alloc(Term::Ref(sort_functor));
+        let kind_sym = self.kb.intern(kind_str);
+        let kind_term = self.kb.alloc(Term::Ident(kind_sym));
+
+        let definition_term = if has_entities {
+            self.kb.make_name_term_from_sym(sort_functor)
+        } else {
+            let anon_sym = self.kb.intern("?");
+            let vid = self.kb.fresh_var(anon_sym);
+            self.kb.alloc(Term::Var(Var::Global(vid)))
+        };
+
+        let ctors_list = build_list(self.kb, ctor_refs);
+        let ops_list = build_list(self.kb, op_refs);
+        let params_list = build_list(self.kb, param_refs);
+        let requires_list = build_list(self.kb, req_terms);
+
+        let mut si_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::from_slice(&[
+            (constructors_sym, ctors_list),
+            (definition_sym, definition_term),
+            (kind_field_sym, kind_term),
+            (name_sym, name_ref),
+            (operations_sym, ops_list),
+            (parameters_sym, params_list),
+            (requires_sym, requires_list),
+        ]);
+        si_args.sort_by_key(|(s, _)| s.index());
         let fact_term = self.kb.alloc(Term::Fn {
             functor: sort_info_sym,
             pos_args: SmallVec::new(),
-            named_args: SmallVec::from_slice(&[
-                (name_sym, name_ref),
-                (definition_sym, definition_term),
-                (constructors_sym, ctors_list),
-                (operations_sym, ops_list),
-                (parameters_sym, params_list),
-                (requires_sym, requires_list),
-            ]),
+            named_args: si_args,
         });
         self.kb.assert_fact(fact_term, sort_sort, parent_domain, None);
-
-        self.current_scope = prev_scope;
     }
 
     fn load_entity(&mut self, e: &Entity, domain: TermId) {
@@ -3231,7 +3092,7 @@ impl<'a> Loader<'a> {
     fn load_requires_decl(&mut self, r: &RequiresDecl, domain: TermId) {
         let requirement_sort = self.kb.make_name_term("Requirement");
         let requires_sym = self.kb.resolve_symbol("anthill.reflect.SortRequiresInfo");
-        let type_term = self.type_expr_to_term(&r.type_expr);
+        let type_term = self.sort_inst_to_term(&r.type_expr);
 
         // Named args: sort_ref, spec
         let sort_ref_sym = self.kb.intern("sort_ref");
@@ -3324,7 +3185,8 @@ impl<'a> Loader<'a> {
                 }
                 Item::SortWithBody(s) => {
                     let sym = self.remap_name(&s.name);
-                    self.emit_member_fact(sym, "Sort", parent);
+                    let kind = if s.kind == SortDeclKind::Enum { "Enum" } else { "Sort" };
+                    self.emit_member_fact(sym, kind, parent);
                 }
                 Item::Operation(o) => {
                     let sym = self.remap_name(&o.name);

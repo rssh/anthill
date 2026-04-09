@@ -2,7 +2,7 @@ namespace anthill.reflect.typing
   import anthill.prelude.{List, Bool}
 
   import anthill.reflect.{Term, Symbol, KB, SortInfo, OperationInfo, EntityInfo, SortRequiresInfo, scope}
-  export entity_of, is_entity_of, refines, type_compatible
+  export entity_of, is_entity_of, refines, type_compatible, is_subtype
   export list_contains
   export extract_sort_ref
 
@@ -81,5 +81,82 @@ namespace anthill.reflect.typing
   rule sort_has_param(?sort, ?param)
     :- SortInfo(name: ?sort, parameters: ?params),
        list_contains(?param, ?params)
+
+  -- ================================================================
+  -- Type entity term compatibility (anthill.prelude.Type)
+  -- ================================================================
+  -- Rules for the Type entity representation used by the typing pass.
+  -- sort_ref, parameterized, arrow, named_tuple, type_var, nothing.
+
+  import anthill.prelude.Type.{sort_ref, parameterized, arrow, type_var, named_tuple, nothing, TypeBinding, TypeField}
+
+  -- ================================================================
+  -- is_subtype: strict subtyping (irreflexive)
+  -- ================================================================
+
+  -- Entity strict subtyping
+  rule is_subtype(sort_ref(name: ?A), sort_ref(name: ?B))
+    :- is_entity_of(?A, ?B), neq(?A, ?B)
+
+  -- Requires/refines strict subtyping
+  rule is_subtype(sort_ref(name: ?A), sort_ref(name: ?B))
+    :- refines(?A, ?B)
+
+  -- Identity: same type
+  rule type_compatible(sort_ref(name: ?A), sort_ref(name: ?A))
+
+  -- Entity subtyping: sort_ref(entity) <: sort_ref(parent)
+  rule type_compatible(sort_ref(name: ?A), sort_ref(name: ?B))
+    :- is_entity_of(?A, ?B)
+
+  -- type_var is compatible with anything (inference wildcard)
+  rule type_compatible(type_var(name: ?), ?)
+  rule type_compatible(?, type_var(name: ?))
+
+  -- nothing is bottom type — subtype of everything
+  rule type_compatible(nothing, ?)
+
+  -- Parameterized types: compatible if base compatible and bindings compatible
+  rule type_compatible(
+    parameterized(base: ?B1, bindings: ?Binds1),
+    parameterized(base: ?B2, bindings: ?Binds2))
+    :- type_compatible(?B1, ?B2),
+       bindings_compatible(?Binds1, ?Binds2)
+
+  -- Binding list compatibility: every expected binding has a compatible actual binding
+  rule bindings_compatible(?, nil)
+  rule bindings_compatible(?actual,
+    cons(head: TypeBinding(param: ?P, value: ?V2), tail: ?rest))
+    :- list_contains(TypeBinding(param: ?P, value: ?V1), ?actual),
+       type_compatible(?V1, ?V2),
+       bindings_compatible(?actual, ?rest)
+
+  -- Arrow subtyping: contravariant param, covariant result, covariant effects
+  rule type_compatible(
+    arrow(param: ?P1, result: ?R1, effects: ?E1),
+    arrow(param: ?P2, result: ?R2, effects: ?E2))
+    :- type_compatible(?P2, ?P1),
+       type_compatible(?R1, ?R2),
+       effects_subset(?E1, ?E2)
+
+  -- Effect subset: actual effects ⊆ expected effects
+  rule effects_subset(nil, ?)
+  rule effects_subset(cons(head: ?E, tail: ?rest), ?expected)
+    :- list_contains(?E, ?expected),
+       effects_subset(?rest, ?expected)
+
+  -- Named tuple subtyping: width + depth
+  -- Every expected field must have a compatible actual field
+  rule type_compatible(
+    named_tuple(fields: ?F1),
+    named_tuple(fields: ?F2))
+    :- fields_compatible(?F1, ?F2)
+
+  rule fields_compatible(?, nil)
+  rule fields_compatible(?actual,
+    cons(head: TypeField(name: ?N, type: ?T2), tail: ?rest))
+    :- list_contains(TypeField(name: ?N, type: ?T1), ?actual),
+       type_compatible(?T1, ?T2),
+       fields_compatible(?actual, ?rest)
 
 end

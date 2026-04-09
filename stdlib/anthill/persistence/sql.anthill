@@ -8,7 +8,7 @@ namespace anthill.persistence.sql
   import anthill.persistence.{QueryableStore}
   export SqlStore, SqlDialect, QueryBinding, ColumnDef
 
-  sort SqlDialect {
+  enum SqlDialect {
     entity Postgresql
     entity Mysql
     entity Sqlite

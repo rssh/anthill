@@ -41,7 +41,7 @@ namespace anthill.stage0
     scope      : SourceScope
   )
 
-  sort SourceScope
+  enum SourceScope
     entity Main
     entity Test
     entity Generated
@@ -61,7 +61,7 @@ namespace anthill.stage0
     success    : SuccessCriterion
   )
 
-  sort SuccessCriterion
+  enum SuccessCriterion
     entity ExitZero
     entity ExitCode(code: Int)
     entity OutputMatches(pattern: String)
@@ -88,20 +88,20 @@ namespace anthill.stage0
     status      : WorkStatus
   )
 
-  sort ContextRef
+  enum ContextRef
     entity FileRef(path: String, lines: Option[T = String])
     entity FactRef(domain: String, pattern: Term)
     entity WorkItemRef(id: String)
   end
 
-  sort AcceptanceCriterion
+  enum AcceptanceCriterion
     entity ToolPasses(tool: String, params: Option[T = Term])
     entity FactHolds(domain: String, pattern: Term)
     entity Compiles(source: SourceRoot)
     entity Constraint(term: Term)
   end
 
-  sort WorkStatus
+  enum WorkStatus
     entity Draft
     entity Open
     entity Claimed(agent: String, since: String)
@@ -116,7 +116,7 @@ namespace anthill.stage0
   -- Agent capabilities
   -- =================================================================
 
-  sort Capability
+  enum Capability
     entity Code(languages: List[T = String])
     entity Test
     entity Refine
