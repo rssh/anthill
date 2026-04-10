@@ -1654,6 +1654,9 @@ pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<Lo
         // Check operation bodies: return types compatible with declared
         check_operation_bodies(kb, &op_syms, &mut errors);
 
+        // Check HO pattern fragment restrictions
+        check_pattern_fragment(kb, sort_term, &mut errors);
+
         // Check rule variable typing: consistent types across head + body
         check_rule_typing(kb, sort_term, &mut errors);
     }
@@ -2096,6 +2099,141 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                 }
             }
         }
+    }
+}
+
+// ── HO pattern fragment checking ───────────────────────────────
+
+/// Validate that rules conform to the hereditary Harrop pattern fragment.
+/// This ensures higher-order unification remains decidable.
+fn check_pattern_fragment(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Vec<LoadError>) {
+    let ho_apply_sym = match kb.try_resolve_symbol("anthill.reflect.Expr.ho_apply") {
+        Some(s) => s,
+        None => return,
+    };
+
+    for rid in kb.by_domain(sort_term) {
+        let body = kb.rule_body(rid);
+        if body.is_empty() { continue; } // skip facts — only check rules
+
+        let head = kb.rule_head(rid);
+
+        let head_name = match kb.get_term(head) {
+            Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_string(),
+            _ => "?".to_string(),
+        };
+        let span = kb.occurrences.by_term(head)
+            .first()
+            .map(|&occ_id| kb.occurrences.span(occ_id).span);
+
+        // Rule 1: head must not contain ho_apply (no predicate variables in head)
+        if term_contains_functor(kb, head, ho_apply_sym) {
+            errors.push(LoadError::TypeMismatch {
+                entity_name: head_name.clone(),
+                field_name: "head".to_string(),
+                expected_type: "no predicate variables in rule head".to_string(),
+                actual_type: "ho_apply in head position".to_string(),
+                span,
+            });
+        }
+
+        // Check body goals for pattern fragment violations
+        for &goal_tid in body {
+            check_ho_apply_pattern(kb, goal_tid, ho_apply_sym, &head_name, span, errors);
+        }
+    }
+}
+
+/// Check a term for ho_apply pattern fragment violations.
+fn check_ho_apply_pattern(
+    kb: &KnowledgeBase,
+    term: TermId,
+    ho_apply_sym: Symbol,
+    rule_name: &str,
+    span: Option<Span>,
+    errors: &mut Vec<LoadError>,
+) {
+    match kb.get_term(term) {
+        Term::Fn { functor, pos_args, named_args, .. } => {
+            let functor = *functor;
+            let pos_args = pos_args.clone();
+            let named_args = named_args.clone();
+
+            if functor == ho_apply_sym && !pos_args.is_empty() {
+                // This is an ho_apply — check pattern fragment rules
+
+                // Rule 2: first arg (predicate) must be a variable
+                let pred = pos_args[0];
+                if !matches!(kb.get_term(pred), Term::Var(_)) {
+                    // After body_rename, the var may be substituted with a concrete term.
+                    // In stored rules (DeBruijn), it should be a Var. In opened rules, it may not be.
+                    // Only check stored (DeBruijn) rules.
+                    if matches!(kb.get_term(pred), Term::Fn { .. }) {
+                        // Check if it's another ho_apply — predicate applied to predicate
+                        if let Term::Fn { functor: inner_f, .. } = kb.get_term(pred) {
+                            if *inner_f == ho_apply_sym {
+                                errors.push(LoadError::TypeMismatch {
+                                    entity_name: rule_name.to_string(),
+                                    field_name: "body".to_string(),
+                                    expected_type: "variable as predicate in ho_apply".to_string(),
+                                    actual_type: "nested ho_apply (predicate applied to predicate)".to_string(),
+                                    span,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // Rule 3: remaining args must be distinct (no duplicate variables)
+                let mut seen_vars: Vec<u32> = Vec::new();
+                for &arg in &pos_args[1..] {
+                    if let Term::Var(Var::DeBruijn(idx)) = kb.get_term(arg) {
+                        if seen_vars.contains(idx) {
+                            errors.push(LoadError::TypeMismatch {
+                                entity_name: rule_name.to_string(),
+                                field_name: "body".to_string(),
+                                expected_type: "distinct variables in ho_apply args".to_string(),
+                                actual_type: format!("duplicate variable ?{} in predicate application", idx),
+                                span,
+                            });
+                        }
+                        seen_vars.push(*idx);
+                    }
+
+                    // Rule 3b: args must not contain ho_apply (no predicate variable as argument)
+                    if term_contains_functor(kb, arg, ho_apply_sym) {
+                        errors.push(LoadError::TypeMismatch {
+                            entity_name: rule_name.to_string(),
+                            field_name: "body".to_string(),
+                            expected_type: "first-order args in ho_apply".to_string(),
+                            actual_type: "predicate variable as argument to predicate".to_string(),
+                            span,
+                        });
+                    }
+                }
+            }
+
+            // Recurse into subterms
+            for &arg in pos_args.iter() {
+                check_ho_apply_pattern(kb, arg, ho_apply_sym, rule_name, span, errors);
+            }
+            for &(_, arg) in named_args.iter() {
+                check_ho_apply_pattern(kb, arg, ho_apply_sym, rule_name, span, errors);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Check if a term (or any subterm) contains the given functor.
+fn term_contains_functor(kb: &KnowledgeBase, term: TermId, target_functor: Symbol) -> bool {
+    match kb.get_term(term) {
+        Term::Fn { functor, pos_args, named_args, .. } => {
+            if *functor == target_functor { return true; }
+            pos_args.iter().any(|a| term_contains_functor(kb, *a, target_functor))
+                || named_args.iter().any(|(_, a)| term_contains_functor(kb, *a, target_functor))
+        }
+        _ => false,
     }
 }
 

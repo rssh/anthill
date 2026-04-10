@@ -2583,3 +2583,63 @@ fn rule_typing_stdlib_no_spurious_errors() {
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(errors.is_empty(), "stdlib rules should produce no type errors, got: {:?}", errors);
 }
+
+// ══════════════════════════════════════════════════════════════════
+// Pattern fragment checking tests
+// ══════════════════════════════════════════════════════════════════
+
+#[test]
+fn pattern_fragment_valid_ho_apply_in_body() {
+    // ?P(nil) in body — valid pattern fragment
+    let source = r#"
+sort TestSort
+  rule test(?P) :- ?P(nil)
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "valid ho_apply in body should be fine, got: {:?}", errors);
+}
+
+#[test]
+fn pattern_fragment_duplicate_var_rejected() {
+    // ?P(?x, ?x) — duplicate variable in ho_apply args — rejected
+    let source = r#"
+sort TestSort
+  rule test(?P, ?x) :- ?P(?x, ?x)
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(!errors.is_empty(), "duplicate var in ho_apply should be rejected, got: {:?}", errors);
+}
+
+#[test]
+fn pattern_fragment_stdlib_valid() {
+    // stdlib should have no pattern fragment violations
+    let (mut kb, result) = {
+        let dir = common::stdlib_dir();
+        let files = common::collect_anthill_files(&dir);
+        let parsed: Vec<_> = files.iter()
+            .map(|path| {
+                let source = std::fs::read_to_string(path).unwrap();
+                anthill_core::parse::parse(&source).unwrap()
+            })
+            .collect();
+        let refs: Vec<_> = parsed.iter().collect();
+        let mut kb = KnowledgeBase::new();
+        load::register_prelude(&mut kb);
+        kb.register_standard_builtins();
+        let result = load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
+        (kb, result)
+    };
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    // Filter to only pattern-fragment errors (not type errors)
+    let ho_errors: Vec<_> = errors.iter()
+        .filter(|e| {
+            let msg = format!("{}", e);
+            msg.contains("ho_apply") || msg.contains("predicate")
+        })
+        .collect();
+    assert!(ho_errors.is_empty(), "stdlib should have no pattern fragment errors, got: {:?}", ho_errors);
+}
