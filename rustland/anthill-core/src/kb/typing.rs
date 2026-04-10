@@ -1653,6 +1653,9 @@ pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<Lo
 
         // Check operation bodies: return types compatible with declared
         check_operation_bodies(kb, &op_syms, &mut errors);
+
+        // Check rule variable typing: consistent types across head + body
+        check_rule_typing(kb, sort_term, &mut errors);
     }
 
     errors
@@ -2093,6 +2096,119 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                 }
             }
         }
+    }
+}
+
+// ── Rule type checking ─────────────────────────────────────────
+
+/// Check that rule variables have consistent types across head and body.
+/// For each rule in the given sort's domain:
+/// 1. Collect type constraints from head (operation params, entity fields)
+/// 2. Collect type constraints from body goals
+/// 3. Unify all constraints for each variable — must be consistent
+fn check_rule_typing(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Vec<LoadError>) {
+    for rid in kb.by_domain(sort_term) {
+        let body = kb.rule_body(rid);
+        if body.is_empty() { continue; } // facts have no body — nothing to check
+
+        let head = kb.rule_head(rid);
+        let mut subst = Substitution::new();
+        let mut var_types: HashMap<u32, TermId> = std::collections::HashMap::new();
+
+        // Collect type constraints from head
+        collect_term_type_constraints(kb, head, &mut var_types, &mut subst);
+
+        // Collect type constraints from body goals
+        for &goal_tid in body {
+            collect_term_type_constraints(kb, goal_tid, &mut var_types, &mut subst);
+        }
+
+        // Check for contradictions in the substitution
+        if subst.is_contradiction() {
+            let head_name = match kb.get_term(head) {
+                Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_string(),
+                _ => "?".to_string(),
+            };
+            let span = kb.occurrences.by_term(head)
+                .first()
+                .map(|&occ_id| kb.occurrences.span(occ_id).span);
+            errors.push(LoadError::TypeMismatch {
+                entity_name: head_name,
+                field_name: "rule".to_string(),
+                expected_type: "consistent variable types".to_string(),
+                actual_type: "contradictory variable types".to_string(),
+                span,
+            });
+        }
+    }
+}
+
+/// Collect type constraints from a term: for each variable in an operation/entity
+/// argument position, record the expected type.
+fn collect_term_type_constraints(
+    kb: &KnowledgeBase,
+    term: TermId,
+    var_types: &mut HashMap<u32, TermId>,
+    subst: &mut Substitution,
+) {
+    match kb.get_term(term) {
+        Term::Fn { functor, pos_args, named_args, .. } => {
+            let functor = *functor;
+            let pos_args = pos_args.clone();
+            let named_args = named_args.clone();
+
+            // Try to get expected types from operation params or entity fields
+            if let Some(op) = lookup_operation_info_full(kb, functor) {
+                // Operation call: match args to param types
+                for (i, &arg) in pos_args.iter().enumerate() {
+                    if let Some(&(_, param_type)) = op.params.get(i) {
+                        constrain_var_type(kb, arg, param_type, var_types, subst);
+                    }
+                }
+            } else if let Some(field_types) = kb.entity_field_types(functor) {
+                // Entity constructor: match named args to field types
+                let field_types = field_types.to_vec();
+                for &(field_sym, field_type) in &field_types {
+                    if let Some((_, arg_tid)) = named_args.iter().find(|(s, _)| *s == field_sym) {
+                        constrain_var_type(kb, *arg_tid, field_type, var_types, subst);
+                    }
+                }
+            }
+
+            // Recurse into subterms
+            for &arg in pos_args.iter() {
+                collect_term_type_constraints(kb, arg, var_types, subst);
+            }
+            for &(_, arg) in named_args.iter() {
+                collect_term_type_constraints(kb, arg, var_types, subst);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// If `term` is a variable, record that it should have `expected_type`.
+/// If the variable already has a type, unify the two.
+fn constrain_var_type(
+    kb: &KnowledgeBase,
+    term: TermId,
+    expected_type: TermId,
+    var_types: &mut HashMap<u32, TermId>,
+    subst: &mut Substitution,
+) {
+    let vid = match kb.get_term(term) {
+        Term::Var(Var::Global(vid)) => vid.raw(),
+        Term::Var(Var::DeBruijn(idx)) => *idx,
+        _ => return,
+    };
+
+    if let Some(&existing_type) = var_types.get(&vid) {
+        // Variable already has a type — unify with the new expected type
+        if !unify_types(kb, subst, existing_type, expected_type) {
+            subst.contradiction = true;
+        }
+    } else {
+        var_types.insert(vid, expected_type);
     }
 }
 

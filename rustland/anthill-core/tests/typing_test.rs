@@ -2509,3 +2509,77 @@ end
     assert!(!solutions.is_empty(),
         "test(my_pred) should succeed — ho_apply(my_pred, 42) resolves my_pred(42)");
 }
+
+// ══════════════════════════════════════════════════════════════════
+// Rule type-checking tests
+// ══════════════════════════════════════════════════════════════════
+
+#[test]
+fn rule_typing_consistent_vars_no_error() {
+    // ?x appears as Int in both head and body — consistent
+    let source = r#"
+sort Math
+  operation double(x: Int) -> Int
+  rule double_fact(?x, ?y) :- double(?x, ?y)
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "consistent variable types should produce no errors, got: {:?}", errors);
+}
+
+#[test]
+fn rule_typing_inconsistent_vars_detected() {
+    // ?x used as String field and Int field — inconsistent
+    let source = r#"
+sort Mixed
+  entity Foo(name: String)
+  entity Bar(count: Int)
+  rule bad(?x) :- Foo(name: ?x), Bar(count: ?x)
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(!errors.is_empty(), "?x used as String and Int should be detected, got: {:?}", errors);
+}
+
+#[test]
+fn rule_typing_entity_fields_consistent() {
+    // ?c used consistently as Color in both entity field positions
+    let source = r#"
+enum Color
+  entity red
+  entity blue
+end
+sort Items
+  entity Box(color: Color)
+  entity Bag(color: Color)
+  rule same_color(?c) :- Box(color: ?c), Bag(color: ?c)
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "?c consistently Color should be fine, got: {:?}", errors);
+}
+
+#[test]
+fn rule_typing_stdlib_no_spurious_errors() {
+    let (mut kb, result) = {
+        let dir = common::stdlib_dir();
+        let files = common::collect_anthill_files(&dir);
+        let parsed: Vec<_> = files.iter()
+            .map(|path| {
+                let source = std::fs::read_to_string(path).unwrap();
+                anthill_core::parse::parse(&source).unwrap()
+            })
+            .collect();
+        let refs: Vec<_> = parsed.iter().collect();
+        let mut kb = KnowledgeBase::new();
+        load::register_prelude(&mut kb);
+        kb.register_standard_builtins();
+        let result = load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
+        (kb, result)
+    };
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "stdlib rules should produce no type errors, got: {:?}", errors);
+}
