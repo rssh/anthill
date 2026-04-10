@@ -1781,6 +1781,8 @@ struct Loader<'a> {
     errors: Vec<LoadError>,
     // Current scope for scope-aware resolution
     current_scope: TermId,
+    // Cache: type param name → TermId (Var) per scope, so all references to T share the same Var
+    type_param_vars: HashMap<(u32, String), TermId>,
     // Description index counter per target (keyed by TermId raw)
     desc_index: HashMap<u32, i64>,
     // ── Occurrence tracking ─────────────────────────────────────
@@ -1812,6 +1814,7 @@ impl<'a> Loader<'a> {
             errors: Vec::new(),
             current_scope: global_scope,
             desc_index: HashMap::new(),
+            type_param_vars: HashMap::new(),
             defined_sorts: Vec::new(),
             source_id,
             current_owner: None,
@@ -2451,6 +2454,28 @@ impl<'a> Loader<'a> {
 
     /// Convert a Name to a sort term (nullary Fn term) using scope-aware resolution.
     /// Used for KB-internal sort references (entity_parent, by_sort), NOT for type terms.
+    /// Find the Var from SortAlias for a type parameter symbol.
+    fn find_sort_alias_var(&self, sym: Symbol) -> Option<TermId> {
+        let alias_sym = self.kb.try_resolve_symbol("SortAlias")?;
+        let sort_name = self.kb.resolve_sym(sym);
+        for rid in self.kb.by_functor(alias_sym) {
+            if !self.kb.rule_body(rid).is_empty() { continue; }
+            let head = self.kb.rule_head(rid);
+            if let Term::Fn { pos_args, .. } = self.kb.get_term(head) {
+                if pos_args.len() >= 2 {
+                    if let Term::Fn { functor, .. } = self.kb.get_term(pos_args[0]) {
+                        if *functor == sym || self.kb.resolve_sym(*functor) == sort_name {
+                            if matches!(self.kb.get_term(pos_args[1]), Term::Var(_)) {
+                                return Some(pos_args[1]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn name_to_sort_term(&mut self, name: &Name) -> TermId {
         let functor = self.remap_name(name);
         self.kb.alloc(Term::Fn {
@@ -2466,6 +2491,25 @@ impl<'a> Loader<'a> {
         match ty {
             TypeExpr::Simple(name) => {
                 let sort_sym = self.remap_name(name);
+                let short_name = self.kb.resolve_sym(sort_sym).to_owned();
+                // If this symbol is a type parameter, use a Var directly.
+                // All references to the same type param within a scope share the same Var.
+                if self.kb.symbols.is_type_param(self.current_scope.raw(), &short_name) {
+                    let key = (self.current_scope.raw(), short_name.clone());
+                    if let Some(&cached) = self.type_param_vars.get(&key) {
+                        return cached;
+                    }
+                    // Try SortAlias first (if abstract sort already loaded)
+                    let var_tid = if let Some(alias_var) = self.find_sort_alias_var(sort_sym) {
+                        alias_var
+                    } else {
+                        let var_sym = self.kb.intern(&short_name);
+                        let vid = self.kb.fresh_var(var_sym);
+                        self.kb.alloc(Term::Var(Var::Global(vid)))
+                    };
+                    self.type_param_vars.insert(key, var_tid);
+                    return var_tid;
+                }
                 self.kb.make_sort_ref(sort_sym)
             }
             TypeExpr::Parameterized { name, bindings } => {

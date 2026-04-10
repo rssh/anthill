@@ -156,6 +156,12 @@ impl SymbolTable {
             .insert(name.to_owned());
     }
 
+    /// Check if a name is a type parameter of the given scope.
+    pub fn is_type_param(&self, scope_raw: u32, name: &str) -> bool {
+        self.scopes.get(&scope_raw)
+            .map_or(false, |s| s.type_params.contains(name))
+    }
+
     /// Record a type parameter name for a scope (excluded from parent lookups).
     pub fn add_type_param(&mut self, scope_raw: u32, name: &str) {
         self.scopes
