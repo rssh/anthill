@@ -2676,3 +2676,58 @@ fn effect_scoping_stdlib_no_spurious_errors() {
         .collect();
     assert!(effect_errors.is_empty(), "stdlib should have no effect errors, got: {:?}", effect_errors);
 }
+
+// ══════════════════════════════════════════════════════════════════
+// Constructor type param inference tests
+// ══════════════════════════════════════════════════════════════════
+
+use anthill_core::kb::typing::type_check_expr;
+use anthill_core::kb::typing::TypingEnv;
+
+#[test]
+fn constructor_infers_type_param_from_int_field() {
+    // Direct test: type_check_expr on cons(head: 42, tail: nil) should produce a parameterized List type
+    let source = r#"
+sort TestSort
+  import anthill.prelude.List
+  entity Holder(items: List[T = Int])
+end
+fact Holder(items: cons(head: 42, tail: nil))
+"#;
+    let (mut kb, result) = load_with_result(source);
+    // Use parameterized field checking (already works for facts)
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(),
+        "cons(head: 42, tail: nil) in List[T=Int] field should pass, got: {:?}", errors);
+}
+
+#[test]
+fn constructor_infers_type_param_from_string_field() {
+    let source = r#"
+sort TestSort
+  import anthill.prelude.List
+  entity Holder(items: List[T = String])
+end
+fact Holder(items: cons(head: "hello", tail: nil))
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(),
+        "cons(head: \"hello\", tail: nil) in List[T=String] field should pass, got: {:?}", errors);
+}
+
+#[test]
+fn constructor_type_param_mismatch_detected() {
+    // cons(head: 42) in a List[T=String] field — should detect mismatch
+    let source = r#"
+sort TestSort
+  import anthill.prelude.List
+  entity Holder(items: List[T = String])
+end
+fact Holder(items: cons(head: 42, tail: nil))
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(!errors.is_empty(),
+        "cons(head: 42) in List[T=String] field should detect Int vs String mismatch");
+}

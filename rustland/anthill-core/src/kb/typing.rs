@@ -411,9 +411,7 @@ pub fn type_check_expr(
             if let Some(ty) = env.lookup_var(&name) {
                 Some(TypeResult::pure(ty, env.clone()))
             } else if kb.is_constructor_symbol(*sym) {
-                kb.constructor_parent_sort(*sym)
-                    .map(|st| sort_term_to_type(kb, st))
-                    .map(|ty| TypeResult::pure(ty, env.clone()))
+                infer_constructor_type(kb, env, *sym, &SmallVec::new(), &SmallVec::new())
             } else {
                 None
             }
@@ -439,9 +437,11 @@ pub fn type_check_expr(
                 }
                 "constructor" => {
                     let name_sym = extract_sym_arg(kb, &named_args, &pos_args, "name")?;
-                    kb.constructor_parent_sort(name_sym)
-                        .map(|st| sort_term_to_type(kb, st))
-                        .map(|ty| TypeResult::pure(ty, env.clone()))
+                    let args_tid = get_named_arg(kb, &named_args, "args");
+                    let ctor_args: SmallVec<[TermId; 4]> = args_tid
+                        .map(|a| list_to_vec(kb, a).into_iter().collect())
+                        .unwrap_or_default();
+                    infer_constructor_type(kb, env, name_sym, &ctor_args, &SmallVec::new())
                 }
                 "apply" => check_apply(kb, env, &named_args, &pos_args),
                 "if_expr" => check_if_expr(kb, env, &named_args),
@@ -460,9 +460,7 @@ pub fn type_check_expr(
                 _ => {
                     let f_sym = *functor;
                     if kb.is_constructor_symbol(f_sym) {
-                        kb.constructor_parent_sort(f_sym)
-                            .map(|st| sort_term_to_type(kb, st))
-                            .map(|ty| TypeResult::pure(ty, env.clone()))
+                        infer_constructor_type(kb, env, f_sym, &pos_args, &named_args)
                     } else {
                         lookup_operation_return_type(kb, f_sym).map(|ty| TypeResult::pure(ty, env.clone()))
                     }
@@ -594,6 +592,113 @@ fn lookup_operation_info_full(kb: &KnowledgeBase, functor: Symbol) -> Option<Ope
         return Some(OperationInfoFull { params, return_type, effects });
     }
     None
+}
+
+/// Infer the type of a constructor application, including type parameter instantiation.
+/// e.g., cons(head: 1, tail: nil) → parameterized(List, [T=Int])
+fn infer_constructor_type(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    ctor_sym: Symbol,
+    pos_args: &SmallVec<[TermId; 4]>,
+    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+) -> Option<TypeResult> {
+    let parent_tid = kb.constructor_parent_sort(ctor_sym)?;
+    let parent_type = sort_term_to_type(kb, parent_tid);
+
+    // Get the constructor's declared field types
+    let field_types = kb.entity_field_types(ctor_sym)?.to_vec();
+    if field_types.is_empty() {
+        return Some(TypeResult::pure(parent_type, env.clone()));
+    }
+
+    let mut subst = Substitution::new();
+    let mut effects = Vec::new();
+
+    // Unify named args with field types
+    for &(field_sym, declared_type) in &field_types {
+        let arg_tid = named_args.iter()
+            .find(|(s, _)| *s == field_sym)
+            .map(|(_, v)| *v);
+        if let Some(arg) = arg_tid {
+            if let Some(r) = type_check_expr(kb, env, resolve_handle(kb, arg)) {
+                unify_types(kb, &mut subst, r.ty, declared_type);
+                effects = merge_effects(&effects, &r.effects);
+            }
+        }
+    }
+
+    // Unify positional args with field types in order
+    for (i, &arg) in pos_args.iter().enumerate() {
+        if let Some(&(_, declared_type)) = field_types.get(i) {
+            // For constructor expression form, args are ApplyArg(name, value)
+            let actual_arg = if let Term::Fn { named_args: aa, .. } = kb.get_term(arg) {
+                get_named_arg(kb, aa, "value")
+                    .map(|v| resolve_handle(kb, v))
+                    .unwrap_or(arg)
+            } else {
+                arg
+            };
+            if let Some(r) = type_check_expr(kb, env, actual_arg) {
+                unify_types(kb, &mut subst, r.ty, declared_type);
+                effects = merge_effects(&effects, &r.effects);
+            }
+        }
+    }
+
+    // If any type params were bound, build a parameterized type
+    if subst.bindings.is_empty() {
+        return Some(TypeResult { ty: parent_type, env: env.clone(), effects });
+    }
+
+    // Build parameterized type from the sort's type params + substitution bindings.
+    // Look up SortAlias facts for the parent sort's scope to find param names → Var mappings.
+    let parent_sym = match kb.get_term(parent_tid) {
+        Term::Fn { functor, .. } => *functor,
+        _ => return Some(TypeResult { ty: parent_type, env: env.clone(), effects }),
+    };
+
+    let alias_sym = kb.try_resolve_symbol("SortAlias");
+    let mut param_bindings: Vec<(Symbol, TermId)> = Vec::new();
+
+    if let Some(a_sym) = alias_sym {
+        let parent_name = kb.qualified_name_of(parent_sym).to_string();
+        // Collect alias info: (param_short_name, VarId, bound_type)
+        let mut alias_info: Vec<(String, TermId)> = Vec::new();
+        for rid in kb.by_functor(a_sym) {
+            if !kb.rule_body(rid).is_empty() { continue; }
+            let head = kb.rule_head(rid);
+            if let Term::Fn { pos_args, .. } = kb.get_term(head) {
+                if pos_args.len() >= 2 {
+                    let sort_tid = pos_args[0];
+                    let target_tid = pos_args[1];
+                    if let Term::Fn { functor: alias_functor, .. } = kb.get_term(sort_tid) {
+                        let alias_name = kb.qualified_name_of(*alias_functor).to_string();
+                        if alias_name.starts_with(&parent_name) && alias_name.len() > parent_name.len() {
+                            let param_short = alias_name[parent_name.len() + 1..].to_string();
+                            if let Term::Var(Var::Global(vid)) = kb.get_term(target_tid) {
+                                if let Some(&bound_type) = subst.bindings.get(vid) {
+                                    alias_info.push((param_short, bound_type));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (param_short, bound_type) in alias_info {
+            let param_sym = kb.intern(&param_short);
+            param_bindings.push((param_sym, bound_type));
+        }
+    }
+
+    if param_bindings.is_empty() {
+        Some(TypeResult { ty: parent_type, env: env.clone(), effects })
+    } else {
+        let base = kb.make_sort_ref(parent_sym);
+        let param_type = kb.make_parameterized_type(base, &param_bindings);
+        Some(TypeResult { ty: param_type, env: env.clone(), effects })
+    }
 }
 
 /// Extract return type and effects from an arrow(param, result, effects) type term.
