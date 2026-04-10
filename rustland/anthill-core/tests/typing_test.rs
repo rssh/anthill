@@ -2717,6 +2717,57 @@ fact Holder(items: cons(head: "hello", tail: nil))
 }
 
 #[test]
+fn constructor_two_different_instantiations() {
+    // Two fields with different T bindings: List[T=Int] and List[T=String]
+    // Both should be checked correctly — shared Var must not cause conflict
+    let source = r#"
+sort Container
+  import anthill.prelude.List
+  entity Holder(ints: List[T = Int], strings: List[T = String])
+end
+fact Holder(ints: cons(head: 42, tail: nil), strings: cons(head: "hello", tail: nil))
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(),
+        "two different List instantiations in same entity should work, got: {:?}", errors);
+}
+
+#[test]
+fn constructor_two_instantiations_mismatch() {
+    // List[T=Int] field with String value — should detect mismatch
+    // List[T=String] field with Int value — should also detect
+    let source = r#"
+sort Container
+  import anthill.prelude.List
+  entity Holder(ints: List[T = Int], strings: List[T = String])
+end
+fact Holder(ints: cons(head: "wrong", tail: nil), strings: cons(head: 42, tail: nil))
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(!errors.is_empty(),
+        "swapped types should be detected, got: {:?}", errors);
+}
+
+#[test]
+fn constructor_two_instantiations_in_rule() {
+    // Rule that uses both List[T=Int] and List[T=String] fields
+    // via different variables — should not interfere
+    let source = r#"
+sort Container
+  import anthill.prelude.List
+  entity Holder(ints: List[T = Int], strings: List[T = String])
+  rule test(?x, ?y) :- Holder(ints: ?x, strings: ?y)
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(),
+        "rule with two different List instantiations should be fine, got: {:?}", errors);
+}
+
+#[test]
 fn constructor_type_param_mismatch_detected() {
     // cons(head: 42) in a List[T=String] field — should detect mismatch
     let source = r#"
