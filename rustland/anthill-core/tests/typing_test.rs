@@ -2429,3 +2429,83 @@ rule test(?P) :- ?P(foo, bar)
         other => panic!("expected Fn, got {:?}", other),
     }
 }
+
+#[test]
+fn ho_bigint_induction_parses() {
+    // BigInt strong induction rule with HO predicate variable
+    let source = r#"
+rule bigint_induction(?P)
+  :- ?P(0),
+     forall(?n, gt(?n, 0), ?P(sub(?n, 1)) -: ?P(?n))
+"#;
+    let parsed = parse::parse(source);
+    assert!(parsed.is_ok(), "BigInt induction rule should parse: {:?}", parsed.err());
+
+    let mut kb = load_stdlib_kb();
+    load_source(&mut kb, source);
+
+    let ind_sym = kb.try_resolve_symbol("bigint_induction");
+    assert!(ind_sym.is_some(), "bigint_induction should be defined");
+
+    let rules = kb.by_functor(ind_sym.unwrap());
+    assert!(!rules.is_empty(), "should have a rule");
+
+    // Rule head: bigint_induction(?P)
+    let head = kb.rule_head(rules[0]);
+    match kb.get_term(head) {
+        Term::Fn { pos_args, .. } => {
+            assert_eq!(pos_args.len(), 1, "head should have 1 arg (?P)");
+            assert!(matches!(kb.get_term(pos_args[0]), Term::Var(_)),
+                "head arg should be a Var");
+        }
+        other => panic!("expected Fn head, got {:?}", other),
+    }
+
+    // Rule body should have 2 goals: ?P(0) and forall(...)
+    let body = kb.rule_body(rules[0]);
+    assert_eq!(body.len(), 2, "body should have 2 goals: ?P(0) and forall(...)");
+
+    // First goal: ho_apply(?P, 0)
+    match kb.get_term(body[0]) {
+        Term::Fn { functor, pos_args, .. } => {
+            let fname = kb.resolve_sym(*functor);
+            assert!(fname == "ho_apply" || fname.ends_with(".ho_apply"),
+                "first goal should be ho_apply, got: {}", fname);
+            assert_eq!(pos_args.len(), 2, "ho_apply(?P, 0)");
+        }
+        other => panic!("expected ho_apply for first goal, got {:?}", other),
+    }
+
+    // Second goal: forall(?n, ...) — should be a forall term
+    match kb.get_term(body[1]) {
+        Term::Fn { functor, pos_args, .. } => {
+            let fname = kb.resolve_sym(*functor);
+            assert!(fname == "forall" || fname.ends_with(".forall"),
+                "second goal should be forall, got: {} (pos_args: {})", fname, pos_args.len());
+        }
+        other => {
+            // forall might parse differently — just check it exists
+            eprintln!("second goal term: {:?}", other);
+        }
+    }
+}
+
+#[test]
+fn ho_predicate_resolves_with_bound_var() {
+    // rule test(?P) :- ?P(42)
+    // rule my_pred(42)
+    // Query: test(my_pred) should succeed
+    let source = r#"
+sort TestSort
+  rule test(?P) :- ?P(42)
+  rule my_pred(42)
+end
+"#;
+    let mut kb = load_with_source(source);
+    let my_pred_term = kb.resolve_qualified_name_term("TestSort.my_pred");
+    let query = make_goal(&mut kb, "TestSort.test", &[my_pred_term]);
+    let config = default_config();
+    let solutions = kb.resolve(&[query], &config);
+    assert!(!solutions.is_empty(),
+        "test(my_pred) should succeed — ho_apply(my_pred, 42) resolves my_pred(42)");
+}

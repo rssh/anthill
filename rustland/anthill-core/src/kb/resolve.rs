@@ -50,6 +50,8 @@ pub enum BuiltinTag {
     Kind,
     /// `anthill.reflect.field_access(?object, ?field, ?result)` — dot projection.
     FieldAccess,
+    /// `anthill.reflect.Expr.ho_apply(?P, args...)` — higher-order predicate application.
+    HoApply,
     // ── Arithmetic and comparison builtins ───────────────────
     /// `anthill.prelude.Eq.eq(?a, ?b)` — structural equality (succeeds/fails).
     Eq,
@@ -312,6 +314,19 @@ impl SearchStream {
             if tag == BuiltinTag::Not {
                 return self.step_naf(kb, goal, depth, delay_mode);
             }
+            // HO predicate application: replace goal with the applied term
+            if tag == BuiltinTag::HoApply {
+                if let Some(applied) = self.resolve_ho_apply(kb, goal, &frame.subst) {
+                    let f = self.stack.last_mut().unwrap();
+                    f.goals[0] = applied;
+                    f.state = FrameState::Init { delay_mode };
+                    return Some(StepResult::Continue);
+                } else {
+                    // Predicate var still unbound — fail (can't apply unbound predicate)
+                    self.stack.pop();
+                    return Some(StepResult::Continue);
+                }
+            }
             match kb.execute_builtin(tag, goal, &frame.subst) {
                 BuiltinResult::Success => {
                     // Remove goals[0], bump depth, reset delay counter if delayed
@@ -471,6 +486,34 @@ impl SearchStream {
     ///   delay (floundering prevention).
     /// - Otherwise, run sub-resolution: if the inner goal has ANY solution,
     ///   `not(Goal)` fails; if it has NO solutions, `not(Goal)` succeeds.
+    /// Resolve ho_apply(?P, args...) by walking ?P through the substitution.
+    /// If ?P resolves to a concrete symbol, construct Fn(sym, args) and return it.
+    fn resolve_ho_apply(&self, kb: &mut KnowledgeBase, goal: TermId, subst: &Substitution) -> Option<TermId> {
+        let (pos_args, named_args) = match kb.get_term(goal) {
+            Term::Fn { pos_args, named_args, .. } => (pos_args.clone(), named_args.clone()),
+            _ => return None,
+        };
+        if pos_args.is_empty() { return None; }
+
+        // First pos_arg is the predicate variable — walk it
+        let pred_tid = kb.walk(pos_args[0], subst);
+        let pred_sym = match kb.get_term(pred_tid) {
+            Term::Ref(s) => *s,
+            Term::Fn { functor, pos_args: pa, named_args: na, .. }
+                if pa.is_empty() && na.is_empty() => *functor,
+            _ => return None, // still a variable or complex term — can't apply
+        };
+
+        // Construct the applied goal: pred_sym(remaining_args)
+        let remaining: SmallVec<[TermId; 4]> = pos_args[1..].into();
+        let result = kb.alloc(Term::Fn {
+            functor: pred_sym,
+            pos_args: remaining,
+            named_args: SmallVec::new(),
+        });
+        Some(result)
+    }
+
     fn step_naf(
         &mut self,
         kb: &mut KnowledgeBase,
@@ -869,6 +912,7 @@ impl KnowledgeBase {
             BuiltinTag::IsEntityOf => self.builtin_is_entity_of(goal, answer_subst),
             BuiltinTag::ExtractSort => self.builtin_extract_sort(goal, answer_subst),
             BuiltinTag::Not => unreachable!("Not is handled in step_init, not execute_builtin"),
+            BuiltinTag::HoApply => unreachable!("HoApply is handled in step_init, not execute_builtin"),
             BuiltinTag::ResolveSortInstParam => self.builtin_resolve_sort_inst_param(goal, answer_subst),
             BuiltinTag::Scope => self.builtin_scope(goal, answer_subst),
             BuiltinTag::Kind => self.builtin_kind(goal, answer_subst),
