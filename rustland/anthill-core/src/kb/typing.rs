@@ -10,7 +10,7 @@ use smallvec::SmallVec;
 
 use super::term::{Term, TermId, Literal, HandleKind, Var, VarId};
 use super::occurrence::OccurrenceId;
-use super::KnowledgeBase;
+use super::{KnowledgeBase, SortKind};
 use crate::intern::Symbol;
 use crate::span::Span;
 
@@ -77,6 +77,7 @@ pub struct TypingEnv {
     type_bindings: HashMap<String, TermId>,
     expected_collection_type: Option<TermId>,
     local_resources: Vec<String>,
+    pub diagnostics: Vec<String>,
 }
 
 impl TypingEnv {
@@ -86,6 +87,7 @@ impl TypingEnv {
             type_bindings: HashMap::new(),
             expected_collection_type: None,
             local_resources: Vec::new(),
+            diagnostics: Vec::new(),
         }
     }
 
@@ -783,7 +785,7 @@ fn extract_pattern_var_name(kb: &KnowledgeBase, pattern: TermId) -> Option<Strin
     None
 }
 
-/// match_expr: effects = scrutinee ∪ all branches
+/// match_expr: effects = scrutinee ∪ all branches. Also checks exhaustiveness.
 fn check_match_expr(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -800,12 +802,15 @@ fn check_match_expr(
 
     let branch_list = list_to_vec(kb, branches);
     let mut result_ty: Option<TermId> = None;
+    let mut covered_entities: Vec<Symbol> = Vec::new();
+    let mut has_wildcard = false;
 
     for branch_tid in &branch_list {
         if let Term::Fn { named_args: br_args, .. } = kb.get_term(*branch_tid).clone() {
             let pattern = get_named_arg(kb, &br_args, "pattern");
             let body = get_named_arg(kb, &br_args, "body");
             if let (Some(pat), Some(bod)) = (pattern, body) {
+                collect_covered_entities(kb, pat, &mut covered_entities, &mut has_wildcard);
                 let mut branch_env = env.clone();
                 extend_env_from_pattern(kb, &mut branch_env, pat, scr_ty);
                 if let Some(body_r) = type_check_expr(kb, &branch_env, resolve_handle(kb, bod)) {
@@ -816,7 +821,38 @@ fn check_match_expr(
         }
     }
 
-    result_ty.map(|ty| TypeResult { ty, env: env.clone(), effects })
+    // Exhaustiveness check: if scrutinee type is an enum, all entities must be covered
+    let mut result_env = env.clone();
+    if !has_wildcard {
+        if let Some(sty) = scr_ty {
+            if let Some(sort_sym) = extract_sort_ref_sym(kb, sty) {
+                let sort_term = kb.make_name_term_from_sym(sort_sym);
+                if kb.sort_kind(sort_term) == Some(SortKind::Enum) {
+                    let entity_terms = kb.sort_children(sort_term);
+                    let all_entities: Vec<Symbol> = entity_terms.iter().filter_map(|&et| {
+                        match kb.get_term(et) {
+                            Term::Fn { functor, .. } => Some(*functor),
+                            _ => None,
+                        }
+                    }).collect();
+                    let missing: Vec<String> = all_entities.iter()
+                        .filter(|e| !covered_entities.iter().any(|c| {
+                            *c == **e || kb.resolve_sym(*c) == kb.resolve_sym(**e)
+                        }))
+                        .map(|s| kb.resolve_sym(*s).to_string())
+                        .collect();
+                    if !missing.is_empty() {
+                        let sort_name = kb.resolve_sym(sort_sym);
+                        result_env.diagnostics.push(
+                            format!("non-exhaustive match on {}: missing {}", sort_name, missing.join(", "))
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    result_ty.map(|ty| TypeResult { ty, env: result_env, effects })
 }
 
 /// lambda: body effects are encoded in the function type per proposal 003.
@@ -1820,7 +1856,7 @@ pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<Lo
         // Check entity facts: field values match declared field types
         check_entity_facts(kb, &ctor_syms, &mut errors);
 
-        // Check operation bodies: return types compatible with declared
+        // Check operation bodies: return types + exhaustiveness
         check_operation_bodies(kb, &op_syms, &mut errors);
 
         // Check HO pattern fragment restrictions
@@ -2268,6 +2304,61 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                         });
                     }
                 }
+            }
+
+            // Collect exhaustiveness diagnostics from the typing env
+            for diag in &result.env.diagnostics {
+                errors.push(LoadError::TypeMismatch {
+                    entity_name: op.op_name.clone(),
+                    field_name: "match".to_string(),
+                    expected_type: "exhaustive".to_string(),
+                    actual_type: diag.clone(),
+                    span: op.span,
+                });
+            }
+        }
+    }
+}
+
+
+/// Collect which entity constructors a pattern covers (recursively).
+fn collect_covered_entities(
+    kb: &KnowledgeBase,
+    pattern: TermId,
+    covered: &mut Vec<Symbol>,
+    has_wildcard: &mut bool,
+) {
+    if let Term::Fn { functor, named_args, pos_args, .. } = kb.get_term(pattern) {
+        let fname = kb.resolve_sym(*functor).to_string();
+        match fname.as_str() {
+            "wildcard" => { *has_wildcard = true; }
+            "var_pattern" => {
+                // A var_pattern might actually be a nullary constructor (e.g., `case red`)
+                if let Some(sym) = extract_sym_arg(kb, named_args, pos_args, "name") {
+                    let qname = kb.qualified_name_of(sym);
+                    let resolved = kb.try_resolve_symbol(qname);
+                    let ctor_sym = resolved.unwrap_or(sym);
+                    if kb.is_constructor_symbol(ctor_sym) || kb.constructor_parent_sort(ctor_sym).is_some() {
+                        covered.push(ctor_sym);
+                    } else {
+                        *has_wildcard = true;
+                    }
+                } else {
+                    *has_wildcard = true;
+                }
+            }
+            "constructor_pattern" => {
+                // constructor_pattern(name: sym, args: ...)
+                if let Some(sym) = extract_sym_arg(kb, named_args, pos_args, "name") {
+                    covered.push(sym);
+                }
+            }
+            "literal_pattern" => {
+                // literal patterns don't cover enum entities — skip
+            }
+            _ => {
+                // Unknown pattern form — be conservative, treat as wildcard
+                *has_wildcard = true;
             }
         }
     }

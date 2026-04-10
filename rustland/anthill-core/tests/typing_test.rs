@@ -2782,3 +2782,91 @@ fact Holder(items: cons(head: 42, tail: nil))
     assert!(!errors.is_empty(),
         "cons(head: 42) in List[T=String] field should detect Int vs String mismatch");
 }
+
+// ══════════════════════════════════════════════════════════════════
+// Exhaustiveness checking tests
+// ══════════════════════════════════════════════════════════════════
+
+#[test]
+fn exhaustiveness_all_cases_covered() {
+    let source = r#"
+enum Color
+  entity red
+  entity blue
+end
+sort Test
+  operation name(c: Color) -> String =
+    match c
+      case red -> "red"
+      case blue -> "blue"
+    end
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "exhaustive match should be fine, got: {:?}", errors);
+}
+
+#[test]
+fn exhaustiveness_missing_case_detected() {
+    let source = r#"
+enum Color
+  entity red
+  entity blue
+  entity green
+end
+sort Test
+  operation name(c: Color) -> String =
+    match c
+      case red -> "red"
+      case blue -> "blue"
+    end
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let match_errors: Vec<_> = errors.iter()
+        .filter(|e| format!("{}", e).contains("missing"))
+        .collect();
+    assert!(!match_errors.is_empty(), "should detect missing 'green' case, got: {:?}", errors);
+}
+
+#[test]
+fn exhaustiveness_wildcard_covers_all() {
+    let source = r#"
+enum Color
+  entity red
+  entity blue
+  entity green
+end
+sort Test
+  operation name(c: Color) -> String =
+    match c
+      case red -> "red"
+      case ?other -> "other"
+    end
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "wildcard should cover remaining cases, got: {:?}", errors);
+}
+
+#[test]
+fn exhaustiveness_var_pattern_covers_all() {
+    let source = r#"
+enum Color
+  entity red
+  entity blue
+end
+sort Test
+  operation name(c: Color) -> String =
+    match c
+      case ?x -> "something"
+    end
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "var pattern should cover all cases, got: {:?}", errors);
+}
