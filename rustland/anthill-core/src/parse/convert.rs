@@ -390,11 +390,19 @@ impl<'a> Converter<'a> {
 
     fn convert_fn_term(&mut self, node: Node) -> TermId {
         let name_node = self.field(node, "name").unwrap_or(node);
-        let name = self.convert_name(name_node);
-        let functor = self.intern_name(&name);
+
+        // Check if functor is a variable (HO predicate application: ?P(args))
+        let is_ho = name_node.kind() == "variable";
 
         let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
         let mut named_args: SmallVec<[(crate::intern::Symbol, TermId); 2]> = SmallVec::new();
+
+        if is_ho {
+            // HO predicate: ?P(a, b) → ho_apply(?P, a, b)
+            let var_tid = self.convert_variable_node(name_node);
+            pos_args.push(var_tid);
+        }
+
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             match child.kind() {
@@ -407,7 +415,7 @@ impl<'a> Converter<'a> {
                         named_args.push((sym, tid));
                     }
                 }
-                "name" => { /* already handled */ }
+                "name" | "variable" => { /* already handled */ }
                 _ if is_term_kind(child.kind()) => {
                     let tid = self.convert_term(child);
                     pos_args.push(tid);
@@ -416,7 +424,14 @@ impl<'a> Converter<'a> {
             }
         }
 
-        self.terms.alloc(Term::Fn { functor, pos_args, named_args })
+        if is_ho {
+            let ho_apply_sym = self.intern("ho_apply");
+            self.terms.alloc(Term::Fn { functor: ho_apply_sym, pos_args, named_args })
+        } else {
+            let name = self.convert_name(name_node);
+            let functor = self.intern_name(&name);
+            self.terms.alloc(Term::Fn { functor, pos_args, named_args })
+        }
     }
 
     fn convert_instantiation_term(&mut self, node: Node) -> TermId {

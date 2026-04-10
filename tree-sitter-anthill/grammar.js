@@ -39,6 +39,7 @@ module.exports = grammar({
     // After operation clauses, `requires` could be another clause or a standalone declaration
     [$.operation_declaration],
     [$.variable_term],
+    [$.variable_term, $.fn_term],
     // name [ could be parameterized_type or simple_type followed by something else
     [$.simple_type, $.parameterized_type],
     // [ after rule head could be meta_block or start of next rule_entry with collection_literal
@@ -536,7 +537,7 @@ module.exports = grammar({
     variable: $ => token(seq('?', optional(/[a-zA-Z_][a-zA-Z0-9_-]*/))),
 
     fn_term: $ => seq(
-      field('name', $.name),
+      field('name', choice($.name, $.variable)),
       '(',
       commaSep($._fn_arg),
       ')',

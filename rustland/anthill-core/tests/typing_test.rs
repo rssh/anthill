@@ -2376,3 +2376,56 @@ fact Foo(x: "wrong")
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(!errors.is_empty(), "should detect type error in user sort");
 }
+
+// ══════════════════════════════════════════════════════════════════
+// HO predicate variable tests
+// ══════════════════════════════════════════════════════════════════
+
+#[test]
+fn ho_predicate_parses_as_ho_apply() {
+    // ?P(nil) should parse and load as ho_apply(?P, nil)
+    let source = r#"
+rule test_induction(?P) :- ?P(nil)
+"#;
+    let mut kb = load_with_source(source);
+    // The rule should be loaded — check it exists
+    let test_sym = kb.try_resolve_symbol("test_induction");
+    assert!(test_sym.is_some(), "test_induction should be defined");
+
+    let facts = kb.by_functor(test_sym.unwrap());
+    assert!(!facts.is_empty(), "should have rule for test_induction");
+    let body = kb.rule_body(facts[0]);
+    assert!(!body.is_empty(), "rule should have a body");
+    // Body goal should be ho_apply(?P, nil)
+    match kb.get_term(body[0]) {
+        Term::Fn { functor, pos_args, .. } => {
+            let fname = kb.resolve_sym(*functor);
+            assert!(fname == "ho_apply" || fname.ends_with(".ho_apply"),
+                "body should be ho_apply, got: {}", fname);
+            assert_eq!(pos_args.len(), 2, "ho_apply should have 2 pos args: ?P and nil");
+        }
+        other => panic!("expected Fn term, got {:?}", other),
+    }
+}
+
+#[test]
+fn ho_predicate_multi_arg() {
+    // ?P(a, b) should parse as ho_apply(?P, a, b)
+    let source = r#"
+rule test(?P) :- ?P(foo, bar)
+"#;
+    let mut kb = load_with_source(source);
+    let test_sym = kb.try_resolve_symbol("test");
+    assert!(test_sym.is_some());
+    let facts = kb.by_functor(test_sym.unwrap());
+    let body = kb.rule_body(facts[0]);
+    match kb.get_term(body[0]) {
+        Term::Fn { functor, pos_args, .. } => {
+            let fname = kb.resolve_sym(*functor);
+            assert!(fname == "ho_apply" || fname.ends_with(".ho_apply"),
+                "body should be ho_apply, got: {}", fname);
+            assert_eq!(pos_args.len(), 3, "ho_apply(?P, foo, bar) = 3 pos args");
+        }
+        other => panic!("expected Fn, got {:?}", other),
+    }
+}

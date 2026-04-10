@@ -1,0 +1,70 @@
+=====================================
+Predicate variable in rule body
+=====================================
+
+rule test(?P) :- ?P(nil)
+
+---
+
+(source_file
+  (rule_declaration
+    head: (rule_head
+      (fn_term
+        name: (name (identifier))
+        (variable_term (variable))))
+    body: (rule_body
+      (fn_term
+        name: (variable)
+        (identifier)))))
+
+=====================================
+Predicate variable with named args
+=====================================
+
+rule test(?P) :- ?P(cons(head: ?h, tail: ?t))
+
+---
+
+(source_file
+  (rule_declaration
+    head: (rule_head
+      (fn_term
+        name: (name (identifier))
+        (variable_term (variable))))
+    body: (rule_body
+      (fn_term
+        name: (variable)
+        (fn_term
+          name: (name (identifier))
+          (named_arg
+            name: (identifier)
+            value: (variable_term (variable)))
+          (named_arg
+            name: (identifier)
+            value: (variable_term (variable))))))))
+
+=====================================
+Multiple predicate applications
+=====================================
+
+rule induction(?P) :- ?P(nil), ?P(a), ?P(b, c)
+
+---
+
+(source_file
+  (rule_declaration
+    head: (rule_head
+      (fn_term
+        name: (name (identifier))
+        (variable_term (variable))))
+    body: (rule_body
+      (fn_term
+        name: (variable)
+        (identifier))
+      (fn_term
+        name: (variable)
+        (identifier))
+      (fn_term
+        name: (variable)
+        (identifier)
+        (identifier)))))
