@@ -2643,3 +2643,36 @@ fn pattern_fragment_stdlib_valid() {
         .collect();
     assert!(ho_errors.is_empty(), "stdlib should have no pattern fragment errors, got: {:?}", ho_errors);
 }
+
+// ══════════════════════════════════════════════════════════════════
+// Effect scoping tests
+// ══════════════════════════════════════════════════════════════════
+
+#[test]
+fn effect_scoping_stdlib_no_spurious_errors() {
+    // Stdlib operations should produce no effect scoping errors
+    let (mut kb, result) = {
+        let dir = common::stdlib_dir();
+        let files = common::collect_anthill_files(&dir);
+        let parsed: Vec<_> = files.iter()
+            .map(|path| {
+                let source = std::fs::read_to_string(path).unwrap();
+                anthill_core::parse::parse(&source).unwrap()
+            })
+            .collect();
+        let refs: Vec<_> = parsed.iter().collect();
+        let mut kb = KnowledgeBase::new();
+        load::register_prelude(&mut kb);
+        kb.register_standard_builtins();
+        let result = load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
+        (kb, result)
+    };
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let effect_errors: Vec<_> = errors.iter()
+        .filter(|e| {
+            let msg = format!("{}", e);
+            msg.contains("effect")
+        })
+        .collect();
+    assert!(effect_errors.is_empty(), "stdlib should have no effect errors, got: {:?}", effect_errors);
+}

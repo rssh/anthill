@@ -141,6 +141,53 @@ impl TypeResult {
     }
 }
 
+/// Filter effects: keep only external effects (on non-local resources).
+/// Effects on let-bound resources are local and don't propagate.
+fn external_effects(kb: &KnowledgeBase, env: &TypingEnv, effects: &[TermId]) -> Vec<TermId> {
+    effects.iter().filter(|&&effect| {
+        // An effect like Modify[store] — check if 'store' is a local resource
+        // Effect terms are sort_ref or parameterized. Extract the resource name.
+        let resource_name = extract_effect_resource_name(kb, effect);
+        match resource_name {
+            Some(name) => !env.is_local_resource(&name),
+            None => true, // can't determine resource — assume external
+        }
+    }).copied().collect()
+}
+
+/// Extract the resource name from an effect term.
+/// e.g., Modify[T = store] → "store", or sort_ref(name: Modify) → None (no resource)
+fn extract_effect_resource_name(kb: &KnowledgeBase, effect: TermId) -> Option<String> {
+    let functor_name = type_functor_name(kb, effect)?;
+    match functor_name {
+        "parameterized" => {
+            // parameterized(base: sort_ref(Modify), bindings: [TypeBinding(param: T, value: sort_ref(store))])
+            if let Term::Fn { named_args, .. } = kb.get_term(effect) {
+                let bindings_tid = get_named_arg(kb, named_args, "bindings")?;
+                let bindings = list_to_vec(kb, bindings_tid);
+                // Take the first binding's value as the resource
+                for b in &bindings {
+                    if let Some(value_tid) = binding_value(kb, *b) {
+                        // The resource could be sort_ref(name: store) or just a Ref
+                        if let Some(sym) = extract_sort_ref_sym(kb, value_tid) {
+                            return Some(kb.resolve_sym(sym).to_string());
+                        }
+                        if let Term::Ref(s) = kb.get_term(value_tid) {
+                            return Some(kb.resolve_sym(*s).to_string());
+                        }
+                    }
+                }
+            }
+            None
+        }
+        "sort_ref" => {
+            // A bare effect like sort_ref(Branch) — no resource parameter
+            None
+        }
+        _ => None,
+    }
+}
+
 /// Merge two effect lists (set union by TermId).
 fn merge_effects(a: &[TermId], b: &[TermId]) -> Vec<TermId> {
     let mut result = a.to_vec();
@@ -589,7 +636,7 @@ fn check_if_expr(
     Some(TypeResult { ty, env: env.clone(), effects })
 }
 
-/// let_expr: effects = value ∪ body
+/// let_expr: effects = value ∪ body (with local resource scoping)
 fn check_let_expr(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -605,6 +652,11 @@ fn check_let_expr(
     let mut ext_env = value_r.as_ref().map(|r| r.env.clone()).unwrap_or_else(|| env.clone());
     extend_env_from_pattern(kb, &mut ext_env, pattern, value_ty);
 
+    // Declare let-bound variable as a local resource for effect scoping
+    if let Some(var_name) = extract_pattern_var_name(kb, pattern) {
+        ext_env.declare_local_resource(var_name);
+    }
+
     let body_r = type_check_expr(kb, &ext_env, resolve_handle(kb, body))?;
 
     let mut effects = Vec::new();
@@ -612,6 +664,18 @@ fn check_let_expr(
     effects = merge_effects(&effects, &body_r.effects);
 
     Some(TypeResult { ty: body_r.ty, env: body_r.env, effects })
+}
+
+/// Extract the variable name from a pattern (for var_pattern).
+fn extract_pattern_var_name(kb: &KnowledgeBase, pattern: TermId) -> Option<String> {
+    if let Term::Fn { functor, named_args, pos_args, .. } = kb.get_term(pattern) {
+        let fname = kb.resolve_sym(*functor);
+        if fname == "var_pattern" {
+            return extract_sym_arg(kb, named_args, pos_args, "name")
+                .map(|s| kb.resolve_sym(s).to_string());
+        }
+    }
+    None
 }
 
 /// match_expr: effects = scrutinee ∪ all branches
@@ -2081,7 +2145,9 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                 });
             }
 
-            for effect in &result.effects {
+            // Filter out local resource effects — only external effects must be declared
+            let ext_effects = external_effects(kb, &result.env, &result.effects);
+            for effect in &ext_effects {
                 if !op.declared_effects.contains(effect) {
                     let effect_name = type_display_name(kb, *effect);
                     let declared_names: Vec<String> = op.declared_effects.iter()
