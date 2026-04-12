@@ -181,6 +181,10 @@ pub struct KnowledgeBase {
     // Populated during load_entity, used by type_check_sorts.
     entity_field_types: HashMap<Symbol, Vec<(Symbol, TermId)>>,
 
+    // SortRequiresInfo facts already finalized by resolve_requires_bindings.
+    // Keyed by post-reassert RuleId. Lets incremental loads skip stdlib facts.
+    resolved_requires_facts: HashSet<RuleId>,
+
     // Source registry (file names/paths)
     pub(crate) sources: SourceRegistry,
 }
@@ -210,8 +214,20 @@ impl KnowledgeBase {
             guards_by_sort: HashMap::new(),
             occurrences: OccurrenceStore::new(),
             entity_field_types: HashMap::new(),
+            resolved_requires_facts: HashSet::new(),
             sources: SourceRegistry::new(),
         }
+    }
+
+    /// Has this SortRequiresInfo fact already been finalized
+    /// (operations auto-bound) by resolve_requires_bindings?
+    pub fn is_requires_resolved(&self, rid: RuleId) -> bool {
+        self.resolved_requires_facts.contains(&rid)
+    }
+
+    /// Mark a (post-reassert) SortRequiresInfo RuleId as finalized.
+    pub fn mark_requires_resolved(&mut self, rid: RuleId) {
+        self.resolved_requires_facts.insert(rid);
     }
 
     // ── Source & occurrence access ─────────────────────────────

@@ -1142,9 +1142,8 @@ pub fn load(
     }
 }
 
-/// Load multiple parsed files into the same knowledge base.
-///
-/// Scans ALL files for definitions first, then loads them. This ensures
+/// Load multiple parsed files into the same knowledge base, including the
+/// prelude. Scans ALL files for definitions first, then loads them, so that
 /// cross-file references resolve correctly regardless of load order.
 pub fn load_all(
     kb: &mut KnowledgeBase,
@@ -1152,6 +1151,38 @@ pub fn load_all(
     resolver: &dyn SourceResolver,
 ) -> Result<LoadResult, Vec<LoadError>> {
     register_prelude(kb);
+    load_phase(kb, files, resolver)
+}
+
+/// Alias of [`load_all`]. Named for clarity when loading stdlib as the first
+/// phase of an incremental workflow; subsequent files can then be added via
+/// [`load_incremental`] without reprocessing already-finalized facts.
+pub fn load_stdlib(
+    kb: &mut KnowledgeBase,
+    files: &[&ParsedFile],
+    resolver: &dyn SourceResolver,
+) -> Result<LoadResult, Vec<LoadError>> {
+    load_all(kb, files, resolver)
+}
+
+/// Load additional files on top of an already-populated KB. Skips
+/// `register_prelude`. Relies on `resolve_instantiations` being idempotent
+/// (`resolved_requires_facts` guard) so stdlib facts are not retracted or
+/// reasserted. The returned `LoadResult.defined_sorts` contains only sorts
+/// defined in `files`.
+pub fn load_incremental(
+    kb: &mut KnowledgeBase,
+    files: &[&ParsedFile],
+    resolver: &dyn SourceResolver,
+) -> Result<LoadResult, Vec<LoadError>> {
+    load_phase(kb, files, resolver)
+}
+
+fn load_phase(
+    kb: &mut KnowledgeBase,
+    files: &[&ParsedFile],
+    resolver: &dyn SourceResolver,
+) -> Result<LoadResult, Vec<LoadError>> {
     let mut all_errors = scan_definitions(kb, files);
     kb.resolve_builtins();
 
@@ -1164,6 +1195,7 @@ pub fn load_all(
         }
     }
     resolve_instantiations(kb);
+    all_errors.extend(super::typing::type_check_sorts(kb, &all_sorts));
     if all_errors.is_empty() {
         Ok(LoadResult { defined_sorts: all_sorts })
     } else {
@@ -1215,6 +1247,9 @@ fn build_base_substitutions(kb: &mut KnowledgeBase) {
     };
 
     let rule_ids = kb.by_functor(sort_info_sym);
+    let name_sym = kb.intern("name");
+    let parameters_sym = kb.intern("parameters");
+    let operations_sym = kb.intern("operations");
     let mut sort_entries: Vec<(Symbol, Vec<(Symbol, TermId)>)> = Vec::new();
 
     for rid in rule_ids {
@@ -1224,17 +1259,18 @@ fn build_base_substitutions(kb: &mut KnowledgeBase) {
         let head = kb.rule_head(rid);
         let term = kb.get_term(head).clone();
         if let Term::Fn { named_args, .. } = term {
-            // Extract sort name symbol
-            let name_sym = kb.intern("name");
-            let parameters_sym = kb.intern("parameters");
-            let operations_sym = kb.intern("operations");
-
             let sort_functor_sym = named_args.iter()
                 .find(|(s, _)| *s == name_sym)
                 .and_then(|(_, tid)| match kb.get_term(*tid) {
                     Term::Ref(sym) => Some(*sym),
                     _ => None,
                 });
+
+            if let Some(sym) = sort_functor_sym {
+                if kb.sort_base_subst(sym).is_some() {
+                    continue;
+                }
+            }
 
             let params_list_tid = named_args.iter()
                 .find(|(s, _)| *s == parameters_sym)
@@ -1328,6 +1364,9 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
     let mut updates: Vec<(super::RuleId, TermId, Symbol, SmallVec<[(Symbol, TermId); 2]>)> = Vec::new();
 
     for rid in &rule_ids {
+        if kb.is_requires_resolved(*rid) {
+            continue;
+        }
         if !kb.rule_body(*rid).is_empty() {
             continue;
         }
@@ -1459,7 +1498,8 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
                 let domain = kb.rule_domain(rid);
                 let meta = kb.rule_meta(rid);
                 kb.retract(rid);
-                kb.assert_fact(new_head, sort, domain, meta);
+                let new_rid = kb.assert_fact(new_head, sort, domain, meta);
+                kb.mark_requires_resolved(new_rid);
             }
         }
     }
