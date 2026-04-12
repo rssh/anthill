@@ -18,6 +18,48 @@ use smallvec::SmallVec;
 
 mod stdlib_embedded;
 
+static SKILL_MD: &str = r#"---
+name: anthill-todo
+description: Manage project work items (add, list, show, claim, deliver) using the anthill-todo CLI. Works in any project directory.
+user-invocable: true
+allowed-tools:
+  - Bash
+  - Read
+  - Edit
+---
+
+# anthill-todo
+
+Manage structured work items for any project using the `anthill-todo` CLI.
+
+## Usage
+
+Always pass `-d` with the current working directory so work items go to the correct project:
+
+```bash
+anthill-todo -d "$PWD" $ARGS
+```
+
+When invoked as `/anthill-todo`, run the CLI with the user's arguments. If no arguments, show the list.
+
+If the project has no `anthill-todo/` directory yet, run `init` first.
+
+## Commands
+
+```bash
+anthill-todo -d "$PWD" list                              # List all work items
+anthill-todo -d "$PWD" add "description" [--depends WI-NNN]  # Add a new work item
+anthill-todo -d "$PWD" show WI-NNN                       # Show details
+anthill-todo -d "$PWD" next                              # Show next claimable item
+anthill-todo -d "$PWD" --agent claude claim WI-NNN       # Claim a work item
+anthill-todo -d "$PWD" --agent claude deliver WI-NNN     # Mark as delivered
+anthill-todo -d "$PWD" feedback WI-NNN "feedback text"   # Add feedback
+anthill-todo -d "$PWD" status                            # Show status counts
+anthill-todo -d "$PWD" graph                             # Show dependency graph
+anthill-todo -d "$PWD" init                              # Initialize anthill-todo/ in project
+```
+"#;
+
 // ── CLI types ───────────────────────────────────────────────────
 
 #[derive(Parser)]
@@ -123,6 +165,8 @@ enum TodoCommand {
     },
     /// Show dependency graph
     Graph,
+    /// Print Claude Code skill definition to stdout
+    Skill,
 }
 
 // ── File collection ─────────────────────────────────────────────
@@ -231,7 +275,7 @@ fn scan_dir(project_dir: &Path) -> PathBuf {
 
 fn load_kb(project_dir: &Path, stdlib_path: Option<&Path>) -> Result<KnowledgeBase, String> {
     // Phase 1: Parse stdlib (embedded or from disk)
-    let mut parsed_files: Vec<ParsedFile> = Vec::new();
+    let mut stdlib_parsed: Vec<ParsedFile> = Vec::new();
 
     if let Some(stdlib_dir) = stdlib_path {
         let stdlib_files = collect_anthill_files(&[stdlib_dir.to_path_buf()]);
@@ -239,7 +283,7 @@ fn load_kb(project_dir: &Path, stdlib_path: Option<&Path>) -> Result<KnowledgeBa
             let source = fs::read_to_string(file)
                 .map_err(|e| format!("{}: {e}", file.display()))?;
             match parse::parse(&source) {
-                Ok(p) => parsed_files.push(p),
+                Ok(p) => stdlib_parsed.push(p),
                 Err(errs) => {
                     for e in &errs {
                         eprintln!("warning: {}: {e}", file.display());
@@ -248,8 +292,8 @@ fn load_kb(project_dir: &Path, stdlib_path: Option<&Path>) -> Result<KnowledgeBa
             }
         }
     } else {
-        let (stdlib_parsed, stdlib_errors) = stdlib_embedded::parse_embedded_stdlib();
-        parsed_files.extend(stdlib_parsed);
+        let (embedded, stdlib_errors) = stdlib_embedded::parse_embedded_stdlib();
+        stdlib_parsed.extend(embedded);
         for e in &stdlib_errors {
             eprintln!("warning: {e}");
         }
@@ -258,11 +302,12 @@ fn load_kb(project_dir: &Path, stdlib_path: Option<&Path>) -> Result<KnowledgeBa
     // Phase 2: Parse project files (only from anthill-todo/ subdir, not whole project)
     let scan = scan_dir(project_dir);
     let project_files = collect_anthill_files(&[scan.clone()]);
+    let mut domain_parsed: Vec<ParsedFile> = Vec::new();
     for file in &project_files {
         let source = fs::read_to_string(file)
             .map_err(|e| format!("{}: {e}", file.display()))?;
         match parse::parse(&source) {
-            Ok(p) => parsed_files.push(p),
+            Ok(p) => domain_parsed.push(p),
             Err(errs) => {
                 for e in &errs {
                     eprintln!("warning: {}:{}", file.display(), e.format_with_source(&source));
@@ -271,25 +316,26 @@ fn load_kb(project_dir: &Path, stdlib_path: Option<&Path>) -> Result<KnowledgeBa
         }
     }
 
-    if parsed_files.is_empty() {
+    if stdlib_parsed.is_empty() && domain_parsed.is_empty() {
         return Err("no .anthill files found".into());
     }
 
     let mut kb = KnowledgeBase::new();
 
-    let paths = &[project_dir.to_path_buf()];
-    let base_dirs: Vec<PathBuf> = paths.iter()
-        .filter_map(|p| {
-            if p.is_dir() { p.parent().map(|pp| pp.to_path_buf()) }
-            else { p.parent().and_then(|pp| pp.parent()).map(|pp| pp.to_path_buf()) }
-        })
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
+    let base_dirs: Vec<PathBuf> = project_dir.parent()
+        .map(|p| vec![p.to_path_buf()])
+        .unwrap_or_default();
     let resolver = FileSourceResolver::new(base_dirs);
 
-    let refs: Vec<&ParsedFile> = parsed_files.iter().collect();
-    if let Err(errs) = load::load_all(&mut kb, &refs, &resolver) {
+    let stdlib_refs: Vec<&ParsedFile> = stdlib_parsed.iter().collect();
+    if let Err(errs) = load::load_stdlib(&mut kb, &stdlib_refs, &resolver) {
+        for e in &errs {
+            eprintln!("warning: {e}");
+        }
+    }
+
+    let domain_refs: Vec<&ParsedFile> = domain_parsed.iter().collect();
+    if let Err(errs) = load::load_incremental(&mut kb, &domain_refs, &resolver) {
         for e in &errs {
             eprintln!("warning: {e}");
         }
@@ -1264,7 +1310,11 @@ fn run_init(project_name: Option<&str>) {
 
 // ── Add command ─────────────────────────────────────────────────
 
-fn next_workitem_id(kb: &KnowledgeBase) -> String {
+fn next_workitem_id(kb: &KnowledgeBase) -> Result<String, String> {
+    if kb.try_resolve_symbol("anthill.stage0.WorkItem").is_none() {
+        return Err("WorkItem sort not found in KB — domain.anthill may have parse errors. Run with RUST_LOG=warn to see details.".into());
+    }
+
     let items = collect_workitems(kb);
     let mut max_num: u32 = 0;
 
@@ -1276,11 +1326,17 @@ fn next_workitem_id(kb: &KnowledgeBase) -> String {
         }
     }
 
-    format!("WI-{:03}", max_num + 1)
+    Ok(format!("WI-{:03}", max_num + 1))
 }
 
 fn run_add(kb: &KnowledgeBase, project_dir: &Path, description: &str, depends_on: &[String], acceptance: &[String]) {
-    let id = next_workitem_id(kb);
+    let id = match next_workitem_id(kb) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return;
+        }
+    };
     let desc_escaped = description.replace('"', "\\\"");
 
     let deps = format_string_list(depends_on);
@@ -1307,9 +1363,14 @@ fn run_add(kb: &KnowledgeBase, project_dir: &Path, description: &str, depends_on
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    // Init doesn't need project dir
+    // These commands don't need project dir
     if let TodoCommand::Init { name } = &cli.command {
         run_init(name.as_deref());
+        return ExitCode::SUCCESS;
+    }
+
+    if let TodoCommand::Skill = &cli.command {
+        print!("{}", SKILL_MD);
         return ExitCode::SUCCESS;
     }
 
@@ -1336,7 +1397,7 @@ fn main() -> ExitCode {
     };
 
     match &cli.command {
-        TodoCommand::Init { .. } | TodoCommand::Delete { .. } => unreachable!(),
+        TodoCommand::Init { .. } | TodoCommand::Delete { .. } | TodoCommand::Skill => unreachable!(),
         TodoCommand::Add { description, depends_on, acceptance } => {
             run_add(&kb, &project_dir, description, depends_on, acceptance);
         }
