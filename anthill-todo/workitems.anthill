@@ -39,7 +39,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-008",
-  description: "implement expressions",
+  description: "implement evaluation of expressions",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-001"],
   status: Open)
@@ -209,7 +209,7 @@ fact WorkItem(
   description: "Expression type-checking: implement type_check for all expression forms (literals, variables, constructors, application, if/match/let/lambda) per typing_pass_spec.anthill",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-031"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-04-12T20:11:19Z"))
 
 fact WorkItem(
   id: "WI-033",
