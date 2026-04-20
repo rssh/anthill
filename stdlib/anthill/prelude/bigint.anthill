@@ -3,7 +3,7 @@
 -- Literals that overflow i64 are automatically parsed as BigInt.
 namespace anthill.prelude.BigInt
   import anthill.prelude.{Eq, Ordered, Numeric}
-  export to_bigint, to_int
+  export to_bigint, to_int, to_float
 
   -- BigInt satisfies the parametric algebra specs.
   -- These facts declare that eq, neq, compare, gt, lt, gte, lte,
@@ -15,4 +15,8 @@ namespace anthill.prelude.BigInt
   -- Conversion operations
   operation to_bigint(n: Int) -> BigInt
   operation to_int(n: BigInt) -> Option[T = Int]
+  -- BigInt → Float. Lossy for values beyond f64's precision (~2^53) —
+  -- rounds to nearest representable Float, may saturate to Infinity.
+  -- Total function: all inputs produce a defined Float (possibly Inf).
+  operation to_float(n: BigInt) -> Float
 end

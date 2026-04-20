@@ -16,6 +16,14 @@
 --   Modify[target] — mutates a parameter (non-obvious from signature)
 --   Error          — can fail with an untyped error
 --   Error[type]    — can fail with a typed error
+--
+-- Runtime-handler semantics (Rust evaluator, M5):
+--   A handler is registered per effect sort (`Modify`, `Error`, …), not
+--   per instantiation. The default `Modify` handler holds one arena keyed
+--   by the target's functor symbol — `set(store, v)` and `set(counter, v)`
+--   share the same handler but live in separate slots within it. To give
+--   a specific resource its own handler, replace the global Modify handler
+--   with a dispatcher that switches on the target symbol.
 
 -- Effect: meta-sort for effect registration.
 -- fact Effect[T = Modify[?]] means "Modify[target] for any target is a valid effect."
@@ -45,6 +53,15 @@ end
 sort Branch
   import anthill.prelude.{Nothing}
   operation fail() -> Nothing effects Branch
+end
+
+-- Payload for match-failure errors. Raised through `Error[MatchFailed]` by
+-- the evaluator when a `match` expression has no matching arm. The
+-- exhaustiveness-checked typer removes `Error[MatchFailed]` from a match's
+-- inferred effect row when all arms are covered.
+sort MatchFailed
+  import anthill.reflect.{Occurrence, Term}
+  entity match_failed(occurrence: Occurrence, scrutinee: Term)
 end
 
 -- Register as effects

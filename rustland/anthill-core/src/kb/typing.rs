@@ -679,7 +679,7 @@ fn infer_constructor_type(
                         if alias_name.starts_with(&parent_name) && alias_name.len() > parent_name.len() {
                             let param_short = alias_name[parent_name.len() + 1..].to_string();
                             if let Term::Var(Var::Global(vid)) = kb.get_term(target_tid) {
-                                if let Some(&bound_type) = subst.bindings.get(vid) {
+                                if let Some(bound_type) = subst.resolve(*vid) {
                                     alias_info.push((param_short, bound_type));
                                 }
                             }

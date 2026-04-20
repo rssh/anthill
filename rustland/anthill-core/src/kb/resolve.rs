@@ -343,11 +343,13 @@ impl SearchStream {
                     return Some(StepResult::Continue);
                 }
                 BuiltinResult::SuccessWithBindings(extra) => {
-                    // Merge extra bindings into the current substitution
+                    // Merge extra bindings into the current substitution.
+                    // Iterate Value-typed bindings; use bind_value so we
+                    // don't force everything through Value::Term.
                     let new_goals = frame.goals[1..].to_vec();
                     let mut new_subst = frame.subst.clone();
-                    for (var, tid) in extra.bindings.iter() {
-                        new_subst.bind(*var, *tid);
+                    for (var, val) in extra.bindings.iter() {
+                        new_subst.bind_value(*var, val.clone());
                     }
                     let new_depth = depth + 1;
                     let new_delay = delay_mode.reset();
@@ -688,7 +690,10 @@ impl SearchStream {
             // Ground fact (occurrence or rule with empty body)
             let remaining = kb.apply_subst_each(&frame.goals[1..], &tree_subst);
             let mut merged = frame.subst.clone();
-            merged.bind_compressed(tree_subst.bindings.into_iter(), &kb.terms);
+            // bind_compressed wants (VarId, TermId) pairs; filter to the
+            // Value::Term subset — path compression is TermId-only.
+            let term_pairs: Vec<(VarId, TermId)> = tree_subst.iter_terms().collect();
+            merged.bind_compressed(term_pairs.into_iter(), &kb.terms);
             let new_delay = delay_mode.reset();
             self.stack.push(Frame {
                 goals: remaining,
@@ -703,19 +708,20 @@ impl SearchStream {
             let remaining = kb.apply_subst_each(&frame.goals[1..], &tree_subst);
 
             let caller_fresh_vars: Vec<VarId> = answer_links
-                .bindings
-                .values()
-                .filter_map(|&tid| match kb.terms.get(tid) {
+                .iter_terms()
+                .filter_map(|(_, tid)| match kb.terms.get(tid) {
                     Term::Var(Var::Global(vid)) => Some(*vid),
                     _ => None,
                 })
                 .collect();
 
             let mut merged = frame.subst.clone();
-            merged.bind_compressed(
-                answer_links.bindings.into_iter(),
-                &kb.terms,
-            );
+            // Path compression over the Value::Term subset of the link
+            // bindings. Non-Term variants don't participate in caller-var
+            // linkage, so filtering them out matches the pre-refactor
+            // behavior exactly.
+            let link_pairs: Vec<(VarId, TermId)> = answer_links.iter_terms().collect();
+            merged.bind_compressed(link_pairs.into_iter(), &kb.terms);
 
             // Pre-check: delay propagation on caller vars
             if !caller_fresh_vars.is_empty()

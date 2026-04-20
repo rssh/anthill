@@ -668,8 +668,18 @@ fn print_query_results(
         // Print bindings if any
         let bindings: Vec<String> = subst
             .iter()
-            .map(|(vid, tid)| {
-                format!("?{} = {}", kb.resolve_sym(vid.name()), printer.print_term(*tid))
+            .map(|(vid, val)| {
+                use anthill_core::eval::Value;
+                let rendered = match val {
+                    Value::Term(tid) => printer.print_term(*tid),
+                    Value::Int(n) => n.to_string(),
+                    Value::BigInt(n) => n.to_string(),
+                    Value::Float(f) => f.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Str(s) => format!("{:?}", s),
+                    other => format!("{:?}", other),
+                };
+                format!("?{} = {}", kb.resolve_sym(vid.name()), rendered)
             })
             .collect();
         if !bindings.is_empty() {

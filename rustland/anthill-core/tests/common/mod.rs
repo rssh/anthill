@@ -2,6 +2,11 @@
 
 use std::path::PathBuf;
 
+use anthill_core::eval::{self, Interpreter};
+use anthill_core::kb::KnowledgeBase;
+use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::parse;
+
 /// Collect all .anthill files under a directory, recursively.
 pub fn collect_anthill_files(dir: &std::path::Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
@@ -26,11 +31,93 @@ pub fn stdlib_dir() -> PathBuf {
 }
 
 /// Path to anthill-testcases/ relative to the anthill-core crate root.
+#[allow(dead_code)]
 pub fn testcases_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../anthill-testcases")
 }
 
 /// Path to examples/ relative to the anthill-core crate root.
+#[allow(dead_code)]
 pub fn examples_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples")
+}
+
+/// Load the stdlib + the given user source into a fresh KB. Panics with a
+/// readable diagnostic on parse or load errors. Used across every eval
+/// integration test; previously hand-copied in each file.
+#[allow(dead_code)]
+pub fn load_kb_with(source: &str) -> KnowledgeBase {
+    let dir = stdlib_dir();
+    let files = collect_anthill_files(&dir);
+    assert!(!files.is_empty(), "stdlib empty");
+
+    let mut parsed: Vec<_> = files.iter()
+        .map(|p| {
+            let src = std::fs::read_to_string(p)
+                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
+    parsed.push(parse::parse(source).expect("parse user source"));
+
+    let refs: Vec<_> = parsed.iter().collect();
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    load::load_all(&mut kb, &refs, &NullResolver)
+        .unwrap_or_else(|errs| {
+            for e in &errs { eprintln!("{}", e); }
+            panic!("load failed with {} errors", errs.len());
+        });
+    kb
+}
+
+/// Load stdlib + user source, construct an `Interpreter`, and register the
+/// standard eval builtins. The one-liner every eval_mN_test file needs.
+#[allow(dead_code)]
+pub fn interp_for(source: &str) -> Interpreter {
+    let kb = load_kb_with(source);
+    let mut interp = Interpreter::new(kb);
+    eval::builtins::register_standard_builtins(&mut interp)
+        .expect("register standard eval builtins");
+    interp
+}
+
+// ── Effect handler test helpers (M5) ─────────────────────────
+
+/// Build a buffered `ConsoleOutput` handler and return `(buffer, handler)`.
+/// The buffer is owned by the caller and outlives the handler — inspect
+/// it after the test program runs.
+#[allow(dead_code)]
+pub fn buffered_console_output() -> (
+    std::rc::Rc<std::cell::RefCell<String>>,
+    anthill_core::eval::effects::EffectHandler,
+) {
+    let buf = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+    let handler = anthill_core::eval::effects::buffered_console_output_handler(buf.clone());
+    (buf, handler)
+}
+
+/// Build a scripted `ConsoleInput` handler from a list of lines and
+/// return `(queue, handler)`. The queue holds any lines the program
+/// didn't consume — useful for assertions.
+#[allow(dead_code)]
+pub fn scripted_console_input(lines: &[&str]) -> (
+    std::rc::Rc<std::cell::RefCell<std::collections::VecDeque<String>>>,
+    anthill_core::eval::effects::EffectHandler,
+) {
+    let queue = std::rc::Rc::new(std::cell::RefCell::new(
+        lines.iter().map(|s| s.to_string()).collect()
+    ));
+    let handler = anthill_core::eval::effects::scripted_console_input_handler(queue.clone());
+    (queue, handler)
+}
+
+/// Register the default `Modify` arena-backed handler on the interpreter.
+/// Shared across Modify-focused tests that don't want to depend on the
+/// stdio-binding side effects of `register_standard_effect_handlers`.
+#[allow(dead_code)]
+pub fn register_modify_handler(interp: &mut Interpreter) {
+    interp.register_effect_handler("Modify", anthill_core::eval::effects::default_modify_handler())
+        .expect("register Modify handler");
 }

@@ -1,0 +1,38 @@
+-- Console: typed I/O resource for terminal interaction.
+--
+-- Console is a resource sort with a single entity `console`. Operations
+-- take the console explicitly and declare their effect as
+-- `ConsoleOutput` (writes to stdout) or `ConsoleInput` (reads from stdin).
+-- The handler in `anthill run` binds the Console to process stdio;
+-- tests substitute buffers.
+--
+-- Effect kinds are Console-specific rather than parameterized
+-- `Output[T]` / `Input[T]`: today the only payload type is `String` and
+-- the only resource is Console, so the generic parameter never varies.
+-- When another I/O resource with a matching shape appears, generalize.
+sort anthill.prelude.Console
+  import anthill.prelude.{String, Unit, Effect}
+  export Console, console, ConsoleOutput, ConsoleInput, print, println, read_line
+
+  entity console
+
+  -- Effect kinds specific to Console. Unparameterized — the effect is
+  -- the capability itself, like `Error` / `Suspension`.
+  sort ConsoleOutput
+  end
+
+  sort ConsoleInput
+  end
+
+  fact Effect[T = ConsoleOutput]
+  fact Effect[T = ConsoleInput]
+
+  operation print(c: Console, s: String) -> Unit
+    effects ConsoleOutput
+
+  operation println(c: Console, s: String) -> Unit
+    effects ConsoleOutput
+
+  operation read_line(c: Console) -> String
+    effects ConsoleInput
+end

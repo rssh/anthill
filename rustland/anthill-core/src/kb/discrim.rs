@@ -17,6 +17,8 @@ use crate::intern::Symbol;
 use super::persist_subst::{ArgPos, BindValue, PersistSubst, SmallSubst, VarPath};
 use super::subst::Substitution;
 use super::term::{Literal, Term, TermId, TermStore, Var};
+use super::term_view::{TermView, ViewHead, ViewItem};
+use super::KnowledgeBase;
 #[cfg(test)]
 use super::term::VarId;
 
@@ -378,94 +380,97 @@ impl<L> SubstTree<L> {
 // arbitrary nesting depth — no temporary Vec allocation needed.
 
 impl<L: Clone> SubstTree<L> {
-    pub(crate) fn query_raw(
+    pub(crate) fn query_raw<V: TermView>(
         &self,
-        terms: &TermStore,
-        query_term: TermId,
+        kb: &KnowledgeBase,
+        query: &V,
     ) -> Vec<(L, SmallSubst)> {
         let mut results = Vec::new();
-        Self::query_node(&self.root, terms, query_term, VarPath::Root, SmallSubst::new(), &mut results);
+        Self::query_node(&self.root, kb, query, VarPath::Root, SmallSubst::new(), &mut results);
         results
     }
 
-    pub(crate) fn query_resolved<F>(
+    pub(crate) fn query_resolved<V: TermView, F>(
         &self,
-        terms: &TermStore,
-        query_term: TermId,
+        kb: &KnowledgeBase,
+        query: &V,
         resolve_term: F,
     ) -> Vec<(L, Substitution)>
     where
         F: Fn(&L) -> TermId,
     {
-        self.query_raw(terms, query_term).into_iter()
+        self.query_raw(kb, query).into_iter()
             .map(|(leaf, subst)| {
                 let fact_term = resolve_term(&leaf);
-                let s = subst.resolve_leaf(terms, fact_term);
+                let s = subst.resolve_leaf(&kb.terms, fact_term);
                 (leaf, s)
             })
             .collect()
     }
 
-    fn query_node(
+    fn query_node<V: TermView>(
         node: &DiscrimNode<L>,
-        terms: &TermStore,
-        query_term: TermId,
+        kb: &KnowledgeBase,
+        query: &V,
         path: VarPath,
         subst: SmallSubst,
         results: &mut Vec<(L, SmallSubst)>,
     ) {
-        match terms.get(query_term) {
-            Term::Var(Var::Global(vid)) => {
-                let s = subst.with_binding(*vid, BindValue::Path(path));
+        match query.head(kb) {
+            ViewHead::Var(vid) => {
+                let s = subst.with_binding(vid, BindValue::Path(path));
                 Self::collect_all_leaves(node, s, results);
             }
-            Term::Var(Var::DeBruijn(_)) => {
-                // DeBruijn vars don't participate in substitution tree queries
-            }
-
-            Term::Fn { functor, pos_args, named_args } => {
-                let functor = *functor;
-                let pos_args = pos_args.clone();
-                let named_args = named_args.clone();
-                let arity = pos_args.len() + named_args.len();
-                if let Some(n1) = node.concrete.get(&DiscrimKey::Functor(functor)) {
-                    if let Some(n2) = n1.concrete.get(&DiscrimKey::Arity(arity as u16)) {
-                        let collect_leaves = |node: &DiscrimNode<L>, subst: SmallSubst, results: &mut Vec<(L, SmallSubst)>| {
-                            for leaf in &node.leaves {
-                                results.push((leaf.clone(), subst.clone()));
-                            }
-                        };
-                        Self::query_args(n2, terms, &pos_args, &named_args, 0, true,
-                            subst.clone(), results, &collect_leaves);
+            ViewHead::Functor { functor, pos_arity, named_arity } => {
+                let arity = pos_arity + named_arity;
+                if let Some(fsym) = functor {
+                    if let Some(n1) = node.concrete.get(&DiscrimKey::Functor(fsym)) {
+                        if let Some(n2) = n1.concrete.get(&DiscrimKey::Arity(arity as u16)) {
+                            let named_keys = query.named_keys(kb);
+                            let collect_leaves = |node: &DiscrimNode<L>, subst: SmallSubst, results: &mut Vec<(L, SmallSubst)>| {
+                                for leaf in &node.leaves {
+                                    results.push((leaf.clone(), subst.clone()));
+                                }
+                            };
+                            Self::query_args(
+                                n2, kb, query, 0, pos_arity, &named_keys, 0,
+                                0, true, subst.clone(), results, &collect_leaves,
+                            );
+                        }
                     }
                 }
-
                 for (tree_var, child) in &node.var_edges {
-                    let branch = subst.clone()
-                        .with_binding(tree_var.as_vid(), BindValue::Term(query_term));
+                    let branch = subst.clone().with_binding(tree_var.as_vid(), query.as_bind_value());
                     Self::collect_all_leaves(child, branch, results);
                 }
             }
-
-            Term::Const(lit) => {
-                Self::query_leaf_key(node, &DiscrimKey::Lit(lit.clone()), query_term, subst, results);
+            ViewHead::Const(lit) => {
+                Self::query_leaf_key(node, &DiscrimKey::Lit(lit), query, subst, results);
             }
-            Term::Ident(sym) => {
-                Self::query_leaf_key(node, &DiscrimKey::Ident(*sym), query_term, subst, results);
+            ViewHead::Ident(sym) => {
+                Self::query_leaf_key(node, &DiscrimKey::Ident(sym), query, subst, results);
             }
-            Term::Ref(sym) => {
-                Self::query_leaf_key(node, &DiscrimKey::Ref(*sym), query_term, subst, results);
+            ViewHead::Ref(sym) => {
+                Self::query_leaf_key(node, &DiscrimKey::Ref(sym), query, subst, results);
             }
-            Term::Bottom => {
-                Self::query_leaf_key(node, &DiscrimKey::Bottom, query_term, subst, results);
+            ViewHead::Bottom => {
+                Self::query_leaf_key(node, &DiscrimKey::Bottom, query, subst, results);
+            }
+            ViewHead::Opaque => {
+                // Closures, streams, lazies, DeBruijn — no concrete match.
+                // Still honor var_edges so an opaque value can bind a tree var.
+                for (tree_var, child) in &node.var_edges {
+                    let branch = subst.clone().with_binding(tree_var.as_vid(), query.as_bind_value());
+                    Self::collect_all_leaves(child, branch, results);
+                }
             }
         }
     }
 
-    fn query_leaf_key(
+    fn query_leaf_key<V: TermView>(
         node: &DiscrimNode<L>,
         key: &DiscrimKey,
-        query_term: TermId,
+        query: &V,
         subst: SmallSubst,
         results: &mut Vec<(L, SmallSubst)>,
     ) {
@@ -475,160 +480,173 @@ impl<L: Clone> SubstTree<L> {
             }
         }
         for (tree_var, child) in &node.var_edges {
-            let branch = subst.clone()
-                .with_binding(tree_var.as_vid(), BindValue::Term(query_term));
+            let branch = subst.clone().with_binding(tree_var.as_vid(), query.as_bind_value());
             Self::collect_all_leaves(child, branch, results);
         }
     }
 
-    /// Process args in canonical order. `on_done` is called when all args match.
-    /// `bind_paths`: true at top-level args (VarPath valid), false at nested
-    /// positions (VarPath only supports one level of extraction).
-    fn query_args(
+    /// Process args in canonical order: positionals 0..pos_total first,
+    /// then named in `named_keys` starting at `named_idx`. `on_done` fires
+    /// when both cursors reach their ends.
+    #[allow(clippy::too_many_arguments)]
+    fn query_args<V: TermView>(
         node: &DiscrimNode<L>,
-        terms: &TermStore,
-        positional: &[TermId],
-        named: &[(Symbol, TermId)],
+        kb: &KnowledgeBase,
+        query: &V,
+        pos_idx: usize,
+        pos_total: usize,
+        named_keys: &[Symbol],
+        named_idx: usize,
         pos_offset: usize,
         bind_paths: bool,
         subst: SmallSubst,
         results: &mut Vec<(L, SmallSubst)>,
         on_done: &dyn Fn(&DiscrimNode<L>, SmallSubst, &mut Vec<(L, SmallSubst)>),
     ) {
-        if positional.is_empty() && named.is_empty() {
+        if pos_idx >= pos_total && named_idx >= named_keys.len() {
             on_done(node, subst, results);
             return;
         }
 
-        if !positional.is_empty() {
+        if pos_idx < pos_total {
             let path = if bind_paths {
                 Some(VarPath::Arg(ArgPos::Positional(pos_offset)))
             } else { None };
             if let Some(mc) = node.concrete.get(&DiscrimKey::Positional) {
-                Self::query_arg_value(
-                    mc, terms, positional[0], path,
-                    &positional[1..], named, pos_offset + 1, bind_paths,
-                    subst, results, on_done,
-                );
+                if let Some(arg) = query.pos_arg(kb, pos_idx) {
+                    Self::query_arg_value(
+                        mc, kb, arg, path, query,
+                        pos_idx + 1, pos_total, named_keys, named_idx,
+                        pos_offset + 1, bind_paths, subst, results, on_done,
+                    );
+                }
             }
         } else {
-            let (sym, id) = named[0];
+            let sym = named_keys[named_idx];
             let path = if bind_paths {
                 Some(VarPath::Arg(ArgPos::Named(sym)))
             } else { None };
             if let Some(mc) = node.concrete.get(&DiscrimKey::NamedKey(sym)) {
-                Self::query_arg_value(
-                    mc, terms, id, path,
-                    positional, &named[1..], pos_offset, bind_paths,
-                    subst, results, on_done,
-                );
+                if let Some(arg) = query.named_arg(kb, sym) {
+                    Self::query_arg_value(
+                        mc, kb, arg, path, query,
+                        pos_idx, pos_total, named_keys, named_idx + 1,
+                        pos_offset, bind_paths, subst, results, on_done,
+                    );
+                }
             }
         }
     }
 
-    /// Process one arg value, then continue with remaining args.
-    fn query_arg_value(
+    /// Process one arg value, then continue with the remaining args of the
+    /// outer query via `query_args`.
+    #[allow(clippy::too_many_arguments)]
+    fn query_arg_value<V: TermView>(
         node: &DiscrimNode<L>,
-        terms: &TermStore,
-        arg_term_id: TermId,
+        kb: &KnowledgeBase,
+        arg: ViewItem<'_>,
         arg_path: Option<VarPath>,
-        remaining_pos: &[TermId],
-        remaining_named: &[(Symbol, TermId)],
+        outer: &V,
+        pos_idx: usize,
+        pos_total: usize,
+        named_keys: &[Symbol],
+        named_idx: usize,
         pos_offset: usize,
         bind_paths: bool,
         subst: SmallSubst,
         results: &mut Vec<(L, SmallSubst)>,
         on_done: &dyn Fn(&DiscrimNode<L>, SmallSubst, &mut Vec<(L, SmallSubst)>),
     ) {
-        match terms.get(arg_term_id) {
-            Term::Var(Var::Global(vid)) => {
+        match arg.head(kb) {
+            ViewHead::Var(vid) => {
                 let s = match arg_path {
-                    Some(path) => subst.with_binding(*vid, BindValue::Path(path)),
+                    Some(path) => subst.with_binding(vid, BindValue::Path(path)),
                     None => subst,
                 };
                 Self::skip_subtree_then_continue(
-                    node, terms, remaining_pos, remaining_named, pos_offset,
-                    bind_paths, s, results, on_done,
+                    node, kb, outer, pos_idx, pos_total, named_keys, named_idx,
+                    pos_offset, bind_paths, s, results, on_done,
                 );
             }
-            Term::Var(Var::DeBruijn(_)) => {
-                // DeBruijn vars: skip subtree like a wildcard, no binding
-                Self::skip_subtree_then_continue(
-                    node, terms, remaining_pos, remaining_named, pos_offset,
-                    bind_paths, subst, results, on_done,
-                );
-            }
-
-            Term::Fn { functor, pos_args, named_args } => {
-                let functor = *functor;
-                let inner_pos = pos_args.clone();
-                let inner_named = named_args.clone();
-                let arity = inner_pos.len() + inner_named.len();
-                if let Some(n1) = node.concrete.get(&DiscrimKey::Functor(functor)) {
-                    if let Some(n2) = n1.concrete.get(&DiscrimKey::Arity(arity as u16)) {
-                        // After inner args, continue with remaining outer args
-                        let nested_cont = |node: &DiscrimNode<L>, subst: SmallSubst, results: &mut Vec<(L, SmallSubst)>| {
+            ViewHead::Functor { functor, pos_arity, named_arity } => {
+                let arity = pos_arity + named_arity;
+                if let Some(fsym) = functor {
+                    if let Some(n1) = node.concrete.get(&DiscrimKey::Functor(fsym)) {
+                        if let Some(n2) = n1.concrete.get(&DiscrimKey::Arity(arity as u16)) {
+                            let inner_named_keys = arg.named_keys(kb);
+                            let nested_cont = |node: &DiscrimNode<L>, subst: SmallSubst, results: &mut Vec<(L, SmallSubst)>| {
+                                Self::query_args(
+                                    node, kb, outer, pos_idx, pos_total, named_keys, named_idx,
+                                    pos_offset, bind_paths, subst, results, on_done,
+                                );
+                            };
                             Self::query_args(
-                                node, terms, remaining_pos, remaining_named, pos_offset,
-                                bind_paths, subst, results, on_done,
+                                n2, kb, &arg, 0, pos_arity, &inner_named_keys, 0,
+                                0, false, subst.clone(), results, &nested_cont,
                             );
-                        };
-                        Self::query_args(
-                            n2, terms, &inner_pos, &inner_named, 0, false,
-                            subst.clone(), results, &nested_cont,
-                        );
+                        }
                     }
                 }
-                // var_edges: tree variable matches this nested Fn
                 for (tree_var, child) in &node.var_edges {
-                    let branch = subst.clone()
-                        .with_binding(tree_var.as_vid(), BindValue::Term(arg_term_id));
+                    let branch = subst.clone().with_binding(tree_var.as_vid(), arg.as_bind_value());
                     Self::query_args(
-                        child, terms, remaining_pos, remaining_named, pos_offset,
-                        bind_paths, branch, results, on_done,
+                        child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
+                        pos_offset, bind_paths, branch, results, on_done,
                     );
                 }
             }
-
-            Term::Const(lit) => {
+            ViewHead::Const(lit) => {
                 Self::follow_key_then_continue(
-                    node, &DiscrimKey::Lit(lit.clone()), arg_term_id, terms,
-                    remaining_pos, remaining_named, pos_offset, bind_paths,
+                    node, &DiscrimKey::Lit(lit), arg, kb, outer,
+                    pos_idx, pos_total, named_keys, named_idx, pos_offset, bind_paths,
                     subst, results, on_done,
                 );
             }
-            Term::Ident(sym) => {
+            ViewHead::Ident(sym) => {
                 Self::follow_key_then_continue(
-                    node, &DiscrimKey::Ident(*sym), arg_term_id, terms,
-                    remaining_pos, remaining_named, pos_offset, bind_paths,
+                    node, &DiscrimKey::Ident(sym), arg, kb, outer,
+                    pos_idx, pos_total, named_keys, named_idx, pos_offset, bind_paths,
                     subst, results, on_done,
                 );
             }
-            Term::Ref(sym) => {
+            ViewHead::Ref(sym) => {
                 Self::follow_key_then_continue(
-                    node, &DiscrimKey::Ref(*sym), arg_term_id, terms,
-                    remaining_pos, remaining_named, pos_offset, bind_paths,
+                    node, &DiscrimKey::Ref(sym), arg, kb, outer,
+                    pos_idx, pos_total, named_keys, named_idx, pos_offset, bind_paths,
                     subst, results, on_done,
                 );
             }
-            Term::Bottom => {
+            ViewHead::Bottom => {
                 Self::follow_key_then_continue(
-                    node, &DiscrimKey::Bottom, arg_term_id, terms,
-                    remaining_pos, remaining_named, pos_offset, bind_paths,
+                    node, &DiscrimKey::Bottom, arg, kb, outer,
+                    pos_idx, pos_total, named_keys, named_idx, pos_offset, bind_paths,
                     subst, results, on_done,
                 );
+            }
+            ViewHead::Opaque => {
+                for (tree_var, child) in &node.var_edges {
+                    let branch = subst.clone().with_binding(tree_var.as_vid(), arg.as_bind_value());
+                    Self::query_args(
+                        child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
+                        pos_offset, bind_paths, branch, results, on_done,
+                    );
+                }
             }
         }
     }
 
-    /// Follow a concrete key, then continue with remaining args.
-    fn follow_key_then_continue(
+    /// Follow a concrete key, then continue with remaining outer args.
+    #[allow(clippy::too_many_arguments)]
+    fn follow_key_then_continue<V: TermView>(
         node: &DiscrimNode<L>,
         key: &DiscrimKey,
-        query_term: TermId,
-        terms: &TermStore,
-        remaining_pos: &[TermId],
-        remaining_named: &[(Symbol, TermId)],
+        arg: ViewItem<'_>,
+        kb: &KnowledgeBase,
+        outer: &V,
+        pos_idx: usize,
+        pos_total: usize,
+        named_keys: &[Symbol],
+        named_idx: usize,
         pos_offset: usize,
         bind_paths: bool,
         subst: SmallSubst,
@@ -636,40 +654,51 @@ impl<L: Clone> SubstTree<L> {
         on_done: &dyn Fn(&DiscrimNode<L>, SmallSubst, &mut Vec<(L, SmallSubst)>),
     ) {
         if let Some(child) = node.concrete.get(key) {
-            Self::query_args(child, terms, remaining_pos, remaining_named, pos_offset,
-                bind_paths, subst.clone(), results, on_done);
+            Self::query_args(
+                child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
+                pos_offset, bind_paths, subst.clone(), results, on_done,
+            );
         }
         for (tree_var, child) in &node.var_edges {
-            let branch = subst.clone()
-                .with_binding(tree_var.as_vid(), BindValue::Term(query_term));
-            Self::query_args(child, terms, remaining_pos, remaining_named, pos_offset,
-                bind_paths, branch, results, on_done);
+            let branch = subst.clone().with_binding(tree_var.as_vid(), arg.as_bind_value());
+            Self::query_args(
+                child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
+                pos_offset, bind_paths, branch, results, on_done,
+            );
         }
     }
 
     /// Skip an entire subtree (query Var at arg position), then continue.
-    fn skip_subtree_then_continue(
+    #[allow(clippy::too_many_arguments)]
+    fn skip_subtree_then_continue<V: TermView>(
         node: &DiscrimNode<L>,
-        terms: &TermStore,
-        remaining_pos: &[TermId],
-        remaining_named: &[(Symbol, TermId)],
+        kb: &KnowledgeBase,
+        outer: &V,
+        pos_idx: usize,
+        pos_total: usize,
+        named_keys: &[Symbol],
+        named_idx: usize,
         pos_offset: usize,
         bind_paths: bool,
         subst: SmallSubst,
         results: &mut Vec<(L, SmallSubst)>,
         on_done: &dyn Fn(&DiscrimNode<L>, SmallSubst, &mut Vec<(L, SmallSubst)>),
     ) {
-        // This node might be the end of the skipped subtree
-        Self::query_args(node, terms, remaining_pos, remaining_named, pos_offset,
-            bind_paths, subst.clone(), results, on_done);
-        // Or it might have deeper structure
+        Self::query_args(
+            node, kb, outer, pos_idx, pos_total, named_keys, named_idx,
+            pos_offset, bind_paths, subst.clone(), results, on_done,
+        );
         for (_, child) in &node.concrete {
-            Self::skip_subtree_then_continue(child, terms, remaining_pos, remaining_named,
-                pos_offset, bind_paths, subst.clone(), results, on_done);
+            Self::skip_subtree_then_continue(
+                child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
+                pos_offset, bind_paths, subst.clone(), results, on_done,
+            );
         }
         for (_, child) in &node.var_edges {
-            Self::skip_subtree_then_continue(child, terms, remaining_pos, remaining_named,
-                pos_offset, bind_paths, subst.clone(), results, on_done);
+            Self::skip_subtree_then_continue(
+                child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
+                pos_offset, bind_paths, subst.clone(), results, on_done,
+            );
         }
     }
 
@@ -697,26 +726,32 @@ impl<L: Clone> SubstTree<L> {
 mod tests {
     use super::*;
     use smallvec::SmallVec;
-    use crate::intern::Interner;
 
+    /// Holds a real `KnowledgeBase` so tests can call the generic
+    /// `query_resolved`/`query_raw` APIs that need `&KB`. `env.terms`,
+    /// `env.intern`, `env.alloc` delegate to the inner KB.
     struct TestEnv {
-        terms: TermStore,
-        interner: Interner,
+        kb: KnowledgeBase,
         next_var: u32,
     }
 
     impl TestEnv {
         fn new() -> Self {
-            TestEnv { terms: TermStore::new(), interner: Interner::new(), next_var: 0 }
+            TestEnv { kb: KnowledgeBase::new(), next_var: 0 }
         }
-        fn intern(&mut self, s: &str) -> Symbol { self.interner.intern(s) }
-        fn alloc(&mut self, term: Term) -> TermId { self.terms.alloc(term) }
+        fn intern(&mut self, s: &str) -> Symbol { self.kb.intern(s) }
+        fn alloc(&mut self, term: Term) -> TermId { self.kb.alloc(term) }
         fn fresh_var(&mut self, name: &str) -> VarId {
-            let sym = self.interner.intern(name);
+            let sym = self.kb.intern(name);
             let id = self.next_var;
             self.next_var += 1;
             VarId::new(id, sym)
         }
+    }
+
+    /// Shorthand for `&TermIdView(tid)` that the query APIs want.
+    fn view(tid: TermId) -> super::super::term_view::TermIdView {
+        super::super::term_view::TermIdView(tid)
     }
 
     fn make_resolver(mapping: Vec<(u32, TermId)>) -> impl Fn(&u32) -> TermId {
@@ -734,8 +769,8 @@ mod tests {
         let term = env.alloc(Term::Fn {
             functor: f, pos_args: SmallVec::from_elem(val, 1), named_args: SmallVec::new(),
         });
-        tree.insert_ground(&env.terms, term, 1);
-        let results = tree.query_resolved(&env.terms, term, |_| term);
+        tree.insert_ground(&env.kb.terms, term, 1);
+        let results = tree.query_resolved(&env.kb, &view(term), |_| term);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, 1);
     }
@@ -749,8 +784,8 @@ mod tests {
         let v2 = env.alloc(Term::Const(Literal::Int(2)));
         let t1 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(v1, 1), named_args: SmallVec::new() });
         let t2 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(v2, 1), named_args: SmallVec::new() });
-        tree.insert_ground(&env.terms, t1, 1);
-        assert!(tree.query_raw(&env.terms, t2).is_empty());
+        tree.insert_ground(&env.kb.terms, t1, 1);
+        assert!(tree.query_raw(&env.kb, &view(t2)).is_empty());
     }
 
     #[test]
@@ -763,11 +798,11 @@ mod tests {
         let c = env.alloc(Term::Const(Literal::String("charlie".into())));
         let f1 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_slice(&[a, b]), named_args: SmallVec::new() });
         let f2 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_slice(&[b, c]), named_args: SmallVec::new() });
-        tree.insert_ground(&env.terms, f1, 1);
-        tree.insert_ground(&env.terms, f2, 2);
+        tree.insert_ground(&env.kb.terms, f1, 1);
+        tree.insert_ground(&env.kb.terms, f2, 2);
         let res = make_resolver(vec![(1, f1), (2, f2)]);
-        assert_eq!(tree.query_resolved(&env.terms, f1, &res).len(), 1);
-        assert_eq!(tree.query_resolved(&env.terms, f2, &res).len(), 1);
+        assert_eq!(tree.query_resolved(&env.kb, &view(f1), &res).len(), 1);
+        assert_eq!(tree.query_resolved(&env.kb, &view(f2), &res).len(), 1);
     }
 
     #[test]
@@ -779,14 +814,14 @@ mod tests {
         let v2 = env.alloc(Term::Const(Literal::Int(2)));
         let t1 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(v1, 1), named_args: SmallVec::new() });
         let t2 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(v2, 1), named_args: SmallVec::new() });
-        tree.insert_ground(&env.terms, t1, 1);
-        tree.insert_ground(&env.terms, t2, 2);
+        tree.insert_ground(&env.kb.terms, t1, 1);
+        tree.insert_ground(&env.kb.terms, t2, 2);
 
         let vid = env.fresh_var("x");
         let var = env.alloc(Term::Var(Var::Global(vid)));
         let pat = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(var, 1), named_args: SmallVec::new() });
         let res = make_resolver(vec![(1, t1), (2, t2)]);
-        let results = tree.query_resolved(&env.terms, pat, &res);
+        let results = tree.query_resolved(&env.kb, &view(pat), &res);
         assert_eq!(results.len(), 2);
         for (leaf, subst) in &results {
             let bound = subst.resolve(vid).expect("bound");
@@ -808,7 +843,7 @@ mod tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_slice(&[(id_s, vid), (name_s, vname)]),
         });
-        tree.insert_ground(&env.terms, fact, 1);
+        tree.insert_ground(&env.kb.terms, fact, 1);
 
         let xv = env.fresh_var("x");
         let var_x = env.alloc(Term::Var(Var::Global(xv)));
@@ -817,7 +852,7 @@ mod tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_slice(&[(id_s, var_x), (name_s, vname)]),
         });
-        let results = tree.query_resolved(&env.terms, pat, |_| fact);
+        let results = tree.query_resolved(&env.kb, &view(pat), |_| fact);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].1.resolve(xv).unwrap(), vid);
     }
@@ -831,13 +866,13 @@ mod tests {
         let val = env.alloc(Term::Const(Literal::Int(1)));
         let tf = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(val, 1), named_args: SmallVec::new() });
         let tg = env.alloc(Term::Fn { functor: g, pos_args: SmallVec::new(), named_args: SmallVec::new() });
-        tree.insert_ground(&env.terms, tf, 1);
-        tree.insert_ground(&env.terms, tg, 2);
+        tree.insert_ground(&env.kb.terms, tf, 1);
+        tree.insert_ground(&env.kb.terms, tg, 2);
 
         let vid = env.fresh_var("x");
         let var_q = env.alloc(Term::Var(Var::Global(vid)));
         let res = make_resolver(vec![(1, tf), (2, tg)]);
-        let results = tree.query_resolved(&env.terms, var_q, &res);
+        let results = tree.query_resolved(&env.kb, &view(var_q), &res);
         assert_eq!(results.len(), 2);
         for (leaf, subst) in &results {
             let bound = subst.resolve(vid).unwrap();
@@ -857,14 +892,14 @@ mod tests {
         let g2 = env.alloc(Term::Fn { functor: g, pos_args: SmallVec::from_elem(v2, 1), named_args: SmallVec::new() });
         let fg1 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(g1, 1), named_args: SmallVec::new() });
         let fg2 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(g2, 1), named_args: SmallVec::new() });
-        tree.insert_ground(&env.terms, fg1, 1);
-        tree.insert_ground(&env.terms, fg2, 2);
+        tree.insert_ground(&env.kb.terms, fg1, 1);
+        tree.insert_ground(&env.kb.terms, fg2, 2);
 
         let res = make_resolver(vec![(1, fg1), (2, fg2)]);
-        let r1 = tree.query_resolved(&env.terms, fg1, &res);
+        let r1 = tree.query_resolved(&env.kb, &view(fg1), &res);
         assert_eq!(r1.len(), 1);
         assert_eq!(r1[0].0, 1);
-        let r2 = tree.query_resolved(&env.terms, fg2, &res);
+        let r2 = tree.query_resolved(&env.kb, &view(fg2), &res);
         assert_eq!(r2.len(), 1);
         assert_eq!(r2[0].0, 2);
     }
@@ -878,10 +913,10 @@ mod tests {
         let f = env.intern("f");
         let val = env.alloc(Term::Const(Literal::Int(42)));
         let term = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(val, 1), named_args: SmallVec::new() });
-        tree.insert_ground(&env.terms, term, 1);
-        assert_eq!(tree.query_raw(&env.terms, term).len(), 1);
-        tree.remove_ground(&env.terms, term, &1);
-        assert!(tree.query_raw(&env.terms, term).is_empty());
+        tree.insert_ground(&env.kb.terms, term, 1);
+        assert_eq!(tree.query_raw(&env.kb, &view(term)).len(), 1);
+        tree.remove_ground(&env.kb.terms, term, &1);
+        assert!(tree.query_raw(&env.kb, &view(term)).is_empty());
         assert!(tree.root.is_empty());
     }
 
@@ -892,10 +927,10 @@ mod tests {
         let f = env.intern("f");
         let val = env.alloc(Term::Const(Literal::Int(1)));
         let term = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(val, 1), named_args: SmallVec::new() });
-        tree.insert_ground(&env.terms, term, 1);
-        tree.insert_ground(&env.terms, term, 2);
-        tree.remove_ground(&env.terms, term, &1);
-        let results = tree.query_raw(&env.terms, term);
+        tree.insert_ground(&env.kb.terms, term, 1);
+        tree.insert_ground(&env.kb.terms, term, 2);
+        tree.remove_ground(&env.kb.terms, term, &1);
+        let results = tree.query_raw(&env.kb, &view(term));
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, 2);
     }
@@ -910,10 +945,10 @@ mod tests {
         let vid = env.fresh_var("x");
         let var_term = env.alloc(Term::Var(Var::Global(vid)));
         let pat = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(var_term, 1), named_args: SmallVec::new() });
-        tree.insert_pattern(&env.terms, pat, 100);
+        tree.insert_pattern(&env.kb.terms, pat, 100);
         let val = env.alloc(Term::Const(Literal::Int(42)));
         let ground = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(val, 1), named_args: SmallVec::new() });
-        let results = tree.query_raw(&env.terms, ground);
+        let results = tree.query_raw(&env.kb, &view(ground));
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, 100);
     }
@@ -925,17 +960,17 @@ mod tests {
         let f = env.intern("f");
         let v42 = env.alloc(Term::Const(Literal::Int(42)));
         let ground = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(v42, 1), named_args: SmallVec::new() });
-        tree.insert_ground(&env.terms, ground, 1);
+        tree.insert_ground(&env.kb.terms, ground, 1);
 
         let vid = env.fresh_var("x");
         let var_term = env.alloc(Term::Var(Var::Global(vid)));
         let pat = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(var_term, 1), named_args: SmallVec::new() });
-        tree.insert_pattern(&env.terms, pat, 2);
+        tree.insert_pattern(&env.kb.terms, pat, 2);
 
-        assert_eq!(tree.query_raw(&env.terms, ground).len(), 2);
+        assert_eq!(tree.query_raw(&env.kb, &view(ground)).len(), 2);
         let v99 = env.alloc(Term::Const(Literal::Int(99)));
         let q99 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(v99, 1), named_args: SmallVec::new() });
-        let r = tree.query_raw(&env.terms, q99);
+        let r = tree.query_raw(&env.kb, &view(q99));
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].0, 2);
     }

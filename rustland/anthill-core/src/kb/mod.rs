@@ -11,6 +11,8 @@ pub mod load;
 pub mod resolve;
 pub mod occurrence;
 pub mod typing;
+pub mod term_view;
+pub mod execute;
 pub(crate) mod persist_subst;
 pub(crate) mod discrim;
 
@@ -867,10 +869,23 @@ impl KnowledgeBase {
     ///
     /// Returns `Some(subst)` on success, `None` on failure.
     pub fn match_term(&self, pattern: TermId, target: TermId) -> Option<subst::Substitution> {
+        self.match_view(pattern, &term_view::TermIdView(target))
+    }
+
+    /// Value-aware match: unifies a rule-head pattern (always `TermId`)
+    /// against any [`TermView`] target. For a `TermIdView(t)` target this
+    /// is semantically equivalent to `match_term(pattern, t)`; for a
+    /// `Value`-backed target it preserves lineage (no promotion into the
+    /// `TermStore`). Variable bindings flow into the result substitution
+    /// as `Value::Term` for Term targets and the raw `Value` for others.
+    pub fn match_view<V: term_view::TermView>(
+        &self,
+        pattern: TermId,
+        target: &V,
+    ) -> Option<subst::Substitution> {
         let mut tree = SubstTree::<()>::new();
-        tree.insert_pattern(&self.terms, target, ());
-        let results = tree.query_resolved(&self.terms, pattern, |_| target);
-        // Filter out contradictory substitutions (e.g. ?x bound to two different values)
+        tree.insert_pattern(&self.terms, pattern, ());
+        let results = tree.query_resolved(self, target, |_| pattern);
         results.into_iter()
             .map(|(_, s)| s)
             .find(|s| !s.is_contradiction())
@@ -882,9 +897,10 @@ impl KnowledgeBase {
     /// Variable bindings are resolved via path extraction from head terms.
     pub fn query(&self, pattern: TermId) -> Vec<(RuleId, subst::Substitution)> {
         let rules = &self.rules;
+        let pattern_view = term_view::TermIdView(pattern);
         let candidates = self.discrim.query_resolved(
-            &self.terms,
-            pattern,
+            self,
+            &pattern_view,
             |rid: &RuleId| rules[rid.index()].head,
         );
 
@@ -1205,18 +1221,19 @@ impl KnowledgeBase {
             //    Open any DeBruijn vars in the value to their fresh globals.
             let mut answer_links = subst::Substitution::new();
             let mut body_rename = subst::Substitution::new();
-            for (ts_vid, bound_term) in &tree_subst.bindings {
+            // Walk only Value::Term bindings — this code path uses TermIds
+            // for DeBruijn rename + caller-var linkage. Non-Term bindings
+            // from external streams flow through a different path.
+            for (ts_vid, bound_term) in tree_subst.iter_terms() {
                 let is_synthetic = ts_vid.raw() > u32::MAX - arity - 1;
                 if is_synthetic {
-                    // Synthetic VarId for DeBruijn(n) — substitute into body
                     let db_index = (u32::MAX - ts_vid.raw()) as usize;
                     if let Some(&fresh_vid) = fresh_vars.get(db_index) {
-                        body_rename.bind(fresh_vid, *bound_term);
+                        body_rename.bind(fresh_vid, bound_term);
                     }
                 } else {
-                    // Query var — open any DeBruijn in the bound value
-                    let opened = self.term_from_debruijn(*bound_term, &fresh_vars);
-                    answer_links.bind(*ts_vid, opened);
+                    let opened = self.term_from_debruijn(bound_term, &fresh_vars);
+                    answer_links.bind(ts_vid, opened);
                 }
             }
 
@@ -1255,20 +1272,20 @@ impl KnowledgeBase {
                 .collect();
 
             let mut answer_links = subst::Substitution::new();
-            for (ts_vid, bound_term) in &tree_subst.bindings {
-                if all_vars.contains(ts_vid) {
+            for (ts_vid, bound_term) in tree_subst.iter_terms() {
+                if all_vars.contains(&ts_vid) {
                     continue;
                 }
-                match self.terms.get(*bound_term) {
+                match self.terms.get(bound_term) {
                     Term::Var(Var::Global(rule_vid)) => {
                         let rule_vid = *rule_vid;
                         if let Some(renamed) = rename.resolve(rule_vid) {
-                            answer_links.bind(*ts_vid, renamed);
+                            answer_links.bind(ts_vid, renamed);
                         }
                     }
                     _ => {
-                        let renamed_term = self.apply_subst(*bound_term, &rename);
-                        answer_links.bind(*ts_vid, renamed_term);
+                        let renamed_term = self.apply_subst(bound_term, &rename);
+                        answer_links.bind(ts_vid, renamed_term);
                     }
                 }
             }
@@ -1850,6 +1867,74 @@ mod tests {
         assert!(kb.match_term(term_f, term_f).is_some());
         // Different functor → fails
         assert!(kb.match_term(term_f, term_g).is_none());
+    }
+
+    #[test]
+    fn match_view_against_value_entity() {
+        // Pattern `Account(?x)` (TermId) matched against a runtime
+        // `Value::Entity { functor: Account, pos: [Value::Str("A001")] }`.
+        // Proves the Q2 goal: rule-head patterns can unify with
+        // non-TermId Value targets without promoting them into TermStore.
+        use crate::eval::value::Value;
+
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("Account");
+        let x_sym = kb.intern("x");
+        let xv = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(Var::Global(xv)));
+        let pattern = kb.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
+        });
+
+        let value_target = Value::Entity {
+            functor: f,
+            pos: vec![Value::Str("A001".into())],
+            named: Vec::new(),
+        };
+
+        let subst = kb.match_view(pattern, &value_target)
+            .expect("match should succeed");
+        // ?x's binding is the Value (not a TermId) — lineage preserved.
+        match subst.lookup(xv) {
+            Some(Value::Str(s)) => assert_eq!(s, "A001"),
+            other => panic!("expected Value::Str, got {other:?}"),
+        }
+        // resolve() returns None because the binding isn't a TermId.
+        assert!(subst.resolve(xv).is_none());
+    }
+
+    #[test]
+    fn match_term_equals_match_view_of_termidview() {
+        // For TermId-backed targets, match_term and match_view produce
+        // structurally-equivalent substitutions. Proves the wrapper is
+        // semantically transparent on the fast path.
+        use crate::kb::term_view::TermIdView;
+
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("pair");
+        let x_sym = kb.intern("x");
+        let xv = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(Var::Global(xv)));
+        let lit = kb.alloc(Term::Const(Literal::Int(7)));
+        let pattern = kb.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_slice(&[var_x, lit]),
+            named_args: SmallVec::new(),
+        });
+        let a = kb.alloc(Term::Const(Literal::Int(3)));
+        let target = kb.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_slice(&[a, lit]),
+            named_args: SmallVec::new(),
+        });
+
+        let via_term = kb.match_term(pattern, target).expect("match_term");
+        let via_view = kb.match_view(pattern, &TermIdView(target)).expect("match_view");
+
+        assert_eq!(via_term.resolve(xv), via_view.resolve(xv));
+        assert_eq!(via_term.resolve(xv), Some(a));
     }
 
     #[test]

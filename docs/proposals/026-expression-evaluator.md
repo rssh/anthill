@@ -2,7 +2,7 @@
 
 **Status:** Draft
 **Depends on:** [018-expressions-and-operation-implementation](018-expressions-and-operation-implementation.md) (expression syntax + IR)
-**Related:** [013-abstract-effects](013-abstract-effects.md), [025-proof-constructs](025-proof-constructs.md) (Suspension/Branch semantics)
+**Related:** [013-abstract-effects](013-abstract-effects.md), [025-proof-constructs](025-proof-constructs.md) (Suspension/Branch semantics), [026.1-value-integrated-kb-queries](026.1-value-integrated-kb-queries.md) (KB ↔ `Value` contract for M4)
 **Affects:** `rustland/anthill-core/src/eval/` (new), CLI (`anthill run`)
 
 ## Motivation
@@ -18,7 +18,9 @@ Non-goals for v1: bytecode, JIT, distributed evaluation, hot-reloading, persiste
 
 ## Architecture overview
 
-A **tree-walking interpreter** over `TermId`-encoded expression bodies, with an **explicit heap-allocated activation stack** (no native recursion). Runtime values use a `Value` enum with unboxed scalars, transient tuples/entities, and a `Value::Term(TermId)` variant for data already hash-consed in the KB — see the Values section for the full rationale.
+A **tree-walking interpreter** over `ExprOccurrence`-encoded operation bodies, with an **explicit heap-allocated activation stack** (no native recursion). Runtime values use a `Value` enum with unboxed scalars, transient tuples/entities, and a `Value::Term(TermId)` variant for data already hash-consed in the KB — see the Values section for the full rationale.
+
+Expression IR is positional, not hash-consed — see [022-typing-as-facts](022-typing-as-facts.md). `ExprOccurrence` carries an `OccurrenceId` (unique per source position), a `Span`, an owner, and a `TermId` that points at the hash-consed structural content. Two identical `?x + 1` subexpressions in different operations are *different* `ExprOccurrence`s even though they share a `TermId` — which is what typing, error reporting, and scope-sensitive evaluation all need.
 
 ```
 rustland/anthill-core/src/eval/
@@ -33,7 +35,7 @@ rustland/anthill-core/src/eval/
 ### Why tree-walker first
 
 - Lands in days, runs end-to-end tests, pins down reference semantics.
-- Hash-consed IR means "the tree" is the KB — zero conversion cost.
+- The IR is already loaded into the `OccurrenceStore` during typing (proposal 022). Code pointers are `ExprOccurrenceId`s — no separate bytecode emit, no parallel representation to keep in sync. Zero conversion cost.
 - Doesn't preclude a VM later; in fact defines the semantics a VM must match.
 
 A VM becomes necessary when `Suspension` / `Branch` need real support: those need a saveable/forkable stack, which is awkward to build on the Rust call stack. The heap-allocated frame stack we adopt on day one gives us 80% of that machinery already.
@@ -166,14 +168,14 @@ Builtins and core primitives operate on `Value` directly. We only promote to `Te
 
 ```rust
 struct Frame {
-    op: Symbol,                    // operation being evaluated
-    expr: TermId,                  // current expression node (AST term from KB)
+    op: Symbol,                       // operation being evaluated
+    expr: ExprOccurrenceId,           // current expression node (positional IR from OccurrenceStore)
     locals: SmallVec<[(VarId, Value); 4]>,
-    cont: Continuation,            // what to do with the result
+    cont: Continuation,               // what to do with the result
 }
 ```
 
-Note: `expr: TermId` is the AST node under evaluation — expression bodies are stored as hash-consed terms in the KB, so the code pointer is a `TermId`. The **locals and intermediate results** are `Value`, not `TermId`.
+Note: `expr` is an `ExprOccurrenceId` — positional, not hash-consed. Expression bodies live in the `OccurrenceStore` (proposal 022); the store yields both the structural content (via `occurrence_term` → `TermId`) and positional metadata (span, owner) needed for error reporting and debugger support. The **locals and intermediate results** are `Value`.
 
 `Continuation` enum enumerates the contexts where a sub-expression's result is consumed (if-arm, match-scrutinee-done, let-bound-var, apply-next-arg, …). Evaluation proceeds as `step(&mut self)` repeatedly until the stack is empty.
 
@@ -181,7 +183,7 @@ Note: `expr: TermId` is the AST node under evaluation — expression bodies are 
 
 **Depth cap**: configurable limit (default 1024) prevents runaway recursion.
 
-This shape is also what a future stack-VM wants; migration is "replace `expr: TermId` with `pc: usize` and add an opcode dispatcher."
+This shape is also what a future stack-VM wants; migration is "replace `expr: ExprOccurrenceId` with `pc: usize` and add an opcode dispatcher — the source-position metadata moves into a debug sidetable keyed by `pc`."
 
 ## KB queries and `LogicalStream`
 
@@ -204,6 +206,18 @@ This design means:
 - Non-determinism is never an interpreter concern — a non-deterministic computation is just a first-class `LogicalStream` value.
 - The resolver becomes an effect-free producer of `LogicalStream`. The interpreter drives it via `splitFirst` calls.
 - The laziness story is explicit and matches what the type system already says.
+
+### Value ↔ KB contract
+
+The interface between `Value` and the resolver is not covered here — it's large enough to warrant its own proposal. See [026.1-value-integrated-kb-queries](026.1-value-integrated-kb-queries.md) for:
+
+- `Substitution: VarId → Value` with `Value::Term(tid)` as the dominant case.
+- `TermView` abstraction letting unification consume either `TermId`-backed or `Value`-native operands.
+- **Single input boundary** at `execute(LogicalQuery)` — all reflect operations compile down to assembling a query and dispatching through it.
+- **Lineage-preserving bindings**: never promote external-sourced data into the main `TermStore`, so streaming a 1M-row external KB does not grow the in-memory DB.
+- Query-scoped arenas for the pathological deep-recursion-over-stream case.
+
+M4 of this proposal implements 026.1; the two proposals land together.
 
 ## Memory management
 
@@ -415,7 +429,7 @@ anthill run <file.anthill> [--entry qualified.Name] [--arg '<term>']...
 
 **M3: builtins** — arithmetic, comparison, string, list/set/map primitives, `println`.
 
-**M4: `LogicalStream` + KB queries** — `splitFirst`, `collect`, resolver bridge. Can run a program that queries the KB and iterates.
+**M4: `LogicalStream` + KB queries** — `splitFirst`, `collect`, resolver bridge. Implements [026.1](026.1-value-integrated-kb-queries.md) (Substitution as `Value`, `TermView`, `execute(LogicalQuery)`, lineage-preserving bindings). Can run a program that queries the KB and iterates.
 
 **M5: effect handlers** — `IO`, `Modify`. Stubbed `Suspension`/`Branch`.
 
@@ -428,7 +442,7 @@ Each milestone lands independently with its own tests.
 When we implement `Suspension` / `Branch` properly:
 
 1. Add an encoder: `TermId` body → `Vec<Op>` bytecode.
-2. Replace `Frame::expr: TermId` with `Frame::pc: usize` + a frame-local bytecode handle.
+2. Replace `Frame::expr: ExprOccurrenceId` with `Frame::pc: usize` + a frame-local bytecode handle. Preserve the occurrence-id mapping in a debug sidetable so error reporting and spans still work.
 3. `Suspension` snapshots the frame stack + substitution; `resume(handle, value)` restores them.
 4. `Branch` clones the top N frames.
 

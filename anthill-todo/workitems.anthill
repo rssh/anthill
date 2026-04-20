@@ -39,20 +39,20 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-008",
-  description: "implement evaluation of expressions",
+  description: "umbrella: implement evaluation of expressions (tree-walking interpreter per proposals 026 + 026.1). Closes when all sub-items verify. Sub-items: WI-042 (M1 walking skeleton), WI-043 (M2 match/lambda/collections), WI-044 (M3 builtins), WI-045 (Q1 Substitution Value), WI-046 (Q2 TermView), WI-047 (Q3 execute LogicalQuery), WI-048 (M4 LogicalStream + splitFirst), WI-049 (Console stdlib), WI-050 (M5 effect handlers), WI-051 (M6 anthill run CLI). WI-052 (Q4 external streams) is an optional follow-up, not in umbrella.",
   acceptance: [ToolPasses("cargo-test")],
-  depends_on: ["WI-001"],
+  depends_on: ["WI-042", "WI-043", "WI-044", "WI-045", "WI-046", "WI-047", "WI-048", "WI-049", "WI-050", "WI-051"],
   status: Open)
 fact WorkItem(
   id: "WI-009",
   description: "port todo-app to anthill",
   acceptance: [ToolPasses("cargo-test")],
-  depends_on: ["WI-008"],
+  depends_on: ["WI-051"],
   status: Open)
 
 fact WorkItem(
   id: "WI-010",
-  description: "Sort in unifications: enable Sort values to participate in term unification, so that typing rules like type_of(?env, ?occ, ?type) can carry and match Sort-typed arguments in the env term. Currently Sort is opaque (sort_as_term/term_as_sort boundary). Extending unification to handle Sort terms would allow typing to be expressed purely as rules with TypingEnv as a data sort.",
+  description: "Implement type-unification helpers as anthill rules so type_of(?env, ?occ, ?type) rules (WI-011) can reason about types declaratively. Three relations to define: (a) subtype(?sub, ?sup) / assignable(?from, ?to) covering primitive subtyping and structural compatibility; (b) resolve_sort_alias(?sort, ?canonical) walking SortAlias facts; (c) unify_type(?a, ?b) orchestrating structural match + alias resolution + subtyping. The Rust unify_types (typing.rs:1131) stays as the operational fast path used by type_check. Note: Type values are already plain Term::Fn and unify structurally via SLD — the original 'Sort is opaque' framing was inaccurate. The unused sort_as_term/term_as_sort/can_be_sort stubs in reflect.anthill:136-140 should be removed as cleanup.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
   status: Open)
@@ -268,3 +268,234 @@ fact WorkItem(
   status: Open)
 
 fact Feedback(content: "cons/nil are especially clear: they come from ListLiteral desugaring, never written by user. Loader should use kb.resolve_symbol(\"anthill.prelude.List.cons\") directly when building cons chains, not go through scope resolution.", at: "2026-03-31T17:16:57Z", workitem: "WI-040", author: "user")
+fact WorkItem(
+  id: "WI-041",
+  description: "Add 'update' subcommand to anthill-todo CLI: update <ID> [--description TEXT] [--acceptance ACC]... to edit work item fields in place. Currently description/acceptance edits require manual .anthill file edit or delete+add (which loses the ID and history). Should rewrite the WorkItem fact in workitems.anthill preserving id, depends_on, status.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-042",
+  description: "eval M1: walking skeleton — Value enum, Frame/ActivationStack, step() tree walk over ExprOccurrence for literals, variables, if, let, function call (no match, no collections). Creates rustland/anthill-core/src/eval/{mod,value,frame,eval,arena,error}.rs. Acceptance: test programs 'main() = 42', 'main() = if true then 1 else 2', 'main() = let x = 1 in x + 1' (with + stubbed) evaluate to expected Value::Int. Proposal 026 §Activation stack / §Values.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-001"],
+  status: Verified(at: "2026-04-19T18:05:22Z"))
+
+fact WorkItem(
+  id: "WI-043",
+  description: "eval M2: full expression set — pattern match (uniform over Value::Entity and Value::Term via §Pattern-match uniformity), lambda + closures (eval/closure.rs, ClosureArena), collection literals (cons/nil as Value::Entity, no TermStore alloc). Non-exhaustive match raises Error[MatchFailed] — introduce sort MatchFailed(occurrence, scrutinee) in stdlib. Acceptance: match on Option/List, 'let f = λ(x) -> x+1 in f(2)', list construction + destructuring tests. Proposal 026 §Values / M2.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-042"],
+  status: Verified(at: "2026-04-19T18:36:29Z"))
+
+fact WorkItem(
+  id: "WI-044",
+  description: "eval M3: builtins — arithmetic, comparison, string ops, list/set/map primitives registered via Interpreter::register_builtin(qname, Fn(&mut Self, &[Value]) -> Result<Value, EvalError>) in eval/builtins.rs. Mirrors kb::resolve::builtins shape by qualified symbol. No I/O in this milestone (println lives in M5 via Console). Acceptance: unit tests per op group; integration test running arithmetic expression programs end-to-end.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-043"],
+  status: Verified(at: "2026-04-19T19:35:13Z"))
+
+fact WorkItem(
+  id: "WI-045",
+  description: "026.1 Q1: Substitution carries Value. Rewrite kb/subst.rs to HashMap<VarId, Value> with bind_term(v, TermId) fast path and bind_value(v, Value) for external sources. Migrate all callers (resolve.rs, discrim.rs, mod.rs::{match_term, reify, walk, apply_subst}, persist_subst.rs, typing.rs unifier) via mechanical bind(v, tid) → bind_term(v, tid). Pure refactor, semantics-preserving. Acceptance: cargo test -p anthill-core green with no other behavior change. Proposal 026.1 Q1 + §Substitution: VarId → Value.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-042"],
+  status: Delivered(agent: "claude", at: "2026-04-19T19:47:52Z"))
+
+fact WorkItem(
+  id: "WI-046",
+  description: "026.1 Q2: TermView abstraction. Add trait TermView { head, arg, named } impl for Value and (&KB, TermId). Add kb.match_view<V: TermView>(pattern: TermId, target: V) beside match_term. Generalize SubstTree::query_resolved and resolve.rs unifier to consume impl TermView on binding side; candidate rule heads stay TermId. Acceptance: all kb tests still green; match_term becomes thin wrapper. Proposal 026.1 Q2 + §TermView abstraction.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-045"],
+  status: Delivered(agent: "claude", at: "2026-04-19T20:31:44Z"))
+
+fact WorkItem(
+  id: "WI-047",
+  description: "026.1 Q3: execute(LogicalQuery). Add kb.execute_logical_query(q: &Value) -> SearchStream and lower_query(&Value) -> Vec<TermId> over every LogicalQuery constructor in reflect.anthill (pattern_query, conjunction, disjunction, negation, guarded, projected, limited, forall_q, some_q, …). alloc_from_value recursively promotes Value → TermId via TermStore::alloc — the sole input-boundary hash-cons site. Wire as builtin backing anthill.reflect.KB.execute. Rewrite thin reflect bodies (sorts, operations, rules) to assemble LogicalQuery and dispatch through execute. Acceptance: integration test runs execute(kb, pattern_query(EntityOf(?x, List))) and iterates Value-typed Substitution solutions. Proposal 026.1 Q3 + §Query-lowering at execute.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-046"],
+  status: Delivered(agent: "claude", at: "2026-04-19T22:32:01Z"))
+
+fact WorkItem(
+  id: "WI-048",
+  description: "eval M4: LogicalStream + splitFirst. Create eval/stream.rs with StreamArena, StreamSource::{Resolver, Empty, Pure, MPlus, Native}. StreamSource::Resolver wraps SearchStream; split_first(&mut Interpreter, handle) pumps SearchStream::split_first(&mut kb) and wraps yielded Solution as Value::Entity { functor: Option.some, .. } or Option.none. Register as builtin for anthill.prelude.LogicalStream.splitFirst. Stream laws (head, tail, collect) come for free via stdlib rules over splitFirst. Acceptance: integration test runs anthill program that queries 'ancestor(?x, bob)' and collects answers. Proposal 026 §KB queries and LogicalStream.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-044", "WI-047", "WI-060"],
+  status: Delivered(agent: "claude", at: "2026-04-19T22:54:55Z"))
+
+fact WorkItem(
+  id: "WI-049",
+  description: "stdlib Console sort. Add stdlib/anthill/prelude/console.anthill with 'sort Console { entity console; operation print(c: Console, s: String) -> Unit effects Modify[c]; operation println(c: Console, s: String) -> Unit effects Modify[c]; operation read_line(c: Console) -> String effects Modify[c] }'. Console is a typed resource — I/O is Modify[Console], not a new top-level effect kind. Consistent with KB-as-resource pattern in reflect.anthill. Wire into prelude exports. Acceptance: console.anthill parses, type-checks, is importable from test programs. Prerequisite for M5 effect handlers.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-20T06:25:36Z"))
+
+fact WorkItem(
+  id: "WI-050",
+  description: "eval M5: effect handlers. Create eval/effects.rs with Interpreter::register_effect_handler(qname, Box<dyn FnMut(&mut Interpreter, Symbol, &[Value]) -> Result<Value, EvalError>>). Real handlers: Modify[Console] (print/println/read_line against Interpreter.stdout: Box<dyn Write> / stdin — buffer-injectable for tests), Modify[store] generic (backed by ModifyArena<StoreCell> with cycle detection → EvalError::CyclicReference). Suspension and Branch register as handlers returning UnhandledEffect. Error[T]::raise surfaces as EvalError::Raised(payload). Acceptance: integration test captures println output via injected buffer; Modify counter test mutates through operation calls. Proposal 026 §Effects.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-048", "WI-049"],
+  status: Delivered(agent: "claude", at: "2026-04-20T06:46:45Z"))
+
+fact WorkItem(
+  id: "WI-051",
+  description: "eval M6: 'anthill run' CLI. Add Command::Run(RunArgs { paths: Vec<PathBuf>, entry: Option<String> default 'main', args: Vec<String> }) to anthill-cli/src/main.rs. Parses + load_all (existing), locates entry OperationInfo, constructs Interpreter, calls register_standard_builtins + registers real Console handler bound to stdio, invokes interp.call(entry_sym, &args), prints result via TermPrinter after one-shot Value → TermId promotion using persistence::term_ser. Acceptance: anthill-cli/tests/run_cmd_test.rs invokes binary against fixture hello.anthill and asserts stdout. Unblocks WI-009 (port todo-app). Proposal 026 §CLI: anthill run.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-050"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-052",
+  description: "026.1 Q4 (optional follow-up): external-backed stream sources. Add StreamSource::External(Box<dyn ExternalStream>) yielding Value::Entity rows without TermStore promotion — lineage-preserving. Example implementation: file-backed WorkItem store for examples/github-todo. Acceptance: 10k-row external scan does NOT grow main TermStore (assert size bounded by KB-resident facts + query goals). Not required for v1 evaluator correctness. Proposal 026.1 Q4 + §Scale: external-backed KBs.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-048"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-053",
+  description: "per-operation compile caches (follow-up to M1-M3). Add memoization arenas keyed on reflect tree nodes: (a) decision tree for match_expr keyed on OccurrenceId — built on first hit, reused; (b) Symbol → (body_term, params) cache replacing the linear OperationInfo walk in eval::lookup_operation_body; (c) per-operation slot-index table so var_ref lookups become array-indexed instead of linear-scanned. Stays on the reflect tree — no separate IR, just side-tables. Revisit after M4/M5 to decide if a targeted bytecode lowering is warranted. Brainstorm discussion in conversation 2026-04-19.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-044"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-054",
+  description: "refactor OperationInfo lookup into shared helper. Three callers currently duplicate the walk-OperationInfo-facts pattern: kb::typing::lookup_operation_info_full (typing.rs:546), kb::typing::check_operation_bodies (typing.rs:2180, hand-inlined), eval::lookup_operation_body (eval.rs:389). Extract pub fn lookup_operation_info(kb, functor) -> Option<OpInfoRecord> returning { params, return_type, effects, body: Option<TermId> } in kb/ (new op_info.rs or typing.rs). Collapse the three callers. Non-functional refactor; acceptance is all anthill-core tests still green.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-042"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-055",
+  description: "eval runtime refcount wiring: Value::Closure needs to reclaim arena slots when no Value references it. Today every reduce_lambda leaks a slot until the Interpreter drops (closure.rs retain/release are #[allow(dead_code)]). Approach: make ClosureHandle not Copy; on Clone increment the arena's refcount, on Drop decrement. Because Value needs Clone and Drop access to the arena, route via the Interpreter's closure arena held behind a shared cell (Rc<RefCell> or interior arena access). Generalize to Stream (M4) / Lazy (M5) when those land. Refcount handles acyclic cases; cycles deferred to WI-058 GC evaluation. Cycle-safety is conditional, not universal: holds while M4 streams stay lazy+non-memoized and Native stream sources respect a no-self-ref invariant. SharedStream memoization (proposal 026 post-v1) or Native sources that cache back-refs would need cycle detection at the insert site, same shape as proposal 026 §v2 Modify-store cycle checks.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-043"],
+  status: Verified(at: "2026-04-19T19:36:15Z"))
+
+fact WorkItem(
+  id: "WI-056",
+  description: "share frame locals via Rc to eliminate per-sub-expression clones. eval_nested (eval.rs:~487) clones the parent's locals SmallVec every sub-expression; apply_closure clones captured env every call; reduce_lambda captures full parent locals (not free vars). Fix path: wrap locals in Rc<SmallVec<...>> so clone is a refcount bump. A principled follow-up is free-variable analysis on lambda body to capture only what's used, but the Rc fix is the cheaper first win. Benchmark driven — land after WI-053 compile-caches.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-053"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-057",
+  description: "Value::Entity.named field: change Vec<(Symbol, Value)> to SmallVec<[(Symbol, Value); 2]>. cons cells have exactly 2 named args (head, tail); entity constructors typically fit in 2-4. Saves a heap alloc per Entity value — significant on list-heavy workloads. Cross-cutting: eval.rs build_list_value + reduce_constructor + pattern.rs unify_constructor all allocate Vec today. Same rationale applies to Value::Tuple.named and Value::Entity.pos. Benchmark-driven; WI-053 companion.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-053"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-058",
+  description: "prototype gc_arena vs concrete tracer for eval-time cycle handling. Spike in a branch between M4 and M5 — measure 'gc-lifetime pollution cost against the actually-built eval + resolver code (Substitution<Value> from 026.1 Q1 + LogicalStream from M4 are in scope by then). Cycles don't arise until M5 Modify[store] with store cells closing over closures; v1 refcount (WI-055) is correct until then. Decide based on: (a) ripple of 'gc into Interpreter/Substitution/Frame signatures; (b) derive(Collect) coverage on held types (SmallVec, SearchStream, persistence types); (c) mutator-threading ergonomics for builtins + host embedding; (d) safepoint discipline cost. Outcome is a decision + write-up in docs/proposals/, not a shipped implementation.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-048"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-059",
+  description: "cache stdlib KB across integration tests. load_kb_with re-parses + re-loads the full stdlib (~50 files) per test. With ~25 eval tests × ~400ms this dominates test run time. Fix: Lazy<Arc<KB>> in tests/common that loads stdlib once per test binary, with a cheap 'clone or fork' path that user sources extend. Requires either KB::clone (potentially expensive if hash-consed term store is deep-cloned — prefer Arc-sharing of immutable parts) or a 'fresh copy extending a read-only base' API. Needs a design sketch; profile first to confirm savings.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-060",
+  description: "Convert eval to true continuation-passing so deep recursion hits EvalError::DepthExceeded instead of native SIGABRT. Proposal 026 §Activation stack mandates 'no native recursion', but today eval_nested / enter_operation / apply_closure each call run_until recursively — so the Rust call stack grows in lockstep with the activation stack and overflows first. Fix: expand Continuation enum to cover every mid-state (ApplyArg { buffered, remaining }, ApplyArgsComplete { target }, LetBind, MatchScrutinee, IfCond, ClosureResult, …). reduce_* pushes a child frame and returns StepOutcome::Continue; the outer run() loop delivers child results to the parent's Continuation. Prerequisite for honest DepthExceeded semantics and for future Suspension/Branch (VM-style resumption needs a saveable stack). Test: a zero-arg infinite recursion should return DepthExceeded at the configured cap, not SIGABRT.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-044"],
+  status: Verified(at: "2026-04-19T19:40:08Z"))
+
+fact WorkItem(
+  id: "WI-061",
+  description: "Tail-call optimization for operation/closure dispatch + bump activation-stack cap. Follow-on to WI-060. At dispatch_call time the current frame has nothing left to do (its expr has been fully consumed by the time we dispatch), so replacing it with the body frame is always safe — no static tail-position analysis needed. Change: enter_operation / enter_closure replace the top frame instead of push + awaiting=OperationResult. Also bump DEFAULT_DEPTH_CAP from 1024 to 1_000_000 (activation frames are heap-allocated; cap is a safety valve not a memory bound). Update m1_infinite_recursion_hits_depth_cap to use non-tail form (let _ = f() \n 0) since tail infinite recursion is a correct constant-time loop under TCO. Preserve original op on replacement so error messages stay readable. Acceptance: existing tests green; new test m1_tail_recursion_runs_deep showing O(1) stack over 10000 levels.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-060"],
+  status: Delivered(agent: "claude", at: "2026-04-19T17:35:22Z"))
+
+fact WorkItem(
+  id: "WI-062",
+  description: "Interpreter resource config (EvalConfig struct). Replace ad-hoc set_stack_depth_cap with a coherent config object: pub struct EvalConfig { depth_cap: Option<usize>, step_cap: Option<u64> }. depth_cap catches non-tail recursion; step_cap catches infinite tail loops (TCO means no stack growth, so depth_cap alone can't catch them). Add EvalError::StepsExhausted. Thread through Interpreter::with_config / config / config_mut. Default: depth_cap=Some(1_000_000), step_cap=None. Deprecate set_stack_depth_cap in favor of config mutation. Test: infinite tail recursion (loop() = loop()) with step_cap=1000 surfaces StepsExhausted cleanly. value_weight_cap (memory-weight tracking) is filed separately — add when embedding / untrusted input is a concrete use case.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-061"],
+  status: Delivered(agent: "claude", at: "2026-04-19T17:52:09Z"))
+
+fact WorkItem(
+  id: "WI-063",
+  description: "EvalConfig: add value_weight_cap. Sum per-Value weight (scalars=1, Str ~= len/16, Entity/Tuple = 2 + children) across frame locals + closure arena. Catches memory-blowup programs where stack stays shallow but values grow (e.g., recursive cons-ing of big strings). Not needed for typical CLI / test usage; useful when embedding anthill in a host (untrusted input) or for spec-level budget contracts. Tag as 'embedding prerequisite'.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-062"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-064",
+  description: "Add fold / reduce / map / filter combinators to stdlib. Currently anthill.prelude.Iteration only has split; Collection has insert + empty. No higher-order combinators. Blocks ergonomic list processing — every user program that wants to sum a list has to hand-roll recursion. Add: fold_left(xs, init, f), fold_right(xs, init, f), map(xs, f), filter(xs, pred), for_each(xs, f) in anthill.prelude.Iteration (polymorphic over Iterator[T]). Definitions via rules over Iteration.split. Acceptance: a reduce-the-list-to-sum integration test passes end-to-end.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-065",
+  description: "Add div to stdlib + register builtin.  parses as infix → desugars to div(a, b) functor (parse/pratt.rs:58), but no Numeric.div / Int.div / Float.div operation is declared in stdlib, so using  in anthill source fails with UnknownOperation at runtime. Declare div in Numeric (or Int + Float specifically) and register the builtin. Decide semantics: for Int, is  == divExact (truncate) or error on non-exact? Proposal needed before implementation.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-19T18:42:59Z"))
+
+fact WorkItem(
+  id: "WI-066",
+  description: "Encode partiality of integer division as Error-effect. Currently Int.div and Field.div errors on divide-by-zero only at runtime (EvalError::DivisionByZero). Add Error[DivisionByZero] to signatures: Int.div, Int.mod, Int.rem, Field.div all grow effects Error[DivisionByZero]. Add sort DivisionByZero payload alongside MatchFailed in effects.anthill. Float.div stays pure (IEEE 0.0/0.0=NaN, 1.0/0.0=Inf are defined values, not errors). Downstream: callers using / on Ints must declare Error[DivisionByZero] in their effect rows OR handle it. Typer may need to thread this; existing tests might need updates.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-065"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-067",
+  description: "Discharge Error-effects from local proofs. When Int.div / Field.div declare Error[DivisionByZero] unconditionally, callers must propagate the effect everywhere — even where b≠0 is locally obvious (pattern match arm after case 0, explicit if neq(b, 0) guard, or a refinement-typed non-zero Int). Design + implement a mechanism to elide the effect at call sites where the partiality-triggering condition is statically ruled out. Three candidate mechanisms, not mutually exclusive: (1) flow-sensitive typer that narrows value facts inside if/match branches; (2) refinement types, e.g., NonZero Int with a require clause; (3) pattern-match refinement, same as (1) applied to match arms. Unrelated to proposal 023 (KB guards — that's about assert-time fact integrity). Needs its own proposal; this WI is the placeholder.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-066"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-068",
+  description: "Make Int's machine-boundedness explicit via an alias, not a rename. BigInt already exists for arbitrary-precision; most real programs want bounded arithmetic (fast, i64-sized). Keep Int as the user-facing default, but introduce `sort BoundedInt` with the current contents of Int and declare `sort Int = BoundedInt` as an alias. Users keep writing `Int`; the spec-level name BoundedInt clarifies what it actually is; the alias prevents churn across existing code. Interacts with WI-066: Error[Overflow] effect lives on BoundedInt arithmetic (inherited by Int via alias). Does NOT promote BigInt to be the literal default — bounded ints remain the pragmatic path. BigInt stays an explicit opt-in for crypto, financial, or values exceeding i64. Scope: stdlib int.anthill rename-and-alias, Error[Overflow] effect on BoundedInt.add/sub/mul/neg/abs, fact Numeric[BoundedInt] (Int inherits via alias). Proposal doc lightweight: this is cosmetic + effect addition, no runtime changes.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-069",
+  description: "Implement Suspension effect: first-class continuations on the activation stack. WI-050 stubs Suspension as UnhandledEffect. Real implementation: (1) SuspensionHandle wraps a saved snapshot of the activation stack + locals + in-flight AwaitStates. (2) operation suspend(k: Function[T, U]) -> U effects Suspension — when invoked, snapshot current stack up to the suspend site, return SuspensionHandle to user code, bail out of run(). (3) operation resume(handle: SuspensionHandle, value: T) -> U — restore saved stack, deliver value to the saved continuation, resume run(). Uses the heap-allocated activation stack from WI-060 (CPS eval) directly — no VM/bytecode needed. The ClosureHandle Rc refcount (WI-055) already makes snapshot+restore safe. Scope: save/restore protocol, suspend/resume builtins, test of continuation capture and round-trip. Separate from Branch (WI-TODO) — Branch is SLD-value-level non-determinism, different shape.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-050", "WI-060"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-070",
+  description: "Implement Branch effect: SLD-style value-level non-determinism. WI-050 stubs Branch as UnhandledEffect. Real implementation: (1) operation fail() effects Branch — signals 'this computation branch is infeasible, backtrack'. (2) Under Branch, an operation returning multiple values pushes alternative frames; the activation stack forks. (3) At resolution points (e.g. pattern match or constraint discharge), one branch proceeds; on fail() the saved alternative resumes. Relationship to LogicalStream (M4): LogicalStream is the external interface for non-deterministic computation (stream of values); Branch is the internal mechanism. A stream-returning operation uses Branch to represent multiple yields. Scope: snapshot of activation stack at choice points (same machinery as Suspension's save/restore), branch / fail builtins, test of backtracking through a non-deterministic operation.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-050", "WI-060"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-071",
+  description: "Grammar: add bare-Type positional SortBinding. Spec (kernel-language.md:481-483) declares three SortBinding forms: Name=Type (named), Type (positional), VariableTerm. The tree-sitter grammar (tree-sitter-anthill/grammar.js:121) only implements Name[=Type] and variable_term. This blocks bracketed-type positional bindings like Effect[Output[?]] or List[Option[Int]], which must be written in named form today (Effect[T = Output[?]]). Fix: extend sort_binding choice 2 from variable_term to a general _type, updating the converter to emit positional bindings. Update existing stdlib opportunistically. Acceptance: 'effects Output[Console]' works for bare names (already parses) AND nested like 'fact Effect[Output[?]]' parses and lowers correctly; existing uses unchanged.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-072",
+  description: "M5 follow-up: Modify[T] runtime effect handler with arena-backed cells. WI-050 landed the effect-handler framework (register_effect_handler, invoke_effect_handler, EffectRegistry) plus Console. Modify[T] needs its own handler: ModifyArena<StoreCell> holding per-resource state keyed by resource symbol, get/set dispatched via op_sym, cycle detection on Rc reference chains surfacing as EvalError::CyclicReference. Register a default handler for Modify[?] that owns the arena. Acceptance: counter test — anthill operation that calls set(store, n) repeatedly and verifies get returns the latest value; cycle-detection test where two cells reference each other triggers CyclicReference. Depends on WI-050.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-20T06:46:45Z"))
+
+fact WorkItem(
+  id: "WI-073",
+  description: "M5 follow-up: Error[T]::raise runtime propagation. WI-050 did not register a handler for Error[?]. Implement: default handler that unwraps args[0] as the error payload and surfaces it as EvalError::Raised { payload: Value }. Downstream catch/handle constructs (future) inspect the payload. Until catch lands, a raised Error aborts evaluation with the payload in the EvalError. Acceptance: integration test calls raise(my_error_value) and asserts the EvalError matches Raised with the expected payload. Depends on WI-050.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+

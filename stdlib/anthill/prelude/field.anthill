@@ -1,0 +1,29 @@
+-- Field: division algebra. Extends Numeric with multiplicative inverse —
+-- for every non-zero element `b`, there exists `div(a, b)` satisfying the
+-- inverse law `mul(div(a, b), b) = a`.
+--
+-- `Int` does NOT satisfy Field: truncated integer division discards
+-- information (`div(7, 2) * 2 = 6 ≠ 7`). Code that wants integer truncation
+-- uses `Int.div` directly; code that wants proper division works over a
+-- `Field` instance (Float approximately, Rational exactly).
+sort anthill.prelude.Field
+  import anthill.prelude.{Numeric}
+  export div, recip
+
+  sort T = ?
+  requires Numeric[T]
+
+  operation {
+    div(a: T, b: T) -> T                -- `a * inv(b)` for b ≠ 0
+    recip(a: T) -> T                    -- `1 / a` for a ≠ 0
+  }
+
+  -- Inverse law: div really is the inverse of mul — but only for b ≠ 0.
+  -- The guarded-rule syntax (`:- cond`) reads as "this equation holds
+  -- when the guard is satisfied." A verifier uses the guard to discharge
+  -- the rule's preconditions; a typer/resolver skips the rewrite when the
+  -- guard is not (yet) known to hold.
+  rule mul(div(?a, ?b), ?b) = ?a :- neq(?b, 0)
+  rule div(?a, ?b) = mul(?a, recip(?b)) :- neq(?b, 0)
+  rule mul(recip(?a), ?a) = 1 :- neq(?a, 0)
+end

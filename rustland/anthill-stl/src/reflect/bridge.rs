@@ -704,10 +704,15 @@ impl Substitution for SubstBridge {
     }
 
     fn compose(&self, s2: &dyn Substitution, kb: &dyn KB) -> Box<dyn Substitution> {
-        // Apply s2 to every binding value in self
+        // Apply s2 to every binding value in self. Only Term-valued entries
+        // have a resolver-level rewrite; non-Term bindings (external-source
+        // Values) pass through unchanged — applying a substitution to a
+        // bare scalar is a no-op.
         let mut result = self.inner.clone();
-        for (_var, tid) in result.bindings.iter_mut() {
-            *tid = s2.apply(*tid, kb);
+        for (_var, val) in result.bindings.iter_mut() {
+            if let anthill_core::eval::Value::Term(tid) = val {
+                *tid = s2.apply(*tid, kb);
+            }
         }
         // s2's own bindings that aren't in self are not accessible through
         // the trait — full compose needs same-type access. SubstBridge
@@ -720,11 +725,13 @@ impl SubstBridge {
     /// Full composition when both substitutions are SubstBridge.
     pub fn compose_with(&self, s2: &SubstBridge, kb: &dyn KB) -> SubstBridge {
         let mut result = self.inner.clone();
-        for (_var, tid) in result.bindings.iter_mut() {
-            *tid = kb.apply_core_subst(*tid, &s2.inner);
+        for (_var, val) in result.bindings.iter_mut() {
+            if let anthill_core::eval::Value::Term(tid) = val {
+                *tid = kb.apply_core_subst(*tid, &s2.inner);
+            }
         }
-        for (var, tid) in s2.inner.iter() {
-            result.bindings.entry(*var).or_insert(*tid);
+        for (var, val) in s2.inner.iter() {
+            result.bindings.entry(*var).or_insert_with(|| val.clone());
         }
         SubstBridge { inner: result }
     }

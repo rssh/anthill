@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use smallvec::SmallVec;
 
+use crate::eval::value::Value;
 use crate::intern::Symbol;
 use super::subst::Substitution;
 use super::term::{Term, TermId, TermStore, VarId};
@@ -38,13 +39,18 @@ pub(crate) enum ArgPos {
 
 // ── BindValue — right-hand side of a persistent substitution entry
 
-/// A binding value: either an already-resolved TermId or a deferred path.
+/// A binding value: a TermId (KB-resident), a deferred path into the fact
+/// term, or a runtime `Value` (external-sourced, per 026.1 Q2 — used when
+/// the query side is a `Value::Entity` etc. that can't be promoted to a
+/// TermId without violating the lineage-preservation invariant).
 #[derive(Clone, Debug)]
 pub(crate) enum BindValue {
     /// Resolved immediately (e.g., tree var_edge bound to query's known TermId)
     Term(TermId),
     /// Deferred: extract from fact term at leaf using this path
     Path(VarPath),
+    /// Non-TermId runtime value from an external-source query side.
+    Value(Value),
 }
 
 // ── Path extraction ─────────────────────────────────────────────
@@ -107,11 +113,11 @@ impl PersistSubst for SmallSubst {
     fn resolve_leaf(self, terms: &TermStore, fact_term: TermId) -> Substitution {
         let mut s = Substitution::new();
         for (vid, val) in self.bindings {
-            let tid = match val {
-                BindValue::Term(tid) => tid,
-                BindValue::Path(path) => extract_at_path(terms, fact_term, &path),
-            };
-            s.bind(vid, tid);
+            match val {
+                BindValue::Term(tid) => s.bind_term(vid, tid),
+                BindValue::Path(path) => s.bind_term(vid, extract_at_path(terms, fact_term, &path)),
+                BindValue::Value(v) => s.bind_value(vid, v),
+            }
         }
         s
     }
@@ -149,11 +155,11 @@ impl PersistSubst for SharedSubst {
         let mut s = Substitution::new();
         let mut cur = &self.head;
         while let Some(cell) = cur {
-            let tid = match &cell.value {
-                BindValue::Term(tid) => *tid,
-                BindValue::Path(path) => extract_at_path(terms, fact_term, path),
-            };
-            s.bind(cell.var, tid);
+            match &cell.value {
+                BindValue::Term(tid) => s.bind_term(cell.var, *tid),
+                BindValue::Path(path) => s.bind_term(cell.var, extract_at_path(terms, fact_term, path)),
+                BindValue::Value(v) => s.bind_value(cell.var, v.clone()),
+            }
             cur = &cell.tail;
         }
         s

@@ -1,0 +1,129 @@
+//! Runtime value representation for the evaluator.
+//!
+//! Per proposal 026 §Values: scalars stay unboxed, transient tuples/entities
+//! hold inline payloads, and `Value::Term(TermId)` wraps KB-resident data
+//! that's already hash-consed. Promotion to `TermId` happens only at KB
+//! boundaries (assert_fact, Modify writes, SharedStream caching).
+
+use crate::intern::Symbol;
+use crate::kb::term::TermId;
+
+pub use super::closure::ClosureHandle;
+pub use super::stream::StreamHandle;
+
+#[derive(Clone, Debug)]
+pub enum Value {
+    // Unboxed scalars — zero alloc, zero hash lookup.
+    Int(i64),
+    /// Arbitrary-precision integer. Lives outside the hash-consed TermStore
+    /// so in-flight arithmetic doesn't pay the alloc+refcount tax per
+    /// intermediate value. Only promoted to `Value::Term(TermId)` at KB
+    /// boundaries.
+    BigInt(num_bigint::BigInt),
+    Float(f64),
+    Bool(bool),
+    Str(String),
+    Unit,
+
+    // Anonymous tuple (no functor). `Vec` rather than `SmallVec<[Value; N]>`
+    // to avoid a self-referential layout cycle.
+    Tuple {
+        pos: Vec<Value>,
+        named: Vec<(Symbol, Value)>,
+    },
+
+    // Constructed entity (has a functor), transient until persisted. Zero
+    // TermStore allocation unless/until it crosses a KB boundary.
+    Entity {
+        functor: Symbol,
+        pos: Vec<Value>,
+        named: Vec<(Symbol, Value)>,
+    },
+
+    // Interpreter-owned handles. Each is an arena-refcounted smart
+    // pointer — Clone bumps the slot's refcount, Drop decrements. The
+    // lazy arena is not yet built; `LazyHandle` stays a plain u32 newtype
+    // until M5 lands it.
+    Closure(ClosureHandle),
+    Stream(StreamHandle),
+    Lazy(LazyHandle),
+
+    // KB-sourced or already-committed data (hash-consed).
+    Term(TermId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LazyHandle(pub(crate) u32);
+
+impl Value {
+    /// Scalar equality. Tuples / Entities / Closures / Streams / Lazies
+    /// compare as unequal regardless of contents — structural compare is
+    /// deferred to 026.1 Q2's `TermView` work (shape-aware comparator
+    /// over `Value` and `(&KB, TermId)` uniformly). Used by `Eq.eq` and
+    /// by `SetLiteral` dedup.
+    pub fn scalar_eq(&self, other: &Value) -> bool {
+        match (self, other) {
+            (Value::Int(x), Value::Int(y)) => x == y,
+            (Value::BigInt(x), Value::BigInt(y)) => x == y,
+            (Value::Float(x), Value::Float(y)) => x == y,
+            (Value::Bool(x), Value::Bool(y)) => x == y,
+            (Value::Str(x), Value::Str(y)) => x == y,
+            (Value::Unit, Value::Unit) => true,
+            (Value::Term(x), Value::Term(y)) => x == y,
+            _ => false,
+        }
+    }
+
+    pub fn as_int(&self) -> Option<i64> {
+        if let Value::Int(n) = self { Some(*n) } else { None }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        if let Value::Bool(b) = self { Some(*b) } else { None }
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        if let Value::Str(s) = self { Some(s.as_str()) } else { None }
+    }
+
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Value::Int(_) => "Int",
+            Value::BigInt(_) => "BigInt",
+            Value::Float(_) => "Float",
+            Value::Bool(_) => "Bool",
+            Value::Str(_) => "String",
+            Value::Unit => "Unit",
+            Value::Tuple { .. } => "Tuple",
+            Value::Entity { .. } => "Entity",
+            Value::Closure(_) => "Closure",
+            Value::Stream(_) => "Stream",
+            Value::Lazy(_) => "Lazy",
+            Value::Term(_) => "Term",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scalars_unboxed() {
+        assert_eq!(Value::Int(42).as_int(), Some(42));
+        assert_eq!(Value::Bool(true).as_bool(), Some(true));
+        assert_eq!(Value::Int(1).type_name(), "Int");
+    }
+
+    #[test]
+    fn tuple_builds() {
+        let t = Value::Tuple {
+            pos: vec![Value::Int(1), Value::Int(2)],
+            named: Vec::new(),
+        };
+        match t {
+            Value::Tuple { pos, .. } => assert_eq!(pos.len(), 2),
+            _ => panic!(),
+        }
+    }
+}
