@@ -279,6 +279,20 @@ impl KnowledgeBase {
         }
     }
 
+    /// Kind of a resolved symbol (Sort, Entity, Operation, …).
+    /// `None` for unresolved symbols.
+    pub fn kind_of(&self, sym: Symbol) -> Option<crate::intern::SymbolKind> {
+        match self.symbols.get(sym) {
+            SymbolDef::Resolved { kind, .. } => Some(*kind),
+            SymbolDef::Unresolved { .. } => None,
+        }
+    }
+
+    /// Scope symbol that owns `sym`. Delegates to the symbol table.
+    pub fn scope_of(&self, sym: Symbol) -> Option<Symbol> {
+        self.symbols.scope_of(sym)
+    }
+
     /// Get the Term for a TermId.
     pub fn get_term(&self, id: TermId) -> &Term {
         self.terms.get(id)
@@ -1001,7 +1015,7 @@ impl KnowledgeBase {
     /// Returns a new hash-consed TermId.
     pub fn apply_subst(&mut self, term: TermId, subst: &subst::Substitution) -> TermId {
         match self.terms.get(term).clone() {
-            Term::Var(Var::Global(vid)) => subst.resolve(vid).unwrap_or(term),
+            Term::Var(Var::Global(vid)) => subst.resolve_with_term(vid).unwrap_or(term),
             Term::Var(Var::DeBruijn(_)) => term,
             Term::Fn { .. } => self.map_fn_children(term, |kb, id| kb.apply_subst(id, subst)),
             _ => term,
@@ -1017,7 +1031,7 @@ impl KnowledgeBase {
         loop {
             match self.terms.get(current) {
                 Term::Var(Var::Global(vid)) => {
-                    if let Some(bound) = subst.resolve(*vid) {
+                    if let Some(bound) = subst.resolve_with_term(*vid) {
                         if bound == current {
                             return current; // self-referential, stop
                         }
@@ -1255,7 +1269,7 @@ impl KnowledgeBase {
 
             let mut rename = subst::Substitution::new();
             for vid in &all_vars {
-                if let Some(bound) = tree_subst.resolve(*vid) {
+                if let Some(bound) = tree_subst.resolve_with_term(*vid) {
                     if !matches!(self.terms.get(bound), Term::Var(_)) {
                         rename.bind(*vid, bound);
                         continue;
@@ -1279,7 +1293,7 @@ impl KnowledgeBase {
                 match self.terms.get(bound_term) {
                     Term::Var(Var::Global(rule_vid)) => {
                         let rule_vid = *rule_vid;
-                        if let Some(renamed) = rename.resolve(rule_vid) {
+                        if let Some(renamed) = rename.resolve_with_term(rule_vid) {
                             answer_links.bind(ts_vid, renamed);
                         }
                     }
@@ -1806,7 +1820,7 @@ mod tests {
         let target = kb.alloc(Term::Const(Literal::Int(42)));
 
         let s = kb.match_term(var_term, target).expect("should match");
-        assert_eq!(s.resolve(vid), Some(target));
+        assert_eq!(s.resolve_with_term(vid), Some(target));
     }
 
     #[test]
@@ -1897,12 +1911,87 @@ mod tests {
         let subst = kb.match_view(pattern, &value_target)
             .expect("match should succeed");
         // ?x's binding is the Value (not a TermId) — lineage preserved.
-        match subst.lookup(xv) {
+        match subst.resolve_as_value(xv) {
             Some(Value::Str(s)) => assert_eq!(s, "A001"),
             other => panic!("expected Value::Str, got {other:?}"),
         }
         // resolve() returns None because the binding isn't a TermId.
-        assert!(subst.resolve(xv).is_none());
+        assert!(subst.resolve_with_term(xv).is_none());
+    }
+
+    #[test]
+    fn match_view_binds_vars_to_nested_value_entities() {
+        // Pattern `Pair(?x, ?y)` matched against a runtime
+        // `Pair(Entity{ inner(a: 1, b: "hi") }, Tuple(2, Entity{ leaf }))`.
+        // Proves variables capture non-trivial structured Values out of
+        // Substitution — the core WI-045/Q1 contract for external-source
+        // bindings that must not be promoted to TermId.
+        use crate::eval::value::Value;
+
+        let mut kb = KnowledgeBase::new();
+        let pair = kb.intern("Pair");
+        let inner = kb.intern("Inner");
+        let leaf = kb.intern("Leaf");
+        let a_field = kb.intern("a");
+        let b_field = kb.intern("b");
+
+        let x_sym = kb.intern("x");
+        let y_sym = kb.intern("y");
+        let xv = kb.fresh_var(x_sym);
+        let yv = kb.fresh_var(y_sym);
+        let var_x = kb.alloc(Term::Var(Var::Global(xv)));
+        let var_y = kb.alloc(Term::Var(Var::Global(yv)));
+        let pattern = kb.alloc(Term::Fn {
+            functor: pair,
+            pos_args: SmallVec::from_slice(&[var_x, var_y]),
+            named_args: SmallVec::new(),
+        });
+
+        let inner_val = Value::Entity {
+            functor: inner,
+            pos: Vec::new(),
+            named: vec![(a_field, Value::Int(1)), (b_field, Value::Str("hi".into()))],
+        };
+        let leaf_val = Value::Entity { functor: leaf, pos: Vec::new(), named: Vec::new() };
+        let nested_tuple = Value::Tuple {
+            pos: vec![Value::Int(2), leaf_val.clone()],
+            named: Vec::new(),
+        };
+        let target = Value::Entity {
+            functor: pair,
+            pos: vec![inner_val.clone(), nested_tuple.clone()],
+            named: Vec::new(),
+        };
+
+        let subst = kb.match_view(pattern, &target).expect("match should succeed");
+
+        match subst.resolve_as_value(xv) {
+            Some(Value::Entity { functor, named, .. }) => {
+                assert_eq!(*functor, inner);
+                assert_eq!(named.len(), 2);
+                assert!(named.iter().any(|(k, v)|
+                    *k == a_field && matches!(v, Value::Int(1))));
+                assert!(named.iter().any(|(k, v)|
+                    *k == b_field && matches!(v, Value::Str(s) if s == "hi")));
+            }
+            other => panic!("expected Value::Entity(Inner) for ?x, got {other:?}"),
+        }
+
+        match subst.resolve_as_value(yv) {
+            Some(Value::Tuple { pos, .. }) => {
+                assert_eq!(pos.len(), 2);
+                assert!(matches!(pos[0], Value::Int(2)));
+                match &pos[1] {
+                    Value::Entity { functor, .. } => assert_eq!(*functor, leaf),
+                    other => panic!("expected nested Leaf entity, got {other:?}"),
+                }
+            }
+            other => panic!("expected Value::Tuple for ?y, got {other:?}"),
+        }
+
+        // Both variables bind to non-Term Values → resolve() returns None.
+        assert!(subst.resolve_with_term(xv).is_none());
+        assert!(subst.resolve_with_term(yv).is_none());
     }
 
     #[test]
@@ -1933,8 +2022,8 @@ mod tests {
         let via_term = kb.match_term(pattern, target).expect("match_term");
         let via_view = kb.match_view(pattern, &TermIdView(target)).expect("match_view");
 
-        assert_eq!(via_term.resolve(xv), via_view.resolve(xv));
-        assert_eq!(via_term.resolve(xv), Some(a));
+        assert_eq!(via_term.resolve_with_term(xv), via_view.resolve_with_term(xv));
+        assert_eq!(via_term.resolve_with_term(xv), Some(a));
     }
 
     #[test]
@@ -2039,7 +2128,7 @@ mod tests {
         let results = kb.query(pattern);
         assert_eq!(results.len(), 1);
         let (_, ref s) = results[0];
-        assert_eq!(s.resolve(vid), Some(alice));
+        assert_eq!(s.resolve_with_term(vid), Some(alice));
     }
 
     #[test]

@@ -76,7 +76,11 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     Ok(())
 }
 
-fn register_if_present<F>(interp: &mut Interpreter, qname: &str, f: F) -> Result<(), EvalError>
+/// Register a builtin if its qualified name resolves in the KB; silently
+/// skip `UnknownOperation` so partial-stdlib test harnesses keep loading.
+/// Exposed for downstream crates (e.g. `anthill-stl`) that register their
+/// own builtin sets with the same policy.
+pub fn register_if_present<F>(interp: &mut Interpreter, qname: &str, f: F) -> Result<(), EvalError>
 where
     F: Fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError> + 'static,
 {
@@ -89,7 +93,8 @@ where
 
 // ── argument helpers ────────────────────────────────────────────
 
-fn expect_args<const N: usize>(op: &'static str, args: &[Value]) -> Result<[Value; N], EvalError> {
+/// Unpack an arg slice into a fixed-size array, enforcing arity.
+pub fn expect_args<const N: usize>(op: &'static str, args: &[Value]) -> Result<[Value; N], EvalError> {
     if args.len() != N {
         return Err(EvalError::ArityMismatch { op, expected: N, got: args.len() });
     }
@@ -228,12 +233,12 @@ fn int_sign(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
 
 fn builtin_eq(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("Eq.eq", args)?;
-    Ok(Value::Bool(a.scalar_eq(&b)))
+    Ok(Value::Bool(a.structural_eq(&b)))
 }
 
 fn builtin_neq(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("Eq.neq", args)?;
-    Ok(Value::Bool(!a.scalar_eq(&b)))
+    Ok(Value::Bool(!a.structural_eq(&b)))
 }
 
 /// Total order on primitive scalars. Floats use `total_cmp` so NaN has a
@@ -501,7 +506,10 @@ fn kb_execute(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
     Ok(Value::Stream(handle))
 }
 
-fn require_symbol(interp: &Interpreter, qualified: &str, short: &str)
+/// Resolve a builtin's target symbol. Tries the fully-qualified name first,
+/// then falls back to the short name. Exposed so downstream crates that
+/// register their own builtins (e.g. `anthill-stl`) error consistently.
+pub fn require_symbol(interp: &Interpreter, qualified: &str, short: &str)
     -> Result<crate::intern::Symbol, EvalError>
 {
     interp.kb.try_resolve_symbol(qualified)
@@ -531,6 +539,7 @@ effect_dispatcher!(modify_set, "Modify.set", "set", "Modify");
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::intern::Symbol;
 
     fn dummy() -> Interpreter {
         Interpreter::new(crate::kb::KnowledgeBase::new())
@@ -582,10 +591,44 @@ mod tests {
     }
 
     #[test]
-    fn eq_on_tuple_is_false_by_policy() {
-        // Aggregates compare as unequal until a structural comparator lands.
+    fn eq_on_equal_tuples_is_true() {
         let a = Value::Tuple { pos: vec![Value::Int(1)], named: Vec::new() };
         let b = Value::Tuple { pos: vec![Value::Int(1)], named: Vec::new() };
+        let r = builtin_eq(&mut dummy(), &[a, b]).unwrap();
+        assert_eq!(r.as_bool(), Some(true));
+    }
+
+    #[test]
+    fn eq_on_different_tuples_is_false() {
+        let a = Value::Tuple { pos: vec![Value::Int(1)], named: Vec::new() };
+        let b = Value::Tuple { pos: vec![Value::Int(2)], named: Vec::new() };
+        let r = builtin_eq(&mut dummy(), &[a, b]).unwrap();
+        assert_eq!(r.as_bool(), Some(false));
+    }
+
+    #[test]
+    fn eq_on_equal_entities_is_true() {
+        let mk = || Value::Entity {
+            functor: Symbol::from_raw(7),
+            pos: vec![Value::Int(10), Value::Str("x".into())],
+            named: vec![(Symbol::from_raw(8), Value::Bool(true))],
+        };
+        let r = builtin_eq(&mut dummy(), &[mk(), mk()]).unwrap();
+        assert_eq!(r.as_bool(), Some(true));
+    }
+
+    #[test]
+    fn eq_on_entities_differing_functor_is_false() {
+        let a = Value::Entity {
+            functor: Symbol::from_raw(7),
+            pos: vec![Value::Int(1)],
+            named: vec![],
+        };
+        let b = Value::Entity {
+            functor: Symbol::from_raw(8),
+            pos: vec![Value::Int(1)],
+            named: vec![],
+        };
         let r = builtin_eq(&mut dummy(), &[a, b]).unwrap();
         assert_eq!(r.as_bool(), Some(false));
     }

@@ -219,6 +219,7 @@ impl KnowledgeBase {
             Value::Closure(_) => Err(LowerError::UnsupportedVariant("Closure")),
             Value::Stream(_) => Err(LowerError::UnsupportedVariant("Stream")),
             Value::Lazy(_) => Err(LowerError::UnsupportedVariant("Lazy")),
+            Value::Substitution(_) => Err(LowerError::UnsupportedVariant("Substitution")),
         }
     }
 

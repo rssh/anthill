@@ -51,7 +51,7 @@ Integration tests in `anthill-core/tests/` follow:
 1. Load stdlib via `common::collect_anthill_files(&common::stdlib_dir())`
 2. Parse + `register_prelude` + `register_standard_builtins` + `load_all`
 3. Build query term, call `kb.resolve(&[query], &config)`
-4. Assert on `solutions.len()`, `subst.resolve(var)`, `kb.reify(var, &subst)`
+4. Assert on `solutions.len()`, `subst.resolve_with_term(var)`, `kb.reify(var, &subst)`
 
 ## Conventions
 

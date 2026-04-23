@@ -679,7 +679,7 @@ fn infer_constructor_type(
                         if alias_name.starts_with(&parent_name) && alias_name.len() > parent_name.len() {
                             let param_short = alias_name[parent_name.len() + 1..].to_string();
                             if let Term::Var(Var::Global(vid)) = kb.get_term(target_tid) {
-                                if let Some(bound_type) = subst.resolve(*vid) {
+                                if let Some(bound_type) = subst.resolve_with_term(*vid) {
                                     alias_info.push((param_short, bound_type));
                                 }
                             }
@@ -1180,7 +1180,7 @@ fn occurs_in(kb: &KnowledgeBase, vid: VarId, term: TermId) -> bool {
 fn walk_type(kb: &KnowledgeBase, subst: &Substitution, ty: TermId) -> TermId {
     match kb.get_term(ty) {
         Term::Var(Var::Global(vid)) => {
-            match subst.resolve(*vid) {
+            match subst.resolve_with_term(*vid) {
                 Some(bound) => walk_type(kb, subst, bound),
                 None => ty,
             }
@@ -1196,7 +1196,7 @@ fn walk_type(kb: &KnowledgeBase, subst: &Substitution, ty: TermId) -> TermId {
             };
             // Alias to Var (type param) → resolve through substitution
             if let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) {
-                subst.resolve(*vid).map_or(alias_target, |bound| walk_type(kb, subst, bound))
+                subst.resolve_with_term(*vid).map_or(alias_target, |bound| walk_type(kb, subst, bound))
             } else {
                 alias_target
             }

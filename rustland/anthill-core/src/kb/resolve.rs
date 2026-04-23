@@ -140,7 +140,7 @@ impl Default for ResolveConfig {
 
 /// A successful resolution result: variable bindings collected during proof.
 ///
-/// The substitution is always flat (path-compressed) — use `subst.resolve(vid)`
+/// The substitution is always flat (path-compressed) — use `subst.resolve_with_term(vid)`
 /// directly, no `walk` needed.
 ///
 /// `residual` contains delayed goals that could not be resolved (e.g., a
@@ -1693,7 +1693,7 @@ mod tests {
         let val = kb.alloc(Term::Const(Literal::Int(42)));
 
         let s = kb.match_term(var_x, val).expect("should match");
-        assert_eq!(s.resolve(vid), Some(val));
+        assert_eq!(s.resolve_with_term(vid), Some(val));
     }
 
     #[test]
@@ -1717,7 +1717,7 @@ mod tests {
         });
 
         let s = kb.match_term(t1, t2).expect("should match");
-        assert_eq!(s.resolve(vx), Some(val));
+        assert_eq!(s.resolve_with_term(vx), Some(val));
     }
 
     #[test]
@@ -1750,18 +1750,18 @@ mod tests {
 
         // x → y
         s.bind_compressed([(vx, var_y)], &kb.terms);
-        assert_eq!(s.resolve(vx), Some(var_y));
+        assert_eq!(s.resolve_with_term(vx), Some(var_y));
 
         // y → z: should also compress x → z
         s.bind_compressed([(vy, var_z)], &kb.terms);
-        assert_eq!(s.resolve(vy), Some(var_z));
-        assert_eq!(s.resolve(vx), Some(var_z));
+        assert_eq!(s.resolve_with_term(vy), Some(var_z));
+        assert_eq!(s.resolve_with_term(vx), Some(var_z));
 
         // z → 99: should compress x → 99 and y → 99
         s.bind_compressed([(vz, val)], &kb.terms);
-        assert_eq!(s.resolve(vz), Some(val));
-        assert_eq!(s.resolve(vy), Some(val));
-        assert_eq!(s.resolve(vx), Some(val));
+        assert_eq!(s.resolve_with_term(vz), Some(val));
+        assert_eq!(s.resolve_with_term(vy), Some(val));
+        assert_eq!(s.resolve_with_term(vx), Some(val));
     }
 
     // ── Reify tests ─────────────────────────────────────────────
@@ -1877,7 +1877,7 @@ mod tests {
         let results = kb.resolve(&[goal], &config);
         assert_eq!(results.len(), 1);
         // answer_subst is flat — resolve directly, no walk needed
-        assert_eq!(results[0].subst.resolve(vx), Some(alice));
+        assert_eq!(results[0].subst.resolve_with_term(vx), Some(alice));
     }
 
     #[test]
@@ -2649,7 +2649,7 @@ mod tests {
         let results = kb.resolve(&[goal], &config);
         assert_eq!(results.len(), 1);
         assert!(results[0].residual.is_empty());
-        assert_eq!(results[0].subst.resolve(vx), Some(val));
+        assert_eq!(results[0].subst.resolve_with_term(vx), Some(val));
     }
 
     #[test]
@@ -3174,7 +3174,7 @@ mod tests {
 
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
         assert_eq!(solutions.len(), 1, "qualified_name should produce 1 solution");
-        let resolved = solutions[0].subst.resolve(result_vid).expect("result should be bound");
+        let resolved = solutions[0].subst.resolve_with_term(result_vid).expect("result should be bound");
         match kb.get_term(resolved) {
             Term::Const(Literal::String(s)) => assert_eq!(s, "foo.Bar"),
             other => panic!("expected String const 'foo.Bar', got {:?}", other),
@@ -3206,7 +3206,7 @@ mod tests {
 
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
         assert_eq!(solutions.len(), 1);
-        let resolved = solutions[0].subst.resolve(result_vid).expect("result should be bound");
+        let resolved = solutions[0].subst.resolve_with_term(result_vid).expect("result should be bound");
         match kb.get_term(resolved) {
             Term::Const(Literal::String(s)) => assert_eq!(s, "Baz"),
             other => panic!("expected String const 'Baz', got {:?}", other),
@@ -3238,7 +3238,7 @@ mod tests {
 
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
         assert_eq!(solutions.len(), 1);
-        let resolved = solutions[0].subst.resolve(result_vid).expect("result should be bound");
+        let resolved = solutions[0].subst.resolve_with_term(result_vid).expect("result should be bound");
         match kb.get_term(resolved) {
             Term::Ref(sym) => assert_eq!(*sym, qux_sym),
             other => panic!("expected Ref(Qux), got {:?}", other),
@@ -3544,7 +3544,7 @@ mod tests {
         assert_eq!(solutions.len(), 1, "should have one solution");
         assert!(solutions[0].residual.is_empty(), "no residual expected");
         // ?x should be bound to a
-        let bound = solutions[0].subst.resolve(vx);
+        let bound = solutions[0].subst.resolve_with_term(vx);
         assert!(bound.is_some(), "?x should be bound");
     }
 

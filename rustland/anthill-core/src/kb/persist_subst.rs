@@ -205,7 +205,7 @@ mod tests {
         let s = SmallSubst::new()
             .with_binding(vid, BindValue::Term(tid));
         let sub = s.resolve_leaf(&env.terms, TermId::from_raw(0));
-        assert_eq!(sub.resolve(vid), Some(tid));
+        assert_eq!(sub.resolve_with_term(vid), Some(tid));
     }
 
     #[test]
@@ -223,7 +223,7 @@ mod tests {
         let s = SmallSubst::new()
             .with_binding(vid, BindValue::Path(VarPath::Arg(ArgPos::Positional(0))));
         let sub = s.resolve_leaf(&env.terms, fact_term);
-        assert_eq!(sub.resolve(vid), Some(val));
+        assert_eq!(sub.resolve_with_term(vid), Some(val));
     }
 
     #[test]
@@ -239,12 +239,12 @@ mod tests {
             .with_binding(vid2, BindValue::Term(tid));
 
         let sub1 = s1.resolve_leaf(&env.terms, TermId::from_raw(0));
-        assert_eq!(sub1.resolve(vid1), Some(tid));
-        assert_eq!(sub1.resolve(vid2), None);
+        assert_eq!(sub1.resolve_with_term(vid1), Some(tid));
+        assert_eq!(sub1.resolve_with_term(vid2), None);
 
         let sub2 = s2.resolve_leaf(&env.terms, TermId::from_raw(0));
-        assert_eq!(sub2.resolve(vid1), Some(tid));
-        assert_eq!(sub2.resolve(vid2), Some(tid));
+        assert_eq!(sub2.resolve_with_term(vid1), Some(tid));
+        assert_eq!(sub2.resolve_with_term(vid2), Some(tid));
     }
 
     #[test]
@@ -256,7 +256,7 @@ mod tests {
         let s = SharedSubst::new()
             .with_binding(vid, BindValue::Term(tid));
         let sub = s.resolve_leaf(&env.terms, TermId::from_raw(0));
-        assert_eq!(sub.resolve(vid), Some(tid));
+        assert_eq!(sub.resolve_with_term(vid), Some(tid));
     }
 
     #[test]
@@ -272,11 +272,11 @@ mod tests {
             .with_binding(vid2, BindValue::Term(tid));
 
         let sub1 = s1.resolve_leaf(&env.terms, TermId::from_raw(0));
-        assert_eq!(sub1.resolve(vid2), None);
+        assert_eq!(sub1.resolve_with_term(vid2), None);
 
         let sub2 = s2.resolve_leaf(&env.terms, TermId::from_raw(0));
-        assert_eq!(sub2.resolve(vid1), Some(tid));
-        assert_eq!(sub2.resolve(vid2), Some(tid));
+        assert_eq!(sub2.resolve_with_term(vid1), Some(tid));
+        assert_eq!(sub2.resolve_with_term(vid2), Some(tid));
     }
 
     // ── Path extraction tests ───────────────────────────────────

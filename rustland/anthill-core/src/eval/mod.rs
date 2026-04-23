@@ -12,6 +12,7 @@ pub mod eval;
 pub mod frame;
 pub mod pattern;
 pub mod stream;
+pub mod subst_arena;
 pub mod value;
 
 use std::collections::HashMap;
@@ -191,6 +192,7 @@ pub struct Interpreter {
     pub(crate) fields: FieldSymbols,
     pub(crate) closures: ClosureArenaRef,
     pub(crate) streams: StreamArenaRef,
+    pub(crate) substs: subst_arena::SubstArenaRef,
     pub(crate) effect_handlers: EffectRegistry,
     pub(crate) config: EvalConfig,
     /// Monotonically increasing step counter, reset on each `call()`.
@@ -220,6 +222,7 @@ impl Interpreter {
             fields,
             closures: ClosureArenaRef::new(),
             streams: StreamArenaRef::new(),
+            substs: subst_arena::SubstArenaRef::new(),
             effect_handlers: EffectRegistry::new(),
             config,
             step_count: 0,
@@ -254,11 +257,16 @@ impl Interpreter {
 
     /// Invoke an anthill operation by qualified name with the given argument
     /// values. The operation is looked up via `OperationInfo` facts — the
-    /// stdlib + user code must already be loaded.
+    /// stdlib + user code must already be loaded. If the operation is
+    /// backed by a registered Rust builtin (no anthill body), the builtin
+    /// runs directly without a frame push.
     pub fn call(&mut self, qualified_name: &str, args: &[Value]) -> Result<Value, EvalError> {
         let sym = self.kb.try_resolve_symbol(qualified_name).ok_or_else(|| {
             EvalError::UnknownOperation { name: qualified_name.to_string() }
         })?;
+        if let Some(builtin) = self.builtins.get(&sym).cloned() {
+            return (builtin)(self, args);
+        }
         let (body_term, params) = eval::lookup_operation_body(&self.kb, sym)
             .ok_or_else(|| EvalError::OperationBodyMissing {
                 name: qualified_name.to_string(),
@@ -294,6 +302,31 @@ impl Interpreter {
     /// Number of live stream-arena slots. Diagnostic for refcount tests.
     pub fn stream_arena_live_count(&self) -> usize { self.streams.live() }
 
+    /// Number of live substitution-arena slots. Diagnostic for refcount tests.
+    pub fn subst_arena_live_count(&self) -> usize { self.substs.live() }
+
+    /// Allocate a fresh substitution slot and return a handle.
+    pub fn alloc_subst(&self, s: crate::kb::subst::Substitution) -> value::SubstHandle {
+        self.substs.alloc(s)
+    }
+
+    /// Run `f` with a shared reference to the substitution behind `h`.
+    pub fn with_subst<R>(
+        &self,
+        h: &value::SubstHandle,
+        f: impl FnOnce(&crate::kb::subst::Substitution) -> R,
+    ) -> R {
+        self.substs.with_subst(h, f)
+    }
+
+    /// Clone the substitution-arena handle. Useful when a caller needs to
+    /// borrow a substitution through the arena while also mutably borrowing
+    /// `kb`; both fields are independent, so the cloned `Rc` decouples the
+    /// arena borrow from any `&mut self` on the interpreter.
+    pub fn subst_arena(&self) -> subst_arena::SubstArenaRef {
+        self.substs.clone()
+    }
+
     /// Allocate a stream source, returning an owning handle.
     pub fn alloc_stream(&self, src: stream::StreamSource) -> value::StreamHandle {
         self.streams.alloc(src)
@@ -305,10 +338,9 @@ impl Interpreter {
     /// it's the same slot advanced in place; for `MPlus` with `left`
     /// exhausted, it's the `right` child's handle.
     ///
-    /// Resolver yields are represented as `Value::Unit` for v1 — the
-    /// `Substitution`'s binding contents aren't introspectable from anthill
-    /// code yet (`apply` / `compose` remain stdlib declarations only).
-    /// Counting solutions works; inspecting bindings is future work.
+    /// Resolver yields land as `Value::Substitution(handle)` pointing into
+    /// the per-interpreter substitution arena; anthill code reads individual
+    /// bindings via `Substitution.apply`.
     pub fn stream_split_first(
         &mut self,
         handle: &value::StreamHandle,
@@ -348,16 +380,17 @@ impl Interpreter {
             Action::YieldSelf(v) => Ok(Some((v, handle.clone()))),
             Action::PumpResolver(stream) => {
                 let result = stream.split_first(&mut self.kb);
-                let arena = self.streams.clone();
+                let stream_arena = self.streams.clone();
                 match result {
-                    Some((_sol, rest)) => {
-                        arena.with_source_mut(handle, |_| {
+                    Some((sol, rest)) => {
+                        stream_arena.with_source_mut(handle, |_| {
                             (StreamSource::Resolver(Some(rest)), ())
                         });
-                        Ok(Some((Value::Unit, handle.clone())))
+                        let subst_handle = self.substs.alloc(sol.subst);
+                        Ok(Some((Value::Substitution(subst_handle), handle.clone())))
                     }
                     None => {
-                        arena.with_source_mut(handle, |_| (StreamSource::Empty, ()));
+                        stream_arena.with_source_mut(handle, |_| (StreamSource::Empty, ()));
                         Ok(None)
                     }
                 }

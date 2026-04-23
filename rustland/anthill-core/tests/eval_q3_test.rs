@@ -172,7 +172,7 @@ end
     for sol in &solutions {
         // lookup returns Option<&Value>; we expect Value::Term for KB-resident
         // bindings (lineage-preserving — EntityInfo fact heads are TermId).
-        match sol.subst.lookup(vn) {
+        match sol.subst.resolve_as_value(vn) {
             Some(Value::Term(t)) => {
                 if let Term::Fn { functor, .. } = kb.get_term(*t) {
                     if *functor == red_tid { seen_colors.insert("red"); }
@@ -253,7 +253,7 @@ end
     let mut stream = kb.execute_logical_query(&conj).expect("execute conj");
     let mut xs = Vec::new();
     while let Some((sol, rest)) = stream.split_first(&mut kb) {
-        match sol.subst.lookup(vid) {
+        match sol.subst.resolve_as_value(vid) {
             Some(Value::Term(t)) => {
                 if let Term::Const(anthill_core::kb::term::Literal::Int(n)) = kb.get_term(*t) {
                     xs.push(*n);

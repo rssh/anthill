@@ -623,20 +623,20 @@ impl Interpreter {
         ctor_sym: Symbol,
         is_tuple_literal: bool,
         pos: Vec<Value>,
-        named: Vec<(Symbol, Value)>,
+        mut named: Vec<(Symbol, Value)>,
     ) -> Result<StepOutcome, EvalError> {
+        sort_named_canonical(&self.kb, ctor_sym, &mut named);
         let value = if Some(ctor_sym) == self.reflect.list_literal {
             self.build_list_value(pos, &named)?
         } else if is_tuple_literal {
             Value::Tuple { pos, named }
         } else if Some(ctor_sym) == self.reflect.set_literal {
-            // SetLiteral has set semantics: dedup via `scalar_eq`.
-            // Aggregate values compare as distinct because scalar_eq is
-            // structure-agnostic today — acceptable until 026.1 Q2's
-            // structural comparator lands. Named args are preserved as-is.
+            // SetLiteral has set semantics: dedup via `structural_eq` so
+            // nested tuples/entities compare by shape, not identity. Opaque
+            // handles (Closure/Stream/Lazy) still compare as distinct.
             let mut deduped: Vec<Value> = Vec::with_capacity(pos.len());
             for v in pos {
-                if !deduped.iter().any(|existing| existing.scalar_eq(&v)) {
+                if !deduped.iter().any(|existing| existing.structural_eq(&v)) {
                     deduped.push(v);
                 }
             }
@@ -785,6 +785,21 @@ fn classify_ctor_arg(
         }
         Some(sym) => named.push((sym, value)),
         None => pos.push(value),
+    }
+}
+
+/// Sort named args by the entity's declared field order when the functor
+/// is registered, falling back to `Symbol::index()` for anonymous shapes.
+/// Mirrors `alloc_from_value` in `kb/execute.rs` so Value and Term share
+/// the same canonical form.
+fn sort_named_canonical(kb: &KnowledgeBase, functor: Symbol, named: &mut Vec<(Symbol, Value)>) {
+    if named.len() < 2 {
+        return;
+    }
+    match kb.entity_field_names(functor) {
+        Some(order) => named.sort_by_key(|(s, _)|
+            order.iter().position(|f| f == s).unwrap_or(usize::MAX)),
+        None => named.sort_by_key(|(s, _)| s.index()),
     }
 }
 

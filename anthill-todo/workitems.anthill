@@ -5,7 +5,7 @@ fact WorkItem(
   description: "define typing rules — spec complete in typing_pass_spec.anthill: all expression forms, collection literals, constructor patterns, error reporting, guards, SourceUnit entry point.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-014", "WI-015", "WI-016", "WI-017", "WI-018", "WI-025"],
-  status: Delivered(agent: "claude", at: "2026-03-24T16:00:00Z"))
+  status: Verified(at: "2026-04-20T16:03:25Z"))
 
 fact WorkItem(
   id: "WI-002",
@@ -59,10 +59,10 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-011",
-  description: "Typing as rules: express the typing pass as anthill rules (not just operations) using type_of(?env, ?occ, ?type) 3-arg relation. TypingEnv as data sort with constructors (empty, bind). Requires: (1) Sort in unifications (WI-010), (2) forward chaining or materialization to persist derived TypeOf facts, (3) tabling/memoization for recursive derivations. See Proposal 022 and 011 discussion.",
+  description: "Typing as rules: express the typing pass as anthill rules (not just operations) using type_of(?env, ?occ, ?type) 3-arg relation. TypingEnv as data sort with constructors (empty, bind). Requires: (1) Sort in unifications (WI-010), (2) forward chaining or materialization to persist derived TypeOf facts, (3) tabling/memoization for recursive derivations. See Proposal 022 and 011 discussion. CLOSED 2026-04-23 (decision verified, scope abandoned): the original premises are addressed without needing the Horn-rules lift. (a) Sort participation in unification is implemented — types are plain Term::Fn and unify structurally via SLD; rust unify_types (typing.rs:1131) is the operational helper. (b) Typing logic is already expressed in anthill code via typing_pass_spec.anthill (operations-form spec, not Horn-rule form, but serving the same documentation/specification purpose). (c) Forward chaining and tabling infrastructure is significant work with no current consumer — better added when a real use case appears. Followup: WI-079 covers parity-testing between the operations-form spec and the Rust implementation. Do not reopen without a concrete use case for the Horn-rules form specifically.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-010"],
-  status: Open)
+  status: Verified(at: "2026-04-23T00:00:00Z"))
 fact WorkItem(
   id: "WI-012",
   description: "Bug: deliver/claim commands don't update status in workitems.anthill file — claim reports success but list still shows Open",
@@ -301,21 +301,21 @@ fact WorkItem(
   description: "026.1 Q1: Substitution carries Value. Rewrite kb/subst.rs to HashMap<VarId, Value> with bind_term(v, TermId) fast path and bind_value(v, Value) for external sources. Migrate all callers (resolve.rs, discrim.rs, mod.rs::{match_term, reify, walk, apply_subst}, persist_subst.rs, typing.rs unifier) via mechanical bind(v, tid) → bind_term(v, tid). Pure refactor, semantics-preserving. Acceptance: cargo test -p anthill-core green with no other behavior change. Proposal 026.1 Q1 + §Substitution: VarId → Value.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-042"],
-  status: Delivered(agent: "claude", at: "2026-04-19T19:47:52Z"))
+  status: Verified(at: "2026-04-21T13:04:38Z"))
 
 fact WorkItem(
   id: "WI-046",
   description: "026.1 Q2: TermView abstraction. Add trait TermView { head, arg, named } impl for Value and (&KB, TermId). Add kb.match_view<V: TermView>(pattern: TermId, target: V) beside match_term. Generalize SubstTree::query_resolved and resolve.rs unifier to consume impl TermView on binding side; candidate rule heads stay TermId. Acceptance: all kb tests still green; match_term becomes thin wrapper. Proposal 026.1 Q2 + §TermView abstraction.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-045"],
-  status: Delivered(agent: "claude", at: "2026-04-19T20:31:44Z"))
+  status: Verified(at: "2026-04-22T19:14:01Z"))
 
 fact WorkItem(
   id: "WI-047",
-  description: "026.1 Q3: execute(LogicalQuery). Add kb.execute_logical_query(q: &Value) -> SearchStream and lower_query(&Value) -> Vec<TermId> over every LogicalQuery constructor in reflect.anthill (pattern_query, conjunction, disjunction, negation, guarded, projected, limited, forall_q, some_q, …). alloc_from_value recursively promotes Value → TermId via TermStore::alloc — the sole input-boundary hash-cons site. Wire as builtin backing anthill.reflect.KB.execute. Rewrite thin reflect bodies (sorts, operations, rules) to assemble LogicalQuery and dispatch through execute. Acceptance: integration test runs execute(kb, pattern_query(EntityOf(?x, List))) and iterates Value-typed Substitution solutions. Proposal 026.1 Q3 + §Query-lowering at execute.",
+  description: "026.1 Q3: execute(LogicalQuery) + reflect.KB eval builtins. Core: kb.execute_logical_query(q: &Value) -> SearchStream and lower_query(&Value) -> Vec<TermId> over LogicalQuery constructors in reflect.anthill (pattern_query, conjunction, guarded, projected, limited, single-goal negation; disjunction/multi-goal negation/quantifiers deferred per WI-075/WI-076/WI-048). alloc_from_value recursively promotes Value → TermId via TermStore::alloc — the sole input-boundary hash-cons site. Wired as builtin backing anthill.reflect.KB.execute. Plus 23 additional reflect builtins registered via anthill-stl/src/reflect/builtins.rs::register_reflect_builtins: KB.{sort_template, sorts, operations, constructors, fields, rules, descriptions, reify, reflect, nonvar, ground}; namespace ops {qualified_name, short_name, lookup_symbol, scope, kind, sort_as_term, term_as_sort, can_be_sort, field_access, resolve_sort_instantiation_param, Substitution.apply, Substitution.compose}. New first-class Value::Substitution(SubstHandle) variant + SubstArena (eval/subst_arena.rs); LogicalStream.splitFirst now yields Value::Substitution. Supporting kernel additions: Interpreter::call short-circuits to builtins; KnowledgeBase::{kind_of, scope_of}; SymbolTable::iter_defs; register_if_present + expect_args exported from anthill-core::eval::builtins. Acceptance: 16/16 anthill-stl tests + 606/606 workspace tests pass. Delivered 2026-04-23. See docs/status/wi-047.md. Follow-ups: WI-075 (disjunction), WI-076 (multi-goal negation), WI-048 (quantifiers/aggregations); reflect.not(query) deferred to a new WI; KB.assert/add_guard (proposal 023), occurrence ops (proposal 022), instantiation_query (design) split out.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-046"],
-  status: Delivered(agent: "claude", at: "2026-04-19T22:32:01Z"))
+  status: Delivered(agent: "claude", at: "2026-04-23T00:00:00Z"))
 
 fact WorkItem(
   id: "WI-048",
@@ -495,6 +495,56 @@ fact WorkItem(
 fact WorkItem(
   id: "WI-073",
   description: "M5 follow-up: Error[T]::raise runtime propagation. WI-050 did not register a handler for Error[?]. Implement: default handler that unwraps args[0] as the error payload and surfaces it as EvalError::Raised { payload: Value }. Downstream catch/handle constructs (future) inspect the payload. Until catch lands, a raised Error aborts evaluation with the payload in the EvalError. Acceptance: integration test calls raise(my_error_value) and asserts the EvalError matches Raised with the expected payload. Depends on WI-050.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-074",
+  description: "Reflect operations parity test: ensure sorts/operations/rules in anthill-stl/src/reflect/bridge.rs return the same results as the equivalent execute(LogicalQuery) path (per proposal 026.1 §Q3). Add integration tests that build a LogicalQuery via pattern_query/conjunction/sort_query and compare results to the direct Rust impl. No rewrite needed - the Rust impls exist, only equivalence verification. See docs/status/wi-047.md.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-047"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-075",
+  description: "LogicalQuery disjunction via push_choice primitive (design refined 2026-04-23). Replace the kb/execute.rs:381 NotYetImplemented with: (1) generalize Candidate enum in kb/resolve.rs to add Continuation(Vec<TermId>) variant alongside Rule/Occurrence — the existing FrameState::ChoicePoint machinery iterates Candidates so this is local and reuses all alts/dedup/solution-accounting code; (2) add new top-level namespace anthill.kernel as the home for resolver primitives (qualified namespace replaces sigil prefix — consistent with anthill.reflect.*); (3) declare 'operation push_choice(?goal: Term) -> Bool' in stdlib/anthill/kernel/kernel.anthill; (4) add BuiltinTag::PushChoice in kb/mod.rs:27, register as 'anthill.kernel.push_choice' in register_standard_builtins (mod.rs:1656); (5) handle PushChoice in step_init (not execute_builtin — same special-case pattern as Not/HoApply): walk the argument to get alt_goal, transform current Frame from Init to ChoicePoint with two Continuation candidates: cont_a = goals[1..] (drop push_choice from queue), cont_b = [alt_goal, ...goals[2..]] — existing iteration handles 'try cont_a; on backtrack try cont_b'; (6) add stdlib rule 'or(?a, ?b) :- push_choice(?b), ?a' (variables-in-goal-position already work since step_init walks goals through substitution); (7) wire kb/execute.rs disjunction(L, R) lowering to emit or(L_goal, R_goal), wrapping multi-goal branches in conjunction-rule (same pattern as negation, kb/execute.rs:356). Tests: basic disjunction yields both branches; disjunction inside conjunction (no DNF push-down needed — falls out of frame structure); nested disjunctions; shared variables across branches; long-stream variant once WI-077 lands. Foundational scope: push_choice is the substrate for the future Branch effect in functional operation bodies (proposal 026/M5) — a Branch(a, b) effect with 'collect all paths' handler raises an equivalent push_choice at the resolver layer, so the same primitive serves both rule-body disjunction and expression-level nondeterminism. Cut, soft-cut, if-then-else, once, findall are similarly downstream. Background: kb/execute.rs:381 currently returns LowerError::NotYetImplemented('disjunction (resolver has no native OR; needs rule-lifting)'). See docs/status/wi-047.md.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-047"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-076",
+  description: "Multi-goal negation in LogicalQuery: lift current single-goal limitation in kb/execute.rs:356 (NotYetImplemented for multi-goal negation). Needs synthesized intermediate conjunction rule head. Low impact - single-goal covers most cases - but completes negation(query) constructor for arbitrary subqueries. See docs/status/wi-047.md.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-047"],
+  status: Open)
+
+fact Feedback(content: "Verification report: docs/status/wi-047.md. Core execute(LogicalQuery) API + acceptance test pass. Reopened with deps on WI-074 (reflect-ops parity test - sorts/operations/rules already exist in anthill-stl/src/reflect/bridge.rs, only equivalence check needed), WI-075 (disjunction), WI-076 (multi-goal negation). Quantifiers/aggregations stay deferred under WI-048.", at: "2026-04-22T19:36:36Z", workitem: "WI-047", author: "user")
+fact WorkItem(
+  id: "WI-077",
+  description: "Long-stream stress test for execute_logical_query / SearchStream: build a KB with N (>=1000) matching facts (or a recursive rule yielding N solutions), wrap the resulting SearchStream as StreamSource::Resolver, drive splitFirst to exhaustion, and assert (a) all N solutions surface, (b) stream arena slot is reclaimed (stream_arena_live_count returns to 0), (c) memory/perf does not blow up. Current coverage tops out at 3 solutions on Resolver streams (eval_m4_test.rs); infinite-stream tests only exercise StreamSource::Native, not the resolver path. Should also gate disjunction work (WI-075) so the same harness can verify MPlus over long branches.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-078",
+  description: "Land proposal 027 (Effect handlers and standard effects): see docs/proposals/027-effect-handlers-and-standard-effects.md. Substrate confirmation (verified 2026-04-23): the defunctionalized eval (activation stack with explicit Frame/AwaitState in eval/frame.rs and eval/eval.rs, per 026/M1) already exists — no evaluator refactor needed. Sequencing per proposal §Migration plan, in two phases. PHASE A (substrate, do first): (a) add Clone to Frame and ActivationStack in eval/frame.rs after auditing AwaitState fields for cloneability; (b) define HandlerAction carrier (Pure | Throw | Fail | Choice) in eval/effects.rs and migrate existing handlers to return it; (c) add RuntimeAPI snapshot_eval_state / resume_with / push_choice / fail_branch operations and wire Choice interpretation; (d) WI-075 push_choice resolver-side prerequisite (parallel). PHASE B (handlers + ergonomics): (e) default Branch handler returning Choice(a, alt_b) for branch / Fail for fail (this is WI-054's scope, recast on the carrier model); (f) default Error handler returning Throw(payload) — propagates to EvalError (this is WI-070's scope on the carrier model); (g) Reader sort + handler in stdlib + Rust default; (h) push/pop handler stack: HashMap<Symbol, Vec<Handler>>, push_handler/pop_handler/with_handler in RuntimeAPI, optional 'with handler H for E do body end' grammar; (i) bracket(setup, body, cleanup) stdlib op via with_handler. Kernel-side stdlib changes: add 'operation branch(a: T, b: T) -> T effects Branch' to Branch sort + sub-effect derivation 'rule Effect[T = Suspension] :- Effect[T = Branch]' to effects.anthill. Tests: per-handler unit tests; integration test for branch inside let yielding LogicalStream; nested with-handler tests; bracket success+error path tests. Relates: WI-050 (M5 framework, landed); WI-053 (Suspension, sibling — overlaps phase A's snapshot/resume API); WI-054 (Branch, replaced by phase B step e); WI-070 (Modify follow-up, parallel — already planned); WI-077 (long-stream stress test, harness reusable for MPlus over Branch).",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-075"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-080",
+  description: "Wire anthill.reflect.not(query: Term) -> Bool as eval-time negation-as-failure. Implementation: builtin in anthill-stl/src/reflect/builtins.rs wraps the goal in a resolver `not(...)` Fn term (functor = anthill.reflect.not) and runs a one-shot kb.resolve_lazy. Behavior: ground q with solutions → Bool(false); ground q with no solutions → Bool(true); ungrounded q → EvalError::Internal('floundering') since NAF is unsound on unground goals and eval-time has no outer frame to DELAY on. Reuses the existing resolver BuiltinTag::Not step_naf handling (resolve.rs:519) — one `not`, one meaning (NAF) across rule-body and eval-time invocation. Acceptance: 3 tests in anthill-stl (satisfiable → false, unsatisfiable → true, ungrounded → floundering error). All pass. Completes the eval-time surface of reflect.anthill. Delivered 2026-04-23.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-047"],
+  status: Delivered(agent: "claude", at: "2026-04-23T00:00:00Z"))
+
+fact WorkItem(
+  id: "WI-079",
+  description: "Typing-pass parity test: verify the operations-form spec in docs/proposals/typing_pass_spec.anthill produces the same TypeOf facts as the Rust implementation in rustland/anthill-core/src/kb/typing.rs for a corpus of test programs. Approach: (a) build a small corpus of well-typed and ill-typed test programs covering: literals, variables, lambdas (with and without annotations), let, match (exhaustive and non-exhaustive), constructor patterns, operation calls, effect-row inference, type-parameter binding, structural unification of parameterized/arrow/named_tuple types, subtyping relationships. (b) run each program through the Rust typer; collect resulting TypeOf facts (per occurrence) and any LoadError diagnostics. (c) (when typing_pass_spec.anthill operations are wired as runnable anthill code) run the same programs through the spec; collect TypeOf facts; compare. Initial milestone before the spec is runnable: lock down a snapshot of expected TypeOf facts from the Rust typer as the reference, so the spec implementation has a concrete target to match. Reason WI-011 was closed in favor of this WI: the operations-form spec already exists; what's missing is the equivalence guarantee. Closes the practical concern WI-011 was capturing without the Horn-rules infrastructure ambition.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
   status: Open)

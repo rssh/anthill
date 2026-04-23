@@ -717,7 +717,7 @@ fn print_solutions(
         let bindings: Vec<String> = query_vars
             .iter()
             .filter_map(|vid| {
-                sol.subst.resolve(*vid).map(|tid| {
+                sol.subst.resolve_with_term(*vid).map(|tid| {
                     format!("?{} = {}", kb.resolve_sym(vid.name()), printer.print_term(tid))
                 })
             })

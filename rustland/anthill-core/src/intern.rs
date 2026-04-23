@@ -295,6 +295,26 @@ impl SymbolTable {
         matches!(&self.defs[sym.0 as usize], SymbolDef::Resolved { .. })
     }
 
+    /// Scope symbol that owns `sym` (the symbol whose body contains it as a
+    /// local). `None` at the top-level `_global` scope or for unresolved
+    /// symbols. Linear scan over defs — fine at introspection rates.
+    pub fn scope_of(&self, sym: Symbol) -> Option<Symbol> {
+        let scope_raw = match self.get(sym) {
+            SymbolDef::Resolved { scope_raw, .. } => *scope_raw,
+            SymbolDef::Unresolved { .. } => return None,
+        };
+        for (i, def) in self.defs.iter().enumerate() {
+            if let SymbolDef::Resolved { scope_raw: sraw, kind, .. } = def {
+                if *sraw != scope_raw { continue; }
+                if matches!(kind, SymbolKind::Sort | SymbolKind::Namespace | SymbolKind::Operation) {
+                    let candidate = Symbol::from_raw(i as u32);
+                    if candidate != sym { return Some(candidate); }
+                }
+            }
+        }
+        None
+    }
+
 }
 
 // ── Backward-compatible type alias ──────────────────────────────

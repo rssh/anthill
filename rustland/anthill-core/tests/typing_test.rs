@@ -1062,7 +1062,7 @@ fn field_access_entity_extracts_field() {
     let solutions = kb.resolve(&[goal], &ResolveConfig::default());
     assert!(!solutions.is_empty(), "field_access should produce a solution");
     let sol = &solutions[0];
-    let resolved = sol.subst.resolve(result_var).expect("result should be bound");
+    let resolved = sol.subst.resolve_with_term(result_var).expect("result should be bound");
     // The resolved value should be 42 (the fs field)
     match kb.get_term(resolved) {
         Term::Const(anthill_core::kb::term::Literal::Int(n)) => {
@@ -1162,7 +1162,7 @@ fn field_access_sort_component() {
     let solutions = kb.resolve(&[goal], &ResolveConfig::default());
     assert!(!solutions.is_empty(), "field_access for sort component should succeed");
     let sol = &solutions[0];
-    let resolved = sol.subst.resolve(result_var).expect("result should be bound");
+    let resolved = sol.subst.resolve_with_term(result_var).expect("result should be bound");
     // Should resolve to Carrier sort term (nullary Fn)
     match kb.get_term(resolved) {
         Term::Fn { functor, .. } => {
@@ -2161,7 +2161,7 @@ fn unify_var_binds_to_type() {
     let var_term = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(vid)));
     let mut subst = Substitution::new();
     assert!(unify_types(&kb, &mut subst, var_term, int_ty), "Var unifies with Int");
-    assert_eq!(subst.resolve(vid), Some(int_ty), "Var should be bound to Int");
+    assert_eq!(subst.resolve_with_term(vid), Some(int_ty), "Var should be bound to Int");
 }
 
 #[test]
@@ -2176,7 +2176,7 @@ fn unify_both_vars_bind() {
     let mut subst = Substitution::new();
     assert!(unify_types(&kb, &mut subst, var1, var2), "two vars unify");
     // One should be bound to the other
-    assert!(subst.resolve(vid1).is_some() || subst.resolve(vid2).is_some(),
+    assert!(subst.resolve_with_term(vid1).is_some() || subst.resolve_with_term(vid2).is_some(),
         "at least one var should be bound");
 }
 
@@ -2206,7 +2206,7 @@ fn unify_parameterized_with_var_binding() {
 
     let mut subst = Substitution::new();
     assert!(unify_types(&kb, &mut subst, list_var, list_int), "List[T=?X] unifies with List[T=Int]");
-    assert_eq!(subst.resolve(x_vid), Some(int_ty), "?X should be bound to Int");
+    assert_eq!(subst.resolve_with_term(x_vid), Some(int_ty), "?X should be bound to Int");
 }
 
 #[test]
@@ -2228,8 +2228,8 @@ fn unify_arrow_with_var_binding() {
 
     let mut subst = Substitution::new();
     assert!(unify_types(&kb, &mut subst, arrow_var, arrow_concrete), "(?A -> ?B) unifies with (Int -> String)");
-    assert_eq!(subst.resolve(a_vid), Some(int_ty), "?A = Int");
-    assert_eq!(subst.resolve(b_vid), Some(str_ty), "?B = String");
+    assert_eq!(subst.resolve_with_term(a_vid), Some(int_ty), "?A = Int");
+    assert_eq!(subst.resolve_with_term(b_vid), Some(str_ty), "?B = String");
 }
 
 #[test]

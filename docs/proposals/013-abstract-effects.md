@@ -257,3 +257,4 @@ match &effect.type_expr {
 - **003 (Effect Arrow Sorts)**: Covers `(A) => B effect [E]` — effects on function types. This proposal covers abstract effects in operation `effects(E)` clauses. Complementary.
 - **011 (Type Resolution)**: Stream's `sort E = ?` needs this proposal. 011 depends on 013. The typing lattice in 011 now documents entity instances as sort members, which grounds the value-dependent typing that effects rely on.
 - **002 (Arrow Sorts)**: Independent. Abstract effects work without arrow sorts.
+- **027 (Effect Handlers and Standard Effects)**: Picks up where this proposal stops. 013 specifies the *declaration / typing* model for effects (effects as sorts and facts, kernel checking via KB query). 027 specifies the *runtime / interpretation* model (handler dispatch, semantics for `Modify` / `Error` / `Suspension` / `Branch` / `Console*`, and how the `Branch` effect bridges to the resolver via `anthill.kernel.push_choice`). See 027 for handlers.

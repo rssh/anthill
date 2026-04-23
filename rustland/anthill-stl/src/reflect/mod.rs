@@ -1,6 +1,7 @@
 #![allow(unused_imports)]
 
 pub mod bridge;
+pub mod builtins;
 
 use crate::prelude::{List, Pair, Bool, Stream};
 

@@ -40,12 +40,12 @@ impl Substitution {
         }
     }
 
-    /// Look up a binding as a `TermId`, walking the parent chain. Returns
-    /// `Some(tid)` only when the binding is `Value::Term(tid)` — the
-    /// dominant resolver-internal case. Non-`Term` bindings (external
-    /// sources, literals) return `None` here; use [`Self::lookup`] to get
-    /// the raw `Value`.
-    pub fn resolve(&self, var: VarId) -> Option<TermId> {
+    /// Narrow resolve: returns `Some(tid)` only when the binding is
+    /// `Value::Term(tid)` — the dominant resolver-internal case. Non-`Term`
+    /// bindings (external sources, literals) return `None` here; use
+    /// [`Self::resolve_as_value`] for the covering view that surfaces any
+    /// `Value` variant.
+    pub fn resolve_with_term(&self, var: VarId) -> Option<TermId> {
         if let Some(v) = self.bindings.get(&var) {
             return match v {
                 Value::Term(tid) => Some(*tid),
@@ -53,19 +53,24 @@ impl Substitution {
             };
         }
         if let Some(ref parent) = self.parent {
-            return parent.resolve(var);
+            return parent.resolve_with_term(var);
         }
         None
     }
 
-    /// Value-aware lookup: returns any binding, including non-`Term`
-    /// variants produced by external stream sources or rule-body literals.
-    pub fn lookup(&self, var: VarId) -> Option<&Value> {
+    /// Covering resolve: returns any binding as a `Value`, including the
+    /// `Value::Term(tid)` variant (which [`Self::resolve_with_term`] would
+    /// also surface) and non-`Term` variants produced by external stream
+    /// sources or rule-body literals (which the `_term` path hides).
+    /// Prefer this when the caller can handle any lineage; use
+    /// `resolve_with_term` only when a `TermId` is genuinely required
+    /// (discrim-tree indexing, serialization, etc.).
+    pub fn resolve_as_value(&self, var: VarId) -> Option<&Value> {
         if let Some(v) = self.bindings.get(&var) {
             return Some(v);
         }
         if let Some(ref parent) = self.parent {
-            return parent.lookup(var);
+            return parent.resolve_as_value(var);
         }
         None
     }
@@ -94,7 +99,7 @@ impl Substitution {
     /// `Value::Term` via `TermStore::alloc`.
     pub fn bind_value(&mut self, var: VarId, val: Value) {
         if let Some(existing) = self.bindings.get(&var) {
-            if !existing.scalar_eq(&val) {
+            if !existing.structural_eq(&val) {
                 self.contradiction = true;
             }
             return;
@@ -180,8 +185,8 @@ mod tests {
         let v = vid(1);
         let t = TermId::from_raw(42);
         s.bind_term(v, t);
-        assert_eq!(s.resolve(v), Some(t));
-        match s.lookup(v) {
+        assert_eq!(s.resolve_with_term(v), Some(t));
+        match s.resolve_as_value(v) {
             Some(Value::Term(tid)) => assert_eq!(*tid, t),
             other => panic!("expected Value::Term, got {other:?}"),
         }
@@ -193,9 +198,9 @@ mod tests {
         let v = vid(1);
         s.bind_value(v, Value::Int(42));
         // resolve (TermId-only path) returns None for non-Term bindings.
-        assert_eq!(s.resolve(v), None);
+        assert_eq!(s.resolve_with_term(v), None);
         // lookup surfaces the full Value.
-        match s.lookup(v) {
+        match s.resolve_as_value(v) {
             Some(Value::Int(42)) => {}
             other => panic!("expected Value::Int(42), got {other:?}"),
         }
@@ -247,8 +252,8 @@ mod tests {
         let mut parent = Substitution::new();
         parent.bind_term(vid(1), TermId::from_raw(10));
         let child = Substitution::with_parent(parent);
-        assert_eq!(child.resolve(vid(1)), Some(TermId::from_raw(10)));
-        matches!(child.lookup(vid(1)), Some(Value::Term(_)));
+        assert_eq!(child.resolve_with_term(vid(1)), Some(TermId::from_raw(10)));
+        matches!(child.resolve_as_value(vid(1)), Some(Value::Term(_)));
     }
 
     #[test]
@@ -266,6 +271,104 @@ mod tests {
     }
 
     #[test]
+    fn bind_value_stores_structured_entity() {
+        let mut s = Substitution::new();
+        let v = vid(1);
+        let functor = Symbol::from_raw(7);
+        let key = Symbol::from_raw(8);
+        let entity = Value::Entity {
+            functor,
+            pos: vec![Value::Int(10), Value::Str("hi".into())],
+            named: vec![(key, Value::Bool(true))],
+        };
+        s.bind_value(v, entity);
+        assert_eq!(s.resolve_with_term(v), None);
+        match s.resolve_as_value(v) {
+            Some(Value::Entity { functor: f, pos, named }) => {
+                assert_eq!(*f, functor);
+                assert!(matches!(pos.as_slice(), [Value::Int(10), Value::Str(_)]));
+                assert_eq!(named.len(), 1);
+                assert_eq!(named[0].0, key);
+                assert!(matches!(named[0].1, Value::Bool(true)));
+            }
+            other => panic!("expected Value::Entity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bind_value_stores_structured_tuple() {
+        let mut s = Substitution::new();
+        let v = vid(1);
+        let tuple = Value::Tuple {
+            pos: vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+            named: vec![],
+        };
+        s.bind_value(v, tuple);
+        assert_eq!(s.resolve_with_term(v), None);
+        match s.resolve_as_value(v) {
+            Some(Value::Tuple { pos, named }) => {
+                assert_eq!(pos.len(), 3);
+                assert!(named.is_empty());
+            }
+            other => panic!("expected Value::Tuple, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bind_value_equal_entity_not_contradiction() {
+        let mut s = Substitution::new();
+        let v = vid(1);
+        let make_entity = || Value::Entity {
+            functor: Symbol::from_raw(7),
+            pos: vec![Value::Int(10), Value::Str("hi".into())],
+            named: vec![(Symbol::from_raw(8), Value::Bool(true))],
+        };
+        s.bind_value(v, make_entity());
+        s.bind_value(v, make_entity());
+        assert!(!s.is_contradiction());
+    }
+
+    #[test]
+    fn bind_value_different_entity_is_contradiction() {
+        let mut s = Substitution::new();
+        let v = vid(1);
+        s.bind_value(
+            v,
+            Value::Entity {
+                functor: Symbol::from_raw(7),
+                pos: vec![Value::Int(10)],
+                named: vec![],
+            },
+        );
+        s.bind_value(
+            v,
+            Value::Entity {
+                functor: Symbol::from_raw(7),
+                pos: vec![Value::Int(11)],
+                named: vec![],
+            },
+        );
+        assert!(s.is_contradiction());
+    }
+
+    #[test]
+    fn bind_value_nested_entity_equal_not_contradiction() {
+        let mut s = Substitution::new();
+        let v = vid(1);
+        let make = || Value::Entity {
+            functor: Symbol::from_raw(7),
+            pos: vec![Value::Tuple {
+                pos: vec![Value::Int(1), Value::Str("x".into())],
+                named: vec![],
+            }],
+            named: vec![],
+        };
+        s.bind_value(v, make());
+        s.bind_value(v, make());
+        assert!(!s.is_contradiction());
+    }
+
+    #[test]
     fn bind_compressed_leaves_non_term_entries_untouched() {
         let mut store = TermStore::new();
         let v1 = vid(1);
@@ -279,8 +382,8 @@ mod tests {
         s.bind_compressed(std::iter::once((v1, target)), &store);
 
         // v2's binding now points through to `target`.
-        assert_eq!(s.resolve(v2), Some(target));
+        assert_eq!(s.resolve_with_term(v2), Some(target));
         // v3's non-Term binding is preserved as-is.
-        assert!(matches!(s.lookup(vid(3)), Some(Value::Int(77))));
+        assert!(matches!(s.resolve_as_value(vid(3)), Some(Value::Int(77))));
     }
 }
