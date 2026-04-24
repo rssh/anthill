@@ -1,0 +1,15 @@
+namespace my.app
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
+  import anthill.prelude.{Int, String, List}
+  export Hello
+
+  sort Hello
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int
+      effects ConsoleOutput
+    =
+      let _ = println(console(), "hello, world")
+      0
+  end
+end

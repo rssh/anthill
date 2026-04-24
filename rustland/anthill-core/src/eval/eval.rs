@@ -649,7 +649,7 @@ impl Interpreter {
 
     /// Build a `cons(head, tail)` chain ending in `nil()`. A `tail` named
     /// arg overrides the default `nil` terminator.
-    fn build_list_value(
+    pub fn build_list_value(
         &self,
         elements: Vec<Value>,
         named: &[(Symbol, Value)],

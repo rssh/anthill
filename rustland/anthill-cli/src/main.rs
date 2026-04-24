@@ -15,6 +15,9 @@ use anthill_core::parse::ir::{Item, ParsedFile};
 use anthill_core::persistence::print::TermPrinter;
 use anthill_core::persistence::term_ser;
 
+mod run;
+mod stdlib_embedded;
+
 // ── CLI types ───────────────────────────────────────────────────────
 
 #[derive(Parser)]
@@ -37,6 +40,8 @@ enum Command {
     Query(QueryArgs),
     /// Check constraints (scaffold)
     Check(CheckArgs),
+    /// Run an anthill program (entry via `requires anthill.cli.Main`)
+    Run(run::RunArgs),
 }
 
 #[derive(Subcommand)]
@@ -746,6 +751,9 @@ fn print_solutions(
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
+    // `Run` carries its own exit code (the program's return value plus
+    // distinct codes for compile vs runtime failure) and bypasses the
+    // SUCCESS/FAILURE collapse used by the other commands.
     let result = match cli.command {
         Command::Codegen { target } => match target {
             CodegenTarget::Rust(ref args) => run_codegen_rust(args),
@@ -753,6 +761,7 @@ fn main() -> ExitCode {
         Command::Load(ref args) => run_load(args),
         Command::Query(ref args) => run_query(args),
         Command::Check(ref args) => run_check(args),
+        Command::Run(ref args) => return ExitCode::from(run::run(args) as u8),
     };
 
     match result {

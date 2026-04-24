@@ -1,0 +1,10 @@
+namespace my.exit7
+  import anthill.cli.Main
+  import anthill.prelude.{Int, String, List}
+  export E
+
+  sort E
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int = 7
+  end
+end

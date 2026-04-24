@@ -343,7 +343,7 @@ fact WorkItem(
   description: "eval M6: 'anthill run' CLI. Add Command::Run(RunArgs { paths: Vec<PathBuf>, entry: Option<String> default 'main', args: Vec<String> }) to anthill-cli/src/main.rs. Parses + load_all (existing), locates entry OperationInfo, constructs Interpreter, calls register_standard_builtins + registers real Console handler bound to stdio, invokes interp.call(entry_sym, &args), prints result via TermPrinter after one-shot Value → TermId promotion using persistence::term_ser. Acceptance: anthill-cli/tests/run_cmd_test.rs invokes binary against fixture hello.anthill and asserts stdout. Unblocks WI-009 (port todo-app). Proposal 026 §CLI: anthill run.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-050"],
-  status: Open)
+  status: Delivered(agent: "user", at: "2026-04-24T14:46:31Z"))
 
 fact WorkItem(
   id: "WI-052",

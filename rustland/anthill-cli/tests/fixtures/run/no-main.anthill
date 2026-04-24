@@ -1,0 +1,8 @@
+namespace my.empty
+  import anthill.prelude.{Int}
+  export Thing
+
+  sort Thing
+    operation double(n: Int) -> Int = n + n
+  end
+end
