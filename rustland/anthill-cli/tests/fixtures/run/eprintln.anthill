@@ -1,0 +1,16 @@
+namespace my.diag
+  import anthill.cli.Main
+  import anthill.prelude.Console.{console, println, eprintln, ConsoleOutput, ConsoleError}
+  import anthill.prelude.{Int, String, List}
+  export D
+
+  sort D
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int
+      effects {ConsoleOutput, ConsoleError}
+    =
+      let _ = println(console(), "stdout-line")
+      let _ = eprintln(console(), "stderr-line")
+      0
+  end
+end

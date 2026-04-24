@@ -85,3 +85,15 @@ fn main_return_value_is_exit_code() {
     assert_eq!(out.code, 7, "stderr:\n{}", out.stderr);
     assert_eq!(out.stdout, "");
 }
+
+#[test]
+fn eprintln_writes_to_stderr_not_stdout() {
+    let path = fixtures_dir().join("eprintln.anthill");
+    let out = run_with(&[path.to_str().unwrap()]);
+    assert_eq!(out.code, 0, "stderr:\n{}", out.stderr);
+    assert_eq!(out.stdout, "stdout-line\n");
+    assert!(out.stderr.contains("stderr-line\n"),
+            "expected `stderr-line` on stderr; got:\n{}", out.stderr);
+    assert!(!out.stdout.contains("stderr-line"),
+            "stderr-line leaked to stdout:\n{}", out.stdout);
+}

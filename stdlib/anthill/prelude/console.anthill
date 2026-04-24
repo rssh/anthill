@@ -1,10 +1,16 @@
 -- Console: typed I/O resource for terminal interaction.
 --
--- Console is a resource sort with a single entity `console`. Operations
--- take the console explicitly and declare their effect as
--- `ConsoleOutput` (writes to stdout) or `ConsoleInput` (reads from stdin).
--- The handler in `anthill run` binds the Console to process stdio;
--- tests substitute buffers.
+-- Console is a resource sort with a single `console` entity. Operations
+-- take the console explicitly and declare their effect as one of:
+--   ConsoleOutput  — writes to process stdout   (print / println)
+--   ConsoleError   — writes to process stderr   (eprint / eprintln)
+--   ConsoleInput   — reads from process stdin   (read_line)
+-- Splitting stdout and stderr into distinct effect sorts lets a caller
+-- state at the type level which streams it touches, and lets tests
+-- redirect one channel without affecting the other.
+--
+-- The handler in `anthill run` binds each effect to the real fd; tests
+-- substitute buffered handlers for capture.
 --
 -- Effect kinds are Console-specific rather than parameterized
 -- `Output[T]` / `Input[T]`: today the only payload type is `String` and
@@ -12,7 +18,9 @@
 -- When another I/O resource with a matching shape appears, generalize.
 sort anthill.prelude.Console
   import anthill.prelude.{String, Unit, Effect}
-  export Console, console, ConsoleOutput, ConsoleInput, print, println, read_line
+  export Console, console
+  export ConsoleOutput, ConsoleError, ConsoleInput
+  export print, println, eprint, eprintln, read_line
 
   entity console
 
@@ -21,18 +29,31 @@ sort anthill.prelude.Console
   sort ConsoleOutput
   end
 
+  sort ConsoleError
+  end
+
   sort ConsoleInput
   end
 
   fact Effect[T = ConsoleOutput]
+  fact Effect[T = ConsoleError]
   fact Effect[T = ConsoleInput]
 
+  -- stdout
   operation print(c: Console, s: String) -> Unit
     effects ConsoleOutput
 
   operation println(c: Console, s: String) -> Unit
     effects ConsoleOutput
 
+  -- stderr
+  operation eprint(c: Console, s: String) -> Unit
+    effects ConsoleError
+
+  operation eprintln(c: Console, s: String) -> Unit
+    effects ConsoleError
+
+  -- stdin
   operation read_line(c: Console) -> String
     effects ConsoleInput
 end

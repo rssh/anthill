@@ -11,7 +11,7 @@ mod common;
 
 use anthill_core::eval::Value;
 
-use common::{buffered_console_output, interp_for, scripted_console_input};
+use common::{buffered_console, interp_for, scripted_console_input};
 
 #[test]
 fn m5_println_captured_to_buffer() {
@@ -25,7 +25,7 @@ namespace test.m5_print
 end
 "#;
     let mut interp = interp_for(src);
-    let (buf, handler) = buffered_console_output();
+    let (buf, handler) = buffered_console();
     interp.register_effect_handler("anthill.prelude.Console.ConsoleOutput", handler)
         .expect("register output handler");
 
@@ -49,12 +49,36 @@ namespace test.m5_print2
 end
 "#;
     let mut interp = interp_for(src);
-    let (buf, handler) = buffered_console_output();
+    let (buf, handler) = buffered_console();
     interp.register_effect_handler("anthill.prelude.Console.ConsoleOutput", handler).unwrap();
     let console_sym = interp.kb().try_resolve_symbol("anthill.prelude.Console.console").unwrap();
     let console_val = Value::Entity { functor: console_sym, pos: Vec::new(), named: Vec::new() };
     interp.call("test.m5_print2.speak", &[console_val]).expect("speak runs");
     assert_eq!(buf.borrow().as_str(), "hi");
+}
+
+#[test]
+fn m5_eprintln_goes_only_to_stderr_buffer() {
+    let src = r#"
+namespace test.m5_eprint
+  import anthill.prelude.{Console, Unit, String}
+  import anthill.prelude.Console.{console, println, eprintln}
+
+  operation diag(c: Console) -> Unit =
+    let _ = eprintln(c, "oops")
+    println(c, "ok")
+end
+"#;
+    let mut interp = interp_for(src);
+    let (out_buf, out_handler) = buffered_console();
+    let (err_buf, err_handler) = buffered_console();
+    interp.register_effect_handler("anthill.prelude.Console.ConsoleOutput", out_handler).unwrap();
+    interp.register_effect_handler("anthill.prelude.Console.ConsoleError", err_handler).unwrap();
+    let console_sym = interp.kb().try_resolve_symbol("anthill.prelude.Console.console").unwrap();
+    let console_val = Value::Entity { functor: console_sym, pos: Vec::new(), named: Vec::new() };
+    interp.call("test.m5_eprint.diag", &[console_val]).expect("diag runs");
+    assert_eq!(out_buf.borrow().as_str(), "ok\n");
+    assert_eq!(err_buf.borrow().as_str(), "oops\n");
 }
 
 #[test]
@@ -92,7 +116,7 @@ namespace test.m5_round
 end
 "#;
     let mut interp = interp_for(src);
-    let (buf, out_h) = buffered_console_output();
+    let (buf, out_h) = buffered_console();
     let (_q, in_h) = scripted_console_input(&["alice"]);
     interp.register_effect_handler("anthill.prelude.Console.ConsoleOutput", out_h).unwrap();
     interp.register_effect_handler("anthill.prelude.Console.ConsoleInput", in_h).unwrap();
@@ -141,14 +165,14 @@ namespace test.m5_swap
 end
 "#;
     let mut interp = interp_for(src);
-    let (buf1, h1) = buffered_console_output();
+    let (buf1, h1) = buffered_console();
     interp.register_effect_handler("anthill.prelude.Console.ConsoleOutput", h1).unwrap();
     let console_sym = interp.kb().try_resolve_symbol("anthill.prelude.Console.console").unwrap();
     let console_val = Value::Entity { functor: console_sym, pos: Vec::new(), named: Vec::new() };
     interp.call("test.m5_swap.speak", &[console_val.clone(), Value::Str("first".into())]).unwrap();
     assert_eq!(buf1.borrow().as_str(), "first\n");
 
-    let (buf2, h2) = buffered_console_output();
+    let (buf2, h2) = buffered_console();
     interp.register_effect_handler("anthill.prelude.Console.ConsoleOutput", h2).unwrap();
     interp.call("test.m5_swap.speak", &[console_val, Value::Str("second".into())]).unwrap();
     assert_eq!(buf2.borrow().as_str(), "second\n", "new handler captured");

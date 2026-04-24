@@ -24,18 +24,32 @@ pub type EffectHandler =
 
 // ── Default Console handlers (stdio) ───────────────────────────
 
+/// Short name of an op ends with "println" — matches both the stdout
+/// `println` and stderr `eprintln` variants, which both append a newline.
+fn op_appends_newline(op_name: &str) -> bool {
+    op_name == "println" || op_name == "eprintln"
+}
+
 /// Default `ConsoleOutput` handler — writes to `io::stdout()`. `print` and
 /// `println` differ only in the trailing newline.
 pub fn stdio_console_output_handler() -> EffectHandler {
-    let stdout = Rc::new(RefCell::new(io::stdout()));
-    let println_short = "println";
+    stdio_console_write_handler(io::stdout())
+}
+
+/// Default `ConsoleError` handler — writes to `io::stderr()`.
+pub fn stdio_console_error_handler() -> EffectHandler {
+    stdio_console_write_handler(io::stderr())
+}
+
+fn stdio_console_write_handler<W: Write + 'static>(sink: W) -> EffectHandler {
+    let sink = Rc::new(RefCell::new(sink));
     Box::new(move |interp, op_sym, args| {
         let s = args.get(1).and_then(Value::as_str).ok_or_else(|| {
             EvalError::TypeMismatch { expected: "String", got: "missing or non-String argument".into() }
         })?;
-        let mut out = stdout.borrow_mut();
+        let mut out = sink.borrow_mut();
         out.write_all(s.as_bytes()).map_err(|e| EvalError::Internal(e.to_string()))?;
-        if interp.kb().resolve_sym(op_sym) == println_short {
+        if op_appends_newline(interp.kb().resolve_sym(op_sym)) {
             out.write_all(b"\n").map_err(|e| EvalError::Internal(e.to_string()))?;
         }
         out.flush().map_err(|e| EvalError::Internal(e.to_string()))?;
@@ -62,16 +76,17 @@ pub fn stdio_console_input_handler() -> EffectHandler {
 /// as the rest of the evaluator.
 pub type SharedBuffer = Rc<RefCell<String>>;
 
-/// Build a `ConsoleOutput` handler that appends to a shared buffer
-/// instead of stdout. Use for tests that need to assert on program
-/// output without touching the process's real stdio.
-pub fn buffered_console_output_handler(buf: SharedBuffer) -> EffectHandler {
+/// Build a Console write handler that appends to a shared buffer.
+/// Use for ConsoleOutput or ConsoleError — the caller picks which by
+/// passing the returned handler to `register_effect_handler` with the
+/// corresponding effect-sort qualified name.
+pub fn buffered_console_handler(buf: SharedBuffer) -> EffectHandler {
     Box::new(move |interp, op_sym, args| {
         let s = args.get(1).and_then(Value::as_str).ok_or_else(|| {
             EvalError::TypeMismatch { expected: "String", got: "missing or non-String argument".into() }
         })?;
         buf.borrow_mut().push_str(s);
-        if interp.kb().resolve_sym(op_sym) == "println" {
+        if op_appends_newline(interp.kb().resolve_sym(op_sym)) {
             buf.borrow_mut().push('\n');
         }
         Ok(Value::Unit)
@@ -318,8 +333,9 @@ impl Interpreter {
     /// even for tests, since Modify.get/set have no side effect beyond
     /// the handler's own state.
     pub fn register_standard_effect_handlers(&mut self) -> Result<(), EvalError> {
-        let entries: [(&str, fn() -> EffectHandler); 3] = [
+        let entries: [(&str, fn() -> EffectHandler); 4] = [
             ("anthill.prelude.Console.ConsoleOutput", stdio_console_output_handler),
+            ("anthill.prelude.Console.ConsoleError", stdio_console_error_handler),
             ("anthill.prelude.Console.ConsoleInput", stdio_console_input_handler),
             ("Modify", default_modify_handler),
         ];

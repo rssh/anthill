@@ -85,16 +85,16 @@ pub fn interp_for(source: &str) -> Interpreter {
 
 // ── Effect handler test helpers (M5) ─────────────────────────
 
-/// Build a buffered `ConsoleOutput` handler and return `(buffer, handler)`.
-/// The buffer is owned by the caller and outlives the handler — inspect
-/// it after the test program runs.
+/// Build a buffered Console handler and return `(buffer, handler)`.
+/// Works for ConsoleOutput or ConsoleError — the caller registers the
+/// handler against whichever effect sort it wants to capture.
 #[allow(dead_code)]
-pub fn buffered_console_output() -> (
+pub fn buffered_console() -> (
     std::rc::Rc<std::cell::RefCell<String>>,
     anthill_core::eval::effects::EffectHandler,
 ) {
     let buf = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
-    let handler = anthill_core::eval::effects::buffered_console_output_handler(buf.clone());
+    let handler = anthill_core::eval::effects::buffered_console_handler(buf.clone());
     (buf, handler)
 }
 

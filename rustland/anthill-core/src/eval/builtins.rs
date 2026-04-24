@@ -68,6 +68,8 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
 
     register_if_present(interp, "anthill.prelude.Console.print", console_print)?;
     register_if_present(interp, "anthill.prelude.Console.println", console_println)?;
+    register_if_present(interp, "anthill.prelude.Console.eprint", console_eprint)?;
+    register_if_present(interp, "anthill.prelude.Console.eprintln", console_eprintln)?;
     register_if_present(interp, "anthill.prelude.Console.read_line", console_read_line)?;
 
     register_if_present(interp, "Modify.get", modify_get)?;
@@ -532,6 +534,8 @@ macro_rules! effect_dispatcher {
 
 effect_dispatcher!(console_print,     "anthill.prelude.Console.print",     "print",     "anthill.prelude.Console.ConsoleOutput");
 effect_dispatcher!(console_println,   "anthill.prelude.Console.println",   "println",   "anthill.prelude.Console.ConsoleOutput");
+effect_dispatcher!(console_eprint,    "anthill.prelude.Console.eprint",    "eprint",    "anthill.prelude.Console.ConsoleError");
+effect_dispatcher!(console_eprintln,  "anthill.prelude.Console.eprintln",  "eprintln",  "anthill.prelude.Console.ConsoleError");
 effect_dispatcher!(console_read_line, "anthill.prelude.Console.read_line", "read_line", "anthill.prelude.Console.ConsoleInput");
 effect_dispatcher!(modify_get, "Modify.get", "get", "Modify");
 effect_dispatcher!(modify_set, "Modify.set", "set", "Modify");
