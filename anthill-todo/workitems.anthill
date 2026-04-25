@@ -549,3 +549,101 @@ fact WorkItem(
   depends_on: [],
   status: Open)
 
+fact WorkItem(
+  id: "WI-081",
+  description: "Math library: Vec3, quaternion, 3D rotations and rigid-body transforms in anthill.prelude.math (or similar). Followup from lf1 example which currently uses a project-local Vec3. Should support rotation by yaw/quaternion, vector arithmetic, dot/cross products, magnitude/normalize. Backed by tl::expected on the C++ side for any operation that can fail (e.g. normalize(0)).",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-082",
+  description: "Kernel extension: allow Quoted to reference an external source file. Either as a new field form (e.g. Quoted with file path argument) or via a separate construct. Driven by lf1 example, where the Mavic2Pro inner stabilization loop is roughly 100 lines of vendor C++ that should ride along verbatim alongside the anthill spec; inlining as an escaped string literal is impractical. Proposal needed: kernel-spec section 4.2 Quoted Terms, syntax plus scoping rules plus how the referenced path resolves relative to the spec file.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-083",
+  description: "Byte / byte-array support in anthill. Currently no first-class bytes sort — String is used as a stand-in for binary payloads (e.g. lf1's webots.Emitter.send / Receiver.get_data, which on the C++ side take/return const void* with explicit size). String stand-ins break for payloads containing null bytes and require reinterpret_cast to round-trip serialized structs. Needed: a Bytes sort (or List[T = Byte] equivalent) with primitive operations (length, concat, slice, from_string, to_string), Implementation facts mapping to std::string (size-tracked) or std::vector<std::byte> in C++, and parser/typing support for byte-literal syntax. Driven by lf1 webots bindings; will also be needed by blefusku (proto wire format).",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-084",
+  description: "Term-level named constants in anthill. Currently the language has primitive literals and entities but no way to declare a named constant of a primitive type. Workarounds (entity-as-constant + side fact, unit-sort with coercion) are clunky. Proposed shape: 'const NAME: Type = literal_expr' at namespace or sort scope, identifier-resolvable everywhere a term is expected. Drives: webots binding sentinels (CHANNEL_BROADCAST = -1, infinity-as-velocity-mode), magic numbers in the safety proof's KinematicAssumptions / DistanceBounds. Should compose with the proposal-026 expression evaluator so constant expressions can be folded at load time.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-085",
+  description: "anthill-todo CLI: 'add' generates duplicate IDs (WI-001 instead of next sequential) when the workitems.anthill file has a parse error. Root cause was upstream of the CLI: the tree-sitter grammar's string_literal regex /\"[^\"]*\"/ rejected backslash-escaped sequences, so any string containing \\\" (which the printer emits to encode embedded quotes) failed to parse. The whole file's parsed view collapsed, leaving zero WorkItems in the KB and the CLI's next-id logic falling back to WI-001. Same root cause produced 'WorkItem sort not found in KB' for files that combined embedded quotes with em-dashes. Fixed: (1) tree-sitter grammar string_literal regex now accepts /\"([^\"\\\\]|\\\\.)*\"/ and grammar regenerated, (2) parse/convert.rs decodes escape sequences (\\\", \\\\, \\n, \\r, \\t) into the resulting Literal::String, (3) added persistence_test::round_trip_escapes_preserve_content and round_trip_entity_with_string_fields_preserves_escapes regression tests covering term-source-term round-trip with quotes / backslashes / em-dashes / control chars in both positional-arg facts and named-arg entity-shaped facts. Verified end-to-end: lf1 webots dir loads, anthill-todo add now allocates next sequential id even with quotes and em-dashes in the description.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Verified(at: "2026-04-25T19:19:29Z"))
+
+fact WorkItem(
+  id: "WI-086",
+  description: "anthill.realization.directMemory: a system-modeling sublibrary capturing host-language memory/ownership concerns. Parameterized sorts: Borrowed[T] (non-owning const ref), BorrowedMut[T] (non-owning mut ref), Owned[T] (explicit owned), Shared[T] (refcounted), Pinned[T] (non-movable). C++ codegen lowers each via a CarrierBinding on the wrapper sort itself. Lets specs express 'this handle borrows from its owner' instead of relying on convention + raw pointer carriers. Driver: lf1 webots bindings (Robot::getGPS returns webots::GPS *, semantically Borrowed[T = GPS]); future use cases include smart-pointer-heavy APIs, hardware MMIO, async self-references. Until this lands, lf1 elides borrow semantics and relies on raw-pointer carriers + codegen convention. Open design questions: auto-deref vs explicit unwrap; how Borrowed interacts with effects (Modify self); whether Borrowed[T] auto-satisfies sorts that T satisfies; aliasing/exclusivity rules.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-087",
+  description: "Operation attributes / metadata in anthill — the kernel mechanism. Operations need a way to carry structured metadata that downstream tools read. Three distinct uses, ALL riding on this one mechanism: (1) named marker facts for recurring lowering patterns (e.g. Vec3FromConstDoublePtr3 — codegen has one handler per marker, marker is reusable across many operations); (2) one-off escape hatch with literal host-language body (CppBody(\"...\") — for ad-hoc glue that doesn't fit a known pattern); (3) profile/dispatch hints (Profile(\"cpp20-stl\")). Note: @ is taken for effects (grammar.js:608 arrow-type annotation; WI-004 may extend it to operation declarations) so attributes need a different vehicle. Two candidate shapes: (A) keyword-introduced clause matching effects/requires shape: 'operation foo(...) -> R effects (E) meta Vec3FromConstDoublePtr3, Profile(\"cpp20-stl\")'; (B) nested fact block reusing existing keyword: 'operation foo(...) -> R effects (E) fact Vec3FromConstDoublePtr3 fact Profile(\"cpp20-stl\")' where the operation symbol is the implicit subject. (B) is semantically purer — attributes already ARE facts about the operation symbol, the realization model is already fact-based, and no new keyword needed. Open design: pick (A) vs (B); attribute argument forms; name resolution scope; how attributes interact with effects and contracts.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-088",
+  description: "Marshalling-pattern markers for lf1 webots bindings (and reusable later). Named marker facts that the C++ codegen recognizes and synthesizes a body for, abstracting recurring lowering patterns so each operation just declares which pattern it follows rather than spelling out the body. First marker needed: Vec3FromConstDoublePtr3, applying to operations whose anthill return is Vec3 and whose C++ side returns a const double pointer at 3 contiguous doubles. Codegen handler synthesizes a single line that reads the pointer and constructs the Vec3, where METHOD is the snake_case operation name converted to camelCase. Operations needing it in lf1: GPS.get_values, GPS.get_speed_vector, Gyro.get_values, Receiver.get_emitter_direction. Variants likely needed: EulerAnglesFromConstDoublePtr3 for InertialUnit.get_roll_pitch_yaw, Vec4FromConstDoublePtr4 for InertialUnit.get_quaternion when modeled. Lives in webots/marshalling.anthill project-local until a second consumer needs the same patterns; then lift. Depends on WI-087 (operation attributes mechanism). NOT to be confused with the generic CppBody escape hatch: markers are abstract, CppBody is verbatim.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-087"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-089",
+  description: "anthill.realization.cpp_std: C++ language mapping file, sibling to rust_std.anthill. One LanguageMapping fact per profile (cpp17-stl, cpp20-stl) with effect_map (Modify to lvalue ref, Error to tl::expected wrap), type_map (Int to int64_t, Float to double, Bool to bool, String to std::string, List to std::vector, Option to std::optional, Bytes to std::vector of std::byte when WI-083 lands), trait_return TraitsClass per docs/cpp-forward-mapping.md. Plus a NamingConvention fact: language: cpp, method_case: camelCase, source_case: snake_case. Codegen uses this as the default when translating operation names. Per-operation overrides ride on WI-087 attributes (a CppName fact in the operation block) to handle irregulars such as acronyms (get_gps, get_imu). Driver: lf1 example needs cpp_std and lf1's webots realization references it.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-087"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-090",
+  description: "test",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-091",
+  description: "WI-085 fix verification: round-trip with quotes \"inline\" and em-dash — works.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-092",
+  description: "Parser error span recovery: tighten the failure window so a single-construct error inside a sort body does not subsume the rest of the body in the error span. Symptom observed during WI-085 diagnosis: a malformed effects clause (\"effects (Modify self)\" instead of \"effects Modify[self]\") at byte 316 produced a parse error spanning 316..1947 — almost the entire sort body. Bisection by truncating the file made later innocent constructs (multi-line imports, trailing effects before end) look like they were the trigger, since each truncation either ended on the bad clause (failed) or after it (passed). Fixing the real bug was easy once isolated, but the diagnostic was actively misleading. Improvement: per-clause recovery in the operation/sort body so the error span ends at the next recognizable clause boundary (\"effects\", \"requires\", \"operation\", \"end\"). Should not require grammar changes — tree-sitter has explicit ERROR recovery hooks. Likely a few-hour change to grammar.js plus regenerate.  Driver: improves debuggability for everyone authoring anthill specs; webots-modelling/lf1 was the first project with enough hand-authored binding files to surface this.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-093",
+  description: "Time stdlib (anthill.prelude.time): minimal time vocabulary needed for simulation, scheduling, and impurity reasoning. Three pieces. (1) Tick effect — sort Tick with fact Effect[T = Tick]. Operations marked 'effects Tick' depend on or advance simulation/wall-clock time; two calls separated by a Tick are not interchangeable. (2) Clock resource — sort Clock with entity clock, plus operations: now(c: Clock) -> Timestamp effects Tick; advance(c: Clock, by: Duration) -> Unit effects {Modify[c], Tick}. (3) Arithmetic on existing Duration / Timestamp data shapes from primitives.anthill — addition, subtraction, comparison, Numeric and Ordered satisfaction facts as appropriate. Driver: lf1 webots example wants Design B effect modeling — sensor reads stay pure (referentially transparent within a tick, matching webots's contract that sensor values update only via Robot::step), and Robot::step is the only Tick-emitting op. Without a Tick effect we can't express this, so all impurity is currently flattened into Modify. Connected to safety.anthill's inductive_invariant which already reasons in discrete steps; Tick on step makes the proof transition explicit. Out of scope: real-time / wall-clock semantics, time zones, scheduling primitives — those are separate stdlib chunks once concrete consumers appear.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-094",
+  description: "World naming predicate for webots (and other simulator) bindings. Tightens the string-typed coupling between controller code and world-file device names by modeling them as anthill facts. Three fact shapes: (1) RobotKind(name, devices: List[NamedDevice]) — devices baked into a robot proto, e.g. Mavic2Pro's gps/gyro/inertial-unit/4-propellers. (2) WorldRobot(world, name, kind, extra_devices: List[NamedDevice]) — robot instance in a specific world, with per-instance additions like a radio Emitter or Receiver. (3) NamedDevice(name, sort) — a (name, anthill-sort) pair. Plus a derived predicate has_device(world, robot, device, sort) :- WorldRobot(...), RobotKind(...), in_devices(...) that binds (world × robot × device-name) to its sort. Codegen check: every Robot.get_X(r, lit_name) call where lit_name is a String literal triggers a query has_device(?world, r.name, lit_name, X); a mismatch produces a typed warning at codegen time. Same name resolving to different sorts on different robots (radio = Emitter on leader, Receiver on followers) is naturally captured per-robot. Driver: lf1 example. First implementation: webots/robot_kinds.anthill listing Mavic2Pro's standard devices; per-world file under examples/webots-modelling/lf1/ listing the lf1 world's robot instances and extras. Codegen-side check is a follow-up under the eventual anthill-cpp-gen WI; the model itself is useful even without the check (tooling, documentation, supervisor-dispatch). Generalizes beyond webots: a Gazebo or hardware target would have its own robot kinds and world-file analogues.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+

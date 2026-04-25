@@ -1,0 +1,136 @@
+-- Realization facts for the lf1 webots bindings.
+--
+-- One Implementation per binding sort, plus a single shared
+-- NamespaceMapping. These are read by the C++ codegen to:
+--   1. emit `#include <webots/X.hpp>` for the right header
+--   2. carrier-bind anthill sort references to webots::X*
+--   3. lower anthill operations to method calls on those handles
+--
+-- Webots ships its public headers at
+--   $WEBOTS_HOME/include/controller/cpp/webots/<DeviceName>.hpp
+
+namespace anthill.examples.lf1.webots.realization
+  import anthill.prelude.{List, Option, String, Int}
+  import anthill.realization.{Implementation, CarrierBinding,
+                              NamespaceMapping}
+
+  -- ================================================================
+  -- C++ enum encoding facts
+  --
+  -- Project-local; will move to anthill.realization.cpp_std (WI-089)
+  -- once that file is authored. Each fact says: this anthill enum
+  -- constructor maps to this int value on the C++ side. The codegen
+  -- uses these facts to synthesize the int<->enum conversion at
+  -- operation boundaries (e.g. Robot::step's int return is mapped
+  -- to StepResult).
+  -- ================================================================
+
+  entity CppEnumValue(constructor: String, value: Int)
+
+  fact CppEnumValue(constructor: "anthill.examples.lf1.webots.Running",
+                    value: 0)
+  fact CppEnumValue(constructor: "anthill.examples.lf1.webots.Quit",
+                    value: -1)
+
+
+  -- One namespace mapping covers every binding sort in lf1.webots.
+  fact NamespaceMapping(
+    namespace:   "anthill.examples.lf1.webots",
+    host_module: "webots"
+  )
+
+  -- One Implementation per device sort. The artifact path is the
+  -- standard webots header location; profile = cpp20-stl per the
+  -- decision in this example's README.
+
+  fact Implementation(
+    target:      "anthill.examples.lf1.webots.Robot",
+    artifact:    "webots/Robot.hpp",
+    language:    "cpp",
+    profile:     some("cpp20-stl"),
+    description: some("webots::Robot — controller runtime + device factory"),
+    carrier:     [CarrierBinding(sort_name: "Robot",
+                                 host_type: "webots::Robot")],
+    namespace_map: []
+  )
+
+  -- SimulationRuntime carrier-binds to the same C++ class as Robot —
+  -- webots conflates the two. main_robot() lowers to a trivial
+  -- self-reference (return *this).
+  fact Implementation(
+    target:      "anthill.examples.lf1.webots.SimulationRuntime",
+    artifact:    "webots/Robot.hpp",
+    language:    "cpp",
+    profile:     some("cpp20-stl"),
+    description: some("Webots runtime context — same C++ class as Robot"),
+    carrier:     [CarrierBinding(sort_name: "SimulationRuntime",
+                                 host_type: "webots::Robot")],
+    namespace_map: []
+  )
+
+  fact Implementation(
+    target:      "anthill.examples.lf1.webots.GPS",
+    artifact:    "webots/GPS.hpp",
+    language:    "cpp",
+    profile:     some("cpp20-stl"),
+    description: some("webots::GPS — position sensor"),
+    carrier:     [CarrierBinding(sort_name: "GPS",
+                                 host_type: "webots::GPS *")],
+    namespace_map: []
+  )
+
+  fact Implementation(
+    target:      "anthill.examples.lf1.webots.Gyro",
+    artifact:    "webots/Gyro.hpp",
+    language:    "cpp",
+    profile:     some("cpp20-stl"),
+    description: some("webots::Gyro — angular-velocity sensor"),
+    carrier:     [CarrierBinding(sort_name: "Gyro",
+                                 host_type: "webots::Gyro *")],
+    namespace_map: []
+  )
+
+  fact Implementation(
+    target:      "anthill.examples.lf1.webots.InertialUnit",
+    artifact:    "webots/InertialUnit.hpp",
+    language:    "cpp",
+    profile:     some("cpp20-stl"),
+    description: some("webots::InertialUnit — orientation sensor"),
+    carrier:     [CarrierBinding(sort_name: "InertialUnit",
+                                 host_type: "webots::InertialUnit *")],
+    namespace_map: []
+  )
+
+  fact Implementation(
+    target:      "anthill.examples.lf1.webots.Motor",
+    artifact:    "webots/Motor.hpp",
+    language:    "cpp",
+    profile:     some("cpp20-stl"),
+    description: some("webots::Motor — propeller / wheel actuator"),
+    carrier:     [CarrierBinding(sort_name: "Motor",
+                                 host_type: "webots::Motor *")],
+    namespace_map: []
+  )
+
+  fact Implementation(
+    target:      "anthill.examples.lf1.webots.Emitter",
+    artifact:    "webots/Emitter.hpp",
+    language:    "cpp",
+    profile:     some("cpp20-stl"),
+    description: some("webots::Emitter — outbound radio / serial / IR"),
+    carrier:     [CarrierBinding(sort_name: "Emitter",
+                                 host_type: "webots::Emitter *")],
+    namespace_map: []
+  )
+
+  fact Implementation(
+    target:      "anthill.examples.lf1.webots.Receiver",
+    artifact:    "webots/Receiver.hpp",
+    language:    "cpp",
+    profile:     some("cpp20-stl"),
+    description: some("webots::Receiver — inbound radio / serial / IR"),
+    carrier:     [CarrierBinding(sort_name: "Receiver",
+                                 host_type: "webots::Receiver *")],
+    namespace_map: []
+  )
+end

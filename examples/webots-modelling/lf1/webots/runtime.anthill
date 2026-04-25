@@ -1,0 +1,31 @@
+-- Webots simulation runtime — the host-provided context.
+--
+-- SimulationRuntime is the entry point a controller receives at
+-- startup. It is the *source* of Robot values — there is no anthill-
+-- side way to construct a Robot; you obtain one from the runtime.
+-- This makes the lifecycle explicit (cleaner than treating Robot as
+-- an implicitly-singleton entity) and supports multi-robot
+-- scenarios (a supervisor controller calls additional runtime ops
+-- to obtain handles to other robots).
+--
+-- C++ note: webots conflates the runtime and the controller's own
+-- robot into one class — webots::Robot. Both `SimulationRuntime`
+-- and `Robot` carrier-bind to webots::Robot * in the lf1 mapping;
+-- main_robot() lowers to a trivial pass-through. Other host
+-- targets (Gazebo, Mujoco, or a mock) would split the carriers
+-- differently — that's the point of having the abstraction.
+
+sort anthill.examples.lf1.webots.SimulationRuntime
+  import anthill.examples.lf1.webots.{Robot}
+  export SimulationRuntime, main_robot
+
+  -- No anthill-side constructor — the runtime is provided by the
+  -- host at controller startup. The codegen entry point receives a
+  -- SimulationRuntime as its first argument.
+
+  -- The robot this controller represents. Webots: the controller's
+  -- own `this` (since user controllers derive from webots::Robot).
+  -- Once a Supervisor binding is modeled, additional operations
+  -- (get_from_def, get_root_node) will obtain other robots.
+  operation main_robot(rt: SimulationRuntime) -> Robot
+end

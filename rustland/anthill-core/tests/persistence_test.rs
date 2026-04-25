@@ -56,6 +56,112 @@ fn printer_round_trip_string_literal() {
 }
 
 #[test]
+fn round_trip_escapes_preserve_content() {
+    // Regression: printer escapes \" and \\, parser must decode them so the
+    // resulting Literal::String matches the original. Previously the grammar's
+    // string regex `/"[^"]*"/` rejected any backslash, breaking round-trip on
+    // every string containing a quote or backslash. (See WI-085 history.)
+    //
+    // Strategy: print(fact) -> parse -> load into fresh KB -> printer again ->
+    // assert second print equals first. If escapes are preserved end to end,
+    // both prints come out identical.
+    let cases = [
+        r#"plain ascii"#,
+        r#"quotes "inside" string"#,
+        r#"backslash \ alone"#,
+        r#"both \ and " together"#,
+        r#"em-dash — and "quotes" in same string"#,  // WI-082 trigger
+        "newline\nand\ttab",
+    ];
+    for original in cases {
+        let mut kb1 = KnowledgeBase::new();
+        let functor = kb1.intern("s");
+        let lit = kb1.alloc(Term::Const(Literal::String(original.to_string())));
+        let fact = kb1.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::from_slice(&[lit]),
+            named_args: SmallVec::new(),
+        });
+        let printed1 = print::print_fact(&kb1, fact, None);
+
+        // Round-trip: parse and load into a fresh KB.
+        let parsed = parse::parse(&printed1)
+            .unwrap_or_else(|e| panic!("re-parse failed for {original:?}: {e:?}"));
+        let mut kb2 = KnowledgeBase::new();
+        load::load(&mut kb2, &parsed, &NullResolver)
+            .unwrap_or_else(|e| panic!("load failed for {original:?}: {e:?}"));
+
+        // Pull the round-tripped fact and reprint via the second KB.
+        // `intern` is idempotent — returns the existing symbol if scan/load
+        // interned it for the fact's functor, otherwise creates a fresh one.
+        let s_sym = kb2.intern("s");
+        let rules = kb2.by_functor(s_sym);
+        assert_eq!(rules.len(), 1, "should find exactly one fact for {original:?}");
+        let head = kb2.rule_head(rules[0]);
+        let printer = TermPrinter::new(&kb2);
+        let printed2 = format!("fact {}\n", printer.print_term(head));
+
+        assert_eq!(printed1, printed2,
+            "round-trip mismatch for {original:?}:\nfirst print:  {printed1}second print: {printed2}");
+    }
+}
+
+#[test]
+fn round_trip_entity_with_string_fields_preserves_escapes() {
+    // Mirrors how stdlib / project files actually serialize state: an entity
+    // declaration with String-typed named fields, instantiated by a fact whose
+    // values contain quotes, backslashes, em-dashes, etc. This is the WI-082
+    // shape (a WorkItem fact with a description field containing escaped quotes).
+    //
+    // Strategy: write an `entity` declaration plus a `fact` literal directly as
+    // text, parse it, then verify the parsed fact has the original (decoded)
+    // string values.
+    let id_value      = r#"WI-001"#;
+    let desc_value    = r#"Use Quoted("cpp", "...") with em-dash — and a \backslash"#;
+    let payload_value = "newline\nand\ttab and \"quotes\"";
+
+    // Build the source text via the printer's escape rules so the parser
+    // sees exactly the shape the printer would produce.
+    let mut kb1 = KnowledgeBase::new();
+    let entity_sym = kb1.intern("Account");
+    let id_field = kb1.intern("id");
+    let desc_field = kb1.intern("description");
+    let payload_field = kb1.intern("payload");
+    let id_lit = kb1.alloc(Term::Const(Literal::String(id_value.into())));
+    let desc_lit = kb1.alloc(Term::Const(Literal::String(desc_value.into())));
+    let payload_lit = kb1.alloc(Term::Const(Literal::String(payload_value.into())));
+    let fact_term = kb1.alloc(Term::Fn {
+        functor: entity_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[
+            (desc_field, desc_lit),
+            (id_field, id_lit),
+            (payload_field, payload_lit),
+        ]),
+    });
+    let printed1 = print::print_fact(&kb1, fact_term, None);
+
+    // Round-trip through parse and load.
+    let parsed = parse::parse(&printed1)
+        .expect("entity-with-strings fact should parse after printer escapes");
+    let mut kb2 = KnowledgeBase::new();
+    load::load(&mut kb2, &parsed, &NullResolver)
+        .expect("entity-with-strings fact should load");
+
+    let acc_sym = kb2.intern("Account");
+    let rules = kb2.by_functor(acc_sym);
+    assert_eq!(rules.len(), 1, "exactly one Account fact after round-trip");
+
+    // Reprint via the second KB and compare textually — if any escape was
+    // misdecoded, the second print would carry doubled or mangled escapes.
+    let head = kb2.rule_head(rules[0]);
+    let printer = TermPrinter::new(&kb2);
+    let printed2 = format!("fact {}\n", printer.print_term(head));
+    assert_eq!(printed1, printed2,
+        "entity round-trip mismatch:\nfirst print:  {printed1}second print: {printed2}");
+}
+
+#[test]
 fn printer_round_trip_numeric_literals() {
     let mut kb = KnowledgeBase::new();
     let f = kb.intern("nums");

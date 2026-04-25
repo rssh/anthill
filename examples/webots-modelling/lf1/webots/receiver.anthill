@@ -1,0 +1,63 @@
+-- webots::Receiver — receives packets emitted on a matching channel.
+--
+-- C++ surface:
+--   void enable(int samplingPeriod);
+--   void disable();
+--   int  getSamplingPeriod() const;
+--   void setChannel(int channel);
+--   int  getChannel() const;
+--   int  getQueueLength() const;
+--   void nextPacket();
+--   int  getDataSize() const;
+--   const void *getData() const;
+--   double getSignalStrength() const;     // 1/r^2
+--   const double *getEmitterDirection() const;  // Vec3, unit vector
+
+sort anthill.examples.lf1.webots.Receiver
+  import anthill.prelude.{Int, Float, Unit, String, Bool, Modify}
+  import anthill.examples.lf1.webots.types.{Vec3}
+  export Receiver
+  export enable, disable, get_sampling_period
+  export set_channel, get_channel
+  export get_queue_length, next_packet, get_data_size, get_data
+  export get_signal_strength, get_emitter_direction
+
+  -- Lifecycle.
+  operation enable(self: Receiver, sampling_period: Int) -> Unit
+    effects Modify[self]
+
+  operation disable(self: Receiver) -> Unit
+    effects Modify[self]
+
+  operation get_sampling_period(self: Receiver) -> Int
+
+  -- Channel selection (-1 for broadcast, must match an emitter).
+  operation set_channel(self: Receiver, channel: Int) -> Unit
+    effects Modify[self]
+
+  operation get_channel(self: Receiver) -> Int
+
+  -- Packet queue iteration.
+  operation get_queue_length(self: Receiver) -> Int
+
+  -- Pop the head packet. Modeled as a Modify; the C++ side returns
+  -- void.
+  operation next_packet(self: Receiver) -> Unit
+    effects Modify[self]
+
+  -- Size in bytes of the head packet (0 if queue empty).
+  operation get_data_size(self: Receiver) -> Int
+
+  -- Read the head packet's payload. As with Emitter.send, we model
+  -- the payload as String for now; richer byte-array support can
+  -- replace this later.
+  operation get_data(self: Receiver) -> String
+
+  -- Inverse-square signal strength of the head packet (used by the
+  -- safety proof to bound emitter distance from observed strength).
+  operation get_signal_strength(self: Receiver) -> Float
+
+  -- Unit vector pointing from receiver toward the emitter, in
+  -- receiver's local frame.
+  operation get_emitter_direction(self: Receiver) -> Vec3
+end

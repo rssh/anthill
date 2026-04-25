@@ -774,7 +774,7 @@ module.exports = grammar({
     // Literals
     // =========================================================
 
-    string_literal: $ => /"[^"]*"/,
+    string_literal: $ => /"([^"\\]|\\.)*"/,
     integer_literal: $ => /-?[0-9]+/,
     float_literal: $ => /-?[0-9]+\.[0-9]+/,
     boolean_literal: $ => choice('true', 'false'),

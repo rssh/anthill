@@ -78,6 +78,12 @@ struct LoadArgs {
     /// Print verbose output
     #[arg(long)]
     verbose: bool,
+
+    /// Do not auto-include the embedded standard library. By default
+    /// `anthill load` parses the stdlib alongside the requested paths
+    /// so that prelude / reflect / realization references resolve.
+    #[arg(long = "no-stdlib")]
+    no_stdlib: bool,
 }
 
 #[derive(Parser)]
@@ -220,6 +226,12 @@ fn output_filename(input: &Path) -> String {
 // ── Shared KB loader ────────────────────────────────────────────────
 
 fn load_kb(paths: &[PathBuf], verbose: bool) -> Result<KnowledgeBase, i32> {
+    load_kb_with_stdlib(paths, verbose, false)
+}
+
+fn load_kb_with_stdlib(paths: &[PathBuf], verbose: bool, include_stdlib: bool)
+    -> Result<KnowledgeBase, i32>
+{
     let files = match collect_anthill_files(paths) {
         Ok(f) => f,
         Err(errs) => {
@@ -238,6 +250,17 @@ fn load_kb(paths: &[PathBuf], verbose: bool) -> Result<KnowledgeBase, i32> {
     // Parse all files
     let mut parsed_files = Vec::new();
     let mut errors = Vec::new();
+
+    if include_stdlib {
+        let (stdlib_files, stdlib_errors) = stdlib_embedded::parse_embedded_stdlib();
+        if verbose {
+            eprintln!("included {} embedded stdlib file(s)", stdlib_files.len());
+        }
+        parsed_files.extend(stdlib_files);
+        for e in &stdlib_errors {
+            errors.push(e.clone());
+        }
+    }
 
     for file in &files {
         let source = match fs::read_to_string(file) {
@@ -426,7 +449,7 @@ fn run_codegen_rust(args: &RustCodegenArgs) -> Result<(), i32> {
 // ── Load command ────────────────────────────────────────────────────
 
 fn run_load(args: &LoadArgs) -> Result<(), i32> {
-    let kb = load_kb(&args.paths, args.verbose)?;
+    let kb = load_kb_with_stdlib(&args.paths, args.verbose, !args.no_stdlib)?;
     println!("loaded: {} facts, {} rules", kb.fact_count(), kb.rule_count());
     Ok(())
 }

@@ -1,0 +1,50 @@
+-- webots::Emitter — sends packets over a radio / serial / IR channel.
+--
+-- C++ surface:
+--   int  send(const void *data, int size);
+--   int  getBufferSize() const;
+--   void setChannel(int channel);          // -1 = broadcast
+--   int  getChannel() const;
+--   double getRange() const;
+--   void   setRange(double range);
+--
+-- World-file properties (baud_rate, byte_size, signal_speed, type,
+-- aperture) are NOT exposed at runtime. The safety proof reads them
+-- as a `LinkParameters` fact (see safety.anthill) and derives
+-- comm_delay_max from them.
+
+sort anthill.examples.lf1.webots.Emitter
+  import anthill.prelude.{Int, Float, Unit, String, Bool, Modify}
+  export Emitter, BROADCAST_CHANNEL
+  export send, set_channel, get_channel
+  export set_range, get_range, get_buffer_size
+
+  -- Sentinel for broadcast (mirrors webots::Emitter::CHANNEL_BROADCAST = -1).
+  -- TODO: model as a constant once anthill has term-level constants.
+  -- For now, callers pass -1 directly to set_channel.
+  entity BROADCAST_CHANNEL
+
+  -- Send a payload. The C++ API takes (data, size); on the anthill
+  -- side we model the payload as a string (or once we have richer
+  -- byte-array support, as bytes). LeaderController serializes its
+  -- pose into a fixed-size struct upstream of this call.
+  --
+  -- Returns 1 on success, 0 if the buffer is full (and the packet
+  -- was dropped). Modeled as Bool: true = enqueued, false = dropped.
+  operation send(self: Emitter, payload: String) -> Bool
+    effects Modify[self]
+
+  -- Channel selection (-1 for broadcast).
+  operation set_channel(self: Emitter, channel: Int) -> Unit
+    effects Modify[self]
+
+  operation get_channel(self: Emitter) -> Int
+
+  -- Effective range (m). -1 for unlimited.
+  operation set_range(self: Emitter, range: Float) -> Unit
+    effects Modify[self]
+
+  operation get_range(self: Emitter) -> Float
+
+  operation get_buffer_size(self: Emitter) -> Int
+end

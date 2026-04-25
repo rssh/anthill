@@ -1,0 +1,162 @@
+-- Safety properties for the leader-follower protocol.
+--
+-- Goal (v1, discrete-step): under stated assumptions, the inter-drone
+-- distance stays in [d_min, d_max] forever — no collision, formation
+-- maintained.
+--
+-- STATUS: sketch. The constraints below describe what we want to
+-- prove, not what is currently provable. Discharge requires:
+--   - arithmetic-aware reasoning in the SLD evaluator
+--     (proposal 026 expression evaluator + a small invariant tactic)
+--   - or an SMT export pass (out of scope for v1)
+-- Continuous-time invariance between sample steps is treated as a
+-- modeling assumption captured in step_distance_bound, not a
+-- separate proof obligation.
+--
+-- Convention notes (from stdlib idioms):
+--   - field access on a bound entity is via destructuring in the
+--     body, not dot syntax: DistanceBounds(d_min: ?d_min, ...)
+--     extracts ?d_min from the active fact
+--   - comparisons in goal position go through Ordered: lt, gt, lte
+--   - arithmetic in goal position uses Numeric ops: add, mul, div
+
+namespace anthill.examples.lf1.safety
+  import anthill.prelude.{Float, Int, Bool}
+  import anthill.prelude.Ordered.{lt, gt, lte, gte}
+  import anthill.prelude.Numeric.{add, mul}
+  import anthill.prelude.Float.{div, abs}
+
+  export DistanceBounds, KinematicAssumptions, LinkParameters
+  export comm_delay_max
+  export safety_min_distance, safety_max_distance
+  export inductive_invariant
+
+  -- =================================================================
+  -- Stated bounds the protocol must respect
+  -- =================================================================
+
+  -- Inter-drone distance bounds. Values are application-specific;
+  -- defaults reflect the reference impl's nominal 4 m offset.
+  entity DistanceBounds(
+    d_min: Float,    -- e.g. 1.0 m  (no-collision margin)
+    d_max: Float,    -- e.g. 8.0 m  (formation envelope)
+    delta: Float     -- per-step max change in distance
+  )
+
+  -- Assumptions on the protocol's kinematic envelope. These are
+  -- *inputs* to the proof — to discharge the safety obligations the
+  -- developer states each one as a fact, then the proof goes
+  -- through given those facts.
+  entity KinematicAssumptions(
+    leader_speed_max:    Float,   -- |v_L| <= leader_speed_max
+    follower_speed_max:  Float,   -- |v_F| <= follower_speed_max
+    control_period:      Float,   -- T_c, control loop period (sec)
+    sensor_period:       Float    -- T_s, sensor sample period
+  )
+
+  -- Communication parameters of the leader→follower radio link.
+  -- Webots's Emitter/Receiver model exposes these as world-file
+  -- and/or runtime configuration. Reading them as facts lets the
+  -- proof *derive* comm_delay_max instead of assuming it.
+  entity LinkParameters(
+    range_max:    Float,   -- emitter.range — max reception distance (m)
+    signal_speed: Float,   -- propagation speed (m/s); typically c
+    baud_rate:    Float,   -- bits per second
+    byte_size:    Int,     -- bits per byte (typically 8)
+    packet_size:  Int      -- payload size in bytes (LeaderPose = 32)
+  )
+
+  -- Derived bound on packet delay between emit and receive.
+  -- Sources of delay:
+  --   - propagation:  range_max / signal_speed   (usually negligible)
+  --   - transmission: packet_size * byte_size / baud_rate
+  --   - queueing:     up to one control_period   (packet emitted
+  --                   just after the receiver's last sampling
+  --                   instant waits for the next one)
+  -- TODO: discharge — exercises arithmetic in goal position; works
+  -- once the evaluator's builtin add/mul/div participate in
+  -- resolution.
+  rule comm_delay_max(?tau)
+    :- LinkParameters(range_max: ?r,
+                      signal_speed: ?c,
+                      baud_rate: ?br,
+                      byte_size: ?bs,
+                      packet_size: ?ps),
+       KinematicAssumptions(control_period: ?tc),
+       ?prop  = div(?r, ?c),
+       ?bits  = mul(?ps, ?bs),
+       ?trans = div(?bits, ?br),
+       ?sum1  = add(?prop, ?trans),
+       ?tau   = add(?sum1, ?tc)
+
+  -- =================================================================
+  -- Properties (proof obligations)
+  -- =================================================================
+
+  -- The two pointwise constraints. Stated as denials: the predicate
+  -- must NEVER hold over any reachable state.
+  --
+  -- TODO: discharge — needs arithmetic-aware reasoner.
+  constraint safety_min_distance
+    :- reachable(?leader_pose, ?follower_pose),
+       distance(?leader_pose, ?follower_pose, ?d),
+       DistanceBounds(d_min: ?d_min, d_max: ?, delta: ?),
+       lt(?d, ?d_min)
+
+  constraint safety_max_distance
+    :- reachable(?leader_pose, ?follower_pose),
+       distance(?leader_pose, ?follower_pose, ?d),
+       DistanceBounds(d_min: ?, d_max: ?d_max, delta: ?),
+       gt(?d, ?d_max)
+
+  -- =================================================================
+  -- Discrete-step inductive invariant (the actual proof target)
+  -- =================================================================
+  --
+  -- Per-step max distance change is bounded:
+  --     delta = (leader_speed_max + follower_speed_max) * control_period
+  --             + sensor / comm error terms
+  --
+  -- Initial separation is inside the safe envelope by at least delta:
+  --     d_0 in [d_min + delta, d_max - delta]
+  --
+  -- Inductive step:
+  --     d_min <= d_k <= d_max  =>  d_min <= d_{k+1} <= d_max
+  --
+  -- Conclusion (by induction on k):
+  --     for all k >= 0:  d_min <= d_k <= d_max
+  --
+  -- TODO: discharge — needs arithmetic-aware reasoner with
+  -- linear arithmetic on Float values.
+  rule inductive_invariant(?d_next)
+    :- DistanceBounds(d_min: ?d_min, d_max: ?d_max, delta: ?delta),
+       step_distance_bound(?delta),
+       distance_at_step(?k, ?d_prev),
+       lte(?d_min, ?d_prev),
+       lte(?d_prev, ?d_max),
+       ?d_next = add(?d_prev, ?step),
+       lte(abs(?step), ?delta)
+       -- => d_min <= d_next <= d_max  (the goal)
+
+  -- =================================================================
+  -- Predicates the proof reasons over
+  -- =================================================================
+  --
+  -- These are placeholders — actual definitions live in operational
+  -- semantics terms once the reasoner can talk about them. Listed here
+  -- so the reader can see what surface area the proof depends on.
+  --
+  -- reachable(?leader_pose, ?follower_pose)
+  --   The pair (leader_pose, follower_pose) is reachable from the
+  --   initial state via the protocol's transition relation.
+  --
+  -- distance(?p1, ?p2, ?d)
+  --   ?d is the Euclidean distance between p1.position and p2.position.
+  --
+  -- distance_at_step(?k, ?d)
+  --   ?d is the distance between the drones at sample step k.
+  --
+  -- step_distance_bound(?delta)
+  --   ?delta is the per-step distance change bound derivable from the
+  --   KinematicAssumptions fact.
+end

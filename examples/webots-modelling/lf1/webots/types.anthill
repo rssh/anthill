@@ -1,0 +1,39 @@
+-- Project-local value types used by the webots bindings.
+--
+-- Vec3 lives here for now. When WI-081 (math library) lands, lift to
+-- a shared anthill.prelude.math.Vec3 and update imports.
+--
+-- ── Snapshot semantics ──────────────────────────────────────────────
+-- All value types in this file are *snapshots*. Webots's C++ API
+-- returns several kinds of fixed-size double arrays via
+-- `const double *` pointers into its internal buffers; those buffers
+-- are reused between calls and definitely overwritten by Robot.step.
+-- The C++ codegen for any operation returning a value type from this
+-- file emits a copy at call time:
+--
+--     const double * raw = self->getValues();
+--     return Vec3{raw[0], raw[1], raw[2]};
+--
+-- The returned struct OWNS its three doubles; webots's pointer is
+-- never carried through into anthill-side state. (How that copy
+-- shows up in codegen is currently per-operation — eventually the
+-- marshalling pattern will be expressible as an operation attribute
+-- once that kernel feature lands.)
+
+namespace anthill.examples.lf1.webots.types
+  import anthill.prelude.{Float}
+  export Vec3, EulerAngles
+
+  -- 3-vector for spatial quantities (position, velocity, direction,
+  -- angular velocity components in body frame). Field names are the
+  -- world / body axes.
+  entity Vec3(x: Float, y: Float, z: Float)
+
+  -- Orientation as Euler angles, radians. Field order matches
+  -- webots::InertialUnit::getRollPitchYaw output. Distinguishing
+  -- this from Vec3 keeps spatial-vs-orientation reads from being
+  -- aliased through the same component names (otherwise
+  -- `pose.position.x` and `pose.orientation.x` look identical and
+  -- the reader has to remember which axis is which).
+  entity EulerAngles(roll: Float, pitch: Float, yaw: Float)
+end

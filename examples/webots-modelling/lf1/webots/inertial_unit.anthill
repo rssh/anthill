@@ -1,0 +1,35 @@
+-- webots::InertialUnit — orientation sensor returning roll/pitch/yaw
+-- in radians.
+--
+-- C++ surface:
+--   void enable(int samplingPeriod);
+--   void disable();
+--   int  getSamplingPeriod() const;
+--   const double *getRollPitchYaw() const;   // -> Vec3 (rad)
+--   const double *getQuaternion() const;     // 4-vector; not used by lf1
+--   double getNoise() const;
+
+sort anthill.examples.lf1.webots.InertialUnit
+  import anthill.prelude.{Int, Float, Unit, Modify}
+  import anthill.examples.lf1.webots.types.{EulerAngles}
+  export InertialUnit
+  export enable, disable, get_sampling_period
+  export get_roll_pitch_yaw, get_noise
+
+  operation enable(self: InertialUnit, sampling_period: Int) -> Unit
+    effects Modify[self]
+
+  operation disable(self: InertialUnit) -> Unit
+    effects Modify[self]
+
+  operation get_sampling_period(self: InertialUnit) -> Int
+
+  -- Orientation as (roll, pitch, yaw) in radians. EulerAngles
+  -- (rather than Vec3) keeps the field names matched to angular
+  -- semantics — see types.anthill for the rationale.
+  operation get_roll_pitch_yaw(self: InertialUnit) -> EulerAngles
+
+  -- Sensor noise level (rad). Useful for the safety proof's
+  -- KinematicAssumptions.
+  operation get_noise(self: InertialUnit) -> Float
+end

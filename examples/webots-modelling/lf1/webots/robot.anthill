@@ -1,0 +1,76 @@
+-- webots::Robot — runtime base class with device getters and a step
+-- function. Mirrors the public C++ surface needed by lf1.
+--
+-- Webots's actual class hierarchy has webots::Robot as the parent of
+-- webots::Supervisor and as the holder of all device handles. We
+-- model only what the controller calls into.
+
+sort anthill.examples.lf1.webots.Robot
+  import anthill.prelude.{Int, Float, Unit, String, Bool, Modify}
+  import anthill.examples.lf1.webots.{GPS, Gyro, InertialUnit, Motor,
+                                       Emitter, Receiver}
+  export Robot, StepResult, Running, Quit
+  export get_basic_time_step, step
+  export get_gps, get_gyro, get_inertial_unit, get_motor
+  export get_emitter, get_receiver
+
+  -- Robot is a sort without a constructor — there is no anthill-side
+  -- way to "create a Robot." Robot values come from
+  -- SimulationRuntime (see runtime.anthill): main_robot returns the
+  -- controller's own robot, and supervisor-mode operations (not yet
+  -- modeled) return additional robots. This avoids baking a single-
+  -- instance assumption into the type. The C++ carrier
+  -- (webots::Robot *) is supplied by webots itself — typically the
+  -- controller's `this` reference, since user controllers derive
+  -- from webots::Robot.
+
+  -- Simulation time step in milliseconds (a.k.a. WorldInfo.basicTimeStep).
+  operation get_basic_time_step(self: Robot) -> Float
+
+  -- Result of a step() call. Two states; named so the call site
+  -- reads correctly without remembering a Bool encoding direction.
+  --
+  -- C++ encoding: webots::Robot::step returns int — 0 for Running,
+  -- -1 for Quit. The mapping lives as facts (CppEnumValue, in
+  -- realization.anthill) so the C++ codegen can synthesize the
+  -- conversion. Pattern is general — any other int-as-tagged-status
+  -- op (e.g. Emitter.send with 1=ok / 0=buffer-full) can declare
+  -- its own enum + CppEnumValue facts.
+  enum StepResult
+    entity Running
+    entity Quit
+  end
+
+  -- Advance the simulation by `period` ms. Running = controller
+  -- continues; Quit = simulator requested termination.
+  --
+  -- Effects: Modify[self] for the runtime mutation. Once the time
+  -- stdlib (WI-093) lands, step() also gains Tick — sensor reads
+  -- are pure within a tick (Design B in the effects-on-sensor-reads
+  -- brainstorm), so Tick on step makes the safety proof's discrete
+  -- transition explicit.
+  operation step(self: Robot, period: Int) -> StepResult
+    effects Modify[self]
+    -- TODO(WI-093): add Tick effect: effects {Modify[self], Tick}
+
+  -- Device getters. All return a handle (the C++ side returns a raw
+  -- pointer; on the anthill side these are sort-typed values whose
+  -- realization is a non-owning C++ reference).
+  operation get_gps(self: Robot, name: String) -> GPS
+    effects Modify[self]
+
+  operation get_gyro(self: Robot, name: String) -> Gyro
+    effects Modify[self]
+
+  operation get_inertial_unit(self: Robot, name: String) -> InertialUnit
+    effects Modify[self]
+
+  operation get_motor(self: Robot, name: String) -> Motor
+    effects Modify[self]
+
+  operation get_emitter(self: Robot, name: String) -> Emitter
+    effects Modify[self]
+
+  operation get_receiver(self: Robot, name: String) -> Receiver
+    effects Modify[self]
+end

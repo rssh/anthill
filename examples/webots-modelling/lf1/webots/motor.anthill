@@ -1,0 +1,30 @@
+-- webots::Motor — propeller / wheel actuator. Two control modes:
+-- position control (setPosition) and velocity control (setVelocity).
+-- The Mavic 2 Pro uses velocity control with position set to inf.
+--
+-- C++ surface (subset used by lf1):
+--   void   setPosition(double position);   // inf for pure velocity mode
+--   void   setVelocity(double velocity);
+--   double getMaxVelocity() const;
+--   double getMinPosition() const;
+--   double getMaxPosition() const;
+
+sort anthill.examples.lf1.webots.Motor
+  import anthill.prelude.{Float, Unit, Modify}
+  export Motor
+  export set_position, set_velocity
+  export get_max_velocity, get_min_position, get_max_position
+
+  -- Position setpoint (rad or m depending on motor type).
+  -- Pass +infinity to switch to pure velocity control.
+  operation set_position(self: Motor, position: Float) -> Unit
+    effects Modify[self]
+
+  -- Velocity setpoint (rad/s or m/s).
+  operation set_velocity(self: Motor, velocity: Float) -> Unit
+    effects Modify[self]
+
+  operation get_max_velocity(self: Motor) -> Float
+  operation get_min_position(self: Motor) -> Float
+  operation get_max_position(self: Motor) -> Float
+end

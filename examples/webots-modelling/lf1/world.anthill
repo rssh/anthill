@@ -1,0 +1,66 @@
+-- The lf1 world's robot instances and their per-instance devices.
+--
+-- Mirrors
+-- /Users/rssh/packages/cyberbotics/webots/projects/ips-drones/multirotor_leader_follower1/worlds/multirotor_leader_follower1.wbt
+--
+-- Each robot instance pairs:
+--   - a world-file name (the string passed to Robot::getDevice / what
+--     the simulator displays)
+--   - a robot kind (proto, defining the baked-in devices)
+--   - extra_devices: world-file additions on top of the proto's set
+--
+-- Together with webots/robot_kinds.anthill these facts model the
+-- full naming surface that controllers depend on. WI-094 sketches
+-- the codegen-time check that uses this model.
+--
+-- STATUS: data only. The has_device(?world, ?robot, ?dev, ?sort)
+-- predicate (rule form) is deferred until the codegen check is
+-- built — the data alone is useful for documentation and the
+-- check arrives with WI-094.
+
+namespace anthill.examples.lf1.world
+  import anthill.prelude.{String, List}
+  import anthill.examples.lf1.webots.robot_kinds.{NamedDevice}
+  export WorldRobot
+
+  -- A robot instance in a webots world.
+  --   world: the .wbt's logical name (lf1: multirotor_leader_follower1)
+  --   name:  the robot's `name` field in the .wbt
+  --   kind:  matches a RobotKind fact's name (e.g. "Mavic2Pro")
+  --   extra_devices: per-instance additions beyond the proto's set
+  entity WorldRobot(
+    world:          String,
+    name:           String,
+    kind:           String,
+    extra_devices:  List[T = NamedDevice]
+  )
+
+  -- ── lf1 world: leader + 2 followers, all Mavic2Pro ────────────────
+
+  fact WorldRobot(
+    world: "multirotor_leader_follower1",
+    name:  "leader",
+    kind:  "Mavic2Pro",
+    extra_devices: [
+      NamedDevice(name: "radio", sort: "Emitter")   -- broadcasts pose
+    ]
+  )
+
+  fact WorldRobot(
+    world: "multirotor_leader_follower1",
+    name:  "follower1",
+    kind:  "Mavic2Pro",
+    extra_devices: [
+      NamedDevice(name: "radio", sort: "Receiver")  -- receives leader pose
+    ]
+  )
+
+  fact WorldRobot(
+    world: "multirotor_leader_follower1",
+    name:  "follower2",
+    kind:  "Mavic2Pro",
+    extra_devices: [
+      NamedDevice(name: "radio", sort: "Receiver")
+    ]
+  )
+end

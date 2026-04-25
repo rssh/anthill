@@ -94,6 +94,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "anthill-cpp-gen"
+version = "0.1.0"
+dependencies = [
+ "anthill-core",
+]
+
+[[package]]
 name = "anthill-stl"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,38 @@
+-- webots::GPS — position sensor.
+--
+-- C++ surface (subset used by lf1):
+--   void enable(int samplingPeriod);
+--   void disable();
+--   int  getSamplingPeriod() const;
+--   const double *getValues() const;     // -> Vec3 (position x/y/z)
+--   double getSpeed() const;
+--   const double *getSpeedVector() const; // -> Vec3 (velocity x/y/z)
+
+sort anthill.examples.lf1.webots.GPS
+  import anthill.prelude.{Int, Float, Unit, Modify}
+  import anthill.examples.lf1.webots.types.{Vec3}
+  export GPS
+  export enable, disable, get_sampling_period
+  export get_values, get_speed, get_speed_vector
+
+  -- GPS is a handle obtained from Robot.get_gps; carrier-bound to a
+  -- non-owning webots::GPS* on the C++ side (see realization.anthill).
+
+  -- Sensor lifecycle.
+  operation enable(self: GPS, sampling_period: Int) -> Unit
+    effects Modify[self]
+
+  operation disable(self: GPS) -> Unit
+    effects Modify[self]
+
+  operation get_sampling_period(self: GPS) -> Int
+
+  -- Position in world frame (x, y, z) in meters.
+  operation get_values(self: GPS) -> Vec3
+
+  -- Scalar ground speed (m/s).
+  operation get_speed(self: GPS) -> Float
+
+  -- Velocity vector in world frame (m/s).
+  operation get_speed_vector(self: GPS) -> Vec3
+end

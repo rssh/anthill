@@ -290,9 +290,15 @@ impl<'a> Converter<'a> {
         match node.kind() {
             "string_literal" => {
                 let raw = self.text(node);
-                // Strip quotes
-                let s = &raw[1..raw.len() - 1];
-                let term = Term::Const(Literal::String(s.to_string()));
+                let inner = &raw[1..raw.len() - 1];
+                // Fast path: most strings have no escapes; skip the
+                // per-char copy loop in that case.
+                let decoded = if inner.contains('\\') {
+                    decode_string_escapes(inner)
+                } else {
+                    inner.to_string()
+                };
+                let term = Term::Const(Literal::String(decoded));
                 self.terms.alloc(term)
             }
             "integer_literal" => {
@@ -1476,4 +1482,29 @@ fn strip_description_delimiters(raw: &str) -> String {
         .and_then(|s| s.strip_suffix(">}"))
         .unwrap_or(trimmed);
     inner.trim().to_string()
+}
+
+/// Decode the `\\.`-style escape sequences the grammar accepts inside
+/// string literals. The matching encoder is `persistence::print`'s
+/// String case (\" \\ \n \r \t). Unknown escapes pass the trailing
+/// char through; a lone trailing backslash is kept literal.
+fn decode_string_escapes(inner: &str) -> String {
+    let mut decoded = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('"')  => decoded.push('"'),
+                Some('\\') => decoded.push('\\'),
+                Some('n')  => decoded.push('\n'),
+                Some('r')  => decoded.push('\r'),
+                Some('t')  => decoded.push('\t'),
+                Some(other) => decoded.push(other),
+                None => decoded.push('\\'),
+            }
+        } else {
+            decoded.push(c);
+        }
+    }
+    decoded
 }

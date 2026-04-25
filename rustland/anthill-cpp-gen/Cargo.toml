@@ -1,0 +1,8 @@
+[package]
+name = "anthill-cpp-gen"
+version = "0.1.0"
+edition = "2021"
+description = "Generate C++ code from anthill specifications (KB-driven)."
+
+[dependencies]
+anthill-core = { path = "../anthill-core" }

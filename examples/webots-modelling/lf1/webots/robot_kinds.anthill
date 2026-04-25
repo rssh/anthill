@@ -1,0 +1,43 @@
+-- Robot kinds — devices baked into webots robot protos.
+--
+-- Each RobotKind fact lists the devices a particular proto provides
+-- by default (their world-file names + anthill sort). Per-world
+-- additions (Emitter/Receiver wired into a specific robot instance)
+-- live in the world's own .anthill file as WorldRobot facts.
+--
+-- Together, RobotKind + WorldRobot let codegen cross-check that
+-- every `Robot.get_X(robot, "name")` call resolves to a real device
+-- of sort X for the robot's kind. See WI-094.
+
+namespace anthill.examples.lf1.webots.robot_kinds
+  import anthill.prelude.{String, List}
+  import anthill.examples.lf1.webots.{GPS, Gyro, InertialUnit, Motor}
+  export NamedDevice, RobotKind
+
+  -- A (device-name, anthill-sort) pair. The name is the string the
+  -- world file / proto declares; the sort is what
+  -- `Robot.get_X(robot, name)` should return.
+  entity NamedDevice(name: String, sort: String)
+
+  -- A robot proto and the devices it bakes in.
+  entity RobotKind(name: String, devices: List[T = NamedDevice])
+
+  -- Mavic2Pro: the drone proto used by lf1's leader and followers.
+  -- Default device names from
+  -- /Users/rssh/packages/cyberbotics/webots/projects/robots/dji/mavic/protos/Mavic2Pro.proto
+  fact RobotKind(
+    name: "Mavic2Pro",
+    devices: [
+      NamedDevice(name: "gps", sort: "GPS"),
+      NamedDevice(name: "gyro", sort: "Gyro"),
+      NamedDevice(name: "inertial unit", sort: "InertialUnit"),
+      NamedDevice(name: "front left propeller", sort: "Motor"),
+      NamedDevice(name: "front right propeller", sort: "Motor"),
+      NamedDevice(name: "rear left propeller", sort: "Motor"),
+      NamedDevice(name: "rear right propeller", sort: "Motor"),
+      NamedDevice(name: "camera yaw", sort: "Motor"),
+      NamedDevice(name: "camera pitch", sort: "Motor"),
+      NamedDevice(name: "camera roll", sort: "Motor")
+    ]
+  )
+end
