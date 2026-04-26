@@ -1,0 +1,29 @@
+-- IndexedSeq: bounded random-access into a sequential container.
+-- Carrier = the container; Element = what `nth` returns inside Option.
+-- Cost is implementation-defined: List's `nth` is O(N), Vec's is O(1).
+-- A future RandomAccess sub-spec can refine this with the O(1)
+-- guarantee when consumers need it.
+sort anthill.prelude.IndexedSeq
+  import anthill.prelude.{Int, Option}
+  import anthill.prelude.Option.{none}
+  import anthill.prelude.Ordered.{lt, gte}
+  export IndexedSeq, length, nth
+
+  sort C = ?
+  sort T = ?
+  sort Effect = ?
+
+  operation {
+    length(xs: C) -> Int
+    nth(xs: C, i: Int) -> Option[T]
+  }
+
+  -- Out-of-bounds indices yield none. Both bounds are stated; the
+  -- upper bound uses `length` (also part of IndexedSeq).
+  -- Implementations are free to match these rules directly or treat
+  -- them as a contract on top of their own clauses.
+  rule {
+    nth_oob_lo: nth(?_, ?i)   = none :- lt(?i, 0)
+    nth_oob_hi: nth(?xs, ?i)  = none :- gte(?i, length(?xs))
+  }
+end

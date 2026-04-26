@@ -3,6 +3,16 @@ name = "anthill-cpp-gen"
 version = "0.1.0"
 edition = "2021"
 description = "Generate C++ code from anthill specifications (KB-driven)."
+# Disable Cargo's automatic per-file test discovery — every
+# `tests/*_test.rs` would otherwise compile + link as its own binary
+# (~3 s × ~28 files = nearly two minutes of pure link cost on
+# incremental rebuilds). The single `integration` test target below
+# rolls them all into one binary that links once.
+autotests = false
 
 [dependencies]
 anthill-core = { path = "../anthill-core" }
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

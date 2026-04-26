@@ -30,13 +30,16 @@
 
 namespace anthill.examples.lf1
   import anthill.prelude.{Float, Int, Unit, String, Option, Bool, List}
+  import anthill.prelude.Option.{some, none}
+  import anthill.prelude.Float.{atan2, hypot, log10, fmod, abs,
+                                cos, sin, sqrt, pi}
+  import anthill.prelude.IndexedSeq.{nth}
+  import anthill.geometry.{Vec3}
   -- TODO: import anthill.examples.lf1.webots.{Robot, GPS, Gyro,
   --       InertialUnit, Motor, Emitter, Receiver, Vec3} once the
   --       project-local webots bindings are authored.
-  -- TODO: import anthill.prelude.math.{atan2, hypot, log10, fmod, abs,
-  --                                    cos, sin, pi} once authored.
 
-  export Vec3, Pose, Controls
+  export Pose, Controls
   export Waypoint, WaypointSequence, LeaderState, FollowerState
   export LeaderController, FollowerController
 
@@ -44,9 +47,7 @@ namespace anthill.examples.lf1
   -- Geometry / kinematics value types
   -- =================================================================
 
-  -- Project-local for now. Lift to a shared math library when
-  -- WI-081 (Vec3 + quaternion + 3D rotations) is in flight.
-  entity Vec3(x: Float, y: Float, z: Float)
+  -- Vec3 lives in anthill.geometry (shared). Imported above.
 
   entity Pose(
     position: Vec3,
@@ -84,15 +85,74 @@ namespace anthill.examples.lf1
   )
 
   sort LeaderController
-    -- Advance the waypoint cursor when within `precision` of the
-    -- current waypoint. Pure state update.
-    operation advance_waypoint(state: LeaderState, pose: Pose) -> LeaderState
+    -- Advance the waypoint cursor when the drone is within
+    -- `state.precision` (planar distance, ignoring altitude) of the
+    -- current waypoint. The list is consumed cyclically by the
+    -- consumer; we just increment the index and trust the consumer
+    -- to wrap.
+    operation advance_waypoint(state: LeaderState, pose: Pose) -> LeaderState =
+      let pts     = ((state).waypoints).points
+      let current = ((state).waypoints).current
+      let target  = nth(pts, current)
+      match target
+        case some(?w) ->
+          let dx       = sub(?w.x, ((pose).position).x)
+          let dy       = sub(?w.y, ((pose).position).y)
+          let distance = hypot(dx, dy)
+          let next_idx = if lt(distance, (state).precision)
+                           then add(current, 1)
+                           else current
+          LeaderState(
+            altitude_target: (state).altitude_target,
+            precision:       (state).precision,
+            waypoints:       WaypointSequence(
+              points:  pts,
+              current: next_idx
+            )
+          )
+        case none -> state
 
-    -- Compute the outer-loop controls for one tick.
-    operation compute_controls(state: LeaderState, pose: Pose) -> Controls
+    -- Compute outer-loop controls for one tick.
+    --
+    -- Yaw   — point at the current waypoint via atan2(dy, dx).
+    -- Pitch — log10-shaped forward thrust based on distance past the
+    --         precision threshold, mirroring the reference Mavic2Pro
+    --         outer loop. Saturates gracefully near the waypoint.
+    -- Roll  — held at 0; yaw alignment removes the lateral component
+    --         once we're on heading. The inner stabiliser handles
+    --         the high-frequency roll dynamics.
+    --
+    -- When out of waypoints, hover (yaw / pitch / roll all 0).
+    operation compute_controls(state: LeaderState, pose: Pose) -> Controls =
+      let pts     = ((state).waypoints).points
+      let current = ((state).waypoints).current
+      let target  = nth(pts, current)
+      match target
+        case some(?w) ->
+          let dx         = sub(?w.x, ((pose).position).x)
+          let dy         = sub(?w.y, ((pose).position).y)
+          let distance   = hypot(dx, dy)
+          let target_yaw = atan2(dy, dx)
+          -- log10-shaped pitch: 0 at distance = 1m, grows slowly
+          -- past that. Saturated by adding 1.0 inside log10 so the
+          -- domain constraint (arg > 0) is never violated.
+          let pitch_amt  = log10(add(distance, 1.0))
+          Controls(
+            yaw:             target_yaw,
+            pitch:           pitch_amt,
+            roll:            0.0,
+            target_altitude: (state).altitude_target
+          )
+        case none ->
+          Controls(
+            yaw:             0.0,
+            pitch:           0.0,
+            roll:            0.0,
+            target_altitude: (state).altitude_target
+          )
 
-    -- Broadcast pose to followers. Currently elided — once
-    -- anthill.webots.Emitter exists, this becomes:
+    -- Broadcast pose to followers. Elided until anthill.webots.Emitter
+    -- is wired up; once it exists this becomes:
     --   operation broadcast(e: Emitter, pose: Pose) -> Unit
     --     effects (Modify e)
   end
@@ -108,19 +168,64 @@ namespace anthill.examples.lf1
   )
 
   sort FollowerController
-    -- Update the cached leader pose from any pending packets.
-    -- Once anthill.webots.Receiver exists, this becomes:
-    --   operation drain_receiver(s: FollowerState, r: Receiver)
-    --       -> FollowerState
-    --     effects (Modify r)
+    -- Update the cached leader pose from a freshly-decoded packet.
+    -- Pure record update — no math required, this body is final.
+    -- Once anthill.webots.Receiver is wired up, the surface signature
+    -- becomes drain_receiver(s, r) -> FollowerState effects (Modify r).
     operation update_leader_pose(state: FollowerState, packet: Pose)
-      -> FollowerState
+      -> FollowerState =
+      FollowerState(
+        offset:         (state).offset,
+        leader_pose:    some(packet),
+        hover_altitude: (state).hover_altitude
+      )
 
-    -- Compute the outer-loop controls for one tick.
-    operation compute_controls(state: FollowerState, pose: Pose) -> Controls
+    -- Compute outer-loop controls. When we have a leader pose,
+    -- point at the desired follow position (leader pose +
+    -- yaw-rotated offset) via atan2, use log10-shaped pitch on
+    -- planar distance (same shape as the leader), and copy the
+    -- desired-position altitude. Roll held at 0 — yaw alignment
+    -- removes lateral error.
+    --
+    -- When no leader is yet known, hover at the configured altitude.
+    operation compute_controls(state: FollowerState, pose: Pose) -> Controls =
+      match (state).leader_pose
+        case some(?lp) ->
+          let target     = desired_position(?lp, (state).offset)
+          let dx         = sub((target).x, ((pose).position).x)
+          let dy         = sub((target).y, ((pose).position).y)
+          let distance   = hypot(dx, dy)
+          let target_yaw = atan2(dy, dx)
+          let pitch_amt  = log10(add(distance, 1.0))
+          Controls(
+            yaw:             target_yaw,
+            pitch:           pitch_amt,
+            roll:            0.0,
+            target_altitude: (target).z
+          )
+        case none ->
+          Controls(
+            yaw:             0.0,
+            pitch:           0.0,
+            roll:            0.0,
+            target_altitude: (state).hover_altitude
+          )
 
-    -- Pure helper: leader pose + offset (rotated by leader yaw)
-    --              → desired follower position in world frame.
-    operation desired_position(leader: Pose, offset: Vec3) -> Vec3
+    -- Pure helper: leader position + leader-yaw-rotated offset.
+    -- The body-frame offset is rotated into world frame by the
+    -- standard 2-D rotation matrix:
+    --   x' =  cos(yaw)*x - sin(yaw)*y
+    --   y' =  sin(yaw)*x + cos(yaw)*y
+    -- Z is untouched (no pitch/roll in the formation geometry).
+    operation desired_position(leader: Pose, offset: Vec3) -> Vec3 =
+      Vec3(
+        x: add(((leader).position).x,
+               sub(mul(cos((leader).yaw), (offset).x),
+                   mul(sin((leader).yaw), (offset).y))),
+        y: add(((leader).position).y,
+               add(mul(sin((leader).yaw), (offset).x),
+                   mul(cos((leader).yaw), (offset).y))),
+        z: add(((leader).position).z, (offset).z)
+      )
   end
 end

@@ -4,7 +4,7 @@
 //! declared host type (instead of the hardcoded primitive fallback or
 //! a fresh emitted struct).
 
-mod common;
+use super::common;
 
 use anthill_cpp_gen::{emit_entity_struct, emit_namespace_header, CarrierTable};
 use common::{collect_anthill_files, load_kb_with, load_kb_with_extras, rustland_root};

@@ -15,7 +15,7 @@
 
 sort anthill.examples.lf1.webots.Receiver
   import anthill.prelude.{Int, Float, Unit, String, Bool, Modify}
-  import anthill.examples.lf1.webots.types.{Vec3}
+  import anthill.geometry.{Vec3}
   export Receiver
   export enable, disable, get_sampling_period
   export set_channel, get_channel

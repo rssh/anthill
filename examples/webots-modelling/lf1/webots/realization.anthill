@@ -13,6 +13,7 @@ namespace anthill.examples.lf1.webots.realization
   import anthill.prelude.{List, Option, String, Int}
   import anthill.realization.{Implementation, CarrierBinding,
                               NamespaceMapping}
+  import anthill.realization.cpp_std.{ReturnTypeConversion}
 
   -- ================================================================
   -- C++ enum encoding facts
@@ -132,5 +133,38 @@ namespace anthill.examples.lf1.webots.realization
     carrier:     [CarrierBinding(sort_name: "Receiver",
                                  host_type: "webots::Receiver *")],
     namespace_map: []
+  )
+
+  -- ============================================================
+  -- Return-type conversions: webots methods that return
+  -- `const double *` to a fixed-size array, lifted to Vec3 /
+  -- EulerAngles via hand-authored C++ adapters that ship in
+  -- `cpp/vec3_support.hpp` alongside the generated controllers.
+  -- ============================================================
+
+  fact ReturnTypeConversion(
+    target:     "anthill.examples.lf1.webots.GPS",
+    operation:  "get_values",
+    conversion: "anthill::examples::lf1::webots::types::Vec3::from_array"
+  )
+  fact ReturnTypeConversion(
+    target:     "anthill.examples.lf1.webots.GPS",
+    operation:  "get_speed_vector",
+    conversion: "anthill::examples::lf1::webots::types::Vec3::from_array"
+  )
+  fact ReturnTypeConversion(
+    target:     "anthill.examples.lf1.webots.Gyro",
+    operation:  "get_values",
+    conversion: "anthill::examples::lf1::webots::types::Vec3::from_array"
+  )
+  fact ReturnTypeConversion(
+    target:     "anthill.examples.lf1.webots.InertialUnit",
+    operation:  "get_roll_pitch_yaw",
+    conversion: "anthill::examples::lf1::webots::types::EulerAngles::from_array"
+  )
+  fact ReturnTypeConversion(
+    target:     "anthill.examples.lf1.webots.Receiver",
+    operation:  "get_emitter_direction",
+    conversion: "anthill::examples::lf1::webots::types::Vec3::from_array"
   )
 end

@@ -48,6 +48,66 @@ enum Command {
 enum CodegenTarget {
     /// Generate Rust skeleton code (traits, structs, enums)
     Rust(RustCodegenArgs),
+    /// Generate a C++17/20 namespace header from anthill specs
+    Cpp(CppCodegenArgs),
+    /// Scaffold a complete C++ controller project (Makefile + copies
+    /// of hand-authored sources alongside generated headers)
+    CppProject(CppProjectArgs),
+}
+
+#[derive(Parser)]
+struct CppCodegenArgs {
+    /// .anthill source files / directories to load (in addition to
+    /// the embedded stdlib).
+    #[arg(required = true)]
+    paths: Vec<PathBuf>,
+
+    /// Anthill namespace to emit. Produces `<short>.hpp` covering all
+    /// entities, sum sorts, and traits classes declared directly
+    /// under the namespace.
+    #[arg(short = 'n', long = "namespace")]
+    namespace: String,
+
+    /// Output directory. Headers land here; `anthill_runtime.hpp` is
+    /// copied alongside (and `anthill_geometry.hpp` if the namespace
+    /// uses Vec3 / EulerAngles).
+    #[arg(short, long, default_value = "./generated")]
+    output_dir: PathBuf,
+
+    /// Print emitted contents to stdout instead of writing files.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Parser)]
+struct CppProjectArgs {
+    /// .anthill source files / directories to load.
+    #[arg(required = true)]
+    paths: Vec<PathBuf>,
+
+    /// Anthill namespace whose traits classes become C++ controller
+    /// targets. One controller is scaffolded per traits class found.
+    #[arg(short = 'n', long = "namespace")]
+    namespace: String,
+
+    /// Directory holding hand-authored C++ sources to copy verbatim
+    /// into each generated controller folder (e.g. `mavic_base.cpp`,
+    /// `*_main.cpp`). Files are copied byte-for-byte; the generated
+    /// Makefile compiles them alongside the generated header.
+    #[arg(long = "cpp-sources", default_value = "./cpp")]
+    cpp_sources: PathBuf,
+
+    /// Output directory for the generated project. One subdirectory
+    /// per controller, each self-contained (sources + Makefile + a
+    /// copy of the runtime / geometry headers) so the result drops
+    /// into a fresh Webots install without requiring any reference
+    /// project.
+    #[arg(short, long, default_value = "./generated")]
+    output_dir: PathBuf,
+
+    /// Print intended actions without writing files.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Parser)]
@@ -446,6 +506,244 @@ fn run_codegen_rust(args: &RustCodegenArgs) -> Result<(), i32> {
     }
 }
 
+// ── C++ codegen command ─────────────────────────────────────────────
+
+fn run_codegen_cpp(args: &CppCodegenArgs) -> Result<(), i32> {
+    let kb = load_kb_with_stdlib(&args.paths, false, true)?;
+
+    let header = anthill_cpp_gen::emit_namespace_header(&kb, &args.namespace)
+        .map_err(|e| {
+            eprintln!("error: {}", e.message);
+            1
+        })?;
+
+    let short = args.namespace.rsplit('.').next().unwrap_or(&args.namespace);
+    let header_filename = format!("{short}.hpp");
+
+    if args.dry_run {
+        println!("[dry-run] {} -> {}/{}",
+            args.namespace,
+            args.output_dir.display(),
+            header_filename);
+        return Ok(());
+    }
+
+    if let Err(e) = fs::create_dir_all(&args.output_dir) {
+        eprintln!("error: cannot create output dir {}: {e}", args.output_dir.display());
+        return Err(1);
+    }
+
+    let header_path = args.output_dir.join(&header_filename);
+    if let Err(e) = fs::write(&header_path, &header) {
+        eprintln!("error: write {}: {e}", header_path.display());
+        return Err(1);
+    }
+    println!("{} -> {}", args.namespace, header_path.display());
+
+    let runtime_path = args.output_dir.join("anthill_runtime.hpp");
+    if let Err(e) = fs::write(&runtime_path, anthill_cpp_gen::emit_runtime_header()) {
+        eprintln!("error: write {}: {e}", runtime_path.display());
+        return Err(1);
+    }
+    println!("anthill_runtime.hpp -> {}", runtime_path.display());
+
+    // anthill::geometry only emits if the namespace declared anything
+    // there; ignore the error when the namespace is empty (carrier-
+    // only / unrelated namespace).
+    if let Ok(geometry_header) = anthill_cpp_gen::emit_namespace_header(&kb, "anthill.geometry") {
+        let geometry_path = args.output_dir.join("anthill_geometry.hpp");
+        if let Err(e) = fs::write(&geometry_path, &geometry_header) {
+            eprintln!("error: write {}: {e}", geometry_path.display());
+            return Err(1);
+        }
+        println!("anthill.geometry -> {}", geometry_path.display());
+    }
+
+    Ok(())
+}
+
+// ── C++ project layout command ──────────────────────────────────────
+
+fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
+    let kb = load_kb_with_stdlib(&args.paths, false, true)?;
+
+    // Source of truth: `fact Generated(kind: "controller", language: "cpp", ...)`
+    // entries scoped to the requested namespace. Each fact names one
+    // controller binary and provides its profile / artifact path.
+    // When no facts are declared, fall back to "every traits class
+    // under the namespace becomes a controller" — keeps the existing
+    // CLI flow working until projects opt into spec-declared
+    // generation.
+    let ns_prefix = format!("{}.", args.namespace);
+    let declared: Vec<anthill_cpp_gen::GeneratedTarget> = anthill_cpp_gen::generated_targets(&kb)
+        .into_iter()
+        .filter(|t| t.language == "cpp")
+        .filter(|t| t.kind == "controller")
+        .filter(|t| t.source == args.namespace || t.source.starts_with(&ns_prefix))
+        .collect();
+    let controllers: Vec<String> = if declared.is_empty() {
+        anthill_cpp_gen::traits_classes_in_namespace(&kb, &args.namespace)
+    } else {
+        declared.iter()
+            .map(|t| t.source.rsplit('.').next().unwrap_or(&t.source).to_string())
+            .collect()
+    };
+    if controllers.is_empty() {
+        eprintln!(
+            "error: namespace '{}' has no `fact Generated(kind: \"controller\")` \
+             declarations and no traits classes to fall back on — \
+             nothing to scaffold",
+            args.namespace
+        );
+        return Err(1);
+    }
+
+    let header = anthill_cpp_gen::emit_namespace_header(&kb, &args.namespace)
+        .map_err(|e| { eprintln!("error: {}", e.message); 1 })?;
+    let geometry = anthill_cpp_gen::emit_namespace_header(&kb, "anthill.geometry").ok();
+    let runtime = anthill_cpp_gen::emit_runtime_header();
+
+    let cpp_files = match list_cpp_sources(&args.cpp_sources) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: scanning cpp sources at {}: {e}",
+                args.cpp_sources.display());
+            return Err(1);
+        }
+    };
+
+    let ns_short = args.namespace.rsplit('.').next().unwrap_or(&args.namespace);
+    let header_filename = format!("{ns_short}.hpp");
+
+    for ctor_name in &controllers {
+        let dir = args.output_dir.join("controllers").join(ctor_name);
+        if args.dry_run {
+            println!("[dry-run] would scaffold controller '{ctor_name}' under {}",
+                dir.display());
+            continue;
+        }
+        if let Err(e) = fs::create_dir_all(&dir) {
+            eprintln!("error: mkdir {}: {e}", dir.display());
+            return Err(1);
+        }
+
+        // Generated headers — same content per controller, copies are
+        // intentional (Webots wants self-contained controller dirs).
+        let mut wrote: Vec<String> = Vec::new();
+        write_or_err(&dir.join(&header_filename), &header, &mut wrote)?;
+        write_or_err(&dir.join("anthill_runtime.hpp"), runtime, &mut wrote)?;
+        if let Some(g) = &geometry {
+            write_or_err(&dir.join("anthill_geometry.hpp"), g, &mut wrote)?;
+        }
+
+        // Hand-authored sources copied verbatim. A file named
+        // `<OtherCtor>.cpp`, `<OtherCtor>_main.cpp`, or `<OtherCtor>.hpp`
+        // belongs to a different controller and is skipped — only
+        // shared helpers (mavic_base.{cpp,hpp}, etc.) and this
+        // controller's own `<ctor_name>{,_main}.{cpp,hpp}` are
+        // copied. Filename-based, so renaming a source moves it to a
+        // different bucket.
+        for src in &cpp_files {
+            let fname = match src.file_name().and_then(|s| s.to_str()) {
+                Some(f) => f,
+                None => continue,
+            };
+            if !file_belongs_to_controller(fname, ctor_name, &controllers) {
+                continue;
+            }
+            let dst = dir.join(fname);
+            if let Err(e) = fs::copy(src, &dst) {
+                eprintln!("error: copy {} → {}: {e}", src.display(), dst.display());
+                return Err(1);
+            }
+            wrote.push(fname.to_string());
+        }
+
+        // Per-controller Makefile. Compiles every .cpp in the dir
+        // and links them against the Webots controller library.
+        let makefile = render_controller_makefile(ctor_name);
+        write_or_err(&dir.join("Makefile"), &makefile, &mut wrote)?;
+
+        println!("scaffolded {} ({} files)", dir.display(), wrote.len());
+    }
+
+    Ok(())
+}
+
+/// Decide whether `fname` should be copied into `current_ctor`'s
+/// folder. Files whose stem starts with a *different* controller's
+/// name (e.g. `LeaderController_main.cpp` when current is
+/// `FollowerController`) are filtered out. Everything else — shared
+/// helpers, the current controller's own files — is kept.
+fn file_belongs_to_controller(fname: &str, current_ctor: &str, controllers: &[String]) -> bool {
+    let stem = fname.rsplit_once('.').map(|(s, _)| s).unwrap_or(fname);
+    for other in controllers {
+        if other == current_ctor { continue; }
+        if stem == other.as_str() { return false; }
+        if let Some(rest) = stem.strip_prefix(other.as_str()) {
+            // Match `<other>_main`, `<other>_impl`, etc. Don't match
+            // `LeaderController_helper` against `Leader` (require a
+            // separator after the prefix).
+            if rest.starts_with('_') || rest.is_empty() { return false; }
+        }
+    }
+    true
+}
+
+fn list_cpp_sources(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
+    let mut out = Vec::new();
+    if !dir.exists() {
+        return Ok(out);
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() { continue; }
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        if matches!(ext, "cpp" | "hpp" | "h" | "cc" | "cxx" | "hh") {
+            out.push(path);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+fn write_or_err(path: &Path, contents: &str, wrote: &mut Vec<String>) -> Result<(), i32> {
+    if let Err(e) = fs::write(path, contents) {
+        eprintln!("error: write {}: {e}", path.display());
+        return Err(1);
+    }
+    if let Some(name) = path.file_name() {
+        wrote.push(name.to_string_lossy().to_string());
+    }
+    Ok(())
+}
+
+/// v0 Makefile for a Webots C++ controller. Mirrors the standard
+/// `controllers/<name>/Makefile` shape Cyberbotics ships: pulls in
+/// `$(WEBOTS_HOME)/resources/Makefile.include` which fills in
+/// CFLAGS / LFLAGS / the libController link. We just declare the
+/// target name + list every .cpp in the directory as a source.
+fn render_controller_makefile(controller: &str) -> String {
+    format!(
+        r#"# Generated by anthill — controller scaffold.
+# Compiles every .cpp in this directory against the Webots
+# controller library. Re-run `anthill codegen cpp-project ...` to
+# refresh generated headers when the .anthill specs change.
+
+ifndef WEBOTS_HOME
+$(error set WEBOTS_HOME to your Webots install)
+endif
+
+CXX_SOURCES = $(wildcard *.cpp)
+CXX_FLAGS  += -std=c++20 -Wall -Wextra
+TARGET = {controller}
+
+include $(WEBOTS_HOME)/resources/Makefile.include
+"#,
+    )
+}
+
 // ── Load command ────────────────────────────────────────────────────
 
 fn run_load(args: &LoadArgs) -> Result<(), i32> {
@@ -780,6 +1078,8 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Codegen { target } => match target {
             CodegenTarget::Rust(ref args) => run_codegen_rust(args),
+            CodegenTarget::Cpp(ref args) => run_codegen_cpp(args),
+            CodegenTarget::CppProject(ref args) => run_codegen_cpp_project(args),
         },
         Command::Load(ref args) => run_load(args),
         Command::Query(ref args) => run_query(args),

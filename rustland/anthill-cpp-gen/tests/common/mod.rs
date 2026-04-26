@@ -37,6 +37,7 @@ pub fn stdlib_dir() -> PathBuf {
 }
 
 /// Path to the workspace root (parent of `rustland/`).
+#[allow(dead_code)]
 pub fn rustland_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -56,6 +57,7 @@ static STDLIB_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
 });
 
 /// Build a KB with the cached stdlib + a user source string.
+#[allow(dead_code)]
 pub fn load_kb_with(source: &str) -> KnowledgeBase {
     load_kb_with_extras(source, &[])
 }
@@ -126,7 +128,25 @@ pub fn load_kb_with_extras(source: &str, extra_paths: &[PathBuf]) -> KnowledgeBa
     load::load_all(&mut kb, &refs, &NullResolver)
         .unwrap_or_else(|errs| {
             for e in &errs { eprintln!("{}", e); }
-            panic!("load failed with {} errors", errs.len());
+            if std::env::var("ANTHILL_TEST_IGNORE_LOAD_ERRORS").is_err() {
+                panic!("load failed with {} errors", errs.len());
+            }
+            load::LoadResult { defined_sorts: Vec::new() }
         });
+    kb
+}
+
+/// Variant of `load_kb_with` that does not panic on load errors —
+/// useful for diagnostics that need to inspect post-typing term
+/// shapes even when the type checker rejects an expression.
+#[allow(dead_code)]
+pub fn load_kb_with_lenient(source: &str) -> KnowledgeBase {
+    let user = parse::parse(source).expect("parse user source");
+    let mut refs: Vec<&ParsedFile> = STDLIB_PARSED.iter().collect();
+    refs.push(&user);
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    let _ = load::load_all(&mut kb, &refs, &NullResolver);
     kb
 }

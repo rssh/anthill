@@ -10,7 +10,7 @@
 
 sort anthill.examples.lf1.webots.GPS
   import anthill.prelude.{Int, Float, Unit, Modify}
-  import anthill.examples.lf1.webots.types.{Vec3}
+  import anthill.geometry.{Vec3}
   export GPS
   export enable, disable, get_sampling_period
   export get_values, get_speed, get_speed_vector

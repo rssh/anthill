@@ -1,0 +1,27 @@
+-- Geometry: shared spatial value types.
+--
+-- Today: Vec3, EulerAngles. Quaternion + 3D rotation operations are
+-- the eventual landing target for WI-081; they will join this
+-- namespace when authored.
+--
+-- ── Snapshot semantics for codegen consumers ─────────────────────────
+-- These value types are *snapshots*. When a C++ binding returns a
+-- pointer into vendor-managed memory (e.g. webots's
+-- `const double *` from `Robot::getDevice(...)->getValues()`), the
+-- generated wrapper copies into a fresh Vec3 at call time so the
+-- anthill-side struct outlives the next step / sensor read.
+namespace anthill.geometry
+  import anthill.prelude.{Float}
+  export Vec3, EulerAngles
+
+  -- 3-vector for spatial quantities (position, velocity, direction,
+  -- angular velocity in body frame). Field names are world / body
+  -- axes.
+  entity Vec3(x: Float, y: Float, z: Float)
+
+  -- Orientation as Euler angles, radians. Field order matches the
+  -- webots InertialUnit convention (roll, pitch, yaw). Distinguishing
+  -- this from Vec3 prevents spatial-vs-orientation reads from being
+  -- aliased through identical component names.
+  entity EulerAngles(roll: Float, pitch: Float, yaw: Float)
+end

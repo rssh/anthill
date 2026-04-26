@@ -647,3 +647,10 @@ fact WorkItem(
   depends_on: [],
   status: Open)
 
+fact WorkItem(
+  id: "WI-095",
+  description: "Finish proposal 002 (arrow sorts) implementation. Source grammar/loader/IR for arrow types is already in. Remaining: (a) author Functor/Applicative/Monad typeclass sorts in stdlib using existing arrow syntax; (b) operation-name-as-value (eta-expansion) so 'flatMap(m, pure)' parses with 'pure' as a value; (c) term-headed application '?f(?x)' for arrow-sorted variables, with Miller-pattern unification in the resolver; (d) effect subtyping for arrow types — '(A) -> B <: (A) -> B @ E'; (e) C++ codegen lowering for 'arrow' / 'arrow_effect' functor terms to 'std::function<R(Args...)>'; (f) higher-kinded codegen — when a sort parameter's body declares its own type params, emit 'template<template<typename...> class F>' instead of 'typename F' so Functor/Monad-style sorts compile to C++. The nested-body source form 'sort F { sort T = ? }' already encodes the kind information; codegen just needs to read it. See docs/proposals/002-arrow-sorts.md.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+

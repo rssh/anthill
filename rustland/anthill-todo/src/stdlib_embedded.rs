@@ -31,11 +31,14 @@ static STDLIB_SOURCES: &[(&str, &str)] = &[
     ("anthill/prelude/function", include_str!("../../../stdlib/anthill/prelude/function.anthill")),
     ("anthill/prelude/collection", include_str!("../../../stdlib/anthill/prelude/collection.anthill")),
     ("anthill/prelude/iteration", include_str!("../../../stdlib/anthill/prelude/iteration.anthill")),
+    ("anthill/prelude/indexed_seq", include_str!("../../../stdlib/anthill/prelude/indexed_seq.anthill")),
     ("anthill/prelude/stream", include_str!("../../../stdlib/anthill/prelude/stream.anthill")),
     ("anthill/prelude/logical_stream", include_str!("../../../stdlib/anthill/prelude/logical_stream.anthill")),
     ("anthill/prelude/lattice", include_str!("../../../stdlib/anthill/prelude/lattice.anthill")),
     ("anthill/prelude/effects", include_str!("../../../stdlib/anthill/prelude/effects.anthill")),
     ("anthill/prelude/effect-set", include_str!("../../../stdlib/anthill/prelude/effect-set.anthill")),
+    // geometry
+    ("anthill/geometry", include_str!("../../../stdlib/anthill/geometry.anthill")),
     // reflect
     ("anthill/reflect/reflect", include_str!("../../../stdlib/anthill/reflect/reflect.anthill")),
     ("anthill/reflect/typing", include_str!("../../../stdlib/anthill/reflect/typing.anthill")),
@@ -43,6 +46,7 @@ static STDLIB_SOURCES: &[(&str, &str)] = &[
     ("anthill/realization/realization", include_str!("../../../stdlib/anthill/realization/realization.anthill")),
     ("anthill/realization/platform", include_str!("../../../stdlib/anthill/realization/platform.anthill")),
     ("anthill/realization/rust_std", include_str!("../../../stdlib/anthill/realization/rust_std.anthill")),
+    ("anthill/realization/cpp_std", include_str!("../../../stdlib/anthill/realization/cpp_std.anthill")),
     // persistence
     ("anthill/persistence/store", include_str!("../../../stdlib/anthill/persistence/store.anthill")),
     ("anthill/persistence/filesystem", include_str!("../../../stdlib/anthill/persistence/filesystem.anthill")),

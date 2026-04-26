@@ -8,7 +8,7 @@
 
 sort anthill.examples.lf1.webots.Gyro
   import anthill.prelude.{Int, Unit, Modify}
-  import anthill.examples.lf1.webots.types.{Vec3}
+  import anthill.geometry.{Vec3}
   export Gyro
   export enable, disable, get_sampling_period, get_values
 

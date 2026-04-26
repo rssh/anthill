@@ -2,7 +2,11 @@
 enum anthill.prelude.List
   import anthill.prelude.Collection
   import anthill.prelude.Iteration
-  export List, nil, cons, length, member, append, insert, empty, split
+  import anthill.prelude.IndexedSeq
+  import anthill.prelude.Option.{some, none}
+  import anthill.prelude.Numeric.{add, sub}
+  import anthill.prelude.Ordered.{gt}
+  export List, nil, cons, length, member, append, insert, empty, split, nth
 
   sort T = ?                                           -- type parameter (abstract)
   entity nil                                         -- empty list
@@ -25,6 +29,15 @@ enum anthill.prelude.List
 
   -- List satisfies Collection (pure, no effects)
   fact Collection[Collection = List[T], Element = T, Effect = {}]
+
+  -- List satisfies IndexedSeq (no effects). Cost is O(N) per `nth` —
+  -- callers that need O(1) should depend on a future RandomAccess
+  -- subspec that excludes List. `length` is already defined above
+  -- with the standard recursive rules; only `nth` needs new clauses.
+  fact IndexedSeq[C = List[T], T = T, Effect = {}]
+  rule nth(nil, ?_) = none
+  rule nth(cons(?h, ?_), 0) = some(?h)
+  rule nth(cons(?_, ?t), ?i) = nth(?t, sub(?i, 1)) :- gt(?i, 0)
 
   -- Collection.insert for List: prepend element
   rule insert(?c, ?elem) = cons(head: ?elem, tail: ?c)

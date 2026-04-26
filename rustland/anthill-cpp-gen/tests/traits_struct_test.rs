@@ -1,7 +1,7 @@
 //! Tests for emit_traits_struct (sort-with-operations → C++ struct
 //! with static method declarations).
 
-mod common;
+use super::common;
 
 use std::process::Command;
 
@@ -183,6 +183,161 @@ int main() {{
 }
 
 #[test]
+fn parameterized_return_bodies_compile() {
+    // Same shape as parameterized_return_types_emit_bodies, but
+    // proves the synthesised bodies are real C++ by running them
+    // through clang++. Provides a stub `::vendor::Sensor` whose
+    // methods return matching std types.
+    let source = r#"
+        namespace test.params_compile
+          import anthill.prelude.{Int, Float, Unit, List, Option, Modify}
+          import anthill.realization.{Implementation, CarrierBinding}
+          export Sensor
+
+          sort Sensor
+            operation samples(self: Sensor) -> List[T = Float]
+            operation latest(self: Sensor) -> Option[T = Float]
+            operation reading(self: Sensor) -> Float
+          end
+
+          fact Implementation(
+            target:        "test.params_compile.Sensor",
+            artifact:      "sensor.hpp",
+            language:      "cpp",
+            profile:       some("cpp17-stl"),
+            description:   none,
+            carrier:       [CarrierBinding(sort_name: "Sensor",
+                                           host_type: "::vendor::Sensor *")],
+            namespace_map: []
+          )
+        end
+    "#;
+    let kb = load_kb_with(source);
+    let traits = emit_traits_struct(&kb, "test.params_compile.Sensor")
+        .expect("emit Sensor traits");
+
+    let cxx = match find_cxx() {
+        Some(c) => c,
+        None => {
+            eprintln!("no C++ compiler available — skipping parameterized-body compile check");
+            return;
+        }
+    };
+
+    let dir = scratch_dir("params_compile");
+    let driver = format!(
+        r#"#include <cstdint>
+#include <vector>
+#include <optional>
+
+namespace vendor {{
+struct Sensor {{
+    std::vector<double> samples()  const {{ return {{1.0, 2.0, 3.0}}; }}
+    std::optional<double> latest() const {{ return 3.0; }}
+    double reading()               const {{ return 1.5; }}
+}};
+}}
+
+namespace test::params_compile {{
+
+{traits}
+}}
+
+int main() {{
+    ::vendor::Sensor s;
+    auto v  = test::params_compile::Sensor::samples(&s);
+    auto la = test::params_compile::Sensor::latest(&s);
+    auto r  = test::params_compile::Sensor::reading(&s);
+    (void)v; (void)la; (void)r;
+    return 0;
+}}
+"#
+    );
+    let driver_path = dir.join("driver.cpp");
+    std::fs::write(&driver_path, &driver).expect("write driver");
+
+    let output = Command::new(cxx)
+        .args(["-std=c++17", "-fsyntax-only", "-Wall", "-Wextra"])
+        .arg(&driver_path)
+        .output()
+        .expect("invoke compiler");
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        panic!(
+            "parameterized-return-body compile failed (compiler: {cxx})\n\
+             ── traits ───────────\n{traits}\n\
+             ── driver.cpp ───────\n{driver}\n\
+             ── stderr ───────────\n{stderr}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn parameterized_return_types_emit_bodies() {
+    // Operation returns `List[T = Float]` and `Option[T = Int]` —
+    // both should lower to the std-template form AND get bodies
+    // synthesised (since List/Option of primitives is "transparent").
+    // Project-local entities in the type stay decl-only.
+    let source = r#"
+        namespace test.params_in_ops
+          import anthill.prelude.{Int, Float, Unit, String, Modify, List, Option}
+          import anthill.realization.{Implementation, CarrierBinding}
+          export Sensor, Sample
+
+          entity Sample(value: Float)
+
+          sort Sensor
+            operation samples(self: Sensor) -> List[T = Float]
+            operation last_value(self: Sensor) -> Option[T = Float]
+            operation last_sample(self: Sensor) -> Option[T = Sample]
+          end
+
+          fact Implementation(
+            target:        "test.params_in_ops.Sensor",
+            artifact:      "sensor.hpp",
+            language:      "cpp",
+            profile:       some("cpp17-stl"),
+            description:   none,
+            carrier:       [CarrierBinding(sort_name: "Sensor",
+                                           host_type: "::vendor::Sensor *")],
+            namespace_map: []
+          )
+        end
+    "#;
+
+    let kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&kb, "test.params_in_ops.Sensor")
+        .expect("emit Sensor traits");
+
+    // Body emitted for List[T = Float] — base + binding both primitive.
+    assert!(
+        cpp.contains("static std::vector<double> samples(::vendor::Sensor * self) {\n        return self->samples();\n    }"),
+        "samples body missing or wrong:\n{cpp}"
+    );
+
+    // Body emitted for Option[T = Float] — same.
+    assert!(
+        cpp.contains("static std::optional<double> last_value(::vendor::Sensor * self) {\n        return self->lastValue();\n    }"),
+        "last_value body missing or wrong:\n{cpp}"
+    );
+
+    // Declaration only for Option[T = Sample] — Sample is a project-
+    // local entity, so we don't know what the C++ method returns
+    // (could be Sample, could be std::optional<Sample>, could be a
+    // pointer). Decl-only is the safe default.
+    assert!(
+        cpp.contains("static std::optional<Sample> last_sample(::vendor::Sensor * self);"),
+        "last_sample should be decl-only:\n{cpp}"
+    );
+    assert!(
+        !cpp.contains("self->lastSample()"),
+        "last_sample should not have a body:\n{cpp}"
+    );
+}
+
+#[test]
 fn sort_with_no_operations_errors() {
     // A sort declaring only fields (an entity) — no operations means
     // the traits-struct emitter has nothing to emit.
@@ -236,13 +391,15 @@ fn lf1_gps_traits_struct_emits_correctly() {
         cpp.contains("static double get_speed(webots::GPS * self) {\n        return self->getSpeed();\n    }"),
         "missing get_speed body:\n{cpp}"
     );
-    // Vec3-returning ops: declaration only.
+    // Vec3-returning ops: bodies wrap the carrier call in
+    // anthill::examples::lf1::webots::types::Vec3::from_array per
+    // ReturnTypeConversion facts in webots/realization.anthill.
     assert!(
-        cpp.contains("static Vec3 get_speed_vector(webots::GPS * self);"),
-        "missing get_speed_vector decl:\n{cpp}"
+        cpp.contains("static Vec3 get_speed_vector(webots::GPS * self) {\n        return anthill::examples::lf1::webots::types::Vec3::from_array(self->getSpeedVector());\n    }"),
+        "missing get_speed_vector body with conversion:\n{cpp}"
     );
     assert!(
-        cpp.contains("static Vec3 get_values(webots::GPS * self);"),
-        "missing get_values decl:\n{cpp}"
+        cpp.contains("static Vec3 get_values(webots::GPS * self) {\n        return anthill::examples::lf1::webots::types::Vec3::from_array(self->getValues());\n    }"),
+        "missing get_values body with conversion:\n{cpp}"
     );
 }

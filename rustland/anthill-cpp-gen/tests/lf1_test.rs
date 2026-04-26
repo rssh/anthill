@@ -1,7 +1,7 @@
 //! Smoke test against the actual lf1 spec files.
 //! Verifies the codegen handles real project sources, not just inline ones.
 
-mod common;
+use super::common;
 
 use std::process::Command;
 
@@ -42,24 +42,21 @@ struct EulerAngles {
 
 #[test]
 fn lf1_types_namespace_emits_compilable_header() {
-    // The webots/types.anthill namespace contains Vec3 and EulerAngles.
-    // Emit the whole namespace as a single .hpp and compile it.
+    // Vec3 / EulerAngles now live in `anthill.geometry` (shared
+    // stdlib). Emit the whole namespace as a single .hpp and compile
+    // it — the lf1 webots binding files re-target their imports here
+    // instead of carrying a project-local copy.
     let lf1_webots = rustland_root().join("examples/webots-modelling/lf1/webots");
     let lf1_files = collect_anthill_files(&lf1_webots);
     let kb = load_kb_with_extras("namespace test.lf1_smoke end", &lf1_files);
 
-    let header = emit_namespace_header(
-        &kb,
-        "anthill.examples.lf1.webots.types",
-    ).expect("emit lf1 types header");
+    let header = emit_namespace_header(&kb, "anthill.geometry")
+        .expect("emit anthill.geometry header");
 
-    // Verify shape.
-    assert!(header.contains("namespace anthill::examples::lf1::webots::types {"));
+    assert!(header.contains("namespace anthill::geometry {"));
     assert!(header.contains("struct Vec3"));
     assert!(header.contains("struct EulerAngles"));
 
-    // Skip compile check if no compiler — same pattern as
-    // header_compile_test.
     let cxx = match find_cxx() {
         Some(c) => c,
         None => {
@@ -69,16 +66,15 @@ fn lf1_types_namespace_emits_compilable_header() {
     };
 
     let dir = scratch_dir("lf1_types");
-    let header_path = dir.join("types.hpp");
+    let header_path = dir.join("geometry.hpp");
     std::fs::write(&header_path, &header).expect("write header");
 
-    // Driver references both structs to exercise the namespace path.
     let driver = format!(
         r#"#include "{}"
 
 int main() {{
-    anthill::examples::lf1::webots::types::Vec3 v{{1.0, 2.0, 3.0}};
-    anthill::examples::lf1::webots::types::EulerAngles e{{0.0, 0.0, 0.0}};
+    anthill::geometry::Vec3 v{{1.0, 2.0, 3.0}};
+    anthill::geometry::EulerAngles e{{0.0, 0.0, 0.0}};
     (void)v; (void)e;
     return 0;
 }}
@@ -96,7 +92,7 @@ int main() {{
 
     assert!(
         output.status.success(),
-        "lf1 types header failed to compile (compiler: {cxx})\n\
+        "anthill.geometry header failed to compile (compiler: {cxx})\n\
          ── header ───────────\n{header}\n\
          ── stderr ───────────\n{}",
         String::from_utf8_lossy(&output.stderr),

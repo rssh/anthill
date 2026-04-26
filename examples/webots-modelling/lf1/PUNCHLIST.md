@@ -17,19 +17,22 @@ Concrete tasks to take this scaffold to a runnable + provable example. Roughly i
   - [x] one `Implementation{...}` fact per sort pointing at the C++ class (`webots/realization.anthill`)
   - [x] `CONVERSION.md` checklist so the rest of the API can be batched out later
   - [x] **Validate parsing**: all webots/*.anthill files load cleanly through `anthill-core` (117 facts; only unresolved-name warnings for missing imports, no parse errors). Confirmed: constructor-form facts (`fact Implementation(target: ..., carrier: [...])`) parse, multiple top-level facts parse, multi-line imports parse, list literals as fact arg values parse. Only real fix needed during validation was the `effects` syntax (`Modify[self]` — bracket form for the type-level target binding, `Modify(self)` is the term-level form).
-- [ ] **Math vocabulary (minimal)** — scalar math (`atan2`, `hypot`, `log10`, `fmod`, `abs`, `cos`, `sin`, `pi`) needed by the outer loop. Live on `anthill.prelude.Float` for now. Each maps to `<cmath>` / `<numbers>` via `Implementation` facts.
-- [ ] **Vec3 (project-local)** — defined in `leader_follower.anthill`. Lift to a shared math library once **WI-081** is in flight.
-- [ ] **`anthill-cpp-gen` crate** — KB-driven anthill → C++ emitter, profile `cpp20-stl`. Per `docs/proposals/029-rust-mapping-split.md`, `docs/cpp-forward-mapping.md`.
+- [x] **Math vocabulary (minimal)** — `sqrt`, `hypot`, `fmod`, `pow`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `log`, `log10`, `log2`, plus `pi`, `e`, `tau` constants on `anthill.prelude.Float`. cpp-gen lowers them to `std::*` and adds `<cmath>` automatically.
+- [x] **Vec3 / EulerAngles lifted to shared library** — `anthill.geometry` (stdlib). `webots/types.anthill` removed; both lf1 controllers and webots binding sorts import from the shared namespace. WI-081's quaternion + 3D rotation operations are the next addition.
+- [ ] **List / IndexedSeq vocabulary** — `IndexedSeq.{nth, length}` on a typeclass orthogonal to Collection/Iteration; List satisfies it. cpp-gen lowers to container-agnostic `xs.size()` / bounds-checked `xs[i]`. Done; future: sub-spec `RandomAccess` for O(1) guarantees.
+- [x] **`anthill-cpp-gen` crate** — KB-driven anthill → C++ emitter, profile `cpp20-stl`. Per `docs/proposals/029-rust-mapping-split.md`, `docs/cpp-forward-mapping.md`.
   - [x] crate scaffolded at `rustland/anthill-cpp-gen/`, in workspace
   - [x] **entity → struct** with primitive type lowering (Int → int64_t, Float → double, Bool → bool, String → std::string, Unit → void); declaration-order field emission; `sort_ref` unwrapping. End-to-end smoke test against lf1's webots/types.anthill emitting Vec3 and EulerAngles correctly.
-  - [ ] traits-class emission for sorts with operations
-  - [ ] `std::variant` emission for sorts with constructors
-  - [ ] effect lowering (`tl::expected` for `Error`, mutable references for `Modify`)
-  - [ ] `Implementation` / `NamespaceMapping` / `CarrierBinding` consumption (fact-driven, replaces the hardcoded primitive table)
-  - [ ] parameterized type lowering (`List[T = X]` → `std::vector<X>`, `Option[T = X]` → `std::optional<X>`)
-  - [ ] namespace wrapping (`namespace foo::bar { ... }`)
+  - [x] traits-class emission for sorts with operations (declaration + body forms; topo-sorted alongside data types)
+  - [x] `std::variant` emission for sorts with constructors (nullary and field-carrying, generic and non-generic)
+  - [x] effect lowering — `Error` → `tl::expected<T, std::string>`; `Error.raise(e)` → `tl::make_unexpected(e)`. (`Modify` mutable-ref lowering still pending.)
+  - [x] `Implementation` / `NamespaceMapping` / `CarrierBinding` consumption (fact-driven; replaces the hardcoded primitive table)
+  - [x] parameterized type lowering (`List[T = X]` → `std::vector<X>`, `Option[T = X]` → `std::optional<X>`, generic sorts via slice 1 of generic-sort support)
+  - [x] namespace wrapping (`namespace foo::bar { ... }` with topo-sorted entities and traits classes inside)
+  - [x] **expression body lowering** — Phases A–F: literals, parameter refs, function calls, if-then-else, field access, let chains, lambdas, match (with value-binding patterns), constructor literals, list/tuple/set literals, typeclass operator dispatch (`add` → `+`), Error-effect return wrapping, wildcard `let _ =` discard
+  - [x] **generic sorts** — slices 1+2: `template<typename T>` for sorts with `sort T = ?`, generic sum sorts (`template<typename T> using Tree = std::variant<...>`), keyword-clash canonicalisation
   - [ ] runtime header (`anthill_runtime.hpp`) with `is_satisfied` detection trait
-- [ ] **Operation bodies in anthill** — fill out `leader_follower.anthill` with bodies expressible in the proposal-026 expression sublanguage. For the trig-heavy parts (`atan2`, `log10`-based pitch shaping) either lower via the math vocabulary or emit `Quoted("cpp", "...")` blocks until expression coverage is complete.
+- [x] **Operation bodies in anthill** — `leader_follower.anthill` has real bodies for all 5 controller operations: `update_leader_pose`, `desired_position` (full 2-D yaw rotation), `advance_waypoint` (precision-based via `IndexedSeq.nth` + `hypot`), and both `compute_controls` (atan2 yaw + log10-shaped pitch).
 - [ ] **Project layout** here — mirror the reference:
   - [ ] `worlds/` (symlink or copy of `multirotor_leader_follower1.wbt`)
   - [ ] `mavic_base.cpp` / `mavic_base.hpp` — verbatim copies of the reference's `common/MavicBase.{cpp,hpp}`, carried as the Quoted("cpp") block referenced by `leader_follower.anthill`

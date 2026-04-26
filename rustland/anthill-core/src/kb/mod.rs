@@ -293,6 +293,34 @@ impl KnowledgeBase {
         self.symbols.scope_of(sym)
     }
 
+    /// Type-parameter names declared inside a sort's body (`sort T = ?`
+    /// inside `sort S { ... }`). Returns the names in alphabetical
+    /// order — stable across runs but not necessarily source order.
+    /// Empty when the sort has no body, no children, or no params.
+    pub fn type_params_of_sort(&self, sort_sym: Symbol) -> Vec<String> {
+        let qn = self.qualified_name_of(sort_sym);
+        let prefix = format!("{qn}.");
+        // Find the body scope by looking only at *direct* children of
+        // the sort — qualified names with no further dots after the
+        // prefix. `HashMap.iter()` order is non-deterministic, so a
+        // grandchild (e.g. an operation parameter) would otherwise
+        // sometimes win and yield the wrong scope.
+        let body_scope = self.symbols.by_qualified_name.iter()
+            .find_map(|(child_qn, child_sym)| {
+                if !child_qn.starts_with(&prefix) { return None; }
+                if child_qn[prefix.len()..].contains('.') { return None; }
+                match self.symbols.get(*child_sym) {
+                    SymbolDef::Resolved { scope_raw, .. } => Some(*scope_raw),
+                    _ => None,
+                }
+            });
+        let Some(scope_raw) = body_scope else { return Vec::new() };
+        let Some(scope) = self.symbols.scope(scope_raw) else { return Vec::new() };
+        let mut params: Vec<String> = scope.type_params.iter().cloned().collect();
+        params.sort();
+        params
+    }
+
     /// Get the Term for a TermId.
     pub fn get_term(&self, id: TermId) -> &Term {
         self.terms.get(id)

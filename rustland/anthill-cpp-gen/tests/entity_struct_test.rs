@@ -1,6 +1,6 @@
 //! Integration tests for emit_entity_struct.
 
-mod common;
+use super::common;
 
 use anthill_cpp_gen::emit_entity_struct;
 use common::load_kb_with;

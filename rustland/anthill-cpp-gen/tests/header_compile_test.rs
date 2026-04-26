@@ -5,7 +5,7 @@
 //! test should not fail on machines that lack one. CI must therefore
 //! ensure clang++ or g++ is installed if it wants real coverage.
 
-mod common;
+use super::common;
 
 use std::process::Command;
 

@@ -10,4 +10,5 @@ path = "src/main.rs"
 
 [dependencies]
 anthill-core = { path = "../anthill-core" }
+anthill-cpp-gen = { path = "../anthill-cpp-gen" }
 clap = { version = "4", features = ["derive"] }

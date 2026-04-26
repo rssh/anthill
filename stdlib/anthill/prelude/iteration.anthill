@@ -8,6 +8,6 @@ sort anthill.prelude.Iteration
   sort Element = ?
   sort Effect = ?
 
-  operation split(i: Iterator) -> Option[T = (Element, Iterator)]
+  operation split(i: Iterator) -> Option[(Element, Iterator)]
     effects Effect
 end

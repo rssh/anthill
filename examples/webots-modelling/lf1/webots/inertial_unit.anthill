@@ -11,7 +11,7 @@
 
 sort anthill.examples.lf1.webots.InertialUnit
   import anthill.prelude.{Int, Float, Unit, Modify}
-  import anthill.examples.lf1.webots.types.{EulerAngles}
+  import anthill.geometry.{EulerAngles}
   export InertialUnit
   export enable, disable, get_sampling_period
   export get_roll_pitch_yaw, get_noise
