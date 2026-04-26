@@ -266,8 +266,101 @@ fn lf1_transponder_excursion_ranking_function_manual() {
          — got {s2:?}"
     );
 
-    // Together: post-armed bad-step sequence has length ≤ R(initial) = 6.
-    // Excursion bound: 6 · δ_t = 6 · 0.812 ≈ 4.87 m. With d_max = 20
-    // and d_min = 1 there is comfortable headroom; tightening δ_t
-    // (lower v_max, smaller ε_t, or shorter T_c) shrinks the budget.
+    // Query 3: BOUNDED-EXCURSION ⇒ SAFETY — combine the ranking-
+    // function meta-theorem (post-armed bad streak ≤ 6) with the
+    // per-step bound δ_t (proved by transponder_step_distance_bound)
+    // and show that any 6-tick post-armed trajectory starting
+    // inside the headroom band stays within [d_min, d_max].
+    //
+    // δ_t = (v_L + v_F) · T_c + 2 · ε_t  =  (8+8) · 0.032 + 2·0.15
+    //     =  0.512 + 0.3  =  0.812  m
+    // 6 · δ_t = 4.872 m
+    // headroom band: [d_min + 6·δ_t, d_max − 6·δ_t]
+    //              = [1.0 + 4.872, 20.0 − 4.872]  =  [5.872, 15.128]
+    //
+    // Negate: ∃ initial d_0 in the headroom band and 6-tick trajectory
+    // each step ≤ δ_t such that some intermediate distance escapes
+    // [d_min, d_max].
+    let bounded_excursion = "\
+(set-logic LRA)
+(define-fun delta_t () Real 0.812)
+(define-fun d_min   () Real 1.0)
+(define-fun d_max   () Real 20.0)
+
+; initial post-armed distance, with full headroom on both sides
+(declare-const d_0 Real)
+(assert (<= (+ d_min (* 6 delta_t)) d_0))
+(assert (<= d_0 (- d_max (* 6 delta_t))))
+
+; 6 steps, each bounded by δ_t (from transponder_step_distance_bound)
+(declare-const d_1 Real) (declare-const s_1 Real)
+(declare-const d_2 Real) (declare-const s_2 Real)
+(declare-const d_3 Real) (declare-const s_3 Real)
+(declare-const d_4 Real) (declare-const s_4 Real)
+(declare-const d_5 Real) (declare-const s_5 Real)
+(declare-const d_6 Real) (declare-const s_6 Real)
+
+(assert (= d_1 (+ d_0 s_1))) (assert (<= (- 0 delta_t) s_1)) (assert (<= s_1 delta_t))
+(assert (= d_2 (+ d_1 s_2))) (assert (<= (- 0 delta_t) s_2)) (assert (<= s_2 delta_t))
+(assert (= d_3 (+ d_2 s_3))) (assert (<= (- 0 delta_t) s_3)) (assert (<= s_3 delta_t))
+(assert (= d_4 (+ d_3 s_4))) (assert (<= (- 0 delta_t) s_4)) (assert (<= s_4 delta_t))
+(assert (= d_5 (+ d_4 s_5))) (assert (<= (- 0 delta_t) s_5)) (assert (<= s_5 delta_t))
+(assert (= d_6 (+ d_5 s_6))) (assert (<= (- 0 delta_t) s_6)) (assert (<= s_6 delta_t))
+
+; negate safety: some intermediate distance escapes [d_min, d_max]
+(assert (or (< d_1 d_min) (> d_1 d_max)
+            (< d_2 d_min) (> d_2 d_max)
+            (< d_3 d_min) (> d_3 d_max)
+            (< d_4 d_min) (> d_4 d_max)
+            (< d_5 d_min) (> d_5 d_max)
+            (< d_6 d_min) (> d_6 d_max)))
+(check-sat)
+";
+    let path3 = std::env::temp_dir().join("anthill_lf1_ranking_safety.smt2");
+    std::fs::write(&path3, bounded_excursion).expect("write bounded_excursion");
+    let out3 = std::process::Command::new("z3").arg(&path3).output().expect("z3");
+    let s3 = String::from_utf8_lossy(&out3.stdout);
+    assert_eq!(
+        s3.trim(), "unsat",
+        "bounded-excursion ⇒ safety query should be unsat: any 6-tick \
+         post-armed trajectory starting in the headroom band stays \
+         within [d_min, d_max] — got {s3:?}"
+    );
+
+    // Sanity check (non-vacuity): drop the headroom precondition and
+    // expect SAT — i.e. a 6-tick trajectory CAN escape if it starts
+    // close to the envelope edges. This confirms query 3 isn't a
+    // tautology of LRA but actually depends on the precondition.
+    let sanity = "\
+(set-logic LRA)
+(define-fun delta_t () Real 0.812)
+(define-fun d_min   () Real 1.0)
+(define-fun d_max   () Real 20.0)
+
+(declare-const d_0 Real)
+; weaker precondition: only [d_min, d_max], no headroom
+(assert (<= d_min d_0)) (assert (<= d_0 d_max))
+
+(declare-const d_1 Real) (declare-const s_1 Real)
+(assert (= d_1 (+ d_0 s_1))) (assert (<= (- 0 delta_t) s_1)) (assert (<= s_1 delta_t))
+
+; pick a witness: d_0 close to d_min and s_1 = -δ_t drives d_1 below d_min
+(assert (< d_1 d_min))
+(check-sat)
+";
+    let path4 = std::env::temp_dir().join("anthill_lf1_ranking_sanity.smt2");
+    std::fs::write(&path4, sanity).expect("write sanity");
+    let out4 = std::process::Command::new("z3").arg(&path4).output().expect("z3");
+    let s4 = String::from_utf8_lossy(&out4.stdout);
+    assert_eq!(
+        s4.trim(), "sat",
+        "non-vacuity sanity check should be sat: without the headroom \
+         precondition a single step CAN escape — got {s4:?}"
+    );
+
+    // Together: post-armed bad-step sequence has length ≤ R(initial) = 6,
+    // each step is bounded by δ_t (from transponder_step_distance_bound),
+    // and the headroom band [d_min + 6·δ_t, d_max − 6·δ_t] absorbs
+    // the worst-case excursion. Conclusion: bounded-excursion safety
+    // for the transponder follower, post-arming.
 }

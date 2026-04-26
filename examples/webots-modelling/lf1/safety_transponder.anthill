@@ -57,9 +57,11 @@ namespace anthill.examples.lf1.safety.transponder
     DistanceBounds, KinematicAssumptions
   }
 
-  export TransponderErrorBound
-  export transponder_step_distance_bound
+  export TransponderErrorBound, PostArmedExcursionBound
+  export transponder_step_distance_bound, excursion_distance_bound
   export lower_violation_transponder
+  export bounded_excursion_lower_violation_transponder
+  export bounded_excursion_upper_violation_transponder
 
   -- =================================================================
   -- Sensor parameter
@@ -118,6 +120,64 @@ namespace anthill.examples.lf1.safety.transponder
        lt(?d_next, ?d_min)
 
   -- =================================================================
+  -- Bounded-excursion d_max guarantee
+  -- =================================================================
+  --
+  -- The d_max upper-bound holds in a bounded-excursion sense: from
+  -- any post-armed state with at least N · δ_t headroom on both
+  -- sides, the controller forces a yaw flip within N consecutive
+  -- bad ticks and the resulting trajectory stays inside
+  -- [d_min, d_max].
+  --
+  -- N is the meta-theorem proved off-line by the manual ranking-
+  -- function discharge in
+  -- `anthill-smt-gen/tests/lf1_real_spec_test.rs::
+  --   lf1_transponder_excursion_ranking_function_manual`
+  -- using R = −upc as the well-founded measure. For the lf1
+  -- controller's seq=±5 thresholds, N = 6.
+  --
+  -- That meta-theorem is plugged in here as a fact
+  -- (PostArmedExcursionBound) so the rule below can be discharged
+  -- by the existing `by z3(logic: "LRA")` tactic. Once the proof
+  -- grammar accepts a ranking-function clause, this fact will
+  -- become a theorem proved within anthill itself.
+
+  entity PostArmedExcursionBound(max_ticks: Int)
+
+  rule excursion_distance_bound(?excursion)
+    :- transponder_step_distance_bound(?delta_t),
+       PostArmedExcursionBound(max_ticks: ?n),
+       ?excursion = mul(?n, ?delta_t)
+
+  -- Lower-bound violation under the bounded-excursion preconditions.
+  -- The strong precondition is the headroom band:
+  --   d_min + N·δ_t ≤ d_prev ≤ d_max − N·δ_t
+  -- and the per-step bound is the worst-case window displacement,
+  -- N·δ_t (any prefix of the post-armed window cannot move farther
+  -- than that under the per-tick bound).
+  rule bounded_excursion_lower_violation_transponder(?d_next)
+    :- DistanceBounds(d_min: ?d_min, d_max: ?d_max),
+       excursion_distance_bound(?excursion),
+       ?d_low_bound  = add(?d_min, ?excursion),
+       ?d_high_bound = sub(?d_max, ?excursion),
+       lte(?d_low_bound, ?d_prev),
+       lte(?d_prev, ?d_high_bound),
+       lte(abs(?step), ?excursion),
+       ?d_next = add(?d_prev, ?step),
+       lt(?d_next, ?d_min)
+
+  rule bounded_excursion_upper_violation_transponder(?d_next)
+    :- DistanceBounds(d_min: ?d_min, d_max: ?d_max),
+       excursion_distance_bound(?excursion),
+       ?d_low_bound  = add(?d_min, ?excursion),
+       ?d_high_bound = sub(?d_max, ?excursion),
+       lte(?d_low_bound, ?d_prev),
+       lte(?d_prev, ?d_high_bound),
+       lte(abs(?step), ?excursion),
+       ?d_next = add(?d_prev, ?step),
+       gt(?d_next, ?d_max)
+
+  -- =================================================================
   -- Concrete facts — transponder-specific values
   -- =================================================================
   --
@@ -128,10 +188,27 @@ namespace anthill.examples.lf1.safety.transponder
 
   fact TransponderErrorBound(epsilon_t: 0.15)
 
-  -- Transponder follower: only the lower-bound (no-collision)
-  -- obligation. The upper-bound is an open liveness obligation
-  -- (see header comment).
+  -- N = 6: bound on consecutive post-armed bad ticks. Proved off-line
+  -- by the ranking-function manual discharge in lf1_real_spec_test.rs
+  -- (R = −upc, post-armed upc ∈ [−6, 0], strict decrease on bad
+  -- steps). Becomes an in-language theorem once the proof grammar
+  -- accepts a ranking-function tactic clause.
+  fact PostArmedExcursionBound(max_ticks: 6)
+
+  -- Per-step no-collision (always holds on every tick, not just
+  -- post-armed).
   proof lower_violation_transponder
+    by z3(logic: "LRA")
+  end
+
+  -- Bounded-excursion d_max guarantee (post-armed, N=6 bad ticks):
+  -- starting in the headroom band [d_min + N·δ_t, d_max − N·δ_t],
+  -- worst-case 6-tick excursion stays in [d_min, d_max].
+  proof bounded_excursion_lower_violation_transponder
+    by z3(logic: "LRA")
+  end
+
+  proof bounded_excursion_upper_violation_transponder
     by z3(logic: "LRA")
   end
 end
