@@ -54,3 +54,21 @@ pub fn load_kb_with(source: &str) -> KnowledgeBase {
     let _ = load::load_all(&mut kb, &refs, &NullResolver);
     kb
 }
+
+#[allow(dead_code)]
+pub fn z3_available() -> bool {
+    std::process::Command::new("z3").arg("--version").output()
+        .map(|o| o.status.success()).unwrap_or(false)
+}
+
+/// Write `smt` to `${TMPDIR}/anthill_${slug}.smt2`, invoke z3 on it,
+/// and return trimmed stdout. The temp file is intentionally left in
+/// place for failure-mode debugging.
+#[allow(dead_code)]
+pub fn run_z3(slug: &str, smt: &str) -> String {
+    let path = std::env::temp_dir().join(format!("anthill_{slug}.smt2"));
+    std::fs::write(&path, smt).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+    let out = std::process::Command::new("z3").arg(&path).output()
+        .unwrap_or_else(|e| panic!("z3 spawn for {slug}: {e}"));
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}

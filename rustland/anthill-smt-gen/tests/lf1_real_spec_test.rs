@@ -28,7 +28,7 @@ use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::parse;
 use anthill_core::parse::ir::ParsedFile;
 
-use super::common::collect_anthill_files;
+use super::common::{self, collect_anthill_files};
 use anthill_smt_gen::emit_satisfiability_check;
 
 /// Build a KB with stdlib + the actual lf1 spec directory on disk.
@@ -60,58 +60,37 @@ fn lf1_kb() -> KnowledgeBase {
 
 #[test]
 fn lf1_lower_violation_is_unsat() {
-    if std::process::Command::new("z3").arg("--version").output()
-        .map(|o| !o.status.success()).unwrap_or(true)
-    {
-        eprintln!("z3 not available — skipping");
-        return;
-    }
+    if !common::z3_available() { eprintln!("z3 not available — skipping"); return; }
     let kb = lf1_kb();
     let smt = emit_satisfiability_check(
         &kb, "anthill.examples.lf1.safety.gps.lower_violation"
     ).expect("emit lower_violation");
-    let path = std::env::temp_dir().join("anthill_lf1_lower_violation.smt2");
-    std::fs::write(&path, &smt).expect("write");
-    let out = std::process::Command::new("z3").arg(&path).output().expect("z3");
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let verdict = common::run_z3("lf1_lower_violation", &smt);
     assert_eq!(
-        stdout.trim(), "unsat",
+        verdict, "unsat",
         "lf1 lower_violation should be unsat (no underflow possible) \
-         — got {stdout:?}\n\n{smt}"
+         — got {verdict:?}\n\n{smt}"
     );
 }
 
 #[test]
 fn lf1_upper_violation_is_unsat() {
-    if std::process::Command::new("z3").arg("--version").output()
-        .map(|o| !o.status.success()).unwrap_or(true)
-    {
-        eprintln!("z3 not available — skipping");
-        return;
-    }
+    if !common::z3_available() { eprintln!("z3 not available — skipping"); return; }
     let kb = lf1_kb();
     let smt = emit_satisfiability_check(
         &kb, "anthill.examples.lf1.safety.gps.upper_violation"
     ).expect("emit upper_violation");
-    let path = std::env::temp_dir().join("anthill_lf1_upper_violation.smt2");
-    std::fs::write(&path, &smt).expect("write");
-    let out = std::process::Command::new("z3").arg(&path).output().expect("z3");
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let verdict = common::run_z3("lf1_upper_violation", &smt);
     assert_eq!(
-        stdout.trim(), "unsat",
+        verdict, "unsat",
         "lf1 upper_violation should be unsat (no overflow possible) \
-         — got {stdout:?}\n\n{smt}"
+         — got {verdict:?}\n\n{smt}"
     );
 }
 
 #[test]
 fn lf1_step_distance_bound_is_within_two_meters() {
-    if std::process::Command::new("z3").arg("--version").output()
-        .map(|o| !o.status.success()).unwrap_or(true)
-    {
-        eprintln!("z3 not available — skipping");
-        return;
-    }
+    if !common::z3_available() { eprintln!("z3 not available — skipping"); return; }
     // With the lf1 facts (RTK-quality eps=0.1, v_max=8, T_c=0.032)
     // the step bound should compute to:
     //   delta = (8+8)*0.032 + 4*0.1 + tau*8 ≈ 0.512 + 0.4 + 0.256
@@ -125,13 +104,10 @@ fn lf1_step_distance_bound_is_within_two_meters() {
         rule_qn: "anthill.examples.lf1.safety.gps.step_distance_bound".to_string(),
         upper_bound: 2.0,
     }).expect("emit");
-    let path = std::env::temp_dir().join("anthill_lf1_step_bound.smt2");
-    std::fs::write(&path, &smt).expect("write");
-    let out = std::process::Command::new("z3").arg(&path).output().expect("z3");
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let verdict = common::run_z3("lf1_step_bound", &smt);
     assert_eq!(
-        stdout.trim(), "unsat",
-        "step_distance_bound should fit under 2.0 m for lf1 — got {stdout:?}\n\n{smt}"
+        verdict, "unsat",
+        "step_distance_bound should fit under 2.0 m for lf1 — got {verdict:?}\n\n{smt}"
     );
 }
 
@@ -190,12 +166,7 @@ fn lf1_step_distance_bound_is_within_two_meters() {
 /// regardless of seq). Both are open work.
 #[test]
 fn lf1_transponder_excursion_ranking_function_manual() {
-    if std::process::Command::new("z3").arg("--version").output()
-        .map(|o| !o.status.success()).unwrap_or(true)
-    {
-        eprintln!("z3 not available — skipping");
-        return;
-    }
+    if !common::z3_available() { eprintln!("z3 not available — skipping"); return; }
 
     // Query 1: BOUNDEDNESS — does any post-armed state have R < 0?
     //
@@ -212,14 +183,11 @@ fn lf1_transponder_excursion_ranking_function_manual() {
 (assert (< (R upc) 0))
 (check-sat)
 ";
-    let path1 = std::env::temp_dir().join("anthill_lf1_ranking_boundedness.smt2");
-    std::fs::write(&path1, boundedness).expect("write boundedness");
-    let out1 = std::process::Command::new("z3").arg(&path1).output().expect("z3");
-    let s1 = String::from_utf8_lossy(&out1.stdout);
+    let v1 = common::run_z3("lf1_ranking_boundedness", boundedness);
     assert_eq!(
-        s1.trim(), "unsat",
+        v1, "unsat",
         "ranking-function boundedness query should be unsat \
-         (R = -upc, post-armed upc ≤ 0 ⇒ R ≥ 0) — got {s1:?}"
+         (R = -upc, post-armed upc ≤ 0 ⇒ R ≥ 0) — got {v1:?}"
     );
 
     // Query 2: DECREASE — is there a bad-step transition where R does
@@ -255,15 +223,12 @@ fn lf1_transponder_excursion_ranking_function_manual() {
 (assert (>= (R upc_next) (R upc)))
 (check-sat)
 ";
-    let path2 = std::env::temp_dir().join("anthill_lf1_ranking_decrease.smt2");
-    std::fs::write(&path2, decrease).expect("write decrease");
-    let out2 = std::process::Command::new("z3").arg(&path2).output().expect("z3");
-    let s2 = String::from_utf8_lossy(&out2.stdout);
+    let v2 = common::run_z3("lf1_ranking_decrease", decrease);
     assert_eq!(
-        s2.trim(), "unsat",
+        v2, "unsat",
         "ranking-function decrease query should be unsat \
          (every bad step in the post-armed regime decrements R by 1) \
-         — got {s2:?}"
+         — got {v2:?}"
     );
 
     // Query 3: BOUNDED-EXCURSION ⇒ SAFETY — combine the ranking-
@@ -316,15 +281,12 @@ fn lf1_transponder_excursion_ranking_function_manual() {
             (< d_6 d_min) (> d_6 d_max)))
 (check-sat)
 ";
-    let path3 = std::env::temp_dir().join("anthill_lf1_ranking_safety.smt2");
-    std::fs::write(&path3, bounded_excursion).expect("write bounded_excursion");
-    let out3 = std::process::Command::new("z3").arg(&path3).output().expect("z3");
-    let s3 = String::from_utf8_lossy(&out3.stdout);
+    let v3 = common::run_z3("lf1_ranking_safety", bounded_excursion);
     assert_eq!(
-        s3.trim(), "unsat",
+        v3, "unsat",
         "bounded-excursion ⇒ safety query should be unsat: any 6-tick \
          post-armed trajectory starting in the headroom band stays \
-         within [d_min, d_max] — got {s3:?}"
+         within [d_min, d_max] — got {v3:?}"
     );
 
     // Sanity check (non-vacuity): drop the headroom precondition and
@@ -348,14 +310,11 @@ fn lf1_transponder_excursion_ranking_function_manual() {
 (assert (< d_1 d_min))
 (check-sat)
 ";
-    let path4 = std::env::temp_dir().join("anthill_lf1_ranking_sanity.smt2");
-    std::fs::write(&path4, sanity).expect("write sanity");
-    let out4 = std::process::Command::new("z3").arg(&path4).output().expect("z3");
-    let s4 = String::from_utf8_lossy(&out4.stdout);
+    let v4 = common::run_z3("lf1_ranking_sanity", sanity);
     assert_eq!(
-        s4.trim(), "sat",
+        v4, "sat",
         "non-vacuity sanity check should be sat: without the headroom \
-         precondition a single step CAN escape — got {s4:?}"
+         precondition a single step CAN escape — got {v4:?}"
     );
 
     // Together: post-armed bad-step sequence has length ≤ R(initial) = 6,

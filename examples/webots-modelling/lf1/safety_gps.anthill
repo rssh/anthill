@@ -170,21 +170,12 @@ namespace anthill.examples.lf1.safety.gps
   -- Violation rules — the actual Z3-dischargeable obligations
   -- =================================================================
   --
-  --   PRECONDITION (the strong invariant):
-  --       d_min + delta <= d_prev <= d_max - delta
-  --   STEP BOUND:
-  --       |step| <= delta
-  --   d_next:
-  --       d_next = d_prev + step
+  -- If `lower_violation` is unsat, no (d_prev, step) within the
+  -- strong invariant drives d_next below d_min. Symmetric for
+  -- upper_violation. Both unsat ⇒ inductive_invariant holds.
   --
-  -- If `lower_violation` is unsatisfiable, no (d_prev, step) drives
-  -- d_next below d_min. Symmetric for upper_violation. Both unsat
-  -- ⇒ inductive_invariant holds.
-  --
-  -- The `?d_next` head argument exists only to give the rule a
-  -- queryable functor — it carries the witness when Z3 produces
-  -- `sat` (counterexample). Discharged via anthill-smt-gen's
-  -- `emit_satisfiability_check`; expect `unsat` in CI.
+  -- `?d_next` is only there to give the rule a queryable head — it
+  -- carries the witness when Z3 produces `sat` (counterexample).
 
   rule lower_violation(?d_next)
     :- DistanceBounds(d_min: ?d_min, d_max: ?d_max),
