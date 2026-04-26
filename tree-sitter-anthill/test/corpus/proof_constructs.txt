@@ -1,0 +1,243 @@
+=====================================
+Proof with no strategy (open obligation)
+=====================================
+
+namespace test
+  rule foo(?x) :- bar(?x)
+  proof foo end
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name (identifier))
+    (rule_declaration
+      head: (rule_head (fn_term
+        name: (name (identifier))
+        (variable_term (variable))))
+      body: (rule_body (fn_term
+        name: (name (identifier))
+        (variable_term (variable)))))
+    (proof_declaration
+      target: (name (identifier)))))
+
+=====================================
+Proof by derivation
+=====================================
+
+namespace test
+  rule foo(?x) :- bar(?x)
+  proof foo
+    by derivation
+  end
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name (identifier))
+    (rule_declaration
+      head: (rule_head (fn_term
+        name: (name (identifier))
+        (variable_term (variable))))
+      body: (rule_body (fn_term
+        name: (name (identifier))
+        (variable_term (variable)))))
+    (proof_declaration
+      target: (name (identifier))
+      strategy: (proof_strategy name: (identifier)))))
+
+=====================================
+Proof by z3 with parameters
+=====================================
+
+namespace test
+  rule foo(?x) :- bar(?x)
+  proof foo
+    by z3(timeout: 5000, logic: "LRA")
+  end
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name (identifier))
+    (rule_declaration
+      head: (rule_head (fn_term
+        name: (name (identifier))
+        (variable_term (variable))))
+      body: (rule_body (fn_term
+        name: (name (identifier))
+        (variable_term (variable)))))
+    (proof_declaration
+      target: (name (identifier))
+      strategy: (proof_strategy
+        name: (identifier)
+        (named_arg name: (identifier) value: (integer_literal))
+        (named_arg name: (identifier) value: (string_literal))))))
+
+=====================================
+Proof by test
+=====================================
+
+namespace test
+  rule foo(?x) :- bar(?x)
+  proof foo
+    by test(runs: 1000)
+  end
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name (identifier))
+    (rule_declaration
+      head: (rule_head (fn_term
+        name: (name (identifier))
+        (variable_term (variable))))
+      body: (rule_body (fn_term
+        name: (name (identifier))
+        (variable_term (variable)))))
+    (proof_declaration
+      target: (name (identifier))
+      strategy: (proof_strategy
+        name: (identifier)
+        (named_arg name: (identifier) value: (integer_literal))))))
+
+=====================================
+Proof with explicit query and mapping
+=====================================
+
+namespace test
+  rule add_comm(?a, ?b) :- eq(add(?a, ?b), add(?b, ?a))
+  proof add_comm
+    by z3
+    query "(assert (forall ((a Int) (b Int)) (= (+ a b) (+ b a))))"
+    mapping {
+      add -> "+",
+      eq -> "=",
+      Int -> Int
+    }
+  end
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name (identifier))
+    (rule_declaration
+      head: (rule_head (fn_term
+        name: (name (identifier))
+        (variable_term (variable)) (variable_term (variable))))
+      body: (rule_body (fn_term
+        name: (name (identifier))
+        (fn_term
+          name: (name (identifier))
+          (variable_term (variable)) (variable_term (variable)))
+        (fn_term
+          name: (name (identifier))
+          (variable_term (variable)) (variable_term (variable))))))
+    (proof_declaration
+      target: (name (identifier))
+      strategy: (proof_strategy name: (identifier))
+      query: (string_literal)
+      mapping: (mapping_block
+        (mapping_entry source: (name (identifier)) target: (string_literal))
+        (mapping_entry source: (name (identifier)) target: (string_literal))
+        (mapping_entry source: (name (identifier)) target: (name (identifier)))))))
+
+=====================================
+Provides clause inside sort body
+=====================================
+
+namespace test
+  sort IntStack
+    provides Stack[T = Int]
+  end
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name (identifier))
+    (sort_with_body
+      name: (name (identifier))
+      (provides_clause
+        spec: (parameterized_type
+          (name (identifier))
+          (sort_binding
+            param: (name (identifier))
+            type: (simple_type (name (identifier)))))))))
+
+=====================================
+Provides block (anthill language) with rules and proofs
+=====================================
+
+namespace test
+  provides Stack[T = Int]
+    language anthill
+    rule push(?s, ?x) :- cons(head: ?x, tail: ?s)
+    proof push_pop by derivation end
+  end
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name (identifier))
+    (provides_block
+      spec: (parameterized_type
+        (name (identifier))
+        (sort_binding
+          param: (name (identifier))
+          type: (simple_type (name (identifier)))))
+      language: (identifier)
+      (rule_declaration
+        head: (rule_head (fn_term
+          name: (name (identifier))
+          (variable_term (variable)) (variable_term (variable))))
+        body: (rule_body (fn_term
+          name: (name (identifier))
+          (named_arg name: (identifier) value: (variable_term (variable)))
+          (named_arg name: (identifier) value: (variable_term (variable))))))
+      (proof_declaration
+        target: (name (identifier))
+        strategy: (proof_strategy name: (identifier))))))
+
+=====================================
+Provides block (rust language) with artifact and carrier
+=====================================
+
+namespace test
+  provides Stack[T = Int]
+    language rust
+    artifact "src/stack.rs"
+    carrier { T: i64 }
+    namespace_map { Stack: "crate::stack" }
+  end
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name (identifier))
+    (provides_block
+      spec: (parameterized_type
+        (name (identifier))
+        (sort_binding
+          param: (name (identifier))
+          type: (simple_type (name (identifier)))))
+      language: (identifier)
+      (artifact_clause path: (string_literal))
+      (carrier_clause bindings: (bindings
+        (identifier) (identifier)))
+      (namespace_map_clause bindings: (bindings
+        (identifier) (string_literal))))))

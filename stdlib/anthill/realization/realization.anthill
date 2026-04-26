@@ -9,7 +9,10 @@ namespace anthill.realization
   import anthill.reflect.{Term, Symbol}
   export Implementation, Generated, Obligation, CarrierBinding, NamespaceMapping,
          LanguageMapping, EffectMapping, ReceiverRule, TypeMapping,
-         ReceiverForm, TraitReturnForm, OperationImpl
+         ReceiverForm, TraitReturnForm, OperationImpl,
+         ProofRecord, ProofStrategyOpen, ProofStrategyKind,
+         ProofBodyNone, ProofBodyHints, ProofBodyQuery, MappingEntry,
+         Pending, Discharged, Failed
 
   -- Links host-language code to an anthill algebra spec.
   --
@@ -148,4 +151,34 @@ namespace anthill.realization
     entity Discharged(result: ProofResult)
     entity Failed(result: ProofResult)
   }
+
+  -- ================================================================
+  -- Proof construct (proposal 025)
+  -- ================================================================
+  --
+  -- A `proof <rule>` declaration in source is loaded as a ProofRecord
+  -- fact. The CLI's `prove` driver inspects these facts and dispatches
+  -- to a backend (z3, test, derivation) based on the strategy.
+
+  -- Strategy variants
+  entity ProofStrategyOpen                          -- no `by` clause
+  entity ProofStrategyKind(name: String, args: Term) -- args = cons-list of named_arg/term
+
+  -- Body variants
+  entity ProofBodyNone                              -- no body
+  entity ProofBodyHints(hints: Term)                -- hints = cons-list of rule-name terms
+  entity ProofBodyQuery(text: String, mapping: Term) -- mapping = cons-list of MappingEntry
+
+  -- Mapping anthill symbols → tool symbols (e.g. add → "+")
+  entity MappingEntry(source: String, target: String)
+
+  -- A proof obligation as it lives in the KB. Created by the loader,
+  -- updated by the prove CLI as backends discharge it.
+  entity ProofRecord(
+    rule          : String,                         -- qualified name of the rule
+    strategy      : Term,                           -- ProofStrategyOpen or ProofStrategyKind
+    body          : Term,                           -- ProofBodyNone | Hints | Query
+    result        : ObligationStatus,               -- Pending → Discharged(...) | Failed(...)
+    dependencies  : List[T = String]                -- rules used during discharge
+  )
 end

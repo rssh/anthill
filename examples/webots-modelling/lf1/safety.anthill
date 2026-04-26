@@ -388,6 +388,23 @@ namespace anthill.examples.lf1.safety
 
   fact DistanceBounds(d_min: 1.0, d_max: 20.0)
 
+  -- Proof obligations (proposal 025). Run with `discharge.sh`.
+  -- Z3 should report `unsat` for both: no (d_prev, step) pair
+  -- can drive d_next outside [d_min, d_max] under the inductive
+  -- precondition, so the safety envelope is preserved per step.
+  --
+  -- step_distance_bound's upper-bound proof (δ ≤ 2.0) lives in
+  -- anthill-smt-gen/tests/lf1_real_spec_test.rs until the proof
+  -- grammar exposes a `by z3(upper: 2.0)` argument.
+
+  proof lower_violation
+    by z3(logic: "LRA")
+  end
+
+  proof upper_violation
+    by z3(logic: "LRA")
+  end
+
   -- =================================================================
   -- Predicates the proof reasons over
   -- =================================================================

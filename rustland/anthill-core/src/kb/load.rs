@@ -2665,6 +2665,9 @@ impl<'a> Loader<'a> {
                     }
                 }
                 Item::Describe(d) => self.load_describe(d, domain),
+                Item::Proof(p) => self.load_proof(p, domain),
+                Item::ProvidesClause(pc) => self.load_provides_clause(pc, domain),
+                Item::ProvidesBlock(pb) => self.load_provides_block(pb, domain),
             }
         }
 
@@ -2848,7 +2851,88 @@ impl<'a> Loader<'a> {
             &ctor_refs, &op_refs, &param_refs, &req_terms,
             sort_sort, parent_domain);
 
+        // Skip induction-rule emission for sorts with type params:
+        // a fresh var named after a field whose type is `?T` collides
+        // with cpp-gen's type-param binding pipeline.
+        let has_type_params = s.items.iter().any(|item| matches!(item, Item::AbstractSort(_)));
+        if has_entities && !has_type_params {
+            self.emit_induction_rule(s, sort_functor, parent_domain);
+        }
+
         self.current_scope = prev_scope;
+    }
+
+    /// Emit `<Sort>.induction(?P) :- ho_apply(?P, ctor_1(...)), ...` —
+    /// flat case analysis. Recursive-position induction hypotheses
+    /// (`forall(?r, ?P(?r) -: ?P(cons(?h, ?r)))`) wait on a resolver
+    /// pass for nested implication; without them the rule is sound
+    /// for finite enums and structurally-skeletal for recursive ones.
+    fn emit_induction_rule(
+        &mut self,
+        s: &SortWithBody,
+        sort_functor: Symbol,
+        parent_domain: TermId,
+    ) {
+        let entities: Vec<&Entity> = s.items.iter()
+            .filter_map(|i| if let Item::Entity(e) = i { Some(e) } else { None })
+            .collect();
+        if entities.is_empty() { return; }
+
+        let p_sym = self.kb.intern("P");
+        let p_var = self.kb.fresh_var(p_sym);
+        let p_term = self.kb.alloc(Term::Var(Var::Global(p_var)));
+
+        let sort_name = match self.kb.symbols.get(sort_functor) {
+            SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
+            SymbolDef::Unresolved { name } => name.clone(),
+        };
+        let induction_name = format!("{sort_name}.induction");
+        let induction_sym = if let Some(&existing) = self.kb.symbols.by_qualified_name.get(&induction_name) {
+            existing
+        } else {
+            self.kb.symbols.define(
+                "induction", &induction_name, SymbolKind::Goal, parent_domain.raw(),
+            )
+        };
+
+        let head = self.kb.alloc(Term::Fn {
+            functor: induction_sym,
+            pos_args: SmallVec::from_slice(&[p_term]),
+            named_args: SmallVec::new(),
+        });
+
+        let ho_apply_sym = self.kb.intern("ho_apply");
+
+        let mut body: Vec<TermId> = Vec::new();
+        for e in entities {
+            let ctor_sym = self.remap_name(&e.name);
+            let ctor_term = if e.fields.is_empty() {
+                self.kb.alloc(Term::Ref(ctor_sym))
+            } else {
+                let mut field_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                for f in &e.fields {
+                    let f_name_str = self.parsed.symbols.name(f.name).to_owned();
+                    let f_sym = self.kb.intern(&f_name_str);
+                    let var = self.kb.fresh_var(f_sym);
+                    let var_term = self.kb.alloc(Term::Var(Var::Global(var)));
+                    field_args.push((f_sym, var_term));
+                }
+                self.kb.alloc(Term::Fn {
+                    functor: ctor_sym,
+                    pos_args: SmallVec::new(),
+                    named_args: field_args,
+                })
+            };
+            let p_applied = self.kb.alloc(Term::Fn {
+                functor: ho_apply_sym,
+                pos_args: SmallVec::from_slice(&[p_term, ctor_term]),
+                named_args: SmallVec::new(),
+            });
+            body.push(p_applied);
+        }
+
+        let rule_sort = self.kb.make_name_term("Rule");
+        self.kb.assert_rule_debruijn(head, body, rule_sort, parent_domain, None);
     }
 
     /// Emit a SortInfo fact with the given components.
@@ -3130,6 +3214,80 @@ impl<'a> Loader<'a> {
                 self.kb.assert_fact(op_impl, impl_sort, domain, None);
             }
         }
+
+        if let Some(body_parse_id) = o.body {
+            self.emit_operation_equation(o, functor, body_parse_id, domain);
+        }
+    }
+
+    /// Build `eq(<op>(?p1, ?p2, ...), body[params -> ?p_i])` and
+    /// assert it as a rule with empty body, so SLD can apply operation
+    /// definitions as rewrite rules during proof search.
+    fn emit_operation_equation(
+        &mut self,
+        o: &Operation,
+        op_functor: Symbol,
+        body_parse_id: TermId,
+        domain: TermId,
+    ) {
+        let body_kb = self.convert_term(body_parse_id);
+
+        let mut param_vars: Vec<(Symbol, VarId)> = Vec::new();
+        for p in &o.params {
+            let pname = self.parsed.symbols.name(p.name).to_owned();
+            let kb_sym = self.kb.intern(&pname);
+            let var = self.kb.fresh_var(kb_sym);
+            param_vars.push((kb_sym, var));
+        }
+
+        let body_with_vars = self.rewrite_param_refs(body_kb, &param_vars);
+
+        let call_pos: SmallVec<[TermId; 4]> = param_vars.iter()
+            .map(|(_, vid)| self.kb.alloc(Term::Var(Var::Global(*vid))))
+            .collect();
+        let call = self.kb.alloc(Term::Fn {
+            functor: op_functor,
+            pos_args: call_pos,
+            named_args: SmallVec::new(),
+        });
+
+        let eq_sym = self.kb.try_resolve_symbol("anthill.prelude.Eq.eq")
+            .unwrap_or_else(|| self.kb.intern("eq"));
+        let head = self.kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[call, body_with_vars]),
+            named_args: SmallVec::new(),
+        });
+
+        let eq_sort = self.kb.make_name_term("anthill.prelude.Eq");
+        self.kb.assert_rule_debruijn(head, vec![], eq_sort, domain, None);
+    }
+
+    /// Replace `Ident(s)`/`Ref(s)` matching a parameter symbol with the
+    /// corresponding `Var::Global`. Doesn't alpha-rename inside lambda
+    /// or let bodies — shadowing param names is unsupported.
+    fn rewrite_param_refs(&mut self, term: TermId, param_vars: &[(Symbol, VarId)]) -> TermId {
+        match self.kb.get_term(term).clone() {
+            Term::Ident(s) | Term::Ref(s) => {
+                if let Some((_, vid)) = param_vars.iter().find(|(p, _)| *p == s) {
+                    self.kb.alloc(Term::Var(Var::Global(*vid)))
+                } else {
+                    term
+                }
+            }
+            Term::Fn { functor, pos_args, named_args } => {
+                let mut new_pos: SmallVec<[TermId; 4]> = SmallVec::new();
+                for &t in pos_args.iter() {
+                    new_pos.push(self.rewrite_param_refs(t, param_vars));
+                }
+                let mut new_named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                for &(n, t) in named_args.iter() {
+                    new_named.push((n, self.rewrite_param_refs(t, param_vars)));
+                }
+                self.kb.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named })
+            }
+            _ => term,
+        }
     }
 
     fn load_constraint(&mut self, c: &Constraint, domain: TermId) {
@@ -3198,6 +3356,180 @@ impl<'a> Loader<'a> {
         let target_term = self.name_to_sort_term(&d.target);
         for content in &d.contents {
             self.emit_desc_fact(target_term, content, domain);
+        }
+    }
+
+    /// Lower a `proof <target> by <strategy> ... end` declaration into a
+    /// ProofRecord fact. The target's qualified name and a term
+    /// encoding of strategy/body are written so an external driver
+    /// (CLI, IDE) can dispatch without reparsing the source.
+    fn load_proof(&mut self, p: &ProofDecl, domain: TermId) {
+        let target_sym = self.remap_name(&p.target);
+
+        let strategy_term = match &p.strategy {
+            None => {
+                let open_sym = self.kb.resolve_symbol("anthill.realization.ProofStrategyOpen");
+                self.kb.alloc(Term::Fn {
+                    functor: open_sym,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::new(),
+                })
+            }
+            Some(s) => {
+                let sname_sym = self.kb.alloc(Term::Const(
+                    super::term::Literal::String(self.parsed.symbols.name(s.name).to_string())
+                ));
+                let strat_sym = self.kb.resolve_symbol("anthill.realization.ProofStrategyKind");
+                let arg_ids: Vec<TermId> = s.args.iter().map(|&t| self.convert_term(t)).collect();
+                let args_list = build_list(self.kb, &arg_ids);
+                let name_arg = self.kb.symbols.intern("name");
+                let args_arg = self.kb.symbols.intern("args");
+                self.kb.alloc(Term::Fn {
+                    functor: strat_sym,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::from_slice(&[
+                        (name_arg, sname_sym),
+                        (args_arg, args_list),
+                    ]),
+                })
+            }
+        };
+
+        let body_term = match &p.body {
+            None => {
+                let none_sym = self.kb.resolve_symbol("anthill.realization.ProofBodyNone");
+                self.kb.alloc(Term::Fn {
+                    functor: none_sym,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::new(),
+                })
+            }
+            Some(ProofBody::Hints(hints)) => {
+                let hint_ids: Vec<TermId> = hints.iter().map(|&t| self.convert_term(t)).collect();
+                let list = build_list(self.kb, &hint_ids);
+                let h_sym = self.kb.resolve_symbol("anthill.realization.ProofBodyHints");
+                let hints_arg = self.kb.symbols.intern("hints");
+                self.kb.alloc(Term::Fn {
+                    functor: h_sym,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::from_slice(&[
+                        (hints_arg, list),
+                    ]),
+                })
+            }
+            Some(ProofBody::Query { text, mapping }) => {
+                let text_term = self.kb.alloc(Term::Const(
+                    super::term::Literal::String(text.clone())
+                ));
+                let mapping_term = match mapping {
+                    None => {
+                        let nil_sym = self.kb.resolve_symbol("anthill.prelude.List.nil");
+                        self.kb.alloc(Term::Fn {
+                            functor: nil_sym,
+                            pos_args: SmallVec::new(),
+                            named_args: SmallVec::new(),
+                        })
+                    }
+                    Some(mb) => {
+                        let pair_sym = self.kb.resolve_symbol("anthill.realization.MappingEntry");
+                        let s_arg = self.kb.symbols.intern("source");
+                        let t_arg = self.kb.symbols.intern("target");
+                        let entries: Vec<TermId> = mb.entries.iter().map(|e| {
+                            let src = self.kb.alloc(Term::Const(
+                                super::term::Literal::String(join_segments(&self.parsed.symbols, &e.source.segments))
+                            ));
+                            let tgt = self.kb.alloc(Term::Const(
+                                super::term::Literal::String(e.target.clone())
+                            ));
+                            self.kb.alloc(Term::Fn {
+                                functor: pair_sym,
+                                pos_args: SmallVec::new(),
+                                named_args: SmallVec::from_slice(&[
+                                    (s_arg, src),
+                                    (t_arg, tgt),
+                                ]),
+                            })
+                        }).collect();
+                        build_list(self.kb, &entries)
+                    }
+                };
+                let q_sym = self.kb.resolve_symbol("anthill.realization.ProofBodyQuery");
+                let text_arg = self.kb.symbols.intern("text");
+                let map_arg = self.kb.symbols.intern("mapping");
+                self.kb.alloc(Term::Fn {
+                    functor: q_sym,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::from_slice(&[
+                        (text_arg, text_term),
+                        (map_arg, mapping_term),
+                    ]),
+                })
+            }
+        };
+
+        let record_sym = self.kb.resolve_symbol("anthill.realization.ProofRecord");
+        let rule_arg = self.kb.symbols.intern("rule");
+        let strategy_arg = self.kb.symbols.intern("strategy");
+        let body_arg = self.kb.symbols.intern("body");
+        let result_arg = self.kb.symbols.intern("result");
+        let deps_arg = self.kb.symbols.intern("dependencies");
+
+        let rule_text = match self.kb.symbols.get(target_sym) {
+            SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
+            SymbolDef::Unresolved { name } => name.clone(),
+        };
+        let rule_term = self.kb.alloc(Term::Const(
+            super::term::Literal::String(rule_text)
+        ));
+        let pending_sym = self.kb.resolve_symbol("anthill.realization.ObligationStatus.Pending");
+        let pending_term = self.kb.alloc(Term::Fn {
+            functor: pending_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let nil_sym = self.kb.resolve_symbol("anthill.prelude.List.nil");
+        let nil_term = self.kb.alloc(Term::Fn {
+            functor: nil_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+
+        let record_term = self.kb.alloc(Term::Fn {
+            functor: record_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (rule_arg, rule_term),
+                (strategy_arg, strategy_term),
+                (body_arg, body_term),
+                (result_arg, pending_term),
+                (deps_arg, nil_term),
+            ]),
+        });
+        let record_sort = self.kb.make_name_term("anthill.realization.ProofRecord");
+        self.kb.assert_fact(record_term, record_sort, domain, None);
+    }
+
+    /// `provides Spec[...]` inside a sort body — stub. Subtyping
+    /// integration arrives with the typeclass pass.
+    fn load_provides_clause(&mut self, _pc: &ProvidesClause, _domain: TermId) {}
+
+    /// Standalone `provides Spec language X ... end`. For anthill we
+    /// recurse into the inner items; host languages are stubbed out
+    /// pending Implementation-fact wiring.
+    fn load_provides_block(&mut self, pb: &ProvidesBlock, domain: TermId) {
+        if self.parsed.symbols.name(pb.language) != "anthill" { return; }
+        for item in &pb.items {
+            match item {
+                ProvidesItem::Rule(r) => self.load_rule(r, domain),
+                ProvidesItem::RuleBlock(rb) => {
+                    for r in &rb.entries { self.load_rule(r, domain); }
+                }
+                ProvidesItem::Fact(f) => self.load_fact(f, domain),
+                ProvidesItem::Proof(p) => self.load_proof(p, domain),
+                ProvidesItem::Artifact(_)
+                | ProvidesItem::Carrier(_)
+                | ProvidesItem::NamespaceMap(_) => {}
+            }
         }
     }
 

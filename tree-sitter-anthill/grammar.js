@@ -77,6 +77,9 @@ module.exports = grammar({
       $.operation_block,
       $.rule_block,
       $.describe_declaration,
+      // Proof + provides (proposal 025)
+      $.proof_declaration,
+      $.provides_block,
     ),
 
     // =========================================================
@@ -153,6 +156,8 @@ module.exports = grammar({
       $.describe_declaration,
       $.import_clause,
       $.export_clause,
+      $.proof_declaration,
+      $.provides_block,
     ),
 
     _body_sort: $ => choice(
@@ -176,6 +181,8 @@ module.exports = grammar({
       $.describe_declaration,
       $.import_clause,
       $.export_clause,
+      $.proof_declaration,
+      $.provides_clause,
     ),
 
     // =========================================================
@@ -228,6 +235,8 @@ module.exports = grammar({
       $.describe_declaration,
       $.import_clause,
       $.export_clause,
+      $.proof_declaration,
+      $.provides_clause,
     ),
 
     constructor: $ => seq(
@@ -396,6 +405,107 @@ module.exports = grammar({
       field('target', $.name),
       repeat1(field('content', $.description_block)),
     )),
+
+    // =========================================================
+    // Proof construct (proposal 025)
+    // =========================================================
+    //
+    // proof <rule-name>
+    //   by derivation                     -- kernel SLD search
+    //   by z3(timeout: 5000, logic: "LRA") -- external solver
+    //   by test(runs: 1000)               -- test runner
+    //   query "(assert ...)"              -- explicit external query
+    //     mapping { add -> +, eq -> = }
+    //   :- hint1, hint2                   -- guided derivation hints
+    // end
+
+    proof_declaration: $ => seq(
+      repeat(field('description', $.description_block)),
+      'proof',
+      field('target', $.name),
+      optional(seq('by', field('strategy', $.proof_strategy))),
+      optional($._proof_body),
+      'end',
+      optional($.name),
+    ),
+
+    proof_strategy: $ => choice(
+      field('name', $.identifier),
+      seq(field('name', $.identifier), '(', commaSep1($._fn_arg), ')'),
+    ),
+
+    _proof_body: $ => choice(
+      seq(':-', field('hints', $.rule_body)),
+      seq(
+        'query', field('query', $.string_literal),
+        optional(seq('mapping', field('mapping', $.mapping_block))),
+      ),
+    ),
+
+    mapping_block: $ => seq(
+      '{',
+      commaSep1($.mapping_entry),
+      optional(','),
+      '}',
+    ),
+
+    // mapping rhs is a free string token (e.g. `+`, `=`, `Int`) — to keep
+    // it simple we accept either a name or a string_literal.
+    mapping_entry: $ => seq(
+      field('source', $.name),
+      '->',
+      field('target', choice($.name, $.string_literal)),
+    ),
+
+    // =========================================================
+    // Provides construct (proposal 025)
+    // =========================================================
+    //
+    // Inside a sort body — declares spec satisfaction:
+    //   provides Stack[T = Int]
+    //
+    // Standalone block — delivers work:
+    //   provides Stack[T = Int]
+    //     language anthill
+    //     rule push(?s, ?x) = cons(head: ?x, tail: ?s)
+    //     proof push_pop by derivation end
+    //   end
+    //
+    //   provides Stack[T = Int]
+    //     language rust
+    //     artifact "src/stack.rs"
+    //     carrier { T: i64 }
+    //     namespace_map { Stack: "crate::stack" }
+    //   end
+
+    provides_clause: $ => seq(
+      'provides',
+      field('spec', $._type),
+    ),
+
+    provides_block: $ => seq(
+      repeat(field('description', $.description_block)),
+      'provides',
+      field('spec', $._type),
+      'language', field('language', $.identifier),
+      repeat($._provides_content),
+      'end',
+      optional($.name),
+    ),
+
+    _provides_content: $ => choice(
+      $.rule_declaration,
+      $.proof_declaration,
+      $.fact_declaration,
+      $.rule_block,
+      $.artifact_clause,
+      $.carrier_clause,
+      $.namespace_map_clause,
+    ),
+
+    artifact_clause: $ => seq('artifact', field('path', $.string_literal)),
+    carrier_clause: $ => seq('carrier', field('bindings', $.bindings)),
+    namespace_map_clause: $ => seq('namespace_map', field('bindings', $.bindings)),
 
     // =========================================================
     // Sugar: operation block, rule block

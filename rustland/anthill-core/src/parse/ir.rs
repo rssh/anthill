@@ -152,6 +152,9 @@ pub enum Item {
     OperationBlock(OperationBlock),
     RuleBlock(RuleBlock),
     Describe(Describe),
+    Proof(ProofDecl),
+    ProvidesClause(ProvidesClause),
+    ProvidesBlock(ProvidesBlock),
 }
 
 // ── Namespace ───────────────────────────────────────────────────
@@ -346,6 +349,93 @@ pub struct MetaBlock {
 pub struct MetaEntry {
     pub key: Name,
     pub value: TermId,
+}
+
+// ── Proof construct (proposal 025) ──────────────────────────────
+
+#[derive(Debug)]
+pub struct ProofDecl {
+    /// Name of the rule (or operation contract clause) being proved.
+    pub target: Name,
+    pub strategy: Option<ProofStrategy>,
+    pub body: Option<ProofBody>,
+    pub span: Span,
+}
+
+#[derive(Debug)]
+pub struct ProofStrategy {
+    /// "derivation" | "z3" | "test" | tool name
+    pub name: Symbol,
+    /// Optional tool args, named or positional. Each TermId points into
+    /// the file's SimpleTermStore. Named args are stored as
+    /// `Term::FnArg::Named { name, value }` already.
+    pub args: Vec<TermId>,
+    pub span: Span,
+}
+
+#[derive(Debug)]
+pub enum ProofBody {
+    /// `:- hint1, hint2` — guided search hints (rule-name terms).
+    Hints(Vec<TermId>),
+    /// `query "..."` (+ optional mapping block) — explicit external query.
+    Query {
+        text: String,
+        mapping: Option<MappingBlock>,
+    },
+}
+
+#[derive(Debug)]
+pub struct MappingBlock {
+    pub entries: Vec<MappingEntry>,
+}
+
+#[derive(Debug)]
+pub struct MappingEntry {
+    pub source: Name,
+    /// rendered as a string in tool space (operator, identifier, etc.)
+    pub target: String,
+}
+
+// ── Provides construct (proposal 025) ───────────────────────────
+
+/// `provides Spec[T = X]` inside a sort/enum body.
+/// Declares the enclosing sort satisfies the spec.
+#[derive(Debug)]
+pub struct ProvidesClause {
+    pub spec: TypeExpr,
+    pub span: Span,
+}
+
+/// Standalone `provides Spec language <lang> ... end` block.
+#[derive(Debug)]
+pub struct ProvidesBlock {
+    pub spec: TypeExpr,
+    pub language: Symbol,
+    pub items: Vec<ProvidesItem>,
+    pub span: Span,
+}
+
+#[derive(Debug)]
+pub enum ProvidesItem {
+    Rule(Rule),
+    RuleBlock(RuleBlock),
+    Fact(Fact),
+    Proof(ProofDecl),
+    Artifact(String),
+    Carrier(Vec<CarrierBinding>),
+    NamespaceMap(Vec<NamespaceMapEntry>),
+}
+
+#[derive(Debug)]
+pub struct CarrierBinding {
+    pub anthill_param: Symbol,
+    pub host_type: TermId,
+}
+
+#[derive(Debug)]
+pub struct NamespaceMapEntry {
+    pub anthill_namespace: Symbol,
+    pub host_module: TermId,
 }
 
 // ── Stage 0: import tools ───────────────────────────────────────

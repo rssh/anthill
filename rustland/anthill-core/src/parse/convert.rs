@@ -168,6 +168,9 @@ impl<'a> Converter<'a> {
             "operation_block" => self.convert_operation_block(node).map(Item::OperationBlock),
             "rule_block" => self.convert_rule_block(node).map(Item::RuleBlock),
             "describe_declaration" => self.convert_describe(node).map(Item::Describe),
+            "proof_declaration" => self.convert_proof(node).map(Item::Proof),
+            "provides_clause" => self.convert_provides_clause(node).map(Item::ProvidesClause),
+            "provides_block" => self.convert_provides_block(node).map(Item::ProvidesBlock),
             "line_comment" | "block_comment" => None,
             other => {
                 self.err(format!("unexpected top-level node: {other}"), node);
@@ -289,16 +292,7 @@ impl<'a> Converter<'a> {
     fn convert_term(&mut self, node: Node) -> TermId {
         match node.kind() {
             "string_literal" => {
-                let raw = self.text(node);
-                let inner = &raw[1..raw.len() - 1];
-                // Fast path: most strings have no escapes; skip the
-                // per-char copy loop in that case.
-                let decoded = if inner.contains('\\') {
-                    decode_string_escapes(inner)
-                } else {
-                    inner.to_string()
-                };
-                let term = Term::Const(Literal::String(decoded));
+                let term = Term::Const(Literal::String(decode_string_lit(self.text(node))));
                 self.terms.alloc(term)
             }
             "integer_literal" => {
@@ -1271,6 +1265,173 @@ impl<'a> Converter<'a> {
 
     // ── Describe ────────────────────────────────────────────────
 
+    // ── Proof / provides (proposal 025) ─────────────────────────
+
+    fn convert_proof(&mut self, node: Node) -> Option<ProofDecl> {
+        let target = self.field(node, "target").map(|n| self.convert_name(n))?;
+        let strategy = self.field(node, "strategy").map(|n| self.convert_proof_strategy(n));
+        let body = self.convert_proof_body(node);
+        let span = self.span(node);
+        Some(ProofDecl { target, strategy, body, span })
+    }
+
+    /// Convert a single `named_arg` node into a synthetic
+    /// `named_arg(name: "...", value: <term>)` term so it can be carried
+    /// alongside positional args in proof strategies.
+    fn convert_named_arg(&mut self, node: Node) -> TermId {
+        let key_node = self.field(node, "name");
+        let val_node = self.field(node, "value");
+        if let (Some(k), Some(v)) = (key_node, val_node) {
+            let key_str = self.terms.alloc(
+                Term::Const(Literal::String(self.text(k).to_string()))
+            );
+            let val_tid = self.convert_term(v);
+            let functor = self.intern("named_arg");
+            let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+            named_args.push((self.intern("name"), key_str));
+            named_args.push((self.intern("value"), val_tid));
+            self.terms.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args })
+        } else {
+            self.terms.alloc(Term::Bottom)
+        }
+    }
+
+    fn convert_proof_strategy(&mut self, node: Node) -> ProofStrategy {
+        let span = self.span(node);
+        let name = self.field(node, "name")
+            .map(|n| self.intern(self.text(n)))
+            .unwrap_or_else(|| self.intern("derivation"));
+        // Args are positional/named children of the proof_strategy node.
+        // _fn_arg can be either a term (positional) or a named_arg.
+        let mut args: Vec<TermId> = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "named_arg" => args.push(self.convert_named_arg(child)),
+                "identifier" | "name" => {
+                    // The strategy name itself — skip.
+                }
+                _ => {
+                    args.push(self.convert_term(child));
+                }
+            }
+        }
+        ProofStrategy { name, args, span }
+    }
+
+    /// _proof_body is either `:- hints` or `query "..." [mapping {...}]`.
+    /// The body fields appear as direct children of proof_declaration.
+    fn convert_proof_body(&mut self, proof_node: Node) -> Option<ProofBody> {
+        // Hints case: child `rule_body` field named "hints"
+        if let Some(hints_node) = self.field(proof_node, "hints") {
+            let mut hints = Vec::new();
+            let mut cursor = hints_node.walk();
+            for child in hints_node.named_children(&mut cursor) {
+                hints.push(self.convert_term(child));
+            }
+            return Some(ProofBody::Hints(hints));
+        }
+        // Query case: string_literal field named "query"
+        if let Some(q_node) = self.field(proof_node, "query") {
+            let raw = self.text(q_node);
+            // strip surrounding quotes and unescape simple \\ \"
+            let text = decode_string_lit(raw);
+            let mapping = self.field(proof_node, "mapping")
+                .map(|n| self.convert_mapping_block(n));
+            return Some(ProofBody::Query { text, mapping });
+        }
+        None
+    }
+
+    fn convert_mapping_block(&mut self, node: Node) -> MappingBlock {
+        let entries: Vec<MappingEntry> = self.children_by_kind(node, "mapping_entry")
+            .into_iter()
+            .map(|e| self.convert_mapping_entry(e))
+            .collect();
+        MappingBlock { entries }
+    }
+
+    fn convert_mapping_entry(&mut self, node: Node) -> MappingEntry {
+        let source = self.field(node, "source")
+            .map(|n| self.convert_name(n))
+            .unwrap_or_else(|| Name::simple(self.intern("?"), self.span(node)));
+        let target = self.field(node, "target")
+            .map(|n| match n.kind() {
+                "string_literal" => decode_string_lit(self.text(n)),
+                _ => self.text(n).to_string(),
+            })
+            .unwrap_or_default();
+        MappingEntry { source, target }
+    }
+
+    fn convert_provides_clause(&mut self, node: Node) -> Option<ProvidesClause> {
+        let spec = self.field(node, "spec").map(|n| self.convert_type(n))?;
+        let span = self.span(node);
+        Some(ProvidesClause { spec, span })
+    }
+
+    fn convert_provides_block(&mut self, node: Node) -> Option<ProvidesBlock> {
+        let spec = self.field(node, "spec").map(|n| self.convert_type(n))?;
+        let language = self.field(node, "language")
+            .map(|n| self.intern(self.text(n)))?;
+        let mut items: Vec<ProvidesItem> = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "rule_declaration" => {
+                    if let Some(r) = self.convert_rule(child) { items.push(ProvidesItem::Rule(r)); }
+                }
+                "rule_block" => {
+                    if let Some(rb) = self.convert_rule_block(child) { items.push(ProvidesItem::RuleBlock(rb)); }
+                }
+                "fact_declaration" => {
+                    if let Some(f) = self.convert_fact(child) { items.push(ProvidesItem::Fact(f)); }
+                }
+                "proof_declaration" => {
+                    if let Some(p) = self.convert_proof(child) { items.push(ProvidesItem::Proof(p)); }
+                }
+                "artifact_clause" => {
+                    if let Some(p) = self.field(child, "path") {
+                        items.push(ProvidesItem::Artifact(decode_string_lit(self.text(p))));
+                    }
+                }
+                "carrier_clause" => {
+                    items.push(ProvidesItem::Carrier(self.convert_provides_bindings(child)
+                        .into_iter().map(|(s, t)| CarrierBinding { anthill_param: s, host_type: t }).collect()));
+                }
+                "namespace_map_clause" => {
+                    items.push(ProvidesItem::NamespaceMap(self.convert_provides_bindings(child)
+                        .into_iter().map(|(s, t)| NamespaceMapEntry { anthill_namespace: s, host_module: t }).collect()));
+                }
+                _ => {}
+            }
+        }
+        let span = self.span(node);
+        Some(ProvidesBlock { spec, language, items, span })
+    }
+
+    fn convert_provides_bindings(&mut self, node: Node) -> Vec<(Symbol, TermId)> {
+        // bindings: '{' commaSep1(seq(identifier, ':', term)) '}'
+        let mut out: Vec<(Symbol, TermId)> = Vec::new();
+        if let Some(bindings) = self.field(node, "bindings") {
+            let mut cursor = bindings.walk();
+            let children: Vec<Node> = bindings.named_children(&mut cursor).collect();
+            // Walk pairs (identifier, term)
+            let mut i = 0;
+            while i + 1 < children.len() {
+                if children[i].kind() == "identifier" {
+                    let key = self.intern(self.text(children[i]));
+                    let val = self.convert_term(children[i + 1]);
+                    out.push((key, val));
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        out
+    }
+
     fn convert_describe(&mut self, node: Node) -> Option<Describe> {
         let target = self.field(node, "target")
             .map(|n| self.convert_name(n))?;
@@ -1482,6 +1643,21 @@ fn strip_description_delimiters(raw: &str) -> String {
         .and_then(|s| s.strip_suffix(">}"))
         .unwrap_or(trimmed);
     inner.trim().to_string()
+}
+
+/// Strip surrounding quotes from a `string_literal` token and decode escapes.
+fn decode_string_lit(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let inner = if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+    if inner.contains('\\') {
+        decode_string_escapes(inner)
+    } else {
+        inner.to_string()
+    }
 }
 
 /// Decode the `\\.`-style escape sequences the grammar accepts inside

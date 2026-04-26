@@ -462,7 +462,8 @@ impl<'a> RustCodegen<'a> {
                     // Skip — only meaningful inside sort bodies
                 }
                 Item::OperationBlock(_) | Item::RequiresDecl(_)
-                | Item::Describe(_) => {}
+                | Item::Describe(_)
+                | Item::Proof(_) | Item::ProvidesClause(_) | Item::ProvidesBlock(_) => {}
             }
             first = false;
         }

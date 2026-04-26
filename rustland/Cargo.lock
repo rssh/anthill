@@ -76,7 +76,9 @@ version = "0.1.0"
 dependencies = [
  "anthill-core",
  "anthill-cpp-gen",
+ "anthill-smt-gen",
  "clap",
+ "smallvec",
 ]
 
 [[package]]

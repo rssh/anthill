@@ -126,6 +126,26 @@ fn comm_delay_max_z3_round_trip_unsat() {
 }
 
 #[test]
+fn config_overrides_logic_and_emits_timeout() {
+    use anthill_smt_gen::{emit_obligation_with, ProofConfig};
+    let kb = lf1_safety_kb();
+    let mut config = ProofConfig::default();
+    config.logic = Some("AUFLIRA".to_string());
+    config.timeout_ms = Some(2500);
+    let smt = emit_obligation_with(&kb, &Obligation {
+        rule_qn: "test.smt_gen.lf1.comm_delay_max".to_string(),
+        upper_bound: 0.1,
+    }, &config).expect("emit");
+    assert!(smt.contains("(set-logic AUFLIRA)"),
+            "logic override not honoured:\n{smt}");
+    assert!(smt.contains("(set-option :timeout 2500)"),
+            "timeout option not emitted:\n{smt}");
+    // Default logic must NOT appear.
+    assert!(!smt.contains("(set-logic QF_LRA)"),
+            "default logic leaked through override:\n{smt}");
+}
+
+#[test]
 fn comm_delay_max_emits_arith_in_correct_smt_lib_order() {
     // Z3 wants prefix notation `(+ a b)`, not infix `(a + b)`.
     let kb = lf1_safety_kb();

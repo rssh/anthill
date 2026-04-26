@@ -1,0 +1,22 @@
+-- Logic.Constructive — intuitionistic axioms, declared as bare rule
+-- heads with no Horn body. The resolver pass that handles `-:`
+-- (nested implication) will treat these as introduction/elimination
+-- schemas rather than facts; until then they exist as named symbols
+-- so a `proof ... :- modus_ponens, …` hint block can reference them.
+namespace anthill.logic.Constructive
+  import anthill.logic.Minimal.{Minimal}
+  export Constructive
+
+  sort Constructive
+    requires anthill.logic.Minimal.Minimal
+
+    rule identity(?p)
+    rule modus_ponens(?p, ?q)
+    rule conjunction_intro(?p, ?q)
+    rule conjunction_elim_l(?p, ?q)
+    rule conjunction_elim_r(?p, ?q)
+    rule disjunction_intro_l(?p, ?q)
+    rule disjunction_intro_r(?p, ?q)
+    rule ex_falso(?p)
+  end
+end

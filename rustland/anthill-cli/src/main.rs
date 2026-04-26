@@ -15,6 +15,7 @@ use anthill_core::parse::ir::{Item, ParsedFile};
 use anthill_core::persistence::print::TermPrinter;
 use anthill_core::persistence::term_ser;
 
+mod prove;
 mod run;
 mod stdlib_embedded;
 
@@ -42,6 +43,8 @@ enum Command {
     Check(CheckArgs),
     /// Run an anthill program (entry via `requires anthill.cli.Main`)
     Run(run::RunArgs),
+    /// Discharge proof obligations declared via `proof <rule> by ...` blocks
+    Prove(ProveArgs),
 }
 
 #[derive(Subcommand)]
@@ -116,6 +119,35 @@ struct CppProjectArgs {
     /// Print intended actions without writing files.
     #[arg(long)]
     dry_run: bool,
+}
+
+#[derive(Parser)]
+struct ProveArgs {
+    /// .anthill source files / directories to load (in addition to
+    /// the embedded stdlib).
+    #[arg(required = true)]
+    paths: Vec<PathBuf>,
+
+    /// Discharge only this proof (qualified rule name, e.g.
+    /// `anthill.examples.lf1.safety.lower_violation`). When omitted,
+    /// discharges every proof in the loaded KB.
+    #[arg(long = "rule")]
+    rule: Option<String>,
+
+    /// External solver binary to invoke for `by z3` strategies.
+    /// Default `z3`. Override for non-standard installs or alt-prover
+    /// experiments.
+    #[arg(long, default_value = "z3")]
+    solver: String,
+
+    /// Print emitted SMT-LIB to stdout instead of running the solver.
+    /// Useful for debugging or when `z3` isn't on $PATH.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Print extra progress info.
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 #[derive(Parser)]
@@ -1154,6 +1186,7 @@ fn main() -> ExitCode {
         Command::Query(ref args) => run_query(args),
         Command::Check(ref args) => run_check(args),
         Command::Run(ref args) => return ExitCode::from(run::run(args) as u8),
+        Command::Prove(ref args) => prove::run_prove(args),
     };
 
     match result {

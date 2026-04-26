@@ -31,6 +31,18 @@ impl SmtGenError {
     }
 }
 
+/// Caller-supplied overrides forwarded to the SMT preamble.
+#[derive(Debug, Clone, Default)]
+pub struct ProofConfig {
+    /// SMT-LIB logic, e.g. "QF_LRA". Defaults to the auto-detected one.
+    pub logic: Option<String>,
+    /// Emitted as `(set-option :timeout N)` before `(set-logic …)`.
+    pub timeout_ms: Option<u32>,
+    /// Anthill QN → SMT operator/identifier overrides (currently
+    /// stored but not consulted; default mapping covers lf1).
+    pub mapping: BTreeMap<String, String>,
+}
+
 /// One obligation to discharge: prove `<rule>(?result) ≤ <bound>`
 /// for *every* binding of the rule's body. Translates to
 /// `(assert (not (<= rule_result bound)))` + `(check-sat)` —
@@ -52,10 +64,20 @@ pub struct Obligation {
 /// loaded. Logic is `QF_LRA` (quantifier-free linear real
 /// arithmetic) — decidable, fast.
 pub fn emit_obligation(kb: &KnowledgeBase, obligation: &Obligation) -> Result<String, SmtGenError> {
+    emit_obligation_with(kb, obligation, &ProofConfig::default())
+}
+
+/// Like `emit_obligation`, but with an explicit `ProofConfig` for
+/// logic, timeout, or mapping overrides.
+pub fn emit_obligation_with(
+    kb: &KnowledgeBase,
+    obligation: &Obligation,
+    config: &ProofConfig,
+) -> Result<String, SmtGenError> {
     let mut emitter = Emitter::new(kb);
     emitter.collect_rule(&obligation.rule_qn)?;
     emitter.collect_facts_for_referenced_entities();
-    Ok(emitter.render_upper_bound(obligation))
+    Ok(emitter.render_upper_bound_with(obligation, config))
 }
 
 /// Emit a satisfiability check for a rule's body, framed as a
@@ -72,10 +94,35 @@ pub fn emit_satisfiability_check(
     kb: &KnowledgeBase,
     rule_qn: &str,
 ) -> Result<String, SmtGenError> {
+    emit_satisfiability_check_with(kb, rule_qn, &ProofConfig::default())
+}
+
+/// Like `emit_satisfiability_check`, but with an explicit `ProofConfig`.
+pub fn emit_satisfiability_check_with(
+    kb: &KnowledgeBase,
+    rule_qn: &str,
+    config: &ProofConfig,
+) -> Result<String, SmtGenError> {
     let mut emitter = Emitter::new(kb);
     emitter.collect_rule(rule_qn)?;
     emitter.collect_facts_for_referenced_entities();
-    Ok(emitter.render_satisfiability(rule_qn))
+    Ok(emitter.render_satisfiability_with(rule_qn, config))
+}
+
+/// Like `emit_satisfiability_check_with` but additionally returns the
+/// set of rule QNs visited during emission — the proof's dependency
+/// set, used for staleness tracking when one of them changes.
+pub fn emit_satisfiability_check_with_deps(
+    kb: &KnowledgeBase,
+    rule_qn: &str,
+    config: &ProofConfig,
+) -> Result<(String, Vec<String>), SmtGenError> {
+    let mut emitter = Emitter::new(kb);
+    emitter.collect_rule(rule_qn)?;
+    emitter.collect_facts_for_referenced_entities();
+    let smt = emitter.render_satisfiability_with(rule_qn, config);
+    let deps: Vec<String> = emitter.visited_rules.into_iter().collect();
+    Ok((smt, deps))
 }
 
 // ── Implementation ──────────────────────────────────────────────────
@@ -107,6 +154,9 @@ struct Emitter<'kb> {
     /// inequality goals but never bound by an `=` clause). These
     /// must be `(declare-const ... Real)`'d for satisfiability mode.
     free_vars: BTreeSet<String>,
+    /// QNs of every rule visited (top-level + transitive). The
+    /// CLI surfaces these as the proof's staleness dependency set.
+    pub(crate) visited_rules: BTreeSet<String>,
 }
 
 impl<'kb> Emitter<'kb> {
@@ -119,12 +169,14 @@ impl<'kb> Emitter<'kb> {
             result_var: String::new(),
             assertions: Vec::new(),
             free_vars: BTreeSet::new(),
+            visited_rules: BTreeSet::new(),
         }
     }
 
     /// Find the rule by qualified name. Walk its body and produce
     /// the SMT-LIB equation that defines the head's result variable.
     fn collect_rule(&mut self, rule_qn: &str) -> Result<(), SmtGenError> {
+        self.visited_rules.insert(rule_qn.to_string());
         let sym = self.kb.try_resolve_symbol(rule_qn)
             .ok_or_else(|| SmtGenError::new(format!("rule '{rule_qn}' not found")))?;
         let rules = self.kb.by_functor(sym);
@@ -315,6 +367,7 @@ impl<'kb> Emitter<'kb> {
     /// Each called rule's body uses its own DeBruijn indices, so
     /// fresh local bindings don't collide with the caller's.
     fn translate_called_rule(&mut self, callee_qn: &str) -> Result<String, SmtGenError> {
+        self.visited_rules.insert(callee_qn.to_string());
         let sym = self.kb.try_resolve_symbol(callee_qn)
             .ok_or_else(|| SmtGenError::new(format!("rule call '{callee_qn}' not found")))?;
         let rid = self.kb.by_functor(sym).into_iter()
@@ -429,13 +482,17 @@ impl<'kb> Emitter<'kb> {
         }
     }
 
-    fn render_upper_bound(&self, obligation: &Obligation) -> String {
+    fn render_upper_bound_with(&self, obligation: &Obligation, config: &ProofConfig) -> String {
+        let logic = config.logic.as_deref().unwrap_or("QF_LRA");
         let mut out = String::new();
         out.push_str(&format!(
             "; Generated by anthill-smt-gen for obligation {}.\n",
             obligation.rule_qn));
-        out.push_str("; Logic: QF_LRA (quantifier-free linear real arithmetic).\n");
-        out.push_str("(set-logic QF_LRA)\n\n");
+        out.push_str(&format!("; Logic: {logic}.\n"));
+        if let Some(t) = config.timeout_ms {
+            out.push_str(&format!("(set-option :timeout {t})\n"));
+        }
+        out.push_str(&format!("(set-logic {logic})\n\n"));
 
         for (name, value) in &self.field_consts {
             out.push_str(&format!("(define-fun {name} () Real {})\n", format_real(*value)));
@@ -456,15 +513,18 @@ impl<'kb> Emitter<'kb> {
         out
     }
 
-    fn render_satisfiability(&self, rule_qn: &str) -> String {
+    fn render_satisfiability_with(&self, rule_qn: &str, config: &ProofConfig) -> String {
+        // `LRA` is the default for satisfiability mode (handles `abs`
+        // via the standard if-then-else encoding Z3 applies).
+        let logic = config.logic.as_deref().unwrap_or("LRA");
         let mut out = String::new();
         out.push_str(&format!(
             "; Generated by anthill-smt-gen — satisfiability check for rule {rule_qn}.\n"));
         out.push_str("; `unsat` ⇒ rule body has no solution ⇒ encoded property holds.\n");
-        // `LRA` (linear real arithmetic) — `abs` requires
-        // quantifier-friendly logic; `LRA` covers it via the
-        // standard if-then-else encoding Z3 applies internally.
-        out.push_str("(set-logic LRA)\n\n");
+        if let Some(t) = config.timeout_ms {
+            out.push_str(&format!("(set-option :timeout {t})\n"));
+        }
+        out.push_str(&format!("(set-logic {logic})\n\n"));
 
         for (name, value) in &self.field_consts {
             out.push_str(&format!("(define-fun {name} () Real {})\n", format_real(*value)));

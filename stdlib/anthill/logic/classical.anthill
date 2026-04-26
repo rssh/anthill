@@ -1,0 +1,20 @@
+-- Logic.Classical — adds the non-constructive axioms (excluded
+-- middle, double-negation, contradiction). Declared as bare rule
+-- heads; see `constructive.anthill` for the same caveat.
+--
+-- SMT-discharged proofs (`by z3`) are classical regardless of which
+-- logic the enclosing sort imports; this distinction matters only
+-- for `by derivation`, where the resolver consults rules in the
+-- transitive `requires` chain.
+namespace anthill.logic.Classical
+  import anthill.logic.Constructive.{Constructive}
+  export Classical
+
+  sort Classical
+    requires anthill.logic.Constructive.Constructive
+
+    rule excluded_middle(?p)
+    rule contradiction(?p)
+    rule double_negation(?p)
+  end
+end
