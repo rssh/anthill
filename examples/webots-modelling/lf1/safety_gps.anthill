@@ -99,11 +99,10 @@ namespace anthill.examples.lf1.safety.gps
                       byte_size: ?bs,
                       packet_size: ?ps),
        KinematicAssumptions(control_period: ?tc),
-       ?prop  = div(?r, ?c),
-       ?bits  = mul(?ps, ?bs),
-       ?trans = div(?bits, ?br),
-       ?sum1  = add(?prop, ?trans),
-       ?tau   = add(?sum1, ?tc)
+       ?prop  = ?r / ?c,
+       ?bits  = ?ps * ?bs,
+       ?trans = ?bits / ?br,
+       ?tau   = ?prop + ?trans + ?tc
 
   -- =================================================================
   -- step_distance_bound — derived per-step distance-change envelope
@@ -121,11 +120,10 @@ namespace anthill.examples.lf1.safety.gps
                             control_period:      ?tc),
        GpsErrorBound(epsilon: ?eps),
        comm_delay_max(?tau),
-       ?phys     = mul(add(?vL, ?vF), ?tc),
-       ?gps_term = mul(4.0, ?eps),
-       ?stale    = mul(?tau, ?vL),
-       ?sum1     = add(?phys, ?gps_term),
-       ?delta    = add(?sum1, ?stale)
+       ?phys     = (?vL + ?vF) * ?tc,
+       ?gps_term = 4.0 * ?eps,
+       ?stale    = ?tau * ?vL,
+       ?delta    = ?phys + ?gps_term + ?stale
 
   -- =================================================================
   -- Properties (proof obligations)
@@ -164,7 +162,7 @@ namespace anthill.examples.lf1.safety.gps
        distance_at_step(?k, ?d_prev),
        lte(?d_min, ?d_prev),
        lte(?d_prev, ?d_max),
-       ?d_next = add(?d_prev, ?step),
+       ?d_next = ?d_prev + ?step,
        lte(abs(?step), ?delta)
        -- => d_min <= d_next <= d_max  (the goal)
 
@@ -191,23 +189,23 @@ namespace anthill.examples.lf1.safety.gps
   rule lower_violation(?d_next)
     :- DistanceBounds(d_min: ?d_min, d_max: ?d_max),
        step_distance_bound(?delta),
-       ?d_low_bound  = add(?d_min, ?delta),
-       ?d_high_bound = sub(?d_max, ?delta),
+       ?d_low_bound  = ?d_min + ?delta,
+       ?d_high_bound = ?d_max - ?delta,
        lte(?d_low_bound, ?d_prev),
        lte(?d_prev, ?d_high_bound),
        lte(abs(?step), ?delta),
-       ?d_next = add(?d_prev, ?step),
+       ?d_next = ?d_prev + ?step,
        lt(?d_next, ?d_min)
 
   rule upper_violation(?d_next)
     :- DistanceBounds(d_min: ?d_min, d_max: ?d_max),
        step_distance_bound(?delta),
-       ?d_low_bound  = add(?d_min, ?delta),
-       ?d_high_bound = sub(?d_max, ?delta),
+       ?d_low_bound  = ?d_min + ?delta,
+       ?d_high_bound = ?d_max - ?delta,
        lte(?d_low_bound, ?d_prev),
        lte(?d_prev, ?d_high_bound),
        lte(abs(?step), ?delta),
-       ?d_next = add(?d_prev, ?step),
+       ?d_next = ?d_prev + ?step,
        gt(?d_next, ?d_max)
 
   -- =================================================================
