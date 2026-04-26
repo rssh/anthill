@@ -40,6 +40,10 @@ module.exports = grammar({
     [$.operation_declaration],
     [$.variable_term],
     [$.variable_term, $.fn_term],
+    // `Foo.bar` is field_access; `Foo.bar(...)` extends it into
+    // fn_term. Tree-sitter needs to explore both branches and pick
+    // based on whether `(` follows.
+    [$._atom_term, $.fn_term],
     // name [ could be parameterized_type or simple_type followed by something else
     [$.simple_type, $.parameterized_type],
     // [ after rule head could be meta_block or start of next rule_entry with collection_literal
@@ -647,8 +651,12 @@ module.exports = grammar({
     // Single token: ?name must be written without whitespace.
     variable: $ => token(seq('?', optional(/[a-zA-Z_][a-zA-Z0-9_-]*/))),
 
+    // The functor excludes the fully-dotted `name` rule so that
+    // bare `p.x` in argument position reduces to field_access
+    // instead of being eaten as a nested fn_term name. The `(`
+    // after field_access is the disambiguator with $._atom_term.
     fn_term: $ => seq(
-      field('name', choice($.name, $.variable)),
+      field('name', choice($.identifier, $.field_access, $.variable)),
       '(',
       commaSep($._fn_arg),
       ')',
@@ -667,9 +675,10 @@ module.exports = grammar({
 
     // Instantiation term: Eq[Int], List[T = Int], etc.
     // Same syntax as parameterized_type but in term position.
-    // Used for: fact Eq[Int], fact Numeric[Int], etc.
+    // Name is a single identifier — see fn_term above for why
+    // the dotted form is excluded.
     instantiation_term: $ => seq(
-      field('name', $.name),
+      field('name', $.identifier),
       '[',
       commaSep1($.sort_binding),
       ']',

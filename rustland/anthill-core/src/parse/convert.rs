@@ -184,6 +184,10 @@ impl<'a> Converter<'a> {
     fn convert_name(&mut self, node: Node) -> Name {
         let span = self.span(node);
         let mut segments = SmallVec::new();
+        if node.kind() == "field_access" {
+            self.collect_field_access_segments(node, &mut segments);
+            return Name { segments, span };
+        }
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             if child.kind() == "identifier" {
@@ -197,6 +201,27 @@ impl<'a> Converter<'a> {
             segments.push(sym);
         }
         Name { segments, span }
+    }
+
+    fn collect_field_access_segments(
+        &mut self,
+        node: Node,
+        segments: &mut SmallVec<[Symbol; 2]>,
+    ) {
+        let object = self.field(node, "object");
+        let field = self.field(node, "field");
+        if let Some(o) = object {
+            if o.kind() == "field_access" {
+                self.collect_field_access_segments(o, segments);
+            } else if o.kind() == "identifier" {
+                let sym = self.intern(self.text(o));
+                segments.push(sym);
+            }
+        }
+        if let Some(f) = field {
+            let sym = self.intern(self.text(f));
+            segments.push(sym);
+        }
     }
 
     // ── Type expressions ────────────────────────────────────────
@@ -405,6 +430,9 @@ impl<'a> Converter<'a> {
 
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
+            if child == name_node {
+                continue;
+            }
             match child.kind() {
                 "named_arg" => {
                     let key_node = self.field(child, "name");
@@ -415,7 +443,6 @@ impl<'a> Converter<'a> {
                         named_args.push((sym, tid));
                     }
                 }
-                "name" | "variable" => { /* already handled */ }
                 _ if is_term_kind(child.kind()) => {
                     let tid = self.convert_term(child);
                     pos_args.push(tid);

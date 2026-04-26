@@ -11,16 +11,22 @@ end
 
 (source_file
   (namespace_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (rule_declaration
-      head: (rule_head (fn_term
-        name: (name (identifier))
-        (variable_term (variable))))
-      body: (rule_body (fn_term
-        name: (name (identifier))
-        (variable_term (variable)))))
+      head: (rule_head
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable))))
+      body: (rule_body
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable)))))
     (proof_declaration
-      target: (name (identifier)))))
+      target: (name
+        (identifier)))))
 
 =====================================
 Proof by derivation
@@ -37,17 +43,24 @@ end
 
 (source_file
   (namespace_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (rule_declaration
-      head: (rule_head (fn_term
-        name: (name (identifier))
-        (variable_term (variable))))
-      body: (rule_body (fn_term
-        name: (name (identifier))
-        (variable_term (variable)))))
+      head: (rule_head
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable))))
+      body: (rule_body
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable)))))
     (proof_declaration
-      target: (name (identifier))
-      strategy: (proof_strategy name: (identifier)))))
+      target: (name
+        (identifier))
+      strategy: (proof_strategy
+        name: (identifier)))))
 
 =====================================
 Proof by z3 with parameters
@@ -64,20 +77,30 @@ end
 
 (source_file
   (namespace_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (rule_declaration
-      head: (rule_head (fn_term
-        name: (name (identifier))
-        (variable_term (variable))))
-      body: (rule_body (fn_term
-        name: (name (identifier))
-        (variable_term (variable)))))
+      head: (rule_head
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable))))
+      body: (rule_body
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable)))))
     (proof_declaration
-      target: (name (identifier))
+      target: (name
+        (identifier))
       strategy: (proof_strategy
         name: (identifier)
-        (named_arg name: (identifier) value: (integer_literal))
-        (named_arg name: (identifier) value: (string_literal))))))
+        (named_arg
+          name: (identifier)
+          value: (integer_literal))
+        (named_arg
+          name: (identifier)
+          value: (string_literal))))))
 
 =====================================
 Proof by test
@@ -94,19 +117,27 @@ end
 
 (source_file
   (namespace_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (rule_declaration
-      head: (rule_head (fn_term
-        name: (name (identifier))
-        (variable_term (variable))))
-      body: (rule_body (fn_term
-        name: (name (identifier))
-        (variable_term (variable)))))
+      head: (rule_head
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable))))
+      body: (rule_body
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable)))))
     (proof_declaration
-      target: (name (identifier))
+      target: (name
+        (identifier))
       strategy: (proof_strategy
         name: (identifier)
-        (named_arg name: (identifier) value: (integer_literal))))))
+        (named_arg
+          name: (identifier)
+          value: (integer_literal))))))
 
 =====================================
 Proof with explicit query and mapping
@@ -129,27 +160,51 @@ end
 
 (source_file
   (namespace_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (rule_declaration
-      head: (rule_head (fn_term
-        name: (name (identifier))
-        (variable_term (variable)) (variable_term (variable))))
-      body: (rule_body (fn_term
-        name: (name (identifier))
+      head: (rule_head
         (fn_term
-          name: (name (identifier))
-          (variable_term (variable)) (variable_term (variable)))
+          name: (identifier)
+          (variable_term
+            (variable))
+          (variable_term
+            (variable))))
+      body: (rule_body
         (fn_term
-          name: (name (identifier))
-          (variable_term (variable)) (variable_term (variable))))))
+          name: (identifier)
+          (fn_term
+            name: (identifier)
+            (variable_term
+              (variable))
+            (variable_term
+              (variable)))
+          (fn_term
+            name: (identifier)
+            (variable_term
+              (variable))
+            (variable_term
+              (variable))))))
     (proof_declaration
-      target: (name (identifier))
-      strategy: (proof_strategy name: (identifier))
+      target: (name
+        (identifier))
+      strategy: (proof_strategy
+        name: (identifier))
       query: (string_literal)
       mapping: (mapping_block
-        (mapping_entry source: (name (identifier)) target: (string_literal))
-        (mapping_entry source: (name (identifier)) target: (string_literal))
-        (mapping_entry source: (name (identifier)) target: (name (identifier)))))))
+        (mapping_entry
+          source: (name
+            (identifier))
+          target: (string_literal))
+        (mapping_entry
+          source: (name
+            (identifier))
+          target: (string_literal))
+        (mapping_entry
+          source: (name
+            (identifier))
+          target: (name
+            (identifier)))))))
 
 =====================================
 Provides clause inside sort body
@@ -165,15 +220,21 @@ end
 
 (source_file
   (namespace_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (sort_with_body
-      name: (name (identifier))
+      name: (name
+        (identifier))
       (provides_clause
         spec: (parameterized_type
-          (name (identifier))
+          (name
+            (identifier))
           (sort_binding
-            param: (name (identifier))
-            type: (simple_type (name (identifier)))))))))
+            param: (name
+              (identifier))
+            type: (simple_type
+              (name
+                (identifier)))))))))
 
 =====================================
 Provides block (anthill language) with rules and proofs
@@ -191,25 +252,43 @@ end
 
 (source_file
   (namespace_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (provides_block
       spec: (parameterized_type
-        (name (identifier))
+        (name
+          (identifier))
         (sort_binding
-          param: (name (identifier))
-          type: (simple_type (name (identifier)))))
+          param: (name
+            (identifier))
+          type: (simple_type
+            (name
+              (identifier)))))
       language: (identifier)
       (rule_declaration
-        head: (rule_head (fn_term
-          name: (name (identifier))
-          (variable_term (variable)) (variable_term (variable))))
-        body: (rule_body (fn_term
-          name: (name (identifier))
-          (named_arg name: (identifier) value: (variable_term (variable)))
-          (named_arg name: (identifier) value: (variable_term (variable))))))
+        head: (rule_head
+          (fn_term
+            name: (identifier)
+            (variable_term
+              (variable))
+            (variable_term
+              (variable))))
+        body: (rule_body
+          (fn_term
+            name: (identifier)
+            (named_arg
+              name: (identifier)
+              value: (variable_term
+                (variable)))
+            (named_arg
+              name: (identifier)
+              value: (variable_term
+                (variable))))))
       (proof_declaration
-        target: (name (identifier))
-        strategy: (proof_strategy name: (identifier))))))
+        target: (name
+          (identifier))
+        strategy: (proof_strategy
+          name: (identifier))))))
 
 =====================================
 Provides block (rust language) with artifact and carrier
@@ -228,16 +307,26 @@ end
 
 (source_file
   (namespace_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (provides_block
       spec: (parameterized_type
-        (name (identifier))
+        (name
+          (identifier))
         (sort_binding
-          param: (name (identifier))
-          type: (simple_type (name (identifier)))))
+          param: (name
+            (identifier))
+          type: (simple_type
+            (name
+              (identifier)))))
       language: (identifier)
-      (artifact_clause path: (string_literal))
-      (carrier_clause bindings: (bindings
-        (identifier) (identifier)))
-      (namespace_map_clause bindings: (bindings
-        (identifier) (string_literal))))))
+      (artifact_clause
+        path: (string_literal))
+      (carrier_clause
+        bindings: (bindings
+          (identifier)
+          (identifier)))
+      (namespace_map_clause
+        bindings: (bindings
+          (identifier)
+          (string_literal))))))

@@ -8,10 +8,12 @@ rule r: ?x.y
 
 (source_file
   (rule_declaration
-    label: (name (identifier))
+    label: (name
+      (identifier))
     head: (rule_head
       (field_access
-        object: (variable_term (variable))
+        object: (variable_term
+          (variable))
         field: (identifier)))))
 
 =====================================
@@ -24,11 +26,13 @@ rule r: ?x.y.z
 
 (source_file
   (rule_declaration
-    label: (name (identifier))
+    label: (name
+      (identifier))
     head: (rule_head
       (field_access
         object: (field_access
-          object: (variable_term (variable))
+          object: (variable_term
+            (variable))
           field: (identifier))
         field: (identifier)))))
 
@@ -43,11 +47,73 @@ fact f(?a.b, ?c)
 (source_file
   (fact_declaration
     term: (fn_term
-      name: (name (identifier))
+      name: (identifier)
       (field_access
-        object: (variable_term (variable))
+        object: (variable_term
+          (variable))
         field: (identifier))
-      (variable_term (variable)))))
+      (variable_term
+        (variable)))))
+
+=====================================
+Field access on plain identifier in function call
+=====================================
+
+fact g(p.x, q.y)
+
+---
+
+(source_file
+  (fact_declaration
+    term: (fn_term
+      name: (identifier)
+      (field_access
+        object: (identifier)
+        field: (identifier))
+      (field_access
+        object: (identifier)
+        field: (identifier)))))
+
+=====================================
+Chained field access on plain identifier in function call
+=====================================
+
+fact f(state.waypoints.points)
+
+---
+
+(source_file
+  (fact_declaration
+    term: (fn_term
+      name: (identifier)
+      (field_access
+        object: (field_access
+          object: (identifier)
+          field: (identifier))
+        field: (identifier)))))
+
+=====================================
+Qualified function call with field-access args
+=====================================
+
+fact wrap(Foo.bar(p.x, q.y))
+
+---
+
+(source_file
+  (fact_declaration
+    term: (fn_term
+      name: (identifier)
+      (fn_term
+        name: (field_access
+          object: (identifier)
+          field: (identifier))
+        (field_access
+          object: (identifier)
+          field: (identifier))
+        (field_access
+          object: (identifier)
+          field: (identifier))))))
 
 =====================================
 Field access in rule body
@@ -59,17 +125,21 @@ rule r: result(?val) :- ?val = ?env.fs
 
 (source_file
   (rule_declaration
-    label: (name (identifier))
+    label: (name
+      (identifier))
     head: (rule_head
       (fn_term
-        name: (name (identifier))
-        (variable_term (variable))))
+        name: (identifier)
+        (variable_term
+          (variable))))
     body: (rule_body
       (infix_term
-        (variable_term (variable))
+        (variable_term
+          (variable))
         (operator_symbol)
         (field_access
-          object: (variable_term (variable))
+          object: (variable_term
+            (variable))
           field: (identifier))))))
 
 =====================================
@@ -83,7 +153,9 @@ fact Namespace.Sort()
 (source_file
   (fact_declaration
     term: (fn_term
-      name: (name (identifier) (identifier)))))
+      name: (field_access
+        object: (identifier)
+        field: (identifier)))))
 
 =====================================
 Field access on parenthesized expression
@@ -95,9 +167,11 @@ rule r: (?x).y
 
 (source_file
   (rule_declaration
-    label: (name (identifier))
+    label: (name
+      (identifier))
     head: (rule_head
       (field_access
         object: (paren_expr
-          (variable_term (variable)))
+          (variable_term
+            (variable)))
         field: (identifier)))))

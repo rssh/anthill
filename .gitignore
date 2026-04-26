@@ -28,5 +28,8 @@ docs/local/
 pdf/
 transitions.anthill
 
+# Local-only reference material (vendor / WIP imports)
+examples/webots-modelling/lf1/sc2/
+
 # Claude
 .claude/

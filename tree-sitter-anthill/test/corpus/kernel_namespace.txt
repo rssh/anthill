@@ -9,7 +9,8 @@ namespace banking {
 
 (source_file
   (namespace_declaration
-    name: (name (identifier))))
+    name: (name
+      (identifier))))
 
 =====================================
 Namespace with entity and operation
@@ -27,47 +28,63 @@ end
 
 (source_file
   (namespace_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (export_clause
-      (name (identifier))
-      (name (identifier))
-      (name (identifier)))
+      (name
+        (identifier))
+      (name
+        (identifier))
+      (name
+        (identifier)))
     (entity_declaration
-      name: (name (identifier))
+      name: (name
+        (identifier))
       (field_decl
         name: (identifier)
-        type: (simple_type (name (identifier))))
+        type: (simple_type
+          (name
+            (identifier))))
       (field_decl
         name: (identifier)
-        type: (simple_type (name (identifier)))))
+        type: (simple_type
+          (name
+            (identifier)))))
     (operation_declaration
-      name: (name (identifier))
+      name: (name
+        (identifier))
       (param
         name: (identifier)
-        type: (simple_type (name (identifier))))
+        type: (simple_type
+          (name
+            (identifier))))
       (param
         name: (identifier)
-        type: (simple_type (name (identifier))))
-      return_type: (simple_type (name (identifier)))
+        type: (simple_type
+          (name
+            (identifier))))
+      return_type: (simple_type
+        (name
+          (identifier)))
       (operation_clause
         (requires_clause
           (rule_body
             (fn_term
-              name: (name (identifier))
+              name: (identifier)
               (identifier)
               (identifier)))))
       (operation_clause
         (ensures_clause
           (rule_body
             (fn_term
-              name: (name (identifier))
+              name: (identifier)
               (fn_term
-                name: (name (identifier))
+                name: (identifier)
                 (identifier))
               (fn_term
-                name: (name (identifier))
+                name: (identifier)
                 (fn_term
-                  name: (name (identifier))
+                  name: (identifier)
                   (identifier))
                 (identifier)))))))))
 
@@ -81,8 +98,10 @@ sort Scalar = ?
 
 (source_file
   (abstract_sort
-    name: (name (identifier))
-    definition: (variable_term (variable))))
+    name: (name
+      (identifier))
+    definition: (variable_term
+      (variable))))
 
 =====================================
 Sort with body (ADT)
@@ -98,19 +117,27 @@ sort WorkStatus {
 
 (source_file
   (sort_with_body
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (entity_declaration
-      name: (name (identifier)))
+      name: (name
+        (identifier)))
     (entity_declaration
-      name: (name (identifier)))
+      name: (name
+        (identifier)))
     (entity_declaration
-      name: (name (identifier))
+      name: (name
+        (identifier))
       (field_decl
         name: (identifier)
-        type: (simple_type (name (identifier))))
+        type: (simple_type
+          (name
+            (identifier))))
       (field_decl
         name: (identifier)
-        type: (simple_type (name (identifier)))))))
+        type: (simple_type
+          (name
+            (identifier)))))))
 
 =====================================
 Fact with metadata
@@ -123,15 +150,17 @@ fact parent("alice", "bob") [trust: axiom, agent: "author"]
 (source_file
   (fact_declaration
     term: (fn_term
-      name: (name (identifier))
+      name: (identifier)
       (string_literal)
       (string_literal))
     (meta_block
       (meta_entry
-        key: (name (identifier))
+        key: (name
+          (identifier))
         value: (identifier))
       (meta_entry
-        key: (name (identifier))
+        key: (name
+          (identifier))
         value: (string_literal)))))
 
 =====================================
@@ -148,25 +177,39 @@ sort Ordered {
 
 (source_file
   (sort_with_body
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (abstract_sort
-      name: (name (identifier))
-      definition: (variable_term (variable)))
+      name: (name
+        (identifier))
+      definition: (variable_term
+        (variable)))
     (requires_declaration
       type: (parameterized_type
-        (name (identifier))
+        (name
+          (identifier))
         (sort_binding
-          param: (name (identifier))
-          type: (simple_type (name (identifier))))))
+          param: (name
+            (identifier))
+          type: (simple_type
+            (name
+              (identifier))))))
     (operation_declaration
-      name: (name (identifier))
+      name: (name
+        (identifier))
       (param
         name: (identifier)
-        type: (simple_type (name (identifier))))
+        type: (simple_type
+          (name
+            (identifier))))
       (param
         name: (identifier)
-        type: (simple_type (name (identifier))))
-      return_type: (simple_type (name (identifier))))))
+        type: (simple_type
+          (name
+            (identifier))))
+      return_type: (simple_type
+        (name
+          (identifier))))))
 
 =====================================
 Sort with import/export statements
@@ -183,24 +226,34 @@ end
 
 (source_file
   (sort_with_body
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (import_clause
       (import_path
         (identifier)
         (identifier)
         (identifier)))
     (export_clause
-      (name (identifier))
-      (name (identifier)))
+      (name
+        (identifier))
+      (name
+        (identifier)))
     (operation_declaration
-      name: (name (identifier))
+      name: (name
+        (identifier))
       (param
         name: (identifier)
-        type: (simple_type (name (identifier))))
+        type: (simple_type
+          (name
+            (identifier))))
       (param
         name: (identifier)
-        type: (simple_type (name (identifier))))
-      return_type: (simple_type (name (identifier))))))
+        type: (simple_type
+          (name
+            (identifier))))
+      return_type: (simple_type
+        (name
+          (identifier))))))
 
 =====================================
 Namespace with requires declaration
@@ -215,16 +268,23 @@ namespace banking {
 
 (source_file
   (namespace_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (abstract_sort
-      name: (name (identifier))
-      definition: (variable_term (variable)))
+      name: (name
+        (identifier))
+      definition: (variable_term
+        (variable)))
     (requires_declaration
       type: (parameterized_type
-        (name (identifier))
+        (name
+          (identifier))
         (sort_binding
-          param: (name (identifier))
-          type: (simple_type (name (identifier))))))))
+          param: (name
+            (identifier))
+          type: (simple_type
+            (name
+              (identifier))))))))
 
 =====================================
 Requires with punned sort binding
@@ -239,15 +299,21 @@ sort Ordered {
 
 (source_file
   (sort_with_body
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (abstract_sort
-      name: (name (identifier))
-      definition: (variable_term (variable)))
+      name: (name
+        (identifier))
+      definition: (variable_term
+        (variable)))
     (requires_declaration
       type: (parameterized_type
-        (name (identifier))
+        (name
+          (identifier))
         (sort_binding
-          type: (simple_type (name (identifier))))))))
+          type: (simple_type
+            (name
+              (identifier))))))))
 
 =====================================
 Import with dotted name
@@ -262,17 +328,21 @@ end
 
 (source_file
   (namespace_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (import_clause
       (import_path
         (identifier)
         (identifier)
         (identifier)))
     (entity_declaration
-      name: (name (identifier))
+      name: (name
+        (identifier))
       (field_decl
         name: (identifier)
-        type: (simple_type (name (identifier)))))))
+        type: (simple_type
+          (name
+            (identifier)))))))
 
 =====================================
 Selective import
@@ -287,7 +357,8 @@ end
 
 (source_file
   (namespace_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (import_clause
       (import_path
         (identifier)
@@ -296,10 +367,13 @@ end
           (identifier)
           (identifier))))
     (entity_declaration
-      name: (name (identifier))
+      name: (name
+        (identifier))
       (field_decl
         name: (identifier)
-        type: (simple_type (name (identifier)))))))
+        type: (simple_type
+          (name
+            (identifier)))))))
 
 =====================================
 Wildcard import
@@ -314,17 +388,21 @@ end
 
 (source_file
   (namespace_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (import_clause
       (import_path
         (identifier)
         (identifier)
         (wildcard_import)))
     (entity_declaration
-      name: (name (identifier))
+      name: (name
+        (identifier))
       (field_decl
         name: (identifier)
-        type: (simple_type (name (identifier)))))))
+        type: (simple_type
+          (name
+            (identifier)))))))
 
 =====================================
 Fact with instantiation term
@@ -337,10 +415,13 @@ fact Eq[T = Int]
 (source_file
   (fact_declaration
     term: (instantiation_term
-      name: (name (identifier))
+      name: (identifier)
       (sort_binding
-        param: (name (identifier))
-        type: (simple_type (name (identifier)))))))
+        param: (name
+          (identifier))
+        type: (simple_type
+          (name
+            (identifier)))))))
 
 =====================================
 Constraint with guard
@@ -352,19 +433,23 @@ constraint non_negative: gte(balance(?a), 0) :- balance(?a, ?_)
 
 (source_file
   (constraint_declaration
-    label: (name (identifier))
+    label: (name
+      (identifier))
     head: (rule_body
       (fn_term
-        name: (name (identifier))
+        name: (identifier)
         (fn_term
-          name: (name (identifier))
-          (variable_term (variable)))
+          name: (identifier)
+          (variable_term
+            (variable)))
         (integer_literal)))
     guard: (rule_body
       (fn_term
-        name: (name (identifier))
-        (variable_term (variable))
-        (variable_term (variable))))))
+        name: (identifier)
+        (variable_term
+          (variable))
+        (variable_term
+          (variable))))))
 
 =====================================
 Constraint without guard
@@ -376,11 +461,13 @@ constraint positive: gt(?x, 0)
 
 (source_file
   (constraint_declaration
-    label: (name (identifier))
+    label: (name
+      (identifier))
     head: (rule_body
       (fn_term
-        name: (name (identifier))
-        (variable_term (variable))
+        name: (identifier)
+        (variable_term
+          (variable))
         (integer_literal)))))
 
 =====================================
@@ -393,15 +480,19 @@ rule first: frs(?a, ?) = ?a
 
 (source_file
   (rule_declaration
-    label: (name (identifier))
+    label: (name
+      (identifier))
     head: (rule_head
       (infix_term
         (fn_term
-          name: (name (identifier))
-          (variable_term (variable))
-          (variable_term (variable)))
+          name: (identifier)
+          (variable_term
+            (variable))
+          (variable_term
+            (variable)))
         (operator_symbol)
-        (variable_term (variable))))))
+        (variable_term
+          (variable))))))
 
 =====================================
 Line comment
@@ -415,8 +506,10 @@ sort T = ?
 (source_file
   (line_comment)
   (abstract_sort
-    name: (name (identifier))
-    definition: (variable_term (variable))))
+    name: (name
+      (identifier))
+    definition: (variable_term
+      (variable))))
 
 =====================================
 Abstract sort with named variable
@@ -428,8 +521,10 @@ sort T = ?Element
 
 (source_file
   (abstract_sort
-    name: (name (identifier))
-    definition: (variable_term (variable))))
+    name: (name
+      (identifier))
+    definition: (variable_term
+      (variable))))
 
 =====================================
 Sort type alias (simple)
@@ -441,8 +536,11 @@ sort Money = Int
 
 (source_file
   (abstract_sort
-    name: (name (identifier))
-    definition: (simple_type (name (identifier)))))
+    name: (name
+      (identifier))
+    definition: (simple_type
+      (name
+        (identifier)))))
 
 =====================================
 Sort type alias (parameterized)
@@ -454,12 +552,17 @@ sort IntList = List[T = Int]
 
 (source_file
   (abstract_sort
-    name: (name (identifier))
+    name: (name
+      (identifier))
     definition: (parameterized_type
-      (name (identifier))
+      (name
+        (identifier))
       (sort_binding
-        param: (name (identifier))
-        type: (simple_type (name (identifier)))))))
+        param: (name
+          (identifier))
+        type: (simple_type
+          (name
+            (identifier)))))))
 
 =====================================
 Describe declaration
@@ -471,7 +574,8 @@ describe Account {< A bank account holding funds >}
 
 (source_file
   (describe_declaration
-    target: (name (identifier))
+    target: (name
+      (identifier))
     content: (description_block)))
 
 =====================================
@@ -484,7 +588,8 @@ sort Money = ? {< Monetary amount >} ?
 
 (source_file
   (abstract_sort
-    name: (name (identifier))
+    name: (name
+      (identifier))
     definition: (variable_term
       (variable)
       description: (description_block))))
@@ -499,10 +604,11 @@ rule test: foo(? {< an unknown value >} ?)
 
 (source_file
   (rule_declaration
-    label: (name (identifier))
+    label: (name
+      (identifier))
     head: (rule_head
       (fn_term
-        name: (name (identifier))
+        name: (identifier)
         (variable_term
           (variable)
           description: (description_block))))))
@@ -517,10 +623,11 @@ rule test: bar(?x {< the x value >} ?, ?x)
 
 (source_file
   (rule_declaration
-    label: (name (identifier))
+    label: (name
+      (identifier))
     head: (rule_head
       (fn_term
-        name: (name (identifier))
+        name: (identifier)
         (variable_term
           (variable)
           description: (description_block))
@@ -537,14 +644,18 @@ operation foo(x: ?, y: ?T) -> ?T
 
 (source_file
   (operation_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (param
       name: (identifier)
-      type: (variable_term (variable)))
+      type: (variable_term
+        (variable)))
     (param
       name: (identifier)
-      type: (variable_term (variable)))
-    return_type: (variable_term (variable))))
+      type: (variable_term
+        (variable)))
+    return_type: (variable_term
+      (variable))))
 
 =====================================
 Variable as entity field type
@@ -556,13 +667,16 @@ entity Pair(fst: ?A, snd: ?B)
 
 (source_file
   (entity_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (field_decl
       name: (identifier)
-      type: (variable_term (variable)))
+      type: (variable_term
+        (variable)))
     (field_decl
       name: (identifier)
-      type: (variable_term (variable)))))
+      type: (variable_term
+        (variable)))))
 
 =====================================
 Variable with description in type position
@@ -574,13 +688,15 @@ operation foo(x: ?T {< the type >} ?) -> ?T
 
 (source_file
   (operation_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (param
       name: (identifier)
       type: (variable_term
         (variable)
         description: (description_block)))
-    return_type: (variable_term (variable))))
+    return_type: (variable_term
+      (variable))))
 
 =====================================
 Effects with parameterized type
@@ -595,22 +711,33 @@ sort Store {
 
 (source_file
   (sort_with_body
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (operation_declaration
-      name: (name (identifier))
+      name: (name
+        (identifier))
       (param
         name: (identifier)
-        type: (simple_type (name (identifier))))
+        type: (simple_type
+          (name
+            (identifier))))
       (param
         name: (identifier)
-        type: (simple_type (name (identifier))))
-      return_type: (simple_type (name (identifier)))
+        type: (simple_type
+          (name
+            (identifier))))
+      return_type: (simple_type
+        (name
+          (identifier)))
       (operation_clause
         (effects_clause
           (parameterized_type
-            (name (identifier))
+            (name
+              (identifier))
             (sort_binding
-              type: (simple_type (name (identifier))))))))))
+              type: (simple_type
+                (name
+                  (identifier))))))))))
 
 =====================================
 Effects with multiple types
@@ -623,21 +750,32 @@ operation process(store: Store) -> Bool
 
 (source_file
   (operation_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (param
       name: (identifier)
-      type: (simple_type (name (identifier))))
-    return_type: (simple_type (name (identifier)))
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))
     (operation_clause
       (effects_clause
         (parameterized_type
-          (name (identifier))
+          (name
+            (identifier))
           (sort_binding
-            type: (simple_type (name (identifier)))))
+            type: (simple_type
+              (name
+                (identifier)))))
         (parameterized_type
-          (name (identifier))
+          (name
+            (identifier))
           (sort_binding
-            type: (simple_type (name (identifier)))))))))
+            type: (simple_type
+              (name
+                (identifier)))))))))
 
 =====================================
 Effects with abstract effect type
@@ -650,14 +788,21 @@ operation run(x: Int) -> Int
 
 (source_file
   (operation_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (param
       name: (identifier)
-      type: (simple_type (name (identifier))))
-    return_type: (simple_type (name (identifier)))
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))
     (operation_clause
       (effects_clause
-        (simple_type (name (identifier)))))))
+        (simple_type
+          (name
+            (identifier)))))))
 
 =====================================
 Variable in sort binding (anonymous)
@@ -670,13 +815,16 @@ fact Effect[T = Read[?]]
 (source_file
   (fact_declaration
     term: (instantiation_term
-      name: (name (identifier))
+      name: (identifier)
       (sort_binding
-        param: (name (identifier))
+        param: (name
+          (identifier))
         type: (parameterized_type
-          (name (identifier))
+          (name
+            (identifier))
           (sort_binding
-            type: (variable_term (variable))))))))
+            type: (variable_term
+              (variable))))))))
 
 =====================================
 Variable in sort binding (named)
@@ -690,22 +838,28 @@ rule Effect[T = Read[?r]] :- Effect[T = Modify[?r]]
   (rule_declaration
     head: (rule_head
       (instantiation_term
-        name: (name (identifier))
+        name: (identifier)
         (sort_binding
-          param: (name (identifier))
+          param: (name
+            (identifier))
           type: (parameterized_type
-            (name (identifier))
+            (name
+              (identifier))
             (sort_binding
-              type: (variable_term (variable)))))))
+              type: (variable_term
+                (variable)))))))
     body: (rule_body
       (instantiation_term
-        name: (name (identifier))
+        name: (identifier)
         (sort_binding
-          param: (name (identifier))
+          param: (name
+            (identifier))
           type: (parameterized_type
-            (name (identifier))
+            (name
+              (identifier))
             (sort_binding
-              type: (variable_term (variable)))))))))
+              type: (variable_term
+                (variable)))))))))
 
 =====================================
 Abstract sort with multiple descriptions
@@ -717,7 +871,8 @@ sort Money = ? {< Monetary amount >} {< Used in banking >} ?
 
 (source_file
   (abstract_sort
-    name: (name (identifier))
+    name: (name
+      (identifier))
     definition: (variable_term
       (variable)
       description: (description_block)
@@ -733,7 +888,8 @@ describe Account {< A bank account >} {< Holds funds >}
 
 (source_file
   (describe_declaration
-    target: (name (identifier))
+    target: (name
+      (identifier))
     content: (description_block)
     content: (description_block)))
 
@@ -752,11 +908,14 @@ sort WorkStatus {
 (source_file
   (sort_with_body
     description: (description_block)
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (entity_declaration
-      name: (name (identifier)))
+      name: (name
+        (identifier)))
     (entity_declaration
-      name: (name (identifier)))))
+      name: (name
+        (identifier)))))
 
 =====================================
 Variable with multiple descriptions in rule
@@ -768,10 +927,11 @@ rule test: foo(?x {< first desc >} {< second desc >} ?)
 
 (source_file
   (rule_declaration
-    label: (name (identifier))
+    label: (name
+      (identifier))
     head: (rule_head
       (fn_term
-        name: (name (identifier))
+        name: (identifier)
         (variable_term
           (variable)
           description: (description_block)

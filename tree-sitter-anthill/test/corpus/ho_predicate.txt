@@ -10,8 +10,9 @@ rule test(?P) :- ?P(nil)
   (rule_declaration
     head: (rule_head
       (fn_term
-        name: (name (identifier))
-        (variable_term (variable))))
+        name: (identifier)
+        (variable_term
+          (variable))))
     body: (rule_body
       (fn_term
         name: (variable)
@@ -29,19 +30,22 @@ rule test(?P) :- ?P(cons(head: ?h, tail: ?t))
   (rule_declaration
     head: (rule_head
       (fn_term
-        name: (name (identifier))
-        (variable_term (variable))))
+        name: (identifier)
+        (variable_term
+          (variable))))
     body: (rule_body
       (fn_term
         name: (variable)
         (fn_term
-          name: (name (identifier))
+          name: (identifier)
           (named_arg
             name: (identifier)
-            value: (variable_term (variable)))
+            value: (variable_term
+              (variable)))
           (named_arg
             name: (identifier)
-            value: (variable_term (variable))))))))
+            value: (variable_term
+              (variable))))))))
 
 =====================================
 Multiple predicate applications
@@ -55,8 +59,9 @@ rule induction(?P) :- ?P(nil), ?P(a), ?P(b, c)
   (rule_declaration
     head: (rule_head
       (fn_term
-        name: (name (identifier))
-        (variable_term (variable))))
+        name: (identifier)
+        (variable_term
+          (variable))))
     body: (rule_body
       (fn_term
         name: (variable)

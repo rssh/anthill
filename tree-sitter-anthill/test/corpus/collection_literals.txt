@@ -8,7 +8,8 @@ rule r: []
 
 (source_file
   (rule_declaration
-    label: (name (identifier))
+    label: (name
+      (identifier))
     head: (rule_head
       (collection_literal))))
 
@@ -22,10 +23,12 @@ rule r: [?x]
 
 (source_file
   (rule_declaration
-    label: (name (identifier))
+    label: (name
+      (identifier))
     head: (rule_head
       (collection_literal
-        (variable_term (variable))))))
+        (variable_term
+          (variable))))))
 
 =====================================
 Multi-element collection literal
@@ -37,12 +40,16 @@ rule r: [?a, ?b, ?c]
 
 (source_file
   (rule_declaration
-    label: (name (identifier))
+    label: (name
+      (identifier))
     head: (rule_head
       (collection_literal
-        (variable_term (variable))
-        (variable_term (variable))
-        (variable_term (variable))))))
+        (variable_term
+          (variable))
+        (variable_term
+          (variable))
+        (variable_term
+          (variable))))))
 
 =====================================
 Collection literal with head-tail
@@ -54,11 +61,14 @@ rule r: [?h | ?t]
 
 (source_file
   (rule_declaration
-    label: (name (identifier))
+    label: (name
+      (identifier))
     head: (rule_head
       (collection_literal
-        (variable_term (variable))
-        tail: (variable_term (variable))))))
+        (variable_term
+          (variable))
+        tail: (variable_term
+          (variable))))))
 
 =====================================
 Multi-element with tail
@@ -70,12 +80,16 @@ rule r: [?a, ?b | ?t]
 
 (source_file
   (rule_declaration
-    label: (name (identifier))
+    label: (name
+      (identifier))
     head: (rule_head
       (collection_literal
-        (variable_term (variable))
-        (variable_term (variable))
-        tail: (variable_term (variable))))))
+        (variable_term
+          (variable))
+        (variable_term
+          (variable))
+        tail: (variable_term
+          (variable))))))
 
 =====================================
 Integer elements
@@ -87,7 +101,8 @@ rule r: [1, 2, 3]
 
 (source_file
   (rule_declaration
-    label: (name (identifier))
+    label: (name
+      (identifier))
     head: (rule_head
       (collection_literal
         (integer_literal)
@@ -105,7 +120,7 @@ fact foo([1, 2], [3, 4])
 (source_file
   (fact_declaration
     term: (fn_term
-      name: (name (identifier))
+      name: (identifier)
       (collection_literal
         (integer_literal)
         (integer_literal))
