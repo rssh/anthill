@@ -55,7 +55,27 @@ pub fn emit_obligation(kb: &KnowledgeBase, obligation: &Obligation) -> Result<St
     let mut emitter = Emitter::new(kb);
     emitter.collect_rule(&obligation.rule_qn)?;
     emitter.collect_facts_for_referenced_entities();
-    Ok(emitter.render(obligation))
+    Ok(emitter.render_upper_bound(obligation))
+}
+
+/// Emit a satisfiability check for a rule's body, framed as a
+/// proof obligation: if Z3 reports `unsat`, the body's joint
+/// constraints can't all hold (typically meaning a "violation rule"
+/// is vacuous → the safety property holds). If `sat`, Z3 found a
+/// counterexample.
+///
+/// Use this for rules that encode the negation of a property — e.g.
+/// `lower_bound_violation` whose body is the inductive
+/// preconditions plus `lt(d_next, d_min)`. `unsat` proves no
+/// (d_prev, step) can drive d_next below d_min.
+pub fn emit_satisfiability_check(
+    kb: &KnowledgeBase,
+    rule_qn: &str,
+) -> Result<String, SmtGenError> {
+    let mut emitter = Emitter::new(kb);
+    emitter.collect_rule(rule_qn)?;
+    emitter.collect_facts_for_referenced_entities();
+    Ok(emitter.render_satisfiability(rule_qn))
 }
 
 // ── Implementation ──────────────────────────────────────────────────
@@ -73,7 +93,20 @@ struct Emitter<'kb> {
     body_smtlib: String,
     /// Name of the rule's result variable (the `?tau` in
     /// `comm_delay_max(?tau)`). Used in the obligation assertion.
+    /// Empty string for rules whose head is bare (no result arg —
+    /// the rule is a property/violation predicate that we feed to
+    /// `render_satisfiability`).
     result_var: String,
+    /// Inequality body goals (`lte`, `lt`, `gte`, `gt`) collected as
+    /// SMT-LIB constraint expressions. Emitted as `(assert ...)`
+    /// inside `render_satisfiability`. Order-preserving so
+    /// counterexample SMT reads in the user's authored order.
+    assertions: Vec<String>,
+    /// Free SMT vars introduced because of body bindings whose
+    /// definition is missing (e.g. `?d_prev` is talked about by
+    /// inequality goals but never bound by an `=` clause). These
+    /// must be `(declare-const ... Real)`'d for satisfiability mode.
+    free_vars: BTreeSet<String>,
 }
 
 impl<'kb> Emitter<'kb> {
@@ -84,6 +117,8 @@ impl<'kb> Emitter<'kb> {
             referenced_entities: BTreeSet::new(),
             body_smtlib: String::new(),
             result_var: String::new(),
+            assertions: Vec::new(),
+            free_vars: BTreeSet::new(),
         }
     }
 
@@ -102,38 +137,76 @@ impl<'kb> Emitter<'kb> {
         // identifier `var_<i>` — unreadable but unambiguous, and Z3
         // only sees consts and ops so the names don't matter for
         // soundness.
+        //
+        // Two head shapes:
+        //  - `rule_qn(?result)` — single pos_arg, the result var.
+        //    Used by upper-bound obligations.
+        //  - `rule_qn` — bare (no pos_args). Used by satisfiability-
+        //    check obligations: the rule encodes a property as a
+        //    body conjunction; we ask Z3 to find any binding that
+        //    satisfies it. `result_var` stays empty.
         let head = self.kb.rule_head(rid);
-        let result_idx = match self.kb.get_term(head) {
-            Term::Fn { pos_args, .. } if pos_args.len() == 1 => {
-                match self.kb.get_term(pos_args[0]) {
-                    Term::Var(Var::DeBruijn(i)) => *i,
-                    other => return Err(SmtGenError::new(format!(
-                        "v0: rule head's first pos_arg must be a DeBruijn var, got {other:?}"))),
-                }
-            }
-            _ => return Err(SmtGenError::new(
-                "v0: rule head must have exactly one positional arg (the result)")),
+        let head_pos_count = match self.kb.get_term(head) {
+            Term::Fn { pos_args, .. } => pos_args.len(),
+            _ => return Err(SmtGenError::new(format!(
+                "rule head must be Fn, got {:?}", self.kb.get_term(head)))),
         };
-        self.result_var = synthetic_var_name(result_idx);
+        if head_pos_count == 1 {
+            let pos = match self.kb.get_term(head) {
+                Term::Fn { pos_args, .. } => pos_args[0],
+                _ => unreachable!(),
+            };
+            let result_idx = match self.kb.get_term(pos) {
+                Term::Var(Var::DeBruijn(i)) => *i,
+                other => return Err(SmtGenError::new(format!(
+                    "v0: rule head's pos_arg must be DeBruijn var, got {other:?}"))),
+            };
+            self.result_var = synthetic_var_name(result_idx);
+        } else if head_pos_count != 0 {
+            return Err(SmtGenError::new(format!(
+                "v0: rule head must have 0 or 1 pos_args, got {head_pos_count}")));
+        }
 
-        // Walk the body. Two clause shapes we accept:
+        // Walk the body. Three clause shapes we accept:
         //   <Entity>(field: ?var, ...) — destructure a fact's fields
-        //                               into local SMT consts
         //   ?var = <arith>             — bind ?var to an SMT term
+        //   <Ordered.op>(a, b)         — inequality assertion
+        //                                  (lte/lt/gte/gt)
+        // Plus rule calls (`<rule_qn>(?var)`) — chase the dependency.
         let body = self.kb.rule_body(rid);
         let mut local_bindings: BTreeMap<String, String> = BTreeMap::new();
         for goal in body {
             self.process_body_goal(*goal, &mut local_bindings)?;
         }
 
-        let result_smt = local_bindings.get(&self.result_var).ok_or_else(||
-            SmtGenError::new(format!(
-                "rule body never bound the result variable '?{}'",
-                self.result_var)))?;
-        self.body_smtlib = format!(
-            "(define-fun {} () Real {})",
-            sanitize_smt_id(&self.result_var),
-            result_smt);
+        // For upper-bound mode the result var must be bound by the
+        // body. For satisfiability mode (no result var) it's fine if
+        // every body var is either bound or free.
+        if !self.result_var.is_empty() {
+            let result_smt = local_bindings.get(&self.result_var).ok_or_else(||
+                SmtGenError::new(format!(
+                    "rule body never bound the result variable '?{}'",
+                    self.result_var)))?;
+            self.body_smtlib = format!(
+                "(define-fun {} () Real {})",
+                sanitize_smt_id(&self.result_var),
+                result_smt);
+        }
+
+        // Compute free vars: any var_<i> referenced by an assertion
+        // expression that has no binding entry. Those need
+        // `(declare-const ... Real)` in satisfiability mode.
+        for assertion in &self.assertions {
+            for tok in assertion.split(|c: char| !c.is_alphanumeric() && c != '_') {
+                if let Some(idx_str) = tok.strip_prefix("var_") {
+                    if idx_str.parse::<u32>().is_ok()
+                        && !local_bindings.contains_key(tok)
+                    {
+                        self.free_vars.insert(tok.to_string());
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -170,6 +243,21 @@ impl<'kb> Emitter<'kb> {
                     "v0: = goal's LHS must be a DeBruijn var, got {lhs:?}"))),
             };
             bindings.insert(synthetic_var_name(lhs_idx), rhs_smt);
+            return Ok(());
+        }
+
+        // Inequality body goals: `lte/lt/gte/gt(a, b)` become SMT
+        // assertions on the constraint set. The rule body's joint
+        // satisfiability is exactly the conjunction of these
+        // inequalities + the equation-derived bindings.
+        if let Some(smt_op) = map_inequality_op(qn) {
+            if pos_args.len() != 2 {
+                return Err(SmtGenError::new(format!(
+                    "{qn}: expected 2 pos_args, got {}", pos_args.len())));
+            }
+            let a = self.translate_expr(pos_args[0], bindings)?;
+            let b = self.translate_expr(pos_args[1], bindings)?;
+            self.assertions.push(format!("({smt_op} {a} {b})"));
             return Ok(());
         }
 
@@ -278,6 +366,14 @@ impl<'kb> Emitter<'kb> {
             }
             Term::Fn { functor, pos_args, .. } => {
                 let op = self.kb.qualified_name_of(*functor);
+                if let Some(smt_op) = map_unary_op(op) {
+                    if pos_args.len() != 1 {
+                        return Err(SmtGenError::new(format!(
+                            "{op}: expected 1 pos_arg, got {}", pos_args.len())));
+                    }
+                    let a = self.translate_expr(pos_args[0], bindings)?;
+                    return Ok(format!("({smt_op} {a})"));
+                }
                 let smt_op = match map_arith_op(op) {
                     Some(o) => o,
                     None => return Err(SmtGenError::new(format!(
@@ -333,7 +429,7 @@ impl<'kb> Emitter<'kb> {
         }
     }
 
-    fn render(&self, obligation: &Obligation) -> String {
+    fn render_upper_bound(&self, obligation: &Obligation) -> String {
         let mut out = String::new();
         out.push_str(&format!(
             "; Generated by anthill-smt-gen for obligation {}.\n",
@@ -359,6 +455,47 @@ impl<'kb> Emitter<'kb> {
         out.push_str("(check-sat)\n");
         out
     }
+
+    fn render_satisfiability(&self, rule_qn: &str) -> String {
+        let mut out = String::new();
+        out.push_str(&format!(
+            "; Generated by anthill-smt-gen — satisfiability check for rule {rule_qn}.\n"));
+        out.push_str("; `unsat` ⇒ rule body has no solution ⇒ encoded property holds.\n");
+        // `LRA` (linear real arithmetic) — `abs` requires
+        // quantifier-friendly logic; `LRA` covers it via the
+        // standard if-then-else encoding Z3 applies internally.
+        out.push_str("(set-logic LRA)\n\n");
+
+        for (name, value) in &self.field_consts {
+            out.push_str(&format!("(define-fun {name} () Real {})\n", format_real(*value)));
+        }
+        out.push('\n');
+
+        // Free vars (`?d_prev`, `?step`, etc. that appear in
+        // assertions but aren't bound by an `=` clause) become
+        // existentially-quantified inputs to the satisfiability
+        // check — declared as global Real consts so `(check-sat)`
+        // picks values for them if any exist.
+        for v in &self.free_vars {
+            out.push_str(&format!("(declare-const {v} Real)\n"));
+        }
+        out.push('\n');
+
+        // Body equations bound the result vars; emit them as
+        // define-funs so subsequent assertions can reference them.
+        // For satisfiability mode we don't have a single result var
+        // but intermediate bindings still matter.
+        if !self.body_smtlib.is_empty() {
+            out.push_str(&self.body_smtlib);
+            out.push_str("\n\n");
+        }
+
+        for assertion in &self.assertions {
+            out.push_str(&format!("(assert {assertion})\n"));
+        }
+        out.push_str("\n(check-sat)\n");
+        out
+    }
 }
 
 /// Synthetic SMT identifier for a de Bruijn-indexed variable. The
@@ -379,6 +516,33 @@ fn map_arith_op(qn: &str) -> Option<&'static str> {
         "anthill.prelude.Numeric.mul" | "Numeric.mul" | "mul" => Some("*"),
         "anthill.prelude.Float.div"   | "Float.div"   | "div" => Some("/"),
         "anthill.prelude.Int.div"     | "Int.div"             => Some("div"),
+        _ => None,
+    }
+}
+
+/// Map unary anthill ops (abs, neg) to SMT-LIB.
+/// `abs` requires the AUFLIRA / LRA logics — Z3 supports it directly
+/// in linear arithmetic by axiomatising via `if-then-else`. We just
+/// emit `(abs ...)` and let the solver desugar.
+fn map_unary_op(qn: &str) -> Option<&'static str> {
+    match qn {
+        "anthill.prelude.Float.abs" | "Float.abs" | "abs" => Some("abs"),
+        "anthill.prelude.Int.abs" => Some("abs"),
+        "anthill.prelude.Float.neg" | "Float.neg" => Some("-"),
+        "anthill.prelude.Int.neg" | "Int.neg" => Some("-"),
+        _ => None,
+    }
+}
+
+/// Map anthill comparison ops to SMT-LIB. Used as body-goal
+/// assertions (not embedded in arithmetic expressions, since
+/// SMT-LIB segregates Bool from Real cleanly).
+fn map_inequality_op(qn: &str) -> Option<&'static str> {
+    match qn {
+        "anthill.prelude.Ordered.lte" | "Ordered.lte" | "lte" => Some("<="),
+        "anthill.prelude.Ordered.lt"  | "Ordered.lt"  | "lt"  => Some("<"),
+        "anthill.prelude.Ordered.gte" | "Ordered.gte" | "gte" => Some(">="),
+        "anthill.prelude.Ordered.gt"  | "Ordered.gt"  | "gt"  => Some(">"),
         _ => None,
     }
 }
