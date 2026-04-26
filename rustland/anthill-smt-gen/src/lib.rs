@@ -177,7 +177,6 @@ impl<'kb> Emitter<'kb> {
         // For v0 we only handle named-arg destructures. Each
         // ?bind_var becomes an SMT const bound to the corresponding
         // field's value from the matching ground fact.
-        let _ = named_args;
         if self.is_known_entity(*functor) {
             let entity_qn = qn.to_string();
             self.referenced_entities.insert(entity_qn.clone());
@@ -194,8 +193,67 @@ impl<'kb> Emitter<'kb> {
             return Ok(());
         }
 
+        // Rule call: `<rule_qn>(?result_var)` — chase the dependency.
+        // We accept exactly one positional arg (the result binding),
+        // matching the same v0 shape we accept for the obligation's
+        // own rule head. The called rule is translated against a
+        // FRESH local-bindings map (so its own intermediate
+        // `?var = ...` equations don't collide with ours), and its
+        // body's facts / referenced entities accumulate into our
+        // own `field_consts` and `referenced_entities`.
+        if pos_args.len() == 1 && named_args.is_empty()
+            && self.kb.by_functor(*functor).iter()
+                .any(|rid| !self.kb.rule_body(*rid).is_empty())
+        {
+            let bind_idx = match self.kb.get_term(pos_args[0]) {
+                Term::Var(Var::DeBruijn(i)) => *i,
+                _ => return Err(SmtGenError::new(format!(
+                    "v0: rule call's pos arg must be a DeBruijn var, got {:?}",
+                    self.kb.get_term(pos_args[0])))),
+            };
+            let inlined = self.translate_called_rule(qn)?;
+            bindings.insert(synthetic_var_name(bind_idx), inlined);
+            return Ok(());
+        }
+
         Err(SmtGenError::new(format!(
             "v0: unhandled body goal functor '{qn}'")))
+    }
+
+    /// Recursively translate a *called* rule's body to a single
+    /// SMT-LIB expression — the rule's result, fully inlined. The
+    /// caller binds its rule-call goal's pos arg to this expression
+    /// so subsequent uses of the variable substitute it directly.
+    /// Each called rule's body uses its own DeBruijn indices, so
+    /// fresh local bindings don't collide with the caller's.
+    fn translate_called_rule(&mut self, callee_qn: &str) -> Result<String, SmtGenError> {
+        let sym = self.kb.try_resolve_symbol(callee_qn)
+            .ok_or_else(|| SmtGenError::new(format!("rule call '{callee_qn}' not found")))?;
+        let rid = self.kb.by_functor(sym).into_iter()
+            .find(|r| !self.kb.rule_body(*r).is_empty())
+            .ok_or_else(|| SmtGenError::new(format!(
+                "rule call '{callee_qn}' has no defining clauses")))?;
+
+        let head = self.kb.rule_head(rid);
+        let result_idx = match self.kb.get_term(head) {
+            Term::Fn { pos_args, .. } if pos_args.len() == 1 => {
+                match self.kb.get_term(pos_args[0]) {
+                    Term::Var(Var::DeBruijn(i)) => *i,
+                    _ => return Err(SmtGenError::new(format!(
+                        "v0: called rule '{callee_qn}' head must be ?DeBruijn"))),
+                }
+            }
+            _ => return Err(SmtGenError::new(format!(
+                "v0: called rule '{callee_qn}' must have exactly one pos arg in head"))),
+        };
+        let mut local_bindings: BTreeMap<String, String> = BTreeMap::new();
+        for goal in self.kb.rule_body(rid) {
+            self.process_body_goal(*goal, &mut local_bindings)?;
+        }
+        local_bindings.get(&synthetic_var_name(result_idx))
+            .cloned()
+            .ok_or_else(|| SmtGenError::new(format!(
+                "called rule '{callee_qn}' never bound its result var")))
     }
 
     /// Translate an arithmetic expression (anthill prelude ops) to

@@ -6,3 +6,4 @@
 mod common;
 
 mod comm_delay_test;
+mod step_distance_test;
