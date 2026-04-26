@@ -4,16 +4,44 @@
 -- distance stays in [d_min, d_max] forever — no collision, formation
 -- maintained.
 --
--- STATUS: sketch. The constraints below describe what we want to
--- prove, not what is currently provable. Discharge requires:
---   - arithmetic-aware reasoning in the SLD evaluator
---     (proposal 026 expression evaluator + a small invariant tactic)
---   - or an SMT export pass (out of scope for v1)
--- Continuous-time invariance between sample steps is treated as a
--- modeling assumption captured in step_distance_bound, not a
--- separate proof obligation.
+-- ── Model architecture ──────────────────────────────────────────────
 --
--- Convention notes (from stdlib idioms):
+-- The proof reasons over the *real* (physical) drone trajectory, not
+-- the *observed* (GPS-measured) one. The controllers only ever see
+-- observed poses; the safety property only cares about real
+-- distances (collisions happen at real positions). The bridge
+-- between them is the GPS error bound: |observed − real| ≤ ε.
+--
+-- The inner stabilisation loop (Mavic2Pro fixed-gain PID + motor
+-- mixing, carried verbatim in cpp/mavic_base.{cpp,hpp}) is NOT
+-- modelled here. Its behavioural envelope is *assumed* via
+-- KinematicAssumptions. That is the load-bearing assumption of the
+-- whole proof: if the inner loop satisfies the speed bounds, then
+-- the outer-loop spec preserves the safety envelope. Lifting the
+-- PID into anthill is a separate (much larger) project.
+--
+-- ── What proof invalidation means here ─────────────────────────────
+--
+-- The proof and the code share one KB. If anyone edits a controller
+-- operation body in `leader_follower.anthill`, the operational
+-- semantics of `compute_controls` change → the derived
+-- step_distance_bound changes → the inductive invariant either
+-- still discharges or doesn't. "Doesn't" is the alarm bell. The
+-- whole point of doing this in anthill rather than alongside hand-
+-- written C++ is that proof and code drift is impossible.
+--
+-- ── Discharge mechanisms (TBD) ─────────────────────────────────────
+--
+-- Most of these obligations reduce to linear arithmetic on Float
+-- bounds. Two paths:
+--   (a) native interval-propagation tactic in the SLD evaluator
+--       (build on proposal 026's expression evaluator)
+--   (b) SMT export pass (Z3 / dReal); reuses huge engineering at
+--       the cost of leaving anthill briefly to discharge
+-- Both are open work. The model below is independent of which path
+-- we eventually pick.
+--
+-- ── Convention notes (from stdlib idioms) ──────────────────────────
 --   - field access on a bound entity is via destructuring in the
 --     body, not dot syntax: DistanceBounds(d_min: ?d_min, ...)
 --     extracts ?d_min from the active fact
@@ -25,11 +53,29 @@ namespace anthill.examples.lf1.safety
   import anthill.prelude.Ordered.{lt, gt, lte, gte}
   import anthill.prelude.Numeric.{add, mul}
   import anthill.prelude.Float.{div, abs}
+  import anthill.examples.lf1.{Pose}
 
-  export DistanceBounds, KinematicAssumptions, LinkParameters
-  export comm_delay_max
+  export Drone, Leader, Follower
+  export DistanceBounds, KinematicAssumptions, LinkParameters, GpsErrorBound
+  export comm_delay_max, position_distance
+  export real_pose_at, observed_pose_at, reachable_real
+  export gps_drift_axiom
   export safety_min_distance, safety_max_distance
   export inductive_invariant
+
+  -- =================================================================
+  -- Drone identity
+  -- =================================================================
+
+  -- Two roles in the lf1 protocol. Followers are addressed by role
+  -- here, not by Webots instance number — the (single) safety
+  -- property says "the leader and *each* follower stay separated."
+  -- Multi-follower extension is leader/follower_i for each i; for
+  -- v1 we model one leader + one follower.
+  enum Drone
+    entity Leader
+    entity Follower
+  end
 
   -- =================================================================
   -- Stated bounds the protocol must respect
@@ -40,19 +86,37 @@ namespace anthill.examples.lf1.safety
   entity DistanceBounds(
     d_min: Float,    -- e.g. 1.0 m  (no-collision margin)
     d_max: Float,    -- e.g. 8.0 m  (formation envelope)
-    delta: Float     -- per-step max change in distance
+    delta: Float     -- per-step max change in REAL inter-drone distance
   )
 
-  -- Assumptions on the protocol's kinematic envelope. These are
-  -- *inputs* to the proof — to discharge the safety obligations the
-  -- developer states each one as a fact, then the proof goes
-  -- through given those facts.
+  -- Assumed bounds on the inner-loop kinematic envelope.
+  --
+  -- This is the load-bearing assumption: it abstracts away the
+  -- Mavic2Pro PID + motor mixing in mavic_base.cpp. If the real
+  -- inner loop violates these bounds in flight, the proof says
+  -- nothing about real safety. Bounds should be derived from the
+  -- vendor controller's specification or empirical flight data,
+  -- not guessed.
   entity KinematicAssumptions(
-    leader_speed_max:    Float,   -- |v_L| <= leader_speed_max
+    leader_speed_max:    Float,   -- |v_L| <= leader_speed_max  (m/s)
     follower_speed_max:  Float,   -- |v_F| <= follower_speed_max
-    control_period:      Float,   -- T_c, control loop period (sec)
-    sensor_period:       Float    -- T_s, sensor sample period
+    control_period:      Float,   -- T_c, control loop period   (s)
+    sensor_period:       Float    -- T_s, sensor sample period  (s)
   )
+
+  -- GPS measurement error.
+  --
+  -- Each drone reads its own position via GPS; the value the
+  -- controller sees differs from physical truth by up to `epsilon`
+  -- in Euclidean distance. Derived from the GPS module's
+  -- specification — typical off-the-shelf modules give 1–3 m
+  -- horizontal, RTK gives sub-decimeter.
+  --
+  -- This bound applies independently per-drone per-tick. Two drones
+  -- and two consecutive ticks combine to up to 4·ε of apparent
+  -- relative motion that is purely measurement noise — the proof's
+  -- step_distance_bound accounts for this.
+  entity GpsErrorBound(epsilon: Float)
 
   -- Communication parameters of the leader→follower radio link.
   -- Webots's Emitter/Receiver model exposes these as world-file
@@ -65,6 +129,61 @@ namespace anthill.examples.lf1.safety
     byte_size:    Int,     -- bits per byte (typically 8)
     packet_size:  Int      -- payload size in bytes (LeaderPose = 32)
   )
+
+  -- =================================================================
+  -- Trajectory predicates
+  -- =================================================================
+  --
+  -- Two parallel predicates over the same Pose sort. No new entity
+  -- type — the distinction is which predicate you read.
+  --
+  -- real_pose_at(k, drone, pose)
+  --   The drone's true (physical) pose at sample step k. The
+  --   safety property quantifies over this. Only inferable from
+  --   the real-world protocol semantics; not directly observable
+  --   in the simulator (Webots happens to expose perfect ground
+  --   truth, but the proof is for the deployment, where it isn't).
+  --
+  -- observed_pose_at(k, drone, pose)
+  --   What the drone's GPS reports at step k — i.e. what its
+  --   controller's `compute_controls` receives. This is what the
+  --   anthill operations operate on.
+  --
+  -- Both relations are partial functions: at any step k, each drone
+  -- has exactly one real and exactly one observed pose. Established
+  -- by the protocol's transition relation (out of scope for the
+  -- model — encoded operationally by the controller bodies).
+
+  -- =================================================================
+  -- Bridge: GPS drift
+  -- =================================================================
+
+  -- For every step and drone, the observed pose lies within ε of
+  -- the real pose. This is the SINGLE axiom that connects the
+  -- physical world to what the controllers see; the rest of the
+  -- proof flows from it plus the kinematic envelope.
+  rule gps_drift_axiom
+    :- real_pose_at(?k, ?drone, ?real),
+       observed_pose_at(?k, ?drone, ?observed),
+       GpsErrorBound(epsilon: ?eps),
+       position_distance(?real, ?observed, ?d),
+       lte(?d, ?eps)
+
+  -- =================================================================
+  -- Reachability (real trajectory)
+  -- =================================================================
+
+  -- The pair (leader_real, follower_real) is simultaneously reached
+  -- by the protocol's transition relation — i.e. there is some k
+  -- where real_pose_at(k, Leader) = leader_real and
+  --       real_pose_at(k, Follower) = follower_real.
+  rule reachable_real(?leader_real, ?follower_real)
+    :- real_pose_at(?k, Leader, ?leader_real),
+       real_pose_at(?k, Follower, ?follower_real)
+
+  -- =================================================================
+  -- Communication delay
+  -- =================================================================
 
   -- Derived bound on packet delay between emit and receive.
   -- Sources of delay:
@@ -93,19 +212,20 @@ namespace anthill.examples.lf1.safety
   -- Properties (proof obligations)
   -- =================================================================
 
-  -- The two pointwise constraints. Stated as denials: the predicate
-  -- must NEVER hold over any reachable state.
+  -- The two pointwise constraints. Stated as denials over the REAL
+  -- inter-drone distance — collisions and formation breaks happen
+  -- at real positions, not at GPS-measured ones.
   --
   -- TODO: discharge — needs arithmetic-aware reasoner.
   constraint safety_min_distance
-    :- reachable(?leader_pose, ?follower_pose),
-       distance(?leader_pose, ?follower_pose, ?d),
+    :- reachable_real(?leader_real, ?follower_real),
+       position_distance(?leader_real, ?follower_real, ?d),
        DistanceBounds(d_min: ?d_min, d_max: ?, delta: ?),
        lt(?d, ?d_min)
 
   constraint safety_max_distance
-    :- reachable(?leader_pose, ?follower_pose),
-       distance(?leader_pose, ?follower_pose, ?d),
+    :- reachable_real(?leader_real, ?follower_real),
+       position_distance(?leader_real, ?follower_real, ?d),
        DistanceBounds(d_min: ?, d_max: ?d_max, delta: ?),
        gt(?d, ?d_max)
 
@@ -113,21 +233,25 @@ namespace anthill.examples.lf1.safety
   -- Discrete-step inductive invariant (the actual proof target)
   -- =================================================================
   --
-  -- Per-step max distance change is bounded:
-  --     delta = (leader_speed_max + follower_speed_max) * control_period
-  --             + sensor / comm error terms
+  -- Per-step max change in REAL inter-drone distance:
   --
-  -- Initial separation is inside the safe envelope by at least delta:
-  --     d_0 in [d_min + delta, d_max - delta]
+  --   delta = (v_L_max + v_F_max) * T_c                  -- physical
+  --         + 4 * epsilon                                -- GPS noise
+  --                                                      --   (2 drones × 2 ticks)
+  --         + comm_delay_max * v_L_max                   -- staleness
+  --                                                      --   of received leader pose
+  --
+  -- Initial separation is inside the safe envelope by at least
+  -- delta:  d_0 in [d_min + delta, d_max - delta].
   --
   -- Inductive step:
-  --     d_min <= d_k <= d_max  =>  d_min <= d_{k+1} <= d_max
+  --   d_min <= d_k <= d_max  =>  d_min <= d_{k+1} <= d_max
   --
   -- Conclusion (by induction on k):
-  --     for all k >= 0:  d_min <= d_k <= d_max
+  --   for all k >= 0:  d_min <= d_k <= d_max
   --
-  -- TODO: discharge — needs arithmetic-aware reasoner with
-  -- linear arithmetic on Float values.
+  -- TODO: discharge — needs arithmetic-aware reasoner with linear
+  -- arithmetic on Float values.
   rule inductive_invariant(?d_next)
     :- DistanceBounds(d_min: ?d_min, d_max: ?d_max, delta: ?delta),
        step_distance_bound(?delta),
@@ -142,21 +266,26 @@ namespace anthill.examples.lf1.safety
   -- Predicates the proof reasons over
   -- =================================================================
   --
-  -- These are placeholders — actual definitions live in operational
-  -- semantics terms once the reasoner can talk about them. Listed here
-  -- so the reader can see what surface area the proof depends on.
+  -- Placeholder declarations. Actual definitions live in operational
+  -- semantics terms once the reasoner can talk about them; listed
+  -- here so the reader can see what surface area the proof depends
+  -- on.
   --
-  -- reachable(?leader_pose, ?follower_pose)
-  --   The pair (leader_pose, follower_pose) is reachable from the
-  --   initial state via the protocol's transition relation.
-  --
-  -- distance(?p1, ?p2, ?d)
+  -- position_distance(?p1, ?p2, ?d)
   --   ?d is the Euclidean distance between p1.position and p2.position.
+  --   Defined for both real and observed Poses (same Pose sort).
   --
   -- distance_at_step(?k, ?d)
-  --   ?d is the distance between the drones at sample step k.
+  --   ?d is the REAL distance between the drones at sample step k.
+  --   Definitionally: distance_at_step(?k, ?d) :-
+  --       real_pose_at(?k, Leader, ?l),
+  --       real_pose_at(?k, Follower, ?f),
+  --       position_distance(?l, ?f, ?d).
   --
   -- step_distance_bound(?delta)
-  --   ?delta is the per-step distance change bound derivable from the
-  --   KinematicAssumptions fact.
+  --   ?delta is the per-step REAL distance change bound, derived
+  --   from KinematicAssumptions + GpsErrorBound + comm_delay_max
+  --   per the formula above. Once the proof's arithmetic backend
+  --   can derive this, it's a `rule` — until then, asserted as a
+  --   fact alongside the application-specific DistanceBounds.
 end
