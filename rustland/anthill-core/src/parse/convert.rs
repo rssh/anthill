@@ -463,8 +463,19 @@ impl<'a> Converter<'a> {
                         pos_args.push(self.terms.alloc(Term::Ref(sym)));
                     }
                     (None, Some(t)) => {
-                        // Variable binding: Modify[?] or Modify[?r]
-                        let tid = self.convert_term(t);
+                        // Positional binding. Bare names (`List[Int]`)
+                        // and parameterised types (`Tree[List[Int]]`)
+                        // become `Term::Ref(Name)`; variable forms and
+                        // tuple/arrow types fall through to convert_term
+                        // (which handles them correctly).
+                        let tid = match t.kind() {
+                            "simple_type" | "parameterized_type" => {
+                                let name = self.convert_type_to_name(t);
+                                let sym = self.intern_name(&name);
+                                self.terms.alloc(Term::Ref(sym))
+                            }
+                            _ => self.convert_term(t),
+                        };
                         pos_args.push(tid);
                     }
                     (None, None) => {}

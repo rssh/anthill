@@ -41,11 +41,14 @@ Concrete tasks to take this scaffold to a runnable + provable example. Roughly i
 
 ## Proof track
 
-- [ ] **Arithmetic-aware tactic in the SLD evaluator.** Build on proposal 026 (already landed M1–M5, commit `6939272`) so `?d_min <= ?d <= ?d_max`-style guards over `Float` literals can actually be discharged. Smallest viable form: linear arithmetic over `Float` constants and additions.
-- [ ] **State `KinematicAssumptions` and `DistanceBounds` as facts** for the lf1 protocol with concrete numbers.
-- [ ] **Discharge `inductive_invariant`** under those facts. This is the v1 proof target.
-- [ ] **Optional: SMT export pass** (`anthill-smt-gen` or similar) for parts the native tactic can't reach. Not required for v1.
-- [ ] **Optional: continuous-time gap.** Document the per-step modeling assumption rigorously, or eventually export to a hybrid-systems tool. Long-term.
+- [x] **`anthill-smt-gen` crate** — KB → SMT-LIB 2.6 emitter; Z3 round-trip for linear-real-arithmetic obligations. Commits `14a0f54`, `2bd2d9d`, `2fc4a37`, `3b616b7`. Replaces what was originally framed as a native arithmetic tactic — Z3 covers the lf1 use case directly.
+- [x] **State `KinematicAssumptions`, `LinkParameters`, `GpsErrorBound`, `DistanceBounds`** as facts in `safety.anthill` with the lf1 RTK numbers (ε = 0.1 m, v_max = 8 m/s, T_c = 0.032 s, d ∈ [1, 20] m).
+- [x] **Discharge inductive invariant.** Encoded as paired violation rules (`lower_violation`, `upper_violation`); both report `unsat` via `anthill prove` (commit `9703ed7`). Run with `discharge.sh`. The step-bound check (`δ ≤ 2.0 m`) lives in `rustland/anthill-smt-gen/tests/lf1_real_spec_test.rs` until the proof grammar exposes a `by z3(upper: 2.0)` argument.
+- [x] **Inline `proof` blocks** (proposal 025). `safety.anthill` declares `proof lower_violation by z3(logic: "LRA")` etc. — the obligations live next to the rules they cover instead of hand-rolled Rust tests.
+- [ ] **`by z3(upper: <bound>)` strategy argument** so `step_distance_bound` can move from the on-disk Rust test into an inline `proof` block alongside the violation rules.
+- [ ] **Reachability proof.** Lift the inductive invariant to ∀k. d_min ≤ d_k ≤ d_max via induction on k. Needs proposal 025 Phase 2.6b (nested-implication / `forall` resolution) + the auto-generated `Int.induction` rule on top of what's already in place. Not blocking the v1 safety claim.
+- [ ] **Counterexample extraction** when Z3 reports `sat`. Today the CLI prints the raw model in `--verbose` mode; reifying it back through the KB into anthill terms would let users see the witness directly.
+- [ ] **Continuous-time gap.** Document the per-step modeling assumption rigorously, or eventually export to a hybrid-systems tool. Long-term.
 
 ## Settled decisions
 

@@ -247,7 +247,7 @@ sort Ordered {
       type: (parameterized_type
         (name (identifier))
         (sort_binding
-          param: (name (identifier)))))))
+          type: (simple_type (name (identifier))))))))
 
 =====================================
 Import with dotted name
@@ -610,7 +610,7 @@ sort Store {
           (parameterized_type
             (name (identifier))
             (sort_binding
-              param: (name (identifier)))))))))
+              type: (simple_type (name (identifier))))))))))
 
 =====================================
 Effects with multiple types
@@ -633,11 +633,11 @@ operation process(store: Store) -> Bool
         (parameterized_type
           (name (identifier))
           (sort_binding
-            param: (name (identifier))))
+            type: (simple_type (name (identifier)))))
         (parameterized_type
           (name (identifier))
           (sort_binding
-            param: (name (identifier))))))))
+            type: (simple_type (name (identifier)))))))))
 
 =====================================
 Effects with abstract effect type

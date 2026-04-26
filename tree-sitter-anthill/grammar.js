@@ -121,13 +121,14 @@ module.exports = grammar({
 
     selective_import: $ => seq('{', commaSep1($.identifier), '}'),
 
+    // Sort bindings accept two forms:
+    //   - `name = type`       — named binding (`T = Int`)
+    //   - any type expression — positional (`Function[Int, Int]`,
+    //     `Function[(Int, Int), Int]`, `Effect{?r}` via variable_term)
+    // Bare names route through `_type::simple_type::name`.
     sort_binding: $ => choice(
-      seq(
-        field('param', $.name),
-        optional(seq('=', field('type', $._type))),
-      ),
-      // Variable as standalone binding: Read{?}, Effect{?r}
-      field('type', $.variable_term),
+      seq(field('param', $.name), '=', field('type', $._type)),
+      field('type', $._type),
     ),
 
     export_clause: $ => seq(
