@@ -1,0 +1,13 @@
+[package]
+name = "anthill-smt-gen"
+version = "0.1.0"
+edition = "2021"
+description = "Emit SMT-LIB 2.6 from anthill specifications (KB-driven, Z3 / CVC5 target)."
+autotests = false
+
+[dependencies]
+anthill-core = { path = "../anthill-core" }
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
