@@ -7,4 +7,5 @@ mod common;
 
 mod comm_delay_test;
 mod inductive_test;
+mod lf1_real_spec_test;
 mod step_distance_test;
