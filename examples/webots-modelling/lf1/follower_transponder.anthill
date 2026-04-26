@@ -1,0 +1,181 @@
+-- Follower (transponder variant) controller spec.
+--
+-- The follower receives a *scalar* distance reading to the leader
+-- (a transponder ranging measurement) — no position broadcast, no
+-- relative bearing. The controller is therefore an extremum-seeking
+-- search: it cruises forward at fixed pitch and flips yaw whenever
+-- the distance trend reverses, hill-climbing on |range|.
+--
+-- Ported (intent, not literal control flow) from sc2/mavic2pro.c
+-- lines 471-535. The C original has a dangling-else around the
+-- yaw-flip ("if upc==0 && seq==-1 / if yaw!=0 / else yaw=-0.45") —
+-- the else binds to the inner if, not the outer. The intent is
+-- "on direction-flip event, reverse yaw, kicking it from 0 if
+-- needed"; we preserve that.
+--
+-- ── Webots realization (low-risk emulation) ────────────────────────
+-- The simulator does not yet ship a transponder pseudo-device.
+-- For lf1 we emulate one in the realization by computing
+-- |leader_gps - follower_gps| from the leader's broadcast pose and
+-- the follower's own GPS — the same scalar the C reference computes
+-- via calc_target_distance_v2. The spec doesn't see this; it only
+-- sees TransponderReading. Swapping the realization for a real
+-- pseudo-device (supervisor-backed) later requires no spec change.
+
+namespace anthill.examples.lf1.follower_transponder
+  import anthill.prelude.{Float, Int, Unit, String, Option, Bool, List}
+  import anthill.prelude.Option.{some, none}
+  import anthill.prelude.Float.{abs}
+  import anthill.examples.lf1.leader.{Pose, Controls}
+
+  export TransponderReading
+  export TransponderFollowerState
+  export TransponderFollowerController
+
+  -- =================================================================
+  -- Sensor reading
+  -- =================================================================
+
+  -- Scalar Euclidean distance between this follower and the leader,
+  -- in metres. The follower receives one of these per control tick.
+  entity TransponderReading(distance: Float)
+
+  -- =================================================================
+  -- Controller state
+  -- =================================================================
+  --
+  -- prev_distance / prev_delta: rolling history (None on first tick).
+  -- upc:    monotonicity counter — incremented while the distance
+  --         is shrinking faster, decremented while it is shrinking
+  --         slower / growing. Clamped through 0 so a sign change
+  --         resets the count.
+  -- seq:    -1 / 0 / +1 — the last "trend regime" (set when |upc|
+  --         exceeds 5). seq == -1 means "we were recently improving
+  --         fast"; seeing upc fall back to 0 from that regime is the
+  --         direction-flip event.
+  -- yaw_cmd: current yaw command being applied during cruise. Sign
+  --         flips on the direction-flip event; magnitude is held.
+  --         Initialized at 0; the first flip kicks it to -0.45.
+  -- capture_radius: |range| below which the controller cuts pitch
+  --         and yaw to 0 (hover near leader).
+  -- cruise_pitch:   fixed forward thrust during search. -2.3 in the
+  --         C reference (negative pitch = forward in webots
+  --         convention).
+  -- hover_altitude: target altitude held for the whole episode.
+
+  entity TransponderFollowerState(
+    prev_distance:  Option[T = Float],
+    prev_delta:     Option[T = Float],
+    upc:            Int,
+    seq:            Int,
+    yaw_cmd:        Float,
+    capture_radius: Float,
+    cruise_pitch:   Float,
+    hover_altitude: Float
+  )
+
+  -- =================================================================
+  -- Controller
+  -- =================================================================
+
+  sort TransponderFollowerController
+    -- One discrete control step. Updates the rolling history,
+    -- detects a direction-flip event using the *previous* tick's
+    -- (upc, seq) — this matters; the flip check must run before
+    -- the new upc is computed, mirroring the C reference's
+    -- ordering at lines 495-517.
+    --
+    -- Yaw-flip rule:
+    --   if upc == 0 && seq == -1 (i.e. we just emerged from an
+    --   improving regime and the trend reversed):
+    --     - if |yaw_cmd| > 0:  yaw_cmd <- -yaw_cmd  (reverse)
+    --     - else:              yaw_cmd <- -0.45     (kick)
+    --   else: yaw_cmd unchanged.
+    --
+    -- upc update rule (using new_delta vs prev_delta):
+    --   shrinking faster  (new_delta < prev_delta):
+    --     upc <- upc - 1 if upc <= 0 else 0     (clamp through 0)
+    --   else (slower / growing):
+    --     upc <- upc + 1 if upc >= 0 else 0     (clamp through 0)
+    --
+    -- seq update rule:
+    --   upc < -5:  seq <- -1
+    --   upc >  5:  seq <-  1
+    --   otherwise: seq <-  0
+    operation step(state: TransponderFollowerState,
+                   reading: TransponderReading)
+      -> TransponderFollowerState =
+      match state.prev_distance
+        case none ->
+          -- First tick: just record the distance, leave counters alone.
+          TransponderFollowerState(
+            prev_distance:  some(reading.distance),
+            prev_delta:     none,
+            upc:            state.upc,
+            seq:            state.seq,
+            yaw_cmd:        state.yaw_cmd,
+            capture_radius: state.capture_radius,
+            cruise_pitch:   state.cruise_pitch,
+            hover_altitude: state.hover_altitude
+          )
+        case some(prev_d) ->
+          let new_delta   = sub(reading.distance, prev_d)
+          -- direction-flip event: previous (upc, seq) just hit (0, -1)
+          let new_yaw_cmd =
+            if eq(state.upc, 0)
+              then if eq(state.seq, -1)
+                     then if gt(abs(state.yaw_cmd), 0.0)
+                            then sub(0.0, state.yaw_cmd)
+                            else -0.45
+                     else state.yaw_cmd
+              else state.yaw_cmd
+          -- upc update: needs prev_delta to compare against
+          let new_upc =
+            match state.prev_delta
+              case none -> 0
+              case some(pd) ->
+                if lt(new_delta, pd)
+                  then if lte(state.upc, 0)
+                         then sub(state.upc, 1)
+                         else 0
+                  else if gte(state.upc, 0)
+                         then add(state.upc, 1)
+                         else 0
+          let new_seq =
+            if lt(new_upc, -5)
+              then -1
+              else if gt(new_upc, 5)
+                     then 1
+                     else 0
+          TransponderFollowerState(
+            prev_distance:  some(reading.distance),
+            prev_delta:     some(new_delta),
+            upc:            new_upc,
+            seq:            new_seq,
+            yaw_cmd:        new_yaw_cmd,
+            capture_radius: state.capture_radius,
+            cruise_pitch:   state.cruise_pitch,
+            hover_altitude: state.hover_altitude
+          )
+
+    -- Compute outer-loop controls. Inside capture radius: hover
+    -- (yaw / pitch / roll = 0). Outside: cruise forward at
+    -- cruise_pitch with current yaw_cmd. Roll always 0; the inner
+    -- stabiliser handles roll dynamics.
+    operation compute_controls(state: TransponderFollowerState,
+                               reading: TransponderReading) -> Controls =
+      if lt(reading.distance, state.capture_radius)
+        then Controls(
+          yaw:             0.0,
+          pitch:           0.0,
+          roll:            0.0,
+          target_altitude: state.hover_altitude
+        )
+        else Controls(
+          yaw:             state.yaw_cmd,
+          pitch:           state.cruise_pitch,
+          roll:            0.0,
+          target_altitude: state.hover_altitude
+        )
+  end
+end

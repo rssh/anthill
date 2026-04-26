@@ -14,7 +14,7 @@ namespace anthill.examples.lf1.realization
   import anthill.realization.{Generated}
 
   fact Generated(
-    source:      "anthill.examples.lf1.LeaderController",
+    source:      "anthill.examples.lf1.leader.LeaderController",
     artifact:    "controllers/LeaderController",
     language:    "cpp",
     profile:     some("cpp20-stl"),
@@ -23,11 +23,26 @@ namespace anthill.examples.lf1.realization
   )
 
   fact Generated(
-    source:      "anthill.examples.lf1.FollowerController",
+    source:      "anthill.examples.lf1.follower_gps.FollowerController",
     artifact:    "controllers/FollowerController",
     language:    "cpp",
     profile:     some("cpp20-stl"),
     kind:        "controller",
-    description: some("Webots leader-follower outer-loop follower controller")
+    description: some("Webots leader-follower outer-loop follower controller (pose-tracking variant; consumes broadcast leader Pose)")
+  )
+
+  -- Transponder variant of the follower: extremum-seeking controller
+  -- driven by a scalar distance reading. For now the transponder is
+  -- emulated in the realization layer (compute |leader_gps -
+  -- follower_gps| from the broadcast leader pose plus own GPS). A
+  -- supervisor-backed pseudo-device can replace the emulation later
+  -- without touching the spec.
+  fact Generated(
+    source:      "anthill.examples.lf1.follower_transponder.TransponderFollowerController",
+    artifact:    "controllers/TransponderFollowerController",
+    language:    "cpp",
+    profile:     some("cpp20-stl"),
+    kind:        "controller",
+    description: some("Webots leader-follower outer-loop follower controller (transponder variant; scalar-range hill-climbing)")
   )
 end

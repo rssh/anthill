@@ -1,0 +1,143 @@
+-- Leader controller spec.
+--
+-- Models the outer control loop of the leader Mavic-2-Pro drone in
+-- /Users/rssh/packages/cyberbotics/webots/projects/ips-drones/multirotor_leader_follower1/
+--
+-- Pose and Controls are defined here (alongside the leader) and are
+-- the value vocabulary the followers (follower_gps, follower_transponder)
+-- import.
+--
+-- The inner stabilization loop (MavicBase::run — fixed-gain PID +
+-- motor mixing) is *not modeled in anthill*. It is carried into the
+-- generated project as a Quoted("cpp", ...) block sourced from the
+-- sibling files mavic_base.cpp / mavic_base.hpp (verbatim copies of
+-- the reference's common/MavicBase.{cpp,hpp}). LeaderController and
+-- the follower controllers become C++ subclasses of MavicBase whose
+-- computeControls() override is the codegen target.
+
+namespace anthill.examples.lf1.leader
+  import anthill.prelude.{Float, Int, Unit, String, Option, Bool, List}
+  import anthill.prelude.Option.{some, none}
+  import anthill.prelude.Float.{atan2, hypot, log10, fmod, abs,
+                                cos, sin, sqrt, pi}
+  import anthill.prelude.IndexedSeq.{nth}
+  import anthill.geometry.{Vec3}
+
+  export Pose, Controls
+  export Waypoint, WaypointSequence, LeaderState
+  export LeaderController
+
+  -- =================================================================
+  -- Geometry / kinematics value types
+  -- =================================================================
+
+  -- Vec3 lives in anthill.geometry (shared). Imported above.
+
+  entity Pose(
+    position: Vec3,
+    roll:     Float,
+    pitch:    Float,
+    yaw:      Float
+  )
+
+  -- High-level controls produced by the outer loop. The inner
+  -- stabilization loop converts (Pose, Controls) into 4 motor
+  -- velocities. Field names match MavicBase::Controls in the
+  -- reference C++.
+  entity Controls(
+    yaw:             Float,
+    pitch:           Float,
+    roll:            Float,
+    target_altitude: Float
+  )
+
+  -- =================================================================
+  -- Leader: patrols a fixed waypoint sequence
+  -- =================================================================
+
+  entity Waypoint(x: Float, y: Float)
+
+  entity WaypointSequence(
+    points:  List[T = Waypoint],
+    current: Int                       -- index into `points`
+  )
+
+  entity LeaderState(
+    altitude_target: Float,             -- TARGET_ALTITUDE in reference
+    precision:       Float,             -- TARGET_PRECISION
+    waypoints:       WaypointSequence
+  )
+
+  sort LeaderController
+    -- Advance the waypoint cursor when the drone is within
+    -- `state.precision` (planar distance, ignoring altitude) of the
+    -- current waypoint. The list is consumed cyclically by the
+    -- consumer; we just increment the index and trust the consumer
+    -- to wrap.
+    operation advance_waypoint(state: LeaderState, pose: Pose) -> LeaderState =
+      let pts     = state.waypoints.points
+      let current = state.waypoints.current
+      let target  = nth(pts, current)
+      match target
+        case some(w) ->
+          let dx       = sub(w.x, pose.position.x)
+          let dy       = sub(w.y, pose.position.y)
+          let distance = hypot(dx, dy)
+          let next_idx = if lt(distance, state.precision)
+                           then add(current, 1)
+                           else current
+          LeaderState(
+            altitude_target: state.altitude_target,
+            precision:       state.precision,
+            waypoints:       WaypointSequence(
+              points:  pts,
+              current: next_idx
+            )
+          )
+        case none -> state
+
+    -- Compute outer-loop controls for one tick.
+    --
+    -- Yaw   — point at the current waypoint via atan2(dy, dx).
+    -- Pitch — log10-shaped forward thrust based on distance past the
+    --         precision threshold, mirroring the reference Mavic2Pro
+    --         outer loop. Saturates gracefully near the waypoint.
+    -- Roll  — held at 0; yaw alignment removes the lateral component
+    --         once we're on heading. The inner stabiliser handles
+    --         the high-frequency roll dynamics.
+    --
+    -- When out of waypoints, hover (yaw / pitch / roll all 0).
+    operation compute_controls(state: LeaderState, pose: Pose) -> Controls =
+      let pts     = state.waypoints.points
+      let current = state.waypoints.current
+      let target  = nth(pts, current)
+      match target
+        case some(w) ->
+          let dx         = sub(w.x, pose.position.x)
+          let dy         = sub(w.y, pose.position.y)
+          let distance   = hypot(dx, dy)
+          let target_yaw = atan2(dy, dx)
+          -- log10-shaped pitch: 0 at distance = 1m, grows slowly
+          -- past that. Saturated by adding 1.0 inside log10 so the
+          -- domain constraint (arg > 0) is never violated.
+          let pitch_amt  = log10(add(distance, 1.0))
+          Controls(
+            yaw:             target_yaw,
+            pitch:           pitch_amt,
+            roll:            0.0,
+            target_altitude: state.altitude_target
+          )
+        case none ->
+          Controls(
+            yaw:             0.0,
+            pitch:           0.0,
+            roll:            0.0,
+            target_altitude: state.altitude_target
+          )
+
+    -- Broadcast pose to followers. Elided until anthill.webots.Emitter
+    -- is wired up; once it exists this becomes:
+    --   operation broadcast(e: Emitter, pose: Pose) -> Unit
+    --     effects (Modify e)
+  end
+end

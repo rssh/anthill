@@ -1,0 +1,137 @@
+-- Safety obligations for the transponder follower (sc2).
+--
+-- Imports the sensor-agnostic vocabulary from safety_common
+-- (Drone, DistanceBounds, KinematicAssumptions, real_/observed_pose_at,
+-- reachable_real) and adds the transponder-specific bridges:
+--
+--   - TransponderErrorBound (ε_t)
+--   - transponder_step_distance_bound: per-tick envelope of the
+--     real distance for the scalar-range follower (no comm-staleness
+--     term, half the measurement noise of the GPS variant)
+--   - lower_violation_transponder: the SMT-discharged no-collision
+--     obligation
+--
+-- ── What we prove and what we don't ───────────────────────────────
+--
+-- The sc2 follower (follower_transponder.anthill) replaces GPS
+-- pose-tracking with a scalar distance reading and an
+-- extremum-seeking yaw-flip controller. Two consequences:
+--
+--   1. The d_max upper-bound property (d_k ≤ d_max for all k) is
+--      NOT a per-step inductive invariant for this controller.
+--      Hill-climbing on yaw can transiently drift the follower
+--      outward while it searches for the gradient — so naïvely
+--      applying a transponder-equivalent of `upper_violation`
+--      gives sat (a counterexample excursion exists). The honest
+--      formulation is bounded-excursion: from any "armed" state
+--      (one where seq has been −1, i.e. sustained improvement was
+--      observed) the controller forces a yaw flip within at most
+--      6 ticks. Worked manual discharge of this property via a
+--      ranking function R = −upc lives in
+--      anthill-smt-gen/tests/lf1_real_spec_test.rs
+--      (lf1_transponder_excursion_ranking_function_manual). Once
+--      the proof grammar accepts a ranking-function clause, it
+--      will surface here as e.g.
+--          proof bounded_excursion_transponder
+--            by z3(ranking: neg_upc,
+--                  decrease_when: bad_step,
+--                  logic: "LIA")
+--          end
+--      — i.e. the tactic is an argument to `by z3(...)`, not a
+--      separate `by ranking(...)` form.
+--
+--   2. The d_min no-collision property still admits a per-step
+--      inductive proof, *provided* `capture_radius` from
+--      TransponderFollowerState is set above d_min by at least
+--      transponder_step_distance_bound. Once the controller's
+--      reading drops below capture_radius it cuts pitch and yaw
+--      to 0 (compute_controls match-arm 1), so the only motion
+--      left is the leader closing the gap — bounded by v_L * T_c.
+
+namespace anthill.examples.lf1.safety.transponder
+  import anthill.prelude.{Float, Int, Bool}
+  import anthill.prelude.Ordered.{lt, gt, lte, gte}
+  import anthill.prelude.Numeric.{add, sub, mul}
+  import anthill.prelude.Float.{abs}
+  import anthill.examples.lf1.safety.common.{
+    DistanceBounds, KinematicAssumptions
+  }
+
+  export TransponderErrorBound
+  export transponder_step_distance_bound
+  export lower_violation_transponder
+
+  -- =================================================================
+  -- Sensor parameter
+  -- =================================================================
+
+  -- Transponder ranging error. ε_t typical for UWB / acoustic /
+  -- BLE-RSSI ranging is sub-decimetre to ~0.5 m depending on
+  -- modality; the lf1 emulation computes |gps_L − gps_F|, so it
+  -- inherits ≤ √2 · ε of GPS noise (concrete value in the fact
+  -- below).
+  entity TransponderErrorBound(epsilon_t: Float)
+
+  -- =================================================================
+  -- Per-step distance-change envelope
+  -- =================================================================
+  --
+  -- Differs from the GPS-variant step_distance_bound on two terms:
+  --
+  --   physical motion:        (v_L_max + v_F_max) * control_period
+  --   transponder noise:      2 * epsilon_t
+  --     — single-channel scalar measurement, so two-tick
+  --       comparison gives 2·ε_t apparent change (vs. 4·ε in the
+  --       GPS variant where two drones each contribute 2·ε)
+  --   no leader-pose staleness term
+  --     — the follower has no broadcast leader pose; the
+  --       transponder is read fresh every tick
+
+  rule transponder_step_distance_bound(?delta_t)
+    :- KinematicAssumptions(leader_speed_max:    ?vL,
+                            follower_speed_max:  ?vF,
+                            control_period:      ?tc),
+       TransponderErrorBound(epsilon_t: ?et),
+       ?phys      = mul(add(?vL, ?vF), ?tc),
+       ?meas_term = mul(2.0, ?et),
+       ?delta_t   = add(?phys, ?meas_term)
+
+  -- =================================================================
+  -- Lower-bound (no-collision) violation rule
+  -- =================================================================
+  --
+  -- Same shape as `lower_violation` in safety_gps.anthill but uses
+  -- transponder_step_distance_bound. The strong precondition is
+  -- only the lower side: d_prev ≥ d_min + delta_t. (Upper side is
+  -- not asserted because we are not proving d_max here — see
+  -- ranking-function TODO at the top of this file.)
+  --
+  -- Discharged with z3-LRA; expect `unsat` in CI.
+
+  rule lower_violation_transponder(?d_next)
+    :- DistanceBounds(d_min: ?d_min, d_max: ?),
+       transponder_step_distance_bound(?delta_t),
+       ?d_low_bound = add(?d_min, ?delta_t),
+       lte(?d_low_bound, ?d_prev),
+       lte(abs(?step), ?delta_t),
+       ?d_next = add(?d_prev, ?step),
+       lt(?d_next, ?d_min)
+
+  -- =================================================================
+  -- Concrete facts — transponder-specific values
+  -- =================================================================
+  --
+  -- Transponder error: emulated via |gps_L − gps_F|, so it inherits
+  -- ≤ √2 · ε ≈ 0.142 (from two independent GPS reads). Round up to
+  -- 0.15 to leave a small headroom; tighten if a real ranging
+  -- pseudo-device is wired in later.
+
+  fact TransponderErrorBound(epsilon_t: 0.15)
+
+  -- Transponder follower: only the lower-bound (no-collision)
+  -- obligation. The upper-bound is an open liveness obligation
+  -- (see header comment).
+  proof lower_violation_transponder
+    by z3(logic: "LRA")
+  end
+end

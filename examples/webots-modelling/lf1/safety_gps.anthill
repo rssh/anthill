@@ -1,0 +1,247 @@
+-- Safety obligations for the GPS / pose-tracking follower (sc1).
+--
+-- Imports the sensor-agnostic vocabulary from safety_common
+-- (Drone, DistanceBounds, KinematicAssumptions, real_/observed_pose_at,
+-- reachable_real) and adds the GPS-specific bridges:
+--
+--   - GpsErrorBound (ε): |observed − real| ≤ ε per drone per tick
+--   - LinkParameters: emitter/receiver knobs that drive comm_delay_max
+--   - gps_drift_axiom: the SINGLE physics → controller bridge
+--   - step_distance_bound: per-tick envelope of the real distance
+--   - safety_min_distance / safety_max_distance constraints
+--   - lower_violation / upper_violation: the SMT-discharged obligations
+--
+-- ── Discharge mechanisms ──────────────────────────────────────────
+-- Most obligations reduce to linear arithmetic on Float bounds.
+-- Two paths:
+--   (a) native interval-propagation tactic in the SLD evaluator
+--       (build on proposal 026's expression evaluator)
+--   (b) SMT export pass (Z3 / dReal)
+-- The current discharge.sh uses (b) via z3-LRA.
+
+namespace anthill.examples.lf1.safety.gps
+  import anthill.prelude.{Float, Int, Bool}
+  import anthill.prelude.Ordered.{lt, gt, lte, gte}
+  import anthill.prelude.Numeric.{add, sub, mul}
+  import anthill.prelude.Float.{div, abs}
+  import anthill.examples.lf1.leader.{Pose}
+  import anthill.examples.lf1.safety.common.{
+    Drone, DistanceBounds, KinematicAssumptions, reachable_real
+  }
+  import anthill.examples.lf1.safety.common.Drone.{Leader, Follower}
+
+  export GpsErrorBound, LinkParameters
+  export comm_delay_max, gps_drift_axiom
+  export step_distance_bound
+  export safety_min_distance, safety_max_distance
+  export inductive_invariant, lower_violation, upper_violation
+
+  -- =================================================================
+  -- Sensor / link parameters
+  -- =================================================================
+
+  -- GPS measurement error.
+  --
+  -- Each drone reads its own position via GPS; the value the
+  -- controller sees differs from physical truth by up to `epsilon`
+  -- in Euclidean distance. Derived from the GPS module's
+  -- specification — typical off-the-shelf modules give 1–3 m
+  -- horizontal, RTK gives sub-decimeter.
+  --
+  -- This bound applies independently per-drone per-tick. Two drones
+  -- and two consecutive ticks combine to up to 4·ε of apparent
+  -- relative motion that is purely measurement noise — the proof's
+  -- step_distance_bound accounts for this.
+  entity GpsErrorBound(epsilon: Float)
+
+  -- Communication parameters of the leader→follower radio link.
+  -- Webots's Emitter/Receiver model exposes these as world-file
+  -- and/or runtime configuration. Reading them as facts lets the
+  -- proof *derive* comm_delay_max instead of assuming it.
+  entity LinkParameters(
+    range_max:    Float,   -- emitter.range — max reception distance (m)
+    signal_speed: Float,   -- propagation speed (m/s); typically c
+    baud_rate:    Float,   -- bits per second
+    byte_size:    Int,     -- bits per byte (typically 8)
+    packet_size:  Int      -- payload size in bytes (LeaderPose = 32)
+  )
+
+  -- =================================================================
+  -- Bridge: GPS drift
+  -- =================================================================
+
+  -- For every step and drone, the observed pose lies within ε of
+  -- the real pose. This is the SINGLE axiom that connects the
+  -- physical world to what the controllers see; the rest of the
+  -- proof flows from it plus the kinematic envelope.
+  rule gps_drift_axiom
+    :- real_pose_at(?k, ?drone, ?real),
+       observed_pose_at(?k, ?drone, ?observed),
+       GpsErrorBound(epsilon: ?eps),
+       position_distance(?real, ?observed, ?d),
+       lte(?d, ?eps)
+
+  -- =================================================================
+  -- Communication delay
+  -- =================================================================
+
+  -- Derived bound on packet delay between emit and receive.
+  -- Sources of delay:
+  --   - propagation:  range_max / signal_speed   (usually negligible)
+  --   - transmission: packet_size * byte_size / baud_rate
+  --   - queueing:     up to one control_period   (packet emitted
+  --                   just after the receiver's last sampling
+  --                   instant waits for the next one)
+  rule comm_delay_max(?tau)
+    :- LinkParameters(range_max: ?r,
+                      signal_speed: ?c,
+                      baud_rate: ?br,
+                      byte_size: ?bs,
+                      packet_size: ?ps),
+       KinematicAssumptions(control_period: ?tc),
+       ?prop  = div(?r, ?c),
+       ?bits  = mul(?ps, ?bs),
+       ?trans = div(?bits, ?br),
+       ?sum1  = add(?prop, ?trans),
+       ?tau   = add(?sum1, ?tc)
+
+  -- =================================================================
+  -- step_distance_bound — derived per-step distance-change envelope
+  -- =================================================================
+  --
+  -- Bounds the maximum change in the REAL inter-drone distance from
+  -- one control tick to the next. Three contributing terms:
+  --
+  --   physical motion:  (v_L_max + v_F_max) * control_period
+  --   GPS measurement noise: 4 * epsilon  (2 drones × 2 ticks)
+  --   leader-pose staleness: comm_delay_max * v_L_max
+  rule step_distance_bound(?delta)
+    :- KinematicAssumptions(leader_speed_max:    ?vL,
+                            follower_speed_max:  ?vF,
+                            control_period:      ?tc),
+       GpsErrorBound(epsilon: ?eps),
+       comm_delay_max(?tau),
+       ?phys     = mul(add(?vL, ?vF), ?tc),
+       ?gps_term = mul(4.0, ?eps),
+       ?stale    = mul(?tau, ?vL),
+       ?sum1     = add(?phys, ?gps_term),
+       ?delta    = add(?sum1, ?stale)
+
+  -- =================================================================
+  -- Properties (proof obligations)
+  -- =================================================================
+
+  -- The two pointwise constraints. Stated as denials over the REAL
+  -- inter-drone distance — collisions and formation breaks happen
+  -- at real positions, not at GPS-measured ones.
+  constraint safety_min_distance
+    :- reachable_real(?leader_real, ?follower_real),
+       position_distance(?leader_real, ?follower_real, ?d),
+       DistanceBounds(d_min: ?d_min, d_max: ?),
+       lt(?d, ?d_min)
+
+  constraint safety_max_distance
+    :- reachable_real(?leader_real, ?follower_real),
+       position_distance(?leader_real, ?follower_real, ?d),
+       DistanceBounds(d_min: ?, d_max: ?d_max),
+       gt(?d, ?d_max)
+
+  -- =================================================================
+  -- Discrete-step inductive invariant (the actual proof target)
+  -- =================================================================
+  --
+  -- Initial separation is inside the safe envelope by at least
+  -- delta:  d_0 in [d_min + delta, d_max - delta].
+  --
+  -- Inductive step:
+  --   d_min <= d_k <= d_max  =>  d_min <= d_{k+1} <= d_max
+  --
+  -- Conclusion (by induction on k):
+  --   for all k >= 0:  d_min <= d_k <= d_max
+  rule inductive_invariant(?d_next)
+    :- DistanceBounds(d_min: ?d_min, d_max: ?d_max),
+       step_distance_bound(?delta),
+       distance_at_step(?k, ?d_prev),
+       lte(?d_min, ?d_prev),
+       lte(?d_prev, ?d_max),
+       ?d_next = add(?d_prev, ?step),
+       lte(abs(?step), ?delta)
+       -- => d_min <= d_next <= d_max  (the goal)
+
+  -- =================================================================
+  -- Violation rules — the actual Z3-dischargeable obligations
+  -- =================================================================
+  --
+  --   PRECONDITION (the strong invariant):
+  --       d_min + delta <= d_prev <= d_max - delta
+  --   STEP BOUND:
+  --       |step| <= delta
+  --   d_next:
+  --       d_next = d_prev + step
+  --
+  -- If `lower_violation` is unsatisfiable, no (d_prev, step) drives
+  -- d_next below d_min. Symmetric for upper_violation. Both unsat
+  -- ⇒ inductive_invariant holds.
+  --
+  -- The `?d_next` head argument exists only to give the rule a
+  -- queryable functor — it carries the witness when Z3 produces
+  -- `sat` (counterexample). Discharged via anthill-smt-gen's
+  -- `emit_satisfiability_check`; expect `unsat` in CI.
+
+  rule lower_violation(?d_next)
+    :- DistanceBounds(d_min: ?d_min, d_max: ?d_max),
+       step_distance_bound(?delta),
+       ?d_low_bound  = add(?d_min, ?delta),
+       ?d_high_bound = sub(?d_max, ?delta),
+       lte(?d_low_bound, ?d_prev),
+       lte(?d_prev, ?d_high_bound),
+       lte(abs(?step), ?delta),
+       ?d_next = add(?d_prev, ?step),
+       lt(?d_next, ?d_min)
+
+  rule upper_violation(?d_next)
+    :- DistanceBounds(d_min: ?d_min, d_max: ?d_max),
+       step_distance_bound(?delta),
+       ?d_low_bound  = add(?d_min, ?delta),
+       ?d_high_bound = sub(?d_max, ?delta),
+       lte(?d_low_bound, ?d_prev),
+       lte(?d_prev, ?d_high_bound),
+       lte(abs(?step), ?delta),
+       ?d_next = add(?d_prev, ?step),
+       gt(?d_next, ?d_max)
+
+  -- =================================================================
+  -- Concrete facts — GPS-specific values
+  -- =================================================================
+  --
+  --   - epsilon (GPS error): 0.1 m assumes RTK; non-RTK Mavic2Pro
+  --     GPS gives ~1.5 m and the inductive step won't go through
+  --     for d_min=1 m. Tighter ε ⇒ tighter delta ⇒ more headroom.
+
+  fact LinkParameters(
+    range_max:    100.0,
+    signal_speed: 300000000.0,
+    baud_rate:    1000000.0,
+    byte_size:    8,
+    packet_size:  32
+  )
+
+  fact GpsErrorBound(epsilon: 0.1)
+
+  -- Proof obligations (proposal 025). Run with `discharge.sh`.
+  -- Z3 should report `unsat` for both: no (d_prev, step) pair
+  -- can drive d_next outside [d_min, d_max] under the inductive
+  -- precondition, so the safety envelope is preserved per step.
+  --
+  -- step_distance_bound's upper-bound proof (δ ≤ 2.0) lives in
+  -- anthill-smt-gen/tests/lf1_real_spec_test.rs until the proof
+  -- grammar exposes a `by z3(upper: 2.0)` argument.
+
+  proof lower_violation
+    by z3(logic: "LRA")
+  end
+
+  proof upper_violation
+    by z3(logic: "LRA")
+  end
+end

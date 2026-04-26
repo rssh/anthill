@@ -1,0 +1,84 @@
+-- Follower (GPS variant) controller spec.
+--
+-- Tracks a constant offset in the leader's body frame, given a
+-- broadcast leader Pose. This is the sc1 / pose-tracking model.
+-- The transponder variant (scalar-distance only) lives in
+-- follower_transponder.anthill.
+
+namespace anthill.examples.lf1.follower_gps
+  import anthill.prelude.{Float, Int, Unit, String, Option, Bool, List}
+  import anthill.prelude.Option.{some, none}
+  import anthill.prelude.Float.{atan2, hypot, log10, cos, sin}
+  import anthill.geometry.{Vec3}
+  import anthill.examples.lf1.leader.{Pose, Controls}
+
+  export FollowerState, FollowerController
+
+  entity FollowerState(
+    offset:        Vec3,                -- offset in leader body frame
+    leader_pose:   Option[T = Pose],    -- last received leader pose
+    hover_altitude: Float               -- HOVER_ALTITUDE if no leader yet
+  )
+
+  sort FollowerController
+    -- Update the cached leader pose from a freshly-decoded packet.
+    -- Pure record update — no math required, this body is final.
+    -- Once anthill.webots.Receiver is wired up, the surface signature
+    -- becomes drain_receiver(s, r) -> FollowerState effects (Modify r).
+    operation update_leader_pose(state: FollowerState, packet: Pose)
+      -> FollowerState =
+      FollowerState(
+        offset:         state.offset,
+        leader_pose:    some(packet),
+        hover_altitude: state.hover_altitude
+      )
+
+    -- Compute outer-loop controls. When we have a leader pose,
+    -- point at the desired follow position (leader pose +
+    -- yaw-rotated offset) via atan2, use log10-shaped pitch on
+    -- planar distance (same shape as the leader), and copy the
+    -- desired-position altitude. Roll held at 0 — yaw alignment
+    -- removes lateral error.
+    --
+    -- When no leader is yet known, hover at the configured altitude.
+    operation compute_controls(state: FollowerState, pose: Pose) -> Controls =
+      match state.leader_pose
+        case some(lp) ->
+          let target     = desired_position(lp, state.offset)
+          let dx         = sub(target.x, pose.position.x)
+          let dy         = sub(target.y, pose.position.y)
+          let distance   = hypot(dx, dy)
+          let target_yaw = atan2(dy, dx)
+          let pitch_amt  = log10(add(distance, 1.0))
+          Controls(
+            yaw:             target_yaw,
+            pitch:           pitch_amt,
+            roll:            0.0,
+            target_altitude: target.z
+          )
+        case none ->
+          Controls(
+            yaw:             0.0,
+            pitch:           0.0,
+            roll:            0.0,
+            target_altitude: state.hover_altitude
+          )
+
+    -- Pure helper: leader position + leader-yaw-rotated offset.
+    -- The body-frame offset is rotated into world frame by the
+    -- standard 2-D rotation matrix:
+    --   x' =  cos(yaw)*x - sin(yaw)*y
+    --   y' =  sin(yaw)*x + cos(yaw)*y
+    -- Z is untouched (no pitch/roll in the formation geometry).
+    operation desired_position(leader: Pose, offset: Vec3) -> Vec3 =
+      Vec3(
+        x: add(leader.position.x,
+               sub(mul(cos(leader.yaw), offset.x),
+                   mul(sin(leader.yaw), offset.y))),
+        y: add(leader.position.y,
+               add(mul(sin(leader.yaw), offset.x),
+                   mul(cos(leader.yaw), offset.y))),
+        z: add(leader.position.z, offset.z)
+      )
+  end
+end
