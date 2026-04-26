@@ -81,12 +81,18 @@ namespace anthill.examples.lf1.safety
   -- Stated bounds the protocol must respect
   -- =================================================================
 
-  -- Inter-drone distance bounds. Values are application-specific;
-  -- defaults reflect the reference impl's nominal 4 m offset.
+  -- Inter-drone distance bounds the protocol must respect.
+  -- Application-specific; only `d_min` and `d_max` are user-asserted.
+  -- The per-step change bound `delta` is *derived* from
+  -- KinematicAssumptions, GpsErrorBound, and comm_delay_max via the
+  -- step_distance_bound rule below — putting it on this entity
+  -- would let the user fudge it to make the proof go through, which
+  -- would be a transparent cheat. Kept derived to force consistency
+  -- between the proof's bookkeeping and the protocol's actual
+  -- envelope.
   entity DistanceBounds(
     d_min: Float,    -- e.g. 1.0 m  (no-collision margin)
-    d_max: Float,    -- e.g. 8.0 m  (formation envelope)
-    delta: Float     -- per-step max change in REAL inter-drone distance
+    d_max: Float     -- e.g. 8.0 m  (formation envelope)
   )
 
   -- Assumed bounds on the inner-loop kinematic envelope.
@@ -209,6 +215,43 @@ namespace anthill.examples.lf1.safety
        ?tau   = add(?sum1, ?tc)
 
   -- =================================================================
+  -- step_distance_bound — derived per-step distance-change envelope
+  -- =================================================================
+  --
+  -- Bounds the maximum change in the REAL inter-drone distance from
+  -- one control tick to the next. Three contributing terms:
+  --
+  --   physical motion:  (v_L_max + v_F_max) * control_period
+  --     — both drones can move at top speed for one period; relative
+  --       motion is at most their sum
+  --
+  --   GPS measurement noise: 4 * epsilon
+  --     — each drone's measured pose can shift by up to 2*ε between
+  --       ticks (ε at tick k, opposite ε at tick k+1); two drones
+  --       compound that into 4*ε of apparent relative motion that is
+  --       pure noise, not physical
+  --
+  --   leader-pose staleness: comm_delay_max * v_L_max
+  --     — the follower's notion of the leader can be up to
+  --       comm_delay_max old; in that window the leader can have
+  --       moved by tau*v_L
+  --
+  -- TODO: discharge — exercises arithmetic in goal position; works
+  -- once the SMT export pass (or a native interval-prop tactic) can
+  -- reduce linear arithmetic on Float bounds.
+  rule step_distance_bound(?delta)
+    :- KinematicAssumptions(leader_speed_max:    ?vL,
+                            follower_speed_max:  ?vF,
+                            control_period:      ?tc),
+       GpsErrorBound(epsilon: ?eps),
+       comm_delay_max(?tau),
+       ?phys     = mul(add(?vL, ?vF), ?tc),
+       ?gps_term = mul(4.0, ?eps),
+       ?stale    = mul(?tau, ?vL),
+       ?sum1     = add(?phys, ?gps_term),
+       ?delta    = add(?sum1, ?stale)
+
+  -- =================================================================
   -- Properties (proof obligations)
   -- =================================================================
 
@@ -220,13 +263,13 @@ namespace anthill.examples.lf1.safety
   constraint safety_min_distance
     :- reachable_real(?leader_real, ?follower_real),
        position_distance(?leader_real, ?follower_real, ?d),
-       DistanceBounds(d_min: ?d_min, d_max: ?, delta: ?),
+       DistanceBounds(d_min: ?d_min, d_max: ?),
        lt(?d, ?d_min)
 
   constraint safety_max_distance
     :- reachable_real(?leader_real, ?follower_real),
        position_distance(?leader_real, ?follower_real, ?d),
-       DistanceBounds(d_min: ?, d_max: ?d_max, delta: ?),
+       DistanceBounds(d_min: ?, d_max: ?d_max),
        gt(?d, ?d_max)
 
   -- =================================================================
@@ -253,7 +296,7 @@ namespace anthill.examples.lf1.safety
   -- TODO: discharge — needs arithmetic-aware reasoner with linear
   -- arithmetic on Float values.
   rule inductive_invariant(?d_next)
-    :- DistanceBounds(d_min: ?d_min, d_max: ?d_max, delta: ?delta),
+    :- DistanceBounds(d_min: ?d_min, d_max: ?d_max),
        step_distance_bound(?delta),
        distance_at_step(?k, ?d_prev),
        lte(?d_min, ?d_prev),
@@ -283,9 +326,7 @@ namespace anthill.examples.lf1.safety
   --       position_distance(?l, ?f, ?d).
   --
   -- step_distance_bound(?delta)
-  --   ?delta is the per-step REAL distance change bound, derived
-  --   from KinematicAssumptions + GpsErrorBound + comm_delay_max
-  --   per the formula above. Once the proof's arithmetic backend
-  --   can derive this, it's a `rule` — until then, asserted as a
-  --   fact alongside the application-specific DistanceBounds.
+  --   Defined as a real rule above. The arithmetic discharge is
+  --   what's pending — the rule body is correct; the SMT/native
+  --   solver just needs to be wired up.
 end
