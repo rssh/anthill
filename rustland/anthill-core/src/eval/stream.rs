@@ -143,6 +143,7 @@ pub struct StreamHandle {
 
 impl StreamHandle {
     pub fn raw(&self) -> u32 { self.raw }
+    #[allow(dead_code)]  // arena handle accessor; kept for future stream ops
     pub(crate) fn arena(&self) -> &StreamArenaRef { &self.arena }
 }
 

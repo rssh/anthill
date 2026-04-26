@@ -491,7 +491,7 @@ impl SearchStream {
     /// Resolve ho_apply(?P, args...) by walking ?P through the substitution.
     /// If ?P resolves to a concrete symbol, construct Fn(sym, args) and return it.
     fn resolve_ho_apply(&self, kb: &mut KnowledgeBase, goal: TermId, subst: &Substitution) -> Option<TermId> {
-        let (pos_args, named_args) = match kb.get_term(goal) {
+        let (pos_args, _named_args) = match kb.get_term(goal) {
             Term::Fn { pos_args, named_args, .. } => (pos_args.clone(), named_args.clone()),
             _ => return None,
         };

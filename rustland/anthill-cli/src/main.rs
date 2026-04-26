@@ -97,6 +97,14 @@ struct CppProjectArgs {
     #[arg(long = "cpp-sources", default_value = "./cpp")]
     cpp_sources: PathBuf,
 
+    /// Directory holding `.wbt` world files (and any other Webots
+    /// project assets) to copy into `<output>/worlds/` verbatim.
+    /// Optional — when the directory doesn't exist, no worlds are
+    /// copied and the user must drop a `.wbt` in by hand before
+    /// launching Webots.
+    #[arg(long = "worlds-dir", default_value = "./worlds")]
+    worlds_dir: PathBuf,
+
     /// Output directory for the generated project. One subdirectory
     /// per controller, each self-contained (sources + Makefile + a
     /// copy of the runtime / geometry headers) so the result drops
@@ -667,7 +675,56 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
         println!("scaffolded {} ({} files)", dir.display(), wrote.len());
     }
 
+    // Copy world files (`.wbt` + any sibling textures / protos) into
+    // `<output>/worlds/`. Webots opens the .wbt as the entry point,
+    // so without this step the scaffolded project has nowhere to
+    // launch the controllers from.
+    if !args.dry_run && args.worlds_dir.exists() {
+        let worlds_dst = args.output_dir.join("worlds");
+        if let Err(e) = fs::create_dir_all(&worlds_dst) {
+            eprintln!("error: mkdir {}: {e}", worlds_dst.display());
+            return Err(1);
+        }
+        let world_files = match list_world_files(&args.worlds_dir) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("error: scanning worlds at {}: {e}", args.worlds_dir.display());
+                return Err(1);
+            }
+        };
+        for src in &world_files {
+            let Some(fname) = src.file_name() else { continue };
+            let dst = worlds_dst.join(fname);
+            if let Err(e) = fs::copy(src, &dst) {
+                eprintln!("error: copy {} → {}: {e}", src.display(), dst.display());
+                return Err(1);
+            }
+        }
+        if !world_files.is_empty() {
+            println!("copied {} world file(s) → {}",
+                world_files.len(), worlds_dst.display());
+        }
+    }
+
     Ok(())
+}
+
+fn list_world_files(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
+    let mut out = Vec::new();
+    if !dir.exists() {
+        return Ok(out);
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() { continue; }
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        if matches!(ext, "wbt" | "proto" | "wbproj") {
+            out.push(path);
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 /// Decide whether `fname` should be copied into `current_ctor`'s
@@ -730,16 +787,28 @@ fn render_controller_makefile(controller: &str) -> String {
 # Compiles every .cpp in this directory against the Webots
 # controller library. Re-run `anthill codegen cpp-project ...` to
 # refresh generated headers when the .anthill specs change.
+#
+# Layout follows the Cyberbotics convention: include
+# `Makefile.os.include` first, then declare sources, then include
+# `Makefile.include`, *then* extend CFLAGS — `Makefile.include`
+# resets CFLAGS, so std/warning flags must come after.
+
+null :=
+space := $(null) $(null)
+WEBOTS_HOME_PATH ?= $(subst $(space),\ ,$(strip $(subst \,/,$(WEBOTS_HOME))))
 
 ifndef WEBOTS_HOME
 $(error set WEBOTS_HOME to your Webots install)
 endif
 
+include $(WEBOTS_HOME_PATH)/resources/Makefile.os.include
+
 CXX_SOURCES = $(wildcard *.cpp)
-CXX_FLAGS  += -std=c++20 -Wall -Wextra
 TARGET = {controller}
 
-include $(WEBOTS_HOME)/resources/Makefile.include
+include $(WEBOTS_HOME_PATH)/resources/Makefile.include
+
+CFLAGS += -std=c++20 -Wall -Wextra
 "#,
     )
 }

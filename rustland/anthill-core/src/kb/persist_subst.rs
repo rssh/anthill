@@ -21,7 +21,7 @@ use super::term::{Term, TermId, TermStore, VarId};
 
 /// Describes where in a fact term to extract a variable's binding value.
 #[derive(Clone, Debug)]
-pub(crate) enum VarPath {
+pub enum VarPath {
     /// The entire fact term (bare variable query)
     Root,
     /// An argument value of the top-level Fn
@@ -30,7 +30,7 @@ pub(crate) enum VarPath {
 
 /// Identifies an argument within a Fn term.
 #[derive(Clone, Debug)]
-pub(crate) enum ArgPos {
+pub enum ArgPos {
     /// N-th positional argument (0-based)
     Positional(usize),
     /// Named argument with this key symbol
@@ -44,7 +44,7 @@ pub(crate) enum ArgPos {
 /// the query side is a `Value::Entity` etc. that can't be promoted to a
 /// TermId without violating the lineage-preservation invariant).
 #[derive(Clone, Debug)]
-pub(crate) enum BindValue {
+pub enum BindValue {
     /// Resolved immediately (e.g., tree var_edge bound to query's known TermId)
     Term(TermId),
     /// Deferred: extract from fact term at leaf using this path

@@ -135,6 +135,7 @@ impl ReflectSymbols {
 /// `Interpreter::new` via `kb.intern` so per-step lookups compare `Symbol`s
 /// instead of scanning strings.
 #[derive(Debug)]
+#[allow(dead_code)]  // params/type_name/guard are reserved for future arms
 pub(crate) struct FieldSymbols {
     pub value: Symbol,
     pub name: Symbol,

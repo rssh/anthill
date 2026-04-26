@@ -260,6 +260,7 @@ impl EffectRegistry {
         self.handlers.remove(&effect_sym).and_then(|o| o)
     }
 
+    #[allow(dead_code)]  // not active yet — kept for handler-presence queries
     pub fn has(&self, effect_sym: Symbol) -> bool {
         self.handlers.get(&effect_sym).map_or(false, |o| o.is_some())
     }

@@ -1,52 +1,54 @@
-// MavicBase — Mavic2Pro inner stabilisation loop scaffold.
-//
-// Hand-authored, anthill-independent (flavour A in the project's
-// realisation taxonomy). Subclasses of MavicBase live in the
-// generated controller folders (`*_main.cpp`) and override
-// `compute_controls(...)` with calls into the anthill-generated
-// traits classes for the outer loop.
-//
-// THIS IS A STUB. The real Mavic2Pro inner loop (fixed-gain PID +
-// motor mixing) ships verbatim from the Cyberbotics reference at
-// `webots/projects/ips-drones/multirotor_leader_follower1/common/`.
-// The stub here exists so the project compiles for syntax checks
-// before the real PID is dropped in.
-
 #pragma once
 
-#include "anthill_geometry.hpp"   // Vec3, EulerAngles
-#include "lf1.hpp"                // Pose, Controls (anthill-generated)
+#include <webots/GPS.hpp>
+#include <webots/Gyro.hpp>
+#include <webots/InertialUnit.hpp>
+#include <webots/Motor.hpp>
+#include <webots/Robot.hpp>
 
-namespace anthill::lf1::runtime {
+#include <algorithm>
+#include <array>
 
-using anthill::examples::lf1::Controls;
-using anthill::examples::lf1::Pose;
-
-class MavicBase {
+class MavicBase : public webots::Robot {
 public:
-    explicit MavicBase(int basic_time_step_ms);
-    virtual ~MavicBase() = default;
-
-    // Runs the simulation loop until Webots tells us to stop.
-    // Calls step() per tick → reads sensors → synthesises Pose →
-    // calls compute_controls(pose) → sends the resulting Controls
-    // to the motors.
-    void run();
+  MavicBase();
+  void run();
 
 protected:
-    // Override in subclasses to compute outer-loop controls from a
-    // pose. The default implementation hovers in place.
-    virtual Controls compute_controls(const Pose& pose) = 0;
+  struct Pose {
+    double x{}, y{}, z{};
+    double roll{}, pitch{}, yaw{};
+  };
 
-    // Hook called once per tick before `compute_controls`. Default
-    // is a no-op; the FollowerController override drains the
-    // receiver queue here.
-    virtual void pre_step() {}
+  // Subclasses fill in disturbances + altitude target each tick.
+  // Defaults already zeroed; subclasses only set what they care about.
+  struct Controls {
+    double yaw{};
+    double pitch{};
+    double roll{};
+    double target_altitude{};
+  };
 
-    int basic_time_step() const { return basic_time_step_ms_; }
+  virtual Controls computeControls(const Pose& pose) = 0;
+
+  static constexpr double K_VERTICAL_THRUST = 68.5;
+  static constexpr double K_VERTICAL_OFFSET = 0.6;
+  static constexpr double K_VERTICAL_P = 3.0;
+  static constexpr double K_ROLL_P = 50.0;
+  static constexpr double K_PITCH_P = 30.0;
+  static constexpr double MAX_YAW_DISTURBANCE = 0.4;
+  static constexpr double MAX_PITCH_DISTURBANCE = -1.0;
+
+  static constexpr double clamp(double v, double lo, double hi) {
+    return std::min(std::max(v, lo), hi);
+  }
+
+  int timeStep() const { return time_step_; }
 
 private:
-    int basic_time_step_ms_;
+  int time_step_;
+  webots::InertialUnit* imu_;
+  webots::GPS* gps_;
+  webots::Gyro* gyro_;
+  std::array<webots::Motor*, 4> motors_;
 };
-
-}  // namespace anthill::lf1::runtime

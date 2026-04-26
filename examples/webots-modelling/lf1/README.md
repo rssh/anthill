@@ -21,13 +21,71 @@ The whole reference is ~275 lines. The anthill spec replaces the *outer loop* (t
 
 ## Status
 
-**Scaffold only.** The spec sketches in this directory describe what we want; they cannot be compiled or proved yet.
+**Codegen track: end-to-end through clang.** Running `./build.sh`
+produces a self-contained Webots project tree at `./build/` whose
+generated headers + hand-authored shims compile cleanly under
+`clang++ -std=c++17 -fsyntax-only -Wall -Wextra`. To actually fly
+the drones in Webots, link the controllers against `libController`
+via `make` (see "Building" below) and open the generated
+`multirotor_leader_follower1.wbt`.
+
+**Proof track: still partial.** The discrete-step safety obligation
+in `safety.anthill` waits on arithmetic-aware tactics in the SLD
+evaluator (proposal 026 follow-up).
 
 ## Files
 
-- `leader_follower.anthill` — sorts and operations for `Pose`, `Controls`, `LeaderController`, `FollowerController`. Sketch.
-- `safety.anthill` — assumptions encoded as facts, safety properties as constraints, with `-- TODO: discharge` markers indicating what reasoner is needed. Sketch.
-- `PUNCHLIST.md` — what infrastructure must be built to get from sketch to running.
+- `leader_follower.anthill` — sorts + operations for `Pose`,
+  `Controls`, waypoint state, and the two controllers. Real bodies
+  for all five operations using anthill expression bodies.
+- `realization.anthill` — `fact Generated(...)` declarations
+  pointing the codegen at each controller binary's intended output
+  path.
+- `safety.anthill` — assumptions and safety properties (constraints).
+- `world.anthill` — environmental assumptions referenced by the
+  proof.
+- `webots/*.anthill` — project-local bindings for the Webots C++ API
+  (Robot, GPS, Gyro, InertialUnit, Motor, Emitter, Receiver) plus
+  the per-binding `fact Implementation(...)` carrier mappings.
+- `cpp/` — hand-authored C++ that's not modelled in anthill:
+  - `mavic_base.{cpp,hpp}` — Mavic2Pro inner stabilisation loop,
+    copied verbatim from the Cyberbotics reference. Uses raw
+    `webots::*` headers; no anthill awareness.
+  - `LeaderController_main.cpp` / `FollowerController_main.cpp` —
+    thin shims that subclass `MavicBase`, marshal between
+    `MavicBase::{Pose,Controls}` and the anthill-generated value
+    types, and dispatch each tick through the anthill traits
+    classes.
+- `worlds/multirotor_leader_follower1.wbt` — Webots world (carried
+  from the reference, with the two `controller "..."` slots updated
+  to match our generated folder names).
+- `build.sh` — one-shot project scaffold runner. Produces
+  `./build/` (gitignored).
+- `PUNCHLIST.md` — remaining work.
+
+## Building
+
+```bash
+./build.sh                        # scaffolds ./build/ from .anthill specs + cpp/ + worlds/
+
+export WEBOTS_HOME=/Applications/Webots.app/Contents   # macOS
+# or:  WEBOTS_HOME=/usr/local/webots                   # Linux
+
+(cd build/controllers/LeaderController   && make)
+(cd build/controllers/FollowerController && make)
+
+# Open build/worlds/multirotor_leader_follower1.wbt in Webots.
+```
+
+`build.sh` runs `anthill codegen cpp-project` against the .anthill
+specs in this directory; the output dir is `./build/` by default,
+overridable via `OUT_DIR=… ./build.sh`. Re-run it whenever any
+.anthill file changes — `make` then rebuilds only the affected
+controllers.
+
+The two follower drones share one binary (`FollowerController`);
+the world file passes per-instance offsets via
+`controllerArgs ["--offset=…"]`.
 
 ## Dependency chain
 

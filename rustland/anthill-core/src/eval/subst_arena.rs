@@ -97,6 +97,7 @@ pub struct SubstHandle {
 
 impl SubstHandle {
     pub fn raw(&self) -> u32 { self.raw }
+    #[allow(dead_code)]  // arena handle accessor; kept for future subst ops
     pub(crate) fn arena(&self) -> &SubstArenaRef { &self.arena }
 }
 
