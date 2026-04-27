@@ -367,7 +367,44 @@ These two drive the cpp20-stl profile:
 - **Backward direction (C++ → anthill).** No automated extractor. Hand-author bindings as needed. A libclang-based tool may be considered later if hand-authoring proves to be a real bottleneck.
 - **Smart-pointer-heavy ownership models.** Out of scope for this draft. Specs that genuinely need heap-allocated polymorphism will get `std::unique_ptr<Concept>` mappings later, not now.
 
-## 7. Open questions
+## 7. Unsupported features in `cpp17-stl` (codegen refuses)
+
+The profile uses **value semantics + RAII only**. There is no host-side hash-cons / term arena, and no heap-allocated closure store. Inputs that would require either are rejected at codegen time with a clear `CppCodegenError` message, rather than emitting code that fails to compile downstream.
+
+### 7.1 Runtime use of `anthill.reflect.*` and `anthill.persistence.*`
+
+Sorts under these namespaces (`TermRepr`, `SortInfo`, `OperationInfo`, `KB`, `Store`, `FileStore`, `SqlStore`, …) model live anthill terms as runtime values. They presuppose a hash-consed term store on the host — exactly the infrastructure `anthill-core`'s `TermStore` provides on the Rust side. The `cpp17-stl` profile ships nothing equivalent.
+
+Codegen refuses any operation signature or type position that resolves to such a sort with:
+
+> `profile cpp17-stl does not support runtime <reflection|persistence> (sort '<qn>') — these require term-store infrastructure not provided in C++; either add an explicit CarrierBinding mapping the sort to a host type, or omit the operation from the C++ surface`
+
+**Workarounds:**
+- Add an `Implementation` + `CarrierBinding` fact mapping the sort to a host type the consumer already maintains (the binding is honored before the refusal check).
+- Move the operation to a Rust-only or query-time surface and don't expose it via the C++ profile.
+- A future `cpp-meta` profile (or `cpp20-stl` with a stub term-store runtime) is the proper home for these features; not in scope for `cpp17-stl`.
+
+### 7.2 Self-referential anonymous lambdas
+
+Anthill expression bodies allow `let f = lambda(?x) -> body`. The current cpp17-stl emission is `[=](auto x) { return body; }` inside an IIFE — a generic by-value lambda. The lambda has **no name in scope for itself**, so a body that calls `f` would compile to invalid C++.
+
+There is no clean RAII-only fix:
+- A Y-combinator (`[](auto&& self, auto x){ ... self(self, x-1); }`) bloats every call site and changes the closure's call signature.
+- `std::function<R(Args)>` heap-allocates a refcounted control block — that is reference-counting GC for the closure, contradicting the profile's "RAII only" contract.
+
+Codegen detects this case (the lambda body references the let-binder name) and refuses with:
+
+> `recursive anonymous lambda not supported in cpp17-stl profile (binder '<name>' referenced inside its own lambda body) — lift the body to a named operation, which lowers to a regular C++ function and recurses cleanly by name`
+
+**Workaround:** lift the body to a named `operation`. Named operations lower to ordinary C++ functions and recurse by name with no closure machinery — the bytes-on-disk equivalent of a `let rec` group, but without paying for a heap closure or a verbose fixpoint encoding.
+
+### 7.3 What is *not* refused
+
+- **Recursion via named operations** is fully supported — the emitted C++ function is a regular `static` member (or free function) that calls itself by name. RAII-clean.
+- **Non-self-referential lambdas** (`let g = lambda(?x) -> add(x, 1); g(n)`) lower normally; the detector keys on the binder name appearing inside the lambda body.
+- **Cycles in entity field types** — codegen still emits headers (currently in alphabetical order; explicit forward declarations remain a known gap, see "Known gaps").
+
+## 8. Open questions
 
 - **Marker name (`anthill_satisfied`).** Picked for clarity over brevity; could be a shorter `_a_sat` or an attribute-based marker. Defaults to the verbose form for now.
 - **Per-method `static_assert` vs. one wrapping `static_assert` block.** Current choice: emit one `static_assert` per `requires` at the top of each method body, even when the same `requires` repeats across methods of the same sort. Slightly redundant, but makes each method's contract self-documenting and avoids relying on members in the struct body that some compilers handle inconsistently. Could be optimized to a single `static_assert` block in the struct's primary template if redundancy becomes a real concern.

@@ -35,6 +35,7 @@ mod option_test;
 mod parameterized_test;
 mod runtime_header_test;
 mod traits_struct_test;
+mod unsupported_test;
 mod variant_test;
 
 // Diagnostics — `#[ignore]`-gated dev-time helpers, kept in the

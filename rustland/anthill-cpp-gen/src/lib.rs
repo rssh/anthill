@@ -1857,12 +1857,14 @@ fn lower_expr(ctx: &CodegenContext, term: TermId) -> Result<String, CppCodegenEr
                             }
                             _ => break current,
                         };
-                        let val_s = lower_expr(ctx, val)?;
-                        if is_wildcard_pattern(kb, pat) {
-                            slots.push(Slot::Discard(val_s));
+                        if !is_wildcard_pattern(kb, pat) {
+                            let bind_name = pattern_var_name(kb, pat)?;
+                            check_recursive_lambda(kb, val, &bind_name)?;
+                            let val_s = lower_expr(ctx, val)?;
+                            slots.push(Slot::Bind(bind_name, val_s));
                         } else {
-                            let name = pattern_var_name(kb, pat)?;
-                            slots.push(Slot::Bind(name, val_s));
+                            let val_s = lower_expr(ctx, val)?;
+                            slots.push(Slot::Discard(val_s));
                         }
                         // Step into body — may be a Handle wrapper, peel it.
                         current = match kb.get_term(body) {
@@ -2540,6 +2542,89 @@ fn is_wildcard_pattern(kb: &KnowledgeBase, pat: TermId) -> bool {
     false
 }
 
+/// Recursively scan an expression term for any name reference whose
+/// short name matches `target`. Used to detect self-referential
+/// anonymous lambdas — `let f = lambda(?x) -> f(x - 1)` is rejected
+/// at codegen time because cpp17-stl has no clean RAII-only lowering
+/// for it (Y-combinator is verbose; `std::function` introduces a
+/// refcounted heap control block).
+fn term_references_name(kb: &KnowledgeBase, term: TermId, target: &str) -> bool {
+    match kb.get_term(term) {
+        Term::Ref(s) | Term::Ident(s) => {
+            short_name_of(kb.qualified_name_of(*s)) == target
+        }
+        Term::Var(v) => {
+            let name_sym = match v {
+                anthill_core::kb::term::Var::Global(vid) => vid.name(),
+                anthill_core::kb::term::Var::DeBruijn(_) => return false,
+            };
+            kb.resolve_sym(name_sym) == target
+        }
+        Term::Fn { functor, pos_args, named_args, .. } => {
+            if short_name_of(kb.qualified_name_of(*functor)) == target {
+                return true;
+            }
+            for a in pos_args.iter() {
+                if term_references_name(kb, *a, target) {
+                    return true;
+                }
+            }
+            for (_, value) in named_args.iter() {
+                if term_references_name(kb, *value, target) {
+                    return true;
+                }
+            }
+            false
+        }
+        Term::Const(Literal::Handle(HandleKind::Occurrence, id)) => {
+            let inner = kb.occurrence_store().term(OccurrenceId::from_raw(*id));
+            term_references_name(kb, inner, target)
+        }
+        _ => false,
+    }
+}
+
+/// Reject `let f = lambda(?x) -> ... f ...` — anonymous self-recursion.
+/// Profile cpp17-stl emits `[=](auto x) { return body; }`, which gives
+/// the lambda no self-reference. Workarounds (Y-combinator, `std::function`)
+/// either bloat the call site or introduce refcounted heap closures —
+/// neither is "RAII only". The user should lift the body to a named
+/// operation, which compiles to a regular C++ function and recurses
+/// cleanly by name.
+fn check_recursive_lambda(
+    kb: &KnowledgeBase,
+    val: TermId,
+    bind_name: &str,
+) -> Result<(), CppCodegenError> {
+    let peeled = match kb.get_term(val) {
+        Term::Const(Literal::Handle(HandleKind::Occurrence, id)) => {
+            kb.occurrence_store().term(OccurrenceId::from_raw(*id))
+        }
+        _ => val,
+    };
+    let Term::Fn { functor, named_args, .. } = kb.get_term(peeled) else {
+        return Ok(());
+    };
+    if kb.qualified_name_of(*functor) != "anthill.reflect.Expr.lambda" {
+        return Ok(());
+    }
+    let Some(body) = find_named(kb, named_args, "body") else {
+        return Ok(());
+    };
+    if !term_references_name(kb, body, bind_name) {
+        return Ok(());
+    }
+    Err(CppCodegenError {
+        message: format!(
+            "recursive anonymous lambda not supported in cpp17-stl \
+             profile (binder '{bind_name}' referenced inside its own \
+             lambda body) — lift the body to a named operation, \
+             which lowers to a regular C++ function and recurses \
+             cleanly by name"
+        ),
+    })
+}
+
 /// Extract the bound name from a `Pattern.var_pattern(name: Ref(<n>), ...)`.
 /// Used by let / lambda lowering. Constructor / tuple / wildcard /
 /// literal pattern shapes are handled by `pattern_constructor_name`
@@ -2790,6 +2875,22 @@ fn sort_to_cpp(ctx: &CodegenContext, sym: Symbol) -> Result<String, CppCodegenEr
     if let Some(prim) = prim_lower(short) {
         return Ok(prim.to_string());
     }
+    // Runtime use of `anthill.reflect.*` (TermRepr, SortInfo, KB, …)
+    // and `anthill.persistence.*` (Store, FileStore, SqlStore, …) is
+    // refused: cpp17-stl has no term-store / hash-cons infrastructure
+    // on the host side, so these can't be lowered to value-typed C++.
+    // A future `cpp-meta` profile (or an explicit CarrierBinding) can
+    // opt in by mapping the sort to a host type.
+    if let Some(profile) = unsupported_runtime_profile(qualified) {
+        return Err(CppCodegenError {
+            message: format!(
+                "profile cpp17-stl does not support runtime {profile} (sort '{qualified}') — \
+                 these require term-store infrastructure not provided in C++; \
+                 either add an explicit CarrierBinding mapping the sort to a host type, \
+                 or omit the operation from the C++ surface"
+            ),
+        });
+    }
     // Project-local entity. Refer by short name when the entity
     // lives in the same C++ namespace block we're currently
     // emitting; otherwise use the fully-qualified path so the
@@ -2811,6 +2912,19 @@ fn sort_to_cpp(ctx: &CodegenContext, sym: Symbol) -> Result<String, CppCodegenEr
              via an Implementation fact, or model it as an entity with fields"
         ),
     })
+}
+
+/// Classify a fully-qualified sort name as belonging to a stdlib
+/// subsystem the cpp17-stl profile cannot lower at runtime. Returns
+/// the human-readable subsystem label, or `None` if the sort is fine.
+fn unsupported_runtime_profile(qualified: &str) -> Option<&'static str> {
+    if qualified.starts_with("anthill.reflect.") {
+        Some("reflection")
+    } else if qualified.starts_with("anthill.persistence.") {
+        Some("persistence")
+    } else {
+        None
+    }
 }
 
 /// Prelude primitive name → C++ type name. None for non-primitives.
