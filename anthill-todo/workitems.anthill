@@ -654,3 +654,59 @@ fact WorkItem(
   depends_on: [],
   status: Open)
 
+fact WorkItem(
+  id: "WI-096",
+  description: "Proposal 025.1 Phase 1 — Proof cache (XDG, sha256, JSON). Independent of new tactic types; immediate ~6x speedup on discharge.sh. Deliverables: anthill-smt-gen/src/cache/ module (key.rs sha256 over emitted SMT-LIB + canonical-serialised tactic term + ordered hint QNs + transitive rule/fact dep hashes + stdlib version + z3 --version + cache_format_version; store.rs JSON-per-entry with two-level hex fanout under per-solver subtree <root>/projects/<repo-hash>/proofs/z3/v1/; location.rs XDG resolver with override chain --cache-dir / ANTHILL_CACHE_DIR / anthill.toml / XDG default); anthill-cli new flags --no-cache --refresh-cache --show-cache --gc-cache --stats; wrap emit_satisfiability_check + emit_obligation call sites in anthill prove with cache lookup. Acceptance: discharge.sh second run reports all hits and finishes <600ms wall-clock; editing a downstream fact invalidates a proof's cache. Risks: dep-hash correctness (mitigation: reuse existing requires_chain in anthill-core/src/kb/mod.rs); path encoding for repo-hash with symlinks (mitigation: canonicalised paths). See docs/proposals/025.1-z3-tactic-dsl.md §Implementation plan Phase 1.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-097",
+  description: "Proposal 025.1 Phase 2 — Grammar + tactic-term IR. Gates every later phase. Deliverables: tree-sitter-anthill/grammar.js extends field_value admissible-value grammar to accept tactic terms (named applications, combinator calls, raw(...) escape, mapping ... -> rule X) with corpus tests; anthill-core/src/parse/convert.rs produces typed Tactic IR enum (Smt, Then(Vec<Tactic>), OrElse(Vec<Tactic>), Repeat{tactic, times}, Par(Vec<Tactic>), Raw(String), Induction{...}, Ranking{...}, Mapping(Vec<MappingEntry>)); backwards compat preserved (existing 'by z3(logic: \"LRA\")' continues to parse and dispatches as Tactic::Smt{logic}). Acceptance: existing safety_*.anthill proofs in lf1 parse unchanged; new corpus tests cover each tactic term shape; cargo test all green. Risks: tree-sitter conflicts on deeply nested rules (mitigation: explicit conflict entries; iterate corpus tests one tactic at a time); backwards compat (mitigation: corpus tests covering each existing lf1 proof BEFORE any grammar edit). See docs/proposals/025.1-z3-tactic-dsl.md §Implementation plan Phase 2.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-096"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-098",
+  description: "Proposal 025.1 Phase 3 — Pass-through tactics + raw escape hatch. Validates the IR end-to-end before tackling meta-tactics. Deliverables: anthill-smt-gen emit_tactic(Tactic) -> String serialiser maps IR to Z3 input syntax — Smt(args) to (check-sat-using (using-params smt :timeout :random_seed)); Simplify/qe/propagate-values to (using-params <name> ...); Then to (then a b); OrElse to (or-else a b); Repeat{tactic, times} to (repeat <t> <n>); Par to (par-or a b); Raw(s) verbatim splice. Update lf1 existing proofs to dispatch through the new emitter (no behavioural change; validates the IR). Acceptance: discharge.sh reports 5/5 unsat unchanged; new tests cover each pass-through tactic shape. Risks: Z3 tactic naming drift across versions (mitigation: z3 --version captured in cache key, version bump → entries miss → re-run). See §Implementation plan Phase 3.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-097"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-099",
+  description: "Proposal 025.1 Phase 4 — Outcome layer (models, cores, interpolants). Needed before meta-tactics so they can emit their RankingProof / ProofCore facts. Deliverables: emit (set-option :produce-models true) / :produce-unsat-cores true / :produce-interpolants true per outcome flags; parse Z3 output (model strings, unsat-core lists, interpolant expressions); anthill-core/src/kb/load.rs registers fact schemas for ProofCounterexample(proof, model, variable_assignments) and ProofCore(proof, required_rules), inserted as facts on outcome; cache value layout (Phase 1) extended to carry these fields. Acceptance: a deliberately-broken proof (negate the safety claim) returns disproved with a parsed model in ProofCounterexample; an unsat lf1 proof with cores: true populates ProofCore.required_rules with the contributing rule QNs. Risks: Z3's (model ...) text parsing is non-trivial (mitigation: store raw text always; structured variable_assignments is best-effort). See §Implementation plan Phase 4.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-098"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-100",
+  description: "Proposal 025.1 Phase 5 — ranking meta-tactic (HEADLINE). Lifts the lf1 manual ranking-function discharge from lf1_real_spec_test.rs::lf1_transponder_excursion_ranking_function_manual into the language. Replaces hand-plugged PostArmedExcursionBound(max_ticks: 6) fact with an in-language proof. Deliverables: Tactic::Ranking{measure, decrease_when, state_sort, well_founded_on, sub_logic} produces 2 SMT-LIB queries — boundedness (forall state. measure(state) >= 0) and decrease (forall s, s'. decrease_when(s, s') => measure(s') < measure(s)); each sub-query uses Smt emit path so cache+outcome compose; combine verdicts (both unsat → proved; either sat → disproved; either unknown → unknown); on proved, emit RankingProof(name, measure, bad_step, bound_witness) fact (bound_witness from solving (maximise measure(state)) over precondition or fallback to user-supplied pessimistic_bound: N); anthill-core registers RankingProof fact schema; safety_transponder.anthill migration: replace PostArmedExcursionBound fact with proof post_armed_excursion_bound by z3(tactic: ranking(...)) end. Acceptance: discharge.sh reports 5/5 unsat unchanged; lf1_transponder_excursion_ranking_function_manual marked #[ignore] (then deleted in Phase 8). Risks: bound_witness via (maximise ...) brittle (mitigation: binary-search query OR pessimistic_bound: N user arg); user's bad_step rule may reference operations that don't translate to SMT (mitigation: surface error pointing at mapping ... -> rule X). See §Implementation plan Phase 5.",
+  acceptance: [ToolPasses("cargo-test+discharge")],
+  depends_on: ["WI-099"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-101",
+  description: "Proposal 025.1 Phase 6 — induction meta-tactic. Lower priority; not needed by lf1 (no existing obligation exercises it). Useful for stdlib proofs over List, Option, etc. Deliverables: Tactic::Induction{over, base, step} reads the auto-generated induction principle (proposal 025) for the named sort and emits one subgoal per constructor; each subgoal dispatches to base or step (defaulting to Smt) via the existing emit path; combine verdicts (all subgoals proved → proved; any disproved → disproved). Acceptance: a stdlib proof using induction (e.g. List length is non-negative) discharges unsat; clear error if the sort's induction principle isn't in the KB. Risks: auto-generated induction principle availability varies by sort kind in proposal 025 (mitigation: error clearly if missing; do not synthesise). See §Implementation plan Phase 6.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-099"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-102",
+  description: "Proposal 025.1 Phase 7 — mapping ... -> rule X rule-inline. Per-symbol anthill→Z3 translation; the small-scale workaround for cases where the user knows precisely which rule should be inlined as a Z3 (define-fun ...). Holds the line until a separate simp-set proposal lands. Deliverables: grammar extension to mapping_entry to accept 'name -> rule X' syntax (one-line addition; covered in Phase 2 grammar work, finalised here); emit walks the rule body, translates to Z3 (define-fun ...), prepends to SMT-LIB preamble; recursion through referenced rules. Test: a custom euclidean_dist rule mapped into a proof, discharged unsat. Risks: translation gaps when a rule body uses an operation with no Z3 equivalent (mitigation: surface a clear error pointing at the offending sub-term). See §Implementation plan Phase 7 and §Anthill-rule-aware simplification (deferred).",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-099"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-103",
+  description: "Proposal 025.1 Phase 8 — Cleanup, docs, migration. Deliverables: delete lf1_transponder_excursion_ranking_function_manual test (Phase 5 obsoletes it); audit anthill-smt-gen/tests/ to use new helpers (run_z3, common::z3_available); add cache_hit assertions where applicable; stdlib README for the new tactic catalog with worked examples; update discharge.sh documentation to mention --show-cache and the warm-cache CI pattern; tighten the proposal doc with anything implementation revealed. Acceptance: cargo test all green; docs link the worked examples; lf1_real_spec_test.rs has 3 tests (manual ranking gone). See §Implementation plan Phase 8.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-100"],
+  status: Open)
+
