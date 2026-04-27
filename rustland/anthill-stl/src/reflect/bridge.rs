@@ -47,6 +47,9 @@ impl KbBridge {
             CoreTerm::Var(Var::DeBruijn(n)) => TermRepr::VarRepr {
                 name: format!("_{n}"),
             },
+            CoreTerm::Var(Var::Rigid(vid)) => TermRepr::VarRepr {
+                name: format!("!{}", kb.resolve_sym(vid.name())),
+            },
             CoreTerm::Fn { functor, pos_args, named_args } => {
                 let name_term = kb.alloc(CoreTerm::Ref(functor));
                 let pos: Vec<TermId> = pos_args.iter().copied().collect();
@@ -134,6 +137,7 @@ impl KbBridge {
             CoreTerm::Const(Literal::Handle(kind, id)) => format!("<{:?}:{}>", kind, id),
             CoreTerm::Var(Var::Global(vid)) => format!("?{}", kb.resolve_sym(vid.name())),
             CoreTerm::Var(Var::DeBruijn(n)) => format!("?_{n}"),
+            CoreTerm::Var(Var::Rigid(vid)) => format!("!{}", kb.resolve_sym(vid.name())),
             CoreTerm::Bottom => "⊥".into(),
         }
     }

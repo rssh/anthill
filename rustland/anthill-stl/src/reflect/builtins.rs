@@ -235,6 +235,7 @@ fn term_display_name(kb: &KnowledgeBase, id: TermId) -> String {
         CoreTerm::Const(Literal::Handle(kind, id)) => format!("<{:?}:{}>", kind, id),
         CoreTerm::Var(Var::Global(vid)) => format!("?{}", kb.resolve_sym(vid.name())),
         CoreTerm::Var(Var::DeBruijn(n)) => format!("?_{n}"),
+        CoreTerm::Var(Var::Rigid(vid)) => format!("!{}", kb.resolve_sym(vid.name())),
         CoreTerm::Bottom => "⊥".into(),
     }
 }
@@ -587,6 +588,11 @@ fn reify_term_to_value(kb: &mut KnowledgeBase, syms: &ReflectSyms, id: TermId) -
             functor: syms.var_repr,
             pos: Vec::new(),
             named: vec![(syms.f_name, Value::Str(format!("_{n}")))],
+        },
+        CoreTerm::Var(Var::Rigid(vid)) => Value::Entity {
+            functor: syms.var_repr,
+            pos: Vec::new(),
+            named: vec![(syms.f_name, Value::Str(format!("!{}", kb.resolve_sym(vid.name()))))],
         },
         CoreTerm::Ref(sym) | CoreTerm::Ident(sym) => {
             let name_term = kb.alloc(CoreTerm::Ref(sym));

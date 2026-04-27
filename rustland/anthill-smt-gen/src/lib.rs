@@ -15,6 +15,9 @@
 //!
 //! Mapping reference: `docs/smtlib-forward-mapping.md`.
 
+pub mod cache;
+pub mod tactic_emit;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
@@ -41,6 +44,10 @@ pub struct ProofConfig {
     /// Anthill QN → SMT operator/identifier overrides (currently
     /// stored but not consulted; default mapping covers lf1).
     pub mapping: BTreeMap<String, String>,
+    /// Optional Z3 tactic expression. When `Some`, the emitted
+    /// document closes with `(check-sat-using <expr>)`; when `None`,
+    /// with the canonical `(check-sat)`.
+    pub tactic_expr: Option<String>,
 }
 
 /// One obligation to discharge: prove `<rule>(?result) ≤ <bound>`
@@ -509,7 +516,10 @@ impl<'kb> Emitter<'kb> {
             "(assert (not (<= {} {})))\n",
             sanitize_smt_id(&self.result_var),
             format_real(obligation.upper_bound)));
-        out.push_str("(check-sat)\n");
+        match &config.tactic_expr {
+            Some(expr) => out.push_str(&format!("(check-sat-using {expr})\n")),
+            None => out.push_str("(check-sat)\n"),
+        }
         out
     }
 
@@ -553,7 +563,10 @@ impl<'kb> Emitter<'kb> {
         for assertion in &self.assertions {
             out.push_str(&format!("(assert {assertion})\n"));
         }
-        out.push_str("\n(check-sat)\n");
+        match &config.tactic_expr {
+            Some(expr) => out.push_str(&format!("\n(check-sat-using {expr})\n")),
+            None => out.push_str("\n(check-sat)\n"),
+        }
         out
     }
 }

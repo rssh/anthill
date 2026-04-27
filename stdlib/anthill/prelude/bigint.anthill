@@ -3,6 +3,8 @@
 -- Literals that overflow i64 are automatically parsed as BigInt.
 namespace anthill.prelude.BigInt
   import anthill.prelude.{Eq, Ordered, Numeric}
+  import anthill.prelude.Ordered.{gt}
+  import anthill.prelude.Numeric.{sub}
   export to_bigint, to_int, to_float
 
   -- BigInt satisfies the parametric algebra specs.
@@ -19,4 +21,13 @@ namespace anthill.prelude.BigInt
   -- rounds to nearest representable Float, may saturate to Infinity.
   -- Total function: all inputs produce a defined Float (possibly Inf).
   operation to_float(n: BigInt) -> Float
+
+  -- Strong induction on non-negative BigInt. Proposal 025 §Auto-generated
+  -- induction rules. ?P holds for all n ≥ 0 if it holds at 0 and is
+  -- preserved by the predecessor IH at every positive n.
+  rule induction(?P)
+    :- ?P(0),
+       (forall(?n),
+          gt(?n, 0), ?P(sub(?n, 1))
+          -: ?P(?n))
 end

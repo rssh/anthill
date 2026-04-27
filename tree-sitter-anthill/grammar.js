@@ -619,11 +619,29 @@ module.exports = grammar({
       $.set_literal,
       $.collection_literal,
       $.tuple_literal,
+      $.nested_implication,
       $.paren_expr,
       $.ref_term,
       $.prefix_term,
       $.field_access,
       prec(-1, $.identifier),
+    ),
+
+    // Nested implication inside a forall binder, used as a body goal.
+    // (forall(?h, ?rest), Q(?h), Q(?rest) -: P(cons(head: ?h, tail: ?rest)))
+    // Used by the auto-generated induction principles in proposal 025
+    // for the inductive-step case of recursive constructors.
+    nested_implication: $ => seq(
+      '(',
+      'forall',
+      '(',
+      commaSep1(field('binder', $.variable)),
+      ')',
+      ',',
+      field('antecedents', $.rule_body),
+      '-:',
+      field('consequent', $.rule_body),
+      ')',
     ),
 
     // Field access: ?x.y, expr.field — dot projection.

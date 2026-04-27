@@ -23,6 +23,27 @@ impl<'a> TermPrinter<'a> {
         buf
     }
 
+    /// If `id` is a `tuple(...)` Fn term with no named args, return a
+    /// borrowed slice over its positional contents. Used by the
+    /// `forall_impl` pretty-printer.
+    fn unwrap_tuple(&self, id: TermId) -> Option<&[TermId]> {
+        match self.kb.get_term(id) {
+            Term::Fn { functor, pos_args, named_args }
+                if self.kb.resolve_sym(*functor) == "tuple" && named_args.is_empty() =>
+            {
+                Some(pos_args.as_slice())
+            }
+            _ => None,
+        }
+    }
+
+    fn write_comma_sep(&self, ts: &[TermId], buf: &mut String) {
+        for (i, &t) in ts.iter().enumerate() {
+            if i > 0 { buf.push_str(", "); }
+            self.write_term(t, buf);
+        }
+    }
+
     fn write_term(&self, id: TermId, buf: &mut String) {
         match self.kb.get_term(id) {
             Term::Const(lit) => self.write_literal(lit, buf),
@@ -33,8 +54,34 @@ impl<'a> TermPrinter<'a> {
             Term::Var(Var::DeBruijn(n)) => {
                 buf.push_str(&format!("?#{n}"));
             }
+            Term::Var(Var::Rigid(vid)) => {
+                buf.push('!');
+                buf.push_str(self.kb.resolve_sym(vid.name()));
+            }
             Term::Fn { functor, pos_args, named_args } => {
-                buf.push_str(self.kb.resolve_sym(*functor));
+                let fname = self.kb.resolve_sym(*functor);
+                // Round-trip the forall_impl encoding produced by
+                // convert_nested_implication back to surface syntax.
+                if fname == "forall_impl"
+                    && pos_args.len() == 3
+                    && named_args.is_empty()
+                {
+                    if let (Some(binders), Some(ants), Some(cons)) = (
+                        self.unwrap_tuple(pos_args[0]),
+                        self.unwrap_tuple(pos_args[1]),
+                        self.unwrap_tuple(pos_args[2]),
+                    ) {
+                        buf.push_str("(forall(");
+                        self.write_comma_sep(binders, buf);
+                        buf.push_str("), ");
+                        self.write_comma_sep(ants, buf);
+                        buf.push_str(" -: ");
+                        self.write_comma_sep(cons, buf);
+                        buf.push(')');
+                        return;
+                    }
+                }
+                buf.push_str(fname);
                 if !pos_args.is_empty() || !named_args.is_empty() {
                     buf.push('(');
                     let mut first = true;

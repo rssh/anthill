@@ -363,6 +363,7 @@ impl<'a> Converter<'a> {
                 tid
             }
             "fn_term" => self.convert_fn_term(node),
+            "nested_implication" => self.convert_nested_implication(node),
             "instantiation_term" => self.convert_instantiation_term(node),
             "ref_term" => {
                 let name_node = self.child_by_kind(node, "name");
@@ -459,6 +460,34 @@ impl<'a> Converter<'a> {
             let functor = self.intern_name(&name);
             self.terms.alloc(Term::Fn { functor, pos_args, named_args })
         }
+    }
+
+    /// Lower a `(forall(?h, ?rest), Q -: P)` body goal into a kernel term.
+    ///
+    /// Encoded as `forall_impl(binders, antecedents, consequent)` where each
+    /// positional arg is a `tuple(...)` collecting the relevant terms.
+    /// The binder vars are lowered as ordinary `Var::Global` in the current
+    /// rule scope; proper inner-binder scoping is handled at SLD resolution
+    /// time (WI-108).
+    fn convert_nested_implication(&mut self, node: Node) -> TermId {
+        let mut binders: SmallVec<[TermId; 4]> = SmallVec::new();
+        for n in self.fields_by_name(node, "binder") {
+            binders.push(self.convert_variable_node(n));
+        }
+        let antecedents: SmallVec<[TermId; 4]> = self.field(node, "antecedents")
+            .map(|n| self.convert_rule_body(n).into_iter().collect())
+            .unwrap_or_default();
+        let consequent: SmallVec<[TermId; 4]> = self.field(node, "consequent")
+            .map(|n| self.convert_rule_body(n).into_iter().collect())
+            .unwrap_or_default();
+
+        let binders_tuple = self.alloc_fn_term("tuple", binders);
+        let antecedents_tuple = self.alloc_fn_term("tuple", antecedents);
+        let consequent_tuple = self.alloc_fn_term("tuple", consequent);
+        self.alloc_fn_term(
+            "forall_impl",
+            SmallVec::from_slice(&[binders_tuple, antecedents_tuple, consequent_tuple]),
+        )
     }
 
     fn convert_instantiation_term(&mut self, node: Node) -> TermId {
@@ -1342,19 +1371,140 @@ impl<'a> Converter<'a> {
         // Args are positional/named children of the proof_strategy node.
         // _fn_arg can be either a term (positional) or a named_arg.
         let mut args: Vec<TermId> = Vec::new();
+        let mut tactic_args: Vec<TacticArg> = Vec::new();
+        let mut explicit_tactic: Option<Tactic> = None;
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             match child.kind() {
-                "named_arg" => args.push(self.convert_named_arg(child)),
+                "named_arg" => {
+                    args.push(self.convert_named_arg(child));
+                    let arg = self.convert_tactic_named_arg(child);
+                    if let Some(arg) = arg {
+                        if self.parse_symbol_name(arg.name) == Some("tactic") {
+                            if let TacticArgValue::Tactic(t) = arg.value {
+                                explicit_tactic = Some(*t);
+                                continue;
+                            }
+                        }
+                        tactic_args.push(arg);
+                    }
+                }
                 "identifier" | "name" => {
                     // The strategy name itself — skip.
                 }
                 _ => {
                     args.push(self.convert_term(child));
+                    if let Some(value) = self.convert_tactic_term_node(child) {
+                        tactic_args.push(TacticArg { name: None, value });
+                    }
                 }
             }
         }
-        ProofStrategy { name, args, span }
+
+        // Build the typed Tactic IR for z3 strategies. Backwards compat:
+        // `by z3(logic: "LRA")` desugars to `by z3(tactic: smt(logic: "LRA"))`.
+        let tactic = if self.symbol_text(name) == "z3" {
+            Some(explicit_tactic.unwrap_or_else(|| {
+                Tactic::App(self.intern("smt"), tactic_args)
+            }))
+        } else {
+            None
+        };
+
+        ProofStrategy { name, args, tactic, span }
+    }
+
+    /// Lift one parse-side `named_arg` into a `TacticArg`. Returns
+    /// `None` if the value can't be classified (which keeps malformed
+    /// inputs from corrupting the typed IR; the legacy `args` field
+    /// still carries them).
+    fn convert_tactic_named_arg(&mut self, node: Node) -> Option<TacticArg> {
+        let key_node = self.field(node, "name")?;
+        let val_node = self.field(node, "value")?;
+        let name = Some(self.intern(self.text(key_node)));
+        let value = self.convert_tactic_term_node(val_node)?;
+        Some(TacticArg { name, value })
+    }
+
+    /// Convert a parse-tree node into a `TacticArgValue`. Recognises
+    /// literals, name references, and nested tactic applications.
+    fn convert_tactic_term_node(&mut self, node: Node) -> Option<TacticArgValue> {
+        match node.kind() {
+            "string_literal" => Some(TacticArgValue::String(
+                decode_string_lit(self.text(node))
+            )),
+            "integer_literal" => self.text(node).parse::<i64>().ok()
+                .map(TacticArgValue::Int),
+            "boolean_literal" => Some(TacticArgValue::Bool(
+                self.text(node) == "true"
+            )),
+            "identifier" => {
+                // A bare identifier in tactic position — interpret as
+                // `Tactic::Bare`. (e.g. `then(smt, simplify)` — args are
+                // bare identifier tactics.)
+                let sym = self.intern(self.text(node));
+                Some(TacticArgValue::Tactic(Box::new(Tactic::Bare(sym))))
+            }
+            "fn_term" => {
+                let tactic = self.convert_tactic_fn_term(node)?;
+                Some(TacticArgValue::Tactic(Box::new(tactic)))
+            }
+            "name" => {
+                let n = self.convert_name(node);
+                Some(TacticArgValue::Name(n))
+            }
+            _ => None,
+        }
+    }
+
+    /// Recognise a `fn_term` as a tactic application. `smt(...)`,
+    /// `then(t1, t2)`, `induction(over: …, base: …)`, `raw("...")`
+    /// all flow through here. Returns `None` if the fn_term doesn't
+    /// have a tactic shape (then the caller falls back to the legacy
+    /// args path).
+    fn convert_tactic_fn_term(&mut self, node: Node) -> Option<Tactic> {
+        let name_node = self.field(node, "name")?;
+        let fn_name = self.text(name_node).to_string();
+
+        // raw("…") — single positional string literal.
+        if fn_name == "raw" {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child == name_node { continue; }
+                if child.kind() == "string_literal" {
+                    return Some(Tactic::Raw(decode_string_lit(self.text(child))));
+                }
+            }
+            return None;
+        }
+
+        let functor = self.intern(&fn_name);
+        let mut args: Vec<TacticArg> = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child == name_node { continue; }
+            match child.kind() {
+                "named_arg" => {
+                    if let Some(a) = self.convert_tactic_named_arg(child) {
+                        args.push(a);
+                    }
+                }
+                _ => {
+                    if let Some(v) = self.convert_tactic_term_node(child) {
+                        args.push(TacticArg { name: None, value: v });
+                    }
+                }
+            }
+        }
+        Some(Tactic::App(functor, args))
+    }
+
+    fn parse_symbol_name(&self, sym: Option<Symbol>) -> Option<&str> {
+        sym.map(|s| self.symbols.name(s))
+    }
+
+    fn symbol_text(&self, sym: Symbol) -> &str {
+        self.symbols.name(sym)
     }
 
     /// _proof_body is either `:- hints` or `query "..." [mapping {...}]`.
@@ -1647,6 +1797,7 @@ fn is_term_kind(kind: &str) -> bool {
             | "variable"
             | "variable_term"
             | "fn_term"
+            | "nested_implication"
             | "instantiation_term"
             | "ref_term"
             | "infix_term"

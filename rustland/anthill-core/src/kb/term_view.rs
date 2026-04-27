@@ -81,6 +81,12 @@ impl TermView for TermIdView {
     fn head(&self, kb: &KnowledgeBase) -> ViewHead {
         match kb.get_term(self.0) {
             Term::Var(Var::Global(vid)) => ViewHead::Var(*vid),
+            // Rigid (skolem) is opaque: it matches only stored patterns
+            // that have a wildcard (var_edge) at this position, never
+            // concrete-key patterns. WI-108 — without this, the discrim
+            // would treat a Rigid like a flex var, allowing a goal
+            // `pred(!rigid)` to falsely unify with a fact `pred(leaf)`.
+            Term::Var(Var::Rigid(_)) => ViewHead::Opaque,
             Term::Var(Var::DeBruijn(_)) => ViewHead::Opaque,
             Term::Const(lit) => ViewHead::Const(lit.clone()),
             Term::Fn { functor, pos_args, named_args } => ViewHead::Functor {

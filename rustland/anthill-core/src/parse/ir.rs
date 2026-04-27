@@ -369,8 +369,57 @@ pub struct ProofStrategy {
     /// Optional tool args, named or positional. Each TermId points into
     /// the file's SimpleTermStore. Named args are stored as
     /// `Term::FnArg::Named { name, value }` already.
+    ///
+    /// Legacy field. New consumers should read `tactic` (proposal 025.1
+    /// Phase 2 IR). Kept for backwards compat with anthill-cli's
+    /// dispatch path.
     pub args: Vec<TermId>,
+    /// Typed tactic term (proposal 025.1). Populated for `by z3(...)`
+    /// blocks. For other strategies (derivation, test, ...) this is
+    /// `None`. The conversion treats `by z3(logic: "LRA")` as the
+    /// shorthand `by z3(tactic: smt(logic: "LRA"))`, so the field is
+    /// always populated for `z3` even on the legacy syntax.
+    pub tactic: Option<Tactic>,
     pub span: Span,
+}
+
+// ── Tactic IR (proposal 025.1 Phase 2) ──────────────────────────
+
+/// A tactic term. Tactic terms are either bare identifiers (`smt`,
+/// `simplify`), function applications (`smt(logic: "LRA")`,
+/// `then(smt, qe)`), the `raw(...)` escape, or a `mapping` block.
+#[derive(Debug, Clone)]
+pub enum Tactic {
+    /// Bare identifier — equivalent to a no-arg application.
+    Bare(Symbol),
+    /// `name(arg1, arg2, ...)` — covers `smt(...)`, `then(...)`,
+    /// `or_else(...)`, `repeat(t, times: N)`, `induction(over: ...)`,
+    /// `ranking(...)` and any pass-through Z3 tactic. The interpreter
+    /// (Phase 3+) inspects the name and shape.
+    App(Symbol, Vec<TacticArg>),
+    /// `raw("(tactic-expr)")` — verbatim splice into Z3 input.
+    Raw(String),
+    /// `mapping { src -> tgt, ... }`.
+    Mapping(MappingBlock),
+}
+
+#[derive(Debug, Clone)]
+pub struct TacticArg {
+    /// `Some(name)` for named args (`logic:`, `times:`, `over:`),
+    /// `None` for positional args (combinator children, `raw`'s string).
+    pub name: Option<Symbol>,
+    pub value: TacticArgValue,
+}
+
+#[derive(Debug, Clone)]
+pub enum TacticArgValue {
+    Tactic(Box<Tactic>),
+    String(String),
+    Int(i64),
+    Bool(bool),
+    /// A `name`-shaped reference (e.g. `over: TransponderState`).
+    /// Resolution happens at tactic-execution time.
+    Name(Name),
 }
 
 #[derive(Debug)]
@@ -384,12 +433,12 @@ pub enum ProofBody {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MappingBlock {
     pub entries: Vec<MappingEntry>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MappingEntry {
     pub source: Name,
     /// rendered as a string in tool space (operator, identifier, etc.)

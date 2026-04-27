@@ -1926,6 +1926,10 @@ fn lower_expr(ctx: &CodegenContext, term: TermId) -> Result<String, CppCodegenEr
                     message: "DeBruijn var in expression body — \
                               should have been opened by the loader".into(),
                 }),
+                anthill_core::kb::term::Var::Rigid(_) => return Err(CppCodegenError {
+                    message: "Rigid var in expression body — only valid \
+                              during proof discharge, not codegen".into(),
+                }),
             };
             let name = kb.resolve_sym(name_sym);
             if let Some(access) = ctx.lookup_value_binding(name) {
@@ -2557,6 +2561,7 @@ fn term_references_name(kb: &KnowledgeBase, term: TermId, target: &str) -> bool 
             let name_sym = match v {
                 anthill_core::kb::term::Var::Global(vid) => vid.name(),
                 anthill_core::kb::term::Var::DeBruijn(_) => return false,
+                anthill_core::kb::term::Var::Rigid(_) => return false,
             };
             kb.resolve_sym(name_sym) == target
         }
@@ -2746,6 +2751,9 @@ fn lower_type(ctx: &CodegenContext, type_term: TermId) -> Result<String, CppCode
                 anthill_core::kb::term::Var::Global(vid) => vid.name(),
                 anthill_core::kb::term::Var::DeBruijn(_) => return Err(CppCodegenError {
                     message: "DeBruijn var in type position — should have been opened".into(),
+                }),
+                anthill_core::kb::term::Var::Rigid(_) => return Err(CppCodegenError {
+                    message: "Rigid var in type position — only valid during proof".into(),
                 }),
             };
             let name = kb.resolve_sym(name_sym).to_string();

@@ -19,3 +19,4 @@ fact WorkItem(
   depends_on: [],
   status: Open)
 
+fact Feedback(content: "All deliverables already shipped: predicate-variable parsing (grammar accepts ?variable in fn_term name field), conversion to ho_apply (parse/convert.rs:416-462), pattern-fragment check at load (typing.rs:2367-2488 — head rejection, nested-ho_apply rejection, distinct-args check), resolver dispatch (resolve.rs:491 resolve_ho_apply). Acceptance tests pass: ho_predicate_*, ho_bigint_induction_parses, pattern_fragment_*.", workitem: "WI-104", author: "claude", at: "2026-04-27T10:30:59Z")

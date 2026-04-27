@@ -148,6 +148,36 @@ struct ProveArgs {
     /// Print extra progress info.
     #[arg(short, long)]
     verbose: bool,
+
+    /// Bypass the proof cache for this run — every proof goes to the
+    /// solver. (Cache reads AND writes are disabled.)
+    #[arg(long = "no-cache")]
+    no_cache: bool,
+
+    /// Force re-run of every proof and overwrite cached entries.
+    /// Useful after a solver upgrade or when debugging stale results.
+    #[arg(long = "refresh-cache")]
+    refresh_cache: bool,
+
+    /// Print cached entries (key, verdict, age) for the loaded KB and
+    /// exit. No proofs are dispatched.
+    #[arg(long = "show-cache")]
+    show_cache: bool,
+
+    /// Override the cache root directory. Default: XDG cache (e.g.
+    /// `~/.cache/anthill/` on Linux, `~/Library/Caches/anthill/` on
+    /// macOS). Also honoured: `$ANTHILL_CACHE_DIR`.
+    #[arg(long = "cache-dir")]
+    cache_dir: Option<PathBuf>,
+
+    /// Garbage-collect cache entries older than N days for the
+    /// current project's subtree, then exit.
+    #[arg(long = "gc-cache")]
+    gc_cache: Option<u32>,
+
+    /// After the run, print a summary of cache hits / misses / writes.
+    #[arg(long = "stats")]
+    stats: bool,
 }
 
 #[derive(Parser)]

@@ -565,6 +565,9 @@ fn term_to_value(kb: &KnowledgeBase, term: TermId) -> Result<serde_json::Value, 
         Term::Var(Var::DeBruijn(n)) => {
             Ok(serde_json::Value::String(format!("?#{n}")))
         }
+        Term::Var(Var::Rigid(vid)) => {
+            Ok(serde_json::Value::String(format!("!{}", kb.resolve_sym(vid.name()))))
+        }
         Term::Fn { functor, pos_args, named_args } => {
             let functor = *functor;
             let pos_args = pos_args.clone();

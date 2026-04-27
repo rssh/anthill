@@ -76,15 +76,24 @@ impl Hash for VarId {
     }
 }
 
-/// Variable representation: either a de Bruijn index (stored terms)
-/// or a global id (during resolution).
+/// Variable representation: a de Bruijn index (stored terms),
+/// a global id (during resolution), or a rigid id (introduced when
+/// opening a `forall_impl` binder).
 #[derive(Clone, Copy, Debug)]
 pub enum Var {
     /// De Bruijn index — canonical representation in stored terms.
     /// Index 0 = bound by innermost enclosing binder.
     DeBruijn(u32),
     /// Global variable id — used during resolution after opening binders.
+    /// "Flex" in λProlog terminology: freely unifiable with any term.
     Global(VarId),
+    /// Rigid variable — introduced as a fresh witness when discharging
+    /// a `forall_impl` body goal (proposal 025 §Auto-generated induction
+    /// rules; WI-108). Unifies only with another `Rigid` carrying the same
+    /// `VarId`; never with a flex or a concrete term. Equivalent to
+    /// "Skolem constant" (resolution literature) or "eigenvariable"
+    /// (sequent calculus).
+    Rigid(VarId),
 }
 
 impl Var {
@@ -96,9 +105,20 @@ impl Var {
         matches!(self, Var::Global(_))
     }
 
+    pub fn is_rigid(&self) -> bool {
+        matches!(self, Var::Rigid(_))
+    }
+
     pub fn as_global(&self) -> Option<VarId> {
         match self {
             Var::Global(vid) => Some(*vid),
+            _ => None,
+        }
+    }
+
+    pub fn as_rigid(&self) -> Option<VarId> {
+        match self {
+            Var::Rigid(vid) => Some(*vid),
             _ => None,
         }
     }
@@ -111,13 +131,14 @@ impl Var {
     }
 
     /// Get a VarId for use in substitutions.
-    /// For Global: returns the VarId directly.
+    /// For Global / Rigid: returns the VarId directly.
     /// For DeBruijn(n): returns a synthetic VarId with id = u32::MAX - n
     /// (reserved range, won't conflict with fresh vars that count up from 0).
     /// The name is only for display — VarId equality uses id only.
     pub fn as_vid(&self) -> VarId {
         match self {
             Var::Global(vid) => *vid,
+            Var::Rigid(vid) => *vid,
             Var::DeBruijn(n) => VarId::new(u32::MAX - n, Symbol::from_raw(0)),
         }
     }
@@ -128,6 +149,7 @@ impl PartialEq for Var {
         match (self, other) {
             (Var::DeBruijn(a), Var::DeBruijn(b)) => a == b,
             (Var::Global(a), Var::Global(b)) => a == b,
+            (Var::Rigid(a), Var::Rigid(b)) => a == b,
             _ => false,
         }
     }
@@ -144,6 +166,10 @@ impl Hash for Var {
             }
             Var::Global(vid) => {
                 1u8.hash(state);
+                vid.hash(state);
+            }
+            Var::Rigid(vid) => {
+                2u8.hash(state);
                 vid.hash(state);
             }
         }

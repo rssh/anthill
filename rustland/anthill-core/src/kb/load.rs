@@ -1693,6 +1693,11 @@ pub fn convert_query_term(
             kb.alloc(Term::Var(Var::Global(kb_vid)))
         }
         Term::Var(Var::DeBruijn(n)) => kb.alloc(Term::Var(Var::DeBruijn(n))),
+        Term::Var(Var::Rigid(_)) => {
+            // Rigid vars are introduced only post-open by the resolver,
+            // never present in stored terms — should not appear here.
+            unreachable!("Var::Rigid in stored parse term")
+        }
         Term::Fn { functor, pos_args, named_args } => {
             let functor_name = parse_symbols.name(functor);
             let kb_functor = resolve_name_in_kb(kb, functor_name, scope_raw);
@@ -2048,6 +2053,9 @@ impl<'a> Loader<'a> {
                 Term::Var(Var::Global(kb_vid))
             }
             Term::Var(Var::DeBruijn(n)) => Term::Var(Var::DeBruijn(n)),
+            Term::Var(Var::Rigid(_)) => {
+                unreachable!("Var::Rigid in stored parse term")
+            }
             Term::Fn { functor, pos_args, named_args } => {
                 let new_functor = self.remap_symbol(functor);
 
@@ -2851,25 +2859,33 @@ impl<'a> Loader<'a> {
             &ctor_refs, &op_refs, &param_refs, &req_terms,
             sort_sort, parent_domain);
 
-        // Skip induction-rule emission for sorts with type params:
-        // a fresh var named after a field whose type is `?T` collides
-        // with cpp-gen's type-param binding pipeline.
-        let has_type_params = s.items.iter().any(|item| matches!(item, Item::AbstractSort(_)));
-        if has_entities && !has_type_params {
-            self.emit_induction_rule(s, sort_functor, parent_domain);
+        // Auto-emit the induction principle for any sort with constructors,
+        // including parameterised ones. The body uses positional fresh vars
+        // (?head, ?tail, ...) in value position; it never references the
+        // type parameter ?T, so polymorphism does not affect the rule
+        // shape. (An earlier exclusion claimed cpp-gen would collide, but
+        // cpp-gen iterates rules only via specific functor queries —
+        // Implementation, SortInfo, OperationInfo, etc. — and never
+        // enumerates `<Sort>.induction` rules.)
+        if has_entities {
+            self.emit_induction_rule(s, sort_term, sort_functor, parent_domain);
         }
 
         self.current_scope = prev_scope;
     }
 
     /// Emit `<Sort>.induction(?P) :- ho_apply(?P, ctor_1(...)), ...` —
-    /// flat case analysis. Recursive-position induction hypotheses
-    /// (`forall(?r, ?P(?r) -: ?P(cons(?h, ?r)))`) wait on a resolver
-    /// pass for nested implication; without them the rule is sound
-    /// for finite enums and structurally-skeletal for recursive ones.
+    /// case analysis with one body goal per constructor. For ctors
+    /// with recursive fields (a field whose type is the sort itself),
+    /// the goal is wrapped in `forall_impl` carrying the inductive
+    /// hypothesis: `(forall(?f1, ..., ?fN), ho_apply(?P, ?fr) -: ho_apply(?P, ctor(...)))`
+    /// where `?fr` is each recursive-position binder. The IH form
+    /// is consumed at proof time by the SLD nested-impl resolver
+    /// (WI-108) and the Z3 induction tactic (WI-101).
     fn emit_induction_rule(
         &mut self,
         s: &SortWithBody,
+        sort_term: TermId,
         sort_functor: Symbol,
         parent_domain: TermId,
     ) {
@@ -2887,11 +2903,17 @@ impl<'a> Loader<'a> {
             SymbolDef::Unresolved { name } => name.clone(),
         };
         let induction_name = format!("{sort_name}.induction");
+        // Scope the `induction` short-name to the SORT (not parent_domain).
+        // Top-level sorts otherwise all share `_global`, where the first
+        // call registers `induction → Symbol(N)` and subsequent calls
+        // reuse that without inserting their qualified name into
+        // `by_qualified_name` — making each subsequent <Sort>.induction
+        // unreachable by qualified-name lookup.
         let induction_sym = if let Some(&existing) = self.kb.symbols.by_qualified_name.get(&induction_name) {
             existing
         } else {
             self.kb.symbols.define(
-                "induction", &induction_name, SymbolKind::Goal, parent_domain.raw(),
+                "induction", &induction_name, SymbolKind::Goal, sort_term.raw(),
             )
         };
 
@@ -2901,38 +2923,90 @@ impl<'a> Loader<'a> {
             named_args: SmallVec::new(),
         });
 
-        let ho_apply_sym = self.kb.intern("ho_apply");
+        // Use the resolved qualified-name symbol so the builtin tag
+        // (BuiltinTag::HoApply registered against `anthill.reflect.Expr.ho_apply`)
+        // recognises auto-generated induction rule bodies. Falling back
+        // to bare intern would create an unresolved symbol disconnected
+        // from the builtin tag.
+        let ho_apply_sym = self.kb.symbols
+            .by_qualified_name
+            .get("anthill.reflect.Expr.ho_apply")
+            .copied()
+            .unwrap_or_else(|| self.kb.intern("ho_apply"));
+        let tuple_sym = self.kb.intern("tuple");
+        let forall_impl_sym = self.kb.intern("forall_impl");
 
         let mut body: Vec<TermId> = Vec::new();
         for e in entities {
             let ctor_sym = self.remap_name(&e.name);
-            let ctor_term = if e.fields.is_empty() {
-                self.kb.alloc(Term::Ref(ctor_sym))
-            } else {
-                let mut field_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-                for f in &e.fields {
-                    let f_name_str = self.parsed.symbols.name(f.name).to_owned();
-                    let f_sym = self.kb.intern(&f_name_str);
-                    let var = self.kb.fresh_var(f_sym);
-                    let var_term = self.kb.alloc(Term::Var(Var::Global(var)));
-                    field_args.push((f_sym, var_term));
+            if e.fields.is_empty() {
+                let ctor_term = self.kb.alloc(Term::Ref(ctor_sym));
+                body.push(self.alloc_pos_fn(ho_apply_sym, &[p_term, ctor_term]));
+                continue;
+            }
+
+            // Build binder vars per field, classifying recursive positions.
+            let mut field_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+            let mut binder_vars: SmallVec<[TermId; 4]> = SmallVec::new();
+            let mut recursive_vars: SmallVec<[TermId; 2]> = SmallVec::new();
+            for f in &e.fields {
+                let f_name_str = self.parsed.symbols.name(f.name).to_owned();
+                let f_sym = self.kb.intern(&f_name_str);
+                let var = self.kb.fresh_var(f_sym);
+                let var_term = self.kb.alloc(Term::Var(Var::Global(var)));
+                field_args.push((f_sym, var_term));
+                binder_vars.push(var_term);
+                if self.field_is_recursive(&f.ty, sort_functor) {
+                    recursive_vars.push(var_term);
                 }
-                self.kb.alloc(Term::Fn {
-                    functor: ctor_sym,
-                    pos_args: SmallVec::new(),
-                    named_args: field_args,
-                })
-            };
-            let p_applied = self.kb.alloc(Term::Fn {
-                functor: ho_apply_sym,
-                pos_args: SmallVec::from_slice(&[p_term, ctor_term]),
-                named_args: SmallVec::new(),
+            }
+
+            let ctor_term = self.kb.alloc(Term::Fn {
+                functor: ctor_sym,
+                pos_args: SmallVec::new(),
+                named_args: field_args,
             });
-            body.push(p_applied);
+            let consequent_goal = self.alloc_pos_fn(ho_apply_sym, &[p_term, ctor_term]);
+
+            if recursive_vars.is_empty() {
+                body.push(consequent_goal);
+                continue;
+            }
+
+            // Inductive case: wrap in forall_impl(binders, ihs, [consequent]).
+            let ihs: Vec<TermId> = recursive_vars.iter()
+                .map(|&rv| self.alloc_pos_fn(ho_apply_sym, &[p_term, rv]))
+                .collect();
+            let binders_tuple = self.alloc_pos_fn(tuple_sym, &binder_vars);
+            let ihs_tuple = self.alloc_pos_fn(tuple_sym, &ihs);
+            let consequent_tuple = self.alloc_pos_fn(tuple_sym, &[consequent_goal]);
+            body.push(self.alloc_pos_fn(
+                forall_impl_sym,
+                &[binders_tuple, ihs_tuple, consequent_tuple],
+            ));
         }
 
         let rule_sort = self.kb.make_name_term("Rule");
         self.kb.assert_rule_debruijn(head, body, rule_sort, parent_domain, None);
+    }
+
+    /// True if `ty` is a `Simple` type whose remapped symbol equals the
+    /// containing sort. Parameterised self-references aren't reached here
+    /// because parameterised sorts skip induction emission upstream.
+    fn field_is_recursive(&mut self, ty: &TypeExpr, sort_functor: Symbol) -> bool {
+        match ty {
+            TypeExpr::Simple(n) => self.remap_name(n) == sort_functor,
+            _ => false,
+        }
+    }
+
+    /// Allocate `Term::Fn { functor, pos_args, named_args: empty }`.
+    fn alloc_pos_fn(&mut self, functor: Symbol, pos_args: &[TermId]) -> TermId {
+        self.kb.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::from_slice(pos_args),
+            named_args: SmallVec::new(),
+        })
     }
 
     /// Emit a SortInfo fact with the given components.

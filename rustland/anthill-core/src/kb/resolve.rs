@@ -16,6 +16,7 @@ use smallvec::SmallVec;
 
 use super::subst::Substitution;
 use super::term::{Term, TermId, Var, VarId};
+use crate::intern::Symbol;
 use super::occurrence::OccurrenceId;
 use super::RuleId;
 use super::KnowledgeBase;
@@ -106,6 +107,9 @@ enum Candidate {
     Rule(RuleId, Substitution),
     /// Occurrence (always a ground fact — no body).
     Occurrence(OccurrenceId, Substitution),
+    /// Frame-scoped assumed fact (introduced by `forall_impl` discharge —
+    /// WI-108). Behaves as a zero-body rule.
+    Assumption(Substitution),
 }
 
 /// Result of a recursive groundness check.
@@ -208,6 +212,10 @@ struct Frame {
     subst: Substitution,
     depth: usize,
     state: FrameState,
+    /// Antecedents assumed under a `forall_impl` discharge that landed in
+    /// this frame's goal stream. Consulted as zero-body facts during the
+    /// proof of the consequent goals; popped when the frame pops. WI-108.
+    assumed_facts: Vec<TermId>,
 }
 
 /// Result of a single step in the search loop.
@@ -307,6 +315,26 @@ impl SearchStream {
         }
 
         let goal = frame.goals[0];
+
+        // 3.4 __pop_assumption(N) — scoping marker emitted by
+        // step_forall_impl. Pops N entries off the frame's
+        // assumed_facts and consumes the marker. WI-108.
+        if let Some(n) = Self::pop_assumption_arg(kb, goal) {
+            let f = self.stack.last_mut().unwrap();
+            let drop_from = f.assumed_facts.len().saturating_sub(n);
+            f.assumed_facts.truncate(drop_from);
+            f.goals.remove(0);
+            f.depth += 1;
+            f.state = FrameState::Init { delay_mode: delay_mode.reset() };
+            return Some(StepResult::Continue);
+        }
+
+        // 3.5 forall_impl(binders, antecedents, consequent) — hereditary
+        // Harrop discharge. Skolemise binders, push antecedents as scoped
+        // assumptions, prepend consequents to the goal stream. WI-108.
+        if Self::is_forall_impl(kb, goal, &frame.subst) {
+            return self.step_forall_impl(kb, goal, depth, delay_mode);
+        }
 
         // 4. Builtin goal
         if let Some(tag) = kb.get_builtin(goal) {
@@ -468,6 +496,21 @@ impl SearchStream {
 
         candidates.extend(rule_candidates.into_iter().map(|(rid, s)| Candidate::Rule(rid, s)));
 
+        // Frame-scoped assumed facts (WI-108). Reify the goal through
+        // the current substitution first so that goal-side flex vars
+        // bound to rigids appear in their concrete form. Then try
+        // unifying each assumed fact against the reified goal.
+        let assumed = self.stack.last().unwrap().assumed_facts.clone();
+        let frame_subst = self.stack.last().unwrap().subst.clone();
+        let reified_goal = kb.reify(goal, &frame_subst);
+        for assumed_fact in assumed {
+            if let Some(subst) = kb.match_term(assumed_fact, reified_goal) {
+                if !subst.is_contradiction() {
+                    candidates.push(Candidate::Assumption(subst));
+                }
+            }
+        }
+
         // Transition to ChoicePoint
         let f = self.stack.last_mut().unwrap();
         f.state = FrameState::ChoicePoint {
@@ -488,6 +531,197 @@ impl SearchStream {
     ///   delay (floundering prevention).
     /// - Otherwise, run sub-resolution: if the inner goal has ANY solution,
     ///   `not(Goal)` fails; if it has NO solutions, `not(Goal)` succeeds.
+    /// True if `goal` is a `forall_impl(...)` body goal. Walks the goal
+    /// to handle the case where it sits behind a flex var binding.
+    fn is_forall_impl(kb: &KnowledgeBase, goal: TermId, subst: &Substitution) -> bool {
+        let walked = kb.walk(goal, subst);
+        match kb.terms.get(walked) {
+            Term::Fn { functor, .. } => kb.resolve_sym(*functor) == "forall_impl",
+            _ => false,
+        }
+    }
+
+    /// Discharge a `forall_impl(binders, antecedents, consequent)` body
+    /// goal: skolemise the binders into fresh `Var::Rigid` witnesses,
+    /// substitute throughout antecedents and consequent, push antecedents
+    /// as scoped assumptions on the next frame, and prepend consequents
+    /// to the goal stream.
+    fn step_forall_impl(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        goal: TermId,
+        depth: usize,
+        delay_mode: DelayMode,
+    ) -> Option<StepResult> {
+        let frame = self.stack.last().unwrap();
+        let walked = kb.walk(goal, &frame.subst);
+        let pos_args = match kb.terms.get(walked) {
+            Term::Fn { pos_args, .. } if pos_args.len() == 3 => pos_args.clone(),
+            _ => {
+                // Malformed forall_impl term — treat as failure
+                self.stack.pop();
+                return Some(StepResult::Continue);
+            }
+        };
+
+        let binder_tids = Self::unwrap_tuple_args(kb, pos_args[0]);
+        let antecedent_tids = Self::unwrap_tuple_args(kb, pos_args[1]);
+        let consequent_tids = Self::unwrap_tuple_args(kb, pos_args[2]);
+
+        // Build the Global → Rigid substitution map from the binders.
+        let mut skolem_map: HashMap<u32, TermId> = HashMap::new();
+        for &b in &binder_tids {
+            let walked_b = kb.walk(b, &frame.subst);
+            if let Term::Var(Var::Global(vid)) = kb.terms.get(walked_b) {
+                let vid = *vid;
+                let fresh = kb.fresh_var(vid.name());
+                let rigid_term = kb.alloc(Term::Var(Var::Rigid(fresh)));
+                skolem_map.insert(vid.raw(), rigid_term);
+            }
+        }
+
+        // Substitute Global → Rigid in antecedents and consequents.
+        // Also try to lower top-level ho_apply forms in antecedents so
+        // they share a functor with whatever the consequent's resolution
+        // will eventually look up (the resolver's HoApply path lowers
+        // the goal-side; we lower the assumption-side here for parity).
+        let frame = self.stack.last().unwrap();
+        let subst = frame.subst.clone();
+        let mut skolemized_antecedents: Vec<TermId> = Vec::with_capacity(antecedent_tids.len());
+        for &t in &antecedent_tids {
+            let sk = Self::subst_globals(kb, t, &skolem_map);
+            let lowered = Self::lower_ho_apply(kb, sk, &subst).unwrap_or(sk);
+            skolemized_antecedents.push(lowered);
+        }
+        let skolemized_consequents: Vec<TermId> = consequent_tids.iter()
+            .map(|&t| Self::subst_globals(kb, t, &skolem_map))
+            .collect();
+
+        // Append a pop_assumption marker after the consequents so the
+        // assumed antecedents go out of scope before the surrounding
+        // rule's remaining goals run (WI-108 scoping invariant).
+        let frame = self.stack.last().unwrap();
+        let n_assumed = skolemized_antecedents.len();
+        let mut new_goals: Vec<TermId> = skolemized_consequents;
+        if n_assumed > 0 {
+            let marker = Self::make_pop_assumption_marker(kb, n_assumed);
+            new_goals.push(marker);
+        }
+        new_goals.extend(frame.goals[1..].iter().copied());
+        let mut new_assumed = frame.assumed_facts.clone();
+        new_assumed.extend(skolemized_antecedents);
+        let new_subst = frame.subst.clone();
+        let new_delay = delay_mode.reset();
+
+        self.stack.pop();
+        self.stack.push(Frame {
+            goals: new_goals,
+            subst: new_subst,
+            depth: depth + 1,
+            state: FrameState::Init { delay_mode: new_delay },
+            assumed_facts: new_assumed,
+        });
+        Some(StepResult::Continue)
+    }
+
+    /// If `term` is a top-level `ho_apply(?P, args...)` with `?P` walking
+    /// to a concrete symbol under `subst`, return the lowered form
+    /// `pred_sym(args...)`. Otherwise `None`.
+    fn lower_ho_apply(kb: &mut KnowledgeBase, term: TermId, subst: &Substitution) -> Option<TermId> {
+        let (pos_args, _named) = match kb.terms.get(term) {
+            Term::Fn { functor, pos_args, named_args, .. }
+                if kb.resolve_sym(*functor) == "ho_apply" =>
+                (pos_args.clone(), named_args.clone()),
+            _ => return None,
+        };
+        if pos_args.is_empty() { return None; }
+        let pred = kb.walk(pos_args[0], subst);
+        let pred_sym = match kb.terms.get(pred) {
+            Term::Ref(s) => *s,
+            Term::Fn { functor, pos_args: pa, named_args: na, .. }
+                if pa.is_empty() && na.is_empty() => *functor,
+            _ => return None,
+        };
+        let remaining: SmallVec<[TermId; 4]> = pos_args[1..].into();
+        Some(kb.alloc(Term::Fn {
+            functor: pred_sym,
+            pos_args: remaining,
+            named_args: SmallVec::new(),
+        }))
+    }
+
+    /// Build `__pop_assumption(N)` — a synthetic goal that, when reached
+    /// in step_init, drops N entries from the frame's assumed_facts.
+    fn make_pop_assumption_marker(kb: &mut KnowledgeBase, n: usize) -> TermId {
+        let functor = kb.intern("__pop_assumption");
+        let count = kb.alloc(Term::Const(crate::kb::term::Literal::Int(n as i64)));
+        kb.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::from_slice(&[count]),
+            named_args: SmallVec::new(),
+        })
+    }
+
+    /// Recognise `__pop_assumption(N)` and return N. Returns None for
+    /// anything else.
+    fn pop_assumption_arg(kb: &KnowledgeBase, goal: TermId) -> Option<usize> {
+        match kb.terms.get(goal) {
+            Term::Fn { functor, pos_args, named_args, .. }
+                if kb.resolve_sym(*functor) == "__pop_assumption"
+                    && pos_args.len() == 1
+                    && named_args.is_empty() =>
+            {
+                match kb.terms.get(pos_args[0]) {
+                    Term::Const(crate::kb::term::Literal::Int(n)) if *n >= 0 => Some(*n as usize),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Extract the positional args of a `tuple(...)` Fn term. Returns an
+    /// empty vec if the term isn't a tuple.
+    fn unwrap_tuple_args(kb: &KnowledgeBase, id: TermId) -> Vec<TermId> {
+        match kb.terms.get(id) {
+            Term::Fn { functor, pos_args, .. } if kb.resolve_sym(*functor) == "tuple" => {
+                pos_args.iter().copied().collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Walk a term, replacing every `Var::Global(vid)` whose raw id is
+    /// in `subst_map` with the mapped term. Allocates new Fn terms only
+    /// where children change.
+    fn subst_globals(
+        kb: &mut KnowledgeBase,
+        term: TermId,
+        subst_map: &HashMap<u32, TermId>,
+    ) -> TermId {
+        match kb.terms.get(term).clone() {
+            Term::Var(Var::Global(vid)) => {
+                subst_map.get(&vid.raw()).copied().unwrap_or(term)
+            }
+            Term::Fn { functor, pos_args, named_args } => {
+                let new_pos: SmallVec<[TermId; 4]> = pos_args.iter()
+                    .map(|&t| Self::subst_globals(kb, t, subst_map))
+                    .collect();
+                let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args.iter()
+                    .map(|&(s, t)| (s, Self::subst_globals(kb, t, subst_map)))
+                    .collect();
+                if new_pos.iter().zip(pos_args.iter()).all(|(a, b)| a == b)
+                    && new_named.iter().zip(named_args.iter())
+                        .all(|(a, b)| a.1 == b.1)
+                {
+                    return term;
+                }
+                kb.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named })
+            }
+            _ => term,
+        }
+    }
+
     /// Resolve ho_apply(?P, args...) by walking ?P through the substitution.
     /// If ?P resolves to a concrete symbol, construct Fn(sym, args) and return it.
     fn resolve_ho_apply(&self, kb: &mut KnowledgeBase, goal: TermId, subst: &Substitution) -> Option<TermId> {
@@ -638,6 +872,7 @@ impl SearchStream {
                     DelayMode::Normal => 1,
                     DelayMode::Delayed { consecutive_delays } => consecutive_delays + 1,
                 };
+                let inherited = frame.assumed_facts.clone();
                 self.stack.pop();
                 self.stack.push(Frame {
                     goals: rotated,
@@ -648,6 +883,7 @@ impl SearchStream {
                             consecutive_delays: new_consecutive,
                         },
                     },
+                    assumed_facts: inherited,
                 });
                 return Some(StepResult::Continue);
             }
@@ -680,6 +916,7 @@ impl SearchStream {
         let (opt_rid, tree_subst) = match candidate {
             Candidate::Occurrence(_occ_id, subst) => (None, subst),
             Candidate::Rule(rid, subst) => (Some(rid), subst),
+            Candidate::Assumption(subst) => (None, subst),
         };
 
         let body = opt_rid.map_or(Vec::new(), |rid| kb.rule_body(rid).to_vec());
@@ -695,11 +932,13 @@ impl SearchStream {
             let term_pairs: Vec<(VarId, TermId)> = tree_subst.iter_terms().collect();
             merged.bind_compressed(term_pairs.into_iter(), &kb.terms);
             let new_delay = delay_mode.reset();
+            let inherited = frame.assumed_facts.clone();
             self.stack.push(Frame {
                 goals: remaining,
                 subst: merged,
                 depth: frame.depth + 1,
                 state: FrameState::Init { delay_mode: new_delay },
+                assumed_facts: inherited,
             });
         } else {
             // Rule with body
@@ -738,11 +977,13 @@ impl SearchStream {
             let mut new_goals = fresh_body;
             new_goals.extend(remaining);
             let new_delay = delay_mode.reset();
+            let inherited = frame.assumed_facts.clone();
             self.stack.push(Frame {
                 goals: new_goals,
                 subst: merged,
                 depth: frame.depth + 1,
                 state: FrameState::Init { delay_mode: new_delay },
+                assumed_facts: inherited,
             });
         }
 
@@ -784,6 +1025,7 @@ impl KnowledgeBase {
             subst: Substitution::new(),
             depth: 0,
             state: FrameState::Init { delay_mode: DelayMode::Normal },
+            assumed_facts: Vec::new(),
         };
         SearchStream {
             stack: vec![initial_frame],
@@ -1288,23 +1530,29 @@ impl KnowledgeBase {
 
     /// `eq(?a, ?b)` — structural equality after walking. Succeeds if both
     /// args resolve to the same TermId (hash-consed identity = structural equality).
+    /// Delays only on flex (`Var::Global`); rigid vars compare by TermId
+    /// identity (hash-consing ensures `Rigid(a) == Rigid(a)`).
     fn builtin_eq(&self, goal: TermId, subst: &Substitution) -> BuiltinResult {
         let a = self.walk(self.builtin_first_arg(goal), subst);
         let b = self.walk(self.builtin_second_arg(goal), subst);
-        match (self.terms.get(a), self.terms.get(b)) {
-            (Term::Var(_), _) | (_, Term::Var(_)) => BuiltinResult::Delay,
-            _ => if a == b { BuiltinResult::Success } else { BuiltinResult::Failure },
+        if Self::is_flex(self.terms.get(a)) || Self::is_flex(self.terms.get(b)) {
+            return BuiltinResult::Delay;
         }
+        if a == b { BuiltinResult::Success } else { BuiltinResult::Failure }
     }
 
     /// `neq(?a, ?b)` — structural inequality after walking.
     fn builtin_neq(&self, goal: TermId, subst: &Substitution) -> BuiltinResult {
         let a = self.walk(self.builtin_first_arg(goal), subst);
         let b = self.walk(self.builtin_second_arg(goal), subst);
-        match (self.terms.get(a), self.terms.get(b)) {
-            (Term::Var(_), _) | (_, Term::Var(_)) => BuiltinResult::Delay,
-            _ => if a != b { BuiltinResult::Success } else { BuiltinResult::Failure },
+        if Self::is_flex(self.terms.get(a)) || Self::is_flex(self.terms.get(b)) {
+            return BuiltinResult::Delay;
         }
+        if a != b { BuiltinResult::Success } else { BuiltinResult::Failure }
+    }
+
+    fn is_flex(t: &Term) -> bool {
+        matches!(t, Term::Var(Var::Global(_)))
     }
 
     /// Generic comparison builtin for gt/lt/gte/lte.
