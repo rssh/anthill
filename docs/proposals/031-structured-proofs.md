@@ -183,18 +183,31 @@ The CLI's prove driver dispatches structured proofs to a new `dispatch_structure
 
 ## Concrete worked example: step_distance_lemma in lf1
 
-The current by-trust step_distance_lemma in `safety_common.anthill`:
+The current setup in `safety_common.anthill` is split:
 
 ```anthill
+rule step_distance_lemma(?w)
+  :- distance_at_step(?k, ?d_prev),
+     ?k_next = ?k + 1,
+     distance_at_step(?k_next, ?d_next),
+     ?w = ?d_next - ?d_prev
+  -: lte(abs(?d_next - ?d_prev), ?delta)
+
 proof step_distance_lemma
   by trust(reason: "Composition of triangle_inequality + velocity_envelope + real_pose_at transition; mechanical discharge blocked by three smt-gen limits — see comment.")
 end
 ```
 
-becomes:
+becomes a single `lemma` block colocating claim + proof:
 
 ```anthill
-proof step_distance_lemma
+lemma step_distance_lemma
+  :- distance_at_step(?k, ?d_prev),
+     ?k_next = ?k + 1,
+     distance_at_step(?k_next, ?d_next),
+     ?w = ?d_next - ?d_prev
+  -: lte(abs(?d_next - ?d_prev), ?delta)
+
   -- Step 1: distance_at_step is the norm of position difference.
   -- Definitional unfolding via SLD against position_distance rule.
   step h1: distance_at_step(?k, ?d_prev) ⇒ ?d_prev = ‖p_L(k) − p_F(k)‖
@@ -204,7 +217,7 @@ proof step_distance_lemma
   step h2: p_L(k+1) − p_F(k+1) = (p_L(k) − p_F(k)) + (v_L(k) − v_F(k)) · T_c
     by z3(logic: "QF_LRA")
 
-  -- Step 3: reverse triangle inequality. This is the geometric leaf.
+  -- Step 3: reverse triangle inequality. The geometric leaf.
   step h3: |‖p_L(k+1) − p_F(k+1)‖ − ‖p_L(k) − p_F(k)‖| ≤ ‖(v_L − v_F) · T_c‖
     using triangle_inequality
     by z3(logic: "NRA")
@@ -232,6 +245,8 @@ proof step_distance_lemma
     by z3(logic: "QF_LRA")
 end
 ```
+
+The claim (lines 2-6) and proof (lines 8-onwards) sit in one block. The lemma is still citable from elsewhere — `using step_distance_lemma` resolves through the registry exactly as it would with the split form — but the source-level reading is unified: the claim's free vars (`?k`, `?d_prev`, `?d_next`, `?delta`) flow into the `step` claims directly without any name-resolution gymnastics.
 
 The trust report (`anthill check --report-trust`) now lists:
 - `step_distance_lemma`: trusted via h4 (scalar norm homogeneity).
@@ -293,6 +308,53 @@ proof_conclude: $ => seq(
 ```
 
 Two new keywords: `step` and `conclude`. Both reserved within proof-body context only.
+
+### `lemma` block — colocated rule + structured proof
+
+For lemmas whose only role is to be proved (no external `using`-citers), the split between `rule` declaration and `proof` block is ceremony. Add a new top-level `lemma` declaration that combines both:
+
+```js
+lemma_declaration: $ => seq(
+  'lemma',
+  field('name', $.name),
+  optional(seq(':-', field('body', $.rule_body))),
+  optional(seq('-:', field('conclusion', $.rule_body))),
+  optional($.meta_block),
+  $.structured_proof_body,
+  'end',
+),
+```
+
+The loader desugars `lemma X :- … -: … [meta] step … conclude … end` into two declarations:
+
+1. `rule X :- … -: … [meta]` — the rule (with whatever attributes the lemma carries).
+2. `proof X` with `ProofBody::Structured(steps, conclude)` — the discharge.
+
+Both go through the existing convert + load paths. The rule remains citable via `using X` from any consumer; the witness machinery is unchanged. The user-visible payoff is *colocation*: the lemma's claim and discharge live in one source block, reading top-to-bottom as "here's what we're proving, here's how."
+
+The Coq parallel:
+```
+Theorem step_distance_lemma : forall k d_prev d_next, …
+  -> abs (d_next - d_prev) <= delta.
+Proof.
+  intros.
+  apply triangle_inequality.
+  …
+Qed.
+```
+
+Anthill's `lemma` is the same idea — combined claim + proof, parsed-and-loaded as if the user wrote both pieces separately.
+
+Two new keywords: `lemma` (top-level) and `end` (already a keyword closing many block constructs). `step` and `conclude` remain proof-body-context keywords.
+
+### Choosing between forms
+
+| Form | When to use |
+|---|---|
+| `rule X …` + `proof X …` | X is reusable elsewhere; the rule statement deserves emphasis (a top-level theorem). |
+| `lemma X …` (combined) | X is internal; only the proof discharges it; no external citers. |
+
+Both produce the same registry membership and witness shape; the choice is documentary.
 
 ## Out of scope
 
