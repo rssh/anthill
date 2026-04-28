@@ -1,0 +1,55 @@
+-- Per-predicate translation policy (proposal 030 phase δ).
+--
+-- The kernel decides once, per predicate per backend, how each call
+-- to that predicate is lowered when emitting backend code (SMT-LIB,
+-- Lean, dReal, …). Project-wide; applies in every proof.
+--
+-- Source-of-truth: `TranslationPolicy(predicate, backend, policy)`
+-- facts in the KB. Codegen consults the policy at emission time;
+-- absent ⇒ a per-backend inferred default kicks in (see proposal
+-- §δ.2).
+namespace anthill.realization.policy
+  import anthill.prelude.{Option}
+  export TranslationPolicy, PredicatePolicy,
+         Inline, DefineFun, DeclareFun, LiftedAxiom
+
+  -- A single policy entry. `predicate` is the qualified name of
+  -- the rule whose translation is being controlled; `backend`
+  -- names the backend ("smt-z3", "smt-cvc5", "lean", …).
+  entity TranslationPolicy(
+    predicate : String,
+    backend   : String,
+    policy    : PredicatePolicy
+  )
+
+  -- The four lowering strategies the kernel currently distinguishes.
+  -- Per proposal 030 §Per-predicate translation policy.
+  sort PredicatePolicy
+    -- Inline the body at every call site; predicate symbol
+    -- disappears from the emitted document. Today's default
+    -- behavior for predicates not appearing in any `using` clause.
+    entity Inline
+
+    -- Emit `(define-fun NAME (typed-args) Bool body)`. Symbol
+    -- preserved; calls become symbol references; body interpreted
+    -- on demand by the solver. For closed-body, non-recursive
+    -- predicates that benefit from symbol-level reuse.
+    entity DefineFun
+
+    -- Emit `(declare-fun NAME (typed-args) Bool)` — uninterpreted.
+    -- Body is *not* translated. Meaning enters via separate axioms
+    -- or TrustedAxiom witnesses. Used for predicates with no
+    -- usable body (specification placeholders, hybrid-systems
+    -- claims).
+    entity DeclareFun
+
+    -- `(declare-fun NAME …)` plus `(assert (forall (args) (=
+    -- (NAME args) body)))` — combination of symbol-preservation
+    -- with explicit forall-asserted equivalence. Useful for
+    -- recursive predicates that don't fit `define-fun-rec` cleanly,
+    -- and as the canonical form when a `using`-cited predicate is
+    -- referenced from multiple consumers (the axiom asserted once,
+    -- callers reference the symbol).
+    entity LiftedAxiom
+  end
+end

@@ -928,3 +928,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T14:21:35Z"))
 
+fact WorkItem(
+  id: "WI-132",
+  description: "Proposal 030 phase δ — per-predicate translation policy. Per docs/proposals/030-theorem-registry.md §Per-predicate translation policy: the kernel decides once per predicate per backend how each call is lowered (Inline / DefineFun / DeclareFun / LiftedAxiom). Today smt-gen always inlines. δ.1: schema TranslationPolicy + PredicatePolicy in stdlib/anthill/realization/policy.anthill. δ.2: per-backend default inference (Inline for closed-body, LiftedAxiom for predicates appearing in any using clause, DefineFun for self-recursive, DeclareFun for trusted-axiom-only). δ.3: override channels — namespace meta blocks, per-rule meta blocks, CLI flags. δ.4: smt-gen consults the policy when emitting calls. δ.5: logic-fragment selection driven by policies in use. v0 scope: implement schema (δ.1) + minimal default inference (δ.2) + smt-gen integration (δ.4); δ.3 + δ.5 follow. Acceptance: cargo-test passes; new tests verify default-Inline behavior unchanged for predicates with no using-side use, default-LiftedAxiom for predicates cited by some proof's using clause.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T14:34:52Z"))
+

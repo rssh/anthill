@@ -17,6 +17,7 @@
 
 pub mod cache;
 pub mod outcome;
+pub mod policy;
 pub mod tactic_emit;
 
 use std::collections::{BTreeMap, BTreeSet};
