@@ -110,3 +110,78 @@ fn no_regression_without_proof() {
         "no proofs declared, but found: {records:?}"
     );
 }
+
+#[test]
+fn structured_proof_body_loads_with_steps_and_conclude() {
+    // Proposal 031: structured proof body with two step rules
+    // and a concluding `using ... by ...` clause. The loader
+    // encodes this as a ProofBodyStructured term carrying a
+    // cons-list of ProofStep terms and a ProofConcludeClause.
+    let src = r#"
+        namespace test.structured_proof
+          rule big_lemma: gte(?x, 0.0)
+            :- gte(?x, 5.0)
+
+          proof big_lemma
+            rule h1: gte(?x, 3.0)
+              :- gte(?x, 5.0)
+              by z3(logic: "LRA")
+
+            rule h2: gte(?x, 1.0)
+              :- gte(?x, 3.0)
+              by z3(logic: "LRA")
+
+            using h1, h2
+            by z3(logic: "LRA")
+          end
+        end
+    "#;
+    let mut kb = load_with(src);
+    let records = render_facts_for(&mut kb, "anthill.realization.ProofRecord");
+    let r = records.iter().find(|r| r.contains("big_lemma"))
+        .unwrap_or_else(|| panic!("no ProofRecord for big_lemma; saw:\n{records:#?}"));
+    assert!(
+        r.contains("ProofBodyStructured"),
+        "expected ProofBodyStructured body, got: {r}"
+    );
+    assert!(
+        r.contains("ProofStep"),
+        "expected at least one ProofStep in body, got: {r}"
+    );
+    assert!(
+        r.contains("ProofConcludeClause"),
+        "expected ProofConcludeClause from trailing using/by, got: {r}"
+    );
+    // Step labels are preserved as String literals.
+    assert!(r.contains("h1") && r.contains("h2"),
+        "expected step labels h1 and h2 in body: {r}");
+}
+
+#[test]
+fn structured_proof_without_concluding_clause_loads() {
+    // The concluding clause is optional. A proof body of just step
+    // rules (no trailing `using ... by`) should still load — the
+    // dispatcher will reject it at discharge time, but parsing and
+    // term-encoding must succeed cleanly.
+    let src = r#"
+        namespace test.structured_no_conclude
+          rule lemma_x: gte(?x, 0.0)
+            :- gte(?x, 5.0)
+
+          proof lemma_x
+            rule h1: gte(?x, 3.0)
+              :- gte(?x, 5.0)
+              by z3(logic: "LRA")
+          end
+        end
+    "#;
+    let mut kb = load_with(src);
+    let records = render_facts_for(&mut kb, "anthill.realization.ProofRecord");
+    let r = records.iter().find(|r| r.contains("lemma_x"))
+        .unwrap_or_else(|| panic!("no ProofRecord for lemma_x; saw:\n{records:#?}"));
+    assert!(r.contains("ProofBodyStructured"), "wrong body: {r}");
+    assert!(r.contains("ProofStep"), "missing step: {r}");
+    // The conclude slot is absent → encoded as Bottom (⊥).
+    assert!(r.contains("⊥") || !r.contains("ProofConcludeClause"),
+        "expected absent conclude to be ⊥, got: {r}");
+}

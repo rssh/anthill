@@ -444,15 +444,56 @@ module.exports = grammar({
     //   :- hint1, hint2                   -- guided derivation hints
     // end
 
+    // Two body shapes:
+    //
+    //   * Single-tactic: `proof X [using Y...] by <tactic> [body] end`
+    //     — one tactic discharges the whole rule.
+    //   * Structured (proposal 031): `proof X (rule h_i: ... by t_i)+
+    //     [using ... by t] end` — sequence of step rules followed by an
+    //     optional concluding `using ... by ...` clause that discharges
+    //     the enclosing lemma's head under accumulated hypotheses.
     proof_declaration: $ => seq(
       repeat(field('description', $.description_block)),
       'proof',
       field('target', $.name),
-      optional(seq('using', field('using', $.proof_using_list))),
-      optional(seq('by', field('strategy', $.proof_strategy))),
-      optional($._proof_body),
+      choice(
+        seq(
+          optional(seq('using', field('using', $.proof_using_list))),
+          optional(seq('by', field('strategy', $.proof_strategy))),
+          optional($._proof_body),
+        ),
+        seq(
+          repeat1(field('step', $.proof_step)),
+          optional(field('conclude', $.proof_concluding_clause)),
+        ),
+      ),
       'end',
       optional($.name),
+    ),
+
+    // A step inside a structured proof body. Same shape as a top-level
+    // rule_declaration (single-arrow per proposal 032) plus optional
+    // `using` and a mandatory `by <tactic>`.
+    proof_step: $ => seq(
+      'rule',
+      optional(seq(field('label', $.name), ':')),
+      choice(
+        seq(field('heads', $.rule_heads), ':-', field('body', $.rule_body)),
+        seq(field('body', $.rule_body), '-:', field('heads', $.rule_heads)),
+        field('heads', $.rule_heads),
+      ),
+      optional($.meta_block),
+      optional(seq('using', field('using', $.proof_using_list))),
+      'by',
+      field('tactic', $.proof_strategy),
+    ),
+
+    // The trailing `[using ...] by <tactic>` clause that discharges the
+    // enclosing lemma's head under accumulated step hypotheses.
+    proof_concluding_clause: $ => seq(
+      optional(seq('using', field('using', $.proof_using_list))),
+      'by',
+      field('tactic', $.proof_strategy),
     ),
 
     // Comma-separated list of previously-proved lemma names that the

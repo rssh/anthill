@@ -440,6 +440,34 @@ pub enum ProofBody {
         text: String,
         mapping: Option<MappingBlock>,
     },
+    /// Structured proof body (proposal 031): a sequence of inner step
+    /// rules each carrying its own discharge tactic, plus an optional
+    /// concluding `using ... by ...` clause that discharges the
+    /// enclosing lemma's head under the accumulated step hypotheses.
+    Structured {
+        steps: Vec<ProofStep>,
+        conclude: Option<ConcludeClause>,
+    },
+}
+
+/// One step inside a structured proof body. The step is structurally
+/// a single-arrow rule (proposal 032) plus optional `using` cites and
+/// a mandatory `by <tactic>` discharge.
+#[derive(Debug)]
+pub struct ProofStep {
+    pub rule: Rule,
+    pub using: Vec<Name>,
+    pub strategy: ProofStrategy,
+    pub span: Span,
+}
+
+/// The trailing `[using ...] by <tactic>` clause that discharges the
+/// enclosing proof's lemma under accumulated step hypotheses.
+#[derive(Debug)]
+pub struct ConcludeClause {
+    pub using: Vec<Name>,
+    pub strategy: ProofStrategy,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

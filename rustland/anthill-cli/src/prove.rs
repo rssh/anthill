@@ -148,6 +148,15 @@ struct ProofRec {
     /// `ProofConfig.assumptions`). Empty for proofs without a
     /// `using` clause.
     using: Vec<String>,
+    /// True when the proof body is `ProofBodyStructured` (proposal
+    /// 031). The dispatcher routes these through `dispatch_structured`
+    /// rather than the standard tactic dispatch path. Phase b of the
+    /// proposal (full structured-proof dispatch with transient
+    /// step rules + hypothesis splicing) is filed as a follow-up
+    /// work item; today the dispatcher emits a clear `Skipped`
+    /// verdict so the syntax round-trips through parse/load/check
+    /// without silently passing.
+    structured: bool,
 }
 
 #[derive(Debug)]
@@ -302,7 +311,19 @@ fn read_proof_record(kb: &KnowledgeBase, syms: &ProofSyms, term_id: TermId) -> O
     let using = get_named_arg(kb, named, "using")
         .map(|tid| read_string_list(kb, syms, tid))
         .unwrap_or_default();
-    Some(ProofRec { rule, strategy, using })
+    let structured = get_named_arg(kb, named, "body")
+        .map(|t| is_structured_body(kb, t))
+        .unwrap_or(false);
+    Some(ProofRec { rule, strategy, using, structured })
+}
+
+/// True if `body_tid` is the `ProofBodyStructured` constructor (proposal 031).
+fn is_structured_body(kb: &KnowledgeBase, body_tid: TermId) -> bool {
+    let functor = match kb.get_term(body_tid) {
+        Term::Fn { functor, .. } => *functor,
+        _ => return false,
+    };
+    kb.qualified_name_of(functor) == "anthill.realization.ProofBodyStructured"
 }
 
 fn has_auto_registered_witness(
@@ -462,6 +483,15 @@ fn dispatch(
     stats: &mut CacheStats,
     discharged_this_run: &std::collections::HashMap<String, DischargeKind>,
 ) -> DispatchOutcome {
+    if rec.structured {
+        return DispatchOutcome::no_witness(Verdict::Skipped(
+            "structured proof body (proposal 031): step-by-step dispatch \
+             not yet implemented (see WI for follow-up). The proof's \
+             grammar, IR, and KB encoding are in place; the dispatcher \
+             will iterate inner step rules and chain their witnesses \
+             via MetaCompose once phase b lands.".into()
+        ));
+    }
     let (tool, tool_args) = match &rec.strategy {
         Strategy::Open => return DispatchOutcome::no_witness(
             Verdict::Skipped("open obligation (no `by` clause)".into())),

@@ -479,3 +479,101 @@ end
             (variable))
           (variable_term
             (variable)))))))
+
+=====================================
+Structured proof — multi-step with concluding clause (proposal 031)
+=====================================
+
+namespace test
+  rule big_lemma: gte(?x, 0.0)
+    :- gte(?x, 5.0)
+
+  proof big_lemma
+    rule h1: gte(?x, 3.0)
+      :- gte(?x, 5.0)
+      by z3(logic: "LRA")
+
+    rule h2: gte(?x, 1.0)
+      :- gte(?x, 3.0)
+      by z3(logic: "LRA")
+
+    using h1, h2
+    by z3(logic: "LRA")
+  end
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (rule_declaration
+      label: (name
+        (identifier))
+      heads: (rule_heads
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable))
+          (float_literal)))
+      body: (rule_body
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable))
+          (float_literal))))
+    (proof_declaration
+      target: (name
+        (identifier))
+      step: (proof_step
+        label: (name
+          (identifier))
+        heads: (rule_heads
+          (fn_term
+            name: (identifier)
+            (variable_term
+              (variable))
+            (float_literal)))
+        body: (rule_body
+          (fn_term
+            name: (identifier)
+            (variable_term
+              (variable))
+            (float_literal)))
+        tactic: (proof_strategy
+          name: (identifier)
+          (named_arg
+            name: (identifier)
+            value: (string_literal))))
+      step: (proof_step
+        label: (name
+          (identifier))
+        heads: (rule_heads
+          (fn_term
+            name: (identifier)
+            (variable_term
+              (variable))
+            (float_literal)))
+        body: (rule_body
+          (fn_term
+            name: (identifier)
+            (variable_term
+              (variable))
+            (float_literal)))
+        tactic: (proof_strategy
+          name: (identifier)
+          (named_arg
+            name: (identifier)
+            value: (string_literal))))
+      conclude: (proof_concluding_clause
+        using: (proof_using_list
+          (name
+            (identifier))
+          (name
+            (identifier)))
+        tactic: (proof_strategy
+          name: (identifier)
+          (named_arg
+            name: (identifier)
+            value: (string_literal)))))))

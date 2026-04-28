@@ -1026,3 +1026,10 @@ fact WorkItem(
   depends_on: ["WI-143"],
   status: Open)
 
+fact WorkItem(
+  id: "WI-146",
+  description: "Proposal 031 phase b — dispatch_structured implementation. Phase a (grammar + IR + KB encoding) is done. Today the dispatcher recognizes ProofBodyStructured bodies and emits a clear Skipped verdict. Phase b iterates the steps and discharges each, then discharges the concluding clause. Surface area: (1) new dispatch_structured in anthill-cli/src/prove.rs that decodes the body term (read steps cons-list and conclude term), iterates steps, dispatches each steps tactic, accumulates step heads as hypotheses for subsequent dispatches; (2) hypothesis splicing — either synthesize transient KB rules for each step (so the existing using cite-resolution path picks them up via lift_rule_to_implication_clause) or extend ProofConfig.assumptions with extra inline assertions rendered from step head terms; (3) the concluding clauses using list is augmented with all step labels and dispatched against the parent rules claim; (4) wrap all sub-witnesses in MetaCompose with tactic_name=structured; (5) trust + cite propagation flows through MetaCompose beta-6 / gamma-1 unchanged. Test plan: small end-to-end test where a 3-step structured proof discharges each step via z3 and the concluding clause via z3-citing-all-steps; lf1 step_distance_lemma migrated from by trust to a structured proof per proposal 031 worked example, verifying the trust report shows the named step trusts (h4 scalar norm homogeneity, h6 velocity envelope) instead of one opaque lemma.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+

@@ -1520,8 +1520,9 @@ impl<'a> Converter<'a> {
         self.symbols.name(sym)
     }
 
-    /// _proof_body is either `:- hints` or `query "..." [mapping {...}]`.
-    /// The body fields appear as direct children of proof_declaration.
+    /// _proof_body is either `:- hints` or `query "..." [mapping {...}]`,
+    /// or (proposal 031) the structured form: a sequence of `proof_step`
+    /// children plus an optional `proof_concluding_clause`.
     fn convert_proof_body(&mut self, proof_node: Node) -> Option<ProofBody> {
         // Hints case: child `rule_body` field named "hints"
         if let Some(hints_node) = self.field(proof_node, "hints") {
@@ -1535,13 +1536,54 @@ impl<'a> Converter<'a> {
         // Query case: string_literal field named "query"
         if let Some(q_node) = self.field(proof_node, "query") {
             let raw = self.text(q_node);
-            // strip surrounding quotes and unescape simple \\ \"
             let text = decode_string_lit(raw);
             let mapping = self.field(proof_node, "mapping")
                 .map(|n| self.convert_mapping_block(n));
             return Some(ProofBody::Query { text, mapping });
         }
+        // Structured case (proposal 031): `proof_step` children plus an
+        // optional `proof_concluding_clause`. Detect by presence of any
+        // proof_step child; the concluding clause is optional.
+        let steps: Vec<ProofStep> = self.children_by_kind(proof_node, "proof_step")
+            .into_iter()
+            .filter_map(|n| self.convert_proof_step(n))
+            .collect();
+        if !steps.is_empty() {
+            let conclude = self.child_by_kind(proof_node, "proof_concluding_clause")
+                .and_then(|n| self.convert_proof_concluding_clause(n));
+            return Some(ProofBody::Structured { steps, conclude });
+        }
         None
+    }
+
+    fn convert_proof_step(&mut self, node: Node) -> Option<ProofStep> {
+        self.reset_var_scope();
+        let span = self.span(node);
+
+        let label = self.field(node, "label").map(|n| self.convert_name(n));
+        let heads = self.field(node, "heads")
+            .map(|h| self.convert_rule_heads(h))
+            .unwrap_or_else(|| vec![RuleHead::Bottom]);
+        let body = self.field(node, "body").map(|b| self.convert_rule_body(b));
+        let meta = self.convert_meta_block(node);
+        let using = self.field(node, "using")
+            .map(|n| self.convert_proof_using_list(n))
+            .unwrap_or_default();
+        let strategy = self.field(node, "tactic")
+            .map(|n| self.convert_proof_strategy(n))?;
+
+        let rule = Rule { label, heads, body, meta, span };
+        Some(ProofStep { rule, using, strategy, span })
+    }
+
+    fn convert_proof_concluding_clause(&mut self, node: Node) -> Option<ConcludeClause> {
+        let span = self.span(node);
+        let using = self.field(node, "using")
+            .map(|n| self.convert_proof_using_list(n))
+            .unwrap_or_default();
+        let strategy = self.field(node, "tactic")
+            .map(|n| self.convert_proof_strategy(n))?;
+        Some(ConcludeClause { using, strategy, span })
     }
 
     fn convert_mapping_block(&mut self, node: Node) -> MappingBlock {

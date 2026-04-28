@@ -4295,6 +4295,104 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// Encode a `ProofStrategy` IR node into a `ProofStrategyKind` (or
+    /// `ProofStrategyOpen`) Term. Shared by ProofRecord.strategy and
+    /// the per-step / concluding-clause tactic fields of structured
+    /// proofs (proposal 031).
+    fn encode_strategy(&mut self, s: &ProofStrategy) -> TermId {
+        let sname_sym = self.kb.alloc(Term::Const(
+            super::term::Literal::String(self.parsed.symbols.name(s.name).to_string())
+        ));
+        let strat_sym = self.kb.resolve_symbol("anthill.realization.ProofStrategyKind");
+        let arg_ids: Vec<TermId> = s.args.iter().map(|&t| self.convert_term(t)).collect();
+        let args_list = build_list(self.kb, &arg_ids);
+        let name_arg = self.kb.symbols.intern("name");
+        let args_arg = self.kb.symbols.intern("args");
+        self.kb.alloc(Term::Fn {
+            functor: strat_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (name_arg, sname_sym),
+                (args_arg, args_list),
+            ]),
+        })
+    }
+
+    /// Encode the cite-list (`using h1, h2, ...`) as a cons-list of
+    /// String literals carrying each cited rule's source-side name.
+    /// The dispatcher resolves each name to a qualified rule QN at
+    /// dispatch time.
+    fn encode_using_list(&mut self, using: &[Name]) -> TermId {
+        let strs: Vec<TermId> = using.iter()
+            .map(|n| {
+                let s = join_segments(&self.parsed.symbols, &n.segments);
+                self.kb.alloc(Term::Const(super::term::Literal::String(s)))
+            })
+            .collect();
+        build_list(self.kb, &strs)
+    }
+
+    /// Encode one structured-proof step rule into a ProofStep Term.
+    /// The step's head is taken as the first positive head of the
+    /// rule (proposal 031 v0 supports single-head steps); multi-head
+    /// or denial steps are encoded with `Bottom` as a placeholder so
+    /// the dispatcher can reject them at runtime with a clear error.
+    fn encode_proof_step(&mut self, step: &ProofStep) -> TermId {
+        let label_str = step.rule.label.as_ref()
+            .map(|n| join_segments(&self.parsed.symbols, &n.segments))
+            .unwrap_or_default();
+        let label_term = self.kb.alloc(Term::Const(
+            super::term::Literal::String(label_str)
+        ));
+
+        let head_term = match step.rule.heads.first() {
+            Some(RuleHead::Term(tid)) => self.convert_term(*tid),
+            _ => self.kb.alloc(Term::Bottom),
+        };
+
+        let body_ids: Vec<TermId> = step.rule.body.as_ref()
+            .map(|terms| terms.iter().map(|&t| self.convert_term(t)).collect())
+            .unwrap_or_default();
+        let body_list = build_list(self.kb, &body_ids);
+
+        let using_list = self.encode_using_list(&step.using);
+        let tactic_term = self.encode_strategy(&step.strategy);
+
+        let s_sym = self.kb.resolve_symbol("anthill.realization.ProofStep");
+        let label_arg = self.kb.symbols.intern("label");
+        let head_arg = self.kb.symbols.intern("head_term");
+        let body_arg = self.kb.symbols.intern("body_terms");
+        let using_arg = self.kb.symbols.intern("using_names");
+        let tactic_arg = self.kb.symbols.intern("tactic");
+        self.kb.alloc(Term::Fn {
+            functor: s_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (label_arg, label_term),
+                (head_arg, head_term),
+                (body_arg, body_list),
+                (using_arg, using_list),
+                (tactic_arg, tactic_term),
+            ]),
+        })
+    }
+
+    fn encode_proof_conclude(&mut self, c: &ConcludeClause) -> TermId {
+        let using_list = self.encode_using_list(&c.using);
+        let tactic_term = self.encode_strategy(&c.strategy);
+        let c_sym = self.kb.resolve_symbol("anthill.realization.ProofConcludeClause");
+        let using_arg = self.kb.symbols.intern("using_names");
+        let tactic_arg = self.kb.symbols.intern("tactic");
+        self.kb.alloc(Term::Fn {
+            functor: c_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (using_arg, using_list),
+                (tactic_arg, tactic_term),
+            ]),
+        })
+    }
+
     /// Lower a `proof <target> by <strategy> ... end` declaration into a
     /// ProofRecord fact. The target's qualified name and a term
     /// encoding of strategy/body are written so an external driver
@@ -4311,24 +4409,7 @@ impl<'a> Loader<'a> {
                     named_args: SmallVec::new(),
                 })
             }
-            Some(s) => {
-                let sname_sym = self.kb.alloc(Term::Const(
-                    super::term::Literal::String(self.parsed.symbols.name(s.name).to_string())
-                ));
-                let strat_sym = self.kb.resolve_symbol("anthill.realization.ProofStrategyKind");
-                let arg_ids: Vec<TermId> = s.args.iter().map(|&t| self.convert_term(t)).collect();
-                let args_list = build_list(self.kb, &arg_ids);
-                let name_arg = self.kb.symbols.intern("name");
-                let args_arg = self.kb.symbols.intern("args");
-                self.kb.alloc(Term::Fn {
-                    functor: strat_sym,
-                    pos_args: SmallVec::new(),
-                    named_args: SmallVec::from_slice(&[
-                        (name_arg, sname_sym),
-                        (args_arg, args_list),
-                    ]),
-                })
-            }
+            Some(s) => self.encode_strategy(s),
         };
 
         let body_term = match &p.body {
@@ -4350,6 +4431,27 @@ impl<'a> Loader<'a> {
                     pos_args: SmallVec::new(),
                     named_args: SmallVec::from_slice(&[
                         (hints_arg, list),
+                    ]),
+                })
+            }
+            Some(ProofBody::Structured { steps, conclude }) => {
+                let step_terms: Vec<TermId> = steps.iter()
+                    .map(|s| self.encode_proof_step(s))
+                    .collect();
+                let steps_list = build_list(self.kb, &step_terms);
+                let conclude_term = match conclude {
+                    Some(c) => self.encode_proof_conclude(c),
+                    None => self.kb.alloc(Term::Bottom),
+                };
+                let s_sym = self.kb.resolve_symbol("anthill.realization.ProofBodyStructured");
+                let steps_arg = self.kb.symbols.intern("steps");
+                let conclude_arg = self.kb.symbols.intern("conclude");
+                self.kb.alloc(Term::Fn {
+                    functor: s_sym,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::from_slice(&[
+                        (steps_arg, steps_list),
+                        (conclude_arg, conclude_term),
                     ]),
                 })
             }

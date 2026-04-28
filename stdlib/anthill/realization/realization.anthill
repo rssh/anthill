@@ -11,7 +11,8 @@ namespace anthill.realization
          LanguageMapping, EffectMapping, ReceiverRule, TypeMapping,
          ReceiverForm, TraitReturnForm, OperationImpl,
          ProofRecord, ProofStrategyOpen, ProofStrategyKind,
-         ProofBodyNone, ProofBodyHints, ProofBodyQuery, MappingEntry,
+         ProofBodyNone, ProofBodyHints, ProofBodyQuery, ProofBodyStructured,
+         ProofStep, ProofConcludeClause, MappingEntry,
          Pending, Discharged, Failed,
          ParametricBinding
 
@@ -169,6 +170,31 @@ namespace anthill.realization
   entity ProofBodyNone                              -- no body
   entity ProofBodyHints(hints: Term)                -- hints = cons-list of rule-name terms
   entity ProofBodyQuery(text: String, mapping: Term) -- mapping = cons-list of MappingEntry
+
+  -- Structured proof body (proposal 031): a sequence of step rules
+  -- (each with its own `by tactic` discharge) followed by an optional
+  -- concluding `using ... by tactic` clause that discharges the
+  -- enclosing lemma's head under accumulated step hypotheses.
+  --   * `steps`    : cons-list of ProofStep
+  --   * `conclude` : Term (ProofConcludeClause) or Bottom when absent.
+  entity ProofBodyStructured(steps: Term, conclude: Term)
+
+  -- One step inside a structured proof body. The `head_term` is a
+  -- term-encoded representation of the step's claim (the rule's
+  -- conclusion under proposal 032). `body_terms` is a cons-list of
+  -- premise terms; `using_names` is a cons-list of cite QNs;
+  -- `tactic` is a ProofStrategyKind term.
+  entity ProofStep(
+    label       : String,
+    head_term   : Term,
+    body_terms  : Term,
+    using_names : Term,
+    tactic      : Term
+  )
+
+  -- The trailing `[using ...] by <tactic>` clause of a structured
+  -- proof body. `using_names` and `tactic` mirror ProofStep's fields.
+  entity ProofConcludeClause(using_names: Term, tactic: Term)
 
   -- Mapping anthill symbols → tool symbols (e.g. add → "+")
   entity MappingEntry(source: String, target: String)
