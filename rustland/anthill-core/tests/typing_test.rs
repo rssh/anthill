@@ -2432,11 +2432,18 @@ rule test(?P) :- ?P(foo, bar)
 
 #[test]
 fn ho_bigint_induction_parses() {
-    // BigInt strong induction rule with HO predicate variable
+    // BigInt strong induction rule with HO predicate variable.
+    // The inductive-step antecedent uses the `nested_implication`
+    // grammar form: outer parens around `(forall(binders), ant -:
+    // cons)`. The outer parens are required by the grammar; without
+    // them, the inner `-:` has no syntactic anchor and tree-sitter
+    // emits an embedded ERROR node (parser limped along by accident
+    // in earlier versions; the form below is the grammar-supported
+    // shape and parses cleanly).
     let source = r#"
 rule bigint_induction(?P)
   :- ?P(0),
-     forall(?n, gt(?n, 0), ?P(sub(?n, 1)) -: ?P(?n))
+     (forall(?n), gt(?n, 0), ?P(sub(?n, 1)) -: ?P(?n))
 "#;
     let parsed = parse::parse(source);
     assert!(parsed.is_ok(), "BigInt induction rule should parse: {:?}", parsed.err());
@@ -2476,15 +2483,22 @@ rule bigint_induction(?P)
         other => panic!("expected ho_apply for first goal, got {:?}", other),
     }
 
-    // Second goal: forall(?n, ...) — should be a forall term
+    // Second goal: the nested-implication form `(forall(?n), ant -:
+    // cons)` loads as `forall_impl` — the WI-108 hereditary-Harrop
+    // form built specifically for the inductive-step antecedent of
+    // recursive-constructor induction principles. Accept either the
+    // plain `forall` functor (for the unparenthesized form) or
+    // `forall_impl` (for the nested-implication form).
     match kb.get_term(body[1]) {
         Term::Fn { functor, pos_args, .. } => {
             let fname = kb.resolve_sym(*functor);
-            assert!(fname == "forall" || fname.ends_with(".forall"),
-                "second goal should be forall, got: {} (pos_args: {})", fname, pos_args.len());
+            let ok = fname == "forall" || fname.ends_with(".forall")
+                  || fname == "forall_impl" || fname.ends_with(".forall_impl");
+            assert!(ok,
+                "second goal should be forall or forall_impl, got: {} (pos_args: {})",
+                fname, pos_args.len());
         }
         other => {
-            // forall might parse differently — just check it exists
             eprintln!("second goal term: {:?}", other);
         }
     }

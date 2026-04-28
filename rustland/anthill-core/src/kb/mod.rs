@@ -100,11 +100,17 @@ struct Guard {
 struct RuleEntry {
     head: TermId,
     body: Vec<TermId>,
+    /// Goals from the optional `-:` (then) clause. When non-empty,
+    /// the rule's positive theorem statement is `∀ vars. body ⇒
+    /// (and conclusion)`. Z3 discharge negates the conjunction
+    /// of these goals; the WI-C1 lift uses them directly. Empty
+    /// for classical violation-shape rules and for facts.
+    conclusion: Vec<TermId>,
     sort: TermId,
     domain: TermId,
     meta: Option<TermId>,
     retracted: bool,
-    /// Number of de Bruijn-encoded free variables in head+body.
+    /// Number of de Bruijn-encoded free variables in head+body+conclusion.
     /// Zero for ground facts. Used by resolver to allocate fresh globals.
     arity: u32,
 }
@@ -360,6 +366,7 @@ impl KnowledgeBase {
         self.rules.push(RuleEntry {
             head,
             body,
+            conclusion: Vec::new(), // populated via assert_rule_with_conclusion
             sort,
             domain,
             meta,
@@ -819,6 +826,13 @@ impl KnowledgeBase {
         &self.rules[id.index()].body
     }
 
+    /// Get the conclusion literals of a rule (empty for facts and
+    /// classical violation-shape rules without a `-:` clause). When
+    /// non-empty, the rule reads as `∀ vars. body ⇒ (and conclusion)`.
+    pub fn rule_conclusion(&self, id: RuleId) -> &[TermId] {
+        &self.rules[id.index()].conclusion
+    }
+
     /// Get the sort of a rule.
     pub fn rule_sort(&self, id: RuleId) -> TermId {
         self.rules[id.index()].sort
@@ -1124,8 +1138,50 @@ impl KnowledgeBase {
         domain: TermId,
         meta: Option<TermId>,
     ) -> RuleId {
-        let (db_head, db_body, arity) = self.terms_to_debruijn(head, &body);
+        self.assert_rule_debruijn_with_conclusion(head, body, Vec::new(), sort, domain, meta)
+    }
+
+    /// Like `assert_rule_debruijn`, but also accepts a `conclusion`
+    /// goal-list (the explicit `-:` clause). DeBruijn-conversion is
+    /// applied across head ∪ body ∪ conclusion together so the same
+    /// variable shares an index across all three.
+    pub fn assert_rule_debruijn_with_conclusion(
+        &mut self,
+        head: TermId,
+        body: Vec<TermId>,
+        conclusion: Vec<TermId>,
+        sort: TermId,
+        domain: TermId,
+        meta: Option<TermId>,
+    ) -> RuleId {
+        // Combine body+conclusion for var-collection so all three
+        // share a common DeBruijn frame.
+        let mut combined = body.clone();
+        combined.extend(conclusion.iter().copied());
+        let vars = if combined.is_empty() {
+            self.collect_vars(head)
+        } else {
+            self.collect_rule_vars(head, &combined)
+        };
+        let arity = vars.len() as u32;
+        let (db_head, db_body, db_conclusion) = if vars.is_empty() {
+            (head, body, conclusion)
+        } else {
+            let new_head = self.term_to_debruijn(head, &vars);
+            let new_body: Vec<TermId> = body.iter()
+                .map(|&b| self.term_to_debruijn(b, &vars))
+                .collect();
+            let new_conclusion: Vec<TermId> = conclusion.iter()
+                .map(|&c| self.term_to_debruijn(c, &vars))
+                .collect();
+            (new_head, new_body, new_conclusion)
+        };
         let rule_id = self.assert_rule(db_head, db_body, sort, domain, meta);
+        // Incref conclusion terms and stash them on the entry.
+        for &c in &db_conclusion {
+            self.terms.incref(c);
+        }
+        self.rules[rule_id.index()].conclusion = db_conclusion;
         self.rules[rule_id.index()].arity = arity;
         rule_id
     }

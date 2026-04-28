@@ -1,0 +1,156 @@
+-- Proof witnesses (Proposal 030, Phase α.1)
+--
+-- Stance-2 architecture: tactics produce candidate proofs; the kernel
+-- checks them; checked witnesses get registered on ProofRecord. This
+-- file defines the witness schema — distinct constructors per tactic
+-- kind so the kernel can dispatch checking by case.
+--
+-- See docs/proposals/030-theorem-registry.md.
+
+namespace anthill.realization.witness
+  import anthill.prelude.{List, Option, Float, Int, Bool}
+  import anthill.reflect.{Term}
+
+  export ProofWitness,
+         SmtDischarge, SldDerivation, MetaCompose,
+         ScopeAxiom, Specialization, TrustedAxiom,
+         SmtVerdict, Unsat, Sat, Unknown,
+         SortBinding,
+         MetaTacticContract
+
+  -- ================================================================
+  -- ProofWitness — the certificate
+  -- ================================================================
+  --
+  -- Distinct constructors so the kernel can route checking by case.
+  -- Each constructor's checking semantics is documented in the
+  -- proposal §Certificate checking semantics.
+
+  sort ProofWitness
+
+    -- SMT discharge — the certificate is the SMT-LIB document the
+    -- backend ran (referenced by content hash; the actual document
+    -- lives in the prove cache, content-addressed) plus the verdict
+    -- and any unsat-core annotation. The kernel re-runs the document
+    -- on demand via `anthill check` and verifies the verdict matches.
+    entity SmtDischarge(
+      backend       : String,                         -- "z3" | "cvc5" | future
+      logic         : String,                         -- e.g. "QF_LRA"
+      document_hash : String,                         -- content hash into prove cache
+      verdict       : SmtVerdict,                     -- Unsat | Sat(model_hash) | Unknown(reason)
+      core          : Option[T = String]              -- unsat-core lines, if requested
+    )
+
+    -- SLD derivation — the resolution tree. Replayable. Stored as
+    -- a hash referencing full content in the cache; cheap to verify
+    -- by replaying step-by-step against the current KB.
+    entity SldDerivation(tree_hash: String)
+
+    -- Meta-tactic composition — the tactic dispatched N sub-queries
+    -- and AND-combined their verdicts. The certificate is the list
+    -- of sub-witnesses (each itself a ProofWitness). Recursive entity
+    -- definitions are supported by the realization layer.
+    entity MetaCompose(
+      tactic_name : String,                           -- e.g. "induction", "ranking"
+      sub         : List[T = ProofWitness]
+    )
+
+    -- Definitional witness for kernel-derived lemmas: lemmas that
+    -- are true by virtue of a scope's declared structure.
+    --
+    -- `aspect` discriminates which structural feature the witness
+    -- rests on:
+    --   - "requires.<SE-flat>" — the lemma is one of the scope's
+    --     `requires` clauses, identified by the flattened Sort-Expr.
+    --   - "induction" — the lemma is the auto-generated induction
+    --     principle for an inductive sort.
+    --   - (future aspects extend the dispatch table without schema
+    --     changes — DeclareFun-supplied predicates etc.)
+    --
+    -- The kernel re-reads the cited declaration and dispatches per
+    -- aspect to verify. Not in the trust base — `S`'s source IS
+    -- the proof, mechanically checkable.
+    entity ScopeAxiom(
+      scope_kind : String,                            -- "sort" | "operation"
+      scope_qn   : String,                            -- the cited declaration's QN
+      aspect     : String                             -- "requires.<SE-flat>" | "induction" | ...
+    )
+
+    -- Use-site specialization — combine a parametric ProofRecord
+    -- with concrete instance ProofRecords plus a substitution map
+    -- to obtain a specialized theorem. The kernel checks structurally:
+    --   * substitution is well-formed,
+    --   * parametric ProofRecord exists and is Discharged with valid state-hash,
+    --   * each instance ProofRecord covers the parametric's open
+    --     `requires` under the substitution.
+    --
+    -- The specialization yields a *derived* statement (the parametric's
+    -- statement with the substitution applied). Not a re-discharge —
+    -- soundness inherits from the parametric + instances + the
+    -- substitution being well-formed.
+    entity Specialization(
+      parametric   : String,                          -- QN of parametric ProofRecord
+      substitution : List[T = SortBinding],           -- T_i ↦ ConcreteSort
+      instances    : List[T = String]                 -- ProofRecord QNs covering the parametric requires
+    )
+
+    -- User-asserted axiom — explicit trust, no kernel check.
+    -- Permitted but flagged in any proof tree containing it.
+    -- Replaces the silent axiomatic content of pre-030 `using`.
+    entity TrustedAxiom(reason: String)
+  end
+
+  -- ================================================================
+  -- SmtVerdict
+  -- ================================================================
+  --
+  -- The recorded verdict from the SMT backend at discharge time.
+  -- The kernel's `check` re-runs the document and verifies the
+  -- backend still returns this verdict.
+
+  sort SmtVerdict
+    entity Unsat                                      -- claim holds
+    entity Sat(model_hash: String)                    -- counterexample; model in cache
+    entity Unknown(reason: String)                    -- timeout / incomplete logic / ...
+  end
+
+  -- ================================================================
+  -- SortBinding — substitution entry for Specialization
+  -- ================================================================
+  --
+  -- One mapping from an abstract sort parameter to a concrete sort.
+  -- Substitutions are lists of these. For polymorphic sorts like
+  -- `List[T]`, a use at T = Int produces a Specialization whose
+  -- substitution is `[SortBinding(abstract_param: "T", concrete_sort: "anthill.prelude.Int")]`.
+
+  entity SortBinding(
+    abstract_param : String,                          -- e.g. "T"
+    concrete_sort  : String                           -- qualified name of the concrete sort
+  )
+
+  -- ================================================================
+  -- MetaTacticContract — kernel-checked structural shape per meta-tactic
+  -- ================================================================
+  --
+  -- Each meta-tactic (induction, ranking, future patterns) declares
+  -- the structural shape its MetaCompose witnesses must take. The
+  -- kernel uses this to validate sub-witness shapes during checking.
+  --
+  -- For `induction(over: T)`, the contract is *derived* from T's
+  -- auto-registered `<T>.induction` principle (see proposal §Auto-
+  -- generated induction principles); the contract object recorded
+  -- here is for meta-tactics whose contract isn't sort-derived.
+  --
+  -- For `ranking(boundedness, decrease)`, the contract pins:
+  --   sub.length == 2; sub[0] proves the ranking value is bounded
+  --   below; sub[1] proves strict decrease across transitions.
+  --
+  -- Future meta-tactics (`bmc`, `proof_chain`, …) declare their
+  -- contracts as facts of this entity.
+
+  entity MetaTacticContract(
+    name        : String,                             -- meta-tactic name
+    arity       : Int,                                -- number of sub-witnesses required
+    description : String                              -- human-readable shape description
+  )
+end

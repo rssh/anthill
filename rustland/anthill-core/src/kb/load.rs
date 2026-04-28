@@ -3147,8 +3147,13 @@ impl<'a> Loader<'a> {
             .map(|terms| terms.iter().map(|&tid| self.convert_term(tid)).collect())
             .unwrap_or_default();
 
+        let conclusion: Vec<TermId> = r.conclusion.as_ref()
+            .map(|terms| terms.iter().map(|&tid| self.convert_term(tid)).collect())
+            .unwrap_or_default();
+
         let meta = r.meta.as_ref().map(|mb| self.load_meta_block(mb));
-        self.kb.assert_rule_debruijn(head_term, body, rule_sort, domain, meta);
+        self.kb.assert_rule_debruijn_with_conclusion(
+            head_term, body, conclusion, rule_sort, domain, meta);
 
         self.current_owner = prev_owner;
     }
@@ -3547,6 +3552,15 @@ impl<'a> Loader<'a> {
         let body_arg = self.kb.symbols.intern("body");
         let result_arg = self.kb.symbols.intern("result");
         let deps_arg = self.kb.symbols.intern("dependencies");
+        let using_arg = self.kb.symbols.intern("using");
+        // Phase α.2 — proposal 030: witness, state_hash, parametric_context.
+        // At load time these are placeholders; the prove driver will
+        // populate them when a successful discharge produces a witness
+        // (phase α.3+). Until then a Pending record carries a
+        // TrustedAxiom placeholder so the field is always populated.
+        let witness_arg = self.kb.symbols.intern("witness");
+        let state_hash_arg = self.kb.symbols.intern("state_hash");
+        let parametric_context_arg = self.kb.symbols.intern("parametric_context");
 
         let rule_text = match self.kb.symbols.get(target_sym) {
             SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
@@ -3568,6 +3582,42 @@ impl<'a> Loader<'a> {
             named_args: SmallVec::new(),
         });
 
+        // `using` clause: each cited name is resolved against the
+        // proof block's enclosing scope (so `using lemma_a` works
+        // bare, and `using anthill.x.lemma_a` also works). Resolved
+        // qualified names land as String consts in a cons-list, so
+        // the CLI driver can read them without re-parsing.
+        let using_qns: Vec<TermId> = p.using.iter().map(|n| {
+            let sym = self.remap_name(n);
+            let qn = match self.kb.symbols.get(sym) {
+                SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
+                SymbolDef::Unresolved { name } => name.clone(),
+            };
+            self.kb.alloc(Term::Const(super::term::Literal::String(qn)))
+        }).collect();
+        let using_list = build_list(self.kb, &using_qns);
+
+        // Phase α.2 placeholder values for witness, state_hash, and
+        // parametric_context. A Pending ProofRecord carries
+        // TrustedAxiom(reason: "pending — not yet discharged") as its
+        // witness placeholder so the field is always populated. The
+        // prove driver overwrites this when a tactic returns a real
+        // witness (phase α.3+).
+        let trusted_axiom_sym =
+            self.kb.resolve_symbol("anthill.realization.witness.ProofWitness.TrustedAxiom");
+        let reason_arg = self.kb.symbols.intern("reason");
+        let pending_reason_term = self.kb.alloc(Term::Const(
+            super::term::Literal::String("pending — not yet discharged".to_string())
+        ));
+        let placeholder_witness = self.kb.alloc(Term::Fn {
+            functor: trusted_axiom_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(reason_arg, pending_reason_term)]),
+        });
+        let empty_state_hash = self.kb.alloc(Term::Const(
+            super::term::Literal::String(String::new())
+        ));
+
         let record_term = self.kb.alloc(Term::Fn {
             functor: record_sym,
             pos_args: SmallVec::new(),
@@ -3577,6 +3627,10 @@ impl<'a> Loader<'a> {
                 (body_arg, body_term),
                 (result_arg, pending_term),
                 (deps_arg, nil_term),
+                (using_arg, using_list),
+                (witness_arg, placeholder_witness),
+                (state_hash_arg, empty_state_hash),
+                (parametric_context_arg, nil_term),
             ]),
         });
         let record_sort = self.kb.make_name_term("anthill.realization.ProofRecord");

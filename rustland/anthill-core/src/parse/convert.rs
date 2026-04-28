@@ -1064,9 +1064,12 @@ impl<'a> Converter<'a> {
         let body = self.field(node, "body")
             .map(|b| self.convert_rule_body(b));
 
+        let conclusion = self.field(node, "conclusion")
+            .map(|c| self.convert_rule_body(c));
+
         let meta = self.convert_meta_block(node);
 
-        Some(Rule { label, head, body, meta, span })
+        Some(Rule { label, head, body, conclusion, meta, span })
     }
 
     fn convert_rule_head(&mut self, node: Node) -> RuleHead {
@@ -1326,8 +1329,10 @@ impl<'a> Converter<'a> {
             .unwrap_or(RuleHead::Bottom);
         let body = self.field(node, "body")
             .map(|b| self.convert_rule_body(b));
+        let conclusion = self.field(node, "conclusion")
+            .map(|c| self.convert_rule_body(c));
         let meta = self.convert_meta_block(node);
-        Some(Rule { label, head, body, meta, span })
+        Some(Rule { label, head, body, conclusion, meta, span })
     }
 
     // ── Describe ────────────────────────────────────────────────
@@ -1338,8 +1343,25 @@ impl<'a> Converter<'a> {
         let target = self.field(node, "target").map(|n| self.convert_name(n))?;
         let strategy = self.field(node, "strategy").map(|n| self.convert_proof_strategy(n));
         let body = self.convert_proof_body(node);
+        let using = self.field(node, "using")
+            .map(|n| self.convert_proof_using_list(n))
+            .unwrap_or_default();
         let span = self.span(node);
-        Some(ProofDecl { target, strategy, body, span })
+        Some(ProofDecl { target, strategy, body, using, span })
+    }
+
+    /// Pull each `name` child of a `proof_using_list` node into a
+    /// `Vec<Name>`. Empty input yields an empty vector — the loader
+    /// treats that as "no cited lemmas".
+    fn convert_proof_using_list(&mut self, node: Node) -> Vec<Name> {
+        let mut out = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "name" {
+                out.push(self.convert_name(child));
+            }
+        }
+        out
     }
 
     /// Convert a single `named_arg` node into a synthetic

@@ -12,7 +12,8 @@ namespace anthill.realization
          ReceiverForm, TraitReturnForm, OperationImpl,
          ProofRecord, ProofStrategyOpen, ProofStrategyKind,
          ProofBodyNone, ProofBodyHints, ProofBodyQuery, MappingEntry,
-         Pending, Discharged, Failed
+         Pending, Discharged, Failed,
+         ParametricBinding
 
   -- Links host-language code to an anthill algebra spec.
   --
@@ -174,11 +175,45 @@ namespace anthill.realization
 
   -- A proof obligation as it lives in the KB. Created by the loader,
   -- updated by the prove CLI as backends discharge it.
+  --
+  -- `using` carries the cited-lemma list from the optional
+  -- `using <name-list>` clause on the source-level proof block
+  -- (`proof X using Y, Z by ...`). The prove driver treats each
+  -- name as a previously-proved theorem rule whose body should be
+  -- rendered to SMT and injected as a hypothesis (`(assert ...)`)
+  -- when discharging this proof. Empty list ⇒ no citations.
+  --
+  -- `witness`, `state_hash`, `parametric_context` are added in
+  -- proposal 030 (phase α.2). The witness term is a ProofWitness
+  -- value (see anthill.realization.witness); state_hash captures the
+  -- KB-state slice the discharge depended on (every visited rule's
+  -- canonical IR hash + every visited fact's content hash, combined);
+  -- parametric_context lists the abstract sort parameters and ambient
+  -- requires that were in scope during discharge (empty for non-
+  -- parametric proofs).
+  --
+  -- For records loaded from sources predating phase α.2, the new
+  -- fields default to placeholders (witness = TrustedAxiom("legacy
+  -- pre-030 record"), state_hash = "", parametric_context = nil) and
+  -- the prove driver treats such records as Pending — forcing
+  -- re-discharge to populate the witness properly.
   entity ProofRecord(
-    rule          : String,                         -- qualified name of the rule
-    strategy      : Term,                           -- ProofStrategyOpen or ProofStrategyKind
-    body          : Term,                           -- ProofBodyNone | Hints | Query
-    result        : ObligationStatus,               -- Pending → Discharged(...) | Failed(...)
-    dependencies  : List[T = String]                -- rules used during discharge
+    rule              : String,                         -- qualified name of the rule
+    strategy          : Term,                           -- ProofStrategyOpen or ProofStrategyKind
+    body              : Term,                           -- ProofBodyNone | Hints | Query
+    result            : ObligationStatus,               -- Pending → Discharged(...) | Failed(...)
+    dependencies      : List[T = String],               -- rules used during discharge
+    using             : List[T = String],               -- cited-lemma rule QNs
+    witness           : Term,                           -- ProofWitness; placeholder for Pending
+    state_hash        : String,                         -- canonical hash of dep slice; empty for Pending
+    parametric_context: Term                            -- list of ParametricBinding; nil if non-parametric
+  )
+
+  -- Per-quantifier binding for ProofRecord.parametric_context.
+  -- Records "this proof's discharge ran with abstract sort `T`
+  -- in scope, ambient under requires `R₁, R₂, …`."
+  entity ParametricBinding(
+    abstract_sort : String,                         -- e.g. "T"
+    requires      : List[T = String]                -- spec QNs ambient over this sort
   )
 end

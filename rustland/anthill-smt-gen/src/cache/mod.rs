@@ -9,6 +9,6 @@ pub mod key;
 pub mod location;
 pub mod store;
 
-pub use key::{build_key, KeyInputs, CACHE_FORMAT_VERSION};
+pub use key::{build_key, state_hash, KeyInputs, CACHE_FORMAT_VERSION, STATE_HASH_FORMAT_VERSION};
 pub use location::{entry_path, proof_subdir, resolve_cache_root, Solver};
 pub use store::{invalidate, lookup, store as store_entry, CacheEntry};

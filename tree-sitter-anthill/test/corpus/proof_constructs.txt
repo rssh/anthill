@@ -330,3 +330,108 @@ end
         bindings: (bindings
           (identifier)
           (string_literal))))))
+
+=====================================
+Proof with using clause (cited lemmas)
+=====================================
+
+namespace test
+  rule foo(?w) :- bar(?w)
+  rule lemma_a(?x) :- baz(?x)
+  rule lemma_b(?x) :- qux(?x)
+  proof foo
+    using lemma_a, lemma_b
+    by z3(logic: "LRA")
+  end
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (rule_declaration
+      head: (rule_head
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable))))
+      body: (rule_body
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable)))))
+    (rule_declaration
+      head: (rule_head
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable))))
+      body: (rule_body
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable)))))
+    (rule_declaration
+      head: (rule_head
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable))))
+      body: (rule_body
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable)))))
+    (proof_declaration
+      target: (name
+        (identifier))
+      using: (proof_using_list
+        (name
+          (identifier))
+        (name
+          (identifier)))
+      strategy: (proof_strategy
+        name: (identifier)
+        (named_arg
+          name: (identifier)
+          value: (string_literal))))))
+
+=====================================
+Rule with explicit conclusion (-: separator)
+=====================================
+
+namespace test
+  rule lower_bound_holds(?d, ?d_min)
+    :- gte(?d, 5.0)
+    -: gte(?d, ?d_min)
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (rule_declaration
+      head: (rule_head
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable))
+          (variable_term
+            (variable))))
+      body: (rule_body
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable))
+          (float_literal)))
+      conclusion: (rule_body
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable))
+          (variable_term
+            (variable)))))))

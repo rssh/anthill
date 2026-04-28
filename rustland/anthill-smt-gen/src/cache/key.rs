@@ -62,6 +62,31 @@ pub fn build_key(kb: &KnowledgeBase, inputs: &KeyInputs<'_>) -> String {
     hex::encode(h.finalize())
 }
 
+/// Format version for `state_hash`. Bumping this invalidates every
+/// recorded `ProofRecord.state_hash` — do so on changes to the input
+/// envelope (label strings, framing bytes, included fields).
+pub const STATE_HASH_FORMAT_VERSION: u32 = 1;
+
+/// Per-`ProofRecord` state hash (proposal 030 phase α.4): canonical
+/// hash of the kb-state slice a discharge depended on. Composed of
+/// the same `walk_visited` + `fact_dep_hash_from` content as
+/// `build_key`, but **without** the SMT-document, tactic, hint,
+/// stdlib, or solver-version envelope. Two proofs that consult the
+/// same rules + facts produce the same state hash regardless of
+/// which tactic discharged them.
+///
+/// Returned as a 64-char lowercase-hex sha256 digest.
+pub fn state_hash(kb: &KnowledgeBase, visited: &BTreeSet<String>) -> String {
+    let mut h = Sha256::new();
+    let (rule_dep, referenced_functors) = walk_visited(kb, visited);
+    field(&mut h, b"rule_deps:", rule_dep.as_bytes());
+    let fact_dep = fact_dep_hash_from(kb, &referenced_functors);
+    field(&mut h, b"fact_deps:", fact_dep.as_bytes());
+    h.update(b"shfv:");
+    h.update(STATE_HASH_FORMAT_VERSION.to_le_bytes());
+    hex::encode(h.finalize())
+}
+
 fn field(h: &mut Sha256, label: &[u8], value: &[u8]) {
     h.update(label);
     h.update(value);

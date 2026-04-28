@@ -44,6 +44,7 @@ static STDLIB_SOURCES: &[(&str, &str)] = &[
     ("anthill/reflect/typing", include_str!("../../../stdlib/anthill/reflect/typing.anthill")),
     // realization
     ("anthill/realization/realization", include_str!("../../../stdlib/anthill/realization/realization.anthill")),
+    ("anthill/realization/witness", include_str!("../../../stdlib/anthill/realization/witness.anthill")),
     ("anthill/realization/platform", include_str!("../../../stdlib/anthill/realization/platform.anthill")),
     ("anthill/realization/rust_std", include_str!("../../../stdlib/anthill/realization/rust_std.anthill")),
     ("anthill/realization/cpp_std", include_str!("../../../stdlib/anthill/realization/cpp_std.anthill")),

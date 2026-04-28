@@ -668,16 +668,17 @@ entity Account(id: AccountId, balance: Money)
 
 ```
 Rule ::= DescriptionBlock*
-           'rule' [Name ':'] Head [':-' RuleBody]
+           'rule' [Name ':'] Head [':-' RuleBody] ['-:' Conclusion]
            ['meta' ':' Meta]
 
-Head ::= Term                          -- what the rule asserts
-       | '⊥'                           -- bottom (for denials)
+Head        ::= Term                       -- what the rule asserts
+              | '⊥'                        -- bottom (for denials)
 
-RuleBody ::= Term (',' Term)*          -- conjunction of conditions
+RuleBody    ::= Term (',' Term)*           -- premises (conjunction)
+Conclusion  ::= Term (',' Term)*           -- positive conclusion (conjunction)
 ```
 
-**Three forms:**
+**Four forms:**
 
 ```
 -- Derivation rule: head holds when body holds
@@ -688,7 +689,32 @@ rule parent("alice", "bob")
 
 -- Denial / integrity constraint: desugared from constraint syntax
 rule non_negative: ⊥ :- balance(?a, ?b), lt(?b, 0)
+
+-- Positive theorem: explicit `-:` (then) clause states the conclusion
+rule lower_bound_holds(?d)
+  :- reachable_real(?l, ?f), position_distance(?d, ?l, ?f),
+     DistanceBounds(d_min: ?d_min, d_max: ?_)
+  -: gte(?d, ?d_min)
 ```
+
+**The `-:` (then) clause** — *Z3 backend only.* Optional. When present, the rule reads as a *positive theorem*:
+
+> **∀ vars. body ⇒ conclusion**
+
+The two separators are deliberately symmetric: `:-` reads as "if" (premises), `-:` reads as "then" (conclusion). The conclusion is a comma-separated conjunction of goal terms — typically arithmetic relations (`gte`, `lte`, `eq`) but any term shape that smt-gen can lower is accepted.
+
+**Z3 mapping** (the `-:` clause is meaningful only when the rule is dispatched via `proof X by z3(...)` or cited via `using X`):
+
+| Mode                         | SMT-LIB encoding                                            |
+| ---------------------------- | ----------------------------------------------------------- |
+| `proof X by z3(...)`         | `(assert <body>); (assert (not (and <conclusion>))); (check-sat)` — `unsat` ⇒ theorem holds. |
+| `proof Y using X by z3(...)` | `(assert (forall (<vars>) (=> (and <body>) (and <conclusion>))))` injected into Y's preamble before Y's own assertions. |
+
+The forall-quantification covers every free SMT variable of the lemma (the `var_<i>` synthetic names produced from the rule's de Bruijn indices). The encoding is deterministic by construction — there is no heuristic about which clause is "the conclusion"; the user names it explicitly via `-:`.
+
+**Citability.** A rule with a `-:` clause is *citable* via `using` in another proof block. A rule *without* a `-:` clause (classical violation-shape — body must be unsat to discharge) is **not citable**: its theorem statement is "the body has no satisfying instance," not a premises ⇒ conclusion implication, and the lift would have no determinate conclusion to emit. Authors who want to cite a violation-shape rule must rewrite it in positive form with an explicit `-:` clause.
+
+**Other backends.** SLD resolution and the derivation-trace prover ignore the `-:` clause: SLD treats the rule's head as the goal and chains through the body as in any Horn rule. Other backends (test runner, future hybrid-systems pass) can choose their own interpretation; today only the Z3 backend consumes `-:`.
 
 Rules can optionally be **named** (e.g., `non_negative:`) for reference in error messages, retractions, and documentation.
 

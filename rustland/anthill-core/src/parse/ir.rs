@@ -232,6 +232,14 @@ pub struct Rule {
     pub label: Option<Name>,
     pub head: RuleHead,
     pub body: Option<Vec<TermId>>,
+    /// Goals from the optional `-:` (then) clause: the rule's
+    /// *positive conclusion* under universal closure of the body
+    /// vars. When present, the rule reads as `∀ vars. body ⇒
+    /// (and conclusion)`. Z3 discharge negates this conjunction
+    /// and proves unsat; the `using` clause's lift uses it
+    /// directly (no inversion). When absent, the rule is the
+    /// classical violation form (body must be unsat to discharge).
+    pub conclusion: Option<Vec<TermId>>,
     pub meta: Option<MetaBlock>,
     pub span: Span,
 }
@@ -359,6 +367,12 @@ pub struct ProofDecl {
     pub target: Name,
     pub strategy: Option<ProofStrategy>,
     pub body: Option<ProofBody>,
+    /// Cited-lemma rule names from the optional `using <name-list>`
+    /// clause. The prove driver resolves each to a rule QN, renders
+    /// the cited rule's body, and injects the result as
+    /// `ProofConfig.assumptions` clauses for the discharge of this
+    /// proof. Empty when the clause is absent.
+    pub using: Vec<Name>,
     pub span: Span,
 }
 

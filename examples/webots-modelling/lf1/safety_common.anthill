@@ -227,11 +227,13 @@ namespace anthill.examples.lf1.safety.common
        )
 
   -- distance_at_step: the inter-drone distance at sample tick k.
-  -- Composes real_pose_at + position_distance.
+  -- Composes real_pose_at + position_distance. Result var first per
+  -- smt-gen convention (rule head `(?d, ?p1, ?p2)`), so the call
+  -- here is `position_distance(?d, ?l, ?f)`.
   rule distance_at_step(?k, ?d)
     :- real_pose_at(?k, Leader, ?l),
        real_pose_at(?k, Follower, ?f),
-       position_distance(?l, ?f, ?d)
+       position_distance(?d, ?l, ?f)
 
   -- =================================================================
   -- position_distance — Euclidean distance between two poses

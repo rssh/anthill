@@ -1,21 +1,25 @@
 //! `anthill prove` — discharge proof obligations declared via
 //! `proof <rule> by <strategy>` blocks (proposal 025).
 
+use std::collections::BTreeSet;
 use std::process::Command;
 
 use anthill_core::intern::Symbol;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::typing::get_named_arg;
-use anthill_smt_gen::{emit_satisfiability_check_with_deps, ProofConfig};
+use anthill_smt_gen::{
+    emit_satisfiability_check_with_deps, lift_rule_to_implication_clause, ProofConfig,
+};
 use anthill_smt_gen::cache::{
     self, build_key, entry_path, lookup, proof_subdir, resolve_cache_root,
-    store_entry, CacheEntry, KeyInputs, Solver,
+    state_hash, store_entry, CacheEntry, KeyInputs, Solver,
 };
 use anthill_smt_gen::tactic_emit::emit_tactic_from_term;
 use anthill_smt_gen::outcome::parse_z3_output;
 
 use crate::{ProveArgs, load_kb_with_stdlib};
+use crate::witness::{ProofWitness, SmtVerdict};
 
 pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
     if args.show_cache {
@@ -46,7 +50,22 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
             }
         }
         total += 1;
-        match dispatch(&mut kb, rec, args, &mut stats) {
+        let outcome = dispatch(&mut kb, rec, args, &mut stats);
+        // Phase α.3: outcome.witness is captured here; phase α.5
+        // will write it onto the ProofRecord. For now it's discarded
+        // after the verdict-printing match below.
+        let _witness = outcome.witness;
+        // Phase α.4: compute the per-ProofRecord state hash from the
+        // visited-rule set this discharge consulted. None when the
+        // discharge consulted no kb state (early-exit Skipped /
+        // EmitError); Some(hash) otherwise. α.5 writes this onto
+        // ProofRecord.state_hash.
+        let _state_hash: Option<String> = if outcome.visited_rules.is_empty() {
+            None
+        } else {
+            Some(state_hash(&kb, &outcome.visited_rules))
+        };
+        match outcome.verdict {
             Verdict::Proved => {
                 println!("✓ {}: proved (z3: unsat)", rec.rule);
                 discharged += 1;
@@ -104,6 +123,13 @@ struct CacheStats {
 struct ProofRec {
     rule: String,
     strategy: Strategy,
+    /// Cited-lemma rule QNs from the source-level `using` clause.
+    /// Each is dispatched separately to render its body as SMT,
+    /// and the resulting clauses are spliced into this proof's
+    /// SMT preamble as `(assert ...)` hypotheses (via
+    /// `ProofConfig.assumptions`). Empty for proofs without a
+    /// `using` clause.
+    using: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -175,7 +201,34 @@ fn read_proof_record(kb: &KnowledgeBase, syms: &ProofSyms, term_id: TermId) -> O
     };
     let rule = lookup_string(kb, named, "rule")?;
     let strategy = read_strategy(kb, syms, get_named_arg(kb, named, "strategy")?);
-    Some(ProofRec { rule, strategy })
+    let using = get_named_arg(kb, named, "using")
+        .map(|tid| read_string_list(kb, syms, tid))
+        .unwrap_or_default();
+    Some(ProofRec { rule, strategy, using })
+}
+
+/// Walk a `cons(head: <String const>, tail: ...)` list and collect
+/// the head strings. Returns empty vec for a `nil`-only list. Used
+/// to read the cited-lemma list from a ProofRecord's `using` field.
+fn read_string_list(kb: &KnowledgeBase, syms: &ProofSyms, mut tid: TermId) -> Vec<String> {
+    let mut out = Vec::new();
+    for _ in 0..MAX_LIST_LEN {
+        let (functor, named) = match kb.get_term(tid) {
+            Term::Fn { functor, named_args, .. } => (*functor, named_args),
+            _ => break,
+        };
+        if syms.cons != Some(functor) { break; }
+        if let Some(h) = get_named_arg(kb, named, "head") {
+            if let Term::Const(Literal::String(s)) = kb.get_term(h) {
+                out.push(s.clone());
+            }
+        }
+        match get_named_arg(kb, named, "tail") {
+            Some(t) => tid = t,
+            None => break,
+        }
+    }
+    out
 }
 
 fn read_strategy(kb: &KnowledgeBase, syms: &ProofSyms, tid: TermId) -> Strategy {
@@ -261,21 +314,51 @@ enum Verdict {
     EmitError(String),
 }
 
+/// Outcome of an SMT-discharge subquery: verdict for user-facing
+/// reporting + an optional `ProofWitness` for the kernel registry
+/// (proposal 030 phase α.3) + the visited-rule set the discharge
+/// consulted (phase α.4 — used to compute the per-ProofRecord state
+/// hash). The witness is populated when the backend produced a real
+/// verdict (Proved / Disproved / Unknown); it's `None` for Skipped
+/// (dry-run, solver missing) and EmitError outcomes. `visited_rules`
+/// is populated whenever a discharge actually walked KB content —
+/// empty for early-exit verdicts where no kb-state slice was
+/// consulted.
+#[allow(dead_code)] // witness/state_hash consumed in α.5; kept now for plumbing
+struct DispatchOutcome {
+    verdict: Verdict,
+    witness: Option<ProofWitness>,
+    visited_rules: BTreeSet<String>,
+}
+
+impl DispatchOutcome {
+    fn no_witness(verdict: Verdict) -> Self {
+        DispatchOutcome {
+            verdict,
+            witness: None,
+            visited_rules: BTreeSet::new(),
+        }
+    }
+}
+
 fn dispatch(
     kb: &mut KnowledgeBase,
     rec: &ProofRec,
     args: &ProveArgs,
     stats: &mut CacheStats,
-) -> Verdict {
+) -> DispatchOutcome {
     let (tool, tool_args) = match &rec.strategy {
-        Strategy::Open => return Verdict::Skipped("open obligation (no `by` clause)".into()),
+        Strategy::Open => return DispatchOutcome::no_witness(
+            Verdict::Skipped("open obligation (no `by` clause)".into())),
         Strategy::Tool { name, args } => (name.as_str(), args.as_slice()),
     };
     match tool {
-        "z3" => dispatch_z3(kb, &rec.rule, tool_args, args, stats),
-        "test" => Verdict::Skipped("`by test` not yet wired".into()),
+        "z3" => dispatch_z3(kb, &rec.rule, tool_args, &rec.using, args, stats),
+        "test" => DispatchOutcome::no_witness(
+            Verdict::Skipped("`by test` not yet wired".into())),
         "derivation" => dispatch_derivation(kb, &rec.rule, tool_args),
-        other => Verdict::Skipped(format!("unknown strategy `{other}`")),
+        other => DispatchOutcome::no_witness(
+            Verdict::Skipped(format!("unknown strategy `{other}`"))),
     }
 }
 
@@ -283,7 +366,7 @@ fn dispatch_derivation(
     kb: &mut KnowledgeBase,
     rule_qn: &str,
     tool_args: &[NamedArg],
-) -> Verdict {
+) -> DispatchOutcome {
     use anthill_core::kb::resolve::ResolveConfig;
 
     let mut max_depth: usize = 200;
@@ -298,42 +381,76 @@ fn dispatch_derivation(
 
     let rule_sym = match kb.try_resolve_symbol(rule_qn) {
         Some(s) => s,
-        None => return Verdict::EmitError(format!("rule `{rule_qn}` not in KB")),
+        None => return DispatchOutcome::no_witness(
+            Verdict::EmitError(format!("rule `{rule_qn}` not in KB"))),
     };
     let rules = kb.by_functor(rule_sym);
     if rules.is_empty() {
-        return Verdict::EmitError(format!("no rules found for `{rule_qn}`"));
+        return DispatchOutcome::no_witness(
+            Verdict::EmitError(format!("no rules found for `{rule_qn}`")));
     }
     let config = ResolveConfig {
         max_depth,
         max_solutions: max_solutions.max(1),
         simplify: true,
     };
+    // SLD-derivation witness: phase α.3 produces a placeholder
+    // tree_hash referencing the rule QN. Phase α.5 introduces
+    // proper derivation-tree capture in the resolver and
+    // content-addressed storage in the prove cache.
+    let derivation_witness = ProofWitness::SldDerivation {
+        tree_hash: format!("sld-derivation:{rule_qn}"),
+    };
+    // Phase α.4: visited_rules for derivation is currently a coarse
+    // placeholder (rule_qn itself). The SLD resolver doesn't yet
+    // surface its visited-rule set; α.5 introduces the derivation-
+    // tree capture which will populate this precisely.
+    let visited: BTreeSet<String> =
+        std::iter::once(rule_qn.to_string()).collect();
     for rule_id in rules {
         if kb.rule_body(rule_id).is_empty() {
-            return Verdict::Proved;
+            return DispatchOutcome {
+                verdict: Verdict::Proved,
+                witness: Some(derivation_witness.clone()),
+                visited_rules: visited.clone(),
+            };
         }
         let empty_subst = anthill_core::kb::subst::Substitution::new();
         let (fresh_body, _links) = kb.with_fresh_vars(rule_id, &empty_subst);
         if !kb.resolve(&fresh_body, &config).is_empty() {
-            return Verdict::Proved;
+            return DispatchOutcome {
+                verdict: Verdict::Proved,
+                witness: Some(derivation_witness),
+                visited_rules: visited,
+            };
         }
     }
-    Verdict::Unknown(format!(
+    DispatchOutcome::no_witness(Verdict::Unknown(format!(
         "no derivation found within depth {max_depth} for `{rule_qn}`"
-    ))
+    )))
 }
 
 fn dispatch_z3(
     kb: &mut KnowledgeBase,
     rule_qn: &str,
     tool_args: &[NamedArg],
+    using: &[String],
     cli: &ProveArgs,
     stats: &mut CacheStats,
-) -> Verdict {
+) -> DispatchOutcome {
     let mut config = ProofConfig::default();
     let mut canon_parts: Vec<String> = Vec::new();
     let mut tactic_term: Option<TermId> = None;
+    // Render each cited lemma's body via smt-gen and stash the
+    // resulting clauses as `(assert ...)` hypotheses for this proof.
+    // We re-use `emit_satisfiability_check_with_deps` with a default
+    // ProofConfig (no tactic, no outcome flags) — we only need the
+    // body assertions, not the discharge envelope. The cited rule's
+    // own body assertions become AND-ed conjuncts.
+    if let Some(clauses) = render_cited_lemmas(kb, using, rule_qn) {
+        config.assumptions = clauses;
+        canon_parts.push(format!("using={}", using.join(",")));
+    }
     for arg in tool_args {
         match (arg.key.as_str(), &arg.value) {
             ("logic", ArgValue::String(s)) => {
@@ -385,6 +502,42 @@ fn dispatch_z3(
     run_smt_subquery(kb, rule_qn, &config, &tactic_canon, cli, stats)
 }
 
+/// Render each cited-lemma rule as a forall-quantified implication
+/// clause via `lift_rule_to_implication_clause` — see WI-C1. The
+/// resulting strings land in `ProofConfig.assumptions` and are
+/// spliced into the consuming proof's preamble as `(assert …)`
+/// blocks. Returns `None` if the cite list is empty.
+///
+/// Each cited rule must be a violation-shape rule whose last body
+/// assertion is the negated conclusion. The lift helper inverts
+/// that assertion to recover the positive conclusion and forall-
+/// quantifies the rule's free vars. So `using <X>` semantically
+/// means *"assume the universal claim X certifies"*, not "assume
+/// X's premises hold for the same vars as the consumer".
+///
+/// Caller passes `target_rule_qn` so self-citation is dropped
+/// silently (would otherwise loop the lift helper).
+fn render_cited_lemmas(
+    kb: &KnowledgeBase,
+    using: &[String],
+    target_rule_qn: &str,
+) -> Option<Vec<String>> {
+    if using.is_empty() { return None; }
+    let mut clauses = Vec::with_capacity(using.len());
+    for cited in using {
+        if cited == target_rule_qn { continue; }
+        match lift_rule_to_implication_clause(kb, cited) {
+            Ok(clause) => clauses.push(clause),
+            Err(e) => {
+                eprintln!("warning: cited lemma `{cited}` could not be lifted \
+                          to an implication for `using` clause on \
+                          `{target_rule_qn}`: {}", e.message);
+            }
+        }
+    }
+    if clauses.is_empty() { None } else { Some(clauses) }
+}
+
 struct CacheCtx {
     subdir: std::path::PathBuf,
     key: String,
@@ -395,18 +548,17 @@ fn build_cache_context(
     kb: &KnowledgeBase,
     smt: &str,
     tactic_canon: &str,
-    deps: &[String],
+    visited: &BTreeSet<String>,
     z3_version: &str,
 ) -> CacheCtx {
     let cache_root = resolve_cache_root(cache_dir_override.as_deref());
     let repo_root = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let subdir = proof_subdir(&cache_root, &repo_root, Solver::Z3);
-    let visited: std::collections::BTreeSet<String> = deps.iter().cloned().collect();
     let key = build_key(kb, &KeyInputs {
         emitted_smt_lib: smt,
         tactic_canon,
         hint_qns: &[],
-        visited_rules: &visited,
+        visited_rules: visited,
         stdlib_version: env!("CARGO_PKG_VERSION"),
         z3_version,
     });
@@ -496,7 +648,7 @@ fn dispatch_induction(
     base_config: &ProofConfig,
     cli: &ProveArgs,
     stats: &mut CacheStats,
-) -> Verdict {
+) -> DispatchOutcome {
     // Build the case list. For binary induction (Int / Bool /
     // single-recursive enums) use base + step. Otherwise consume the
     // positional `cases` list.
@@ -505,22 +657,53 @@ fn dispatch_induction(
     if let Some(s) = &spec.step { sub_qns.push(s.clone()); }
     sub_qns.extend(spec.cases.iter().cloned());
     if sub_qns.is_empty() {
-        return Verdict::EmitError(format!(
+        return DispatchOutcome::no_witness(Verdict::EmitError(format!(
             "induction tactic for `{parent_qn}` has no cases — \
              supply `base:` + `step:` or positional case rules"
-        ));
+        )));
     }
 
     if cli.verbose {
         let over = spec.over.as_deref().unwrap_or("(unspecified)");
         println!("  induction(over: {over}) sub-queries: {}", sub_qns.join(", "));
     }
-    dispatch_subqueries(kb, parent_qn, "induction case", &sub_qns, base_config, cli, stats)
+    let outcome = dispatch_subqueries(
+        kb, parent_qn, "induction case", &sub_qns, base_config, cli, stats);
+    rewrap_meta_compose(outcome, "induction")
+}
+
+/// On a Proved meta-tactic outcome, replace the placeholder
+/// `MetaCompose { tactic_name: "compose" }` produced by
+/// `dispatch_subqueries` with one named after the actual meta-tactic
+/// (`"induction"`, `"ranking"`, …). On non-Proved outcomes, returns
+/// the outcome unchanged. Without this, callers would see anonymous
+/// witnesses in the kernel registry.
+fn rewrap_meta_compose(outcome: DispatchOutcome, tactic_name: &str) -> DispatchOutcome {
+    if !matches!(outcome.verdict, Verdict::Proved) {
+        return outcome;
+    }
+    let DispatchOutcome { verdict, witness, visited_rules } = outcome;
+    let sub_witnesses = witness.into_iter().flat_map(|w| match w {
+        ProofWitness::MetaCompose { sub, .. } => sub,
+        other => vec![other],
+    }).collect();
+    DispatchOutcome {
+        verdict,
+        witness: Some(ProofWitness::MetaCompose {
+            tactic_name: tactic_name.to_string(),
+            sub: sub_witnesses,
+        }),
+        visited_rules,
+    }
 }
 
 /// Shared meta-tactic dispatch: run each `sub_qns` rule as an SMT
-/// satisfiability check; combine. All proved → Proved; first failure
+/// satisfiability check; combine. All proved → Proved (with a
+/// `MetaCompose` witness wrapping each sub-witness); first failure
 /// surfaces with `label` ("ranking sub-query" / "induction case").
+/// The returned witness on success is a `MetaCompose` placeholder;
+/// the caller (`dispatch_ranking` / `dispatch_induction`) names the
+/// meta-tactic by overwriting `tactic_name`.
 fn dispatch_subqueries(
     kb: &mut KnowledgeBase,
     parent_qn: &str,
@@ -529,23 +712,40 @@ fn dispatch_subqueries(
     base_config: &ProofConfig,
     cli: &ProveArgs,
     stats: &mut CacheStats,
-) -> Verdict {
+) -> DispatchOutcome {
     let sub_config = ProofConfig { tactic_expr: None, ..base_config.clone() };
+    let mut sub_witnesses: Vec<ProofWitness> = Vec::new();
+    let mut combined_visited: BTreeSet<String> = BTreeSet::new();
     for sub in sub_qns {
         let sub_canon = format!("z3-subquery({})",
             sub_config.logic.as_deref().unwrap_or("LRA"));
-        match run_smt_subquery(kb, sub, &sub_config, &sub_canon, cli, stats) {
-            Verdict::Proved => continue,
-            Verdict::Disproved(model) => return Verdict::Disproved(format!(
-                "{label} `{sub}` failed for `{parent_qn}`:\n{model}"
-            )),
-            Verdict::Unknown(why) => return Verdict::Unknown(format!(
-                "{label} `{sub}` for `{parent_qn}`: {why}"
-            )),
-            other => return other,
+        let DispatchOutcome { verdict, witness, visited_rules } =
+            run_smt_subquery(kb, sub, &sub_config, &sub_canon, cli, stats);
+        combined_visited.extend(visited_rules);
+        match verdict {
+            Verdict::Proved => {
+                if let Some(w) = witness {
+                    sub_witnesses.push(w);
+                }
+                continue;
+            }
+            Verdict::Disproved(model) => return DispatchOutcome::no_witness(
+                Verdict::Disproved(format!(
+                    "{label} `{sub}` failed for `{parent_qn}`:\n{model}"))),
+            Verdict::Unknown(why) => return DispatchOutcome::no_witness(
+                Verdict::Unknown(format!(
+                    "{label} `{sub}` for `{parent_qn}`: {why}"))),
+            other => return DispatchOutcome::no_witness(other),
         }
     }
-    Verdict::Proved
+    DispatchOutcome {
+        verdict: Verdict::Proved,
+        witness: Some(ProofWitness::MetaCompose {
+            tactic_name: "compose".to_string(), // overwritten by caller
+            sub: sub_witnesses,
+        }),
+        visited_rules: combined_visited,
+    }
 }
 
 fn qn_of(kb: &KnowledgeBase, term: TermId) -> Option<String> {
@@ -568,12 +768,14 @@ fn dispatch_ranking(
     base_config: &ProofConfig,
     cli: &ProveArgs,
     stats: &mut CacheStats,
-) -> Verdict {
+) -> DispatchOutcome {
     let sub_qns = [boundedness_qn.to_string(), decrease_qn.to_string()];
     if cli.verbose {
         println!("  ranking sub-queries: {}", sub_qns.join(", "));
     }
-    dispatch_subqueries(kb, parent_qn, "ranking sub-query", &sub_qns, base_config, cli, stats)
+    let outcome = dispatch_subqueries(
+        kb, parent_qn, "ranking sub-query", &sub_qns, base_config, cli, stats);
+    rewrap_meta_compose(outcome, "ranking")
 }
 
 /// Execute one obligation rule as an SMT-LIB satisfiability check.
@@ -589,30 +791,43 @@ fn run_smt_subquery(
     tactic_canon: &str,
     cli: &ProveArgs,
     stats: &mut CacheStats,
-) -> Verdict {
+) -> DispatchOutcome {
     let (smt, deps) = match emit_satisfiability_check_with_deps(kb, rule_qn, config) {
         Ok(p) => p,
-        Err(e) => return Verdict::EmitError(e.message),
+        Err(e) => return DispatchOutcome::no_witness(Verdict::EmitError(e.message)),
     };
     if cli.verbose && !deps.is_empty() {
         println!("  deps: {}", deps.join(", "));
     }
+    // Phase α.4: deps from emit_satisfiability_check_with_deps is the
+    // visited-rule set for state-hash purposes. Cache hit AND miss
+    // paths produce the same set since deps are computed before we
+    // consult the cache.
+    let visited: BTreeSet<String> = deps.into_iter().collect();
     if cli.dry_run {
         println!("--- {rule_qn} ---");
         print!("{smt}");
         println!("------");
-        return Verdict::Skipped("dry-run (SMT printed to stdout)".into());
+        // Dry-run still consulted KB state (deps were computed); record
+        // the visited set so callers can hash it even when no real
+        // verdict is produced.
+        return DispatchOutcome {
+            verdict: Verdict::Skipped("dry-run (SMT printed to stdout)".into()),
+            witness: None,
+            visited_rules: visited,
+        };
     }
     let z3_version = match Command::new(&cli.solver).arg("--version").output() {
         Ok(o) if o.status.success() =>
             String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        _ => return Verdict::Skipped(format!("solver `{}` not on $PATH", cli.solver)),
+        _ => return DispatchOutcome::no_witness(
+            Verdict::Skipped(format!("solver `{}` not on $PATH", cli.solver))),
     };
     let cache_ctx = if cli.no_cache {
         stats.bypassed += 1;
         None
     } else {
-        Some(build_cache_context(&cli.cache_dir, kb, &smt, tactic_canon, &deps, &z3_version))
+        Some(build_cache_context(&cli.cache_dir, kb, &smt, tactic_canon, &visited, &z3_version))
     };
     if let Some(ctx) = &cache_ctx {
         if !cli.refresh_cache {
@@ -621,7 +836,14 @@ fn run_smt_subquery(
                 if cli.verbose {
                     println!("  cache hit: {} ({})", &ctx.key[..12], entry.verdict);
                 }
-                return verdict_from_cache(&entry);
+                let cached_verdict = verdict_from_cache(&entry);
+                let witness = build_smt_witness(
+                    &cli.solver, config, &ctx.key, &cached_verdict, &entry);
+                return DispatchOutcome {
+                    verdict: cached_verdict,
+                    witness,
+                    visited_rules: visited,
+                };
             }
         }
         stats.misses += 1;
@@ -631,12 +853,14 @@ fn run_smt_subquery(
         sanitize_filename(rule_qn)
     ));
     if let Err(e) = std::fs::write(&path, &smt) {
-        return Verdict::EmitError(format!("write smt2: {e}"));
+        return DispatchOutcome::no_witness(
+            Verdict::EmitError(format!("write smt2: {e}")));
     }
     let started = std::time::Instant::now();
     let out = match Command::new(&cli.solver).arg(&path).output() {
         Ok(o) => o,
-        Err(e) => return Verdict::EmitError(format!("invoke {}: {e}", cli.solver)),
+        Err(e) => return DispatchOutcome::no_witness(
+            Verdict::EmitError(format!("invoke {}: {e}", cli.solver))),
     };
     let elapsed = started.elapsed().as_secs_f64();
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -655,6 +879,29 @@ fn run_smt_subquery(
             println!("  unsat-core: {}", outcome.unsat_core.join(", "));
         }
     }
+    let document_hash = cache_ctx.as_ref().map(|c| c.key.clone()).unwrap_or_default();
+    let witness = if document_hash.is_empty() {
+        // No cache → no stable content hash for the document; carry
+        // the sha-equivalent identifier as the rule QN. α.5 will
+        // populate a real content hash even in --no-cache mode.
+        Some(ProofWitness::SmtDischarge {
+            backend: cli.solver.clone(),
+            logic: config.logic.clone().unwrap_or_default(),
+            document_hash: format!("nocache:{rule_qn}"),
+            verdict: smt_verdict_from_outcome(&outcome, &stdout),
+            core: if outcome.unsat_core.is_empty() { None }
+                  else { Some(outcome.unsat_core.join("\n")) },
+        })
+    } else {
+        Some(ProofWitness::SmtDischarge {
+            backend: cli.solver.clone(),
+            logic: config.logic.clone().unwrap_or_default(),
+            document_hash,
+            verdict: smt_verdict_from_outcome(&outcome, &stdout),
+            core: if outcome.unsat_core.is_empty() { None }
+                  else { Some(outcome.unsat_core.join("\n")) },
+        })
+    };
     if let Some(ctx) = cache_ctx {
         let mut entry = CacheEntry::new(
             ctx.key,
@@ -674,7 +921,54 @@ fn run_smt_subquery(
             },
         }
     }
-    verdict
+    DispatchOutcome { verdict, witness, visited_rules: visited }
+}
+
+/// Translate a parsed Z3 outcome into a `SmtVerdict` enum suitable
+/// for the witness. Sat / Unknown carry a content-hash reference
+/// to the model text (using a hash here is α.5 territory; for now
+/// we use the stdout as the model_hash placeholder).
+fn smt_verdict_from_outcome(
+    outcome: &anthill_smt_gen::outcome::OutcomeData,
+    full_stdout: &str,
+) -> SmtVerdict {
+    match outcome.verdict.as_str() {
+        "unsat" => SmtVerdict::Unsat,
+        "sat" => SmtVerdict::Sat {
+            // α.3: stdout-as-model_hash placeholder; α.5 introduces
+            // proper content-addressed cache storage.
+            model_hash: format!("inline:{}", full_stdout.len()),
+        },
+        other => SmtVerdict::Unknown { reason: format!("z3: {other}") },
+    }
+}
+
+/// Construct a witness for a cache-hit verdict. The cache entry
+/// already records the verdict shape; we re-produce the witness
+/// from those fields for downstream registration.
+fn build_smt_witness(
+    backend: &str,
+    config: &ProofConfig,
+    document_hash: &str,
+    cached_verdict: &Verdict,
+    entry: &CacheEntry,
+) -> Option<ProofWitness> {
+    let smt_verdict = match cached_verdict {
+        Verdict::Proved => SmtVerdict::Unsat,
+        Verdict::Disproved(_) => SmtVerdict::Sat {
+            model_hash: format!("inline:{}", entry.model_text.len()),
+        },
+        Verdict::Unknown(reason) => SmtVerdict::Unknown { reason: reason.clone() },
+        _ => return None,
+    };
+    Some(ProofWitness::SmtDischarge {
+        backend: backend.to_string(),
+        logic: config.logic.clone().unwrap_or_default(),
+        document_hash: document_hash.to_string(),
+        verdict: smt_verdict,
+        core: if entry.unsat_core.is_empty() { None }
+              else { Some(entry.unsat_core.join("\n")) },
+    })
 }
 
 fn bool_of(v: &ArgValue) -> Option<bool> {
@@ -704,7 +998,7 @@ fn verdict_from_cache(entry: &CacheEntry) -> Verdict {
     match entry.verdict.as_str() {
         "proved" => Verdict::Proved,
         "disproved" => Verdict::Disproved(entry.raw_output.clone()),
-        "unknown" => Verdict::Unknown(format!("z3: unknown (cached)")),
+        "unknown" => Verdict::Unknown("z3: unknown (cached)".to_string()),
         other => Verdict::EmitError(format!("unrecognised cached verdict `{other}`")),
     }
 }

@@ -204,25 +204,33 @@ namespace anthill.examples.lf1.safety.transponder
   -- (induction tactic on top of base + step violation pair —
   -- not yet wired here as a single proof block, but the per-step
   -- step is unsat in CI so the universal claim follows).
-  constraint safety_no_collision_transponder
+  --
+  -- Encoded as a violation **rule** (not a constraint) so the prove
+  -- driver dispatches it to Z3. Body inlining reaches the concrete
+  -- `real_pose_at` facts via reachable_real → real_pose_at; the
+  -- nonlinear `?d * ?d = ?d_sq` from position_distance pushes the
+  -- discharge into QF_NRA.
+  rule safety_no_collision_transponder(?w)
     :- reachable_real(?leader_real, ?follower_real),
-       position_distance(?leader_real, ?follower_real, ?d),
-       DistanceBounds(d_min: ?d_min, d_max: ?),
-       lt(?d, ?d_min)
+       position_distance(?d, ?leader_real, ?follower_real),
+       DistanceBounds(d_min: ?d_min, d_max: ?_),
+       lt(?d, ?d_min),
+       ?w = ?d
 
   -- Bounded-excursion d_max: distance never exceeds d_max + N·δ_t
   -- during a post-armed bad-streak. The N=6 bound is proved below
-  -- by `post_armed_excursion_bound`. (The strict claim
-  -- `d ≤ d_max` does NOT hold for this controller; that's why this
-  -- constraint is the bounded form, not the GPS variant's
-  -- `safety_max_distance`.)
-  constraint safety_bounded_excursion_transponder
+  -- by `post_armed_excursion_bound`. The strict claim `d ≤ d_max`
+  -- does NOT hold for this controller (yaw-flip search drifts the
+  -- follower outward transiently), which is why this rule asserts
+  -- the *bounded* envelope, not the strict one.
+  rule safety_bounded_excursion_transponder(?w)
     :- reachable_real(?leader_real, ?follower_real),
-       position_distance(?leader_real, ?follower_real, ?d),
-       DistanceBounds(d_min: ?, d_max: ?d_max),
+       position_distance(?d, ?leader_real, ?follower_real),
+       DistanceBounds(d_min: ?_, d_max: ?d_max),
        excursion_distance_bound(?excursion),
        ?d_high_bound = ?d_max + ?excursion,
-       gt(?d, ?d_high_bound)
+       gt(?d, ?d_high_bound),
+       ?w = ?d
 
   -- =================================================================
   -- Ranking-function discharge of PostArmedExcursionBound.max_ticks
@@ -301,5 +309,17 @@ namespace anthill.examples.lf1.safety.transponder
     by z3(tactic: ranking(boundedness: bound_violation_transponder,
                           decrease: decrease_violation_transponder),
           logic: "LIA")
+  end
+
+  -- Top-level public-claim discharges for the transponder follower.
+  -- Same shape as the GPS variant: SLD/inline expands to the initial
+  -- geometry, position_distance contributes nonlinear arithmetic,
+  -- QF_NRA decides.
+  proof safety_no_collision_transponder
+    by z3(logic: "QF_NRA")
+  end
+
+  proof safety_bounded_excursion_transponder
+    by z3(logic: "QF_NRA")
   end
 end

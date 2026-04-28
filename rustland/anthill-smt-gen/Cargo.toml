@@ -24,3 +24,7 @@ path = "tests/integration.rs"
 [[test]]
 name = "cache_key"
 path = "tests/cache_key_test.rs"
+
+[[test]]
+name = "state_hash"
+path = "tests/state_hash_test.rs"

@@ -260,12 +260,23 @@ module.exports = grammar({
     // Rule
     // =========================================================
 
+    // A rule has body (premises after `:-`) and optional conclusion
+    // (after `-:`). Without `-:`, the rule is "violation-shape" —
+    // a refutation target whose body must be unsat for the proof to
+    // discharge. With `-:`, the rule is a positive theorem of the
+    // form `∀ vars. premises ⇒ conclusion`. Z3 discharge negates the
+    // conclusion (`assert (not (and conclusion)); check-sat`); the
+    // `using` clause's lift step emits the implication directly.
+    //
+    // The two separators are deliberately symmetric — `:-` reads as
+    // "if" (premises), `-:` reads as "then" (conclusion).
     rule_declaration: $ => seq(
       repeat(field('description', $.description_block)),
       'rule',
       optional(seq(field('label', $.name), ':')),
       field('head', $.rule_head),
       optional(seq(':-', field('body', $.rule_body))),
+      optional(seq('-:', field('conclusion', $.rule_body))),
       optional($.meta_block),
     ),
 
@@ -428,10 +439,26 @@ module.exports = grammar({
       repeat(field('description', $.description_block)),
       'proof',
       field('target', $.name),
+      optional(seq('using', field('using', $.proof_using_list))),
       optional(seq('by', field('strategy', $.proof_strategy))),
       optional($._proof_body),
       'end',
       optional($.name),
+    ),
+
+    // Comma-separated list of previously-proved lemma names that the
+    // prove driver should cite as hypotheses when discharging this
+    // proof. Each name resolves to a rule QN; smt-gen renders the
+    // cited rule's body and splices it into the SMT preamble as
+    // `(assert …)` clauses (via `ProofConfig.assumptions`).
+    //
+    //   proof safety_min_distance
+    //     using reachability_band, distance_at_step
+    //     by z3(logic: "QF_NRA")
+    //   end
+    proof_using_list: $ => seq(
+      $.name,
+      repeat(seq(',', $.name)),
     ),
 
     proof_strategy: $ => choice(

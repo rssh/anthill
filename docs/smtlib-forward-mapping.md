@@ -228,6 +228,45 @@ When rules are partial or overlapping, expressed via constructor testers and sel
       (= (length l) (+ 1 (length (tail l)))))))
 ```
 
+### 4.5 Rules with Explicit `-:` (then) Conclusion
+
+Anthill rules with the optional `-:` (then) clause encode positive theorems of the form `∀ vars. body ⇒ conclusion`. This clause is **Z3-specific** — SLD and the derivation-trace prover ignore it. Two SMT-LIB encodings depending on whether the rule is being *discharged* or *cited*:
+
+**Discharge** (the rule is the proof target, `proof X by z3(...)`):
+
+```
+rule lower_bound_holds(?w)
+  :- gte(?x, 5.0), eq(?w, ?x)
+  -: gte(?x, 3.0)
+```
+
+```smt2
+(assert (>= var_x 5.0))                         ; premises
+(assert (not (>= var_x 3.0)))                   ; negated conclusion
+(check-sat)                                     ; unsat ⇒ theorem holds
+```
+
+The conclusion is *negated* and added as the final assertion. Multiple conclusion clauses become `(assert (not (and …)))`. The verdict `unsat` certifies the theorem; `sat` returns a counterexample.
+
+**Citation** (the rule is referenced from another proof's `using` clause, `proof Y using X by z3(...)`):
+
+```
+proof other_proof
+  using lower_bound_holds
+  by z3(logic: "LRA")
+end
+```
+
+```smt2
+; Cited-lemma assumptions (from `using` clause).
+(assert (forall ((var_x Real)) (=> (>= var_x 5.0) (>= var_x 3.0))))
+; ... rest of `other_proof` discharge follows
+```
+
+The lift function (`anthill_smt_gen::lift_rule_to_implication_clause`) emits `(forall (vars) (=> (and body) (and conclusion)))` directly — no inversion, no last-clause heuristic. The forall-quantification covers every free SMT variable produced from the rule's de Bruijn frame.
+
+**Citability gate.** Only rules with an explicit `-:` clause are citable. Classical violation-shape rules (no `-:`) describe an *emptiness* claim ("body unsat") rather than an implication, and the lift refuses them with a clear error. Authors who want to cite a violation-shape claim must rewrite it in positive form.
+
 ## 5. Spec Satisfaction and Requires
 
 ### 5.1 Requires as Axiom Import

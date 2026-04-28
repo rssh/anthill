@@ -79,7 +79,7 @@ namespace anthill.examples.lf1.safety.gps
     :- real_pose_at(?k, ?drone, ?real),
        observed_pose_at(?k, ?drone, ?observed),
        GpsErrorBound(epsilon: ?eps),
-       position_distance(?real, ?observed, ?d),
+       position_distance(?d, ?real, ?observed),
        lte(?d, ?eps)
 
   -- =================================================================
@@ -130,20 +130,33 @@ namespace anthill.examples.lf1.safety.gps
   -- Properties (proof obligations)
   -- =================================================================
 
-  -- The two pointwise constraints. Stated as denials over the REAL
-  -- inter-drone distance — collisions and formation breaks happen
-  -- at real positions, not at GPS-measured ones.
-  constraint safety_min_distance
-    :- reachable_real(?leader_real, ?follower_real),
-       position_distance(?leader_real, ?follower_real, ?d),
-       DistanceBounds(d_min: ?d_min, d_max: ?),
-       lt(?d, ?d_min)
+  -- The two pointwise safety properties. Encoded as **violation
+  -- rules** rather than `constraint` blocks: the prove driver
+  -- dispatches each rule's body as a Z3 satisfiability check, and
+  -- `unsat` ⇒ no (?leader_real, ?follower_real) reachable from the
+  -- initial geometry under position_distance can violate the bound.
+  --
+  -- Discharge logic is `QF_NRA` because position_distance carries a
+  -- nonlinear `?d * ?d = ?d_sq` clause; `?w` is the ?d witness
+  -- exposed in the rule head so smt-gen has a single result-var to
+  -- bind. SLD/inline expansion of `reachable_real` and
+  -- `position_distance` reaches the concrete `real_pose_at` facts
+  -- (initial geometry); the resulting nonlinear arithmetic is
+  -- exactly what Z3 QF_NRA decides.
 
-  constraint safety_max_distance
+  rule safety_min_distance(?w)
     :- reachable_real(?leader_real, ?follower_real),
-       position_distance(?leader_real, ?follower_real, ?d),
-       DistanceBounds(d_min: ?, d_max: ?d_max),
-       gt(?d, ?d_max)
+       position_distance(?d, ?leader_real, ?follower_real),
+       DistanceBounds(d_min: ?d_min, d_max: ?_),
+       lt(?d, ?d_min),
+       ?w = ?d
+
+  rule safety_max_distance(?w)
+    :- reachable_real(?leader_real, ?follower_real),
+       position_distance(?d, ?leader_real, ?follower_real),
+       DistanceBounds(d_min: ?_, d_max: ?d_max),
+       gt(?d, ?d_max),
+       ?w = ?d
 
   -- =================================================================
   -- Discrete-step inductive invariant (the actual proof target)
@@ -323,5 +336,19 @@ namespace anthill.examples.lf1.safety.gps
 
   proof upper_violation
     by z3(logic: "LRA")
+  end
+
+  -- Top-level public-claim discharges. Each chases its body through
+  -- `reachable_real` → `real_pose_at` (fact-bound to the initial
+  -- geometry) → `position_distance` (nonlinear, hence QF_NRA) and
+  -- asks Z3 to refute the violation hypothesis. `unsat` ⇒ the
+  -- initial geometry satisfies the corresponding pointwise safety
+  -- property. Universal-over-k still rests on `reachability_band`.
+  proof safety_min_distance
+    by z3(logic: "QF_NRA")
+  end
+
+  proof safety_max_distance
+    by z3(logic: "QF_NRA")
   end
 end

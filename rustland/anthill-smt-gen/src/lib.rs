@@ -61,6 +61,15 @@ pub struct ProofConfig {
     /// the flag wires the option through but the get-interpolants form
     /// is left as a follow-up. WI-099.
     pub produce_interpolants: bool,
+    /// Pre-rendered SMT-LIB clauses to splice into the preamble as
+    /// extra `(assert <clause>)` blocks. Each entry is the raw S-expr
+    /// content (without the surrounding `(assert …)`). Used by the
+    /// prove driver when a `proof X using Y by …` block fires —
+    /// driver renders Y's body into clauses, hands them in here, and
+    /// smt-gen injects them so Z3 has Y's claim as a hypothesis when
+    /// discharging X. Smt-gen does not parse / validate these strings;
+    /// it trusts the caller. Order is preserved.
+    pub assumptions: Vec<String>,
 }
 
 /// One obligation to discharge: prove `<rule>(?result) ≤ <bound>`
@@ -145,6 +154,68 @@ pub fn emit_satisfiability_check_with_deps(
     Ok((smt, deps))
 }
 
+/// WI-C1 lift: convert a positive-form rule (`R(args) :- premises -:
+/// conclusion`) into a single SMT-LIB *implication clause* suitable
+/// for splicing into a downstream proof's `ProofConfig.assumptions`.
+///
+/// Deterministic semantics — the `:-` clause is the premise set, the
+/// `-:` clause is the conclusion. No heuristic, no last-clause guess.
+/// The author has explicitly named what they want to prove.
+///
+/// Returns a string like
+/// `(forall ((var_d Real)) (=> (and <premises>) (and <conclusion>)))`.
+/// When there is exactly one premise (resp. one conclusion clause),
+/// the `(and …)` wrapper is dropped.
+///
+/// **Refuses any rule without a `-:` conclusion clause.** Classical
+/// violation-shape rules (no `-:`) are unciteable today: their
+/// theorem statement is implicitly "the body is unsat", not a
+/// premises ⇒ conclusion implication. The author who wants to cite
+/// such a rule must rewrite it in positive form.
+///
+/// Field consts (define-fun lines from entity destructure) are NOT
+/// re-emitted here — the consumer's preamble already declares them
+/// since the consumer chases the same facts.
+///
+/// Caller is responsible for ensuring the cited rule has actually
+/// been *proved* (via `cargo run anthill prove`); this function only
+/// emits the lifted statement, not the certification.
+pub fn lift_rule_to_implication_clause(
+    kb: &KnowledgeBase,
+    rule_qn: &str,
+) -> Result<String, SmtGenError> {
+    let mut emitter = Emitter::new(kb);
+    emitter.collect_rule(rule_qn)?;
+    emitter.collect_facts_for_referenced_entities();
+
+    if emitter.conclusion_assertions.is_empty() {
+        return Err(SmtGenError::new(format!(
+            "rule '{rule_qn}' is not citable: no `-:` (then) clause. \
+             Citable rules must state their conclusion explicitly via \
+             the `-:` separator. Classical violation-shape rules (body \
+             unsat) are not lifted as implications.")));
+    }
+
+    let premises = match emitter.assertions.len() {
+        0 => "true".to_string(),
+        1 => emitter.assertions[0].clone(),
+        _ => format!("(and {})", emitter.assertions.join(" ")),
+    };
+    let conclusion = match emitter.conclusion_assertions.len() {
+        1 => emitter.conclusion_assertions[0].clone(),
+        _ => format!("(and {})", emitter.conclusion_assertions.join(" ")),
+    };
+
+    let imp = format!("(=> {} {})", premises, conclusion);
+    if emitter.free_vars.is_empty() {
+        return Ok(imp);
+    }
+    let decls: Vec<String> = emitter.free_vars.iter()
+        .map(|v| format!("({v} Real)"))
+        .collect();
+    Ok(format!("(forall ({}) {})", decls.join(" "), imp))
+}
+
 // ── Implementation ──────────────────────────────────────────────────
 
 struct Emitter<'kb> {
@@ -169,6 +240,13 @@ struct Emitter<'kb> {
     /// inside `render_satisfiability`. Order-preserving so
     /// counterexample SMT reads in the user's authored order.
     assertions: Vec<String>,
+    /// Conclusion clauses from the rule's `-:` (then) clause. Each
+    /// is the SMT-LIB rendering of one conclusion goal. For SMT
+    /// discharge they are negated and AND-conjoined into one
+    /// `(assert (not (and …)))`; for `using`-clause lift they are
+    /// emitted directly inside the implication's right-hand side.
+    /// Empty for facts and classical violation-shape rules.
+    conclusion_assertions: Vec<String>,
     /// Free SMT vars introduced because of body bindings whose
     /// definition is missing (e.g. `?d_prev` is talked about by
     /// inequality goals but never bound by an `=` clause). These
@@ -177,6 +255,13 @@ struct Emitter<'kb> {
     /// QNs of every rule visited (top-level + transitive). The
     /// CLI surfaces these as the proof's staleness dependency set.
     pub(crate) visited_rules: BTreeSet<String>,
+    /// Entity-typed bindings: synthetic var name → entity TermId
+    /// (e.g. `var_2` → `Pose(position: Vec3(...), ...)`). Populated
+    /// when a rule-call is fact-matched (or inlined) and a positional
+    /// arg of the call is a DeBruijn var while the corresponding
+    /// fact arg is a constructor `Term::Fn`. Consumed by
+    /// `translate_expr` when it encounters `field_access(?var, ...)`.
+    entity_bindings: BTreeMap<String, TermId>,
 }
 
 impl<'kb> Emitter<'kb> {
@@ -188,8 +273,10 @@ impl<'kb> Emitter<'kb> {
             body_smtlib: String::new(),
             result_var: String::new(),
             assertions: Vec::new(),
+            conclusion_assertions: Vec::new(),
             free_vars: BTreeSet::new(),
             visited_rules: BTreeSet::new(),
+            entity_bindings: BTreeMap::new(),
         }
     }
 
@@ -251,6 +338,22 @@ impl<'kb> Emitter<'kb> {
             self.process_body_goal(*goal, &mut local_bindings)?;
         }
 
+        // Process the `-:` (conclusion) clause goals if any. Each
+        // goal is translated through the same machinery as the body
+        // (so equalities, inequalities, rule calls, entity destructure
+        // all work), but the resulting assertions are siphoned into
+        // `conclusion_assertions` instead of `assertions`. Discharge
+        // and lift consume the two buckets differently — see
+        // render_satisfiability_with / lift_rule_to_implication_clause.
+        let conclusion_goals: Vec<TermId> = self.kb.rule_conclusion(rid).to_vec();
+        if !conclusion_goals.is_empty() {
+            let body_count = self.assertions.len();
+            for goal in &conclusion_goals {
+                self.process_body_goal(*goal, &mut local_bindings)?;
+            }
+            self.conclusion_assertions = self.assertions.split_off(body_count);
+        }
+
         // For upper-bound mode the result var must be bound by the
         // body. For satisfiability mode (no result var) it's fine if
         // every body var is either bound or free.
@@ -266,9 +369,11 @@ impl<'kb> Emitter<'kb> {
         }
 
         // Compute free vars: any var_<i> referenced by an assertion
-        // expression that has no binding entry. Those need
-        // `(declare-const ... Real)` in satisfiability mode.
-        for assertion in &self.assertions {
+        // expression (body OR conclusion) that has no binding entry.
+        // Those need `(declare-const ... Real)` in satisfiability mode
+        // — and become the forall-quantified parameters in the lift.
+        let scan = self.assertions.iter().chain(self.conclusion_assertions.iter());
+        for assertion in scan {
             for tok in assertion.split(|c: char| !c.is_alphanumeric() && c != '_') {
                 if let Some(idx_str) = tok.strip_prefix("var_") {
                     if idx_str.parse::<u32>().is_ok()
@@ -307,14 +412,19 @@ impl<'kb> Emitter<'kb> {
                 return Err(SmtGenError::new(format!(
                     "= goal: expected 2 pos_args, got {}", pos_args.len())));
             }
-            let lhs = self.kb.get_term(pos_args[0]);
+            let lhs_term = self.kb.get_term(pos_args[0]);
             let rhs_smt = self.translate_expr(pos_args[1], bindings)?;
-            let lhs_idx = match lhs {
-                Term::Var(Var::DeBruijn(i)) => *i,
-                _ => return Err(SmtGenError::new(format!(
-                    "v0: = goal's LHS must be a DeBruijn var, got {lhs:?}"))),
-            };
-            bindings.insert(synthetic_var_name(lhs_idx), rhs_smt);
+            // Bare-DeBruijn LHS → string binding (cheap inline substitution
+            // for downstream uses). Anything else (e.g. `?d * ?d = ?d_sq`)
+            // → emit as a free assertion `(= <lhs> <rhs>)`. This keeps the
+            // bindings map small and lets nonlinear equalities flow into
+            // QF_NRA naturally.
+            if let Term::Var(Var::DeBruijn(i)) = lhs_term {
+                bindings.insert(synthetic_var_name(*i), rhs_smt);
+                return Ok(());
+            }
+            let lhs_smt = self.translate_expr(pos_args[0], bindings)?;
+            self.assertions.push(format!("(= {lhs_smt} {rhs_smt})"));
             return Ok(());
         }
 
@@ -353,14 +463,9 @@ impl<'kb> Emitter<'kb> {
             return Ok(());
         }
 
-        // Rule call: `<rule_qn>(?result_var)` — chase the dependency.
-        // We accept exactly one positional arg (the result binding),
-        // matching the same v0 shape we accept for the obligation's
-        // own rule head. The called rule is translated against a
-        // FRESH local-bindings map (so its own intermediate
-        // `?var = ...` equations don't collide with ours), and its
-        // body's facts / referenced entities accumulate into our
-        // own `field_consts` and `referenced_entities`.
+        // Rule call: `<rule_qn>(?result_var)` — single-arg shorthand
+        // that yields one inline SMT expression. Used by call sites
+        // like `step_distance_bound(?delta)`.
         if pos_args.len() == 1 && named_args.is_empty()
             && self.kb.by_functor(*functor).iter()
                 .any(|rid| !self.kb.rule_body(*rid).is_empty())
@@ -376,8 +481,267 @@ impl<'kb> Emitter<'kb> {
             return Ok(());
         }
 
+        // Multi-pos-arg rule call: `<rule>(<a1>, ..., <aN>)`.
+        // Two paths:
+        //   (1) Fact match — the rule has at least one ground fact
+        //       (rule with empty body) whose pos_args structurally
+        //       agree with the call. Each call-side DeBruijn var
+        //       gets bound to the matched fact slot (literal → string
+        //       binding, entity Fn → entity_bindings).
+        //   (2) Inline — the rule has a defining body. Open it with
+        //       caller→callee parameter substitution; process its
+        //       goals as if inlined here.
+        // No named_args path yet — multi-pos-arg with named_args is
+        // a v1 concern.
+        if !pos_args.is_empty() && named_args.is_empty() {
+            let call_args: Vec<TermId> = pos_args.iter().copied().collect();
+            if self.try_match_fact_call(*functor, &call_args, bindings)? {
+                return Ok(());
+            }
+            if self.try_inline_rule_call(qn, &call_args, bindings)? {
+                return Ok(());
+            }
+        }
+
         Err(SmtGenError::new(format!(
             "v0: unhandled body goal functor '{qn}'")))
+    }
+
+    /// Try to match a multi-pos-arg call against any ground fact
+    /// (rule with empty body) of the same functor. On match, bind
+    /// each call-side DeBruijn var to the corresponding fact slot —
+    /// literal → string binding, entity-shaped Term::Fn →
+    /// entity_bindings (consumed by `field_access` lowering).
+    /// Returns Ok(true) if a fact matched (and bindings were applied);
+    /// Ok(false) if no fact matched (caller falls through to inline).
+    fn try_match_fact_call(
+        &mut self,
+        functor: anthill_core::intern::Symbol,
+        call_args: &[TermId],
+        bindings: &mut BTreeMap<String, String>,
+    ) -> Result<bool, SmtGenError> {
+        let candidates = self.kb.by_functor(functor);
+        // Record the functor's QN in visited_rules so the cache key
+        // observes any change to its defining facts (initial-geometry
+        // edits invalidate downstream proofs).
+        let functor_qn = self.kb.qualified_name_of(functor).to_string();
+        for rid in candidates {
+            if !self.kb.rule_body(rid).is_empty() { continue; }
+            self.visited_rules.insert(functor_qn.clone());
+            let head = self.kb.rule_head(rid);
+            let Term::Fn { pos_args: fpos, named_args: fnamed, .. } = self.kb.get_term(head)
+                else { continue };
+            if !fnamed.is_empty() { continue; }
+            if fpos.len() != call_args.len() { continue; }
+
+            // Probe — does every concrete call slot equal the
+            // corresponding fact slot? Variable slots match anything.
+            let mut bind_pairs: Vec<(u32, TermId)> = Vec::new();
+            let mut matched = true;
+            for (call_t, fact_t) in call_args.iter().zip(fpos.iter()) {
+                if let Term::Var(Var::DeBruijn(i)) = self.kb.get_term(*call_t) {
+                    bind_pairs.push((*i, *fact_t));
+                    continue;
+                }
+                if !self.terms_match(*call_t, *fact_t) {
+                    matched = false;
+                    break;
+                }
+            }
+            if !matched { continue; }
+
+            // Apply bindings.
+            for (idx, fact_term_id) in bind_pairs {
+                let synth = synthetic_var_name(idx);
+                match self.kb.get_term(fact_term_id) {
+                    Term::Const(Literal::Float(f)) => {
+                        bindings.insert(synth, format_real(f.into_inner()));
+                    }
+                    Term::Const(Literal::Int(i)) => {
+                        bindings.insert(synth, format_real(*i as f64));
+                    }
+                    Term::Fn { .. } => {
+                        // Entity (Pose, Vec3, …) — defer until
+                        // field_access reads it.
+                        self.entity_bindings.insert(synth, fact_term_id);
+                    }
+                    Term::Ref(_) | Term::Ident(_) => {
+                        // Nullary symbol like `Leader`. Skip — it
+                        // can't appear in arithmetic expressions
+                        // and there's no field projection over it.
+                    }
+                    _ => { /* skip for v0 */ }
+                }
+            }
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Inline a rule call's body at the call site. `call_args` are
+    /// the caller-side TermIds bound positionally to the callee's
+    /// head DeBruijn vars. The callee's local DeBruijn indices are
+    /// renamed into a per-call namespace so they don't collide with
+    /// the caller's; entity-typed arguments propagate into the
+    /// callee's entity_bindings.
+    fn try_inline_rule_call(
+        &mut self,
+        callee_qn: &str,
+        call_args: &[TermId],
+        caller_bindings: &mut BTreeMap<String, String>,
+    ) -> Result<bool, SmtGenError> {
+        let sym = match self.kb.try_resolve_symbol(callee_qn) {
+            Some(s) => s,
+            None => return Ok(false),
+        };
+        let rid = match self.kb.by_functor(sym).into_iter()
+            .find(|r| !self.kb.rule_body(*r).is_empty())
+        {
+            Some(r) => r,
+            None => return Ok(false),
+        };
+        self.visited_rules.insert(callee_qn.to_string());
+
+        let head = self.kb.rule_head(rid);
+        let head_pos: Vec<TermId> = match self.kb.get_term(head) {
+            Term::Fn { pos_args, named_args, .. } if named_args.is_empty() => {
+                pos_args.iter().copied().collect()
+            }
+            _ => return Err(SmtGenError::new(format!(
+                "v0: inlined rule '{callee_qn}' must have only pos args in head"))),
+        };
+        if head_pos.len() != call_args.len() {
+            return Err(SmtGenError::new(format!(
+                "rule call arity mismatch for '{callee_qn}': expected {}, got {}",
+                head_pos.len(), call_args.len())));
+        }
+
+        // Prepare callee-local bindings: each head ?DeBruijn becomes
+        // either the caller's already-translated SMT string (for
+        // arithmetic-typed args) or an entry in the per-call
+        // entity_bindings (for entity-typed args).
+        //
+        // We also remember `head_caller`: head DeBruijn idx → the
+        // caller-side DeBruijn synth name (when the call arg is a
+        // var). After body processing, if the body bound the head
+        // (e.g. `?d_sq = ?dx * ?dx + ...`), we copy that final value
+        // back into `caller_bindings[caller_synth]` — otherwise the
+        // caller would see the head var as unconstrained and Z3
+        // would treat it as free. This is the propagation that
+        // makes inlining behave like substitution in the caller's
+        // joint constraint set.
+        let mut callee_str: BTreeMap<String, String> = BTreeMap::new();
+        let mut callee_ent: BTreeMap<String, TermId> = BTreeMap::new();
+        let mut head_caller: Vec<(u32, String)> = Vec::new();
+        for (head_arg, call_arg) in head_pos.iter().zip(call_args.iter()) {
+            let head_idx = match self.kb.get_term(*head_arg) {
+                Term::Var(Var::DeBruijn(i)) => *i,
+                _ => return Err(SmtGenError::new(format!(
+                    "v0: inlined rule '{callee_qn}' head args must be DeBruijn vars"))),
+            };
+            let head_synth = synthetic_var_name(head_idx);
+            match self.kb.get_term(*call_arg) {
+                Term::Var(Var::DeBruijn(j)) => {
+                    let caller_synth = synthetic_var_name(*j);
+                    head_caller.push((head_idx, caller_synth.clone()));
+                    if let Some(s) = caller_bindings.get(&caller_synth) {
+                        callee_str.insert(head_synth.clone(), s.clone());
+                    } else {
+                        // Forward the synthetic name (caller will
+                        // declare it free if it remains unbound).
+                        callee_str.insert(head_synth.clone(), caller_synth.clone());
+                    }
+                    if let Some(t) = self.entity_bindings.get(&caller_synth) {
+                        callee_ent.insert(head_synth, *t);
+                    }
+                }
+                Term::Const(Literal::Float(f)) => {
+                    callee_str.insert(head_synth, format_real(f.into_inner()));
+                }
+                Term::Const(Literal::Int(i)) => {
+                    callee_str.insert(head_synth, format_real(*i as f64));
+                }
+                Term::Fn { .. } => {
+                    // Concrete entity literal at the call site —
+                    // expose it for field_access on the callee side.
+                    callee_ent.insert(head_synth, *call_arg);
+                }
+                Term::Ref(_) | Term::Ident(_) => {
+                    // Nullary symbol — not arithmetic; ignore.
+                }
+                _ => {}
+            }
+        }
+
+        // Process the callee's body. We share the global
+        // `assertions` / `field_consts` / `referenced_entities` /
+        // `free_vars` accumulators (the inlined rule's facts and
+        // assertions belong to the caller's SMT document), but we
+        // give the callee its own bindings + entity_bindings so its
+        // local DeBruijn indices stay isolated. After processing we
+        // restore the caller's entity_bindings.
+        let body_goals: Vec<TermId> = self.kb.rule_body(rid).iter().copied().collect();
+        let saved_ent = std::mem::take(&mut self.entity_bindings);
+        self.entity_bindings = callee_ent;
+        let mut local = callee_str;
+        let mut err: Option<SmtGenError> = None;
+        for goal in body_goals {
+            if let Err(e) = self.process_body_goal(goal, &mut local) {
+                err = Some(e);
+                break;
+            }
+        }
+        // Capture the (possibly grown) callee entity_bindings before
+        // restoring the caller's view — fact_match calls deeper in
+        // the body can bind head DeBruijns to entity terms (e.g.
+        // `real_pose_at(0, Leader, ?l)` binds ?l → Pose), and the
+        // caller needs those propagated to its own synthetic names.
+        let final_ent = std::mem::replace(&mut self.entity_bindings, saved_ent);
+        if let Some(e) = err { return Err(e); }
+
+        // Propagate body-bound head values back to the caller — both
+        // arithmetic strings and entity_bindings.
+        for (head_idx, caller_synth) in head_caller {
+            let head_synth = synthetic_var_name(head_idx);
+            if let Some(value) = local.get(&head_synth) {
+                // Skip the trivial forwarding entry — body never
+                // overrode it, so there's nothing new to push back.
+                if *value != caller_synth {
+                    caller_bindings.insert(caller_synth.clone(), value.clone());
+                }
+            }
+            if let Some(entity_tid) = final_ent.get(&head_synth) {
+                self.entity_bindings.insert(caller_synth, *entity_tid);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Structural equality of two TermIds for fact-match probing.
+    /// Hash-consing makes this an id-equality fast path; the helper
+    /// exists so future changes (e.g. literal-as-Real coercions) have
+    /// one place to gate.
+    fn terms_match(&self, a: TermId, b: TermId) -> bool {
+        if a == b { return true; }
+        match (self.kb.get_term(a), self.kb.get_term(b)) {
+            (Term::Const(Literal::Float(x)), Term::Const(Literal::Float(y))) => x == y,
+            (Term::Const(Literal::Int(x)),   Term::Const(Literal::Int(y)))   => x == y,
+            (Term::Const(Literal::Int(i)),   Term::Const(Literal::Float(f)))
+            | (Term::Const(Literal::Float(f)), Term::Const(Literal::Int(i))) => {
+                (*i as f64) == f.into_inner()
+            }
+            (Term::Ref(x) | Term::Ident(x), Term::Ref(y) | Term::Ident(y)) => x == y,
+            (Term::Fn { functor: fx, pos_args: px, named_args: nx },
+             Term::Fn { functor: fy, pos_args: py, named_args: ny }) => {
+                fx == fy
+                    && px.len() == py.len()
+                    && nx.len() == ny.len()
+                    && px.iter().zip(py.iter()).all(|(a, b)| self.terms_match(*a, *b))
+                    && nx.iter().zip(ny.iter()).all(|((sa, ta), (sb, tb))|
+                        sa == sb && self.terms_match(*ta, *tb))
+            }
+            _ => false,
+        }
     }
 
     /// Recursively translate a *called* rule's body to a single
@@ -439,6 +803,15 @@ impl<'kb> Emitter<'kb> {
             }
             Term::Fn { functor, pos_args, .. } => {
                 let op = self.kb.qualified_name_of(*functor);
+                // Entity field projection: `?p.field` desugars to
+                // `field_access(?p, Ident(field))`. Resolve through
+                // the entity_bindings populated by fact match / rule
+                // inline to a concrete literal (or recurse on a
+                // nested entity field).
+                if op == "anthill.reflect.field_access" || op == "field_access" {
+                    let resolved = self.resolve_field_access(term)?;
+                    return self.translate_expr(resolved, bindings);
+                }
                 if let Some(smt_op) = map_unary_op(op) {
                     if pos_args.len() != 1 {
                         return Err(SmtGenError::new(format!(
@@ -463,6 +836,79 @@ impl<'kb> Emitter<'kb> {
             other => Err(SmtGenError::new(format!(
                 "v0: unhandled term in expression: {other:?}"))),
         }
+    }
+
+    /// Resolve `field_access(?obj, Ident(field))` (possibly nested)
+    /// to the projected value's TermId. The chain bottoms out either
+    /// at a literal (Const) or a value that itself goes back through
+    /// translate_expr — typically a leaf Float in an entity's named
+    /// args.
+    ///
+    /// Resolution rules:
+    /// - root `?var` → look up `entity_bindings[var_<i>]`. The bound
+    ///   term is expected to be a Term::Fn with named_args (an
+    ///   entity instance).
+    /// - root `field_access(...)` → recurse on the nested chain.
+    /// - root entity Term::Fn → use directly.
+    fn resolve_field_access(&self, term: TermId) -> Result<TermId, SmtGenError> {
+        let Term::Fn { functor, pos_args, .. } = self.kb.get_term(term) else {
+            return Err(SmtGenError::new(format!(
+                "field_access: expected Fn, got {:?}", self.kb.get_term(term))));
+        };
+        let op = self.kb.qualified_name_of(*functor);
+        if !(op == "anthill.reflect.field_access" || op == "field_access") {
+            return Err(SmtGenError::new(format!(
+                "resolve_field_access called on non-field_access functor '{op}'")));
+        }
+        if pos_args.len() != 2 {
+            return Err(SmtGenError::new(format!(
+                "field_access: expected 2 pos_args, got {}", pos_args.len())));
+        }
+        let object_tid = pos_args[0];
+        let field_tid = pos_args[1];
+
+        // Step 1: resolve the object to an entity Term::Fn.
+        let entity_tid = match self.kb.get_term(object_tid) {
+            Term::Var(Var::DeBruijn(i)) => {
+                let synth = synthetic_var_name(*i);
+                *self.entity_bindings.get(&synth).ok_or_else(||
+                    SmtGenError::new(format!(
+                        "field_access on '?{synth}': no entity binding\
+                         (caller did not supply a concrete entity)")))?
+            }
+            Term::Fn { functor: f2, .. } => {
+                let q2 = self.kb.qualified_name_of(*f2);
+                if q2 == "anthill.reflect.field_access" || q2 == "field_access" {
+                    self.resolve_field_access(object_tid)?
+                } else {
+                    object_tid
+                }
+            }
+            other => return Err(SmtGenError::new(format!(
+                "field_access: cannot resolve object: {other:?}"))),
+        };
+
+        // Step 2: extract the field name.
+        let field_sym = match self.kb.get_term(field_tid) {
+            Term::Ref(s) | Term::Ident(s) => *s,
+            other => return Err(SmtGenError::new(format!(
+                "field_access: field must be Ident/Ref, got {other:?}"))),
+        };
+        let field_name = self.kb.resolve_sym(field_sym).to_string();
+
+        // Step 3: project into the entity's named_args by short-name match.
+        let Term::Fn { named_args, .. } = self.kb.get_term(entity_tid) else {
+            return Err(SmtGenError::new(format!(
+                "field_access: object resolved to non-Fn term: {:?}",
+                self.kb.get_term(entity_tid))));
+        };
+        for (sym, val_tid) in named_args.iter() {
+            if self.kb.resolve_sym(*sym) == field_name {
+                return Ok(*val_tid);
+            }
+        }
+        Err(SmtGenError::new(format!(
+            "field_access: field '{field_name}' not found in entity")))
     }
 
     /// True if the symbol resolves to an entity declaration.
@@ -520,6 +966,8 @@ impl<'kb> Emitter<'kb> {
         }
         out.push('\n');
 
+        emit_assumptions(&mut out, config);
+
         out.push_str(&self.body_smtlib);
         out.push_str("\n\n");
 
@@ -567,6 +1015,8 @@ impl<'kb> Emitter<'kb> {
         }
         out.push('\n');
 
+        emit_assumptions(&mut out, config);
+
         // Body equations bound the result vars; emit them as
         // define-funs so subsequent assertions can reference them.
         // For satisfiability mode we don't have a single result var
@@ -579,6 +1029,20 @@ impl<'kb> Emitter<'kb> {
         for assertion in &self.assertions {
             out.push_str(&format!("(assert {assertion})\n"));
         }
+        // Conclusion clauses (from the `-:` separator) are NEGATED
+        // for the discharge: prove `body ∧ ¬conclusion` unsat ⇒
+        // `body ⇒ conclusion`. AND-conjoined into a single
+        // negation so the verdict cleanly mirrors the lemma's
+        // theorem statement.
+        if !self.conclusion_assertions.is_empty() {
+            out.push_str("; Negated conclusion (from `-:` clause).\n");
+            let conj = if self.conclusion_assertions.len() == 1 {
+                self.conclusion_assertions[0].clone()
+            } else {
+                format!("(and {})", self.conclusion_assertions.join(" "))
+            };
+            out.push_str(&format!("(assert (not {conj}))\n"));
+        }
         match &config.tactic_expr {
             Some(expr) => out.push_str(&format!("\n(check-sat-using {expr})\n")),
             None => out.push_str("\n(check-sat)\n"),
@@ -586,6 +1050,20 @@ impl<'kb> Emitter<'kb> {
         emit_outcome_getters(&mut out, config);
         out
     }
+}
+
+/// Splice cited-lemma clauses into the preamble. Each entry in
+/// `config.assumptions` is wrapped in `(assert …)` and emitted
+/// after field consts but before the body / assertions, so the
+/// hypothesis is in scope when Z3 decides the goal. Order is
+/// preserved to keep cache keys stable.
+fn emit_assumptions(out: &mut String, config: &ProofConfig) {
+    if config.assumptions.is_empty() { return; }
+    out.push_str("; Cited-lemma assumptions (from `using` clause).\n");
+    for clause in &config.assumptions {
+        out.push_str(&format!("(assert {clause})\n"));
+    }
+    out.push('\n');
 }
 
 /// Append `(set-option :produce-* true)` lines to the preamble for

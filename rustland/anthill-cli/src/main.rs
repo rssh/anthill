@@ -18,6 +18,7 @@ use anthill_core::persistence::term_ser;
 mod prove;
 mod run;
 mod stdlib_embedded;
+mod witness;
 
 // ── CLI types ───────────────────────────────────────────────────────
 
