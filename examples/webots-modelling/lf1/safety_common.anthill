@@ -161,19 +161,39 @@ namespace anthill.examples.lf1.safety.common
   -- Predicates the proof reasons over
   -- =================================================================
   --
-  -- Placeholder declarations. Actual definitions live in operational
-  -- semantics terms once the reasoner can talk about them; listed
-  -- here so the reader can see what surface area the proof depends
-  -- on.
+  -- These are *uninterpreted* at the proof layer — Z3 sees them as
+  -- free function symbols. The discharge of the inductive step
+  -- (lower_violation / upper_violation in safety_gps.anthill /
+  -- safety_transponder.anthill) reasons symbolically about the
+  -- distance scalar `?d` without ever computing it from positions.
+  -- The reachability lift (reachability_band, via Z3 induction tactic)
+  -- adds the universal-over-k claim on top.
   --
   -- position_distance(?p1, ?p2, ?d)
   --   ?d is the Euclidean distance between p1.position and p2.position.
   --   Defined for both real and observed Poses (same Pose sort).
+  --   Uninterpreted in the proof — the per-step bound `step_distance_bound`
+  --   captures the only property the proof needs (∂d/∂t ≤ 2·v_max + drift
+  --   + comm-delay-staleness).
   --
   -- distance_at_step(?k, ?d)
   --   ?d is the REAL distance between the drones at sample step k.
-  --   Definitionally: distance_at_step(?k, ?d) :-
-  --       real_pose_at(?k, Leader, ?l),
-  --       real_pose_at(?k, Follower, ?f),
-  --       position_distance(?l, ?f, ?d).
+  --   Definitionally:
+  --     distance_at_step(?k, ?d) :-
+  --         real_pose_at(?k, Leader, ?l),
+  --         real_pose_at(?k, Follower, ?f),
+  --         position_distance(?l, ?f, ?d).
+  --   Uninterpreted in the proof. The inductive invariant transports
+  --   `?d` from one tick to the next under the per-step bound; the
+  --   bridge to `real_pose_at` is the modelling assumption that
+  --   anchors the proof to the physical system.
+  --
+  -- real_pose_at(?k, ?drone, ?pose)
+  --   The drone's true (physical) pose at sample step k. Uninterpreted.
+  --   The proof never instantiates it; it appears only inside the
+  --   `reachable_real` rule and the safety_min/max_distance constraints
+  --   as the hand-off point between the inductive arithmetic claim and
+  --   the physical-state interpretation. A Webots run validates the
+  --   modelling assumption empirically; a future hybrid-systems pass
+  --   could verify it formally.
 end

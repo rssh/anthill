@@ -35,6 +35,7 @@ namespace anthill.examples.lf1.safety.gps
   export step_distance_bound
   export safety_min_distance, safety_max_distance
   export inductive_invariant, lower_violation, upper_violation
+  export base_lower_violation, base_upper_violation, reachability_band
 
   -- =================================================================
   -- Sensor / link parameters
@@ -198,6 +199,96 @@ namespace anthill.examples.lf1.safety.gps
        lte(abs(?step), ?delta),
        ?d_next = ?d_prev + ?step,
        gt(?d_next, ?d_max)
+
+  -- =================================================================
+  -- Base-case obligations (∀k. d_min ≤ d_k ≤ d_max — induction k=0)
+  -- =================================================================
+  --
+  -- The strong invariant `d_0 ∈ [d_min + delta, d_max - delta]` is the
+  -- starting condition assumed by the discharge. The base-case
+  -- obligations assert that condition AND negate the safe-band
+  -- conclusion: any escape from `[d_min, d_max]` at k=0 contradicts
+  -- the strong invariant. Both unsat ⇒ d_0 starts inside the safe
+  -- band. (Trivial under arithmetic: the strong interval is a strict
+  -- sub-interval of the safe interval whenever 2·delta ≤ d_max - d_min,
+  -- which the lf1 numbers satisfy: delta ≤ 2.0, d_max - d_min = 19.)
+
+  -- The result var `?w` is bound to `?d0` only to satisfy smt-gen's
+  -- "head var must be defined by the body" convention; semantically
+  -- `?d0` is the witness candidate.
+  rule base_lower_violation(?w)
+    :- DistanceBounds(d_min: ?d_min, d_max: ?d_max),
+       step_distance_bound(?delta),
+       ?d_low_bound  = ?d_min + ?delta,
+       ?d_high_bound = ?d_max - ?delta,
+       lte(?d_low_bound, ?d0),
+       lte(?d0, ?d_high_bound),
+       lt(?d0, ?d_min),             -- negate lower safe-band bound
+       ?w = ?d0
+
+  rule base_upper_violation(?w)
+    :- DistanceBounds(d_min: ?d_min, d_max: ?d_max),
+       step_distance_bound(?delta),
+       ?d_low_bound  = ?d_min + ?delta,
+       ?d_high_bound = ?d_max - ?delta,
+       lte(?d_low_bound, ?d0),
+       lte(?d0, ?d_high_bound),
+       gt(?d0, ?d_max),             -- negate upper safe-band bound
+       ?w = ?d0
+
+  -- =================================================================
+  -- Reachability lift (∀k. d_min ≤ d_k ≤ d_max) via Z3 induction
+  -- =================================================================
+  --
+  -- This is the universal-over-k claim that the safety_min_distance /
+  -- safety_max_distance constraints implicitly require. The induction
+  -- tactic dispatches four SMT-LIB sub-queries:
+  --
+  --   base_lower_violation     - d_0 escapes below d_min  (must unsat)
+  --   base_upper_violation     - d_0 escapes above d_max  (must unsat)
+  --   lower_violation          - d_{k+1} < d_min from safe d_k  (unsat)
+  --   upper_violation          - d_{k+1} > d_max from safe d_k  (unsat)
+  --
+  -- All four unsat ⇒ for all k ≥ 0, distance_at_step(k) ∈ [d_min, d_max].
+  --
+  -- ── What this proof IS and IS NOT ─────────────────────────────────
+  --
+  -- IS proven (mechanically, via Z3, content-addressed cached):
+  --   * The arithmetic implication: under the per-step bound `delta`
+  --     and the strong-invariant initial separation, the discrete
+  --     distance sequence `distance_at_step(k)` stays in the safe band.
+  --
+  -- ASSUMED (modelling axioms, NOT discharged here):
+  --   * `distance_at_step(k, d)` correctly equals `position_distance`
+  --     of `real_pose_at(k, Leader)` and `real_pose_at(k, Follower)`.
+  --     This is the bridge from physical reality to the inductive
+  --     variable; it bundles the inner-loop kinematic envelope, GPS
+  --     drift, and the comm-delay staleness that `step_distance_bound`
+  --     was derived from. Any inflight violation of `KinematicAssumptions`
+  --     breaks this bridge and the proof says nothing.
+  --   * `position_distance` itself is treated as an uninterpreted
+  --     scalar Float here — the proof never reasons about Vec3 maths.
+  --     Triangle inequality + per-drone velocity bound ⇒ per-step
+  --     distance change ≤ delta is the load-bearing axiom.
+  --   * The initial state `distance_at_step(0)` lies in the strong
+  --     invariant. Capture this in a `fact InitialSeparation(d0_lo, d0_hi)`
+  --     when wiring to a real flight; the GPS variant assumes an
+  --     environmental constraint on launch geometry.
+  --
+  -- The `safety_min_distance` / `safety_max_distance` constraints
+  -- become vacuous IF the assumed bridge holds and IF the four
+  -- sub-queries discharge. Both are externally verifiable.
+
+  rule reachability_band(?marker)
+    :- eq(?marker, true)
+
+  proof reachability_band
+    by z3(tactic: induction(base_lower_violation,
+                            base_upper_violation,
+                            lower_violation,
+                            upper_violation),
+          logic: "LRA")
+  end
 
   -- =================================================================
   -- Concrete facts — GPS-specific values
