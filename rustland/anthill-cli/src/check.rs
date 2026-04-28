@@ -119,6 +119,7 @@ fn check_witness_term(
     match f_short {
         "SmtDischarge" => check_smt_discharge_witness(kb, &named, blob_dir, solver),
         "ScopeAxiom" => check_scope_axiom_witness(kb, &named),
+        "Specialization" => check_specialization_witness(kb, &named),
         "TrustedAxiom" => {
             let reason = read_string_field(kb, &named, "reason")
                 .unwrap_or_else(|| "(no reason)".into());
@@ -127,6 +128,111 @@ fn check_witness_term(
         // Other constructors land in later β sub-phases.
         other => CheckStatus::Skipped(format!("witness `{other}` not yet checkable")),
     }
+}
+
+/// Phase β.5: validate a Specialization witness structurally.
+///
+/// Checks (per the proposal):
+///   (a) parametric ProofRecord exists in the registry — without it
+///       there's nothing to specialize.
+///   (b) substitution is well-formed — no duplicate abstract_param
+///       keys; concrete sorts are valid identifiers.
+///   (c) v0: instances list is empty (per α.8 v0); pass when (a) and
+///       (b) hold. Future refinement: when α.8 starts populating the
+///       instances list, β.5 verifies each instance ProofRecord
+///       covers a specific requires-law under the substitution.
+///
+/// Encoding: substitution is a cons-list of SortBinding entities;
+/// instances is a cons-list of QN strings.
+fn check_specialization_witness(
+    kb: &KnowledgeBase,
+    named: &smallvec::SmallVec<[(Symbol, TermId); 2]>,
+) -> CheckStatus {
+    let parametric_qn = match read_string_field(kb, named, "parametric") {
+        Some(s) if !s.is_empty() => s,
+        _ => return CheckStatus::Failed("Specialization: missing parametric QN".into()),
+    };
+
+    if !proof_record_exists(kb, &parametric_qn) {
+        return CheckStatus::Failed(format!(
+            "Specialization: parametric ProofRecord `{parametric_qn}` not found \
+             in registry — was the spec's requires clause removed?"
+        ));
+    }
+
+    let substitution = read_substitution(kb, named);
+    let mut seen_keys: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for (k, _) in &substitution {
+        if !seen_keys.insert(k.as_str()) {
+            return CheckStatus::Failed(format!(
+                "Specialization: substitution has duplicate abstract_param `{k}`"
+            ));
+        }
+    }
+
+    CheckStatus::Pass
+}
+
+/// True iff a `ProofRecord` fact exists with `rule = qn`. The check
+/// scans the by_functor list for ProofRecord — small in practice
+/// (proofs per project are bounded) and avoids needing a separate
+/// index.
+fn proof_record_exists(kb: &KnowledgeBase, qn: &str) -> bool {
+    let record_sym = match kb.try_resolve_symbol("anthill.realization.ProofRecord") {
+        Some(s) => s,
+        None => return false,
+    };
+    for rid in kb.by_functor(record_sym) {
+        if !kb.rule_body(rid).is_empty() { continue; }
+        let head = kb.rule_head(rid);
+        if let Term::Fn { named_args, .. } = kb.get_term(head) {
+            if let Some(tid) = get_named_arg(kb, named_args, "rule") {
+                if let Term::Const(Literal::String(s)) = kb.get_term(tid) {
+                    if s == qn { return true; }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Read a Specialization's `substitution` field — a cons-list of
+/// SortBinding entities — into a `Vec<(abstract_param, concrete_sort)>`.
+/// Returns an empty vec on a `nil` list or unrecognized shape; the
+/// caller treats empty as a degenerate-but-valid substitution
+/// (identity map).
+fn read_substitution(
+    kb: &KnowledgeBase,
+    named: &smallvec::SmallVec<[(Symbol, TermId); 2]>,
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut tid = match get_named_arg(kb, named, "substitution") {
+        Some(t) => t,
+        None => return out,
+    };
+    for _ in 0..1024 {
+        let (functor, named_inner) = match kb.get_term(tid) {
+            Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+            _ => break,
+        };
+        let f_short = kb.qualified_name_of(functor)
+            .rsplit('.').next().unwrap_or("").to_owned();
+        if f_short != "cons" { break; }
+        if let Some(h) = get_named_arg(kb, &named_inner, "head") {
+            if let Term::Fn { named_args: bind_args, .. } = kb.get_term(h) {
+                let k = read_string_field(kb, bind_args, "abstract_param");
+                let v = read_string_field(kb, bind_args, "concrete_sort");
+                if let (Some(k), Some(v)) = (k, v) {
+                    out.push((k, v));
+                }
+            }
+        }
+        match get_named_arg(kb, &named_inner, "tail") {
+            Some(t) => tid = t,
+            None => break,
+        }
+    }
+    out
 }
 
 /// Phase β.4: re-read the named scope's declaration in the current

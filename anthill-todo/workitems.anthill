@@ -865,3 +865,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T12:27:50Z"))
 
+fact WorkItem(
+  id: "WI-123",
+  description: "Proposal 030 phase β.5 — Specialization witness checking. Per phase β.5 of docs/proposals/030-theorem-registry.md: validate substitution well-formedness; resolve the parametric ProofRecord; verify each instance ProofRecord covers the parametric's requires under the substitution. For α.8's emitted Specialization records (witness has parametric: <S-qn>.requires.<SE>, substitution: list of SortBinding, instances: list of QNs): (a) confirm parametric ProofRecord exists in registry; (b) confirm substitution is well-formed (no duplicate abstract_param keys); (c) for each entry of the parametric's requires-laws under substitution, confirm a covering ProofRecord exists at the substituted scope (auto-registered or user-stated). v0 simplification: instances list is empty (per α.8 v0); β.5 verifies coverage by scanning the registry for matches at the substituted scope rather than chasing a pre-baked list. Pass if all checks succeed; Failed with a clear message naming the missing piece. Acceptance: cargo-test passes; new test verifies a Specialization record passes when the parametric exists, fails when the parametric is missing.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T12:31:01Z"))
+
