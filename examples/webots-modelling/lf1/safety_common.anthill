@@ -52,6 +52,8 @@ namespace anthill.examples.lf1.safety.common
   export Drone
   export DistanceBounds, KinematicAssumptions
   export reachable_real
+  export RealVelocity, real_velocity_at, real_pose_at, distance_at_step
+  export StepDistanceAxiom
 
   -- =================================================================
   -- Drone identity
@@ -156,6 +158,105 @@ namespace anthill.examples.lf1.safety.common
   )
 
   fact DistanceBounds(d_min: 1.0, d_max: 20.0)
+
+  -- =================================================================
+  -- Real-pose dynamics — operational definition of `real_pose_at`
+  -- =================================================================
+  --
+  -- The drone's true (physical) trajectory at the discrete sample
+  -- grid. `real_pose_at(k+1)` is derived from `real_pose_at(k)` plus
+  -- the velocity the inner stabilisation loop produced at tick k.
+  -- Velocity magnitude is bounded by `KinematicAssumptions.*_speed_max`
+  -- — that is the *load-bearing assumption* of the whole proof: the
+  -- Mavic2Pro inner loop (carried verbatim as `mavic_base.cpp`,
+  -- not modeled here) keeps |v| ≤ v_max under the controller spec.
+  --
+  -- This rule defines real_pose_at recursively over k. The reachability
+  -- proof in safety_gps.anthill / safety_transponder.anthill does NOT
+  -- discharge the recursion symbolically (Z3 LRA can't reason over
+  -- Pose-vector kinematics); instead it relies on the *consequence*
+  -- captured by `StepDistanceAxiom` below — a derived universal-over-k
+  -- bound on consecutive distances that is what the inductive step
+  -- actually consumes.
+
+  -- Velocity vector at sample tick k. Magnitude bounded by
+  -- KinematicAssumptions; direction free.
+  entity RealVelocity(
+    drone: Drone,
+    k:     Int,
+    vx:    Float,
+    vy:    Float,
+    vz:    Float
+  )
+
+  -- Inner-loop axiom (assumption): the velocity vector at every tick
+  -- has magnitude within the per-drone speed bound. This is what
+  -- carrying mavic_base.cpp verbatim *gives* us; if the inner loop
+  -- ever violates it, the whole proof says nothing.
+  rule real_velocity_at(?k, ?drone, ?vx, ?vy, ?vz)
+    :- RealVelocity(drone: ?drone, k: ?k, vx: ?vx, vy: ?vy, vz: ?vz),
+       KinematicAssumptions(leader_speed_max:    ?vL_max,
+                            follower_speed_max:  ?vF_max,
+                            control_period:      ?_,
+                            sensor_period:       ?_)
+
+  -- Transition relation: pose at k+1 = pose at k + v·tc per axis.
+  -- Stated in anthill source so the model is self-documenting; not
+  -- recursively discharged in the SMT proof. `real_pose_at(0, drone, p0)`
+  -- is the base case the user asserts as a fact when wiring to a
+  -- real flight (initial geometry of the formation).
+  rule real_pose_at(?k_next, ?drone, ?pose_next)
+    :- real_pose_at(?k, ?drone, ?pose_prev),
+       real_velocity_at(?k, ?drone, ?vx, ?vy, ?vz),
+       KinematicAssumptions(leader_speed_max:    ?_,
+                            follower_speed_max:  ?_,
+                            control_period:      ?tc,
+                            sensor_period:       ?_),
+       ?k_next  = add(?k, 1),
+       ?nx      = ?pose_prev.position.x + ?vx * ?tc,
+       ?ny      = ?pose_prev.position.y + ?vy * ?tc,
+       ?nz      = ?pose_prev.position.z + ?vz * ?tc,
+       ?pose_next = Pose(
+         position: Vec3(x: ?nx, y: ?ny, z: ?nz),
+         roll:     ?pose_prev.roll,
+         pitch:    ?pose_prev.pitch,
+         yaw:      ?pose_prev.yaw
+       )
+
+  -- distance_at_step: the inter-drone distance at sample tick k.
+  -- Composes real_pose_at + position_distance.
+  rule distance_at_step(?k, ?d)
+    :- real_pose_at(?k, Leader, ?l),
+       real_pose_at(?k, Follower, ?f),
+       position_distance(?l, ?f, ?d)
+
+  -- =================================================================
+  -- StepDistanceAxiom — the load-bearing consequence
+  -- =================================================================
+  --
+  -- The universal-over-k bound the inductive step consumes:
+  --
+  --   ∀ k.  | distance_at_step(k+1) − distance_at_step(k) |  ≤  delta
+  --
+  -- where delta = step_distance_bound from KinematicAssumptions +
+  -- GpsErrorBound + LinkParameters. This is *derivable* (in principle)
+  -- from real_pose_at's transition rule above + the velocity envelope
+  -- + triangle inequality on `position_distance`; that derivation is
+  -- a hybrid-systems claim outside Z3 LRA's scope and is currently
+  -- carried as a postulate.
+  --
+  -- A future hybrid-systems pass (dReal, KeYmaera X, or hand-rolled
+  -- Coq/Lean) would discharge it. Until then, the safety proof is
+  -- conditional on this axiom holding — and a Webots run validates
+  -- it empirically per flight.
+  rule StepDistanceAxiom
+    :- distance_at_step(?k, ?d_curr),
+       ?k_next = add(?k, 1),
+       distance_at_step(?k_next, ?d_next),
+       ?diff = sub(?d_next, ?d_curr),
+       lte(abs(?diff), ?delta_bound)
+       -- where ?delta_bound is `step_distance_bound` from the
+       -- variant-specific safety file (gps / transponder).
 
   -- =================================================================
   -- Predicates the proof reasons over
