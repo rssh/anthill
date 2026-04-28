@@ -23,7 +23,7 @@ namespace anthill.reflect
   export KB
   export qualified_name, short_name, lookup_symbol, scope, kind
   export LiteralRepr, TermRepr, SetLiteral, TupleLiteral, ListLiteral, SortInfo, EntityInfo, OperationInfo, FieldInfo, DescriptionInfo
-  export SortRequiresInfo, SortView
+  export SortRequiresInfo, SortProvidesInfo, SortView
   export Expr, Pattern, MatchBranch, ApplyArg, NamedPattern
   export match_expr, if_expr, let_expr, lambda, constructor, var_ref
   export int_lit, bigint_lit, float_lit, string_lit, bool_lit
@@ -345,6 +345,17 @@ namespace anthill.reflect
   entity SortRequiresInfo(
     sort_ref : Term,                                -- the sort that has the requirement
     spec     : Term                                 -- the view: SortView(Ref(Monoid), T=Int(), ...)
+  )
+
+  -- SortProvidesInfo: sort provides spec satisfaction (proposal 030
+  -- phase α.8 / WI-119 Variant 3). Emitted for each `provides` clause
+  -- on a sort. Declares the providing sort's intent: "I claim X
+  -- satisfies S at substitution σ." The kernel verifies the claim
+  -- by walking S's auto-registered ScopeAxiom records (α.6) and
+  -- checking each is covered by a Discharged ProofRecord at σ.
+  entity SortProvidesInfo(
+    sort_ref : Term,                                -- the providing sort (e.g. Ref(Int))
+    spec     : Term                                 -- the spec view (e.g. SortView(Ref(Eq), T = Int()))
   )
 
   -- ================================================================

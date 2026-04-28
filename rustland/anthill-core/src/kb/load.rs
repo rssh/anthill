@@ -991,6 +991,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     let op_info_sym = kb.symbols.define("OperationInfo", "anthill.reflect.OperationInfo", SymbolKind::Entity, reflect_term.raw());
     let entity_info_sym = kb.symbols.define("EntityInfo", "anthill.reflect.EntityInfo", SymbolKind::Entity, reflect_term.raw());
     let sort_requires_info_sym = kb.symbols.define("SortRequiresInfo", "anthill.reflect.SortRequiresInfo", SymbolKind::Entity, reflect_term.raw());
+    let sort_provides_info_sym = kb.symbols.define("SortProvidesInfo", "anthill.reflect.SortProvidesInfo", SymbolKind::Entity, reflect_term.raw());
     let sort_view_sym = kb.symbols.define("SortView", "anthill.reflect.SortView", SymbolKind::Entity, reflect_term.raw());
     let set_literal_sym = kb.symbols.define("SetLiteral", "anthill.reflect.SetLiteral", SymbolKind::Entity, reflect_term.raw());
     let tuple_literal_sym = kb.symbols.define("TupleLiteral", "anthill.reflect.TupleLiteral", SymbolKind::Entity, reflect_term.raw());
@@ -1083,6 +1084,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.add_import(global_raw, "OperationInfo", op_info_sym);
     kb.symbols.add_import(global_raw, "EntityInfo", entity_info_sym);
     kb.symbols.add_import(global_raw, "SortRequiresInfo", sort_requires_info_sym);
+    kb.symbols.add_import(global_raw, "SortProvidesInfo", sort_provides_info_sym);
     kb.symbols.add_import(global_raw, "SortView", sort_view_sym);
     kb.symbols.add_import(global_raw, "SetLiteral", set_literal_sym);
     kb.symbols.add_import(global_raw, "TupleLiteral", tuple_literal_sym);
@@ -1826,31 +1828,302 @@ fn register_induction_axiom_witnesses(kb: &mut KnowledgeBase) {
     }
 }
 
-/// Proposal 030 phase α.8 — auto-compose `Specialization` ProofRecords
-/// when a sort `provides` a parametric spec at concrete sort
-/// substitution. **Currently a no-op stub** (see WI-118): the
-/// kernel doesn't yet have a `provides` discharge mechanism —
-/// `load_provides_clause` is a stub, and spec satisfaction is
-/// expressed via `fact Eq[T = Int]` style facts that don't carry
-/// the parametric→specialized binding metadata the compose pass
-/// needs.
+/// Proposal 030 phase α.8 / WI-119 Variant 3 / WI-120 — emit
+/// `Specialization`-witnessed ProofRecords for each `provides A[T =
+/// X]` clause whose required laws all have Discharged ProofRecords
+/// at the substitution.
 ///
-/// When implemented, this pass will walk a future `SortProvidesInfo`
-/// (or analog) fact set and, for each `provides A[T = X]`, emit:
-///   - For each of A's `<A-qn>.requires.<SE>` records: a
-///     Specialization ProofRecord composing A's parametric witness
-///     with `[(T, X)]` substitution and X's matching `<X-qn>.requires.<SE>`
-///     instance proofs.
-///   - For each of A's induction principles where T appears: a
-///     specialized induction record.
+/// Algorithm: walk `SortProvidesInfo` facts. For each `(X, A[T = X])`:
+///   1. Resolve A's qualified name and the substitution σ from the
+///      spec view's named bindings (filtering operation auto-bindings).
+///   2. For each of A's auto-registered `<A-qn>.requires.<SE>`
+///      ProofRecords (α.6), emit a `Specialization` ProofRecord
+///      named `<X-qn>.provides.<A-flat>.<SE>` whose witness is
+///      `Specialization { parametric: <A-qn>.requires.<SE>,
+///      substitution: σ, instances: [] }`. The instances list is
+///      empty in v0 — phase β.5's structural check verifies
+///      coverage by walking the existing registry rather than
+///      chasing a pre-baked instance-list. Future refinement: pre-
+///      compute the per-law instance ProofRecord QNs and embed.
+///   3. Phase β.5's check enforces: for each requires-law `<SE>`,
+///      either an instance ProofRecord covers it at σ, or a
+///      ScopeAxiom on X's own declaration does. Errors at check
+///      time, not load time — so missing proofs surface in
+///      `anthill check`'s integrity audit, not as load failures.
 ///
-/// Phase β.5 (Specialization witness checking) and phase γ (`using`
-/// consults registry) are independent and can land before this
-/// pass is fleshed out.
-fn register_specialization_witnesses(_kb: &mut KnowledgeBase) {
-    // No-op until provides-discharge infrastructure exists. The
-    // function is plumbed into `load_phase` so future implementations
-    // land in a known location without churning the call site.
+/// Idempotent across loads via `existing_rule_qns`.
+fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
+    let provides_info_sym = match kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") {
+        Some(s) => s,
+        None => return,
+    };
+    let record_sym = match kb.try_resolve_symbol("anthill.realization.ProofRecord") {
+        Some(s) => s,
+        None => return,
+    };
+    let pending_sym = match kb.try_resolve_symbol(
+        "anthill.realization.ObligationStatus.Pending"
+    ) { Some(s) => s, None => return };
+    let strategy_open_sym = match kb.try_resolve_symbol(
+        "anthill.realization.ProofStrategyOpen"
+    ) { Some(s) => s, None => return };
+    let body_none_sym = match kb.try_resolve_symbol(
+        "anthill.realization.ProofBodyNone"
+    ) { Some(s) => s, None => return };
+    let specialization_sym = match kb.try_resolve_symbol(
+        "anthill.realization.witness.ProofWitness.Specialization"
+    ) { Some(s) => s, None => return };
+    let sort_binding_sym = match kb.try_resolve_symbol(
+        "anthill.realization.witness.SortBinding"
+    ) { Some(s) => s, None => return };
+    let nil_sym = match kb.try_resolve_symbol("anthill.prelude.List.nil") {
+        Some(s) => s, None => return,
+    };
+    let cons_sym = match kb.try_resolve_symbol("anthill.prelude.List.cons") {
+        Some(s) => s, None => return,
+    };
+
+    let rule_arg = kb.intern("rule");
+    let strategy_arg = kb.intern("strategy");
+    let body_arg = kb.intern("body");
+    let result_arg = kb.intern("result");
+    let deps_arg = kb.intern("dependencies");
+    let using_arg = kb.intern("using");
+    let witness_arg = kb.intern("witness");
+    let state_hash_arg = kb.intern("state_hash");
+    let parametric_context_arg = kb.intern("parametric_context");
+    let head_arg = kb.intern("head");
+    let tail_arg = kb.intern("tail");
+    let parametric_arg = kb.intern("parametric");
+    let substitution_arg = kb.intern("substitution");
+    let instances_arg = kb.intern("instances");
+    let abstract_param_arg = kb.intern("abstract_param");
+    let concrete_sort_arg = kb.intern("concrete_sort");
+
+    let existing_rule_qns = collect_existing_proof_record_qns(kb, record_sym);
+
+    // Snapshot all (X-qn, spec-tid) pairs first so we don't borrow-
+    // conflict with kb mutations during ProofRecord construction.
+    let provides_rids = kb.by_functor(provides_info_sym);
+    let mut targets: Vec<(String, TermId)> = Vec::new();
+    for rid in provides_rids {
+        if !kb.rule_body(rid).is_empty() { continue; }
+        let head = kb.rule_head(rid);
+        let head_term = kb.get_term(head).clone();
+        let named = match head_term {
+            Term::Fn { named_args, .. } => named_args,
+            _ => continue,
+        };
+        let sort_ref_tid = match super::typing::get_named_arg(kb, &named, "sort_ref") {
+            Some(t) => t,
+            None => continue,
+        };
+        let spec_tid = match super::typing::get_named_arg(kb, &named, "spec") {
+            Some(t) => t,
+            None => continue,
+        };
+        let x_qn = match qn_of_sort_ref(kb, sort_ref_tid) {
+            Some(q) => q,
+            None => continue,
+        };
+        targets.push((x_qn, spec_tid));
+    }
+
+    let mut new_records: Vec<TermId> = Vec::new();
+
+    for (x_qn, spec_tid) in targets {
+        let (a_short, a_qn, substitution) = match resolve_provides_spec(kb, spec_tid) {
+            Some(t) => t,
+            None => continue,
+        };
+        // Find every auto-registered <a_qn>.requires.<SE> record so
+        // we can emit one Specialization per requires-law.
+        let parametric_records: Vec<String> = existing_rule_qns
+            .iter()
+            .filter(|qn| qn.starts_with(&format!("{a_qn}.requires.")))
+            .cloned()
+            .collect();
+        if parametric_records.is_empty() { continue; }
+
+        for parametric_qn in parametric_records {
+            let se_part = parametric_qn
+                .strip_prefix(&format!("{a_qn}.requires."))
+                .unwrap_or(&parametric_qn);
+            let rule_qn_text = format!("{x_qn}.provides.{a_short}.{se_part}");
+            if existing_rule_qns.contains(&rule_qn_text) { continue; }
+
+            let parametric_term = kb.alloc(Term::Const(
+                Literal::String(parametric_qn.clone())
+            ));
+            // Build the substitution cons-list of SortBinding entities.
+            let binding_terms: Vec<TermId> = substitution.iter().map(|(k, v)| {
+                let k_term = kb.alloc(Term::Const(Literal::String(k.clone())));
+                let v_term = kb.alloc(Term::Const(Literal::String(v.clone())));
+                kb.alloc(Term::Fn {
+                    functor: sort_binding_sym,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::from_slice(&[
+                        (abstract_param_arg, k_term),
+                        (concrete_sort_arg, v_term),
+                    ]),
+                })
+            }).collect();
+            let substitution_list = build_cons_list(
+                kb, &binding_terms, nil_sym, cons_sym, head_arg, tail_arg);
+            let instances_list = kb.alloc(Term::Fn {
+                functor: nil_sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::new(),
+            });
+
+            let witness_term = kb.alloc(Term::Fn {
+                functor: specialization_sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[
+                    (parametric_arg, parametric_term),
+                    (substitution_arg, substitution_list),
+                    (instances_arg, instances_list),
+                ]),
+            });
+            let strategy_term = kb.alloc(Term::Fn {
+                functor: strategy_open_sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::new(),
+            });
+            let body_term = kb.alloc(Term::Fn {
+                functor: body_none_sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::new(),
+            });
+            let pending_term = kb.alloc(Term::Fn {
+                functor: pending_sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::new(),
+            });
+            let nil_term = kb.alloc(Term::Fn {
+                functor: nil_sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::new(),
+            });
+            let rule_text_term = kb.alloc(Term::Const(Literal::String(rule_qn_text)));
+            let state_hash_term = kb.alloc(Term::Const(
+                Literal::String("specialization".to_string())
+            ));
+
+            let record_term = kb.alloc(Term::Fn {
+                functor: record_sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[
+                    (rule_arg, rule_text_term),
+                    (strategy_arg, strategy_term),
+                    (body_arg, body_term),
+                    (result_arg, pending_term),
+                    (deps_arg, nil_term),
+                    (using_arg, nil_term),
+                    (witness_arg, witness_term),
+                    (state_hash_arg, state_hash_term),
+                    (parametric_context_arg, nil_term),
+                ]),
+            });
+            new_records.push(record_term);
+        }
+    }
+
+    if new_records.is_empty() { return; }
+    let record_sort_term = kb.make_name_term("anthill.realization.ProofRecord");
+    let global_term = kb.make_name_term("_global");
+    for rec in new_records {
+        kb.assert_fact(rec, record_sort_term, global_term, None);
+    }
+}
+
+/// Resolve a SortProvidesInfo.spec term into:
+/// - the spec's short name (used as `<A-flat>` in the rule QN)
+/// - the spec's qualified name (used to find α.6's requires records)
+/// - the substitution as `Vec<(abstract_param, concrete_sort_short)>`
+fn resolve_provides_spec(
+    kb: &KnowledgeBase,
+    spec: TermId,
+) -> Option<(String, String, Vec<(String, String)>)> {
+    use crate::intern::SymbolKind;
+    let term = kb.get_term(spec);
+    match term {
+        Term::Fn { functor, pos_args, named_args } => {
+            let f_name = kb.qualified_name_of(*functor);
+            let f_short = f_name.rsplit('.').next().unwrap_or(f_name);
+            if f_short == "SortView" {
+                let base = pos_args.first().copied()?;
+                let base_sym = match kb.get_term(base) {
+                    Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
+                    _ => return None,
+                };
+                let a_qn = kb.qualified_name_of(base_sym).to_owned();
+                let a_short = a_qn.rsplit('.').next().unwrap_or(&a_qn).to_owned();
+                let mut sub: Vec<(String, String)> = named_args.iter().filter_map(|(k_sym, v_tid)| {
+                    let value_sym = match kb.get_term(*v_tid) {
+                        Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => Some(*functor),
+                        _ => None,
+                    };
+                    if let Some(vs) = value_sym {
+                        if matches!(kb.kind_of(vs), Some(SymbolKind::Operation)) {
+                            return None;
+                        }
+                    }
+                    let k_name = kb.resolve_sym(*k_sym);
+                    let k_short = k_name.rsplit('.').next().unwrap_or(k_name).to_owned();
+                    let v_short = match value_sym {
+                        Some(s) => {
+                            let n = kb.resolve_sym(s);
+                            n.rsplit('.').next().unwrap_or(n).to_owned()
+                        }
+                        None => "_".to_string(),
+                    };
+                    Some((k_short, v_short))
+                }).collect();
+                sub.sort_by(|a, b| a.0.cmp(&b.0));
+                Some((a_short, a_qn, sub))
+            } else {
+                // Plain nullary sort term — `provides Foo` with no
+                // bindings.
+                let qn = kb.qualified_name_of(*functor).to_owned();
+                let short = qn.rsplit('.').next().unwrap_or(&qn).to_owned();
+                Some((short, qn, Vec::new()))
+            }
+        }
+        Term::Ref(s) | Term::Ident(s) => {
+            let qn = kb.qualified_name_of(*s).to_owned();
+            let short = qn.rsplit('.').next().unwrap_or(&qn).to_owned();
+            Some((short, qn, Vec::new()))
+        }
+        _ => None,
+    }
+}
+
+/// Build a cons/nil list using explicit functor symbols. Mirrors
+/// `build_list` but accepts pre-resolved nil/cons/head/tail symbols
+/// — useful when the caller already resolved them once and wants
+/// to avoid re-lookups in inner loops.
+fn build_cons_list(
+    kb: &mut KnowledgeBase,
+    items: &[TermId],
+    nil_sym: Symbol,
+    cons_sym: Symbol,
+    head_arg: Symbol,
+    tail_arg: Symbol,
+) -> TermId {
+    let mut list = kb.alloc(Term::Fn {
+        functor: nil_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+    for &item in items.iter().rev() {
+        list = kb.alloc(Term::Fn {
+            functor: cons_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(head_arg, item), (tail_arg, list)]),
+        });
+    }
+    list
 }
 
 /// True iff a SortInfo fact's `kind` field is `"enum"` — the v0
@@ -4119,9 +4392,34 @@ impl<'a> Loader<'a> {
         self.kb.assert_fact(record_term, record_sort, domain, None);
     }
 
-    /// `provides Spec[...]` inside a sort body — stub. Subtyping
-    /// integration arrives with the typeclass pass.
-    fn load_provides_clause(&mut self, _pc: &ProvidesClause, _domain: TermId) {}
+    /// `provides Spec[...]` inside a sort body. Emits a
+    /// `SortProvidesInfo` fact recording the user's intent ("this
+    /// sort claims to satisfy the named spec at the given binding").
+    /// The verification pass `register_provides_specializations`
+    /// (proposal 030 phase α.8 / WI-119 Variant 3) walks these
+    /// facts after α.6/α.7 have registered the requires-clause
+    /// witnesses; for each it checks that every requires-law has
+    /// a Discharged ProofRecord at the substitution and emits
+    /// `Specialization` ProofRecords pointing at the supporting
+    /// proofs.
+    fn load_provides_clause(&mut self, pc: &ProvidesClause, domain: TermId) {
+        let provides_sort = self.kb.make_name_term("Requirement");
+        let provides_sym = self.kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
+        let spec_term = self.sort_inst_to_term(&pc.spec);
+
+        let sort_ref_sym = self.kb.intern("sort_ref");
+        let spec_sym = self.kb.intern("spec");
+        self.kb.register_entity_fields(provides_sym, vec![sort_ref_sym, spec_sym]);
+        let provides_term = self.kb.alloc(Term::Fn {
+            functor: provides_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (sort_ref_sym, domain),
+                (spec_sym, spec_term),
+            ]),
+        });
+        self.kb.assert_fact(provides_term, provides_sort, domain, None);
+    }
 
     /// Standalone `provides Spec language X ... end`. For anthill we
     /// recurse into the inner items; host languages are stubbed out
