@@ -4318,15 +4318,46 @@ impl<'a> Loader<'a> {
         })
     }
 
-    /// Encode the cite-list (`using h1, h2, ...`) as a cons-list of
-    /// String literals carrying each cited rule's source-side name.
-    /// The dispatcher resolves each name to a qualified rule QN at
-    /// dispatch time.
-    fn encode_using_list(&mut self, using: &[Name]) -> TermId {
+    /// Resolve a structured-proof cite name to its qualified rule QN.
+    /// Step-local labels (matching one of `step_labels`) resolve to
+    /// `<parent_proof_qn>.<label>` — phase-b dispatch will look up
+    /// the synthesized step rule under that QN. External cites fall
+    /// back to scope-aware resolution against the loader's current
+    /// scope (same path the parent proof's `using` clause uses).
+    /// Names that don't resolve are encoded as their source-side
+    /// segment join so the dispatcher can surface a clear error
+    /// rather than silently dropping the cite.
+    fn resolve_step_cite(
+        &mut self,
+        name: &Name,
+        parent_proof_qn: &str,
+        step_labels: &std::collections::BTreeSet<String>,
+    ) -> String {
+        let source = join_segments(&self.parsed.symbols, &name.segments);
+        if step_labels.contains(&source) {
+            return format!("{parent_proof_qn}.{source}");
+        }
+        let sym = self.remap_name(name);
+        match self.kb.symbols.get(sym) {
+            crate::intern::SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
+            crate::intern::SymbolDef::Unresolved { .. } => source,
+        }
+    }
+
+    /// Encode a structured-proof cite-list as a cons-list of String
+    /// literals carrying each cite's resolved qualified rule QN
+    /// (step-local labels become `<parent_proof_qn>.<label>`; external
+    /// names go through scope-aware resolution).
+    fn encode_step_using_list(
+        &mut self,
+        using: &[Name],
+        parent_proof_qn: &str,
+        step_labels: &std::collections::BTreeSet<String>,
+    ) -> TermId {
         let strs: Vec<TermId> = using.iter()
             .map(|n| {
-                let s = join_segments(&self.parsed.symbols, &n.segments);
-                self.kb.alloc(Term::Const(super::term::Literal::String(s)))
+                let qn = self.resolve_step_cite(n, parent_proof_qn, step_labels);
+                self.kb.alloc(Term::Const(super::term::Literal::String(qn)))
             })
             .collect();
         build_list(self.kb, &strs)
@@ -4337,7 +4368,12 @@ impl<'a> Loader<'a> {
     /// rule (proposal 031 v0 supports single-head steps); multi-head
     /// or denial steps are encoded with `Bottom` as a placeholder so
     /// the dispatcher can reject them at runtime with a clear error.
-    fn encode_proof_step(&mut self, step: &ProofStep) -> TermId {
+    fn encode_proof_step(
+        &mut self,
+        step: &ProofStep,
+        parent_proof_qn: &str,
+        step_labels: &std::collections::BTreeSet<String>,
+    ) -> TermId {
         let label_str = step.rule.label.as_ref()
             .map(|n| join_segments(&self.parsed.symbols, &n.segments))
             .unwrap_or_default();
@@ -4355,7 +4391,7 @@ impl<'a> Loader<'a> {
             .unwrap_or_default();
         let body_list = build_list(self.kb, &body_ids);
 
-        let using_list = self.encode_using_list(&step.using);
+        let using_list = self.encode_step_using_list(&step.using, parent_proof_qn, step_labels);
         let tactic_term = self.encode_strategy(&step.strategy);
 
         let s_sym = self.kb.resolve_symbol("anthill.realization.ProofStep");
@@ -4377,8 +4413,13 @@ impl<'a> Loader<'a> {
         })
     }
 
-    fn encode_proof_conclude(&mut self, c: &ConcludeClause) -> TermId {
-        let using_list = self.encode_using_list(&c.using);
+    fn encode_proof_conclude(
+        &mut self,
+        c: &ConcludeClause,
+        parent_proof_qn: &str,
+        step_labels: &std::collections::BTreeSet<String>,
+    ) -> TermId {
+        let using_list = self.encode_step_using_list(&c.using, parent_proof_qn, step_labels);
         let tactic_term = self.encode_strategy(&c.strategy);
         let c_sym = self.kb.resolve_symbol("anthill.realization.ProofConcludeClause");
         let using_arg = self.kb.symbols.intern("using_names");
@@ -4435,12 +4476,27 @@ impl<'a> Loader<'a> {
                 })
             }
             Some(ProofBody::Structured { steps, conclude }) => {
+                // Collect step labels first so step-internal cites
+                // (`using h1, h2, ...` referencing other steps in
+                // this same body) resolve to `<parent_proof_qn>.<label>`
+                // rather than going through scope-aware lookup. The
+                // parent_proof_qn is the qualified name of the rule
+                // being proved (`rule_text`, computed below before
+                // ProofRecord construction).
+                let parent_proof_qn: String = match self.kb.symbols.get(target_sym) {
+                    crate::intern::SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
+                    crate::intern::SymbolDef::Unresolved { name } => name.clone(),
+                };
+                let step_labels: std::collections::BTreeSet<String> = steps.iter()
+                    .filter_map(|s| s.rule.label.as_ref()
+                        .map(|n| join_segments(&self.parsed.symbols, &n.segments)))
+                    .collect();
                 let step_terms: Vec<TermId> = steps.iter()
-                    .map(|s| self.encode_proof_step(s))
+                    .map(|s| self.encode_proof_step(s, &parent_proof_qn, &step_labels))
                     .collect();
                 let steps_list = build_list(self.kb, &step_terms);
                 let conclude_term = match conclude {
-                    Some(c) => self.encode_proof_conclude(c),
+                    Some(c) => self.encode_proof_conclude(c, &parent_proof_qn, &step_labels),
                     None => self.kb.alloc(Term::Bottom),
                 };
                 let s_sym = self.kb.resolve_symbol("anthill.realization.ProofBodyStructured");

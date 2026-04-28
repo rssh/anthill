@@ -155,6 +155,14 @@ fn structured_proof_body_loads_with_steps_and_conclude() {
     // Step labels are preserved as String literals.
     assert!(r.contains("h1") && r.contains("h2"),
         "expected step labels h1 and h2 in body: {r}");
+    // Step-local cites (`using h1, h2`) resolve to the
+    // `<parent_proof_qn>.<label>` form at load time so phase b's
+    // dispatcher doesn't need to guess.
+    assert!(
+        r.contains("test.structured_proof.big_lemma.h1")
+            && r.contains("test.structured_proof.big_lemma.h2"),
+        "expected step-local cites resolved to parent.<label>, got: {r}"
+    );
 }
 
 #[test]

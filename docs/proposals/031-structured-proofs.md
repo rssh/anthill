@@ -131,6 +131,19 @@ For a `trust`-discharged step:
 - No SMT or SLD invocation; the step's head is asserted via TrustedAxiom witness.
 - Subsequent steps can use the claim as if it had been mechanically discharged. The trust flag propagates.
 
+#### Implementation strategy: extra-assertions in `ProofConfig`
+
+Phase b's hypothesis-splicing implementation **extends `ProofConfig.assumptions`** with assertions rendered directly from each step's head term, rather than synthesizing transient KB rules. The rationale:
+
+- **No KB mutation.** Each `prove` invocation produces a fresh dispatcher state holding the step witnesses and their rendered SMT assertions; nothing leaks into the KB. Cleanup-on-failure is automatic (the dispatcher state goes out of scope). Sidecar caching keys cleanly off the step set.
+- **Same render path as `using` cites.** A new helper `render_term_as_smt_assertion` in `anthill-smt-gen` lowers a single term into one `(assert ...)` clause using the same `process_body_goal` machinery `lift_rule_to_implication_clause` already uses for cited-lemma bodies. The dispatcher accumulates step assertions as a `Vec<String>` and prepends them to `ProofConfig.assumptions` for each subsequent step.
+- **Trust propagation flows through `MetaCompose`.** A trust-discharged step's head still becomes an `(assert …)` clause for the SMT-side; the witness records `TrustedAxiom { reason }` and β.6's aggregation surfaces it through the structured proof's containing MetaCompose. No special path needed.
+- **SLD steps consult the same buffer.** When dispatching an SLD-discharged step under accumulated hypotheses, the resolver runs against `kb` plus a transient assumption stack (already supported via WI-108). The step heads convert to assumption terms; the resolver pops them when the step completes. No global fact-table mutation.
+
+The alternative — synthesizing per-step KB rules so the existing `using` cite-resolution path picks them up via `lift_rule_to_implication_clause` — was rejected because it introduces lifecycle complexity (transient-rule cleanup on failure, sidecar invalidation when step labels collide across runs, `by_functor` index pollution) and demands a parallel "are-these-rules-real-or-synthetic" predicate everywhere downstream. The extra-assertions path keeps step state where it logically lives — in the dispatcher's call frame — and avoids those concerns.
+
+Step `using` lists are encoded at load time with **resolved qualified names**: step-local labels (`h1`, `h2`, …) become `<parent_proof_qn>.<label>`; external cites (`triangle_inequality`) go through scope-aware resolution to their namespace QN. Phase b's dispatcher consumes the resolved QNs directly without re-running scope lookup.
+
 ### Free variables and binding scope
 
 A step's head may contain free variables not bound by previous steps. Two cases:
