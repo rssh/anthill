@@ -41,14 +41,32 @@ Concrete tasks to take this scaffold to a runnable + provable example. Roughly i
 
 ## Proof track
 
-- [x] **`anthill-smt-gen` crate** — KB → SMT-LIB 2.6 emitter; Z3 round-trip for linear-real-arithmetic obligations. Commits `14a0f54`, `2bd2d9d`, `2fc4a37`, `3b616b7`. Replaces what was originally framed as a native arithmetic tactic — Z3 covers the lf1 use case directly.
-- [x] **State `KinematicAssumptions`, `LinkParameters`, `GpsErrorBound`, `DistanceBounds`** as facts in `safety.anthill` with the lf1 RTK numbers (ε = 0.1 m, v_max = 8 m/s, T_c = 0.032 s, d ∈ [1, 20] m).
-- [x] **Discharge inductive invariant.** Encoded as paired violation rules (`lower_violation`, `upper_violation`); both report `unsat` via `anthill prove` (commit `9703ed7`). Run with `discharge.sh`. The step-bound check (`δ ≤ 2.0 m`) lives in `rustland/anthill-smt-gen/tests/lf1_real_spec_test.rs` until the proof grammar exposes a `by z3(upper: 2.0)` argument.
-- [x] **Inline `proof` blocks** (proposal 025). `safety.anthill` declares `proof lower_violation by z3(logic: "LRA")` etc. — the obligations live next to the rules they cover instead of hand-rolled Rust tests.
-- [ ] **`by z3(upper: <bound>)` strategy argument** so `step_distance_bound` can move from the on-disk Rust test into an inline `proof` block alongside the violation rules.
-- [ ] **Reachability proof.** Lift the inductive invariant to ∀k. d_min ≤ d_k ≤ d_max via induction on k. Needs proposal 025 Phase 2.6b (nested-implication / `forall` resolution) + the auto-generated `Int.induction` rule on top of what's already in place. Not blocking the v1 safety claim.
-- [ ] **Counterexample extraction** when Z3 reports `sat`. Today the CLI prints the raw model in `--verbose` mode; reifying it back through the KB into anthill terms would let users see the witness directly.
-- [ ] **Continuous-time gap.** Document the per-step modeling assumption rigorously, or eventually export to a hybrid-systems tool. Long-term.
+### Landed (kernel-checked end-to-end via proposal 030)
+
+- [x] **`anthill-smt-gen` crate** — KB → SMT-LIB 2.6 emitter; Z3 round-trip for linear-real-arithmetic obligations. Commits `14a0f54`, `2bd2d9d`, `2fc4a37`, `3b616b7`.
+- [x] **State `KinematicAssumptions`, `LinkParameters`, `GpsErrorBound`, `DistanceBounds`** as facts with the lf1 RTK numbers (ε = 0.1 m, v_max = 8 m/s, T_c = 0.032 s, d ∈ [1, 20] m).
+- [x] **Per-step inductive obligations** (LRA): `lower_violation` / `upper_violation`, `base_lower_violation` / `base_upper_violation` (gps); `lower_violation_transponder`, `bounded_excursion_lower/upper_violation_transponder` (transponder). All discharge `unsat`.
+- [x] **Reachability lift** ∀k. d_min ≤ d_k ≤ d_max — implemented via induction-tactic discharge of `reachability_band`. The rule now carries an explicit `-:` conclusion (post-030 cleanup) so the universal claim is first-class in the registry; the induction meta-tactic dispatches the four base × step sub-queries; β.3's MetaCompose check verifies recursively. The Φ-prerequisite (proposal 025 Phase 2.6b nested-implication resolution) is no longer needed because proposal 030's witness machinery factors out the soundness gate.
+- [x] **Per-flight refutation** (QF_NRA): `safety_min_distance` / `safety_max_distance` (gps), `safety_no_collision_transponder` / `safety_bounded_excursion_transponder` (transponder). Each chases body through `reachable_real` → `real_pose_at` (initial-geometry facts) → `position_distance` (nonlinear) and refutes the violation hypothesis at the lf1 launch geometry.
+- [x] **Ranking-function discharge** of `PostArmedExcursionBound.max_ticks = 6` via `post_armed_excursion_bound` proof block (LIA, ranking tactic). R = −upc ∈ [0, 6] strictly decreases each bad tick.
+- [x] **`anthill check` end-to-end audit**: prove writes sidecar witnesses + content-addressed blobs (XDG cache); check replays SmtDischarge witnesses, recurses through MetaCompose witnesses, re-reads source declarations for ScopeAxioms. Lf1 reports 43/43 pass (11 user proofs + 1 Specialization + 31 auto-registered ScopeAxioms; 0 trusted, 0 failed).
+
+### Remaining gaps (load-bearing modeling assumptions, NOT discharged by Z3)
+
+These are the axiomatic content the lf1 proof rests on. Each is documented inline in `safety_common.anthill` (§Predicate status); listed here for visibility:
+
+1. **Step-distance bound** `|distance_at_step(k+1) − distance_at_step(k)| ≤ δ`. Inlined as the body clause `step_distance_bound(?delta), lte(abs(?step), ?delta)` in every per-step violation rule. *Derivable in principle* from `real_pose_at`'s transition rule + KinematicAssumptions velocity envelope + triangle inequality on `position_distance`, but the derivation is a hybrid-systems claim outside Z3's QF_LRA / QF_NRA scope. Future: dReal or KeYmaera X discharge; until then, the proof is conditional on KinematicAssumptions holding.
+2. **`KinematicAssumptions` inner-loop envelope**. The Mavic2Pro PID + motor mixing (carried verbatim as `mavic_base.{cpp,hpp}`) is *assumed* to keep |v_drone| ≤ v_max. If the real inner loop violates this in flight, the whole proof says nothing. Empirically validated per Webots run; no symbolic discharge planned.
+3. **`gps_drift_axiom`** / `transponder_step_distance_bound`'s measurement-noise term. Sensor error model; treated as an axiom. The 0.1 m / 0.15 m numbers come from the GPS module's spec / transponder calibration; not derivable from kernel rules.
+4. **`distance_at_step(k, d) ↔ position_distance(real_pose_at(k, Leader), real_pose_at(k, Follower))` bridge**. Definitional rule but Z3 doesn't unfold it during the inductive discharge — the proof reasons at the scalar `d` level. Conceptually the bridge bundles assumptions 1–3.
+5. **`PostArmedExcursionBound.max_ticks = 6` literal** in source. The ranking-tactic proof witnesses that R ∈ [0, 6] is sound, but the literal `6` is plugged in as a fact rather than auto-derived from the ranking-tactic outcome. Tracked: the ranking tactic accepting a `pessimistic_bound: N` argument that emits a `RankingProof(name, measure, max_ticks)` fact directly.
+
+### Future infrastructure improvements
+
+- [ ] **`by z3(upper: <bound>)` strategy argument** so the step-distance bound check (`δ ≤ 2.0 m`) can move from `rustland/anthill-smt-gen/tests/lf1_real_spec_test.rs` into an inline `proof` block.
+- [ ] **Counterexample extraction** when Z3 reports `sat` — reify the model back through the KB into anthill terms so users see the witness directly. Today the CLI prints the raw model in `--verbose` mode.
+- [ ] **Continuous-time gap.** Document the per-step modeling assumption rigorously, or export to a hybrid-systems tool (dReal / KeYmaera X) to discharge gap #1 mechanically.
+- [ ] **Mark `gps_drift_axiom` / `transponder_step_distance_bound` measurement-noise terms as explicit `TrustedAxiom`-witnessed ProofRecords** so `anthill check --report-trust` surfaces them. Today they're inline body clauses; promoting them to citable lemmas with proof blocks of `by trust("sensor spec; …")` form (when that tactic lands) would make the trust surface auditable.
 
 ## Settled decisions
 

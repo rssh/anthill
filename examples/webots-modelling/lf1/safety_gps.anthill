@@ -292,8 +292,28 @@ namespace anthill.examples.lf1.safety.gps
   -- become vacuous IF the assumed bridge holds and IF the four
   -- sub-queries discharge. Both are externally verifiable.
 
-  rule reachability_band(?marker)
-    :- eq(?marker, true)
+  -- Universal-over-k band-membership claim. The body's premises
+  -- + the `-:` conclusion express:
+  --
+  --   ∀ k ≥ 0, ∀ d. distance_at_step(k, d) ⇒ d_min ≤ d ≤ d_max
+  --
+  -- The discharge runs through the induction meta-tactic, which
+  -- dispatches four independent SMT sub-queries (the base × step
+  -- violation pair); the rule body+conclusion themselves are not
+  -- consumed by the tactic. Stating them properly here (instead of
+  -- the previous `eq(?marker, true)` placeholder) makes the
+  -- universal claim citable via `using reachability_band` from the
+  -- safety_min_distance / safety_max_distance proofs once γ's
+  -- registry-mediated cite path consults it; today those proofs
+  -- discharge their per-flight refutations directly without citing
+  -- this rule, but the claim is now first-class in the registry
+  -- and shows up in `anthill check`'s 43/43 verification list.
+  rule reachability_band(?k, ?d)
+    :- DistanceBounds(d_min: ?d_min, d_max: ?d_max),
+       gte(?k, 0),
+       distance_at_step(?k, ?d)
+    -: gte(?d, ?d_min),
+       lte(?d, ?d_max)
 
   proof reachability_band
     by z3(tactic: induction(base_lower_violation,
