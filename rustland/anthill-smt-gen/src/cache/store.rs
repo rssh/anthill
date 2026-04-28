@@ -38,6 +38,17 @@ pub struct CacheEntry {
     /// `produce_unsat_cores` was on.
     #[serde(default)]
     pub unsat_core: Vec<String>,
+    /// Content hash of the SMT-LIB document that produced this
+    /// entry (proposal 030 phase α.5 — `ProofWitness::SmtDischarge.
+    /// document_hash`). Empty for legacy entries written before
+    /// α.5; readers fall back to recomputing if needed.
+    #[serde(default)]
+    pub document_hash: String,
+    /// Content hash of the sat model text (when applicable). Empty
+    /// for unsat / unknown verdicts and legacy entries. Used as
+    /// `SmtVerdict::Sat.model_hash` in the witness.
+    #[serde(default)]
+    pub model_hash: String,
 }
 
 impl CacheEntry {
@@ -54,6 +65,8 @@ impl CacheEntry {
             model_text: String::new(),
             variable_assignments: Vec::new(),
             unsat_core: Vec::new(),
+            document_hash: String::new(),
+            model_hash: String::new(),
         }
     }
 }

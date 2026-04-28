@@ -12,8 +12,8 @@ use anthill_smt_gen::{
     emit_satisfiability_check_with_deps, lift_rule_to_implication_clause, ProofConfig,
 };
 use anthill_smt_gen::cache::{
-    self, build_key, entry_path, lookup, proof_subdir, resolve_cache_root,
-    state_hash, store_entry, CacheEntry, KeyInputs, Solver,
+    self, blob_subdir, build_key, entry_path, hash_content, lookup, proof_subdir,
+    resolve_cache_root, state_hash, store_blob, store_entry, CacheEntry, KeyInputs, Solver,
 };
 use anthill_smt_gen::tactic_emit::emit_tactic_from_term;
 use anthill_smt_gen::outcome::parse_z3_output;
@@ -540,6 +540,7 @@ fn render_cited_lemmas(
 
 struct CacheCtx {
     subdir: std::path::PathBuf,
+    blob_dir: std::path::PathBuf,
     key: String,
 }
 
@@ -554,6 +555,7 @@ fn build_cache_context(
     let cache_root = resolve_cache_root(cache_dir_override.as_deref());
     let repo_root = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let subdir = proof_subdir(&cache_root, &repo_root, Solver::Z3);
+    let blob_dir = blob_subdir(&cache_root, &repo_root);
     let key = build_key(kb, &KeyInputs {
         emitted_smt_lib: smt,
         tactic_canon,
@@ -562,7 +564,7 @@ fn build_cache_context(
         stdlib_version: env!("CARGO_PKG_VERSION"),
         z3_version,
     });
-    CacheCtx { subdir, key }
+    CacheCtx { subdir, blob_dir, key }
 }
 
 /// Recognise `ranking(boundedness: <rule_qn>, decrease: <rule_qn>)`
@@ -838,7 +840,7 @@ fn run_smt_subquery(
                 }
                 let cached_verdict = verdict_from_cache(&entry);
                 let witness = build_smt_witness(
-                    &cli.solver, config, &ctx.key, &cached_verdict, &entry);
+                    &cli.solver, config, &cached_verdict, &entry);
                 return DispatchOutcome {
                     verdict: cached_verdict,
                     witness,
@@ -879,29 +881,36 @@ fn run_smt_subquery(
             println!("  unsat-core: {}", outcome.unsat_core.join(", "));
         }
     }
-    let document_hash = cache_ctx.as_ref().map(|c| c.key.clone()).unwrap_or_default();
-    let witness = if document_hash.is_empty() {
-        // No cache → no stable content hash for the document; carry
-        // the sha-equivalent identifier as the rule QN. α.5 will
-        // populate a real content hash even in --no-cache mode.
-        Some(ProofWitness::SmtDischarge {
-            backend: cli.solver.clone(),
-            logic: config.logic.clone().unwrap_or_default(),
-            document_hash: format!("nocache:{rule_qn}"),
-            verdict: smt_verdict_from_outcome(&outcome, &stdout),
-            core: if outcome.unsat_core.is_empty() { None }
-                  else { Some(outcome.unsat_core.join("\n")) },
-        })
+    // Phase α.5: real content-addressed hashes for the witness.
+    // The SMT-LIB document is sha256'd; if a cache_ctx exists, the
+    // document is also persisted as a blob so phase-β check can
+    // replay the discharge. Same for the sat model.
+    let document_hash = hash_content(&smt);
+    let model_hash = if matches!(verdict, Verdict::Disproved(_))
+        && !outcome.model_text.is_empty()
+    {
+        Some(hash_content(&outcome.model_text))
     } else {
-        Some(ProofWitness::SmtDischarge {
-            backend: cli.solver.clone(),
-            logic: config.logic.clone().unwrap_or_default(),
-            document_hash,
-            verdict: smt_verdict_from_outcome(&outcome, &stdout),
-            core: if outcome.unsat_core.is_empty() { None }
-                  else { Some(outcome.unsat_core.join("\n")) },
-        })
+        None
     };
+    if let Some(ctx) = &cache_ctx {
+        if let Err(e) = store_blob(&ctx.blob_dir, &smt) {
+            if cli.verbose { eprintln!("  blob write failed (smt doc): {e}"); }
+        }
+        if model_hash.is_some() {
+            if let Err(e) = store_blob(&ctx.blob_dir, &outcome.model_text) {
+                if cli.verbose { eprintln!("  blob write failed (model): {e}"); }
+            }
+        }
+    }
+    let witness = Some(ProofWitness::SmtDischarge {
+        backend: cli.solver.clone(),
+        logic: config.logic.clone().unwrap_or_default(),
+        document_hash: document_hash.clone(),
+        verdict: smt_verdict_from_outcome(&outcome, model_hash.clone()),
+        core: if outcome.unsat_core.is_empty() { None }
+              else { Some(outcome.unsat_core.join("\n")) },
+    });
     if let Some(ctx) = cache_ctx {
         let mut entry = CacheEntry::new(
             ctx.key,
@@ -914,6 +923,8 @@ fn run_smt_subquery(
         entry.model_text = outcome.model_text;
         entry.variable_assignments = outcome.variable_assignments;
         entry.unsat_core = outcome.unsat_core;
+        entry.document_hash = document_hash;
+        entry.model_hash = model_hash.unwrap_or_default();
         match store_entry(&ctx.subdir, &entry) {
             Ok(_) => stats.writes += 1,
             Err(e) => if cli.verbose {
@@ -925,38 +936,38 @@ fn run_smt_subquery(
 }
 
 /// Translate a parsed Z3 outcome into a `SmtVerdict` enum suitable
-/// for the witness. Sat / Unknown carry a content-hash reference
-/// to the model text (using a hash here is α.5 territory; for now
-/// we use the stdout as the model_hash placeholder).
+/// for the witness. Sat carries a content hash for the model text
+/// (computed by the caller); unknown carries the reason.
 fn smt_verdict_from_outcome(
     outcome: &anthill_smt_gen::outcome::OutcomeData,
-    full_stdout: &str,
+    model_hash: Option<String>,
 ) -> SmtVerdict {
     match outcome.verdict.as_str() {
         "unsat" => SmtVerdict::Unsat,
         "sat" => SmtVerdict::Sat {
-            // α.3: stdout-as-model_hash placeholder; α.5 introduces
-            // proper content-addressed cache storage.
-            model_hash: format!("inline:{}", full_stdout.len()),
+            model_hash: model_hash.unwrap_or_default(),
         },
         other => SmtVerdict::Unknown { reason: format!("z3: {other}") },
     }
 }
 
-/// Construct a witness for a cache-hit verdict. The cache entry
-/// already records the verdict shape; we re-produce the witness
-/// from those fields for downstream registration.
+/// Construct a witness for a cache-hit verdict from the stored
+/// entry. The entry's `document_hash` and `model_hash` (added in
+/// α.5) are content-addressed sha256 of the underlying blob text;
+/// older entries written before α.5 have empty `document_hash`,
+/// in which case the witness's hash defaults to empty too — a
+/// signal to phase β that re-discharge is required to populate
+/// payloads.
 fn build_smt_witness(
     backend: &str,
     config: &ProofConfig,
-    document_hash: &str,
     cached_verdict: &Verdict,
     entry: &CacheEntry,
 ) -> Option<ProofWitness> {
     let smt_verdict = match cached_verdict {
         Verdict::Proved => SmtVerdict::Unsat,
         Verdict::Disproved(_) => SmtVerdict::Sat {
-            model_hash: format!("inline:{}", entry.model_text.len()),
+            model_hash: entry.model_hash.clone(),
         },
         Verdict::Unknown(reason) => SmtVerdict::Unknown { reason: reason.clone() },
         _ => return None,
@@ -964,7 +975,7 @@ fn build_smt_witness(
     Some(ProofWitness::SmtDischarge {
         backend: backend.to_string(),
         logic: config.logic.clone().unwrap_or_default(),
-        document_hash: document_hash.to_string(),
+        document_hash: entry.document_hash.clone(),
         verdict: smt_verdict,
         core: if entry.unsat_core.is_empty() { None }
               else { Some(entry.unsat_core.join("\n")) },

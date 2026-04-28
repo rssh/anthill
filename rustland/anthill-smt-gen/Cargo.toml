@@ -28,3 +28,7 @@ path = "tests/cache_key_test.rs"
 [[test]]
 name = "state_hash"
 path = "tests/state_hash_test.rs"
+
+[[test]]
+name = "blob"
+path = "tests/blob_test.rs"

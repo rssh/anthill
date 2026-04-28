@@ -808,3 +808,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T10:50:16Z"))
 
+fact WorkItem(
+  id: "WI-115",
+  description: "Proposal 030 phase α.5 — witness storage. Per phase α.5 of docs/proposals/030-theorem-registry.md: large witness payloads (SMT-LIB documents, sat models, SLD-derivation trees) go in the prove cache content-addressed by sha256; ProofRecord.witness carries content-hash references rather than the inline placeholders today. Scope: (1) blob storage layer in rustland/anthill-smt-gen/src/cache/ — store_blob(content) -> hash, load_blob(hash) -> content, blob path layout under XDG cache root; (2) replace prove.rs placeholders — SmtDischarge.document_hash becomes sha256 of the SMT-LIB document text (not the composite cache_key); SmtVerdict::Sat.model_hash becomes sha256 of model text; SmtDischarge.core remains inline if small, else blob-stored; (3) cache-hit witness reconstruction reads from blobs; (4) honest placeholder on SLD-derivation tree_hash with a note that real derivation-tree capture is a separate sub-task pending resolver instrumentation. Out of scope for α.5: persisting the witness back onto ProofRecord facts in source (separate concern, deferred). Acceptance: existing prove tests pass; new tests verify blob round-trip and that document_hash matches sha256(smt-doc).",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T11:10:03Z"))
+
