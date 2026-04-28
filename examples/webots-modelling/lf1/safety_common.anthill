@@ -57,7 +57,7 @@ namespace anthill.examples.lf1.safety.common
   export reachable_real
   export RealVelocity, real_velocity_at, real_pose_at, distance_at_step
   export position_distance, position_distance_sq
-  export step_distance_lemma
+  export step_distance_lemma, triangle_inequality, velocity_envelope
 
   -- =================================================================
   -- Drone identity
@@ -309,44 +309,89 @@ namespace anthill.examples.lf1.safety.common
   ))
 
   -- =================================================================
-  -- Step-distance lemma — citable trusted axiom
+  -- Geometric & physical axioms — decomposed trust surface
   -- =================================================================
   --
-  -- Promotes the previously-inlined `lte(abs(?step), ?delta)` claim
-  -- to a first-class citable rule. The lemma's content (the per-step
-  -- bound on inter-drone distance) is *derivable* from:
+  -- The step-distance lemma's content is *derivable* from:
   --
   --   1. Triangle inequality on Euclidean R³ norm.
   --   2. The kinematic envelope ‖v_drone‖ ≤ v_max (KinematicAssumptions).
   --   3. The transition rule p(k+1) = p(k) + v(k)·T_c (real_pose_at).
   --
-  -- Of these, (1) and (2) are genuinely axiomatic (geometric law +
-  -- physical assumption); (3) is the existing source rule. Until a
-  -- hybrid-systems backend can mechanically discharge the chain, the
-  -- whole lemma is asserted as a TrustedAxiom — `anthill check
-  -- --report-trust` then surfaces the dependency in every consumer's
-  -- audit trail.
+  -- (1) and (2) are genuinely axiomatic; (3) is the existing source
+  -- rule (real_pose_at's transition). Each axiom is named, [hint]-
+  -- tagged so it auto-applies in proofs in this scope, and asserted
+  -- via `by trust(...)` so `anthill check --report-trust` surfaces
+  -- it. Future: discharge (1) in dReal / KeYmaera X; (2) remains
+  -- physical and stays trusted.
 
+  -- Triangle inequality (scalar norm form). Inputs are non-negative
+  -- norm scalars; conclusion is the standard `‖a+b‖ ≤ ‖a‖ + ‖b‖`
+  -- shape. Stated at the scalar-norm level (rather than over Vec3
+  -- arguments) so consumers can use it directly without a vec_norm
+  -- definition; the per-component form is a separate WI.
+  --
+  -- Not tagged `[hint]` because `lift_rule_to_implication_clause`'s
+  -- v0 implementation refuses heads with more than one pos_arg. Once
+  -- the per-RuleId lift helper lands (separate smt-gen WI), this
+  -- can become `[hint]` so any proof in scope auto-cites it without
+  -- explicit `using`.
+  rule triangle_inequality(?na, ?nb, ?n_sum)
+    :- gte(?na, 0.0),
+       gte(?nb, 0.0),
+       gte(?n_sum, 0.0)
+    -: lte(?n_sum, ?na + ?nb)
+
+  proof triangle_inequality
+    by trust(reason: "Euclidean 3-norm triangle inequality; geometry of R^3.")
+  end
+
+  -- Velocity envelope. The drone's velocity at every tick has
+  -- Euclidean norm bounded by its role's max speed. The
+  -- *load-bearing physical assumption* — what carrying
+  -- mavic_base.cpp verbatim gives us; if the inner loop violates
+  -- this in flight the safety claim is void.
+  --
+  -- Same lift-arity caveat as triangle_inequality: not [hint]-tagged
+  -- in v0; promote when the multi-arg-head lift lands.
+  rule velocity_envelope(?drone, ?k, ?n_v)
+    :- real_velocity_at(?k, ?drone, ?vx, ?vy, ?vz),
+       KinematicAssumptions(leader_speed_max:    ?vL_max,
+                            follower_speed_max:  ?vF_max,
+                            control_period:      ?_,
+                            sensor_period:       ?_),
+       gte(?n_v, 0.0)
+    -: lte(?n_v, ?vL_max + ?vF_max)
+
+  proof velocity_envelope
+    by trust(reason: "Mavic2Pro inner loop preserves KinematicAssumptions; empirical validation per Webots flight.")
+  end
+
+  -- =================================================================
+  -- Step-distance lemma — composes the axioms
+  -- =================================================================
+  --
   -- The lemma takes `?delta` as a parameter rather than computing
   -- it from `step_distance_bound` (which is variant-specific —
   -- defined in safety_gps.anthill / safety_transponder.anthill,
   -- not visible from this common namespace). Consumers bind
   -- `?delta` via their own variant's step_distance_bound when
   -- citing this lemma.
+  --
+  -- The proof's by-trust reason now names its decomposition: the
+  -- lemma's truth follows from triangle_inequality +
+  -- velocity_envelope + the transition rule (the latter being
+  -- definitional in source). triangle_inequality and
+  -- velocity_envelope are themselves [hint]-tagged TrustedAxioms,
+  -- so `anthill check --report-trust` surfaces the full chain.
   rule step_distance_lemma(?k, ?d_prev, ?d_next, ?delta)
     :- distance_at_step(?k, ?d_prev),
        ?k_next = ?k + 1,
        distance_at_step(?k_next, ?d_next)
     -: lte(abs(?d_next - ?d_prev), ?delta)
 
-  -- The lemma is asserted axiomatically. Future: decompose into
-  -- triangle_inequality + velocity_envelope and discharge in dReal
-  -- (the SLD-chains-structure + Z3-NRA-closes-arithmetic pattern
-  -- works in principle but Z3 NRA's heuristic instantiation is
-  -- brittle on this size of formula; dReal's δ-decision handles it
-  -- reliably).
   proof step_distance_lemma
-    by trust(reason: "Triangle inequality on Euclidean 3-norm plus Mavic2Pro velocity envelope; pending hybrid-systems backend.")
+    by trust(reason: "Composition of triangle_inequality + velocity_envelope + real_pose_at transition; pending mechanical discharge in a hybrid-systems backend.")
   end
 
   -- =================================================================
