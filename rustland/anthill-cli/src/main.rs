@@ -15,6 +15,7 @@ use anthill_core::parse::ir::{Item, ParsedFile};
 use anthill_core::persistence::print::TermPrinter;
 use anthill_core::persistence::term_ser;
 
+mod check;
 mod prove;
 mod run;
 mod stdlib_embedded;
@@ -1081,10 +1082,11 @@ fn collect_queries(
 // ── Check command ───────────────────────────────────────────────────
 
 fn run_check(args: &CheckArgs) -> Result<(), i32> {
-    let kb = load_kb(&args.paths, false)?;
+    let kb = load_kb_with_stdlib(&args.paths, false, true)?;
     println!("loaded: {} facts, {} rules", kb.fact_count(), kb.rule_count());
-    println!("note: constraint evaluation not yet implemented");
-    Ok(())
+    let outcomes = check::run_check(&args.paths, &kb, "z3", None)?;
+    let failed = check::print_summary(&outcomes);
+    if failed > 0 { Err(1) } else { Ok(()) }
 }
 
 // ── Display helpers ─────────────────────────────────────────────────

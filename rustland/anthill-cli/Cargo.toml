@@ -15,3 +15,6 @@ anthill-smt-gen = { path = "../anthill-smt-gen" }
 clap = { version = "4", features = ["derive"] }
 smallvec = "1"
 serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
