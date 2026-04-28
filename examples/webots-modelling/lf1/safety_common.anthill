@@ -53,7 +53,6 @@ namespace anthill.examples.lf1.safety.common
   export DistanceBounds, KinematicAssumptions
   export reachable_real
   export RealVelocity, real_velocity_at, real_pose_at, distance_at_step
-  export StepDistanceAxiom
 
   -- =================================================================
   -- Drone identity
@@ -231,32 +230,39 @@ namespace anthill.examples.lf1.safety.common
        position_distance(?l, ?f, ?d)
 
   -- =================================================================
-  -- StepDistanceAxiom — the load-bearing consequence
+  -- The step-distance bound — load-bearing axiom, expressed inline
   -- =================================================================
   --
   -- The universal-over-k bound the inductive step consumes:
   --
   --   ∀ k.  | distance_at_step(k+1) − distance_at_step(k) |  ≤  delta
   --
-  -- where delta = step_distance_bound from KinematicAssumptions +
-  -- GpsErrorBound + LinkParameters. This is *derivable* (in principle)
-  -- from real_pose_at's transition rule above + the velocity envelope
-  -- + triangle inequality on `position_distance`; that derivation is
-  -- a hybrid-systems claim outside Z3 LRA's scope and is currently
-  -- carried as a postulate.
+  -- where delta = step_distance_bound, computed in the variant
+  -- file from KinematicAssumptions + the variant's sensor-error
+  -- entity + (for the GPS variant) LinkParameters.
   --
-  -- A future hybrid-systems pass (dReal, KeYmaera X, or hand-rolled
-  -- Coq/Lean) would discharge it. Until then, the safety proof is
-  -- conditional on this axiom holding — and a Webots run validates
-  -- it empirically per flight.
-  rule StepDistanceAxiom
-    :- distance_at_step(?k, ?d_curr),
-       ?k_next = ?k + 1,
-       distance_at_step(?k_next, ?d_next),
-       ?diff = ?d_next - ?d_curr,
-       abs(?diff) <= ?delta_bound
-       -- where ?delta_bound is `step_distance_bound` from the
-       -- variant-specific safety file (gps / transponder).
+  -- This bound CANNOT be a free-standing rule in safety_common
+  -- because `step_distance_bound` is variant-specific and not in
+  -- scope here. Instead, the axiom is enforced *inline* inside
+  -- `lower_violation` / `upper_violation` (and their bounded-
+  -- excursion / transponder counterparts) via the body clauses:
+  --
+  --   step_distance_bound(?delta),
+  --   lte(abs(?step), ?delta),
+  --
+  -- where `?step = ?d_next − ?d_prev`. So every per-step inductive
+  -- obligation that smt-gen emits already carries the bound as
+  -- part of its precondition; there is no separate `StepDistanceAxiom`
+  -- rule to dispatch.
+  --
+  -- The bound itself is *derivable* (in principle) from real_pose_at's
+  -- transition rule above + the velocity envelope + triangle
+  -- inequality on `position_distance`; that derivation is a
+  -- hybrid-systems claim outside Z3 LRA's scope. A future pass
+  -- (dReal, KeYmaera X, or hand-rolled Coq/Lean) would discharge
+  -- it; until then the safety proof is conditional on the
+  -- velocity-envelope assumption (KinematicAssumptions) holding,
+  -- which a Webots run validates empirically per flight.
 
   -- =================================================================
   -- Predicate status — what's defined vs assumed vs uninterpreted
@@ -298,13 +304,15 @@ namespace anthill.examples.lf1.safety.common
   --     StepDistanceAxiom — so position_distance never needs to be
   --     unfolded.
   --
-  -- StepDistanceAxiom                       — POSTULATED axiom
-  --   * Stated as a rule above (not discharged). Universal-over-k
-  --     bound on consecutive distance differences. Derivable in
-  --     principle from `real_pose_at`'s transition rule + the
-  --     velocity envelope + triangle inequality on
-  --     `position_distance` — but that derivation is a
-  --     hybrid-systems claim outside Z3 LRA's scope.
+  -- step-distance bound                     — POSTULATED axiom (inline)
+  --   * Not a free-standing rule (would need variant-specific
+  --     `step_distance_bound` in scope, which is in the variant
+  --     files, not here). Enforced inline as body clauses
+  --     `step_distance_bound(?delta), lte(abs(?step), ?delta)` in
+  --     every variant's per-step violation rule.
+  --   * Derivable in principle from real_pose_at's transition
+  --     rule + the velocity envelope + triangle inequality on
+  --     position_distance — outside Z3 LRA's scope.
   --
   -- The reachability lift (reachability_band in safety_gps.anthill,
   -- by induction tactic) consumes StepDistanceAxiom + the strong
