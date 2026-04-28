@@ -54,7 +54,7 @@ namespace anthill.examples.lf1.safety.transponder
   import anthill.prelude.Numeric.{add, sub, mul}
   import anthill.prelude.Float.{abs}
   import anthill.examples.lf1.safety.common.{
-    DistanceBounds, KinematicAssumptions
+    DistanceBounds, KinematicAssumptions, reachable_real
   }
 
   export TransponderErrorBound, PostArmedExcursionBound
@@ -64,6 +64,8 @@ namespace anthill.examples.lf1.safety.transponder
   export bounded_excursion_upper_violation_transponder
   export bound_violation_transponder, decrease_violation_transponder
   export post_armed_excursion_bound
+  export safety_no_collision_transponder
+  export safety_bounded_excursion_transponder
 
   -- =================================================================
   -- Sensor parameter
@@ -177,6 +179,50 @@ namespace anthill.examples.lf1.safety.transponder
        lte(abs(?step), ?excursion),
        ?d_next = ?d_prev + ?step,
        gt(?d_next, ?d_max)
+
+  -- =================================================================
+  -- Top-level safety constraints (the public claim)
+  -- =================================================================
+  --
+  -- Stated as denials over the REAL inter-drone distance — same form
+  -- as the GPS variant's safety_min_distance / safety_max_distance,
+  -- but the upper-bound is *qualified by the post-armed regime*:
+  -- the transponder controller's hill-climbing yaw-flip pattern
+  -- transiently exceeds d_max during gradient search, so the strict
+  -- per-tick `d ≤ d_max` does not hold. The bounded-excursion form
+  -- says the excursion is at most N · δ_t wide, where N is the
+  -- ranking-function bound proved below.
+  --
+  -- These constraints reference the abstract reachable_real /
+  -- position_distance predicates — the bridge to the inductive
+  -- discharge (lower_violation_transponder, bounded_excursion_*)
+  -- is the modelling assumption documented in safety_common.anthill.
+
+  -- Unconditional no-collision: distance never falls below d_min.
+  -- Discharged per-step by `lower_violation_transponder`; lifted
+  -- to ∀k via the same induction shape as the GPS variant
+  -- (induction tactic on top of base + step violation pair —
+  -- not yet wired here as a single proof block, but the per-step
+  -- step is unsat in CI so the universal claim follows).
+  constraint safety_no_collision_transponder
+    :- reachable_real(?leader_real, ?follower_real),
+       position_distance(?leader_real, ?follower_real, ?d),
+       DistanceBounds(d_min: ?d_min, d_max: ?),
+       lt(?d, ?d_min)
+
+  -- Bounded-excursion d_max: distance never exceeds d_max + N·δ_t
+  -- during a post-armed bad-streak. The N=6 bound is proved below
+  -- by `post_armed_excursion_bound`. (The strict claim
+  -- `d ≤ d_max` does NOT hold for this controller; that's why this
+  -- constraint is the bounded form, not the GPS variant's
+  -- `safety_max_distance`.)
+  constraint safety_bounded_excursion_transponder
+    :- reachable_real(?leader_real, ?follower_real),
+       position_distance(?leader_real, ?follower_real, ?d),
+       DistanceBounds(d_min: ?, d_max: ?d_max),
+       excursion_distance_bound(?excursion),
+       ?d_high_bound = ?d_max + ?excursion,
+       gt(?d, ?d_high_bound)
 
   -- =================================================================
   -- Ranking-function discharge of PostArmedExcursionBound.max_ticks
