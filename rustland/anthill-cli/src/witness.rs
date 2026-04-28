@@ -14,8 +14,15 @@
 /// success; the kernel checks them; ProofRecord.witness stores a
 /// reference to the produced witness (typically via content-hashed
 /// payload in the prove cache).
+// ScopeAxiom / Specialization / TrustedAxiom variants are
+// constructed at the Term level in `anthill_core::kb::load` (loader
+// emits them as KB facts directly, bypassing this Rust enum). They
+// remain in the enum so `to_shape` can mirror the full DTO surface
+// for any future serialization path that does originate them in
+// Rust — and so the variant set stays in lockstep with
+// `cache::WitnessShape`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Constructors will be used as α.3+ wires more dispatch paths
+#[allow(dead_code)]
 pub enum ProofWitness {
     /// SMT discharge — the certificate is the SMT-LIB document the
     /// backend ran (referenced by content hash; document lives in
@@ -72,7 +79,6 @@ pub enum ProofWitness {
 
 /// The recorded SMT verdict. Re-checked by replay during `anthill check`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum SmtVerdict {
     Unsat,
     Sat { model_hash: String },
@@ -80,7 +86,9 @@ pub enum SmtVerdict {
 }
 
 /// Substitution entry for `Specialization`. Maps an abstract sort
-/// parameter to a concrete sort.
+/// parameter to a concrete sort. Mirrors `cache::SortBindingDto`-
+/// equivalent field set; constructed at the Term level in the
+/// loader, never via this Rust struct (loaders bypass the enum).
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct SortBinding {

@@ -12,7 +12,7 @@ use anthill_smt_gen::{
     emit_satisfiability_check_with_deps, lift_rule_to_implication_clause, ProofConfig,
 };
 use anthill_smt_gen::cache::{
-    self, blob_subdir, build_key, entry_path, hash_content, lookup, proof_subdir,
+    self, blob_subdir, build_key, hash_content, lookup, proof_subdir,
     resolve_cache_root, state_hash, store_blob, store_entry, store_witness,
     witness_subdir, CacheEntry, KeyInputs, Solver, WitnessSidecar,
 };
@@ -158,8 +158,10 @@ struct NamedArg {
 enum ArgValue {
     String(String),
     Int(i64),
-    #[allow(dead_code)]
-    Float(f64),
+    /// Parsed by `read_named_arg`; not yet consumed by any tactic-arg
+    /// reader. Retained so float-valued args round-trip through the
+    /// IR even though no current tactic looks at them.
+    Float(#[allow(dead_code)] f64),
     Bool(bool),
     /// Non-primitive term value — preserved as a TermId so callers can
     /// re-walk it (e.g. tactic-term values for `tactic:` named args).
@@ -422,14 +424,13 @@ enum Verdict {
 /// Outcome of an SMT-discharge subquery: verdict for user-facing
 /// reporting + an optional `ProofWitness` for the kernel registry
 /// (proposal 030 phase α.3) + the visited-rule set the discharge
-/// consulted (phase α.4 — used to compute the per-ProofRecord state
-/// hash). The witness is populated when the backend produced a real
+/// consulted (phase α.4 — drives the per-ProofRecord state hash).
+/// The witness is populated when the backend produced a real
 /// verdict (Proved / Disproved / Unknown); it's `None` for Skipped
 /// (dry-run, solver missing) and EmitError outcomes. `visited_rules`
 /// is populated whenever a discharge actually walked KB content —
 /// empty for early-exit verdicts where no kb-state slice was
 /// consulted.
-#[allow(dead_code)] // witness/state_hash consumed in α.5; kept now for plumbing
 struct DispatchOutcome {
     verdict: Verdict,
     witness: Option<ProofWitness>,
@@ -1460,11 +1461,6 @@ fn walk_cache_entries(subdir: &std::path::Path) -> Vec<CacheEntry> {
     }
     recurse(subdir, &mut out);
     out
-}
-
-#[allow(dead_code)]
-fn _cache_modules_in_use() {
-    let _ = (cache::CACHE_FORMAT_VERSION, entry_path);
 }
 
 fn sanitize_filename(s: &str) -> String {

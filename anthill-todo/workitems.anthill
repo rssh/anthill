@@ -942,3 +942,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T14:40:27Z"))
 
+fact WorkItem(
+  id: "WI-134",
+  description: "Proposal 030 phase ε.1 — cleanup: remove dead code paths from pre-γ using mechanism. After γ.1+γ.2 made cite-resolution gated on Discharged status, the old warn-and-proceed paths in render_cited_lemmas and any related call sites are unreachable. Sweep for: (a) eprintln! warnings about un-discharged cites that are now hard errors instead; (b) any 'inline body propagation' fallback that bypassed the registry; (c) unused #[allow(dead_code)] markers on phase α stubs that are now consumed; (d) prove driver paths that constructed witnesses but discarded them (replaced by witness persistence in WI-124). Acceptance: cargo-test still passes; lf1 prove + check unchanged; cargo build emits no new warnings.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T15:01:43Z"))
+

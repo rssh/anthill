@@ -26,13 +26,11 @@ use anthill_smt_gen::cache::{
 use anthill_smt_gen::outcome::parse_z3_output;
 
 /// One check report per ProofRecord.
-#[allow(dead_code)] // fields surfaced by the CLI summary
 pub struct CheckOutcome {
     pub rule_qn: String,
     pub status: CheckStatus,
 }
 
-#[allow(dead_code)] // variants surfaced by the CLI summary; phase β extends
 pub enum CheckStatus {
     /// Witness verified successfully.
     Pass,

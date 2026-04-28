@@ -178,9 +178,13 @@ pub fn emit_satisfiability_check_with_deps(
 /// re-emitted here — the consumer's preamble already declares them
 /// since the consumer chases the same facts.
 ///
-/// Caller is responsible for ensuring the cited rule has actually
-/// been *proved* (via `cargo run anthill prove`); this function only
-/// emits the lifted statement, not the certification.
+/// **Caller-side discharge gate (proposal 030 phase γ.1):** this
+/// function only emits the lifted statement; the caller MUST first
+/// confirm the cited rule's ProofRecord is Discharged (or that
+/// it's a kernel-derived ScopeAxiom / Specialization). The prove
+/// driver's `cite_status` does this gate before invoking the lift;
+/// direct callers from new code must enforce the same contract or
+/// they reintroduce silent-axiom-acceptance.
 pub fn lift_rule_to_implication_clause(
     kb: &KnowledgeBase,
     rule_qn: &str,
