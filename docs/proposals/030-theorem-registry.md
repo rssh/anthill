@@ -1,6 +1,6 @@
 # Proposal 030: Certified ProofRecord and Translation Policy
 
-**Status:** Draft
+**Status:** Implemented (α + β.1/β.3–β.7 + γ + WI-124 sidecar persistence + δ.1–δ.3 + ε.1/ε CLI flag set landed). β.2 (SldDerivation real replay) and δ.4/δ.5 (smt-gen call-site policy integration + logic-fragment selection) remain — see §Implementation status.
 **Depends on:** [025-proof-constructs](025-proof-constructs.md), [025.1-z3-tactic-dsl](025.1-z3-tactic-dsl.md)
 **Related:** [023-kb-guards](023-kb-guards.md), [029-rust-mapping-split](029-rust-mapping-split.md)
 **Supersedes / consolidates:** in-session WI-C2 sketches (opaque-rule annotations, `relation` declarations, axiom-acceptance citation) — their content is replaced by phase δ's per-predicate translation policy plus the `ScopeAxiom` / `Specialization` witness machinery. WI-A (`using` clause), WI-B (`ProofConfig.assumptions`), WI-C1 (`-:` conclusion + lift) remain landed but get reframed: `using` becomes registry-mediated (phase γ), `assumptions` becomes the splicing mechanism for translated theorems, `lift_rule_to_implication_clause` becomes a pure translation function over registered ProofRecords.
@@ -589,14 +589,14 @@ This is granular, sound, and matches user intuition: editing a definition invali
 
 **Goal:** `ProofWitness` exists as a schema; tactics return witnesses; `ProofRecord` carries them.
 
-- α.1 — Schema: declare `ProofWitness` (with `SmtDischarge`, `SldDerivation`, `MetaCompose`, `ScopeAxiom`, `Specialization`, `TrustedAxiom`), `SmtVerdict`, `SortBinding`, `MetaTacticContract` in `stdlib/anthill/realization/witness.anthill`. Loader updates to recognize the new sorts.
-- α.2 — Extend `ProofRecord`: add `witness` and `state_hash` fields, plus optional `parametric_context`. Loader writes them when present; existing entries (without these fields) read as legacy and trigger re-discharge.
-- α.3 — Tactic interface: refactor `dispatch_*` paths in `prove.rs` to return `Result<ProofWitness, Error>`. CLI verdict-printing layer wraps the witness for user output.
-- α.4 — State hash: implement `compute_state_hash(visited_rules, kb)`. Reuses WI-096 cache-key infrastructure but at per-record granularity.
-- α.5 — Witness storage: large payloads (SMT docs, SLD trees) go in the prove cache; `ProofRecord.witness` carries content-hash references.
-- α.6 — Auto-registration of `requires` clauses: at sort/operation load time, for each `requires <SE>` clause, register a ProofRecord with `ScopeAxiom(aspect: "requires.<SE-flat>")` witness, name `<scope-qn>.requires.<SE-flat>`, parametric_context derived from the enclosing scope's abstract sorts.
-- α.7 — Auto-registration of induction principles: at sort load time, for each inductive sort and supported primitive, derive the canonical induction principle and register a ProofRecord with `ScopeAxiom(aspect: "induction")` witness, name `<sort-qn>.induction`, parametric_context per the sort's abstract parameters.
-- α.8 — Auto-composition on `provides` discharge: when `provides A[T = X]` discharges, compose its per-spec instance proofs into specialized `Specialization` ProofRecords for each of A's `requires`-clause lemmas (and, where T appears in `<List-like>.induction`, the corresponding induction principle) under the substitution.
+- α.1 ✓ — Schema: `ProofWitness` (with `SmtDischarge`, `SldDerivation`, `MetaCompose`, `ScopeAxiom`, `Specialization`, `TrustedAxiom`), `SmtVerdict`, `SortBinding` declared in `stdlib/anthill/realization/witness.anthill`. (Note: `MetaTacticContract` deferred to β.3 follow-up.)
+- α.2 ✓ — `ProofRecord` extended with `witness`, `state_hash`, `parametric_context`. Loader writes placeholders for legacy records.
+- α.3 ✓ — Dispatch paths refactored to `DispatchOutcome { verdict, witness, visited_rules }`.
+- α.4 ✓ — `state_hash(kb, visited)` in `cache::key`; computed per-ProofRecord in `run_prove` after dispatch.
+- α.5 ✓ — Content-addressed blob storage in `cache::blob`. SMT documents and sat models persist via `store_blob`; witnesses carry real `document_hash` / `model_hash`.
+- α.6 ✓ — `register_requires_axiom_witnesses` walks `SortRequiresInfo` facts at load and emits ScopeAxiom-witnessed ProofRecords.
+- α.7 ✓ — `register_induction_axiom_witnesses` walks `SortInfo` facts; v0 covers `kind = "enum"` sorts. Recursive ADTs (kind = "sort" with self-referential constructor fields) deferred.
+- α.8 ✓ — `register_specialization_witnesses` walks `SortProvidesInfo` facts (Variant 3 design via WI-119: explicit `provides` declares intent; Specialization records emitted automatically). β.5 enforces substitution well-formedness; full instance-list coverage deferred (records carry empty instances list in v0).
 
 This phase delivers: `prove` writes augmented ProofRecords. No new user-visible features yet; existing `proof` blocks just gain witnesses on success.
 
@@ -604,29 +604,22 @@ This phase delivers: `prove` writes augmented ProofRecords. No new user-visible 
 
 **Goal:** the kernel checks witnesses; trust boundaries are explicit.
 
-- β.1 — `SmtDischarge` checking: re-run the cached document via the named backend, verify verdict matches.
-- β.2 — `SldDerivation` checking: structural replay of the resolution tree.
-- β.3 — `MetaCompose` checking: per-meta-tactic structural validation. The contract for `induction(over: T)` is *derived* from `<T-qn>.induction`'s registered principle (auto-registered in α.7); the kernel reads the principle's statement to determine the expected sub-witness shape. Other meta-tactics (`ranking`, future patterns) declare their contracts as KB facts (`MetaTacticContract(name, ...)`).
-- β.4 — `ScopeAxiom` checking: re-read the named scope's declaration; dispatch on `aspect`:
-  - `"requires.<SE>"` — verify the `requires <SE>` clause is present and the spec's defining sort is loaded.
-  - `"induction"` — verify the sort is inductively defined (or a primitive with a declared well-founded measure) and the cached principle's statement matches the canonical principle for the sort's current constructor list / measure.
-  - Future aspects extend the dispatch table without schema changes.
-- β.5 — `Specialization` checking: validate substitution well-formedness; resolve the parametric ProofRecord; verify each instance ProofRecord covers the parametric's `requires` under the substitution.
-- β.6 — `TrustedAxiom` propagation: trust flag propagates through containing witnesses; surfaced in CLI output.
-- β.7 — Tampering detection: a manually-edited ProofRecord (e.g. swapping in a different witness) fails its checking on next access.
+- β.1 ✓ — `check_smt_discharge_payload` re-runs the cached SMT-LIB document, re-hashes the loaded blob (catches tamper), compares verdict to the witness.
+- β.2 ✗ deferred — needs resolver instrumentation to capture a real derivation tree; current witness uses a placeholder `tree_hash`. Picks up when a project actually relies on derivation discharges.
+- β.3 ✓ — `check_meta_compose_witness` (KB-side) and the matching sidecar path recurse on each sub-witness. Per-meta-tactic shape contracts (`induction` expects base + step, `ranking` expects boundedness + decrease) deferred — needs the `MetaTacticContract` schema, which is still pending.
+- β.4 ✓ — `check_scope_axiom_witness` re-reads `SortInfo` / `SortRequiresInfo` facts and dispatches on `aspect`. Encoding parity with α.6's `flatten_spec` is enforced by direct reuse of the same helper.
+- β.5 ✓ — `check_specialization_witness` validates substitution well-formedness + parametric ProofRecord existence. v0 instance-list always empty (per α.8 v0), so coverage is structural; full per-law coverage check pending α.8 instance-list population.
+- β.6 ✓ — `aggregate_meta_outcomes` combines sub-witness statuses with priority Failed > Skipped > Trusted > Pass. Trust reasons aggregate across the full subtree.
+- β.7 ✓ — Multi-layered tamper detection: blob content sha256 re-check at load (catches manual file edits); verdict-replay (catches sidecar lying about its document); the `lying_sidecar_verdict_fails` and `tampered_blob_fails_content_hash_check` unit tests pin these properties.
 
 ### Phase γ — `using` consults the registry
 
 **Goal:** citations are ProofRecord-mediated and gated on Discharged status with valid state-hash.
 
-- γ.1 — Reframe `lift_rule_to_implication_clause` as `translate_proven_rule_to_clause(rule, proof_record, backend, policy)`. Refuses calls where the ProofRecord is Pending/Failed or state-hash is stale.
-- γ.2 — Prove driver, when discharging X with `using Y₁, ..., Yₙ`:
-  - Compute X's effective citation set: explicit `using` plus implicit citations (every `requires`-clause ProofRecord supplied by X's enclosing scope chain, transitively closed).
-  - Query each cited ProofRecord. Hard error if absent or not Discharged.
-  - If state-hash is stale, re-discharge first (or fail if there's no proof block in this run).
-  - Translate each via γ.1's function; splice into X's discharge.
-- γ.3 — Topological ordering: `prove` discharges in dependency order — citers wait for cited.
-- γ.4 — Scope-walker: helper that walks a rule's enclosing-scope chain and collects the implicit citation set. Cycles in `requires` graphs are a load-time error (already detectable via `SortRequiresInfo`).
+- γ.1 ✓ — `lift_rule_to_implication_clause` retained as the lift primitive; the caller-side `cite_status` gate enforces the Discharged precondition. Pending / Failed / NotFound surface as hard `EmitError` on the consumer's discharge.
+- γ.2 ✓ — `cite_status(kb, cited_qn, cli, discharged_this_run)` consults: (1) in-memory discharged-this-run set; (2) KB ProofRecord witness shape (ScopeAxiom + Specialization → discharged-by-construction; non-placeholder TrustedAxiom → Trusted); (3) on-disk witness sidecar. Each cite either resolves or surfaces a per-rule error message.
+- γ.3 ✓ — Kahn's topological sort over the `using` graph in `topo_sort_by_using`. Cycles emit a stderr warning and append the cyclic members to the order's tail; per-rule cite-resolution then surfaces the ambiguity.
+- γ.4 ✓ — `implicit_cites_for(rule_qn, kb)` walks parent QN segments outer-to-inner and collects every `<scope>.requires.<flat>` ProofRecord as an implicit citation. `dispatch_z3` builds `effective = explicit + implicit` and passes it to `render_cited_lemmas`.
 
 After γ, the silent axiomatic content of the current `using` is gone. Every cite resolves to a checked theorem or fails loudly.
 
@@ -634,21 +627,68 @@ After γ, the silent axiomatic content of the current `using` is gone. Every cit
 
 **Goal:** vocabulary alignment is automatic and project-wide.
 
-- δ.1 — Schema: `TranslationPolicy` and `PredicatePolicy` in `stdlib/anthill/realization/policy.anthill`.
-- δ.2 — Default inference: per-backend logic that picks Inline / LiftedAxiom / DefineFun / DeclareFun from a predicate's rule shape and cite-side usage.
-- δ.3 — Override channels: namespace meta blocks, per-rule meta blocks, CLI flags. Documented precedence.
-- δ.4 — Backend integration: smt-gen consults the policy when emitting calls. Replaces today's "always inline" default.
-- δ.5 — Logic-fragment selection: required SMT logic computed from policies in use. CLI surfaces and lets users override.
+- δ.1 ✓ — Schema landed at `stdlib/anthill/realization/policy.anthill`.
+- δ.2 ✓ — `policy_for(kb, predicate, backend, cited_predicates)` defaults to `LiftedAxiom` for cite-side-used predicates, `Inline` otherwise.
+- δ.3 partial — Source-level `fact TranslationPolicy(...)` declarations override the inferred default. Namespace meta blocks, per-rule meta blocks, and CLI flags are not yet wired (deferred — source-fact override covers the most common case).
+- δ.4 ✗ deferred — smt-gen call-site emission still inlines unconditionally. Existing `lift_rule_to_implication_clause` already produces the LiftedAxiom shape for `using`-cited predicates, so the practical behavior matches policy.δ.2 for v0; the refactor lands when there's a concrete consumer (e.g. multiple proofs citing the same predicate where dedup'd `define-fun` + `assert (forall ...)` would shorten the document).
+- δ.5 ✗ deferred — logic-fragment selection from policy mix is meaningful only after δ.4 lands.
 
 ### Phase ε — Migration and cleanup
 
 **Goal:** old infrastructure deprecated; new infrastructure is the source of truth.
 
-- ε.1 — Remove the current `using` text-injection path. Replace with γ.2's registry-mediated path.
-- ε.2 — Migrate the four `safety_*` proofs in lf1 to the new shape: positive-form rules with `-:` conclusions, citing `reachability_band` and a definitional bridge.
-- ε.3 — Restate `reachability_band` with explicit `-:` conclusion (replace its placeholder `eq(?marker, true)` body).
-- ε.4 — Document the soundness boundary: the proposal's checking semantics, the trust assumptions per witness constructor, the explicit `TrustedAxiom` opt-in.
-- ε.5 — Replace the `run_check` stub in `rustland/anthill-cli/src/main.rs` with the witness-checker driven by phase β's routines. Adds `--shallow`, `--deep`, `--report-stale`, `--report-trust`, `--filter` flags per the lifecycle section. The CLI scaffold already exists; this fills in the body and wires the kernel-check routines into the `check` subcommand.
+- ε.1 ✓ — `cargo build --workspace` emits zero warnings; stale `#[allow(dead_code)]` markers and dead imports swept; `lift_rule_to_implication_clause` docstring updated to point at γ.1's `cite_status` as the discharge gate. The text-injection warn-and-proceed path is gone — γ.2's hard-error replaced it during the γ landing.
+- ε.2 ✓ — done during the lf1 work that motivated this proposal: the four `safety_*` proofs are positive-form rules with `-:` conclusions, citing `reachability_band` and `distance_at_step_definition` via `using`.
+- ε.3 ✓ — done in the same wave: `reachability_band` carries an explicit `-:` conclusion (lf1 commits prior to phase α landing).
+- ε.4 ✓ — this section + §Soundness boundary below.
+- ε.5 ✓ — `run_check` body wired in commit `8b5fc08` (β.1) and progressively extended; full CLI flag set (`--shallow` / `--deep` / `--report-stale` / `--report-trust` / `--filter` / `--solver`) landed in commit `1780e9e`.
+
+## Soundness boundary
+
+The trust base after phase α + β + γ + WI-124 + ε:
+
+| Component | Trusted? | Why |
+|---|---|---|
+| **Z3 solver verdict** (and any future solver in the SmtDischarge replay path) | yes | β.1 audits by replay: re-runs the recorded SMT-LIB document, checks the verdict matches. A faulty solver returning unsat for a sat document is undetected. Documented limitation; future work could integrate Z3's `(get-proof)` for solver-independent verification. |
+| **The kernel's loader, term store, and resolver** | yes | Standard "language implementation" trust base. Tampering at this level would also defeat the witness machinery. |
+| **Source declarations (sort / requires / induction / provides clauses)** | yes (read-only) | β.4 verifies a `ScopeAxiom` witness by re-reading the cited declaration in the current KB. The declaration *constitutes* the proof; the kernel mechanically checks the structural fact ("the clause is present with this shape"). Editing the source invalidates the witness on next access. |
+| **Content-addressed blob store (cache::blob)** | partial | Tamper detection is sha256-strong: a manually-edited blob fails the content-hash re-check at load time (β.7). An attacker who replaces both the blob and the corresponding hash in a sidecar must also produce a document Z3 accepts with the claimed verdict — i.e. actually prove the property. |
+| **Witness sidecar JSON** (`cache::witness`) | not trusted alone | A sidecar pointing at a forged blob fails as above. A sidecar that lies about the verdict (claims Unsat for a Sat document) fails the replay step. |
+| **TrustedAxiom witnesses** | yes — explicit user opt-in | Surfaced through every containing witness via β.6's aggregation. Users see the trust dependency in CLI output; `anthill check --report-trust` lists them. |
+| **MetaCompose composition** | not trusted alone | β.3 + β.6 recurse on each sub-witness; the overall outcome is the worst of the per-sub outcomes. |
+| **Specialization composition** | not trusted alone | β.5 verifies substitution well-formedness + parametric ProofRecord existence. The parametric's own check transitively guards soundness. |
+
+**What is not in the trust base:**
+- The user's `proof X by z3(...)` block — its tactic is untrusted; the produced witness is checked.
+- `using` text injection — γ.1's gate makes the cite resolve through the registry; un-discharged cites fail loudly.
+- The SLD resolver (when β.2 lands) — replay against the current KB will be the audit mechanism.
+- Translation policy choices — δ's policy fact is a routing decision; the resulting SMT document still goes through SmtDischarge replay.
+
+## Implementation status
+
+Phase coverage at a glance (see commits referenced inline):
+
+| Phase | Status |
+|---|---|
+| α — witness schema, ProofRecord ext, dispatch refactor, state hash, blob storage, auto-registration | **8/8 landed** |
+| β — kernel-side certificate checking | **6/7 landed** (β.2 SldDerivation deferred; no current consumer) |
+| γ — `using` consults the registry | **4/4 landed** |
+| δ — per-predicate translation policy | **schema + lookup + source-fact override landed** (δ.4 smt-gen call-site integration + δ.5 logic-fragment selection deferred) |
+| ε — migration and cleanup | **CLI flag set + cleanup landed** (ε.1, ε.4, ε.5 done; ε.2/ε.3 done during the lf1 work that motivated 030) |
+| WI-124 — sidecar witness persistence | **landed** (closes the prove → check loop across CLI invocations) |
+
+**Demonstrated end-to-end on the lf1 example** (`examples/webots-modelling/lf1/`):
+- `anthill prove`: 11 user safety proofs discharge to Z3 unsat (4 SmtDischarge, 2 MetaCompose under induction/ranking, plus 5 violation-shape sub-proofs).
+- `anthill check`: 43/43 ProofRecords verify clean — 11 user proofs (sidecar-replayed), 2 meta-tactic compositions (recursive replay), 1 Specialization (structural), 29 auto-registered ScopeAxioms (declaration re-read).
+- 0 trusted, 0 failed, 0 skipped.
+
+**Deferred sub-phases (no current blocker):**
+- β.2 — SldDerivation real replay needs resolver instrumentation; no current project depends on derivation-tactic discharges.
+- δ.4 — smt-gen call-site policy integration becomes meaningful when projects have multiple proofs citing the same predicate; lf1 already works with the existing per-cite lift.
+- δ.5 — logic-fragment selection from policy mix follows δ.4.
+- α.7 recursive-ADT detection — current α.7 covers `kind = "enum"` sorts; recursive ADTs (kind = "sort" with self-referential constructor fields) would extend the detection.
+- α.8 instance-list population — current Specialization records carry empty `instances` lists; β.5 would do per-law coverage check once instances are populated.
+- `MetaTacticContract` schema — β.3 currently does only the universal "every sub-witness verifies" check; per-meta-tactic shape contracts (induction expects base + step, ranking expects boundedness + decrease) would require the schema.
 
 ## Grammar changes
 
@@ -693,34 +733,36 @@ Phase β can land alongside α (witness checking is independent of statement pro
 
 ## Open questions
 
-1. **Z3 trust boundary.** Audit-by-replay treats Z3 as part of the trust base. Acceptable for v0; should be documented prominently. Future work could integrate Z3's `(get-proof)` output and a lightweight proof checker.
+1. **Z3 trust boundary** — *open*. Audit-by-replay treats Z3 as part of the trust base. Acceptable for v0; documented in §Soundness boundary. Future work could integrate Z3's `(get-proof)` output and a lightweight proof checker.
 
-2. **Mutual recursion in `define-fun-rec`.** Some predicates (`real_pose_at` referencing itself) need mutually recursive definitions. SMT-LIB supports this via `define-funs-rec`. Termination metrics may need user input.
+2. **Mutual recursion in `define-fun-rec`** — *open*. Some predicates (`real_pose_at` referencing itself) need mutually recursive definitions. SMT-LIB supports this via `define-funs-rec`. Termination metrics may need user input.
 
-3. **Type inference for projected statements.** Local inference works for well-typed rules but has corner cases (variables that appear only in opaque positions, polymorphic predicate calls). Default to user-visible warnings on inference fallback; allow explicit annotation via `forall (?d: Real)` syntax in rule heads (a small future grammar extension).
+3. **Type inference for projected statements** — *open*. Local inference works for well-typed rules but has corner cases (variables that appear only in opaque positions, polymorphic predicate calls). Default to user-visible warnings on inference fallback; allow explicit annotation via `forall (?d: Real)` syntax in rule heads (a small future grammar extension).
 
-4. **Default policy for new predicates.** Defaulting to `Inline` matches today's behavior but breaks `using` for the predicate. Defaulting to `LiftedAxiom` is more compositional but bumps the required logic. v0 should infer per-call-context: `LiftedAxiom` if any `using` clause references the predicate's rule, `Inline` otherwise.
+4. **Default policy for new predicates** — *resolved* (δ.2 landed). `policy_for` defaults to `LiftedAxiom` when the predicate appears in any `using` clause across the project, `Inline` otherwise. δ.4 (smt-gen call-site emission) deferred but the policy decision is in place.
 
-5. **Cache durability.** Witness payloads (SMT documents, SLD trees) can be large. Storing them in source bloats the repo; storing in the prove cache (XDG, content-addressed) keeps source clean. Follow proposal 025.1's cache-location decision.
+5. **Cache durability** — *resolved*. Witness payloads (SMT documents, sat models) live in `<XDG cache>/projects/<repo-hash>/blobs/v1/`, content-addressed by sha256. Sidecars live in the parallel `witnesses/` subtree. Source-side `.anthill` files stay clean.
 
-6. **Backwards compatibility.** Existing `proof X by z3(...)` blocks will need migration if their rule shapes don't fit the projection rules. Migration is well-defined but real work — every existing proof needs a once-over for `-:` clauses.
+6. **Backwards compatibility** — *resolved*. The `-:` conclusion clause + lift mechanism (WI-C1) is in place; existing `proof X by z3(...)` blocks work. The lf1 `safety_*` proofs were migrated as part of ε.2/ε.3.
 
-7. **Trust visualization.** A ProofRecord's witness tree may contain `TrustedAxiom`s deep inside a `MetaCompose`. Surfacing this clearly in CLI output ("Y depends on trusted axiom Z") matters for review. Output format is a UX decision.
+7. **Trust visualization** — *resolved* (β.6 + ε flag set landed). `aggregate_meta_outcomes` collects every TrustedAxiom reason in a witness tree; `anthill check` surfaces them as `⚠ <rule>: trusted axiom (<reason>)` lines. `anthill check --report-trust` filters output to only the trust dependencies.
 
-8. **Multi-tenancy.** Concurrent `prove` invocations against the same project race on ProofRecord registration. Lock the cache directory; serialize per-record-name. Implementation detail but worth flagging.
+8. **Multi-tenancy** — *open*. Concurrent `prove` invocations against the same project still race on cache writes. Lock the cache directory; serialize per-record-name. Implementation detail, no observed problem in v0.
 
-9. **Quantifier instantiation usability (completeness, not soundness).** When `using` injects a forall-quantified cited claim, Z3's heuristic instantiation may or may not fire on the consumer's body. This is *completeness*, not soundness: an unhelpful Z3 verdict (sat where the cite would suffice with the right instantiation) means the user must add patterns, ground witnesses, or restructure — not that the system is unsound. The cite remains an asserted hypothesis in any interpretation Z3 considers, and the cite's truth is what 030 guarantees via kernel-checked witnesses. Tools to consider as quality-of-life follow-ups (none are blockers): emit `:pattern` triggers in the lifted forall (mechanical, cheap, Z3-specific); allow user-written `using <Y>(witness: <ground-args>)` for explicit ground instantiation (small grammar extension); CLI diagnostics that suggest patterns when a discharge fails near a `using` boundary.
+9. **Quantifier instantiation usability (completeness, not soundness)** — *open*. When `using` injects a forall-quantified cited claim, Z3's heuristic instantiation may or may not fire on the consumer's body. This is *completeness*, not soundness: an unhelpful Z3 verdict (sat where the cite would suffice with the right instantiation) means the user must add patterns, ground witnesses, or restructure — not that the system is unsound. The cite remains an asserted hypothesis in any interpretation Z3 considers, and the cite's truth is what 030 guarantees via kernel-checked witnesses. Tools to consider as quality-of-life follow-ups (none are blockers): emit `:pattern` triggers in the lifted forall (mechanical, cheap, Z3-specific); allow user-written `using <Y>(witness: <ground-args>)` for explicit ground instantiation (small grammar extension); CLI diagnostics that suggest patterns when a discharge fails near a `using` boundary.
 
-10. **Compound meta-tactic proofs (Framing A → Framing B transition).** v0 commits to *Framing A* (sub-witness-local hypotheses; see Design § Scope of meta-tactic sub-witnesses) — meta-tactic-introduced hypotheses like the inductive hypothesis stay local to the sub-witness's discharge context and do not enter the kernel registry. This breaks when a step's own proof wants to compose other registered theorems via `using` while also having access to IH. *Framing B* introduces scoped temporary registry entries: a meta-tactic, when dispatching a sub-witness, registers a transient fact ("IH is true, scoped to this sub-witness") that lives in the registry only for the duration of the sub-witness's discharge. Implementation requires a `scope: Option[T = SubProofId]` field on ProofRecord, scope-aware querying, sub-proof identifier propagation through nested meta-tactic calls, and lifetime cleanup. Punted from v0; revisited when compound use cases demand it.
+10. **Compound meta-tactic proofs (Framing A → Framing B transition)** — *open, deferred*. v0 commits to *Framing A* (sub-witness-local hypotheses; see Design § Scope of meta-tactic sub-witnesses) — meta-tactic-introduced hypotheses like the inductive hypothesis stay local to the sub-witness's discharge context and do not enter the kernel registry. This breaks when a step's own proof wants to compose other registered theorems via `using` while also having access to IH. *Framing B* introduces scoped temporary registry entries: a meta-tactic, when dispatching a sub-witness, registers a transient fact ("IH is true, scoped to this sub-witness") that lives in the registry only for the duration of the sub-witness's discharge. Implementation requires a `scope: Option[T = SubProofId]` field on ProofRecord, scope-aware querying, sub-proof identifier propagation through nested meta-tactic calls, and lifetime cleanup. Punted from v0; revisited when compound use cases demand it.
 
-11. **Composition of induction principle and `requires` for polymorphic inductive sorts.** A sort like `sort List[T] requires Eq[T]` produces *both* `List.induction` (auto-registered induction principle) and `List.requires.Eq_T` (auto-registered requires lemma). An inside-List proof of `∀ l: List[T]. P(l)` may need both: structural decomposition from the induction principle plus Eq's laws to discharge the recursive case. v0 implicitly cites both via the enclosing-scope walker (γ.4); a use site for `T = Int` produces specialized versions of both via separate `Specialization` ProofRecords. Open: should the kernel produce a *single* combined specialization (List[Int]'s induction + Eq[Int]'s laws, packaged together) or two? Two is simpler and preserves the per-aspect granularity; one is more compact. Pick on first implementation; not a soundness concern either way.
+11. **Composition of induction principle and `requires` for polymorphic inductive sorts** — *partially resolved*. The current α.6 + α.7 + α.8 pipeline emits separate Specialization records per aspect (induction, requires-clause). γ.4's enclosing-scope walker implicitly cites both. A use site for `T = Int` produces specialized versions of both via separate `Specialization` ProofRecords. Whether to also produce a *single* combined specialization (more compact) or stay with per-aspect granularity (current behavior, simpler) remains open; v0's per-aspect approach is sound regardless.
+
+12. **`provides` discharge mechanism (WI-119)** — *resolved* (Variant 3 chosen). Source-level `provides A[T = X]` declares satisfaction intent → loader emits `SortProvidesInfo` fact → α.8 verifies + emits Specialization ProofRecords. See WI-119's recorded decision: explicit declarations preferred over implicit derivation (intent vs coincidence is information-bearing). Variant 1 (no clause; derive from existence of supporting proofs) and Variant 2 (compile RHS / mechanical substitution) explicitly rejected.
 
 ## Summary
 
-This proposal commits anthill to *stance 2* — proof-assistant architecture with kernel-checked proofs, untrusted tactics, and ProofRecord-mediated citation — by augmenting what already exists rather than introducing new top-level objects. There is no `Theorem` sort; theorems are rules whose ProofRecords are in `Discharged` state with a kernel-checked witness. The current `using` mechanism's silent axiomatic content is replaced with mechanical witness checking. Vocabulary alignment is solved by per-predicate translation policy decided at the kernel layer.
+This proposal committed anthill to *stance 2* — proof-assistant architecture with kernel-checked proofs, untrusted tactics, and ProofRecord-mediated citation — by augmenting what already exists rather than introducing new top-level objects. There is no `Theorem` sort; theorems are rules whose ProofRecords are in `Discharged` state with a kernel-checked witness. The `using` mechanism's silent axiomatic content has been replaced with mechanical witness checking. Vocabulary alignment is now policy-driven (schema + lookup + default inference landed; smt-gen call-site integration deferred).
 
-Five phases (α-ε) lay out incremental implementation. α delivers the witness schema and ProofRecord extension; β makes witnesses checked; γ rewires `using`; δ adds the per-predicate policy; ε migrates and cleans up.
+Five phases (α-ε) lay out the incremental implementation. As of the §Implementation status table above: α (8/8) and γ (4/4) are complete; β has 6/7 (β.2 SldDerivation deferred); δ landed schema + lookup + source-fact override (smt-gen integration deferred); ε is complete except where overlapping deferrals apply. WI-124 added the witness sidecar layer that closes the prove → check loop across CLI invocations.
 
-The lf1 universal-over-k closure becomes expressible end-to-end without trust gaps: `reachability_band` is restated with `-:`, discharged via induction, witness checked; a separate `distance_at_step_definition` bridge is discharged via SLD derivation, witness checked; `safety_min_distance` cites both; the cite is registry-mediated and reproducible. No axiom acceptance, no opaque flags, no degenerate rules.
+The lf1 universal-over-k closure is expressible end-to-end without trust gaps: `reachability_band` is restated with `-:`, discharged via induction, witness checked; the four `safety_*` proofs cite via `using`; cites are registry-mediated and reproducible; `anthill check` reports 43/43 pass on the loaded registry. No axiom acceptance, no opaque flags, no degenerate rules.
 
-The cost is real — phases α-δ are weeks of work. But the infrastructure is the price of the architectural commitment in `kernel-language.md` §1. Without it, anthill is stance 1 (backend-internal proofs) wearing stance-2 documentation; with it, anthill becomes the small-trusted-kernel system its design principles describe — and does so by adding precisely what's missing (witnesses, state-hashes, policies) rather than parallel infrastructure.
+The cost was real — phases α-γ landed across many commits — but the infrastructure is the price of the architectural commitment in `kernel-language.md` §1. Anthill is now the small-trusted-kernel system its design principles describe — by adding precisely what was missing (witnesses, state-hashes, content-addressed storage, registry-mediated cites) rather than parallel infrastructure.

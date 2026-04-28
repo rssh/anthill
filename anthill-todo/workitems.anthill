@@ -949,3 +949,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T15:01:43Z"))
 
+fact WorkItem(
+  id: "WI-135",
+  description: "Proposal 030 phase ε.4 — soundness boundary + implementation-status documentation. Update docs/proposals/030-theorem-registry.md with: (a) §Implementation status — landed sub-phases with commit refs, deferred items; (b) §Soundness boundary — explicit list of trust base components (Z3 for SmtDischarge replay; kernel re-reading source for ScopeAxiom; structural composition check for Specialization; user-asserted trust for TrustedAxiom); (c) update §Open questions to mark Variant 3 (WI-119) resolved for provides; (d) brief lifecycle note that prove writes sidecars, check reads them. Acceptance: docs review only — no code changes.",
+  acceptance: [ToolPasses("review")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T15:21:10Z"))
+
