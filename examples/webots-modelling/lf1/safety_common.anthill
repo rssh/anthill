@@ -212,7 +212,7 @@ namespace anthill.examples.lf1.safety.common
                             follower_speed_max:  ?_,
                             control_period:      ?tc,
                             sensor_period:       ?_),
-       ?k_next  = add(?k, 1),
+       ?k_next  = ?k + 1,
        ?nx      = ?pose_prev.position.x + ?vx * ?tc,
        ?ny      = ?pose_prev.position.y + ?vy * ?tc,
        ?nz      = ?pose_prev.position.z + ?vz * ?tc,
@@ -251,9 +251,9 @@ namespace anthill.examples.lf1.safety.common
   -- it empirically per flight.
   rule StepDistanceAxiom
     :- distance_at_step(?k, ?d_curr),
-       ?k_next = add(?k, 1),
+       ?k_next = ?k + 1,
        distance_at_step(?k_next, ?d_next),
-       ?diff = sub(?d_next, ?d_curr),
+       ?diff = ?d_next - ?d_curr,
        lte(abs(?diff), ?delta_bound)
        -- where ?delta_bound is `step_distance_bound` from the
        -- variant-specific safety file (gps / transponder).

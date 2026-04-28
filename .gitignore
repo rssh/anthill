@@ -33,3 +33,6 @@ examples/webots-modelling/lf1/sc2/
 
 # Claude
 .claude/
+*.swp
+.*.swp
+.*.swo
