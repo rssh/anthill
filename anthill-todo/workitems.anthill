@@ -921,3 +921,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T14:18:22Z"))
 
+fact WorkItem(
+  id: "WI-131",
+  description: "Proposal 030 phase γ.4 — implicit citations from enclosing scope. Per phase γ.4 of docs/proposals/030-theorem-registry.md: a rule inside scope S automatically cites S's requires-clause ProofRecords (auto-registered by α.6) without the user having to write 'using' explicitly. Implementation: implicit_cites_for(rule_qn, kb) walks parent QN segments — for rule a.b.c.rule_name, treat a.b.c, a.b, a as scope QNs and collect any ProofRecord whose rule name starts with '<scope>.requires.' as an implicit cite. dispatch_z3 builds effective_using = explicit + implicit and passes to render_cited_lemmas. Acceptance: cargo-test passes; new test verifies a proof inside a sort with requires Eq[T] doesn't need to write 'using' to access Eq_T's auto-registered ScopeAxiom record.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T14:21:35Z"))
+

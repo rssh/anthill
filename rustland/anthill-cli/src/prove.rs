@@ -554,10 +554,22 @@ fn dispatch_z3(
     // ProofConfig (no tactic, no outcome flags) — we only need the
     // body assertions, not the discharge envelope. The cited rule's
     // own body assertions become AND-ed conjuncts.
-    match render_cited_lemmas(kb, using, rule_qn, cli, discharged_this_run) {
+    // Phase γ.4: combine the user-stated `using` list with implicit
+    // citations from the rule's enclosing scope chain. Each parent
+    // scope contributes its auto-registered `<scope>.requires.<SE>`
+    // ProofRecords (α.6). Explicit cites come first; implicit ones
+    // appended in order, deduped against the explicit set.
+    let implicit = implicit_cites_for(rule_qn, kb);
+    let mut effective: Vec<String> = using.iter().cloned().collect();
+    for qn in implicit {
+        if !effective.contains(&qn) {
+            effective.push(qn);
+        }
+    }
+    match render_cited_lemmas(kb, &effective, rule_qn, cli, discharged_this_run) {
         Ok(Some(clauses)) => {
             config.assumptions = clauses;
-            canon_parts.push(format!("using={}", using.join(",")));
+            canon_parts.push(format!("using={}", effective.join(",")));
         }
         Ok(None) => {}
         Err(msg) => {
@@ -788,6 +800,56 @@ fn witness_tid_named<'a>(
     } else {
         None
     }
+}
+
+/// Phase γ.4: walk a rule's enclosing-scope chain and collect every
+/// auto-registered `<scope-qn>.requires.<SE>` ProofRecord as an
+/// implicit citation. For rule `a.b.c.rule_name`, the parent scopes
+/// `a.b.c`, `a.b`, `a` are each scanned. Records are returned in
+/// outer-to-inner order (innermost scope's requires last).
+fn implicit_cites_for(rule_qn: &str, kb: &KnowledgeBase) -> Vec<String> {
+    let record_sym = match kb.try_resolve_symbol("anthill.realization.ProofRecord") {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let parts: Vec<&str> = rule_qn.split('.').collect();
+    if parts.len() < 2 { return Vec::new(); }
+
+    // Snapshot all ProofRecord QNs once so the inner loop is cheap.
+    let mut all_record_qns: Vec<String> = Vec::new();
+    for rid in kb.by_functor(record_sym) {
+        if !kb.rule_body(rid).is_empty() { continue; }
+        let head = kb.rule_head(rid);
+        let named = match kb.get_term(head) {
+            Term::Fn { named_args, .. } => named_args,
+            _ => continue,
+        };
+        if let Some(tid) = get_named_arg(kb, named, "rule") {
+            if let Term::Const(Literal::String(s)) = kb.get_term(tid) {
+                all_record_qns.push(s.clone());
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    // Walk outer-to-inner so the innermost scope's requires come
+    // last in `effective_using` — matches the user's mental model
+    // of "closest scope wins" if there's any duplication.
+    for end in 1..parts.len() {
+        let scope_qn = parts[..end].join(".");
+        let prefix = format!("{scope_qn}.requires.");
+        for qn in &all_record_qns {
+            // Match exact-prefix-and-no-deeper-segment so we don't
+            // pick up `a.b.requires.X.requires.Y` style records as
+            // implicit cites for scope `a.b`.
+            if let Some(rest) = qn.strip_prefix(&prefix) {
+                if !rest.contains('.') {
+                    out.push(qn.clone());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// True iff a witness sidecar JSON exists for the given rule QN at
