@@ -2132,7 +2132,7 @@ fn build_cons_list(
 /// `assert_sort_info`), so we look up the symbol's interned name.
 /// Recursive ADTs (kind = "sort" with self-referential constructor
 /// fields) are deferred; this function returns false for them today.
-fn sort_info_is_inductive(
+pub fn sort_info_is_inductive(
     kb: &KnowledgeBase,
     named: &SmallVec<[(Symbol, TermId); 2]>,
 ) -> bool {
@@ -2151,7 +2151,7 @@ fn sort_info_is_inductive(
 /// `name` field is a symbol reference (Term::Ref / Term::Ident /
 /// nullary Fn), encoded by the loader as `<sort-qn>` in the
 /// symbol table.
-fn sort_info_qn(
+pub fn sort_info_qn(
     kb: &KnowledgeBase,
     named: &SmallVec<[(Symbol, TermId); 2]>,
 ) -> Option<String> {
@@ -2187,7 +2187,7 @@ fn collect_existing_proof_record_qns(kb: &KnowledgeBase, record_sym: Symbol) -> 
 /// of the enclosing scope (sort or operation). Returns the canonical
 /// `qualified_name` rather than the short display name so the
 /// emitted ProofRecord rule QN is project-unique.
-fn qn_of_sort_ref(kb: &KnowledgeBase, term: TermId) -> Option<String> {
+pub fn qn_of_sort_ref(kb: &KnowledgeBase, term: TermId) -> Option<String> {
     match kb.get_term(term) {
         Term::Fn { functor, .. } => Some(kb.qualified_name_of(*functor).to_owned()),
         Term::Ref(s) | Term::Ident(s) => Some(kb.qualified_name_of(*s).to_owned()),
@@ -2205,7 +2205,7 @@ fn qn_of_sort_ref(kb: &KnowledgeBase, term: TermId) -> Option<String> {
 /// derived from `resolve_requires_bindings` and not user-written, so
 /// they should not pollute the SE-flat. Type-parameter and
 /// concrete-sort bindings remain.
-fn flatten_spec(kb: &KnowledgeBase, term: TermId) -> Option<String> {
+pub fn flatten_spec(kb: &KnowledgeBase, term: TermId) -> Option<String> {
     use crate::intern::SymbolKind;
     let term_ref = kb.get_term(term);
     let (functor, pos_args, named_args) = match term_ref {

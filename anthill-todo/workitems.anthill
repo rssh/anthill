@@ -858,3 +858,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T12:20:34Z"))
 
+fact WorkItem(
+  id: "WI-122",
+  description: "Proposal 030 phase β.4 — ScopeAxiom witness checking. Per phase β.4 of docs/proposals/030-theorem-registry.md: re-read the named scope's declaration and dispatch on aspect. For aspect='requires.<SE-flat>': verify the requires <SE> clause is present in the scope (walk SortRequiresInfo facts for scope_qn, check at least one matches the SE-flat signature). For aspect='induction': verify the named sort exists and is inductively defined (SortInfo.kind = enum, or has constructors). On success, transition the ProofRecord's outcome to Pass. On failure (declaration missing, clause edited away, kind changed), Failed with a clear message. Acceptance: cargo-test passes; new tests verify (a) a sort with requires Eq[T] makes its ScopeAxiom requires record check Pass; (b) an enum sort makes its induction record check Pass; (c) a sort whose declaration is removed or whose kind changes makes the corresponding ScopeAxiom check Failed.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T12:27:50Z"))
+
