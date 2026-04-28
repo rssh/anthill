@@ -680,6 +680,44 @@ mod tests {
             "expected Failed with 'missing' message when blob is absent");
     }
 
+    /// Phase β.7 tampering: a sidecar that claims Unsat but points
+    /// at a SAT document fails the replay. The attacker would have
+    /// to either (a) forge a document that Z3 returns Unsat for —
+    /// which means proving the property by content (no cheat) — or
+    /// (b) tamper with Z3 itself, which is the documented trust
+    /// boundary in §β.1.
+    #[test]
+    fn lying_sidecar_verdict_fails() {
+        if !z3_available() { eprintln!("skip: z3 not on PATH"); return; }
+        let tmp = TempDir::new().unwrap();
+        // SAT-shaped document — Z3 will return sat.
+        let sat_doc = "(set-logic LRA)\n(declare-const x Real)\n\
+                       (assert (> x 0))\n(check-sat)\n";
+        let hash = store_blob(tmp.path(), sat_doc).unwrap();
+        // Sidecar lies and claims this discharge was Unsat.
+        let result = check_smt_discharge_payload(tmp.path(), &hash, "Unsat", "z3");
+        assert!(matches!(result, CheckStatus::Failed(_)),
+            "lying sidecar must fail verification");
+    }
+
+    /// Phase β.7 tampering: a blob whose on-disk content has been
+    /// edited to be different from its claimed hash is rejected by
+    /// the content-hash re-check before solver replay even runs.
+    #[test]
+    fn tampered_blob_fails_content_hash_check() {
+        let tmp = TempDir::new().unwrap();
+        // Compute a hash for one document, then write a different
+        // document at that hash's path — simulates manual edit.
+        let original = "(check-sat)\n";
+        let hash = hash_content(original);
+        let tampered_path = anthill_smt_gen::cache::blob_path(tmp.path(), &hash);
+        std::fs::create_dir_all(tampered_path.parent().unwrap()).unwrap();
+        std::fs::write(&tampered_path, "(check-sat) ; tampered\n").unwrap();
+        let result = check_smt_discharge_payload(tmp.path(), &hash, "Unsat", "z3");
+        assert!(matches!(result, CheckStatus::Failed(msg) if msg.contains("hash mismatch")),
+            "tampered blob must fail content-hash re-check");
+    }
+
     #[test]
     fn aggregate_meta_priority_failed_beats_trusted() {
         // [Pass, Trusted, Failed] → Failed (with the failure's

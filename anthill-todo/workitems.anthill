@@ -893,3 +893,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T14:00:44Z"))
 
+fact WorkItem(
+  id: "WI-127",
+  description: "Proposal 030 phase β.7 — tampering detection. Most of β.7's intent is already covered: α.5's content-addressed blobs detect blob tampering; β.1's verdict replay forces an attacker to forge a document Z3 accepts with the claimed verdict (Z3 is the trust base, documented in §β.1). What's left: an explicit test demonstrating that a manually-edited ProofRecord (witness-field swap, document_hash forgery) fails the check. Approach: (1) blob content hash already re-checked in check_smt_discharge_payload; (2) add a test storing a benign blob, recording a sidecar pointing at it with a CONTRADICTORY verdict label (Sat instead of Unsat), and verify check reports Failed. (3) document the tamper-resistance properties in a brief note. Acceptance: cargo-test passes; new test verifies that a sidecar+blob pair where the sidecar lies about the verdict fails verification.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T14:04:30Z"))
+
