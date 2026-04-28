@@ -13,6 +13,10 @@
 namespace anthill.geometry
   import anthill.prelude.{Float}
   export Vec3, EulerAngles
+  export vec_add, vec_sub, vec_scale, vec_zero
+  export vec_add_comm, vec_add_assoc, vec_add_identity
+  export vec_scale_distrib_v, vec_scale_distrib_s, vec_scale_assoc
+  export vec_scale_identity, vec_sub_def
 
   -- 3-vector for spatial quantities (position, velocity, direction,
   -- angular velocity in body frame). Field names are world / body
@@ -24,4 +28,109 @@ namespace anthill.geometry
   -- this from Vec3 prevents spatial-vs-orientation reads from being
   -- aliased through identical component names.
   entity EulerAngles(roll: Float, pitch: Float, yaw: Float)
+
+  -- ================================================================
+  -- Vec3 vector operations
+  -- ================================================================
+  --
+  -- Concrete per-component definitions on Vec3 with Float scalars.
+  -- Result var is last positional arg per smt-gen convention.
+  -- Bodies are fully ground arithmetic on Float components — Z3 LRA
+  -- evaluates them when the consumer supplies Vec3 destructure.
+  --
+  -- Future (separate WI): lift these to a generic VectorSpace[V, S]
+  -- spec in anthill.algebra and have Vec3 satisfy it; would let
+  -- proof-side reasoning work on abstract V instead of pinning to
+  -- the per-component shape.
+
+  -- Vector addition: c = a + b (componentwise).
+  rule vec_add(?a, ?b, ?c)
+    :- ?a = Vec3(x: ?ax, y: ?ay, z: ?az),
+       ?b = Vec3(x: ?bx, y: ?by, z: ?bz),
+       ?c = Vec3(x: ?ax + ?bx, y: ?ay + ?by, z: ?az + ?bz)
+
+  -- Vector subtraction: c = a - b (componentwise).
+  rule vec_sub(?a, ?b, ?c)
+    :- ?a = Vec3(x: ?ax, y: ?ay, z: ?az),
+       ?b = Vec3(x: ?bx, y: ?by, z: ?bz),
+       ?c = Vec3(x: ?ax - ?bx, y: ?ay - ?by, z: ?az - ?bz)
+
+  -- Scalar multiplication: w = c * v.
+  rule vec_scale(?c, ?v, ?w)
+    :- ?v = Vec3(x: ?vx, y: ?vy, z: ?vz),
+       ?w = Vec3(x: ?c * ?vx, y: ?c * ?vy, z: ?c * ?vz)
+
+  -- Additive identity. Used as `vec_zero(?z)` to bind `?z` to the
+  -- zero vector — the relational form lets it appear in rule bodies
+  -- without needing a function-call shape.
+  rule vec_zero(?z)
+    :- ?z = Vec3(x: 0.0, y: 0.0, z: 0.0)
+
+  -- ================================================================
+  -- Algebraic laws
+  -- ================================================================
+  --
+  -- Each law is a citable rule with explicit `-:` conclusion. They
+  -- discharge trivially through Z3's per-component Float arithmetic
+  -- (LRA — no nonlinear terms in commutativity/associativity/etc.;
+  -- distributivity has a single multiplication per component, still
+  -- in QF_NRA-friendly form).
+
+  -- Commutativity of vector addition: a + b = b + a.
+  rule vec_add_comm(?a, ?b)
+    :- vec_add(?a, ?b, ?c1),
+       vec_add(?b, ?a, ?c2)
+    -: ?c1 = ?c2
+
+  -- Associativity of vector addition: (a + b) + c = a + (b + c).
+  rule vec_add_assoc(?a, ?b, ?c)
+    :- vec_add(?a, ?b, ?ab),
+       vec_add(?ab, ?c, ?lhs),
+       vec_add(?b, ?c, ?bc),
+       vec_add(?a, ?bc, ?rhs)
+    -: ?lhs = ?rhs
+
+  -- Additive identity: a + zero = a.
+  rule vec_add_identity(?a)
+    :- vec_zero(?z),
+       vec_add(?a, ?z, ?result)
+    -: ?result = ?a
+
+  -- Subtraction is addition of negation: a - b = a + (-1)·b.
+  rule vec_sub_def(?a, ?b)
+    :- vec_sub(?a, ?b, ?lhs),
+       vec_scale(-1.0, ?b, ?neg_b),
+       vec_add(?a, ?neg_b, ?rhs)
+    -: ?lhs = ?rhs
+
+  -- Distributivity of scalar over vector sum: c·(a + b) = c·a + c·b.
+  rule vec_scale_distrib_v(?c, ?a, ?b)
+    :- vec_add(?a, ?b, ?ab),
+       vec_scale(?c, ?ab, ?lhs),
+       vec_scale(?c, ?a, ?ca),
+       vec_scale(?c, ?b, ?cb),
+       vec_add(?ca, ?cb, ?rhs)
+    -: ?lhs = ?rhs
+
+  -- Distributivity of scalar sum over vector: (c + d)·v = c·v + d·v.
+  rule vec_scale_distrib_s(?c, ?d, ?v)
+    :- ?cd = ?c + ?d,
+       vec_scale(?cd, ?v, ?lhs),
+       vec_scale(?c, ?v, ?cv),
+       vec_scale(?d, ?v, ?dv),
+       vec_add(?cv, ?dv, ?rhs)
+    -: ?lhs = ?rhs
+
+  -- Associativity of scalar multiplication: c·(d·v) = (c·d)·v.
+  rule vec_scale_assoc(?c, ?d, ?v)
+    :- vec_scale(?d, ?v, ?dv),
+       vec_scale(?c, ?dv, ?lhs),
+       ?cd = ?c * ?d,
+       vec_scale(?cd, ?v, ?rhs)
+    -: ?lhs = ?rhs
+
+  -- Scalar identity: 1·v = v.
+  rule vec_scale_identity(?v)
+    :- vec_scale(1.0, ?v, ?result)
+    -: ?result = ?v
 end

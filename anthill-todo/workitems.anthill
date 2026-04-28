@@ -963,3 +963,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T15:58:54Z"))
 
+fact WorkItem(
+  id: "WI-137",
+  description: "Vec3 vector operations in anthill stdlib (prerequisite for decomposing step_distance_lemma into geometric axioms). Today Vec3 in anthill.geometry is a plain entity (x, y, z fields) with no arithmetic —  for two Vec3 values doesn't typecheck. Add a VectorSpace[V, Scalar] spec in anthill.algebra (or anthill.geometry) with operations add / sub / scale / zero, plus a satisfaction fact for Vec3 with Float scalar. Initial scope: just the operations + their algebraic-law rules (associativity, commutativity, additive identity, additive inverse). Norm and inner product follow in a separate WI. Acceptance: cargo-test passes; new test verifies  for two Vec3 values resolves through the spec;  clean.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T16:07:14Z"))
+
