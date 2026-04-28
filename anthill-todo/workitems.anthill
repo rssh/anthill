@@ -872,3 +872,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T12:31:01Z"))
 
+fact WorkItem(
+  id: "WI-124",
+  description: "Proposal 030: Witness persistence — wire prove's discharged witnesses back so check can verify them across CLI invocations. Today prove produces a ProofWitness in-memory but discards it (let _witness = outcome.witness). check reads the source ProofRecord's witness field, which still carries the loader's placeholder TrustedAxiom('pending — not yet discharged'). For β.1's SmtDischarge replay to actually fire on user proofs, the witness must persist. Approach: sidecar JSON per project per rule QN under cache_root/projects/<repo>/witnesses/v1/<sanitised-qn>.json. Format: rule_qn, witness shape mirroring ProofWitness::SmtDischarge fields, state_hash, written_at. prove writes after each Discharged outcome; check reads the sidecar before falling back to source-witness — if a sidecar exists and its document_hash references a stored blob, the witness is used in place of the placeholder. Cleanly reverses on prove --refresh-cache (writes new sidecar, overwriting stale). Out of scope: in-source persistence (would need .anthill rewrites). Acceptance: cargo-test passes; new test verifies prove → check on a small fixture flips a Pending record from Trusted (placeholder) to Pass (verified).",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T12:55:20Z"))
+

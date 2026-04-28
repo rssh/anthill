@@ -20,7 +20,8 @@ use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::typing::get_named_arg;
 use anthill_smt_gen::cache::{
-    blob_subdir, hash_content, load_blob, resolve_cache_root,
+    blob_subdir, hash_content, load_blob, load_witness, resolve_cache_root,
+    witness_subdir, SmtVerdictDto, WitnessShape, WitnessSidecar,
 };
 use anthill_smt_gen::outcome::parse_z3_output;
 
@@ -57,6 +58,7 @@ pub fn run_check(
     let cache_root = resolve_cache_root(cache_dir_override);
     let repo_root = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let blob_dir = blob_subdir(&cache_root, &repo_root);
+    let witness_dir = witness_subdir(&cache_root, &repo_root);
 
     let record_sym = match kb.try_resolve_symbol("anthill.realization.ProofRecord") {
         Some(s) => s,
@@ -67,7 +69,7 @@ pub fn run_check(
     for rid in kb.by_functor(record_sym) {
         if !kb.rule_body(rid).is_empty() { continue; }
         let head = kb.rule_head(rid);
-        let outcome = match check_one_record(kb, head, &blob_dir, solver) {
+        let outcome = match check_one_record(kb, head, &blob_dir, &witness_dir, solver) {
             Some(o) => o,
             None => continue,
         };
@@ -80,6 +82,7 @@ fn check_one_record(
     kb: &KnowledgeBase,
     head: TermId,
     blob_dir: &Path,
+    witness_dir: &Path,
     solver: &str,
 ) -> Option<CheckOutcome> {
     let named = match kb.get_term(head) {
@@ -94,14 +97,91 @@ fn check_one_record(
         Some(s) => s,
         None => return None,
     };
+    // Witness sidecar (WI-124) takes precedence over the in-source
+    // placeholder when one exists for this rule QN — the sidecar
+    // carries the discharged witness from the most recent prove
+    // run. Falling back to the source witness preserves α.6/α.7
+    // ScopeAxiom records (auto-registered, no sidecar needed).
+    if let Some(sidecar) = load_witness(witness_dir, &rule_qn) {
+        let status = check_witness_sidecar(&sidecar, blob_dir, solver);
+        return Some(CheckOutcome { rule_qn, status });
+    }
     let witness_tid = get_named_arg(kb, named, "witness")?;
-    // Don't gate on `result.status` — phase β verifies the witness
-    // directly. ScopeAxiom records land at status = Pending in α.6/
-    // α.7 (we avoid synthesizing a ProofResult at registration) but
-    // their witness is checkable by definition. The witness check's
-    // own outcome is the truth: Pass / Failed / Trusted / Skipped.
     let status = check_witness_term(kb, witness_tid, blob_dir, solver);
     Some(CheckOutcome { rule_qn, status })
+}
+
+/// Verify a witness loaded from a sidecar — same dispatch as
+/// `check_witness_term` but operates on the serialized DTO so we
+/// don't need to round-trip through KB term construction.
+fn check_witness_sidecar(
+    sidecar: &WitnessSidecar,
+    blob_dir: &Path,
+    solver: &str,
+) -> CheckStatus {
+    check_witness_shape(&sidecar.witness, blob_dir, solver)
+}
+
+fn check_witness_shape(
+    shape: &WitnessShape,
+    blob_dir: &Path,
+    solver: &str,
+) -> CheckStatus {
+    match shape {
+        WitnessShape::SmtDischarge { document_hash, verdict, .. } => {
+            if document_hash.is_empty() {
+                return CheckStatus::Skipped("sidecar has empty document_hash".into());
+            }
+            let recorded_verdict = match verdict {
+                SmtVerdictDto::Unsat => "Unsat",
+                SmtVerdictDto::Sat { .. } => "Sat",
+                SmtVerdictDto::Unknown { .. } => return CheckStatus::Skipped(
+                    "sidecar verdict is Unknown — nothing to replay".into()
+                ),
+            };
+            check_smt_discharge_payload(blob_dir, document_hash, recorded_verdict, solver)
+        }
+        WitnessShape::MetaCompose { tactic_name, sub } => {
+            // Phase β.3 essentials inlined for sidecars: recurse on
+            // each sub-witness; pass when every sub passes; the
+            // first non-pass propagates upward.
+            for (i, sub_shape) in sub.iter().enumerate() {
+                match check_witness_shape(sub_shape, blob_dir, solver) {
+                    CheckStatus::Pass => continue,
+                    CheckStatus::Trusted(reason) => return CheckStatus::Trusted(format!(
+                        "{tactic_name}[{i}]: {reason}"
+                    )),
+                    CheckStatus::Skipped(reason) => return CheckStatus::Skipped(format!(
+                        "{tactic_name}[{i}]: {reason}"
+                    )),
+                    CheckStatus::Failed(reason) => return CheckStatus::Failed(format!(
+                        "{tactic_name}[{i}]: {reason}"
+                    )),
+                }
+            }
+            CheckStatus::Pass
+        }
+        WitnessShape::TrustedAxiom { reason } => CheckStatus::Trusted(reason.clone()),
+        // ScopeAxiom / Specialization sidecars happen when prove
+        // discharged a record whose witness shape is one of those
+        // (rare for user proofs in v0). Not yet replayable from the
+        // sidecar alone — needs KB context. Skip with a note.
+        other => CheckStatus::Skipped(format!(
+            "sidecar witness `{}` not yet checkable from sidecar",
+            shape_name(other)
+        )),
+    }
+}
+
+fn shape_name(s: &WitnessShape) -> &'static str {
+    match s {
+        WitnessShape::SmtDischarge { .. } => "SmtDischarge",
+        WitnessShape::SldDerivation { .. } => "SldDerivation",
+        WitnessShape::MetaCompose { .. } => "MetaCompose",
+        WitnessShape::ScopeAxiom { .. } => "ScopeAxiom",
+        WitnessShape::Specialization { .. } => "Specialization",
+        WitnessShape::TrustedAxiom { .. } => "TrustedAxiom",
+    }
 }
 
 fn check_witness_term(
@@ -441,9 +521,8 @@ fn rand_suffix() -> String {
 /// Run the SmtDischarge replay path with explicit hash + verdict
 /// inputs (no KB construction needed). Returns `CheckStatus::Pass`
 /// when the blob loads, hash matches, and the solver replay yields
-/// the recorded verdict; `Failed(...)` otherwise. Exposed for
-/// targeted unit tests of the replay machinery.
-#[cfg(test)]
+/// the recorded verdict; `Failed(...)` otherwise. Used both from
+/// the KB-side dispatch and from the sidecar-side dispatch (WI-124).
 fn check_smt_discharge_payload(
     blob_dir: &Path,
     document_hash: &str,

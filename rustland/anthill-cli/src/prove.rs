@@ -13,7 +13,8 @@ use anthill_smt_gen::{
 };
 use anthill_smt_gen::cache::{
     self, blob_subdir, build_key, entry_path, hash_content, lookup, proof_subdir,
-    resolve_cache_root, state_hash, store_blob, store_entry, CacheEntry, KeyInputs, Solver,
+    resolve_cache_root, state_hash, store_blob, store_entry, store_witness,
+    witness_subdir, CacheEntry, KeyInputs, Solver, WitnessSidecar,
 };
 use anthill_smt_gen::tactic_emit::emit_tactic_from_term;
 use anthill_smt_gen::outcome::parse_z3_output;
@@ -51,20 +52,23 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
         }
         total += 1;
         let outcome = dispatch(&mut kb, rec, args, &mut stats);
-        // Phase α.3: outcome.witness is captured here; phase α.5
-        // will write it onto the ProofRecord. For now it's discarded
-        // after the verdict-printing match below.
-        let _witness = outcome.witness;
-        // Phase α.4: compute the per-ProofRecord state hash from the
-        // visited-rule set this discharge consulted. None when the
-        // discharge consulted no kb state (early-exit Skipped /
-        // EmitError); Some(hash) otherwise. α.5 writes this onto
-        // ProofRecord.state_hash.
-        let _state_hash: Option<String> = if outcome.visited_rules.is_empty() {
+        let witness = outcome.witness.clone();
+        // Per-ProofRecord state hash (phase α.4): canonical hash of
+        // the kb-state slice this discharge consulted. None for
+        // early-exit Skipped / EmitError where no kb state was read.
+        let record_state_hash: Option<String> = if outcome.visited_rules.is_empty() {
             None
         } else {
             Some(state_hash(&kb, &outcome.visited_rules))
         };
+        // WI-124 — witness persistence: write a sidecar JSON for
+        // every Proved outcome so `anthill check` can replay the
+        // witness across CLI invocations. Discharges that didn't
+        // produce a real witness (Skipped, EmitError) leave any
+        // existing sidecar in place for staleness on the next run.
+        if let (Verdict::Proved, Some(w)) = (&outcome.verdict, &witness) {
+            persist_witness(args, &rec.rule, w, record_state_hash.as_deref());
+        }
         match outcome.verdict {
             Verdict::Proved => {
                 println!("✓ {}: proved (z3: unsat)", rec.rule);
@@ -1041,6 +1045,51 @@ fn verdict_from_cache(entry: &CacheEntry) -> Verdict {
         "disproved" => Verdict::Disproved(entry.raw_output.clone()),
         "unknown" => Verdict::Unknown("z3: unknown (cached)".to_string()),
         other => Verdict::EmitError(format!("unrecognised cached verdict `{other}`")),
+    }
+}
+
+/// Persist a successful discharge's witness as a JSON sidecar
+/// (WI-124). The sidecar lives in the same per-project cache root
+/// as proof entries and blobs; `anthill check` reads it back and
+/// uses the stored witness in place of the in-source placeholder
+/// (TrustedAxiom("pending …")) on Pending ProofRecords.
+fn persist_witness(
+    args: &ProveArgs,
+    rule_qn: &str,
+    witness: &ProofWitness,
+    state_hash: Option<&str>,
+) {
+    if args.no_cache {
+        // --no-cache means don't touch the cache; sidecars live in
+        // the same store, so respect the same opt-out.
+        return;
+    }
+    let cache_root = resolve_cache_root(args.cache_dir.as_deref());
+    let repo_root = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let dir = witness_subdir(&cache_root, &repo_root);
+    let verdict_label = match witness {
+        ProofWitness::SmtDischarge { verdict, .. } => match verdict {
+            crate::witness::SmtVerdict::Unsat => "Proved",
+            crate::witness::SmtVerdict::Sat { .. } => "Disproved",
+            crate::witness::SmtVerdict::Unknown { .. } => "Unknown",
+        },
+        ProofWitness::SldDerivation { .. } => "Proved",
+        ProofWitness::MetaCompose { .. } => "Proved",
+        ProofWitness::ScopeAxiom { .. } => "Proved",
+        ProofWitness::Specialization { .. } => "Proved",
+        ProofWitness::TrustedAxiom { .. } => "Trusted",
+    };
+    let sidecar = WitnessSidecar {
+        rule_qn: rule_qn.to_string(),
+        verdict_label: verdict_label.to_string(),
+        witness: witness.to_shape(),
+        state_hash: state_hash.unwrap_or("").to_string(),
+        written_at: now_iso8601(),
+    };
+    if let Err(e) = store_witness(&dir, &sidecar) {
+        if args.verbose {
+            eprintln!("  warning: witness sidecar write failed for `{rule_qn}`: {e}");
+        }
     }
 }
 
