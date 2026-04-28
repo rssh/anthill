@@ -2183,6 +2183,37 @@ fn collect_existing_proof_record_qns(kb: &KnowledgeBase, record_sym: Symbol) -> 
     out
 }
 
+/// Detect an equational rule head (WI-139): the head term is an
+/// `=` application like `add(?a, ?b) = add(?b, ?a)`. Used by
+/// `load_rule` to gate the `by_functor` index — bare equational
+/// rules are cite-required only and must not drive automatic SLD
+/// rewriting (which would loop on `add_comm`-style laws).
+pub fn is_equational_head(kb: &KnowledgeBase, head: TermId) -> bool {
+    if let Term::Fn { functor, .. } = kb.get_term(head) {
+        let qn = kb.qualified_name_of(*functor);
+        let short = qn.rsplit('.').next().unwrap_or(qn);
+        // The kernel's equality predicate. Aliases that resolve to
+        // the same builtin are normalised at scan-time, so this
+        // suffix-match is sufficient.
+        return short == "=" || short == "eq";
+    }
+    false
+}
+
+/// Test whether a rule's `meta` block contains a flag with the
+/// given key. Treats both `[name]` (no value) and `[name: anything]`
+/// as "flag is present" — the loader stores the meta as a `meta(...)`
+/// term whose `named_args` carry the entries.
+pub fn meta_has_flag(kb: &KnowledgeBase, meta: Option<TermId>, key: &str) -> bool {
+    let tid = match meta { Some(t) => t, None => return false };
+    if let Term::Fn { named_args, .. } = kb.get_term(tid) {
+        for (k, _) in named_args.iter() {
+            if kb.resolve_sym(*k) == key { return true; }
+        }
+    }
+    false
+}
+
 /// Resolve a `SortRequiresInfo.sort_ref` term to the qualified name
 /// of the enclosing scope (sort or operation). Returns the canonical
 /// `qualified_name` rather than the short display name so the
@@ -3907,8 +3938,23 @@ impl<'a> Loader<'a> {
             .unwrap_or_default();
 
         let meta = r.meta.as_ref().map(|mb| self.load_meta_block(mb));
-        self.kb.assert_rule_debruijn_with_conclusion(
+        let rid = self.kb.assert_rule_debruijn_with_conclusion(
             head_term, body, conclusion, rule_sort, domain, meta);
+
+        // WI-139: equational rules are cite-required by default.
+        // Only `[simp]` (SLD + SMT auto-apply) or `[unfold]`
+        // (SLD-only auto-apply) keep them in the by_functor index
+        // for SLD goal resolution. Bare equational rules and rules
+        // tagged only `[hint]` (SMT-only auto-include — SMT-side
+        // semantics deferred for v0) are removed from the index
+        // so `add_comm` and similar laws don't drive infinite
+        // backward-chaining rewrites.
+        if is_equational_head(self.kb, head_term)
+            && !meta_has_flag(self.kb, meta, "simp")
+            && !meta_has_flag(self.kb, meta, "unfold")
+        {
+            self.kb.unindex_functor(rid);
+        }
 
         self.current_owner = prev_owner;
     }

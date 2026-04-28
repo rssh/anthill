@@ -789,6 +789,27 @@ impl KnowledgeBase {
     }
 
     /// All active rules/facts with a given top-level functor symbol.
+    /// Remove `id` from the `by_functor` head index without
+    /// retracting the rule. The rule still exists in the KB —
+    /// reachable by `try_resolve_symbol` (for cite-resolution),
+    /// `by_sort`, `by_domain`, and direct `RuleId` access — but
+    /// SLD's `by_functor`-driven goal resolution will not consult
+    /// it.
+    ///
+    /// Used for opt-in equational rules per WI-139: equational
+    /// laws (head is an `=` application) without a `[simp]` /
+    /// `[unfold]` attribute are cite-required only and must not
+    /// drive automatic SLD rewriting (which would loop on rules
+    /// like `add_comm: add(a, b) = add(b, a)`).
+    pub fn unindex_functor(&mut self, id: RuleId) {
+        let head = self.rules[id.index()].head;
+        if let Term::Fn { functor, .. } = *self.terms.get(head) {
+            if let Some(v) = self.by_functor.get_mut(&functor) {
+                v.retain(|&rid| rid != id);
+            }
+        }
+    }
+
     pub fn by_functor(&self, sym: Symbol) -> Vec<RuleId> {
         self.by_functor
             .get(&sym)
