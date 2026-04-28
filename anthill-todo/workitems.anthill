@@ -970,3 +970,17 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T16:07:14Z"))
 
+fact WorkItem(
+  id: "WI-138",
+  description: "Algebra abstraction: introduce Ring + VectorSpace specs in stdlib; have Float provide Ring, Vec3 provide VectorSpace[V = Vec3, F = Float]. Lifts the concrete vec_add / vec_sub / vec_scale / vec_zero operations from WI-137 into a proper algebraic typeclass, paralleling the existing Numeric spec pattern. Ring spec: add / sub / mul / zero / one + comm / assoc / identity / distributivity laws. VectorSpace[V, F] requires Ring[F]: vec_add / vec_sub / vec_scale / vec_zero + algebraic laws (currently in geometry.anthill). Acceptance: cargo-test passes; lf1 prove + check unchanged; new tests verify both specs load + the satisfaction declarations resolve.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T16:48:42Z"))
+
+fact WorkItem(
+  id: "WI-139",
+  description: "Disable automatic application of equational rewrite rules to Z3 emission. Equational laws like add_comm: 'add(a, b) = add(b, a)' inside Numeric / Ring / VectorSpace specs become forall-quantified Z3 axioms when emitted, which can blow up quantifier instantiation (commutativity rewrites loop in E-matching, distributivity multiplies term count). User concern: such laws should NOT be ambient axioms; they should require explicit 'using <law-name>' to be visible to the SMT discharge. Approach options: (a) add a [rewrite: false] meta annotation on rule blocks; (b) treat equational rules (head ?= body shape) as Pending until cited via using; (c) split the spec into 'operations' and 'lemmas' sections where lemmas are off-by-default. Acceptance: cargo-test passes; lf1 still discharges 12/12; the new Ring/VectorSpace law rules don't appear in the Z3 document for lf1 obligations unless explicitly cited.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+

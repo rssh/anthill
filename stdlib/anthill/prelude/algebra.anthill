@@ -1,0 +1,89 @@
+-- Algebra: typeclass abstractions for arithmetic structures.
+--
+-- Ring is the scalar typeclass — a commutative ring with
+-- multiplicative identity. Float satisfies Ring via the prelude's
+-- Numeric operations.
+--
+-- VectorSpace[V, F] requires Ring[F] — a vector space over the
+-- scalar field F. Vec3 (in anthill.geometry) provides
+-- VectorSpace[V = Vec3, F = Float].
+--
+-- This is a more abstract layer than anthill.prelude.Numeric (which
+-- bundles Ring + Ordered into one spec for primitive arithmetic
+-- types). Ring is intentionally Ordered-free so non-ordered fields
+-- (complex numbers, finite fields) can satisfy it later if needed.
+
+namespace anthill.prelude.algebra
+  export Ring, VectorSpace
+
+  -- =================================================================
+  -- Ring — commutative ring with multiplicative identity
+  -- =================================================================
+  --
+  -- Operations are total. Subtraction is defined (a - b = a + (-b),
+  -- with the additive inverse implicit). Division is NOT — that's a
+  -- Field, a separate spec we'll add when needed.
+  --
+  -- Float satisfies Ring via the prelude's Numeric ops + the
+  -- multiplicative identity 1.0.
+  sort Ring
+    sort T = ?
+
+    operation {
+      add(a: T, b: T) -> T            -- +
+      sub(a: T, b: T) -> T            -- -
+      mul(a: T, b: T) -> T            -- *
+      zero() -> T                      -- additive identity
+      one() -> T                       -- multiplicative identity
+    }
+
+    rule {
+      add_comm:      add(?a, ?b) = add(?b, ?a)
+      add_assoc:     add(add(?a, ?b), ?c) = add(?a, add(?b, ?c))
+      add_identity:  add(?a, zero) = ?a
+      mul_comm:      mul(?a, ?b) = mul(?b, ?a)
+      mul_assoc:     mul(mul(?a, ?b), ?c) = mul(?a, mul(?b, ?c))
+      mul_identity:  mul(?a, one) = ?a
+      distrib:       mul(?a, add(?b, ?c)) = add(mul(?a, ?b), mul(?a, ?c))
+    }
+  end
+
+  -- =================================================================
+  -- VectorSpace[V, F] — V is a vector space over the field F
+  -- =================================================================
+  --
+  -- Two type parameters: V (the vector type) and F (the scalar type).
+  -- F must be a ring (we don't require multiplicative inverses — a
+  -- module over a ring is sufficient for the geometric content; the
+  -- name is "VectorSpace" by convention but technically the spec is
+  -- a left-module).
+  --
+  -- Vec3 (in anthill.geometry) provides VectorSpace[V = Vec3, F = Float]
+  -- via per-component implementations.
+  sort VectorSpace
+    sort V = ?
+    sort F = ?
+    requires Ring[F]
+
+    operation {
+      vec_add(a: V, b: V) -> V        -- vector addition
+      vec_sub(a: V, b: V) -> V        -- vector subtraction
+      vec_scale(c: F, v: V) -> V      -- scalar multiplication
+      vec_zero() -> V                  -- additive identity vector
+    }
+
+    -- Scalar-side ops (`Ring.add`, `Ring.mul`, `Ring.one`) are
+    -- explicitly qualified in the laws below — `add` / `mul` /
+    -- `one` are also in scope from `anthill.prelude.Numeric` and
+    -- the resolver can't disambiguate without the prefix.
+    rule {
+      vec_add_comm:        vec_add(?a, ?b) = vec_add(?b, ?a)
+      vec_add_assoc:       vec_add(vec_add(?a, ?b), ?c) = vec_add(?a, vec_add(?b, ?c))
+      vec_add_identity:    vec_add(?a, vec_zero) = ?a
+      vec_scale_identity:  vec_scale(Ring.one, ?v) = ?v
+      vec_scale_assoc:     vec_scale(?c, vec_scale(?d, ?v)) = vec_scale(Ring.mul(?c, ?d), ?v)
+      vec_scale_distrib_v: vec_scale(?c, vec_add(?a, ?b)) = vec_add(vec_scale(?c, ?a), vec_scale(?c, ?b))
+      vec_scale_distrib_s: vec_scale(Ring.add(?c, ?d), ?v) = vec_add(vec_scale(?c, ?v), vec_scale(?d, ?v))
+    }
+  end
+end
