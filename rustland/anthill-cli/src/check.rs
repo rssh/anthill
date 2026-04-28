@@ -200,6 +200,7 @@ fn check_witness_term(
         "SmtDischarge" => check_smt_discharge_witness(kb, &named, blob_dir, solver),
         "ScopeAxiom" => check_scope_axiom_witness(kb, &named),
         "Specialization" => check_specialization_witness(kb, &named),
+        "MetaCompose" => check_meta_compose_witness(kb, &named, blob_dir, solver),
         "TrustedAxiom" => {
             let reason = read_string_field(kb, &named, "reason")
                 .unwrap_or_else(|| "(no reason)".into());
@@ -208,6 +209,70 @@ fn check_witness_term(
         // Other constructors land in later β sub-phases.
         other => CheckStatus::Skipped(format!("witness `{other}` not yet checkable")),
     }
+}
+
+/// Phase β.3 (KB-side): recurse into each sub-witness term in a
+/// MetaCompose. Pass when every sub passes; first non-pass
+/// propagates upward with the offending sub-witness's index in the
+/// list. Mirrors the sidecar-side recursion in
+/// `check_witness_shape::MetaCompose` so the two paths stay in
+/// sync. Per-meta-tactic shape contracts (induction expects
+/// base + step, ranking expects boundedness + decrease, …) are
+/// deferred — they require a `MetaTacticContract` schema the
+/// kernel doesn't yet have.
+fn check_meta_compose_witness(
+    kb: &KnowledgeBase,
+    named: &smallvec::SmallVec<[(Symbol, TermId); 2]>,
+    blob_dir: &Path,
+    solver: &str,
+) -> CheckStatus {
+    let tactic_name = read_string_field(kb, named, "tactic_name")
+        .unwrap_or_else(|| "compose".into());
+    let sub_tid = match get_named_arg(kb, named, "sub") {
+        Some(t) => t,
+        None => return CheckStatus::Failed(
+            "MetaCompose: missing `sub` field".into()
+        ),
+    };
+    let sub_witnesses = read_witness_list(kb, sub_tid);
+    for (i, sub_tid) in sub_witnesses.iter().enumerate() {
+        match check_witness_term(kb, *sub_tid, blob_dir, solver) {
+            CheckStatus::Pass => continue,
+            CheckStatus::Trusted(r) => return CheckStatus::Trusted(format!(
+                "{tactic_name}[{i}]: {r}"
+            )),
+            CheckStatus::Skipped(r) => return CheckStatus::Skipped(format!(
+                "{tactic_name}[{i}]: {r}"
+            )),
+            CheckStatus::Failed(r) => return CheckStatus::Failed(format!(
+                "{tactic_name}[{i}]: {r}"
+            )),
+        }
+    }
+    CheckStatus::Pass
+}
+
+/// Walk a `cons(head: <witness-term>, tail: ...)` list and collect
+/// the head TermIds. Used to read MetaCompose's `sub` field.
+fn read_witness_list(kb: &KnowledgeBase, mut tid: TermId) -> Vec<TermId> {
+    let mut out = Vec::new();
+    for _ in 0..1024 {
+        let (functor, named) = match kb.get_term(tid) {
+            Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+            _ => break,
+        };
+        let f_short = kb.qualified_name_of(functor)
+            .rsplit('.').next().unwrap_or("").to_owned();
+        if f_short != "cons" { break; }
+        if let Some(h) = get_named_arg(kb, &named, "head") {
+            out.push(h);
+        }
+        match get_named_arg(kb, &named, "tail") {
+            Some(t) => tid = t,
+            None => break,
+        }
+    }
+    out
 }
 
 /// Phase β.5: validate a Specialization witness structurally.

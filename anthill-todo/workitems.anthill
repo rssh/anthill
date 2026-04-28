@@ -879,3 +879,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T12:55:20Z"))
 
+fact WorkItem(
+  id: "WI-125",
+  description: "Proposal 030 phase β.3 — MetaCompose witness checking (KB-side). Per phase β.3 of docs/proposals/030-theorem-registry.md: per-meta-tactic structural validation. The contract for induction(over: T) is derived from <T-qn>.induction's registered principle (auto-registered in α.7); the kernel reads the principle's statement to determine the expected sub-witness shape. v0 scope: recurse on each sub-witness (using the same dispatch as top-level), pass when all pass. Per-meta-tactic shape contracts (induction needs base + step, ranking needs boundedness + decrease, etc.) deferred — that requires reading MetaTacticContract facts which the kernel doesn't yet have a schema for. The sidecar variant (in WI-124) already inlines the recursive replay logic; this WI lifts it to also fire for KB-term MetaCompose witnesses. Acceptance: cargo-test passes; an existing MetaCompose KB-term witness checks Pass when all sub-witnesses pass.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T13:57:11Z"))
+
