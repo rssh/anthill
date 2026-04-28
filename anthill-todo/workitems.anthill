@@ -900,3 +900,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T14:04:30Z"))
 
+fact WorkItem(
+  id: "WI-128",
+  description: "Proposal 030 phase β.2 — SldDerivation real replay. DEFERRED: requires resolver instrumentation to capture a derivation tree. Today dispatch_derivation produces ProofWitness::SldDerivation { tree_hash: format!('sld-derivation:{rule_qn}') } as a placeholder; the kernel-check side has no real tree to replay. Scope when picked up: (1) extend resolve_kb / SearchStream to record a trace — list of (goal, rule_id, substitution) per derivation step; (2) serialize the trace as JSON; store as blob via cache::store_blob; tree_hash becomes real sha256 of the serialized trace; (3) at check time, load blob, for each recorded step verify rule_id still resolves to the same head term and substitution still unifies under current KB. The lf1 example doesn't use derivation-tactic proofs today, so β.2 has minimal user-visible payoff at v0. Pick up when a project actually relies on derivation discharges. Acceptance: cargo-test passes; new test verifies a small derivation proof can be checked.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
