@@ -1196,6 +1196,7 @@ fn load_phase(
     }
     resolve_instantiations(kb);
     register_requires_axiom_witnesses(kb);
+    register_induction_axiom_witnesses(kb);
     all_errors.extend(super::typing::type_check_sorts(kb, &all_sorts));
     if all_errors.is_empty() {
         Ok(LoadResult { defined_sorts: all_sorts })
@@ -1677,6 +1678,189 @@ fn register_requires_axiom_witnesses(kb: &mut KnowledgeBase) {
     for rec in new_records {
         kb.assert_fact(rec, record_sort_term, global_term, None);
     }
+}
+
+/// Proposal 030 phase α.7: emit a synthetic `ProofRecord` fact for
+/// every inductive sort's induction principle. Witness shape mirrors
+/// α.6's `requires` clauses but with `aspect = "induction"`.
+///
+/// v0 scope: enum sorts (`SortInfo.kind = "enum"`) get an induction
+/// ProofRecord. Non-enum sorts with recursive constructors are
+/// deferred — recursion detection requires walking EntityInfo and
+/// matching constructor field types against the parent sort, which
+/// is straightforward but additional code; recursive ADTs picked up
+/// in a follow-up sub-task. Primitives with hand-written `induction`
+/// rules in stdlib (Int.induction, BigInt.induction, …) are *not*
+/// re-registered here — those rules already exist as user-visible
+/// anthill rules and phase γ resolves citations against them
+/// directly. The auto-registered records here cover the kernel-
+/// derived structural induction for user-declared inductive sorts.
+///
+/// The witness is `ScopeAxiom(scope_kind: "sort", scope_qn: <T>,
+/// aspect: "induction")`. Phase β.4's check re-reads T's SortInfo
+/// and confirms the constructor list matches what the principle was
+/// derived from.
+///
+/// Idempotent across loads via the same `existing_rule_qns` guard
+/// as α.6.
+fn register_induction_axiom_witnesses(kb: &mut KnowledgeBase) {
+    let sort_info_sym = match kb.try_resolve_symbol("anthill.reflect.SortInfo") {
+        Some(s) => s,
+        None => return,
+    };
+    let record_sym = match kb.try_resolve_symbol("anthill.realization.ProofRecord") {
+        Some(s) => s,
+        None => return,
+    };
+    let pending_sym = match kb.try_resolve_symbol(
+        "anthill.realization.ObligationStatus.Pending"
+    ) { Some(s) => s, None => return };
+    let strategy_open_sym = match kb.try_resolve_symbol(
+        "anthill.realization.ProofStrategyOpen"
+    ) { Some(s) => s, None => return };
+    let body_none_sym = match kb.try_resolve_symbol(
+        "anthill.realization.ProofBodyNone"
+    ) { Some(s) => s, None => return };
+    let scope_axiom_sym = match kb.try_resolve_symbol(
+        "anthill.realization.witness.ProofWitness.ScopeAxiom"
+    ) { Some(s) => s, None => return };
+    let nil_sym = match kb.try_resolve_symbol("anthill.prelude.List.nil") {
+        Some(s) => s, None => return,
+    };
+
+    let rule_arg = kb.intern("rule");
+    let strategy_arg = kb.intern("strategy");
+    let body_arg = kb.intern("body");
+    let result_arg = kb.intern("result");
+    let deps_arg = kb.intern("dependencies");
+    let using_arg = kb.intern("using");
+    let witness_arg = kb.intern("witness");
+    let state_hash_arg = kb.intern("state_hash");
+    let parametric_context_arg = kb.intern("parametric_context");
+    let scope_kind_arg = kb.intern("scope_kind");
+    let scope_qn_arg = kb.intern("scope_qn");
+    let aspect_arg = kb.intern("aspect");
+
+    let existing_rule_qns = collect_existing_proof_record_qns(kb, record_sym);
+    let sort_info_rids = kb.by_functor(sort_info_sym);
+    let mut new_records: Vec<TermId> = Vec::new();
+
+    for rid in sort_info_rids {
+        if !kb.rule_body(rid).is_empty() { continue; }
+        let head = kb.rule_head(rid);
+        let head_term = kb.get_term(head).clone();
+        let named = match head_term {
+            Term::Fn { named_args, .. } => named_args,
+            _ => continue,
+        };
+
+        if !sort_info_is_inductive(kb, &named) { continue; }
+        let sort_qn = match sort_info_qn(kb, &named) {
+            Some(q) => q,
+            None => continue,
+        };
+        let rule_qn_text = format!("{sort_qn}.induction");
+        if existing_rule_qns.contains(&rule_qn_text) { continue; }
+
+        let scope_kind_term = kb.alloc(Term::Const(Literal::String("sort".to_string())));
+        let scope_qn_term = kb.alloc(Term::Const(Literal::String(sort_qn)));
+        let aspect_term = kb.alloc(Term::Const(Literal::String("induction".to_string())));
+        let witness_term = kb.alloc(Term::Fn {
+            functor: scope_axiom_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (scope_kind_arg, scope_kind_term),
+                (scope_qn_arg, scope_qn_term),
+                (aspect_arg, aspect_term),
+            ]),
+        });
+        let strategy_term = kb.alloc(Term::Fn {
+            functor: strategy_open_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let body_term = kb.alloc(Term::Fn {
+            functor: body_none_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let pending_term = kb.alloc(Term::Fn {
+            functor: pending_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let nil_term = kb.alloc(Term::Fn {
+            functor: nil_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let rule_text_term = kb.alloc(Term::Const(Literal::String(rule_qn_text)));
+        let state_hash_term = kb.alloc(Term::Const(
+            Literal::String("scope-axiom".to_string())
+        ));
+
+        let record_term = kb.alloc(Term::Fn {
+            functor: record_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (rule_arg, rule_text_term),
+                (strategy_arg, strategy_term),
+                (body_arg, body_term),
+                (result_arg, pending_term),
+                (deps_arg, nil_term),
+                (using_arg, nil_term),
+                (witness_arg, witness_term),
+                (state_hash_arg, state_hash_term),
+                (parametric_context_arg, nil_term),
+            ]),
+        });
+        new_records.push(record_term);
+    }
+
+    if new_records.is_empty() { return; }
+    let record_sort_term = kb.make_name_term("anthill.realization.ProofRecord");
+    let global_term = kb.make_name_term("_global");
+    for rec in new_records {
+        kb.assert_fact(rec, record_sort_term, global_term, None);
+    }
+}
+
+/// True iff a SortInfo fact's `kind` field is `"enum"` — the v0
+/// detection criterion for "needs an induction principle". The
+/// loader emits `kind` as `Term::Ident(intern("enum"))` (see
+/// `assert_sort_info`), so we look up the symbol's interned name.
+/// Recursive ADTs (kind = "sort" with self-referential constructor
+/// fields) are deferred; this function returns false for them today.
+fn sort_info_is_inductive(
+    kb: &KnowledgeBase,
+    named: &SmallVec<[(Symbol, TermId); 2]>,
+) -> bool {
+    let kind_tid = match super::typing::get_named_arg(kb, named, "kind") {
+        Some(t) => t,
+        None => return false,
+    };
+    match kb.get_term(kind_tid) {
+        Term::Ident(s) | Term::Ref(s) => kb.resolve_sym(*s) == "enum",
+        Term::Const(Literal::String(s)) => s == "enum",
+        _ => false,
+    }
+}
+
+/// Resolve a SortInfo's `name` field to its qualified name. The
+/// `name` field is a symbol reference (Term::Ref / Term::Ident /
+/// nullary Fn), encoded by the loader as `<sort-qn>` in the
+/// symbol table.
+fn sort_info_qn(
+    kb: &KnowledgeBase,
+    named: &SmallVec<[(Symbol, TermId); 2]>,
+) -> Option<String> {
+    let tid = super::typing::get_named_arg(kb, named, "name")?;
+    let sym = match kb.get_term(tid) {
+        Term::Ref(s) | Term::Ident(s) => *s,
+        Term::Fn { functor, .. } => *functor,
+        _ => return None,
+    };
+    Some(kb.qualified_name_of(sym).to_owned())
 }
 
 /// Read the `rule` field of every existing `ProofRecord` fact so the

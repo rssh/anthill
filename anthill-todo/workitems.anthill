@@ -822,3 +822,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T11:37:49Z"))
 
+fact WorkItem(
+  id: "WI-117",
+  description: "Proposal 030 phase α.7 — auto-register induction principles as ScopeAxiom witnesses. Per phase α.7 of docs/proposals/030-theorem-registry.md: at sort load time, for each inductive sort (enum / inductive ADT) and supported primitive (Int, BigInt, ...), the loader emits a synthetic ProofRecord with: rule = '<sort-qn>.induction'; strategy = ProofStrategyOpen; body = ProofBodyNone; result = Pending; witness = ScopeAxiom(scope_kind: 'sort', scope_qn: <sort-qn>, aspect: 'induction'); state_hash = 'scope-axiom'; parametric_context derived from sort's abstract parameters (empty for monomorphic). Detection: walk SortInfo facts; for each sort with multiple entity-constructors (enum), or with self-referential constructor args (inductive ADT), or matching the primitives whitelist, register the principle. Idempotent. Acceptance: cargo-test passes; new test verifies an enum gets a single induction ProofRecord with the expected witness.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T11:46:19Z"))
+
