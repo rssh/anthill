@@ -1,6 +1,6 @@
 //! WI-139: equational rules are cite-required by default; opt-in
-//! via `[simp: true]` / `[unfold: true]` to enter the `by_functor` index for
-//! SLD goal resolution. (`[hint: true]` is recognised by the parser but
+//! via `[simp]` / `[unfold]` to enter the `by_functor` index for
+//! SLD goal resolution. (`[hint]` is recognised by the parser but
 //! its SMT-side semantics — auto-include in proof preamble — are
 //! deferred for v0; the attribute itself parses and stores cleanly.)
 
@@ -90,12 +90,12 @@ fn simp_attributed_equational_rule_is_indexed() {
         namespace test.eqattr.simp_with
           export Marker
           rule Marker(?x) :- ?x = 1
-          rule my_def: foo(?a) = bar(?a) [simp: true]
+          rule my_def: foo(?a) = bar(?a) [simp]
         end
     "#));
     assert!(
         with_simp > baseline,
-        "[simp: true]-tagged equational rule must be in by_functor — \
+        "[simp]-tagged equational rule must be in by_functor — \
          got baseline {baseline} → with_simp {with_simp}"
     );
 }
@@ -112,19 +112,19 @@ fn unfold_attributed_equational_rule_is_indexed() {
         namespace test.eqattr.unfold_with
           export Marker
           rule Marker(?x) :- ?x = 1
-          rule my_def: g(?a) = h(?a) [unfold: true]
+          rule my_def: g(?a) = h(?a) [unfold]
         end
     "#));
     assert!(
         with_unfold > baseline,
-        "[unfold: true]-tagged equational rule must be in by_functor — \
+        "[unfold]-tagged equational rule must be in by_functor — \
          got baseline {baseline} → with_unfold {with_unfold}"
     );
 }
 
 #[test]
 fn hint_attributed_equational_rule_stays_unindexed_in_v0() {
-    // [hint: true] currently doesn't gate the by_functor index — its
+    // [hint] currently doesn't gate the by_functor index — its
     // semantics are SMT-only auto-emission, which v0 hasn't wired
     // yet. The attribute parses cleanly; the rule remains
     // cite-required for SLD-side resolution. Once SMT-emission
@@ -142,13 +142,13 @@ fn hint_attributed_equational_rule_stays_unindexed_in_v0() {
           rule Marker(?x) :- ?x = 1
           rule {
             my_lemma: comm(?a, ?b) = comm(?b, ?a)
-            [hint: true]
+            [hint]
           }
         end
     "#));
     assert_eq!(
         baseline, with_hint,
-        "[hint: true] alone must NOT add to the by_functor index in v0 \
+        "[hint] alone must NOT add to the by_functor index in v0 \
          — got baseline {baseline} → with_hint {with_hint}"
     );
 }

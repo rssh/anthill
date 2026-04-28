@@ -596,13 +596,19 @@ module.exports = grammar({
       ']',
     ),
 
-    // Open-keyed: any Name : Term pair. Well-known keys (trust, agent,
-    // timestamp, iteration, source, supersedes) have kernel semantics;
-    // additional keys are project-defined.
+    // Open-keyed: any Name optionally followed by `: Term`. Well-known
+    // keys (trust, agent, timestamp, iteration, source, supersedes,
+    // and the WI-139 rule-attribute flags simp/unfold/hint) have
+    // kernel semantics; additional keys are project-defined.
+    //
+    // Flag form: `[simp]` is shorthand for `[simp: true]` — the
+    // converter sees a missing value and defaults to Term::Bottom,
+    // and `meta_has_flag` only checks key presence regardless of
+    // value, so the two forms are interchangeable for predicate
+    // queries.
     meta_entry: $ => seq(
       field('key', $.name),
-      ':',
-      field('value', $._term),
+      optional(seq(':', field('value', $._term))),
     ),
 
     trust_level: $ => choice(

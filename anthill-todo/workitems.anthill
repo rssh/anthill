@@ -982,5 +982,12 @@ fact WorkItem(
   description: "Disable automatic application of equational rewrite rules to Z3 emission. Equational laws like add_comm: 'add(a, b) = add(b, a)' inside Numeric / Ring / VectorSpace specs become forall-quantified Z3 axioms when emitted, which can blow up quantifier instantiation (commutativity rewrites loop in E-matching, distributivity multiplies term count). User concern: such laws should NOT be ambient axioms; they should require explicit 'using <law-name>' to be visible to the SMT discharge. Approach options: (a) add a [rewrite: false] meta annotation on rule blocks; (b) treat equational rules (head ?= body shape) as Pending until cited via using; (c) split the spec into 'operations' and 'lemmas' sections where lemmas are off-by-default. Acceptance: cargo-test passes; lf1 still discharges 12/12; the new Ring/VectorSpace law rules don't appear in the Z3 document for lf1 obligations unless explicitly cited.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-04-28T17:30:46Z"))
+
+fact WorkItem(
+  id: "WI-140",
+  description: "Grammar extension: bare meta_entry flag form ([simp] sugar for [simp: true]). Per WI-139 follow-up. Today rule_attribute meta blocks require [key: value]; [simp] alone errors at parse. Update tree-sitter grammar's meta_entry to make :value optional. Convert side already defaults missing values to Term::Bottom; meta_has_flag only checks key presence. Acceptance: cargo-test passes; existing meta usage with values keeps working; bare [simp] / [unfold] / [hint] flags now parse cleanly.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T18:56:08Z"))
 
