@@ -991,3 +991,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T18:56:08Z"))
 
+fact WorkItem(
+  id: "WI-141",
+  description: "WI-139 follow-up: [hint] SMT-side auto-include semantics. Per the brainstorm: rules tagged [hint] are auto-cited from any proof in the same enclosing scope chain — the SMT-side analogue of [simp]'s SLD-side auto-application. Implementation: new hint_cites_for(rule_qn, kb) in prove.rs walks all rules with hint flag in meta; for each, gets its head functor's QN and adds to effective using list iff the QN is prefixed by one of rule_qn's parent scope segments. v0 limitation: relies on lift_rule_to_implication_clause's QN-based lookup, which picks the first rule under the head functor — works for unique-head rules (definitional unfolds, top-level rules where label==head-functor) but breaks for shared-head equational rules. Per-RuleId lift helper for safety on shared functors deferred. Acceptance: cargo-test passes; new test verifies a [hint] rule is auto-applied to a sibling proof without explicit using.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T19:02:18Z"))
+

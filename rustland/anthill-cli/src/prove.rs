@@ -604,8 +604,14 @@ fn dispatch_z3(
     // ProofRecords (α.6). Explicit cites come first; implicit ones
     // appended in order, deduped against the explicit set.
     let implicit = implicit_cites_for(rule_qn, kb);
+    let hints = hint_cites_for(rule_qn, kb);
     let mut effective: Vec<String> = using.iter().cloned().collect();
     for qn in implicit {
+        if !effective.contains(&qn) {
+            effective.push(qn);
+        }
+    }
+    for qn in hints {
         if !effective.contains(&qn) {
             effective.push(qn);
         }
@@ -868,6 +874,60 @@ fn witness_tid_named<'a>(
 /// implicit citation. For rule `a.b.c.rule_name`, the parent scopes
 /// `a.b.c`, `a.b`, `a` are each scanned. Records are returned in
 /// outer-to-inner order (innermost scope's requires last).
+/// WI-139 [hint] semantics: walk the KB for rules whose meta carries
+/// the `hint` flag and whose head-functor QN sits in `rule_qn`'s
+/// enclosing scope chain. Each such rule is implicitly cited so its
+/// `-:` conclusion lifts as a forall hypothesis in the consumer's
+/// preamble — the SMT-side analogue of `[simp]`'s SLD-side
+/// auto-application.
+///
+/// v0 limitation: the rule's identity for cite purposes is its
+/// head-functor QN (what `lift_rule_to_implication_clause` accepts).
+/// For rules whose head-functor uniquely identifies them
+/// (definitional unfolds with a unique top symbol, top-level rules
+/// where label==head-functor), [hint] works directly. For
+/// equational rules under shared `eq` functor, the lift picks the
+/// first rule under the symbol — multiple equational [hint]s with
+/// the same scope risk lifting the wrong one. Document; revisit
+/// when a per-RuleId lift helper lands.
+fn hint_cites_for(rule_qn: &str, kb: &mut KnowledgeBase) -> Vec<String> {
+    let parts: Vec<&str> = rule_qn.split('.').collect();
+    if parts.len() < 2 { return Vec::new(); }
+
+    // Walk all rules in the KB. For each with `hint` meta, determine
+    // its head-functor QN and check whether the QN is prefixed by
+    // any of `rule_qn`'s parent scope segments.
+    let rule_sort = kb.make_name_term("Rule");
+    let mut out: Vec<String> = Vec::new();
+    for rid in kb.by_sort(rule_sort) {
+        let meta = kb.rule_meta(rid);
+        if !anthill_core::kb::load::meta_has_flag(kb, meta, "hint") {
+            continue;
+        }
+        let head = kb.rule_head(rid);
+        let functor = match kb.get_term(head) {
+            Term::Fn { functor, .. } => *functor,
+            _ => continue,
+        };
+        let head_qn = kb.qualified_name_of(functor).to_string();
+        // Scope filter: head_qn must start with one of rule_qn's
+        // parent QN segments. This restricts hints to the proof's
+        // own enclosing namespace chain.
+        let mut in_scope = false;
+        for end in 1..parts.len() {
+            let scope = parts[..end].join(".");
+            if head_qn.starts_with(&format!("{scope}.")) {
+                in_scope = true;
+                break;
+            }
+        }
+        if in_scope && !out.contains(&head_qn) {
+            out.push(head_qn);
+        }
+    }
+    out
+}
+
 fn implicit_cites_for(rule_qn: &str, kb: &KnowledgeBase) -> Vec<String> {
     let record_sym = match kb.try_resolve_symbol("anthill.realization.ProofRecord") {
         Some(s) => s,
