@@ -206,7 +206,72 @@ fn collect_proof_records(kb: &KnowledgeBase) -> Vec<ProofRec> {
             out.push(rec);
         }
     }
-    out.sort_by(|a, b| a.rule.cmp(&b.rule));
+    // Phase γ.3: discharge in dependency order (cited before citer)
+    // so γ.2's `discharged_this_run` has the prerequisite witnesses
+    // ready by the time their consumer's cite-resolution fires.
+    // Falls back to alphabetical when the topo sort can't terminate
+    // (cycles surface via the warning path; offending records fall
+    // to the end so the rest still get tried).
+    topo_sort_by_using(out)
+}
+
+/// Kahn's algorithm over the `using` graph. Records with no
+/// dependencies on other ProofRecords come first; ties broken
+/// alphabetically. Cycles produce a stderr warning naming the
+/// involved rules and the cycle members are appended to the end
+/// of the order (their cites will then fail loudly via cite_status,
+/// rather than crashing the whole prove run).
+fn topo_sort_by_using(records: Vec<ProofRec>) -> Vec<ProofRec> {
+    use std::collections::{BTreeSet, HashMap};
+    let known: BTreeSet<String> = records.iter().map(|r| r.rule.clone()).collect();
+    let mut indeg: HashMap<String, usize> = HashMap::new();
+    let mut deps: HashMap<String, Vec<String>> = HashMap::new();
+    for rec in &records {
+        indeg.entry(rec.rule.clone()).or_insert(0);
+        for cited in &rec.using {
+            // Only edges to other records being dispatched count;
+            // out-of-set cites resolve via sidecar/KB and don't
+            // need ordering.
+            if known.contains(cited) && cited != &rec.rule {
+                *indeg.entry(rec.rule.clone()).or_insert(0) += 1;
+                deps.entry(cited.clone()).or_default().push(rec.rule.clone());
+            }
+        }
+    }
+    let mut by_name: HashMap<String, ProofRec> = records
+        .into_iter().map(|r| (r.rule.clone(), r)).collect();
+    // Use a sorted ready-set so ties break alphabetically (stable
+    // output order across runs).
+    let mut ready: BTreeSet<String> = indeg.iter()
+        .filter_map(|(k, v)| if *v == 0 { Some(k.clone()) } else { None })
+        .collect();
+    let mut out: Vec<ProofRec> = Vec::with_capacity(by_name.len());
+    while let Some(qn) = ready.iter().next().cloned() {
+        ready.remove(&qn);
+        if let Some(rec) = by_name.remove(&qn) {
+            out.push(rec);
+        }
+        if let Some(consumers) = deps.remove(&qn) {
+            for c in consumers {
+                if let Some(d) = indeg.get_mut(&c) {
+                    *d = d.saturating_sub(1);
+                    if *d == 0 { ready.insert(c); }
+                }
+            }
+        }
+    }
+    if !by_name.is_empty() {
+        let cycle: Vec<String> = by_name.keys().cloned().collect();
+        eprintln!(
+            "warning: cycle in `using` dependencies among proofs: {}; \
+             these will discharge in arbitrary order and any cite-resolution \
+             failures will surface per-record",
+            cycle.join(", ")
+        );
+        let mut tail: Vec<ProofRec> = by_name.into_values().collect();
+        tail.sort_by(|a, b| a.rule.cmp(&b.rule));
+        out.extend(tail);
+    }
     out
 }
 

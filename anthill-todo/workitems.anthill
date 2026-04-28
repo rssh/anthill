@@ -914,3 +914,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T14:14:47Z"))
 
+fact WorkItem(
+  id: "WI-130",
+  description: "Proposal 030 phase γ.3 — topological ordering of proof discharge. Per phase γ.3 of docs/proposals/030-theorem-registry.md: prove discharges in dependency order — citers wait for cited. Today's collect_proof_records sort_by(rule.cmp) is alphabetical; for lf1 this happens to put cited rules first because of naming, but a rename would break the within-invocation chain (γ.2's discharged_this_run wouldn't have the cite ready). Implement Kahn's topological sort over the  graph; cycle = load-time error. Acceptance: cargo-test passes; new test verifies a chain (B uses A) with B coming first alphabetically still discharges in the right order (A first, then B); a circular-using pair errors loudly.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T14:18:22Z"))
+
