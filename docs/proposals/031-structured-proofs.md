@@ -50,40 +50,55 @@ This proposal commits to **Framing B**. The structured-proof tactic is a single 
 
 ## Design
 
-### Source syntax
+### Source syntax — no new keywords
 
-A structured proof body has two shapes:
+A structured proof body is a sequence of inner `rule` declarations followed by a final `using ... by ...` discharge. Reuses the existing `rule`, `:-`, `-:`, `by`, `using`, `end` keywords; no new ones.
 
 ```anthill
 proof X
-  step h1: <claim>
+  rule h1: <head>
+    :- <premises>
+    -: <conclusion>
     [using <cite-list>]
     by <tactic>
-  step h2: <claim>
+
+  rule h2: <head>
+    :- <premises>
+    -: <conclusion>
     by <tactic>
-  -- ...
-  conclude
-    [using <cite-list>]
-    by <tactic>
+
+  -- ... more inner rules
+
+  -- Final discharge of the enclosing lemma's own `-:` conclusion,
+  -- citing the inner rules by label. No `rule` introducer here —
+  -- this clause has no head.
+  using h1, h2, ...
+  by <tactic>
 end
 ```
 
-Each `step` declares a named intermediate claim (`h_i: <term>`) and a tactic for discharging it. The tactic can be any of the existing kinds (`z3`, `derivation`, `trust`, induction, ranking) or new ones added later.
+**Inner-rule semantics:** each `rule h_i: ... by <tactic>` inside a proof block is a *step* — a local lemma scoped to this proof. The kernel discharges it via the per-step tactic, exactly as a top-level `proof h_i by <tactic> end` would. Each step's witness goes into the structured proof's MetaCompose sub-list. Step cite-resolution (`using h_3, ...` from a later step) consults the same in-flight registry the top-level `using` chain does.
 
-`conclude` discharges the lemma's own `-:` conclusion under all the accumulated `step` hypotheses. The cite-list and tactic on `conclude` apply to the final discharge.
+**Concluding clause:** the trailing `using ... by <tactic>` (no `rule` introducer) discharges the enclosing proof's lemma — the rule whose name appears after `proof <name>`. The `using` cite-list typically references the inner-rule labels (`h_1`, `h_2`, …) so the chain's intermediate facts are asserted as hypotheses for the final discharge.
+
+The inner-rule form mirrors the top-level rule form exactly. There's nothing new to learn syntactically — a proof block is a sequence of mini-rules + a final discharge clause.
+
+### Disambiguation: structured vs. single-tactic
+
+A `proof X` block is **structured** iff it contains at least one inner `rule` declaration. Otherwise it's the existing single-tactic form (`proof X by <tactic> end`). The grammar can detect this by lookahead — `proof X` followed by `rule` or `by` chooses the right parse.
 
 ### Discharge semantics
 
-For each step `h_i: claim_i by tactic_i`:
+For each inner rule `rule h_i: ... by tactic_i`:
 
-1. Build the discharge context: the target rule's body, plus all previously-asserted step claims `h_1`, …, `h_{i-1}` as hypotheses.
-2. Run `tactic_i` to produce a witness `w_i` for `claim_i` under that context. The witness is whatever shape `tactic_i` produces — `SmtDischarge` for z3, `SldDerivation` for derivation, `TrustedAxiom` for trust, etc.
-3. Each step's witness is a real witness in the kernel-checked sense. β's check pass replays it.
+1. Build the discharge context: the enclosing lemma's body, plus all previously-asserted inner rules' conclusions `h_1`, …, `h_{i-1}` as hypotheses.
+2. Run `tactic_i` to produce a witness `w_i` for the inner rule's `-:` conclusion under that context. The witness is whatever shape `tactic_i` produces — `SmtDischarge` for z3, `SldDerivation` for derivation, `TrustedAxiom` for trust, etc.
+3. Each inner rule's witness is a real witness in the kernel-checked sense. β's check pass replays it.
 
-For `conclude by tactic`:
+For the trailing `using <cites> by <tactic>` clause:
 
-1. Build the same context plus all step hypotheses.
-2. Discharge the rule's `-:` conclusion under that context.
+1. Build the same context plus all inner-rule hypotheses (added via the inner-rule labels `h_1`, …, `h_n` in the `using` list).
+2. Discharge the enclosing lemma's `-:` conclusion under that context.
 3. Produce the final witness.
 
 The structured-proof tactic packages all witnesses into a `MetaCompose`:
@@ -91,11 +106,11 @@ The structured-proof tactic packages all witnesses into a `MetaCompose`:
 ```rust
 ProofWitness::MetaCompose {
   tactic_name: "structured".into(),
-  sub: vec![w_1, w_2, ..., w_n, w_conclude],
+  sub: vec![w_1, w_2, ..., w_n, w_final],
 }
 ```
 
-β.3's MetaCompose checker recurses on each sub-witness. β.6's trust aggregation propagates trust flags through the whole tree. γ.1's cite gate applies per-step (cited rules in `using` lists must be Discharged).
+β.3's MetaCompose checker recurses on each sub-witness. β.6's trust aggregation propagates trust flags through the whole tree. γ.1's cite gate applies per inner rule (cited rules in their `using` lists must be Discharged).
 
 ### Hypothesis splicing — the load-bearing mechanism
 
@@ -183,7 +198,7 @@ The CLI's prove driver dispatches structured proofs to a new `dispatch_structure
 
 ## Concrete worked example: step_distance_lemma in lf1
 
-The current setup in `safety_common.anthill` is split:
+The current by-trust step_distance_lemma in `safety_common.anthill`:
 
 ```anthill
 rule step_distance_lemma(?w)
@@ -198,55 +213,64 @@ proof step_distance_lemma
 end
 ```
 
-becomes a single `lemma` block colocating claim + proof:
+becomes a structured proof using only inner `rule` declarations + a trailing `using ... by ...` clause:
 
 ```anthill
-lemma step_distance_lemma
-  :- distance_at_step(?k, ?d_prev),
-     ?k_next = ?k + 1,
-     distance_at_step(?k_next, ?d_next),
-     ?w = ?d_next - ?d_prev
-  -: lte(abs(?d_next - ?d_prev), ?delta)
-
-  -- Step 1: distance_at_step is the norm of position difference.
+proof step_distance_lemma
+  -- h1: distance_at_step is the norm of position difference.
   -- Definitional unfolding via SLD against position_distance rule.
-  step h1: distance_at_step(?k, ?d_prev) ⇒ ?d_prev = ‖p_L(k) − p_F(k)‖
+  rule h1: distance_at_step(?k, ?d_prev)
+    -: ?d_prev = norm_of_pose_diff(?k)
     by sld
 
-  -- Step 2: transition rule + algebraic substitution.
-  step h2: p_L(k+1) − p_F(k+1) = (p_L(k) − p_F(k)) + (v_L(k) − v_F(k)) · T_c
+  -- h2: transition rule + algebraic substitution.
+  rule h2
+    -: p_L(?k+1) − p_F(?k+1) = (p_L(?k) − p_F(?k)) + (v_L(?k) − v_F(?k)) · ?T_c
     by z3(logic: "QF_LRA")
 
-  -- Step 3: reverse triangle inequality. The geometric leaf.
-  step h3: |‖p_L(k+1) − p_F(k+1)‖ − ‖p_L(k) − p_F(k)‖| ≤ ‖(v_L − v_F) · T_c‖
+  -- h3: reverse triangle inequality. The geometric leaf.
+  rule h3
+    :- norm_of_pose_diff(?k_next) - norm_of_pose_diff(?k)
+    -: lte(abs(...), norm((v_L − v_F) · T_c))
     using triangle_inequality
     by z3(logic: "NRA")
 
-  -- Step 4: scalar homogeneity of norm.
-  step h4: ‖(v_L − v_F) · T_c‖ = T_c · ‖v_L − v_F‖
+  -- h4: scalar homogeneity of norm.
+  rule h4
+    -: norm((v_L − v_F) · T_c) = T_c · norm(v_L − v_F)
     by trust(reason: "Scalar homogeneity of Euclidean norm")
 
-  -- Step 5: triangle on velocity diff + envelope.
-  step h5: T_c · ‖v_L − v_F‖ ≤ T_c · (‖v_L‖ + ‖v_F‖)
+  -- h5: triangle on velocity diff.
+  rule h5
+    -: lte(T_c · norm(v_L − v_F), T_c · (norm(v_L) + norm(v_F)))
     using triangle_inequality
     by z3(logic: "QF_NRA")
 
-  -- Step 6: velocity envelope (the genuinely physical claim).
-  step h6: T_c · (‖v_L‖ + ‖v_F‖) ≤ T_c · (v_L_max + v_F_max)
+  -- h6: velocity envelope (the genuinely physical claim).
+  rule h6
+    -: lte(T_c · (norm(v_L) + norm(v_F)), T_c · (?vL_max + ?vF_max))
     using velocity_envelope
     by z3(logic: "QF_LRA")
 
-  -- Step 7: collapse to delta.
-  step h7: T_c · (v_L_max + v_F_max) = ?delta
+  -- h7: collapse to delta.
+  rule h7: step_distance_bound(?delta)
+    -: T_c · (?vL_max + ?vF_max) = ?delta
     by sld
 
-  -- Conclude: chain h1..h7 yields the lemma's `-:` conclusion.
-  conclude
-    by z3(logic: "QF_LRA")
+  -- Final discharge: chain h1..h7 yields the lemma's `-:`.
+  using h1, h2, h3, h4, h5, h6, h7
+  by z3(logic: "QF_LRA")
 end
 ```
 
-The claim (lines 2-6) and proof (lines 8-onwards) sit in one block. The lemma is still citable from elsewhere — `using step_distance_lemma` resolves through the registry exactly as it would with the split form — but the source-level reading is unified: the claim's free vars (`?k`, `?d_prev`, `?d_next`, `?delta`) flow into the `step` claims directly without any name-resolution gymnastics.
+The proof block is a sequence of mini-rules each with its own `by <tactic>`, followed by a trailing `using ... by ...` that discharges the enclosing lemma's `-:` conclusion citing the inner rules by label. No new keywords — every form is reused from the existing rule grammar.
+
+The trust report after this lands lists three named trust dependencies:
+- `triangle_inequality` (cited by h3 and h5; from its own proof block).
+- h4 (`Scalar homogeneity of Euclidean norm`; trusted in this proof).
+- `velocity_envelope` (cited by h6; from its own proof block).
+
+Versus today's "step_distance_lemma is opaquely trusted" — finer-grained, audit-friendly. Mechanical backends (dReal, KeYmaera X) replace per-step `by trust(...)` with per-step `by dreal(...)` without changing the proof's structure.
 
 The trust report (`anthill check --report-trust`) now lists:
 - `step_distance_lemma`: trusted via h4 (scalar norm homogeneity).
@@ -281,80 +305,87 @@ Three named, audit-friendly trust dependencies — finer-grained than today's "t
 - d.1 Rewrite `step_distance_lemma`'s discharge as a structured proof per the worked example above. Verify three trust dependencies surface in `--report-trust`.
 - d.2 Document the per-step trust → mechanical-discharge promotion path: replacing a step's `by trust(...)` with `by z3(...)` or `by dreal(...)` (when dReal lands) doesn't change the proof's structure; only that step's witness shape flips.
 
-## Grammar changes
+## Grammar changes — no new keywords
 
-Add to `proof_body`:
-
-```js
-structured_proof_body: $ => seq(
-  repeat1($.proof_step),
-  $.proof_conclude,
-),
-
-proof_step: $ => seq(
-  'step',
-  field('name', $.name),
-  ':',
-  field('claim', $._term),
-  optional(seq('using', $.name_list)),
-  optional(seq('by', field('tactic', $.proof_strategy))),
-),
-
-proof_conclude: $ => seq(
-  'conclude',
-  optional(seq('using', $.name_list)),
-  optional(seq('by', field('tactic', $.proof_strategy))),
-),
-```
-
-Two new keywords: `step` and `conclude`. Both reserved within proof-body context only.
-
-### `lemma` block — colocated rule + structured proof
-
-For lemmas whose only role is to be proved (no external `using`-citers), the split between `rule` declaration and `proof` block is ceremony. Add a new top-level `lemma` declaration that combines both:
+The structured proof body reuses `rule`, `:-`, `-:`, `by`, `using`, `end` — all already in the language. Extend `proof_body` to accept a sequence of inner rule declarations followed by an optional trailing `using ... by ...` clause:
 
 ```js
-lemma_declaration: $ => seq(
-  'lemma',
-  field('name', $.name),
+// Existing: proof X by <tactic> end
+// New: proof X (rule h: ... by ...)+ [using ... by ...] end
+
+proof_body: $ => choice(
+  // single-tactic form (existing)
+  seq(
+    optional(seq('using', $.name_list)),
+    'by',
+    field('tactic', $.proof_strategy),
+  ),
+  // structured form (new): inner rules + trailing discharge
+  seq(
+    repeat1($.inner_rule_step),
+    optional($.proof_concluding_clause),
+  ),
+),
+
+// Same shape as a top-level rule_declaration but with mandatory `by`.
+inner_rule_step: $ => seq(
+  'rule',
+  optional(seq(field('label', $.name), ':')),
+  field('head', $.rule_head),
   optional(seq(':-', field('body', $.rule_body))),
   optional(seq('-:', field('conclusion', $.rule_body))),
   optional($.meta_block),
-  $.structured_proof_body,
-  'end',
+  optional(seq('using', $.name_list)),
+  'by',
+  field('tactic', $.proof_strategy),
+),
+
+// Trailing discharge of the enclosing lemma's `-:` conclusion.
+proof_concluding_clause: $ => seq(
+  optional(seq('using', $.name_list)),
+  'by',
+  field('tactic', $.proof_strategy),
 ),
 ```
 
-The loader desugars `lemma X :- … -: … [meta] step … conclude … end` into two declarations:
+Disambiguation: the parser distinguishes structured from single-tactic by lookahead. `proof X by ...` is single-tactic; `proof X rule ...` is structured.
 
-1. `rule X :- … -: … [meta]` — the rule (with whatever attributes the lemma carries).
-2. `proof X` with `ProofBody::Structured(steps, conclude)` — the discharge.
+The grammar gains exactly **zero new keywords**. `inner_rule_step` is structurally identical to a top-level `rule_declaration` plus a mandatory tactic — same `:-`, `-:`, `by`, `using`, `meta_block` clauses. The loader recognises the inner-rule context (it's inside a `proof X` block, not at top level) and treats each one as a step in the structured discharge.
 
-Both go through the existing convert + load paths. The rule remains citable via `using X` from any consumer; the witness machinery is unchanged. The user-visible payoff is *colocation*: the lemma's claim and discharge live in one source block, reading top-to-bottom as "here's what we're proving, here's how."
+### Optional colocation: trailing `proof` block on a rule
 
-The Coq parallel:
+When a rule's only role is to be proved (no external `using`-citers), the split between `rule X :- ... -: ...` and `proof X ... end` is ceremony. Optionally extend `rule_declaration` to accept a trailing `proof ... end` block:
+
+```js
+rule_declaration: $ => seq(
+  /* existing fields */,
+  optional($.meta_block),
+  // new: optional trailing proof block, no name (implicitly proves
+  // the enclosing rule).
+  optional(seq(
+    'proof',
+    $.proof_body,
+    'end',
+  )),
+),
 ```
-Theorem step_distance_lemma : forall k d_prev d_next, …
-  -> abs (d_next - d_prev) <= delta.
-Proof.
-  intros.
-  apply triangle_inequality.
-  …
-Qed.
-```
 
-Anthill's `lemma` is the same idea — combined claim + proof, parsed-and-loaded as if the user wrote both pieces separately.
+`rule X :- … -: … proof <body> end` desugars at load time into:
+1. The rule X declaration (without the trailing proof).
+2. A separate `proof X` block with the same body.
 
-Two new keywords: `lemma` (top-level) and `end` (already a keyword closing many block constructs). `step` and `conclude` remain proof-body-context keywords.
+Both go through the existing convert + load paths. Reuses `proof` and `end` keywords; no new ones. The user-visible payoff is colocation; the kernel-level effect is identical to writing them separately.
 
 ### Choosing between forms
 
 | Form | When to use |
 |---|---|
-| `rule X …` + `proof X …` | X is reusable elsewhere; the rule statement deserves emphasis (a top-level theorem). |
-| `lemma X …` (combined) | X is internal; only the proof discharges it; no external citers. |
+| `rule X …` + separate `proof X …` | X is reusable; the rule statement deserves emphasis. |
+| `rule X … proof <body> end` (trailing) | X is internal; only the proof discharges it. |
+| `proof X by <tactic> end` (single-tactic) | The rule's discharge is one solver invocation. |
+| `proof X rule h1 ... rule hn ... using h1..hn by ... end` (structured) | The discharge needs multi-step composition. |
 
-Both produce the same registry membership and witness shape; the choice is documentary.
+All produce the same registry membership and witness shape; the choice is documentary.
 
 ## Out of scope
 
