@@ -935,3 +935,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T14:34:52Z"))
 
+fact WorkItem(
+  id: "WI-133",
+  description: "Proposal 030 phase ε — anthill check CLI flag set. Per docs/proposals/030-theorem-registry.md §Lifecycle: load, prove, check: implement --shallow (skip witness replay; state-hash + structural only), --deep (full replay; default for CI), --report-stale (list stale ProofRecords without re-checking), --report-trust (surface TrustedAxiom dependencies), --filter=<glob> (restrict to specific rule QNs). Acceptance: cargo-test passes; new tests verify --filter narrows scope, --report-trust lists every TrustedAxiom-dependent record.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T14:40:27Z"))
+

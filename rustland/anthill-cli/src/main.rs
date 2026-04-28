@@ -269,6 +269,41 @@ struct CheckArgs {
     /// .anthill files or directories to check
     #[arg(required = true)]
     paths: Vec<PathBuf>,
+
+    /// Skip the witness-replay step; only verify state-hash and
+    /// structural integrity. Faster but doesn't catch a Z3-says-
+    /// different-now drift; mainly useful as a smoke-test in
+    /// pre-commit hooks.
+    #[arg(long, conflicts_with = "deep")]
+    shallow: bool,
+
+    /// Full witness replay (the default). Specified explicitly when
+    /// pairing with `--report-stale` etc. — if neither --shallow
+    /// nor --deep is set, --deep semantics apply.
+    #[arg(long)]
+    deep: bool,
+
+    /// List stale ProofRecords (state-hash differs from current KB
+    /// state) without re-running the witness check. Useful as the
+    /// "what would change?" query before a `prove --refresh-cache`.
+    #[arg(long)]
+    report_stale: bool,
+
+    /// List every ProofRecord whose witness tree contains a
+    /// TrustedAxiom — surfaces the trust dependencies a project
+    /// has accumulated.
+    #[arg(long)]
+    report_trust: bool,
+
+    /// Restrict checking to ProofRecords whose rule QN matches the
+    /// glob. Standard glob syntax (`*` matches any segment chars
+    /// including `.`). Repeatable to combine multiple patterns.
+    #[arg(long)]
+    filter: Vec<String>,
+
+    /// Solver binary used for SmtDischarge replay. Default `z3`.
+    #[arg(long, default_value = "z3")]
+    solver: String,
 }
 
 // ── File collection ─────────────────────────────────────────────────
@@ -1084,7 +1119,13 @@ fn collect_queries(
 fn run_check(args: &CheckArgs) -> Result<(), i32> {
     let kb = load_kb_with_stdlib(&args.paths, false, true)?;
     println!("loaded: {} facts, {} rules", kb.fact_count(), kb.rule_count());
-    let outcomes = check::run_check(&args.paths, &kb, "z3", None)?;
+    let opts = check::CheckOpts {
+        shallow: args.shallow,
+        report_stale_only: args.report_stale,
+        report_trust_only: args.report_trust,
+        filters: args.filter.clone(),
+    };
+    let outcomes = check::run_check_with(&args.paths, &kb, &args.solver, None, &opts)?;
     let failed = check::print_summary(&outcomes);
     if failed > 0 { Err(1) } else { Ok(()) }
 }

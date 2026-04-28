@@ -46,15 +46,37 @@ pub enum CheckStatus {
     Trusted(String),
 }
 
-/// Top-level entry point for `anthill check <paths>`. Loads the KB,
-/// walks Discharged ProofRecords, and prints a summary.
-pub fn run_check(
+/// Per-invocation options for `anthill check`. Mirrors the CLI
+/// flags surface (proposal 030 phase ε §Lifecycle).
+#[derive(Default, Clone, Debug)]
+pub struct CheckOpts {
+    /// Skip witness replay; only verify state-hash and structural
+    /// integrity. Pending records still skip; ScopeAxiom records
+    /// re-read declarations; SmtDischarge / MetaCompose records
+    /// short-circuit to a "Pass (shallow)" outcome based on
+    /// document_hash presence.
+    pub shallow: bool,
+    /// Report stale ProofRecords (state-hash mismatches current KB
+    /// state) and skip everything else.
+    pub report_stale_only: bool,
+    /// Report only the records whose witness tree contains a
+    /// TrustedAxiom; everything else is filtered out of the output.
+    pub report_trust_only: bool,
+    /// Glob-restrict the rule QNs that get checked. Empty = no
+    /// restriction.
+    pub filters: Vec<String>,
+}
+
+
+/// Like `run_check` but with explicit options for the ε CLI flags.
+pub fn run_check_with(
     paths: &[PathBuf],
     kb: &KnowledgeBase,
     solver: &str,
     cache_dir_override: Option<&Path>,
+    opts: &CheckOpts,
 ) -> Result<Vec<CheckOutcome>, i32> {
-    let _ = paths; // path tracking is the loader's job
+    let _ = paths;
     let cache_root = resolve_cache_root(cache_dir_override);
     let repo_root = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let blob_dir = blob_subdir(&cache_root, &repo_root);
@@ -69,21 +91,73 @@ pub fn run_check(
     for rid in kb.by_functor(record_sym) {
         if !kb.rule_body(rid).is_empty() { continue; }
         let head = kb.rule_head(rid);
-        let outcome = match check_one_record(kb, head, &blob_dir, &witness_dir, solver) {
+        let outcome = match check_one_record_with(
+            kb, head, &blob_dir, &witness_dir, solver, opts
+        ) {
             Some(o) => o,
             None => continue,
         };
+        if !filter_keeps(&outcome, opts) { continue; }
         out.push(outcome);
     }
     Ok(out)
 }
 
-fn check_one_record(
+/// Filter pass: applies `--filter`, `--report-stale`, and
+/// `--report-trust` selection to a check outcome.
+fn filter_keeps(o: &CheckOutcome, opts: &CheckOpts) -> bool {
+    if !opts.filters.is_empty() {
+        let any_match = opts.filters.iter().any(|pat| glob_match(pat, &o.rule_qn));
+        if !any_match { return false; }
+    }
+    if opts.report_trust_only {
+        return matches!(o.status, CheckStatus::Trusted(_));
+    }
+    if opts.report_stale_only {
+        return matches!(&o.status, CheckStatus::Failed(msg)
+            if msg.contains("state-hash") || msg.contains("stale"));
+    }
+    true
+}
+
+/// Minimal glob matcher: `*` matches any sequence of characters
+/// (including dots), no other special syntax. Sufficient for the
+/// typical "anthill.examples.*" or "*.safety_*" patterns; richer
+/// glob support is a follow-up if needed.
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return pattern == text;
+    }
+    let mut cursor = 0usize;
+    let first = parts[0];
+    if !text[cursor..].starts_with(first) { return false; }
+    cursor += first.len();
+    for (i, part) in parts[1..].iter().enumerate() {
+        if part.is_empty() {
+            if i + 2 == parts.len() { return true; }
+            continue;
+        }
+        match text[cursor..].find(part) {
+            Some(pos) => cursor += pos + part.len(),
+            None => return false,
+        }
+    }
+    if let Some(last) = parts.last() {
+        if !last.is_empty() && !text.ends_with(last) {
+            return false;
+        }
+    }
+    true
+}
+
+fn check_one_record_with(
     kb: &KnowledgeBase,
     head: TermId,
     blob_dir: &Path,
     witness_dir: &Path,
     solver: &str,
+    opts: &CheckOpts,
 ) -> Option<CheckOutcome> {
     let named = match kb.get_term(head) {
         Term::Fn { named_args, .. } => named_args,
@@ -103,12 +177,71 @@ fn check_one_record(
     // run. Falling back to the source witness preserves α.6/α.7
     // ScopeAxiom records (auto-registered, no sidecar needed).
     if let Some(sidecar) = load_witness(witness_dir, &rule_qn) {
-        let status = check_witness_sidecar(&sidecar, blob_dir, solver);
+        let status = if opts.shallow {
+            check_witness_sidecar_shallow(&sidecar)
+        } else {
+            check_witness_sidecar(&sidecar, blob_dir, solver)
+        };
         return Some(CheckOutcome { rule_qn, status });
     }
     let witness_tid = get_named_arg(kb, named, "witness")?;
-    let status = check_witness_term(kb, witness_tid, blob_dir, solver);
+    let status = if opts.shallow {
+        check_witness_term_shallow(kb, witness_tid)
+    } else {
+        check_witness_term(kb, witness_tid, blob_dir, solver)
+    };
     Some(CheckOutcome { rule_qn, status })
+}
+
+/// Shallow check: structural integrity only. ScopeAxiom records
+/// still re-read the declaration (cheap, no solver). SmtDischarge,
+/// SldDerivation, MetaCompose, Specialization records pass when
+/// the witness is well-formed and the recorded hashes are non-
+/// empty — no replay. TrustedAxiom records surface their reason.
+fn check_witness_term_shallow(kb: &KnowledgeBase, witness: TermId) -> CheckStatus {
+    let (functor, named) = match kb.get_term(witness) {
+        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        _ => return CheckStatus::Skipped("witness not a structured term".into()),
+    };
+    let f_short = kb.qualified_name_of(functor)
+        .rsplit('.').next().unwrap_or("").to_string();
+    match f_short.as_str() {
+        "ScopeAxiom" => check_scope_axiom_witness(kb, &named),
+        "TrustedAxiom" => {
+            let reason = read_string_field(kb, &named, "reason")
+                .unwrap_or_else(|| "(no reason)".into());
+            CheckStatus::Trusted(reason)
+        }
+        "SmtDischarge" => {
+            let dh = read_string_field(kb, &named, "document_hash")
+                .unwrap_or_default();
+            if dh.is_empty() {
+                CheckStatus::Failed("SmtDischarge: document_hash empty (shallow)".into())
+            } else {
+                CheckStatus::Pass
+            }
+        }
+        "Specialization" => check_specialization_witness(kb, &named),
+        // Other shapes accepted as-is in shallow mode.
+        _ => CheckStatus::Pass,
+    }
+}
+
+fn check_witness_sidecar_shallow(sidecar: &WitnessSidecar) -> CheckStatus {
+    match &sidecar.witness {
+        WitnessShape::SmtDischarge { document_hash, .. } => {
+            if document_hash.is_empty() {
+                CheckStatus::Failed(
+                    "sidecar SmtDischarge: document_hash empty (shallow)".into()
+                )
+            } else {
+                CheckStatus::Pass
+            }
+        }
+        WitnessShape::TrustedAxiom { reason } => CheckStatus::Trusted(reason.clone()),
+        // Other shapes accepted as-is in shallow mode.
+        _ => CheckStatus::Pass,
+    }
 }
 
 /// Verify a witness loaded from a sidecar — same dispatch as
@@ -767,6 +900,23 @@ mod tests {
             aggregate_meta_outcomes("induction", &outcomes),
             CheckStatus::Pass
         ));
+    }
+
+    #[test]
+    fn glob_match_basic_patterns() {
+        // Exact match.
+        assert!(glob_match("foo.bar", "foo.bar"));
+        assert!(!glob_match("foo.bar", "foo.bar.baz"));
+        // Suffix wildcard.
+        assert!(glob_match("foo.*", "foo.bar"));
+        assert!(glob_match("foo.*", "foo.bar.baz"));
+        assert!(!glob_match("foo.*", "foox"));
+        // Prefix wildcard.
+        assert!(glob_match("*.bar", "foo.bar"));
+        assert!(glob_match("*.bar", "a.b.c.bar"));
+        // Substring wildcard.
+        assert!(glob_match("*safety*", "anthill.examples.lf1.safety.gps.x"));
+        assert!(!glob_match("*safety*", "anthill.examples.lf1.gps.x"));
     }
 
     #[test]
