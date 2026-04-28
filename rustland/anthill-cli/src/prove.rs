@@ -165,6 +165,8 @@ struct ProofSyms {
     open: Option<Symbol>,
     cons: Option<Symbol>,
     named_arg: Option<Symbol>,
+    scope_axiom: Option<Symbol>,
+    specialization: Option<Symbol>,
 }
 
 impl ProofSyms {
@@ -173,6 +175,10 @@ impl ProofSyms {
             open: kb.try_resolve_symbol("anthill.realization.ProofStrategyOpen"),
             cons: kb.try_resolve_symbol("anthill.prelude.List.cons"),
             named_arg: kb.try_resolve_symbol("named_arg"),
+            scope_axiom: kb.try_resolve_symbol(
+                "anthill.realization.witness.ProofWitness.ScopeAxiom"),
+            specialization: kb.try_resolve_symbol(
+                "anthill.realization.witness.ProofWitness.Specialization"),
         }
     }
 }
@@ -199,12 +205,36 @@ fn read_proof_record(kb: &KnowledgeBase, syms: &ProofSyms, term_id: TermId) -> O
         Term::Fn { named_args, .. } => named_args,
         _ => return None,
     };
+    // Auto-registered ScopeAxiom / Specialization records (proposal
+    // 030 phase α.6+) are kernel-managed: they exist as ProofRecord
+    // facts so phase β can verify them, but the user-facing prove
+    // driver should not "discharge" them like ordinary proof blocks.
+    if has_auto_registered_witness(kb, syms, named) {
+        return None;
+    }
     let rule = lookup_string(kb, named, "rule")?;
     let strategy = read_strategy(kb, syms, get_named_arg(kb, named, "strategy")?);
     let using = get_named_arg(kb, named, "using")
         .map(|tid| read_string_list(kb, syms, tid))
         .unwrap_or_default();
     Some(ProofRec { rule, strategy, using })
+}
+
+fn has_auto_registered_witness(
+    kb: &KnowledgeBase,
+    syms: &ProofSyms,
+    named: &smallvec::SmallVec<[(Symbol, TermId); 2]>,
+) -> bool {
+    let witness_tid = match get_named_arg(kb, named, "witness") {
+        Some(t) => t,
+        None => return false,
+    };
+    let witness_functor = match kb.get_term(witness_tid) {
+        Term::Fn { functor, .. } => *functor,
+        _ => return false,
+    };
+    Some(witness_functor) == syms.scope_axiom
+        || Some(witness_functor) == syms.specialization
 }
 
 /// Walk a `cons(head: <String const>, tail: ...)` list and collect

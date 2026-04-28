@@ -815,3 +815,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T11:10:03Z"))
 
+fact WorkItem(
+  id: "WI-116",
+  description: "Proposal 030 phase α.6 — auto-register requires clauses as ProofRecords with ScopeAxiom witness. Per phase α.6 of docs/proposals/030-theorem-registry.md: at sort/operation load time, for each 'requires <SE>' clause inside scope S, the loader emits a synthetic ProofRecord fact with: rule = '<S-qn>.requires.<SE-flat>'; strategy = ProofStrategyOpen; body = ProofBodyNone; result = Discharged; witness = ScopeAxiom(scope_kind: 'sort' | 'operation', scope_qn: <S-qn>, aspect: 'requires.<SE-flat>'); state_hash = canonical hash of S's declaration; dependencies = []; using = []; parametric_context = derived from enclosing abstract sorts (empty for non-parametric). Sort-Expr flattening: 'Eq[T]' → 'Eq_T', 'Foo[A, B]' → 'Foo_A_B', etc. Idempotent — re-loading the same source produces the same ProofRecord QN. Acceptance: cargo-test passes; new test verifies a sort with a requires clause gets a Discharged ProofRecord with the expected witness shape.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T11:37:49Z"))
+

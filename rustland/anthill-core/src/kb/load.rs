@@ -1195,6 +1195,7 @@ fn load_phase(
         }
     }
     resolve_instantiations(kb);
+    register_requires_axiom_witnesses(kb);
     all_errors.extend(super::typing::type_check_sorts(kb, &all_sorts));
     if all_errors.is_empty() {
         Ok(LoadResult { defined_sorts: all_sorts })
@@ -1502,6 +1503,275 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
                 kb.mark_requires_resolved(new_rid);
             }
         }
+    }
+}
+
+/// Proposal 030 phase α.6: emit a synthetic `ProofRecord` fact for
+/// every `requires <SE>` clause in a sort or operation declaration.
+/// The witness is `ScopeAxiom(scope_kind, scope_qn, aspect)` —
+/// definitionally checkable by re-reading the source declaration.
+///
+/// Naming: `<scope-qn>.requires.<SE-flat>` where `<SE-flat>` is the
+/// spec's base sort short-name plus binding-value short-names sorted
+/// by binding key. So `requires Eq[T]` inside `algebra.A` becomes
+/// `algebra.A.requires.Eq_T`; `requires Monoid[T = Int]` becomes
+/// `<scope>.requires.Monoid_Int`.
+///
+/// Records land with `result = Pending` for now — phase β's witness
+/// checker transitions them to `Discharged` once the structural
+/// dispatch on `aspect` confirms the cited declaration is present.
+/// State hash is the sentinel `"scope-axiom"` since these records
+/// have no SLD/SMT dep slice; staleness is detected by re-reading
+/// the declaration directly during β.4 checking.
+///
+/// Idempotent: if a ProofRecord with the same `rule` field already
+/// exists in the KB (e.g. a previous load_phase already registered
+/// it), the auto-registration is skipped to avoid duplicate facts.
+fn register_requires_axiom_witnesses(kb: &mut KnowledgeBase) {
+    let requires_info_sym = match kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") {
+        Some(s) => s,
+        None => return,
+    };
+    let record_sym = match kb.try_resolve_symbol("anthill.realization.ProofRecord") {
+        Some(s) => s,
+        None => return,
+    };
+    let pending_sym = match kb.try_resolve_symbol(
+        "anthill.realization.ObligationStatus.Pending"
+    ) {
+        Some(s) => s,
+        None => return,
+    };
+    let strategy_open_sym = match kb.try_resolve_symbol(
+        "anthill.realization.ProofStrategyOpen"
+    ) {
+        Some(s) => s,
+        None => return,
+    };
+    let body_none_sym = match kb.try_resolve_symbol(
+        "anthill.realization.ProofBodyNone"
+    ) {
+        Some(s) => s,
+        None => return,
+    };
+    let scope_axiom_sym = match kb.try_resolve_symbol(
+        "anthill.realization.witness.ProofWitness.ScopeAxiom"
+    ) {
+        Some(s) => s,
+        None => return,
+    };
+    let nil_sym = match kb.try_resolve_symbol("anthill.prelude.List.nil") {
+        Some(s) => s,
+        None => return,
+    };
+
+    let sort_ref_field = kb.intern("sort_ref");
+    let spec_field = kb.intern("spec");
+    let rule_arg = kb.intern("rule");
+    let strategy_arg = kb.intern("strategy");
+    let body_arg = kb.intern("body");
+    let result_arg = kb.intern("result");
+    let deps_arg = kb.intern("dependencies");
+    let using_arg = kb.intern("using");
+    let witness_arg = kb.intern("witness");
+    let state_hash_arg = kb.intern("state_hash");
+    let parametric_context_arg = kb.intern("parametric_context");
+    let scope_kind_arg = kb.intern("scope_kind");
+    let scope_qn_arg = kb.intern("scope_qn");
+    let aspect_arg = kb.intern("aspect");
+
+    let existing_rule_qns = collect_existing_proof_record_qns(kb, record_sym);
+    let requires_rids = kb.by_functor(requires_info_sym);
+    let mut new_records: Vec<TermId> = Vec::new();
+
+    for rid in requires_rids {
+        if !kb.rule_body(rid).is_empty() { continue; }
+        let head = kb.rule_head(rid);
+        let head_term = kb.get_term(head).clone();
+        let named = match head_term {
+            Term::Fn { named_args, .. } => named_args,
+            _ => continue,
+        };
+
+        let sort_ref_tid = match named.iter()
+            .find(|(s, _)| *s == sort_ref_field).map(|(_, t)| *t) {
+            Some(t) => t,
+            None => continue,
+        };
+        let spec_tid = match named.iter()
+            .find(|(s, _)| *s == spec_field).map(|(_, t)| *t) {
+            Some(t) => t,
+            None => continue,
+        };
+
+        let scope_qn = match qn_of_sort_ref(kb, sort_ref_tid) {
+            Some(q) => q,
+            None => continue,
+        };
+        let se_flat = match flatten_spec(kb, spec_tid) {
+            Some(s) => s,
+            None => continue,
+        };
+        let aspect_text = format!("requires.{se_flat}");
+        let rule_qn_text = format!("{scope_qn}.{aspect_text}");
+        if existing_rule_qns.contains(&rule_qn_text) { continue; }
+
+        let scope_kind_term = kb.alloc(Term::Const(Literal::String("sort".to_string())));
+        let scope_qn_term = kb.alloc(Term::Const(Literal::String(scope_qn.clone())));
+        let aspect_term = kb.alloc(Term::Const(Literal::String(aspect_text)));
+        let witness_term = kb.alloc(Term::Fn {
+            functor: scope_axiom_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (scope_kind_arg, scope_kind_term),
+                (scope_qn_arg, scope_qn_term),
+                (aspect_arg, aspect_term),
+            ]),
+        });
+        let strategy_term = kb.alloc(Term::Fn {
+            functor: strategy_open_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let body_term = kb.alloc(Term::Fn {
+            functor: body_none_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let pending_term = kb.alloc(Term::Fn {
+            functor: pending_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let nil_term = kb.alloc(Term::Fn {
+            functor: nil_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let rule_text_term = kb.alloc(Term::Const(Literal::String(rule_qn_text)));
+        let state_hash_term = kb.alloc(Term::Const(
+            Literal::String("scope-axiom".to_string())
+        ));
+
+        let record_term = kb.alloc(Term::Fn {
+            functor: record_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (rule_arg, rule_text_term),
+                (strategy_arg, strategy_term),
+                (body_arg, body_term),
+                (result_arg, pending_term),
+                (deps_arg, nil_term),
+                (using_arg, nil_term),
+                (witness_arg, witness_term),
+                (state_hash_arg, state_hash_term),
+                (parametric_context_arg, nil_term),
+            ]),
+        });
+        new_records.push(record_term);
+    }
+
+    if new_records.is_empty() { return; }
+    let record_sort_term = kb.make_name_term("anthill.realization.ProofRecord");
+    let global_term = kb.make_name_term("_global");
+    for rec in new_records {
+        kb.assert_fact(rec, record_sort_term, global_term, None);
+    }
+}
+
+/// Read the `rule` field of every existing `ProofRecord` fact so the
+/// auto-registration in `register_requires_axiom_witnesses` can skip
+/// duplicates.
+fn collect_existing_proof_record_qns(kb: &KnowledgeBase, record_sym: Symbol) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for rid in kb.by_functor(record_sym) {
+        if !kb.rule_body(rid).is_empty() { continue; }
+        let head = kb.rule_head(rid);
+        if let Term::Fn { named_args, .. } = kb.get_term(head) {
+            if let Some(tid) = super::typing::get_named_arg(kb, named_args, "rule") {
+                if let Term::Const(Literal::String(s)) = kb.get_term(tid) {
+                    out.insert(s.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Resolve a `SortRequiresInfo.sort_ref` term to the qualified name
+/// of the enclosing scope (sort or operation). Returns the canonical
+/// `qualified_name` rather than the short display name so the
+/// emitted ProofRecord rule QN is project-unique.
+fn qn_of_sort_ref(kb: &KnowledgeBase, term: TermId) -> Option<String> {
+    match kb.get_term(term) {
+        Term::Fn { functor, .. } => Some(kb.qualified_name_of(*functor).to_owned()),
+        Term::Ref(s) | Term::Ident(s) => Some(kb.qualified_name_of(*s).to_owned()),
+        _ => None,
+    }
+}
+
+/// Flatten a `SortRequiresInfo.spec` term to the deterministic
+/// short-name signature used in `requires.<SE-flat>` rule QNs. For
+/// `SortView(Eq, T = X)` the result is `Eq_<short(X)>`. For a plain
+/// nullary sort term `Foo`, the result is `Foo`. Bindings are sorted
+/// by their binding key short name to keep the encoding stable
+/// across reorderings. Operation auto-bindings (binding values that
+/// resolve to operation symbols) are filtered out — they are
+/// derived from `resolve_requires_bindings` and not user-written, so
+/// they should not pollute the SE-flat. Type-parameter and
+/// concrete-sort bindings remain.
+fn flatten_spec(kb: &KnowledgeBase, term: TermId) -> Option<String> {
+    use crate::intern::SymbolKind;
+    let term_ref = kb.get_term(term);
+    let (functor, pos_args, named_args) = match term_ref {
+        Term::Fn { functor, pos_args, named_args } =>
+            (*functor, pos_args.clone(), named_args.clone()),
+        _ => return None,
+    };
+    let functor_name = kb.resolve_sym(functor);
+    let functor_short = functor_name.rsplit('.').next().unwrap_or(functor_name);
+    if functor_short != "SortView" {
+        return Some(functor_short.to_owned());
+    }
+    let base_short = match pos_args.first().map(|t| kb.get_term(*t)) {
+        Some(Term::Fn { functor, .. }) | Some(Term::Ref(functor)) | Some(Term::Ident(functor)) => {
+            let n = kb.resolve_sym(*functor);
+            n.rsplit('.').next().unwrap_or(n).to_owned()
+        }
+        _ => return None,
+    };
+    let mut bindings: Vec<(String, String)> = named_args.iter().filter_map(|(k_sym, v_tid)| {
+        let value_sym = match kb.get_term(*v_tid) {
+            Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => Some(*functor),
+            _ => None,
+        };
+        // Skip operation auto-bindings — they aren't part of the
+        // user-written Sort-Expr.
+        if let Some(vs) = value_sym {
+            if matches!(kb.kind_of(vs), Some(SymbolKind::Operation)) {
+                return None;
+            }
+        }
+        let k_name = kb.resolve_sym(*k_sym);
+        let k_short = k_name.rsplit('.').next().unwrap_or(k_name).to_owned();
+        let v_short = match value_sym {
+            Some(s) => {
+                let n = kb.resolve_sym(s);
+                n.rsplit('.').next().unwrap_or(n).to_owned()
+            }
+            None => match kb.get_term(*v_tid) {
+                Term::Const(Literal::String(s)) => format!("str_{s}"),
+                _ => "_".to_string(),
+            },
+        };
+        Some((k_short, v_short))
+    }).collect();
+    bindings.sort_by(|a, b| a.0.cmp(&b.0));
+    if bindings.is_empty() {
+        Some(base_short)
+    } else {
+        let parts: Vec<String> = bindings.into_iter().map(|(_, v)| v).collect();
+        Some(format!("{base_short}_{}", parts.join("_")))
     }
 }
 
