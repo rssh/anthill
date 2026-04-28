@@ -254,7 +254,7 @@ namespace anthill.examples.lf1.safety.common
        ?k_next = ?k + 1,
        distance_at_step(?k_next, ?d_next),
        ?diff = ?d_next - ?d_curr,
-       lte(abs(?diff), ?delta_bound)
+       abs(?diff) <= ?delta_bound
        -- where ?delta_bound is `step_distance_bound` from the
        -- variant-specific safety file (gps / transponder).
 
