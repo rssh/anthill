@@ -1174,8 +1174,9 @@ fn parse_variable_with_description() {
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
         Item::Rule(r) => {
-            // Head should be a fn_term foo(?x)
-            match &r.head {
+            // Head should be a fn_term foo(?x). Single-head rule.
+            assert_eq!(r.heads.len(), 1, "expected single head");
+            match &r.heads[0] {
                 RuleHead::Term(tid) => {
                     match parsed.terms.get(*tid) {
                         Term::Fn { functor, pos_args, .. } => {
@@ -1355,7 +1356,8 @@ fn parse_variable_multiple_descriptions() {
     let parsed = parse::parse(source).expect("parse failed");
     match &parsed.items[0] {
         Item::Rule(r) => {
-            match &r.head {
+            assert_eq!(r.heads.len(), 1, "expected single head");
+            match &r.heads[0] {
                 RuleHead::Term(tid) => {
                     match parsed.terms.get(*tid) {
                         Term::Fn { pos_args, .. } => {
@@ -2110,9 +2112,12 @@ fn parse_rule_head_ir(expr: &str) -> (SimpleTermStore, anthill_core::intern::Sym
     let parsed = parse::parse(&source).expect("parse failed");
     // Extract the head term from the first rule item
     let head_tid = match &parsed.items[0] {
-        Item::Rule(r) => match &r.head {
-            anthill_core::parse::ir::RuleHead::Term(tid) => *tid,
-            _ => panic!("expected rule head term"),
+        Item::Rule(r) => {
+            assert_eq!(r.heads.len(), 1, "expected single head");
+            match &r.heads[0] {
+                anthill_core::parse::ir::RuleHead::Term(tid) => *tid,
+                _ => panic!("expected rule head term"),
+            }
         },
         other => panic!("expected Rule, got {:?}", std::mem::discriminant(other)),
     };

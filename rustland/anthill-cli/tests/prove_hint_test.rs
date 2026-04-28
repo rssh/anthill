@@ -32,16 +32,12 @@ fn hint_attributed_rule_auto_included_in_proof() {
         namespace test.hint.basic
           export bound_d, target
 
-          rule bound_d(?w)
-            :- gte(?x, 5.0),
-               ?w = ?x
-            -: gte(?x, 3.0)
+          rule bound_d: gte(?x, 3.0)
+            :- gte(?x, 5.0)
             [hint]
 
-          rule target(?w)
-            :- gte(?x, 5.0),
-               ?w = ?x
-            -: gte(?x, 3.0)
+          rule target: gte(?x, 3.0)
+            :- gte(?x, 5.0)
 
           proof bound_d
             by z3(logic: "LRA")

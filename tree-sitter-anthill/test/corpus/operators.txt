@@ -10,7 +10,7 @@ rule r: ?a + ?b
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (infix_term
         (variable_term
           (variable))
@@ -30,7 +30,7 @@ rule r: ?a + ?b * ?c
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (infix_term
         (variable_term
           (variable))
@@ -71,7 +71,7 @@ rule r: not ?a
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (prefix_term
         (variable_term
           (variable))))))
@@ -88,7 +88,7 @@ rule r: ?a | ?b & ?c
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (infix_term
         (variable_term
           (variable))
@@ -111,7 +111,7 @@ rule r: ?a != ?b
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (infix_term
         (variable_term
           (variable))
@@ -130,7 +130,7 @@ rule r: ?a -> ?b
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (infix_term
         (variable_term
           (variable))
@@ -150,7 +150,7 @@ rule r: ?a -> ?b @ ?c
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (infix_term
         (variable_term
           (variable))
@@ -172,7 +172,7 @@ rule r: !?a + ?b
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (infix_term
         (prefix_term
           (variable_term
@@ -193,7 +193,7 @@ rule r: ?a mod ?b
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (infix_term
         (variable_term
           (variable))

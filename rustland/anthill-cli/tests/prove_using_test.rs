@@ -65,15 +65,12 @@ fn proof_with_using_clause_dispatches_lemma_as_hypothesis() {
         namespace test.using.basic
           export bound_d, target_violation
 
-          rule bound_d(?w)
-            :- gte(?x, 5.0),
-               ?w = ?x
-            -: gte(?x, 3.0)
+          rule bound_d: gte(?x, 3.0)
+            :- gte(?x, 5.0)
 
-          rule target_violation(?w)
+          rule target_violation: ⊥
             :- gte(?x, 5.0),
-               lt(?x, 3.0),
-               ?w = ?x
+               lt(?x, 3.0)
 
           proof bound_d
             by z3(logic: "LRA")
@@ -111,15 +108,11 @@ fn citing_un_discharged_lemma_fails_loudly() {
         namespace test.using.no_record
           export some_rule, target
 
-          rule some_rule(?w)
-            :- gte(?x, 5.0),
-               ?w = ?x
-            -: gte(?x, 3.0)
+          rule some_rule: gte(?x, 3.0)
+            :- gte(?x, 5.0)
 
-          rule target(?w)
-            :- gte(?x, 0.0),
-               ?w = ?x
-            -: gte(?x, 0.0)
+          rule target: gte(?x, 0.0)
+            :- gte(?x, 0.0)
 
           proof target
             using some_rule

@@ -10,7 +10,7 @@ rule r: ()
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (tuple_literal))))
 
 =====================================
@@ -25,7 +25,7 @@ rule r: (1, 2, 3)
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (tuple_literal
         (integer_literal)
         (integer_literal)
@@ -43,7 +43,7 @@ rule r: (x: 1, y: 2)
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (tuple_literal
         (named_arg
           name: (identifier)
@@ -64,7 +64,7 @@ rule r: (?a, ?b)
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (tuple_literal
         (variable_term
           (variable))

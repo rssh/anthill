@@ -482,7 +482,7 @@ rule first: frs(?a, ?) = ?a
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (infix_term
         (fn_term
           name: (identifier)
@@ -606,7 +606,7 @@ rule test: foo(? {< an unknown value >} ?)
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (fn_term
         name: (identifier)
         (variable_term
@@ -625,7 +625,7 @@ rule test: bar(?x {< the x value >} ?, ?x)
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (fn_term
         name: (identifier)
         (variable_term
@@ -836,7 +836,7 @@ rule Effect[T = Read[?r]] :- Effect[T = Modify[?r]]
 
 (source_file
   (rule_declaration
-    head: (rule_head
+    heads: (rule_heads
       (instantiation_term
         name: (identifier)
         (sort_binding
@@ -929,7 +929,7 @@ rule test: foo(?x {< first desc >} {< second desc >} ?)
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (fn_term
         name: (identifier)
         (variable_term

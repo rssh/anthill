@@ -14,7 +14,7 @@ end
     name: (name
       (identifier))
     (rule_declaration
-      head: (rule_head
+      heads: (rule_heads
         (fn_term
           name: (identifier)
           (variable_term
@@ -46,7 +46,7 @@ end
     name: (name
       (identifier))
     (rule_declaration
-      head: (rule_head
+      heads: (rule_heads
         (fn_term
           name: (identifier)
           (variable_term
@@ -80,7 +80,7 @@ end
     name: (name
       (identifier))
     (rule_declaration
-      head: (rule_head
+      heads: (rule_heads
         (fn_term
           name: (identifier)
           (variable_term
@@ -120,7 +120,7 @@ end
     name: (name
       (identifier))
     (rule_declaration
-      head: (rule_head
+      heads: (rule_heads
         (fn_term
           name: (identifier)
           (variable_term
@@ -163,7 +163,7 @@ end
     name: (name
       (identifier))
     (rule_declaration
-      head: (rule_head
+      heads: (rule_heads
         (fn_term
           name: (identifier)
           (variable_term
@@ -266,7 +266,7 @@ end
               (identifier)))))
       language: (identifier)
       (rule_declaration
-        head: (rule_head
+        heads: (rule_heads
           (fn_term
             name: (identifier)
             (variable_term
@@ -352,7 +352,7 @@ end
     name: (name
       (identifier))
     (rule_declaration
-      head: (rule_head
+      heads: (rule_heads
         (fn_term
           name: (identifier)
           (variable_term
@@ -363,7 +363,7 @@ end
           (variable_term
             (variable)))))
     (rule_declaration
-      head: (rule_head
+      heads: (rule_heads
         (fn_term
           name: (identifier)
           (variable_term
@@ -374,7 +374,7 @@ end
           (variable_term
             (variable)))))
     (rule_declaration
-      head: (rule_head
+      heads: (rule_heads
         (fn_term
           name: (identifier)
           (variable_term
@@ -399,12 +399,12 @@ end
           value: (string_literal))))))
 
 =====================================
-Rule with explicit conclusion (-: separator)
+Rule with forward arrow (-: separator, mirror of :-)
 =====================================
 
 namespace test
-  rule lower_bound_holds(?d, ?d_min)
-    :- gte(?d, 5.0)
+  rule lower_bound:
+    gte(?d, 5.0)
     -: gte(?d, ?d_min)
 end
 
@@ -415,7 +415,48 @@ end
     name: (name
       (identifier))
     (rule_declaration
-      head: (rule_head
+      label: (name
+        (identifier))
+      body: (rule_body
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable))
+          (float_literal)))
+      heads: (rule_heads
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable))
+          (variable_term
+            (variable)))))))
+
+=====================================
+Rule with multi-head (conjunctive sugar)
+=====================================
+
+namespace test
+  rule completion:
+    completed(?w),
+    timestamp_recorded(?w, ?t)
+      :- WorkItem(id: ?w, status: Done),
+         finished_at(?w, ?t)
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (rule_declaration
+      label: (name
+        (identifier))
+      heads: (rule_heads
+        (fn_term
+          name: (identifier)
+          (variable_term
+            (variable)))
         (fn_term
           name: (identifier)
           (variable_term
@@ -425,10 +466,13 @@ end
       body: (rule_body
         (fn_term
           name: (identifier)
-          (variable_term
-            (variable))
-          (float_literal)))
-      conclusion: (rule_body
+          (named_arg
+            name: (identifier)
+            value: (variable_term
+              (variable)))
+          (named_arg
+            name: (identifier)
+            value: (identifier)))
         (fn_term
           name: (identifier)
           (variable_term

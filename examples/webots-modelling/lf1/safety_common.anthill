@@ -330,11 +330,10 @@ namespace anthill.examples.lf1.safety.common
   -- the body. Stated at the scalar-norm level so consumers can
   -- use it directly without a vec_norm definition. Conclusion is
   -- the standard `‖a+b‖ ≤ ‖a‖ + ‖b‖` shape.
-  rule triangle_inequality(?w)
-    :- gte(?na, 0.0),
-       gte(?nb, 0.0),
-       gte(?n_sum, 0.0),
-       ?w = ?n_sum
+  rule triangle_inequality:
+    gte(?na, 0.0),
+    gte(?nb, 0.0),
+    gte(?n_sum, 0.0)
     -: lte(?n_sum, ?na + ?nb)
 
   proof triangle_inequality
@@ -347,14 +346,13 @@ namespace anthill.examples.lf1.safety.common
   -- pair's speed sum (loose but adequate for the step-distance
   -- chain). Load-bearing physical assumption — what carrying
   -- mavic_base.cpp verbatim gives us.
-  rule velocity_envelope(?w)
-    :- real_velocity_at(?k, ?drone, ?vx, ?vy, ?vz),
-       KinematicAssumptions(leader_speed_max:    ?vL_max,
-                            follower_speed_max:  ?vF_max,
-                            control_period:      ?_,
-                            sensor_period:       ?_),
-       gte(?n_v, 0.0),
-       ?w = ?n_v
+  rule velocity_envelope:
+    real_velocity_at(?k, ?drone, ?vx, ?vy, ?vz),
+    KinematicAssumptions(leader_speed_max:    ?vL_max,
+                         follower_speed_max:  ?vF_max,
+                         control_period:      ?_,
+                         sensor_period:       ?_),
+    gte(?n_v, 0.0)
     -: lte(?n_v, ?vL_max + ?vF_max)
 
   proof velocity_envelope
@@ -378,11 +376,10 @@ namespace anthill.examples.lf1.safety.common
   -- definitional in source). triangle_inequality and
   -- velocity_envelope are themselves [hint]-tagged TrustedAxioms,
   -- so `anthill check --report-trust` surfaces the full chain.
-  rule step_distance_lemma(?w)
-    :- distance_at_step(?k, ?d_prev),
-       ?k_next = ?k + 1,
-       distance_at_step(?k_next, ?d_next),
-       ?w = ?d_next - ?d_prev
+  rule step_distance_lemma:
+    distance_at_step(?k, ?d_prev),
+    ?k_next = ?k + 1,
+    distance_at_step(?k_next, ?d_next)
     -: lte(abs(?d_next - ?d_prev), ?delta)
 
   -- Mechanical NRA-discharge attempted (and reverted to by trust)

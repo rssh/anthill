@@ -998,3 +998,31 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T19:02:18Z"))
 
+fact WorkItem(
+  id: "WI-142",
+  description: "Proposal 032 — scaland mirror port. The rustland implementation of the symmetric-arrow rule grammar (proposal 032) is in. Port the same change to scaland/. Surface area: (a) parser (fastparse) — replace dual-arrow rule production with the choice over (heads :- body | body -: heads | heads); add multi-head rule_heads with comma-separated terms; (b) parse IR — replace head/conclusion fields with heads: Vec; (c) loader — apply the same transitional translation as rustland: labeled non-equational positive rules synthesize a 0-arg label-functor as the KB head with user heads in conclusion; labeled equational rules keep the head-as-identity; labeled denial uses synthesized label-functor; unlabeled multi-head is rejected with a clear error. Acceptance: sbt test green; reference implementation parses the same .anthill files (stdlib, examples) as rustland.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-143",
+  description: "Proposal 032 — smt-gen migration to unified head-as-conclusion encoding. Today the rustland loader keeps a transitional shape: labeled non-equational positive rules synthesize a 0-arg label-functor as the KB head and place the user-written head term(s) in 'conclusion'. The legacy assert_rule_debruijn_with_conclusion path stays alive only to keep smt-gen working without modification. Migration: rewrite smt-gen's collect_rule (anthill-smt-gen/src/lib.rs ~line 290) to use the rule head AS the conclusion when the head is positive (run it through process_body_goal and route into conclusion_assertions); when head is Bottom, conclusion_assertions stays empty (denial form). Drop the result_var extraction from the head's pos_args (the synthetic-label-with-result-var pattern goes away under 032). Once smt-gen runs on the unified encoding: simplify the loader to assert_rule_debruijn(head, body) without a conclusion vec. Acceptance: cargo test green; lift_implication_test exercises the new encoding; lf1 step_distance_lemma proof still discharges the same way.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-144",
+  description: "Proposal 032 — drop legacy 'conclusion' KB field after smt-gen migration. Once WI-143 lands, the kb/mod.rs RuleEntry.conclusion: Vec<TermId> field, the rule_conclusion(rid) accessor, and the assert_rule_debruijn_with_conclusion helper are all dead code. Cleanup: (a) remove the conclusion field from RuleEntry; (b) remove rule_conclusion getter; (c) collapse assert_rule_debruijn_with_conclusion back into assert_rule_debruijn; (d) simplify the loader's load_rule (kb/load.rs ~line 3918) to call assert_rule_debruijn directly without manufacturing an empty conclusion. Also reconsider the loader's transitional translation: now that smt-gen consumes head-as-conclusion natively, labeled non-equational rules can use the user's head directly as the KB head (no synthesized 0-arg label functor), provided the citation gate is rewritten to look up by label rather than head functor. That citation gate refactor is a sibling work item — see comments in load.rs load_rule for context. Acceptance: cargo test green; the conclusion field has zero references in the workspace.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-143"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-145",
+  description: "Proposal 032 — citation by label, not head functor. Under proposal 032 the head IS the rule's conclusion (e.g. 'gte(?x, 3.0)'); head functors are no longer unique rule identifiers, since many rules can share the same head functor (every positive arithmetic theorem has 'gte'/'lte' etc. as its head). The rule's identity for cite-resolution must therefore be the LABEL, not the head functor. Today's transitional load (rustland) papers over this by synthesizing a 0-arg label-functor as the KB head, but that's not the right architecture long-term: it forces an artificial KB term and prevents downstream code from using the head as the actual semantic claim. Migration: (a) cite-resolution (anthill-cli/src/prove.rs and any 'using' lookup paths) consults a label→rule map keyed on the rule's label, falling back to head functor only for unlabeled legacy rules; (b) by_functor index for SLD continues to use head functor (multi-rule per functor is fine for SLD); (c) loader stops synthesizing the label-functor head — labeled rules use the user's head term as the KB head directly. Depends on WI-143 (smt-gen migration). Acceptance: cargo test green; multi-head labeled rules work end-to-end; lf1 reachability_band cites work without the synthesized-functor workaround.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-143"],
+  status: Open)
+

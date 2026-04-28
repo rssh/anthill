@@ -28,9 +28,8 @@ fn trust_tactic_discharges_with_reason() {
         namespace test.trust.basic
           export geometric_law
 
-          rule geometric_law(?x)
+          rule geometric_law: gte(?x, 0.0)
             :- gte(?x, 0.0)
-            -: gte(?x, 0.0)
 
           proof geometric_law
             by trust(reason: "axiom by construction; identity claim")
@@ -59,15 +58,11 @@ fn citing_trusted_rule_warns_but_proceeds() {
         namespace test.trust.cite
           export axiom_lemma, consumer
 
-          rule axiom_lemma(?w)
-            :- gte(?x, 5.0),
-               ?w = ?x
-            -: gte(?x, 3.0)
+          rule axiom_lemma: gte(?x, 3.0)
+            :- gte(?x, 5.0)
 
-          rule consumer(?w)
-            :- gte(?x, 5.0),
-               ?w = ?x
-            -: gte(?x, 3.0)
+          rule consumer: gte(?x, 3.0)
+            :- gte(?x, 5.0)
 
           proof axiom_lemma
             by trust(reason: "load-bearing physical assumption")

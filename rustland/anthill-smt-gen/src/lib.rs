@@ -305,10 +305,9 @@ impl<'kb> Emitter<'kb> {
         // Two head shapes:
         //  - `rule_qn(?result)` — single pos_arg, the result var.
         //    Used by upper-bound obligations.
-        //  - `rule_qn` — bare (no pos_args). Used by satisfiability-
-        //    check obligations: the rule encodes a property as a
-        //    body conjunction; we ask Z3 to find any binding that
-        //    satisfies it. `result_var` stays empty.
+        //  - `rule_qn` — bare (no pos_args). Satisfiability mode.
+        //    Also the shape produced by the proposal-032 transitional
+        //    loader for labeled rules (label-functor as 0-arg head).
         let head = self.kb.rule_head(rid);
         let head_pos_count = match self.kb.get_term(head) {
             Term::Fn { pos_args, .. } => pos_args.len(),

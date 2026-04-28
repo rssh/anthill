@@ -34,15 +34,11 @@ fn cite_chain_discharges_in_dependency_order_not_alphabetical() {
         namespace test.topo
           export aaa_consumer, zzz_lemma
 
-          rule zzz_lemma(?w)
-            :- gte(?x, 5.0),
-               ?w = ?x
-            -: gte(?x, 3.0)
+          rule zzz_lemma: gte(?x, 3.0)
+            :- gte(?x, 5.0)
 
-          rule aaa_consumer(?w)
-            :- gte(?x, 5.0),
-               ?w = ?x
-            -: gte(?x, 3.0)
+          rule aaa_consumer: gte(?x, 3.0)
+            :- gte(?x, 5.0)
 
           proof zzz_lemma
             by z3(logic: "LRA")

@@ -1,16 +1,17 @@
 //! WI-C1: `lift_rule_to_implication_clause` — converts a positive-
-//! form rule (`R :- premises -: conclusion`) into a forall-quantified
-//! implication clause for splicing as a cited-lemma assumption.
+//! form rule (per proposal 032: `label: head :- premises`, where the
+//! head is the conclusion) into a forall-quantified implication
+//! clause for splicing as a cited-lemma assumption.
 //!
 //! Deterministic semantics: the `:-` clause is the premise set, the
-//! `-:` clause is the conclusion. No heuristic.
+//! head (the rule's stated claim) is the conclusion. No heuristic.
 
 use super::common::{load_kb_with, run_z3, z3_available};
 use anthill_smt_gen::lift_rule_to_implication_clause;
 
 fn build_simple_kb() -> anthill_core::kb::KnowledgeBase {
-    // Trivial scalar lemma: `?x >= 5 ⇒ ?x >= 3`. Premise is on the
-    // `:-` side, conclusion is on the `-:` side. The lift emits
+    // Trivial scalar lemma: `?x >= 5 ⇒ ?x >= 3`. The head is the
+    // conclusion under proposal 032. The lift emits
     // `(forall ((var_x Real)) (=> (>= var_x 5.0) (>= var_x 3.0)))`.
     let source = r#"
         namespace test.lift.simple
@@ -19,10 +20,8 @@ fn build_simple_kb() -> anthill_core::kb::KnowledgeBase {
 
           export simple_lemma
 
-          rule simple_lemma(?w)
-            :- gte(?x, 5.0),
-               ?w = ?x
-            -: gte(?x, 3.0)
+          rule simple_lemma: gte(?x, 3.0)
+            :- gte(?x, 5.0)
         end
     "#;
     load_kb_with(source)
@@ -64,8 +63,9 @@ fn lifted_implication_is_a_z3_tautology() {
 
 #[test]
 fn lift_refuses_rule_without_conclusion_clause() {
-    // Violation-shape rule (no `-:`) — must NOT be liftable. The
-    // citable-rule contract is opt-in via `-:`.
+    // Violation-shape rule (denial: head=⊥) — must NOT be liftable.
+    // The citable-rule contract is opt-in: only positive theorems
+    // (head is a real claim) lift to forall implications.
     let source = r#"
         namespace test.lift.no_conclusion
           import anthill.prelude.{Float}
@@ -73,24 +73,24 @@ fn lift_refuses_rule_without_conclusion_clause() {
 
           export violation_only
 
-          rule violation_only(?w)
+          rule violation_only: ⊥
             :- gte(?x, 5.0),
-               lt(?x, 3.0),
-               ?w = ?x
+               lt(?x, 3.0)
         end
     "#;
     let kb = load_kb_with(source);
     let result = lift_rule_to_implication_clause(
         &kb, "test.lift.no_conclusion.violation_only");
-    let err = result.expect_err("lift must refuse rules without a `-:` clause");
+    let err = result.expect_err("lift must refuse denial-shape rules");
     assert!(err.message.contains("not citable") || err.message.contains("`-:`"),
-        "error message should mention the missing -: clause: `{}`", err.message);
+        "error message should mention the missing conclusion: `{}`", err.message);
 }
 
 fn build_band_kb() -> anthill_core::kb::KnowledgeBase {
     // Multi-clause: premises `?x >= 5 AND ?x <= 10` ⇒ conclusion
     // `?x >= 5 AND ?x <= 10` (still trivial, but exercises
-    // multi-premise / multi-conclusion ANDing).
+    // multi-premise / multi-conclusion ANDing via proposal-032
+    // multi-head conjunctive sugar).
     let source = r#"
         namespace test.lift.band
           import anthill.prelude.{Float}
@@ -98,11 +98,9 @@ fn build_band_kb() -> anthill_core::kb::KnowledgeBase {
 
           export band_lemma
 
-          rule band_lemma(?w)
+          rule band_lemma: gte(?x, 5.0), lte(?x, 10.0)
             :- gte(?x, 5.0),
-               lte(?x, 10.0),
-               ?w = ?x
-            -: gte(?x, 5.0), lte(?x, 10.0)
+               lte(?x, 10.0)
         end
     "#;
     load_kb_with(source)

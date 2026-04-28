@@ -308,10 +308,10 @@ namespace anthill.examples.lf1.safety.gps
   -- discharge their per-flight refutations directly without citing
   -- this rule, but the claim is now first-class in the registry
   -- and shows up in `anthill check`'s 43/43 verification list.
-  rule reachability_band(?k, ?d)
-    :- DistanceBounds(d_min: ?d_min, d_max: ?d_max),
-       gte(?k, 0),
-       distance_at_step(?k, ?d)
+  rule reachability_band:
+    DistanceBounds(d_min: ?d_min, d_max: ?d_max),
+    gte(?k, 0),
+    distance_at_step(?k, ?d)
     -: gte(?d, ?d_min),
        lte(?d, ?d_max)
 

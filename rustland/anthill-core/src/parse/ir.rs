@@ -230,16 +230,11 @@ pub struct FieldDecl {
 #[derive(Debug)]
 pub struct Rule {
     pub label: Option<Name>,
-    pub head: RuleHead,
+    /// One or more positive head terms, or a single `RuleHead::Bottom`
+    /// for denial. Mixing `Bottom` with positive heads is rejected at
+    /// load time. Multi-head desugars conjunctively (proposal 032).
+    pub heads: Vec<RuleHead>,
     pub body: Option<Vec<TermId>>,
-    /// Goals from the optional `-:` (then) clause: the rule's
-    /// *positive conclusion* under universal closure of the body
-    /// vars. When present, the rule reads as `∀ vars. body ⇒
-    /// (and conclusion)`. Z3 discharge negates this conjunction
-    /// and proves unsat; the `using` clause's lift uses it
-    /// directly (no inversion). When absent, the rule is the
-    /// classical violation form (body must be unsat to discharge).
-    pub conclusion: Option<Vec<TermId>>,
     pub meta: Option<MetaBlock>,
     pub span: Span,
 }

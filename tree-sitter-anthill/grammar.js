@@ -268,21 +268,30 @@ module.exports = grammar({
     // conclusion (`assert (not (and conclusion)); check-sat`); the
     // `using` clause's lift step emits the implication directly.
     //
-    // The two separators are deliberately symmetric — `:-` reads as
-    // "if" (premises), `-:` reads as "then" (conclusion).
+    // The two arrows `:-` and `-:` are mirror surface forms of the same
+    // implication operator (see proposal 032). Exactly one of them
+    // appears per rule (or neither, for a fact); the dual-arrow form
+    // `head :- body -: conclusion` no longer exists.
+    //
+    // Heads are comma-separated for conjunctive multi-head sugar:
+    // `H1, H2 :- B` desugars at load time to two Horn rules sharing
+    // body B. `⊥` may appear only as a sole head (denial); it cannot
+    // be mixed with positive heads.
     rule_declaration: $ => seq(
       repeat(field('description', $.description_block)),
       'rule',
       optional(seq(field('label', $.name), ':')),
-      field('head', $.rule_head),
-      optional(seq(':-', field('body', $.rule_body))),
-      optional(seq('-:', field('conclusion', $.rule_body))),
+      choice(
+        seq(field('heads', $.rule_heads), ':-', field('body', $.rule_body)),
+        seq(field('body', $.rule_body), '-:', field('heads', $.rule_heads)),
+        field('heads', $.rule_heads),
+      ),
       optional($.meta_block),
     ),
 
-    rule_head: $ => choice(
+    rule_heads: $ => choice(
       '⊥',
-      $._term,
+      commaSep1($._term),
     ),
 
     rule_body: $ => commaSep1($._term),
@@ -577,8 +586,11 @@ module.exports = grammar({
 
     rule_entry: $ => seq(
       optional(seq(field('label', $.name), ':')),
-      field('head', $.rule_head),
-      optional(seq(':-', field('body', $.rule_body))),
+      choice(
+        seq(field('heads', $.rule_heads), ':-', field('body', $.rule_body)),
+        seq(field('body', $.rule_body), '-:', field('heads', $.rule_heads)),
+        field('heads', $.rule_heads),
+      ),
       optional($.meta_block),
     ),
 

@@ -668,55 +668,59 @@ entity Account(id: AccountId, balance: Money)
 
 ```
 Rule ::= DescriptionBlock*
-           'rule' [Name ':'] Head [':-' RuleBody] ['-:' Conclusion]
+           'rule' [Name ':'] (Heads ':-' RuleBody | RuleBody '-:' Heads | Heads)
            ['meta' ':' Meta]
 
-Head        ::= Term                       -- what the rule asserts
-              | '⊥'                        -- bottom (for denials)
+Heads       ::= Term (',' Term)*           -- one or more heads (multi-head: conjunctive sugar)
+              | '⊥'                        -- bottom (for denials; cannot mix with positive heads)
 
 RuleBody    ::= Term (',' Term)*           -- premises (conjunction)
-Conclusion  ::= Term (',' Term)*           -- positive conclusion (conjunction)
 ```
 
-**Four forms:**
+**Single arrow per rule.** `:-` and `-:` are mirror surface forms of the same implication operator (proposal 032). Exactly one of them appears per rule (or neither, for a bare-head fact). The dual-arrow form `head :- body -: conclusion` is **not** part of the grammar — under the unified design the head IS the rule's conclusion, so a separate `-:` slot would duplicate it. `:-` reads as "if" (head if body); `-:` reads as "then" (body therefore head). They produce the same internal Horn clause; choice is purely stylistic.
+
+**Forms:**
 
 ```
--- Derivation rule: head holds when body holds
+-- Derivation rule (Horn), backward and forward forms:
 rule ancestor(?X, ?Z) :- parent(?X, ?Y), ancestor(?Y, ?Z)
+rule parent(?X, ?Y), ancestor(?Y, ?Z) -: ancestor(?X, ?Z)
 
 -- Ground assertion (= fact): bodyless rule
 rule parent("alice", "bob")
 
--- Denial / integrity constraint: desugared from constraint syntax
+-- Denial / integrity constraint, backward and forward:
 rule non_negative: ⊥ :- balance(?a, ?b), lt(?b, 0)
+rule non_negative: balance(?a, ?b), lt(?b, 0) -: ⊥
 
--- Positive theorem: explicit `-:` (then) clause states the conclusion
-rule lower_bound_holds(?d)
+-- Positive theorem — the head IS the conclusion:
+rule lower_bound:
+  reachable_real(?l, ?f), position_distance(?d, ?l, ?f),
+  DistanceBounds(d_min: ?d_min, d_max: ?_)
+  -: gte(?d, ?d_min)
+
+-- Same theorem, backward form:
+rule lower_bound: gte(?d, ?d_min)
   :- reachable_real(?l, ?f), position_distance(?d, ?l, ?f),
      DistanceBounds(d_min: ?d_min, d_max: ?_)
-  -: gte(?d, ?d_min)
 ```
 
-**The `-:` (then) clause** — *Z3 backend only.* Optional. When present, the rule reads as a *positive theorem*:
+**Multi-head (conjunctive sugar).** A rule may carry multiple comma-separated head terms — the conjunctive multi-head form. `H1, H2 :- B` (or its mirror `B -: H1, H2`) desugars at load time into N Horn clauses sharing body B; logically `body ⇒ (H1 ∧ ... ∧ Hn)`. The comma `,` always means logical conjunction in Anthill — both inside the head list and inside the body — a deliberate departure from classical CNF convention (where head-`,` would be disjunction). `;` and `|` are reserved in head position and rejected by the loader (a future proposal may introduce disjunctive heads under those tokens). `⊥` may not be mixed with positive heads.
 
-> **∀ vars. body ⇒ conclusion**
-
-The two separators are deliberately symmetric: `:-` reads as "if" (premises), `-:` reads as "then" (conclusion). The conclusion is a comma-separated conjunction of goal terms — typically arithmetic relations (`gte`, `lte`, `eq`) but any term shape that smt-gen can lower is accepted.
-
-**Z3 mapping** (the `-:` clause is meaningful only when the rule is dispatched via `proof X by z3(...)` or cited via `using X`):
+**Z3 mapping** (rules with positive heads are *citable* via `using`; denial-shape rules with head `⊥` are not):
 
 | Mode                         | SMT-LIB encoding                                            |
 | ---------------------------- | ----------------------------------------------------------- |
-| `proof X by z3(...)`         | `(assert <body>); (assert (not (and <conclusion>))); (check-sat)` — `unsat` ⇒ theorem holds. |
-| `proof Y using X by z3(...)` | `(assert (forall (<vars>) (=> (and <body>) (and <conclusion>))))` injected into Y's preamble before Y's own assertions. |
+| `proof X by z3(...)`         | `(assert <body>); (assert (not <head>)); (check-sat)` — `unsat` ⇒ theorem holds. For multi-head rules `head` becomes `(and H1 ... Hn)`. For denial-shape rules (head=⊥) the encoding collapses to "body unsat." |
+| `proof Y using X by z3(...)` | `(assert (forall (<vars>) (=> (and <body>) <head>)))` injected into Y's preamble before Y's own assertions. |
 
-The forall-quantification covers every free SMT variable of the lemma (the `var_<i>` synthetic names produced from the rule's de Bruijn indices). The encoding is deterministic by construction — there is no heuristic about which clause is "the conclusion"; the user names it explicitly via `-:`.
+The forall-quantification covers every free SMT variable of the lemma (the `var_<i>` synthetic names produced from the rule's de Bruijn indices). The encoding is deterministic by construction — the head is the conclusion, full stop.
 
-**Citability.** A rule with a `-:` clause is *citable* via `using` in another proof block. A rule *without* a `-:` clause (classical violation-shape — body must be unsat to discharge) is **not citable**: its theorem statement is "the body has no satisfying instance," not a premises ⇒ conclusion implication, and the lift would have no determinate conclusion to emit. Authors who want to cite a violation-shape rule must rewrite it in positive form with an explicit `-:` clause.
+**Citability.** Rules with positive heads are uniformly citable via `using`. Denial-shape rules (head = `⊥`) are **not citable**: their statement is "the body has no satisfying instance," which has no determinate conclusion to lift as `body ⇒ head`. Authors who want to cite a denial must rewrite it in positive form (state the conclusion explicitly).
 
-**Other backends.** SLD resolution and the derivation-trace prover ignore the `-:` clause: SLD treats the rule's head as the goal and chains through the body as in any Horn rule. Other backends (test runner, future hybrid-systems pass) can choose their own interpretation; today only the Z3 backend consumes `-:`.
+**Other backends.** SLD resolution treats the head as the goal and chains through the body as in any Horn rule. The arrow direction (`:-` vs `-:`) is erased before resolution.
 
-Rules can optionally be **named** (e.g., `non_negative:`) for reference in error messages, retractions, and documentation.
+Rules can optionally be **named** (e.g., `non_negative:`) for reference in error messages, retractions, and documentation. Named rules with positive heads are also the citation handles for `using <Name>`.
 
 **Rule head functors are scoped definitions.** The functor (predicate name) of a rule's head term is defined as a named symbol in the enclosing scope, just like sorts, entities, and operations. Multiple rules with the same head functor in the same scope share a single symbol. This means rule predicates participate in the namespace import/export system — they can be exported from a namespace and imported elsewhere. For example, `refines` defined inside `anthill.reflect.typing` has the qualified name `anthill.reflect.typing.refines` and is visible from other scopes via import.
 

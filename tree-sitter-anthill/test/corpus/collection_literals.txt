@@ -10,7 +10,7 @@ rule r: []
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (collection_literal))))
 
 =====================================
@@ -25,7 +25,7 @@ rule r: [?x]
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (collection_literal
         (variable_term
           (variable))))))
@@ -42,7 +42,7 @@ rule r: [?a, ?b, ?c]
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (collection_literal
         (variable_term
           (variable))
@@ -63,7 +63,7 @@ rule r: [?h | ?t]
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (collection_literal
         (variable_term
           (variable))
@@ -82,7 +82,7 @@ rule r: [?a, ?b | ?t]
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (collection_literal
         (variable_term
           (variable))
@@ -103,7 +103,7 @@ rule r: [1, 2, 3]
   (rule_declaration
     label: (name
       (identifier))
-    head: (rule_head
+    heads: (rule_heads
       (collection_literal
         (integer_literal)
         (integer_literal)

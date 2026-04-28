@@ -351,28 +351,41 @@ fn scan_rule(
         let qualified = make_qualified(prefix, &name);
         kb.symbols.define(&name, &qualified, SymbolKind::Rule, scope.raw());
     }
-    if let Some(functor_name) = rule_head_functor_name(r, parse_sym, parse_terms) {
-        let qualified = make_qualified(prefix, functor_name);
-        kb.symbols.define(functor_name, &qualified, SymbolKind::Goal, scope.raw());
+    // Register the rule's head-functor identity as a scoped Goal
+    // symbol. The transitional load strategy (proposal 032) is:
+    //
+    //   * labeled rule: the label IS the rule's identity. Already
+    //     registered above as `SymbolKind::Rule` — no separate Goal
+    //     entry is needed (the synthesized KB head is a 0-arg
+    //     functor matching the label, looked up by name).
+    //   * unlabeled single-head rule: the head functor IS the rule's
+    //     identity. Register it as a Goal so SLD can dispatch against
+    //     it. Multi-head unlabeled rules are rejected at load time.
+    if r.label.is_none() {
+        if let Some(functor_name) = unlabeled_head_functor_name(r, parse_sym, parse_terms) {
+            let qualified = make_qualified(prefix, functor_name);
+            kb.symbols.define(functor_name, &qualified, SymbolKind::Goal, scope.raw());
+        }
     }
 }
 
-/// Extract the head functor name from a rule, if the head is a Fn term.
-fn rule_head_functor_name<'a>(
+/// For an unlabeled rule with a single positive Fn head, return the
+/// head's functor name. Multi-head, denial, or non-Fn heads return
+/// None.
+fn unlabeled_head_functor_name<'a>(
     r: &Rule,
     parse_sym: &'a crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
 ) -> Option<&'a str> {
-    match &r.head {
-        RuleHead::Term(tid) => {
-            if let Term::Fn { functor, .. } = parse_terms.get(*tid) {
-                Some(parse_sym.name(*functor))
-            } else {
-                None
-            }
-        }
-        RuleHead::Bottom => None,
+    if r.heads.len() != 1 {
+        return None;
     }
+    if let RuleHead::Term(tid) = &r.heads[0] {
+        if let Term::Fn { functor, .. } = parse_terms.get(*tid) {
+            return Some(parse_sym.name(*functor));
+        }
+    }
+    None
 }
 
 fn scan_items_pass1(
@@ -3918,38 +3931,81 @@ impl<'a> Loader<'a> {
     fn load_rule(&mut self, r: &Rule, domain: TermId) {
         let rule_sort = self.kb.make_name_term("Rule");
 
-        // Set owner for body occurrences (use rule label if available)
         let prev_owner = self.current_owner;
         if let Some(ref label) = r.label {
             self.current_owner = Some(self.remap_name(label));
         }
 
-        let head_term = match &r.head {
-            RuleHead::Term(tid) => self.convert_term(*tid),
-            RuleHead::Bottom => self.kb.alloc(Term::Bottom),
-        };
+        // Single pass: build positive heads, detect any `⊥` head.
+        let mut positive_heads: Vec<TermId> = Vec::with_capacity(r.heads.len());
+        let mut has_bottom = false;
+        for h in &r.heads {
+            match h {
+                RuleHead::Term(tid) => positive_heads.push(self.convert_term(*tid)),
+                RuleHead::Bottom => has_bottom = true,
+            }
+        }
+
+        // ⊥ does not combine with positive heads.
+        if has_bottom && r.heads.len() > 1 {
+            self.errors.push(LoadError::Other {
+                message: "denial heads (`⊥`) cannot be combined with positive heads in a multi-head rule".to_string(),
+            });
+            self.current_owner = prev_owner;
+            return;
+        }
 
         let body: Vec<TermId> = r.body.as_ref()
             .map(|terms| terms.iter().map(|&tid| self.convert_term(tid)).collect())
             .unwrap_or_default();
-
-        let conclusion: Vec<TermId> = r.conclusion.as_ref()
-            .map(|terms| terms.iter().map(|&tid| self.convert_term(tid)).collect())
-            .unwrap_or_default();
-
         let meta = r.meta.as_ref().map(|mb| self.load_meta_block(mb));
+
+        // Proposal 032 transitional load: the user-facing head is the
+        // rule's conclusion, but the KB still uses `(head, body,
+        // conclusion)`. We translate at load time. Equational labeled
+        // rules keep the head as the KB identity so by_functor indexes
+        // against `=`; everything else with a label gets a synthetic
+        // 0-arg label-functor as the KB head (the citation handle),
+        // with user heads moved to `conclusion`.
+        let single_eq = positive_heads.len() == 1
+            && is_equational_head(self.kb, positive_heads[0]);
+
+        let (kb_head, kb_conclusion) = match (&r.label, has_bottom, positive_heads.len(), single_eq) {
+            // Labeled equational law: head drives by_functor.
+            (Some(_), false, 1, true) => (positive_heads[0], Vec::new()),
+
+            // Labeled non-equational (denial, single, or multi-head):
+            // synthesize a 0-arg label-functor as the KB head; user
+            // heads (if any) become the conclusion.
+            (Some(label), is_denial, _, _) => {
+                let label_sym = self.remap_name(label);
+                let head = self.kb.make_name_term_from_sym(label_sym);
+                let concl = if is_denial { Vec::new() } else { positive_heads };
+                (head, concl)
+            }
+
+            // Unlabeled denial: head = ⊥. Citable only by pattern.
+            (None, true, _, _) => (self.kb.alloc(Term::Bottom), Vec::new()),
+
+            // Unlabeled single-head: head term IS the KB identity
+            // (legacy Horn / equational law shape).
+            (None, false, 1, _) => (positive_heads.into_iter().next().unwrap(), Vec::new()),
+
+            // Unlabeled multi-head: no unique citation handle.
+            (None, false, _, _) => {
+                self.errors.push(LoadError::Other {
+                    message: "multi-head rule requires a label so the rule has a unique citation handle (e.g. `rule my_law: H1, H2 :- B`)".to_string(),
+                });
+                self.current_owner = prev_owner;
+                return;
+            }
+        };
+
         let rid = self.kb.assert_rule_debruijn_with_conclusion(
-            head_term, body, conclusion, rule_sort, domain, meta);
+            kb_head, body, kb_conclusion, rule_sort, domain, meta);
 
         // WI-139: equational rules are cite-required by default.
-        // Only `[simp]` (SLD + SMT auto-apply) or `[unfold]`
-        // (SLD-only auto-apply) keep them in the by_functor index
-        // for SLD goal resolution. Bare equational rules and rules
-        // tagged only `[hint]` (SMT-only auto-include — SMT-side
-        // semantics deferred for v0) are removed from the index
-        // so `add_comm` and similar laws don't drive infinite
-        // backward-chaining rewrites.
-        if is_equational_head(self.kb, head_term)
+        if is_equational_head(self.kb, kb_head)
             && !meta_has_flag(self.kb, meta, "simp")
             && !meta_has_flag(self.kb, meta, "unfold")
         {

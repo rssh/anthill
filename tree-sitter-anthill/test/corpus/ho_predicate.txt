@@ -8,7 +8,7 @@ rule test(?P) :- ?P(nil)
 
 (source_file
   (rule_declaration
-    head: (rule_head
+    heads: (rule_heads
       (fn_term
         name: (identifier)
         (variable_term
@@ -28,7 +28,7 @@ rule test(?P) :- ?P(cons(head: ?h, tail: ?t))
 
 (source_file
   (rule_declaration
-    head: (rule_head
+    heads: (rule_heads
       (fn_term
         name: (identifier)
         (variable_term
@@ -57,7 +57,7 @@ rule induction(?P) :- ?P(nil), ?P(a), ?P(b, c)
 
 (source_file
   (rule_declaration
-    head: (rule_head
+    heads: (rule_heads
       (fn_term
         name: (identifier)
         (variable_term

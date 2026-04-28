@@ -1057,38 +1057,31 @@ impl<'a> Converter<'a> {
         let label = self.field(node, "label")
             .map(|n| self.convert_name(n));
 
-        let head = self.field(node, "head")
-            .map(|h| self.convert_rule_head(h))
-            .unwrap_or(RuleHead::Bottom);
+        let heads = self.field(node, "heads")
+            .map(|h| self.convert_rule_heads(h))
+            .unwrap_or_else(|| vec![RuleHead::Bottom]);
 
         let body = self.field(node, "body")
             .map(|b| self.convert_rule_body(b));
 
-        let conclusion = self.field(node, "conclusion")
-            .map(|c| self.convert_rule_body(c));
-
         let meta = self.convert_meta_block(node);
 
-        Some(Rule { label, head, body, conclusion, meta, span })
+        Some(Rule { label, heads, body, meta, span })
     }
 
-    fn convert_rule_head(&mut self, node: Node) -> RuleHead {
-        let text = self.text(node);
-        if text.contains('⊥') {
-            return RuleHead::Bottom;
+    /// Convert a `rule_heads` CST node into a list of head terms.
+    /// `rule_heads ::= '⊥' | term (',' term)*` per proposal 032 — the
+    /// `⊥` arm has no named children (the symbol is an anonymous
+    /// token), so a zero-named-child count uniquely identifies denial.
+    fn convert_rule_heads(&mut self, node: Node) -> Vec<RuleHead> {
+        if node.named_child_count() == 0 {
+            return vec![RuleHead::Bottom];
         }
-        // The rule_head is choice(⊥, _term) — if not bottom, it's a term
         let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            if is_term_kind(child.kind()) {
-                return RuleHead::Term(self.convert_term(child));
-            }
-        }
-        // If rule_head itself is a term kind
-        if is_term_kind(node.kind()) {
-            return RuleHead::Term(self.convert_term(node));
-        }
-        RuleHead::Bottom
+        node.named_children(&mut cursor)
+            .filter(|c| is_term_kind(c.kind()))
+            .map(|c| RuleHead::Term(self.convert_term(c)))
+            .collect()
     }
 
     // ── Operation ───────────────────────────────────────────────
@@ -1324,15 +1317,13 @@ impl<'a> Converter<'a> {
         let span = self.span(node);
         let label = self.field(node, "label")
             .map(|n| self.convert_name(n));
-        let head = self.field(node, "head")
-            .map(|h| self.convert_rule_head(h))
-            .unwrap_or(RuleHead::Bottom);
+        let heads = self.field(node, "heads")
+            .map(|h| self.convert_rule_heads(h))
+            .unwrap_or_else(|| vec![RuleHead::Bottom]);
         let body = self.field(node, "body")
             .map(|b| self.convert_rule_body(b));
-        let conclusion = self.field(node, "conclusion")
-            .map(|c| self.convert_rule_body(c));
         let meta = self.convert_meta_block(node);
-        Some(Rule { label, head, body, conclusion, meta, span })
+        Some(Rule { label, heads, body, meta, span })
     }
 
     // ── Describe ────────────────────────────────────────────────
