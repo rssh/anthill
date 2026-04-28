@@ -13,6 +13,7 @@ use anthill_smt_gen::cache::{
     store_entry, CacheEntry, KeyInputs, Solver,
 };
 use anthill_smt_gen::tactic_emit::emit_tactic_from_term;
+use anthill_smt_gen::outcome::parse_z3_output;
 
 use crate::{ProveArgs, load_kb_with_stdlib};
 
@@ -123,6 +124,7 @@ enum ArgValue {
     Int(i64),
     #[allow(dead_code)]
     Float(f64),
+    Bool(bool),
     /// Non-primitive term value — preserved as a TermId so callers can
     /// re-walk it (e.g. tactic-term values for `tactic:` named args).
     Term(TermId),
@@ -231,6 +233,7 @@ fn read_named_arg(kb: &KnowledgeBase, syms: &ProofSyms, tid: TermId) -> Option<N
         Term::Const(Literal::String(s)) => ArgValue::String(s.clone()),
         Term::Const(Literal::Int(n))    => ArgValue::Int(*n),
         Term::Const(Literal::Float(f))  => ArgValue::Float(f.into_inner()),
+        Term::Const(Literal::Bool(b))   => ArgValue::Bool(*b),
         Term::Fn { .. } | Term::Ident(_) | Term::Ref(_) => ArgValue::Term(val_tid),
         _ => ArgValue::Other,
     };
@@ -342,98 +345,44 @@ fn dispatch_z3(
                 canon_parts.push(format!("timeout={n}"));
             }
             ("tactic", ArgValue::Term(t)) => tactic_term = Some(*t),
+            ("model", ArgValue::Term(_)) | ("model", _) => {
+                if let Some(b) = bool_of(&arg.value) {
+                    config.produce_models = b;
+                    canon_parts.push(format!("model={b}"));
+                }
+            }
+            ("cores", _) => {
+                if let Some(b) = bool_of(&arg.value) {
+                    config.produce_unsat_cores = b;
+                    canon_parts.push(format!("cores={b}"));
+                }
+            }
+            ("interpolation", _) => {
+                if let Some(b) = bool_of(&arg.value) {
+                    config.produce_interpolants = b;
+                    canon_parts.push(format!("interp={b}"));
+                }
+            }
             _ => {}
         }
     }
+    // Meta-tactic dispatch: ranking expands to two sub-queries
+    // (boundedness, decrease). Detected before the standard tactic-
+    // expression path because it doesn't reduce to one Z3 call.
     if let Some(t) = tactic_term {
+        if let Some((b_qn, d_qn)) = recognise_ranking_tactic(kb, t) {
+            return dispatch_ranking(kb, rule_qn, &b_qn, &d_qn, &config, cli, stats);
+        }
+        if let Some(ind) = recognise_induction_tactic(kb, t) {
+            return dispatch_induction(kb, rule_qn, &ind, &config, cli, stats);
+        }
         config.tactic_expr = emit_tactic_from_term(kb, t);
         if let Some(expr) = &config.tactic_expr {
             canon_parts.push(format!("tactic={expr}"));
         }
     }
     let tactic_canon = format!("z3({})", canon_parts.join(","));
-
-    let (smt, deps) = match emit_satisfiability_check_with_deps(kb, rule_qn, &config) {
-        Ok(p) => p,
-        Err(e) => return Verdict::EmitError(e.message),
-    };
-
-    if cli.verbose && !deps.is_empty() {
-        println!("  deps: {}", deps.join(", "));
-    }
-
-    if cli.dry_run {
-        println!("--- {rule_qn} ---");
-        print!("{smt}");
-        println!("------");
-        return Verdict::Skipped("dry-run (SMT printed to stdout)".into());
-    }
-
-    let z3_version = match Command::new(&cli.solver).arg("--version").output() {
-        Ok(o) if o.status.success() =>
-            String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        _ => return Verdict::Skipped(format!("solver `{}` not on $PATH", cli.solver)),
-    };
-
-    let cache_ctx = if cli.no_cache {
-        stats.bypassed += 1;
-        None
-    } else {
-        Some(build_cache_context(&cli.cache_dir, kb, &smt, &tactic_canon, &deps, &z3_version))
-    };
-
-    if let Some(ctx) = &cache_ctx {
-        if !cli.refresh_cache {
-            if let Some(entry) = lookup(&ctx.subdir, &ctx.key) {
-                stats.hits += 1;
-                if cli.verbose {
-                    println!("  cache hit: {} ({})", &ctx.key[..12], entry.verdict);
-                }
-                return verdict_from_cache(&entry);
-            }
-        }
-        stats.misses += 1;
-    }
-
-    let path = std::env::temp_dir().join(format!(
-        "anthill_prove_{}.smt2",
-        sanitize_filename(rule_qn)
-    ));
-    if let Err(e) = std::fs::write(&path, &smt) {
-        return Verdict::EmitError(format!("write smt2: {e}"));
-    }
-
-    let started = std::time::Instant::now();
-    let out = match Command::new(&cli.solver).arg(&path).output() {
-        Ok(o) => o,
-        Err(e) => return Verdict::EmitError(format!("invoke {}: {e}", cli.solver)),
-    };
-    let elapsed = started.elapsed().as_secs_f64();
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    let verdict = match stdout.trim() {
-        "unsat" => Verdict::Proved,
-        "sat" => Verdict::Disproved(stdout.clone()),
-        "unknown" => Verdict::Unknown("z3: unknown".into()),
-        other => Verdict::Unknown(format!("z3 said `{other}` (path: {})", path.display())),
-    };
-
-    if let Some(ctx) = cache_ctx {
-        let entry = CacheEntry::new(
-            ctx.key,
-            verdict_label(&verdict).to_string(),
-            elapsed,
-            z3_version,
-            now_iso8601(),
-            stdout,
-        );
-        match store_entry(&ctx.subdir, &entry) {
-            Ok(_) => stats.writes += 1,
-            Err(e) => if cli.verbose {
-                eprintln!("  cache write failed: {e}");
-            },
-        }
-    }
-    verdict
+    run_smt_subquery(kb, rule_qn, &config, &tactic_canon, cli, stats)
 }
 
 struct CacheCtx {
@@ -462,6 +411,283 @@ fn build_cache_context(
         z3_version,
     });
     CacheCtx { subdir, key }
+}
+
+/// Recognise `ranking(boundedness: <rule_qn>, decrease: <rule_qn>)`
+/// as the tactic value of a `by z3(tactic: ...)` block. Returns the
+/// two rule QNs the meta-tactic should dispatch as sub-queries.
+/// WI-100.
+fn recognise_ranking_tactic(
+    kb: &KnowledgeBase,
+    tactic_term: TermId,
+) -> Option<(String, String)> {
+    let (functor, named) = match kb.get_term(tactic_term) {
+        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        _ => return None,
+    };
+    let fn_name = kb.qualified_name_of(functor);
+    if fn_name.rsplit('.').next() != Some("ranking") { return None; }
+
+    let mut bnd: Option<String> = None;
+    let mut dec: Option<String> = None;
+    for (key_sym, val_tid) in &named {
+        let key = kb.qualified_name_of(*key_sym);
+        let key_short = key.rsplit('.').next().unwrap_or(key);
+        let qn = qn_of(kb, *val_tid)?;
+        match key_short {
+            "boundedness" => bnd = Some(qn),
+            "decrease" => dec = Some(qn),
+            _ => {}
+        }
+    }
+    Some((bnd?, dec?))
+}
+
+/// Parsed `induction(...)` tactic value. Slots are best-effort — at
+/// least one of `base`/`step` is required to make a proof meaningful;
+/// `cases` is reserved for non-binary inductions (multi-constructor
+/// sorts). v1 only consumes `base` and `step`.
+struct InductionSpec {
+    over: Option<String>,
+    base: Option<String>,
+    step: Option<String>,
+    cases: Vec<String>,
+}
+
+fn recognise_induction_tactic(
+    kb: &KnowledgeBase,
+    tactic_term: TermId,
+) -> Option<InductionSpec> {
+    let (functor, named, pos) = match kb.get_term(tactic_term) {
+        Term::Fn { functor, named_args, pos_args } =>
+            (*functor, named_args.clone(), pos_args.clone()),
+        _ => return None,
+    };
+    let fn_name = kb.qualified_name_of(functor);
+    if fn_name.rsplit('.').next() != Some("induction") { return None; }
+
+    let mut spec = InductionSpec { over: None, base: None, step: None, cases: Vec::new() };
+    for &p in &pos {
+        if let Some(qn) = qn_of(kb, p) {
+            spec.cases.push(qn);
+        }
+    }
+    for (key_sym, val_tid) in &named {
+        let key = kb.qualified_name_of(*key_sym);
+        let key_short = key.rsplit('.').next().unwrap_or(key);
+        match key_short {
+            "over" => spec.over = qn_of(kb, *val_tid),
+            "base" => spec.base = qn_of(kb, *val_tid),
+            "step" => spec.step = qn_of(kb, *val_tid),
+            _ => {}
+        }
+    }
+    Some(spec)
+}
+
+/// Dispatch a structural / numeric induction proof as N+ SMT
+/// sub-queries. v1: base + step (for `Int.induction`-shaped proofs).
+/// Multi-case form (positional `cases`) is handled when the user
+/// supplies them; otherwise base+step is mandatory. WI-101.
+fn dispatch_induction(
+    kb: &mut KnowledgeBase,
+    parent_qn: &str,
+    spec: &InductionSpec,
+    base_config: &ProofConfig,
+    cli: &ProveArgs,
+    stats: &mut CacheStats,
+) -> Verdict {
+    // Build the case list. For binary induction (Int / Bool /
+    // single-recursive enums) use base + step. Otherwise consume the
+    // positional `cases` list.
+    let mut sub_qns: Vec<String> = Vec::new();
+    if let Some(b) = &spec.base { sub_qns.push(b.clone()); }
+    if let Some(s) = &spec.step { sub_qns.push(s.clone()); }
+    sub_qns.extend(spec.cases.iter().cloned());
+    if sub_qns.is_empty() {
+        return Verdict::EmitError(format!(
+            "induction tactic for `{parent_qn}` has no cases — \
+             supply `base:` + `step:` or positional case rules"
+        ));
+    }
+
+    if cli.verbose {
+        let over = spec.over.as_deref().unwrap_or("(unspecified)");
+        println!("  induction(over: {over}) sub-queries: {}", sub_qns.join(", "));
+    }
+    dispatch_subqueries(kb, parent_qn, "induction case", &sub_qns, base_config, cli, stats)
+}
+
+/// Shared meta-tactic dispatch: run each `sub_qns` rule as an SMT
+/// satisfiability check; combine. All proved → Proved; first failure
+/// surfaces with `label` ("ranking sub-query" / "induction case").
+fn dispatch_subqueries(
+    kb: &mut KnowledgeBase,
+    parent_qn: &str,
+    label: &str,
+    sub_qns: &[String],
+    base_config: &ProofConfig,
+    cli: &ProveArgs,
+    stats: &mut CacheStats,
+) -> Verdict {
+    let sub_config = ProofConfig { tactic_expr: None, ..base_config.clone() };
+    for sub in sub_qns {
+        let sub_canon = format!("z3-subquery({})",
+            sub_config.logic.as_deref().unwrap_or("LRA"));
+        match run_smt_subquery(kb, sub, &sub_config, &sub_canon, cli, stats) {
+            Verdict::Proved => continue,
+            Verdict::Disproved(model) => return Verdict::Disproved(format!(
+                "{label} `{sub}` failed for `{parent_qn}`:\n{model}"
+            )),
+            Verdict::Unknown(why) => return Verdict::Unknown(format!(
+                "{label} `{sub}` for `{parent_qn}`: {why}"
+            )),
+            other => return other,
+        }
+    }
+    Verdict::Proved
+}
+
+fn qn_of(kb: &KnowledgeBase, term: TermId) -> Option<String> {
+    match kb.get_term(term) {
+        Term::Ref(s) | Term::Ident(s) => Some(kb.qualified_name_of(*s).to_string()),
+        Term::Fn { functor, pos_args, named_args }
+            if pos_args.is_empty() && named_args.is_empty() =>
+            Some(kb.qualified_name_of(*functor).to_string()),
+        _ => None,
+    }
+}
+
+/// Run two sub-queries (boundedness, decrease) sequentially. The
+/// in-language analogue of `lf1_transponder_excursion_ranking_function_manual`.
+fn dispatch_ranking(
+    kb: &mut KnowledgeBase,
+    parent_qn: &str,
+    boundedness_qn: &str,
+    decrease_qn: &str,
+    base_config: &ProofConfig,
+    cli: &ProveArgs,
+    stats: &mut CacheStats,
+) -> Verdict {
+    let sub_qns = [boundedness_qn.to_string(), decrease_qn.to_string()];
+    if cli.verbose {
+        println!("  ranking sub-queries: {}", sub_qns.join(", "));
+    }
+    dispatch_subqueries(kb, parent_qn, "ranking sub-query", &sub_qns, base_config, cli, stats)
+}
+
+/// Execute one obligation rule as an SMT-LIB satisfiability check.
+/// The single canonical SMT-dispatch path: `dispatch_z3` calls this
+/// directly for top-level proofs; meta-tactics (ranking, induction)
+/// call it once per sub-case. `tactic_canon` is the cache-key
+/// signature (e.g. `"z3(logic=LRA,tactic=...)"` for top-level,
+/// `"z3-subquery(LRA)"` for meta-tactic children).
+fn run_smt_subquery(
+    kb: &mut KnowledgeBase,
+    rule_qn: &str,
+    config: &ProofConfig,
+    tactic_canon: &str,
+    cli: &ProveArgs,
+    stats: &mut CacheStats,
+) -> Verdict {
+    let (smt, deps) = match emit_satisfiability_check_with_deps(kb, rule_qn, config) {
+        Ok(p) => p,
+        Err(e) => return Verdict::EmitError(e.message),
+    };
+    if cli.verbose && !deps.is_empty() {
+        println!("  deps: {}", deps.join(", "));
+    }
+    if cli.dry_run {
+        println!("--- {rule_qn} ---");
+        print!("{smt}");
+        println!("------");
+        return Verdict::Skipped("dry-run (SMT printed to stdout)".into());
+    }
+    let z3_version = match Command::new(&cli.solver).arg("--version").output() {
+        Ok(o) if o.status.success() =>
+            String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => return Verdict::Skipped(format!("solver `{}` not on $PATH", cli.solver)),
+    };
+    let cache_ctx = if cli.no_cache {
+        stats.bypassed += 1;
+        None
+    } else {
+        Some(build_cache_context(&cli.cache_dir, kb, &smt, tactic_canon, &deps, &z3_version))
+    };
+    if let Some(ctx) = &cache_ctx {
+        if !cli.refresh_cache {
+            if let Some(entry) = lookup(&ctx.subdir, &ctx.key) {
+                stats.hits += 1;
+                if cli.verbose {
+                    println!("  cache hit: {} ({})", &ctx.key[..12], entry.verdict);
+                }
+                return verdict_from_cache(&entry);
+            }
+        }
+        stats.misses += 1;
+    }
+    let path = std::env::temp_dir().join(format!(
+        "anthill_prove_{}.smt2",
+        sanitize_filename(rule_qn)
+    ));
+    if let Err(e) = std::fs::write(&path, &smt) {
+        return Verdict::EmitError(format!("write smt2: {e}"));
+    }
+    let started = std::time::Instant::now();
+    let out = match Command::new(&cli.solver).arg(&path).output() {
+        Ok(o) => o,
+        Err(e) => return Verdict::EmitError(format!("invoke {}: {e}", cli.solver)),
+    };
+    let elapsed = started.elapsed().as_secs_f64();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let outcome = parse_z3_output(&stdout);
+    let verdict = match outcome.verdict.as_str() {
+        "unsat" => Verdict::Proved,
+        "sat" => Verdict::Disproved(stdout.clone()),
+        "unknown" => Verdict::Unknown("z3: unknown".into()),
+        other => Verdict::Unknown(format!("z3 said `{other}` (path: {})", path.display())),
+    };
+    if cli.verbose {
+        if !outcome.variable_assignments.is_empty() {
+            println!("  model: {} bindings", outcome.variable_assignments.len());
+        }
+        if !outcome.unsat_core.is_empty() {
+            println!("  unsat-core: {}", outcome.unsat_core.join(", "));
+        }
+    }
+    if let Some(ctx) = cache_ctx {
+        let mut entry = CacheEntry::new(
+            ctx.key,
+            verdict_label(&verdict).to_string(),
+            elapsed,
+            z3_version,
+            now_iso8601(),
+            stdout,
+        );
+        entry.model_text = outcome.model_text;
+        entry.variable_assignments = outcome.variable_assignments;
+        entry.unsat_core = outcome.unsat_core;
+        match store_entry(&ctx.subdir, &entry) {
+            Ok(_) => stats.writes += 1,
+            Err(e) => if cli.verbose {
+                eprintln!("  cache write failed: {e}");
+            },
+        }
+    }
+    verdict
+}
+
+fn bool_of(v: &ArgValue) -> Option<bool> {
+    match v {
+        ArgValue::Bool(b) => Some(*b),
+        ArgValue::String(s) => match s.as_str() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        },
+        ArgValue::Int(n) => Some(*n != 0),
+        _ => None,
+    }
 }
 
 fn verdict_label(v: &Verdict) -> &'static str {

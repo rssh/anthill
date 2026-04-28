@@ -27,6 +27,17 @@ pub struct CacheEntry {
     pub written_at: String,
     #[serde(default)]
     pub raw_output: String,
+    /// Captured Z3 model text for `sat` verdicts when
+    /// `produce_models` was on. Empty otherwise.
+    #[serde(default)]
+    pub model_text: String,
+    /// Best-effort `(name, value)` pairs extracted from the model.
+    #[serde(default)]
+    pub variable_assignments: Vec<(String, String)>,
+    /// Names from `(get-unsat-core)` for `unsat` verdicts when
+    /// `produce_unsat_cores` was on.
+    #[serde(default)]
+    pub unsat_core: Vec<String>,
 }
 
 impl CacheEntry {
@@ -38,7 +49,12 @@ impl CacheEntry {
         written_at: String,
         raw_output: String,
     ) -> Self {
-        Self { key, verdict, solver_secs, z3_version, written_at, raw_output }
+        Self {
+            key, verdict, solver_secs, z3_version, written_at, raw_output,
+            model_text: String::new(),
+            variable_assignments: Vec::new(),
+            unsat_core: Vec::new(),
+        }
     }
 }
 

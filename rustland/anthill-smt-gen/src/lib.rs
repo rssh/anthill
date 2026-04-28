@@ -16,6 +16,7 @@
 //! Mapping reference: `docs/smtlib-forward-mapping.md`.
 
 pub mod cache;
+pub mod outcome;
 pub mod tactic_emit;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -48,6 +49,18 @@ pub struct ProofConfig {
     /// document closes with `(check-sat-using <expr>)`; when `None`,
     /// with the canonical `(check-sat)`.
     pub tactic_expr: Option<String>,
+    /// Emit `(set-option :produce-models true)` + `(get-model)`. The
+    /// solver's model text becomes available for parsing into a
+    /// `ProofCounterexample` fact when the verdict is `sat`. WI-099.
+    pub produce_models: bool,
+    /// Emit `(set-option :produce-unsat-cores true)` + `(get-unsat-core)`.
+    /// Populates `ProofCore` for `unsat` verdicts. WI-099.
+    pub produce_unsat_cores: bool,
+    /// Emit `(set-option :produce-interpolants true)` + `(get-interpolants)`.
+    /// Reserved — Z3's interpolant API takes additional setup; for now
+    /// the flag wires the option through but the get-interpolants form
+    /// is left as a follow-up. WI-099.
+    pub produce_interpolants: bool,
 }
 
 /// One obligation to discharge: prove `<rule>(?result) ≤ <bound>`
@@ -499,6 +512,7 @@ impl<'kb> Emitter<'kb> {
         if let Some(t) = config.timeout_ms {
             out.push_str(&format!("(set-option :timeout {t})\n"));
         }
+        emit_outcome_options(&mut out, config);
         out.push_str(&format!("(set-logic {logic})\n\n"));
 
         for (name, value) in &self.field_consts {
@@ -520,6 +534,7 @@ impl<'kb> Emitter<'kb> {
             Some(expr) => out.push_str(&format!("(check-sat-using {expr})\n")),
             None => out.push_str("(check-sat)\n"),
         }
+        emit_outcome_getters(&mut out, config);
         out
     }
 
@@ -534,6 +549,7 @@ impl<'kb> Emitter<'kb> {
         if let Some(t) = config.timeout_ms {
             out.push_str(&format!("(set-option :timeout {t})\n"));
         }
+        emit_outcome_options(&mut out, config);
         out.push_str(&format!("(set-logic {logic})\n\n"));
 
         for (name, value) in &self.field_consts {
@@ -567,8 +583,40 @@ impl<'kb> Emitter<'kb> {
             Some(expr) => out.push_str(&format!("\n(check-sat-using {expr})\n")),
             None => out.push_str("\n(check-sat)\n"),
         }
+        emit_outcome_getters(&mut out, config);
         out
     }
+}
+
+/// Append `(set-option :produce-* true)` lines to the preamble for
+/// any outcome flags set in `config`. Z3 requires the option to be
+/// set BEFORE `(set-logic ...)`.
+fn emit_outcome_options(out: &mut String, config: &ProofConfig) {
+    if config.produce_models {
+        out.push_str("(set-option :produce-models true)\n");
+    }
+    if config.produce_unsat_cores {
+        out.push_str("(set-option :produce-unsat-cores true)\n");
+    }
+    if config.produce_interpolants {
+        out.push_str("(set-option :produce-interpolants true)\n");
+    }
+}
+
+/// Append `(get-model)` / `(get-unsat-core)` after `(check-sat)` for
+/// any outcome flags set in `config`. Z3 only honours these when the
+/// matching `:produce-*` option was set; the parser-side outcome
+/// reader tolerates missing blocks.
+fn emit_outcome_getters(out: &mut String, config: &ProofConfig) {
+    if config.produce_models {
+        out.push_str("(get-model)\n");
+    }
+    if config.produce_unsat_cores {
+        out.push_str("(get-unsat-core)\n");
+    }
+    // `(get-interpolants)` is intentionally not emitted: Z3's
+    // interpolant API takes named (assert! ... :named ...) annotations
+    // that the current emitter doesn't produce. Phase 5 follow-up.
 }
 
 /// Synthetic SMT identifier for a de Bruijn-indexed variable. The
