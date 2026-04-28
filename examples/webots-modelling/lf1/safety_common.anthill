@@ -259,42 +259,59 @@ namespace anthill.examples.lf1.safety.common
        -- variant-specific safety file (gps / transponder).
 
   -- =================================================================
-  -- Predicates the proof reasons over
+  -- Predicate status — what's defined vs assumed vs uninterpreted
   -- =================================================================
   --
-  -- These are *uninterpreted* at the proof layer — Z3 sees them as
-  -- free function symbols. The discharge of the inductive step
-  -- (lower_violation / upper_violation in safety_gps.anthill /
-  -- safety_transponder.anthill) reasons symbolically about the
-  -- distance scalar `?d` without ever computing it from positions.
-  -- The reachability lift (reachability_band, via Z3 induction tactic)
-  -- adds the universal-over-k claim on top.
+  -- The predicates below have an operational definition in this file
+  -- (rules above) but are NOT symbolically unfolded by the Z3
+  -- discharge — Z3 LRA can't reason recursively over k or
+  -- structurally over Pose. The split:
   --
-  -- position_distance(?p1, ?p2, ?d)
-  --   ?d is the Euclidean distance between p1.position and p2.position.
-  --   Defined for both real and observed Poses (same Pose sort).
-  --   Uninterpreted in the proof — the per-step bound `step_distance_bound`
-  --   captures the only property the proof needs (∂d/∂t ≤ 2·v_max + drift
-  --   + comm-delay-staleness).
+  -- real_pose_at(?k, ?drone, ?pose)         — DEFINED operationally
+  --   * Base case:    `fact real_pose_at(0, ?drone, ?initial)`
+  --                   — supplied per flight (initial geometry of
+  --                     formation; not pinned in this file because
+  --                     real_pose_at is a per-flight-instance trace,
+  --                     not a global axiom).
+  --   * Step case:    `rule real_pose_at(k+1, drone, p_next) :- ...`
+  --                   — the transition rule above; binds p_next to
+  --                     p_prev + v·tc per axis, with v constrained
+  --                     by KinematicAssumptions.
+  --   * Z3 status:    not unfolded. The recursive definition lets
+  --                   anthill SLD trace `real_pose_at(N, ...)` for
+  --                   any concrete N from a base-case fact, but
+  --                   smt-gen does not emit the recursion.
   --
-  -- distance_at_step(?k, ?d)
-  --   ?d is the REAL distance between the drones at sample step k.
-  --   Definitionally:
-  --     distance_at_step(?k, ?d) :-
-  --         real_pose_at(?k, Leader, ?l),
-  --         real_pose_at(?k, Follower, ?f),
-  --         position_distance(?l, ?f, ?d).
-  --   Uninterpreted in the proof. The inductive invariant transports
-  --   `?d` from one tick to the next under the per-step bound; the
-  --   bridge to `real_pose_at` is the modelling assumption that
-  --   anchors the proof to the physical system.
+  -- distance_at_step(?k, ?d)                — DEFINED operationally
+  --   * Definition:   `rule distance_at_step(?k, ?d) :- ...` above
+  --                   composes real_pose_at + position_distance.
+  --   * Z3 status:    not unfolded. The discharge treats `?d` as a
+  --                   free Real per goal and reasons via
+  --                   StepDistanceAxiom (consecutive distances
+  --                   differ by at most delta).
   --
-  -- real_pose_at(?k, ?drone, ?pose)
-  --   The drone's true (physical) pose at sample step k. Uninterpreted.
-  --   The proof never instantiates it; it appears only inside the
-  --   `reachable_real` rule and the safety_min/max_distance constraints
-  --   as the hand-off point between the inductive arithmetic claim and
-  --   the physical-state interpretation. A Webots run validates the
-  --   modelling assumption empirically; a future hybrid-systems pass
-  --   could verify it formally.
+  -- position_distance(?p1, ?p2, ?d)         — UNINTERPRETED
+  --   * No rule body. Stands for Euclidean distance between
+  --     p1.position and p2.position; Z3 sees it as a free function
+  --     symbol. The only property the proof uses is the per-step
+  --     bound, which is captured at the distance-scalar level by
+  --     StepDistanceAxiom — so position_distance never needs to be
+  --     unfolded.
+  --
+  -- StepDistanceAxiom                       — POSTULATED axiom
+  --   * Stated as a rule above (not discharged). Universal-over-k
+  --     bound on consecutive distance differences. Derivable in
+  --     principle from `real_pose_at`'s transition rule + the
+  --     velocity envelope + triangle inequality on
+  --     `position_distance` — but that derivation is a
+  --     hybrid-systems claim outside Z3 LRA's scope.
+  --
+  -- The reachability lift (reachability_band in safety_gps.anthill,
+  -- by induction tactic) consumes StepDistanceAxiom + the strong
+  -- invariant initial-state assumption. Both unsat verdicts ⇒
+  -- forall k ≥ 0: distance_at_step(k) ∈ [d_min, d_max].
+  --
+  -- Webots empirically validates the chain end-to-end per flight;
+  -- a future hybrid-systems pass (dReal, KeYmaera X) would discharge
+  -- StepDistanceAxiom mechanically.
 end

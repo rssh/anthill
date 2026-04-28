@@ -62,6 +62,8 @@ namespace anthill.examples.lf1.safety.transponder
   export lower_violation_transponder
   export bounded_excursion_lower_violation_transponder
   export bounded_excursion_upper_violation_transponder
+  export bound_violation_transponder, decrease_violation_transponder
+  export post_armed_excursion_bound
 
   -- =================================================================
   -- Sensor parameter
@@ -129,18 +131,17 @@ namespace anthill.examples.lf1.safety.transponder
   -- bad ticks and the resulting trajectory stays inside
   -- [d_min, d_max].
   --
-  -- N is the meta-theorem proved off-line by the manual ranking-
-  -- function discharge in
-  -- `anthill-smt-gen/tests/lf1_real_spec_test.rs::
-  --   lf1_transponder_excursion_ranking_function_manual`
-  -- using R = −upc as the well-founded measure. For the lf1
-  -- controller's seq=±5 thresholds, N = 6.
-  --
-  -- That meta-theorem is plugged in here as a fact
-  -- (PostArmedExcursionBound) so the rule below can be discharged
-  -- by the existing `by z3(logic: "LRA")` tactic. Once the proof
-  -- grammar accepts a ranking-function clause, this fact will
-  -- become a theorem proved within anthill itself.
+  -- N is the meta-theorem now proved in-language by the
+  -- `post_armed_excursion_bound` proof block below, using the
+  -- WI-100 ranking-tactic. The well-founded measure is R = −upc;
+  -- the post-armed regime keeps upc ∈ [−6, 0], so R ∈ [0, 6].
+  -- Each bad-step transition is upc' = upc + 1 (else-branch in
+  -- mavic2pro.c), so R strictly decreases by 1. R ≥ 0 (boundedness)
+  -- + R strictly decreases on every bad step ⇒ at most 6 consecutive
+  -- bad ticks before the controller flips heading. The witness
+  -- value 6 is plugged in as the `max_ticks` field below until the
+  -- ranking tactic exposes a `pessimistic_bound: N` argument that
+  -- emits a `RankingProof(name, measure, max_ticks)` fact directly.
 
   entity PostArmedExcursionBound(max_ticks: Int)
 
@@ -178,6 +179,42 @@ namespace anthill.examples.lf1.safety.transponder
        gt(?d_next, ?d_max)
 
   -- =================================================================
+  -- Ranking-function discharge of PostArmedExcursionBound.max_ticks
+  -- =================================================================
+  --
+  -- Replaces the hand-plugged manual SMT in
+  -- `lf1_real_spec_test.rs::lf1_transponder_excursion_ranking_function_manual`
+  -- with an in-language proof. The well-founded measure is R = −upc;
+  -- the post-armed regime keeps upc ∈ [−6, 0]. Two obligations:
+  --
+  --   bound_violation_transponder    — exists post-armed state with R < 0?
+  --   decrease_violation_transponder — exists bad-step transition where
+  --                                    R does not strictly decrease?
+  --
+  -- Both unsat ⇒ R ∈ [0, 6] and strictly decreases each bad tick ⇒
+  -- at most 6 consecutive bad ticks before the controller flips ⇒
+  -- max_ticks = 6 is a valid bound witness.
+
+  -- R(upc) < 0 ↔ −upc < 0 ↔ upc > 0. With post-armed upc ≤ 0, unsat.
+  rule bound_violation_transponder(?w)
+    :- gte(?upc, -6),
+       lte(?upc, 0),
+       gt(?upc, 0),
+       ?w = ?upc
+
+  -- R(upc') ≥ R(upc) ↔ −upc' ≥ −upc ↔ upc' ≤ upc. Bad step has
+  -- upc' = upc + 1 (else-branch, post-armed). upc + 1 ≤ upc is unsat.
+  rule decrease_violation_transponder(?w)
+    :- gte(?upc, -6),
+       lt(?upc, 0),
+       ?upc_next = ?upc + 1,
+       lte(?upc_next, ?upc),
+       ?w = ?upc
+
+  -- Trivial parent rule — the proof body lives in the tactic clause.
+  rule post_armed_excursion_bound(?w) :- ?w = 1
+
+  -- =================================================================
   -- Concrete facts — transponder-specific values
   -- =================================================================
   --
@@ -188,11 +225,12 @@ namespace anthill.examples.lf1.safety.transponder
 
   fact TransponderErrorBound(epsilon_t: 0.15)
 
-  -- N = 6: bound on consecutive post-armed bad ticks. Proved off-line
-  -- by the ranking-function manual discharge in lf1_real_spec_test.rs
-  -- (R = −upc, post-armed upc ∈ [−6, 0], strict decrease on bad
-  -- steps). Becomes an in-language theorem once the proof grammar
-  -- accepts a ranking-function tactic clause.
+  -- N = 6: bound on consecutive post-armed bad ticks. The validity
+  -- of N = 6 is now proved in-language by `post_armed_excursion_bound`
+  -- (the ranking proof below); the literal `6` here is the bound
+  -- witness, plugged in until the ranking tactic accepts a
+  -- `pessimistic_bound:` argument that emits a `RankingProof` fact
+  -- with the witness directly.
   fact PostArmedExcursionBound(max_ticks: 6)
 
   -- Per-step no-collision (always holds on every tick, not just
@@ -210,5 +248,12 @@ namespace anthill.examples.lf1.safety.transponder
 
   proof bounded_excursion_upper_violation_transponder
     by z3(logic: "LRA")
+  end
+
+  -- Witness that R = −upc is a valid ranking function with bound 6.
+  proof post_armed_excursion_bound
+    by z3(tactic: ranking(boundedness: bound_violation_transponder,
+                          decrease: decrease_violation_transponder),
+          logic: "LIA")
   end
 end
