@@ -956,3 +956,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T15:21:10Z"))
 
+fact WorkItem(
+  id: "WI-136",
+  description: "Proposal 030 follow-up: by trust(\"reason\") tactic. Promote axiomatic rules (geometric laws, sensor specs, inner-loop kinematic envelopes) from inline body clauses or no-proof-block placeholders to first-class citable ProofRecords with TrustedAxiom witness. Implementation: recognise 'trust' as a tactic in dispatch; dispatch_trust reads  named arg as a String; produces Verdict::Proved + ProofWitness::TrustedAxiom { reason }; persists via the existing sidecar mechanism. The witness flows through γ.2 cite_status (already handles TrustedAxiom — returns Trusted with reason; render_cited_lemmas warns but proceeds). β.6 trust aggregation surfaces the reason through containing MetaCompose witnesses. Acceptance: cargo-test passes; new test verifies 'proof X by trust(reason: \"...\") end' produces a Discharged ProofRecord with TrustedAxiom-shaped witness; another proof citing X via 'using X' succeeds with the trust warning.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T15:58:54Z"))
+

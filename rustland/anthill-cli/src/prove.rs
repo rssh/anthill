@@ -46,8 +46,11 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
     // Phase γ.2: rules discharged earlier in this prove invocation.
     // Cite-resolution checks this set first so within-invocation
     // chains work even with --no-cache (which skips sidecar writes).
-    let mut discharged_this_run: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    // Phase γ.2: rules discharged earlier in this prove invocation,
+    // mapped to the kind of discharge so cite_status can distinguish
+    // a clean Discharged from a Trusted (TrustedAxiom-witnessed) one.
+    let mut discharged_this_run: std::collections::HashMap<String, DischargeKind> =
+        std::collections::HashMap::new();
 
     for rec in &records {
         if let Some(filter) = &args.rule {
@@ -73,7 +76,12 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
         // existing sidecar in place for staleness on the next run.
         if let (Verdict::Proved, Some(w)) = (&outcome.verdict, &witness) {
             persist_witness(args, &rec.rule, w, record_state_hash.as_deref());
-            discharged_this_run.insert(rec.rule.clone());
+            let kind = match w {
+                ProofWitness::TrustedAxiom { reason } =>
+                    DischargeKind::Trusted(reason.clone()),
+                _ => DischargeKind::Sound,
+            };
+            discharged_this_run.insert(rec.rule.clone(), kind);
         }
         match outcome.verdict {
             Verdict::Proved => {
@@ -452,7 +460,7 @@ fn dispatch(
     rec: &ProofRec,
     args: &ProveArgs,
     stats: &mut CacheStats,
-    discharged_this_run: &std::collections::HashSet<String>,
+    discharged_this_run: &std::collections::HashMap<String, DischargeKind>,
 ) -> DispatchOutcome {
     let (tool, tool_args) = match &rec.strategy {
         Strategy::Open => return DispatchOutcome::no_witness(
@@ -464,8 +472,43 @@ fn dispatch(
         "test" => DispatchOutcome::no_witness(
             Verdict::Skipped("`by test` not yet wired".into())),
         "derivation" => dispatch_derivation(kb, &rec.rule, tool_args),
+        "trust" => dispatch_trust(tool_args),
         other => DispatchOutcome::no_witness(
             Verdict::Skipped(format!("unknown strategy `{other}`"))),
+    }
+}
+
+/// `proof X by trust(reason: "<reason>") end` — explicit user
+/// trust: the rule's claim is asserted axiomatically with no
+/// kernel check. Produces a `ProofWitness::TrustedAxiom { reason }`;
+/// the witness flows through γ.2's `cite_status` (returns
+/// `Trusted(reason)` to consumers) and β.6's aggregation
+/// (surfaces the reason through containing MetaCompose witnesses).
+///
+/// Use cases:
+///   - Geometric laws not derivable in QF_LRA / QF_NRA (triangle
+///     inequality on Euclidean norm).
+///   - Sensor / inner-loop specs treated as physical assumptions
+///     (Mavic2Pro velocity envelope, GPS error bound).
+///   - Bridge claims that decompose into hybrid-systems content
+///     pending a richer backend (dReal, KeYmaera X).
+///
+/// `anthill check --report-trust` lists every rule whose witness
+/// tree contains a TrustedAxiom, so the trust surface is auditable.
+fn dispatch_trust(tool_args: &[NamedArg]) -> DispatchOutcome {
+    let reason = tool_args.iter()
+        .find(|a| a.key == "reason")
+        .and_then(|a| match &a.value {
+            ArgValue::String(s) => Some(s.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| "(no reason given)".to_string());
+    DispatchOutcome {
+        verdict: Verdict::Proved,
+        witness: Some(ProofWitness::TrustedAxiom { reason }),
+        // No KB state was consulted — the rule's claim is
+        // axiomatic, not derived. visited_rules empty.
+        visited_rules: BTreeSet::new(),
     }
 }
 
@@ -544,7 +587,7 @@ fn dispatch_z3(
     using: &[String],
     cli: &ProveArgs,
     stats: &mut CacheStats,
-    discharged_this_run: &std::collections::HashSet<String>,
+    discharged_this_run: &std::collections::HashMap<String, DischargeKind>,
 ) -> DispatchOutcome {
     let mut config = ProofConfig::default();
     let mut canon_parts: Vec<String> = Vec::new();
@@ -655,7 +698,7 @@ fn render_cited_lemmas(
     using: &[String],
     target_rule_qn: &str,
     cli: &ProveArgs,
-    discharged_this_run: &std::collections::HashSet<String>,
+    discharged_this_run: &std::collections::HashMap<String, DischargeKind>,
 ) -> Result<Option<Vec<String>>, String> {
     if using.is_empty() { return Ok(None); }
     let mut clauses = Vec::with_capacity(using.len());
@@ -698,6 +741,20 @@ fn render_cited_lemmas(
     if clauses.is_empty() { Ok(None) } else { Ok(Some(clauses)) }
 }
 
+/// How a within-invocation discharge resolved — used to route
+/// later cites of the same rule through the right `CiteStatus`
+/// path so trust still surfaces even when cited within the same
+/// prove run.
+#[derive(Debug, Clone)]
+enum DischargeKind {
+    /// Solver / derivation / meta-tactic discharge with no
+    /// transitively-trusted leaves.
+    Sound,
+    /// `by trust(reason: ...)` discharge — the reason propagates
+    /// to consumers via `CiteStatus::Trusted`.
+    Trusted(String),
+}
+
 /// The cite-resolution outcome for a single `using <Y>` reference.
 enum CiteStatus {
     /// Y has a discharged proof — its witness is kernel-derived
@@ -726,10 +783,13 @@ fn cite_status(
     kb: &KnowledgeBase,
     cited_qn: &str,
     cli: &ProveArgs,
-    discharged_this_run: &std::collections::HashSet<String>,
+    discharged_this_run: &std::collections::HashMap<String, DischargeKind>,
 ) -> CiteStatus {
-    if discharged_this_run.contains(cited_qn) {
-        return CiteStatus::Discharged;
+    if let Some(kind) = discharged_this_run.get(cited_qn) {
+        return match kind {
+            DischargeKind::Sound => CiteStatus::Discharged,
+            DischargeKind::Trusted(reason) => CiteStatus::Trusted(reason.clone()),
+        };
     }
     let record_sym = match kb.try_resolve_symbol("anthill.realization.ProofRecord") {
         Some(s) => s,

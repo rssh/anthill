@@ -80,6 +80,7 @@ dependencies = [
  "clap",
  "serde_json",
  "smallvec",
+ "tempfile",
 ]
 
 [[package]]

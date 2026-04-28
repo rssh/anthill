@@ -57,6 +57,7 @@ namespace anthill.examples.lf1.safety.common
   export reachable_real
   export RealVelocity, real_velocity_at, real_pose_at, distance_at_step
   export position_distance, position_distance_sq
+  export step_distance_lemma
 
   -- =================================================================
   -- Drone identity
@@ -306,6 +307,47 @@ namespace anthill.examples.lf1.safety.common
     pitch:    0.0,
     yaw:      0.0
   ))
+
+  -- =================================================================
+  -- Step-distance lemma — citable trusted axiom
+  -- =================================================================
+  --
+  -- Promotes the previously-inlined `lte(abs(?step), ?delta)` claim
+  -- to a first-class citable rule. The lemma's content (the per-step
+  -- bound on inter-drone distance) is *derivable* from:
+  --
+  --   1. Triangle inequality on Euclidean R³ norm.
+  --   2. The kinematic envelope ‖v_drone‖ ≤ v_max (KinematicAssumptions).
+  --   3. The transition rule p(k+1) = p(k) + v(k)·T_c (real_pose_at).
+  --
+  -- Of these, (1) and (2) are genuinely axiomatic (geometric law +
+  -- physical assumption); (3) is the existing source rule. Until a
+  -- hybrid-systems backend can mechanically discharge the chain, the
+  -- whole lemma is asserted as a TrustedAxiom — `anthill check
+  -- --report-trust` then surfaces the dependency in every consumer's
+  -- audit trail.
+
+  -- The lemma takes `?delta` as a parameter rather than computing
+  -- it from `step_distance_bound` (which is variant-specific —
+  -- defined in safety_gps.anthill / safety_transponder.anthill,
+  -- not visible from this common namespace). Consumers bind
+  -- `?delta` via their own variant's step_distance_bound when
+  -- citing this lemma.
+  rule step_distance_lemma(?k, ?d_prev, ?d_next, ?delta)
+    :- distance_at_step(?k, ?d_prev),
+       ?k_next = ?k + 1,
+       distance_at_step(?k_next, ?d_next)
+    -: lte(abs(?d_next - ?d_prev), ?delta)
+
+  -- The lemma is asserted axiomatically. Future: decompose into
+  -- triangle_inequality + velocity_envelope and discharge in dReal
+  -- (the SLD-chains-structure + Z3-NRA-closes-arithmetic pattern
+  -- works in principle but Z3 NRA's heuristic instantiation is
+  -- brittle on this size of formula; dReal's δ-decision handles it
+  -- reliably).
+  proof step_distance_lemma
+    by trust(reason: "Triangle inequality on Euclidean 3-norm plus Mavic2Pro velocity envelope; pending hybrid-systems backend.")
+  end
 
   -- =================================================================
   -- The step-distance bound — load-bearing axiom, expressed inline
