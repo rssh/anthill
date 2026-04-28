@@ -1197,6 +1197,7 @@ fn load_phase(
     resolve_instantiations(kb);
     register_requires_axiom_witnesses(kb);
     register_induction_axiom_witnesses(kb);
+    register_specialization_witnesses(kb);
     all_errors.extend(super::typing::type_check_sorts(kb, &all_sorts));
     if all_errors.is_empty() {
         Ok(LoadResult { defined_sorts: all_sorts })
@@ -1823,6 +1824,33 @@ fn register_induction_axiom_witnesses(kb: &mut KnowledgeBase) {
     for rec in new_records {
         kb.assert_fact(rec, record_sort_term, global_term, None);
     }
+}
+
+/// Proposal 030 phase α.8 — auto-compose `Specialization` ProofRecords
+/// when a sort `provides` a parametric spec at concrete sort
+/// substitution. **Currently a no-op stub** (see WI-118): the
+/// kernel doesn't yet have a `provides` discharge mechanism —
+/// `load_provides_clause` is a stub, and spec satisfaction is
+/// expressed via `fact Eq[T = Int]` style facts that don't carry
+/// the parametric→specialized binding metadata the compose pass
+/// needs.
+///
+/// When implemented, this pass will walk a future `SortProvidesInfo`
+/// (or analog) fact set and, for each `provides A[T = X]`, emit:
+///   - For each of A's `<A-qn>.requires.<SE>` records: a
+///     Specialization ProofRecord composing A's parametric witness
+///     with `[(T, X)]` substitution and X's matching `<X-qn>.requires.<SE>`
+///     instance proofs.
+///   - For each of A's induction principles where T appears: a
+///     specialized induction record.
+///
+/// Phase β.5 (Specialization witness checking) and phase γ (`using`
+/// consults registry) are independent and can land before this
+/// pass is fleshed out.
+fn register_specialization_witnesses(_kb: &mut KnowledgeBase) {
+    // No-op until provides-discharge infrastructure exists. The
+    // function is plumbed into `load_phase` so future implementations
+    // land in a known location without churning the call site.
 }
 
 /// True iff a SortInfo fact's `kind` field is `"enum"` — the v0

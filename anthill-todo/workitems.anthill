@@ -829,3 +829,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T11:46:19Z"))
 
+fact WorkItem(
+  id: "WI-118",
+  description: "Proposal 030 phase α.8 — Specialization witness composition on provides discharge. DEFERRED: depends on the 'provides' discharge mechanism being operational, but load_provides_clause in rustland/anthill-core/src/kb/load.rs:4096 is a stub today. The compose operation needs: (1) a working 'provides A[T = X]' source-level discharge that fires at load; (2) lookup of A's auto-registered ScopeAxiom records (α.6); (3) emission of Specialization { parametric: A.requires.<SE>, substitution: [(T, X)], instances: [X.requires.<SE>] } per A's requires-clause. Spec satisfaction is currently expressed via 'fact Eq[T = Int]' style facts but those don't carry the parametric→specialized binding the kernel needs. Two follow-on WIs: (a) implement provides-discharge KB facts (SortProvidesInfo or analog) and load_provides_clause; (b) phase α.8 compose pass walking SortProvidesInfo + emitting Specialization records. Both phases β.5 (Specialization checking) and γ (using consults registry) are independent and can land before α.8. Acceptance: cargo-test passes; this WI is itself a NoOp stub register_specialization_witnesses() in load.rs that documents the deferral and is plumbed into load_phase for future expansion.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T11:50:16Z"))
+
