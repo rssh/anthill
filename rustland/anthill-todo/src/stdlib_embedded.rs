@@ -37,6 +37,7 @@ static STDLIB_SOURCES: &[(&str, &str)] = &[
     ("anthill/prelude/lattice", include_str!("../../../stdlib/anthill/prelude/lattice.anthill")),
     ("anthill/prelude/effects", include_str!("../../../stdlib/anthill/prelude/effects.anthill")),
     ("anthill/prelude/effect-set", include_str!("../../../stdlib/anthill/prelude/effect-set.anthill")),
+    ("anthill/prelude/algebra", include_str!("../../../stdlib/anthill/prelude/algebra.anthill")),
     // geometry
     ("anthill/geometry", include_str!("../../../stdlib/anthill/geometry.anthill")),
     // reflect
