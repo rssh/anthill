@@ -325,42 +325,36 @@ namespace anthill.examples.lf1.safety.common
   -- it. Future: discharge (1) in dReal / KeYmaera X; (2) remains
   -- physical and stays trusted.
 
-  -- Triangle inequality (scalar norm form). Inputs are non-negative
-  -- norm scalars; conclusion is the standard `‖a+b‖ ≤ ‖a‖ + ‖b‖`
-  -- shape. Stated at the scalar-norm level (rather than over Vec3
-  -- arguments) so consumers can use it directly without a vec_norm
-  -- definition; the per-component form is a separate WI.
-  --
-  -- Not tagged `[hint]` because `lift_rule_to_implication_clause`'s
-  -- v0 implementation refuses heads with more than one pos_arg. Once
-  -- the per-RuleId lift helper lands (separate smt-gen WI), this
-  -- can become `[hint]` so any proof in scope auto-cites it without
-  -- explicit `using`.
-  rule triangle_inequality(?na, ?nb, ?n_sum)
+  -- Triangle inequality (scalar norm form). 0-arg head; the
+  -- universally-quantified vars (?na, ?nb, ?n_sum) flow through
+  -- the body. Stated at the scalar-norm level so consumers can
+  -- use it directly without a vec_norm definition. Conclusion is
+  -- the standard `‖a+b‖ ≤ ‖a‖ + ‖b‖` shape.
+  rule triangle_inequality(?w)
     :- gte(?na, 0.0),
        gte(?nb, 0.0),
-       gte(?n_sum, 0.0)
+       gte(?n_sum, 0.0),
+       ?w = ?n_sum
     -: lte(?n_sum, ?na + ?nb)
 
   proof triangle_inequality
     by trust(reason: "Euclidean 3-norm triangle inequality; geometry of R^3.")
   end
 
-  -- Velocity envelope. The drone's velocity at every tick has
-  -- Euclidean norm bounded by its role's max speed. The
-  -- *load-bearing physical assumption* — what carrying
-  -- mavic_base.cpp verbatim gives us; if the inner loop violates
-  -- this in flight the safety claim is void.
-  --
-  -- Same lift-arity caveat as triangle_inequality: not [hint]-tagged
-  -- in v0; promote when the multi-arg-head lift lands.
-  rule velocity_envelope(?drone, ?k, ?n_v)
+  -- Velocity envelope. 0-arg head; the universally-quantified
+  -- vars (?drone, ?k, ?n_v) flow through the body. The drone's
+  -- velocity at every tick has Euclidean norm bounded by the
+  -- pair's speed sum (loose but adequate for the step-distance
+  -- chain). Load-bearing physical assumption — what carrying
+  -- mavic_base.cpp verbatim gives us.
+  rule velocity_envelope(?w)
     :- real_velocity_at(?k, ?drone, ?vx, ?vy, ?vz),
        KinematicAssumptions(leader_speed_max:    ?vL_max,
                             follower_speed_max:  ?vF_max,
                             control_period:      ?_,
                             sensor_period:       ?_),
-       gte(?n_v, 0.0)
+       gte(?n_v, 0.0),
+       ?w = ?n_v
     -: lte(?n_v, ?vL_max + ?vF_max)
 
   proof velocity_envelope
@@ -384,14 +378,39 @@ namespace anthill.examples.lf1.safety.common
   -- definitional in source). triangle_inequality and
   -- velocity_envelope are themselves [hint]-tagged TrustedAxioms,
   -- so `anthill check --report-trust` surfaces the full chain.
-  rule step_distance_lemma(?k, ?d_prev, ?d_next, ?delta)
+  rule step_distance_lemma(?w)
     :- distance_at_step(?k, ?d_prev),
        ?k_next = ?k + 1,
-       distance_at_step(?k_next, ?d_next)
+       distance_at_step(?k_next, ?d_next),
+       ?w = ?d_next - ?d_prev
     -: lte(abs(?d_next - ?d_prev), ?delta)
 
+  -- Mechanical NRA-discharge attempted (and reverted to by trust)
+  -- because three orthogonal smt-gen issues stack up:
+  --
+  --   1. `lift_rule_to_implication_clause`'s v0 only accepts 0 or 1
+  --      head pos_args — workable, but forces awkward result-var
+  --      sentinels.
+  --   2. The consumer's logic must support quantifiers (NRA, not
+  --      QF_NRA) once any using-cite is lifted as a forall axiom.
+  --   3. Cited-rule bodies that destructure entities
+  --      (`KinematicAssumptions(leader_speed_max: ?x, …)`) pull
+  --      field-constant names into the consumer's preamble where
+  --      they're undefined, because the consumer's emit pass
+  --      doesn't chase the cited rule's referenced facts. Z3
+  --      surfaces "unknown constant leader_speed_max".
+  --
+  -- Even with all three patched, Z3 NRA's heuristic forall
+  -- instantiation on this chain (Cauchy-Schwarz + scalar
+  -- homogeneity + position-update unfolding) is not reliable. A
+  -- dReal backend with δ-decision is the right tool. Until then
+  -- the structural decomposition is captured in source (named
+  -- axioms triangle_inequality + velocity_envelope, plus this
+  -- rule's reason naming the composition), and `anthill check
+  -- --report-trust` surfaces the chain — the architecture is in
+  -- place; the mechanical close is a separate engineering project.
   proof step_distance_lemma
-    by trust(reason: "Composition of triangle_inequality + velocity_envelope + real_pose_at transition; pending mechanical discharge in a hybrid-systems backend.")
+    by trust(reason: "Composition of triangle_inequality + velocity_envelope + real_pose_at transition; mechanical discharge blocked by three smt-gen limits — see comment.")
   end
 
   -- =================================================================
