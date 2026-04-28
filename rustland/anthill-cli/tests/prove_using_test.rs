@@ -101,37 +101,49 @@ fn proof_with_using_clause_dispatches_lemma_as_hypothesis() {
 }
 
 #[test]
-fn citing_violation_shape_lemma_warns_and_no_assumption_injected() {
-    if !z3_available() { return; }
-    // `bound_d_violation` is a classical violation-shape rule
-    // without `-:`. Citing it via `using` should produce a warning
-    // (the lift refuses) and the resulting proof has no extra
-    // assumption injected.
+fn citing_un_discharged_lemma_fails_loudly() {
+    // Phase γ.1+γ.2 (proposal 030): `using <Y>` is gated on Y
+    // having a Discharged ProofRecord. Without one, the cite must
+    // fail at load-discharge time with a clear error — not silently
+    // warn-and-proceed (which was the pre-γ behavior; that path
+    // amounted to silent axiom acceptance).
     let src = r#"
-        namespace test.using.no_conclusion
-          export bound_d_violation, target
+        namespace test.using.no_record
+          export some_rule, target
 
-          rule bound_d_violation(?w)
+          rule some_rule(?w)
             :- gte(?x, 5.0),
-               lt(?x, 3.0),
                ?w = ?x
+            -: gte(?x, 3.0)
 
           rule target(?w)
             :- gte(?x, 0.0),
                ?w = ?x
+            -: gte(?x, 0.0)
 
           proof target
-            using bound_d_violation
+            using some_rule
             by z3(logic: "LRA")
           end
         end
     "#;
-    let path = write_temp("violation_cite.anthill", src);
+    let path = write_temp("undischarged_cite.anthill", src);
     let out = Command::new(ANTHILL_BIN)
         .args(["prove", path.to_str().unwrap(), "-v", "--no-cache"])
         .output().expect("anthill prove");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("not citable") || stderr.contains("`-:`")
-            || stderr.contains("could not be lifted"),
-        "expected a warning that the violation-shape lemma is not citable:\n{stderr}");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Cite-resolution failure surfaces as an EmitError verdict on
+    // `target`; the error message names the un-discharged cite.
+    assert!(
+        combined.contains("not discharged") || combined.contains("unknown"),
+        "expected hard error about the un-discharged cite:\n{combined}"
+    );
+    assert!(
+        !out.status.success(),
+        "prove must exit non-zero when a cite is un-discharged"
+    );
 }

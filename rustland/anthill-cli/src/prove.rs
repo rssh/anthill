@@ -43,6 +43,11 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
     let mut skipped = 0usize;
     let mut failed = 0usize;
     let mut stats = CacheStats::default();
+    // Phase γ.2: rules discharged earlier in this prove invocation.
+    // Cite-resolution checks this set first so within-invocation
+    // chains work even with --no-cache (which skips sidecar writes).
+    let mut discharged_this_run: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     for rec in &records {
         if let Some(filter) = &args.rule {
@@ -51,7 +56,7 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
             }
         }
         total += 1;
-        let outcome = dispatch(&mut kb, rec, args, &mut stats);
+        let outcome = dispatch(&mut kb, rec, args, &mut stats, &discharged_this_run);
         let witness = outcome.witness.clone();
         // Per-ProofRecord state hash (phase α.4): canonical hash of
         // the kb-state slice this discharge consulted. None for
@@ -68,6 +73,7 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
         // existing sidecar in place for staleness on the next run.
         if let (Verdict::Proved, Some(w)) = (&outcome.verdict, &witness) {
             persist_witness(args, &rec.rule, w, record_state_hash.as_deref());
+            discharged_this_run.insert(rec.rule.clone());
         }
         match outcome.verdict {
             Verdict::Proved => {
@@ -380,6 +386,7 @@ fn dispatch(
     rec: &ProofRec,
     args: &ProveArgs,
     stats: &mut CacheStats,
+    discharged_this_run: &std::collections::HashSet<String>,
 ) -> DispatchOutcome {
     let (tool, tool_args) = match &rec.strategy {
         Strategy::Open => return DispatchOutcome::no_witness(
@@ -387,7 +394,7 @@ fn dispatch(
         Strategy::Tool { name, args } => (name.as_str(), args.as_slice()),
     };
     match tool {
-        "z3" => dispatch_z3(kb, &rec.rule, tool_args, &rec.using, args, stats),
+        "z3" => dispatch_z3(kb, &rec.rule, tool_args, &rec.using, args, stats, discharged_this_run),
         "test" => DispatchOutcome::no_witness(
             Verdict::Skipped("`by test` not yet wired".into())),
         "derivation" => dispatch_derivation(kb, &rec.rule, tool_args),
@@ -471,6 +478,7 @@ fn dispatch_z3(
     using: &[String],
     cli: &ProveArgs,
     stats: &mut CacheStats,
+    discharged_this_run: &std::collections::HashSet<String>,
 ) -> DispatchOutcome {
     let mut config = ProofConfig::default();
     let mut canon_parts: Vec<String> = Vec::new();
@@ -481,9 +489,15 @@ fn dispatch_z3(
     // ProofConfig (no tactic, no outcome flags) — we only need the
     // body assertions, not the discharge envelope. The cited rule's
     // own body assertions become AND-ed conjuncts.
-    if let Some(clauses) = render_cited_lemmas(kb, using, rule_qn) {
-        config.assumptions = clauses;
-        canon_parts.push(format!("using={}", using.join(",")));
+    match render_cited_lemmas(kb, using, rule_qn, cli, discharged_this_run) {
+        Ok(Some(clauses)) => {
+            config.assumptions = clauses;
+            canon_parts.push(format!("using={}", using.join(",")));
+        }
+        Ok(None) => {}
+        Err(msg) => {
+            return DispatchOutcome::no_witness(Verdict::EmitError(msg));
+        }
     }
     for arg in tool_args {
         match (arg.key.as_str(), &arg.value) {
@@ -537,39 +551,191 @@ fn dispatch_z3(
 }
 
 /// Render each cited-lemma rule as a forall-quantified implication
-/// clause via `lift_rule_to_implication_clause` — see WI-C1. The
-/// resulting strings land in `ProofConfig.assumptions` and are
-/// spliced into the consuming proof's preamble as `(assert …)`
-/// blocks. Returns `None` if the cite list is empty.
+/// clause via `lift_rule_to_implication_clause` — see WI-C1.
 ///
-/// Each cited rule must be a violation-shape rule whose last body
-/// assertion is the negated conclusion. The lift helper inverts
-/// that assertion to recover the positive conclusion and forall-
-/// quantifies the rule's free vars. So `using <X>` semantically
-/// means *"assume the universal claim X certifies"*, not "assume
-/// X's premises hold for the same vars as the consumer".
+/// Phase γ.1 + γ.2 (proposal 030): every cite is gated on the
+/// cited rule's ProofRecord being **discharged**. The check is:
+///   1. Its witness shape must be ScopeAxiom or Specialization
+///      (kernel-derived; discharged-by-construction); OR
+///   2. A witness sidecar exists at the cited rule QN — proof that
+///      a successful prove run persisted the witness; OR
+///   3. The witness is TrustedAxiom — explicit user trust, allowed
+///      but flagged.
+/// Otherwise: hard error. This closes the silent-axiom-acceptance
+/// hole that the previous text-only `lift_rule_to_implication_clause`
+/// path left open.
 ///
-/// Caller passes `target_rule_qn` so self-citation is dropped
-/// silently (would otherwise loop the lift helper).
+/// Returns:
+///   - `Ok(Some(clauses))` — list of forall-quantified implications
+///     ready to splice into the consumer's `(assert …)` preamble.
+///   - `Ok(None)` — empty cite list (or only self-citation).
+///   - `Err(message)` — at least one cited rule is not discharged.
+///     The consumer's discharge fails with this message instead of
+///     proceeding under unverified assumptions.
 fn render_cited_lemmas(
     kb: &KnowledgeBase,
     using: &[String],
     target_rule_qn: &str,
-) -> Option<Vec<String>> {
-    if using.is_empty() { return None; }
+    cli: &ProveArgs,
+    discharged_this_run: &std::collections::HashSet<String>,
+) -> Result<Option<Vec<String>>, String> {
+    if using.is_empty() { return Ok(None); }
     let mut clauses = Vec::with_capacity(using.len());
     for cited in using {
         if cited == target_rule_qn { continue; }
+        match cite_status(kb, cited, cli, discharged_this_run) {
+            CiteStatus::Discharged => {}
+            CiteStatus::Trusted(reason) => {
+                eprintln!(
+                    "warning: `using {cited}` (in proof `{target_rule_qn}`) \
+                     depends on TrustedAxiom: {reason}"
+                );
+            }
+            CiteStatus::NotFound => {
+                return Err(format!(
+                    "cite `{cited}` (in proof `{target_rule_qn}`) is unknown — \
+                     no ProofRecord found for that rule. Did you misspell, or \
+                     is the rule outside the loaded namespace?"
+                ));
+            }
+            CiteStatus::Pending => {
+                return Err(format!(
+                    "cite `{cited}` (in proof `{target_rule_qn}`) is not \
+                     discharged. Run `anthill prove` on `{cited}` first, or \
+                     remove the `using` clause."
+                ));
+            }
+        }
         match lift_rule_to_implication_clause(kb, cited) {
             Ok(clause) => clauses.push(clause),
             Err(e) => {
-                eprintln!("warning: cited lemma `{cited}` could not be lifted \
-                          to an implication for `using` clause on \
-                          `{target_rule_qn}`: {}", e.message);
+                return Err(format!(
+                    "cite `{cited}` (in proof `{target_rule_qn}`) could not be \
+                     lifted to an implication clause: {}",
+                    e.message
+                ));
             }
         }
     }
-    if clauses.is_empty() { None } else { Some(clauses) }
+    if clauses.is_empty() { Ok(None) } else { Ok(Some(clauses)) }
+}
+
+/// The cite-resolution outcome for a single `using <Y>` reference.
+enum CiteStatus {
+    /// Y has a discharged proof — its witness is kernel-derived
+    /// (ScopeAxiom / Specialization) or a sidecar exists.
+    Discharged,
+    /// Y's witness is TrustedAxiom — allowed but the trust flag
+    /// surfaces in CLI output.
+    Trusted(String),
+    /// No ProofRecord found for Y.
+    NotFound,
+    /// Y's ProofRecord exists but is Pending or Failed (no sidecar
+    /// to back it up).
+    Pending,
+}
+
+/// Resolve a cite to a `CiteStatus`. Resolution order:
+///   1. `discharged_this_run` set — rules proved earlier in this
+///      same prove invocation (catches within-run chains even when
+///      --no-cache disables sidecar persistence).
+///   2. KB ProofRecord witness shape — kernel-derived (ScopeAxiom,
+///      Specialization) records are discharged-by-construction;
+///      TrustedAxiom (non-placeholder) is allowed but flagged.
+///   3. Witness sidecar on disk — the witness was persisted by an
+///      earlier `anthill prove` run.
+fn cite_status(
+    kb: &KnowledgeBase,
+    cited_qn: &str,
+    cli: &ProveArgs,
+    discharged_this_run: &std::collections::HashSet<String>,
+) -> CiteStatus {
+    if discharged_this_run.contains(cited_qn) {
+        return CiteStatus::Discharged;
+    }
+    let record_sym = match kb.try_resolve_symbol("anthill.realization.ProofRecord") {
+        Some(s) => s,
+        None => return CiteStatus::NotFound,
+    };
+    let mut found_record = false;
+    for rid in kb.by_functor(record_sym) {
+        if !kb.rule_body(rid).is_empty() { continue; }
+        let head = kb.rule_head(rid);
+        let named = match kb.get_term(head) {
+            Term::Fn { named_args, .. } => named_args,
+            _ => continue,
+        };
+        let qn_match = get_named_arg(kb, named, "rule")
+            .and_then(|tid| match kb.get_term(tid) {
+                Term::Const(Literal::String(s)) => Some(s.as_str() == cited_qn),
+                _ => None,
+            }).unwrap_or(false);
+        if !qn_match { continue; }
+        found_record = true;
+        if let Some(witness_tid) = get_named_arg(kb, named, "witness") {
+            let witness_short = match kb.get_term(witness_tid) {
+                Term::Fn { functor, .. } => kb.qualified_name_of(*functor)
+                    .rsplit('.').next().unwrap_or("").to_string(),
+                _ => String::new(),
+            };
+            match witness_short.as_str() {
+                "ScopeAxiom" | "Specialization" => return CiteStatus::Discharged,
+                "TrustedAxiom" => {
+                    let reason = get_named_arg(kb, witness_tid_named(kb, witness_tid).as_ref()
+                        .unwrap_or(named), "reason")
+                        .and_then(|t| match kb.get_term(t) {
+                            Term::Const(Literal::String(s)) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| "(no reason)".into());
+                    // The pending-placeholder TrustedAxiom (loader
+                    // default for un-discharged user proofs) is NOT
+                    // a real trust statement — fall through to the
+                    // sidecar lookup so a successful prove run can
+                    // still satisfy the cite.
+                    if !reason.starts_with("pending —") {
+                        return CiteStatus::Trusted(reason);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // SmtDischarge / SldDerivation / MetaCompose: defer to sidecar.
+        break;
+    }
+    if !found_record { return CiteStatus::NotFound; }
+    if sidecar_exists_for(cited_qn, cli) {
+        CiteStatus::Discharged
+    } else {
+        CiteStatus::Pending
+    }
+}
+
+/// Read a witness term's `named_args` so we can look up its `reason`
+/// field. Tiny adapter for the closure-friendly ergonomics in
+/// `cite_status`.
+fn witness_tid_named<'a>(
+    kb: &'a KnowledgeBase,
+    witness_tid: TermId,
+) -> Option<smallvec::SmallVec<[(Symbol, TermId); 2]>> {
+    if let Term::Fn { named_args, .. } = kb.get_term(witness_tid) {
+        Some(named_args.clone())
+    } else {
+        None
+    }
+}
+
+/// True iff a witness sidecar JSON exists for the given rule QN at
+/// the project's cache location. Used by cite_status as the
+/// "discharged elsewhere" check for SmtDischarge / SldDerivation /
+/// MetaCompose witnesses whose ProofRecord still says Pending in
+/// source (because in-source persistence is deferred).
+fn sidecar_exists_for(rule_qn: &str, cli: &ProveArgs) -> bool {
+    if cli.no_cache { return false; }
+    let cache_root = resolve_cache_root(cli.cache_dir.as_deref());
+    let repo_root = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let dir = anthill_smt_gen::cache::witness_subdir(&cache_root, &repo_root);
+    anthill_smt_gen::cache::load_witness(&dir, rule_qn).is_some()
 }
 
 struct CacheCtx {

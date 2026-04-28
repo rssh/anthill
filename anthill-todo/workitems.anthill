@@ -907,3 +907,10 @@ fact WorkItem(
   depends_on: [],
   status: Open)
 
+fact WorkItem(
+  id: "WI-129",
+  description: "Proposal 030 phase γ.1 + γ.2 — using consults the registry. Today's render_cited_lemmas in prove.rs calls lift_rule_to_implication_clause without checking whether the cited rule has been proved — this is the silent-axiom-acceptance vulnerability the proposal headlines (proposal 030 §Motivation, §Stance 2). Per phase γ.1: refuse lift calls when the cited rule's ProofRecord is Pending/Failed or its state-hash is stale. Per γ.2: when discharging X with using Y_1..Y_n, look up each cited ProofRecord. Hard error if absent or status != Discharged. ScopeAxiom-witnessed records (kernel-derived, α.6/α.7) and Specialization-witnessed records (α.8) treated as discharged-by-construction. TrustedAxiom-witnessed records allowed but flagged through to verdict output. SmtDischarge / SldDerivation / MetaCompose witnesses considered discharged iff a witness sidecar exists (proves the witness was persisted by a successful prove run). Acceptance: cargo-test passes; new tests verify (a) using a Discharged rule succeeds; (b) using a Pending rule fails loudly; (c) using a TrustedAxiom rule succeeds with trust flag in output.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T14:14:47Z"))
+
