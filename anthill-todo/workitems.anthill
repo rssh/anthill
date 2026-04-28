@@ -886,3 +886,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-04-28T13:57:11Z"))
 
+fact WorkItem(
+  id: "WI-126",
+  description: "Proposal 030 phase β.6 — TrustedAxiom propagation through compound witness trees. Today's MetaCompose recursion short-circuits on the first non-Pass sub-witness, so a tree like [SmtDischarge_passes, TrustedAxiom_a, SmtDischarge_fails] would report Trusted (axiom_a) and never see the failure. Per phase β.6 of docs/proposals/030-theorem-registry.md: trust flag propagates through containing witnesses and is surfaced in CLI output, but failures must take precedence — the user needs to know if a discharge actually broke versus merely depending on trusted axioms. Change recursion to aggregate all sub-witness outcomes with priority Failed > Skipped > Trusted > Pass. A MetaCompose with all-Pass + N Trusted sub-witnesses reports Trusted with the combined reasons; same tree with one Failed reports Failed; mixed Failed + Trusted prefers Failed (trust still surfaces in the CLI summary). Apply to both KB-term recursion (check_meta_compose_witness) and sidecar recursion (check_witness_shape::MetaCompose). Acceptance: cargo-test passes; new test exercises the priority ordering — a MetaCompose [Pass, Trusted, Failed] reports Failed not Trusted.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-04-28T14:00:44Z"))
+

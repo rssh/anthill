@@ -142,24 +142,14 @@ fn check_witness_shape(
             check_smt_discharge_payload(blob_dir, document_hash, recorded_verdict, solver)
         }
         WitnessShape::MetaCompose { tactic_name, sub } => {
-            // Phase β.3 essentials inlined for sidecars: recurse on
-            // each sub-witness; pass when every sub passes; the
-            // first non-pass propagates upward.
-            for (i, sub_shape) in sub.iter().enumerate() {
-                match check_witness_shape(sub_shape, blob_dir, solver) {
-                    CheckStatus::Pass => continue,
-                    CheckStatus::Trusted(reason) => return CheckStatus::Trusted(format!(
-                        "{tactic_name}[{i}]: {reason}"
-                    )),
-                    CheckStatus::Skipped(reason) => return CheckStatus::Skipped(format!(
-                        "{tactic_name}[{i}]: {reason}"
-                    )),
-                    CheckStatus::Failed(reason) => return CheckStatus::Failed(format!(
-                        "{tactic_name}[{i}]: {reason}"
-                    )),
-                }
-            }
-            CheckStatus::Pass
+            // Phase β.3 + β.6 (sidecar path): recurse on each sub-
+            // witness, aggregate via aggregate_meta_outcomes so trust
+            // surfaces alongside other-pass outcomes (rather than
+            // short-circuiting and masking later failures).
+            let outcomes: Vec<CheckStatus> = sub.iter()
+                .map(|s| check_witness_shape(s, blob_dir, solver))
+                .collect();
+            aggregate_meta_outcomes(tactic_name, &outcomes)
         }
         WitnessShape::TrustedAxiom { reason } => CheckStatus::Trusted(reason.clone()),
         // ScopeAxiom / Specialization sidecars happen when prove
@@ -211,14 +201,13 @@ fn check_witness_term(
     }
 }
 
-/// Phase β.3 (KB-side): recurse into each sub-witness term in a
-/// MetaCompose. Pass when every sub passes; first non-pass
-/// propagates upward with the offending sub-witness's index in the
-/// list. Mirrors the sidecar-side recursion in
-/// `check_witness_shape::MetaCompose` so the two paths stay in
-/// sync. Per-meta-tactic shape contracts (induction expects
-/// base + step, ranking expects boundedness + decrease, …) are
-/// deferred — they require a `MetaTacticContract` schema the
+/// Phase β.3 (KB-side) + β.6 (trust propagation): recurse into each
+/// sub-witness term in a MetaCompose, aggregating outcomes with
+/// priority Failed > Skipped > Trusted > Pass. Mirrors the sidecar-
+/// side recursion in `check_witness_shape::MetaCompose` so the two
+/// paths stay in sync. Per-meta-tactic shape contracts (induction
+/// expects base + step, ranking expects boundedness + decrease, …)
+/// are deferred — they require a `MetaTacticContract` schema the
 /// kernel doesn't yet have.
 fn check_meta_compose_witness(
     kb: &KnowledgeBase,
@@ -235,19 +224,47 @@ fn check_meta_compose_witness(
         ),
     };
     let sub_witnesses = read_witness_list(kb, sub_tid);
-    for (i, sub_tid) in sub_witnesses.iter().enumerate() {
-        match check_witness_term(kb, *sub_tid, blob_dir, solver) {
-            CheckStatus::Pass => continue,
-            CheckStatus::Trusted(r) => return CheckStatus::Trusted(format!(
-                "{tactic_name}[{i}]: {r}"
-            )),
-            CheckStatus::Skipped(r) => return CheckStatus::Skipped(format!(
-                "{tactic_name}[{i}]: {r}"
-            )),
+    let outcomes: Vec<CheckStatus> = sub_witnesses.iter()
+        .map(|t| check_witness_term(kb, *t, blob_dir, solver))
+        .collect();
+    aggregate_meta_outcomes(&tactic_name, &outcomes)
+}
+
+/// Phase β.6: combine sub-witness outcomes into the MetaCompose's
+/// own outcome with priority Failed > Skipped > Trusted > Pass.
+/// Failed short-circuits to surface the breakage; Skipped surfaces
+/// when no failures exist (incomplete checking is honest, not
+/// silent); Trusted aggregates *all* trust reasons across the
+/// subtree so the user sees every axiom dependency, not just the
+/// first encountered. Pass only when every sub-witness passed.
+///
+/// Both the KB-term and sidecar paths route through this so trust
+/// surfacing is uniform regardless of which path the witness
+/// arrived from.
+fn aggregate_meta_outcomes(tactic_name: &str, outcomes: &[CheckStatus]) -> CheckStatus {
+    let mut trust_reasons: Vec<String> = Vec::new();
+    let mut skipped_reasons: Vec<String> = Vec::new();
+    for (i, status) in outcomes.iter().enumerate() {
+        match status {
+            CheckStatus::Pass => {}
+            CheckStatus::Trusted(r) => trust_reasons.push(format!("[{i}] {r}")),
+            CheckStatus::Skipped(r) => skipped_reasons.push(format!("[{i}] {r}")),
             CheckStatus::Failed(r) => return CheckStatus::Failed(format!(
                 "{tactic_name}[{i}]: {r}"
             )),
         }
+    }
+    if !skipped_reasons.is_empty() {
+        return CheckStatus::Skipped(format!(
+            "{tactic_name}: {}",
+            skipped_reasons.join("; ")
+        ));
+    }
+    if !trust_reasons.is_empty() {
+        return CheckStatus::Trusted(format!(
+            "{tactic_name}: {}",
+            trust_reasons.join("; ")
+        ));
     }
     CheckStatus::Pass
 }
@@ -661,6 +678,74 @@ mod tests {
         let result = check_smt_discharge_payload(tmp.path(), &bogus_hash, "Unsat", "z3");
         assert!(matches!(result, CheckStatus::Failed(msg) if msg.contains("missing")),
             "expected Failed with 'missing' message when blob is absent");
+    }
+
+    #[test]
+    fn aggregate_meta_priority_failed_beats_trusted() {
+        // [Pass, Trusted, Failed] → Failed (with the failure's
+        // reason surfaced; trust does NOT mask the failure).
+        let outcomes = vec![
+            CheckStatus::Pass,
+            CheckStatus::Trusted("axiom_a".into()),
+            CheckStatus::Failed("smt mismatch".into()),
+        ];
+        let r = aggregate_meta_outcomes("induction", &outcomes);
+        assert!(matches!(r, CheckStatus::Failed(msg) if msg.contains("smt mismatch")),
+            "Failed must take precedence over Trusted in aggregation");
+    }
+
+    #[test]
+    fn aggregate_meta_trust_when_all_others_pass() {
+        // [Pass, Trusted, Pass] → Trusted (trust surfaces when
+        // there's nothing more severe to report).
+        let outcomes = vec![
+            CheckStatus::Pass,
+            CheckStatus::Trusted("axiom_a".into()),
+            CheckStatus::Pass,
+        ];
+        let r = aggregate_meta_outcomes("ranking", &outcomes);
+        assert!(matches!(r, CheckStatus::Trusted(msg) if msg.contains("axiom_a")),
+            "Trusted must surface when no Failed/Skipped outcomes exist");
+    }
+
+    #[test]
+    fn aggregate_meta_skipped_beats_trusted() {
+        // [Pass, Trusted, Skipped] → Skipped (incomplete checking
+        // is honest, not silent — surface ahead of trust marker).
+        let outcomes = vec![
+            CheckStatus::Pass,
+            CheckStatus::Trusted("axiom_a".into()),
+            CheckStatus::Skipped("not yet impl".into()),
+        ];
+        let r = aggregate_meta_outcomes("induction", &outcomes);
+        assert!(matches!(r, CheckStatus::Skipped(_)),
+            "Skipped must take precedence over Trusted in aggregation");
+    }
+
+    #[test]
+    fn aggregate_meta_all_pass_yields_pass() {
+        let outcomes = vec![CheckStatus::Pass, CheckStatus::Pass, CheckStatus::Pass];
+        assert!(matches!(
+            aggregate_meta_outcomes("induction", &outcomes),
+            CheckStatus::Pass
+        ));
+    }
+
+    #[test]
+    fn aggregate_meta_collects_all_trust_reasons() {
+        let outcomes = vec![
+            CheckStatus::Trusted("axiom_a".into()),
+            CheckStatus::Pass,
+            CheckStatus::Trusted("axiom_b".into()),
+        ];
+        match aggregate_meta_outcomes("induction", &outcomes) {
+            CheckStatus::Trusted(msg) => {
+                assert!(msg.contains("axiom_a"), "trust reasons missing axiom_a: {msg}");
+                assert!(msg.contains("axiom_b"), "trust reasons missing axiom_b: {msg}");
+            }
+            other => panic!("expected Trusted with both reasons, got {:?}",
+                std::mem::discriminant(&other)),
+        }
     }
 }
 
