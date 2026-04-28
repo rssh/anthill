@@ -47,12 +47,16 @@
 
 namespace anthill.examples.lf1.safety.common
   import anthill.prelude.{Float, Int, Bool}
+  import anthill.prelude.Numeric.{add, sub, mul}
+  import anthill.prelude.Ordered.{gte}
+  import anthill.geometry.{Vec3}
   import anthill.examples.lf1.leader.{Pose}
 
   export Drone
   export DistanceBounds, KinematicAssumptions
   export reachable_real
   export RealVelocity, real_velocity_at, real_pose_at, distance_at_step
+  export position_distance, position_distance_sq
 
   -- =================================================================
   -- Drone identity
@@ -228,6 +232,78 @@ namespace anthill.examples.lf1.safety.common
     :- real_pose_at(?k, Leader, ?l),
        real_pose_at(?k, Follower, ?f),
        position_distance(?l, ?f, ?d)
+
+  -- =================================================================
+  -- position_distance — Euclidean distance between two poses
+  -- =================================================================
+  --
+  -- Squared-distance form: avoids the `sqrt` operator (Z3's
+  -- nonlinear-real arithmetic supports it but it's brittle in
+  -- (-) shaped queries) by carrying both `?d_sq = (Δx)² + (Δy)² + (Δz)²`
+  -- and a non-negative `?d` constrained by `?d * ?d = ?d_sq`. Z3
+  -- needs `QF_NRA` (or `NRA` for the universal lift) to discharge
+  -- this — proofs that consume position_distance must declare
+  -- `logic: "QF_NRA"` rather than `LRA`.
+  --
+  -- The current per-step inductive obligations (`lower_violation`,
+  -- `upper_violation` and their transponder counterparts) DO NOT
+  -- reference position_distance — they reason at the scalar `?d`
+  -- level via `step_distance_bound`. So adding this definition
+  -- does not destabilise the existing LRA proofs; it only matters
+  -- when a constraint or a future proof actually evaluates the
+  -- function over concrete poses.
+  --
+  -- Result var first per smt-gen convention; `?p1`, `?p2` are the
+  -- inputs. The rule's body builds `?d_sq` from the per-axis
+  -- differences and then constrains `?d` to be the non-negative
+  -- square root of `?d_sq`.
+
+  rule position_distance_sq(?d_sq, ?p1, ?p2)
+    :- ?dx = ?p1.position.x - ?p2.position.x,
+       ?dy = ?p1.position.y - ?p2.position.y,
+       ?dz = ?p1.position.z - ?p2.position.z,
+       ?d_sq = ?dx * ?dx + ?dy * ?dy + ?dz * ?dz
+
+  rule position_distance(?d, ?p1, ?p2)
+    :- position_distance_sq(?d_sq, ?p1, ?p2),
+       ?d * ?d = ?d_sq,
+       ?d >= 0.0
+
+  -- =================================================================
+  -- Scenario-specific initial state (one concrete flight)
+  -- =================================================================
+  --
+  -- The lf1 world file `multirotor_leader_follower1.wbt` puts the
+  -- leader at origin and the follower at offset `(-4, 0, 0)` at
+  -- altitude 12 m. This gives a concrete `real_pose_at(0, ...)` for
+  -- both drones — without it, the recursive transition rule above
+  -- has no base case and `reachable_real` is groundless.
+  --
+  -- These facts make a SLD-side query like
+  --   distance_at_step(0, ?d)
+  -- actually evaluate to a concrete `?d ≈ 4.0` via the chain
+  --   real_pose_at(0, Leader, ?lp), real_pose_at(0, Follower, ?fp),
+  --   position_distance(?lp, ?fp, ?d).
+  -- The constraints `safety_no_collision_*` etc. become refutable
+  -- *for this specific initial geometry*; for a different starting
+  -- formation, these facts must change.
+  --
+  -- Universal-over-initial-conditions safety remains the inductive
+  -- claim discharged by reachability_band (in safety_gps.anthill).
+
+  fact real_pose_at(0, Leader, Pose(
+    position: Vec3(x: 0.0, y: 0.0, z: 12.0),
+    roll:     0.0,
+    pitch:    0.0,
+    yaw:      0.0
+  ))
+
+  fact real_pose_at(0, Follower, Pose(
+    position: Vec3(x: -4.0, y: 0.0, z: 12.0),
+    roll:     0.0,
+    pitch:    0.0,
+    yaw:      0.0
+  ))
 
   -- =================================================================
   -- The step-distance bound — load-bearing axiom, expressed inline
