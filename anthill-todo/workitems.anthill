@@ -1052,7 +1052,7 @@ fact WorkItem(
   description: "smt-gen: AbstractLift mode for cited-rule body rendering. When lifting a cited rule for use as a forall axiom in a consumers SMT preamble, smt-gen process_body_goal recursively unfolds entity destructures and chains through related rules, including grounding against fact data. Concretely: lf1 step_distance_lemmas body references distance_at_step, which expands transitively into position_distance_sq, which produces nonlinear var*var assertions plus ground constants from real_pose_at facts (e.g. (= (* var_3 var_3) 16.0) appearing in an LRA script). For a universal lemma about abstract distances, ground pose data is irrelevant and the nonlinearity blocks LRA discharge. Fix: add RenderMode { Discharge, AbstractLift } parameter to Emitter; in AbstractLift mode, process_body_goal stops at uninterpreted-predicate boundaries (does not chase entity destructures or rule expansions for predicates that arent already arithmetic). Calls from lift_rule_to_implication_clause use AbstractLift; calls from emit_satisfiability_check_with_deps use Discharge (existing behavior). Acceptance: cited rule lifts produce only the abstract claim (head plus minimal body needed to bind free vars); lf1 conclude with by z3(logic: LRA) closes once WI-147 + WI-148 also land.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-147"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-04-29T08:24:35Z"))
 
 fact WorkItem(
   id: "WI-150",

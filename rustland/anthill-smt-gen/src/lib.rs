@@ -71,6 +71,15 @@ pub struct ProofConfig {
     /// discharging X. Smt-gen does not parse / validate these strings;
     /// it trusts the caller. Order is preserved.
     pub assumptions: Vec<String>,
+    /// WI-149 AbstractLift mode: when true, `process_body_goal` does
+    /// NOT chase rule-call goals into their defining bodies (no
+    /// fact-grounding, no recursive rule expansion). The call's
+    /// vars stay as free SMT consts. Set by `dispatch_structured` for
+    /// the conclude-clause discharge so the parent's body doesn't
+    /// drag in `position_distance_sq` style nonlinear ground
+    /// arithmetic when the structured proof's cited steps already
+    /// constrain the relevant variables.
+    pub abstract_body: bool,
 }
 
 /// One obligation to discharge: prove `<rule>(?result) ≤ <bound>`
@@ -134,6 +143,7 @@ pub fn emit_satisfiability_check_with(
     config: &ProofConfig,
 ) -> Result<String, SmtGenError> {
     let mut emitter = Emitter::new(kb);
+    emitter.abstract_mode = config.abstract_body;
     emitter.collect_rule(rule_qn)?;
     emitter.collect_facts_for_referenced_entities();
     Ok(emitter.render_satisfiability_with(rule_qn, config))
@@ -148,6 +158,7 @@ pub fn emit_satisfiability_check_with_deps(
     config: &ProofConfig,
 ) -> Result<(String, Vec<String>), SmtGenError> {
     let mut emitter = Emitter::new(kb);
+    emitter.abstract_mode = config.abstract_body;
     emitter.collect_rule(rule_qn)?;
     emitter.collect_facts_for_referenced_entities();
     let smt = emitter.render_satisfiability_with(rule_qn, config);
@@ -190,6 +201,15 @@ pub fn lift_rule_to_implication_clause(
     rule_qn: &str,
 ) -> Result<String, SmtGenError> {
     let mut emitter = Emitter::new(kb);
+    // WI-149: cited-rule lifts are inherently abstract — the cited
+    // rule's body should not drag in fact-bound ground arithmetic
+    // or transitive nonlinear `var*var` from its dependencies. The
+    // citation provides the rule's claim as a forall (or, under
+    // shared-arity, as a ground assertion); chasing its body would
+    // mean the cited rule's truth is conditional on facts the
+    // consumer doesn't actually quote, which is unsound for the
+    // universal lift.
+    emitter.abstract_mode = true;
     emitter.collect_rule(rule_qn)?;
     emitter.collect_facts_for_referenced_entities();
 
@@ -317,6 +337,12 @@ struct Emitter<'kb> {
     /// rendered script (WI-147). SMT-LIB has no built-in `abs` for
     /// Real; we synthesise it via `(ite (< x 0) (- x) x)`.
     uses_abs: bool,
+    /// WI-149 AbstractLift mode: when true, `process_body_goal` skips
+    /// rule-call expansion (single-arg shorthand and multi-pos-arg
+    /// fact-match/inline) — those vars stay free in the rendered
+    /// SMT. Used by `lift_rule_to_implication_clause` (always) and
+    /// by structured-proof parent discharges (via ProofConfig).
+    abstract_mode: bool,
 }
 
 impl<'kb> Emitter<'kb> {
@@ -333,6 +359,7 @@ impl<'kb> Emitter<'kb> {
             visited_rules: BTreeSet::new(),
             entity_bindings: BTreeMap::new(),
             uses_abs: false,
+            abstract_mode: false,
         }
     }
 
@@ -515,6 +542,21 @@ impl<'kb> Emitter<'kb> {
                 bindings.insert(synthetic_var_name(bind_idx), const_name.clone());
                 self.field_consts.entry(const_name).or_insert(0.0); // resolved later
             }
+            return Ok(());
+        }
+
+        // WI-149 AbstractLift: in abstract mode, don't chase rule
+        // calls into their defining bodies. The call's vars stay as
+        // free SMT consts; cited-rule lifts (or other ambient
+        // assertions) are expected to constrain them. This avoids
+        // dragging fact-bound ground arithmetic and nonlinear
+        // `var*var` from transitive expansions like
+        // `position_distance_sq` into the consumer's preamble.
+        if self.abstract_mode {
+            // Track the rule's QN as visited (the discharge still
+            // depends structurally on the rule's existence) but
+            // skip its body expansion.
+            self.visited_rules.insert(qn.to_string());
             return Ok(());
         }
 

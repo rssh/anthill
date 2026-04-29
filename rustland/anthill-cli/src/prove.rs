@@ -978,6 +978,21 @@ fn dispatch_z3(
     let mut config = ProofConfig::default();
     let mut canon_parts: Vec<String> = Vec::new();
     let mut tactic_term: Option<TermId> = None;
+    // WI-149: when this rule's source-level proof body is structured
+    // (proposal 031), render the rule's body abstractly — don't chase
+    // rule calls into their defining bodies, leaving the cited step
+    // lifts (already in `assumptions` after `render_cited_lemmas`) as
+    // the sole content of the discharge. Without this, a parent rule
+    // whose body references `distance_at_step` or similar pulls in
+    // transitive nonlinear / fact-bound arithmetic that breaks LRA.
+    if let Some(syms) = Some(ProofSyms::new(kb)) {
+        if find_proof_body_term(kb, &syms, rule_qn)
+            .map(|t| is_structured_body(kb, t))
+            .unwrap_or(false)
+        {
+            config.abstract_body = true;
+        }
+    }
     // Render each cited lemma's body via smt-gen and stash the
     // resulting clauses as `(assert ...)` hypotheses for this proof.
     // We re-use `emit_satisfiability_check_with_deps` with a default
