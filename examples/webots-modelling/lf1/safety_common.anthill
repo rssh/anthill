@@ -382,32 +382,58 @@ namespace anthill.examples.lf1.safety.common
     distance_at_step(?k_next, ?d_next)
     -: lte(abs(?d_next - ?d_prev), ?delta)
 
-  -- Mechanical NRA-discharge attempted (and reverted to by trust)
-  -- because three orthogonal smt-gen issues stack up:
+  -- Migrated to a proposal-031 structured proof. The lemma's truth
+  -- decomposes into two named geometric/physical claims (h_geometric
+  -- + h_envelope) plus the transitivity that chains them. Each is
+  -- individually replaceable: as soon as a backend can mechanically
+  -- discharge one of the steps (e.g. dReal on h_geometric, a learned
+  -- velocity-envelope from telemetry on h_envelope), only that step's
+  -- `by trust(...)` flips to `by dreal(...)` / `by z3(...)` — the
+  -- chain shape and the parent rule's body stay unchanged.
   --
-  --   1. `lift_rule_to_implication_clause`'s v0 only accepts 0 or 1
-  --      head pos_args — workable, but forces awkward result-var
-  --      sentinels.
-  --   2. The consumer's logic must support quantifiers (NRA, not
-  --      QF_NRA) once any using-cite is lifted as a forall axiom.
-  --   3. Cited-rule bodies that destructure entities
-  --      (`KinematicAssumptions(leader_speed_max: ?x, …)`) pull
-  --      field-constant names into the consumer's preamble where
-  --      they're undefined, because the consumer's emit pass
-  --      doesn't chase the cited rule's referenced facts. Z3
-  --      surfaces "unknown constant leader_speed_max".
+  -- `anthill check --report-trust` surfaces each step by name, so
+  -- the trust surface is auditable at the level of "scalar norm
+  -- homogeneity is trusted" rather than "step_distance_lemma is
+  -- opaquely trusted as a whole". See proposal 031 §"Concrete worked
+  -- example" for the long-form 7-step decomposition this is a
+  -- pragmatic v0 of.
   --
-  -- Even with all three patched, Z3 NRA's heuristic forall
-  -- instantiation on this chain (Cauchy-Schwarz + scalar
-  -- homogeneity + position-update unfolding) is not reliable. A
-  -- dReal backend with δ-decision is the right tool. Until then
-  -- the structural decomposition is captured in source (named
-  -- axioms triangle_inequality + velocity_envelope, plus this
-  -- rule's reason naming the composition), and `anthill check
-  -- --report-trust` surfaces the chain — the architecture is in
-  -- place; the mechanical close is a separate engineering project.
+  -- Mechanical NRA-discharge attempted (and reverted) because three
+  -- orthogonal smt-gen issues stack up: result-var sentinel forced
+  -- by `lift_rule_to_implication_clause`'s v0 head shape, NRA
+  -- (not QF_NRA) required for forall lifts, and field-constant
+  -- names from cited entity destructures missing from the consumer
+  -- preamble. Even with all three patched, Z3 NRA's heuristic
+  -- forall instantiation on Cauchy-Schwarz + scalar homogeneity +
+  -- position-update unfolding is unreliable; dReal with δ-decision
+  -- is the right tool. The structural decomposition is captured
+  -- here so individual steps can promote to mechanical discharge
+  -- as backends arrive.
   proof step_distance_lemma
-    by trust(reason: "Composition of triangle_inequality + velocity_envelope + real_pose_at transition; mechanical discharge blocked by three smt-gen limits — see comment.")
+    -- h_geometric: reverse triangle inequality + scalar homogeneity
+    -- of the Euclidean norm bound the position-difference magnitude
+    -- by `T_c · ‖v_L − v_F‖`. Cites triangle_inequality so the
+    -- trust report links this step to the geometric axiom it leans
+    -- on. The bound expression is left as an opaque `?v_diff_scaled`
+    -- — the trust reason names the math.
+    rule h_geometric: lte(abs(?d_next - ?d_prev), ?v_diff_scaled)
+      using triangle_inequality
+      by trust(reason: "Reverse triangle inequality + scalar homogeneity of Euclidean norm: |d_next − d_prev| ≤ T_c · ‖v_L − v_F‖.")
+
+    -- h_envelope: the velocity envelope (with arithmetic on the
+    -- KinematicAssumptions bounds) shrinks `T_c · ‖v_L − v_F‖`
+    -- below `?delta`. Cites velocity_envelope so the trust report
+    -- links this step to the kinematic axiom.
+    rule h_envelope: lte(?v_diff_scaled, ?delta)
+      using velocity_envelope
+      by trust(reason: "Velocity envelope: T_c · ‖v_L − v_F‖ ≤ T_c · (vL_max + vF_max) = delta.")
+
+    -- Concluding clause: transitivity of ≤ across h_geometric and
+    -- h_envelope yields the parent claim. A future backend can
+    -- discharge this step mechanically by Z3 over QF_LRA once both
+    -- step claims are available as cited forall axioms.
+    using h_geometric, h_envelope
+    by trust(reason: "Transitivity of ≤: h_geometric ∧ h_envelope ⇒ |d_next − d_prev| ≤ delta.")
   end
 
   -- =================================================================
