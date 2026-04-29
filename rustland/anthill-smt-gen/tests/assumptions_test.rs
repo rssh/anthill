@@ -33,11 +33,14 @@ fn build_kb() -> anthill_core::kb::KnowledgeBase {
 #[test]
 fn assumptions_appear_as_assert_in_preamble() {
     let kb = build_kb();
+    // WI-150 changed `emit_assumptions` to splice raw, so callers
+    // wrap each clause in `(assert ...)` themselves before stuffing
+    // it into ProofConfig.assumptions.
     let cfg = ProofConfig {
         logic: Some("LRA".to_string()),
         assumptions: vec![
-            "(>= var_d 5.0)".to_string(),
-            "(<= var_d 7.0)".to_string(),
+            "(assert (>= var_d 5.0))".to_string(),
+            "(assert (<= var_d 7.0))".to_string(),
         ],
         ..Default::default()
     };

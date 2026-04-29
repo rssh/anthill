@@ -212,13 +212,58 @@ pub fn lift_rule_to_implication_clause(
     };
 
     let imp = format!("(=> {} {})", premises, conclusion);
-    if emitter.free_vars.is_empty() {
-        return Ok(imp);
+
+    // WI-150: skip forall-quantifying parent-shared vars. For step
+    // rules synthesized in a parent's frame, leading DeBruijn slots
+    // 0..shared_arity belong to the parent — they appear in the
+    // consumer's preamble as declare-const. The remaining slots
+    // (≥ shared_arity) are step-introduced new vars.
+    //
+    // When shared_arity == 0 (regular cited rule, not a structured-
+    // proof step), forall-quantify all free vars as before.
+    //
+    // When shared_arity > 0, step-new vars are emitted as
+    // declare-const at the top of the assumption block (so they
+    // become free Skolem constants in the consumer's preamble);
+    // the lift body is asserted directly without a wrapping forall.
+    // Parent-shared free vars in the body refer to the consumer's
+    // declarations.
+    let shared_arity = kb.try_resolve_symbol(rule_qn)
+        .and_then(|sym| kb.by_functor(sym).first().copied())
+        .map(|rid| kb.rule_shared_arity(rid))
+        .unwrap_or(0);
+
+    if shared_arity == 0 {
+        // Classic universally-quantified lift.
+        if emitter.free_vars.is_empty() {
+            return Ok(format!("(assert {imp})"));
+        }
+        let decls: Vec<String> = emitter.free_vars.iter()
+            .map(|v| format!("({v} Real)"))
+            .collect();
+        return Ok(format!(
+            "(assert (forall ({}) {imp}))",
+            decls.join(" ")
+        ));
     }
-    let decls: Vec<String> = emitter.free_vars.iter()
-        .map(|v| format!("({v} Real)"))
+
+    // shared_arity > 0: emit declare-consts for step-new vars +
+    // a ground assert for the implication.
+    let mut step_new: Vec<&String> = emitter.free_vars.iter()
+        .filter(|v| {
+            v.strip_prefix("var_")
+                .and_then(|s| s.parse::<u32>().ok())
+                .map(|idx| idx >= shared_arity)
+                .unwrap_or(false)
+        })
         .collect();
-    Ok(format!("(forall ({}) {})", decls.join(" "), imp))
+    step_new.sort();
+    let mut block = String::new();
+    for v in &step_new {
+        block.push_str(&format!("(declare-const {v} Real)\n"));
+    }
+    block.push_str(&format!("(assert {imp})"));
+    Ok(block)
 }
 
 // ── Implementation ──────────────────────────────────────────────────
@@ -1089,8 +1134,23 @@ impl<'kb> Emitter<'kb> {
 fn emit_assumptions(out: &mut String, config: &ProofConfig) {
     if config.assumptions.is_empty() { return; }
     out.push_str("; Cited-lemma assumptions (from `using` clause).\n");
+    // Dedupe `(declare-const var_<i> Real)` lines across all
+    // assumptions — different cited step rules (WI-150) may share
+    // step-new vars (because WI-148 phase 1 makes step-introduced
+    // vars share VarIds across consecutive steps), and Z3 rejects
+    // a duplicate constant declaration.
+    let mut seen_decls: BTreeSet<String> = BTreeSet::new();
     for clause in &config.assumptions {
-        out.push_str(&format!("(assert {clause})\n"));
+        for line in clause.split('\n') {
+            if line.trim().is_empty() { continue; }
+            if line.starts_with("(declare-const ") {
+                if !seen_decls.insert(line.to_string()) {
+                    continue;
+                }
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
     }
     out.push('\n');
 }

@@ -113,6 +113,20 @@ struct RuleEntry {
     /// Number of de Bruijn-encoded free variables in head+body+conclusion.
     /// Zero for ground facts. Used by resolver to allocate fresh globals.
     arity: u32,
+    /// Pre-DeBruijn Global VarIds in DeBruijn-index order (i.e.
+    /// `globals[0]` is the Global VarId that was assigned DeBruijn 0
+    /// during rule load). Empty for ground facts. Saved for WI-150:
+    /// dispatch_structured synthesizes step rules in the parent's
+    /// variable frame so the cited-rule lift's `var_<i>` SMT names
+    /// align with the consumer's preamble declarations.
+    globals: Vec<VarId>,
+    /// Number of leading DeBruijn slots whose vars are SHARED with a
+    /// parent rule's frame (WI-150). When `shared_arity > 0`, the
+    /// lift skips forall-quantifying `var_0..var_{shared_arity-1}`
+    /// — those names refer to the consumer's already-declared
+    /// preamble vars; only `var_{shared_arity}..var_{arity-1}` (the
+    /// step-introduced new vars) get forall'd.
+    shared_arity: u32,
 }
 
 // ── Sort kind ───────────────────────────────────────────────────
@@ -388,6 +402,8 @@ impl KnowledgeBase {
             meta,
             retracted: false,
             arity: 0, // set by to_debruijn after loading
+            globals: Vec::new(), // set by assert_rule_debruijn_with_conclusion
+            shared_arity: 0,
         });
 
         // Update indexes
@@ -1220,7 +1236,98 @@ impl KnowledgeBase {
         }
         self.rules[rule_id.index()].conclusion = db_conclusion;
         self.rules[rule_id.index()].arity = arity;
+        // WI-150: save the pre-DeBruijn vars list so structured-proof
+        // step synthesis can re-use the parent's frame at dispatch
+        // time. `vars[i]` is the Global VarId that was assigned
+        // DeBruijn `i` by `term_to_debruijn`. Empty for ground facts.
+        self.rules[rule_id.index()].globals = vars;
         rule_id
+    }
+
+    /// Pre-DeBruijn Global VarIds for this rule, indexed by their
+    /// assigned DeBruijn number. Empty for ground facts. Used by
+    /// structured-proof step synthesis (proposal 031 phase b /
+    /// WI-150) to align step rule variables with the parent's frame.
+    pub fn rule_globals(&self, id: RuleId) -> &[VarId] {
+        &self.rules[id.index()].globals
+    }
+
+    /// Assert a rule using a CALLER-PROVIDED Global VarIds list as
+    /// the DeBruijn frame (proposal 031 / WI-150). The terms are
+    /// reindexed against `vars` rather than recomputed from the
+    /// rule's own free vars; any Global VarId NOT in `vars` is
+    /// appended in first-seen order. Used by `dispatch_structured`
+    /// to synthesize step rules in the parent's variable frame so
+    /// shared variable names produce identical DeBruijn indices
+    /// (and therefore identical `var_<i>` SMT names) across the
+    /// parent rule and every step's cited-rule lift.
+    pub fn assert_rule_debruijn_in_frame(
+        &mut self,
+        head: TermId,
+        body: Vec<TermId>,
+        conclusion: Vec<TermId>,
+        seed_globals: &[VarId],
+        sort: TermId,
+        domain: TermId,
+        meta: Option<TermId>,
+    ) -> RuleId {
+        // Build vars list: start with seed (parent's frame); append
+        // any Global VarIds present in head/body/conclusion that
+        // aren't already covered.
+        // `term_to_debruijn` assigns DeBruijn indices via reverse
+        // position (`vars.len()-1-pos`): the LAST element of `vars`
+        // gets DeBruijn 0. To preserve parent's frame for shared
+        // vars, parent's `seed_globals` must remain at the TAIL of
+        // the combined list — so step-introduced vars are PREPENDED,
+        // not appended.
+        let seen: std::collections::HashSet<u32> =
+            seed_globals.iter().map(|v| v.raw()).collect();
+        let mut combined = body.clone();
+        combined.extend(conclusion.iter().copied());
+        let mut step_vars = if combined.is_empty() {
+            self.collect_vars(head)
+        } else {
+            self.collect_rule_vars(head, &combined)
+        };
+        step_vars.retain(|v| !seen.contains(&v.raw()));
+        // step-new first, then parent's seed.
+        let mut vars: Vec<VarId> = step_vars;
+        vars.extend(seed_globals.iter().copied());
+
+        let arity = vars.len() as u32;
+        let (db_head, db_body, db_conclusion) = if vars.is_empty() {
+            (head, body, conclusion)
+        } else {
+            let new_head = self.term_to_debruijn(head, &vars);
+            let new_body: Vec<TermId> = body.iter()
+                .map(|&b| self.term_to_debruijn(b, &vars))
+                .collect();
+            let new_conclusion: Vec<TermId> = conclusion.iter()
+                .map(|&c| self.term_to_debruijn(c, &vars))
+                .collect();
+            (new_head, new_body, new_conclusion)
+        };
+        let rule_id = self.assert_rule(db_head, db_body, sort, domain, meta);
+        for &c in &db_conclusion {
+            self.terms.incref(c);
+        }
+        self.rules[rule_id.index()].conclusion = db_conclusion;
+        self.rules[rule_id.index()].arity = arity;
+        // The first `seed_globals.len()` DeBruijn slots (after reverse
+        // mapping) belong to the parent's frame. Under term_to_debruijn
+        // the LAST var_order entry maps to DeBruijn 0, so parent's
+        // tailing seed maps to DeBruijn 0..seed_len-1 — exactly the
+        // slots we want the lift to leave forall-free.
+        self.rules[rule_id.index()].shared_arity = seed_globals.len() as u32;
+        self.rules[rule_id.index()].globals = vars;
+        rule_id
+    }
+
+    /// Number of leading DeBruijn slots that are shared with a parent
+    /// rule's frame (WI-150). Zero for ordinary rules; positive for
+    /// step rules synthesized via `assert_rule_debruijn_in_frame`.
+    pub fn rule_shared_arity(&self, id: RuleId) -> u32 {
+        self.rules[id.index()].shared_arity
     }
 
     /// Convert a single term: replace Global(vid) with DeBruijn(index).

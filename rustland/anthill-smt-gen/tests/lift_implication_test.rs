@@ -33,8 +33,12 @@ fn lift_emits_forall_implication_from_explicit_conclusion() {
     let clause = lift_rule_to_implication_clause(
         &kb, "test.lift.simple.simple_lemma").expect("lift");
 
-    assert!(clause.starts_with("(forall ("),
-        "expected forall-quantified clause, got:\n{clause}");
+    // The lift now wraps its result in a fully-formed `(assert ...)`
+    // statement (WI-150 changed emit_assumptions to splice raw),
+    // so the clause starts with `(assert (forall ...))` for ordinary
+    // (non-shared) cited rules.
+    assert!(clause.starts_with("(assert (forall ("),
+        "expected `(assert (forall ...))` clause, got:\n{clause}");
     // Premise `(>= var_x 5.0)` survives.
     assert!(clause.contains("(>= ") && clause.contains("5.0"),
         "expected the >= 5.0 premise to surface:\n{clause}");
@@ -53,8 +57,15 @@ fn lifted_implication_is_a_z3_tautology() {
     let clause = lift_rule_to_implication_clause(
         &kb, "test.lift.simple.simple_lemma").expect("lift");
 
+    // Strip the `(assert ...)` wrapper since this test wants to
+    // negate the implication directly. WI-150 changed the lift to
+    // return `(assert <imp>)`; we recover `<imp>` for the negation.
+    let inner = clause
+        .strip_prefix("(assert ")
+        .and_then(|s| s.strip_suffix(')'))
+        .unwrap_or(&clause);
     let smt = format!(
-        "(set-logic LRA)\n(assert (not {clause}))\n(check-sat)\n"
+        "(set-logic LRA)\n(assert (not {inner}))\n(check-sat)\n"
     );
     let out = run_z3("lift_tautology", &smt);
     assert_eq!(out, "unsat",

@@ -662,9 +662,19 @@ fn read_structured_body(
 /// scope under `step_qn`; subsequent prove invocations will re-create
 /// it idempotently (the symbol-table merge behavior in `define`
 /// returns the existing entry on re-registration).
+///
+/// WI-150: when `parent_qn` resolves to a rule in the KB, the step
+/// rule is asserted in that parent's variable frame — step variables
+/// that match the parent's by Global VarId get the SAME DeBruijn
+/// index (and therefore the same `var_<i>` SMT name when
+/// lift_rule_to_implication_clause renders the cited step). New
+/// step-introduced vars get appended after the parent's frame.
+/// Without a matching parent the step uses its own fresh frame,
+/// matching pre-WI-150 behavior.
 fn synthesize_step_rule(
     kb: &mut KnowledgeBase,
     step_qn: &str,
+    parent_qn: &str,
     body_terms: Vec<TermId>,
     head_term: TermId,
 ) {
@@ -672,21 +682,37 @@ fn synthesize_step_rule(
     let short_name = step_qn.rsplit('.').next().unwrap_or(step_qn);
     let global_scope = kb.make_name_term("_global");
     let label_sym = kb.define_symbol(short_name, step_qn, SymbolKind::Rule, global_scope.raw());
-    // Skip if a rule with this head functor already exists (re-runs
-    // would otherwise duplicate the clause).
     if !kb.by_functor(label_sym).is_empty() {
         return;
     }
     let kb_head = kb.make_name_term_from_sym(label_sym);
     let rule_sort = kb.make_name_term("Rule");
-    kb.assert_rule_debruijn_with_conclusion(
-        kb_head,
-        body_terms,
-        vec![head_term],
-        rule_sort,
-        global_scope,
-        None,
-    );
+
+    let parent_globals: Vec<_> = kb.try_resolve_symbol(parent_qn)
+        .and_then(|sym| kb.by_functor(sym).first().copied())
+        .map(|rid| kb.rule_globals(rid).to_vec())
+        .unwrap_or_default();
+
+    if parent_globals.is_empty() {
+        kb.assert_rule_debruijn_with_conclusion(
+            kb_head,
+            body_terms,
+            vec![head_term],
+            rule_sort,
+            global_scope,
+            None,
+        );
+    } else {
+        kb.assert_rule_debruijn_in_frame(
+            kb_head,
+            body_terms,
+            vec![head_term],
+            &parent_globals,
+            rule_sort,
+            global_scope,
+            None,
+        );
+    }
 }
 
 /// Phase-b dispatch for a structured proof body (proposal 031).
@@ -741,7 +767,7 @@ fn dispatch_structured(
     let mut visited_rules: BTreeSet<String> = BTreeSet::new();
 
     for step in &steps {
-        synthesize_step_rule(kb, &step.qn, step.body_terms.clone(), step.head_term);
+        synthesize_step_rule(kb, &step.qn, &rec.rule, step.body_terms.clone(), step.head_term);
         let step_rec = ProofRec {
             rule: step.qn.clone(),
             strategy: clone_strategy(&step.strategy),

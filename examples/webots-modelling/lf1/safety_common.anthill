@@ -435,8 +435,17 @@ namespace anthill.examples.lf1.safety.common
     -- enough by itself because the KB drops the parent's variable
     -- identity at DeBruijn conversion. Plus WI-149 (AbstractLift)
     -- to stop position_distance_sq's `var*var` from polluting LRA.
+    -- WI-147 + WI-148 + WI-150 are landed; transitivity now lifts
+    -- as ground assertions in the parent's variable frame so Z3
+    -- chains them automatically. Final blocker is WI-149: the
+    -- parent's body recursively unfolds `position_distance_sq`,
+    -- which produces `var * var` ground arithmetic from concrete
+    -- pose facts and breaks LRA. Once WI-149 (AbstractLift mode in
+    -- smt-gen) stops the unfolding at the uninterpreted-predicate
+    -- boundary, this `by trust` flips to `by z3(logic: "LRA")` and
+    -- the trust surface drops to just `h_geometric` + `h_envelope`.
     using h_geometric, h_envelope
-    by trust(reason: "Transitivity of ≤; will mechanise once WI-148 (loader-side var-scope alignment) and WI-149 (AbstractLift mode) land — see in-source TODO.")
+    by trust(reason: "Transitivity of ≤ on h_geometric ∧ h_envelope; mechanical close blocked only by WI-149 (nonlinear `var*var` from position_distance_sq pollutes LRA preamble).")
   end
 
   -- =================================================================
