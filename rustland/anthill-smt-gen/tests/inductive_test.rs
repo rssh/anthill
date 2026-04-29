@@ -110,9 +110,12 @@ fn lower_violation_emits_assertions_and_free_vars() {
     // (no equation binds them).
     assert!(smt.contains("(declare-const var_"),
             "missing free-var decl:\n{smt}");
-    // The bound check `(<= (abs ...) ...)` lands in the assertions.
-    assert!(smt.contains("(<= (abs"),
+    // The bound check `(<= (anthill_abs ...) ...)` lands in the
+    // assertions, with the synthesized abs prelude (WI-147).
+    assert!(smt.contains("(<= (anthill_abs"),
             "missing abs-bound assertion:\n{smt}");
+    assert!(smt.contains("(define-fun anthill_abs"),
+            "missing anthill_abs prelude:\n{smt}");
     // The lower-bound violation `(< d_next d_min)` lands too.
     assert!(smt.contains("(< "),
             "missing strict-lt violation assertion:\n{smt}");

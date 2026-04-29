@@ -267,6 +267,11 @@ struct Emitter<'kb> {
     /// fact arg is a constructor `Term::Fn`. Consumed by
     /// `translate_expr` when it encounters `field_access(?var, ...)`.
     entity_bindings: BTreeMap<String, TermId>,
+    /// Set when an emitted SMT expression uses `anthill_abs`. Triggers
+    /// emission of the `(define-fun anthill_abs ...)` prelude in the
+    /// rendered script (WI-147). SMT-LIB has no built-in `abs` for
+    /// Real; we synthesise it via `(ite (< x 0) (- x) x)`.
+    uses_abs: bool,
 }
 
 impl<'kb> Emitter<'kb> {
@@ -282,6 +287,7 @@ impl<'kb> Emitter<'kb> {
             free_vars: BTreeSet::new(),
             visited_rules: BTreeSet::new(),
             entity_bindings: BTreeMap::new(),
+            uses_abs: false,
         }
     }
 
@@ -787,9 +793,10 @@ impl<'kb> Emitter<'kb> {
 
     /// Translate an arithmetic expression (anthill prelude ops) to
     /// an SMT-LIB term. Variables resolve through `bindings` which
-    /// substitutes already-defined locals inline.
+    /// substitutes already-defined locals inline. Mutates `self` to
+    /// record `uses_abs` (WI-147) when an `abs` call is rendered.
     fn translate_expr(
-        &self,
+        &mut self,
         term: TermId,
         bindings: &BTreeMap<String, String>,
     ) -> Result<String, SmtGenError> {
@@ -822,6 +829,9 @@ impl<'kb> Emitter<'kb> {
                             "{op}: expected 1 pos_arg, got {}", pos_args.len())));
                     }
                     let a = self.translate_expr(pos_args[0], bindings)?;
+                    if smt_op == "anthill_abs" {
+                        self.uses_abs = true;
+                    }
                     return Ok(format!("({smt_op} {a})"));
                 }
                 let smt_op = match map_arith_op(op) {
@@ -965,6 +975,11 @@ impl<'kb> Emitter<'kb> {
         emit_outcome_options(&mut out, config);
         out.push_str(&format!("(set-logic {logic})\n\n"));
 
+        // WI-147: synthesised `abs` prelude — see render_satisfiability_with.
+        if self.uses_abs || config.assumptions.iter().any(|a| a.contains("anthill_abs ")) {
+            out.push_str("(define-fun anthill_abs ((x Real)) Real (ite (< x 0) (- x) x))\n\n");
+        }
+
         for (name, value) in &self.field_consts {
             out.push_str(&format!("(define-fun {name} () Real {})\n", format_real(*value)));
         }
@@ -1003,6 +1018,16 @@ impl<'kb> Emitter<'kb> {
         }
         emit_outcome_options(&mut out, config);
         out.push_str(&format!("(set-logic {logic})\n\n"));
+
+        // WI-147: emit the `anthill_abs` synthesised abs prelude when
+        // any assertion (body, conclusion, or cited-lemma assumption)
+        // references it. SMT-LIB has no built-in `abs` for Real in
+        // LRA / NRA / QF_*; without this prelude `(abs x)` becomes
+        // an uninterpreted function and the discharge silently
+        // produces wrong models or `unknown`.
+        if self.uses_abs || config.assumptions.iter().any(|a| a.contains("anthill_abs ")) {
+            out.push_str("(define-fun anthill_abs ((x Real)) Real (ite (< x 0) (- x) x))\n\n");
+        }
 
         for (name, value) in &self.field_consts {
             out.push_str(&format!("(define-fun {name} () Real {})\n", format_real(*value)));
@@ -1124,13 +1149,15 @@ fn map_arith_op(qn: &str) -> Option<&'static str> {
 }
 
 /// Map unary anthill ops (abs, neg) to SMT-LIB.
-/// `abs` requires the AUFLIRA / LRA logics — Z3 supports it directly
-/// in linear arithmetic by axiomatising via `if-then-else`. We just
-/// emit `(abs ...)` and let the solver desugar.
+/// `abs` is emitted as `anthill_abs` — a (define-fun anthill_abs
+/// ((x Real)) Real (ite (< x 0) (- x) x)) prelude is added to the
+/// final SMT script when any call site renders `anthill_abs` (WI-147).
+/// SMT-LIB has no built-in `abs` for Real in the LRA/NRA logics
+/// most discharges run under, so we synthesise it.
 fn map_unary_op(qn: &str) -> Option<&'static str> {
     match qn {
-        "anthill.prelude.Float.abs" | "Float.abs" | "abs" => Some("abs"),
-        "anthill.prelude.Int.abs" => Some("abs"),
+        "anthill.prelude.Float.abs" | "Float.abs" | "abs" => Some("anthill_abs"),
+        "anthill.prelude.Int.abs" => Some("anthill_abs"),
         "anthill.prelude.Float.neg" | "Float.neg" => Some("-"),
         "anthill.prelude.Int.neg" | "Int.neg" => Some("-"),
         _ => None,
