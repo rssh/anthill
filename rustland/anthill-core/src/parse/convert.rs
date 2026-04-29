@@ -40,6 +40,15 @@ pub(super) struct Converter<'a> {
     /// Reset at each rule/constraint/operation boundary so that
     /// `?x` in different rules gets distinct VarIds.
     var_scope: HashMap<Symbol, VarId>,
+    /// Snapshot of each labeled rule's final var_scope, keyed by the
+    /// rule's label symbol (proposal 031 / WI-148). Lets a subsequent
+    /// `convert_proof` for the same target restore the parent rule's
+    /// scope so structured-proof step variables that share source
+    /// names with the parent (`?d_prev`, `?delta`, …) get the SAME
+    /// VarId — the lift's forall quantification then ranges over the
+    /// PARENT's vars, so the step's claim chains arithmetically with
+    /// the parent's body in the consumer's SMT preamble.
+    rule_var_scopes: HashMap<Symbol, HashMap<Symbol, VarId>>,
 }
 
 impl<'a> Converter<'a> {
@@ -52,6 +61,7 @@ impl<'a> Converter<'a> {
             errors: Vec::new(),
             next_var: 0,
             var_scope: HashMap::new(),
+            rule_var_scopes: HashMap::new(),
         }
     }
 
@@ -1066,6 +1076,15 @@ impl<'a> Converter<'a> {
 
         let meta = self.convert_meta_block(node);
 
+        // Snapshot var_scope for later restoration by convert_proof
+        // (WI-148). Only labeled rules are recorded — proofs target
+        // rules by label.
+        if let Some(ref label_name) = label {
+            if label_name.segments.len() == 1 {
+                self.rule_var_scopes.insert(label_name.segments[0], self.var_scope.clone());
+            }
+        }
+
         Some(Rule { label, heads, body, meta, span })
     }
 
@@ -1323,6 +1342,11 @@ impl<'a> Converter<'a> {
         let body = self.field(node, "body")
             .map(|b| self.convert_rule_body(b));
         let meta = self.convert_meta_block(node);
+        if let Some(ref label_name) = label {
+            if label_name.segments.len() == 1 {
+                self.rule_var_scopes.insert(label_name.segments[0], self.var_scope.clone());
+            }
+        }
         Some(Rule { label, heads, body, meta, span })
     }
 
@@ -1332,6 +1356,19 @@ impl<'a> Converter<'a> {
 
     fn convert_proof(&mut self, node: Node) -> Option<ProofDecl> {
         let target = self.field(node, "target").map(|n| self.convert_name(n))?;
+        // WI-148: restore the parent rule's var_scope before
+        // converting the proof body so structured-proof step
+        // variables that share source names with the parent (e.g.
+        // `?d_prev`, `?delta`) get the SAME parse-IR VarId. Without
+        // this, each step's scope is independent and the cited-rule
+        // lift forall-quantifies the step's vars over arbitrary
+        // reals, producing vacuous axioms in the SMT preamble.
+        self.reset_var_scope();
+        if target.segments.len() == 1 {
+            if let Some(parent_scope) = self.rule_var_scopes.get(&target.segments[0]).cloned() {
+                self.var_scope = parent_scope;
+            }
+        }
         let strategy = self.field(node, "strategy").map(|n| self.convert_proof_strategy(n));
         let body = self.convert_proof_body(node);
         let using = self.field(node, "using")
@@ -1557,7 +1594,12 @@ impl<'a> Converter<'a> {
     }
 
     fn convert_proof_step(&mut self, node: Node) -> Option<ProofStep> {
-        self.reset_var_scope();
+        // WI-148: do NOT reset_var_scope here. Steps inherit the
+        // parent rule's scope (set by convert_proof) so source names
+        // like `?d_prev` map to the SAME VarId across the parent and
+        // every step; they also share with previously-converted steps
+        // in the same proof body, so a later step's `?v_diff_scaled`
+        // matches the earlier step that introduced it.
         let span = self.span(node);
 
         let label = self.field(node, "label").map(|n| self.convert_name(n));

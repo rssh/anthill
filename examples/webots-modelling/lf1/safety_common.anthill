@@ -428,22 +428,15 @@ namespace anthill.examples.lf1.safety.common
       using velocity_envelope
       by trust(reason: "Velocity envelope: T_c · ‖v_L − v_F‖ ≤ T_c · (vL_max + vF_max) = delta.")
 
-    -- Concluding clause: transitivity of ≤ is a Z3 tautology in
-    -- principle, but the cited forall-lifts here aren't useable for
-    -- mechanical chaining yet:
-    --   * `abs` is uninterpreted at the SMT-LIB level (LRA / NRA
-    --     have no built-in `abs`); h_geometric's lift mentions it.
-    --   * Bare-head steps lift to `forall vars. true ⇒ ≤(...)`,
-    --     i.e. an unconstrained universal that's vacuous on the
-    --     SMT side — the chain reasoning has nothing to bite on.
-    --   * The parent's body pulls in `position_distance_sq`, which
-    --     introduces `var * var` nonlinear terms even in LRA.
-    -- Once the lift machinery handles these (define-fun for `abs`,
-    -- proper bound-passing through bare-head steps, or a step that
-    -- stays inside the linear fragment), this `by trust` flips to
-    -- `by z3(logic: "LRA")` without changing the chain shape.
+    -- Concluding clause: transitivity of ≤ chains h_geometric and
+    -- h_envelope. Will mechanise once the full WI-148 stack lands
+    -- (loader-side preservation of pre-DeBruijn vars + synthesis
+    -- using parent's frame); the parse-IR sharing in v1 isn't
+    -- enough by itself because the KB drops the parent's variable
+    -- identity at DeBruijn conversion. Plus WI-149 (AbstractLift)
+    -- to stop position_distance_sq's `var*var` from polluting LRA.
     using h_geometric, h_envelope
-    by trust(reason: "Transitivity of ≤; mechanical close blocked by uninterpreted `abs`, vacuous bare-head lifts, and nonlinear `var*var` from position_distance_sq.")
+    by trust(reason: "Transitivity of ≤; will mechanise once WI-148 (loader-side var-scope alignment) and WI-149 (AbstractLift mode) land — see in-source TODO.")
   end
 
   -- =================================================================
