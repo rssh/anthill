@@ -1033,3 +1033,24 @@ fact WorkItem(
   depends_on: ["WI-143"],
   status: Delivered(agent: "claude", at: "2026-04-29T05:48:22Z"))
 
+fact WorkItem(
+  id: "WI-147",
+  description: "smt-gen: emit anthill_abs define-fun for SMT-LIB scripts that mention abs(). SMT-LIB has no built-in abs for Real; cited-rule lifts and direct discharges that touch abs (e.g. |d_next - d_prev| in lf1 step_distance_lemma) currently emit raw (abs ...) which Z3 treats as an uninterpreted Function. Surface area: in anthill-smt-gen process_body_goal, detect abs-functor calls (qualified name anthill.prelude.Numeric.abs or short-form abs); record a uses_abs flag on the Emitter; when rendering the final SMT script (render_satisfiability_with / lift_rule_to_implication_clause emit prelude), if uses_abs prepend (define-fun anthill_abs ((x Real)) Real (ite (< x 0) (- x) x)) and rewrite all (abs ...) call sites to (anthill_abs ...). Acceptance: lf1 step_distance_lemma h_geometric lifts with valid abs interpretation; cargo test green. Unblocks: WI-148, WI-149.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-148",
+  description: "Variable-scope alignment for structured-proof steps. Today each step rule in a structured proof body has its own de Bruijn variable scope (convert_proof_step calls reset_var_scope). Result: a step head like `lte(?d_next, ?delta)` gets ?d_next ↦ var_0, ?delta ↦ var_1 in the steps scope, while the parent rule has its own scope where ?d_next ↦ var_X. The steps cited-lift then quantifies var_0/var_1 universally over Real, producing a vacuous forall axiom (e.g. forall (var_0 var_1 Real) ⇒ <= var_1 var_0) which is logically false. Fix: thread the parent rules var_map into convert_proof_step instead of resetting; step heads/bodies share the parents synthetic var_<i> names. Surface area: parse/convert.rs convert_proof_step removes reset_var_scope; load.rs encode_proof_step renders heads/bodies under the parents var scope; the loaders structured-body load arm passes the parents var_map down. Acceptance: lf1 step_distance_lemma h_geometric and h_envelope lift to forall axioms whose variables actually correspond to the parents distance/velocity vars, so the conclude clause by z3(logic: LRA) closes the chain. Depends on WI-147 (abs interpretation) for the lf1 case.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-147"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-149",
+  description: "smt-gen: AbstractLift mode for cited-rule body rendering. When lifting a cited rule for use as a forall axiom in a consumers SMT preamble, smt-gen process_body_goal recursively unfolds entity destructures and chains through related rules, including grounding against fact data. Concretely: lf1 step_distance_lemmas body references distance_at_step, which expands transitively into position_distance_sq, which produces nonlinear var*var assertions plus ground constants from real_pose_at facts (e.g. (= (* var_3 var_3) 16.0) appearing in an LRA script). For a universal lemma about abstract distances, ground pose data is irrelevant and the nonlinearity blocks LRA discharge. Fix: add RenderMode { Discharge, AbstractLift } parameter to Emitter; in AbstractLift mode, process_body_goal stops at uninterpreted-predicate boundaries (does not chase entity destructures or rule expansions for predicates that arent already arithmetic). Calls from lift_rule_to_implication_clause use AbstractLift; calls from emit_satisfiability_check_with_deps use Discharge (existing behavior). Acceptance: cited rule lifts produce only the abstract claim (head plus minimal body needed to bind free vars); lf1 conclude with by z3(logic: LRA) closes once WI-147 + WI-148 also land.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-147"],
+  status: Open)
+
