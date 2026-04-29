@@ -59,7 +59,7 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
             }
         }
         total += 1;
-        let outcome = dispatch(&mut kb, rec, args, &mut stats, &discharged_this_run);
+        let outcome = dispatch(&mut kb, rec, args, &mut stats, &mut discharged_this_run);
         let witness = outcome.witness.clone();
         // Per-ProofRecord state hash (phase α.4): canonical hash of
         // the kb-state slice this discharge consulted. None for
@@ -481,16 +481,10 @@ fn dispatch(
     rec: &ProofRec,
     args: &ProveArgs,
     stats: &mut CacheStats,
-    discharged_this_run: &std::collections::HashMap<String, DischargeKind>,
+    discharged_this_run: &mut std::collections::HashMap<String, DischargeKind>,
 ) -> DispatchOutcome {
     if rec.structured {
-        return DispatchOutcome::no_witness(Verdict::Skipped(
-            "structured proof body (proposal 031): step-by-step dispatch \
-             not yet implemented (see WI for follow-up). The proof's \
-             grammar, IR, and KB encoding are in place; the dispatcher \
-             will iterate inner step rules and chain their witnesses \
-             via MetaCompose once phase b lands.".into()
-        ));
+        return dispatch_structured(kb, rec, args, stats, discharged_this_run);
     }
     let (tool, tool_args) = match &rec.strategy {
         Strategy::Open => return DispatchOutcome::no_witness(
@@ -539,6 +533,342 @@ fn dispatch_trust(tool_args: &[NamedArg]) -> DispatchOutcome {
         // No KB state was consulted — the rule's claim is
         // axiomatic, not derived. visited_rules empty.
         visited_rules: BTreeSet::new(),
+    }
+}
+
+// ── Structured proof dispatch (proposal 031 phase b) ─────────────
+
+/// One decoded step from a `ProofBodyStructured` term — ready for
+/// transient-rule synthesis and dispatch.
+struct DecodedStep {
+    /// Resolved qualified name `<parent_proof_qn>.<label>` — used as
+    /// the synthesized KB rule's QN and as a discharged-this-run key.
+    qn: String,
+    head_term: TermId,
+    body_terms: Vec<TermId>,
+    using: Vec<String>,
+    strategy: Strategy,
+}
+
+struct DecodedConclude {
+    using: Vec<String>,
+    strategy: Strategy,
+}
+
+/// Walk a cons-list of TermIds — siblings of `read_string_list` for
+/// term-valued payloads. Returns the head TermId of each cons cell.
+fn read_term_list(kb: &KnowledgeBase, syms: &ProofSyms, mut tid: TermId) -> Vec<TermId> {
+    let mut out = Vec::new();
+    for _ in 0..MAX_LIST_LEN {
+        let (functor, named) = match kb.get_term(tid) {
+            Term::Fn { functor, named_args, .. } => (*functor, named_args),
+            _ => break,
+        };
+        if syms.cons != Some(functor) { break; }
+        if let Some(h) = get_named_arg(kb, named, "head") {
+            out.push(h);
+        }
+        match get_named_arg(kb, named, "tail") {
+            Some(t) => tid = t,
+            None => break,
+        }
+    }
+    out
+}
+
+/// Decode a single `ProofStep` term. Returns None if the term isn't
+/// a ProofStep (e.g. malformed body).
+fn read_proof_step(
+    kb: &KnowledgeBase,
+    syms: &ProofSyms,
+    parent_qn: &str,
+    tid: TermId,
+) -> Option<DecodedStep> {
+    let named = match kb.get_term(tid) {
+        Term::Fn { named_args, .. } => named_args,
+        _ => return None,
+    };
+    let label = lookup_string(kb, named, "label").unwrap_or_default();
+    let head_term = get_named_arg(kb, named, "head_term")?;
+    let body_terms = get_named_arg(kb, named, "body_terms")
+        .map(|t| read_term_list(kb, syms, t))
+        .unwrap_or_default();
+    let using = get_named_arg(kb, named, "using_names")
+        .map(|t| read_string_list(kb, syms, t))
+        .unwrap_or_default();
+    let strategy = get_named_arg(kb, named, "tactic")
+        .map(|t| read_strategy(kb, syms, t))
+        .unwrap_or(Strategy::Open);
+    let qn = if label.is_empty() {
+        format!("{parent_qn}.<unnamed>")
+    } else {
+        format!("{parent_qn}.{label}")
+    };
+    Some(DecodedStep { qn, head_term, body_terms, using, strategy })
+}
+
+fn read_proof_conclude(
+    kb: &KnowledgeBase,
+    syms: &ProofSyms,
+    tid: TermId,
+) -> Option<DecodedConclude> {
+    let named = match kb.get_term(tid) {
+        Term::Fn { named_args, .. } => named_args,
+        _ => return None,
+    };
+    let using = get_named_arg(kb, named, "using_names")
+        .map(|t| read_string_list(kb, syms, t))
+        .unwrap_or_default();
+    let strategy = get_named_arg(kb, named, "tactic")
+        .map(|t| read_strategy(kb, syms, t))
+        .unwrap_or(Strategy::Open);
+    Some(DecodedConclude { using, strategy })
+}
+
+/// Decode the structured body of a parent proof. The body term is
+/// the `body` field of the parent's `ProofRecord` fact. Returns
+/// (steps, conclude) where conclude is None when the parent body
+/// has no concluding clause.
+fn read_structured_body(
+    kb: &KnowledgeBase,
+    syms: &ProofSyms,
+    parent_qn: &str,
+    body_tid: TermId,
+) -> Option<(Vec<DecodedStep>, Option<DecodedConclude>)> {
+    let named = match kb.get_term(body_tid) {
+        Term::Fn { named_args, .. } => named_args,
+        _ => return None,
+    };
+    let steps_list = get_named_arg(kb, named, "steps")?;
+    let step_tids = read_term_list(kb, syms, steps_list);
+    let steps: Vec<DecodedStep> = step_tids.iter()
+        .filter_map(|&t| read_proof_step(kb, syms, parent_qn, t))
+        .collect();
+    let conclude = get_named_arg(kb, named, "conclude")
+        .and_then(|t| {
+            // `Bottom` marks an absent conclude clause.
+            if matches!(kb.get_term(t), Term::Bottom) { None }
+            else { read_proof_conclude(kb, syms, t) }
+        });
+    Some((steps, conclude))
+}
+
+/// Synthesize a transient KB rule for a structured-proof step so
+/// the standard cite-resolution path (lift_rule_to_implication_clause
+/// in smt-gen) can pick it up via `using <step_qn>`. Uses the same
+/// transitional encoding as labeled positive rules per proposal 032:
+/// a synthesized 0-arg label-functor as the KB head with the user's
+/// claim as the conclusion. The rule is registered in the global
+/// scope under `step_qn`; subsequent prove invocations will re-create
+/// it idempotently (the symbol-table merge behavior in `define`
+/// returns the existing entry on re-registration).
+fn synthesize_step_rule(
+    kb: &mut KnowledgeBase,
+    step_qn: &str,
+    body_terms: Vec<TermId>,
+    head_term: TermId,
+) {
+    use anthill_core::intern::SymbolKind;
+    let short_name = step_qn.rsplit('.').next().unwrap_or(step_qn);
+    let global_scope = kb.make_name_term("_global");
+    let label_sym = kb.define_symbol(short_name, step_qn, SymbolKind::Rule, global_scope.raw());
+    // Skip if a rule with this head functor already exists (re-runs
+    // would otherwise duplicate the clause).
+    if !kb.by_functor(label_sym).is_empty() {
+        return;
+    }
+    let kb_head = kb.make_name_term_from_sym(label_sym);
+    let rule_sort = kb.make_name_term("Rule");
+    kb.assert_rule_debruijn_with_conclusion(
+        kb_head,
+        body_terms,
+        vec![head_term],
+        rule_sort,
+        global_scope,
+        None,
+    );
+}
+
+/// Phase-b dispatch for a structured proof body (proposal 031).
+///
+/// Algorithm:
+///   1. Decode the body term to extract steps + optional conclude.
+///   2. For each step: synthesize a transient KB rule under the
+///      resolved step QN, build a synthetic `ProofRec`, dispatch
+///      via the standard `dispatch()` path, record the resulting
+///      witness in `discharged_this_run` so subsequent steps and
+///      the concluding clause can cite it through the existing
+///      `using` machinery.
+///   3. Concluding clause: dispatch the parent rule with
+///      `using = parent.using ∪ conclude.using ∪ {step QNs}`.
+///   4. Wrap all sub-witnesses in
+///      `MetaCompose { tactic_name: "structured", sub: [...] }`.
+///
+/// Failure mode: the first step that doesn't `Proved` aborts the
+/// chain — its verdict surfaces directly so the user sees the
+/// failing step, not an opaque "structured proof failed".
+fn dispatch_structured(
+    kb: &mut KnowledgeBase,
+    rec: &ProofRec,
+    args: &ProveArgs,
+    stats: &mut CacheStats,
+    discharged_this_run: &mut std::collections::HashMap<String, DischargeKind>,
+) -> DispatchOutcome {
+    let syms = ProofSyms::new(kb);
+    // Re-fetch the parent ProofRecord's body term — `rec` doesn't
+    // carry it, so we walk by_functor for ProofRecord and find the
+    // record for this rule QN.
+    let body_tid = match find_proof_body_term(kb, &syms, &rec.rule) {
+        Some(t) => t,
+        None => return DispatchOutcome::no_witness(Verdict::EmitError(format!(
+            "structured proof for `{}`: could not locate body term in KB", rec.rule
+        ))),
+    };
+    let (steps, conclude) = match read_structured_body(kb, &syms, &rec.rule, body_tid) {
+        Some(x) => x,
+        None => return DispatchOutcome::no_witness(Verdict::EmitError(format!(
+            "structured proof for `{}`: malformed ProofBodyStructured term", rec.rule
+        ))),
+    };
+    if steps.is_empty() {
+        return DispatchOutcome::no_witness(Verdict::EmitError(format!(
+            "structured proof for `{}`: no steps", rec.rule
+        )));
+    }
+
+    let mut sub_witnesses: Vec<ProofWitness> = Vec::new();
+    let mut step_qns: Vec<String> = Vec::new();
+    let mut visited_rules: BTreeSet<String> = BTreeSet::new();
+
+    for step in &steps {
+        synthesize_step_rule(kb, &step.qn, step.body_terms.clone(), step.head_term);
+        let step_rec = ProofRec {
+            rule: step.qn.clone(),
+            strategy: clone_strategy(&step.strategy),
+            using: step.using.clone(),
+            structured: false,
+        };
+        let outcome = dispatch(kb, &step_rec, args, stats, discharged_this_run);
+        visited_rules.extend(outcome.visited_rules);
+        match outcome.verdict {
+            Verdict::Proved => {
+                let kind = match &outcome.witness {
+                    Some(ProofWitness::TrustedAxiom { reason }) =>
+                        DischargeKind::Trusted(reason.clone()),
+                    _ => DischargeKind::Sound,
+                };
+                discharged_this_run.insert(step.qn.clone(), kind);
+                if let Some(w) = outcome.witness {
+                    sub_witnesses.push(w);
+                }
+                step_qns.push(step.qn.clone());
+            }
+            other => return DispatchOutcome {
+                verdict: other,
+                witness: None,
+                visited_rules,
+            },
+        }
+    }
+
+    let (conclude_strategy, mut conclude_using) = match conclude {
+        Some(c) => (c.strategy, c.using),
+        None => (Strategy::Open, Vec::new()),
+    };
+    for qn in &step_qns {
+        if !conclude_using.contains(qn) {
+            conclude_using.push(qn.clone());
+        }
+    }
+    for u in &rec.using {
+        if !conclude_using.contains(u) {
+            conclude_using.push(u.clone());
+        }
+    }
+    let parent_rec = ProofRec {
+        rule: rec.rule.clone(),
+        strategy: conclude_strategy,
+        using: conclude_using,
+        structured: false,
+    };
+    let final_outcome = dispatch(kb, &parent_rec, args, stats, discharged_this_run);
+    visited_rules.extend(final_outcome.visited_rules);
+    match final_outcome.verdict {
+        Verdict::Proved => {
+            if let Some(w) = final_outcome.witness {
+                sub_witnesses.push(w);
+            }
+            DispatchOutcome {
+                verdict: Verdict::Proved,
+                witness: Some(ProofWitness::MetaCompose {
+                    tactic_name: "structured".to_string(),
+                    sub: sub_witnesses,
+                }),
+                visited_rules,
+            }
+        }
+        other => DispatchOutcome {
+            verdict: other,
+            witness: None,
+            visited_rules,
+        },
+    }
+}
+
+/// Locate the `body` term of a parent ProofRecord by walking
+/// the by-functor index for ProofRecord and matching the `rule`
+/// field. None when no record exists for the given QN (which
+/// shouldn't happen for a record that reached `dispatch`).
+fn find_proof_body_term(
+    kb: &KnowledgeBase,
+    syms: &ProofSyms,
+    rule_qn: &str,
+) -> Option<TermId> {
+    let functor = kb.try_resolve_symbol("anthill.realization.ProofRecord")?;
+    for rid in kb.by_functor(functor) {
+        let head = kb.rule_head(rid);
+        let named = match kb.get_term(head) {
+            Term::Fn { named_args, .. } => named_args,
+            _ => continue,
+        };
+        if has_auto_registered_witness(kb, syms, named) {
+            continue;
+        }
+        let rule = match lookup_string(kb, named, "rule") {
+            Some(s) => s,
+            None => continue,
+        };
+        if rule == rule_qn {
+            return get_named_arg(kb, named, "body");
+        }
+    }
+    None
+}
+
+/// Manual clone for `Strategy` — derive(Clone) would propagate to
+/// every sub-type, so we spell it out for the structured-proof
+/// dispatch path.
+fn clone_strategy(s: &Strategy) -> Strategy {
+    match s {
+        Strategy::Open => Strategy::Open,
+        Strategy::Tool { name, args } => Strategy::Tool {
+            name: name.clone(),
+            args: args.iter().map(|a| NamedArg {
+                key: a.key.clone(),
+                value: clone_arg_value(&a.value),
+            }).collect(),
+        },
+    }
+}
+
+fn clone_arg_value(v: &ArgValue) -> ArgValue {
+    match v {
+        ArgValue::String(s) => ArgValue::String(s.clone()),
+        ArgValue::Int(n) => ArgValue::Int(*n),
+        ArgValue::Float(f) => ArgValue::Float(*f),
+        ArgValue::Bool(b) => ArgValue::Bool(*b),
+        ArgValue::Term(t) => ArgValue::Term(*t),
+        ArgValue::Other => ArgValue::Other,
     }
 }
 

@@ -264,6 +264,22 @@ impl KnowledgeBase {
         self.symbols.intern(s)
     }
 
+    /// Define a Resolved symbol in the given scope. Wrapper exposing
+    /// `SymbolTable::define` for downstream crates that need to
+    /// register synthesized symbols (e.g. anthill-cli's
+    /// `dispatch_structured` synthesizing transient step rules).
+    /// Idempotent on re-definition: returns the existing symbol if
+    /// `short_name` already lives in the scope.
+    pub fn define_symbol(
+        &mut self,
+        short_name: &str,
+        qualified_name: &str,
+        kind: crate::intern::SymbolKind,
+        scope_raw: u32,
+    ) -> Symbol {
+        self.symbols.define(short_name, qualified_name, kind, scope_raw)
+    }
+
     /// Allocate a fresh logic variable id, carrying the display name.
     pub fn fresh_var(&mut self, name: Symbol) -> VarId {
         let id = self.next_var;
