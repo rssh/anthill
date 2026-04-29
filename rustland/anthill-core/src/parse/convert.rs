@@ -41,7 +41,7 @@ pub(super) struct Converter<'a> {
     /// `?x` in different rules gets distinct VarIds.
     var_scope: HashMap<Symbol, VarId>,
     /// Snapshot of each labeled rule's final var_scope, keyed by the
-    /// rule's label symbol (proposal 031 / WI-148). Lets a subsequent
+    /// rule's label symbol (proposal 031). Lets a subsequent
     /// `convert_proof` for the same target restore the parent rule's
     /// scope so structured-proof step variables that share source
     /// names with the parent (`?d_prev`, `?delta`, …) get the SAME
@@ -1076,16 +1076,20 @@ impl<'a> Converter<'a> {
 
         let meta = self.convert_meta_block(node);
 
-        // Snapshot var_scope for later restoration by convert_proof
-        // (WI-148). Only labeled rules are recorded — proofs target
-        // rules by label.
-        if let Some(ref label_name) = label {
+        self.snapshot_rule_var_scope(&label);
+        Some(Rule { label, heads, body, meta, span })
+    }
+
+    /// Save the current `var_scope` keyed by the rule's label so a
+    /// subsequent `convert_proof` for the same target can restore
+    /// the parent rule's variable identities. Single-segment labels
+    /// only — multi-segment names aren't proof targets.
+    fn snapshot_rule_var_scope(&mut self, label: &Option<Name>) {
+        if let Some(label_name) = label {
             if label_name.segments.len() == 1 {
                 self.rule_var_scopes.insert(label_name.segments[0], self.var_scope.clone());
             }
         }
-
-        Some(Rule { label, heads, body, meta, span })
     }
 
     /// Convert a `rule_heads` CST node into a list of head terms.
@@ -1342,11 +1346,7 @@ impl<'a> Converter<'a> {
         let body = self.field(node, "body")
             .map(|b| self.convert_rule_body(b));
         let meta = self.convert_meta_block(node);
-        if let Some(ref label_name) = label {
-            if label_name.segments.len() == 1 {
-                self.rule_var_scopes.insert(label_name.segments[0], self.var_scope.clone());
-            }
-        }
+        self.snapshot_rule_var_scope(&label);
         Some(Rule { label, heads, body, meta, span })
     }
 
@@ -1356,7 +1356,7 @@ impl<'a> Converter<'a> {
 
     fn convert_proof(&mut self, node: Node) -> Option<ProofDecl> {
         let target = self.field(node, "target").map(|n| self.convert_name(n))?;
-        // WI-148: restore the parent rule's var_scope before
+        // Restore the parent rule's var_scope before
         // converting the proof body so structured-proof step
         // variables that share source names with the parent (e.g.
         // `?d_prev`, `?delta`) get the SAME parse-IR VarId. Without
@@ -1594,7 +1594,7 @@ impl<'a> Converter<'a> {
     }
 
     fn convert_proof_step(&mut self, node: Node) -> Option<ProofStep> {
-        // WI-148: do NOT reset_var_scope here. Steps inherit the
+        // Do NOT reset_var_scope here. Steps inherit the
         // parent rule's scope (set by convert_proof) so source names
         // like `?d_prev` map to the SAME VarId across the parent and
         // every step; they also share with previously-converted steps

@@ -71,14 +71,12 @@ pub struct ProofConfig {
     /// discharging X. Smt-gen does not parse / validate these strings;
     /// it trusts the caller. Order is preserved.
     pub assumptions: Vec<String>,
-    /// WI-149 AbstractLift mode: when true, `process_body_goal` does
-    /// NOT chase rule-call goals into their defining bodies (no
-    /// fact-grounding, no recursive rule expansion). The call's
-    /// vars stay as free SMT consts. Set by `dispatch_structured` for
-    /// the conclude-clause discharge so the parent's body doesn't
-    /// drag in `position_distance_sq` style nonlinear ground
-    /// arithmetic when the structured proof's cited steps already
-    /// constrain the relevant variables.
+    /// AbstractLift mode: when true, `process_body_goal` does NOT
+    /// chase rule-call goals into their defining bodies. The call's
+    /// vars stay free; ambient cited-rule lifts constrain them.
+    /// Set by `dispatch_structured` for the conclude-clause discharge
+    /// so the parent's body doesn't drag transitive nonlinear /
+    /// fact-bound arithmetic into the consumer's preamble.
     pub abstract_body: bool,
 }
 
@@ -201,14 +199,10 @@ pub fn lift_rule_to_implication_clause(
     rule_qn: &str,
 ) -> Result<String, SmtGenError> {
     let mut emitter = Emitter::new(kb);
-    // WI-149: cited-rule lifts are inherently abstract — the cited
-    // rule's body should not drag in fact-bound ground arithmetic
-    // or transitive nonlinear `var*var` from its dependencies. The
-    // citation provides the rule's claim as a forall (or, under
-    // shared-arity, as a ground assertion); chasing its body would
-    // mean the cited rule's truth is conditional on facts the
-    // consumer doesn't actually quote, which is unsound for the
-    // universal lift.
+    // Cited-rule lifts are inherently abstract: chasing the cited
+    // rule's body would condition its truth on facts the consumer
+    // doesn't quote (unsound for a universal claim) and would also
+    // drag in transitive nonlinearity that breaks LRA discharges.
     emitter.abstract_mode = true;
     emitter.collect_rule(rule_qn)?;
     emitter.collect_facts_for_referenced_entities();
@@ -233,28 +227,17 @@ pub fn lift_rule_to_implication_clause(
 
     let imp = format!("(=> {} {})", premises, conclusion);
 
-    // WI-150: skip forall-quantifying parent-shared vars. For step
-    // rules synthesized in a parent's frame, leading DeBruijn slots
-    // 0..shared_arity belong to the parent — they appear in the
-    // consumer's preamble as declare-const. The remaining slots
-    // (≥ shared_arity) are step-introduced new vars.
-    //
-    // When shared_arity == 0 (regular cited rule, not a structured-
-    // proof step), forall-quantify all free vars as before.
-    //
-    // When shared_arity > 0, step-new vars are emitted as
-    // declare-const at the top of the assumption block (so they
-    // become free Skolem constants in the consumer's preamble);
-    // the lift body is asserted directly without a wrapping forall.
-    // Parent-shared free vars in the body refer to the consumer's
-    // declarations.
-    let shared_arity = kb.try_resolve_symbol(rule_qn)
-        .and_then(|sym| kb.by_functor(sym).first().copied())
+    // For step rules synthesized in a parent's frame, the leading
+    // DeBruijn slots 0..shared_arity refer to the parent's preamble
+    // declarations; only step-introduced vars (≥ shared_arity) need
+    // to be emitted, as fresh declare-consts, alongside a ground
+    // implication. shared_arity == 0 falls through to a classic
+    // universally-quantified lift.
+    let shared_arity = kb.rule_id_by_qn(rule_qn)
         .map(|rid| kb.rule_shared_arity(rid))
         .unwrap_or(0);
 
     if shared_arity == 0 {
-        // Classic universally-quantified lift.
         if emitter.free_vars.is_empty() {
             return Ok(format!("(assert {imp})"));
         }
@@ -270,12 +253,7 @@ pub fn lift_rule_to_implication_clause(
     // shared_arity > 0: emit declare-consts for step-new vars +
     // a ground assert for the implication.
     let mut step_new: Vec<&String> = emitter.free_vars.iter()
-        .filter(|v| {
-            v.strip_prefix("var_")
-                .and_then(|s| s.parse::<u32>().ok())
-                .map(|idx| idx >= shared_arity)
-                .unwrap_or(false)
-        })
+        .filter(|v| parse_synthetic_var_name(v).map_or(false, |idx| idx >= shared_arity))
         .collect();
     step_new.sort();
     let mut block = String::new();
@@ -334,10 +312,10 @@ struct Emitter<'kb> {
     entity_bindings: BTreeMap<String, TermId>,
     /// Set when an emitted SMT expression uses `anthill_abs`. Triggers
     /// emission of the `(define-fun anthill_abs ...)` prelude in the
-    /// rendered script (WI-147). SMT-LIB has no built-in `abs` for
-    /// Real; we synthesise it via `(ite (< x 0) (- x) x)`.
+    /// rendered script. SMT-LIB has no built-in `abs` for Real; we
+    /// synthesise it via `(ite (< x 0) (- x) x)`.
     uses_abs: bool,
-    /// WI-149 AbstractLift mode: when true, `process_body_goal` skips
+    /// AbstractLift mode: when true, `process_body_goal` skips
     /// rule-call expansion (single-arg shorthand and multi-pos-arg
     /// fact-match/inline) — those vars stay free in the rendered
     /// SMT. Used by `lift_rule_to_implication_clause` (always) and
@@ -457,12 +435,10 @@ impl<'kb> Emitter<'kb> {
         let scan = self.assertions.iter().chain(self.conclusion_assertions.iter());
         for assertion in scan {
             for tok in assertion.split(|c: char| !c.is_alphanumeric() && c != '_') {
-                if let Some(idx_str) = tok.strip_prefix("var_") {
-                    if idx_str.parse::<u32>().is_ok()
-                        && !local_bindings.contains_key(tok)
-                    {
-                        self.free_vars.insert(tok.to_string());
-                    }
+                if parse_synthetic_var_name(tok).is_some()
+                    && !local_bindings.contains_key(tok)
+                {
+                    self.free_vars.insert(tok.to_string());
                 }
             }
         }
@@ -545,17 +521,12 @@ impl<'kb> Emitter<'kb> {
             return Ok(());
         }
 
-        // WI-149 AbstractLift: in abstract mode, don't chase rule
-        // calls into their defining bodies. The call's vars stay as
-        // free SMT consts; cited-rule lifts (or other ambient
-        // assertions) are expected to constrain them. This avoids
-        // dragging fact-bound ground arithmetic and nonlinear
-        // `var*var` from transitive expansions like
-        // `position_distance_sq` into the consumer's preamble.
+        // Abstract mode: don't chase rule calls into their bodies.
+        // Avoids fact-bound ground arithmetic and transitive
+        // nonlinearity (e.g. `position_distance_sq`'s `var*var`)
+        // polluting the consumer's preamble. The call's vars stay
+        // free; ambient cited-rule lifts constrain them.
         if self.abstract_mode {
-            // Track the rule's QN as visited (the discharge still
-            // depends structurally on the rule's existence) but
-            // skip its body expansion.
             self.visited_rules.insert(qn.to_string());
             return Ok(());
         }
@@ -881,7 +852,7 @@ impl<'kb> Emitter<'kb> {
     /// Translate an arithmetic expression (anthill prelude ops) to
     /// an SMT-LIB term. Variables resolve through `bindings` which
     /// substitutes already-defined locals inline. Mutates `self` to
-    /// record `uses_abs` (WI-147) when an `abs` call is rendered.
+    /// record `uses_abs` when an `abs` call is rendered.
     fn translate_expr(
         &mut self,
         term: TermId,
@@ -1062,10 +1033,7 @@ impl<'kb> Emitter<'kb> {
         emit_outcome_options(&mut out, config);
         out.push_str(&format!("(set-logic {logic})\n\n"));
 
-        // WI-147: synthesised `abs` prelude — see render_satisfiability_with.
-        if self.uses_abs || config.assumptions.iter().any(|a| a.contains("anthill_abs ")) {
-            out.push_str("(define-fun anthill_abs ((x Real)) Real (ite (< x 0) (- x) x))\n\n");
-        }
+        emit_abs_prelude(&mut out, self.uses_abs, config);
 
         for (name, value) in &self.field_consts {
             out.push_str(&format!("(define-fun {name} () Real {})\n", format_real(*value)));
@@ -1106,15 +1074,7 @@ impl<'kb> Emitter<'kb> {
         emit_outcome_options(&mut out, config);
         out.push_str(&format!("(set-logic {logic})\n\n"));
 
-        // WI-147: emit the `anthill_abs` synthesised abs prelude when
-        // any assertion (body, conclusion, or cited-lemma assumption)
-        // references it. SMT-LIB has no built-in `abs` for Real in
-        // LRA / NRA / QF_*; without this prelude `(abs x)` becomes
-        // an uninterpreted function and the discharge silently
-        // produces wrong models or `unknown`.
-        if self.uses_abs || config.assumptions.iter().any(|a| a.contains("anthill_abs ")) {
-            out.push_str("(define-fun anthill_abs ((x Real)) Real (ite (< x 0) (- x) x))\n\n");
-        }
+        emit_abs_prelude(&mut out, self.uses_abs, config);
 
         for (name, value) in &self.field_consts {
             out.push_str(&format!("(define-fun {name} () Real {})\n", format_real(*value)));
@@ -1173,13 +1133,27 @@ impl<'kb> Emitter<'kb> {
 /// after field consts but before the body / assertions, so the
 /// hypothesis is in scope when Z3 decides the goal. Order is
 /// preserved to keep cache keys stable.
+/// Emit the `anthill_abs` define-fun prelude when any rendered
+/// expression (the rule's own body via `uses_abs`, or any cited
+/// lemma's assumption block) references it. SMT-LIB has no built-in
+/// `abs` for Real in LRA/NRA/QF_*; without this prelude `(abs x)`
+/// degenerates to an uninterpreted function (silent unsoundness or
+/// `unknown` verdicts).
+fn emit_abs_prelude(out: &mut String, uses_abs: bool, config: &ProofConfig) {
+    let needs = uses_abs
+        || config.assumptions.iter().any(|a| a.contains("anthill_abs "));
+    if needs {
+        out.push_str("(define-fun anthill_abs ((x Real)) Real (ite (< x 0) (- x) x))\n\n");
+    }
+}
+
 fn emit_assumptions(out: &mut String, config: &ProofConfig) {
     if config.assumptions.is_empty() { return; }
     out.push_str("; Cited-lemma assumptions (from `using` clause).\n");
     // Dedupe `(declare-const var_<i> Real)` lines across all
-    // assumptions — different cited step rules (WI-150) may share
-    // step-new vars (because WI-148 phase 1 makes step-introduced
-    // vars share VarIds across consecutive steps), and Z3 rejects
+    // assumptions — different cited step rules may share step-new
+    // vars (the converter shares VarIds across consecutive steps in
+    // a structured proof body), and Z3 rejects
     // a duplicate constant declaration.
     let mut seen_decls: BTreeSet<String> = BTreeSet::new();
     for clause in &config.assumptions {
@@ -1236,6 +1210,12 @@ fn synthetic_var_name(idx: u32) -> String {
     format!("var_{idx}")
 }
 
+/// Inverse of `synthetic_var_name` — parse `"var_<i>"` back to `i`.
+/// Returns None for any other string shape.
+fn parse_synthetic_var_name(s: &str) -> Option<u32> {
+    s.strip_prefix("var_").and_then(|n| n.parse::<u32>().ok())
+}
+
 /// Map anthill arithmetic functor qualified names to SMT-LIB ops.
 /// Linear-arithmetic only (`/` against a Real constant is still
 /// linear in QF_LRA).
@@ -1253,7 +1233,7 @@ fn map_arith_op(qn: &str) -> Option<&'static str> {
 /// Map unary anthill ops (abs, neg) to SMT-LIB.
 /// `abs` is emitted as `anthill_abs` — a (define-fun anthill_abs
 /// ((x Real)) Real (ite (< x 0) (- x) x)) prelude is added to the
-/// final SMT script when any call site renders `anthill_abs` (WI-147).
+/// final SMT script when any call site renders `anthill_abs`.
 /// SMT-LIB has no built-in `abs` for Real in the LRA/NRA logics
 /// most discharges run under, so we synthesise it.
 fn map_unary_op(qn: &str) -> Option<&'static str> {

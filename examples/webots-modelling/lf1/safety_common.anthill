@@ -429,18 +429,11 @@ namespace anthill.examples.lf1.safety.common
       by trust(reason: "Velocity envelope: T_c · ‖v_L − v_F‖ ≤ T_c · (vL_max + vF_max) = delta.")
 
     -- Concluding clause: transitivity of ≤ chains h_geometric and
-    -- h_envelope. Will mechanise once the full WI-148 stack lands
-    -- (loader-side preservation of pre-DeBruijn vars + synthesis
-    -- using parent's frame); the parse-IR sharing in v1 isn't
-    -- enough by itself because the KB drops the parent's variable
-    -- identity at DeBruijn conversion. Plus WI-149 (AbstractLift)
-    -- to stop position_distance_sq's `var*var` from polluting LRA.
-    -- Transitivity of ≤ chains h_geometric and h_envelope, lifted as
-    -- ground assertions in the parent's variable frame (WI-148 phase 1
-    -- + WI-150). The parent's body is rendered abstractly under
-    -- AbstractLift mode (WI-149) so `distance_at_step` etc. don't
-    -- drag transitive nonlinear arithmetic into the LRA preamble.
-    -- Trust surface: only h_geometric + h_envelope.
+    -- h_envelope. Step claims lift as ground assertions in the
+    -- parent's variable frame; the parent's own body renders
+    -- abstractly so `distance_at_step` and friends don't drag
+    -- transitive nonlinear arithmetic into the LRA preamble. Trust
+    -- surface: just h_geometric + h_envelope.
     using h_geometric, h_envelope
     by z3(logic: "LRA")
   end

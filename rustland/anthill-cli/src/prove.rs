@@ -157,6 +157,13 @@ struct ProofRec {
     /// verdict so the syntax round-trips through parse/load/check
     /// without silently passing.
     structured: bool,
+    /// Render the rule's body abstractly (don't chase rule calls
+    /// into their defining bodies). Set to `true` for the conclude
+    /// clause's parent-rule discharge in `dispatch_structured` so
+    /// transitive nonlinear / fact-bound arithmetic doesn't pollute
+    /// the LRA preamble — the cited step lifts already constrain
+    /// the relevant variables.
+    abstract_body: bool,
 }
 
 #[derive(Debug)]
@@ -314,7 +321,7 @@ fn read_proof_record(kb: &KnowledgeBase, syms: &ProofSyms, term_id: TermId) -> O
     let structured = get_named_arg(kb, named, "body")
         .map(|t| is_structured_body(kb, t))
         .unwrap_or(false);
-    Some(ProofRec { rule, strategy, using, structured })
+    Some(ProofRec { rule, strategy, using, structured, abstract_body: false })
 }
 
 /// True if `body_tid` is the `ProofBodyStructured` constructor (proposal 031).
@@ -492,7 +499,7 @@ fn dispatch(
         Strategy::Tool { name, args } => (name.as_str(), args.as_slice()),
     };
     match tool {
-        "z3" => dispatch_z3(kb, &rec.rule, tool_args, &rec.using, args, stats, discharged_this_run),
+        "z3" => dispatch_z3(kb, &rec.rule, tool_args, &rec.using, rec.abstract_body, args, stats, discharged_this_run),
         "test" => DispatchOutcome::no_witness(
             Verdict::Skipped("`by test` not yet wired".into())),
         "derivation" => dispatch_derivation(kb, &rec.rule, tool_args),
@@ -655,22 +662,17 @@ fn read_structured_body(
 
 /// Synthesize a transient KB rule for a structured-proof step so
 /// the standard cite-resolution path (lift_rule_to_implication_clause
-/// in smt-gen) can pick it up via `using <step_qn>`. Uses the same
-/// transitional encoding as labeled positive rules per proposal 032:
-/// a synthesized 0-arg label-functor as the KB head with the user's
-/// claim as the conclusion. The rule is registered in the global
-/// scope under `step_qn`; subsequent prove invocations will re-create
-/// it idempotently (the symbol-table merge behavior in `define`
-/// returns the existing entry on re-registration).
+/// in smt-gen) can pick it up via `using <step_qn>`. Uses the
+/// transitional encoding from proposal 032: a synthesized 0-arg
+/// label-functor as the KB head with the user's claim as the
+/// conclusion. The rule is registered in the global scope under
+/// `step_qn`; re-registration is idempotent.
 ///
-/// WI-150: when `parent_qn` resolves to a rule in the KB, the step
-/// rule is asserted in that parent's variable frame — step variables
-/// that match the parent's by Global VarId get the SAME DeBruijn
-/// index (and therefore the same `var_<i>` SMT name when
-/// lift_rule_to_implication_clause renders the cited step). New
-/// step-introduced vars get appended after the parent's frame.
-/// Without a matching parent the step uses its own fresh frame,
-/// matching pre-WI-150 behavior.
+/// When `parent_qn` resolves to an existing rule, the step is
+/// asserted in that parent's variable frame so shared variable
+/// names produce identical DeBruijn indices — the cited-step lift
+/// then chains arithmetically with the parent's body in the
+/// consumer's preamble.
 fn synthesize_step_rule(
     kb: &mut KnowledgeBase,
     step_qn: &str,
@@ -688,31 +690,22 @@ fn synthesize_step_rule(
     let kb_head = kb.make_name_term_from_sym(label_sym);
     let rule_sort = kb.make_name_term("Rule");
 
-    let parent_globals: Vec<_> = kb.try_resolve_symbol(parent_qn)
-        .and_then(|sym| kb.by_functor(sym).first().copied())
+    let parent_globals: Vec<_> = kb.rule_id_by_qn(parent_qn)
         .map(|rid| kb.rule_globals(rid).to_vec())
         .unwrap_or_default();
 
-    if parent_globals.is_empty() {
-        kb.assert_rule_debruijn_with_conclusion(
-            kb_head,
-            body_terms,
-            vec![head_term],
-            rule_sort,
-            global_scope,
-            None,
-        );
-    } else {
-        kb.assert_rule_debruijn_in_frame(
-            kb_head,
-            body_terms,
-            vec![head_term],
-            &parent_globals,
-            rule_sort,
-            global_scope,
-            None,
-        );
-    }
+    // Empty seed degenerates to the same DeBruijn assignment as
+    // `assert_rule_debruijn_with_conclusion` — call the in-frame
+    // path unconditionally.
+    kb.assert_rule_debruijn_in_frame(
+        kb_head,
+        body_terms,
+        vec![head_term],
+        &parent_globals,
+        rule_sort,
+        global_scope,
+        None,
+    );
 }
 
 /// Phase-b dispatch for a structured proof body (proposal 031).
@@ -773,6 +766,7 @@ fn dispatch_structured(
             strategy: clone_strategy(&step.strategy),
             using: step.using.clone(),
             structured: false,
+            abstract_body: false,
         };
         let outcome = dispatch(kb, &step_rec, args, stats, discharged_this_run);
         visited_rules.extend(outcome.visited_rules);
@@ -816,6 +810,11 @@ fn dispatch_structured(
         strategy: conclude_strategy,
         using: conclude_using,
         structured: false,
+        // Render the parent's body abstractly so transitive rule
+        // calls (`distance_at_step` → `position_distance_sq` → ground
+        // pose data) don't pollute the LRA preamble. Cited step
+        // lifts already constrain the relevant variables.
+        abstract_body: true,
     };
     let final_outcome = dispatch(kb, &parent_rec, args, stats, discharged_this_run);
     visited_rules.extend(final_outcome.visited_rules);
@@ -971,28 +970,15 @@ fn dispatch_z3(
     rule_qn: &str,
     tool_args: &[NamedArg],
     using: &[String],
+    abstract_body: bool,
     cli: &ProveArgs,
     stats: &mut CacheStats,
     discharged_this_run: &std::collections::HashMap<String, DischargeKind>,
 ) -> DispatchOutcome {
     let mut config = ProofConfig::default();
+    config.abstract_body = abstract_body;
     let mut canon_parts: Vec<String> = Vec::new();
     let mut tactic_term: Option<TermId> = None;
-    // WI-149: when this rule's source-level proof body is structured
-    // (proposal 031), render the rule's body abstractly — don't chase
-    // rule calls into their defining bodies, leaving the cited step
-    // lifts (already in `assumptions` after `render_cited_lemmas`) as
-    // the sole content of the discharge. Without this, a parent rule
-    // whose body references `distance_at_step` or similar pulls in
-    // transitive nonlinear / fact-bound arithmetic that breaks LRA.
-    if let Some(syms) = Some(ProofSyms::new(kb)) {
-        if find_proof_body_term(kb, &syms, rule_qn)
-            .map(|t| is_structured_body(kb, t))
-            .unwrap_or(false)
-        {
-            config.abstract_body = true;
-        }
-    }
     // Render each cited lemma's body via smt-gen and stash the
     // resulting clauses as `(assert ...)` hypotheses for this proof.
     // We re-use `emit_satisfiability_check_with_deps` with a default
