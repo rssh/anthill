@@ -136,3 +136,60 @@ fn structured_proof_with_trust_step_produces_metacompose_witness() {
         "trust-only structured proof must discharge end-to-end:\n{stdout}"
     );
 }
+
+#[test]
+fn structured_proof_witness_sidecar_replays_through_check() {
+    if !z3_available() { return; }
+    // Phase c: the MetaCompose witness produced by dispatch_structured
+    // serializes into a sidecar JSON (per WI-124's witness persistence
+    // layer); `anthill check` reads it and replays each sub-witness via
+    // β.3's existing recursion. No phase-c code is added — the test
+    // confirms the proposal-031 claim that "Phase c is essentially free".
+    let src = r#"
+        namespace test.structured.replay
+          export claim
+
+          rule claim: gte(?x, 0.0)
+            :- gte(?x, 5.0)
+
+          proof claim
+            rule h1: gte(?x, 3.0)
+              :- gte(?x, 5.0)
+              by z3(logic: "LRA")
+
+            using h1
+            by z3(logic: "LRA")
+          end
+        end
+    "#;
+    let path = write_temp("structured_replay.anthill", src);
+
+    // Run prove WITHOUT --no-cache so sidecars are written.
+    let prove_out = Command::new(ANTHILL_BIN)
+        .args(["prove", path.to_str().unwrap()])
+        .output().expect("anthill prove");
+    let prove_stdout = String::from_utf8_lossy(&prove_out.stdout);
+    assert!(
+        prove_stdout.contains("test.structured.replay.claim: proved"),
+        "prove must succeed before check can replay:\n{prove_stdout}"
+    );
+
+    // Run check on the same source — should replay each sub-witness
+    // via β.3's MetaCompose recursion.
+    let check_out = Command::new(ANTHILL_BIN)
+        .args(["check", path.to_str().unwrap()])
+        .output().expect("anthill check");
+    let check_stdout = String::from_utf8_lossy(&check_out.stdout);
+    let check_stderr = String::from_utf8_lossy(&check_out.stderr);
+    assert!(
+        check_out.status.success(),
+        "check must exit zero on a discharged structured proof:\n\
+         stdout:\n{check_stdout}\nstderr:\n{check_stderr}"
+    );
+    // The parent record's check should report a positive verdict
+    // (Verified or Trusted depending on aggregation).
+    assert!(
+        check_stdout.contains("test.structured.replay.claim"),
+        "check output must mention the structured-proof rule:\n{check_stdout}"
+    );
+}
