@@ -1,0 +1,72 @@
+-- CLI help renderer. Produces a --help string from an OperationSpec.
+-- Format:
+--   <description>
+--
+--   USAGE: <name> [POSITIONALS...] [FLAGS...]
+--
+--   ARGS:
+--     <name>          <description>
+--
+--   FLAGS:
+--     --<name>        <description>
+namespace anthill.cli.help
+  import anthill.prelude.{List, Option, String, Bool}
+  import anthill.prelude.List.{nil, cons}
+  import anthill.prelude.String.{concat}
+  import anthill.cli.spec.{OperationSpec, ParamSpec, ParamKind}
+  import anthill.cli.spec.ParamKind.{positional, flag, repeated, bool_flag}
+  export format_help
+
+  -- Top-level renderer.
+  operation format_help(s: OperationSpec) -> String =
+    match s
+      case OperationSpec(name, desc, params, _) ->
+        cat3(desc, "\n\nUSAGE: ",
+             cat3(name, usage_summary(params),
+                  cat3("\n\nARGS:\n", render_args(params),
+                       concat("\nFLAGS:\n", render_flags(params)))))
+
+  -- " <pos1> <pos2> [--flag VALUE] [--repeated VALUE]..."
+  operation usage_summary(params: List[T = ParamSpec]) -> String =
+    match params
+      case nil() -> ""
+      case cons(p, rest) ->
+        match p
+          case ParamSpec(name, kind, _, _) ->
+            concat(usage_token(name, kind), usage_summary(rest))
+
+  operation usage_token(name: String, kind: ParamKind) -> String =
+    match kind
+      case positional() -> cat3(" <", name, ">")
+      case flag()       -> cat3(" [--", name, " VALUE]")
+      case repeated()   -> cat3(" [--", name, " VALUE]...")
+      case bool_flag()  -> cat3(" [--", name, "]")
+
+  -- ARGS: section: positional params only.
+  operation render_args(params: List[T = ParamSpec]) -> String =
+    match params
+      case nil() -> ""
+      case cons(p, rest) ->
+        match p
+          case ParamSpec(name, kind, _, desc) ->
+            match kind
+              case positional() ->
+                concat(cat3("  ", name, cat3("  ", desc, "\n")), render_args(rest))
+              case _ -> render_args(rest)
+
+  -- FLAGS: section: non-positional params.
+  operation render_flags(params: List[T = ParamSpec]) -> String =
+    match params
+      case nil() -> ""
+      case cons(p, rest) ->
+        match p
+          case ParamSpec(name, kind, _, desc) ->
+            match kind
+              case positional() -> render_flags(rest)
+              case _ ->
+                concat(cat3("  --", name, cat3("  ", desc, "\n")), render_flags(rest))
+
+  -- 3-arg concat helper.
+  operation cat3(a: String, b: String, c: String) -> String =
+    concat(a, concat(b, c))
+end

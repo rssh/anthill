@@ -1,0 +1,136 @@
+-- CLI argument parser. Walks argv against a List[OperationSpec] and
+-- produces ParsedArgs (spec name + name/value bindings) or a typed
+-- ParseError. v1: one level of subcommands, no nested groups.
+namespace anthill.cli.parse
+  import anthill.prelude.{List, Option, String, Bool}
+  import anthill.prelude.Option.{some, none}
+  import anthill.prelude.List.{nil, cons}
+  import anthill.prelude.Eq.{eq}
+  import anthill.prelude.String.{startsWith, substring, length}
+  import anthill.cli.spec.{OperationSpec, ParamSpec, ParamKind}
+  import anthill.cli.spec.ParamKind.{positional, flag, repeated, bool_flag}
+  export Binding, ParsedArgs, ParseError, ParseResult,
+         no_subcommand, unknown_subcommand, unknown_flag,
+         flag_expects_value, unexpected_argument, missing_required,
+         parse_ok, parse_err,
+         parse_argv
+
+  -- One name=value pair from the parsed argv.
+  -- Repeated flags produce multiple bindings with the same name.
+  entity Binding(name: String, value: String)
+
+  entity ParsedArgs(spec_name: String, bindings: List[T = Binding])
+
+  enum ParseError
+    entity no_subcommand
+    entity unknown_subcommand(given: String)
+    entity unknown_flag(spec_name: String, flag: String)
+    entity flag_expects_value(flag: String)
+    entity unexpected_argument(given: String)
+    entity missing_required(spec_name: String, param_name: String)
+  end
+
+  enum ParseResult
+    entity parse_ok(parsed: ParsedArgs)
+    entity parse_err(error: ParseError)
+  end
+
+  -- Top-level: argv[0] is the subcommand, rest is its args.
+  operation parse_argv(specs: List[T = OperationSpec], argv: List[T = String]) -> ParseResult =
+    match argv
+      case nil() -> parse_err(no_subcommand())
+      case cons(head, rest) ->
+        match find_spec(specs, head)
+          case none() -> parse_err(unknown_subcommand(head))
+          case some(s) -> parse_args(s, rest, nil())
+
+  operation parse_args(s: OperationSpec, argv: List[T = String], acc: List[T = Binding]) -> ParseResult =
+    match argv
+      case nil() -> finalize(s, acc)
+      case cons(head, rest) ->
+        if startsWith(head, "--") then
+          consume_flag(s, substring(head, 2, length(head)), rest, acc)
+        else
+          consume_positional(s, head, rest, acc)
+
+  operation consume_flag(s: OperationSpec, name: String, rest: List[T = String], acc: List[T = Binding]) -> ParseResult =
+    match s
+      case OperationSpec(sname, _, params, _) ->
+        match find_param(params, name)
+          case none() -> parse_err(unknown_flag(sname, name))
+          case some(p) ->
+            match p
+              case ParamSpec(_, kind, _, _) ->
+                match kind
+                  case bool_flag() -> parse_args(s, rest, cons(Binding(name, "true"), acc))
+                  case _ ->
+                    match rest
+                      case nil() -> parse_err(flag_expects_value(name))
+                      case cons(v, more) -> parse_args(s, more, cons(Binding(name, v), acc))
+
+  operation consume_positional(s: OperationSpec, value: String, rest: List[T = String], acc: List[T = Binding]) -> ParseResult =
+    match s
+      case OperationSpec(_, _, params, _) ->
+        match next_positional(params, acc)
+          case none() -> parse_err(unexpected_argument(value))
+          case some(p) ->
+            match p
+              case ParamSpec(pname, _, _, _) -> parse_args(s, rest, cons(Binding(pname, value), acc))
+
+  operation finalize(s: OperationSpec, acc: List[T = Binding]) -> ParseResult =
+    match s
+      case OperationSpec(sname, _, params, _) ->
+        match check_required(params, acc, sname)
+          case none() -> parse_ok(ParsedArgs(sname, acc))
+          case some(err) -> parse_err(err)
+
+  -- helpers --
+
+  operation find_spec(specs: List[T = OperationSpec], name: String) -> Option[T = OperationSpec] =
+    match specs
+      case nil() -> none()
+      case cons(s, rest) ->
+        match s
+          case OperationSpec(sname, _, _, _) ->
+            if eq(sname, name) then some(s) else find_spec(rest, name)
+
+  operation find_param(params: List[T = ParamSpec], name: String) -> Option[T = ParamSpec] =
+    match params
+      case nil() -> none()
+      case cons(p, rest) ->
+        match p
+          case ParamSpec(pname, _, _, _) ->
+            if eq(pname, name) then some(p) else find_param(rest, name)
+
+  operation has_binding(acc: List[T = Binding], name: String) -> Bool =
+    match acc
+      case nil() -> false
+      case cons(b, rest) ->
+        match b
+          case Binding(bname, _) ->
+            if eq(bname, name) then true else has_binding(rest, name)
+
+  -- First positional param that is not yet bound.
+  operation next_positional(params: List[T = ParamSpec], acc: List[T = Binding]) -> Option[T = ParamSpec] =
+    match params
+      case nil() -> none()
+      case cons(p, rest) ->
+        match p
+          case ParamSpec(pname, kind, _, _) ->
+            match kind
+              case positional() ->
+                if has_binding(acc, pname) then next_positional(rest, acc) else some(p)
+              case _ -> next_positional(rest, acc)
+
+  -- Walk required params, return first one missing from acc (else none).
+  operation check_required(params: List[T = ParamSpec], acc: List[T = Binding], spec_name: String) -> Option[T = ParseError] =
+    match params
+      case nil() -> none()
+      case cons(p, rest) ->
+        match p
+          case ParamSpec(pname, _, required, _) ->
+            if required then
+              if has_binding(acc, pname) then check_required(rest, acc, spec_name)
+              else some(missing_required(spec_name, pname))
+            else check_required(rest, acc, spec_name)
+end

@@ -47,7 +47,7 @@ fact WorkItem(
   id: "WI-009",
   description: "port todo-app to anthill",
   acceptance: [ToolPasses("cargo-test")],
-  depends_on: ["WI-051"],
+  depends_on: ["WI-051", "WI-159"],
   status: Open)
 
 fact WorkItem(
@@ -343,7 +343,7 @@ fact WorkItem(
   description: "eval M6: 'anthill run' CLI. Add Command::Run(RunArgs { paths: Vec<PathBuf>, entry: Option<String> default 'main', args: Vec<String> }) to anthill-cli/src/main.rs. Parses + load_all (existing), locates entry OperationInfo, constructs Interpreter, calls register_standard_builtins + registers real Console handler bound to stdio, invokes interp.call(entry_sym, &args), prints result via TermPrinter after one-shot Value → TermId promotion using persistence::term_ser. Acceptance: anthill-cli/tests/run_cmd_test.rs invokes binary against fixture hello.anthill and asserts stdout. Unblocks WI-009 (port todo-app). Proposal 026 §CLI: anthill run.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-050"],
-  status: Delivered(agent: "user", at: "2026-04-24T14:46:31Z"))
+  status: Verified(at: "2026-05-02T08:23:59Z"))
 
 fact WorkItem(
   id: "WI-052",
@@ -1119,5 +1119,19 @@ fact WorkItem(
   description: "scaland resync — codegen targets (anthill-cpp-gen, anthill-smt-gen). Defer indefinitely; only port if scaland ever needs to emit C++17 or SMT-LIB. Documents the gap; not actionable until requested. If revived, mirror references: rustland/anthill-core/src/codegen/cpp_gen.rs (~2000 lines of expression-lowering passes); rustland/anthill-smt-gen/src/lib.rs (induction / ranking / smt tactics, anthill_abs preamble synthesis from WI-147). Acceptance: deferred — closed only when explicitly required by a downstream consumer.",
   acceptance: [ToolPasses("scaland-sbt-test")],
   depends_on: ["WI-157"],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-159",
+  description: "stdlib argparse module for `anthill run` programs. New `stdlib/anthill/cli/` files: `spec.anthill` (OperationSpec, ParamSpec, CliBinding — sort-typed params, not strings; CliBinding maps spec params to argv positions so the spec stays neutral re: CLI vs JSON tool-calling; param-type field references a KB Symbol so JSON-schema export and type coercion key off the sort lattice), `parse.anthill` (subcommand-aware parse_argv rule: walks argv[0]→child-spec→recurse), `help.anthill` (format_help operation rendering --help text from spec). Subcommand support is v1-critical: dogfood target `anthill-todo` has 16 flat subcommands (init/add/status/list/next/show/claim/deliver/verify/feedback/delete/update/add-dependency/remove-dependency/graph/skill). Each subcommand becomes its own OperationSpec; the registry is List[OperationSpec], parented via `parent: Option[Symbol]`. Out of scope for v1: JSON-schema export, nested subcommand groups (current need is one level), type coercion beyond String/Int/Bool/Option/List. Effect annotations on the dispatched operation should propagate (Console/Modifies/Error) so tool-calling hosts can later reuse the same spec for sandboxing decisions. Acceptance: a sample anthill program declaring three subcommands parses `prog update WI-001 --description \"x\" --acceptance cargo-test` into the expected typed param map and dispatches to the correct operation; round-trips a help-text golden file.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-05-02T09:36:04Z"))
+
+fact WorkItem(
+  id: "WI-160",
+  description: "anthill-todo CLI: track build version. Add a `version` subcommand printing semver + git SHA + build date, and a `--version` flag accepted at any subcommand position. Bake the metadata at build time via build.rs (env var ANTHILL_TODO_VERSION = workspace Cargo version; ANTHILL_TODO_SHA = `git rev-parse --short HEAD`; ANTHILL_TODO_BUILD = ISO-8601 UTC). Surface the same string in `--help` footer. Motivation: today there is no way to tell which build of `anthill-todo` is on PATH; a stale `~/.cargo/bin/anthill-todo` (pre-WI-085 grammar fix) emitted spurious parse warnings against the on-disk workitems file and the diagnosis required diffing binary mtimes. Generalises beyond anthill-todo: every CLI built from this workspace (`anthill`, `anthill-todo`, future tools) should embed the same version stamp, ideally via a small shared crate. Acceptance: cargo test green; `anthill-todo --version` prints a non-empty string; `anthill-todo version` matches; CI/regression test asserts the embedded SHA matches `git rev-parse --short HEAD` at build time.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
   status: Open)
 

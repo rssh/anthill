@@ -53,6 +53,9 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
 
     register_if_present(interp, "anthill.prelude.String.concat", string_concat)?;
     register_if_present(interp, "anthill.prelude.String.length", string_length)?;
+    register_if_present(interp, "anthill.prelude.String.startsWith", string_starts_with)?;
+    register_if_present(interp, "anthill.prelude.String.endsWith", string_ends_with)?;
+    register_if_present(interp, "anthill.prelude.String.substring", string_substring)?;
 
     register_if_present(interp, "anthill.prelude.BigInt.to_bigint", bigint_to_bigint)?;
     register_if_present(interp, "anthill.prelude.BigInt.to_int", bigint_to_int)?;
@@ -448,6 +451,43 @@ fn string_length(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
         Value::Str(s) => Ok(Value::Int(s.chars().count() as i64)),
         other => Err(type_mismatch("String", &other, None)),
     }
+}
+
+fn string_starts_with(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("String.startsWith", args)?;
+    match (&a, &b) {
+        (Value::Str(s), Value::Str(p)) => Ok(Value::Bool(s.starts_with(p.as_str()))),
+        _ => Err(type_mismatch("String", &a, Some(&b))),
+    }
+}
+
+fn string_ends_with(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("String.endsWith", args)?;
+    match (&a, &b) {
+        (Value::Str(s), Value::Str(p)) => Ok(Value::Bool(s.ends_with(p.as_str()))),
+        _ => Err(type_mismatch("String", &a, Some(&b))),
+    }
+}
+
+// substring(s, start, end) — character-indexed half-open range, matching
+// String.length's Unicode-scalar semantics. Negative or out-of-range indices
+// clamp to the string's bounds; reversed ranges produce the empty string.
+fn string_substring(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [s, start, end] = expect_args::<3>("String.substring", args)?;
+    let s = match &s { Value::Str(x) => x.clone(), _ => return Err(type_mismatch("String", &s, None)) };
+    let start = start.as_int().ok_or_else(|| type_mismatch("Int", &start, None))?;
+    let end = end.as_int().ok_or_else(|| type_mismatch("Int", &end, None))?;
+    let n = s.chars().count() as i64;
+    let lo = start.max(0).min(n) as usize;
+    let hi = end.max(0).min(n) as usize;
+    if hi <= lo {
+        return Ok(Value::Str(String::new()));
+    }
+    let mut iter = s.chars();
+    let prefix: String = iter.by_ref().take(lo).collect();
+    drop(prefix);
+    let out: String = iter.take(hi - lo).collect();
+    Ok(Value::Str(out))
 }
 
 // ── LogicalStream / KB.execute ─────────────────────────────────

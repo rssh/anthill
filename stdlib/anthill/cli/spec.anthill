@@ -1,0 +1,38 @@
+-- CLI spec: declarative description of a command-line operation.
+--
+-- The shape is deliberately neutral re: CLI surface. ParamSpec tells you
+-- what a parameter IS (name, type, required, description); the CLI-specific
+-- detail of "is this a positional vs --flag" is folded into ParamKind so
+-- a single OperationSpec can later be reused for JSON-shaped tool calls
+-- by ignoring `kind` and addressing params by name only.
+namespace anthill.cli.spec
+  import anthill.prelude.{List, Option, String, Bool}
+  export OperationSpec, ParamSpec, ParamKind,
+         positional, flag, repeated, bool_flag
+
+  -- How a CLI surface should source the value for a param.
+  --   positional  — argv[i], in declaration order across positional params
+  --   flag        — --name VALUE
+  --   repeated    — --name VALUE, may appear multiple times; collect all values
+  --   bool_flag   — --name (no value, presence binds "true")
+  enum ParamKind
+    entity positional
+    entity flag
+    entity repeated
+    entity bool_flag
+  end
+
+  entity ParamSpec(
+    name: String,
+    kind: ParamKind,
+    required: Bool,
+    description: String)
+
+  -- One subcommand of a CLI program. Top-level commands have parent: none.
+  -- Subcommands name their parent's `name`. v1 supports one level of nesting.
+  entity OperationSpec(
+    name: String,
+    description: String,
+    params: List[T = ParamSpec],
+    parent: Option[T = String])
+end
