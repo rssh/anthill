@@ -29,6 +29,8 @@ object EmbeddedStdlib:
     "anthill.geometry",
     // Proposal 030 phase α / WI-155: ProofWitness + SmtVerdict + SortBinding
     "anthill.realization.witness",
+    // WI-155: ProofRecord + ProofStrategyOpen + ProofBodyNone + Pending + ParametricBinding
+    "anthill.realization.realization",
   )
 
   /** Parse all stdlib files via `resolver`. Returns parsed files in dependency

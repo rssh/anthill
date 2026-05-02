@@ -592,10 +592,13 @@ class ParserIntegrationTest extends munit.FunSuite:
     * those modules are loaded as part of EmbeddedStdlib.
     */
   private val ToleratedUnresolvedNames = Set(
-    "Eq", "Ordered", "Numeric", "List", "Option", "Term")
+    "Eq", "Ordered", "Numeric", "List", "Option", "Term",
+    // realization.anthill imports — Meta typeclass + reflect.Symbol not yet loaded.
+    "Symbol", "ProofResult")
   private def isToleratedLoadError(e: LoadError): Boolean = e match
     case LoadError.UnresolvedName(n, _, _) => ToleratedUnresolvedNames(n)
-    case LoadError.UnresolvedImport(p, _)  => p.startsWith("anthill.prelude.Ordered")
+    case LoadError.UnresolvedImport(p, _)  =>
+      p.startsWith("anthill.prelude.Ordered") || p == "anthill.prelude.Meta"
     case _ => false
 
   /** Single-pass count of items whose `partial` is defined for them.
@@ -770,5 +773,136 @@ class ParserIntegrationTest extends munit.FunSuite:
         "anthill.geometry.Vec3",
         "anthill.realization.witness.ProofWitness")
     do assert(kb.hasQualifiedName(qn), s"$qn should be registered after stdlib load")
+  }
+
+  // ── WI-155: ProofRecord + witness round-trip ──────────────────────
+
+  /** Cached parses — used by every WI-155 test. */
+  private lazy val realizationStdlibPf = parseStdlibFile("anthill.realization.realization")
+  private lazy val witnessStdlibPf = parseStdlibFile("anthill.realization.witness")
+
+  /** Look up a named argument on a Fn term and follow it through the KB. */
+  private def namedArg(kb: KnowledgeBase, fn: Term.Fn, name: String): TermId =
+    val sym = kb.intern(name)
+    fn.namedArgs.find(_._1 == sym).map(_._2)
+      .getOrElse(fail(s"missing named arg `$name`"))
+
+  /** Resolve a functor Symbol to its qualified name; fails the test if unresolved. */
+  private def functorQn(kb: KnowledgeBase, sym: anthill.intern.TermSymbol): String =
+    kb.symbols.get(sym) match
+      case anthill.intern.SymbolDef.Resolved(_, qn, _, _) => qn
+      case other => fail(s"functor unresolved: $other")
+
+  /** Build a KB with witness + realization stdlib + the given user file loaded. */
+  private def kbWithWitnessSchema(userPf: ParsedFile): KnowledgeBase =
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val errs = Loader.loadAll(kb, IndexedSeq(witnessStdlibPf, realizationStdlibPf, userPf))
+    val unrelated = errs.filterNot(isToleratedLoadError)
+    assert(unrelated.isEmpty, s"unexpected load errors: $unrelated")
+    kb
+
+  test("WI-155: stdlib realization.anthill parses end-to-end") {
+    val pf = parseStdlibFile("anthill.realization.realization")
+    val ns = pf.items.collectFirst { case Item.NamespaceItem(n) => n }
+      .getOrElse(fail("expected namespace"))
+    assertEquals(ns.name.segments.map(pf.symbols.name).mkString("."), "anthill.realization")
+    val entityNames = ns.items.collect { case Item.EntityItem(e) => pf.symbols.name(e.name.last) }.toSet
+    // ProofRecord, ProofStrategyOpen, ProofStrategyKind, ProofBodyNone,
+    // ProofBodyHints, ProofBodyQuery, ProofStep, ProofConcludeClause,
+    // ParametricBinding (et al.) — minimum subset we rely on.
+    for needed <- Seq("ProofRecord", "ProofStrategyOpen", "ProofBodyNone", "ParametricBinding") do
+      assert(entityNames.contains(needed), s"expected entity $needed, got $entityNames")
+  }
+
+  test("WI-155: ProofRecord fact with witness + state_hash round-trips through parser + loader") {
+    // User-authored ProofRecord fact citing a TrustedAxiom witness — the
+    // simplest witness shape per witness.anthill. The fact must round-trip
+    // (parse + load + KB lookup retrieves the same named-args). Fully
+    // qualified names sidestep the entities-inside-sorts selective-import
+    // gap (a separate scaland resolver issue, tracked via WI-163's family).
+    val src =
+      """namespace test.proofs
+        |  fact anthill.realization.ProofRecord(
+        |    rule: "demo.foo.requires.Eq_T",
+        |    strategy: anthill.realization.ProofStrategyOpen,
+        |    body: anthill.realization.ProofBodyNone,
+        |    result: anthill.realization.Pending,
+        |    dependencies: nil,
+        |    using: nil,
+        |    witness: anthill.realization.witness.ProofWitness.TrustedAxiom(reason: "demo"),
+        |    state_hash: "abc123",
+        |    parametric_context: nil)
+        |end""".stripMargin
+    val userPf = Parser.parse(src, "<proof-record>") match
+      case Right(p) => p
+      case Left(errs) => fail(s"parse failed: ${errs.map(_.message).mkString("; ")}")
+    val kb = kbWithWitnessSchema(userPf)
+
+    val proofRecordSym = kb.tryResolveSymbol("anthill.realization.ProofRecord")
+      .getOrElse(fail("ProofRecord symbol not registered"))
+    val records = kb.byFunctor(proofRecordSym)
+    assertEquals(records.length, 1, "expected exactly one ProofRecord fact")
+
+    val recordHead = kb.getTerm(kb.ruleHead(records.head)) match
+      case fn: Term.Fn => fn
+      case other => fail(s"expected Fn at fact head, got $other")
+
+    kb.getTerm(namedArg(kb, recordHead, "state_hash")) match
+      case Term.Const(Literal.StringLit(s)) => assertEquals(s, "abc123")
+      case other => fail(s"expected StringLit('abc123') for state_hash, got $other")
+
+    val witnessFn = kb.getTerm(namedArg(kb, recordHead, "witness")) match
+      case w: Term.Fn => w
+      case other => fail(s"expected Fn for witness term, got $other")
+    assert(functorQn(kb, witnessFn.functor).endsWith("TrustedAxiom"),
+      s"expected witness functor TrustedAxiom, got ${functorQn(kb, witnessFn.functor)}")
+    kb.getTerm(namedArg(kb, witnessFn, "reason")) match
+      case Term.Const(Literal.StringLit(s)) => assertEquals(s, "demo")
+      case other => fail(s"expected StringLit('demo') for reason, got $other")
+  }
+
+  test("WI-155: SmtDischarge witness with SmtVerdict round-trips") {
+    // A ProofRecord whose witness is the more structured SmtDischarge —
+    // exercises the full witness schema including SmtVerdict.Unsat.
+    val src =
+      """namespace test.proofs
+        |  fact anthill.realization.ProofRecord(
+        |    rule: "demo.bar",
+        |    strategy: anthill.realization.ProofStrategyOpen,
+        |    body: anthill.realization.ProofBodyNone,
+        |    result: anthill.realization.Pending,
+        |    dependencies: nil,
+        |    using: nil,
+        |    witness: anthill.realization.witness.ProofWitness.SmtDischarge(
+        |      backend: "z3",
+        |      logic: "QF_LRA",
+        |      document_hash: "deadbeef",
+        |      verdict: anthill.realization.witness.SmtVerdict.Unsat(),
+        |      core: none),
+        |    state_hash: "h1",
+        |    parametric_context: nil)
+        |end""".stripMargin
+    val userPf = Parser.parse(src, "<smt-record>") match
+      case Right(p) => p
+      case Left(errs) => fail(s"parse failed: ${errs.map(_.message).mkString("; ")}")
+    val kb = kbWithWitnessSchema(userPf)
+
+    val proofRecordSym = kb.tryResolveSymbol("anthill.realization.ProofRecord")
+      .getOrElse(fail("ProofRecord symbol not registered"))
+    val records = kb.byFunctor(proofRecordSym)
+    assertEquals(records.length, 1)
+
+    val recordHead = kb.getTerm(kb.ruleHead(records.head)) match
+      case fn: Term.Fn => fn
+      case other => fail(s"expected Fn at fact head, got $other")
+    val witnessFn = kb.getTerm(namedArg(kb, recordHead, "witness")) match
+      case w: Term.Fn => w
+      case other => fail(s"expected Fn for witness, got $other")
+    val verdictFn = kb.getTerm(namedArg(kb, witnessFn, "verdict")) match
+      case v: Term.Fn => v
+      case other => fail(s"expected Fn for verdict, got $other")
+    assert(functorQn(kb, verdictFn.functor).endsWith("Unsat"),
+      s"expected Unsat, got ${functorQn(kb, verdictFn.functor)}")
   }
 

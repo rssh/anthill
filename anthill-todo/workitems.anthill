@@ -1098,7 +1098,7 @@ fact WorkItem(
   description: "scaland resync — witness schema: KB-side loading (no checking). Recognize ProofWitness / SmtVerdict / SortBinding entities (defined in stdlib/anthill/realization/witness.anthill) and load ProofRecord facts with `witness` and `state_hash` fields populated. No witness verification (that is proposal 030 phases β/γ — deferred to WI-157). Sidecar JSON read/write also deferred. Mirror references: rustland/anthill-core/src/kb/load.rs (ProofRecord loading); stdlib/anthill/realization/witness.anthill (full schema). Acceptance: sbt test green; ProofRecord facts with witnesses round-trip through parser + loader without information loss.",
   acceptance: [ToolPasses("scaland-sbt-test")],
   depends_on: ["WI-152", "WI-153"],
-  status: Claimed(agent: "user", since: "2026-05-02T10:13:09Z"))
+  status: Delivered(agent: "user", at: "2026-05-02T10:20:57Z"))
 
 fact WorkItem(
   id: "WI-156",
