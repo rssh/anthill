@@ -35,6 +35,9 @@ object Loader:
     for file <- files do
       scanItemsPass2(kb, file.items, file.symbols, globalScope, "", errors)
 
+    // Post-pass: auto-import prelude sort contents into global scope
+    autoImportPrelude(kb, globalScope)
+
     errors
 
   /** Load a parsed file into the KB (Phase 2 — after scanDefinitions). */
@@ -326,7 +329,7 @@ object Loader:
         kb.alloc(Term.Var(kbVid))
       case fn: Term.Fn =>
         val name = fileSym.name(fn.functor)
-        val kbFunctor = resolveName(kb, name, scopeTerm)
+        val kbFunctor = resolveName(kb, name, scopeTerm, errors)
         val kbPos = IArray.from(fn.posArgs.map(id => reallocTerm(kb, fileTerms, fileSym, id, scopeTerm, errors, varMap)))
         val kbNamed = IArray.from(fn.namedArgs.map { (sym, id) =>
           val kbKeySym = kb.intern(fileSym.name(sym))
@@ -335,22 +338,44 @@ object Loader:
         kb.alloc(Term.Fn(kbFunctor, kbPos, kbNamed))
       case Term.Ref(sym) =>
         val name = fileSym.name(sym)
-        val kbSym = resolveName(kb, name, scopeTerm)
+        val kbSym = resolveName(kb, name, scopeTerm, errors)
         kb.alloc(Term.Ref(kbSym))
       case Term.Ident(sym) =>
         val name = fileSym.name(sym)
-        val kbSym = resolveName(kb, name, scopeTerm)
+        val kbSym = resolveName(kb, name, scopeTerm, errors)
         kb.alloc(Term.Ident(kbSym))
       case Term.Bottom => kb.alloc(Term.Bottom)
 
-  /** Resolve a name in scope, falling back to intern. */
-  private def resolveName(kb: KnowledgeBase, name: String, scopeTerm: TermId): TermSymbol =
+  /** Resolve a name in scope, falling back to intern for user-defined predicates. */
+  private def resolveName(kb: KnowledgeBase, name: String, scopeTerm: TermId, errors: ArrayBuffer[LoadError]): TermSymbol =
     kb.symbols.byQualifiedName.get(name) match
       case Some(sym) => sym
       case None =>
         kb.symbols.resolveInScope(name, scopeTerm.raw) match
           case ResolveResult.Found(sym) => sym
-          case _ => kb.intern(name)
+          case ResolveResult.Ambiguous(candidates) =>
+            val qualNames = candidates.map(c => kb.symbols.get(c) match
+              case SymbolDef.Resolved(_, q, _, _) => q
+              case SymbolDef.Unresolved(n) => n
+            ).toIndexedSeq
+            errors += LoadError.AmbiguousSymbol(name, qualNames, Span.empty, "")
+            kb.intern(name)
+          case ResolveResult.NotFound =>
+            kb.intern(name)
+
+  /** Auto-import prelude sort contents into global scope.
+    * Adds each sort defined directly under anthill.prelude as a parent of _global,
+    * making their exported operations (add, sub, mul, etc.) globally visible.
+    */
+  private def autoImportPrelude(kb: KnowledgeBase, globalScope: TermId): Unit =
+    val preludePrefix = "anthill.prelude."
+    for (qualName, sym) <- kb.symbols.byQualifiedName do
+      if qualName.startsWith(preludePrefix) then
+        val afterPrelude = qualName.substring(preludePrefix.length)
+        if !afterPrelude.contains('.') then
+          // Direct child of anthill.prelude — add as parent of _global
+          val sortTerm = kb.makeNameTermFromSym(sym)
+          kb.symbols.addParent(globalScope.raw, ScopeInclusion(sortTerm.raw, 0, isEnclosing = false))
 
   private def findSortTerm(kb: KnowledgeBase, qualName: String): TermId =
     kb.symbols.byQualifiedName.get(qualName) match
@@ -515,7 +540,7 @@ object Loader:
     scope: TermId, errors: ArrayBuffer[LoadError], vm: HashMap[Int, VarId]
   ): TermId =
     val ctx = (kb, ft, fs, scope, errors, vm)
-    val kbFunctor = resolveName(kb, fs.name(parseFunctor), scope)
+    val kbFunctor = resolveName(kb, fs.name(parseFunctor), scope, errors)
     val isEntity = kb.symbols.get(kbFunctor) match
       case SymbolDef.Resolved(_, _, SymbolKind.Entity, _) => true
       case _ => false
@@ -583,7 +608,7 @@ object Loader:
     val ctx = (kb, ft, fs, scope, errors, vm)
     val nameRef = ft.get(posArgs(0)) match
       case Term.Ident(sym) =>
-        val kbSym = resolveName(kb, fs.name(sym), scope)
+        val kbSym = resolveName(kb, fs.name(sym), scope, errors)
         kb.alloc(Term.Ref(kbSym))
       case _ => reallocTerm(kb, ft, fs, posArgs(0), scope, errors, vm)
     val subPatterns = IArray.tabulate(posArgs.length - 1)(i => exprRec(ctx, posArgs(i + 1)))

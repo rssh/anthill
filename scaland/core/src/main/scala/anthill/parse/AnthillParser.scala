@@ -1,0 +1,678 @@
+package anthill.parse
+
+import anthill.intern.{TermSymbol, SymbolTable}
+import anthill.term.{Term, TermId, VarId, Literal, OrderedDouble}
+import anthill.span.Span
+import fastparse.*
+import scala.collection.mutable.{ArrayBuffer, HashMap}
+
+object AnthillParser:
+
+  def parse(source: String, fileName: String = "<input>"): Either[IndexedSeq[ParseError], ParsedFile] =
+    val symbols = SymbolTable()
+    val terms = SimpleTermStore()
+    val errors = ArrayBuffer.empty[ParseError]
+    val parser = new AnthillParserImpl(source, fileName, symbols, terms, errors)
+    fastparse.parse(source, parser.sourceFile(using _)) match
+      case Parsed.Success(items, _) =>
+        if errors.nonEmpty then Left(errors.toIndexedSeq)
+        else Right(ParsedFile(ArrayBuffer.from(items), symbols, terms))
+      case f: Parsed.Failure =>
+        val idx = f.index
+        errors += ParseError(s"Parse error at $idx: ${f.msg}", Span(fileName, idx, idx, 0, 0, 0, 0))
+        Left(errors.toIndexedSeq)
+
+end AnthillParser
+
+// Token-level parsers — no whitespace between characters
+private object Tokens:
+  import fastparse.NoWhitespace.*
+
+  def identToken[$: P]: P[String] =
+    P(CharIn("a-zA-Z_") ~ CharsWhileIn("a-zA-Z0-9_\\-", 0)).!
+
+  def variableToken[$: P]: P[String] =
+    P("?" ~ (CharIn("a-zA-Z_") ~ CharsWhileIn("a-zA-Z0-9_\\-", 0)).?.!)
+
+  def stringToken[$: P]: P[String] =
+    P("\"" ~ CharsWhile(_ != '"', 0).! ~ "\"")
+
+  def floatToken[$: P]: P[String] =
+    P(("-".? ~ CharsWhileIn("0-9", 1) ~ "." ~ CharsWhileIn("0-9", 1)).!)
+
+  def intToken[$: P]: P[String] =
+    P(("-".? ~ CharsWhileIn("0-9", 1)).!)
+
+  def boolToken[$: P]: P[String] =
+    P(identToken.filter(s => s == "true" || s == "false"))
+
+  def opToken[$: P]: P[String] =
+    P(CharsWhileIn("+\\-*/%^|&=<>~", 1).!)
+
+end Tokens
+
+
+private class AnthillParserImpl(
+  source: String,
+  fileName: String,
+  symbols: SymbolTable,
+  terms: SimpleTermStore,
+  errors: ArrayBuffer[ParseError]
+):
+
+  // ── Variable scoping ─────────────────────────────────────────
+
+  private var nextVar: Int = 0
+  private val varScope: HashMap[TermSymbol, VarId] = HashMap.empty
+
+  private def resetVarScope(): Unit = varScope.clear()
+
+  private def getOrCreateVar(sym: TermSymbol): VarId =
+    varScope.getOrElseUpdate(sym, {
+      val id = nextVar; nextVar += 1; VarId(id, sym)
+    })
+
+  private def freshAnonymousVar(): VarId =
+    val anonSym = symbols.intern("?")
+    val id = nextVar; nextVar += 1; VarId(id, anonSym)
+
+  // ── Helpers ──────────────────────────────────────────────────
+
+  private def mkSpan(s: Int, e: Int): Span = Span(fileName, s, e, 0, 0, 0, 0)
+  private def intern(s: String): TermSymbol = symbols.intern(s)
+
+  // ── Custom whitespace ────────────────────────────────────────
+
+  given ws: Whitespace with
+    def apply(ctx: P[?]): P[Unit] =
+      var index = ctx.index
+      val input = ctx.input
+      val length = input.length
+      var continue = true
+      while continue && index < length do
+        val c = input(index)
+        if c == ' ' || c == '\t' || c == '\n' || c == '\r' then
+          index += 1
+        else if index + 1 < length && c == '-' && input(index + 1) == '-' then
+          index += 2
+          while index < length && input(index) != '\n' do index += 1
+        else if index + 1 < length && c == '{' && input(index + 1) == '-' then
+          index += 2
+          var depth = 1
+          while index + 1 < length && depth > 0 do
+            if input(index) == '{' && input(index + 1) == '-' then
+              depth += 1; index += 2
+            else if input(index) == '-' && input(index + 1) == '}' then
+              depth -= 1; index += 2
+            else index += 1
+        else
+          continue = false
+      ctx.freshSuccessUnit(index)
+
+  // ── Lexical ──────────────────────────────────────────────────
+
+  private def ident[$: P]: P[TermSymbol] = P(Tokens.identToken).map(intern)
+
+  private def keyword[$: P](kw: String): P[Unit] =
+    P(Tokens.identToken.filter(_ == kw)).map(_ => ())
+
+  private def name[$: P]: P[Name] =
+    P(Index ~ ident ~ ("." ~ ident).rep ~ Index).map { case (s, first, rest, e) =>
+      Name(first +: rest.toIndexedSeq, mkSpan(s, e))
+    }
+
+  private def simpleName[$: P]: P[Name] =
+    P(Index ~ ident ~ Index).map { case (s, sym, e) => Name.simple(sym, mkSpan(s, e)) }
+
+  // ── Literals ─────────────────────────────────────────────────
+
+  private def stringLiteral[$: P]: P[TermId] =
+    P(Tokens.stringToken).map(s => terms.alloc(Term.Const(Literal.StringLit(s))))
+
+  private def floatLiteral[$: P]: P[TermId] =
+    P(Tokens.floatToken).map(s => terms.alloc(Term.Const(Literal.FloatLit(OrderedDouble(s.toDouble)))))
+
+  private def integerLiteral[$: P]: P[TermId] =
+    P(Tokens.intToken).map(s => terms.alloc(Term.Const(Literal.IntLit(s.toLong))))
+
+  private def boolLiteral[$: P]: P[TermId] =
+    P(Tokens.boolToken).map(s => terms.alloc(Term.Const(Literal.BoolLit(s == "true"))))
+
+  private def literal[$: P]: P[TermId] =
+    P(stringLiteral | floatLiteral | integerLiteral | boolLiteral)
+
+  // ── Variables ────────────────────────────────────────────────
+
+  private def variable[$: P]: P[TermId] =
+    P(Tokens.variableToken).map { varName =>
+      if varName.isEmpty then
+        terms.alloc(Term.Var(freshAnonymousVar()))
+      else
+        terms.alloc(Term.Var(getOrCreateVar(intern(varName))))
+    }
+
+  // ── Types ────────────────────────────────────────────────────
+
+  private def typeExpr[$: P]: P[TypeExpr] = P(arrowType | nonArrowType)
+
+  private def nonArrowType[$: P]: P[TypeExpr] =
+    P(parameterizedType | tupleType | variableType | simpleType)
+
+  private def simpleType[$: P]: P[TypeExpr] = P(name).map(TypeExpr.Simple(_))
+
+  private def parameterizedType[$: P]: P[TypeExpr] =
+    P(name ~ "[" ~ sortBinding.rep(1, sep = ",") ~ "]").map { case (n, bs) =>
+      TypeExpr.Parameterized(n, bs.toIndexedSeq)
+    }
+
+  private def sortBinding[$: P]: P[SortBinding] =
+    P(
+      (name ~ "=" ~ typeExpr).map { case (n, t) => SortBinding(Some(n), t) } |
+      typeExpr.map(t => SortBinding(None, t))
+    )
+
+  private def variableType[$: P]: P[TypeExpr] =
+    P(Tokens.variableToken).map { varName =>
+      val vid = if varName.isEmpty then freshAnonymousVar()
+                else getOrCreateVar(intern(varName))
+      TypeExpr.Variable(terms.alloc(Term.Var(vid)), IndexedSeq.empty)
+    }
+
+  private def arrowType[$: P]: P[TypeExpr] =
+    P(arrowParams ~ "->" ~ typeExpr ~ ("@" ~ nonArrowType).?).map {
+      case (params, ret, eff) => TypeExpr.Arrow(params, ret, eff)
+    }
+
+  private def arrowParams[$: P]: P[IndexedSeq[TypeExpr]] =
+    P("(" ~ typeExpr.rep(sep = ",") ~ ")").map(_.toIndexedSeq)
+
+  case class TupleField(name: TermSymbol, ty: TypeExpr)
+
+  private def tupleType[$: P]: P[TypeExpr] =
+    P(
+      ("(" ~ ")").map(_ => TypeExpr.TupleType(IndexedSeq.empty)) |
+      ("(" ~ tupleTypeArg ~ ("," ~/ tupleTypeArg).rep(1) ~ ")").map { case (first, rest) =>
+        TypeExpr.TupleType((first +: rest.toIndexedSeq).map(f => (f.name, f.ty)))
+      }
+    )
+
+  private def tupleTypeArg[$: P]: P[TupleField] =
+    P(
+      (ident ~ ":" ~ typeExpr).map { case (n, t) => TupleField(n, t) } |
+      typeExpr.map(t => TupleField(intern("_"), t))
+    )
+
+  // ── Terms ────────────────────────────────────────────────────
+
+  private def term[$: P]: P[TermId] =
+    P(atomWithFieldAccess ~ (infixOp ~ atomWithFieldAccess).rep).map { case (first, pairs) =>
+      if pairs.isEmpty then first
+      else
+        val operands = ArrayBuffer(first)
+        val opSymbols = ArrayBuffer.empty[TermSymbol]
+        pairs.foreach { case (op, operand) => opSymbols += op; operands += operand }
+        Pratt.desugar(operands.toIndexedSeq, opSymbols.toIndexedSeq, symbols.name, terms.alloc, symbols.intern)
+    }
+
+  private def atomWithFieldAccess[$: P]: P[TermId] =
+    P(atomBase ~ ("." ~ ident).rep).map { case (base, fields) =>
+      fields.foldLeft(base) { (obj, field) =>
+        val fieldRef = terms.alloc(Term.Ref(field))
+        terms.alloc(Term.Fn(intern("field_access"), IArray(obj, fieldRef), IArray.empty))
+      }
+    }
+
+  private def atomBase[$: P]: P[TermId] =
+    P(
+      literal |
+      variable |
+      refTerm |
+      prefixTerm |
+      fnOrInstOrIdent |
+      collectionLiteral |
+      setLiteral |
+      tupleLiteralOrParenExpr
+    )
+
+  // ── Name suffix ADT ──────────────────────────────────────────
+
+  private enum NameSuffix:
+    case FnArgs(args: IndexedSeq[Either[TermId, (TermSymbol, TermId)]])
+    case InstArgs(bindings: IndexedSeq[SortBinding])
+    case Bare
+
+  private def fnOrInstOrIdent[$: P]: P[TermId] =
+    P(name ~ nameSuffix).map { case (n, suffix) =>
+      suffix match
+        case NameSuffix.FnArgs(args) =>
+          val posArgs = ArrayBuffer.empty[TermId]
+          val namedArgs = ArrayBuffer.empty[(TermSymbol, TermId)]
+          args.foreach {
+            case Left(tid) => posArgs += tid
+            case Right((k, v)) => namedArgs += ((k, v))
+          }
+          val funcStr = n.segments.map(symbols.name).mkString(".")
+          terms.alloc(Term.Fn(intern(funcStr), IArray.from(posArgs), IArray.from(namedArgs)))
+
+        case NameSuffix.InstArgs(bindings) =>
+          val funcStr = n.segments.map(symbols.name).mkString(".")
+          val posArgs = ArrayBuffer.empty[TermId]
+          val namedArgs = ArrayBuffer.empty[(TermSymbol, TermId)]
+          bindings.foreach { sb =>
+            val bt = typeExprToRef(sb.bound)
+            sb.param match
+              case Some(p) => namedArgs += ((p.last, bt))
+              case None => posArgs += bt
+          }
+          terms.alloc(Term.Fn(intern(funcStr), IArray.from(posArgs), IArray.from(namedArgs)))
+
+        case NameSuffix.Bare =>
+          if n.isSimple then terms.alloc(Term.Ident(n.last))
+          else
+            var result = terms.alloc(Term.Ident(n.segments.head))
+            for seg <- n.segments.tail do
+              val fieldRef = terms.alloc(Term.Ref(seg))
+              result = terms.alloc(Term.Fn(intern("field_access"), IArray(result, fieldRef), IArray.empty))
+            result
+    }
+
+  private def nameSuffix[$: P]: P[NameSuffix] =
+    P(
+      fnArgsList.map(NameSuffix.FnArgs(_)) |
+      instArgsList.map(NameSuffix.InstArgs(_)) |
+      Pass(NameSuffix.Bare)
+    )
+
+  private def fnArgsList[$: P]: P[IndexedSeq[Either[TermId, (TermSymbol, TermId)]]] =
+    P("(" ~ fnArg.rep(sep = ",") ~ ")").map(_.toIndexedSeq)
+
+  private def fnArg[$: P]: P[Either[TermId, (TermSymbol, TermId)]] =
+    P(
+      (ident ~ ":" ~/ term).map { case (k, v) => Right((k, v)) } |
+      term.map(Left(_))
+    )
+
+  private def instArgsList[$: P]: P[IndexedSeq[SortBinding]] =
+    P("[" ~ sortBinding.rep(1, sep = ",") ~ "]").map(_.toIndexedSeq)
+
+  private def typeExprToRef(te: TypeExpr): TermId = te match
+    case TypeExpr.Simple(n) => terms.alloc(Term.Ref(n.last))
+    case TypeExpr.Parameterized(n, bindings) =>
+      val posArgs = ArrayBuffer.empty[TermId]
+      val namedArgs = ArrayBuffer.empty[(TermSymbol, TermId)]
+      bindings.foreach { sb =>
+        val bt = typeExprToRef(sb.bound)
+        sb.param match
+          case Some(p) => namedArgs += ((p.last, bt))
+          case None => posArgs += bt
+      }
+      terms.alloc(Term.Fn(n.last, IArray.from(posArgs), IArray.from(namedArgs)))
+    case TypeExpr.Variable(tid, _) => tid
+    case _ => terms.alloc(Term.Ref(intern("_")))
+
+  private def refTerm[$: P]: P[TermId] =
+    P(keyword("Ref") ~ "(" ~/ name ~ ")").map(n => terms.alloc(Term.Ref(n.last)))
+
+  private def prefixTerm[$: P]: P[TermId] =
+    P(prefixOp ~ atomWithFieldAccess).map { case (op, operand) =>
+      val opString = symbols.name(op)
+      val entry = Pratt.lookupPrefix(opString)
+      val functorSym = entry.map(e => intern(e.functor)).getOrElse(op)
+      terms.alloc(Term.Fn(functorSym, IArray(operand), IArray.empty))
+    }
+
+  private def prefixOp[$: P]: P[TermSymbol] =
+    P(
+      "!".!.map(_ => intern("!")) |
+      keyword("not").map(_ => intern("not")) |
+      "-".!.map(_ => intern("-"))
+    )
+
+  private def collectionLiteral[$: P]: P[TermId] =
+    P("[" ~/ (
+      "]".map(_ => terms.alloc(Term.Fn(intern("ListLiteral"), IArray.empty, IArray.empty))) |
+      (term.rep(1, sep = ",") ~ ("|" ~/ term).? ~ "]").map { case (elems, tail) =>
+        val all = ArrayBuffer.from(elems)
+        tail.foreach(all += _)
+        terms.alloc(Term.Fn(intern("ListLiteral"), IArray.from(all), IArray.empty))
+      }
+    ))
+
+  private def setLiteral[$: P]: P[TermId] =
+    P("{" ~ term.rep(sep = ",") ~ "}").map { elems =>
+      terms.alloc(Term.Fn(intern("SetLiteral"), IArray.from(elems), IArray.empty))
+    }
+
+  private def tupleLiteralOrParenExpr[$: P]: P[TermId] =
+    P("(" ~/ (
+      ")".map(_ => terms.alloc(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray.empty))) |
+      (fnArg ~ "," ~ fnArg.rep(1, sep = ",") ~ ",".? ~ ")").map { case (first, rest) =>
+        val all = first +: rest
+        val posArgs = ArrayBuffer.empty[TermId]
+        val namedArgs = ArrayBuffer.empty[(TermSymbol, TermId)]
+        all.foreach {
+          case Left(tid) => posArgs += tid
+          case Right((k, v)) => namedArgs += ((k, v))
+        }
+        terms.alloc(Term.Fn(intern("TupleLiteral"), IArray.from(posArgs), IArray.from(namedArgs)))
+      } |
+      (term ~ ")")
+    ))
+
+  private def infixOp[$: P]: P[TermSymbol] =
+    P(
+      "!=".!.map(_ => intern("!=")) |
+      keyword("or").map(_ => intern("or")) |
+      keyword("and").map(_ => intern("and")) |
+      keyword("mod").map(_ => intern("mod")) |
+      keyword("div").map(_ => intern("div")) |
+      Tokens.opToken.map(intern)
+    )
+
+  // ── Expression bodies ────────────────────────────────────────
+
+  private def exprBody[$: P]: P[TermId] =
+    P(matchExpr | ifExpr | letExpr | lambdaExpr | term)
+
+  private def matchExpr[$: P]: P[TermId] =
+    P(keyword("match") ~/ term ~ matchBranch.rep(1) ~ keyword("end")).map { case (scrutinee, branches) =>
+      terms.alloc(Term.Fn(intern("match_expr"), IArray(scrutinee) ++ IArray.from(branches), IArray.empty))
+    }
+
+  private def matchBranch[$: P]: P[TermId] =
+    P(keyword("case") ~/ pattern ~ "->" ~ exprBody).map { case (pat, body) =>
+      terms.alloc(Term.Fn(intern("match_branch"), IArray(pat, body), IArray.empty))
+    }
+
+  private def ifExpr[$: P]: P[TermId] =
+    P(keyword("if") ~/ term ~ keyword("then") ~ exprBody ~ keyword("else") ~ exprBody).map {
+      case (cond, thenB, elseB) =>
+        terms.alloc(Term.Fn(intern("if_expr"), IArray(cond, thenB, elseB), IArray.empty))
+    }
+
+  private def letExpr[$: P]: P[TermId] =
+    P(keyword("let") ~/ pattern ~ "=" ~ exprBody ~ keyword("in") ~ exprBody).map {
+      case (pat, value, body) =>
+        terms.alloc(Term.Fn(intern("let_expr"), IArray(pat, value, body), IArray.empty))
+    }
+
+  private def lambdaExpr[$: P]: P[TermId] =
+    P(keyword("lambda") ~/ pattern ~ "->" ~ exprBody).map { case (param, body) =>
+      terms.alloc(Term.Fn(intern("lambda"), IArray(param, body), IArray.empty))
+    }
+
+  // ── Patterns ─────────────────────────────────────────────────
+
+  private def pattern[$: P]: P[TermId] =
+    P(patternConstructor | patternTuple | patternLiteral | patternWildcard | patternVar)
+
+  private def patternWildcard[$: P]: P[TermId] =
+    P("_").map(_ => terms.alloc(Term.Fn(intern("pattern_wildcard"), IArray.empty, IArray.empty)))
+
+  private def patternVar[$: P]: P[TermId] =
+    P(ident).map { sym =>
+      val idTerm = terms.alloc(Term.Ident(sym))
+      terms.alloc(Term.Fn(intern("pattern_var"), IArray(idTerm), IArray.empty))
+    }
+
+  private def patternLiteral[$: P]: P[TermId] =
+    P(literal).map { tid =>
+      terms.alloc(Term.Fn(intern("pattern_literal"), IArray(tid), IArray.empty))
+    }
+
+  private def patternConstructor[$: P]: P[TermId] =
+    P(name ~ "(" ~ pattern.rep(sep = ",") ~ ")").map { case (n, pats) =>
+      val nameTerm = terms.alloc(Term.Ident(n.last))
+      terms.alloc(Term.Fn(intern("pattern_constructor"), IArray(nameTerm) ++ IArray.from(pats), IArray.empty))
+    }
+
+  private def patternTuple[$: P]: P[TermId] =
+    P(
+      ("(" ~ ")").map(_ => terms.alloc(Term.Fn(intern("pattern_tuple"), IArray.empty, IArray.empty))) |
+      ("(" ~ pattern ~ "," ~ pattern.rep(1, sep = ",") ~ ")").map { case (first, rest) =>
+        terms.alloc(Term.Fn(intern("pattern_tuple"), IArray.from(first +: rest), IArray.empty))
+      }
+    )
+
+  // ── Field declarations & params ──────────────────────────────
+
+  private def fieldDecl[$: P]: P[FieldDecl] =
+    P(ident ~ ":" ~ typeExpr).map { case (n, t) => FieldDecl(n, t) }
+
+  private def param[$: P]: P[Param] =
+    P(ident ~ ":" ~ typeExpr).map { case (n, t) => Param(n, t) }
+
+  // ── Visibility ───────────────────────────────────────────────
+
+  private def visibility[$: P]: P[Visibility] =
+    P(
+      keyword("internal").map(_ => Visibility.Internal) |
+      keyword("export").map(_ => Visibility.Export) |
+      keyword("public").map(_ => Visibility.Public)
+    )
+
+  // ── Import / Export ──────────────────────────────────────────
+
+  private def importClause[$: P]: P[Import] =
+    P(keyword("import") ~/ importPath)
+
+  private def importPath[$: P]: P[Import] =
+    P(Index ~ ident ~ ("." ~ importSegment).rep ~ Index).map { case (s, first, rest, e) =>
+      val allSegments = ArrayBuffer(first)
+      var kind: ImportKind = ImportKind.Plain
+      for seg <- rest do
+        seg match
+          case Left(sym) => allSegments += sym
+          case Right(ik) => kind = ik
+      Import(Name(allSegments.toIndexedSeq, mkSpan(s, e)), kind)
+    }
+
+  private def importSegment[$: P]: P[Either[TermSymbol, ImportKind]] =
+    P(
+      selectiveImport.map(Right(_)) |
+      wildcardImport.map(Right(_)) |
+      ident.map(Left(_))
+    )
+
+  private def selectiveImport[$: P]: P[ImportKind] =
+    P("{" ~/ simpleName.rep(1, sep = ",") ~ "}").map(ns => ImportKind.Selective(ns.toIndexedSeq))
+
+  private def wildcardImport[$: P]: P[ImportKind] =
+    P("*").map(_ => ImportKind.Wildcard)
+
+  private def exportClause[$: P]: P[IndexedSeq[Name]] =
+    P(keyword("export") ~/ name.rep(1, sep = ",")).map(_.toIndexedSeq)
+
+  // ── Meta block ───────────────────────────────────────────────
+
+  private def metaBlock[$: P]: P[MetaBlock] =
+    P("[" ~/ metaEntry.rep(1, sep = ",") ~ "]").map(es => MetaBlock(es.toIndexedSeq))
+
+  private def metaEntry[$: P]: P[MetaEntry] =
+    P(name ~ ":" ~ term).map { case (k, v) => MetaEntry(k, v) }
+
+  // ── Body content (shared by namespace and sort) ──────────────
+
+  private type BodyContent = Either[Either[Import, IndexedSeq[Name]], Item]
+
+  private def bodyContent[$: P]: P[BodyContent] =
+    P(
+      importClause.map(i => Left(Left(i))) |
+      exportClause.map(e => Left(Right(e))) |
+      declaration.map(Right(_))
+    )
+
+  private def processContent(
+    content: Seq[BodyContent]
+  ): (IndexedSeq[Import], IndexedSeq[Name], IndexedSeq[Item]) =
+    val imports = ArrayBuffer.empty[Import]
+    val exports = ArrayBuffer.empty[Name]
+    val items = ArrayBuffer.empty[Item]
+    content.foreach {
+      case Left(Left(imp)) => imports += imp
+      case Left(Right(exps)) => exports ++= exps
+      case Right(item) => items += item
+    }
+    (imports.toIndexedSeq, exports.toIndexedSeq, items.toIndexedSeq)
+
+  private def bracedBody[$: P]: P[(IndexedSeq[Import], IndexedSeq[Name], IndexedSeq[Item])] =
+    P("{" ~/ bodyContent.rep ~ "}").map(cs => processContent(cs))
+
+  private def endBody[$: P]: P[(IndexedSeq[Import], IndexedSeq[Name], IndexedSeq[Item])] =
+    P(bodyContent.rep ~ keyword("end")).map(cs => processContent(cs))
+
+  private def body[$: P]: P[(IndexedSeq[Import], IndexedSeq[Name], IndexedSeq[Item])] =
+    P(bracedBody | endBody)
+
+  // ── Declarations ─────────────────────────────────────────────
+
+  private def namespaceDecl[$: P]: P[Item] =
+    P(keyword("namespace") ~/ name ~ body).map { case (n, (imports, exports, items)) =>
+      Item.NamespaceItem(Namespace(n, imports, exports, items, mkSpan(0, 0)))
+    }
+
+  private def sortDecl[$: P]: P[Item] =
+    P(visibility.? ~ keyword("sort") ~/ name ~ (abstractSortRest | sortWithBodyRest)).map {
+      case (vis, n, Left((defn, meta))) =>
+        Item.AbstractSortItem(AbstractSort(vis, n, defn, IndexedSeq.empty, meta, mkSpan(0, 0)))
+      case (vis, n, Right((imports, exports, items, meta))) =>
+        Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports, exports, items, meta, mkSpan(0, 0)))
+    }
+
+  private def abstractSortRest[$: P]: P[Left[(TypeExpr, Option[MetaBlock]), Nothing]] =
+    P("=" ~/ typeExpr ~ metaBlock.?).map { case (te, mb) => Left((te, mb)) }
+
+  private def sortWithBodyRest[$: P]: P[Right[Nothing, (IndexedSeq[Import], IndexedSeq[Name], IndexedSeq[Item], Option[MetaBlock])]] =
+    P(body ~ metaBlock.?).map { tup =>
+      // fastparse flattens: (imports, exports, items, meta)
+      val imports = tup._1
+      val exports = tup._2
+      val items = tup._3
+      val meta = tup._4
+      Right((imports, exports, items, meta))
+    }
+
+  private def ruleDecl[$: P]: P[Item] =
+    P(keyword("rule") ~/ (
+      bracedRuleBlock |
+      singleRule
+    ))
+
+  private def bracedRuleBlock[$: P]: P[Item] =
+    P("{" ~/ ruleEntry.rep ~ "}").map { entries =>
+      Item.RuleBlockItem(RuleBlock(entries.toIndexedSeq, mkSpan(0, 0)))
+    }
+
+  private def singleRule[$: P]: P[Item] =
+    P((simpleName ~ ":").? ~ ruleHead ~ (":-" ~/ term.rep(1, sep = ",")).? ~ metaBlock.?).map {
+      case (label, head, bodyTerms, meta) =>
+        resetVarScope()
+        Item.RuleItem(Rule(label, head, bodyTerms.map(_.toIndexedSeq), meta, mkSpan(0, 0)))
+    }
+
+  private def ruleEntry[$: P]: P[Rule] =
+    P((simpleName ~ ":").? ~ ruleHead ~ (":-" ~/ term.rep(1, sep = ",")).? ~ metaBlock.?).map {
+      case (label, head, bodyTerms, meta) =>
+        resetVarScope()
+        Rule(label, head, bodyTerms.map(_.toIndexedSeq), meta, mkSpan(0, 0))
+    }
+
+  private def ruleHead[$: P]: P[RuleHead] =
+    P(
+      "\u22A5".!.map(_ => RuleHead.Bottom) |
+      term.map(RuleHead.TermHead(_))
+    )
+
+  private def operationDecl[$: P]: P[Item] =
+    P(keyword("operation") ~/ (
+      bracedOperationBlock |
+      singleOperation
+    ))
+
+  private def bracedOperationBlock[$: P]: P[Item] =
+    P("{" ~/ operationEntry.rep ~ "}").map { entries =>
+      Item.OperationBlockItem(OperationBlock(entries.toIndexedSeq, mkSpan(0, 0)))
+    }
+
+  private def singleOperation[$: P]: P[Item] =
+    P(visibility.? ~ simpleName ~ "(" ~ param.rep(sep = ",") ~ ")" ~ "->" ~ typeExpr ~
+      operationClauses ~ ("=" ~/ exprBody).? ~ metaBlock.?
+    ).map { case (vis, n, params, retType, (reqs, enss, effs), opBody, meta) =>
+      Item.OperationItem(Operation(vis, n, params.toIndexedSeq, retType,
+        reqs, enss, effs, opBody, meta, mkSpan(0, 0)))
+    }
+
+  private def operationEntry[$: P]: P[Operation] =
+    P(visibility.? ~ simpleName ~ "(" ~ param.rep(sep = ",") ~ ")" ~ "->" ~ typeExpr ~
+      operationClauses ~ ("=" ~/ exprBody).? ~ metaBlock.?
+    ).map { case (vis, n, params, retType, (reqs, enss, effs), opBody, meta) =>
+      Operation(vis, n, params.toIndexedSeq, retType, reqs, enss, effs, opBody, meta, mkSpan(0, 0))
+    }
+
+  private def operationClauses[$: P]: P[(IndexedSeq[IndexedSeq[TermId]], IndexedSeq[IndexedSeq[TermId]], IndexedSeq[Effect])] =
+    P(operationClause.rep).map { clauses =>
+      val reqs = ArrayBuffer.empty[IndexedSeq[TermId]]
+      val enss = ArrayBuffer.empty[IndexedSeq[TermId]]
+      val effs = ArrayBuffer.empty[Effect]
+      clauses.foreach {
+        case (0, terms: IndexedSeq[TermId] @unchecked) => reqs += terms
+        case (1, terms: IndexedSeq[TermId] @unchecked) => enss += terms
+        case (2, effects: IndexedSeq[Effect] @unchecked) => effs ++= effects
+        case _ =>
+      }
+      (reqs.toIndexedSeq, enss.toIndexedSeq, effs.toIndexedSeq)
+    }
+
+  private def operationClause[$: P]: P[(Int, IndexedSeq[?])] =
+    P(
+      (keyword("requires") ~/ term.rep(1, sep = ",")).map(ts => (0, ts.toIndexedSeq)) |
+      (keyword("ensures") ~/ term.rep(1, sep = ",")).map(ts => (1, ts.toIndexedSeq)) |
+      (keyword("effects") ~ "(" ~/ typeExpr.rep(1, sep = ",") ~ ")").map(ts => (2, ts.map(Effect(_)).toIndexedSeq))
+    )
+
+  private def requiresDeclItem[$: P]: P[Item] =
+    P(keyword("requires") ~/ typeExpr).map { te =>
+      Item.RequiresDeclItem(RequiresDecl(te, mkSpan(0, 0)))
+    }
+
+  private def entityDecl[$: P]: P[Item] =
+    P(visibility.? ~ keyword("entity") ~/ simpleName ~ ("(" ~ fieldDecl.rep(1, sep = ",") ~ ")").? ~ metaBlock.?
+    ).map { case (vis, n, fields, meta) =>
+      Item.EntityItem(Entity(vis, n, fields.map(_.toIndexedSeq).getOrElse(IndexedSeq.empty), meta, mkSpan(0, 0)))
+    }
+
+  private def factDecl[$: P]: P[Item] =
+    P(keyword("fact") ~/ term ~ metaBlock.?).map { case (t, meta) =>
+      Item.FactItem(Fact(t, meta, mkSpan(0, 0)))
+    }
+
+  private def constraintDecl[$: P]: P[Item] =
+    P(keyword("constraint") ~/ (simpleName ~ ":").? ~ term.rep(1, sep = ",") ~
+      (":-" ~/ term.rep(1, sep = ",")).? ~ metaBlock.?
+    ).map { case (label, head, guard, meta) =>
+      resetVarScope()
+      Item.ConstraintItem(Constraint(label, head.toIndexedSeq, guard.map(_.toIndexedSeq), meta, mkSpan(0, 0)))
+    }
+
+  // describe is not needed for test cases — omitted from declaration dispatch
+
+  // ── Declaration dispatch ─────────────────────────────────────
+
+  private def declaration[$: P]: P[Item] =
+    P(
+      namespaceDecl |
+      sortDecl |
+      ruleDecl |
+      operationDecl |
+      requiresDeclItem |
+      entityDecl |
+      factDecl |
+      constraintDecl
+    )
+
+  // ── Top-level ────────────────────────────────────────────────
+
+  def sourceFile[$: P]: P[Seq[Item]] =
+    P(Start ~ declaration.rep ~ End)
+
+end AnthillParserImpl

@@ -13,35 +13,35 @@ object Pratt:
   enum Assoc:
     case Left, Right, None
 
-  case class InfixEntry(priority: Int, assoc: Assoc)
-  case class PrefixEntry(priority: Int)
+  case class InfixEntry(priority: Int, assoc: Assoc, functor: String)
+  case class PrefixEntry(priority: Int, functor: String)
 
   private val infixTable: Map[String, InfixEntry] = Map(
-    "|" -> InfixEntry(1, Assoc.Left),
-    "or" -> InfixEntry(1, Assoc.Left),
-    "&" -> InfixEntry(2, Assoc.Left),
-    "and" -> InfixEntry(2, Assoc.Left),
-    "=" -> InfixEntry(3, Assoc.None),
-    "!=" -> InfixEntry(3, Assoc.None),
-    "<" -> InfixEntry(4, Assoc.None),
-    "<=" -> InfixEntry(4, Assoc.None),
-    ">" -> InfixEntry(4, Assoc.None),
-    ">=" -> InfixEntry(4, Assoc.None),
-    "+" -> InfixEntry(5, Assoc.Left),
-    "-" -> InfixEntry(5, Assoc.Left),
-    "*" -> InfixEntry(6, Assoc.Left),
-    "/" -> InfixEntry(6, Assoc.Left),
-    "%" -> InfixEntry(6, Assoc.Left),
-    "mod" -> InfixEntry(6, Assoc.Left),
-    "div" -> InfixEntry(6, Assoc.Left),
-    "^" -> InfixEntry(7, Assoc.Right),
-    "->" -> InfixEntry(8, Assoc.Right),
+    "|"   -> InfixEntry(1, Assoc.Left,  "or"),
+    "or"  -> InfixEntry(1, Assoc.Left,  "or"),
+    "&"   -> InfixEntry(2, Assoc.Left,  "and"),
+    "and" -> InfixEntry(2, Assoc.Left,  "and"),
+    "="   -> InfixEntry(3, Assoc.None,  "eq"),
+    "!="  -> InfixEntry(3, Assoc.None,  "neq"),
+    "<"   -> InfixEntry(4, Assoc.None,  "lt"),
+    "<="  -> InfixEntry(4, Assoc.None,  "lte"),
+    ">"   -> InfixEntry(4, Assoc.None,  "gt"),
+    ">="  -> InfixEntry(4, Assoc.None,  "gte"),
+    "+"   -> InfixEntry(5, Assoc.Left,  "add"),
+    "-"   -> InfixEntry(5, Assoc.Left,  "sub"),
+    "*"   -> InfixEntry(6, Assoc.Left,  "mul"),
+    "/"   -> InfixEntry(6, Assoc.Left,  "div"),
+    "%"   -> InfixEntry(6, Assoc.Left,  "mod"),
+    "mod" -> InfixEntry(6, Assoc.Left,  "mod"),
+    "div" -> InfixEntry(6, Assoc.Left,  "div"),
+    "^"   -> InfixEntry(7, Assoc.Right, "pow"),
+    "->"  -> InfixEntry(8, Assoc.Right, "arrow"),
   )
 
   private val prefixTable: Map[String, PrefixEntry] = Map(
-    "!" -> PrefixEntry(9),
-    "not" -> PrefixEntry(9),
-    "-" -> PrefixEntry(9),
+    "!"   -> PrefixEntry(9, "not"),
+    "not" -> PrefixEntry(9, "not"),
+    "-"   -> PrefixEntry(9, "neg"),
   )
 
   def lookupInfix(name: String): Option[InfixEntry] = infixTable.get(name)
@@ -59,19 +59,21 @@ object Pratt:
     operands: IndexedSeq[TermId],
     opSymbols: IndexedSeq[TermSymbol],
     resolve: TermSymbol => String,
-    alloc: Term => TermId
+    alloc: Term => TermId,
+    intern: String => TermSymbol
   ): TermId =
     if operands.length == 1 then return operands(0)
     assert(operands.length == opSymbols.length + 1,
       s"Expected ${opSymbols.length + 1} operands, got ${operands.length}")
-    desugarRec(operands, opSymbols, 0, operands.length - 1, resolve, alloc)
+    desugarRec(operands, opSymbols, 0, operands.length - 1, resolve, alloc, intern)
 
   private def desugarRec(
     operands: IndexedSeq[TermId],
     ops: IndexedSeq[TermSymbol],
     lo: Int, hi: Int,
     resolve: TermSymbol => String,
-    alloc: Term => TermId
+    alloc: Term => TermId,
+    intern: String => TermSymbol
   ): TermId =
     if lo == hi then return operands(lo)
 
@@ -82,7 +84,7 @@ object Pratt:
     var i = lo
     while i < hi do
       val opName = resolve(ops(i))
-      val entry = infixTable.getOrElse(opName, InfixEntry(5, Assoc.Left))
+      val entry = infixTable.getOrElse(opName, InfixEntry(5, Assoc.Left, opName))
       val shouldSplit = entry.assoc match
         case Assoc.Left => entry.priority <= splitPriority
         case Assoc.Right => entry.priority < splitPriority
@@ -93,6 +95,9 @@ object Pratt:
         splitAssoc = entry.assoc
       i += 1
 
-    val lhs = desugarRec(operands, ops, lo, splitIdx, resolve, alloc)
-    val rhs = desugarRec(operands, ops, splitIdx + 1, hi, resolve, alloc)
-    alloc(Term.Fn(ops(splitIdx), IArray(lhs, rhs), IArray.empty))
+    val lhs = desugarRec(operands, ops, lo, splitIdx, resolve, alloc, intern)
+    val rhs = desugarRec(operands, ops, splitIdx + 1, hi, resolve, alloc, intern)
+    val opName = resolve(ops(splitIdx))
+    val entry = infixTable.getOrElse(opName, InfixEntry(5, Assoc.Left, opName))
+    val functorSym = intern(entry.functor)
+    alloc(Term.Fn(functorSym, IArray(lhs, rhs), IArray.empty))

@@ -6,7 +6,7 @@ import anthill.term.{Term, TermId, Literal}
 class ParseTest extends munit.FunSuite:
 
   test("Pratt parser - left associative addition") {
-    // 1 + 2 + 3  should be  +( +(1, 2), 3 )
+    // 1 + 2 + 3  should be  add(add(1, 2), 3)
     val st = SymbolTable()
     val terms = SimpleTermStore()
     val plus = st.intern("+")
@@ -18,18 +18,19 @@ class ParseTest extends munit.FunSuite:
       IndexedSeq(v1, v2, v3),
       IndexedSeq(plus, plus),
       st.name,
-      terms.alloc
+      terms.alloc,
+      st.intern
     )
 
-    // Result should be +(+(1, 2), 3)
+    // Result should be add(add(1, 2), 3)
     terms.get(result) match
       case fn: Term.Fn =>
-        assertEquals(st.name(fn.functor), "+")
+        assertEquals(st.name(fn.functor), "add")
         assertEquals(fn.posArgs.length, 2)
-        // Left child should be +(1, 2)
+        // Left child should be add(1, 2)
         terms.get(fn.posArgs(0)) match
           case inner: Term.Fn =>
-            assertEquals(st.name(inner.functor), "+")
+            assertEquals(st.name(inner.functor), "add")
           case other => fail(s"expected Fn, got $other")
         // Right child should be 3
         terms.get(fn.posArgs(1)) match
@@ -39,7 +40,7 @@ class ParseTest extends munit.FunSuite:
   }
 
   test("Pratt parser - right associative power") {
-    // 2 ^ 3 ^ 4  should be  ^(2, ^(3, 4))
+    // 2 ^ 3 ^ 4  should be  pow(2, pow(3, 4))
     val st = SymbolTable()
     val terms = SimpleTermStore()
     val pow = st.intern("^")
@@ -51,26 +52,27 @@ class ParseTest extends munit.FunSuite:
       IndexedSeq(v2, v3, v4),
       IndexedSeq(pow, pow),
       st.name,
-      terms.alloc
+      terms.alloc,
+      st.intern
     )
 
     terms.get(result) match
       case fn: Term.Fn =>
-        assertEquals(st.name(fn.functor), "^")
+        assertEquals(st.name(fn.functor), "pow")
         // Left child should be 2
         terms.get(fn.posArgs(0)) match
           case Term.Const(Literal.IntLit(2)) => // ok
           case other => fail(s"expected Const(2), got $other")
-        // Right child should be ^(3, 4)
+        // Right child should be pow(3, 4)
         terms.get(fn.posArgs(1)) match
           case inner: Term.Fn =>
-            assertEquals(st.name(inner.functor), "^")
+            assertEquals(st.name(inner.functor), "pow")
           case other => fail(s"expected Fn, got $other")
       case other => fail(s"expected Fn, got $other")
   }
 
   test("Pratt parser - precedence: + vs *") {
-    // 1 + 2 * 3  should be  +(1, *(2, 3))
+    // 1 + 2 * 3  should be  add(1, mul(2, 3))
     val st = SymbolTable()
     val terms = SimpleTermStore()
     val plus = st.intern("+")
@@ -83,20 +85,21 @@ class ParseTest extends munit.FunSuite:
       IndexedSeq(v1, v2, v3),
       IndexedSeq(plus, times),
       st.name,
-      terms.alloc
+      terms.alloc,
+      st.intern
     )
 
     terms.get(result) match
       case fn: Term.Fn =>
-        assertEquals(st.name(fn.functor), "+")
+        assertEquals(st.name(fn.functor), "add")
         // Left should be 1
         terms.get(fn.posArgs(0)) match
           case Term.Const(Literal.IntLit(1)) => // ok
           case other => fail(s"expected Const(1), got $other")
-        // Right should be *(2, 3)
+        // Right should be mul(2, 3)
         terms.get(fn.posArgs(1)) match
           case inner: Term.Fn =>
-            assertEquals(st.name(inner.functor), "*")
+            assertEquals(st.name(inner.functor), "mul")
           case other => fail(s"expected Fn, got $other")
       case other => fail(s"expected Fn, got $other")
   }
@@ -105,7 +108,7 @@ class ParseTest extends munit.FunSuite:
     val st = SymbolTable()
     val terms = SimpleTermStore()
     val v = terms.alloc(Term.Const(Literal.IntLit(42)))
-    val result = Pratt.desugar(IndexedSeq(v), IndexedSeq.empty, st.name, terms.alloc)
+    val result = Pratt.desugar(IndexedSeq(v), IndexedSeq.empty, st.name, terms.alloc, st.intern)
     assertEquals(TermId.raw(result), TermId.raw(v))
   }
 
