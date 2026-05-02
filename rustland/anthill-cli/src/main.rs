@@ -58,6 +58,36 @@ enum CodegenTarget {
     /// Scaffold a complete C++ controller project (Makefile + copies
     /// of hand-authored sources alongside generated headers)
     CppProject(CppProjectArgs),
+    /// Bundle anthill sources into a Rust crate (`rust+anthill` profile).
+    /// Emits a self-contained crate that embeds the spec and dispatches
+    /// the named entry op via the interpreter at runtime.
+    Bundle(BundleArgs),
+}
+
+#[derive(Parser)]
+struct BundleArgs {
+    /// .anthill source files / directories to bundle. Every `.anthill`
+    /// file under the given paths is vendored into the output crate.
+    #[arg(required = true)]
+    paths: Vec<PathBuf>,
+
+    /// Output directory for the generated crate. Created if absent;
+    /// existing files in it are overwritten without warning.
+    #[arg(short, long)]
+    output_dir: PathBuf,
+
+    /// Crate name (and binary name) for the generated project.
+    #[arg(short = 'n', long = "name")]
+    project_name: String,
+
+    /// Operation qualified name to dispatch as `main(args: List[String]) -> Int`.
+    /// Example: `my.app.main`.
+    #[arg(short, long)]
+    entry: String,
+
+    /// One-line description for the generated `Cargo.toml`. Optional.
+    #[arg(long, default_value = "")]
+    description: String,
 }
 
 #[derive(Parser)]
@@ -525,6 +555,102 @@ fn load_kb_with_stdlib(paths: &[PathBuf], verbose: bool, include_stdlib: bool)
 }
 
 // ── Codegen driver ──────────────────────────────────────────────────
+
+fn run_codegen_bundle(args: &BundleArgs) -> Result<(), i32> {
+    let files = match collect_anthill_files(&args.paths) {
+        Ok(f) => f,
+        Err(errs) => {
+            for e in &errs { eprintln!("error: {e}"); }
+            return Err(1);
+        }
+    };
+    if files.is_empty() {
+        eprintln!("error: no .anthill files found");
+        return Err(1);
+    }
+
+    // The generated crate vendors copies of each user source. For paths we
+    // store inside the bundle, prefer the file name relative to the FIRST
+    // ancestor that's a directory among `paths` so the layout stays sane;
+    // fall back to the file's own basename when no parent dir is given.
+    let mut user_sources: Vec<(String, String)> = Vec::with_capacity(files.len());
+    for file in &files {
+        let content = match fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: read {}: {e}", file.display());
+                return Err(1);
+            }
+        };
+        let rel = relative_under_paths(file, &args.paths)
+            .unwrap_or_else(|| file.file_name().unwrap_or_default().to_string_lossy().into_owned());
+        user_sources.push((rel, content));
+    }
+
+    // Locate the workspace's stdlib and anthill-core crate. The CLI binary
+    // lives at <ws>/rustland/target/debug/anthill (or release), so the
+    // workspace root is two parents above the binary's parent.
+    let (stdlib_dir, anthill_core_path) = match locate_workspace_paths() {
+        Some(t) => t,
+        None => {
+            eprintln!("error: cannot locate stdlib or anthill-core relative to this binary");
+            return Err(1);
+        }
+    };
+
+    let opts = anthill_rust_gen::BundleOptions {
+        project_name: args.project_name.clone(),
+        description: args.description.clone(),
+        entry_qname: args.entry.clone(),
+        user_sources,
+        stdlib_dir,
+        anthill_core_path,
+    };
+
+    if let Err(e) = anthill_rust_gen::generate_bundle(&opts, &args.output_dir) {
+        eprintln!("error: {e}");
+        return Err(1);
+    }
+    println!("bundle written to {}", args.output_dir.display());
+    Ok(())
+}
+
+/// Compute the path to display inside the bundle for `file`. If `file`
+/// lives under one of the user-supplied input directories in `paths`,
+/// the returned name is relative to that directory; else None.
+fn relative_under_paths(file: &Path, paths: &[PathBuf]) -> Option<String> {
+    for p in paths {
+        if p.is_dir() {
+            if let Ok(stripped) = file.strip_prefix(p) {
+                return Some(stripped.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
+/// Locate the stdlib/anthill and anthill-core paths in the running workspace.
+/// First tries env var ANTHILL_WORKSPACE_ROOT; else walks parents of the
+/// running binary looking for a `stdlib/anthill` directory.
+fn locate_workspace_paths() -> Option<(PathBuf, PathBuf)> {
+    if let Ok(root) = std::env::var("ANTHILL_WORKSPACE_ROOT") {
+        let root = PathBuf::from(root);
+        let stdlib = root.join("stdlib/anthill");
+        let core = root.join("rustland/anthill-core");
+        if stdlib.is_dir() && core.is_dir() { return Some((stdlib, core)); }
+    }
+    let exe = std::env::current_exe().ok()?;
+    let mut dir = exe.parent()?.to_path_buf();
+    for _ in 0..6 {
+        let stdlib = dir.join("stdlib/anthill");
+        let core = dir.join("rustland/anthill-core");
+        if stdlib.is_dir() && core.is_dir() {
+            return Some((stdlib, core));
+        }
+        if !dir.pop() { break; }
+    }
+    None
+}
 
 fn run_codegen_rust(args: &RustCodegenArgs) -> Result<(), i32> {
     let files = match collect_anthill_files(&args.paths) {
@@ -1255,6 +1381,7 @@ fn main() -> ExitCode {
             CodegenTarget::Rust(ref args) => run_codegen_rust(args),
             CodegenTarget::Cpp(ref args) => run_codegen_cpp(args),
             CodegenTarget::CppProject(ref args) => run_codegen_cpp_project(args),
+            CodegenTarget::Bundle(ref args) => run_codegen_bundle(args),
         },
         Command::Load(ref args) => run_load(args),
         Command::Query(ref args) => run_query(args),

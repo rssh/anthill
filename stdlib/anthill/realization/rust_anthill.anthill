@@ -1,0 +1,50 @@
+-- rust+anthill realization profile: hybrid bundle.
+--
+-- Sibling to rust_std (full codegen). Output is a Rust crate that:
+--   1. include_str!'s every file in `sources`
+--   2. Builds the KB at startup, registers stdlib builtins + user effect handlers
+--   3. Calls interp.call(`entry`, argv) and returns its Int as exit code
+--
+-- Used for distribution: one static binary hosts the interpreter + the
+-- embedded anthill program, no .anthill files needed at the user's
+-- machine. Composable per-sort with rust_std: hot sorts can be flipped
+-- to native codegen later without changing the binary's user contract.
+namespace anthill.realization.rust_anthill
+  import anthill.realization.{LanguageMapping, EffectMapping, ReceiverRule,
+                              TypeMapping}
+  import anthill.prelude.{List, Option, String}
+  import anthill.prelude.Option.{some, none}
+
+  -- Per-bundle parameters. The codegen layer reads one of these to know
+  -- what to bake in. Multiple AnthillBundle facts can coexist (e.g. one
+  -- per top-level executable in a multi-binary project).
+  entity AnthillBundle(
+    project      : String,             -- crate name (e.g. "anthill-todo")
+    description  : String,             -- one-line description for Cargo.toml
+    entry        : String,             -- operation qualified name; e.g. "anthill.todo.main"
+    sources      : List[T = String],   -- relative paths under project root, .anthill files to embed
+    binary_name  : String              -- output binary name
+  )
+
+  -- The rust+anthill profile is "rust" with profile flag "anthill".
+  -- Effects route through the standard Rust runtime (Console, Modify);
+  -- type_map matches rust_std for the interpreter's host-side values.
+  fact LanguageMapping(
+    language: "rust",
+    profile: some("anthill"),
+    effect_map: [
+      EffectMapping(effect: "Modify", receiver: MutRef),
+      EffectMapping(effect: "Error",  receiver: ResultWrap)
+    ],
+    receiver_map: [],
+    type_map: [
+      TypeMapping(anthill_type: "Int",       host_type: "i64"),
+      TypeMapping(anthill_type: "Float",     host_type: "f64"),
+      TypeMapping(anthill_type: "Bool",      host_type: "bool"),
+      TypeMapping(anthill_type: "String",    host_type: "String"),
+      TypeMapping(anthill_type: "List",      host_type: "Vec"),
+      TypeMapping(anthill_type: "Option",    host_type: "Option")
+    ],
+    trait_return: ImplTrait
+  )
+end

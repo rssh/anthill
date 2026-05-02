@@ -76,6 +76,7 @@ version = "0.1.0"
 dependencies = [
  "anthill-core",
  "anthill-cpp-gen",
+ "anthill-rust-gen",
  "anthill-smt-gen",
  "clap",
  "serde_json",
@@ -100,6 +101,13 @@ dependencies = [
 
 [[package]]
 name = "anthill-cpp-gen"
+version = "0.1.0"
+dependencies = [
+ "anthill-core",
+]
+
+[[package]]
+name = "anthill-rust-gen"
 version = "0.1.0"
 dependencies = [
  "anthill-core",
