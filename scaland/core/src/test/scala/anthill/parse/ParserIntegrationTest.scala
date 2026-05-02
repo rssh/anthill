@@ -265,3 +265,120 @@ class ParserIntegrationTest extends munit.FunSuite:
       case other =>
         fail(s"Expected resolved symbol, got $other")
   }
+
+  // ── Proposal 032: symmetric arrows + multi-head rules (WI-142) ─
+
+  test("proposal 032: `body -: heads` parses to same IR as `heads :- body`") {
+    val forwardSrc = "rule fwd: parent(?x, ?y) :- mother(?x, ?y)"
+    val reverseSrc = "rule rev: mother(?x, ?y) -: parent(?x, ?y)"
+
+    val fwd = Parser.parse(forwardSrc, "<fwd>").toOption.get
+    val rev = Parser.parse(reverseSrc, "<rev>").toOption.get
+
+    val fwdRule = fwd.items.collect { case Item.RuleItem(r) => r }.head
+    val revRule = rev.items.collect { case Item.RuleItem(r) => r }.head
+
+    // Both should have one positive head and a one-term body.
+    assertEquals(fwdRule.heads.length, 1)
+    assertEquals(revRule.heads.length, 1)
+    assert(fwdRule.body.exists(_.length == 1))
+    assert(revRule.body.exists(_.length == 1))
+
+    // Heads are the same shape (parent functor) on both sides.
+    val fwdHeadFunctor = fwdRule.heads.head match
+      case RuleHead.TermHead(t) => fwd.terms.get(t) match
+        case fn: Term.Fn => fwd.symbols.name(fn.functor)
+        case other => fail(s"Expected Fn head, got $other")
+      case _ => fail("Expected positive head")
+    val revHeadFunctor = revRule.heads.head match
+      case RuleHead.TermHead(t) => rev.terms.get(t) match
+        case fn: Term.Fn => rev.symbols.name(fn.functor)
+        case other => fail(s"Expected Fn head, got $other")
+      case _ => fail("Expected positive head")
+    assertEquals(fwdHeadFunctor, "parent")
+    assertEquals(revHeadFunctor, "parent")
+
+    // Body functor is the same on both sides too (mother).
+    val fwdBodyFunctor = fwd.terms.get(fwdRule.body.get.head) match
+      case fn: Term.Fn => fwd.symbols.name(fn.functor)
+      case other => fail(s"Expected Fn body, got $other")
+    val revBodyFunctor = rev.terms.get(revRule.body.get.head) match
+      case fn: Term.Fn => rev.symbols.name(fn.functor)
+      case other => fail(s"Expected Fn body, got $other")
+    assertEquals(fwdBodyFunctor, "mother")
+    assertEquals(revBodyFunctor, "mother")
+  }
+
+  test("proposal 032: labeled multi-head rule parses with N positive heads") {
+    val src = "rule completion: completed(?w), timestamp(?w, ?t) :- WorkItem(id: ?w)"
+    val pf = Parser.parse(src, "<multi>").toOption.get
+    val rule = pf.items.collect { case Item.RuleItem(r) => r }.head
+    assertEquals(rule.heads.length, 2, "Expected 2 positive heads")
+    val headFunctors = rule.heads.collect {
+      case RuleHead.TermHead(t) => pf.terms.get(t) match
+        case fn: Term.Fn => pf.symbols.name(fn.functor)
+        case _ => "<not-fn>"
+    }
+    assertEquals(headFunctors.toSet, Set("completed", "timestamp"))
+    assert(rule.label.isDefined)
+    assertEquals(pf.symbols.name(rule.label.get.last), "completion")
+  }
+
+  test("proposal 032: labeled multi-head loads as N horn rules sharing body") {
+    val src =
+      """sort Demo
+        |  rule completion: completed(?w), timestamp(?w, ?t) :- WorkItem(id: ?w)
+        |end""".stripMargin
+    val pf = Parser.parse(src, "<multi-load>").toOption.get
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val errs = Loader.loadAll(kb, IndexedSeq(pf))
+    assert(errs.isEmpty, s"Load errors: $errs")
+
+    // KB should hold one horn rule per head: completed/1 and timestamp/2.
+    val completedSym = kb.intern("completed")
+    val timestampSym = kb.intern("timestamp")
+    val completedRules = kb.byFunctor(completedSym)
+    val timestampRules = kb.byFunctor(timestampSym)
+    assertEquals(completedRules.length, 1, "expected one rule indexed by completed")
+    assertEquals(timestampRules.length, 1, "expected one rule indexed by timestamp")
+  }
+
+  test("proposal 032: unlabeled multi-head rule is rejected at load time") {
+    val src =
+      """sort Demo
+        |  rule completed(?w), timestamp(?w, ?t) :- WorkItem(id: ?w)
+        |end""".stripMargin
+    val pf = Parser.parse(src, "<unlabeled-multi>").toOption.get
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val errs = Loader.loadAll(kb, IndexedSeq(pf))
+    assert(errs.nonEmpty, "Expected a load error for unlabeled multi-head rule")
+    val msg = errs.collectFirst { case anthill.load.LoadError.Other(m) => m }
+    assert(msg.exists(_.contains("multi-head")), s"Expected multi-head error, got: $errs")
+  }
+
+  test("proposal 032: bare-head fact form (no arrow) still works") {
+    val src = "rule ?a + zero = ?a"
+    val pf = Parser.parse(src, "<bare>").toOption.get
+    val rule = pf.items.collect { case Item.RuleItem(r) => r }.head
+    assertEquals(rule.heads.length, 1)
+    assert(rule.body.isEmpty, "Bare-head fact has no body")
+  }
+
+  test("proposal 032: stdlib geometry.anthill parses (post-032 multi-line `-:` form)") {
+    val src = readFile(s"$stdlibDir/anthill/geometry.anthill")
+    val result = Parser.parse(src, "geometry.anthill")
+    assert(result.isRight,
+      s"geometry.anthill parse failed: ${result.left.getOrElse(IndexedSeq.empty).map(_.message).mkString(", ")}")
+    val pf = result.toOption.get
+    val ns = pf.items.collectFirst { case Item.NamespaceItem(n) => n }.get
+    val rules = ns.items.collect { case Item.RuleItem(r) => r }
+    // 12 rules total: 4 vec_* operations + 8 algebraic-law rules.
+    assertEquals(rules.length, 12, s"expected 12 rules, got ${rules.length}")
+    // Algebraic-law rules use the `body -: heads` form and have multi-term bodies.
+    val lawRules = rules.filter(r => r.label.exists(l => pf.symbols.name(l.last).startsWith("vec_")))
+      .filter(_.body.exists(_.length > 1))
+    assert(lawRules.nonEmpty, "expected at least one law rule with `body -: heads` shape")
+  }
+

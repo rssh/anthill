@@ -264,30 +264,12 @@ object Loader:
 
         case Item.RuleItem(rule) =>
           val sortSort = findSortTerm(kb, "anthill.reflect.Rule")
-          val vm = HashMap.empty[Int, VarId] // shared across head+body
-          rule.head match
-            case RuleHead.TermHead(headId) =>
-              val kbHead = reallocTerm(kb, fileTerms, fileSym, headId, scopeTerm, errors, vm)
-              val kbBody = rule.body.map(_.map(b =>
-                reallocTerm(kb, fileTerms, fileSym, b, scopeTerm, errors, vm))).getOrElse(IndexedSeq.empty)
-              kb.assertRule(kbHead, kbBody, sortSort, scopeTerm)
-            case RuleHead.Bottom =>
-              val kbBody = rule.body.map(_.map(b =>
-                reallocTerm(kb, fileTerms, fileSym, b, scopeTerm, errors, vm))).getOrElse(IndexedSeq.empty)
-              val botTerm = kb.alloc(Term.Bottom)
-              kb.assertRule(botTerm, kbBody, sortSort, scopeTerm)
+          loadRuleHeads(kb, rule, fileTerms, fileSym, scopeTerm, sortSort, errors)
 
         case Item.RuleBlockItem(block) =>
           val sortSort = findSortTerm(kb, "anthill.reflect.Rule")
           for rule <- block.entries do
-            val vm = HashMap.empty[Int, VarId]
-            rule.head match
-              case RuleHead.TermHead(headId) =>
-                val kbHead = reallocTerm(kb, fileTerms, fileSym, headId, scopeTerm, errors, vm)
-                val kbBody = rule.body.map(_.map(b =>
-                  reallocTerm(kb, fileTerms, fileSym, b, scopeTerm, errors, vm))).getOrElse(IndexedSeq.empty)
-                kb.assertRule(kbHead, kbBody, sortSort, scopeTerm)
-              case RuleHead.Bottom => // TODO
+            loadRuleHeads(kb, rule, fileTerms, fileSym, scopeTerm, sortSort, errors)
 
         case Item.EntityItem(entity) =>
           val shortName = joinSegments(fileSym, entity.name.segments)
@@ -302,6 +284,57 @@ object Loader:
           }
 
         case _ => // Other items
+
+  /** Load a rule under the proposal-032 grammar. `rule.heads` may be a single
+    * positive head, multiple positive heads (conjunctive sugar), or a single
+    * `Bottom` (denial). Mixing `Bottom` with positive heads is rejected.
+    *
+    * Translation:
+    *   - single positive head            → one horn rule, head IS the KB head
+    *   - labeled multi-head (positive)   → N horn rules, one per head, sharing body
+    *   - unlabeled multi-head (positive) → error: needs a label for citation handle
+    *   - single `Bottom` (denial)        → one rule with `Term.Bottom` as head
+    *
+    * (Scaland's KB has no `conclusion` field, so the rust transitional
+    * translation that synthesizes a 0-arg label-functor as the KB head with
+    * user heads moved to conclusion is collapsed into the literal conjunctive
+    * expansion above. Citation infrastructure is not yet ported.)
+    */
+  private def loadRuleHeads(
+    kb: KnowledgeBase,
+    rule: Rule,
+    fileTerms: SimpleTermStore,
+    fileSym: SymbolTable,
+    scopeTerm: TermId,
+    sortSort: TermId,
+    errors: ArrayBuffer[LoadError]
+  ): Unit =
+    val vm = HashMap.empty[Int, VarId] // shared across heads + body
+    val hasBottom = rule.heads.exists { case RuleHead.Bottom => true; case _ => false }
+    val positiveHeads = rule.heads.collect { case RuleHead.TermHead(t) => t }
+
+    if hasBottom && rule.heads.length > 1 then
+      errors += LoadError.Other(
+        "denial heads (`⊥`) cannot be combined with positive heads in a multi-head rule")
+      return
+
+    if positiveHeads.length > 1 && rule.label.isEmpty then
+      errors += LoadError.Other(
+        "multi-head rule requires a label so the rule has a unique citation handle " +
+        "(e.g. `rule my_law: H1, H2 :- B`)")
+      return
+
+    val kbBody = rule.body.map(_.map(b =>
+      reallocTerm(kb, fileTerms, fileSym, b, scopeTerm, errors, vm))).getOrElse(IndexedSeq.empty)
+
+    if hasBottom then
+      val botTerm = kb.alloc(Term.Bottom)
+      kb.assertRule(botTerm, kbBody, sortSort, scopeTerm)
+    else
+      // One horn rule per head, sharing body (and shared var scope via vm).
+      for headId <- positiveHeads do
+        val kbHead = reallocTerm(kb, fileTerms, fileSym, headId, scopeTerm, errors, vm)
+        kb.assertRule(kbHead, kbBody, sortSort, scopeTerm)
 
   // ── Term reallocation ─────────────────────────────────────────
 

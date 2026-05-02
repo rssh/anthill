@@ -127,7 +127,11 @@ case class FieldDecl(name: TermSymbol, ty: TypeExpr)
 
 case class Rule(
   label: Option[Name],
-  head: RuleHead,
+  /** One or more positive heads, or a single `RuleHead.Bottom` for denial.
+    * Mixing `Bottom` with positive heads is rejected at load time.
+    * Multi-head desugars conjunctively (proposal 032).
+    */
+  heads: IndexedSeq[RuleHead],
   body: Option[IndexedSeq[TermId]],
   meta: Option[MetaBlock],
   span: Span

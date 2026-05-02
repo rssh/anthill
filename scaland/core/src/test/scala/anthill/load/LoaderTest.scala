@@ -42,7 +42,7 @@ class LoaderTest extends munit.FunSuite:
       Item.FactItem(Fact(fact2Term, None, emptySpan)),
       Item.RuleItem(Rule(
         label = None,
-        head = RuleHead.TermHead(ruleHead),
+        heads = IndexedSeq(RuleHead.TermHead(ruleHead)),
         body = Some(IndexedSeq(ruleBody1, ruleBody2)),
         meta = None,
         span = emptySpan

@@ -564,23 +564,51 @@ private class AnthillParserImpl(
     }
 
   private def singleRule[$: P]: P[Item] =
-    P((simpleName ~ ":").? ~ ruleHead ~ (":-" ~/ term.rep(1, sep = ",")).? ~ metaBlock.?).map {
-      case (label, head, bodyTerms, meta) =>
+    P((simpleName ~ ":").? ~ ruleArrowChoice ~ metaBlock.?).map {
+      case (label, (heads, body), meta) =>
         resetVarScope()
-        Item.RuleItem(Rule(label, head, bodyTerms.map(_.toIndexedSeq), meta, mkSpan(0, 0)))
+        Item.RuleItem(Rule(label, heads, body, meta, mkSpan(0, 0)))
     }
 
   private def ruleEntry[$: P]: P[Rule] =
-    P((simpleName ~ ":").? ~ ruleHead ~ (":-" ~/ term.rep(1, sep = ",")).? ~ metaBlock.?).map {
-      case (label, head, bodyTerms, meta) =>
+    P((simpleName ~ ":").? ~ ruleArrowChoice ~ metaBlock.?).map {
+      case (label, (heads, body), meta) =>
         resetVarScope()
-        Rule(label, head, bodyTerms.map(_.toIndexedSeq), meta, mkSpan(0, 0))
+        Rule(label, heads, body, meta, mkSpan(0, 0))
     }
 
-  private def ruleHead[$: P]: P[RuleHead] =
+  /** Proposal 032: choice over (heads :- body | body -: heads | heads).
+    * `:-` and `-:` are mirror surface forms of the same implication arrow;
+    * exactly one (or neither, for a bare-head fact) appears per rule. */
+  private def ruleArrowChoice[$: P]: P[(IndexedSeq[RuleHead], Option[IndexedSeq[TermId]])] =
     P(
-      "\u22A5".!.map(_ => RuleHead.Bottom) |
-      term.map(RuleHead.TermHead(_))
+      // heads (":-" body)?  \u2014 covers `heads :- body` and the bare-head fact form
+      (ruleHeads ~ (":-" ~/ term.rep(1, sep = ",")).?).flatMap { case (hs, body) =>
+        body match
+          case Some(_) =>
+            // `heads :- body` matched \u2014 done.
+            Pass.map(_ => (hs, body.map(_.toIndexedSeq)))
+          case None =>
+            // No `:-` was found; check for the reversed `-:` form, otherwise
+            // accept as a bare-head fact. The reversed form is rare, so we
+            // probe for the `-:` token only after the heads parse cleanly.
+            ("-:" ~/ ruleHeads).?.map {
+              case Some(reversedHeads) =>
+                // `body -: heads` \u2014 what we just parsed as `heads` was actually
+                // the body, and the trailing ruleHeads are the real heads.
+                val bodyTerms = hs.collect { case RuleHead.TermHead(t) => t }
+                (reversedHeads, Some(bodyTerms))
+              case None =>
+                // Bare-head fact (no body).
+                (hs, None)
+            }
+      }
+    )
+
+  private def ruleHeads[$: P]: P[IndexedSeq[RuleHead]] =
+    P(
+      "\u22A5".!.map(_ => IndexedSeq[RuleHead](RuleHead.Bottom)) |
+      term.rep(1, sep = ",").map(_.map(RuleHead.TermHead(_)).toIndexedSeq)
     )
 
   private def operationDecl[$: P]: P[Item] =
