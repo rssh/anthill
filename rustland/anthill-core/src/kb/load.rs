@@ -3830,10 +3830,11 @@ impl<'a> Loader<'a> {
         let parameters_sym = self.kb.intern("parameters");
         let requires_sym = self.kb.intern("requires");
 
-        self.kb.register_entity_fields(sort_info_sym, vec![
+        let field_order = vec![
             name_sym, kind_field_sym, definition_sym, constructors_sym,
             operations_sym, parameters_sym, requires_sym,
-        ]);
+        ];
+        self.kb.register_entity_fields(sort_info_sym, field_order.clone());
 
         let name_ref = self.kb.alloc(Term::Ref(sort_functor));
         let kind_sym = self.kb.intern(kind_str);
@@ -3852,6 +3853,11 @@ impl<'a> Loader<'a> {
         let params_list = build_list(self.kb, param_refs);
         let requires_list = build_list(self.kb, req_terms);
 
+        // Sort by declared field-list order so rule-body partial-named-arg
+        // queries (which use the same order via convert_term) unify against
+        // these facts. Sorting by Symbol::index() looks canonical but isn't —
+        // the field names get interned in arbitrary order, so the index
+        // sort silently diverges from the convert_term-side sort.
         let mut si_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::from_slice(&[
             (constructors_sym, ctors_list),
             (definition_sym, definition_term),
@@ -3861,7 +3867,8 @@ impl<'a> Loader<'a> {
             (parameters_sym, params_list),
             (requires_sym, requires_list),
         ]);
-        si_args.sort_by_key(|(s, _)| s.index());
+        let order: HashMap<Symbol, usize> = field_order.iter().enumerate().map(|(i, &s)| (s, i)).collect();
+        si_args.sort_by_key(|(s, _)| order.get(s).copied().unwrap_or(usize::MAX));
         let fact_term = self.kb.alloc(Term::Fn {
             functor: sort_info_sym,
             pos_args: SmallVec::new(),
