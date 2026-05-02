@@ -1,9 +1,11 @@
 package anthill.parse
 
 import anthill.kb.{KnowledgeBase, SortKind}
-import anthill.load.{Loader, Prelude}
+import anthill.load.{EmbeddedStdlib, FileSourceResolver, Loader, LoadError, Prelude}
 import anthill.term.{Term, TermId, Literal}
 import anthill.intern.{SymbolKind, SymbolDef, ResolveResult}
+
+import java.nio.file.Paths
 
 class ParserIntegrationTest extends munit.FunSuite:
 
@@ -568,5 +570,205 @@ class ParserIntegrationTest extends munit.FunSuite:
     val proofDeclSym = kb.intern("proof_decl")
     val byFunctor = kb.byFunctor(proofDeclSym)
     assertEquals(byFunctor.length, 1, "expected one proof_decl fact in KB")
+  }
+
+  // ── WI-153: stdlib alignment — load the four stdlib files end-to-end ─
+
+  /** Read and parse a stdlib file via the same SourceResolver code path
+    * used by [[anthill.load.EmbeddedStdlib]] at startup.
+    */
+  private def parseStdlibFile(path: String): ParsedFile =
+    val resolver = FileSourceResolver(IndexedSeq(Paths.get(stdlibDir)))
+    val src = resolver.resolve(path) match
+      case Right(s) => s
+      case Left(msg) => fail(s"resolver failed for $path: $msg")
+    val res = Parser.parse(src, s"$path.anthill")
+    assert(res.isRight, s"$path parse failed: ${res.left.toOption.map(_.map(_.message).mkString("; "))}")
+    res.toOption.get
+
+  /** Drop load errors for symbols scaland's Prelude hasn't wired up yet —
+    * the prelude typeclasses (Eq/Ordered/Numeric), the parametric
+    * collections (List/Option), and reflect.Term. Delete this filter once
+    * those modules are loaded as part of EmbeddedStdlib.
+    */
+  private val ToleratedUnresolvedNames = Set(
+    "Eq", "Ordered", "Numeric", "List", "Option", "Term")
+  private def isToleratedLoadError(e: LoadError): Boolean = e match
+    case LoadError.UnresolvedName(n, _, _) => ToleratedUnresolvedNames(n)
+    case LoadError.UnresolvedImport(p, _)  => p.startsWith("anthill.prelude.Ordered")
+    case _ => false
+
+  /** Single-pass count of items whose `partial` is defined for them.
+    * Replaces the more verbose `items.collect { case … => 1 }.sum`.
+    */
+  private def countItems(items: Iterable[Item])(partial: PartialFunction[Item, Any]): Int =
+    items.count(partial.isDefinedAt)
+
+  /** Sum a per-item integer measurement, with a default of 0 for items
+    * the partial function does not match. Used for `OperationBlockItem`
+    * vs `OperationItem` (one contributes `entries.length`, the other 1).
+    */
+  private def sumItems(items: Iterable[Item])(measure: PartialFunction[Item, Int]): Int =
+    items.foldLeft(0)((n, it) => n + measure.applyOrElse(it, (_: Item) => 0))
+
+  test("WI-153: stdlib algebra.anthill parses + loads with expected counts") {
+    val pf = parseStdlibFile("anthill.prelude.algebra")
+    val ns = pf.items.collectFirst { case Item.NamespaceItem(n) => n }
+      .getOrElse(fail("expected namespace"))
+    assertEquals(ns.name.segments.map(pf.symbols.name).mkString("."), "anthill.prelude.algebra")
+
+    val sorts = ns.items.collect { case Item.SortWithBodyItem(s) => s }
+    assertEquals(sorts.map(s => pf.symbols.name(s.name.last)).toSet, Set("Ring", "VectorSpace"))
+
+    // Ring: 1 abstract sort (T), 5 operations (in one block), 7 algebraic-law rules.
+    val ring = sorts.find(s => pf.symbols.name(s.name.last) == "Ring").get
+    assertEquals(countItems(ring.items) { case Item.AbstractSortItem(_) => }, 1)
+    val ringOps = sumItems(ring.items) {
+      case Item.OperationBlockItem(b) => b.entries.length
+      case Item.OperationItem(_)      => 1
+    }
+    assertEquals(ringOps, 5, "Ring should expose 5 operations (add/sub/mul/zero/one)")
+    val ringRules = sumItems(ring.items) {
+      case Item.RuleBlockItem(b) => b.entries.length
+      case Item.RuleItem(_)      => 1
+    }
+    assertEquals(ringRules, 7, "Ring should declare 7 algebraic-law rules")
+
+    // VectorSpace: 2 abstract sorts (V, F), 1 requires (Ring[F]), 4 ops, 7 laws.
+    val vs = sorts.find(s => pf.symbols.name(s.name.last) == "VectorSpace").get
+    assertEquals(countItems(vs.items) { case Item.AbstractSortItem(_) => }, 2)
+    assertEquals(countItems(vs.items) { case Item.RequiresDeclItem(_) => }, 1)
+    val vsOps = sumItems(vs.items) { case Item.OperationBlockItem(b) => b.entries.length }
+    assertEquals(vsOps, 4, "VectorSpace should expose 4 operations (vec_add/sub/scale/zero)")
+    val vsRules = sumItems(vs.items) { case Item.RuleBlockItem(b) => b.entries.length }
+    assertEquals(vsRules, 7, "VectorSpace should declare 7 algebraic-law rules")
+
+    // Loads cleanly into a KB primed with Prelude (algebra is self-contained
+    // except for `?` placeholders for abstract T/V/F).
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val errs = Loader.loadAll(kb, IndexedSeq(pf))
+    assert(errs.isEmpty, s"load errors: $errs")
+    assert(kb.hasQualifiedName("anthill.prelude.algebra.Ring"))
+    assert(kb.hasQualifiedName("anthill.prelude.algebra.VectorSpace"))
+    assert(kb.hasQualifiedName("anthill.prelude.algebra.Ring.add"))
+    assert(kb.hasQualifiedName("anthill.prelude.algebra.VectorSpace.vec_add"))
+  }
+
+  test("WI-153: stdlib float.anthill parses + loads (depends on algebra)") {
+    val algebraPf = parseStdlibFile("anthill.prelude.algebra")
+    val floatPf = parseStdlibFile("anthill.prelude.float")
+
+    val ns = floatPf.items.collectFirst { case Item.NamespaceItem(n) => n }
+      .getOrElse(fail("expected namespace"))
+    assertEquals(ns.name.segments.map(floatPf.symbols.name).mkString("."), "anthill.prelude.Float")
+
+    // 4 typeclass facts (Eq / Ordered / Numeric / Ring), 28 operations,
+    // 4 rules, 6 constraints — a namespace with no inner sorts.
+    assertEquals(countItems(ns.items) { case Item.FactItem(_) => }, 4,
+      "Float should declare 4 typeclass-membership facts")
+    val opCount = sumItems(ns.items) {
+      case Item.OperationBlockItem(b) => b.entries.length
+      case Item.OperationItem(_)      => 1
+    }
+    assertEquals(opCount, 28, "Float should expose 28 operations")
+    assertEquals(countItems(ns.items) { case Item.RuleItem(_) => }, 4,
+      "Float should declare 4 algebraic rules")
+    assertEquals(countItems(ns.items) { case Item.ConstraintItem(_) => }, 6,
+      "Float should declare 6 constraints")
+
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val errs = Loader.loadAll(kb, IndexedSeq(algebraPf, floatPf))
+    val unrelated = errs.filterNot(isToleratedLoadError)
+    assert(unrelated.isEmpty, s"unexpected load errors: $unrelated")
+    assert(kb.hasQualifiedName("anthill.prelude.Float"))
+    assert(kb.hasQualifiedName("anthill.prelude.Float.sqrt"))
+    assert(kb.hasQualifiedName("anthill.prelude.Float.atan2"))
+    assert(kb.hasQualifiedName("anthill.prelude.Float.pi"))
+  }
+
+  test("WI-153: stdlib geometry.anthill loads end-to-end (depends on algebra + Float)") {
+    val algebraPf = parseStdlibFile("anthill.prelude.algebra")
+    val floatPf = parseStdlibFile("anthill.prelude.float")
+    val geomPf = parseStdlibFile("anthill.geometry")
+
+    val ns = geomPf.items.collectFirst { case Item.NamespaceItem(n) => n }
+      .getOrElse(fail("expected namespace"))
+    assertEquals(ns.name.segments.map(geomPf.symbols.name).mkString("."), "anthill.geometry")
+
+    // 2 entities (Vec3, EulerAngles), 1 fact (VectorSpace[Vec3, Float]),
+    // 12 rules: 4 vec_* implementations + 8 algebraic laws.
+    assertEquals(countItems(ns.items) { case Item.EntityItem(_) => }, 2,
+      "geometry should expose 2 entities (Vec3, EulerAngles)")
+    assertEquals(countItems(ns.items) { case Item.FactItem(_) => }, 1,
+      "geometry should declare VectorSpace[Vec3, Float]")
+    assertEquals(countItems(ns.items) { case Item.RuleItem(_) => }, 12,
+      "geometry should declare 12 rules (4 impls + 8 laws)")
+
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val errs = Loader.loadAll(kb, IndexedSeq(algebraPf, floatPf, geomPf))
+    val unrelated = errs.filterNot(isToleratedLoadError)
+    assert(unrelated.isEmpty, s"unexpected load errors: $unrelated")
+    assert(kb.hasQualifiedName("anthill.geometry.Vec3"))
+    assert(kb.hasQualifiedName("anthill.geometry.EulerAngles"))
+  }
+
+  test("WI-153: stdlib witness.anthill loads end-to-end with full sort/entity counts") {
+    val pf = parseStdlibFile("anthill.realization.witness")
+    val ns = pf.items.collectFirst { case Item.NamespaceItem(n) => n }
+      .getOrElse(fail("expected namespace"))
+    assertEquals(ns.name.segments.map(pf.symbols.name).mkString("."), "anthill.realization.witness")
+
+    // 2 inner sorts (ProofWitness, SmtVerdict), 2 top-level entities
+    // (SortBinding, MetaTacticContract).
+    val sorts = ns.items.collect { case Item.SortWithBodyItem(s) => s }
+    assertEquals(sorts.map(s => pf.symbols.name(s.name.last)).toSet,
+      Set("ProofWitness", "SmtVerdict"))
+    val topEntities = ns.items.collect { case Item.EntityItem(e) => e }
+    assertEquals(topEntities.map(e => pf.symbols.name(e.name.last)).toSet,
+      Set("SortBinding", "MetaTacticContract"))
+
+    // ProofWitness: 6 constructors; SmtVerdict: 3.
+    val proofWitness = sorts.find(s => pf.symbols.name(s.name.last) == "ProofWitness").get
+    assertEquals(countItems(proofWitness.items) { case Item.EntityItem(_) => }, 6)
+    val smtVerdict = sorts.find(s => pf.symbols.name(s.name.last) == "SmtVerdict").get
+    assertEquals(countItems(smtVerdict.items) { case Item.EntityItem(_) => }, 3)
+
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val errs = Loader.loadAll(kb, IndexedSeq(pf))
+    val unrelated = errs.filterNot(isToleratedLoadError)
+    assert(unrelated.isEmpty, s"unexpected load errors: $unrelated")
+    assert(kb.hasQualifiedName("anthill.realization.witness.ProofWitness"))
+    assert(kb.hasQualifiedName("anthill.realization.witness.ProofWitness.SmtDischarge"))
+    assert(kb.hasQualifiedName("anthill.realization.witness.SortBinding"))
+    assert(kb.hasQualifiedName("anthill.realization.witness.MetaTacticContract"))
+  }
+
+  test("WI-153: EmbeddedStdlib parses every advertised stdlib path") {
+    val (parsed, errors) = EmbeddedStdlib.parseFromDir(Paths.get(stdlibDir))
+    assert(errors.isEmpty, s"stdlib parse errors: $errors")
+    assertEquals(parsed.length, EmbeddedStdlib.stdlibPaths.length,
+      "every advertised stdlib path should yield a ParsedFile")
+  }
+
+  test("WI-153: EmbeddedStdlib loads as a single KB load pass") {
+    val (parsed, errors) = EmbeddedStdlib.parseFromDir(Paths.get(stdlibDir))
+    assert(errors.isEmpty, s"stdlib parse errors: $errors")
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val loadErrors = Loader.loadAll(kb, parsed)
+    val unrelated = loadErrors.filterNot(isToleratedLoadError)
+    assert(unrelated.isEmpty, s"unexpected stdlib load errors: $unrelated")
+    for qn <- Seq(
+        "anthill.prelude.algebra.Ring",
+        "anthill.prelude.algebra.VectorSpace",
+        "anthill.prelude.Float",
+        "anthill.prelude.Float.sqrt",
+        "anthill.geometry.Vec3",
+        "anthill.realization.witness.ProofWitness")
+    do assert(kb.hasQualifiedName(qn), s"$qn should be registered after stdlib load")
   }
 
