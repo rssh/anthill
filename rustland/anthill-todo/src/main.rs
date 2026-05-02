@@ -1422,9 +1422,21 @@ fn run_init(project_name: Option<&str>) {
 
 // ── Add command ─────────────────────────────────────────────────
 
-fn next_workitem_id(kb: &KnowledgeBase) -> Result<String, String> {
+fn next_workitem_id(kb: &KnowledgeBase, project_dir: &Path) -> Result<String, String> {
     if kb.try_resolve_symbol("anthill.stage0.WorkItem").is_none() {
-        return Err("WorkItem sort not found in KB — domain.anthill may have parse errors. Run with RUST_LOG=warn to see details.".into());
+        let domain_path = scan_dir(project_dir).join("domain.anthill");
+        if !domain_path.is_file() {
+            return Err(format!(
+                "this directory is not an anthill-todo project (no {} found). \
+                 Run `anthill-todo init` to scaffold one.",
+                domain_path.display()
+            ));
+        }
+        return Err(format!(
+            "WorkItem sort not found in KB — {} may have parse errors \
+             (any warnings would have printed to stderr above).",
+            domain_path.display()
+        ));
     }
 
     let items = collect_workitems(kb);
@@ -1442,7 +1454,7 @@ fn next_workitem_id(kb: &KnowledgeBase) -> Result<String, String> {
 }
 
 fn run_add(kb: &KnowledgeBase, project_dir: &Path, description: &str, depends_on: &[String], acceptance: &[String]) {
-    let id = match next_workitem_id(kb) {
+    let id = match next_workitem_id(kb, project_dir) {
         Ok(id) => id,
         Err(e) => {
             eprintln!("error: {e}");
