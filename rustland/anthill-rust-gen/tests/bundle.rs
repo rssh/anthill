@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use anthill_rust_gen::{generate_bundle, BundleError, BundleOptions, CoreDep};
+use tempfile::TempDir;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -20,11 +21,10 @@ fn anthill_core_dir() -> PathBuf {
     workspace_root().join("rustland/anthill-core")
 }
 
-fn options(out: &std::path::Path) -> BundleOptions {
-    let _ = out;
+fn options() -> BundleOptions {
     BundleOptions {
         project_name: "hello-bundle".into(),
-        description: "smoke test for anthill-rust-gen".into(),
+        description: Some("smoke test for anthill-rust-gen".into()),
         entry_qname: "demo.hello.main".into(),
         user_sources: vec![(
             "hello.anthill".into(),
@@ -48,25 +48,24 @@ end
 
 #[test]
 fn bundle_emits_expected_file_layout() {
-    let tmp = tempdir();
-    let opts = options(&tmp);
-    generate_bundle(&opts, &tmp).expect("generate");
+    let tmp = TempDir::new().unwrap();
+    let opts = options();
+    generate_bundle(&opts, tmp.path()).expect("generate");
 
-    assert!(tmp.join("Cargo.toml").is_file(), "Cargo.toml emitted");
-    assert!(tmp.join("src/main.rs").is_file(), "src/main.rs emitted");
-    assert!(tmp.join("spec/user/hello.anthill").is_file(), "user source vendored");
-    // Pick a few stdlib files we expect to exist.
-    assert!(tmp.join("spec/stdlib/prelude/list.anthill").is_file(), "stdlib list vendored");
-    assert!(tmp.join("spec/stdlib/prelude/console.anthill").is_file(), "stdlib console vendored");
-    assert!(tmp.join("spec/stdlib/realization/rust_anthill.anthill").is_file(), "rust_anthill profile vendored");
+    assert!(tmp.path().join("Cargo.toml").is_file(), "Cargo.toml emitted");
+    assert!(tmp.path().join("src/main.rs").is_file(), "src/main.rs emitted");
+    assert!(tmp.path().join("spec/user/hello.anthill").is_file(), "user source vendored");
+    assert!(tmp.path().join("spec/stdlib/prelude/list.anthill").is_file(), "stdlib list vendored");
+    assert!(tmp.path().join("spec/stdlib/prelude/console.anthill").is_file(), "stdlib console vendored");
+    assert!(tmp.path().join("spec/stdlib/realization/rust_anthill.anthill").is_file(), "rust_anthill profile vendored");
 }
 
 #[test]
 fn cargo_toml_names_crate_and_binary() {
-    let tmp = tempdir();
-    let opts = options(&tmp);
-    generate_bundle(&opts, &tmp).expect("generate");
-    let cargo = std::fs::read_to_string(tmp.join("Cargo.toml")).unwrap();
+    let tmp = TempDir::new().unwrap();
+    let opts = options();
+    generate_bundle(&opts, tmp.path()).expect("generate");
+    let cargo = std::fs::read_to_string(tmp.path().join("Cargo.toml")).unwrap();
     assert!(cargo.contains("name = \"hello-bundle\""), "Cargo.toml carries crate name");
     assert!(cargo.contains("[[bin]]"), "Cargo.toml declares a [[bin]] target");
     assert!(cargo.contains("anthill-core = { path"), "Cargo.toml has anthill-core path dep");
@@ -74,16 +73,26 @@ fn cargo_toml_names_crate_and_binary() {
 
 #[test]
 fn main_rs_dispatches_to_entry_qname() {
-    let tmp = tempdir();
-    let opts = options(&tmp);
-    generate_bundle(&opts, &tmp).expect("generate");
-    let main = std::fs::read_to_string(tmp.join("src/main.rs")).unwrap();
+    let tmp = TempDir::new().unwrap();
+    let opts = options();
+    generate_bundle(&opts, tmp.path()).expect("generate");
+    let main = std::fs::read_to_string(tmp.path().join("src/main.rs")).unwrap();
     assert!(main.contains("interp.call(\"demo.hello.main\""), "main calls the named entry op");
     assert!(main.contains("register_standard_builtins"), "main registers standard builtins");
     assert!(main.contains("register_standard_effect_handlers"), "main registers default effect handlers");
-    // Each user source is referenced by include_str! in the generated table.
     assert!(main.contains("include_str!(\"../spec/user/hello.anthill\")"),
             "main embeds the user source via include_str!");
+}
+
+#[test]
+fn description_omitted_when_none() {
+    let tmp = TempDir::new().unwrap();
+    let mut opts = options();
+    opts.description = None;
+    generate_bundle(&opts, tmp.path()).expect("generate");
+    let cargo = std::fs::read_to_string(tmp.path().join("Cargo.toml")).unwrap();
+    assert!(!cargo.contains("description ="),
+            "no description = line when description is None; got:\n{cargo}");
 }
 
 /// End-to-end smoke: emit the bundle, then run `cargo check` on it.
@@ -94,12 +103,12 @@ fn main_rs_dispatches_to_entry_qname() {
 #[test]
 #[ignore = "runs nested cargo check; opt in via --ignored"]
 fn emitted_bundle_compiles() {
-    let tmp = tempdir();
-    let opts = options(&tmp);
-    generate_bundle(&opts, &tmp).expect("generate");
+    let tmp = TempDir::new().unwrap();
+    let opts = options();
+    generate_bundle(&opts, tmp.path()).expect("generate");
     let status = std::process::Command::new(env!("CARGO"))
         .args(["check", "--quiet", "--manifest-path"])
-        .arg(tmp.join("Cargo.toml"))
+        .arg(tmp.path().join("Cargo.toml"))
         .status()
         .expect("invoke cargo check");
     assert!(status.success(), "emitted bundle failed to cargo check");
@@ -107,14 +116,14 @@ fn emitted_bundle_compiles() {
 
 #[test]
 fn git_dep_renders_url_and_rev() {
-    let tmp = tempdir();
-    let mut opts = options(&tmp);
+    let tmp = TempDir::new().unwrap();
+    let mut opts = options();
     opts.anthill_core_dep = CoreDep::Git {
         url: "https://github.com/example/anthill".into(),
         rev: "deadbeef".into(),
     };
-    generate_bundle(&opts, &tmp).expect("generate");
-    let cargo = std::fs::read_to_string(tmp.join("Cargo.toml")).unwrap();
+    generate_bundle(&opts, tmp.path()).expect("generate");
+    let cargo = std::fs::read_to_string(tmp.path().join("Cargo.toml")).unwrap();
     assert!(
         cargo.contains("anthill-core = { git = \"https://github.com/example/anthill\", rev = \"deadbeef\" }"),
         "Cargo.toml carries git+rev dep, got:\n{cargo}",
@@ -125,27 +134,11 @@ fn git_dep_renders_url_and_rev() {
 
 #[test]
 fn errors_when_no_user_sources() {
-    let tmp = tempdir();
-    let mut opts = options(&tmp);
+    let tmp = TempDir::new().unwrap();
+    let mut opts = options();
     opts.user_sources.clear();
-    match generate_bundle(&opts, &tmp) {
+    match generate_bundle(&opts, tmp.path()) {
         Err(BundleError::NoSources) => {}
         other => panic!("expected NoSources, got {other:?}"),
     }
-}
-
-// ── tiny per-test tempdir helper ───────────────────────────────────
-
-fn tempdir() -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let pid = std::process::id();
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut p = std::env::temp_dir();
-    p.push(format!("anthill-rust-gen-test-{pid}-{n}"));
-    if p.exists() {
-        std::fs::remove_dir_all(&p).ok();
-    }
-    std::fs::create_dir_all(&p).expect("mkdir tempdir");
-    p
 }

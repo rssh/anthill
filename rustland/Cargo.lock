@@ -111,6 +111,7 @@ name = "anthill-rust-gen"
 version = "0.1.0"
 dependencies = [
  "anthill-core",
+ "tempfile",
 ]
 
 [[package]]

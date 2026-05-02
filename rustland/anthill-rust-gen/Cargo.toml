@@ -8,6 +8,9 @@ autotests = false
 [dependencies]
 anthill-core = { path = "../anthill-core" }
 
+[dev-dependencies]
+tempfile = "3"
+
 [[test]]
 name = "integration"
 path = "tests/integration.rs"

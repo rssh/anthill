@@ -85,20 +85,23 @@ struct BundleArgs {
     #[arg(short, long)]
     entry: String,
 
-    /// One-line description for the generated `Cargo.toml`. Optional.
-    #[arg(long, default_value = "")]
-    description: String,
+    /// One-line description for the generated `Cargo.toml`. Omitted from
+    /// the emitted manifest when not set. Cargo (and `cargo publish`)
+    /// reject empty quoted descriptions, so leave this off rather than
+    /// passing an empty string.
+    #[arg(long)]
+    description: Option<String>,
 
     /// Reference anthill-core via a git URL instead of a local path. When
     /// set, the generated Cargo.toml uses `{ git = ..., rev = ... }`. The
     /// resulting bundle is portable across machines (build needs git +
-    /// network, but no local checkout). Requires `--git-rev`.
-    #[arg(long = "git-url")]
+    /// network, but no local checkout). Must be paired with `--git-rev`.
+    #[arg(long = "git-url", requires = "git_rev")]
     git_url: Option<String>,
 
-    /// Pin the git dependency to this commit / tag / branch ref. Used
-    /// only when `--git-url` is also passed.
-    #[arg(long = "git-rev")]
+    /// Pin the git dependency to this commit / tag / branch ref. Must
+    /// be paired with `--git-url`.
+    #[arg(long = "git-rev", requires = "git_url")]
     git_rev: Option<String>,
 }
 
@@ -599,9 +602,8 @@ fn run_codegen_bundle(args: &BundleArgs) -> Result<(), i32> {
         user_sources.push((rel, content));
     }
 
-    // Resolve how to reference anthill-core in the generated Cargo.toml.
-    // git mode requires both --git-url and --git-rev; path mode auto-locates
-    // the workspace via env var or by walking upward from the running binary.
+    // git mode: pairing is enforced by clap's `requires` (see BundleArgs).
+    // path mode: auto-locate the workspace via env var or by walking up.
     let (stdlib_dir, anthill_core_dep) = match (&args.git_url, &args.git_rev) {
         (Some(url), Some(rev)) => {
             let stdlib_dir = match locate_stdlib_dir() {
@@ -613,11 +615,7 @@ fn run_codegen_bundle(args: &BundleArgs) -> Result<(), i32> {
             };
             (stdlib_dir, anthill_rust_gen::CoreDep::Git { url: url.clone(), rev: rev.clone() })
         }
-        (Some(_), None) | (None, Some(_)) => {
-            eprintln!("error: --git-url and --git-rev must be passed together");
-            return Err(1);
-        }
-        (None, None) => {
+        _ => {
             let (stdlib_dir, core_path) = match locate_workspace_paths() {
                 Some(t) => t,
                 None => {

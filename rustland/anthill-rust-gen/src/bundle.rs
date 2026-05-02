@@ -59,8 +59,11 @@ pub enum CoreDep {
 pub struct BundleOptions {
     /// Name of the generated cargo crate (and binary).
     pub project_name: String,
-    /// Short description for the crate's `Cargo.toml`.
-    pub description: String,
+    /// Optional one-line description for the crate's `Cargo.toml`. Skipped
+    /// when `None`. Cargo accepts an absent `description` more gracefully
+    /// than an empty quoted string, and `cargo publish` rejects empty
+    /// descriptions outright — keeping this `Option` avoids both pitfalls.
+    pub description: Option<String>,
     /// Operation qualified name to dispatch as the program entry, e.g.
     /// `"my.app.main"`. Must take `args: List[T = String]` and return `Int`.
     pub entry_qname: String,
@@ -92,7 +95,6 @@ pub fn generate_bundle(opts: &BundleOptions, output_dir: &Path) -> Result<(), Bu
     fs::create_dir_all(&spec_user).map_err(|e| BundleError::Io(e, spec_user.clone()))?;
     fs::create_dir_all(&spec_stdlib).map_err(|e| BundleError::Io(e, spec_stdlib.clone()))?;
 
-    // Vendor user sources (overwrite-on-write).
     let mut user_rel_paths: Vec<String> = Vec::new();
     for (rel, content) in &opts.user_sources {
         let dest = spec_user.join(rel);
@@ -111,13 +113,16 @@ pub fn generate_bundle(opts: &BundleOptions, output_dir: &Path) -> Result<(), Bu
     }
 
     let core_dep = render_core_dep(&opts.anthill_core_dep);
+    let desc_line = match &opts.description {
+        Some(d) if !d.is_empty() => format!("description = \"{}\"\n", escape_toml(d)),
+        _ => String::new(),
+    };
     let cargo_toml = format!(
         r#"[package]
 name = "{name}"
 version = "0.1.0"
 edition = "2021"
-description = "{desc}"
-
+{desc_line}
 [[bin]]
 name = "{name}"
 path = "src/main.rs"
@@ -126,12 +131,10 @@ path = "src/main.rs"
 anthill-core = {core_dep}
 "#,
         name = opts.project_name,
-        desc = escape_toml(&opts.description),
     );
     let cargo_path = output_dir.join("Cargo.toml");
     fs::write(&cargo_path, cargo_toml).map_err(|e| BundleError::Io(e, cargo_path.clone()))?;
 
-    // src/main.rs.
     let main_rs = render_main(opts, &user_rel_paths, &stdlib_rel_paths);
     let main_path = src_dir.join("main.rs");
     fs::write(&main_path, main_rs).map_err(|e| BundleError::Io(e, main_path.clone()))?;
@@ -156,12 +159,11 @@ fn copy_anthill_tree(
             fs::create_dir_all(&dest_dir).map_err(|e| BundleError::Io(e, dest_dir.clone()))?;
             copy_anthill_tree(src_root, dst_root, &entry_rel, out_paths)?;
         } else if path.extension().and_then(|e| e.to_str()) == Some("anthill") {
-            let bytes = fs::read(&path).map_err(|e| BundleError::Io(e, path.clone()))?;
             let dest = dst_root.join(&entry_rel);
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent).map_err(|e| BundleError::Io(e, parent.to_path_buf()))?;
             }
-            fs::write(&dest, &bytes).map_err(|e| BundleError::Io(e, dest.clone()))?;
+            fs::copy(&path, &dest).map_err(|e| BundleError::Io(e, dest.clone()))?;
             // Use forward slashes for the rendered include_str! literal regardless of host OS.
             let rel_str = entry_rel.components()
                 .filter_map(|c| match c {
