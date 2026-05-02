@@ -8,9 +8,20 @@ fn main() {
 
     println!("cargo:rerun-if-changed=grammar.js");
 
-    // Generate parser if src/parser.c is missing
-    if !src_dir.join("parser.c").exists() {
-        eprintln!("tree-sitter-anthill: generating parser...");
+    // Generate parser if src/parser.c is missing or stale relative to grammar.js
+    let parser_c = src_dir.join("parser.c");
+    let grammar_js = manifest_dir.join("grammar.js");
+    let needs_regen = !parser_c.exists()
+        || match (
+            std::fs::metadata(&grammar_js).and_then(|m| m.modified()),
+            std::fs::metadata(&parser_c).and_then(|m| m.modified()),
+        ) {
+            (Ok(g), Ok(p)) => g > p,
+            _ => false,
+        };
+
+    if needs_regen {
+        eprintln!("tree-sitter-anthill: (re)generating parser from grammar.js...");
         let status = Command::new("npx")
             .arg("tree-sitter")
             .arg("generate")
