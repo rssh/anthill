@@ -13,6 +13,9 @@ class ParserIntegrationTest extends munit.FunSuite:
   private val stdlibDir = sys.env.getOrElse("ANTHILL_STDLIB",
     System.getProperty("user.dir") + "/../stdlib")
 
+  private val examplesDir = sys.env.getOrElse("ANTHILL_EXAMPLES",
+    System.getProperty("user.dir") + "/../examples")
+
   private def readFile(path: String): String =
     val source = scala.io.Source.fromFile(path)
     try source.mkString finally source.close()
@@ -366,5 +369,204 @@ class ParserIntegrationTest extends munit.FunSuite:
     val lawRules = rules.filter(r => r.label.exists(l => pf.symbols.name(l.last).startsWith("vec_")))
       .filter(_.body.exists(_.length > 1))
     assert(lawRules.nonEmpty, "expected at least one law rule with `body -: heads` shape")
+  }
+
+  // ── Proposals 025 + 031: proof / provides / enum (WI-152) ─────
+
+  test("proposal 025: single-tactic `proof X by <strategy> end` parses") {
+    val src =
+      """sort Demo
+        |  rule p(?x) :- q(?x)
+        |
+        |  proof p
+        |    by z3(logic: "LRA")
+        |  end
+        |end""".stripMargin
+    val res = Parser.parse(src, "<single-tactic>")
+    assert(res.isRight, s"parse failed: ${res.left.toOption.map(_.map(_.message).mkString("; "))}")
+    val pf = res.toOption.get
+    val sort = pf.items.collectFirst { case Item.SortWithBodyItem(s) => s }
+      .getOrElse(fail("expected SortWithBody"))
+    val proofs = sort.items.collect { case Item.ProofItem(p) => p }
+    assertEquals(proofs.length, 1, "expected one proof in sort body")
+    val p = proofs.head
+    assertEquals(pf.symbols.name(p.target.last), "p")
+    assert(p.strategy.isDefined, "expected strategy")
+    assertEquals(pf.symbols.name(p.strategy.get.name), "z3")
+    assert(p.body.isEmpty, "single-tactic body has no inner clause")
+  }
+
+  test("proposal 031: structured-proof body parses with steps + concluding clause") {
+    // Mirrors examples/webots-modelling/lf1/safety_common.anthill's
+    // step_distance_lemma — two `rule` step rules with `using` cites
+    // and `by trust(...)`, then a concluding `using ... by z3(...)`.
+    val src =
+      """sort Demo
+        |  rule step_distance_lemma:
+        |    distance_at_step(?k, ?d_prev),
+        |    distance_at_step(?k_next, ?d_next)
+        |    -: lte(abs(?d_next - ?d_prev), ?delta)
+        |
+        |  proof step_distance_lemma
+        |    rule h_geometric: lte(abs(?d_next - ?d_prev), ?v_diff_scaled)
+        |      using triangle_inequality
+        |      by trust(reason: "Reverse triangle inequality")
+        |
+        |    rule h_envelope: lte(?v_diff_scaled, ?delta)
+        |      using velocity_envelope
+        |      by trust(reason: "Velocity envelope")
+        |
+        |    using h_geometric, h_envelope
+        |    by z3(logic: "LRA")
+        |  end
+        |end""".stripMargin
+    val result = Parser.parse(src, "<structured-proof>")
+    assert(result.isRight, s"parse failed: ${result.left.toOption.map(_.map(_.message).mkString("; "))}")
+    val pf = result.toOption.get
+    val sort = pf.items.collectFirst { case Item.SortWithBodyItem(s) => s }.get
+    val proofs = sort.items.collect { case Item.ProofItem(p) => p }
+    assertEquals(proofs.length, 1)
+    val p = proofs.head
+    assertEquals(pf.symbols.name(p.target.last), "step_distance_lemma")
+    p.body match
+      case Some(ProofBody.Structured(steps, conclude)) =>
+        assertEquals(steps.length, 2, "expected 2 step rules")
+        // Step 1: h_geometric, cites triangle_inequality, by trust(...)
+        val s1 = steps(0)
+        assertEquals(pf.symbols.name(s1.rule.label.get.last), "h_geometric")
+        assertEquals(s1.usingNames.length, 1)
+        assertEquals(pf.symbols.name(s1.usingNames.head.last), "triangle_inequality")
+        assertEquals(pf.symbols.name(s1.strategy.name), "trust")
+        // Step 2: h_envelope, cites velocity_envelope
+        val s2 = steps(1)
+        assertEquals(pf.symbols.name(s2.rule.label.get.last), "h_envelope")
+        assertEquals(s2.usingNames.length, 1)
+        assertEquals(pf.symbols.name(s2.usingNames.head.last), "velocity_envelope")
+        // Conclude: using h_geometric, h_envelope; by z3(...)
+        assert(conclude.isDefined, "expected concluding clause")
+        val c = conclude.get
+        assertEquals(c.usingNames.length, 2)
+        assertEquals(c.usingNames.map(n => pf.symbols.name(n.last)).toSet, Set("h_geometric", "h_envelope"))
+        assertEquals(pf.symbols.name(c.strategy.name), "z3")
+      case other => fail(s"expected Structured body, got $other")
+  }
+
+  test("proposal 025: `enum NAME ... end` parses with kind = Enum") {
+    val src =
+      """enum Drone
+        |  entity Leader
+        |  entity Follower
+        |end""".stripMargin
+    val pf = Parser.parse(src, "<enum>").toOption.get
+    val sort = pf.items.collectFirst { case Item.SortWithBodyItem(s) => s }.get
+    assertEquals(sort.kind, SortDeclKind.Enum)
+    val entities = sort.items.collect { case Item.EntityItem(e) => e }
+    assertEquals(entities.length, 2)
+    assertEquals(entities.map(e => pf.symbols.name(e.name.last)).toSet, Set("Leader", "Follower"))
+  }
+
+  test("proposal 025: `provides Spec` clause parses inside sort body") {
+    val src =
+      """sort IntStack
+        |  provides Stack[T = Int]
+        |end""".stripMargin
+    val pf = Parser.parse(src, "<provides-clause>").toOption.get
+    val sort = pf.items.collectFirst { case Item.SortWithBodyItem(s) => s }.get
+    val provides = sort.items.collect { case Item.ProvidesClauseItem(pc) => pc }
+    assertEquals(provides.length, 1)
+    provides.head.spec match
+      case TypeExpr.Parameterized(n, bs) =>
+        assertEquals(pf.symbols.name(n.last), "Stack")
+        assertEquals(bs.length, 1)
+      case other => fail(s"expected Parameterized spec, got $other")
+  }
+
+  test("proposal 025: standalone `provides Spec language anthill ... end` block parses") {
+    val src =
+      """provides Stack[T = Int]
+        |  language anthill
+        |  rule push(?s, ?x) = cons(head: ?x, tail: ?s)
+        |end""".stripMargin
+    val pf = Parser.parse(src, "<provides-block>").toOption.get
+    val blocks = pf.items.collect { case Item.ProvidesBlockItem(pb) => pb }
+    assertEquals(blocks.length, 1)
+    val b = blocks.head
+    assertEquals(pf.symbols.name(b.language), "anthill")
+    val ruleItems = b.items.collect { case ProvidesItem.RuleI(r) => r }
+    assertEquals(ruleItems.length, 1)
+  }
+
+  test("WI-152: examples/webots-modelling/lf1/safety_common.anthill parses (structured-proof example)") {
+    val src = readFile(s"$examplesDir/webots-modelling/lf1/safety_common.anthill")
+    val result = Parser.parse(src, "safety_common.anthill")
+    assert(result.isRight,
+      s"safety_common.anthill parse failed: ${result.left.toOption.map(_.map(_.message).mkString("; "))}")
+    val pf = result.toOption.get
+    val ns = pf.items.collectFirst { case Item.NamespaceItem(n) => n }
+      .getOrElse(fail("expected namespace"))
+    assertEquals(ns.name.segments.map(pf.symbols.name).mkString("."),
+      "anthill.examples.lf1.safety.common")
+
+    // The file declares `enum Drone` (proposal 025) plus a structured-proof
+    // body for `step_distance_lemma` (proposal 031) — the two surfaces
+    // WI-152 adds. Assert both are seen by the parser.
+    val sortItems = ns.items.collect { case Item.SortWithBodyItem(s) => s }
+    val drone = sortItems.find(s => pf.symbols.name(s.name.last) == "Drone")
+      .getOrElse(fail("expected enum Drone"))
+    assertEquals(drone.kind, SortDeclKind.Enum)
+
+    val proofs = ns.items.collect { case Item.ProofItem(p) => p }
+    val stepDistance = proofs.find(p => pf.symbols.name(p.target.last) == "step_distance_lemma")
+      .getOrElse(fail("expected proof step_distance_lemma"))
+    stepDistance.body match
+      case Some(ProofBody.Structured(steps, conclude)) =>
+        assert(steps.nonEmpty, "structured proof should have step rules")
+        assert(conclude.isDefined, "structured proof should have concluding clause")
+      case other => fail(s"expected Structured body for step_distance_lemma, got $other")
+  }
+
+  test("WI-152: stdlib witness.anthill parses end-to-end") {
+    val src = readFile(s"$stdlibDir/anthill/realization/witness.anthill")
+    val result = Parser.parse(src, "witness.anthill")
+    assert(result.isRight,
+      s"witness.anthill parse failed: ${result.left.toOption.map(_.map(_.message).mkString("; "))}")
+    val pf = result.toOption.get
+    val ns = pf.items.collectFirst { case Item.NamespaceItem(n) => n }
+      .getOrElse(fail("expected namespace"))
+    val nsName = ns.name.segments.map(pf.symbols.name).mkString(".")
+    assertEquals(nsName, "anthill.realization.witness")
+
+    // Sorts: ProofWitness (with 6 entity constructors), SmtVerdict (3 entities)
+    val sorts = ns.items.collect { case Item.SortWithBodyItem(s) => s }
+    val sortNames = sorts.map(s => pf.symbols.name(s.name.last)).toSet
+    assert(sortNames.contains("ProofWitness"), s"expected ProofWitness sort, got $sortNames")
+    assert(sortNames.contains("SmtVerdict"), s"expected SmtVerdict sort, got $sortNames")
+
+    // ProofWitness has 6 entity constructors per witness.anthill:
+    //   SmtDischarge, SldDerivation, MetaCompose,
+    //   ScopeAxiom, Specialization, TrustedAxiom.
+    val proofWitness = sorts.find(s => pf.symbols.name(s.name.last) == "ProofWitness").get
+    val pwEntities = proofWitness.items.collect { case Item.EntityItem(e) => e }
+    assertEquals(pwEntities.length, 6, s"expected 6 ProofWitness constructors, got ${pwEntities.map(e => pf.symbols.name(e.name.last))}")
+  }
+
+  test("WI-152: proof loader emits opaque proof_decl fact") {
+    val src =
+      """sort Demo
+        |  rule p(?x) :- q(?x)
+        |
+        |  proof p
+        |    by z3(logic: "LRA")
+        |  end
+        |end""".stripMargin
+    val pf = Parser.parse(src, "<proof-load>").toOption.get
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val errs = Loader.loadAll(kb, IndexedSeq(pf))
+    assert(errs.isEmpty, s"Load errors: $errs")
+    // The proof emits an opaque `proof_decl` fact under ProofRecord.
+    val proofDeclSym = kb.intern("proof_decl")
+    val byFunctor = kb.byFunctor(proofDeclSym)
+    assertEquals(byFunctor.length, 1, "expected one proof_decl fact in KB")
   }
 

@@ -81,6 +81,9 @@ enum Item:
   case WorkItemItem(wi: WorkItem)
   case FeedbackItem(fb: Feedback)
   case ImportToolsItem(it: ImportTools)
+  case ProofItem(proof: ProofDecl)
+  case ProvidesClauseItem(pc: ProvidesClause)
+  case ProvidesBlockItem(pb: ProvidesBlock)
 
 // ── Namespace ───────────────────────────────────────────────────
 
@@ -110,6 +113,11 @@ case class AbstractSort(
   span: Span
 )
 
+/** Sort or enum declaration kind. Enums are sorts whose subterms are
+  * understood as a closed disjoint sum of constructors (proposal 025). */
+enum SortDeclKind:
+  case Sort, Enum
+
 case class SortWithBody(
   visibility: Option[Visibility],
   name: Name,
@@ -118,7 +126,8 @@ case class SortWithBody(
   exports: IndexedSeq[Name],
   items: IndexedSeq[Item],
   meta: Option[MetaBlock],
-  span: Span
+  span: Span,
+  kind: SortDeclKind = SortDeclKind.Sort
 )
 
 case class FieldDecl(name: TermSymbol, ty: TypeExpr)
@@ -302,3 +311,77 @@ case class Feedback(
   meta: Option[MetaBlock],
   span: Span
 )
+
+// ── Proof construct (proposal 025 / 031) ────────────────────────
+
+/** A `proof <target> ... end` declaration. The `body` field carries the
+  * single-tactic hints, an explicit query, or a structured body of
+  * inner step rules + concluding clause (proposal 031). Witness
+  * checking and discharge are deferred (WI-157). */
+case class ProofDecl(
+  target: Name,
+  strategy: Option[ProofStrategy],
+  body: Option[ProofBody],
+  usingNames: IndexedSeq[Name],
+  span: Span
+)
+
+/** `by <name>(arg, k: v, ...)`. Args are stored as parse-side terms;
+  * the typed Tactic IR (proposal 025.1 phase 2) is not yet ported. */
+case class ProofStrategy(
+  name: TermSymbol,
+  args: IndexedSeq[TermId],
+  span: Span
+)
+
+enum ProofBody:
+  /** `:- hint1, hint2` — guided-derivation hints. */
+  case Hints(hints: IndexedSeq[TermId])
+  /** `query "..."` (+ optional mapping). */
+  case Query(text: String, mapping: Option[MappingBlock])
+  /** Structured body: a sequence of inner step rules each with its own
+    * `by <tactic>` discharge, plus an optional concluding clause that
+    * discharges the enclosing target under accumulated step hypotheses. */
+  case Structured(steps: IndexedSeq[ProofStep], conclude: Option[ConcludeClause])
+
+case class ProofStep(
+  rule: Rule,
+  usingNames: IndexedSeq[Name],
+  strategy: ProofStrategy,
+  span: Span
+)
+
+case class ConcludeClause(
+  usingNames: IndexedSeq[Name],
+  strategy: ProofStrategy,
+  span: Span
+)
+
+case class MappingBlock(entries: IndexedSeq[MappingEntry])
+case class MappingEntry(source: Name, target: String)
+
+// ── Provides construct (proposal 025) ────────────────────────────
+
+/** `provides Spec[T = X]` inside a sort/enum body — declares the
+  * enclosing sort satisfies the spec. */
+case class ProvidesClause(spec: TypeExpr, span: Span)
+
+/** Standalone `provides Spec language <lang> ... end` block. */
+case class ProvidesBlock(
+  spec: TypeExpr,
+  language: TermSymbol,
+  items: IndexedSeq[ProvidesItem],
+  span: Span
+)
+
+enum ProvidesItem:
+  case RuleI(rule: Rule)
+  case RuleBlockI(block: RuleBlock)
+  case FactI(fact: Fact)
+  case ProofI(proof: ProofDecl)
+  case ArtifactI(path: String)
+  case CarrierI(bindings: IndexedSeq[CarrierBinding])
+  case NamespaceMapI(entries: IndexedSeq[NamespaceMapEntry])
+
+case class CarrierBinding(anthillParam: TermSymbol, hostType: TermId)
+case class NamespaceMapEntry(anthillNamespace: TermSymbol, hostModule: TermId)

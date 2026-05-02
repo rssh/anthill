@@ -488,8 +488,15 @@ private class AnthillParserImpl(
   private def metaBlock[$: P]: P[MetaBlock] =
     P("[" ~/ metaEntry.rep(1, sep = ",") ~ "]").map(es => MetaBlock(es.toIndexedSeq))
 
+  /** Open-keyed entry: `key: value` for ordinary metadata, or bare `key`
+    * for the WI-140 flag form (`[simp]` ≡ `[simp: true]`). The bare form
+    * stores `Term.Bottom` as a sentinel — flag-presence checks (landing
+    * with WI-157) inspect only the key, so the two forms are equivalent. */
   private def metaEntry[$: P]: P[MetaEntry] =
-    P(name ~ ":" ~ term).map { case (k, v) => MetaEntry(k, v) }
+    P(name ~ (":" ~/ term).?).map {
+      case (k, Some(v)) => MetaEntry(k, v)
+      case (k, None) => MetaEntry(k, terms.alloc(Term.Bottom))
+    }
 
   // ── Body content (shared by namespace and sort) ──────────────
 
@@ -536,7 +543,15 @@ private class AnthillParserImpl(
       case (vis, n, Left((defn, meta))) =>
         Item.AbstractSortItem(AbstractSort(vis, n, defn, IndexedSeq.empty, meta, mkSpan(0, 0)))
       case (vis, n, Right((imports, exports, items, meta))) =>
-        Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports, exports, items, meta, mkSpan(0, 0)))
+        Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports, exports, items, meta, mkSpan(0, 0), SortDeclKind.Sort))
+    }
+
+  /** `enum NAME ... end` — same body shape as `sort NAME ... end` but the
+    * declaration kind is recorded as `Enum` (proposal 025). */
+  private def enumDecl[$: P]: P[Item] =
+    P(visibility.? ~ keyword("enum") ~/ name ~ body ~ metaBlock.?).map {
+      case (vis, n, (imports, exports, items), meta) =>
+        Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports, exports, items, meta, mkSpan(0, 0), SortDeclKind.Enum))
     }
 
   private def abstractSortRest[$: P]: P[Left[(TypeExpr, Option[MetaBlock]), Nothing]] =
@@ -668,10 +683,12 @@ private class AnthillParserImpl(
       Item.EntityItem(Entity(vis, n, fields.map(_.toIndexedSeq).getOrElse(IndexedSeq.empty), meta, mkSpan(0, 0)))
     }
 
-  private def factDecl[$: P]: P[Item] =
+  private def factDeclInner[$: P]: P[Fact] =
     P(keyword("fact") ~/ term ~ metaBlock.?).map { case (t, meta) =>
-      Item.FactItem(Fact(t, meta, mkSpan(0, 0)))
+      Fact(t, meta, mkSpan(0, 0))
     }
+
+  private def factDecl[$: P]: P[Item] = factDeclInner.map(Item.FactItem(_))
 
   private def constraintDecl[$: P]: P[Item] =
     P(keyword("constraint") ~/ (simpleName ~ ":").? ~ term.rep(1, sep = ",") ~
@@ -683,18 +700,188 @@ private class AnthillParserImpl(
 
   // describe is not needed for test cases — omitted from declaration dispatch
 
+  // ── Proof / Provides (proposal 025 + 031) ────────────────────
+
+  // Hot interns for the synthetic `named_arg(name: "k", value: v)`
+  // shape used by `proofStrategy` (mirrors rustland's `convert_named_arg`).
+  private lazy val namedArgFunctorSym = intern("named_arg")
+  private lazy val namedArgNameSym = intern("name")
+  private lazy val namedArgValueSym = intern("value")
+
+  /** Allocate a synthetic `named_arg(name: "k", value: v)` term so a
+    * `key: value` shape survives parse-IR round-tripping alongside the
+    * raw values (mirrors rustland's `convert_named_arg`). */
+  private def allocNamedArg(k: TermSymbol, v: TermId): TermId =
+    val keyStr = terms.alloc(Term.Const(Literal.StringLit(symbols.name(k))))
+    terms.alloc(Term.Fn(namedArgFunctorSym, IArray.empty,
+      IArray((namedArgNameSym, keyStr), (namedArgValueSym, v))))
+
+  /** `proof TARGET ... end`. Two body shapes (proposal 031):
+    *
+    *   * Single-tactic — optional `using ...`, optional `by <strategy>`,
+    *     optional inner body (`:- hints` or `query "..."`).
+    *   * Structured — one or more `rule h_i: ... by t_i` step rules
+    *     followed by an optional concluding `[using ...] by <tactic>`.
+    *
+    * Disambiguated by lookahead: a structured body must start with a
+    * `rule` step (proof_step), so we try the structured form first and
+    * fall back to the single-tactic form on rep(1) failure. */
+  private def proofDeclInner[$: P]: P[ProofDecl] =
+    // The grammar allows an optional trailing `end <name>`, dropped here:
+    // `name.?` after `end` would greedily consume an outer scope's `end`
+    // keyword (parsed as an ident). The trailing name is decorative.
+    P(keyword("proof") ~/ name ~ proofBodyForm ~ keyword("end")).map {
+      case (target, (using0, strategy, body)) =>
+        resetVarScope()
+        ProofDecl(target, strategy, body, using0, mkSpan(0, 0))
+    }
+
+  private def proofDecl[$: P]: P[Item] = proofDeclInner.map(Item.ProofItem(_))
+
+  private def proofBodyForm[$: P]: P[(IndexedSeq[Name], Option[ProofStrategy], Option[ProofBody])] =
+    P(structuredProofForm | singleTacticProofForm)
+
+  private def structuredProofForm[$: P]: P[(IndexedSeq[Name], Option[ProofStrategy], Option[ProofBody])] =
+    P(proofStepEntry.rep(1) ~ proofConcludingClause.?).map { case (steps, conclude) =>
+      val structured = ProofBody.Structured(steps.toIndexedSeq, conclude)
+      (IndexedSeq.empty, None, Some(structured))
+    }
+
+  private def singleTacticProofForm[$: P]: P[(IndexedSeq[Name], Option[ProofStrategy], Option[ProofBody])] =
+    P((keyword("using") ~/ proofUsingList).? ~ (keyword("by") ~/ proofStrategy).? ~ proofBody.?).map {
+      case (using0, strategy, body) =>
+        (using0.getOrElse(IndexedSeq.empty), strategy, body)
+    }
+
+  private def proofUsingList[$: P]: P[IndexedSeq[Name]] =
+    P(name.rep(1, sep = ",")).map(_.toIndexedSeq)
+
+  private def proofStrategy[$: P]: P[ProofStrategy] =
+    P(Index ~ ident ~ ("(" ~/ fnArg.rep(1, sep = ",") ~ ")").? ~ Index).map {
+      case (s, n, args, e) =>
+        val rawArgs: IndexedSeq[TermId] = args.getOrElse(Seq.empty).toIndexedSeq.map {
+          case Left(tid) => tid
+          case Right((k, v)) => allocNamedArg(k, v)
+        }
+        ProofStrategy(n, rawArgs, mkSpan(s, e))
+    }
+
+  private def stringText[$: P]: P[String] = P(Tokens.stringToken)
+
+  private def proofBody[$: P]: P[ProofBody] =
+    P(
+      (":-" ~/ term.rep(1, sep = ",")).map(hs => ProofBody.Hints(hs.toIndexedSeq)) |
+      (keyword("query") ~/ stringText ~ (keyword("mapping") ~/ mappingBlock).?).map {
+        case (text, mapping) => ProofBody.Query(text, mapping)
+      }
+    )
+
+  private def mappingBlock[$: P]: P[MappingBlock] =
+    P("{" ~/ mappingEntry.rep(1, sep = ",") ~ ",".? ~ "}").map(es => MappingBlock(es.toIndexedSeq))
+
+  private def mappingEntry[$: P]: P[MappingEntry] =
+    P(name ~ "->" ~/ (stringText | name.map(n => n.segments.map(symbols.name).mkString(".")))).map {
+      case (src, target) => MappingEntry(src, target)
+    }
+
+  private def proofStep[$: P]: P[ProofStep] =
+    P((simpleName ~ ":").? ~ ruleArrowChoice ~ metaBlock.? ~ (keyword("using") ~/ proofUsingList).? ~ keyword("by") ~/ proofStrategy)
+      .map { case (label, (heads, bodyTerms), meta, using0, strat) =>
+        val rule = Rule(label, heads, bodyTerms, meta, mkSpan(0, 0))
+        resetVarScope()
+        ProofStep(rule, using0.getOrElse(IndexedSeq.empty), strat, mkSpan(0, 0))
+      }
+
+  /** `rule <step>` — strips the `rule` keyword before delegating to
+    * `proofStep` so the structured-form parser composes cleanly with
+    * `rep(1)`. */
+  private def proofStepEntry[$: P]: P[ProofStep] =
+    P(keyword("rule") ~/ proofStep)
+
+  private def proofConcludingClause[$: P]: P[ConcludeClause] =
+    P((keyword("using") ~/ proofUsingList).? ~ keyword("by") ~/ proofStrategy).map {
+      case (using0, strat) =>
+        ConcludeClause(using0.getOrElse(IndexedSeq.empty), strat, mkSpan(0, 0))
+    }
+
+  /** `provides Spec` (clause) or `provides Spec language X ... end` (block).
+    * Disambiguated by checking for the `language` keyword after the spec. */
+  private def providesDecl[$: P]: P[Item] =
+    P(keyword("provides") ~/ typeExpr ~ providesRest).map {
+      case (spec, Left(())) =>
+        Item.ProvidesClauseItem(ProvidesClause(spec, mkSpan(0, 0)))
+      case (spec, Right((lang, items))) =>
+        Item.ProvidesBlockItem(ProvidesBlock(spec, lang, items, mkSpan(0, 0)))
+    }
+
+  private def providesRest[$: P]: P[Either[Unit, (TermSymbol, IndexedSeq[ProvidesItem])]] =
+    P(
+      (keyword("language") ~/ ident ~ providesContent.rep ~ keyword("end"))
+        .map { case (lang, items) => Right((lang, items.toIndexedSeq)) } |
+      Pass.map(_ => Left(()))
+    )
+
+  private def providesContent[$: P]: P[ProvidesItem] =
+    P(
+      providesArtifact |
+      providesCarrier |
+      providesNamespaceMap |
+      providesProof |
+      providesRule |
+      providesFact
+    )
+
+  private def providesArtifact[$: P]: P[ProvidesItem] =
+    P(keyword("artifact") ~/ stringText).map(p => ProvidesItem.ArtifactI(p))
+
+  private def providesCarrier[$: P]: P[ProvidesItem] =
+    P(keyword("carrier") ~/ providesBindings).map { bs =>
+      ProvidesItem.CarrierI(bs.map { case (k, v) => CarrierBinding(k, v) })
+    }
+
+  private def providesNamespaceMap[$: P]: P[ProvidesItem] =
+    P(keyword("namespace_map") ~/ providesBindings).map { bs =>
+      ProvidesItem.NamespaceMapI(bs.map { case (k, v) => NamespaceMapEntry(k, v) })
+    }
+
+  private def providesBindings[$: P]: P[IndexedSeq[(TermSymbol, TermId)]] =
+    P("{" ~/ providesBinding.rep(1, sep = ",") ~ ",".? ~ "}").map(_.toIndexedSeq)
+
+  private def providesBinding[$: P]: P[(TermSymbol, TermId)] =
+    P(ident ~ ":" ~/ term)
+
+  private def providesProof[$: P]: P[ProvidesItem] =
+    proofDeclInner.map(ProvidesItem.ProofI(_))
+
+  /** Inside a `provides` block, `rule { ... }` desugars to a block-of-
+    * rules and a bare `rule h :- b` to a single rule — `ruleDecl`
+    * already returns the `Item.RuleItem` / `Item.RuleBlockItem` union,
+    * so the partial match here mirrors that existing union. */
+  private def providesRule[$: P]: P[ProvidesItem] =
+    ruleDecl.map {
+      case Item.RuleItem(r) => ProvidesItem.RuleI(r)
+      case Item.RuleBlockItem(rb) => ProvidesItem.RuleBlockI(rb)
+      case other => sys.error(s"ruleDecl returned unexpected $other")
+    }
+
+  private def providesFact[$: P]: P[ProvidesItem] =
+    factDeclInner.map(ProvidesItem.FactI(_))
+
   // ── Declaration dispatch ─────────────────────────────────────
 
   private def declaration[$: P]: P[Item] =
     P(
       namespaceDecl |
       sortDecl |
+      enumDecl |
       ruleDecl |
       operationDecl |
       requiresDeclItem |
       entityDecl |
       factDecl |
-      constraintDecl
+      constraintDecl |
+      proofDecl |
+      providesDecl
     )
 
   // ── Top-level ────────────────────────────────────────────────

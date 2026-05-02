@@ -1077,7 +1077,7 @@ fact WorkItem(
   description: "scaland resync — proposals 025 + 031: proof / lemma / provides / structured-proof grammar. Add parser + IR support for `proof X by <tactic> end`, structured `proof X ... end` blocks (inner step rules + concluding `[using ...] by <tactic>` clause), `lemma` colocation block, `provides` block, and the `enum` keyword. Loader stores these as opaque KB facts; no witness checking, no proof discharge (those land in WI-157). Mirror references: tree-sitter-anthill/grammar.js (proof / provides / enum / lemma productions); rustland/anthill-core/src/parse/ir.rs (ProofBody::SingleTactic / Structured, ProofStep). Scaland-side targets: scaland/core/src/main/scala/anthill/parse/AnthillParser.scala (new productions), parse/IR.scala (ProofBody, ProofStep types), load/Loader.scala (opaque KB encoding — witness/state_hash fields default). Acceptance: sbt test green; ParserIntegrationTest cases parsing one structured-proof example from examples/webots-modelling/lf1/ plus stdlib/anthill/realization/witness.anthill.",
   acceptance: [ToolPasses("scaland-sbt-test")],
   depends_on: ["WI-142"],
-  status: Open)
+  status: Delivered(agent: "user", at: "2026-05-02T09:07:33Z"))
 
 fact WorkItem(
   id: "WI-153",
@@ -1091,7 +1091,7 @@ fact WorkItem(
   description: "scaland resync — rule attribute flags [simp] / [unfold] / [hint] + bare-flag desugar form. Mirror WI-139/140/141 from rustland into scaland. Bare `[simp]` desugars to `[simp: true]` (WI-140). Equational rules cite-required by default unless `[simp]` flag (WI-139). [hint] auto-included from any proof in the enclosing scope chain (WI-141). Loader-side: store flags in the rule's MetaBlock for later use by prove/check (WI-157 — does not exist yet on Scala side, but the metadata needs to be preserved through parse and load so WI-157 can pick it up later). Files: scaland/core/src/main/scala/anthill/parse/AnthillParser.scala (meta_entry parser — accept bare-flag form), parse/IR.scala (verify MetaEntry handling), load/Loader.scala (preserve meta on rules). Acceptance: sbt test green; new ParseTest cases for [simp] bare-flag form parsing identically to [simp: true].",
   acceptance: [ToolPasses("scaland-sbt-test")],
   depends_on: ["WI-142"],
-  status: Open)
+  status: Delivered(agent: "user", at: "2026-05-02T09:01:40Z"))
 
 fact WorkItem(
   id: "WI-155",

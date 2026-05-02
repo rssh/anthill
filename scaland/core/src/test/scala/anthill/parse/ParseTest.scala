@@ -143,3 +143,47 @@ class ParseTest extends munit.FunSuite:
     val parsed = result.toOption.get
     assert(parsed.items.isEmpty)
   }
+
+  // ── WI-154: rule attribute flags + bare-flag desugar (proposal 025.X) ─
+
+  private def ruleMeta(src: String): (ParsedFile, IndexedSeq[MetaEntry]) =
+    val pf = Parser.parse(src, "<flags>").toOption.get
+    val rule = pf.items.collectFirst { case Item.RuleItem(r) => r }.get
+    val entries = rule.meta.map(_.entries).getOrElse(IndexedSeq.empty)
+    (pf, entries)
+
+  private def assertBottom(pf: ParsedFile, t: TermId, label: String): Unit =
+    pf.terms.get(t) match
+      case Term.Bottom => ()
+      case other => fail(s"$label should store Term.Bottom, got $other")
+
+  test("WI-154: bare `[simp]` parses identically to `[simp: true]` for key presence") {
+    val (pfBare, bare) = ruleMeta("rule ?a + zero = ?a [simp]")
+    val (pfFull, full) = ruleMeta("rule ?a + zero = ?a [simp: true]")
+
+    assertEquals(bare.length, 1)
+    assertEquals(full.length, 1)
+    assertEquals(pfBare.symbols.name(bare.head.key.last), "simp")
+    assertEquals(pfFull.symbols.name(full.head.key.last), "simp")
+    assertBottom(pfBare, bare.head.value, "bare [simp]")
+  }
+
+  test("WI-154: multiple flags `[simp, unfold, hint]` all parse as bare entries") {
+    val (pf, entries) = ruleMeta("rule ?a + zero = ?a [simp, unfold, hint]")
+    assertEquals(entries.length, 3)
+    val keys = entries.map(e => pf.symbols.name(e.key.last)).toSet
+    assertEquals(keys, Set("simp", "unfold", "hint"))
+    for e <- entries do
+      assertBottom(pf, e.value, s"bare flag ${pf.symbols.name(e.key.last)}")
+  }
+
+  test("WI-154: mixed bare and keyed entries `[simp, agent: \"x\"]`") {
+    val (pf, entries) = ruleMeta("""rule ?a + zero = ?a [simp, agent: "x"]""")
+    assertEquals(entries.length, 2)
+    val keys = entries.map(e => pf.symbols.name(e.key.last))
+    assertEquals(keys, IndexedSeq("simp", "agent"))
+    assertBottom(pf, entries(0).value, "bare simp")
+    pf.terms.get(entries(1).value) match
+      case Term.Const(Literal.StringLit("x")) => ()
+      case other => fail(s"expected StringLit(\"x\") for agent, got $other")
+  }

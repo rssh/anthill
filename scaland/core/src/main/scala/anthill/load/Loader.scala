@@ -283,6 +283,15 @@ object Loader:
             kb.assertFact(entityOfFact, entityOfSort, scopeTerm)
           }
 
+        case Item.ProofItem(p) =>
+          loadProof(kb, p, fileSym, scopeTerm)
+
+        case Item.ProvidesClauseItem(pc) =>
+          loadProvidesClause(kb, pc, fileSym, scopeTerm)
+
+        case Item.ProvidesBlockItem(pb) =>
+          loadProvidesBlock(kb, pb, fileTerms, fileSym, scopeTerm, errors)
+
         case _ => // Other items
 
   /** Load a rule under the proposal-032 grammar. `rule.heads` may be a single
@@ -335,6 +344,76 @@ object Loader:
       for headId <- positiveHeads do
         val kbHead = reallocTerm(kb, fileTerms, fileSym, headId, scopeTerm, errors, vm)
         kb.assertRule(kbHead, kbBody, sortSort, scopeTerm)
+
+  // ── Proof / Provides loaders (proposal 025 + 031) ────────────
+
+  private def loadProof(
+    kb: KnowledgeBase,
+    p: anthill.parse.ProofDecl,
+    fileSym: SymbolTable,
+    scopeTerm: TermId
+  ): Unit =
+    val targetStr = joinSegments(fileSym, p.target.segments)
+    val targetTerm = kb.alloc(Term.Const(Literal.StringLit(targetStr)))
+    val strategyStr = p.strategy.map(s => fileSym.name(s.name)).getOrElse("derivation")
+    val strategyTerm = kb.alloc(Term.Const(Literal.StringLit(strategyStr)))
+    val proofSym = kb.intern("proof_decl")
+    val proofTerm = kb.alloc(Term.Fn(proofSym, IArray.empty,
+      IArray(
+        (kb.intern("target"), targetTerm),
+        (kb.intern("strategy"), strategyTerm))))
+    val proofSort = kb.makeNameTerm("ProofRecord")
+    kb.assertFact(proofTerm, proofSort, scopeTerm)
+
+  private def loadProvidesClause(
+    kb: KnowledgeBase,
+    pc: anthill.parse.ProvidesClause,
+    fileSym: SymbolTable,
+    scopeTerm: TermId
+  ): Unit =
+    // Lossy: parameterized bindings (e.g. `Stack[T = Int]` vs `Stack[T = String]`)
+    // collapse to the bare spec name. The witness pipeline (WI-157) replaces
+    // this with a structured term that preserves bindings.
+    val specStr = specName(fileSym, pc.spec)
+    val specTerm = kb.alloc(Term.Const(Literal.StringLit(specStr)))
+    val provSym = kb.intern("provides_clause")
+    val provTerm = kb.alloc(Term.Fn(provSym, IArray.empty,
+      IArray(
+        (kb.intern("sort_ref"), scopeTerm),
+        (kb.intern("spec"), specTerm))))
+    val provSort = kb.makeNameTerm("Requirement")
+    kb.assertFact(provTerm, provSort, scopeTerm)
+
+  private def loadProvidesBlock(
+    kb: KnowledgeBase,
+    pb: anthill.parse.ProvidesBlock,
+    fileTerms: SimpleTermStore,
+    fileSym: SymbolTable,
+    scopeTerm: TermId,
+    errors: ArrayBuffer[LoadError]
+  ): Unit =
+    if fileSym.name(pb.language) != "anthill" then return
+    val ruleSort = findSortTerm(kb, "anthill.reflect.Rule")
+    val factSort = findSortTerm(kb, "anthill.reflect.Fact")
+    for item <- pb.items do item match
+      case ProvidesItem.RuleI(r) =>
+        loadRuleHeads(kb, r, fileTerms, fileSym, scopeTerm, ruleSort, errors)
+      case ProvidesItem.RuleBlockI(rb) =>
+        for r <- rb.entries do
+          loadRuleHeads(kb, r, fileTerms, fileSym, scopeTerm, ruleSort, errors)
+      case ProvidesItem.FactI(f) =>
+        val kbTerm = reallocTerm(kb, fileTerms, fileSym, f.term, scopeTerm, errors)
+        kb.assertFact(kbTerm, factSort, scopeTerm)
+      case ProvidesItem.ProofI(p) =>
+        loadProof(kb, p, fileSym, scopeTerm)
+      case ProvidesItem.ArtifactI(_)
+         | ProvidesItem.CarrierI(_)
+         | ProvidesItem.NamespaceMapI(_) =>
+
+  private def specName(fileSym: SymbolTable, te: TypeExpr): String = te match
+    case TypeExpr.Simple(n) => joinSegments(fileSym, n.segments)
+    case TypeExpr.Parameterized(n, _) => joinSegments(fileSym, n.segments)
+    case _ => "<spec>"
 
   // ── Term reallocation ─────────────────────────────────────────
 
