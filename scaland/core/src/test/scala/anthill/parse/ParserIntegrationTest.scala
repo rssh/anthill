@@ -17,6 +17,16 @@ class ParserIntegrationTest extends munit.FunSuite:
     val source = scala.io.Source.fromFile(path)
     try source.mkString finally source.close()
 
+  /** Resolve the functor name of a term that's expected to be a `Term.Fn`. */
+  private def fnFunctor(pf: ParsedFile, t: TermId): String = pf.terms.get(t) match
+    case fn: Term.Fn => pf.symbols.name(fn.functor)
+    case other => fail(s"Expected Term.Fn, got $other")
+
+  /** Resolve the functor name of a positive head; fails the test on `Bottom`. */
+  private def headFunctor(pf: ParsedFile, head: RuleHead): String = head match
+    case RuleHead.TermHead(t) => fnFunctor(pf, t)
+    case RuleHead.Bottom => fail("Expected positive head, got Bottom")
+
   // ── Test 1: Parse ring.anthill (structure check) ──────────────
 
   test("parse ring.anthill — structure check") {
@@ -284,29 +294,10 @@ class ParserIntegrationTest extends munit.FunSuite:
     assert(fwdRule.body.exists(_.length == 1))
     assert(revRule.body.exists(_.length == 1))
 
-    // Heads are the same shape (parent functor) on both sides.
-    val fwdHeadFunctor = fwdRule.heads.head match
-      case RuleHead.TermHead(t) => fwd.terms.get(t) match
-        case fn: Term.Fn => fwd.symbols.name(fn.functor)
-        case other => fail(s"Expected Fn head, got $other")
-      case _ => fail("Expected positive head")
-    val revHeadFunctor = revRule.heads.head match
-      case RuleHead.TermHead(t) => rev.terms.get(t) match
-        case fn: Term.Fn => rev.symbols.name(fn.functor)
-        case other => fail(s"Expected Fn head, got $other")
-      case _ => fail("Expected positive head")
-    assertEquals(fwdHeadFunctor, "parent")
-    assertEquals(revHeadFunctor, "parent")
-
-    // Body functor is the same on both sides too (mother).
-    val fwdBodyFunctor = fwd.terms.get(fwdRule.body.get.head) match
-      case fn: Term.Fn => fwd.symbols.name(fn.functor)
-      case other => fail(s"Expected Fn body, got $other")
-    val revBodyFunctor = rev.terms.get(revRule.body.get.head) match
-      case fn: Term.Fn => rev.symbols.name(fn.functor)
-      case other => fail(s"Expected Fn body, got $other")
-    assertEquals(fwdBodyFunctor, "mother")
-    assertEquals(revBodyFunctor, "mother")
+    assertEquals(headFunctor(fwd, fwdRule.heads.head), "parent")
+    assertEquals(headFunctor(rev, revRule.heads.head), "parent")
+    assertEquals(fnFunctor(fwd, fwdRule.body.get.head), "mother")
+    assertEquals(fnFunctor(rev, revRule.body.get.head), "mother")
   }
 
   test("proposal 032: labeled multi-head rule parses with N positive heads") {
@@ -314,12 +305,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     val pf = Parser.parse(src, "<multi>").toOption.get
     val rule = pf.items.collect { case Item.RuleItem(r) => r }.head
     assertEquals(rule.heads.length, 2, "Expected 2 positive heads")
-    val headFunctors = rule.heads.collect {
-      case RuleHead.TermHead(t) => pf.terms.get(t) match
-        case fn: Term.Fn => pf.symbols.name(fn.functor)
-        case _ => "<not-fn>"
-    }
-    assertEquals(headFunctors.toSet, Set("completed", "timestamp"))
+    assertEquals(rule.heads.map(headFunctor(pf, _)).toSet, Set("completed", "timestamp"))
     assert(rule.label.isDefined)
     assertEquals(pf.symbols.name(rule.label.get.last), "completion")
   }

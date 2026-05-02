@@ -579,27 +579,26 @@ private class AnthillParserImpl(
 
   /** Proposal 032: choice over (heads :- body | body -: heads | heads).
     * `:-` and `-:` are mirror surface forms of the same implication arrow;
-    * exactly one (or neither, for a bare-head fact) appears per rule. */
+    * exactly one (or neither, for a bare-head fact) appears per rule.
+    *
+    * We parse heads first then look for `:-` body or `-:` heads, rather than
+    * the literal alternation `(heads :- body | body -: heads | heads)`, because
+    * the literal form can't backtrack out of a Pratt-parsed equational head
+    * like `?a * (?b + ?c) = ?a * ?b + ?a * ?c`. The reversed `-:` form is rare,
+    * so probing for it only after the heads parse cleanly stays cheap. */
   private def ruleArrowChoice[$: P]: P[(IndexedSeq[RuleHead], Option[IndexedSeq[TermId]])] =
     P(
-      // heads (":-" body)?  \u2014 covers `heads :- body` and the bare-head fact form
       (ruleHeads ~ (":-" ~/ term.rep(1, sep = ",")).?).flatMap { case (hs, body) =>
         body match
           case Some(_) =>
-            // `heads :- body` matched \u2014 done.
             Pass.map(_ => (hs, body.map(_.toIndexedSeq)))
           case None =>
-            // No `:-` was found; check for the reversed `-:` form, otherwise
-            // accept as a bare-head fact. The reversed form is rare, so we
-            // probe for the `-:` token only after the heads parse cleanly.
             ("-:" ~/ ruleHeads).?.map {
               case Some(reversedHeads) =>
-                // `body -: heads` \u2014 what we just parsed as `heads` was actually
-                // the body, and the trailing ruleHeads are the real heads.
+                // What we parsed as `heads` was actually the body of `body -: heads`.
                 val bodyTerms = hs.collect { case RuleHead.TermHead(t) => t }
                 (reversedHeads, Some(bodyTerms))
               case None =>
-                // Bare-head fact (no body).
                 (hs, None)
             }
       }
