@@ -1084,7 +1084,7 @@ fact WorkItem(
   description: "scaland resync — stdlib / Prelude alignment. Make Scala's prelude + source-resolver aware of new stdlib files: stdlib/anthill/prelude/algebra.anthill (Ring, VectorSpace per WI-138); stdlib/anthill/geometry.anthill (Vec3 + algebraic-law rules per WI-137 — already parses post-WI-142 but not yet loaded by Prelude); stdlib/anthill/realization/witness.anthill (ProofWitness, SmtVerdict, SortBinding entities — registration only, no checking); stdlib/anthill/prelude/float.anthill (abs, sqrt, sin, cos, etc.). Recommendation: load via SourceResolver as ordinary .anthill files at startup, not embedded in Prelude.scala (parallel to how rustland's stdlib_embedded.rs handles these). Files: scaland/core/src/main/scala/anthill/load/Prelude.scala, load/SourceResolver.scala. Acceptance: sbt test green; new ParserIntegrationTest cases load each of the four stdlib files end-to-end and assert sort/entity/rule counts.",
   acceptance: [ToolPasses("scaland-sbt-test")],
   depends_on: ["WI-142"],
-  status: Claimed(agent: "user", since: "2026-05-02T09:36:29Z"))
+  status: Delivered(agent: "user", at: "2026-05-02T10:02:35Z"))
 
 fact WorkItem(
   id: "WI-154",
@@ -1133,5 +1133,12 @@ fact WorkItem(
   description: "anthill-todo CLI: track build version. Add a `version` subcommand printing semver + git SHA + build date, and a `--version` flag accepted at any subcommand position. Bake the metadata at build time via build.rs (env var ANTHILL_TODO_VERSION = workspace Cargo version; ANTHILL_TODO_SHA = `git rev-parse --short HEAD`; ANTHILL_TODO_BUILD = ISO-8601 UTC). Surface the same string in `--help` footer. Motivation: today there is no way to tell which build of `anthill-todo` is on PATH; a stale `~/.cargo/bin/anthill-todo` (pre-WI-085 grammar fix) emitted spurious parse warnings against the on-disk workitems file and the diagnosis required diffing binary mtimes. Generalises beyond anthill-todo: every CLI built from this workspace (`anthill`, `anthill-todo`, future tools) should embed the same version stamp, ideally via a small shared crate. Acceptance: cargo test green; `anthill-todo --version` prints a non-empty string; `anthill-todo version` matches; CI/regression test asserts the embedded SHA matches `git rev-parse --short HEAD` at build time.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-161",
+  description: "scaland resync — full prelude chain wiring. Extend EmbeddedStdlib.stdlibPaths beyond the WI-153 four-file set so transitive prelude imports actually resolve. Adds (in dependency order): stdlib/anthill/prelude/{eq,ordered,numeric,option,collection,iteration,indexed_seq,list}.anthill, plus stdlib/anthill/reflect/reflect.anthill (for reflect.Term needed by witness.anthill imports). Also: register Bool.ite and Int.neg as exports in scaland/core/src/main/scala/anthill/load/Prelude.scala — ordered.anthill imports them and they're not currently visible. Goal: drop the WI-153 isToleratedLoadError filter from ParserIntegrationTest and have stdlib load with zero LoadErrors. May surface latent loader bugs around parametric requires (currently TODO in Loader.processRequires) — fix opportunistically or flag as a follow-up. Files: scaland/core/src/main/scala/anthill/load/{EmbeddedStdlib,Prelude}.scala. Acceptance: sbt test green; ParserIntegrationTest.WI-153 cases drop their isToleratedLoadError filter and still pass.",
+  acceptance: [ToolPasses("scaland-sbt-test")],
+  depends_on: ["WI-153"],
   status: Open)
 
