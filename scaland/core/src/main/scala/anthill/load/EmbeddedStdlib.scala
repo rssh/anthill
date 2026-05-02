@@ -21,15 +21,24 @@ object EmbeddedStdlib:
     * Order matters: dependencies first.
     */
   val stdlibPaths: IndexedSeq[String] = IndexedSeq(
-    // WI-138: parametric algebra spec — Ring, VectorSpace
+    // ── prelude typeclass chain (WI-163: now safe to load — bare functor
+    //    names like `eq` / `neg` no longer collide with sort-defined ops
+    //    after registerStructuralOps was removed)
+    "anthill.prelude.eq",
+    "anthill.prelude.ordered",
+    "anthill.prelude.numeric",
+    "anthill.prelude.option",
+    "anthill.prelude.pair",
+    "anthill.prelude.indexed_seq",
+    // ── WI-138: parametric algebra spec — Ring, VectorSpace
     "anthill.prelude.algebra",
-    // WI-153: Float operations layered on Numeric + algebra.Ring
+    // ── WI-153: Float operations layered on Numeric + algebra.Ring
     "anthill.prelude.float",
-    // WI-137: Vec3 + EulerAngles + per-component vec_* rules + algebraic laws
+    // ── WI-137: Vec3 + EulerAngles + per-component vec_* rules + algebraic laws
     "anthill.geometry",
-    // Proposal 030 phase α / WI-155: ProofWitness + SmtVerdict + SortBinding
+    // ── proposal 030 phase α / WI-155: ProofWitness + SmtVerdict + SortBinding
     "anthill.realization.witness",
-    // WI-155: ProofRecord + ProofStrategyOpen + ProofBodyNone + Pending + ParametricBinding
+    // ── WI-155: ProofRecord + ProofStrategyOpen + ProofBodyNone + Pending + ParametricBinding
     "anthill.realization.realization",
   )
 

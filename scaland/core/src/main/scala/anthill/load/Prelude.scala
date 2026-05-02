@@ -18,7 +18,6 @@ object Prelude:
     registerKernelMetaSorts(kb)
     registerExprSorts(kb)
     registerStandardBuiltins(kb)
-    registerStructuralOps(kb)
     registerGlobalParents(kb)
 
   private def registerStdlibScopes(kb: KnowledgeBase): Unit =
@@ -152,17 +151,6 @@ object Prelude:
         case None =>
           val sym = kb.intern(qualName)
           kb.registerBuiltin(sym, tag)
-
-  /** Register structural operator names as prelude-level operations.
-    * These correspond to Pratt table functor mappings that don't belong to any specific sort.
-    */
-  private def registerStructuralOps(kb: KnowledgeBase): Unit =
-    val preludeScope = kb.resolveQualifiedNameTerm("anthill.prelude")
-    for name <- IndexedSeq("eq", "neq", "or", "and", "not", "arrow",
-        "lt", "lte", "gt", "gte", "div", "mod", "pow", "neg") do
-      val qualName = s"anthill.prelude.$name"
-      kb.symbols.define(name, qualName, SymbolKind.Operation, preludeScope.raw)
-      kb.symbols.addExport(preludeScope.raw, name)
 
   /** Add anthill.prelude and anthill.reflect as parents of _global,
     * making their exports visible everywhere.

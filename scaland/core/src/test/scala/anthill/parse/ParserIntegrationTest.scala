@@ -592,13 +592,21 @@ class ParserIntegrationTest extends munit.FunSuite:
     * those modules are loaded as part of EmbeddedStdlib.
     */
   private val ToleratedUnresolvedNames = Set(
-    "Eq", "Ordered", "Numeric", "List", "Option", "Term",
+    // Per-file WI-153 tests load only float/geometry; the typeclass
+    // chain (eq/ordered/numeric) isn't in their KB. EmbeddedStdlib full-load
+    // loads them, so these only fire on the narrower per-file tests.
+    "Eq", "Ordered", "Numeric",
+    // List/Option not yet in EmbeddedStdlib (WI-162: list.anthill parser gap).
+    "List", "Option", "Term",
     // realization.anthill imports — Meta typeclass + reflect.Symbol not yet loaded.
-    "Symbol", "ProofResult")
+    "Symbol", "ProofResult",
+    // ordered.anthill imports Bool.ite + Int.neg — bool.anthill / int.anthill
+    // don't parse yet (WI-162). Tolerate until those land.
+    "ite", "neg")
   private def isToleratedLoadError(e: LoadError): Boolean = e match
     case LoadError.UnresolvedName(n, _, _) => ToleratedUnresolvedNames(n)
     case LoadError.UnresolvedImport(p, _)  =>
-      p.startsWith("anthill.prelude.Ordered") || p == "anthill.prelude.Meta"
+      p == "anthill.prelude.Meta" || p == "anthill.prelude.Ordered"
     case _ => false
 
   /** Single-pass count of items whose `partial` is defined for them.
@@ -904,5 +912,41 @@ class ParserIntegrationTest extends munit.FunSuite:
       case other => fail(s"expected Fn for verdict, got $other")
     assert(functorQn(kb, verdictFn.functor).endsWith("Unsat"),
       s"expected Unsat, got ${functorQn(kb, verdictFn.functor)}")
+  }
+
+  // ── WI-163: bare `eq(?x, ?y)` resolves to Eq.eq with no ambiguity ─────
+
+  test("WI-163: bare `eq(?x, ?y)` in a rule resolves to anthill.prelude.Eq.eq") {
+    // Pre-fix this would have produced AmbiguousSymbol(eq, [anthill.prelude.eq,
+    // anthill.prelude.Eq.eq]). Post-fix the structural-op shim is gone and
+    // `eq` resolves uniquely through the loaded eq.anthill typeclass.
+    val src =
+      """sort Demo
+        |  rule same(?x, ?y) :- eq(?x, ?y)
+        |end""".stripMargin
+    val eqPf = parseStdlibFile("anthill.prelude.eq")
+    val userPf = Parser.parse(src, "<eq-test>") match
+      case Right(p) => p
+      case Left(errs) => fail(s"parse failed: ${errs.map(_.message).mkString("; ")}")
+
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val errs = Loader.loadAll(kb, IndexedSeq(eqPf, userPf))
+    val unrelated = errs.filterNot(isToleratedLoadError)
+    assert(unrelated.isEmpty, s"unexpected load errors: $unrelated")
+
+    // Find the same/2 rule and walk into its body to confirm `eq` resolved
+    // to anthill.prelude.Eq.eq (not the would-be-ambiguous anthill.prelude.eq).
+    // `same` is the rule's head functor — interned, not a registered Symbol.
+    val sameSym = kb.intern("same")
+    val rules = kb.byFunctor(sameSym)
+    assertEquals(rules.length, 1)
+    val body = kb.ruleBody(rules.head)
+    assertEquals(body.length, 1)
+    kb.getTerm(body.head) match
+      case fn: Term.Fn =>
+        assertEquals(functorQn(kb, fn.functor), "anthill.prelude.Eq.eq",
+          "bare eq(?x, ?y) should resolve uniquely to Eq.eq")
+      case other => fail(s"expected Fn for body atom, got $other")
   }
 
