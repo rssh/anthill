@@ -149,6 +149,18 @@ enum TodoCommand {
         /// Work item ID
         id: String,
     },
+    /// Update fields of a work item in place (preserves id, depends_on, status)
+    Update {
+        /// Work item ID
+        id: String,
+        /// New description
+        #[arg(long)]
+        description: Option<String>,
+        /// Replace acceptance criteria with the given tool names (e.g. cargo-test).
+        /// Pass `--acceptance` multiple times for multiple criteria.
+        #[arg(long = "acceptance")]
+        acceptance: Vec<String>,
+    },
     /// Add a dependency to a work item
     AddDependency {
         /// Work item ID
@@ -757,11 +769,12 @@ fn run_claim(kb: &mut KnowledgeBase, id: &str, agent: &str, project_dir: &Path) 
     kb.assert_fact(new_head, sort, domain, None);
 
     let status_text = format!("Claimed(agent: \"{agent}\", since: \"{}\")", now_timestamp());
-    if update_status_in_source(project_dir, id, &status_text) {
-        println!("claimed: {id} by {agent}");
-    } else {
-        eprintln!("warning: could not update source file for {id}");
-        println!("claimed: {id} by {agent} (in-memory only)");
+    match update_status_in_source(project_dir, id, &status_text) {
+        Ok(()) => println!("claimed: {id} by {agent}"),
+        Err(e) => {
+            eprintln!("warning: source update for {id} failed: {e}");
+            println!("claimed: {id} by {agent} (in-memory only)");
+        }
     }
 }
 
@@ -800,11 +813,12 @@ fn run_deliver(kb: &mut KnowledgeBase, id: &str, agent: &str, project_dir: &Path
     kb.assert_fact(new_head, sort, domain, None);
 
     let status_text = format!("Delivered(agent: \"{agent}\", at: \"{}\")", now_timestamp());
-    if update_status_in_source(project_dir, id, &status_text) {
-        println!("delivered: {id} by {agent}");
-    } else {
-        eprintln!("warning: could not update source file for {id}");
-        println!("delivered: {id} by {agent} (in-memory only)");
+    match update_status_in_source(project_dir, id, &status_text) {
+        Ok(()) => println!("delivered: {id} by {agent}"),
+        Err(e) => {
+            eprintln!("warning: source update for {id} failed: {e}");
+            println!("delivered: {id} by {agent} (in-memory only)");
+        }
     }
 }
 
@@ -839,11 +853,12 @@ fn run_verify(kb: &mut KnowledgeBase, id: &str, project_dir: &Path) {
     kb.assert_fact(new_head, sort, domain, None);
 
     let status_text = format!("Verified(at: \"{}\")", now_timestamp());
-    if update_status_in_source(project_dir, id, &status_text) {
-        println!("verified: {id}");
-    } else {
-        eprintln!("warning: could not update source file for {id}");
-        println!("verified: {id} (in-memory only)");
+    match update_status_in_source(project_dir, id, &status_text) {
+        Ok(()) => println!("verified: {id}"),
+        Err(e) => {
+            eprintln!("warning: source update for {id} failed: {e}");
+            println!("verified: {id} (in-memory only)");
+        }
     }
 }
 
@@ -999,71 +1014,97 @@ fn find_fact_block(project_dir: &Path, id: &str) -> Option<(PathBuf, String, usi
     None
 }
 
-fn update_status_in_source(project_dir: &Path, id: &str, new_status: &str) -> bool {
-    let (file, source, abs_start, abs_end) = match find_fact_block(project_dir, id) {
-        Some(t) => t,
-        None => return false,
-    };
-
-    let fact_text = &source[abs_start..abs_end];
-    if let Some(status_offset) = fact_text.find("status: ") {
-        let status_abs = abs_start + status_offset;
-        let old_end = abs_end - 1;
-        let mut result = String::new();
-        result.push_str(&source[..status_abs]);
-        result.push_str("status: ");
-        result.push_str(new_status);
-        result.push_str(&source[old_end..]);
-
-        if let Err(e) = fs::write(&file, &result) {
-            eprintln!("warning: cannot write {}: {e}", file.display());
-            return false;
-        }
-        return true;
-    }
-    false
+fn write_source(file: &Path, content: &str) -> Result<(), String> {
+    fs::write(file, content).map_err(|e| format!("cannot write {}: {e}", file.display()))
 }
 
-fn update_depends_in_source(project_dir: &Path, id: &str, new_deps: &[String]) -> bool {
-    let (file, source, abs_start, abs_end) = match find_fact_block(project_dir, id) {
-        Some(t) => t,
-        None => return false,
-    };
+fn update_status_in_source(project_dir: &Path, id: &str, new_status: &str) -> Result<(), String> {
+    let (file, source, abs_start, abs_end) = find_fact_block(project_dir, id)
+        .ok_or_else(|| format!("no fact block for {id}"))?;
 
-    let deps_text = format_string_list(new_deps);
     let fact_text = &source[abs_start..abs_end];
-    if let Some(deps_offset) = fact_text.find("depends_on: ") {
-        let deps_abs = abs_start + deps_offset;
-        let list_start = deps_abs + "depends_on: ".len();
-        let mut bracket_depth = 0;
-        let mut list_end = list_start;
-        for (i, ch) in source[list_start..].char_indices() {
-            match ch {
-                '[' => bracket_depth += 1,
-                ']' => {
-                    bracket_depth -= 1;
-                    if bracket_depth == 0 {
-                        list_end = list_start + i + 1;
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
+    let status_offset = fact_text.find("status: ").ok_or("no `status:` field")?;
+    let status_abs = abs_start + status_offset;
+    // status is always written as the last field, so its value runs to the closing `)`.
+    let old_end = abs_end - 1;
 
-        let mut result = String::new();
-        result.push_str(&source[..deps_abs]);
-        result.push_str("depends_on: ");
-        result.push_str(&deps_text);
-        result.push_str(&source[list_end..]);
+    let mut result = String::new();
+    result.push_str(&source[..status_abs]);
+    result.push_str("status: ");
+    result.push_str(new_status);
+    result.push_str(&source[old_end..]);
 
-        if let Err(e) = fs::write(&file, &result) {
-            eprintln!("warning: cannot write {}: {e}", file.display());
-            return false;
+    write_source(&file, &result)
+}
+
+fn update_depends_in_source(project_dir: &Path, id: &str, new_deps: &[String]) -> Result<(), String> {
+    let (file, source, abs_start, abs_end) = find_fact_block(project_dir, id)
+        .ok_or_else(|| format!("no fact block for {id}"))?;
+
+    let fact_text = &source[abs_start..abs_end];
+    let deps_offset = fact_text.find("depends_on: ").ok_or("no `depends_on:` field")?;
+    let deps_abs = abs_start + deps_offset;
+    let list_start = deps_abs + "depends_on: ".len();
+    let list_end = scan_bracket_list_end(&source, list_start)
+        .ok_or("malformed `depends_on:` list")?;
+
+    let mut result = String::new();
+    result.push_str(&source[..deps_abs]);
+    result.push_str("depends_on: ");
+    result.push_str(&format_string_list(new_deps));
+    result.push_str(&source[list_end..]);
+
+    write_source(&file, &result)
+}
+
+fn update_description_in_source(project_dir: &Path, id: &str, new_description: &str) -> Result<(), String> {
+    let (file, source, abs_start, abs_end) = find_fact_block(project_dir, id)
+        .ok_or_else(|| format!("no fact block for {id}"))?;
+
+    let fact_text = &source[abs_start..abs_end];
+    let key = "description: \"";
+    let key_offset = fact_text.find(key).ok_or("no `description:` field")?;
+    let value_start = abs_start + key_offset + key.len();
+
+    let mut escaped = false;
+    let mut value_end: Option<usize> = None;
+    for (i, ch) in source[value_start..].char_indices() {
+        if escaped { escaped = false; continue; }
+        match ch {
+            '\\' => escaped = true,
+            '"' => { value_end = Some(value_start + i); break; }
+            _ => {}
         }
-        return true;
     }
-    false
+    let value_end = value_end.ok_or("unterminated description string")?;
+
+    let mut result = String::new();
+    result.push_str(&source[..value_start]);
+    result.push_str(&escape_anthill_string(new_description));
+    result.push_str(&source[value_end..]);
+
+    write_source(&file, &result)
+}
+
+fn update_acceptance_in_source(project_dir: &Path, id: &str, new_tools: &[String]) -> Result<(), String> {
+    let (file, source, abs_start, abs_end) = find_fact_block(project_dir, id)
+        .ok_or_else(|| format!("no fact block for {id}"))?;
+
+    let fact_text = &source[abs_start..abs_end];
+    let key = "acceptance: ";
+    let key_offset = fact_text.find(key).ok_or("no `acceptance:` field")?;
+    let key_abs = abs_start + key_offset;
+    let list_start = key_abs + key.len();
+    let list_end = scan_bracket_list_end(&source, list_start)
+        .ok_or("malformed `acceptance:` list")?;
+
+    let mut result = String::new();
+    result.push_str(&source[..key_abs]);
+    result.push_str(key);
+    result.push_str(&format_acceptance_list(new_tools));
+    result.push_str(&source[list_end..]);
+
+    write_source(&file, &result)
 }
 
 fn format_string_list(items: &[String]) -> String {
@@ -1073,6 +1114,37 @@ fn format_string_list(items: &[String]) -> String {
         let quoted: Vec<String> = items.iter().map(|s| format!("\"{s}\"")).collect();
         format!("[{}]", quoted.join(", "))
     }
+}
+
+fn format_acceptance_list(tools: &[String]) -> String {
+    if tools.is_empty() {
+        "[]".to_string()
+    } else {
+        let items: Vec<String> = tools.iter().map(|a| format!("ToolPasses(\"{a}\")")).collect();
+        format!("[{}]", items.join(", "))
+    }
+}
+
+fn escape_anthill_string(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Scan from `list_start` (which must point at `[`) to the matching `]`.
+/// Returns the absolute index just past the closing bracket, or None if unbalanced.
+fn scan_bracket_list_end(source: &str, list_start: usize) -> Option<usize> {
+    if !source[list_start..].starts_with('[') { return None; }
+    let mut depth = 0;
+    for (i, ch) in source[list_start..].char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 { return Some(list_start + i + 1); }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn append_to_file(path: &Path, text: &str) {
@@ -1240,10 +1312,9 @@ fn run_add_dependency(kb: &KnowledgeBase, project_dir: &Path, id: &str, dep_id: 
     let mut new_deps = item.depends_on.clone();
     new_deps.push(dep_id.to_string());
 
-    if update_depends_in_source(project_dir, id, &new_deps) {
-        println!("added dependency: {id} -> {dep_id}");
-    } else {
-        eprintln!("error: could not update source file for {id}");
+    match update_depends_in_source(project_dir, id, &new_deps) {
+        Ok(()) => println!("added dependency: {id} -> {dep_id}"),
+        Err(e) => eprintln!("error: source update for {id} failed: {e}"),
     }
 }
 
@@ -1264,11 +1335,52 @@ fn run_remove_dependency(kb: &KnowledgeBase, project_dir: &Path, id: &str, dep_i
         .cloned()
         .collect();
 
-    if update_depends_in_source(project_dir, id, &new_deps) {
-        println!("removed dependency: {id} -> {dep_id}");
-    } else {
-        eprintln!("error: could not update source file for {id}");
+    match update_depends_in_source(project_dir, id, &new_deps) {
+        Ok(()) => println!("removed dependency: {id} -> {dep_id}"),
+        Err(e) => eprintln!("error: source update for {id} failed: {e}"),
     }
+}
+
+// ── Update command ──────────────────────────────────────────────
+
+fn run_update(
+    kb: &KnowledgeBase,
+    project_dir: &Path,
+    id: &str,
+    description: Option<&str>,
+    acceptance: &[String],
+) {
+    let items = collect_workitems(kb);
+    if !items.iter().any(|i| i.id == id) {
+        eprintln!("error: work item '{id}' not found");
+        return;
+    }
+
+    // clap gives an empty Vec when --acceptance is not passed; treat that as "no change".
+    let update_acceptance = !acceptance.is_empty();
+
+    if description.is_none() && !update_acceptance {
+        eprintln!("error: nothing to update — pass --description and/or --acceptance");
+        return;
+    }
+
+    let mut changed = Vec::new();
+
+    if let Some(desc) = description {
+        match update_description_in_source(project_dir, id, desc) {
+            Ok(()) => changed.push("description"),
+            Err(e) => { eprintln!("error: update description for {id}: {e}"); return; }
+        }
+    }
+
+    if update_acceptance {
+        match update_acceptance_in_source(project_dir, id, acceptance) {
+            Ok(()) => changed.push("acceptance"),
+            Err(e) => { eprintln!("error: update acceptance for {id}: {e}"); return; }
+        }
+    }
+
+    println!("updated {id}: {}", changed.join(", "));
 }
 
 // ── Init command ────────────────────────────────────────────────
@@ -1337,15 +1449,14 @@ fn run_add(kb: &KnowledgeBase, project_dir: &Path, description: &str, depends_on
             return;
         }
     };
-    let desc_escaped = description.replace('"', "\\\"");
+    let desc_escaped = escape_anthill_string(description);
 
     let deps = format_string_list(depends_on);
 
     let acc = if acceptance.is_empty() {
-        "[ToolPasses(\"cargo-test\")]".to_string()
+        format_acceptance_list(&["cargo-test".to_string()])
     } else {
-        let items: Vec<String> = acceptance.iter().map(|a| format!("ToolPasses(\"{a}\")")).collect();
-        format!("[{}]", items.join(", "))
+        format_acceptance_list(acceptance)
     };
 
     let block = format!(
@@ -1409,6 +1520,9 @@ fn main() -> ExitCode {
         TodoCommand::Deliver { id } => run_deliver(&mut kb, id, &cli.agent, &project_dir),
         TodoCommand::Verify { id } => run_verify(&mut kb, id, &project_dir),
         TodoCommand::Feedback { id, text } => run_feedback(&mut kb, id, text, &cli.agent, &project_dir),
+        TodoCommand::Update { id, description, acceptance } => {
+            run_update(&kb, &project_dir, id, description.as_deref(), acceptance);
+        }
         TodoCommand::AddDependency { id, dependency } => run_add_dependency(&kb, &project_dir, id, dependency),
         TodoCommand::RemoveDependency { id, dependency } => run_remove_dependency(&kb, &project_dir, id, dependency),
         TodoCommand::Graph => run_graph(&kb),

@@ -273,7 +273,7 @@ fact WorkItem(
   description: "Add 'update' subcommand to anthill-todo CLI: update <ID> [--description TEXT] [--acceptance ACC]... to edit work item fields in place. Currently description/acceptance edits require manual .anthill file edit or delete+add (which loses the ID and history). Should rewrite the WorkItem fact in workitems.anthill preserving id, depends_on, status.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-02T07:35:48Z"))
 
 fact WorkItem(
   id: "WI-042",
