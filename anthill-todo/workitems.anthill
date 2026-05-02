@@ -47,7 +47,7 @@ fact WorkItem(
   id: "WI-009",
   description: "port todo-app to anthill",
   acceptance: [ToolPasses("cargo-test")],
-  depends_on: ["WI-051", "WI-159"],
+  depends_on: ["WI-051", "WI-159", "WI-164"],
   status: Open)
 
 fact WorkItem(
@@ -1155,4 +1155,11 @@ fact WorkItem(
   acceptance: [ToolPasses("scaland-sbt-test")],
   depends_on: [],
   status: Delivered(agent: "user", at: "2026-05-02T10:31:41Z"))
+
+fact WorkItem(
+  id: "WI-164",
+  description: "realization profile `rust+anthill` — hybrid bundle of Rust shim + embedded anthill spec. Sibling to `rust_std` (full codegen) and `cpp_std`. Captures the anthill→(Rust shim + embedded spec) realization where the program is interpreted at runtime by a thin Rust host that bakes the .anthill files via include_str! and dispatches `main(args)` through the WI-051 interpreter. Composable with `rust_std` at sort granularity: some sorts realize to native Rust, others stay interpreted in the same binary. Schema delta: the realization layer today says \"spec X is replaced by host code Y\" (rust_std/cpp_std are substitution profiles); rust+anthill needs an *embedding* profile shape — a new `runtime_form` discriminator on LanguageMapping (or equivalent) distinguishing substitution from embedding, plus an AnthillBundle entity (files: List[String], entry: Symbol, effect_handlers: List[T = HandlerBinding]) naming what to bake in and how to wire effects. Includes: stdlib/anthill/realization/rust_anthill.anthill — LanguageMapping fact + supporting entities; codegen knob in anthill-rust-gen (proposal 029) to honour the embed shape — emit a thin shim crate that builds KB from include_str!d files at startup, registers stdlib + project handlers, calls interp.call(entry_qname, args). Driver / acceptance: anthill-todo (WI-009) is the first consumer — its WorkItem entities + workflow rules realize via rust+anthill, the resulting `cargo install` ships one static binary with no .anthill files on disk; integration test asserts `target/release/anthill-todo list` works in a fresh tempdir without runtime stdlib lookup. Migration story: rust+anthill is the bridge from WI-009a (interpret everything, ship now) to WI-009b (rust_std for hot sorts, no interpreter): per-sort profile flip, no rewrite, identical user-facing binary. Out of scope for v1: full anthill-rust-gen (proposal 029); per-effect codegen knobs beyond Console/Modify/Error; no_std bundle variant.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
 
