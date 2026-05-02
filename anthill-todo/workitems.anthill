@@ -1163,3 +1163,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-05-02T10:13:31Z"))
 
+fact WorkItem(
+  id: "WI-162",
+  description: "Publish anthill workspace crates to crates.io. Anthill is now meaningfully usable end-to-end (parser, KB, SLD, interpreter via WI-051, stdlib argparse via WI-159, rust+anthill bundling via WI-161) — time to make it discoverable. Sweep all workspace crates: anthill-core (foundation), anthill-cli (the `anthill` binary), anthill-stl (codegen runtime), anthill-todo (work-item CLI), anthill-cpp-gen / anthill-rust-gen / anthill-smt-gen (codegen). Per crate add: license = \"MIT OR Apache-2.0\" (or Apache-2.0 alone if preferred), repository (github), readme, expanded description (one-line), keywords, categories. Add a `version = \"...\"` clause alongside every `path = \"..\"` inter-crate dep so consumers from the registry resolve correctly while local dev still uses path. Verify name availability on crates.io for all seven names — if any is taken, propose an alternative now (e.g. `anthill-lang-core`). Decide initial version: probably 0.1.0 to signal pre-stable; add CHANGELOG.md per crate or a single workspace-level one. Acceptance: cargo publish --dry-run --allow-dirty succeeds for every crate in dependency order (anthill-core first, leaf crates last); a RELEASE.md runbook lives in the repo root documenting the publish order, version-bump checklist, and yank policy; CI gate that runs `cargo publish --dry-run` for changed crates on PR. Out of scope for v1: cargo-release / release-please automation; signed releases; private mirror. Driver: WI-009 (the anthill-todo port) ships as `cargo install anthill-todo` once this lands. Sibling track: a follow-up Path-B git-rev mode for `anthill codegen bundle` lands first as a stopgap so iterations on WI-009 can keep moving without polluting the registry; that work is captured separately.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+

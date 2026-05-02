@@ -10,4 +10,4 @@
 
 pub mod bundle;
 
-pub use bundle::{generate_bundle, BundleError, BundleOptions};
+pub use bundle::{generate_bundle, BundleError, BundleOptions, CoreDep};

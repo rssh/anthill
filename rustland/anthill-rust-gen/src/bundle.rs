@@ -39,6 +39,21 @@ impl std::fmt::Display for BundleError {
 }
 impl std::error::Error for BundleError {}
 
+/// How the generated `Cargo.toml` should reference `anthill-core`.
+///
+/// `Path` is the development default — points at a local checkout, builds
+/// instantly without the network, but is not portable across machines.
+/// `Git` pins to a specific commit on a public repository — portable and
+/// reproducible without crates.io publication; the consumer needs git
+/// access at build time. When `anthill-core` ships to crates.io a third
+/// `Registry { version }` variant becomes the right default; until then
+/// `Git` is the recommended portable choice.
+#[derive(Clone, Debug)]
+pub enum CoreDep {
+    Path(PathBuf),
+    Git { url: String, rev: String },
+}
+
 /// Inputs for [`generate_bundle`].
 #[derive(Clone, Debug)]
 pub struct BundleOptions {
@@ -55,11 +70,9 @@ pub struct BundleOptions {
     /// Path to the workspace's `stdlib/anthill/` directory. Every `.anthill`
     /// file underneath is vendored into the bundle.
     pub stdlib_dir: PathBuf,
-    /// Path to the `anthill-core` crate to use as a path dependency. The
-    /// generated `Cargo.toml` references it absolutely so the bundle can
-    /// be built without further setup. For published distributions this
-    /// will be replaced by a crates.io version once anthill-core ships.
-    pub anthill_core_path: PathBuf,
+    /// How the generated `Cargo.toml` references `anthill-core`. See
+    /// [`CoreDep`] for the trade-offs between path / git / registry.
+    pub anthill_core_dep: CoreDep,
 }
 
 /// Emit the bundle into `output_dir`. The directory is created if absent;
@@ -97,7 +110,7 @@ pub fn generate_bundle(opts: &BundleOptions, output_dir: &Path) -> Result<(), Bu
         return Err(BundleError::StdlibNotFound(opts.stdlib_dir.clone()));
     }
 
-    // Cargo.toml.
+    let core_dep = render_core_dep(&opts.anthill_core_dep);
     let cargo_toml = format!(
         r#"[package]
 name = "{name}"
@@ -110,11 +123,10 @@ name = "{name}"
 path = "src/main.rs"
 
 [dependencies]
-anthill-core = {{ path = "{core}" }}
+anthill-core = {core_dep}
 "#,
         name = opts.project_name,
         desc = escape_toml(&opts.description),
-        core = opts.anthill_core_path.display(),
     );
     let cargo_path = output_dir.join("Cargo.toml");
     fs::write(&cargo_path, cargo_toml).map_err(|e| BundleError::Io(e, cargo_path.clone()))?;
@@ -166,6 +178,15 @@ fn copy_anthill_tree(
 
 fn escape_toml(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn render_core_dep(dep: &CoreDep) -> String {
+    match dep {
+        CoreDep::Path(p) => format!("{{ path = \"{}\" }}", escape_toml(&p.display().to_string())),
+        CoreDep::Git { url, rev } => {
+            format!("{{ git = \"{}\", rev = \"{}\" }}", escape_toml(url), escape_toml(rev))
+        }
+    }
 }
 
 /// Render the generated `src/main.rs`. The shim parses the embedded sources,

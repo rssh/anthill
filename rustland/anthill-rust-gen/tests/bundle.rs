@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use anthill_rust_gen::{generate_bundle, BundleError, BundleOptions};
+use anthill_rust_gen::{generate_bundle, BundleError, BundleOptions, CoreDep};
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -42,7 +42,7 @@ end
 "#.into(),
         )],
         stdlib_dir: stdlib_dir(),
-        anthill_core_path: anthill_core_dir(),
+        anthill_core_dep: CoreDep::Path(anthill_core_dir()),
     }
 }
 
@@ -103,6 +103,24 @@ fn emitted_bundle_compiles() {
         .status()
         .expect("invoke cargo check");
     assert!(status.success(), "emitted bundle failed to cargo check");
+}
+
+#[test]
+fn git_dep_renders_url_and_rev() {
+    let tmp = tempdir();
+    let mut opts = options(&tmp);
+    opts.anthill_core_dep = CoreDep::Git {
+        url: "https://github.com/example/anthill".into(),
+        rev: "deadbeef".into(),
+    };
+    generate_bundle(&opts, &tmp).expect("generate");
+    let cargo = std::fs::read_to_string(tmp.join("Cargo.toml")).unwrap();
+    assert!(
+        cargo.contains("anthill-core = { git = \"https://github.com/example/anthill\", rev = \"deadbeef\" }"),
+        "Cargo.toml carries git+rev dep, got:\n{cargo}",
+    );
+    assert!(!cargo.contains("anthill-core = { path"),
+            "git mode should not emit a path dep for anthill-core");
 }
 
 #[test]

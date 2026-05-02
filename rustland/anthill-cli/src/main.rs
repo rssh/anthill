@@ -88,6 +88,18 @@ struct BundleArgs {
     /// One-line description for the generated `Cargo.toml`. Optional.
     #[arg(long, default_value = "")]
     description: String,
+
+    /// Reference anthill-core via a git URL instead of a local path. When
+    /// set, the generated Cargo.toml uses `{ git = ..., rev = ... }`. The
+    /// resulting bundle is portable across machines (build needs git +
+    /// network, but no local checkout). Requires `--git-rev`.
+    #[arg(long = "git-url")]
+    git_url: Option<String>,
+
+    /// Pin the git dependency to this commit / tag / branch ref. Used
+    /// only when `--git-url` is also passed.
+    #[arg(long = "git-rev")]
+    git_rev: Option<String>,
 }
 
 #[derive(Parser)]
@@ -587,14 +599,33 @@ fn run_codegen_bundle(args: &BundleArgs) -> Result<(), i32> {
         user_sources.push((rel, content));
     }
 
-    // Locate the workspace's stdlib and anthill-core crate. The CLI binary
-    // lives at <ws>/rustland/target/debug/anthill (or release), so the
-    // workspace root is two parents above the binary's parent.
-    let (stdlib_dir, anthill_core_path) = match locate_workspace_paths() {
-        Some(t) => t,
-        None => {
-            eprintln!("error: cannot locate stdlib or anthill-core relative to this binary");
+    // Resolve how to reference anthill-core in the generated Cargo.toml.
+    // git mode requires both --git-url and --git-rev; path mode auto-locates
+    // the workspace via env var or by walking upward from the running binary.
+    let (stdlib_dir, anthill_core_dep) = match (&args.git_url, &args.git_rev) {
+        (Some(url), Some(rev)) => {
+            let stdlib_dir = match locate_stdlib_dir() {
+                Some(d) => d,
+                None => {
+                    eprintln!("error: cannot locate stdlib relative to this binary");
+                    return Err(1);
+                }
+            };
+            (stdlib_dir, anthill_rust_gen::CoreDep::Git { url: url.clone(), rev: rev.clone() })
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            eprintln!("error: --git-url and --git-rev must be passed together");
             return Err(1);
+        }
+        (None, None) => {
+            let (stdlib_dir, core_path) = match locate_workspace_paths() {
+                Some(t) => t,
+                None => {
+                    eprintln!("error: cannot locate stdlib or anthill-core relative to this binary");
+                    return Err(1);
+                }
+            };
+            (stdlib_dir, anthill_rust_gen::CoreDep::Path(core_path))
         }
     };
 
@@ -604,7 +635,7 @@ fn run_codegen_bundle(args: &BundleArgs) -> Result<(), i32> {
         entry_qname: args.entry.clone(),
         user_sources,
         stdlib_dir,
-        anthill_core_path,
+        anthill_core_dep,
     };
 
     if let Err(e) = anthill_rust_gen::generate_bundle(&opts, &args.output_dir) {
@@ -627,6 +658,12 @@ fn relative_under_paths(file: &Path, paths: &[PathBuf]) -> Option<String> {
         }
     }
     None
+}
+
+/// Locate the stdlib/anthill directory only (used by git-mode bundling,
+/// where anthill-core is referenced via git rather than a local path).
+fn locate_stdlib_dir() -> Option<PathBuf> {
+    locate_workspace_paths().map(|(stdlib, _)| stdlib)
 }
 
 /// Locate the stdlib/anthill and anthill-core paths in the running workspace.
