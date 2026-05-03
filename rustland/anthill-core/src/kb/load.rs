@@ -162,6 +162,11 @@ impl LoadError {
             }
         }
     }
+
+    /// Fatal: codegen and interpretation must not proceed when ill-typed.
+    pub fn is_type_error(&self) -> bool {
+        matches!(self, LoadError::TypeMismatch { .. })
+    }
 }
 
 impl std::fmt::Display for LoadError {

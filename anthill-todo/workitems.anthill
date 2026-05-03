@@ -75,7 +75,7 @@ fact WorkItem(
   description: "Fix field access (dot projection) in expression bodies: p.fst after = doesn't parse. field_access works in rule bodies but not expression context. Likely conflict between identifier.identifier as qualified name vs field access.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-03T17:01:19Z"))
 
 fact WorkItem(
   id: "WI-014",
@@ -251,7 +251,7 @@ fact WorkItem(
   description: "Expression type-checking phase 2: if_expr, let_expr, match_expr, lambda, collection literals. Requires pattern matching, env extension, type inference with fresh type vars.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-032"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-03T16:44:00Z"))
 
 fact WorkItem(
   id: "WI-039",
@@ -347,10 +347,10 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-052",
-  description: "026.1 Q4 (optional follow-up): external-backed stream sources. Add StreamSource::External(Box<dyn ExternalStream>) yielding Value::Entity rows without TermStore promotion — lineage-preserving. Example implementation: file-backed WorkItem store for examples/github-todo. Acceptance: 10k-row external scan does NOT grow main TermStore (assert size bounded by KB-resident facts + query goals). Not required for v1 evaluator correctness. Proposal 026.1 Q4 + §Scale: external-backed KBs.",
+  description: "026.1 Q4 — external-backed stream sources (substrate). Adds eval::stream::ExternalStream Rust trait + StreamSource::External(Box<dyn ExternalStream>) variant yielding Value::Entity rows without TermStore promotion (lineage-preserving). KB.term_store_len() exposed for diagnostic assertions. Example: in-memory WorkItemRowStream in tests/eval_q4_test.rs. Acceptance: 10K-row external scan drains via splitFirst and main TermStore size is unchanged from baseline (eval_q4_test::q4_ten_thousand_row_scan_does_not_grow_term_store). Reconciles with proposal 007 §11 — see the new §11 'Q4 implementation contract (landed)'. Stage B (resolver-side routing wiring) tracked separately under WI-052b. Proposal 026.1 Q4 + §Scale: external-backed KBs.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-048"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-03T13:50:00Z"))
 
 fact WorkItem(
   id: "WI-053",
@@ -1192,6 +1192,13 @@ fact WorkItem(
   status: Verified(at: "2026-05-03T10:34:16Z"))
 
 fact WorkItem(
+  id: "WI-052b",
+  description: "026.1 Q4 Stage B (delivered) — routing-side wiring for external-source backends. Adds the resolver path that turns a goal whose head functor has a registered route handler into ExternalRow candidates pulled from a Box<dyn ExternalStream>. Concrete pieces: (1) RouteHandler trait + RouteRegistry on KB (kb/route.rs); (2) Candidate::ExternalRow variant in kb/resolve.rs; (3) step_init eager-drain of the registered handler's stream after the discrim-tree query, with match_view + bind_value preserving Value::Entity / Value::Str lineage; (4) is_duplicate_projection skipped when σ has any non-Term Value binding (reify can't see those, so dedup would collapse genuinely distinct external rows); (5) public KB API: register_route_handler / route_handler_for. Acceptance: tests/route_dispatch_test.rs::stage_b_routed_goal_yields_external_rows — register a 3-row WorkItemBackend, query WorkItem(id: ?, description: ?), assert 3 distinct solutions surface as Value::Str bindings, and KB.term_store_len() unchanged from baseline. All workspace tests pass. Follow-ups (separate WIs): (a) lazy per-iteration stream pumping (current path is eager-drain — correct, but materializes a Candidate per matching row); (b) anthill-level retrieve(store, pattern) builtin matching the stdlib operation signature in stdlib/anthill/persistence/store.anthill (currently List[Term]; needs to evolve to Stream[Term] to align with Q4 — design decision pending); (c) consult anthill-level route(GoalSort(?))=Store rules at resolution time instead of the direct functor→handler registry (concrete-backend-driven).",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-052"],
+  status: Delivered(agent: "claude", at: "2026-05-03T13:55:00Z"))
+
+fact WorkItem(
   id: "WI-169",
   description: "Synth-rule lifetime management. Proposal 033 §M4 / WI-076 introduced `synthesize_conjunction_rule` (kb/execute.rs) which asserts a fresh `_synth_N(?vars) :- body` rule into the KB on every multi-goal disjunction or negation branch lowering. The synth rule persists for the lifetime of the KB — long-running processes that issue many reflect queries with multi-goal branches accumulate symbol-table entries, RuleEntry allocations, and discrim-tree leaves indefinitely. Each synth functor is unique by construction, so structural dedup never collapses identical synths. The cost per call is bounded (~one rule + one symbol + one discrim leaf) but unbounded in aggregate. Concrete fix options: (a) Have `execute_logical_query` return a SearchStream wrapper that retracts collected synth RuleIds on drop. `KnowledgeBase::retract` (kb/mod.rs:710) already handles index/refcount cleanup correctly. (b) Track synth rules in a per-query arena and bulk-retract after stream exhaustion. (c) Cache by structural body hash so repeated identical queries reuse one synth rule. The interned synth symbol can't be reclaimed without symbol-table GC, but bounding RuleEntry growth is the larger leak. Acceptance: long-running test that issues N multi-goal disjunction queries asserts KB rule count stays bounded (or grows by less than N). Background: kb/eval/builtins.rs:543 (kb_execute) is the long-running entry point; tests/eval_q3_test.rs::q3_disjunction_multi_goal_branch_lifts_via_synthesized_rule etc. exercise the synth path.",
   acceptance: [ToolPasses("cargo-test")],
@@ -1212,3 +1219,4 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "user", at: "2026-05-03T14:24:59Z"))
 
+fact Feedback(content: "Verified resolved. Reproducer parses + loads cleanly: 'operation get_fst(p: Pair) -> Int = p.fst' (sort body and top-level). Likely fixed by commit ccee078 'grammar: dotted functor in fn_term reduces via field_access' which added the [$._atom_term, $.fn_term] conflict resolution and field_access into _atom_term. Added parse_field_access_in_operation_body regression test in parse_test.rs.", at: "2026-05-03T17:01:18Z", workitem: "WI-013", author: "user")

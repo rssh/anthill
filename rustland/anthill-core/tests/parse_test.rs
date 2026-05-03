@@ -2406,6 +2406,31 @@ fn parse_field_access_in_infix() {
 }
 
 #[test]
+fn parse_field_access_in_operation_body() {
+    // `p.fst` after `=` must parse as field_access, not be eaten by
+    // the qualified-name lookahead.
+    let source = "namespace t\n  sort Pair\n    entity P(fst: Int, snd: Int)\n  end\n  operation get_fst(p: Pair) -> Int =\n    p.fst\nend\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    fn find_op(items: &[Item]) -> Option<&Operation> {
+        for i in items {
+            match i {
+                Item::Operation(o) => return Some(o),
+                Item::Namespace(n) => if let Some(o) = find_op(&n.items) { return Some(o); },
+                Item::SortWithBody(s) => if let Some(o) = find_op(&s.items) { return Some(o); },
+                _ => {}
+            }
+        }
+        None
+    }
+    let op = find_op(&parsed.items).expect("expected operation item");
+    let body = op.body.expect("operation should have a body");
+    assert_eq!(
+        fmt_ir_term(&parsed.terms, &parsed.symbols, body),
+        "field_access(p, fst)",
+    );
+}
+
+#[test]
 fn parse_arrow_type_unary() {
     let source = "operation map(f: (A) -> B) -> C\n";
     let parsed = parse::parse(source).expect("parse failed");

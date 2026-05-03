@@ -526,10 +526,17 @@ fn load_kb_with_stdlib(paths: &[PathBuf], verbose: bool, include_stdlib: bool)
 
     let refs: Vec<&ParsedFile> = parsed_files.iter().collect();
     if let Err(load_errors) = load::load_all(&mut kb, &refs, &resolver) {
-        // Print load errors as warnings — some unresolved names are expected
-        // when loading without the full stdlib
+        let mut had_type_error = false;
         for e in &load_errors {
-            eprintln!("warning: {e}");
+            if e.is_type_error() {
+                had_type_error = true;
+                eprintln!("error: {e}");
+            } else {
+                eprintln!("warning: {e}");
+            }
+        }
+        if had_type_error {
+            return Err(1);
         }
     }
 

@@ -398,14 +398,16 @@ This makes the ingestion contract **uniform across backends**: every store's `re
 
 The parser-based path is what `examples/github-todo/docs/pluggable-backend.md` anticipates for its `local | github | api` backend taxonomy: each backend produces anthill-formatted rows; the parser is the shared converter; the resolver consumes them via TermView.
 
-#### `retrieve` return type — abstract `Term`, concrete bifurcation
+#### `retrieve` return type — `Term` at the spec level, `TermView` at the carrier
 
-The abstract `retrieve` operation (§4) returns `List[T = Term]`. The `Term` here is the public abstract sort from `anthill.reflect`. At the carrier-binding level (§9 *Implementation Facts*), `Term` resolves to either:
+The abstract `retrieve` operation (§4) returns `List[Term]`. The `Term` here is the public abstract sort from `anthill.reflect` — that is the only level at which anthill code holds a result.
+
+The implementation-side contract is sharper: what the resolver actually consumes from a `retrieve` result is a `TermView` — the Rust trait introduced by [026.1 Q2](026.1-value-integrated-kb-queries.md) that abstracts over the row's *carrier representation*. Two carriers satisfy `TermView`:
 
 - `TermId` — when the backend hash-conses every row into the main `TermStore` (path 1 above).
-- `Value::Entity` (or another non-`Term` `Value` variant) — when the backend yields rows via Q4's `StreamSource::External` (path 2 above).
+- `Value::Entity` (or another non-`Value::Term` variant) — when the backend yields rows via Q4's `StreamSource::External` (path 2 above).
 
-Callers at the anthill level cannot distinguish the two — both flow through `TermView`. This is the same lineage-preservation principle 026.1 enforces for `Substitution` bindings.
+`TermView` is deliberately *not* exposed as a sort in `anthill.reflect`. That would leak Rust-side representation polymorphism into the kernel language for no gain — anthill code can only observe a `Term`, and which carrier backs it is a residency decision the runtime owns. The sort surface stays minimal; the carrier choice lives in the implementation contract and is documented per backend (§9 *Implementation Facts*). This is the same lineage-preservation principle 026.1 enforces for `Substitution` bindings.
 
 #### Q4 status: required for queryable backends at scale
 
@@ -415,6 +417,23 @@ Callers at the anthill level cannot distinguish the two — both flow through `T
 - ≥ ~10K rows or unbounded streams: Q4 is required to keep `TermStore` size bounded.
 
 The threshold is a design hint, not a hard contract. Workloads that recursively query an external source (proposal 026.1 §"Pathological case: deep recursion over external streams") may exhibit substitution-clone pressure even at lower row counts; the escape valves listed there (query-scoped arena, prefix memoization, projection pushdown) compose with Q4.
+
+#### Q4 implementation contract (landed)
+
+WI-052 (substrate) and WI-052b (resolver-side wiring) together land the implementation:
+
+- `eval::stream::ExternalStream` — Rust trait with `next() -> Option<Value>` and a `description()` identity hook. Every row source (filesystem, SQL cursor, HTTP API, GitHub issues) implements this.
+- `eval::stream::StreamSource::External(Box<dyn ExternalStream>)` — the variant the resolver pumps; yielded rows surface as `Value::Entity` and reach σ via `bind_value`, never `TermStore::alloc`.
+- `kb::route::{RouteHandler, RouteRegistry}` + `KnowledgeBase::register_route_handler` — per-functor backend registry. When the resolver hits a goal whose head functor has a registered handler, `step_init` drains the handler's `ExternalStream` and produces `Candidate::ExternalRow(subst)` entries alongside the discrim-tree results.
+- Acceptance: (a) 10K-row scan via `splitFirst` leaves `KnowledgeBase::term_store_len()` unchanged from its pre-scan baseline (`anthill-core/tests/eval_q4_test.rs`); (b) a query against a routed functor yields one solution per matching row, with `Value::Str` / `Value::Entity` bindings reaching σ unchanged (`anthill-core/tests/route_dispatch_test.rs`).
+
+A backend's `retrieve` is therefore a function `(store, pattern) -> impl ExternalStream`. The path from a goal in the resolver to a row in σ is: registered handler constructs an `ExternalStream` for the goal pattern → resolver pumps the stream → each row binds via `TermView` + `bind_value`. None of these steps allocate in the main `TermStore`.
+
+**Caveats** (separate follow-up items):
+
+- The Stage B path is **eager-drain**: every matching row materializes a `Candidate` before the choice point is built. Correct, and `TermStore`-bounded, but memory grows with the matching-row count. Lazy per-iteration pumping is a follow-up that wraps the stream into a `FrameState` rather than a `Vec<Candidate>`.
+- The current registry is keyed by **head functor symbol directly** — the anthill-level `rule route(GoalSort(?))=Store` declarations from §3 are *not yet consulted at resolution time*. Concrete backends (`FileStore`, `SqlStore`, `GitHubStore`) drive that wiring; until one ships, the route-rule path is forward-compatible documentation.
+- The Stage B unification skips `is_duplicate_projection` when σ has any non-`Value::Term` binding. `kb::reify` walks bindings via `resolve_with_term`, which only sees `Value::Term` entries — so external-row substitutions would all reify to the same TermId (the goal with unbound vars) and the dedup would collapse genuinely distinct rows. Hash-consing a Value-tree to make `reify` Value-aware would defeat Q4's no-`TermStore`-growth guarantee, so the dedup is structurally skipped instead.
 
 #### What this means for proposal 033
 

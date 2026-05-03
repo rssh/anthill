@@ -374,6 +374,10 @@ impl Interpreter {
                 Some(v) => (StreamSource::Native(f), Action::YieldSelf(v)),
                 None => (StreamSource::Empty, Action::Done),
             },
+            StreamSource::External(mut s) => match s.next() {
+                Some(v) => (StreamSource::External(s), Action::YieldSelf(v)),
+                None => (StreamSource::Empty, Action::Done),
+            },
         });
 
         match action {

@@ -1,0 +1,561 @@
+# 034: ScoredBranch Effect — Construction-Time Priorities for Nondeterministic Search
+
+## Status: Draft
+
+## Depends on: 027 (effect handlers and standard effects — establishes `Branch`, `HandlerAction` carrier, `RuntimeAPI`), 013 (effects as sorts and facts), 002 (effect-annotated arrow sorts)
+
+## Relates to: WI-075 (`push_choice` resolver primitive), WI-050 (M5 effect handlers)
+
+## Motivation
+
+Proposal 027 introduces `Branch`, the nondeterministic-choice effect:
+
+```anthill
+sort Branch
+  operation branch(a: T, b: T) -> T effects Branch
+  operation fail() -> Nothing effects Branch
+end
+```
+
+Under the default handler, `branch(a, b)` enumerates `a` and `b` as resolver
+choice points in trial order — LIFO. That is sufficient for unguided search
+(the resolver explores depth-first, backtracking on `fail`), but it leaves no
+way for a caller to say *which* alternative is more promising.
+
+A large class of search problems wants exactly that. The canonical examples:
+
+- **Best-first / Dijkstra / branch-and-bound**: at each step, the algorithm
+  knows the cost of each available continuation; the engine should always
+  expand the cheapest open node, regardless of when it was discovered.
+- **Beam search**: keep the top-k branches by score; prune the rest.
+- **Machine-learning–guided search**: a learned model assigns a score
+  ("preference") to each candidate continuation; the engine should explore
+  high-scoring candidates first.
+
+The Scala work this proposal mirrors — `cps.rl.CpsScoredLogicMonad` in the
+`rl-logic` package and the ICTERI-2025 paper "Merging Logic and the
+Coinductive Selection Monad" (Shevchenko, Doroshenko, Yatsenko, Nemish) —
+addresses this with a `scoredMplus` / `multiScore` interface on top of the
+LogicT-style monad. Each alternative carries an explicit numeric score *at
+the time of branching*; the runtime keeps open alternatives in a priority
+queue (a pairing heap or finger tree) and always resumes the highest-scored
+one first, including alternatives added by *later* `pbranch` calls.
+
+This proposal lifts that interface into Anthill as a new effect:
+`ScoredBranch[R]`. It is structurally a generalization of `Branch` (LIFO is
+"priority by insertion order"), declared as a sub-effect so that callers
+currently typed `effects Branch` accept scored callees without ceremony.
+
+Two scoping notes up front:
+
+1. This proposal covers **construction-time** priorities — score known when
+   the alternative is created. The article also describes
+   **post-evaluation** priorities (`order(stream, score, window)` —
+   `CpsOrderedLogicMonad`), which scores results within a sliding window
+   *after* partial evaluation. That can sit on top of `ScoredBranch` as a
+   stdlib operation (pump the window, score, re-emit via `pbranch`) and
+   does not need its own primitive. Out of scope here.
+
+2. `fail()` is reused unchanged from `Branch`. Failure has no score — it
+   discards the current path; the priority queue picks the next best.
+
+## Effect Declaration
+
+In `stdlib/anthill/prelude/effects.anthill`:
+
+```anthill
+sort ScoredBranch
+  import anthill.prelude.{List, Ordered}
+  sort R = ?
+  constraint ordered_score :- Ordered[T = R]
+
+  -- N-ary scored choice. Each alternative carries its priority at branch time.
+  -- Runtime resumes the highest-scored alternative first (per Ordered.compare,
+  -- treating "greater" as higher priority — see "Score direction" below);
+  -- remaining alts wait in the resolver's priority queue and pop on backtrack
+  -- or when a higher-score alt is added by a later pbranch call.
+  operation pbranch(alts: List[(R, T)]) -> T
+    effects ScoredBranch[R]
+
+  -- Binary form. Sugar for pbranch([(scoreA, a), (scoreB, b)]).
+  operation pbranch2(scoreA: R, a: T, scoreB: R, b: T) -> T
+    effects ScoredBranch[R]
+end
+
+fact Effect[T = ScoredBranch[?]]
+
+-- Sub-effect entailment: scored branch IS branch (LIFO is the special case
+-- where all scores are equal and insertion order breaks ties), and IS
+-- Suspension (multi-shot via cloned snapshots, exactly as Branch).
+rule Effect[T = Branch]     :- Effect[T = ScoredBranch[?R]]
+rule Effect[T = Suspension] :- Effect[T = ScoredBranch[?R]]
+```
+
+### Why `R` is parameterized rather than fixed to `Float`
+
+Different applications use different score types:
+
+- `Float` / `Double` — ML-derived scores, log-probabilities (the article's
+  default).
+- `Int` — bounded integer costs (`-cost` for shortest-path; the negation
+  matches the "greater = better" convention).
+- Custom: pairs `(primary, tiebreak)`, vectors with lexicographic compare,
+  arbitrary `Ordered` algebras (e.g. tropical semiring for path cost).
+
+The constraint `Ordered[T = R]` is the only requirement. The paper's
+`ScalingGroup` is used in `rl-logic` for probabilistic composition
+(multiplying scores along a path); we don't take that as a precondition
+here — `Ordered` alone is enough for correct best-first ordering.
+Probabilistic composition is a *handler* concern; a handler that wants to
+multiply scores along a path can keep that state in its closure.
+
+### Score direction: "greater is better"
+
+Per the article and rl-logic, the convention is **higher score = explore
+first**. To use scored branch for shortest-path / minimum-cost problems,
+pass `-cost` as the score. This matches the article's Dijkstra example
+(line 227: `-(currentCost + e.cost)`).
+
+A future convenience handler `MinScoredBranch[R]` (smaller = better) is a
+trivial wrapper and not worth a separate effect.
+
+### Why no `pscore(value, s) -> T`
+
+The article's `scoredPure(a, s)` annotates a single value with a priority.
+That is just `pbranch([(s, a)])` in our formulation — no separate operation
+needed. Stdlib can supply it as a one-liner:
+
+```anthill
+operation pscore(value: T, s: R) -> T
+  effects ScoredBranch[R]
+=
+  pbranch([(s, value)])
+```
+
+## Carrier Extension
+
+`HandlerAction` (per 027) currently carries:
+
+```
+HandlerAction :=
+  | Pure(value: Value)
+  | Throw(payload: Value)
+  | Fail
+  | Choice(value: Value, alts: List[AltMarker])
+  | Suspend(snapshot: ContSnapshot)
+```
+
+The `Choice.alts` list is interpreted in **list order = trial order**
+(LIFO push under the hood). Scored branching needs **priority order =
+trial order**, where priority can interleave with alts pushed by later
+calls. This proposal adds one variant:
+
+```
+HandlerAction := ...
+  | ScoredChoice(alts: List[(ScoreValue, AltMarker)])
+```
+
+Where:
+- `ScoreValue` is the host representation of an `R` value (typically `f64`
+  in Rust, plus an `Ordered`-callable trait for non-numeric `R`).
+- `alts` is non-empty. A "current path" is not distinguished by position
+  in the list — the runtime picks the head of the heap. (For a single
+  alternative, semantics coincide with `Pure(alt.value)`.)
+
+### Why one variant, not two
+
+One could imagine `ScoredChoice(value: Value, score: ScoreValue, alts:
+List[(ScoreValue, AltMarker)])` to keep the "current path" form, by
+analogy with `Choice`. We chose the simpler shape — every alternative is
+just an entry in the heap — because:
+
+1. **The handler doesn't have a privileged "current" path.** When you call
+   `pbranch([(s1, a1), (s2, a2), (s3, a3)])`, all three alternatives
+   matter equally; the one returned first is purely a function of the
+   scores. Singling one out by position invites bugs where the caller
+   thinks they passed `a1` first and the engine ran `a3` because `s3`
+   was higher.
+2. **Composition with later `pbranch` calls is symmetric.** Every entry
+   in the heap is a `(score, snapshot)` pair, regardless of which
+   `pbranch` invocation produced it.
+
+The runtime, on receiving `ScoredChoice(alts)`, materializes
+`AltMarker`s for each alternative (snapshotting the eval state once,
+reused per alt — see "Snapshot economy" below), inserts them into the
+priority store with their scores, then resumes the highest-scored one.
+
+## RuntimeAPI Extension
+
+One new operation, mirroring `push_choice`:
+
+```
+push_scored_choice(alt: AltMarker, score: ScoreValue) -> Unit
+```
+
+Inserts `alt` into the priority-keyed choice store at the current frame.
+Used by:
+- The runtime when interpreting `ScoredChoice(alts)` (one call per alt,
+  in any order — the heap takes care of priority).
+- Handlers that want to register scored alternatives imperatively (e.g.,
+  a beam-search handler that filters before pushing).
+
+`push_choice(alt)` (un-scored, from 027) remains. It is equivalent to
+`push_scored_choice(alt, default_score)` where `default_score` is "lower
+than every scored entry" — this preserves the LIFO semantics of plain
+`Branch` even when interleaved with `ScoredBranch` (un-scored alts run
+last). Hosts implement this by sentinel value or by tagging entries with
+an `Option<ScoreValue>` and treating `None` as least-priority.
+
+### Resolver-side: choice store becomes a priority queue
+
+The resolver's per-frame choice-point store currently behaves as a stack
+(LIFO). To support `ScoredBranch`, the store becomes a **priority queue
+keyed on `Option<ScoreValue>`**, with `None` ordering below every `Some`,
+and `Some(s1)` vs `Some(s2)` ordered by the registered `Ordered[T = R]`
+comparator (greater-first).
+
+Concrete recommendation, following the article and rl-logic
+(`shared/src/main/scala/cps/rl/ds/PairingHeap.scala`,
+`ScaledPairingHeap.scala`): **pairing heap** as the default backing
+structure. It has O(1) insert, O(log n) amortized delete-min, no
+allocation per peek, and tolerates the "decrease-key" pattern that
+arises when score updates propagate (the resolver does not currently
+need decrease-key, but the choice keeps options open for future
+ML-driven priority updates). Finger trees are the alternative the article
+cites (Hinze–Paterson) — slightly better worst-case bounds, more
+allocation overhead. Pairing heap is the better default.
+
+The store is allocated lazily — frames that never see a scored alt pay
+zero overhead, retaining LIFO behavior via a thin stack.
+
+### Snapshot economy
+
+A naive interpretation of `pbranch([(s1, a1), ..., (sN, aN)])` would
+clone the activation stack `N` times (once per alt). That is wasteful
+when most alts are pruned by score before being resumed. The runtime
+optimization:
+
+1. Snapshot the activation stack once.
+2. For each alt, store `(score_i, value_i, &shared_snapshot)` where
+   `&shared_snapshot` is a reference-counted handle.
+3. On resume, the chosen alt's `value_i` is spliced into a clone of
+   `shared_snapshot` only at that moment.
+
+For `Frame` / `ActivationStack` to support this, they must be `Clone`
+(per 027 Phase A) — already required for plain `Branch`. The added
+requirement is reference-counted sharing of the snapshot until first
+resume; standard `Arc<ActivationStack>` (Rust) / shared object (Scala) /
+refcounted struct (C) suffices.
+
+## Default Handler
+
+The default `ScoredBranch[R]` handler:
+
+```
+scored_branch handler invoked with op_sym = `pbranch`,
+                                  args = [List[(R, T)] of alternatives]:
+  let shared = runtime.snapshot_eval_state()              -- one snapshot
+  let alts = alternatives.map { (score, value) =>
+    let alt = runtime.materialize_alt(shared, value)      -- splices value lazily
+    (score, alt)
+  }
+  return ScoredChoice(alts)
+
+scored_branch handler invoked with op_sym = `pbranch2`, args = [s1, a1, s2, a2]:
+  -- desugars to pbranch([(s1, a1), (s2, a2)])
+  ...as above with alts = [(s1, a1), (s2, a2)]
+```
+
+Calling `fail()` falls through to the `Branch` handler (per the
+sub-effect rule) — `fail` returns `Fail`, the resolver discards the
+current path, the priority store yields the next best.
+
+The result of evaluating an expression containing `pbranch` under this
+handler is naturally a `LogicalStream[T]` ordered by score —
+non-increasing, breaking ties by registration order within a single
+`pbranch`, and breaking inter-call ties by frame proximity (closer
+frames first, matching the LIFO interleaving of `push_choice`).
+
+### Alternative handlers
+
+- **Beam search** (top-k): handler keeps a counter of total live alts.
+  `pbranch(alts)` filters `alts` to the top-k (by score) before
+  registering, drops the rest. Every `fail()` decrements the live
+  counter; if it falls below k, the handler can ask for more (out of
+  scope — needs handler-driven re-entry).
+- **Random-proportional**: instead of strict best-first, the handler
+  resumes alternatives with probability proportional to score (softmax-
+  style). Implemented by perturbing scores or by replacing `ScoredChoice`
+  with imperative `push_scored_choice` calls under a custom selection.
+- **Bounded-cost prune**: handler tracks a global `cost_bound`; `pbranch`
+  drops any `(score, _)` with `score < -cost_bound`. Used by
+  branch-and-bound: each found solution tightens the bound.
+- **Oracle / replay**: handler ignores scores, returns the alternative
+  named by an external sequence — useful for deterministic test runs
+  and for replaying a search trace.
+
+## Worked Example: Dijkstra Shortest Path
+
+Translating the article's Dijkstra (lines 209–242) into Anthill:
+
+```anthill
+namespace anthill.examples.dijkstra
+  import anthill.prelude.{Float, List, Map, Option, ScoredBranch, Branch}
+  import anthill.examples.graph.{Edge, GraphDB, Path}
+
+  -- State maps node → (best path so far, distance so far)
+  sort State end
+  entity State(distances: Map[Node, (List[Node], Float)])
+
+  -- Run pathFrom inside a ScoredBranch[Float] context. The negation of cost
+  -- is used as score (greater-is-better: smaller cost = larger score).
+  operation shortest_path(
+      db: GraphDB, start: Node, end: Node)
+      -> Option[(List[Node], Float)]
+    effects ScoredBranch[Float]
+  =
+    let initial = State(distances: { start -> (List(start), 0.0) })
+    let initial_alts = db.neighbours(start).map(e =>
+      (-(e.cost), e))
+    path_from(db, end, initial, initial_alts).distances.get(end)
+
+  operation path_from(
+      db: GraphDB, target: Node,
+      state: State, frontier: List[(Float, Edge)])
+      -> State
+    effects ScoredBranch[Float]
+  =
+    -- pbranch picks the highest-scored (= cheapest) edge in `frontier`.
+    -- Newly discovered edges from path_from's continuation will be added
+    -- to the *same* priority queue by recursive pbranch calls.
+    let chosen = pbranch(frontier)
+    if state.would_improve(chosen) then
+      let next_state = state.add_edge(chosen)
+      if chosen.to == target then next_state
+      else
+        let new_alts = db.neighbours(chosen.to).map(e =>
+          (-(state.distance(chosen.to) + e.cost), e))
+        path_from(db, target, next_state, new_alts)
+    else
+      fail()  -- already have a better route to chosen.to; drop this branch
+end
+```
+
+This is line-for-line equivalent to the Scala in the article; the
+priority queue is implicit in the runtime rather than threaded through
+the function as `next: F[Edge]`.
+
+## Constraints and Composition
+
+### Composition with `Branch`
+
+By the sub-effect rule, an operation declared `effects ScoredBranch[R]`
+satisfies any caller expecting `effects Branch`. Plain `branch(a, b)`
+inside a `ScoredBranch[R]` operation behaves as `pbranch([(0, a), (0,
+b)])` (or with a sentinel "unscored" priority that registers below all
+scored alts) — the LIFO ordering between unscored alts is preserved.
+Whether `branch` is sugar for `pbranch2(_, a, _, b)` with sentinel
+scores, or stays as a separate operation that lowers to `push_choice`
+(no score), is an implementation choice — both are observably the same.
+
+### Composition with `Consumes` (per 027)
+
+`ScoredBranch[R]` inherits `Branch`, so the existing constraint
+
+```
+constraint branch_consumes_incompatible
+  :- declared_effect(?op, Branch),
+     declared_effect(?op, Consumes)
+```
+
+automatically forbids mixing `ScoredBranch[R]` with shared-cursor stream
+consumption. Same diagnostic, same recourse (refactor consumption out of
+the branching region).
+
+### Composition with `Modify`
+
+`pbranch` does not change the sticky-vs-transactional distinction. `set`
+mutations stay across alternatives (sticky); `set_local` mutations are
+rolled back on backtrack (transactional, per 027). The priority order in
+which alternatives are tried does not affect rollback semantics — each
+alt's transactional state is keyed to its snapshot.
+
+### Score-type homogeneity within a region
+
+A single `pbranch` call uses one `R`. Two distinct effect rows
+`ScoredBranch[Float]` and `ScoredBranch[Int]` *can* coexist on one
+operation (separate priority queues, one per `R`), but most practical
+code uses a single `R` throughout. Mixed-`R` regions are valid but
+unusual; the runtime keeps separate priority stores keyed by `R`'s sort
+identity.
+
+## Implementation Notes
+
+### Rust mapping
+
+```rust
+// New carrier variant in eval/effects.rs
+pub enum HandlerAction {
+    Pure(Value),
+    Throw(Value),
+    Fail,
+    Choice(Value, Vec<AltMarker>),
+    ScoredChoice(Vec<(ScoreValue, AltMarker)>),   // NEW
+    Suspend(ContSnapshot),
+}
+
+// ScoreValue: f64 by default, with an Ordered-callable trait for non-numeric R.
+pub enum ScoreValue {
+    F64(f64),
+    Custom(Symbol, Value),  // R sort symbol + raw value; comparator looked up on demand
+}
+
+// New RuntimeAPI method on Interpreter
+impl Interpreter {
+    pub fn push_scored_choice(&mut self, alt: AltMarker, score: ScoreValue);
+}
+
+// Choice store on the per-frame ChoicePointSet:
+//  - Lazy-allocated PairingHeap<(ScoreValue, AltMarker)> for scored alts
+//  - Existing Vec<AltMarker> for un-scored (LIFO)
+//  - peek_next() returns scored.peek() if non-empty else unscored.last()
+```
+
+The pairing heap implementation can borrow directly from
+`rl-logic/shared/src/main/scala/cps/rl/ds/PairingHeap.scala` — translation
+is mechanical.
+
+### Scala mapping (`scaland`)
+
+The `scaland` host can use the existing `cps.rl.ds.PairingHeap` (or its
+`ScaledPairingHeap` variant) directly. The `HandlerAction` ADT gains the
+`ScoredChoice` case; the choice store is the existing immutable pairing
+heap, which composes naturally with the persistent stack semantics
+`scaland` already uses.
+
+### C mapping (embedded)
+
+Pairing heap as a fixed-size array of `(score, alt_idx)` slots, with
+heap-property-maintaining swaps. No allocation. Score type fixed to
+`float` for the embedded target (custom `R` sorts not in v1 — embedded
+realizations carry only one numeric score). Carrier variant tag:
+`AH_RESULT_SCORED_CHOICE` with a `(ah_alt_t* alts, size_t len)` payload
+where each `ah_alt_t` holds `{ float score; ah_alt_marker_t alt; }`.
+
+## Open Design Decisions
+
+1. **Score sentinel for un-scored `branch`.** Three options:
+   (a) `Option<ScoreValue>` with `None < Some(_)` always.
+   (b) Reserve `f64::NEG_INFINITY` (and equivalent for custom R) as
+       sentinel.
+   (c) Two separate stores in the choice-point set, scored and unscored;
+       check unscored only when scored is empty.
+   Recommendation: (c) — clean separation, no sentinel arithmetic, no
+   trap from a user passing `NEG_INFINITY` as a real score.
+
+2. **Decrease-key support.** Some ML-guided search wants to *update* an
+   already-registered alt's score (e.g., as model weights update mid-
+   search). Pairing heap supports decrease-key in O(log n) amortized;
+   the API surface is `update_scored_choice(alt_id, new_score)`. Out
+   of v1 — add when a real use case arises.
+
+3. **Priority across frames.** A `pbranch` in a deep frame produces alts
+   that should logically compete with alts from outer frames. The
+   per-frame choice-point store violates this. Options:
+   (a) One global priority store, sharing alts across all frames.
+   (b) Per-frame stores, picking from outermost-first.
+   (c) Hybrid: scored alts go to a global store; un-scored stay
+       per-frame (preserving LIFO locality for plain Branch).
+   Recommendation: (c). Best-first should be globally best-first, not
+   per-frame; un-scored Branch retains its current locality.
+
+4. **Lazy score evaluation.** `pbranch([(expensive_score(), value), ...])`
+   forces score evaluation up front. For ML scorers this can be
+   expensive. A lazy variant `pbranch_lazy(alts: List[(() => R, T)])`
+   would defer score computation until the alt is about to be resumed.
+   Out of v1; the article's `multiScore` is also strict.
+
+5. **Constraint `branch_scores_share_R`** — should two `pbranch` calls
+   in one frame be required to use the same `R`? The current proposal
+   allows mixed `R` (separate stores per `R`). Forbidding could simplify
+   the runtime but feels arbitrary. Recommendation: allow.
+
+## Implementation Status
+
+Nothing is implemented. Sequencing depends on the 027 Phase A substrate
+(carrier + snapshot/resume) — `ScoredBranch` is a strict extension and
+should land *after* `Branch` ships under that substrate, not before.
+
+## Migration Plan
+
+**Kernel-side (shared, do first):**
+1. Add the `ScoredBranch` sort declaration to
+   `stdlib/anthill/prelude/effects.anthill`, with `pbranch`, `pbranch2`,
+   the `Ordered[T = R]` constraint, the `fact Effect[T = ScoredBranch[?]]`
+   registration, and the two sub-effect rules
+   (`Branch` and `Suspension`).
+2. Add `pscore(value, s)` as a stdlib operation desugaring to
+   `pbranch([(s, value)])`.
+3. Forward-reference from 027's `Branch` catalog entry to this proposal.
+
+**Rust implementation (depends on 027 Phase A):**
+
+*Phase A — runtime substrate:*
+1. Add `ScoredChoice` variant to `HandlerAction` in `eval/effects.rs`.
+2. Define `ScoreValue` enum with `F64` and `Custom(Symbol, Value)`
+   variants; implement `Ord` via comparator lookup for `Custom`.
+3. Vendored pairing heap module (`eval/heap.rs`), translated from
+   `rl-logic/.../PairingHeap.scala`. Unit tests against the same
+   property suite (`HeapSuite.scala`).
+4. Extend the per-frame `ChoicePointSet` with a lazy
+   `Option<PairingHeap<(ScoreValue, AltMarker)>>` field; update
+   `peek_next` / `pop_next` to check scored before un-scored (per
+   open-decision 1c).
+5. Add `RuntimeAPI::push_scored_choice` and the `ScoredChoice` carrier
+   interpretation to the runtime.
+
+*Phase B — handler and stdlib wiring:*
+6. Default `ScoredBranch[R]` handler returning `ScoredChoice(alts)`.
+7. Handler installed in `anthill run` CLI alongside the `Branch` default.
+8. Tests: best-first ordering on a 4-node graph (Dijkstra example);
+   priority interleaving across nested `pbranch` calls; failure
+   propagation; sub-effect satisfaction (ScoredBranch caller satisfies
+   Branch consumer); composition with `Modify.set_local` rollback.
+
+*Phase C — global priority store (open-decision 3c):*
+9. Promote scored alts from per-frame stores to a single global store
+   (per recommendation 3c). Validate Dijkstra still terminates and
+   produces optimal paths.
+
+**Scala implementation (`scaland`):**
+- Mirror the Rust shape. Use existing
+  `cps.rl.ds.PairingHeap` from rl-logic where licensing permits, or
+  re-implement (small file). Cross-implementation conformance tests
+  share fixtures with Rust.
+
+**C implementation (embedded):**
+- Fixed-size pairing heap over a static buffer. Single `float` score
+  type. No `Custom` ScoreValue. Otherwise the same contract.
+
+Track Rust-side steps as sub-WIs under WI-050; cross-host conformance
+suite is shared with the `Branch` conformance work.
+
+## See also
+
+- 027 — `Branch` effect, `HandlerAction` carrier, `RuntimeAPI`. This
+  proposal is a strict extension.
+- 013 — effects-as-sorts; the sub-effect rules used here are standard
+  013 entailments.
+- WI-075 — `push_choice` resolver primitive; `push_scored_choice` is a
+  parallel addition.
+- ICTERI-2025 paper "Merging Logic and the Coinductive Selection Monad:
+  Mixing Machine Learning into Logical Search" (Shevchenko, Doroshenko,
+  Yatsenko, Nemish) — the source of the construction-time priority
+  design and the Dijkstra worked example.
+- `rl-logic` Scala package
+  (`/Users/rssh/work/oss/rl-logic/shared/src/main/scala/cps/rl/`):
+  `CpsScoredLogicMonad.scala` for the monadic interface,
+  `ds/PairingHeap.scala` and `ds/ScaledPairingHeap.scala` for the
+  reference priority-queue implementation,
+  `ScoredLogicStreamModule.scala` for the stream wiring under
+  `scoredMplus`.

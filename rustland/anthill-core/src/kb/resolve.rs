@@ -17,6 +17,7 @@ use smallvec::SmallVec;
 use super::subst::Substitution;
 use super::term::{Term, TermId, Var, VarId};
 use crate::intern::Symbol;
+use crate::eval::value::Value;
 use super::occurrence::OccurrenceId;
 use super::RuleId;
 use super::KnowledgeBase;
@@ -122,6 +123,12 @@ enum Candidate {
     /// the two branches of a binary choice are emitted as two
     /// `Continuation` candidates that share the frame's tail.
     Continuation(Vec<TermId>),
+    /// Row from a registered external-source backend (proposal 007 §11 +
+    /// 026.1 Q4 Stage B). The substitution unifies the goal pattern with
+    /// the row's `Value::Entity`, with bindings entering σ as the row's
+    /// raw `Value` shape (no `TermStore` allocation per row). Behaviorally
+    /// identical to `Assumption`: zero body, just bindings to merge.
+    ExternalRow(Substitution),
 }
 
 /// Result of a recursive groundness check.
@@ -533,6 +540,29 @@ impl SearchStream {
         };
 
         candidates.extend(rule_candidates.into_iter().map(|(rid, s)| Candidate::Rule(rid, s)));
+
+        // External-source rows (proposal 007 §11 + 026.1 Q4 Stage B).
+        // If the goal head functor has a registered route handler, drain
+        // its stream and add each matching row as an ExternalRow candidate.
+        // Eager drain: lazy per-iteration pumping is a follow-up. Rows
+        // that don't match the pattern are dropped immediately — they
+        // never enter σ or the TermStore.
+        if let Term::Fn { functor, .. } = kb.terms.get(goal) {
+            let functor = *functor;
+            // Take the stream out of the registry briefly so we can hand
+            // `&KnowledgeBase` to the handler without aliasing.
+            let stream_opt = kb.route_handler_for(functor)
+                .map(|h| h.retrieve(kb, goal));
+            if let Some(mut stream) = stream_opt {
+                while let Some(row) = stream.next() {
+                    if let Some(subst) = kb.match_view(goal, &row) {
+                        if !subst.is_contradiction() {
+                            candidates.push(Candidate::ExternalRow(subst));
+                        }
+                    }
+                }
+            }
+        }
 
         // Frame-scoped assumed facts (WI-108). Reify the goal through
         // the current substitution first so that goal-side flex vars
@@ -993,6 +1023,7 @@ impl SearchStream {
             Candidate::Occurrence(_occ_id, subst) => (None, subst),
             Candidate::Rule(rid, subst) => (Some(rid), subst),
             Candidate::Assumption(subst) => (None, subst),
+            Candidate::ExternalRow(subst) => (None, subst),
             Candidate::Continuation(_) => unreachable!("handled above"),
         };
 
@@ -1001,13 +1032,23 @@ impl SearchStream {
         let frame = self.stack.last().unwrap();
 
         if body.is_empty() {
-            // Ground fact (occurrence or rule with empty body)
+            // Ground fact (occurrence or rule with empty body, or
+            // ExternalRow from a routed-store backend).
             let remaining = kb.apply_subst_each(&frame.goals[1..], &tree_subst);
             let mut merged = frame.subst.clone();
             // bind_compressed wants (VarId, TermId) pairs; filter to the
             // Value::Term subset — path compression is TermId-only.
             let term_pairs: Vec<(VarId, TermId)> = tree_subst.iter_terms().collect();
             merged.bind_compressed(term_pairs.into_iter(), &kb.terms);
+            // Non-Term bindings (`Value::Entity` from external rows, etc.)
+            // bypass path compression and bind directly. This is the
+            // proposal 026.1 §"Lineage-preserving bindings" guarantee:
+            // an external row enters σ as its raw `Value` shape.
+            for (vid, val) in tree_subst.iter() {
+                if !matches!(val, Value::Term(_)) {
+                    merged.bind_value(*vid, val.clone());
+                }
+            }
             let new_delay = delay_mode.reset();
             let inherited = frame.assumed_facts.clone();
             self.stack.push(Frame {
@@ -1070,7 +1111,21 @@ impl SearchStream {
     /// Check if a solution is a duplicate by reifying the nearest ancestor
     /// ChoicePoint's goal through the solution substitution. The reified
     /// goal is a ground TermId (hash-consed) — same structure = same id.
+    ///
+    /// Skipped when the substitution carries any non-`Value::Term` binding.
+    /// `kb.reify` walks bindings via `resolve_with_term`, which only sees
+    /// `Value::Term` entries — so external-row substitutions (rows bound
+    /// to `Value::Str`/`Value::Entity` per proposal 026.1 §"Lineage-
+    /// preserving bindings") would all reify to the *same* TermId (the
+    /// goal with unbound vars) and the dedup would collapse genuinely
+    /// distinct rows. Hash-consing a Value-tree to make reify Value-aware
+    /// would also defeat Q4's no-`TermStore`-growth guarantee.
     fn is_duplicate_projection(&mut self, kb: &mut KnowledgeBase, sol: &Solution) -> bool {
+        let has_value_binding = sol.subst.iter()
+            .any(|(_, v)| !matches!(v, Value::Term(_)));
+        if has_value_binding {
+            return false;
+        }
         for frame in self.stack.iter_mut().rev() {
             if let FrameState::ChoicePoint { original_goal, seen_goals, .. } = &mut frame.state {
                 let reified = kb.reify(*original_goal, &sol.subst);

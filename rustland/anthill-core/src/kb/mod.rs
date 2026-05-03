@@ -13,6 +13,7 @@ pub mod occurrence;
 pub mod typing;
 pub mod term_view;
 pub mod execute;
+pub mod route;
 pub(crate) mod persist_subst;
 pub(crate) mod discrim;
 
@@ -209,6 +210,12 @@ pub struct KnowledgeBase {
 
     // Source registry (file names/paths)
     pub(crate) sources: SourceRegistry,
+
+    // Goal-routing registry — per-functor `RouteHandler`s that surface
+    // external row streams as resolution candidates. Empty by default;
+    // populated by host code via `register_route_handler`. See
+    // `kb/route.rs` and proposal 007 §11.
+    pub(crate) routes: route::RouteRegistry,
 }
 
 impl KnowledgeBase {
@@ -238,6 +245,7 @@ impl KnowledgeBase {
             entity_field_types: HashMap::new(),
             resolved_requires_facts: HashSet::new(),
             sources: SourceRegistry::new(),
+            routes: route::RouteRegistry::new(),
         }
     }
 
@@ -963,6 +971,13 @@ impl KnowledgeBase {
     /// Number of active (non-retracted) entries with non-empty body (proper rules).
     pub fn rule_count(&self) -> usize {
         self.rules.iter().filter(|r| !r.retracted && !r.body.is_empty()).count()
+    }
+
+    /// Live term count in the hash-consed `TermStore`. Diagnostic — used by
+    /// 026.1 Q4's acceptance test to verify external-stream scans do not grow
+    /// the main term store.
+    pub fn term_store_len(&self) -> usize {
+        self.terms.len()
     }
 
     // ── Term matching ─────────────────────────────────────────────

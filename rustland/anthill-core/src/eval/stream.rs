@@ -11,8 +11,12 @@
 //! - `Empty` — zero solutions.
 //! - `Pure(Value)` — singleton.
 //! - `MPlus { left, right }` — concatenation (left first, then right).
-//! - `Native(...)` — escape hatch for external data sources (not yet
-//!   exercised; reserved for Q4 external-backed KBs).
+//! - `Native(...)` — host-supplied closure-driven iterator (test/demo
+//!   shortcut — no schema, no row-source identity).
+//! - `External(Box<dyn ExternalStream>)` — proposal 026.1 Q4. Trait-driven
+//!   variant for queryable persistence backends (file rows, SQL cursors,
+//!   API responses). Yields `Value::Entity` rows without `TermStore`
+//!   allocation. See proposal 007 §11.
 //!
 //! The `StreamHandle` is arena-refcounted (same pattern as `ClosureHandle`):
 //! cloning bumps the slot's refcount, dropping decrements and frees at zero.
@@ -23,6 +27,23 @@ use std::rc::Rc;
 use crate::kb::resolve::SearchStream;
 
 use super::value::Value;
+
+/// Trait-driven external row source. Proposal 026.1 Q4 + proposal 007 §11.
+///
+/// Backends (file-rows, SQL cursors, HTTP responses) implement this to
+/// surface row data into the resolver as `Value::Entity` (or any non-
+/// `Value::Term` variant) — i.e. without paying the hash-cons tax that
+/// `assert_fact` does for a bulk-loaded fact. Each `next` call yields one
+/// row; `None` signals exhaustion.
+///
+/// `description` is a short, human-readable identity for the row source
+/// (e.g. `"FileStore[anthill/workitems/]"`, `"SqlStore[audit_entries]"`),
+/// surfaced in error messages and diagnostics. Implementors should make
+/// it cheap — it's `&str` so there's no per-call allocation.
+pub trait ExternalStream {
+    fn next(&mut self) -> Option<Value>;
+    fn description(&self) -> &str { "external-stream" }
+}
 
 /// Body of a stream. Kept distinct from [`StreamHandle`] so arena slots
 /// can be swapped in place (see `split_first` — `Resolver` consumes the
@@ -38,9 +59,14 @@ pub enum StreamSource {
     Pure(Option<Value>),
     /// Concatenation: drain `left` first, then `right`.
     MPlus { left: StreamHandle, right: StreamHandle },
-    /// Host-supplied iterator — see Q4. Left as a placeholder `Native`
-    /// variant so the enum shape is stable; no callers construct it yet.
+    /// Host-supplied closure iterator. Test/demo shortcut — no schema, no
+    /// row-source identity. Production backends should use `External`.
     Native(Box<dyn FnMut() -> Option<Value>>),
+    /// Trait-driven external row source (proposal 026.1 Q4). The contract
+    /// is that yielded `Value`s are *not* hash-consed into the main
+    /// `TermStore` — they enter σ as `Value::Entity` (or another non-Term
+    /// variant) and reach the unifier through `TermView`.
+    External(Box<dyn ExternalStream>),
 }
 
 struct Slot {

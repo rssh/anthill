@@ -174,15 +174,24 @@ fn build_kb(paths: &[PathBuf]) -> Result<KnowledgeBase, i32> {
     let mut kb = KnowledgeBase::new();
     let resolver = FileSourceResolver::new(base_dirs_for(paths));
 
-    // LoadErrors are printed as warnings — some are recoverable (e.g.
+    // Type errors are fatal — running an ill-typed program is unsound.
+    // Other LoadErrors stay as warnings: some are recoverable (e.g.
     // ambiguous-symbol reports when stdlib `register_prelude` makes names
-    // visible in parallel with explicit `import` clauses). The subsequent
-    // main-discovery step and `interp.call` surface anything actually broken.
+    // visible in parallel with explicit `import` clauses).
     let mut all_refs: Vec<&ParsedFile> = stdlib_parsed.iter().collect();
     all_refs.extend(user_parsed.iter());
     if let Err(errs) = load::load_all(&mut kb, &all_refs, &resolver) {
+        let mut had_type_error = false;
         for e in &errs {
-            eprintln!("warning: {e}");
+            if e.is_type_error() {
+                had_type_error = true;
+                eprintln!("error: {e}");
+            } else {
+                eprintln!("warning: {e}");
+            }
+        }
+        if had_type_error {
+            return Err(EXIT_COMPILE);
         }
     }
 
