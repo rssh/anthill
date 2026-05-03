@@ -493,11 +493,18 @@ object Loader:
     */
   private def autoImportPrelude(kb: KnowledgeBase, globalScope: TermId): Unit =
     val preludePrefix = "anthill.prelude."
-    val primitiveSorts = Set("Bool", "Int", "Float", "BigInt", "String")
+    // Skip primitive type sorts (their ops collide with kernel builtins)
+    // AND collection-typeclass sorts (their ops collide with each other —
+    // Iteration/Collection/IndexedSeq/Set/Map/LogicalStream all expose
+    // `empty` / `insert` / `Effect`). These should be reached via explicit
+    // `import` clauses, mirroring rustland's explicit-only global aliases.
+    val skip = Set(
+      "Bool", "Int", "Float", "BigInt", "String",
+      "Iteration", "Collection", "IndexedSeq", "Set", "Map", "LogicalStream")
     for (qualName, sym) <- kb.symbols.byQualifiedName do
       if qualName.startsWith(preludePrefix) then
         val afterPrelude = qualName.substring(preludePrefix.length)
-        if !afterPrelude.contains('.') && !primitiveSorts.contains(afterPrelude) then
+        if !afterPrelude.contains('.') && !skip.contains(afterPrelude) then
           val sortTerm = kb.makeNameTermFromSym(sym)
           kb.symbols.addParent(globalScope.raw, ScopeInclusion(sortTerm.raw, 0, isEnclosing = false))
 

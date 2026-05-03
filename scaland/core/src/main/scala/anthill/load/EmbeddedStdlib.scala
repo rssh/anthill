@@ -21,37 +21,71 @@ object EmbeddedStdlib:
     * Order matters: dependencies first.
     */
   val stdlibPaths: IndexedSeq[String] = IndexedSeq(
-    // ── prelude typeclass + collection chain (WI-163: structural-op
-    //    disambiguation removed the AmbiguousSymbol cascade; WI-162:
-    //    bool/int/iteration/collection/list/reflect now parse)
-    "anthill.prelude.eq",
+    // ── primitive / kernel layer
+    "anthill.prelude.primitives",
+    "anthill.prelude.nothing",
+    "anthill.prelude.unit",
     "anthill.prelude.bool",
     "anthill.prelude.int",
+    "anthill.prelude.bigint",
+    "anthill.prelude.float",
+    "anthill.prelude.string",
+    // ── typeclass chain (WI-163: structural-op disambiguation removed the
+    //    AmbiguousSymbol cascade; WI-162: bool/int/iteration/collection/
+    //    list/reflect now parse)
+    "anthill.prelude.eq",
     "anthill.prelude.ordered",
     "anthill.prelude.numeric",
     "anthill.prelude.option",
     "anthill.prelude.pair",
+    "anthill.prelude.function",
+    "anthill.prelude.field",
+    "anthill.prelude.lattice",
+    // ── effects + I/O
+    "anthill.prelude.effects",
+    "anthill.prelude.effect-set",
+    "anthill.prelude.console",
+    // ── collections
     "anthill.prelude.iteration",
     "anthill.prelude.collection",
     "anthill.prelude.indexed_seq",
     "anthill.prelude.list",
+    "anthill.prelude.set",
+    "anthill.prelude.map",
     "anthill.prelude.stream",
-    "anthill.prelude.lattice",
-    // anthill.prelude.Type lives in sort.anthill (per WI-138)
+    "anthill.prelude.logical_stream",
+    // ── meta + reflect
     "anthill.prelude.sort",
     "anthill.prelude.meta",
-    // ── reflect (provides anthill.reflect.Term + Symbol etc.)
     "anthill.reflect.reflect",
-    // ── WI-138: parametric algebra spec — Ring, VectorSpace
+    "anthill.reflect.typing",
+    // ── kernel meta-spec
+    "anthill.kernel.kernel",
+    // ── parametric algebra (WI-138)
     "anthill.prelude.algebra",
-    // ── WI-153: Float operations layered on Numeric + algebra.Ring
-    "anthill.prelude.float",
-    // ── WI-137: Vec3 + EulerAngles + per-component vec_* rules + algebraic laws
+    // ── geometry (WI-137: Vec3 / EulerAngles / vec_* rules + laws)
     "anthill.geometry",
-    // ── proposal 030 phase α / WI-155: ProofWitness + SmtVerdict + SortBinding
+    // ── logic specs
+    "anthill.logic.minimal",
+    "anthill.logic.constructive",
+    "anthill.logic.classical",
+    // ── realization layer (WI-155: ProofWitness / ProofRecord)
     "anthill.realization.witness",
-    // ── WI-155: ProofRecord + ProofStrategyOpen + ProofBodyNone + Pending + ParametricBinding
     "anthill.realization.realization",
+    "anthill.realization.policy",
+    "anthill.realization.platform",
+    "anthill.realization.rust_std",
+    "anthill.realization.cpp_std",
+    "anthill.realization.rust_anthill",
+    // ── persistence
+    "anthill.persistence.store",
+    "anthill.persistence.filesystem",
+    "anthill.persistence.sql",
+    // ── CLI argparse (WI-159 / WI-164)
+    "anthill.cli.spec",
+    "anthill.cli.parse",
+    "anthill.cli.help",
+    "anthill.cli.main",
   )
 
   /** Parse all stdlib files via `resolver`. Returns parsed files in dependency
