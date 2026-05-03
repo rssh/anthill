@@ -44,12 +44,21 @@ This rule is what makes "no `???`" achievable: codegen never invents a body it c
 | `requires Eq[T]` | upper bound or `using Eq[T]` |
 | `fact SortName` (inside sort body) | `extends SortName` |
 | `fact SortName` (in entity's namespace) | `given SortName.Of[Entity] = …` |
-| `List[T = X]` | `List[X]` (Scala `scala.collection.immutable.List`) |
-| `Option[T = X]` | `Option[X]` |
+| `List[X]` | `List[X]` (Scala `scala.collection.immutable.List`) |
+| `Option[X]` | `Option[X]` |
 | `rule` (law) | ScalaCheck property in `Test` source set |
 | `Quoted("scala", source)` | verbatim Scala code inserted as-is |
 | `constraint` (denial) | `assert(...)` or test-time check |
 | `import N.{A, B}` | `import n.{A, B}` |
+
+> **Anthill type-binding shorthand.** Anthill uses named bindings for
+> type parameters (`List[T = X]`, `Stream[T = A, E = B]`); the bare
+> positional form (`List[X]`, `Stream[A, B]`) is sugar that the loader
+> normalizes to the named form when the parameter list is unambiguous.
+> Both surface forms are legal and produce the same KB term. This doc
+> writes the bare form throughout for visual symmetry with Scala's
+> `List[X]` syntax; expect the verbose `List[T = X]` form in stdlib
+> source for sorts with multiple parameters where naming disambiguates.
 
 ### 2.1 Namespace → Package or Object
 
@@ -204,7 +213,7 @@ When the requires binds a specific type, it becomes a `using` context parameter 
 
 ```
 sort PolynomOps {
-  requires Ring[T = Coeff]                  // Body derived from the spec's rule:
+  requires Ring[Coeff]                      // Body derived from the spec's rule:
   operation add(a: Polynom,      →          //   add(?a, ?b) = zipWith(?a, ?b, Ring.add)
     b: Polynom) -> Polynom                  def add[Coeff](a: Polynom[Coeff],
   rule add(?a, ?b) =                                       b: Polynom[Coeff])
