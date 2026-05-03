@@ -1147,7 +1147,7 @@ fact WorkItem(
   description: "scaland resync — parser gaps blocking full stdlib load. Six stdlib files fail to parse with scaland's fastparse front end. Add support for: (1) `effects EffectExpr` clause on operation declarations — used by stdlib/anthill/prelude/iteration.anthill, collection.anthill, reflect/reflect.anthill; (2) `forall(?n)` quantifier syntax in rule bodies — used by stdlib/anthill/prelude/int.anthill (induction principle); (3) tuple type expressions like `Option[(A, B)]` — used by iteration.anthill (split returns Option[(Element, Iterator)]); (4) empty set literal `{}` in fact bindings — used by stdlib/anthill/prelude/list.anthill (`fact Collection[Element = T, Effect = {}]`); (5) investigate bool.anthill parse error at line 27 col 28 — possibly nested var-on-var pattern. Mirror references: rustland/anthill-core/src/parse/convert.rs handles all of these via tree-sitter. Files: scaland/core/src/main/scala/anthill/parse/AnthillParser.scala, parse/IR.scala. Acceptance: sbt test green; new ParserTest cases parse each of the 6 stdlib files (bool, int, iteration, collection, list, reflect/reflect) without error; EmbeddedStdlib can extend its path list to include them.",
   acceptance: [ToolPasses("scaland-sbt-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "user", at: "2026-05-03T07:23:17Z"))
 
 fact WorkItem(
   id: "WI-163",

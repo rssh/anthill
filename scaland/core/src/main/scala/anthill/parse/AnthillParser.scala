@@ -105,6 +105,13 @@ private class AnthillParserImpl(
             else if input(index) == '-' && input(index + 1) == '}' then
               depth -= 1; index += 2
             else index += 1
+        else if index + 1 < length && c == '{' && input(index + 1) == '<' then
+          // Doc-comment block: `{< ... >}` (used by stdlib sort.anthill).
+          index += 2
+          while index + 1 < length &&
+              !(input(index) == '>' && input(index + 1) == '}') do
+            index += 1
+          if index + 1 < length then index += 2
         else
           continue = false
       ctx.freshSuccessUnit(index)
@@ -144,11 +151,22 @@ private class AnthillParserImpl(
   // ── Variables ────────────────────────────────────────────────
 
   private def variable[$: P]: P[TermId] =
-    P(Tokens.variableToken).map { varName =>
-      if varName.isEmpty then
-        terms.alloc(Term.Var(freshAnonymousVar()))
-      else
-        terms.alloc(Term.Var(getOrCreateVar(intern(varName))))
+    P(Tokens.variableToken ~ fnArgsList.?).map { case (varName, args) =>
+      val varTid =
+        if varName.isEmpty then terms.alloc(Term.Var(freshAnonymousVar()))
+        else terms.alloc(Term.Var(getOrCreateVar(intern(varName))))
+      args match
+        case None => varTid
+        case Some(rawArgs) =>
+          // Higher-order predicate call `?P(a, b)` → `ho_apply(?P, a, b)`.
+          // Mirrors rustland/anthill-core/src/parse/convert.rs:437.
+          val posArgs = ArrayBuffer(varTid)
+          val namedArgs = ArrayBuffer.empty[(TermSymbol, TermId)]
+          rawArgs.foreach {
+            case Left(tid) => posArgs += tid
+            case Right((k, v)) => namedArgs += ((k, v))
+          }
+          terms.alloc(Term.Fn(intern("ho_apply"), IArray.from(posArgs), IArray.from(namedArgs)))
     }
 
   // ── Types ────────────────────────────────────────────────────
@@ -156,7 +174,18 @@ private class AnthillParserImpl(
   private def typeExpr[$: P]: P[TypeExpr] = P(arrowType | nonArrowType)
 
   private def nonArrowType[$: P]: P[TypeExpr] =
-    P(parameterizedType | tupleType | variableType | simpleType)
+    P(parameterizedType | tupleType | setType | variableType | simpleType)
+
+  /** Type-positioned set literal: `{e1, e2, …}` (or empty `{}`). Used in
+    * fact bindings like `fact Collection[Effect = {}]` (proposal 020 effect
+    * sets). Stored as a `Variable` wrapping a SetLiteral term so it round-
+    * trips through the existing `typeExprToRef` lowering. */
+  private def setType[$: P]: P[TypeExpr] =
+    P("{" ~ typeExpr.rep(sep = ",") ~ "}").map { elems =>
+      val elemTerms = elems.map(typeExprToRef).toIndexedSeq
+      val setTerm = terms.alloc(Term.Fn(intern("SetLiteral"), IArray.from(elemTerms), IArray.empty))
+      TypeExpr.Variable(setTerm, IndexedSeq.empty)
+    }
 
   private def simpleType[$: P]: P[TypeExpr] = P(name).map(TypeExpr.Simple(_))
 
@@ -343,20 +372,47 @@ private class AnthillParserImpl(
       terms.alloc(Term.Fn(intern("SetLiteral"), IArray.from(elems), IArray.empty))
     }
 
+  /** Parse `(...)` as one of:
+    *   - empty tuple `()`,
+    *   - nested-implication `(t1, … -: u1, …)` (induction-style body —
+    *     used by stdlib int.anthill, encoded as
+    *     `forall_impl(tuple(antecedents), tuple(consequents))`),
+    *   - single-arg paren expr `(x)` (returned as-is),
+    *   - tuple literal `(x, y, …)` with positional or named args.
+    *
+    * One dispatcher avoids the backtracking trap: alternatives that
+    * pre-consumed input then failed under `~/` couldn't reach the
+    * fallback (this bit `not(not(?a))` and would also bite the nested-
+    * impl form if it lived in a separate alternative).
+    */
   private def tupleLiteralOrParenExpr[$: P]: P[TermId] =
     P("(" ~/ (
       ")".map(_ => terms.alloc(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray.empty))) |
-      (fnArg ~ "," ~ fnArg.rep(1, sep = ",") ~ ",".? ~ ")").map { case (first, rest) =>
-        val all = first +: rest
-        val posArgs = ArrayBuffer.empty[TermId]
-        val namedArgs = ArrayBuffer.empty[(TermSymbol, TermId)]
-        all.foreach {
-          case Left(tid) => posArgs += tid
-          case Right((k, v)) => namedArgs += ((k, v))
-        }
-        terms.alloc(Term.Fn(intern("TupleLiteral"), IArray.from(posArgs), IArray.from(namedArgs)))
-      } |
-      (term ~ ")")
+      (fnArg ~ ("," ~/ fnArg).rep ~ ",".? ~ ("-:" ~/ term.rep(1, sep = ",")).? ~ ")").map {
+        case (first, rest, Some(consequents)) =>
+          val antecedents = (first +: rest).collect { case Left(t) => t }
+          val antTuple = terms.alloc(Term.Fn(intern("tuple"),
+            IArray.from(antecedents), IArray.empty))
+          val conTuple = terms.alloc(Term.Fn(intern("tuple"),
+            IArray.from(consequents), IArray.empty))
+          terms.alloc(Term.Fn(intern("forall_impl"),
+            IArray(antTuple, conTuple), IArray.empty))
+        case (first, rest, None) =>
+          if rest.isEmpty then first match
+            case Left(tid) => tid
+            case Right((k, v)) =>
+              terms.alloc(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray((k, v))))
+          else
+            val all = first +: rest
+            val posArgs = ArrayBuffer.empty[TermId]
+            val namedArgs = ArrayBuffer.empty[(TermSymbol, TermId)]
+            all.foreach {
+              case Left(tid) => posArgs += tid
+              case Right((k, v)) => namedArgs += ((k, v))
+            }
+            terms.alloc(Term.Fn(intern("TupleLiteral"),
+              IArray.from(posArgs), IArray.from(namedArgs)))
+      }
     ))
 
   private def infixOp[$: P]: P[TermSymbol] =
@@ -669,7 +725,12 @@ private class AnthillParserImpl(
     P(
       (keyword("requires") ~/ term.rep(1, sep = ",")).map(ts => (0, ts.toIndexedSeq)) |
       (keyword("ensures") ~/ term.rep(1, sep = ",")).map(ts => (1, ts.toIndexedSeq)) |
-      (keyword("effects") ~ "(" ~/ typeExpr.rep(1, sep = ",") ~ ")").map(ts => (2, ts.map(Effect(_)).toIndexedSeq))
+      // Two surface forms: `effects(T1, T2)` (parenthesised list) or
+      // `effects T` (bare single type — used by stdlib iteration/collection/reflect).
+      (keyword("effects") ~/ (
+        ("(" ~ typeExpr.rep(1, sep = ",") ~ ")") |
+        nonArrowType.map(IndexedSeq(_))
+      )).map(ts => (2, ts.map(Effect(_)).toIndexedSeq))
     )
 
   private def requiresDeclItem[$: P]: P[Item] =

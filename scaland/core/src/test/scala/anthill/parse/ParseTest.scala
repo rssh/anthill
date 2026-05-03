@@ -187,3 +187,80 @@ class ParseTest extends munit.FunSuite:
       case Term.Const(Literal.StringLit("x")) => ()
       case other => fail(s"expected StringLit(\"x\") for agent, got $other")
   }
+
+  // ── WI-162: parser features unblocking the full stdlib chain ────
+
+  private def probeOk(name: String, src: String): Unit =
+    Parser.parse(src, name) match
+      case Right(_) => ()
+      case Left(es) => fail(s"$name parse failed: ${es.map(_.message).mkString("; ")}")
+
+  test("WI-162: nested function calls (e.g. not(not(?a)))") {
+    // Pre-fix the inner paren-expr backtrack failed under `~/` cut.
+    probeOk("nested-not", "rule p: not(not(?a)) = ?a")
+    probeOk("paren-arg",  "fact not((?a))")
+    probeOk("paren-only", "fact (?a)")
+  }
+
+  test("WI-162: bare `effects` clause on operation declaration") {
+    probeOk("effects-bare",
+      """sort Demo
+        |  sort Effect = ?
+        |  operation foo() -> Int
+        |    effects Effect
+        |end""".stripMargin)
+  }
+
+  test("WI-162: var-as-functor call `?P(?lo)` (HO predicate application)") {
+    probeOk("var-call",
+      """sort Demo
+        |  rule induction(?P, ?lo) :- ?P(?lo)
+        |end""".stripMargin)
+  }
+
+  test("WI-162: empty set literal `{}` in fact binding") {
+    probeOk("empty-set-binding",
+      """sort Demo
+        |  fact Foo[Effect = {}]
+        |end""".stripMargin)
+  }
+
+  test("WI-162: nested implication body `(t1, … -: u1, …)` (induction principle)") {
+    probeOk("nested-impl-forall",
+      """sort Demo
+        |  rule induction(?P, ?lo, ?hi)
+        |    :- ?P(?lo),
+        |       (forall(?n),
+        |          gte(?n, ?lo), lt(?n, ?hi), ?P(?n)
+        |          -: ?P(add(?n, 1)))
+        |end""".stripMargin)
+  }
+
+  test("WI-162: doc-comment block `{< … >}` (used by stdlib sort.anthill)") {
+    probeOk("doc-comment",
+      """{< this is a doc comment
+         |   spanning multiple lines >}
+         |sort Demo end""".stripMargin)
+  }
+
+  test("WI-162: each of the 6 stdlib files previously blocked now parses") {
+    val stdlibDir = sys.env.getOrElse("ANTHILL_STDLIB",
+      System.getProperty("user.dir") + "/../stdlib")
+    def read(p: String): String =
+      val s = scala.io.Source.fromFile(s"$stdlibDir/$p")
+      try s.mkString finally s.close()
+    val files = Seq(
+      "anthill/prelude/bool.anthill",
+      "anthill/prelude/int.anthill",
+      "anthill/prelude/iteration.anthill",
+      "anthill/prelude/collection.anthill",
+      "anthill/prelude/list.anthill",
+      "anthill/reflect/reflect.anthill",
+    )
+    val failures = files.flatMap { f =>
+      Parser.parse(read(f), f) match
+        case Right(_) => None
+        case Left(es) => Some(s"$f: ${es.head.message}")
+    }
+    assert(failures.isEmpty, s"stdlib files failing to parse:\n  ${failures.mkString("\n  ")}")
+  }

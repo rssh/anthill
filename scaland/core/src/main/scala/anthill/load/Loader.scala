@@ -197,11 +197,17 @@ object Loader:
               for n <- names do
                 val name = joinSegments(fileSym, n.segments)
                 val symTerm = kb.makeNameTermFromSym(sym)
-                kb.symbols.resolveInScope(name, symTerm.raw) match
-                  case ResolveResult.Found(found) =>
-                    kb.symbols.addImport(scopeTerm.raw, name, found)
-                  case _ =>
-                    errors += LoadError.UnresolvedName(name, n.span, pathStr)
+                val found = kb.symbols.resolveInScope(name, symTerm.raw) match
+                  case ResolveResult.Found(s) => Some(s)
+                  // Fall back to direct fully-qualified lookup — covers
+                  // top-level multi-segment sort decls like
+                  // `enum anthill.prelude.Pair` whose symbol is registered at
+                  // global with the dotted name and never gets attached to
+                  // the `anthill.prelude` namespace's exports.
+                  case _ => kb.symbols.byQualifiedName.get(s"$pathStr.$name")
+                found match
+                  case Some(s) => kb.symbols.addImport(scopeTerm.raw, name, s)
+                  case None => errors += LoadError.UnresolvedName(name, n.span, pathStr)
             case ImportKind.Wildcard =>
               val parentTerm = kb.makeNameTermFromSym(sym)
               kb.symbols.addParent(scopeTerm.raw,
@@ -478,14 +484,20 @@ object Loader:
   /** Auto-import prelude sort contents into global scope.
     * Adds each sort defined directly under anthill.prelude as a parent of _global,
     * making their exported operations (add, sub, mul, etc.) globally visible.
+    *
+    * Skips the primitive type sorts (Bool/Int/Float/BigInt/String) — their
+    * operations conflict with the kernel builtins (`anthill.reflect.not`,
+    * etc.) that Prelude.registerStandardBuiltins already imports at global.
+    * Mirrors rustland's `register_prelude`, which only imports explicit
+    * global aliases instead of bulk-parenting every prelude sort.
     */
   private def autoImportPrelude(kb: KnowledgeBase, globalScope: TermId): Unit =
     val preludePrefix = "anthill.prelude."
+    val primitiveSorts = Set("Bool", "Int", "Float", "BigInt", "String")
     for (qualName, sym) <- kb.symbols.byQualifiedName do
       if qualName.startsWith(preludePrefix) then
         val afterPrelude = qualName.substring(preludePrefix.length)
-        if !afterPrelude.contains('.') then
-          // Direct child of anthill.prelude — add as parent of _global
+        if !afterPrelude.contains('.') && !primitiveSorts.contains(afterPrelude) then
           val sortTerm = kb.makeNameTermFromSym(sym)
           kb.symbols.addParent(globalScope.raw, ScopeInclusion(sortTerm.raw, 0, isEnclosing = false))
 

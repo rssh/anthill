@@ -21,15 +21,26 @@ object EmbeddedStdlib:
     * Order matters: dependencies first.
     */
   val stdlibPaths: IndexedSeq[String] = IndexedSeq(
-    // ── prelude typeclass chain (WI-163: now safe to load — bare functor
-    //    names like `eq` / `neg` no longer collide with sort-defined ops
-    //    after registerStructuralOps was removed)
+    // ── prelude typeclass + collection chain (WI-163: structural-op
+    //    disambiguation removed the AmbiguousSymbol cascade; WI-162:
+    //    bool/int/iteration/collection/list/reflect now parse)
     "anthill.prelude.eq",
+    "anthill.prelude.bool",
+    "anthill.prelude.int",
     "anthill.prelude.ordered",
     "anthill.prelude.numeric",
     "anthill.prelude.option",
     "anthill.prelude.pair",
+    "anthill.prelude.iteration",
+    "anthill.prelude.collection",
     "anthill.prelude.indexed_seq",
+    "anthill.prelude.list",
+    "anthill.prelude.stream",
+    "anthill.prelude.lattice",
+    // anthill.prelude.Type lives in sort.anthill (per WI-138)
+    "anthill.prelude.sort",
+    // ── reflect (provides anthill.reflect.Term + Symbol etc.)
+    "anthill.reflect.reflect",
     // ── WI-138: parametric algebra spec — Ring, VectorSpace
     "anthill.prelude.algebra",
     // ── WI-153: Float operations layered on Numeric + algebra.Ring

@@ -592,17 +592,14 @@ class ParserIntegrationTest extends munit.FunSuite:
     * those modules are loaded as part of EmbeddedStdlib.
     */
   private val ToleratedUnresolvedNames = Set(
-    // Per-file WI-153 tests load only float/geometry; the typeclass
-    // chain (eq/ordered/numeric) isn't in their KB. EmbeddedStdlib full-load
-    // loads them, so these only fire on the narrower per-file tests.
-    "Eq", "Ordered", "Numeric",
-    // List/Option not yet in EmbeddedStdlib (WI-162: list.anthill parser gap).
-    "List", "Option", "Term",
-    // realization.anthill imports — Meta typeclass + reflect.Symbol not yet loaded.
-    "Symbol", "ProofResult",
-    // ordered.anthill imports Bool.ite + Int.neg — bool.anthill / int.anthill
-    // don't parse yet (WI-162). Tolerate until those land.
-    "ite", "neg")
+    // Per-file WI-153 / WI-155 tests load only the immediate file plus its
+    // direct deps — the full prelude chain is not loaded in those narrower
+    // KBs even though EmbeddedStdlib full-load resolves them all.
+    "Eq", "Ordered", "Numeric", "List", "Option", "Term", "Symbol",
+    // realization.anthill imports anthill.prelude.Meta.{ProofResult} —
+    // meta.anthill not yet in EmbeddedStdlib (effects-system WI; not in
+    // the WI-162 parser-gap scope).
+    "ProofResult")
   private def isToleratedLoadError(e: LoadError): Boolean = e match
     case LoadError.UnresolvedName(n, _, _) => ToleratedUnresolvedNames(n)
     case LoadError.UnresolvedImport(p, _)  =>
