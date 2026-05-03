@@ -138,7 +138,7 @@ fact WorkItem(
   description: "Auto-extract trigger sorts from guard term: walk LogicalQuery tree, find pattern_query atoms, extract functor, look up sort. Simplifies add_guard API.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-03T17:22:40Z"))
 
 fact WorkItem(
   id: "WI-023",
@@ -1220,3 +1220,4 @@ fact WorkItem(
   status: Delivered(agent: "user", at: "2026-05-03T14:24:59Z"))
 
 fact Feedback(content: "Verified resolved. Reproducer parses + loads cleanly: 'operation get_fst(p: Pair) -> Int = p.fst' (sort body and top-level). Likely fixed by commit ccee078 'grammar: dotted functor in fn_term reduces via field_access' which added the [$._atom_term, $.fn_term] conflict resolution and field_access into _atom_term. Added parse_field_access_in_operation_body regression test in parse_test.rs.", at: "2026-05-03T17:01:18Z", workitem: "WI-013", author: "user")
+fact Feedback(content: "Implemented. add_guard(guard_term: TermId) signature dropped trigger_sorts param; new extract_trigger_sorts walks the LogicalQuery tree (kb/mod.rs:457-525) and feeds guards_by_sort. pattern_query(term: Foo(...)) → constructor_parent_sort(Foo); sort_query(sort_name: 'S') → S. Compound forms (conjunction/disjunction/negation/guarded/projected/limited/quantifiers) recurse. Made LogicalQuerySymbols::resolve pub(crate) (kb/execute.rs:125). Added guard_trigger_sorts public accessor for verification. Tests in tests/guard_trigger_test.rs cover pattern_query and conjunction cases.", at: "2026-05-03T17:22:40Z", workitem: "WI-022", author: "user")

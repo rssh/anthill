@@ -122,7 +122,7 @@ pub(crate) struct LogicalQuerySymbols {
 }
 
 impl LogicalQuerySymbols {
-    fn resolve(kb: &mut KnowledgeBase) -> Self {
+    pub(crate) fn resolve(kb: &mut KnowledgeBase) -> Self {
         let r = |kb: &KnowledgeBase, q: &str| kb.try_resolve_symbol(q);
         Self {
             empty_query: r(kb, "anthill.reflect.LogicalQuery.empty_query"),

@@ -436,9 +436,12 @@ impl KnowledgeBase {
     // ── Guards ───────────────────────────────────────────────────
 
     /// Register a guard on the KB. The guard_term is a LogicalQuery term
-    /// that must always hold. trigger_sorts lists which sorts trigger
-    /// this guard when a fact of that sort is asserted.
-    pub fn add_guard(&mut self, guard_term: TermId, trigger_sorts: Vec<TermId>) -> ConstraintId {
+    /// that must always hold. Trigger sorts (which sort assertions re-fire
+    /// the guard) are auto-extracted by walking the LogicalQuery tree:
+    /// every `pattern_query(term: Foo(...))` contributes the parent sort
+    /// of `Foo`, every `sort_query(sort_name: "S")` contributes `S`.
+    pub fn add_guard(&mut self, guard_term: TermId) -> ConstraintId {
+        let trigger_sorts = self.extract_trigger_sorts(guard_term);
         let id = ConstraintId(self.guards.len() as u32);
         self.terms.incref(guard_term);
         for &s in &trigger_sorts {
@@ -453,9 +456,96 @@ impl KnowledgeBase {
         id
     }
 
+    /// Walk a LogicalQuery guard term, collect every sort whose facts
+    /// should re-fire the guard. Empty result on a fresh KB without the
+    /// reflect stdlib loaded — guard then triggers on no sorts.
+    fn extract_trigger_sorts(&mut self, guard_term: TermId) -> Vec<TermId> {
+        let syms = execute::LogicalQuerySymbols::resolve(self);
+        let mut out = Vec::new();
+        self.collect_trigger_sorts(guard_term, &syms, &mut out);
+        out
+    }
+
+    fn collect_trigger_sorts(
+        &mut self,
+        term: TermId,
+        syms: &execute::LogicalQuerySymbols,
+        out: &mut Vec<TermId>,
+    ) {
+        let (functor, named, pos) = match self.terms.get(term) {
+            Term::Fn { functor, named_args, pos_args } => {
+                (*functor, named_args.clone(), pos_args.clone())
+            }
+            _ => return,
+        };
+
+        if Some(functor) == syms.pattern_query {
+            let inner = named.iter()
+                .find(|(s, _)| *s == syms.term)
+                .map(|(_, t)| *t);
+            if let Some(inner_tid) = inner {
+                if let Some(sort) = self.term_to_trigger_sort(inner_tid) {
+                    if !out.contains(&sort) {
+                        out.push(sort);
+                    }
+                }
+            }
+            return;
+        }
+
+        if Some(functor) == syms.sort_query {
+            let name = named.iter()
+                .find(|(s, _)| *s == syms.sort_name)
+                .and_then(|(_, t)| match self.terms.get(*t) {
+                    Term::Const(term::Literal::String(s)) => Some(s.clone()),
+                    _ => None,
+                });
+            if let Some(name) = name {
+                if let Some(sym) = self.try_resolve_symbol(&name) {
+                    let sort_term = self.make_name_term_from_sym(sym);
+                    if !out.contains(&sort_term) {
+                        out.push(sort_term);
+                    }
+                }
+            }
+            return;
+        }
+
+        for (_, t) in &named {
+            self.collect_trigger_sorts(*t, syms, out);
+        }
+        for &t in &pos {
+            self.collect_trigger_sorts(t, syms, out);
+        }
+    }
+
+    fn term_to_trigger_sort(&mut self, t: TermId) -> Option<TermId> {
+        let functor = match self.terms.get(t) {
+            Term::Fn { functor, .. } => *functor,
+            Term::Ref(s) => *s,
+            _ => return None,
+        };
+        if let Some(parent) = self.constructor_parent_sort(functor) {
+            return Some(parent);
+        }
+        let sort_term = self.make_name_term_from_sym(functor);
+        if self.sort_kind(sort_term).is_some() {
+            Some(sort_term)
+        } else {
+            None
+        }
+    }
+
     /// Number of registered guards.
     pub fn guard_count(&self) -> usize {
         self.guards.len()
+    }
+
+    /// Sorts whose facts re-fire guard `cid`.
+    pub fn guard_trigger_sorts(&self, cid: ConstraintId) -> &[TermId] {
+        self.guards.get(cid.index())
+            .map(|g| g.trigger_sorts.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Assert a fact with guard checking.
