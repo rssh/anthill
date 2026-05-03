@@ -1198,3 +1198,10 @@ fact WorkItem(
   depends_on: ["WI-076"],
   status: Open)
 
+fact WorkItem(
+  id: "WI-169",
+  description: "scaland — Scala forward-mapping spec + scala_std realization profile + 034 architectural split (parallel to rust 029). Today scaland has no documented anthill→Scala mapping, no scala_std.anthill, and no architectural split between bootstrap codegen / anthill-scala-gen / scala-anthill-gen. Without these, WI-156 (eval) is anchored only to internal evaluator decisions, and any future codegen work would be unanchored. Files (delivered): docs/proposals/034-scala-mapping-split.md, docs/scala-forward-mapping.md, stdlib/anthill/realization/scala_std.anthill. EmbeddedStdlib loads scala_std.anthill alongside rust_std/cpp_std/rust_anthill. Defers actual codegen subprojects (anthill-scala-gen, scala-anthill-gen) to follow-up WIs gated on real consumers; locks in the architecture so they fit the same shape rust adopted.",
+  acceptance: [ToolPasses("scaland-sbt-test")],
+  depends_on: [],
+  status: Delivered(agent: "user", at: "2026-05-03T10:49:08Z"))
+

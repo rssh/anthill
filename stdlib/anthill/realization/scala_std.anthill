@@ -1,0 +1,100 @@
+-- Default Scala/std language mapping profile and execution platforms.
+--
+-- Defines how anthill effects and prelude types map to Scala 3 syntax.
+-- Codegen reads this from the KB; changing it changes generated code
+-- without touching the codegen implementation.
+--
+-- Mirrors stdlib/anthill/realization/rust_std.anthill. The Scala
+-- counterpart documentation is docs/scala-forward-mapping.md, with
+-- the architectural split in docs/proposals/034-scala-mapping-split.md.
+namespace anthill.realization.scala_std
+  import anthill.realization.{LanguageMapping, EffectMapping, ReceiverRule,
+                              TypeMapping, ReceiverForm, TraitReturnForm}
+  import anthill.realization.platform.{ExecutionPlatform}
+  import anthill.prelude.Option.{some, none}
+
+  -- ================================================================
+  -- Default profile: pure-functional, non-monadic
+  -- ================================================================
+  --
+  -- `scala_std` keeps generated Scala dependency-free: `Modify` returns
+  -- updated state by value, `Error` returns `Either[E, R]`. No IO/ZIO
+  -- machinery — alternative profiles (scala_cats_effect / scala_zio)
+  -- swap that in.
+  fact LanguageMapping(
+    language: "scala",
+    profile: some("std"),
+
+    -- Effect → host syntax (semantic: what the effect means)
+    effect_map: [
+      -- Modify X: take X by value, return updated X. Scala-idiomatic
+      -- immutable update — the Scala mirror of rust's `&mut self`,
+      -- which can't be expressed in pure Scala without a Ref/State
+      -- effect (those land in scala_cats_effect / scala_zio profiles).
+      EffectMapping(effect: "Modify", receiver: ByValue),
+      -- Error / Error(E): wrap return in Either[E, R].
+      EffectMapping(effect: "Error",  receiver: ResultWrap)
+    ],
+
+    -- Receiver rules. Scala has no &mut/by-ref distinction at the call
+    -- site, so the rule list is shorter than Rust's. The "self-typed
+    -- return" optimization rust uses (move-by-value to avoid clone)
+    -- has no analog in Scala — JVM references are cheap.
+    receiver_map: [],
+
+    type_map: [
+      TypeMapping(anthill_type: "Int",       host_type: "Int"),
+      TypeMapping(anthill_type: "BigInt",    host_type: "BigInt"),
+      TypeMapping(anthill_type: "Float",     host_type: "Double"),
+      TypeMapping(anthill_type: "Bool",      host_type: "Boolean"),
+      TypeMapping(anthill_type: "String",    host_type: "String"),
+      TypeMapping(anthill_type: "Duration",  host_type: "scala.concurrent.duration.Duration"),
+      TypeMapping(anthill_type: "Timestamp", host_type: "java.time.Instant"),
+      TypeMapping(anthill_type: "List",      host_type: "List"),
+      TypeMapping(anthill_type: "Option",    host_type: "Option"),
+      TypeMapping(anthill_type: "Pair",      host_type: "Tuple2"),
+      TypeMapping(anthill_type: "Set",       host_type: "Set"),
+      TypeMapping(anthill_type: "Map",       host_type: "Map"),
+      TypeMapping(anthill_type: "Stream",    host_type: "LazyList")
+    ],
+
+    -- Return abstract sorts via the trait's type parameter — Scala 3
+    -- handles this with normal generics. No `impl Trait` analog needed.
+    trait_return: ImplTrait
+  )
+
+  -- ================================================================
+  -- Execution platforms
+  -- ================================================================
+  --
+  -- Scala targets JVM (default), Scala.js (browser/node), and Scala
+  -- Native (LLVM). Profile selection at codegen time picks the target.
+
+  fact execution_platform(
+    name: "scala-jvm-linux-x86",
+    properties: [("os", "linux"), ("cpu", "x86_64"),
+                 ("runtime", "jvm"), ("std", "yes"), ("heap", "yes"),
+                 ("threads", "yes")]
+  )
+
+  fact execution_platform(
+    name: "scala-jvm-macos-arm64",
+    properties: [("os", "macos"), ("cpu", "aarch64"),
+                 ("runtime", "jvm"), ("std", "yes"), ("heap", "yes"),
+                 ("threads", "yes")]
+  )
+
+  fact execution_platform(
+    name: "scala-js-node",
+    properties: [("os", "node"), ("cpu", "wasm-or-js"),
+                 ("runtime", "scalajs"), ("std", "partial"),
+                 ("heap", "yes"), ("threads", "no")]
+  )
+
+  fact execution_platform(
+    name: "scala-native-linux-x86",
+    properties: [("os", "linux"), ("cpu", "x86_64"),
+                 ("runtime", "scala-native"), ("std", "yes"),
+                 ("heap", "yes"), ("threads", "yes")]
+  )
+end

@@ -77,6 +77,7 @@ object EmbeddedStdlib:
     "anthill.realization.rust_std",
     "anthill.realization.cpp_std",
     "anthill.realization.rust_anthill",
+    "anthill.realization.scala_std",
     // ── persistence
     "anthill.persistence.store",
     "anthill.persistence.filesystem",
