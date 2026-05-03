@@ -226,6 +226,52 @@ impl KnowledgeBase {
         }
     }
 
+    /// Lift a multi-goal body into a single goal by synthesizing a fresh
+    /// rule `_synth_N(?vars) :- body`, where `?vars` are the free Globals
+    /// across `body`. Returns the head term — a single TermId callers can
+    /// pass to `not`, `or`, etc. Proposal 033 / WI-076.
+    fn synthesize_conjunction_rule(&mut self, body: Vec<TermId>) -> TermId {
+        let mut free_vars: Vec<super::term::VarId> = Vec::new();
+        for &g in &body {
+            for v in self.collect_vars(g) {
+                if !free_vars.iter().any(|fv| fv.raw() == v.raw()) {
+                    free_vars.push(v);
+                }
+            }
+        }
+        let id = self.rules.len();
+        let synth_sym = self.symbols.intern(&format!("_synth_{id}"));
+        let pos_args: SmallVec<[TermId; 4]> = free_vars.iter()
+            .map(|&v| self.terms.alloc(Term::Var(super::term::Var::Global(v))))
+            .collect();
+        let head = self.terms.alloc(Term::Fn {
+            functor: synth_sym,
+            pos_args,
+            named_args: SmallVec::new(),
+        });
+        let rule_sort = self.make_name_term("Rule");
+        let domain = self.make_name_term("_global");
+        self.assert_rule_debruijn(head, body, rule_sort, domain, None);
+        head
+    }
+
+    /// Reduce a lowered branch to a single goal: single-goal verbatim,
+    /// multi-goal via `synthesize_conjunction_rule`, empty rejected because
+    /// the trivial-collapse semantics (empty body succeeds → wrapping
+    /// disjunction unconditionally true / wrapping negation unconditionally
+    /// false) is almost always a caller bug rather than intent.
+    fn coerce_to_single_goal(
+        &mut self,
+        goals: Vec<TermId>,
+        empty_err: &'static str,
+    ) -> Result<TermId, LowerError> {
+        match goals.len() {
+            0 => Err(LowerError::NotYetImplemented(empty_err)),
+            1 => Ok(goals[0]),
+            _ => Ok(self.synthesize_conjunction_rule(goals)),
+        }
+    }
+
     /// Walk a reified `LogicalQuery` value and produce a goal list for the
     /// resolver. Errors surface unsupported shapes cleanly (rather than
     /// silently evaluating to "always true").
@@ -239,11 +285,13 @@ impl KnowledgeBase {
     /// - `sort_query(name)` → a synthetic `is_entity_of(?fresh, name)`
     ///   goal; fresh variable names are lexically scoped to this call
     ///   (no leak into the caller's query-level variables).
-    /// - `negation(q)` → if `q` lowers to a single goal, `[not(g)]`;
-    ///   if it lowers to more than one goal, `NotYetImplemented` —
-    ///   wrapping a multi-goal body in `not` would need a synthesized
-    ///   conjunction head which requires a named-rule emitter we don't
-    ///   have yet (see Q3 open question on multi-goal NAF).
+    /// - `negation(q)` → `[not(g)]` where `g` is the inner's single goal,
+    ///   or `[not(_synth_N(?vars))]` for multi-goal bodies — the synthesized
+    ///   rule is `_synth_N(?vars) :- inner_goals` (proposal 033 §M4 / WI-076).
+    ///   Empty inner is rejected as it almost always indicates a caller bug.
+    /// - `disjunction(l, r)` → `[or(l_goal, r_goal)]` via the same
+    ///   single-goal coercion; `or` is the rule-form lift over push_choice
+    ///   (proposal 033 §M3).
     /// - `guarded(q, cond)` → `lower(q) ++ [alloc_from_value(cond)]`.
     /// - `projected(q, _)` / `limited(q, _)` → for the resolver-level
     ///   view, projection and cardinality limits are post-processing on
@@ -346,20 +394,13 @@ impl KnowledgeBase {
                 entity: "negation", field: "query",
             })?;
             let inner_goals = self.lower_query_with(inner, syms)?;
-            // Single-goal NAF is the common case. Multi-goal needs an
-            // intermediate conjunction rule head which Q3 doesn't add yet.
             let not_sym = syms.not.ok_or(LowerError::NotYetImplemented(
                 "negation without loaded anthill.reflect.not",
             ))?;
-            let arg = match inner_goals.len() {
-                0 => return Err(LowerError::NotYetImplemented(
-                    "negation of empty_query (semantically `false`)",
-                )),
-                1 => inner_goals[0],
-                _ => return Err(LowerError::NotYetImplemented(
-                    "negation of multi-goal query (needs conjunction-rule lifting)",
-                )),
-            };
+            let arg = self.coerce_to_single_goal(
+                inner_goals,
+                "negation of empty_query (semantically `false`)",
+            )?;
             let goal = self.terms.alloc(Term::Fn {
                 functor: not_sym,
                 pos_args: SmallVec::from_slice(&[arg]),
@@ -369,8 +410,8 @@ impl KnowledgeBase {
         }
 
         // `or` is the rule-lifted form of push_choice; no extra lifting needed.
-        // Multi-goal branches are deferred: they need a conjunction-rule head
-        // synthesized in the KB (same shape as multi-goal negation).
+        // Multi-goal branches synthesize a fresh conjunction-rule head
+        // (proposal 033 §M4 / WI-076).
         if Some(functor) == syms.disjunction {
             let left = find_named(named, syms.left).ok_or(LowerError::MissingField {
                 entity: "disjunction", field: "left",
@@ -383,8 +424,9 @@ impl KnowledgeBase {
             let or_sym = syms.or.ok_or(LowerError::NotYetImplemented(
                 "disjunction without loaded anthill.kernel.or",
             ))?;
-            let l = coerce_disjunction_branch(l_goals)?;
-            let r = coerce_disjunction_branch(r_goals)?;
+            let empty_msg = "disjunction with empty_query branch (empty branch trivially succeeds)";
+            let l = self.coerce_to_single_goal(l_goals, empty_msg)?;
+            let r = self.coerce_to_single_goal(r_goals, empty_msg)?;
             let goal = self.terms.alloc(Term::Fn {
                 functor: or_sym,
                 pos_args: SmallVec::from_slice(&[l, r]),
@@ -446,19 +488,4 @@ impl KnowledgeBase {
 
 fn find_named<'a>(named: &'a [(Symbol, Value)], key: Symbol) -> Option<&'a Value> {
     named.iter().find(|(s, _)| *s == key).map(|(_, v)| v)
-}
-
-/// Reduce a disjunction branch's lowered goals to a single TermId.
-/// 0-goal and multi-goal branches need conjunction-rule lifting which the
-/// LogicalQuery surface doesn't currently emit (proposal 033 §Future work).
-fn coerce_disjunction_branch(goals: Vec<TermId>) -> Result<TermId, LowerError> {
-    match goals.len() {
-        0 => Err(LowerError::NotYetImplemented(
-            "disjunction with empty_query branch (semantically `true`/`false` collapse)",
-        )),
-        1 => Ok(goals[0]),
-        _ => Err(LowerError::NotYetImplemented(
-            "disjunction of multi-goal branches (needs conjunction-rule lifting)",
-        )),
-    }
 }

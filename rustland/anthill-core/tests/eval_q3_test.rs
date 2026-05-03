@@ -497,7 +497,7 @@ end
     let vid = kb.fresh_var(v_sym);
     let var_v = kb.alloc(Term::Var(Var::Global(vid)));
 
-    let pq = |kb: &mut anthill_core::kb::KnowledgeBase, functor| Value::Entity {
+    let pq = |functor| Value::Entity {
         functor: pattern_query_sym,
         pos: Vec::new(),
         named: vec![(term_field, Value::Entity {
@@ -505,9 +505,9 @@ end
             named: vec![(name_field, Value::Term(var_v))],
         })],
     };
-    let q_a = pq(&mut kb, a_sym);
-    let q_b = pq(&mut kb, b_sym);
-    let q_c = pq(&mut kb, c_sym);
+    let q_a = pq(a_sym);
+    let q_b = pq(b_sym);
+    let q_c = pq(c_sym);
     let inner = entity_named(disj_sym, vec![(left_field, q_a), (right_field, q_b)]);
     let outer = entity_named(disj_sym, vec![(left_field, inner), (right_field, q_c)]);
 
@@ -527,21 +527,28 @@ end
 }
 
 #[test]
-fn q3_disjunction_multi_goal_branch_is_not_yet_implemented() {
-    // A disjunction whose branch lowers to >1 goal currently surfaces
-    // NotYetImplemented — multi-goal lifting needs a synthesized
-    // conjunction-rule head (deferred to WI-076). This test locks the
-    // contract so future WI-076 work knows what to flip.
+fn q3_disjunction_multi_goal_branch_lifts_via_synthesized_rule() {
+    // Multi-goal disjunction branches lift through a synthesized
+    // conjunction-rule head (proposal 033 §M4 / WI-076). The left branch
+    // is `conjunction(left_tag(?v), other_tag(?v))` — a 2-goal body that
+    // needs a synthesized head; the right branch is a single-goal pattern.
+    // The query succeeds when both halves of the conjunction match a
+    // single ?v ("alpha"), or when the right branch matches alone.
     let mut kb = load_kb_with(r#"
 namespace test.q3_disj_multi
   sort Tag
     entity left_tag(name: String)
+    entity other_tag(name: String)
     entity right_tag(name: String)
   end
+  fact left_tag(name: "alpha")
+  fact other_tag(name: "alpha")
+  fact right_tag(name: "beta")
 end
 "#);
 
     let left_sym = kb.try_resolve_symbol("test.q3_disj_multi.Tag.left_tag").unwrap();
+    let other_sym = kb.try_resolve_symbol("test.q3_disj_multi.Tag.other_tag").unwrap();
     let right_sym = kb.try_resolve_symbol("test.q3_disj_multi.Tag.right_tag").unwrap();
     let pattern_query_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.pattern_query").unwrap();
     let disj_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.disjunction").unwrap();
@@ -555,25 +562,143 @@ end
     let vid = kb.fresh_var(v_sym);
     let var_v = kb.alloc(Term::Var(Var::Global(vid)));
 
-    let pq_left = entity_named(pattern_query_sym, vec![(term_field, Value::Entity {
-        functor: left_sym, pos: Vec::new(),
-        named: vec![(name_field, Value::Term(var_v))],
-    })]);
-    let pq_right = entity_named(pattern_query_sym, vec![(term_field, Value::Entity {
-        functor: right_sym, pos: Vec::new(),
-        named: vec![(name_field, Value::Term(var_v))],
-    })]);
-    // Multi-goal left branch via inner conjunction.
+    let pq = |functor| Value::Entity {
+        functor: pattern_query_sym,
+        pos: Vec::new(),
+        named: vec![(term_field, Value::Entity {
+            functor, pos: Vec::new(),
+            named: vec![(name_field, Value::Term(var_v))],
+        })],
+    };
     let multi_left = entity_named(conj_sym, vec![
-        (left_field, pq_left.clone()),
-        (right_field, pq_right.clone()),
+        (left_field, pq(left_sym)),
+        (right_field, pq(other_sym)),
     ]);
     let query = entity_named(disj_sym, vec![
         (left_field, multi_left),
-        (right_field, pq_right),
+        (right_field, pq(right_sym)),
+    ]);
+
+    let mut stream = kb.execute_logical_query(&query).expect("multi-goal lifts cleanly");
+    let mut seen = std::collections::HashSet::new();
+    while let Some((sol, rest)) = stream.split_first(&mut kb) {
+        if let Some(Value::Term(t)) = sol.subst.resolve_as_value(vid) {
+            if let Term::Const(Literal::String(s)) = kb.get_term(*t) {
+                seen.insert(s.clone());
+            }
+        }
+        stream = rest;
+    }
+    let expected: std::collections::HashSet<String> =
+        ["alpha", "beta"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(seen, expected,
+        "left branch (conj of left_tag+other_tag) yields alpha; right branch yields beta");
+}
+
+#[test]
+fn q3_disjunction_empty_branch_is_not_yet_implemented() {
+    // empty_query branches still surface NYI — the true/false collapse
+    // is a semantic decision the caller likely didn't intend.
+    let mut kb = load_kb_with("namespace test.q3_disj_empty end\n");
+    let pattern_query_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.pattern_query").unwrap();
+    let empty_q_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.empty_query").unwrap();
+    let disj_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.disjunction").unwrap();
+    let entity_info_sym = kb.try_resolve_symbol("anthill.reflect.EntityInfo").unwrap();
+    let term_field = kb.intern("term");
+    let left_field = kb.intern("left");
+    let right_field = kb.intern("right");
+    let name_field = kb.intern("name");
+
+    let n_sym = kb.intern("n");
+    let vn = kb.fresh_var(n_sym);
+    let var_n = kb.alloc(Term::Var(Var::Global(vn)));
+    let some_pattern = entity_named(pattern_query_sym, vec![(term_field, Value::Entity {
+        functor: entity_info_sym, pos: Vec::new(),
+        named: vec![(name_field, Value::Term(var_n))],
+    })]);
+    let empty_q = Value::Entity { functor: empty_q_sym, pos: Vec::new(), named: Vec::new() };
+    let query = entity_named(disj_sym, vec![
+        (left_field, empty_q),
+        (right_field, some_pattern),
     ]);
 
     let err = kb.lower_query(&query).unwrap_err();
     assert!(matches!(err, LowerError::NotYetImplemented(_)),
-        "multi-goal disjunction branch must surface NotYetImplemented; got {err:?}");
+        "empty disjunction branch must still NYI; got {err:?}");
+}
+
+#[test]
+fn q3_negation_multi_goal_lifts_via_synthesized_rule() {
+    // Multi-goal negation lifts through the same synthesizer — proposal
+    // 033 §M4 / WI-076. A `negation(conjunction(p, q))` lowers to
+    // `not(_synth_N(?vars))` where the synthesized rule says
+    // `_synth_N(?vars) :- p_goal, q_goal`. Test: a conjunction that's
+    // unsatisfiable (left_tag and right_tag for the same ?v don't both
+    // match any single ?v) negated should succeed.
+    let mut kb = load_kb_with(r#"
+namespace test.q3_neg_multi
+  sort Tag
+    entity left_tag(name: String)
+    entity right_tag(name: String)
+    entity probe(name: String)
+  end
+  fact left_tag(name: "alpha")
+  fact right_tag(name: "beta")
+  fact probe(name: "p")
+end
+"#);
+
+    let left_sym = kb.try_resolve_symbol("test.q3_neg_multi.Tag.left_tag").unwrap();
+    let right_sym = kb.try_resolve_symbol("test.q3_neg_multi.Tag.right_tag").unwrap();
+    let probe_sym = kb.try_resolve_symbol("test.q3_neg_multi.Tag.probe").unwrap();
+    let pattern_query_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.pattern_query").unwrap();
+    let neg_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.negation").unwrap();
+    let conj_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.conjunction").unwrap();
+    let term_field = kb.intern("term");
+    let left_field = kb.intern("left");
+    let right_field = kb.intern("right");
+    let query_field = kb.intern("query");
+    let name_field = kb.intern("name");
+
+    // ?v shared across the negated conjunction (forces the contradiction);
+    // ?p binds the probe tag so the outer query has something to ground out.
+    let v_sym = kb.intern("v");
+    let p_sym = kb.intern("p");
+    let vid = kb.fresh_var(v_sym);
+    let pid = kb.fresh_var(p_sym);
+    let var_v = kb.alloc(Term::Var(Var::Global(vid)));
+    let var_p = kb.alloc(Term::Var(Var::Global(pid)));
+
+    let pq = |functor, var| Value::Entity {
+        functor: pattern_query_sym, pos: Vec::new(),
+        named: vec![(term_field, Value::Entity {
+            functor, pos: Vec::new(),
+            named: vec![(name_field, Value::Term(var))],
+        })],
+    };
+    // negation(conjunction(left_tag(?v), right_tag(?v))) — multi-goal inner
+    let inner_conj = entity_named(conj_sym, vec![
+        (left_field, pq(left_sym, var_v)),
+        (right_field, pq(right_sym, var_v)),
+    ]);
+    let negated = entity_named(neg_sym, vec![(query_field, inner_conj)]);
+    // conjunction(probe(?p), negation(...)) — gives the outer query a
+    // fact-bound goal so we have something to assert about.
+    let outer = entity_named(conj_sym, vec![
+        (left_field, pq(probe_sym, var_p)),
+        (right_field, negated),
+    ]);
+
+    let mut stream = kb.execute_logical_query(&outer).expect("multi-goal negation lifts");
+    let mut probe_seen = std::collections::HashSet::new();
+    while let Some((sol, rest)) = stream.split_first(&mut kb) {
+        if let Some(Value::Term(t)) = sol.subst.resolve_as_value(pid) {
+            if let Term::Const(Literal::String(s)) = kb.get_term(*t) {
+                probe_seen.insert(s.clone());
+            }
+        }
+        stream = rest;
+    }
+    assert!(probe_seen.contains("p"),
+        "negation succeeds (the conjunction has no shared-?v witness), so probe ground binding surfaces; saw {probe_seen:?}");
 }
