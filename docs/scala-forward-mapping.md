@@ -321,8 +321,24 @@ Same heuristic as Rust (`docs/rust-forward-mapping.md` §4): if an operation's f
 
 ## 5. Naming conventions
 
-- Anthill identifiers stay as-written. Snake_case stays snake_case (Scala-idiomatic camelCase conversion is *not* automatic — that's a project decision and would belong in a `NamespaceMapping` fact, not in baseline codegen).
-- Operator-named operations (e.g. `+` mapped from `add`) stay as method names, not symbolic operators (Scala 3 allows symbolic methods but they're not free; explicit naming is more grep-friendly).
+Anthill stdlib is mixed: most operations use snake_case (`to_bigint`, `read_line`, `parse_argv`, `format_help`, `usage_summary`), some use camelCase (`isEmpty`, `maxValue`, `splitFirst`, `takeN`). Rust mapping needs no conversion (snake_case is idiomatic Rust); **Scala mapping converts to Scala-idiomatic camelCase** so generated code reads naturally:
+
+| Anthill identifier kind | Convention | Scala output |
+|---|---|---|
+| Sort / entity (PascalCase: `ProofRecord`, `Vec3`) | matches Scala class/trait | unchanged → `class ProofRecord`, `case class Vec3` |
+| Operation (snake_case: `to_bigint`, `parse_argv`) | snake_case dominant in stdlib | converted → `def toBigint`, `def parseArgv` |
+| Operation (already camelCase: `isEmpty`, `splitFirst`) | rare in stdlib but present | unchanged → `def isEmpty`, `def splitFirst` |
+| Field name (snake_case: `state_hash`, `qualified_name`) | snake_case dominant | converted → `stateHash`, `qualifiedName` (in case-class fields and named-arg keys) |
+| Namespace segment (lowercase: `prelude`, `realization`) | matches Scala package | unchanged → `package prelude` |
+| Variable (snake_case: `?work_item`) | scope-local; doesn't surface in generated code |  — |
+
+**Conversion rule.** snake_case → camelCase: split on `_`, lowercase the first segment, PascalCase each subsequent segment, join. Identifiers without `_` are unchanged (already camelCase or single-word).
+
+**Round-tripping.** `scala-anthill-gen` (proposal 034) emits `@anthillName("original_snake_case")` on every generated `def` whose Scala name differs from its source — preserves the lossless round trip and lets `Implementation`-fact validation match by source-side name. This mirrors `rust-anthill-gen`'s `#[anthill(name = "...")]`.
+
+**Operator-named operations** (e.g. `add` lifted to `+` via the Pratt operator table): the *method* keeps the spelled-out name (`def add`); whether the consumer also defines a symbolic alias (`def +(other: T): T = add(this, other)`) is a project-level decision, not baseline codegen output. Symbolic methods exist in Scala 3 but they're harder to grep and risk operator-precedence surprise.
+
+**Reserved-word collisions.** When an anthill identifier collides with a Scala keyword (e.g. `match`, `type`, `class`), the generated name is backticked (``def `match`(…)``) — same approach Scala uses for Java interop.
 
 ## 6. Cross-references
 
