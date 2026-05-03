@@ -101,7 +101,7 @@ namespace anthill.persistence
   -- Retrieve facts matching a pattern
   -- For queryable stores: translates pattern to native query
   -- For bulk stores: no-op (facts already in KB from pull)
-  operation retrieve(store: Store, pattern: Term) -> List[T = Term]
+  operation retrieve(store: Store, pattern: Term) -> List[Term]
     effects (Reads store)
 
   -- Remove a fact from its backing store
@@ -113,11 +113,11 @@ namespace anthill.persistence
   -- ================================================================
 
   -- Pull all facts from a bulk store into the KB
-  operation pull(store: Store) -> List[T = Term]
+  operation pull(store: Store) -> List[Term]
     effects (Reads store)
 
   -- Flush KB delta (new/changed/retracted facts) back to store
-  operation flush(store: Store, delta: List[T = Term])
+  operation flush(store: Store, delta: List[Term])
     effects (Modifies store)
 
 end
@@ -375,6 +375,56 @@ Concrete store backends (FileStore, SqlStore) are implementations of the abstrac
 - Conflict resolution across stores — 1-to-1 routing prevents conflicts by design
 - Transaction semantics across stores — each store has its own consistency guarantees
 - Caching / invalidation for queryable stores — retrieved facts are working copies, not cached
+
+### 11. Value integration and ingestion contract (post-026.1)
+
+This proposal predates [026.1 Value-integrated KB queries](026.1-value-integrated-kb-queries.md). The abstract algebra (sections 1–10) holds, but the **implementation contract** between a `Store` and the resolver needs to align with 026.1's `Value` / `TermView` boundary. WI-168 records this reconciliation.
+
+#### Two ingestion paths
+
+A fact entering the KB from a store flows through one of two paths, depending on the store's capabilities:
+
+1. **Bulk pull → `assert_fact` (TermId path).** For `bulk` stores: at startup, `pull(store)` returns all facts. They are parsed (for filesystem stores) or row-converted (for in-memory stores), promoted to `TermId` via `TermStore::alloc`, and asserted as KB facts. This is the path the current Rust implementation uses for `FileStore`. Memory cost: O(KB-resident fact count). Query cost: structural indexing in the discrim tree, all bindings produced by `bind_term` end up as `Value::Term(tid)` in σ.
+
+2. **Queryable retrieve → `bind_value` (Value path, [026.1 Q4](026.1-value-integrated-kb-queries.md#implementation-milestones)).** For `queryable` stores at scale: when the resolver hits a goal whose sort is routed to a queryable store, `retrieve(store, pattern)` returns a `Stream[Value::Entity]` from the native query. Each row binds to σ via `bind_value` — **no `TermStore` allocation per row**. The resolver consumes these bindings via `TermView` (026.1 §"TermView abstraction"), which generalises matching/unification over both `Value::Term` and `Value::Entity`. Memory cost: O(active substitution size during query); the main `TermStore` does not grow with row count.
+
+The split mirrors 026.1's "one input boundary, one output boundary": KB-resident facts stay TermId-keyed for hash-consed structural-equality fast paths; external rows enter as Values without paying that cost.
+
+#### Parser as a Value producer
+
+The canonical implementation of a "row → Value" mapping is the **anthill parser**, applied at row-fragment granularity. Backends that ingest anthill source text (the existing `FileStore`; future `GitHubStore` reading issue bodies; future `ApiStore` consuming response payloads) parse each row into a `ParsedFile`-style IR and convert to `Value::Entity` via the same path that `alloc_from_value` reverses.
+
+This makes the ingestion contract **uniform across backends**: every store's `retrieve` produces Values, regardless of whether the row came from the filesystem, a SQL cursor, an HTTP API, or an issue tracker. The 026.1 Q4 `StreamSource::External` variant is the resolver-side wrapper that surfaces these Values to the search loop.
+
+The parser-based path is what `examples/github-todo/docs/pluggable-backend.md` anticipates for its `local | github | api` backend taxonomy: each backend produces anthill-formatted rows; the parser is the shared converter; the resolver consumes them via TermView.
+
+#### `retrieve` return type — abstract `Term`, concrete bifurcation
+
+The abstract `retrieve` operation (§4) returns `List[T = Term]`. The `Term` here is the public abstract sort from `anthill.reflect`. At the carrier-binding level (§9 *Implementation Facts*), `Term` resolves to either:
+
+- `TermId` — when the backend hash-conses every row into the main `TermStore` (path 1 above).
+- `Value::Entity` (or another non-`Term` `Value` variant) — when the backend yields rows via Q4's `StreamSource::External` (path 2 above).
+
+Callers at the anthill level cannot distinguish the two — both flow through `TermView`. This is the same lineage-preservation principle 026.1 enforces for `Substitution` bindings.
+
+#### Q4 status: required for queryable backends at scale
+
+026.1 Q4 was filed as "optional, profile-driven". The reconciliation here elevates it: **Q4 is the required path for any queryable backend whose row-set may exceed the KB's residency budget** (typical SQL stores, future GitHub/API backends). The "required threshold" is workload-dependent:
+
+- < ~10K rows total in the queried table: bulk pull is acceptable; pay the hash-cons once and avoid Q4 plumbing.
+- ≥ ~10K rows or unbounded streams: Q4 is required to keep `TermStore` size bounded.
+
+The threshold is a design hint, not a hard contract. Workloads that recursively query an external source (proposal 026.1 §"Pathological case: deep recursion over external streams") may exhibit substitution-clone pressure even at lower row counts; the escape valves listed there (query-scoped arena, prefix memoization, projection pushdown) compose with Q4.
+
+#### What this means for proposal 033
+
+Proposal 033 §Open questions §5 records the same gap from the disjunction-substrate side. With this section, that question is resolved: the goal queue stays `Vec<TermId>` (matching `Frame.goals`), the substitution carries `Value` (per Q1), and `bind_value` is the single entry point that lifts non-`Term` row data into σ. No 033 implementation depends on Q4 landing first; 033's `Continuation` variant is forward-compatible with whatever the backend produces.
+
+#### Out of scope for this section
+
+- Concrete `GitHubStore` / `ApiStore` schema or routing logic (deferred to a future proposal that supersedes the relevant parts of `examples/github-todo/docs/pluggable-backend.md`).
+- Implementation milestones for Q4 itself — those live in 026.1.
+- Migration plan for pre-Value SQL bindings (the existing `QueryBinding` schema in §7 uses `Quoted("sql", ...)` terms which are unchanged; only the row-decoding path on the way back is new).
 
 ## Design Rationale
 
