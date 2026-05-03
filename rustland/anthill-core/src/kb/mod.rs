@@ -1902,6 +1902,8 @@ impl KnowledgeBase {
         self.register_builtin("anthill.reflect.kind", BuiltinTag::Kind);
         self.register_builtin("anthill.reflect.field_access", BuiltinTag::FieldAccess);
         self.register_builtin("anthill.reflect.Expr.ho_apply", BuiltinTag::HoApply);
+        // Resolver primitives (proposal 033)
+        self.register_builtin("anthill.kernel.push_choice", BuiltinTag::PushChoice);
         // Arithmetic and comparison
         self.register_builtin("anthill.prelude.Eq.eq", BuiltinTag::Eq);
         self.register_builtin("anthill.prelude.Eq.neq", BuiltinTag::Neq);

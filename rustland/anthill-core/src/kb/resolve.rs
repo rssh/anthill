@@ -53,6 +53,9 @@ pub enum BuiltinTag {
     FieldAccess,
     /// `anthill.reflect.Expr.ho_apply(?P, args...)` — higher-order predicate application.
     HoApply,
+    /// `anthill.kernel.push_choice(?a, ?b)` — binary choice point.
+    /// Special-cased in `step_init`; see proposal 033 / WI-075.
+    PushChoice,
     // ── Arithmetic and comparison builtins ───────────────────
     /// `anthill.prelude.Eq.eq(?a, ?b)` — structural equality (succeeds/fails).
     Eq,
@@ -110,6 +113,15 @@ enum Candidate {
     /// Frame-scoped assumed fact (introduced by `forall_impl` discharge —
     /// WI-108). Behaves as a zero-body rule.
     Assumption(Substitution),
+    /// Inline goal-list continuation — body-only, no rule head, no
+    /// fresh-var renaming. The synthesized goals are prepended before
+    /// `frame.goals[1..]` and the parent frame's σ is inherited
+    /// unchanged (no head match contributes bindings).
+    ///
+    /// Introduced by proposal 033 / WI-075 to back `push_choice(?a, ?b)`:
+    /// the two branches of a binary choice are emitted as two
+    /// `Continuation` candidates that share the frame's tail.
+    Continuation(Vec<TermId>),
 }
 
 /// Result of a recursive groundness check.
@@ -351,6 +363,32 @@ impl SearchStream {
                     return Some(StepResult::Continue);
                 } else {
                     // Predicate var still unbound — fail (can't apply unbound predicate)
+                    self.stack.pop();
+                    return Some(StepResult::Continue);
+                }
+            }
+            // Bypasses execute_builtin: push_choice's effect is on the
+            // choice-point stack, not on σ — like Not/HoApply.
+            if tag == BuiltinTag::PushChoice {
+                if let Some((goal_a, goal_b)) =
+                    Self::resolve_push_choice_args(kb, goal, &frame.subst)
+                {
+                    let candidates = vec![
+                        Candidate::Continuation(vec![goal_a]),
+                        Candidate::Continuation(vec![goal_b]),
+                    ];
+                    let f = self.stack.last_mut().unwrap();
+                    f.state = FrameState::ChoicePoint {
+                        delay_mode,
+                        original_goal: goal,
+                        candidates,
+                        next: 0,
+                        any_delayed: false,
+                        child_solutions: 0,
+                        seen_goals: HashSet::new(),
+                    };
+                    return Some(StepResult::Continue);
+                } else {
                     self.stack.pop();
                     return Some(StepResult::Continue);
                 }
@@ -662,6 +700,26 @@ impl SearchStream {
         })
     }
 
+    /// Walk both args of a `push_choice(?a, ?b)` goal through σ and
+    /// return them as `(goal_a, goal_b)`. Returns `None` if the goal is
+    /// malformed (wrong arity). Proposal 033 / WI-075.
+    fn resolve_push_choice_args(
+        kb: &KnowledgeBase,
+        goal: TermId,
+        subst: &Substitution,
+    ) -> Option<(TermId, TermId)> {
+        match kb.terms.get(goal) {
+            Term::Fn { pos_args, named_args, .. }
+                if pos_args.len() == 2 && named_args.is_empty() =>
+            {
+                let goal_a = kb.walk(pos_args[0], subst);
+                let goal_b = kb.walk(pos_args[1], subst);
+                Some((goal_a, goal_b))
+            }
+            _ => None,
+        }
+    }
+
     /// Recognise `__pop_assumption(N)` and return N. Returns None for
     /// anything else.
     fn pop_assumption_arg(kb: &KnowledgeBase, goal: TermId) -> Option<usize> {
@@ -912,11 +970,30 @@ impl SearchStream {
             }
         }
 
+        // Continuation inherits parent σ unchanged — no head match, so no
+        // new bindings to merge and no walk of the tail to perform. See
+        // proposal 033 §"TermId / Value asymmetry" for why σ is omitted
+        // from the variant.
+        if let Candidate::Continuation(body) = candidate {
+            let frame = self.stack.last().unwrap();
+            let mut new_goals = body;
+            new_goals.extend_from_slice(&frame.goals[1..]);
+            self.stack.push(Frame {
+                goals: new_goals,
+                subst: frame.subst.clone(),
+                depth: frame.depth + 1,
+                state: FrameState::Init { delay_mode: delay_mode.reset() },
+                assumed_facts: frame.assumed_facts.clone(),
+            });
+            return Some(StepResult::Continue);
+        }
+
         // Extract components from candidate
         let (opt_rid, tree_subst) = match candidate {
             Candidate::Occurrence(_occ_id, subst) => (None, subst),
             Candidate::Rule(rid, subst) => (Some(rid), subst),
             Candidate::Assumption(subst) => (None, subst),
+            Candidate::Continuation(_) => unreachable!("handled above"),
         };
 
         let body = opt_rid.map_or(Vec::new(), |rid| kb.rule_body(rid).to_vec());
@@ -1161,6 +1238,7 @@ impl KnowledgeBase {
             BuiltinTag::ExtractSort => self.builtin_extract_sort(goal, answer_subst),
             BuiltinTag::Not => unreachable!("Not is handled in step_init, not execute_builtin"),
             BuiltinTag::HoApply => unreachable!("HoApply is handled in step_init, not execute_builtin"),
+            BuiltinTag::PushChoice => unreachable!("PushChoice is handled in step_init, not execute_builtin"),
             BuiltinTag::ResolveSortInstParam => self.builtin_resolve_sort_inst_param(goal, answer_subst),
             BuiltinTag::Scope => self.builtin_scope(goal, answer_subst),
             BuiltinTag::Kind => self.builtin_kind(goal, answer_subst),
@@ -1904,6 +1982,12 @@ impl KnowledgeBase {
                 // NAF handles delay via goal rotation at resolution time;
                 // other body goals may bind vars before not() is retried.
                 if tag == BuiltinTag::Not {
+                    continue;
+                }
+                // PushChoice is a control primitive — it always fires
+                // immediately at step_init, never delays. Variable args
+                // become goals that delay in their own step if unbound.
+                if tag == BuiltinTag::PushChoice {
                     continue;
                 }
                 if self.builtin_would_delay(tag, goal, subst) {

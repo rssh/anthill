@@ -1086,6 +1086,23 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
         is_enclosing: true,
     });
 
+    // anthill.kernel namespace — resolver primitives (proposal 033).
+    // Pre-declared here so that the loader's resolve_symbol calls find
+    // these names with proper scoping when stdlib/anthill/kernel/ loads.
+    let kernel_sym = kb.symbols.define("kernel", "anthill.kernel", SymbolKind::Namespace, anthill_term.raw());
+    let kernel_term = kb.alloc(Term::Fn {
+        functor: kernel_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(kernel_term.raw(), ScopeInclusion {
+        parent_scope_raw: anthill_term.raw(),
+        instantiation_term_raw: anthill_term.raw(),
+        is_enclosing: true,
+    });
+    kb.symbols.define("push_choice", "anthill.kernel.push_choice", SymbolKind::Operation, kernel_term.raw());
+    kb.symbols.define("or", "anthill.kernel.or", SymbolKind::Operation, kernel_term.raw());
+
     // Global imports: make fundamental constructors visible from any scope
     // that walks up to _global (like Haskell's Prelude auto-import).
     kb.symbols.add_import(global_raw, "cons", cons_sym);
@@ -1106,6 +1123,12 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     // Kernel builtins: globally visible (language primitives, not importable names)
     if let Some(&not_sym) = kb.symbols.by_qualified_name.get("anthill.reflect.not") {
         kb.symbols.add_import(global_raw, "not", not_sym);
+    }
+    if let Some(&push_choice_sym) = kb.symbols.by_qualified_name.get("anthill.kernel.push_choice") {
+        kb.symbols.add_import(global_raw, "push_choice", push_choice_sym);
+    }
+    if let Some(&or_sym) = kb.symbols.by_qualified_name.get("anthill.kernel.or") {
+        kb.symbols.add_import(global_raw, "or", or_sym);
     }
 
     // Arithmetic and comparison: globally importable (like Haskell Prelude).

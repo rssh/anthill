@@ -117,6 +117,8 @@ pub(crate) struct LogicalQuerySymbols {
     pub is_entity_of: Option<Symbol>,
     // `not` — synthesized by `negation`.
     pub not: Option<Symbol>,
+    // `anthill.kernel.or` — synthesized by `disjunction` (proposal 033).
+    pub or: Option<Symbol>,
 }
 
 impl LogicalQuerySymbols {
@@ -155,6 +157,7 @@ impl LogicalQuerySymbols {
 
             is_entity_of: r(kb, "anthill.reflect.typing.is_entity_of"),
             not: r(kb, "anthill.reflect.not"),
+            or: r(kb, "anthill.kernel.or"),
         }
     }
 }
@@ -365,6 +368,31 @@ impl KnowledgeBase {
             return Ok(vec![goal]);
         }
 
+        // `or` is the rule-lifted form of push_choice; no extra lifting needed.
+        // Multi-goal branches are deferred: they need a conjunction-rule head
+        // synthesized in the KB (same shape as multi-goal negation).
+        if Some(functor) == syms.disjunction {
+            let left = find_named(named, syms.left).ok_or(LowerError::MissingField {
+                entity: "disjunction", field: "left",
+            })?;
+            let right = find_named(named, syms.right).ok_or(LowerError::MissingField {
+                entity: "disjunction", field: "right",
+            })?;
+            let l_goals = self.lower_query_with(left, syms)?;
+            let r_goals = self.lower_query_with(right, syms)?;
+            let or_sym = syms.or.ok_or(LowerError::NotYetImplemented(
+                "disjunction without loaded anthill.kernel.or",
+            ))?;
+            let l = coerce_disjunction_branch(l_goals)?;
+            let r = coerce_disjunction_branch(r_goals)?;
+            let goal = self.terms.alloc(Term::Fn {
+                functor: or_sym,
+                pos_args: SmallVec::from_slice(&[l, r]),
+                named_args: SmallVec::new(),
+            });
+            return Ok(vec![goal]);
+        }
+
         // Projection / limit are wrappers over the inner stream. Flatten
         // to the inner query's goals; the caller is responsible for
         // applying projection/limit semantics on the resulting solution
@@ -379,11 +407,6 @@ impl KnowledgeBase {
         // Quantifiers / aggregations: pending M4 LogicalStream (WI-048).
         // Return a recognizable error for now so callers don't silently
         // get the wrong semantics.
-        if Some(functor) == syms.disjunction {
-            return Err(LowerError::NotYetImplemented(
-                "disjunction (resolver has no native OR; needs rule-lifting)",
-            ));
-        }
         for (quantifier_sym, label) in [
             (syms.forall_q, "forall_q"),
             (syms.some_q, "some_q"),
@@ -423,4 +446,19 @@ impl KnowledgeBase {
 
 fn find_named<'a>(named: &'a [(Symbol, Value)], key: Symbol) -> Option<&'a Value> {
     named.iter().find(|(s, _)| *s == key).map(|(_, v)| v)
+}
+
+/// Reduce a disjunction branch's lowered goals to a single TermId.
+/// 0-goal and multi-goal branches need conjunction-rule lifting which the
+/// LogicalQuery surface doesn't currently emit (proposal 033 §Future work).
+fn coerce_disjunction_branch(goals: Vec<TermId>) -> Result<TermId, LowerError> {
+    match goals.len() {
+        0 => Err(LowerError::NotYetImplemented(
+            "disjunction with empty_query branch (semantically `true`/`false` collapse)",
+        )),
+        1 => Ok(goals[0]),
+        _ => Err(LowerError::NotYetImplemented(
+            "disjunction of multi-goal branches (needs conjunction-rule lifting)",
+        )),
+    }
 }

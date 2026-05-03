@@ -11,7 +11,7 @@ mod common;
 
 use anthill_core::eval::Value;
 use anthill_core::kb::execute::LowerError;
-use anthill_core::kb::term::{Term, Var};
+use anthill_core::kb::term::{Literal, Term, Var};
 
 use common::load_kb_with;
 
@@ -50,7 +50,7 @@ end
     // Scalar variants land as Term::Const.
     let t_int = kb.alloc_from_value(&Value::Int(7)).expect("alloc int");
     match kb.get_term(t_int) {
-        Term::Const(anthill_core::kb::term::Literal::Int(7)) => {}
+        Term::Const(Literal::Int(7)) => {}
         other => panic!("expected Const(Int(7)), got {other:?}"),
     }
 }
@@ -255,7 +255,7 @@ end
     while let Some((sol, rest)) = stream.split_first(&mut kb) {
         match sol.subst.resolve_as_value(vid) {
             Some(Value::Term(t)) => {
-                if let Term::Const(anthill_core::kb::term::Literal::Int(n)) = kb.get_term(*t) {
+                if let Term::Const(Literal::Int(n)) = kb.get_term(*t) {
                     xs.push(*n);
                 }
             }
@@ -297,4 +297,166 @@ fn q3_quantifier_lowering_is_not_yet_implemented() {
 
     let err = kb.lower_query(&q).unwrap_err();
     assert!(matches!(err, LowerError::NotYetImplemented(_)), "got {err:?}");
+}
+
+#[test]
+fn q3_disjunction_yields_solutions_from_both_branches() {
+    // disjunction(pattern_query(A), pattern_query(B)) — proposal 033 / WI-075.
+    // Both branches resolve through push_choice; each surviving branch
+    // contributes solutions. Uses entities-as-predicates so the tag entity
+    // is the matched goal head and the fact stamps it into the KB.
+    let mut kb = load_kb_with(r#"
+namespace test.q3_disj
+  sort LeftTag
+    entity left_tag(name: String)
+  end
+  sort RightTag
+    entity right_tag(name: String)
+  end
+  fact left_tag(name: "alpha")
+  fact right_tag(name: "beta")
+end
+"#);
+
+    let left_tag_sym = kb.try_resolve_symbol("test.q3_disj.LeftTag.left_tag").expect("left_tag");
+    let right_tag_sym = kb.try_resolve_symbol("test.q3_disj.RightTag.right_tag").expect("right_tag");
+    let pattern_query_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.pattern_query").unwrap();
+    let disj_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.disjunction").unwrap();
+    let term_field = kb.intern("term");
+    let left_field = kb.intern("left");
+    let right_field = kb.intern("right");
+    let name_field = kb.intern("name");
+
+    let v_sym = kb.intern("v");
+    let vid = kb.fresh_var(v_sym);
+    let var_v = kb.alloc(Term::Var(Var::Global(vid)));
+
+    // pattern_query(left_tag(name: ?v))
+    let left_pattern = Value::Entity {
+        functor: left_tag_sym,
+        pos: Vec::new(),
+        named: vec![(name_field, Value::Term(var_v))],
+    };
+    let left_q = entity_named(pattern_query_sym, vec![(term_field, left_pattern)]);
+
+    // pattern_query(right_tag(name: ?v))
+    let right_pattern = Value::Entity {
+        functor: right_tag_sym,
+        pos: Vec::new(),
+        named: vec![(name_field, Value::Term(var_v))],
+    };
+    let right_q = entity_named(pattern_query_sym, vec![(term_field, right_pattern)]);
+
+    let query = entity_named(disj_sym, vec![
+        (left_field, left_q),
+        (right_field, right_q),
+    ]);
+
+    let mut stream = kb.execute_logical_query(&query).expect("disjunction lowers");
+    // Dedup on ?v value — each entity declaration auto-stamps a schema
+    // fact in addition to the user-asserted fact, so the discrim tree
+    // matches the pattern more than once per branch. The semantic
+    // contract checked here is: distinct ?v values come from both
+    // branches.
+    let mut seen = std::collections::HashSet::new();
+    while let Some((sol, rest)) = stream.split_first(&mut kb) {
+        if let Some(Value::Term(t)) = sol.subst.resolve_as_value(vid) {
+            if let Term::Const(Literal::String(s)) = kb.get_term(*t) {
+                seen.insert(s.clone());
+            }
+        }
+        stream = rest;
+    }
+    let mut expected: std::collections::HashSet<String> = std::collections::HashSet::new();
+    expected.insert("alpha".to_string());
+    expected.insert("beta".to_string());
+    assert_eq!(seen, expected, "both branches must contribute distinct ?v bindings");
+}
+
+#[test]
+fn q3_disjunction_inside_conjunction_yields_cross_product() {
+    // disjunction(P, Q) inside a conjunction with a tail T — both branches
+    // must run T. Validates the shared-tail contract through the
+    // execute_logical_query path.
+    let mut kb = load_kb_with(r#"
+namespace test.q3_disj_conj
+  sort LeftTag
+    entity left_tag(name: String)
+  end
+  sort RightTag
+    entity right_tag(name: String)
+  end
+  sort HasMarker
+    entity has_marker(label: String)
+  end
+  fact left_tag(name: "alpha")
+  fact right_tag(name: "beta")
+  fact has_marker(label: "M")
+end
+"#);
+
+    let left_tag_sym = kb.try_resolve_symbol("test.q3_disj_conj.LeftTag.left_tag").unwrap();
+    let right_tag_sym = kb.try_resolve_symbol("test.q3_disj_conj.RightTag.right_tag").unwrap();
+    let has_marker_sym = kb.try_resolve_symbol("test.q3_disj_conj.HasMarker.has_marker").unwrap();
+    let pattern_query_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.pattern_query").unwrap();
+    let disj_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.disjunction").unwrap();
+    let conj_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.conjunction").unwrap();
+    let term_field = kb.intern("term");
+    let left_field = kb.intern("left");
+    let right_field = kb.intern("right");
+    let name_field = kb.intern("name");
+    let label_field = kb.intern("label");
+
+    let v_sym = kb.intern("v");
+    let m_sym = kb.intern("m");
+    let vid = kb.fresh_var(v_sym);
+    let mid = kb.fresh_var(m_sym);
+    let var_v = kb.alloc(Term::Var(Var::Global(vid)));
+    let var_m = kb.alloc(Term::Var(Var::Global(mid)));
+
+    let left_q = entity_named(pattern_query_sym, vec![(term_field, Value::Entity {
+        functor: left_tag_sym, pos: Vec::new(),
+        named: vec![(name_field, Value::Term(var_v))],
+    })]);
+    let right_q = entity_named(pattern_query_sym, vec![(term_field, Value::Entity {
+        functor: right_tag_sym, pos: Vec::new(),
+        named: vec![(name_field, Value::Term(var_v))],
+    })]);
+    let disj_q = entity_named(disj_sym, vec![
+        (left_field, left_q),
+        (right_field, right_q),
+    ]);
+    let marker_q = entity_named(pattern_query_sym, vec![(term_field, Value::Entity {
+        functor: has_marker_sym, pos: Vec::new(),
+        named: vec![(label_field, Value::Term(var_m))],
+    })]);
+    let query = entity_named(conj_sym, vec![
+        (left_field, disj_q),
+        (right_field, marker_q),
+    ]);
+
+    // Schema-fact auto-stamping (one per entity declaration) inflates the
+    // raw solution count beyond the user-asserted facts. The contract
+    // checked here is the semantic one: solutions where both ?v and ?m
+    // resolve to user-fact strings must include both ("alpha", "M") and
+    // ("beta", "M") — i.e. the disjunction's two branches each
+    // composed with the marker fact in the tail.
+    let mut stream = kb.execute_logical_query(&query).expect("disj+conj lowers");
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    while let Some((sol, rest)) = stream.split_first(&mut kb) {
+        let v_val = sol.subst.resolve_as_value(vid);
+        let m_val = sol.subst.resolve_as_value(mid);
+        if let (Some(Value::Term(vt)), Some(Value::Term(mt))) = (v_val, m_val) {
+            if let (Term::Const(Literal::String(vs)),
+                    Term::Const(Literal::String(ms)))
+                = (kb.get_term(*vt).clone(), kb.get_term(*mt).clone())
+            {
+                seen.insert((vs, ms));
+            }
+        }
+        stream = rest;
+    }
+    assert!(seen.contains(&("alpha".to_string(), "M".to_string()))
+        && seen.contains(&("beta".to_string(), "M".to_string())),
+        "both disjunction branches must compose with the tail marker; saw {seen:?}");
 }
