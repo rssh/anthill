@@ -40,9 +40,18 @@ object Bootstrap:
       case Item.NamespaceItem(ns) => emitNamespace(pf.symbols, ns, packagePath = "", files)
       case Item.SortWithBodyItem(s) => emitSort(pf.symbols, s, packagePath = "", files)
       case Item.EntityItem(e) => emitStandaloneEntity(pf.symbols, e, packagePath = "", files)
-      case _ => // top-level facts/rules/etc. don't yield Scala files in v1
+      case _ =>
     }
+    val hasTests = files.exists(_.relPath.startsWith("src/test/"))
+    if files.nonEmpty then files += GeneratedFile("build.sbt", buildSbtContents(hasTests))
     files.toIndexedSeq
+
+  private def buildSbtContents(hasTests: Boolean): String =
+    val sb = StringBuilder()
+    sb ++= "scalaVersion := \"3.6.3\"\n"
+    if hasTests then
+      sb ++= "libraryDependencies += \"org.scalacheck\" %% \"scalacheck\" % \"1.18.0\" % Test\n"
+    sb.toString
 
   // ── Namespace ───────────────────────────────────────────────────
 

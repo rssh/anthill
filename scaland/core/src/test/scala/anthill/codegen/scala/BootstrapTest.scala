@@ -94,3 +94,27 @@ class BootstrapTest extends munit.FunSuite:
     assert(src.contains("case class Vec3(x: Double, y: Double, z: Double)"),
       s"expected `case class Vec3(...)` with Float→Double mapping in:\n$src")
   }
+
+  test("scala-forward-mapping §1: ??? must never appear in generated output") {
+    // geometry.anthill has rules (algebraic-law content) — exercises LawsGen.
+    val pf = parseStdlib("anthill/geometry.anthill")
+    val files = Bootstrap.generate(pf)
+    files.foreach { f =>
+      assert(!f.contents.contains("???"),
+        s"`???` leaked into ${f.relPath}:\n${f.contents}")
+    }
+  }
+
+  test("bootstrap emits build.sbt with scalacheck dep when laws files exist") {
+    // eq.anthill's Eq sort body has a rule → emits EqLaws → needs scalacheck.
+    val pf = parseStdlib("anthill/prelude/eq.anthill")
+    val files = Bootstrap.generate(pf)
+    val buildSbt = files.find(_.relPath == "build.sbt")
+      .getOrElse(fail(s"expected build.sbt in: ${files.map(_.relPath)}"))
+    assert(buildSbt.contents.contains("scalaVersion"),
+      s"build.sbt missing scalaVersion:\n${buildSbt.contents}")
+    val hasLaws = files.exists(_.relPath.endsWith("Laws.scala"))
+    assert(hasLaws, s"expected at least one Laws.scala in: ${files.map(_.relPath)}")
+    assert(buildSbt.contents.contains("scalacheck"),
+      s"laws file emitted but build.sbt missing scalacheck dep:\n${buildSbt.contents}")
+  }

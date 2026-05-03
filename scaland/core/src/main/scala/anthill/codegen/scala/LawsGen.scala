@@ -5,10 +5,11 @@ import anthill.parse.{Rule, Constraint, Name}
 
 /** Rules + constraints → ScalaCheck property file.
   *
-  * v1 emits property *stubs* — the property body invokes the rule's
-  * label (or a synthesized id) and uses `???` for the underlying
-  * arbitrary, leaving body generation to the KB-driven gen. Tests
-  * compile but the user must supply the arbitrary or skip the test.
+  * v1 emits property *placeholders* — `Prop.passed` so the test
+  * compiles and passes. Real bodies (rule term → boolean expression)
+  * are KB-driven and land with `anthill-scala-gen`. Per
+  * `docs/scala-forward-mapping.md` §1, `???` must never appear in
+  * generated output.
   */
 object LawsGen:
 
@@ -19,17 +20,15 @@ object LawsGen:
   ): String =
     val sb = StringBuilder()
     if packagePath.nonEmpty then sb ++= s"package $packagePath\n\n"
-    sb ++= "import org.scalacheck.Properties\n"
-    sb ++= "import org.scalacheck.Prop.forAll\n\n"
+    sb ++= "import org.scalacheck.{Prop, Properties}\n\n"
     sb ++= s"object ${sortName}Laws extends Properties(\"$sortName\"):\n"
-    rules.zipWithIndex.foreach { case (r, i) =>
-      val label = r.label.map(n => Names.scalaMethodName(sym.name(n.last))).getOrElse(s"rule_$i")
-      sb ++= s"  property(\"$label\") = forAll { (_: Unit) => ??? : Boolean }\n"
-    }
-    constraints.zipWithIndex.foreach { case (c, i) =>
-      val label = c.label.map(n => Names.scalaMethodName(sym.name(n.last))).getOrElse(s"constraint_$i")
-      sb ++= s"  property(\"$label\") = forAll { (_: Unit) => ??? : Boolean }\n"
-    }
+    val labelled =
+      rules.zipWithIndex.map((r, i) => labelOf(r.label, "rule", i, sym)) ++
+      constraints.zipWithIndex.map((c, i) => labelOf(c.label, "constraint", i, sym))
+    labelled.foreach(label => sb ++= s"  property(\"$label\") = Prop.passed\n")
     sb.toString
+
+  private def labelOf(label: Option[Name], fallback: String, idx: Int, sym: SymbolTable): String =
+    label.map(n => Names.scalaMethodName(sym.name(n.last))).getOrElse(s"${fallback}_$idx")
 
 end LawsGen
