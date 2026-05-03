@@ -283,6 +283,14 @@ class ParseTest extends munit.FunSuite:
     Parser.parse(text, "anthill/cli/help.anthill") match
       case Right(_) => ()
       case Left(es) => fail(s"cli/help.anthill: ${es.head.message}")
-    // cli/parse.anthill uses *nested* matches without `end`; that needs
-    // indentation-sensitive parsing (separate WI), out of WI-166 scope.
+  }
+
+  test("WI-167: cli/parse.anthill (nested matches without `end`) parses cleanly") {
+    val stdlibDir = sys.env.getOrElse("ANTHILL_STDLIB",
+      System.getProperty("user.dir") + "/../stdlib")
+    val src = scala.io.Source.fromFile(s"$stdlibDir/anthill/cli/parse.anthill")
+    val text = try src.mkString finally src.close()
+    Parser.parse(text, "anthill/cli/parse.anthill") match
+      case Right(_) => ()
+      case Left(es) => fail(s"cli/parse.anthill: ${es.head.message}")
   }
