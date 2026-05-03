@@ -431,15 +431,10 @@ impl KnowledgeBase {
         rule_id
     }
 
-    /// Assert a ground fact (rule with empty body). Idempotent: if an identical
-    /// fact (same head, sort, domain) already exists, returns the existing RuleId.
     // ── Guards ───────────────────────────────────────────────────
 
-    /// Register a guard on the KB. The guard_term is a LogicalQuery term
-    /// that must always hold. Trigger sorts (which sort assertions re-fire
-    /// the guard) are auto-extracted by walking the LogicalQuery tree:
-    /// every `pattern_query(term: Foo(...))` contributes the parent sort
-    /// of `Foo`, every `sort_query(sort_name: "S")` contributes `S`.
+    /// Register a guard on the KB. Trigger sorts are auto-extracted from
+    /// the LogicalQuery tree.
     pub fn add_guard(&mut self, guard_term: TermId) -> ConstraintId {
         let trigger_sorts = self.extract_trigger_sorts(guard_term);
         let id = ConstraintId(self.guards.len() as u32);
@@ -456,9 +451,7 @@ impl KnowledgeBase {
         id
     }
 
-    /// Walk a LogicalQuery guard term, collect every sort whose facts
-    /// should re-fire the guard. Empty result on a fresh KB without the
-    /// reflect stdlib loaded — guard then triggers on no sorts.
+    /// Empty if reflect stdlib not loaded — guard then triggers on no sorts.
     fn extract_trigger_sorts(&mut self, guard_term: TermId) -> Vec<TermId> {
         let syms = execute::LogicalQuerySymbols::resolve(self);
         let mut out = Vec::new();
