@@ -1205,3 +1205,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "user", at: "2026-05-03T10:49:08Z"))
 
+fact WorkItem(
+  id: "WI-170",
+  description: "scaland — anthill→scala bootstrap codegen (parse-IR-driven, no KB). v1 of the scala-gen pipeline per proposal 034 §Bootstrap. Walks ParsedFile and emits a sbt-shaped output tree (src/main/scala/<package>/<Sort>.scala, src/test/scala/<package>/<Sort>Laws.scala, build.sbt) per docs/scala-forward-mapping.md §1.1. Scope (v1): namespace→package/object, sort-with-ops→trait, sort-with-ctors→Scala 3 enum, entity→case class, operation→abstract def in trait (or top-level when no self-arg), type parameters→generics, requires→trait extends or , imports→imports, snake_case→camelCase per §5, rules→ScalaCheck properties under <Sort>Laws.scala. Default scala_std profile only (Modify→by-value-and-return, Error→Either[E, R]). Out of scope for v1: KB-driven decisions (Implementation/NamespaceMapping facts), scala_caps/cats_effect/zio profiles, Quoted body inlining (those need KB), @anthillName round-trip annotations (those need scala-anthill-gen pairing), full ScalaCheck arbitrary derivation (emit  for the arbitrary; tests compile, may fail at runtime — opt out via skip-marker for now). Files: scaland/core/src/main/scala/anthill/codegen/scala/{Bootstrap,Names,Render,SortGen,OpGen,TypeGen,LawsGen}.scala. Acceptance: sbt test green; codegen-test runs Bootstrap.generate on at least three stdlib files (option.anthill, pair.anthill, eq.anthill) and asserts the emitted Scala compiles via an in-test scala-cli check OR a string-match against golden output.",
+  acceptance: [ToolPasses("scaland-sbt-test")],
+  depends_on: [],
+  status: Delivered(agent: "user", at: "2026-05-03T14:24:59Z"))
+
