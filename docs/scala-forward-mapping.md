@@ -18,13 +18,38 @@ The mapping is deterministic: given the same anthill source, the same Scala code
   1. **A `Quoted("scala", "...")` term** in the spec (verbatim insertion, e.g. `String.length` → `s.length`).
   2. **An `Implementation` fact** (kernel spec §8.5) pointing to a host-side artifact (carrier binding).
   3. **An automatic derivation** from required typeclasses (e.g. `Ordered.lt(a, b)` from `compare`-trichotomy when the spec marks the derivation hint).
-- **Rules are laws, not definitions.** Same as rust (`#[cfg(test)] property-based test stub`), an anthill `rule` becomes a ScalaCheck property in the `Test` source set — used to *verify* implementations, not derive them. Even rules that look definitional (`length(nil) = 0`) compile to a property `forAll { … assert(length(Nil) == 0) }`, not to a method body.
+- **Rules are laws, not definitions.** Same as rust (`#[cfg(test)] property-based test stub`), an anthill `rule` becomes a ScalaCheck property under **`src/test/scala/`** (per §1.1) — used to *verify* implementations, not derive them. Even rules that look definitional (`length(nil) = 0`) compile to a property `forAll { … assert(length(Nil) == 0) }`, not to a method body.
 
 If none of (1)–(3) supplies a body for an operation, codegen emits the abstract `trait` and stops; no concrete companion is produced for that operation. The result still compiles — abstract trait members are valid Scala — and downstream `class … extends Trait` or `Implementation`-fact wiring fills the gap.
 
 `???` never appears in generated output. If it does, that's a codegen bug.
 
 **Target language version**: Scala 3.3+ (LTS). The `enum` keyword, top-level definitions, intersection / union types, and context functions are part of the baseline.
+
+## 1.1 Output layout
+
+Codegen produces an **sbt-shaped project tree**, with the standard
+Scala separation between main and test sources:
+
+```
+<output-root>/
+  src/
+    main/scala/<package-path>/
+      <Sort>.scala            -- trait / enum / case class definitions
+      <Sort>Ops.scala         -- abstract op trait (when applicable)
+      <Sort>Impl.scala        -- concrete companion (only when bodies exist)
+    test/scala/<package-path>/
+      <Sort>Laws.scala        -- ScalaCheck properties from `rule`s + `constraint`s
+  build.sbt                   -- minimal sbt build referencing scalacheck
+```
+
+The split matches sbt's default `Compile` / `Test` configuration:
+trait / case-class definitions land in `src/main/scala/`; rule-derived
+ScalaCheck properties land in `src/test/scala/`. A consumer who wants
+only the definitions can drop the `src/test/` tree.
+
+Anthill `namespace` segments map directly to the package path;
+hyphens in identifiers become underscores.
 
 ## 2. Mapping Rules
 
@@ -49,9 +74,9 @@ If none of (1)–(3) supplies a body for an operation, codegen emits the abstrac
 | `fact SortName` (in entity's namespace) | `given SortName.Of[Entity] = …` |
 | `List[X]` | `List[X]` (Scala `scala.collection.immutable.List`) |
 | `Option[X]` | `Option[X]` |
-| `rule` (law) | ScalaCheck property in `Test` source set |
+| `rule` (law) | ScalaCheck property in `src/test/scala/.../<Sort>Laws.scala` |
 | `Quoted("scala", source)` | verbatim Scala code inserted as-is |
-| `constraint` (denial) | `assert(...)` or test-time check |
+| `constraint` (denial) | property in `src/test/scala/.../<Sort>Laws.scala` |
 | `import N.{A, B}` | `import n.{A, B}` |
 
 > **Anthill type-binding shorthand.** Anthill uses named bindings for
@@ -142,7 +167,7 @@ sort LogicalStream {                        enum LogicalStream[T] {
   operation mplus(                            def mplus(a: LogicalStream[T],
     a: LogicalStream,                                   b: LogicalStream[T]): LogicalStream[T]
     b: LogicalStream)                       }
-    -> LogicalStream                        // (rules become property tests in Test source set)
+    -> LogicalStream                        // (rules → src/test/scala/.../LogicalStreamLaws.scala)
   rule mplus(Empty, ?b) = ?b
   rule mplus(Cons(?h, ?t), ?b) =
     Cons(?h, mplus(?t, ?b))
@@ -216,7 +241,7 @@ sort PolynomOps {                           trait PolynomOps {
   operation add(a: Polynom,                                  b: Polynom[Coeff])
     b: Polynom) -> Polynom                                  (using Ring[Coeff]): Polynom[Coeff]
   rule add(?a, ?b) =                        }
-    zipWith(?a, ?b, Ring.add)               // In Test source: ScalaCheck property over `add`.
+    zipWith(?a, ?b, Ring.add)               // → src/test/scala/.../PolynomOpsLaws.scala
 }
 ```
 
@@ -237,15 +262,18 @@ The `scala_cats_effect` and `scala_zio` profiles re-map `Modify` / `Error` / `Co
 
 ### 2.9 Rules (Laws) → ScalaCheck Properties
 
-Rules generate ScalaCheck property stubs in the `Test` source set:
+Rules generate ScalaCheck property stubs that land in **`src/test/scala/<package-path>/<Sort>Laws.scala`** — strictly separated from the `src/main/scala/` definitions per the layout in §1.1. This matches Scala convention: laws are tests, tests live under `Test`, never inlined into the main source.
 
 ```
-sort Monoid {                               // Test source:
-  rule add_assoc(?a, ?b, ?c)     →          property("add_assoc[Monoid]") {
-    : add(add(?a, ?b), ?c)                    forAll { (a: T, b: T, c: T) =>
-    = add(?a, add(?b, ?c))                      add(add(a, b), c) == add(a, add(b, c))
-}                                             }
-                                            }
+-- src/main/scala/banking/Monoid.scala:    -- src/test/scala/banking/MonoidLaws.scala:
+sort Monoid {                              import org.scalacheck.Prop.forAll
+  sort T                                   class MonoidLaws extends ScalaCheckSuite {
+  operation add(a: T, b: T) -> T   →         property("add_assoc[Monoid]") {
+  rule add_assoc(?a, ?b, ?c)                   forAll { (a: T, b: T, c: T) =>
+    : add(add(?a, ?b), ?c)                       add(add(a, b), c) == add(a, add(b, c))
+    = add(?a, add(?b, ?c))                     }
+}                                            }
+                                           }
 ```
 
 ### 2.10 Quoted → Verbatim Insertion
@@ -258,15 +286,15 @@ operation hash(s: String) -> Int =
 →  def hash(s: String): Int = s.hashCode
 ```
 
-### 2.11 Constraint → Assert / Test
+### 2.11 Constraint → Test Property
 
-A `constraint` (denial) maps to a `assert(...)` at the relevant scope, or a test-time check in the `Test` source set:
+A `constraint` (denial) maps to a ScalaCheck property in **`src/test/scala/<package-path>/<Sort>Laws.scala`**, alongside the rule-derived properties from §2.9. Constraints are *invariants any implementation must preserve*; they belong in the test surface, not as runtime `assert(...)` calls in the main source.
 
 ```
-constraint balance_nonneg
-  : balance(?a) >= 0
-→  // In test source:
-   property("balance_nonneg") { … assert(balance(a) >= 0) … }
+constraint balance_nonneg                  // src/test/scala/banking/AccountLaws.scala:
+  : balance(?a) >= 0              →        property("balance_nonneg") {
+                                             forAll { (a: Account) => assert(balance(a) >= 0) }
+                                           }
 ```
 
 ### 2.12 Import → Import
