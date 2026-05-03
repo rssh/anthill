@@ -1140,7 +1140,7 @@ fact WorkItem(
   description: "scaland resync — full prelude chain wiring. Originally framed as a simple 'add files to EmbeddedStdlib + register Bool.ite/Int.neg' follow-up to WI-153, but exploration in 2026-05-02 surfaced two architectural blockers: (1) six stdlib files (bool, int, iteration, collection, list, reflect/reflect) use parser features not yet in scaland's fastparse front end (`effects` operation clause, `forall(?n)` quantifier, tuple type expressions like `Option[(A, B)]`, empty set literal `{}` in fact bindings); (2) Prelude.registerStructuralOps registers bare functor names (eq, neq, neg, and, or, not, lt, lte, gt, gte, div, mod, pow, arrow) at anthill.prelude scope, which collide with sort-defined operations once typeclass files load — every reference to eq from a rule resolves ambiguously to both anthill.prelude.eq and anthill.prelude.Eq.eq, producing AmbiguousSymbol cascades. Both blockers must be addressed before the WI-153 isToleratedLoadError filter can be dropped. New WIs filed: WI-162 (parser gaps) and WI-163 (structural-op disambiguation). This WI now depends on those plus the original Bool.ite/Int.neg op registration in Prelude.scala. Acceptance: sbt test green; ParserIntegrationTest.WI-153 cases drop their isToleratedLoadError filter and still pass.",
   acceptance: [ToolPasses("scaland-sbt-test")],
   depends_on: ["WI-153", "WI-162", "WI-163"],
-  status: Open)
+  status: Delivered(agent: "user", at: "2026-05-03T07:40:01Z"))
 
 fact WorkItem(
   id: "WI-162",

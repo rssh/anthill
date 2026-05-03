@@ -39,6 +39,7 @@ object EmbeddedStdlib:
     "anthill.prelude.lattice",
     // anthill.prelude.Type lives in sort.anthill (per WI-138)
     "anthill.prelude.sort",
+    "anthill.prelude.meta",
     // ── reflect (provides anthill.reflect.Term + Symbol etc.)
     "anthill.reflect.reflect",
     // ── WI-138: parametric algebra spec — Ring, VectorSpace

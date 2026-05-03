@@ -591,20 +591,12 @@ class ParserIntegrationTest extends munit.FunSuite:
     * collections (List/Option), and reflect.Term. Delete this filter once
     * those modules are loaded as part of EmbeddedStdlib.
     */
-  private val ToleratedUnresolvedNames = Set(
-    // Per-file WI-153 / WI-155 tests load only the immediate file plus its
-    // direct deps — the full prelude chain is not loaded in those narrower
-    // KBs even though EmbeddedStdlib full-load resolves them all.
-    "Eq", "Ordered", "Numeric", "List", "Option", "Term", "Symbol",
-    // realization.anthill imports anthill.prelude.Meta.{ProofResult} —
-    // meta.anthill not yet in EmbeddedStdlib (effects-system WI; not in
-    // the WI-162 parser-gap scope).
-    "ProofResult")
-  private def isToleratedLoadError(e: LoadError): Boolean = e match
-    case LoadError.UnresolvedName(n, _, _) => ToleratedUnresolvedNames(n)
-    case LoadError.UnresolvedImport(p, _)  =>
-      p == "anthill.prelude.Meta" || p == "anthill.prelude.Ordered"
-    case _ => false
+  /** No tolerated load errors after WI-161 — the full stdlib chain loads
+    * cleanly. Per-file tests below now load `EmbeddedStdlib` so transitive
+    * imports resolve. Kept as a no-op predicate for symmetry with earlier
+    * WI iterations and to make any new gap fail loudly.
+    */
+  private def isToleratedLoadError(e: LoadError): Boolean = false
 
   /** Single-pass count of items whose `partial` is defined for them.
     * Replaces the more verbose `items.collect { case … => 1 }.sum`.
@@ -685,11 +677,8 @@ class ParserIntegrationTest extends munit.FunSuite:
     assertEquals(countItems(ns.items) { case Item.ConstraintItem(_) => }, 6,
       "Float should declare 6 constraints")
 
-    val kb = KnowledgeBase()
-    Prelude.register(kb)
-    val errs = Loader.loadAll(kb, IndexedSeq(algebraPf, floatPf))
-    val unrelated = errs.filterNot(isToleratedLoadError)
-    assert(unrelated.isEmpty, s"unexpected load errors: $unrelated")
+    // Loaded as part of the full stdlib chain — Eq/Ordered/Numeric resolve.
+    val kb = kbWithStdlib()
     assert(kb.hasQualifiedName("anthill.prelude.Float"))
     assert(kb.hasQualifiedName("anthill.prelude.Float.sqrt"))
     assert(kb.hasQualifiedName("anthill.prelude.Float.atan2"))
@@ -714,11 +703,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     assertEquals(countItems(ns.items) { case Item.RuleItem(_) => }, 12,
       "geometry should declare 12 rules (4 impls + 8 laws)")
 
-    val kb = KnowledgeBase()
-    Prelude.register(kb)
-    val errs = Loader.loadAll(kb, IndexedSeq(algebraPf, floatPf, geomPf))
-    val unrelated = errs.filterNot(isToleratedLoadError)
-    assert(unrelated.isEmpty, s"unexpected load errors: $unrelated")
+    val kb = kbWithStdlib()
     assert(kb.hasQualifiedName("anthill.geometry.Vec3"))
     assert(kb.hasQualifiedName("anthill.geometry.EulerAngles"))
   }
@@ -744,11 +729,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     val smtVerdict = sorts.find(s => pf.symbols.name(s.name.last) == "SmtVerdict").get
     assertEquals(countItems(smtVerdict.items) { case Item.EntityItem(_) => }, 3)
 
-    val kb = KnowledgeBase()
-    Prelude.register(kb)
-    val errs = Loader.loadAll(kb, IndexedSeq(pf))
-    val unrelated = errs.filterNot(isToleratedLoadError)
-    assert(unrelated.isEmpty, s"unexpected load errors: $unrelated")
+    val kb = kbWithStdlib()
     assert(kb.hasQualifiedName("anthill.realization.witness.ProofWitness"))
     assert(kb.hasQualifiedName("anthill.realization.witness.ProofWitness.SmtDischarge"))
     assert(kb.hasQualifiedName("anthill.realization.witness.SortBinding"))
@@ -763,13 +744,7 @@ class ParserIntegrationTest extends munit.FunSuite:
   }
 
   test("WI-153: EmbeddedStdlib loads as a single KB load pass") {
-    val (parsed, errors) = EmbeddedStdlib.parseFromDir(Paths.get(stdlibDir))
-    assert(errors.isEmpty, s"stdlib parse errors: $errors")
-    val kb = KnowledgeBase()
-    Prelude.register(kb)
-    val loadErrors = Loader.loadAll(kb, parsed)
-    val unrelated = loadErrors.filterNot(isToleratedLoadError)
-    assert(unrelated.isEmpty, s"unexpected stdlib load errors: $unrelated")
+    val kb = kbWithStdlib()
     for qn <- Seq(
         "anthill.prelude.algebra.Ring",
         "anthill.prelude.algebra.VectorSpace",
@@ -780,11 +755,15 @@ class ParserIntegrationTest extends munit.FunSuite:
     do assert(kb.hasQualifiedName(qn), s"$qn should be registered after stdlib load")
   }
 
-  // ── WI-155: ProofRecord + witness round-trip ──────────────────────
+  // ── WI-155 / WI-161 helpers shared by witness + ProofRecord tests ─
 
-  /** Cached parses — used by every WI-155 test. */
-  private lazy val realizationStdlibPf = parseStdlibFile("anthill.realization.realization")
-  private lazy val witnessStdlibPf = parseStdlibFile("anthill.realization.witness")
+  /** Cached parse of every stdlib file in EmbeddedStdlib — used by tests
+    * that need the full chain so transitive imports resolve cleanly.
+    */
+  private lazy val stdlibParsedFiles: IndexedSeq[ParsedFile] =
+    val (parsed, errs) = EmbeddedStdlib.parseFromDir(Paths.get(stdlibDir))
+    assert(errs.isEmpty, s"stdlib parse errors: $errs")
+    parsed
 
   /** Look up a named argument on a Fn term and follow it through the KB. */
   private def namedArg(kb: KnowledgeBase, fn: Term.Fn, name: String): TermId =
@@ -798,14 +777,30 @@ class ParserIntegrationTest extends munit.FunSuite:
       case anthill.intern.SymbolDef.Resolved(_, qn, _, _) => qn
       case other => fail(s"functor unresolved: $other")
 
-  /** Build a KB with witness + realization stdlib + the given user file loaded. */
-  private def kbWithWitnessSchema(userPf: ParsedFile): KnowledgeBase =
+  /** Build a KB pre-loaded with the full stdlib chain. Used by per-file
+    * tests to make transitive imports resolve cleanly. The file under test
+    * is typically already in the chain — no need to add it again.
+    */
+  private def kbWithStdlib(): KnowledgeBase =
     val kb = KnowledgeBase()
     Prelude.register(kb)
-    val errs = Loader.loadAll(kb, IndexedSeq(witnessStdlibPf, realizationStdlibPf, userPf))
-    val unrelated = errs.filterNot(isToleratedLoadError)
-    assert(unrelated.isEmpty, s"unexpected load errors: $unrelated")
+    val errs = Loader.loadAll(kb, stdlibParsedFiles)
+    assert(errs.filterNot(isToleratedLoadError).isEmpty,
+      s"unexpected load errors: $errs")
     kb
+
+  /** As above, but also loads a user file alongside the stdlib chain. */
+  private def kbWithStdlibAndUser(userPf: ParsedFile): KnowledgeBase =
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val errs = Loader.loadAll(kb, stdlibParsedFiles :+ userPf)
+    assert(errs.filterNot(isToleratedLoadError).isEmpty,
+      s"unexpected load errors: $errs")
+    kb
+
+  /** Backwards-compat alias used by the WI-155 ProofRecord round-trip tests. */
+  private def kbWithWitnessSchema(userPf: ParsedFile): KnowledgeBase =
+    kbWithStdlibAndUser(userPf)
 
   test("WI-155: stdlib realization.anthill parses end-to-end") {
     val pf = parseStdlibFile("anthill.realization.realization")
