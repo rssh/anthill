@@ -10,16 +10,19 @@ An anthill namespace declares an **algebra**: abstract sorts, operations with co
 
 The mapping is deterministic: given the same anthill source, the same Scala code is produced.
 
-**Codegen completeness requirement**: every generated `def` has a working body derived from one of:
+**Codegen completeness requirement** — generated files compile and run without manual patching. The way this is achieved is structural, not body-derivation:
 
-1. **An equational rule** in the spec (`rule add(?a, zero) = ?a` becomes a method clause).
-2. **A `Quoted("scala", "...")` term** in the spec (verbatim insertion, used for primitives that have no algebraic definition like `String.length`).
-3. **An `Implementation` fact** (kernel spec §8.5) pointing to a host-side artifact (carrier binding).
-4. **An automatic derivation** from required typeclasses (e.g. `Ordered.lt(a, b) = compare(a, b) < 0` derives from a `compare` rule).
+- **Sorts with operations** generate as `trait`s with **abstract methods** (no body — Scala traits don't require one for abstract members). `trait Eq[T] { def eq(a: T, b: T): Boolean }` is a complete, usable file: it compiles, downstream code can extend it, the lack of a body is not a `???`.
+- **Sorts with constructors** generate as `enum` / `case class` — data layers need no method bodies.
+- **Concrete companion objects with implemented methods** are generated only when a body source exists, namely:
+  1. **A `Quoted("scala", "...")` term** in the spec (verbatim insertion, e.g. `String.length` → `s.length`).
+  2. **An `Implementation` fact** (kernel spec §8.5) pointing to a host-side artifact (carrier binding).
+  3. **An automatic derivation** from required typeclasses (e.g. `Ordered.lt(a, b)` from `compare`-trichotomy when the spec marks the derivation hint).
+- **Rules are laws, not definitions.** Same as rust (`#[cfg(test)] property-based test stub`), an anthill `rule` becomes a ScalaCheck property in the `Test` source set — used to *verify* implementations, not derive them. Even rules that look definitional (`length(nil) = 0`) compile to a property `forAll { … assert(length(Nil) == 0) }`, not to a method body.
 
-If a sort declares an operation that has none of (1)–(4) — i.e. the spec has only the signature, no rule, no quoted body, no implementation fact — then **no concrete class is generated for that sort**. Codegen emits the `trait` with abstract methods only and stops there. A consumer must supply an `Implementation` fact pointing at hand-written Scala for the gaps before the concrete enum / case class layer is generated.
+If none of (1)–(3) supplies a body for an operation, codegen emits the abstract `trait` and stops; no concrete companion is produced for that operation. The result still compiles — abstract trait members are valid Scala — and downstream `class … extends Trait` or `Implementation`-fact wiring fills the gap.
 
-This rule is what makes "no `???`" achievable: codegen never invents a body it can't justify. If you see `???` in generated output, that's a codegen bug, not a TODO.
+`???` never appears in generated output. If it does, that's a codegen bug.
 
 **Target language version**: Scala 3.3+ (LTS). The `enum` keyword, top-level definitions, intersection / union types, and context functions are part of the baseline.
 
@@ -125,29 +128,28 @@ sort WorkStatus {                           enum WorkStatus {
 
 Nullary constructors become parameterless `case`s; constructors with fields become parameterized.
 
-When the enum sort also has operations, those become methods on the enum's companion object — and only if every operation has a derivable body (rule / Quoted / Implementation / typeclass-derived; see §1). If any operation lacks one, the companion object is omitted and codegen emits only the `enum`; the user supplies a separate `object` via an `Implementation` fact.
+When the enum sort also has operations, those become **abstract methods on a companion `trait`** (e.g. `LogicalStreamOps[T]`), not implemented methods on the companion object. Concrete implementations come from `Implementation` facts or `Quoted` terms; rules in the spec become ScalaCheck properties that verify any implementation.
 
 ```
 sort LogicalStream {                        enum LogicalStream[T] {
   sort T                                      case Empty
   entity Empty                                case Cons(head: T, tail: LogicalStream[T])
-  entity Cons(                              }
-    head: T,                                object LogicalStream {
-    tail: LogicalStream)                      // Body derived from `rule mplus(Empty, ?b) = ?b`
-  operation pure(x: T)            →           //                + `rule mplus(Cons(?h, ?t), ?b) = Cons(?h, mplus(?t, ?b))`
-    -> LogicalStream                          def mplus[T](a: LogicalStream[T],
-  rule pure(?x) = Cons(?x, Empty)                          b: LogicalStream[T]): LogicalStream[T] =
-  operation mplus(                              a match
-    a: LogicalStream,                             case Empty => b
-    b: LogicalStream)                             case Cons(h, t) => Cons(h, mplus(t, b))
-    -> LogicalStream                          def pure[T](x: T): LogicalStream[T] = Cons(x, Empty)
-  rule mplus(Empty, ?b) = ?b                }
+  entity Cons(                   →          }
+    head: T,                                trait LogicalStreamOps[T] {
+    tail: LogicalStream)                      // Abstract — bodies supplied via Implementation
+  operation pure(x: T)                        // fact or hand-written subclass.
+    -> LogicalStream                          def pure(x: T): LogicalStream[T]
+  operation mplus(                            def mplus(a: LogicalStream[T],
+    a: LogicalStream,                                   b: LogicalStream[T]): LogicalStream[T]
+    b: LogicalStream)                       }
+    -> LogicalStream                        // (rules become property tests in Test source set)
+  rule mplus(Empty, ?b) = ?b
   rule mplus(Cons(?h, ?t), ?b) =
     Cons(?h, mplus(?t, ?b))
 }
 ```
 
-If `mplus` had no rules — only the signature — codegen would emit the `enum` and stop, leaving the user (or an `Implementation` fact) to supply the companion object.
+The generated file compiles as-is: abstract trait members are valid Scala, the data layer (`enum LogicalStream`) is fully usable, and the rules generate ScalaCheck properties that any implementation of `LogicalStreamOps` must satisfy.
 
 ### 2.4 Standalone Entity → Case Class
 
@@ -162,25 +164,22 @@ entity Account(                             case class Account(
 
 ### 2.5 Operation → Method or Function
 
-Operations map to either trait methods or top-level methods, depending on the self-arg heuristic (§4). When defined inside a `case class` / `enum` sort, the method body is derived from the spec's rules. When the rule directly references an entity field (`balance(?a) = ?a.balance`), the generated method body is the field access. Inside a `trait`, the body stays abstract — concrete subclasses supply it.
+Operations map to either trait methods or top-level abstract members, depending on the self-arg heuristic (§4). Bodies are generated only from `Quoted`, `Implementation`, or typeclass-derivation; rules don't supply bodies (they become property tests).
 
 ```
--- Method (concrete class — rule supplies the body):
-operation balance(a: Account) -> Money
-rule balance(?a) = ?a.balance
-→  def balance(a: Account): Money = a.balance
-
 -- Method (abstract — trait, no body needed):
 sort Eq { operation eq(a: T, b: T) -> Bool }
 →  trait Eq[T] { def eq(a: T, b: T): Boolean }
 
--- Top-level (only generated if a rule, Quoted, or Implementation
--- supplies the body — otherwise this operation appears as an
--- abstract member of <package>OpsTrait that a user-supplied object
--- must implement):
+-- Method with Quoted body — verbatim Scala inserted:
+operation balance(a: Account) -> Money =
+  Quoted("scala", "a.balance")
+→  def balance(a: Account): Money = a.balance
+
+-- Top-level abstract member when no body source exists:
 operation route(fact: Term) -> Store
-rule route(?f) = lookup_store(?f)
-→  def route(fact: Term): Store = lookup_store(fact)   // in <package>Ops
+→  // emitted as abstract member of trait <Package>Ops
+   trait <Package>Ops { def route(fact: Term): Store }
 ```
 
 ### 2.6 Type Parameters → Generics
@@ -209,16 +208,16 @@ sort Ordered {                              trait Ordered[T] extends Eq[T] {
 }
 ```
 
-When the requires binds a specific type, it becomes a `using` context parameter at use sites. The body is derived from the spec's rules — the snippet below assumes a polynomial-add rule exists in the spec:
+When the requires binds a specific type, it becomes a `using` context parameter at use sites. The body remains abstract unless a `Quoted`/`Implementation` source supplies it; the rule in the spec generates a property test:
 
 ```
-sort PolynomOps {
-  requires Ring[Coeff]                      // Body derived from the spec's rule:
-  operation add(a: Polynom,      →          //   add(?a, ?b) = zipWith(?a, ?b, Ring.add)
-    b: Polynom) -> Polynom                  def add[Coeff](a: Polynom[Coeff],
-  rule add(?a, ?b) =                                       b: Polynom[Coeff])
-    zipWith(?a, ?b, Ring.add)                              (using r: Ring[Coeff]): Polynom[Coeff] =
-}                                             zipWith(a, b, r.add)
+sort PolynomOps {                           trait PolynomOps {
+  requires Ring[Coeff]           →            def add[Coeff](a: Polynom[Coeff],
+  operation add(a: Polynom,                                  b: Polynom[Coeff])
+    b: Polynom) -> Polynom                                  (using Ring[Coeff]): Polynom[Coeff]
+  rule add(?a, ?b) =                        }
+    zipWith(?a, ?b, Ring.add)               // In Test source: ScalaCheck property over `add`.
+}
 ```
 
 ### 2.8 Effects → Method Shape
