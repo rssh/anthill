@@ -247,3 +247,93 @@ fn push_choice_shares_tail_with_both_branches() {
     expected.sort();
     assert_eq!(x_bindings, expected, "two branches yield distinct ?x");
 }
+
+#[test]
+fn or_rule_handles_nested_disjunction() {
+    // or(or(p, q), r) — three branches, shared variable binds to three
+    // distinct values. Validates that the Continuation candidates from an
+    // outer push_choice can themselves trigger an inner push_choice (via
+    // the `or` rule unfolding) and that all three leaf solutions surface.
+    let src = r#"
+        namespace test.pc.nested
+          export Tag
+          sort Tag
+            entity ta
+            entity tb
+            entity tc
+          end
+          fact branch_a(ta)
+          fact branch_b(tb)
+          fact branch_c(tc)
+          rule chooses(?x)
+            :- or(or(branch_a(?x), branch_b(?x)), branch_c(?x))
+        end
+    "#;
+    let mut kb = load_with(src);
+    let chooses_sym = kb.try_resolve_symbol("test.pc.nested.chooses").unwrap();
+    let x_sym = kb.intern("_x");
+    let x_vid = kb.fresh_var(x_sym);
+    let x_term = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(x_vid)));
+    let goal = kb.alloc(Term::Fn {
+        functor: chooses_sym,
+        pos_args: SmallVec::from_slice(&[x_term]),
+        named_args: SmallVec::new(),
+    });
+    let cfg = ResolveConfig::default();
+    let solutions = kb.resolve(&[goal], &cfg);
+    assert_eq!(solutions.len(), 3, "nested or yields one solution per leaf branch");
+
+    let ta = ref_term(&mut kb, "test.pc.nested.Tag.ta");
+    let tb = ref_term(&mut kb, "test.pc.nested.Tag.tb");
+    let tc = ref_term(&mut kb, "test.pc.nested.Tag.tc");
+    let mut bindings: Vec<u32> = solutions.iter()
+        .map(|sol| kb.reify(x_term, &sol.subst).raw())
+        .collect();
+    bindings.sort();
+    let mut expected = vec![ta.raw(), tb.raw(), tc.raw()];
+    expected.sort();
+    assert_eq!(bindings, expected, "all three branches must contribute");
+}
+
+#[test]
+fn or_rule_isolates_substitutions_across_branches() {
+    // Branches that bind a shared ?x to different values must not leak
+    // bindings across each other. After branch A binds ?x = ta, branch B
+    // must start from σ where ?x is unbound and bind it to tb (not stay
+    // pinned to ta).
+    let src = r#"
+        namespace test.pc.isolate
+          export Tag
+          sort Tag
+            entity ta
+            entity tb
+          end
+          fact branch_a(ta)
+          fact branch_b(tb)
+          rule chooses(?x)
+            :- or(branch_a(?x), branch_b(?x))
+        end
+    "#;
+    let mut kb = load_with(src);
+    let chooses_sym = kb.try_resolve_symbol("test.pc.isolate.chooses").unwrap();
+    let x_sym = kb.intern("_x");
+    let x_vid = kb.fresh_var(x_sym);
+    let x_term = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(x_vid)));
+    let goal = kb.alloc(Term::Fn {
+        functor: chooses_sym,
+        pos_args: SmallVec::from_slice(&[x_term]),
+        named_args: SmallVec::new(),
+    });
+    let cfg = ResolveConfig::default();
+    let solutions = kb.resolve(&[goal], &cfg);
+    assert_eq!(solutions.len(), 2);
+
+    let ta = ref_term(&mut kb, "test.pc.isolate.Tag.ta");
+    let tb = ref_term(&mut kb, "test.pc.isolate.Tag.tb");
+    let bindings: std::collections::HashSet<u32> = solutions.iter()
+        .map(|sol| kb.reify(x_term, &sol.subst).raw())
+        .collect();
+    let expected: std::collections::HashSet<u32> = [ta.raw(), tb.raw()].into_iter().collect();
+    assert_eq!(bindings, expected,
+        "σ isolation: each branch must bind ?x to its own value, not leak across");
+}

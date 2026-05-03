@@ -460,3 +460,120 @@ end
         && seen.contains(&("beta".to_string(), "M".to_string())),
         "both disjunction branches must compose with the tail marker; saw {seen:?}");
 }
+
+#[test]
+fn q3_nested_disjunction_yields_three_branches() {
+    // disjunction(disjunction(A, B), C) — verifies that the lowering
+    // recurses correctly: the outer disjunction's left branch is itself
+    // a disjunction, and all three leaves contribute solutions.
+    let mut kb = load_kb_with(r#"
+namespace test.q3_disj_nested
+  sort A
+    entity a_tag(name: String)
+  end
+  sort B
+    entity b_tag(name: String)
+  end
+  sort C
+    entity c_tag(name: String)
+  end
+  fact a_tag(name: "alpha")
+  fact b_tag(name: "beta")
+  fact c_tag(name: "gamma")
+end
+"#);
+
+    let a_sym = kb.try_resolve_symbol("test.q3_disj_nested.A.a_tag").unwrap();
+    let b_sym = kb.try_resolve_symbol("test.q3_disj_nested.B.b_tag").unwrap();
+    let c_sym = kb.try_resolve_symbol("test.q3_disj_nested.C.c_tag").unwrap();
+    let pattern_query_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.pattern_query").unwrap();
+    let disj_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.disjunction").unwrap();
+    let term_field = kb.intern("term");
+    let left_field = kb.intern("left");
+    let right_field = kb.intern("right");
+    let name_field = kb.intern("name");
+
+    let v_sym = kb.intern("v");
+    let vid = kb.fresh_var(v_sym);
+    let var_v = kb.alloc(Term::Var(Var::Global(vid)));
+
+    let pq = |kb: &mut anthill_core::kb::KnowledgeBase, functor| Value::Entity {
+        functor: pattern_query_sym,
+        pos: Vec::new(),
+        named: vec![(term_field, Value::Entity {
+            functor, pos: Vec::new(),
+            named: vec![(name_field, Value::Term(var_v))],
+        })],
+    };
+    let q_a = pq(&mut kb, a_sym);
+    let q_b = pq(&mut kb, b_sym);
+    let q_c = pq(&mut kb, c_sym);
+    let inner = entity_named(disj_sym, vec![(left_field, q_a), (right_field, q_b)]);
+    let outer = entity_named(disj_sym, vec![(left_field, inner), (right_field, q_c)]);
+
+    let mut stream = kb.execute_logical_query(&outer).expect("nested disjunction lowers");
+    let mut seen = std::collections::HashSet::new();
+    while let Some((sol, rest)) = stream.split_first(&mut kb) {
+        if let Some(Value::Term(t)) = sol.subst.resolve_as_value(vid) {
+            if let Term::Const(Literal::String(s)) = kb.get_term(*t) {
+                seen.insert(s.clone());
+            }
+        }
+        stream = rest;
+    }
+    let expected: std::collections::HashSet<String> =
+        ["alpha", "beta", "gamma"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(seen, expected, "all three nested branches must contribute");
+}
+
+#[test]
+fn q3_disjunction_multi_goal_branch_is_not_yet_implemented() {
+    // A disjunction whose branch lowers to >1 goal currently surfaces
+    // NotYetImplemented — multi-goal lifting needs a synthesized
+    // conjunction-rule head (deferred to WI-076). This test locks the
+    // contract so future WI-076 work knows what to flip.
+    let mut kb = load_kb_with(r#"
+namespace test.q3_disj_multi
+  sort Tag
+    entity left_tag(name: String)
+    entity right_tag(name: String)
+  end
+end
+"#);
+
+    let left_sym = kb.try_resolve_symbol("test.q3_disj_multi.Tag.left_tag").unwrap();
+    let right_sym = kb.try_resolve_symbol("test.q3_disj_multi.Tag.right_tag").unwrap();
+    let pattern_query_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.pattern_query").unwrap();
+    let disj_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.disjunction").unwrap();
+    let conj_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.conjunction").unwrap();
+    let term_field = kb.intern("term");
+    let left_field = kb.intern("left");
+    let right_field = kb.intern("right");
+    let name_field = kb.intern("name");
+
+    let v_sym = kb.intern("v");
+    let vid = kb.fresh_var(v_sym);
+    let var_v = kb.alloc(Term::Var(Var::Global(vid)));
+
+    let pq_left = entity_named(pattern_query_sym, vec![(term_field, Value::Entity {
+        functor: left_sym, pos: Vec::new(),
+        named: vec![(name_field, Value::Term(var_v))],
+    })]);
+    let pq_right = entity_named(pattern_query_sym, vec![(term_field, Value::Entity {
+        functor: right_sym, pos: Vec::new(),
+        named: vec![(name_field, Value::Term(var_v))],
+    })]);
+    // Multi-goal left branch via inner conjunction.
+    let multi_left = entity_named(conj_sym, vec![
+        (left_field, pq_left.clone()),
+        (right_field, pq_right.clone()),
+    ]);
+    let query = entity_named(disj_sym, vec![
+        (left_field, multi_left),
+        (right_field, pq_right),
+    ]);
+
+    let err = kb.lower_query(&query).unwrap_err();
+    assert!(matches!(err, LowerError::NotYetImplemented(_)),
+        "multi-goal disjunction branch must surface NotYetImplemented; got {err:?}");
+}
