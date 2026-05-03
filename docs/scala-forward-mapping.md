@@ -308,12 +308,67 @@ import banking.{Account, Money}
 
 The `scala_std` profile is intentionally *purely-functional but non-monadic*: `Modify` returns updated state, `Error` returns `Either`, no `IO`/`ZIO` machinery. This keeps the bootstrap-codegen path simple and the generated code dependency-free.
 
-Two alternative profiles are reserved for future work:
+Three alternative profiles are reserved:
 
+- `scala_caps` — Scala 3 capture checking (proposal 034 / `stdlib/anthill/realization/scala_caps.anthill`). See §3.1.
 - `scala_cats_effect` — `Modify X` becomes `cats.effect.Ref[IO, X]`, `Error E` becomes `IO` with `MonadError`, `Console` becomes `cats.effect.std.Console[IO]`.
 - `scala_zio` — analogous with `ZIO[R, E, A]`.
 
-These profiles are selected via `LanguageMapping(language: "scala", profile: some("cats-effect"))` etc. The default profile (no `profile:` field specified) is `scala_std`.
+These profiles are selected via `LanguageMapping(language: "scala", profile: some("caps"))` etc. The default profile (no `profile:` field specified) is `scala_std`.
+
+### 3.1 The `scala_caps` profile (capture checking)
+
+Scala 3.5+ ships experimental capture-checking (`-language:experimental.captureChecking` + `import scala.caps.*`). Capture sets are named-capability annotations on types — `IO^{Console, FS}` reads "an IO that captures Console and FS capabilities". The algebra (named capabilities, set union, subcapturing) lines up identically with anthill's effect system, so `scala_caps` is the most faithful Scala mapping of anthill effects:
+
+| Anthill | scala_caps Scala output |
+|---|---|
+| (none) | `def op(...): R` |
+| `effects (Console)` | `def op(...): R^{Console}` |
+| `effects (Modify X)` | `def op(...)(using Mut[X]^): R` |
+| `effects (Error E)` | `def op(...): R throws E` (compiles to `(using CanThrow[E]) => R`) |
+| `effects (Requires Cap)` | `def op(...)(using Cap^): R` |
+| Effect set `(A, B)` | `R^{A, B}` (capture set union) |
+| Effect subtyping | subcapturing — natural in cc |
+
+**Function-arrow distinction.** Per anthill's effect-tagged operation types, `scala_caps` uses Scala 3's two arrow forms:
+
+| Anthill operation type | scala_caps output |
+|---|---|
+| Pure (no effects) — `Function[A, B]` with empty effect set | `A -> B` (cc pure arrow — no captures) |
+| Any effects | `A => B` (default impure arrow — captures `{cap}`) |
+
+This means `def map(xs: List[A], f: A -> B): List[B]` requires `f` to be pure (compiler-checked); changing `f`'s type to `A => B` allows effects. The arrow distinction enforces the effect set at the call site, not just at the operation declaration.
+
+**Round-trip note.** `scala_caps` is the only profile where `scala-anthill-gen` (proposal 034) can losslessly recover anthill's effect set from the generated Scala without ambiguity — a `^{Console}` capture is unambiguously the source-side `effects (Console)`. With `scala_std`, an `Either[E, R]` could be either anthill-derived or hand-written; with `scala_caps` it's marked.
+
+**Status.** Experimental. Generated code with `^` annotations isn't consumable by non-cc Scala. The profile is reserved in this doc; implementation follows once cc stabilizes (likely Scala 3.7 or 3.8).
+
+### 3.2 Custom error-type mapping
+
+`Error` is the only effect whose host shape names a *user-supplied* type (the error type `E`). The default `scala_std` profile maps `effects (Error)` to `Either[Throwable, R]` and `effects (Error E)` to `Either[E, R]`, but real Scala projects often want a specific error ADT — `ProjectError`, a `cats.data.NonEmptyChain[ProblemReport]`, a `zio.IO[DomainError, R]`, etc.
+
+The `EffectMapping` schema supports per-mapping custom types via the `ResultTyped(error: String)` receiver form (kernel spec / `realization.anthill`). A project can override the default by adding a higher-priority `EffectMapping` fact in its own realization profile:
+
+```anthill
+namespace my.project.scala_profile
+  fact LanguageMapping(
+    language: "scala",
+    profile: some("my-project"),
+    effect_map: [
+      EffectMapping(effect: "Error",
+        receiver: ResultTyped(error: "my.project.ProjectError"))
+      -- ... (other effect mappings inherited from scala_std)
+    ],
+    ...
+  )
+end
+```
+
+Anthill operations that say `effects (Error)` now generate `def op(...): Either[my.project.ProjectError, R]`. Operations that name a specific error in the spec — `effects (Error MyError)` — use the spec's `MyError` directly, overriding the project default.
+
+For `scala_caps`, the same per-project override applies via `CanThrow(error: "...")`. Both forms are first-class in the realization KB.
+
+The same mechanism extends to `Modify` (project-specific state-monad type), `Console` (project-specific console wrapper), and any user-defined effect — the realization layer is the single point of customization, no codegen-level overrides needed.
 
 ## 4. Self-arg heuristic
 

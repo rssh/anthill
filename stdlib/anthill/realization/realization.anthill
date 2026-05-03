@@ -108,6 +108,12 @@ namespace anthill.realization
     entity ResultWrap                   -- wrap return in Result<R, Error>
     entity ResultTyped(error: String)   -- wrap return in Result<R, E>
     entity Callback                     -- add callback parameter
+    -- Scala 3 capture-checking shapes (proposal 034 / scala_caps profile).
+    -- The capability is named in the host language; the codegen emits the
+    -- corresponding ^{Name} capture set on the operation's result type.
+    entity CapabilityCapture(name: String) -- result carries `^{name}` capture
+    entity CanThrow(error: String)         -- `throws E` / CanThrow[E] capability
+    entity ContextCapability(name: String) -- `(using Name^)` context parameter
   end
 
   -- How to return a trait/abstract sort from an operation.
