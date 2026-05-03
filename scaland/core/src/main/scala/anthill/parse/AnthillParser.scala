@@ -431,11 +431,8 @@ private class AnthillParserImpl(
     P(matchExpr | ifExpr | letExpr | lambdaExpr | term)
 
   private def matchExpr[$: P]: P[TermId] =
-    // No `end` keyword — mirrors rustland's tree-sitter grammar
-    // (`match_expr: match scrut repeat1(match_branch)`). `matchBranch.rep(1)`
-    // self-terminates at the first non-`case` token; nested matches are
-    // disambiguated by the same greedy-inner rule rustland uses (real
-    // stdlib code is written so the greedy interpretation matches intent).
+    // Mirrors rustland's tree-sitter grammar: `match scrut repeat1(branch)`,
+    // no `end`. `matchBranch.rep(1)` self-terminates at the first non-`case`.
     P(keyword("match") ~/ term ~ matchBranch.rep(1)).map { case (scrutinee, branches) =>
       terms.alloc(Term.Fn(intern("match_expr"), IArray(scrutinee) ++ IArray.from(branches), IArray.empty))
     }

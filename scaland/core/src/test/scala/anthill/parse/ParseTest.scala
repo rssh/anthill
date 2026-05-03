@@ -195,6 +195,14 @@ class ParseTest extends munit.FunSuite:
       case Right(_) => ()
       case Left(es) => fail(s"$name parse failed: ${es.map(_.message).mkString("; ")}")
 
+  private val stdlibDir = sys.env.getOrElse("ANTHILL_STDLIB",
+    System.getProperty("user.dir") + "/../stdlib")
+
+  private def probeStdlibOk(relPath: String): Unit =
+    val src = scala.io.Source.fromFile(s"$stdlibDir/$relPath")
+    val text = try src.mkString finally src.close()
+    probeOk(relPath, text)
+
   test("WI-162: nested function calls (e.g. not(not(?a)))") {
     // Pre-fix the inner paren-expr backtrack failed under `~/` cut.
     probeOk("nested-not", "rule p: not(not(?a)) = ?a")
@@ -244,25 +252,14 @@ class ParseTest extends munit.FunSuite:
   }
 
   test("WI-162: each of the 6 stdlib files previously blocked now parses") {
-    val stdlibDir = sys.env.getOrElse("ANTHILL_STDLIB",
-      System.getProperty("user.dir") + "/../stdlib")
-    def read(p: String): String =
-      val s = scala.io.Source.fromFile(s"$stdlibDir/$p")
-      try s.mkString finally s.close()
-    val files = Seq(
+    Seq(
       "anthill/prelude/bool.anthill",
       "anthill/prelude/int.anthill",
       "anthill/prelude/iteration.anthill",
       "anthill/prelude/collection.anthill",
       "anthill/prelude/list.anthill",
       "anthill/reflect/reflect.anthill",
-    )
-    val failures = files.flatMap { f =>
-      Parser.parse(read(f), f) match
-        case Right(_) => None
-        case Left(es) => Some(s"$f: ${es.head.message}")
-    }
-    assert(failures.isEmpty, s"stdlib files failing to parse:\n  ${failures.mkString("\n  ")}")
+    ).foreach(probeStdlibOk)
   }
 
   test("WI-166: match expression without trailing `end` (indentation-delimited)") {
@@ -276,21 +273,31 @@ class ParseTest extends munit.FunSuite:
   }
 
   test("WI-166: cli/help.anthill (single-arm match-no-end) parses cleanly") {
-    val stdlibDir = sys.env.getOrElse("ANTHILL_STDLIB",
-      System.getProperty("user.dir") + "/../stdlib")
-    val src = scala.io.Source.fromFile(s"$stdlibDir/anthill/cli/help.anthill")
-    val text = try src.mkString finally src.close()
-    Parser.parse(text, "anthill/cli/help.anthill") match
-      case Right(_) => ()
-      case Left(es) => fail(s"cli/help.anthill: ${es.head.message}")
+    probeStdlibOk("anthill/cli/help.anthill")
   }
 
   test("WI-167: cli/parse.anthill (nested matches without `end`) parses cleanly") {
-    val stdlibDir = sys.env.getOrElse("ANTHILL_STDLIB",
-      System.getProperty("user.dir") + "/../stdlib")
-    val src = scala.io.Source.fromFile(s"$stdlibDir/anthill/cli/parse.anthill")
-    val text = try src.mkString finally src.close()
-    Parser.parse(text, "anthill/cli/parse.anthill") match
-      case Right(_) => ()
-      case Left(es) => fail(s"cli/parse.anthill: ${es.head.message}")
+    probeStdlibOk("anthill/cli/parse.anthill")
+  }
+
+  /** Walks the entire stdlib tree and asserts every .anthill file parses.
+    * Locks in the WI-162/166/167 parser-coverage achievement: as new
+    * stdlib modules are added, this test catches a parser regression
+    * before it bites a downstream consumer.
+    */
+  test("scaland parser covers the whole stdlib (every .anthill file parses)") {
+    import java.nio.file.{Files, Paths}
+    import scala.jdk.CollectionConverters.*
+    val root = Paths.get(stdlibDir)
+    val files = Files.walk(root).iterator.asScala.toList
+      .filter(_.toString.endsWith(".anthill"))
+    val failures = files.flatMap { p =>
+      val rel = root.relativize(p).toString
+      val src = scala.io.Source.fromFile(p.toFile)
+      val text = try src.mkString finally src.close()
+      Parser.parse(text, rel) match
+        case Right(_) => None
+        case Left(es) => Some(s"$rel: ${es.head.message}")
+    }
+    assert(failures.isEmpty, s"stdlib files failing to parse:\n  ${failures.mkString("\n  ")}")
   }
