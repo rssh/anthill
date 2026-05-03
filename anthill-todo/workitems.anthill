@@ -117,7 +117,7 @@ fact WorkItem(
   description: "Error collection and reporting in typing pass: assert_compatible calls error() but how errors are gathered with source positions from ExprOccurrence spans and reported to the user.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-031", "WI-032", "WI-038"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-03T20:04:35Z"))
 
 fact WorkItem(
   id: "WI-020",
@@ -1221,3 +1221,4 @@ fact WorkItem(
 
 fact Feedback(content: "Verified resolved. Reproducer parses + loads cleanly: 'operation get_fst(p: Pair) -> Int = p.fst' (sort body and top-level). Likely fixed by commit ccee078 'grammar: dotted functor in fn_term reduces via field_access' which added the [$._atom_term, $.fn_term] conflict resolution and field_access into _atom_term. Added parse_field_access_in_operation_body regression test in parse_test.rs.", at: "2026-05-03T17:01:18Z", workitem: "WI-013", author: "user")
 fact Feedback(content: "Implemented. add_guard(guard_term: TermId) signature dropped trigger_sorts param; new extract_trigger_sorts walks the LogicalQuery tree (kb/mod.rs:457-525) and feeds guards_by_sort. pattern_query(term: Foo(...)) → constructor_parent_sort(Foo); sort_query(sort_name: 'S') → S. Compound forms (conjunction/disjunction/negation/guarded/projected/limited/quantifiers) recurse. Made LogicalQuerySymbols::resolve pub(crate) (kb/execute.rs:125). Added guard_trigger_sorts public accessor for verification. Tests in tests/guard_trigger_test.rs cover pattern_query and conjunction cases.", at: "2026-05-03T17:22:40Z", workitem: "WI-022", author: "user")
+fact Feedback(content: "Implemented. typing pass now collects errors as structured TypeError values via type_check_sorts_typed. New TypeError::Other variant + TypeErrorContext (EntityField/OperationReturn/OperationEffects/OperationMatch/Rule/Anonymous) carry Symbols for entity/field/op names instead of strings. TypeError::to_load_error(&kb) provides lossy back-compat for existing LoadError consumers; type_check_sorts wraps type_check_sorts_typed via that conversion. All 12 emission sites in typing.rs (check_value_against_*, check_entity_facts, check_operation_bodies, check_pattern_fragment, check_ho_apply_pattern, check_rule_typing) migrated. Public API unchanged for legacy callers. 4 new tests in tests/typing_test.rs::wi_019: structured field mismatch, return-type mismatch, span resolution, legacy LoadError compatibility.", at: "2026-05-03T20:04:35Z", workitem: "WI-019", author: "user")

@@ -18,8 +18,12 @@ use crate::span::Span;
 
 #[derive(Clone, Debug)]
 pub enum TypeError {
+    /// Canonical type mismatch from `assert_compatible`. `context` is where
+    /// in the program the mismatch was detected so the user-facing message
+    /// can name the field/operation rather than just "type mismatch".
     TypeMismatch {
         occ: Option<OccurrenceId>,
+        context: TypeErrorContext,
         expected: TermId,
         actual: TermId,
     },
@@ -35,6 +39,54 @@ pub enum TypeError {
         occ: Option<OccurrenceId>,
         name: Symbol,
     },
+    /// Catchall for auxiliary typing-pass checks (effect declarations,
+    /// match exhaustiveness, HO pattern fragment, rule var consistency).
+    /// Keeps WI-019 emission sites in the structured pipeline without
+    /// proliferating a variant per check; promote to dedicated variants
+    /// when a consumer actually discriminates on them.
+    Other {
+        occ: Option<OccurrenceId>,
+        span: Option<Span>,
+        context: TypeErrorContext,
+        expected: String,
+        actual: String,
+    },
+}
+
+/// Where in the program a TypeError was raised. Carries Symbols (cheap to
+/// copy, resolve at format time).
+#[derive(Clone, Debug)]
+pub enum TypeErrorContext {
+    EntityField { entity: Symbol, field: Symbol },
+    OperationReturn { op_name: Symbol },
+    OperationEffects { op_name: Symbol },
+    OperationMatch { op_name: Symbol },
+    Rule { name: Symbol, field: &'static str },
+    Anonymous,
+}
+
+impl TypeErrorContext {
+    pub fn entity_name(&self, kb: &KnowledgeBase) -> String {
+        match self {
+            TypeErrorContext::EntityField { entity, .. } => kb.resolve_sym(*entity).to_string(),
+            TypeErrorContext::OperationReturn { op_name }
+            | TypeErrorContext::OperationEffects { op_name }
+            | TypeErrorContext::OperationMatch { op_name } => kb.resolve_sym(*op_name).to_string(),
+            TypeErrorContext::Rule { name, .. } => kb.resolve_sym(*name).to_string(),
+            TypeErrorContext::Anonymous => String::new(),
+        }
+    }
+
+    pub fn field_name(&self, kb: &KnowledgeBase) -> String {
+        match self {
+            TypeErrorContext::EntityField { field, .. } => kb.resolve_sym(*field).to_string(),
+            TypeErrorContext::OperationReturn { .. } => "return".to_string(),
+            TypeErrorContext::OperationEffects { .. } => "effects".to_string(),
+            TypeErrorContext::OperationMatch { .. } => "match".to_string(),
+            TypeErrorContext::Rule { field, .. } => field.to_string(),
+            TypeErrorContext::Anonymous => String::new(),
+        }
+    }
 }
 
 impl TypeError {
@@ -55,17 +107,67 @@ impl TypeError {
             TypeError::UnresolvedName { name, .. } => {
                 format!("unresolved name: {}", kb.resolve_sym(*name))
             }
+            TypeError::Other { expected, actual, .. } => {
+                format!("expected {}, got {}", expected, actual)
+            }
         }
     }
 
     pub fn span(&self, kb: &KnowledgeBase) -> Option<Span> {
-        let occ = match self {
-            TypeError::TypeMismatch { occ, .. } => *occ,
-            TypeError::UnknownField { occ, .. } => *occ,
-            TypeError::UnresolvedName { occ, .. } => *occ,
+        match self {
+            TypeError::TypeMismatch { occ, .. }
+            | TypeError::UnknownField { occ, .. }
+            | TypeError::UnresolvedName { occ, .. } => {
+                occ.map(|id| kb.occurrences.span(id).span)
+            }
+            TypeError::Other { occ, span, .. } => {
+                span.or_else(|| occ.map(|id| kb.occurrences.span(id).span))
+            }
             TypeError::NoParentSort { .. } => None,
-        };
-        occ.map(|id| kb.occurrences.span(id).span)
+        }
+    }
+
+    /// Lossy conversion to LoadError for legacy callers (load.rs, CLI).
+    /// Resolves spans, formats type terms via `type_display_name`.
+    pub fn to_load_error(&self, kb: &KnowledgeBase) -> super::load::LoadError {
+        use super::load::LoadError;
+        match self {
+            TypeError::TypeMismatch { context, expected, actual, .. } => LoadError::TypeMismatch {
+                entity_name: context.entity_name(kb),
+                field_name: context.field_name(kb),
+                expected_type: type_display_name(kb, *expected),
+                actual_type: type_display_name(kb, *actual),
+                span: self.span(kb),
+            },
+            TypeError::UnknownField { entity_name, field, .. } => LoadError::TypeMismatch {
+                entity_name: kb.resolve_sym(*entity_name).to_string(),
+                field_name: kb.resolve_sym(*field).to_string(),
+                expected_type: "known field".to_string(),
+                actual_type: format!("unknown field '{}'", kb.resolve_sym(*field)),
+                span: self.span(kb),
+            },
+            TypeError::NoParentSort { name } => LoadError::TypeMismatch {
+                entity_name: kb.resolve_sym(*name).to_string(),
+                field_name: "parent_sort".to_string(),
+                expected_type: "parent sort".to_string(),
+                actual_type: "none".to_string(),
+                span: None,
+            },
+            TypeError::UnresolvedName { name, .. } => LoadError::TypeMismatch {
+                entity_name: kb.resolve_sym(*name).to_string(),
+                field_name: "name".to_string(),
+                expected_type: "resolved name".to_string(),
+                actual_type: "unresolved".to_string(),
+                span: self.span(kb),
+            },
+            TypeError::Other { context, expected, actual, .. } => LoadError::TypeMismatch {
+                entity_name: context.entity_name(kb),
+                field_name: context.field_name(kb),
+                expected_type: expected.clone(),
+                actual_type: actual.clone(),
+                span: self.span(kb),
+            },
+        }
     }
 }
 
@@ -1832,8 +1934,20 @@ use super::load::LoadError;
 /// Type-check sorts/enums by their SortInfo facts.
 /// Walks each sort's constructors (fact field types) and operations (body types) in one pass.
 /// Only checks the given sort terms — not the whole KB.
+///
+/// Public surface returns `Vec<LoadError>` for backward compatibility with
+/// the load pipeline. Use [`type_check_sorts_typed`] when structured
+/// `TypeError` values are needed (programmatic access, IDE diagnostics).
 pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<LoadError> {
-    let mut errors = Vec::new();
+    let typed = type_check_sorts_typed(kb, sort_terms);
+    typed.iter().map(|e| e.to_load_error(kb)).collect()
+}
+
+/// Structured form of [`type_check_sorts`]: returns `Vec<TypeError>`,
+/// preserving occurrence ids and term ids so consumers can format on
+/// demand or filter by variant.
+pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<TypeError> {
+    let mut errors: Vec<TypeError> = Vec::new();
 
     let sort_info_sym = match kb.try_resolve_symbol("anthill.reflect.SortInfo") {
         Some(s) => s,
@@ -1846,23 +1960,15 @@ pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<Lo
             _ => continue,
         };
 
-        // Find this sort's SortInfo fact
         let sort_info = find_sort_info(kb, sort_info_sym, sort_functor);
         let (ctor_syms, op_syms) = match sort_info {
             Some((ctors, ops)) => (ctors, ops),
             None => continue,
         };
 
-        // Check entity facts: field values match declared field types
         check_entity_facts(kb, &ctor_syms, &mut errors);
-
-        // Check operation bodies: return types + exhaustiveness
         check_operation_bodies(kb, &op_syms, &mut errors);
-
-        // Check HO pattern fragment restrictions
         check_pattern_fragment(kb, sort_term, &mut errors);
-
-        // Check rule variable typing: consistent types across head + body
         check_rule_typing(kb, sort_term, &mut errors);
     }
 
@@ -1922,24 +2028,24 @@ fn extract_sym_list(kb: &KnowledgeBase, list_tid: TermId) -> Vec<Symbol> {
     }).collect()
 }
 
-/// Check a value against a declared type. Returns Some(LoadError) on mismatch.
+/// Check a value against a declared type. Returns Some(TypeError) on mismatch.
 fn check_value_against_type(
     kb: &KnowledgeBase,
     value: TermId,
     declared_type: TermId,
-    entity_name: &str,
-    field_name: &str,
+    entity_sym: Symbol,
+    field_sym: Symbol,
     span: Option<Span>,
-) -> Option<LoadError> {
+) -> Option<TypeError> {
     let type_functor = type_functor_name(kb, declared_type);
 
     match type_functor {
         Some("sort_ref") => {
             let declared_sym = extract_sort_ref_sym(kb, declared_type)?;
-            check_value_against_sort_ref(kb, value, declared_sym, declared_type, entity_name, field_name, span)
+            check_value_against_sort_ref(kb, value, declared_sym, declared_type, entity_sym, field_sym, span)
         }
         Some("parameterized") => {
-            check_value_against_parameterized(kb, value, declared_type, entity_name, field_name, span)
+            check_value_against_parameterized(kb, value, declared_type, entity_sym, field_sym, span)
         }
         _ => None, // type_var, arrow, named_tuple, nothing — skip for now
     }
@@ -1951,10 +2057,10 @@ fn check_value_against_sort_ref(
     value: TermId,
     declared_sym: Symbol,
     declared_type: TermId,
-    entity_name: &str,
-    field_name: &str,
+    entity_sym: Symbol,
+    field_sym: Symbol,
     span: Option<Span>,
-) -> Option<LoadError> {
+) -> Option<TypeError> {
     let is_prim = |sym: Symbol, expected: &str| -> bool {
         let name = kb.resolve_sym(sym);
         name == expected || name == &format!("anthill.prelude.{}", expected)
@@ -1977,9 +2083,12 @@ fn check_value_against_sort_ref(
                     Literal::Bool(_) => "Bool",
                     _ => "?",
                 };
-                Some(LoadError::TypeMismatch {
-                    entity_name: entity_name.to_string(), field_name: field_name.to_string(),
-                    expected_type: type_display_name(kb, declared_type), actual_type: actual.to_string(), span,
+                Some(TypeError::Other {
+                    occ: None,
+                    span,
+                    context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
+                    expected: type_display_name(kb, declared_type),
+                    actual: actual.to_string(),
                 })
             } else {
                 None
@@ -1988,9 +2097,12 @@ fn check_value_against_sort_ref(
         Term::Fn { functor: val_functor, .. } => {
             if let Some(parent) = kb.constructor_parent_sort(*val_functor) {
                 if !constructor_matches_declared(kb, parent, declared_sym) {
-                    return Some(LoadError::TypeMismatch {
-                        entity_name: entity_name.to_string(), field_name: field_name.to_string(),
-                        expected_type: type_display_name(kb, declared_type), actual_type: extract_parent_name(kb, parent), span,
+                    return Some(TypeError::Other {
+                        occ: None,
+                        span,
+                        context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
+                        expected: type_display_name(kb, declared_type),
+                        actual: extract_parent_name(kb, parent),
                     });
                 }
             }
@@ -2000,9 +2112,12 @@ fn check_value_against_sort_ref(
             if kb.is_constructor_symbol(*val_sym) {
                 if let Some(parent) = kb.constructor_parent_sort(*val_sym) {
                     if !constructor_matches_declared(kb, parent, declared_sym) {
-                        return Some(LoadError::TypeMismatch {
-                            entity_name: entity_name.to_string(), field_name: field_name.to_string(),
-                            expected_type: type_display_name(kb, declared_type), actual_type: extract_parent_name(kb, parent), span,
+                        return Some(TypeError::Other {
+                            occ: None,
+                            span,
+                            context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
+                            expected: type_display_name(kb, declared_type),
+                            actual: extract_parent_name(kb, parent),
                         });
                     }
                 }
@@ -2018,10 +2133,10 @@ fn check_value_against_parameterized(
     kb: &KnowledgeBase,
     value: TermId,
     declared_type: TermId,
-    entity_name: &str,
-    field_name: &str,
+    entity_sym: Symbol,
+    field_sym: Symbol,
     span: Option<Span>,
-) -> Option<LoadError> {
+) -> Option<TypeError> {
     let declared_args = match kb.get_term(declared_type) {
         Term::Fn { named_args, .. } => named_args.clone(),
         _ => return None,
@@ -2041,9 +2156,12 @@ fn check_value_against_parameterized(
     // Check entity belongs to base sort
     if let Some(parent) = kb.constructor_parent_sort(val_functor) {
         if !constructor_matches_declared(kb, parent, base_sym) {
-            return Some(LoadError::TypeMismatch {
-                entity_name: entity_name.to_string(), field_name: field_name.to_string(),
-                expected_type: type_display_name(kb, declared_type), actual_type: extract_parent_name(kb, parent), span,
+            return Some(TypeError::Other {
+                occ: None,
+                span,
+                context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
+                expected: type_display_name(kb, declared_type),
+                actual: extract_parent_name(kb, parent),
             });
         }
     }
@@ -2085,9 +2203,8 @@ fn check_value_against_parameterized(
 
         // Walk the field type through the substitution to resolve type params
         let instantiated_type = walk_type(kb, &subst, declared_field_type);
-        let sub_field_name = kb.resolve_sym(fsym);
 
-        if let Some(err) = check_value_against_type(kb, fval, instantiated_type, entity_name, sub_field_name, span) {
+        if let Some(err) = check_value_against_type(kb, fval, instantiated_type, entity_sym, fsym, span) {
             return Some(err);
         }
     }
@@ -2096,7 +2213,7 @@ fn check_value_against_parameterized(
 }
 
 /// Check all facts for the given entity constructors against their declared field types.
-fn check_entity_facts(kb: &KnowledgeBase, ctor_syms: &[Symbol], errors: &mut Vec<LoadError>) {
+fn check_entity_facts(kb: &KnowledgeBase, ctor_syms: &[Symbol], errors: &mut Vec<TypeError>) {
     for &ctor_sym in ctor_syms {
         let field_types = match kb.entity_field_types(ctor_sym) {
             Some(ft) => ft.to_vec(),
@@ -2126,7 +2243,6 @@ fn check_entity_facts(kb: &KnowledgeBase, ctor_syms: &[Symbol], errors: &mut Vec
                 _ => continue,
             };
 
-            let entity_name = kb.resolve_sym(ctor_sym);
             let span: Option<Span> = kb.occurrences.by_term(head)
                 .first()
                 .or_else(|| kb.occurrences.by_functor(ctor_sym).iter()
@@ -2143,8 +2259,7 @@ fn check_entity_facts(kb: &KnowledgeBase, ctor_syms: &[Symbol], errors: &mut Vec
                     continue;
                 }
 
-                let field_name = kb.resolve_sym(field_sym);
-                if let Some(err) = check_value_against_type(kb, field_value, declared_type, entity_name, field_name, span) {
+                if let Some(err) = check_value_against_type(kb, field_value, declared_type, ctor_sym, field_sym, span) {
                     errors.push(err);
                 }
             }
@@ -2177,14 +2292,14 @@ fn extract_parent_name(kb: &KnowledgeBase, parent: TermId) -> String {
 }
 
 /// Check operation bodies against their declared return types.
-fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &mut Vec<LoadError>) {
+fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &mut Vec<TypeError>) {
     let op_info_sym = match kb.try_resolve_symbol("anthill.reflect.OperationInfo") {
         Some(s) => s,
         None => return,
     };
 
     struct OpInfo {
-        op_name: String,
+        op_sym: Symbol,
         return_type: TermId,
         declared_effects: Vec<TermId>,
         body_expr: TermId,
@@ -2264,7 +2379,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                 .first()
                 .map(|&occ_id| kb.occurrences.span(occ_id).span);
 
-            ops_to_check.push(OpInfo { op_name: kb.resolve_sym(name_sym).to_string(), return_type, declared_effects, body_expr, params, span });
+            ops_to_check.push(OpInfo { op_sym: name_sym, return_type, declared_effects, body_expr, params, span });
             break; // found the OperationInfo for this op
         }
     }
@@ -2277,12 +2392,11 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
 
         if let Some(result) = type_check_expr(kb, &env, op.body_expr) {
             if !types_compatible(kb, result.ty, op.return_type) {
-                errors.push(LoadError::TypeMismatch {
-                    entity_name: op.op_name.clone(),
-                    field_name: "return".to_string(),
-                    expected_type: type_display_name(kb, op.return_type),
-                    actual_type: type_display_name(kb, result.ty),
-                    span: op.span,
+                errors.push(TypeError::TypeMismatch {
+                    occ: None,
+                    context: TypeErrorContext::OperationReturn { op_name: op.op_sym },
+                    expected: op.return_type,
+                    actual: result.ty,
                 });
             }
 
@@ -2295,12 +2409,12 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                         .map(|e| type_display_name(kb, *e))
                         .collect();
                     if !declared_names.iter().any(|d| d == &effect_name) {
-                        errors.push(LoadError::TypeMismatch {
-                            entity_name: op.op_name.clone(),
-                            field_name: "effects".to_string(),
-                            expected_type: format!("declared: [{}]", declared_names.join(", ")),
-                            actual_type: format!("undeclared effect: {}", effect_name),
+                        errors.push(TypeError::Other {
+                            occ: None,
                             span: op.span,
+                            context: TypeErrorContext::OperationEffects { op_name: op.op_sym },
+                            expected: format!("declared: [{}]", declared_names.join(", ")),
+                            actual: format!("undeclared effect: {}", effect_name),
                         });
                     }
                 }
@@ -2308,12 +2422,12 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
 
             // Collect exhaustiveness diagnostics from the typing env
             for diag in &result.env.diagnostics {
-                errors.push(LoadError::TypeMismatch {
-                    entity_name: op.op_name.clone(),
-                    field_name: "match".to_string(),
-                    expected_type: "exhaustive".to_string(),
-                    actual_type: diag.clone(),
+                errors.push(TypeError::Other {
+                    occ: None,
                     span: op.span,
+                    context: TypeErrorContext::OperationMatch { op_name: op.op_sym },
+                    expected: "exhaustive".to_string(),
+                    actual: diag.clone(),
                 });
             }
         }
@@ -2368,7 +2482,7 @@ fn collect_covered_entities(
 
 /// Validate that rules conform to the hereditary Harrop pattern fragment.
 /// This ensures higher-order unification remains decidable.
-fn check_pattern_fragment(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Vec<LoadError>) {
+fn check_pattern_fragment(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Vec<TypeError>) {
     let ho_apply_sym = match kb.try_resolve_symbol("anthill.reflect.Expr.ho_apply") {
         Some(s) => s,
         None => return,
@@ -2380,9 +2494,9 @@ fn check_pattern_fragment(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Ve
 
         let head = kb.rule_head(rid);
 
-        let head_name = match kb.get_term(head) {
-            Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_string(),
-            _ => "?".to_string(),
+        let head_sym = match kb.get_term(head) {
+            Term::Fn { functor, .. } => *functor,
+            _ => continue,
         };
         let span = kb.occurrences.by_term(head)
             .first()
@@ -2390,18 +2504,18 @@ fn check_pattern_fragment(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Ve
 
         // Rule 1: head must not contain ho_apply (no predicate variables in head)
         if term_contains_functor(kb, head, ho_apply_sym) {
-            errors.push(LoadError::TypeMismatch {
-                entity_name: head_name.clone(),
-                field_name: "head".to_string(),
-                expected_type: "no predicate variables in rule head".to_string(),
-                actual_type: "ho_apply in head position".to_string(),
+            errors.push(TypeError::Other {
+                occ: None,
                 span,
+                context: TypeErrorContext::Rule { name: head_sym, field: "head" },
+                expected: "no predicate variables in rule head".to_string(),
+                actual: "ho_apply in head position".to_string(),
             });
         }
 
         // Check body goals for pattern fragment violations
         for &goal_tid in body {
-            check_ho_apply_pattern(kb, goal_tid, ho_apply_sym, &head_name, span, errors);
+            check_ho_apply_pattern(kb, goal_tid, ho_apply_sym, head_sym, span, errors);
         }
     }
 }
@@ -2411,9 +2525,9 @@ fn check_ho_apply_pattern(
     kb: &KnowledgeBase,
     term: TermId,
     ho_apply_sym: Symbol,
-    rule_name: &str,
+    rule_sym: Symbol,
     span: Option<Span>,
-    errors: &mut Vec<LoadError>,
+    errors: &mut Vec<TypeError>,
 ) {
     match kb.get_term(term) {
         Term::Fn { functor, pos_args, named_args, .. } => {
@@ -2434,12 +2548,12 @@ fn check_ho_apply_pattern(
                         // Check if it's another ho_apply — predicate applied to predicate
                         if let Term::Fn { functor: inner_f, .. } = kb.get_term(pred) {
                             if *inner_f == ho_apply_sym {
-                                errors.push(LoadError::TypeMismatch {
-                                    entity_name: rule_name.to_string(),
-                                    field_name: "body".to_string(),
-                                    expected_type: "variable as predicate in ho_apply".to_string(),
-                                    actual_type: "nested ho_apply (predicate applied to predicate)".to_string(),
+                                errors.push(TypeError::Other {
+                                    occ: None,
                                     span,
+                                    context: TypeErrorContext::Rule { name: rule_sym, field: "body" },
+                                    expected: "variable as predicate in ho_apply".to_string(),
+                                    actual: "nested ho_apply (predicate applied to predicate)".to_string(),
                                 });
                             }
                         }
@@ -2451,12 +2565,12 @@ fn check_ho_apply_pattern(
                 for &arg in &pos_args[1..] {
                     if let Term::Var(Var::DeBruijn(idx)) = kb.get_term(arg) {
                         if seen_vars.contains(idx) {
-                            errors.push(LoadError::TypeMismatch {
-                                entity_name: rule_name.to_string(),
-                                field_name: "body".to_string(),
-                                expected_type: "distinct variables in ho_apply args".to_string(),
-                                actual_type: format!("duplicate variable ?{} in predicate application", idx),
+                            errors.push(TypeError::Other {
+                                occ: None,
                                 span,
+                                context: TypeErrorContext::Rule { name: rule_sym, field: "body" },
+                                expected: "distinct variables in ho_apply args".to_string(),
+                                actual: format!("duplicate variable ?{} in predicate application", idx),
                             });
                         }
                         seen_vars.push(*idx);
@@ -2464,12 +2578,12 @@ fn check_ho_apply_pattern(
 
                     // Rule 3b: args must not contain ho_apply (no predicate variable as argument)
                     if term_contains_functor(kb, arg, ho_apply_sym) {
-                        errors.push(LoadError::TypeMismatch {
-                            entity_name: rule_name.to_string(),
-                            field_name: "body".to_string(),
-                            expected_type: "first-order args in ho_apply".to_string(),
-                            actual_type: "predicate variable as argument to predicate".to_string(),
+                        errors.push(TypeError::Other {
+                            occ: None,
                             span,
+                            context: TypeErrorContext::Rule { name: rule_sym, field: "body" },
+                            expected: "first-order args in ho_apply".to_string(),
+                            actual: "predicate variable as argument to predicate".to_string(),
                         });
                     }
                 }
@@ -2477,10 +2591,10 @@ fn check_ho_apply_pattern(
 
             // Recurse into subterms
             for &arg in pos_args.iter() {
-                check_ho_apply_pattern(kb, arg, ho_apply_sym, rule_name, span, errors);
+                check_ho_apply_pattern(kb, arg, ho_apply_sym, rule_sym, span, errors);
             }
             for &(_, arg) in named_args.iter() {
-                check_ho_apply_pattern(kb, arg, ho_apply_sym, rule_name, span, errors);
+                check_ho_apply_pattern(kb, arg, ho_apply_sym, rule_sym, span, errors);
             }
         }
         _ => {}
@@ -2506,7 +2620,7 @@ fn term_contains_functor(kb: &KnowledgeBase, term: TermId, target_functor: Symbo
 /// 1. Collect type constraints from head (operation params, entity fields)
 /// 2. Collect type constraints from body goals
 /// 3. Unify all constraints for each variable — must be consistent
-fn check_rule_typing(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Vec<LoadError>) {
+fn check_rule_typing(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Vec<TypeError>) {
     for rid in kb.by_domain(sort_term) {
         let body = kb.rule_body(rid);
         if body.is_empty() { continue; } // facts have no body — nothing to check
@@ -2525,19 +2639,19 @@ fn check_rule_typing(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Vec<Loa
 
         // Check for contradictions in the substitution
         if subst.is_contradiction() {
-            let head_name = match kb.get_term(head) {
-                Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_string(),
-                _ => "?".to_string(),
+            let head_sym = match kb.get_term(head) {
+                Term::Fn { functor, .. } => *functor,
+                _ => continue,
             };
             let span = kb.occurrences.by_term(head)
                 .first()
                 .map(|&occ_id| kb.occurrences.span(occ_id).span);
-            errors.push(LoadError::TypeMismatch {
-                entity_name: head_name,
-                field_name: "rule".to_string(),
-                expected_type: "consistent variable types".to_string(),
-                actual_type: "contradictory variable types".to_string(),
+            errors.push(TypeError::Other {
+                occ: None,
                 span,
+                context: TypeErrorContext::Rule { name: head_sym, field: "rule" },
+                expected: "consistent variable types".to_string(),
+                actual: "contradictory variable types".to_string(),
             });
         }
     }
