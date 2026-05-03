@@ -264,3 +264,25 @@ class ParseTest extends munit.FunSuite:
     }
     assert(failures.isEmpty, s"stdlib files failing to parse:\n  ${failures.mkString("\n  ")}")
   }
+
+  test("WI-166: match expression without trailing `end` (indentation-delimited)") {
+    probeOk("match-no-end",
+      """sort Demo
+        |  operation single(x: Foo) -> Int =
+        |    match x
+        |      case Foo(a, _) -> a
+        |  operation next() -> Int = 0
+        |end""".stripMargin)
+  }
+
+  test("WI-166: cli/help.anthill (single-arm match-no-end) parses cleanly") {
+    val stdlibDir = sys.env.getOrElse("ANTHILL_STDLIB",
+      System.getProperty("user.dir") + "/../stdlib")
+    val src = scala.io.Source.fromFile(s"$stdlibDir/anthill/cli/help.anthill")
+    val text = try src.mkString finally src.close()
+    Parser.parse(text, "anthill/cli/help.anthill") match
+      case Right(_) => ()
+      case Left(es) => fail(s"cli/help.anthill: ${es.head.message}")
+    // cli/parse.anthill uses *nested* matches without `end`; that needs
+    // indentation-sensitive parsing (separate WI), out of WI-166 scope.
+  }

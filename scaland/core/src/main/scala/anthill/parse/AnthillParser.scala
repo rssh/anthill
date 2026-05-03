@@ -431,7 +431,10 @@ private class AnthillParserImpl(
     P(matchExpr | ifExpr | letExpr | lambdaExpr | term)
 
   private def matchExpr[$: P]: P[TermId] =
-    P(keyword("match") ~/ term ~ matchBranch.rep(1) ~ keyword("end")).map { case (scrutinee, branches) =>
+    // `end` is optional — `matchBranch.rep(1)` naturally terminates at the
+    // first non-`case` token, so the indentation-delimited form (used by
+    // stdlib cli/help.anthill, cli/parse.anthill) needs no terminator.
+    P(keyword("match") ~/ term ~ matchBranch.rep(1) ~ keyword("end").?).map { case (scrutinee, branches) =>
       terms.alloc(Term.Fn(intern("match_expr"), IArray(scrutinee) ++ IArray.from(branches), IArray.empty))
     }
 

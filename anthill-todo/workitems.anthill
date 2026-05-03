@@ -1170,3 +1170,17 @@ fact WorkItem(
   depends_on: [],
   status: Open)
 
+fact WorkItem(
+  id: "WI-166",
+  description: "scaland — make match expression `end` keyword optional. Today scaland's matchExpr requires an explicit `end` keyword to terminate the arm list (`match scrut case ... case ... end`). Stdlib cli/help.anthill and cli/parse.anthill use the indentation-delimited form without trailing `end`. Both files fail to parse mid-format_help / parse_argv operation because matchBranch.rep(1) stops at the next non-case token, then matchExpr requires `end` and fails when it sees `operation` instead. Fix: make `keyword(\"end\")` an optional suffix (`.?`) — matchBranch.rep(1) naturally terminates at the first non-case token. Mirror reference: rustland's tree-sitter grammar accepts both forms. Files: scaland/core/src/main/scala/anthill/parse/AnthillParser.scala (one-line change to matchExpr). Acceptance: sbt test green; cli/help.anthill and cli/parse.anthill parse cleanly; new ParseTest case for indentation-delimited match.",
+  acceptance: [ToolPasses("scaland-sbt-test")],
+  depends_on: [],
+  status: Delivered(agent: "user", at: "2026-05-03T08:18:51Z"))
+
+fact WorkItem(
+  id: "WI-167",
+  description: "scaland — indentation-aware nested match expressions. WI-166 made trailing `end` optional on match expressions, fixing simple match arms (e.g. cli/help.anthill). Stdlib cli/parse.anthill uses NESTED matches without `end`, where the inner match's `matchBranch.rep(1)` greedily eats the OUTER match's case arms. Without indentation tracking, the LL parser can't disambiguate: `case Foo -> match x case Bar -> y case Baz -> z` could mean (a) outer arm is `Foo -> match x ...` with inner arms `Bar`/`Baz` ending implicitly, or (b) outer arms are `Foo`/`Baz` with inner arm just `Bar`. Fix: introduce indentation-sensitive parsing for match arms — track the column at which the first `case` of a match appeared; subsequent `case` tokens at a deeper column belong to a nested inner match, at the same column to the current match, at a shallower column terminate this match. Mirror reference: rustland's tree-sitter grammar is bottom-up + scannerless and naturally handles this via context-free arm recognition. Files: scaland/core/src/main/scala/anthill/parse/AnthillParser.scala (matchExpr, matchBranch, plus column-tracking machinery in the AnthillParserImpl). Acceptance: sbt test green; stdlib cli/parse.anthill parses end-to-end without inserting `end` markers.",
+  acceptance: [ToolPasses("scaland-sbt-test")],
+  depends_on: [],
+  status: Open)
+
