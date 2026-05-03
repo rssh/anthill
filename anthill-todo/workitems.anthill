@@ -42,7 +42,7 @@ fact WorkItem(
   description: "umbrella: implement evaluation of expressions (tree-walking interpreter per proposals 026 + 026.1). Closes when all sub-items verify. Sub-items: WI-042 (M1 walking skeleton), WI-043 (M2 match/lambda/collections), WI-044 (M3 builtins), WI-045 (Q1 Substitution Value), WI-046 (Q2 TermView), WI-047 (Q3 execute LogicalQuery), WI-048 (M4 LogicalStream + splitFirst), WI-049 (Console stdlib), WI-050 (M5 effect handlers), WI-051 (M6 anthill run CLI). WI-052 (Q4 external streams) is an optional follow-up, not in umbrella.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-042", "WI-043", "WI-044", "WI-045", "WI-046", "WI-047", "WI-048", "WI-049", "WI-050", "WI-051"],
-  status: Open)
+  status: Verified(at: "2026-05-03T09:29:57Z"))
 fact WorkItem(
   id: "WI-009",
   description: "port todo-app to anthill",
@@ -315,28 +315,28 @@ fact WorkItem(
   description: "026.1 Q3: execute(LogicalQuery) + reflect.KB eval builtins. Core: kb.execute_logical_query(q: &Value) -> SearchStream and lower_query(&Value) -> Vec<TermId> over LogicalQuery constructors in reflect.anthill (pattern_query, conjunction, guarded, projected, limited, single-goal negation; disjunction/multi-goal negation/quantifiers deferred per WI-075/WI-076/WI-048). alloc_from_value recursively promotes Value → TermId via TermStore::alloc — the sole input-boundary hash-cons site. Wired as builtin backing anthill.reflect.KB.execute. Plus 23 additional reflect builtins registered via anthill-stl/src/reflect/builtins.rs::register_reflect_builtins: KB.{sort_template, sorts, operations, constructors, fields, rules, descriptions, reify, reflect, nonvar, ground}; namespace ops {qualified_name, short_name, lookup_symbol, scope, kind, sort_as_term, term_as_sort, can_be_sort, field_access, resolve_sort_instantiation_param, Substitution.apply, Substitution.compose}. New first-class Value::Substitution(SubstHandle) variant + SubstArena (eval/subst_arena.rs); LogicalStream.splitFirst now yields Value::Substitution. Supporting kernel additions: Interpreter::call short-circuits to builtins; KnowledgeBase::{kind_of, scope_of}; SymbolTable::iter_defs; register_if_present + expect_args exported from anthill-core::eval::builtins. Acceptance: 16/16 anthill-stl tests + 606/606 workspace tests pass. Delivered 2026-04-23. See docs/status/wi-047.md. Follow-ups: WI-075 (disjunction), WI-076 (multi-goal negation), WI-048 (quantifiers/aggregations); reflect.not(query) deferred to a new WI; KB.assert/add_guard (proposal 023), occurrence ops (proposal 022), instantiation_query (design) split out.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-046"],
-  status: Delivered(agent: "claude", at: "2026-04-23T00:00:00Z"))
+  status: Verified(at: "2026-05-03T09:29:32Z"))
 
 fact WorkItem(
   id: "WI-048",
   description: "eval M4: LogicalStream + splitFirst. Create eval/stream.rs with StreamArena, StreamSource::{Resolver, Empty, Pure, MPlus, Native}. StreamSource::Resolver wraps SearchStream; split_first(&mut Interpreter, handle) pumps SearchStream::split_first(&mut kb) and wraps yielded Solution as Value::Entity { functor: Option.some, .. } or Option.none. Register as builtin for anthill.prelude.LogicalStream.splitFirst. Stream laws (head, tail, collect) come for free via stdlib rules over splitFirst. Acceptance: integration test runs anthill program that queries 'ancestor(?x, bob)' and collects answers. Proposal 026 §KB queries and LogicalStream.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-044", "WI-047", "WI-060"],
-  status: Delivered(agent: "claude", at: "2026-04-19T22:54:55Z"))
+  status: Verified(at: "2026-05-03T09:29:32Z"))
 
 fact WorkItem(
   id: "WI-049",
   description: "stdlib Console sort. Add stdlib/anthill/prelude/console.anthill with 'sort Console { entity console; operation print(c: Console, s: String) -> Unit effects Modify[c]; operation println(c: Console, s: String) -> Unit effects Modify[c]; operation read_line(c: Console) -> String effects Modify[c] }'. Console is a typed resource — I/O is Modify[Console], not a new top-level effect kind. Consistent with KB-as-resource pattern in reflect.anthill. Wire into prelude exports. Acceptance: console.anthill parses, type-checks, is importable from test programs. Prerequisite for M5 effect handlers.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Delivered(agent: "claude", at: "2026-04-20T06:25:36Z"))
+  status: Verified(at: "2026-05-03T09:29:32Z"))
 
 fact WorkItem(
   id: "WI-050",
   description: "eval M5: effect handlers. Create eval/effects.rs with Interpreter::register_effect_handler(qname, Box<dyn FnMut(&mut Interpreter, Symbol, &[Value]) -> Result<Value, EvalError>>). Real handlers: Modify[Console] (print/println/read_line against Interpreter.stdout: Box<dyn Write> / stdin — buffer-injectable for tests), Modify[store] generic (backed by ModifyArena<StoreCell> with cycle detection → EvalError::CyclicReference). Suspension and Branch register as handlers returning UnhandledEffect. Error[T]::raise surfaces as EvalError::Raised(payload). Acceptance: integration test captures println output via injected buffer; Modify counter test mutates through operation calls. Proposal 026 §Effects.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-048", "WI-049"],
-  status: Delivered(agent: "claude", at: "2026-04-20T06:46:45Z"))
+  status: Verified(at: "2026-05-03T09:29:33Z"))
 
 fact WorkItem(
   id: "WI-051",
@@ -511,14 +511,14 @@ fact WorkItem(
   description: "Implement proposal 033 M1+M2+M3 — LogicalQuery disjunction via binary push_choice primitive. See docs/proposals/033-resolver-primitives-and-disjunction.md. M1: extend Candidate enum in kb/resolve.rs with Continuation(Vec<TermId>, Substitution) — body-only candidate (no head unification), reuses all FrameState::ChoicePoint alts/dedup/solution-accounting machinery. M2: create stdlib/anthill/kernel/kernel.anthill with 'operation push_choice(?a: Term, ?b: Term) -> Bool' (binary — both branches share the frame tail captured once at the choice point, like a WAM continuation pointer) and 'rule or(?a, ?b) :- push_choice(?a, ?b)'. Wire anthill.kernel into the prelude-load chain. Add BuiltinTag::PushChoice in kb/mod.rs:27, register as 'anthill.kernel.push_choice' in register_standard_builtins (mod.rs:1656). Handle PushChoice in step_init (not execute_builtin — same special-case pattern as Not/HoApply): walk both args through σ to get goal_a, goal_b; let tail = goals[1..]; produce ChoicePoint with [Continuation([goal_a, ...tail], σ), Continuation([goal_b, ...tail], σ)]. M3: replace kb/execute.rs:382 NotYetImplemented with rewrite to or(L_goal, R_goal); extract wrap_as_single_goal helper from the negation path. Tests: push_choice standalone, or(a,b) with both/one branch succeeding, shared variables, basic disjunction yielding both branches, disjunction inside conjunction (no DNF push-down — falls out of frame structure), nested disjunctions, shared variables across branches. Long-stream variant deferred to WI-077. Foundational scope: push_choice is the substrate for the future Branch effect (proposal 026 §Effects) and downstream cut/soft-cut/if-then-else/once/findall — see proposal 033 §Future work.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-047"],
-  status: Claimed(agent: "claude", since: "2026-05-03T06:56:15Z"))
+  status: Verified(at: "2026-05-03T09:29:31Z"))
 
 fact WorkItem(
   id: "WI-076",
   description: "Implement proposal 033 M4 — multi-goal negation in LogicalQuery. See docs/proposals/033-resolver-primitives-and-disjunction.md. Lift current single-goal limitation in kb/execute.rs:356 (NotYetImplemented for multi-goal negation) using the wrap_as_single_goal helper extracted in WI-075/M3: synthesize an intermediate conjunction-rule head and emit not(synth_head). Low impact — single-goal covers most cases — but completes negation(query) constructor for arbitrary subqueries. Tests: negation(conjunction(p, q)) semantics matches not(synth_head) where synth_head :- p, q.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-075"],
-  status: Claimed(agent: "claude", since: "2026-05-03T08:52:47Z"))
+  status: Verified(at: "2026-05-03T09:29:31Z"))
 
 fact Feedback(content: "Verification report: docs/status/wi-047.md. Core execute(LogicalQuery) API + acceptance test pass. Reopened with deps on WI-074 (reflect-ops parity test - sorts/operations/rules already exist in anthill-stl/src/reflect/bridge.rs, only equivalence check needed), WI-075 (disjunction), WI-076 (multi-goal negation). Quantifiers/aggregations stay deferred under WI-048.", at: "2026-04-22T19:36:36Z", workitem: "WI-047", author: "user")
 fact WorkItem(
