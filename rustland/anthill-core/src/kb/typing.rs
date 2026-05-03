@@ -41,11 +41,8 @@ pub enum TypeError {
     },
     /// Catchall for auxiliary typing-pass checks (effect declarations,
     /// match exhaustiveness, HO pattern fragment, rule var consistency).
-    /// Keeps WI-019 emission sites in the structured pipeline without
-    /// proliferating a variant per check; promote to dedicated variants
-    /// when a consumer actually discriminates on them.
+    /// Promote to a dedicated variant when a consumer discriminates on it.
     Other {
-        occ: Option<OccurrenceId>,
         span: Option<Span>,
         context: TypeErrorContext,
         expected: String,
@@ -53,16 +50,30 @@ pub enum TypeError {
     },
 }
 
-/// Where in the program a TypeError was raised. Carries Symbols (cheap to
-/// copy, resolve at format time).
+#[derive(Clone, Copy, Debug)]
+pub enum RuleField {
+    Head,
+    Body,
+    Whole,
+}
+
+impl RuleField {
+    fn name(self) -> &'static str {
+        match self {
+            RuleField::Head => "head",
+            RuleField::Body => "body",
+            RuleField::Whole => "rule",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum TypeErrorContext {
     EntityField { entity: Symbol, field: Symbol },
     OperationReturn { op_name: Symbol },
     OperationEffects { op_name: Symbol },
     OperationMatch { op_name: Symbol },
-    Rule { name: Symbol, field: &'static str },
-    Anonymous,
+    Rule { name: Symbol, field: RuleField },
 }
 
 impl TypeErrorContext {
@@ -73,7 +84,6 @@ impl TypeErrorContext {
             | TypeErrorContext::OperationEffects { op_name }
             | TypeErrorContext::OperationMatch { op_name } => kb.resolve_sym(*op_name).to_string(),
             TypeErrorContext::Rule { name, .. } => kb.resolve_sym(*name).to_string(),
-            TypeErrorContext::Anonymous => String::new(),
         }
     }
 
@@ -83,8 +93,7 @@ impl TypeErrorContext {
             TypeErrorContext::OperationReturn { .. } => "return".to_string(),
             TypeErrorContext::OperationEffects { .. } => "effects".to_string(),
             TypeErrorContext::OperationMatch { .. } => "match".to_string(),
-            TypeErrorContext::Rule { field, .. } => field.to_string(),
-            TypeErrorContext::Anonymous => String::new(),
+            TypeErrorContext::Rule { field, .. } => field.name().to_string(),
         }
     }
 }
@@ -120,9 +129,7 @@ impl TypeError {
             | TypeError::UnresolvedName { occ, .. } => {
                 occ.map(|id| kb.occurrences.span(id).span)
             }
-            TypeError::Other { occ, span, .. } => {
-                span.or_else(|| occ.map(|id| kb.occurrences.span(id).span))
-            }
+            TypeError::Other { span, .. } => *span,
             TypeError::NoParentSort { .. } => None,
         }
     }
@@ -139,13 +146,16 @@ impl TypeError {
                 actual_type: type_display_name(kb, *actual),
                 span: self.span(kb),
             },
-            TypeError::UnknownField { entity_name, field, .. } => LoadError::TypeMismatch {
-                entity_name: kb.resolve_sym(*entity_name).to_string(),
-                field_name: kb.resolve_sym(*field).to_string(),
-                expected_type: "known field".to_string(),
-                actual_type: format!("unknown field '{}'", kb.resolve_sym(*field)),
-                span: self.span(kb),
-            },
+            TypeError::UnknownField { entity_name, field, .. } => {
+                let field_name = kb.resolve_sym(*field).to_string();
+                LoadError::TypeMismatch {
+                    entity_name: kb.resolve_sym(*entity_name).to_string(),
+                    expected_type: "known field".to_string(),
+                    actual_type: format!("unknown field '{}'", field_name),
+                    field_name,
+                    span: self.span(kb),
+                }
+            }
             TypeError::NoParentSort { name } => LoadError::TypeMismatch {
                 entity_name: kb.resolve_sym(*name).to_string(),
                 field_name: "parent_sort".to_string(),
@@ -1931,11 +1941,7 @@ fn field_type(kb: &KnowledgeBase, field: TermId) -> Option<TermId> {
 
 use super::load::LoadError;
 
-/// Type-check sorts/enums by their SortInfo facts.
-/// Walks each sort's constructors (fact field types) and operations (body types) in one pass.
-/// Only checks the given sort terms — not the whole KB.
-///
-/// Public surface returns `Vec<LoadError>` for backward compatibility with
+/// Type-check the given sort terms and return errors as `LoadError` for
 /// the load pipeline. Use [`type_check_sorts_typed`] when structured
 /// `TypeError` values are needed (programmatic access, IDE diagnostics).
 pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<LoadError> {
@@ -2084,7 +2090,6 @@ fn check_value_against_sort_ref(
                     _ => "?",
                 };
                 Some(TypeError::Other {
-                    occ: None,
                     span,
                     context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
                     expected: type_display_name(kb, declared_type),
@@ -2098,7 +2103,6 @@ fn check_value_against_sort_ref(
             if let Some(parent) = kb.constructor_parent_sort(*val_functor) {
                 if !constructor_matches_declared(kb, parent, declared_sym) {
                     return Some(TypeError::Other {
-                        occ: None,
                         span,
                         context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
                         expected: type_display_name(kb, declared_type),
@@ -2113,7 +2117,6 @@ fn check_value_against_sort_ref(
                 if let Some(parent) = kb.constructor_parent_sort(*val_sym) {
                     if !constructor_matches_declared(kb, parent, declared_sym) {
                         return Some(TypeError::Other {
-                            occ: None,
                             span,
                             context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
                             expected: type_display_name(kb, declared_type),
@@ -2157,7 +2160,6 @@ fn check_value_against_parameterized(
     if let Some(parent) = kb.constructor_parent_sort(val_functor) {
         if !constructor_matches_declared(kb, parent, base_sym) {
             return Some(TypeError::Other {
-                occ: None,
                 span,
                 context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
                 expected: type_display_name(kb, declared_type),
@@ -2410,7 +2412,6 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                         .collect();
                     if !declared_names.iter().any(|d| d == &effect_name) {
                         errors.push(TypeError::Other {
-                            occ: None,
                             span: op.span,
                             context: TypeErrorContext::OperationEffects { op_name: op.op_sym },
                             expected: format!("declared: [{}]", declared_names.join(", ")),
@@ -2423,7 +2424,6 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             // Collect exhaustiveness diagnostics from the typing env
             for diag in &result.env.diagnostics {
                 errors.push(TypeError::Other {
-                    occ: None,
                     span: op.span,
                     context: TypeErrorContext::OperationMatch { op_name: op.op_sym },
                     expected: "exhaustive".to_string(),
@@ -2505,9 +2505,8 @@ fn check_pattern_fragment(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Ve
         // Rule 1: head must not contain ho_apply (no predicate variables in head)
         if term_contains_functor(kb, head, ho_apply_sym) {
             errors.push(TypeError::Other {
-                occ: None,
                 span,
-                context: TypeErrorContext::Rule { name: head_sym, field: "head" },
+                context: TypeErrorContext::Rule { name: head_sym, field: RuleField::Head },
                 expected: "no predicate variables in rule head".to_string(),
                 actual: "ho_apply in head position".to_string(),
             });
@@ -2549,9 +2548,8 @@ fn check_ho_apply_pattern(
                         if let Term::Fn { functor: inner_f, .. } = kb.get_term(pred) {
                             if *inner_f == ho_apply_sym {
                                 errors.push(TypeError::Other {
-                                    occ: None,
                                     span,
-                                    context: TypeErrorContext::Rule { name: rule_sym, field: "body" },
+                                    context: TypeErrorContext::Rule { name: rule_sym, field: RuleField::Body },
                                     expected: "variable as predicate in ho_apply".to_string(),
                                     actual: "nested ho_apply (predicate applied to predicate)".to_string(),
                                 });
@@ -2566,9 +2564,8 @@ fn check_ho_apply_pattern(
                     if let Term::Var(Var::DeBruijn(idx)) = kb.get_term(arg) {
                         if seen_vars.contains(idx) {
                             errors.push(TypeError::Other {
-                                occ: None,
                                 span,
-                                context: TypeErrorContext::Rule { name: rule_sym, field: "body" },
+                                context: TypeErrorContext::Rule { name: rule_sym, field: RuleField::Body },
                                 expected: "distinct variables in ho_apply args".to_string(),
                                 actual: format!("duplicate variable ?{} in predicate application", idx),
                             });
@@ -2579,9 +2576,8 @@ fn check_ho_apply_pattern(
                     // Rule 3b: args must not contain ho_apply (no predicate variable as argument)
                     if term_contains_functor(kb, arg, ho_apply_sym) {
                         errors.push(TypeError::Other {
-                            occ: None,
                             span,
-                            context: TypeErrorContext::Rule { name: rule_sym, field: "body" },
+                            context: TypeErrorContext::Rule { name: rule_sym, field: RuleField::Body },
                             expected: "first-order args in ho_apply".to_string(),
                             actual: "predicate variable as argument to predicate".to_string(),
                         });
@@ -2647,9 +2643,8 @@ fn check_rule_typing(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Vec<Typ
                 .first()
                 .map(|&occ_id| kb.occurrences.span(occ_id).span);
             errors.push(TypeError::Other {
-                occ: None,
                 span,
-                context: TypeErrorContext::Rule { name: head_sym, field: "rule" },
+                context: TypeErrorContext::Rule { name: head_sym, field: RuleField::Whole },
                 expected: "consistent variable types".to_string(),
                 actual: "contradictory variable types".to_string(),
             });

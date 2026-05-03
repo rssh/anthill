@@ -2885,85 +2885,57 @@ end
     assert!(errors.is_empty(), "var pattern should cover all cases, got: {:?}", errors);
 }
 
-// ══════════════════════════════════════════════════════════════════
-// WI-019: structured TypeError pipeline tests
-// ══════════════════════════════════════════════════════════════════
+use anthill_core::kb::typing::{type_check_sorts_typed, TypeError, TypeErrorContext};
 
-mod wi_019 {
-    use super::*;
-    use anthill_core::kb::typing::{type_check_sorts_typed, TypeError, TypeErrorContext};
-
-    #[test]
-    fn structured_field_mismatch_carries_entity_and_field_symbols() {
-        let source = r#"
+#[test]
+fn typed_field_mismatch_carries_entity_and_field_symbols() {
+    let source = r#"
 sort Item
   entity Thing(count: Int)
 end
 fact Thing(count: "oops")
 "#;
-        let (mut kb, result) = load_with_result(source);
-        let errors = type_check_sorts_typed(&mut kb, &result.defined_sorts);
-        assert_eq!(errors.len(), 1, "expected one type error, got: {errors:?}");
-        match &errors[0] {
-            TypeError::Other { context: TypeErrorContext::EntityField { entity, field }, expected, actual, .. } => {
-                assert_eq!(kb.resolve_sym(*entity), "Thing");
-                assert_eq!(kb.resolve_sym(*field), "count");
-                assert!(expected.contains("Int"), "expected Int, got: {expected}");
-                assert_eq!(actual, "String");
-            }
-            other => panic!("expected Other(EntityField), got: {other:?}"),
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts_typed(&mut kb, &result.defined_sorts);
+    assert_eq!(errors.len(), 1, "expected one type error, got: {errors:?}");
+    match &errors[0] {
+        TypeError::Other { context: TypeErrorContext::EntityField { entity, field }, expected, actual, .. } => {
+            assert_eq!(kb.resolve_sym(*entity), "Thing");
+            assert_eq!(kb.resolve_sym(*field), "count");
+            assert!(expected.contains("Int"), "expected Int, got: {expected}");
+            assert_eq!(actual, "String");
         }
+        other => panic!("expected Other(EntityField), got: {other:?}"),
     }
+}
 
-    #[test]
-    fn structured_return_type_mismatch_uses_typemismatch_variant() {
-        let source = r#"
+#[test]
+fn typed_return_type_mismatch_uses_typemismatch_variant() {
+    let source = r#"
 sort Test
   operation greet() -> Int =
     "hello"
 end
 "#;
-        let (mut kb, result) = load_with_result(source);
-        let errors = type_check_sorts_typed(&mut kb, &result.defined_sorts);
-        assert!(!errors.is_empty(), "expected return-type mismatch");
-        let return_err = errors.iter().find(|e| matches!(
-            e,
-            TypeError::TypeMismatch { context: TypeErrorContext::OperationReturn { .. }, .. }
-        )).unwrap_or_else(|| panic!("no OperationReturn TypeMismatch in {errors:?}"));
-        match return_err {
-            TypeError::TypeMismatch { context: TypeErrorContext::OperationReturn { op_name }, .. } => {
-                assert_eq!(kb.resolve_sym(*op_name), "greet");
-            }
-            _ => unreachable!(),
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts_typed(&mut kb, &result.defined_sorts);
+    let return_err = errors.iter().find(|e| matches!(
+        e,
+        TypeError::TypeMismatch { context: TypeErrorContext::OperationReturn { .. }, .. }
+    )).unwrap_or_else(|| panic!("no OperationReturn TypeMismatch in {errors:?}"));
+    match return_err {
+        TypeError::TypeMismatch { context: TypeErrorContext::OperationReturn { op_name }, .. } => {
+            assert_eq!(kb.resolve_sym(*op_name), "greet");
         }
+        _ => unreachable!(),
     }
+}
 
-    #[test]
-    fn span_resolves_to_source_position() {
-        let source = "sort Item\n  entity Thing(count: Int)\nend\nfact Thing(count: \"oops\")\n";
-        let (mut kb, result) = load_with_result(source);
-        let errors = type_check_sorts_typed(&mut kb, &result.defined_sorts);
-        let span = errors[0].span(&kb);
-        assert!(span.is_some(), "span should be populated for entity-field mismatch");
-    }
-
-    #[test]
-    fn legacy_type_check_sorts_still_returns_load_errors() {
-        let source = r#"
-sort Item
-  entity Thing(count: Int)
-end
-fact Thing(count: "oops")
-"#;
-        let (mut kb, result) = load_with_result(source);
-        let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-        assert_eq!(errors.len(), 1);
-        match &errors[0] {
-            load::LoadError::TypeMismatch { entity_name, field_name, .. } => {
-                assert_eq!(entity_name, "Thing");
-                assert_eq!(field_name, "count");
-            }
-            other => panic!("expected LoadError::TypeMismatch, got: {other:?}"),
-        }
-    }
+#[test]
+fn typed_span_resolves_to_source_position() {
+    let source = "sort Item\n  entity Thing(count: Int)\nend\nfact Thing(count: \"oops\")\n";
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts_typed(&mut kb, &result.defined_sorts);
+    let span = errors[0].span(&kb);
+    assert!(span.is_some(), "span should be populated for entity-field mismatch");
 }
