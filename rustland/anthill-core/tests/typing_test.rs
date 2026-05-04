@@ -287,11 +287,14 @@ fn extract_sort_ref_from_parameterized_type() {
     assert_eq!(results.len(), 1, "extract_sort_ref should succeed");
 
     let bound = kb.reify(var_result, &results[0].subst);
+    // extract_sort_ref emits the canonical nullary-Fn shape used by
+    // load.rs for sort references (so the result can flow into rule
+    // heads / fact field positions that expect Fn(name, [], [])).
     match kb.get_term(bound) {
-        Term::Ref(sym) => {
-            assert_eq!(kb.resolve_sym(*sym), "Eq", "should extract Eq from SortView(Eq(), ...)");
+        Term::Fn { functor, pos_args, named_args } if pos_args.is_empty() && named_args.is_empty() => {
+            assert_eq!(kb.resolve_sym(*functor), "Eq", "should extract Eq from SortView(Eq(), ...)");
         }
-        other => panic!("expected Ref(Eq), got {:?}", other),
+        other => panic!("expected Fn(Eq, [], []), got {:?}", other),
     }
 }
 
@@ -312,10 +315,10 @@ fn extract_sort_ref_from_simple_ref() {
 
     let bound = kb.reify(var_result, &results[0].subst);
     match kb.get_term(bound) {
-        Term::Ref(sym) => {
-            assert_eq!(kb.resolve_sym(*sym), "Eq");
+        Term::Fn { functor, pos_args, named_args } if pos_args.is_empty() && named_args.is_empty() => {
+            assert_eq!(kb.resolve_sym(*functor), "Eq");
         }
-        other => panic!("expected Ref(Eq), got {:?}", other),
+        other => panic!("expected Fn(Eq, [], []), got {:?}", other),
     }
 }
 

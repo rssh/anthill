@@ -39,7 +39,9 @@ pub enum BuiltinTag {
     LookupSymbol,
     /// `anthill.reflect.typing.is_entity_of(?sub, ?sup)` — succeeds if sub is entity of sup.
     IsEntityOf,
-    /// `anthill.reflect.typing.extract_sort_ref(?inst, ?result)` — extract functor as Ref from instantiation term.
+    /// `anthill.reflect.typing.extract_sort_ref(?inst, ?result)` — extract
+    /// functor as a nullary Fn (canonical sort-name shape) from
+    /// instantiation term.
     ExtractSort,
     /// `anthill.reflect.not(goal)` — negation-as-failure.
     Not,
@@ -245,6 +247,18 @@ enum StepResult {
     YieldSolution(Solution),
 }
 
+/// Resolution telemetry. Counters are bumped during stepping; used to
+/// gauge the asymptotic cost of a query.
+#[derive(Clone, Debug, Default)]
+pub struct ResolveStats {
+    /// Number of `step()` invocations.
+    pub steps: u64,
+    /// Number of lazy-walks of `goals[0]` performed at goal-selection
+    /// time in `step_init`. Should scale linearly with body size — i.e.
+    /// roughly one walk per goal consumed (WI-030).
+    pub lazy_walk_calls: u64,
+}
+
 /// Lazy search stream that yields one solution at a time via
 /// `split_first`. Converts recursive DFS into an explicit choice-point
 /// stack.
@@ -254,6 +268,8 @@ pub struct SearchStream {
     /// Per-query cache: goal TermId → discrim tree query results.
     /// Safe because facts/rules don't change during a single resolve call.
     query_cache: HashMap<TermId, Vec<(RuleId, Substitution)>>,
+    /// Telemetry (see `ResolveStats`).
+    stats: ResolveStats,
 }
 
 impl SearchStream {
@@ -277,10 +293,16 @@ impl SearchStream {
         self.stack.is_empty()
     }
 
+    /// Read-only access to telemetry (see `ResolveStats`).
+    pub fn stats(&self) -> &ResolveStats {
+        &self.stats
+    }
+
     /// Execute one step of the search. Returns `None` when the stack is
     /// empty (no more work).
     fn step(&mut self, kb: &mut KnowledgeBase) -> Option<StepResult> {
         let frame = self.stack.last_mut()?;
+        self.stats.steps += 1;
         match frame.state {
             FrameState::Init { .. } => self.step_init(kb),
             FrameState::ChoicePoint { .. } => self.step_choice_point(kb),
@@ -333,7 +355,24 @@ impl SearchStream {
             return Some(StepResult::YieldSolution(sol));
         }
 
-        let goal = frame.goals[0];
+        // [WI-030] Lazy substitution. σ already carries every binding
+        // accumulated up to this point (merged via `bind_compressed` in
+        // `step_choice_point`). Walking goals[0] here — instead of eagerly
+        // applying σ to every remaining goal after each match — turns the
+        // inherent SLD work from O(n²) into O(n × goal_size). Memoize the
+        // walked form back into goals[0] so choice-point retries don't
+        // re-walk. Skip the structural walk when σ is empty (no bindings
+        // could change anything anyway).
+        self.stats.lazy_walk_calls += 1;
+        let goal = if frame.subst.is_empty() {
+            frame.goals[0]
+        } else {
+            let f = self.stack.last_mut().unwrap();
+            let walked = kb.apply_subst(f.goals[0], &f.subst);
+            f.goals[0] = walked;
+            walked
+        };
+        let frame = self.stack.last().unwrap();
 
         // 3.4 __pop_assumption(N) — scoping marker emitted by
         // step_forall_impl. Pops N entries off the frame's
@@ -1034,7 +1073,12 @@ impl SearchStream {
         if body.is_empty() {
             // Ground fact (occurrence or rule with empty body, or
             // ExternalRow from a routed-store backend).
-            let remaining = kb.apply_subst_each(&frame.goals[1..], &tree_subst);
+            //
+            // [WI-030] No eager apply_subst_each here — bindings from this
+            // match enter `frame.subst` via `bind_compressed` below, and
+            // remaining goals are lazily walked at selection time in
+            // `step_init`.
+            let remaining = frame.goals[1..].to_vec();
             let mut merged = frame.subst.clone();
             // bind_compressed wants (VarId, TermId) pairs; filter to the
             // Value::Term subset — path compression is TermId-only.
@@ -1062,7 +1106,12 @@ impl SearchStream {
             // Rule with body
             let rid = opt_rid.unwrap();
             let (fresh_body, answer_links) = kb.with_fresh_vars(rid, &tree_subst);
-            let remaining = kb.apply_subst_each(&frame.goals[1..], &tree_subst);
+            // [WI-030] No eager apply_subst_each here. The body itself is
+            // already concretised through `body_rename` inside
+            // `with_fresh_vars`, and caller-side bindings flow into
+            // `frame.subst` via the `bind_compressed` call below; remaining
+            // goals are walked lazily in `step_init`.
+            let remaining = frame.goals[1..].to_vec();
 
             let caller_fresh_vars: Vec<VarId> = answer_links
                 .iter_terms()
@@ -1167,6 +1216,7 @@ impl KnowledgeBase {
                 simplify: config.simplify,
             },
             query_cache: HashMap::new(),
+            stats: ResolveStats::default(),
         }
     }
 
@@ -1176,16 +1226,35 @@ impl KnowledgeBase {
     /// goals simultaneously. Each solution contains variable bindings from
     /// the original query variables to ground terms.
     pub fn resolve(&mut self, goals: &[TermId], config: &ResolveConfig) -> Vec<Solution> {
+        self.resolve_with_stats(goals, config).0
+    }
+
+    /// Like `resolve`, but also returns telemetry from the underlying
+    /// search stream (see `ResolveStats`). Used by performance-oriented
+    /// tests; production callers can stick with `resolve`.
+    pub fn resolve_with_stats(
+        &mut self,
+        goals: &[TermId],
+        config: &ResolveConfig,
+    ) -> (Vec<Solution>, ResolveStats) {
         let mut stream = self.resolve_lazy(goals, config);
         let mut solutions = Vec::new();
-        while let Some((sol, rest)) = stream.split_first(self) {
-            solutions.push(sol);
-            if config.max_solutions > 0 && solutions.len() >= config.max_solutions {
-                break;
+        let mut stats = ResolveStats::default();
+        loop {
+            match stream.split_first(self) {
+                Some((sol, rest)) => {
+                    solutions.push(sol);
+                    stats = rest.stats().clone();
+                    if config.max_solutions > 0
+                        && solutions.len() >= config.max_solutions
+                    {
+                        return (solutions, stats);
+                    }
+                    stream = rest;
+                }
+                None => return (solutions, stats),
             }
-            stream = rest;
         }
-        solutions
     }
 
 
@@ -1548,7 +1617,11 @@ impl KnowledgeBase {
 
         match sort_sym {
             Some(sym) => {
-                let ref_term = self.alloc(Term::Ref(sym));
+                // Canonical nullary-Fn shape — matches the form used by
+                // load.rs for sort references (e.g. SortRequiresInfo facts
+                // hold `sort_ref: Fn(B, [], [])`). Anything else lands in a
+                // discrim-tree slot the rest of the codebase doesn't index.
+                let ref_term = self.make_name_term_from_sym(sym);
                 let walked_result = self.walk(result_arg, subst);
                 match self.terms.get(walked_result) {
                     Term::Var(Var::Global(vid)) => {
@@ -4437,6 +4510,152 @@ mod tests {
                     elapsed.as_millis() < 5000,
                     "1000-head-arg rule took {}ms",
                     elapsed.as_millis()
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    /// Build the same n-head/n-body fixture as `debruijn_large_head_and_body`
+    /// but parametric in `n`. Returns `(kb, query)`.
+    fn build_n_body_fixture(n: usize) -> (KnowledgeBase, TermId) {
+        let mut kb = KnowledgeBase::new();
+        let sort = kb.make_name_term("Sort");
+        let domain = kb.make_name_term("test");
+        let big_sym = kb.intern("big");
+
+        let f_syms: Vec<Symbol> = (0..n)
+            .map(|i| kb.intern(&format!("f_{i}")))
+            .collect();
+        let vals: Vec<TermId> = (0..n)
+            .map(|i| kb.alloc(Term::Const(Literal::String(format!("v{i}")))))
+            .collect();
+        let var_terms: Vec<TermId> = (0..n)
+            .map(|i| {
+                let sym = kb.intern(&format!("x{i}"));
+                let vid = kb.fresh_var(sym);
+                kb.alloc(Term::Var(Var::Global(vid)))
+            })
+            .collect();
+
+        let head = kb.alloc(Term::Fn {
+            functor: big_sym,
+            pos_args: SmallVec::from_vec(var_terms.clone()),
+            named_args: SmallVec::new(),
+        });
+        let body: Vec<TermId> = (0..n)
+            .map(|i| {
+                kb.alloc(Term::Fn {
+                    functor: f_syms[i],
+                    pos_args: SmallVec::from_elem(var_terms[i], 1),
+                    named_args: SmallVec::new(),
+                })
+            })
+            .collect();
+        kb.assert_rule_debruijn(head, body, sort, domain, None);
+
+        for i in 0..n {
+            let fact = kb.alloc(Term::Fn {
+                functor: f_syms[i],
+                pos_args: SmallVec::from_elem(vals[i], 1),
+                named_args: SmallVec::new(),
+            });
+            kb.assert_fact(fact, sort, domain, None);
+        }
+
+        let query = kb.alloc(Term::Fn {
+            functor: big_sym,
+            pos_args: SmallVec::from_vec(vals.clone()),
+            named_args: SmallVec::new(),
+        });
+        (kb, query)
+    }
+
+    /// Smoke test: confirms `ResolveStats` is wired and reports non-zero
+    /// counters for the n-body workload. Always runs; intended as a
+    /// telemetry sanity check, not a regression bound.
+    #[test]
+    fn resolve_stats_populated_on_n_body_query() {
+        let (mut kb, query) = build_n_body_fixture(50);
+        let config = ResolveConfig {
+            max_depth: usize::MAX,
+            max_solutions: 1,
+            simplify: false,
+        };
+        let (sols, stats) = kb.resolve_with_stats(&[query], &config);
+        assert_eq!(sols.len(), 1);
+        eprintln!(
+            "  n=50: steps={} lazy_walk_calls={}",
+            stats.steps, stats.lazy_walk_calls,
+        );
+        assert!(stats.steps > 0, "step counter must increment");
+        assert!(
+            stats.lazy_walk_calls > 0,
+            "lazy_walk counter must increment whenever step_init selects a goal",
+        );
+    }
+
+    /// **WI-030 acceptance test.** Drives the n-body fixture at two sizes
+    /// and asserts that `lazy_walk_calls` grows roughly *linearly* with
+    /// `n` — once the eager `apply_subst_each` walks were dropped, the
+    /// remaining work is one walk per goal selection. Pre-WI-030 the
+    /// equivalent metric (`apply_subst_each_goals`) scaled ~n²/2.
+    #[test]
+    fn wi030_apply_subst_should_be_linear() {
+        // Discrim-tree query recurses once per positional arg, so n=400
+        // overflows the default test stack — same workaround the
+        // `debruijn_large_head_and_body` benchmark uses.
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let small = 100usize;
+                let large = 400usize;
+                let config = ResolveConfig {
+                    max_depth: usize::MAX,
+                    max_solutions: 1,
+                    simplify: false,
+                };
+
+                let run = |n: usize| -> ResolveStats {
+                    let (mut kb, query) = build_n_body_fixture(n);
+                    let (_sols, stats) = kb.resolve_with_stats(&[query], &config);
+                    stats
+                };
+
+                let s_small = run(small);
+                let s_large = run(large);
+
+                eprintln!(
+                    "  n={small}: lazy_walk_calls={}",
+                    s_small.lazy_walk_calls,
+                );
+                eprintln!(
+                    "  n={large}: lazy_walk_calls={}",
+                    s_large.lazy_walk_calls,
+                );
+
+                // Linear bound: lazy_walk_calls must stay below 8·n. With
+                // eager apply_subst_each in place, the equivalent metric
+                // scaled ~n²/2 ≈ 5_000 (n=100) and ~80_000 (n=400) — far
+                // beyond this bound.
+                assert!(
+                    s_large.lazy_walk_calls < 8 * large as u64,
+                    "lazy_walk_calls={} for n={} should be O(n), not O(n²)",
+                    s_large.lazy_walk_calls,
+                    large,
+                );
+
+                // Ratio sanity check: large/small ought to be ≤ ~6× for
+                // linear growth (allow constant slack), not ≥ ~16× as
+                // quadratic gives.
+                let ratio = s_large.lazy_walk_calls as f64
+                    / s_small.lazy_walk_calls.max(1) as f64;
+                assert!(
+                    ratio < 6.0,
+                    "growth ratio {ratio:.1}× between n={small} and \
+                     n={large} indicates super-linear scaling \
+                     (quadratic ≈ 16×)",
                 );
             })
             .unwrap()

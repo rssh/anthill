@@ -120,6 +120,12 @@ impl Substitution {
         self.contradiction
     }
 
+    /// Whether the substitution holds no bindings, walking the parent chain.
+    pub fn is_empty(&self) -> bool {
+        self.bindings.is_empty()
+            && self.parent.as_ref().is_none_or(|p| p.is_empty())
+    }
+
     /// Add bindings with path compression in one operation. Operates over
     /// the `Value::Term` subset — non-`Term` entries are never
     /// path-compression sources or targets. Mixed bindings are left
