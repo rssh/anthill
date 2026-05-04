@@ -1236,3 +1236,10 @@ fact WorkItem(
   acceptance: [ToolPasses("scaland-sbt-test")],
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-05-03T20:30:44Z"))
+
+fact WorkItem(
+  id: "WI-173",
+  description: "Surface pretty-printing for type expressions in `persistence/print.rs`. Today TermPrinter falls through to the generic `name(arg: val, ...)` Fn form for type terms — `arrow(param: …, result: …, effects: cons(...))` instead of `(A) -> B @ {E1, E2}`. Round-trip from KB → text → parse is therefore lossy/ugly for any operation signature, fact field referencing a type, or codegen output. Add per-shape handlers in `write_term`: (1) `arrow(param, result, effects)` → `(<param>) -> <result>` plus `@ <e>` for single effect or `@ {<e1>, <e2>, …}` for set; emit nothing when effects is `nil`. (2) `named_tuple(fields: List[TypeField])` → `(<f1>, <f2>, …)` where TypeField positional `_N` names print as bare types and named fields print as `n: T`. Arrow case detects when `param` is already a named_tuple and uses its parenthesised form directly to avoid double-wrap. (3) `sort_ref(name: Ref(S))` → bare `S`. (4) `parameterized(base, bindings: List[TypeBinding])` → `<base>[<k1> = <v1>, <k2> = <v2>]`. (5) `TypeBinding(name: Ref(K), type: T)` → `K = T`. Recursion goes through `write_term` so each handler's children re-enter and pick up the same surface form. Shared helper `walk_cons_list(tid) -> Vec<TermId>` for the list traversals. Tests in `persistence_test.rs` round-trip the canonical cases plus the multi-effect set (mirroring `load_arrow_type_with_effect_set_preserves_list` already in parse_test.rs). Driver: `(A) -> B @ {Modifies[host], Reads[host]}` should print as itself, not as the cons-list functor blob. Out of scope: `arrow_effect`-positional-form (used only by `build_instantiation_term` for sort instantiation contexts), tuple_type (no Fn shape used for it today).",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
