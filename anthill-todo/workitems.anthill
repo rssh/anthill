@@ -9,7 +9,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-002",
-  description: "implement rust embedding",
+  description: "implement rust embedding. Design: see docs/proposals/029-rust-mapping-split.md (split by direction-of-truth into bootstrap + anthill-rust-gen + rust-anthill-gen workspace). Mapping spec: docs/rust-forward-mapping.md.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
   status: Open)
