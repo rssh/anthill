@@ -45,15 +45,18 @@ private enum StepResult:
 
 // ── Resolve telemetry ───────────────────────────────────────────
 
-/** Resolution telemetry. Counters are bumped during stepping; used to
-  * gauge the asymptotic cost of a query. Mirrors rust's `ResolveStats`. */
-class ResolveStats:
-  /** Number of `step()` invocations. */
-  var steps: Long = 0L
-  /** Number of lazy-walks of `goals[0]` performed at goal-selection
-    * time in `stepInit`. Should scale linearly with body size — i.e.
-    * roughly one walk per goal consumed (WI-172 / rust WI-030). */
-  var lazyWalkCalls: Long = 0L
+/** Immutable resolution telemetry snapshot.
+  *
+  * `goalSelections` counts every visit to the lazy-walk-aware goal
+  * selection in `stepInit` (incremented before the σ-empty fast path).
+  * Pre-WI-172 the equivalent work was done eagerly in stepChoicePoint
+  * via O(remaining-goals) `applySubst` calls per match — the equivalent
+  * metric scaled ~n²/2 on an n-body workload. Post-WI-172 the metric
+  * scales linearly: roughly one selection per goal consumed.
+  *
+  * `actualWalks` is the strict subset where σ was non-empty and
+  * `goals(0)` was actually walked + memoized. */
+case class ResolveStats(steps: Long, goalSelections: Long, actualWalks: Long)
 
 // ── SearchStream ────────────────────────────────────────────────
 
@@ -65,10 +68,13 @@ class SearchStream private (
   private val config: ResolveConfig
 ):
 
-  private val stats_ : ResolveStats = ResolveStats()
+  private var stepsCount_ : Long = 0L
+  private var goalSelections_ : Long = 0L
+  private var actualWalks_ : Long = 0L
 
-  /** Read-only access to telemetry (see [[ResolveStats]]). */
-  def stats: ResolveStats = stats_
+  /** Telemetry snapshot (see [[ResolveStats]]). Returns an immutable
+    * value; callers cannot mutate the underlying counters. */
+  def stats: ResolveStats = ResolveStats(stepsCount_, goalSelections_, actualWalks_)
 
   /** Yield the next solution, returning continuation. */
   def splitFirst(kb: KnowledgeBase): Option[(Solution, SearchStream)] =
@@ -106,7 +112,7 @@ class SearchStream private (
   private def step(kb: KnowledgeBase): Option[StepResult] =
     if stack.isEmpty then return None
     val frame = stack.last
-    stats_.steps += 1
+    stepsCount_ += 1
     frame.state match
       case _: FrameState.Init => stepInit(kb)
       case _: FrameState.ChoicePoint => stepChoicePoint(kb)
@@ -145,11 +151,13 @@ class SearchStream private (
     // applying σ to every remaining goal after each match — turns the
     // inherent SLD work from O(n²) into O(n × goal_size). Memoize the
     // walked form back into goals(0) so choice-point retries don't
-    // re-walk. Skip the structural walk when σ is empty.
-    stats_.lazyWalkCalls += 1
+    // re-walk. Skip the structural walk when σ is empty (no bindings
+    // could change anything anyway).
+    goalSelections_ += 1
     val goal =
       if frame.subst.isEmpty then frame.goals(0)
       else
+        actualWalks_ += 1
         val walked = kb.applySubst(frame.goals(0), frame.subst)
         frame.goals(0) = walked
         walked

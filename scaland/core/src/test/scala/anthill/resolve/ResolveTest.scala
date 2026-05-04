@@ -309,11 +309,11 @@ class ResolveTest extends munit.FunSuite:
     val sols = stream.allSolutions(kb)
     assertEquals(sols.length, 1)
     assert(stream.stats.steps > 0, "step counter must increment")
-    assert(stream.stats.lazyWalkCalls > 0,
-      "lazyWalkCalls must increment whenever stepInit selects a goal")
+    assert(stream.stats.goalSelections > 0,
+      "goalSelections must increment on every stepInit goal selection")
   }
 
-  test("WI-172: lazyWalkCalls scales linearly with body size (acceptance)") {
+  test("WI-172: goalSelections scales linearly with body size (acceptance)") {
     val small = 100
     val large = 400
     val cfg = ResolveConfig(maxSolutions = 1)
@@ -327,15 +327,15 @@ class ResolveTest extends munit.FunSuite:
     val sSmall = run(small)
     val sLarge = run(large)
 
-    // Linear bound: lazyWalkCalls must stay below 8·n. Pre-WI-172 the
-    // equivalent metric (eager applySubst-each over remaining goals)
+    // Linear bound: goalSelections must stay below 8·n. Pre-WI-172 the
+    // equivalent work (eager applySubst-each over remaining goals)
     // scaled ~n²/2 ≈ 5_000 (n=100) and ~80_000 (n=400) — far above this.
-    assert(sLarge.lazyWalkCalls < 8L * large,
-      s"lazyWalkCalls=${sLarge.lazyWalkCalls} for n=$large should be O(n), not O(n²)")
+    assert(sLarge.goalSelections < 8L * large,
+      s"goalSelections=${sLarge.goalSelections} for n=$large should be O(n), not O(n²)")
 
     // Ratio sanity: large/small ≤ ~6× for linear growth (constant slack).
     // Quadratic gives ~16×.
-    val ratio = sLarge.lazyWalkCalls.toDouble / math.max(1L, sSmall.lazyWalkCalls).toDouble
+    val ratio = sLarge.goalSelections.toDouble / math.max(1L, sSmall.goalSelections).toDouble
     assert(ratio < 6.0,
       f"growth ratio $ratio%.1f× between n=$small and n=$large indicates super-linear scaling (quadratic ≈ 16×)")
   }
