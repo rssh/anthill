@@ -1229,3 +1229,10 @@ fact WorkItem(
   acceptance: [ToolPasses("scaland-sbt-test")],
   depends_on: [],
   status: Open)
+
+fact WorkItem(
+  id: "WI-171",
+  description: "scaland — tighten bootstrap codegen + stand up anthill-scala-gen skeleton subproject (proposal 034 §anthill-scala-gen). Bootstrap path: (1) Laws.scala emission dropped from bootstrap entirely — rule term bodies are semantic, out of proposal 034 §Bootstrap's syntactic-only scope; the KB-driven anthill-scala-gen owns Laws emission. LawsGen.scala deleted. (2) build.sbt moved out of generate(pf) into a separate Bootstrap.buildSbt: GeneratedFile API; callers fold per-file generate() outputs into one tree and call buildSbt once — no per-file overwrite footgun. Tests: dropped vacuous Prop.passed placeholder + ill-shaped per-file build.sbt assertion; added (a) multi-file `???`-leak scan, (b) assertion that bootstrap does NOT emit Laws.scala, (c) multi-file regression asserting exactly one build.sbt in the merged tree. Skeleton: new sbt subproject scaland/anthill-scala-gen/ depending on scaland-core, with object Generator { def generate(kb: KnowledgeBase): IndexedSeq[GeneratedFile] = IndexedSeq.empty } and one smoke test. GeneratedFile is reused from anthill.codegen.scala (no duplicate type). Body of Generator deferred to a follow-up WI gated on a real consumer per proposal 034 §5. Acceptance: sbt test green (120 tests).",
+  acceptance: [ToolPasses("scaland-sbt-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-05-03T20:30:44Z"))

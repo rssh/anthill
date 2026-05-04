@@ -40,9 +40,16 @@ object Bootstrap:
       case Item.NamespaceItem(ns) => emitNamespace(pf.symbols, ns, packagePath = "", files)
       case Item.SortWithBodyItem(s) => emitSort(pf.symbols, s, packagePath = "", files)
       case Item.EntityItem(e) => emitStandaloneEntity(pf.symbols, e, packagePath = "", files)
-      case _ => // top-level facts/rules/etc. don't yield Scala files in v1
+      case _ =>
     }
     files.toIndexedSeq
+
+  /** Project-level `build.sbt` for an output tree. Bootstrap is per-file, so
+    * callers fold many `generate()` results into one tree and call this once
+    * to write the project-global file — avoids the per-file last-write-wins
+    * footgun. */
+  def buildSbt: GeneratedFile =
+    GeneratedFile("build.sbt", "scalaVersion := \"3.6.3\"\n")
 
   // ── Namespace ───────────────────────────────────────────────────
 
@@ -102,24 +109,18 @@ object Bootstrap:
       case _ => Seq.empty
     }
     val ctors = sort.items.collect { case Item.EntityItem(e) => e }
-    val rules = sort.items.flatMap {
-      case Item.RuleItem(r) => Seq(r)
-      case Item.RuleBlockItem(b) => b.entries
-      case _ => Seq.empty
-    }
-    val constraints = sort.items.collect { case Item.ConstraintItem(c) => c }
 
+    // Rules + constraints are NOT emitted from bootstrap. Their bodies
+    // are semantic (rule term → ScalaCheck Boolean expression); the
+    // parse-IR-only path can't render them, and emitting a placeholder
+    // (Prop.passed / ???) is either vacuously green or a spec violation
+    // (see docs/scala-forward-mapping.md §1, §2.9). Laws emission is
+    // owned by the KB-driven anthill-scala-gen.
     val mainSrc = renderMainSort(sortName, tpStr, typeParams, requires, ops, ctors,
       sort.kind, effectivePkg, sym)
     out += GeneratedFile(
       relPath = s"src/main/scala/${pathToDir(effectivePkg)}$sortName.scala",
       contents = mainSrc)
-
-    if rules.nonEmpty || constraints.nonEmpty then
-      val testSrc = LawsGen.render(sortName, typeParams, rules, constraints, effectivePkg, sym)
-      out += GeneratedFile(
-        relPath = s"src/test/scala/${pathToDir(effectivePkg)}${sortName}Laws.scala",
-        contents = testSrc)
 
   // ── Standalone entity → case class ──────────────────────────────
 

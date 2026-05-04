@@ -94,3 +94,49 @@ class BootstrapTest extends munit.FunSuite:
     assert(src.contains("case class Vec3(x: Double, y: Double, z: Double)"),
       s"expected `case class Vec3(...)` with Float→Double mapping in:\n$src")
   }
+
+  test("scala-forward-mapping §1: ??? must never appear in generated output") {
+    // Multi-file scan across stdlib files known to contain rules — locks
+    // in that no Bootstrap path emits `???`. Per spec §1, `???` is a
+    // codegen bug.
+    val files = Seq(
+      "anthill/prelude/option.anthill",
+      "anthill/prelude/eq.anthill",
+      "anthill/geometry.anthill",
+    ).flatMap(rel => Bootstrap.generate(parseStdlib(rel)))
+    files.foreach { f =>
+      assert(!f.contents.contains("???"),
+        s"`???` leaked into ${f.relPath}:\n${f.contents}")
+    }
+  }
+
+  test("Bootstrap.generate does not emit Laws.scala (KB-driven gen owns laws)") {
+    // eq.anthill has a rule inside the Eq sort. Bootstrap must NOT emit
+    // EqLaws.scala — rule term bodies are semantic and out of scope per
+    // proposal 034 §Bootstrap. Vacuous Prop.passed placeholders mask
+    // broken implementations, so bootstrap drops Laws emission entirely.
+    val pf = parseStdlib("anthill/prelude/eq.anthill")
+    val files = Bootstrap.generate(pf)
+    val laws = files.filter(_.relPath.endsWith("Laws.scala"))
+    assert(laws.isEmpty, s"bootstrap should not emit Laws files; got: ${laws.map(_.relPath)}")
+  }
+
+  test("Bootstrap.buildSbt is project-global (single source of truth)") {
+    // build.sbt is project-level, not per-file. The previous per-file
+    // emission was a footgun: a no-laws file emitted after a laws-file
+    // would silently overwrite the build.sbt with a missing scalacheck
+    // dep. The fix: build.sbt is exposed as a separate API the caller
+    // invokes once after merging all per-file outputs.
+    val a = Bootstrap.generate(parseStdlib("anthill/prelude/option.anthill"))
+    val b = Bootstrap.generate(parseStdlib("anthill/prelude/eq.anthill"))
+    val merged = a ++ b :+ Bootstrap.buildSbt
+    val buildSbts = merged.filter(_.relPath == "build.sbt")
+    assertEquals(buildSbts.size, 1, s"expected exactly one build.sbt in merged tree; got ${buildSbts.size}")
+    assert(buildSbts.head.contents.contains("scalaVersion"),
+      s"build.sbt missing scalaVersion:\n${buildSbts.head.contents}")
+    // generate() itself never emits build.sbt
+    assert(!a.exists(_.relPath == "build.sbt"),
+      "generate() should not emit build.sbt; that's a separate API")
+    assert(!b.exists(_.relPath == "build.sbt"),
+      "generate() should not emit build.sbt; that's a separate API")
+  }
