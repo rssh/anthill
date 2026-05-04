@@ -271,3 +271,71 @@ class ResolveTest extends munit.FunSuite:
     assert(validDepths.contains(1), "should have succ(zero()) solution")
     assert(validDepths.contains(2), "should have succ(succ(zero())) solution")
   }
+
+  // ── WI-172: lazy-substitution acceptance ────────────────────
+
+  /** n-body fixture: `big(?x_0, ?x_1, …, ?x_{n-1}) :- f_0(?x_0), …, f_{n-1}(?x_{n-1})`
+    * with one ground fact per body goal. Mirrors rust's `build_n_body_fixture`. */
+  private def buildNBodyFixture(n: Int): (KnowledgeBase, TermId) =
+    val kb = KnowledgeBase()
+    val sort = kb.makeNameTerm("Sort")
+    val domain = kb.makeNameTerm("test")
+    val bigSym = kb.intern("big")
+
+    val fSyms = (0 until n).map(i => kb.intern(s"f_$i"))
+    val vals = (0 until n).map(i => kb.alloc(Term.Const(Literal.StringLit(s"v$i"))))
+    val varTerms = (0 until n).map { i =>
+      val sym = kb.intern(s"x$i")
+      val vid = kb.freshVar(sym)
+      kb.alloc(Term.Var(vid))
+    }
+
+    val head = kb.alloc(Term.Fn(bigSym, IArray.from(varTerms), IArray.empty))
+    val body = (0 until n).map { i =>
+      kb.alloc(Term.Fn(fSyms(i), IArray(varTerms(i)), IArray.empty))
+    }
+    kb.assertRule(head, body.toIndexedSeq, sort, domain)
+
+    for i <- 0 until n do
+      val fact = kb.alloc(Term.Fn(fSyms(i), IArray(vals(i)), IArray.empty))
+      kb.assertFact(fact, sort, domain)
+
+    val query = kb.alloc(Term.Fn(bigSym, IArray.from(vals), IArray.empty))
+    (kb, query)
+
+  test("WI-172: ResolveStats populated on n-body query (smoke)") {
+    val (kb, query) = buildNBodyFixture(50)
+    val stream = SearchStream.resolve(kb, query, ResolveConfig(maxSolutions = 1))
+    val sols = stream.allSolutions(kb)
+    assertEquals(sols.length, 1)
+    assert(stream.stats.steps > 0, "step counter must increment")
+    assert(stream.stats.lazyWalkCalls > 0,
+      "lazyWalkCalls must increment whenever stepInit selects a goal")
+  }
+
+  test("WI-172: lazyWalkCalls scales linearly with body size (acceptance)") {
+    val small = 100
+    val large = 400
+    val cfg = ResolveConfig(maxSolutions = 1)
+
+    def run(n: Int): ResolveStats =
+      val (kb, query) = buildNBodyFixture(n)
+      val stream = SearchStream.resolve(kb, query, cfg)
+      val _ = stream.allSolutions(kb)
+      stream.stats
+
+    val sSmall = run(small)
+    val sLarge = run(large)
+
+    // Linear bound: lazyWalkCalls must stay below 8·n. Pre-WI-172 the
+    // equivalent metric (eager applySubst-each over remaining goals)
+    // scaled ~n²/2 ≈ 5_000 (n=100) and ~80_000 (n=400) — far above this.
+    assert(sLarge.lazyWalkCalls < 8L * large,
+      s"lazyWalkCalls=${sLarge.lazyWalkCalls} for n=$large should be O(n), not O(n²)")
+
+    // Ratio sanity: large/small ≤ ~6× for linear growth (constant slack).
+    // Quadratic gives ~16×.
+    val ratio = sLarge.lazyWalkCalls.toDouble / math.max(1L, sSmall.lazyWalkCalls).toDouble
+    assert(ratio < 6.0,
+      f"growth ratio $ratio%.1f× between n=$small and n=$large indicates super-linear scaling (quadratic ≈ 16×)")
+  }

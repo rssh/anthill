@@ -43,6 +43,18 @@ private enum StepResult:
   case Continue
   case YieldSolution(sol: Solution)
 
+// ── Resolve telemetry ───────────────────────────────────────────
+
+/** Resolution telemetry. Counters are bumped during stepping; used to
+  * gauge the asymptotic cost of a query. Mirrors rust's `ResolveStats`. */
+class ResolveStats:
+  /** Number of `step()` invocations. */
+  var steps: Long = 0L
+  /** Number of lazy-walks of `goals[0]` performed at goal-selection
+    * time in `stepInit`. Should scale linearly with body size — i.e.
+    * roughly one walk per goal consumed (WI-172 / rust WI-030). */
+  var lazyWalkCalls: Long = 0L
+
 // ── SearchStream ────────────────────────────────────────────────
 
 /** Lazy search stream that yields one solution at a time via splitFirst.
@@ -52,6 +64,11 @@ class SearchStream private (
   private val stack: ArrayBuffer[Frame],
   private val config: ResolveConfig
 ):
+
+  private val stats_ : ResolveStats = ResolveStats()
+
+  /** Read-only access to telemetry (see [[ResolveStats]]). */
+  def stats: ResolveStats = stats_
 
   /** Yield the next solution, returning continuation. */
   def splitFirst(kb: KnowledgeBase): Option[(Solution, SearchStream)] =
@@ -89,6 +106,7 @@ class SearchStream private (
   private def step(kb: KnowledgeBase): Option[StepResult] =
     if stack.isEmpty then return None
     val frame = stack.last
+    stats_.steps += 1
     frame.state match
       case _: FrameState.Init => stepInit(kb)
       case _: FrameState.ChoicePoint => stepChoicePoint(kb)
@@ -121,7 +139,20 @@ class SearchStream private (
       recordSolutionInAncestors()
       return Some(StepResult.YieldSolution(sol))
 
-    val goal = frame.goals(0)
+    // [WI-172] Lazy substitution. σ already carries every binding
+    // accumulated up to this point (merged via bindCompressed in
+    // stepChoicePoint). Walking goals(0) here — instead of eagerly
+    // applying σ to every remaining goal after each match — turns the
+    // inherent SLD work from O(n²) into O(n × goal_size). Memoize the
+    // walked form back into goals(0) so choice-point retries don't
+    // re-walk. Skip the structural walk when σ is empty.
+    stats_.lazyWalkCalls += 1
+    val goal =
+      if frame.subst.isEmpty then frame.goals(0)
+      else
+        val walked = kb.applySubst(frame.goals(0), frame.subst)
+        frame.goals(0) = walked
+        walked
 
     // 4. Builtin
     kb.getBuiltin(goal) match
@@ -187,12 +218,14 @@ class SearchStream private (
       if newSubst.isContradiction then
         return Some(StepResult.Continue)
 
+      // [WI-172] No eager applySubst-each. Bindings from this match
+      // enter newSubst via bindCompressed above; remaining goals are
+      // lazily walked at selection time in stepInit.
       val newGoals = ArrayBuffer.from(frame.goals.drop(1))
-      val appliedGoals = ArrayBuffer.from(newGoals.map(g => kb.applySubst(g, newSubst)))
 
       val newDelay = cp.delayMode.reset
 
-      stack += Frame(appliedGoals, newSubst, frame.depth + 1, FrameState.Init(newDelay))
+      stack += Frame(newGoals, newSubst, frame.depth + 1, FrameState.Init(newDelay))
     else
       // Rule with body — instantiate with fresh vars
       val (freshBody, answerLinks) = kb.withFreshVars(rid, treeSubst)
@@ -202,9 +235,11 @@ class SearchStream private (
       if newSubst.isContradiction then
         return Some(StepResult.Continue)
 
-      val remainingGoals = ArrayBuffer.from(frame.goals.drop(1))
-      val appliedRemaining = ArrayBuffer.from(remainingGoals.map(g => kb.applySubst(g, newSubst)))
-      val newGoals = ArrayBuffer.from(freshBody) ++= appliedRemaining
+      // [WI-172] No eager applySubst-each. The body is already
+      // concretised through withFreshVars; caller-side bindings flow
+      // into newSubst via bindCompressed above; remaining goals walk
+      // lazily in stepInit.
+      val newGoals = ArrayBuffer.from(freshBody) ++= frame.goals.drop(1)
 
       val newDelay = cp.delayMode.reset
 
