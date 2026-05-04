@@ -23,10 +23,10 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-004",
-  description: "think about changing effect to @ in operation syntax",
+  description: "think about changing effect to @ in operation syntax. Resolved: keep `effects` keyword on operation declarations; do NOT add inline `@ E` shortcut. Reason: the higher-order case `operation foo() -> (A) -> B @ E` is ambiguous between inner attachment (effect on the returned arrow type) and outer attachment (effect on foo itself). Tree-sitter's greedy `arrow_type` consumption picks inner; the explicit `effects E` clause picks outer. Having the two spellings disagree on binding in the higher-order case is a learning-curve trap. Effects on arrow types still use `@` (now accepting `@ {E1, E2}` sets — see commit 9615010); effects on operations remain spelled `effects`. Attribute/metadata work (WI-038) uses the existing `[…]` meta_block, so `@` is not needed for that role either.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Verified(at: "2026-05-04T07:00:00Z"))
 
 
 
