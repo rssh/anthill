@@ -16,10 +16,10 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-003",
-  description: "think about using data in algebraic datatypes or continue using sort",
+  description: "think about using data in algebraic datatypes or continue using sort. Resolved by introducing `enum` as a sibling surface form for closed ADTs (constructors enumerated) while keeping `sort` for algebras/abstract carriers; both coexist in the grammar and stdlib (List, Option, Pair, Type use enum).",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Verified(at: "2026-05-04T05:10:32Z"))
 
 fact WorkItem(
   id: "WI-004",
