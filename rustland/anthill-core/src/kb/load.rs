@@ -587,7 +587,7 @@ fn type_expr_base_name(parse_sym: &crate::intern::SymbolTable, ty: &TypeExpr) ->
         TypeExpr::Parameterized { name, .. } => join_segments(parse_sym, &name.segments),
         TypeExpr::Variable { .. } => "?".to_owned(),
         TypeExpr::Tuple(_) => "TupleLiteral".to_owned(),
-        TypeExpr::Arrow { effect: Some(_), .. } => "arrow_effect".to_owned(),
+        TypeExpr::Arrow { effects, .. } if !effects.is_empty() => "arrow_effect".to_owned(),
         TypeExpr::Arrow { .. } => "arrow".to_owned(),
     }
 }
@@ -673,8 +673,8 @@ fn build_instantiation_term(
                 named_args,
             })
         }
-        TypeExpr::Arrow { params, return_type, effect } => {
-            let functor = if effect.is_some() {
+        TypeExpr::Arrow { params, return_type, effects } => {
+            let functor = if !effects.is_empty() {
                 kb.symbols.intern("arrow_effect")
             } else {
                 kb.symbols.intern("arrow")
@@ -684,7 +684,7 @@ fn build_instantiation_term(
                 .collect();
             let ret = build_instantiation_term(kb, parse_sym, return_type, _current_scope);
             pos_args.push(ret);
-            if let Some(eff) = effect {
+            for eff in effects {
                 let eff_term = build_instantiation_term(kb, parse_sym, eff, _current_scope);
                 pos_args.push(eff_term);
             }
@@ -3418,7 +3418,7 @@ impl<'a> Loader<'a> {
                 }).collect();
                 self.kb.make_named_tuple_type(&type_fields)
             }
-            TypeExpr::Arrow { params, return_type, effect } => {
+            TypeExpr::Arrow { params, return_type, effects } => {
                 // For single-param arrows, use param directly.
                 // For multi-param, build a named_tuple of param types.
                 let param_type = if params.len() == 1 {
@@ -3432,10 +3432,10 @@ impl<'a> Loader<'a> {
                     self.kb.make_named_tuple_type(&param_fields)
                 };
                 let result_type = self.type_expr_to_term(return_type);
-                let effects: Vec<TermId> = effect.iter()
+                let effect_terms: Vec<TermId> = effects.iter()
                     .map(|e| self.type_expr_to_term(e))
                     .collect();
-                self.kb.make_arrow_type(param_type, result_type, &effects)
+                self.kb.make_arrow_type(param_type, result_type, &effect_terms)
             }
         }
     }

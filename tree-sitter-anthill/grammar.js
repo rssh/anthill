@@ -337,10 +337,15 @@ module.exports = grammar({
 
     requires_clause: $ => seq('requires', $.rule_body),
     ensures_clause: $ => seq('ensures', $.rule_body),
-    effects_clause: $ => seq('effects', choice(
-      $._type,                                          // single: effects Modifies[kb]
-      seq('{', commaSep1($._type), '}'),                // multiple: effects {A, B}
-    )),
+    effects_clause: $ => seq('effects', $._effect_set),
+
+    // Effect set — single type or braced list. Shared between
+    // `effects_clause` (operation declarations) and `arrow_type`
+    // (the `@` annotation).
+    _effect_set: $ => choice(
+      $._type,                                          // single: E
+      seq('{', commaSep1($._type), '}'),                // multiple: {A, B}
+    ),
 
     // =========================================================
     // Sugar: entity, fact, constraint
@@ -943,13 +948,15 @@ module.exports = grammar({
       $.arrow_type,
     ),
 
-    // Arrow type: (A) -> B  or  (a: A, b: B) -> C  or  () -> A  or  (A) -> B @ E
+    // Arrow type: (A) -> B  or  (a: A, b: B) -> C  or  () -> A
+    //   or  (A) -> B @ E         (single effect)
+    //   or  (A) -> B @ {E1, E2}  (effect set, mirrors operation `effects`)
     // Uses arrow_params (named, not hidden) to avoid field-bleeding on parens.
     arrow_type: $ => prec.right(seq(
       field('params', $.arrow_params),
       '->',
       field('return_type', $._type),
-      optional(seq('@', field('effect', $._type))),
+      optional(seq('@', field('effect', $._effect_set))),
     )),
 
     arrow_params: $ => choice(

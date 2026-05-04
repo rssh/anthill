@@ -121,6 +121,145 @@ operation run(f: (A) -> B @ Modifies) -> B
         (identifier)))))
 
 ==================
+Arrow type with effect set (multi)
+==================
+
+operation run(f: (A) -> B @ {Modifies, Reads}) -> B
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (param
+      name: (identifier)
+      type: (arrow_type
+        params: (arrow_params
+          (simple_type
+            (name
+              (identifier))))
+        return_type: (simple_type
+          (name
+            (identifier)))
+        effect: (simple_type
+          (name
+            (identifier)))
+        effect: (simple_type
+          (name
+            (identifier)))))
+    return_type: (simple_type
+      (name
+        (identifier)))))
+
+==================
+Arrow type with single-element effect set
+==================
+
+operation run(f: (A) -> B @ {Modifies}) -> B
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (param
+      name: (identifier)
+      type: (arrow_type
+        params: (arrow_params
+          (simple_type
+            (name
+              (identifier))))
+        return_type: (simple_type
+          (name
+            (identifier)))
+        effect: (simple_type
+          (name
+            (identifier)))))
+    return_type: (simple_type
+      (name
+        (identifier)))))
+
+==================
+Arrow type with parameterized effect in set
+==================
+
+operation run(f: (A) -> B @ {Modifies[kb], Reads[grid]}) -> B
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (param
+      name: (identifier)
+      type: (arrow_type
+        params: (arrow_params
+          (simple_type
+            (name
+              (identifier))))
+        return_type: (simple_type
+          (name
+            (identifier)))
+        effect: (parameterized_type
+          (name
+            (identifier))
+          (sort_binding
+            type: (simple_type
+              (name
+                (identifier)))))
+        effect: (parameterized_type
+          (name
+            (identifier))
+          (sort_binding
+            type: (simple_type
+              (name
+                (identifier)))))))
+    return_type: (simple_type
+      (name
+        (identifier)))))
+
+==================
+Arrow type with effect set inside parameterized type
+==================
+
+operation run(f: Box[T = (A) -> B @ {E1, E2}]) -> B
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (param
+      name: (identifier)
+      type: (parameterized_type
+        (name
+          (identifier))
+        (sort_binding
+          param: (name
+            (identifier))
+          type: (arrow_type
+            params: (arrow_params
+              (simple_type
+                (name
+                  (identifier))))
+            return_type: (simple_type
+              (name
+                (identifier)))
+            effect: (simple_type
+              (name
+                (identifier)))
+            effect: (simple_type
+              (name
+                (identifier)))))))
+    return_type: (simple_type
+      (name
+        (identifier)))))
+
+==================
 Arrow type with parameterized return
 ==================
 

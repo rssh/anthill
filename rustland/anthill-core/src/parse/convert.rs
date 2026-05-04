@@ -807,10 +807,19 @@ impl<'a> Converter<'a> {
                 let sym = self.intern("?");
                 Box::new(TypeExpr::Simple(Name::simple(sym, self.span(node))))
             });
-        let effect = self.field(node, "effect")
-            .map(|n| Box::new(self.convert_type(n)));
+        // The `effect` field is repeated under `_effect_set`: a single
+        // `_type` (e.g. `@ E`) yields one entry; a braced set
+        // (`@ {E1, E2}`) yields one entry per element. No annotation →
+        // empty Vec. `_effect_set` is a hidden production, so its
+        // delimiters (`{`, `,`, `}`) inherit the `effect` field name —
+        // skip the anonymous tokens and only keep the type-kind nodes.
+        let effects: Vec<TypeExpr> = self.fields_by_name(node, "effect")
+            .into_iter()
+            .filter(|n| n.is_named())
+            .map(|n| self.convert_type(n))
+            .collect();
 
-        TypeExpr::Arrow { params, return_type, effect }
+        TypeExpr::Arrow { params, return_type, effects }
     }
 
     // ── Visibility ──────────────────────────────────────────────

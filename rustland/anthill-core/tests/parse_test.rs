@@ -2437,7 +2437,7 @@ fn parse_arrow_type_unary() {
     match &parsed.items[0] {
         Item::Operation(o) => {
             match &o.params[0].ty {
-                TypeExpr::Arrow { params, return_type, effect } => {
+                TypeExpr::Arrow { params, return_type, effects } => {
                     assert_eq!(params.len(), 1);
                     match &params[0] {
                         TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "A"),
@@ -2447,7 +2447,7 @@ fn parse_arrow_type_unary() {
                         TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "B"),
                         other => panic!("expected Simple return, got {:?}", other),
                     }
-                    assert!(effect.is_none());
+                    assert!(effects.is_empty());
                 }
                 other => panic!("expected Arrow type, got {:?}", other),
             }
@@ -2463,7 +2463,7 @@ fn parse_arrow_type_named_params() {
     match &parsed.items[0] {
         Item::Operation(o) => {
             match &o.params[0].ty {
-                TypeExpr::Arrow { params, return_type, effect } => {
+                TypeExpr::Arrow { params, return_type, effects } => {
                     // Named params (a: A, b: B) — names are discarded, types kept
                     assert_eq!(params.len(), 2);
                     match &params[0] {
@@ -2478,7 +2478,7 @@ fn parse_arrow_type_named_params() {
                         TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "A"),
                         other => panic!("expected Simple return, got {:?}", other),
                     }
-                    assert!(effect.is_none());
+                    assert!(effects.is_empty());
                 }
                 other => panic!("expected Arrow type, got {:?}", other),
             }
@@ -2494,17 +2494,39 @@ fn parse_arrow_type_with_effect() {
     match &parsed.items[0] {
         Item::Operation(o) => {
             match &o.params[0].ty {
-                TypeExpr::Arrow { params, return_type, effect } => {
+                TypeExpr::Arrow { params, return_type, effects } => {
                     assert_eq!(params.len(), 1);
                     match return_type.as_ref() {
                         TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "B"),
                         other => panic!("expected Simple return, got {:?}", other),
                     }
-                    let eff = effect.as_ref().expect("expected effect annotation");
-                    match eff.as_ref() {
+                    assert_eq!(effects.len(), 1, "expected exactly one effect");
+                    match &effects[0] {
                         TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "Modifies"),
                         other => panic!("expected Simple effect, got {:?}", other),
                     }
+                }
+                other => panic!("expected Arrow type, got {:?}", other),
+            }
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn parse_arrow_type_with_effect_set() {
+    let source = "operation run(f: (A) -> B @ {Modifies, Reads}) -> B\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Operation(o) => {
+            match &o.params[0].ty {
+                TypeExpr::Arrow { effects, .. } => {
+                    assert_eq!(effects.len(), 2, "expected braced effect set of 2");
+                    let names: Vec<&str> = effects.iter().map(|e| match e {
+                        TypeExpr::Simple(n) => parsed.symbols.name(n.last()),
+                        other => panic!("expected Simple effect, got {:?}", other),
+                    }).collect();
+                    assert_eq!(names, vec!["Modifies", "Reads"]);
                 }
                 other => panic!("expected Arrow type, got {:?}", other),
             }
@@ -2520,13 +2542,13 @@ fn parse_arrow_type_nullary() {
     match &parsed.items[0] {
         Item::Operation(o) => {
             match &o.params[0].ty {
-                TypeExpr::Arrow { params, return_type, effect } => {
+                TypeExpr::Arrow { params, return_type, effects } => {
                     assert_eq!(params.len(), 0);
                     match return_type.as_ref() {
                         TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "A"),
                         other => panic!("expected Simple return, got {:?}", other),
                     }
-                    assert!(effect.is_none());
+                    assert!(effects.is_empty());
                 }
                 other => panic!("expected Arrow type, got {:?}", other),
             }
@@ -2636,9 +2658,9 @@ end
             let map_op = ops.iter().find(|o| parsed.symbols.name(o.name.last()) == "map_coeffs")
                 .expect("should have map_coeffs operation");
             match &map_op.params[1].ty {
-                TypeExpr::Arrow { params, return_type, effect } => {
+                TypeExpr::Arrow { params, return_type, effects } => {
                     assert_eq!(params.len(), 1);
-                    assert!(effect.is_none());
+                    assert!(effects.is_empty());
                     match &params[0] {
                         TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "R"),
                         other => panic!("expected Simple param R, got {:?}", other),
