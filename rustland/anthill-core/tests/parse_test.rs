@@ -2535,6 +2535,125 @@ fn parse_arrow_type_with_effect_set() {
     }
 }
 
+/// End-to-end: parse an operation whose parameter is an arrow type with
+/// a 2-effect set, load into KB, and verify the resulting `arrow_effect`
+/// term carries an effects cons-list of length 2 with the expected
+/// effect functors.
+#[test]
+fn load_arrow_type_with_effect_set_preserves_list() {
+    let source = r#"sort Modifies { sort T = ? entity Modifies(target: T) }
+sort Reads { sort T = ? entity Reads(target: T) }
+sort Host {
+  sort A = ?
+  sort B = ?
+  entity host
+  operation run(f: (A) -> B @ {Modifies[host], Reads[host]}) -> B
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    // Locate OperationInfo for `run`, drill into its `params` cons-list
+    // to find parameter `f`, then read `f`'s `type` arg — that's the
+    // arrow term that should carry the effect set.
+    let op_sort = kb.make_name_term("Operation");
+    let ops = kb.by_sort(op_sort);
+    let run_op = ops.iter().find(|&&fid| {
+        match kb.get_term(kb.fact_term(fid)) {
+            Term::Fn { named_args, .. } => named_args.iter().any(|(s, t)| {
+                kb.resolve_sym(*s) == "name"
+                    && matches!(kb.get_term(*t), Term::Ref(sym) if kb.resolve_sym(*sym) == "run")
+            }),
+            _ => false,
+        }
+    }).copied().expect("OperationInfo for `run` should exist");
+
+    let params_list = match kb.get_term(kb.fact_term(run_op)) {
+        Term::Fn { named_args, .. } => named_args.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "params")
+            .map(|(_, t)| *t)
+            .expect("OperationInfo should have `params`"),
+        _ => panic!("expected Fn for OperationInfo"),
+    };
+
+    // First (and only) parameter — head of the cons-list.
+    let param_f = match kb.get_term(params_list) {
+        Term::Fn { named_args, .. } => named_args.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "head")
+            .map(|(_, t)| *t)
+            .expect("params list should have a head"),
+        other => panic!("expected cons cell, got {:?}", other),
+    };
+
+    let arrow_term = match kb.get_term(param_f) {
+        Term::Fn { named_args, .. } => named_args.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "type_name")
+            .map(|(_, t)| *t)
+            .expect("param entry should have `type_name`"),
+        other => panic!("expected param entry Fn, got {:?}", other),
+    };
+
+    let (functor_name, effects_list) = match kb.get_term(arrow_term) {
+        Term::Fn { functor, named_args, .. } => {
+            let effects = named_args.iter()
+                .find(|(s, _)| kb.resolve_sym(*s) == "effects")
+                .map(|(_, t)| *t)
+                .expect("arrow term should have `effects`");
+            (kb.resolve_sym(*functor).to_owned(), effects)
+        }
+        other => panic!("expected arrow Fn, got {:?}", other),
+    };
+
+    assert_eq!(functor_name, "arrow",
+        "arrow-effect term should be built via prelude Type.arrow");
+    assert_eq!(count_list_elements(&kb, effects_list), 2,
+        "effects list should have exactly 2 elements");
+
+    // Walk the cons-list and read each effect's underlying sort name.
+    // Each `Modifies[host]` lowers to `parameterized(base: sort_ref(name:
+    // Ref(Modifies)), bindings: cons(...))`, so we drill base → name.
+    let mut current = effects_list;
+    let mut names = Vec::new();
+    while let Term::Fn { functor, named_args, .. } = kb.get_term(current) {
+        if kb.resolve_sym(*functor) != "cons" { break; }
+        let head = named_args.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "head")
+            .map(|(_, t)| *t).expect("cons head");
+        // head is `parameterized(base: …, bindings: …)`
+        if let Term::Fn { named_args: head_args, .. } = kb.get_term(head) {
+            let base_tid = head_args.iter()
+                .find(|(s, _)| kb.resolve_sym(*s) == "base")
+                .map(|(_, t)| *t).expect("parameterized.base");
+            // base is `sort_ref(name: Ref(<sym>))`
+            if let Term::Fn { named_args: base_args, .. } = kb.get_term(base_tid) {
+                let name_tid = base_args.iter()
+                    .find(|(s, _)| kb.resolve_sym(*s) == "name")
+                    .map(|(_, t)| *t).expect("sort_ref.name");
+                if let Term::Ref(sym) = kb.get_term(name_tid) {
+                    names.push(kb.resolve_sym(*sym).to_owned());
+                }
+            }
+        }
+        current = named_args.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "tail")
+            .map(|(_, t)| *t).expect("cons tail");
+    }
+    assert_eq!(names, vec!["Modifies".to_owned(), "Reads".to_owned()],
+        "effect bases should be Modifies, Reads in order");
+
+    // Printer regression: arrows fall through to the generic Fn
+    // functor-form (no surface pretty-printing yet), but the output
+    // must still be deterministic and mention every effect's base name.
+    let printer = anthill_core::persistence::print::TermPrinter::new(&kb);
+    let printed = printer.print_term(arrow_term);
+    assert!(printed.contains("Modifies") && printed.contains("Reads"),
+        "printer output should mention both effect bases; got `{}`", printed);
+    assert!(printed.contains("effects"),
+        "printer output should mention the effects field; got `{}`", printed);
+}
+
 #[test]
 fn parse_arrow_type_nullary() {
     let source = "operation delay(f: () -> A) -> A\n";
