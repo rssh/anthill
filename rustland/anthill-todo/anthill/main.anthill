@@ -16,8 +16,24 @@ namespace anthill.todo
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.Console.{console, println, eprintln,
                                   ConsoleOutput, ConsoleError}
-  import anthill.prelude.Eq.{eq}
-  export Main
+  import anthill.cli.parse.{parse_argv, ParseResult, ParsedArgs,
+                            parse_ok, parse_err,
+                            no_subcommand, unknown_subcommand}
+  import anthill.cli.spec.{OperationSpec}
+  import anthill.prelude.Option.{none}
+  export Main, specs
+
+  -- Subcommand registry. Phase 1a: skill only — full catalogue
+  -- (status, list, show, graph, next, init, add, feedback, claim,
+  -- deliver, verify, update, add-dependency, remove-dependency,
+  -- delete) lands in later phases.
+  operation specs() -> List[T = OperationSpec] =
+    cons(OperationSpec(
+           name: "skill",
+           description: "Print Claude Code skill definition to stdout",
+           params: nil(),
+           parent: none()),
+         nil())
 
   sort Main
     requires anthill.cli.Main
@@ -25,17 +41,25 @@ namespace anthill.todo
     operation main(args: List[T = String]) -> Int
       effects {ConsoleOutput, ConsoleError}
     =
-      match args
-        case nil() ->
-          let _ = println(console(), "anthill-todo: no subcommand")
+      match parse_argv(specs(), args)
+        case parse_err(no_subcommand()) ->
+          let _ = eprintln(console(), "anthill-todo: no subcommand (try `skill`)")
           1
-        case cons(head, _) ->
-          if eq(head, "skill") then
-            let _ = println(console(),
-              "anthill-todo skill (WI-009 stub) — see SKILL.md in source for full text")
-            0
-          else
-            let _ = println(console(), "unknown subcommand")
-            1
+        case parse_err(unknown_subcommand(given)) ->
+          let _ = eprintln(console(),
+            "anthill-todo: unknown subcommand")
+          2
+        case parse_err(_) ->
+          let _ = eprintln(console(), "anthill-todo: argument error")
+          2
+        case parse_ok(ParsedArgs(name, _)) ->
+          dispatch(name)
+
+    operation dispatch(name: String) -> Int
+      effects ConsoleOutput
+    =
+      let _ = println(console(),
+        "anthill-todo (WI-009 phase 1a): subcommand received")
+      0
   end
 end

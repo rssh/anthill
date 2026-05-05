@@ -56,6 +56,9 @@ static STDLIB_SOURCES: &[(&str, &str)] = &[
     ("anthill/persistence/sql", include_str!("../../../stdlib/anthill/persistence/sql.anthill")),
     // cli
     ("anthill/cli/main", include_str!("../../../stdlib/anthill/cli/main.anthill")),
+    ("anthill/cli/spec", include_str!("../../../stdlib/anthill/cli/spec.anthill")),
+    ("anthill/cli/parse", include_str!("../../../stdlib/anthill/cli/parse.anthill")),
+    ("anthill/cli/help", include_str!("../../../stdlib/anthill/cli/help.anthill")),
 ];
 
 /// Parse all embedded stdlib sources. Returns (parsed files, warnings).
