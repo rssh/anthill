@@ -1291,3 +1291,10 @@ fact WorkItem(
   depends_on: [],
   status: Open)
 
+
+fact WorkItem(
+  id: "WI-181",
+  description: "WI-009 phase 2: read-only commands via KB.execute. The bundle status/list/show/graph/next stubs need to query the KB for WorkItem facts and format them. Pattern: build a LogicalQuery (sort_query(sort_name: anthill.stage0.WorkItem) or pattern_query(term: ...)), call execute(kb(), query) to get Stream of Substitution, iterate via splitFirst, extract fields. Several pieces are unproven from anthill code: 1. constructing a sort_query value with a String — straightforward entity literal; 2. obtaining a KB value — sort KB has entity kb in stdlib reflect, kb() should construct it; 3. iterating Stream via splitFirst — runtime support exists per anthill-core eval stream rs but no anthill-side example exercises it; 4. extracting field values from Substitution. Each command needs distinct query shapes: status counts by status field; list filters out delivered/verified by default; show retrieves one fact by id; graph builds a tree from depends_on; next runs the claimable rule from anthill-todo rules anthill. Acceptance: bundle status produces output structurally identical to legacy status against the same workitems file; cargo test green. Likely sub-WIs once exploration uncovers the actual blockers. Prerequisite for WI-009 phase 3 (mutating commands) since claim/deliver/verify need to FIND the existing WorkItem before retracting and re-asserting.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
