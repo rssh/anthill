@@ -24,7 +24,7 @@ namespace anthill.todo
   -- TodoCommand enum. Specs carry no params yet — per-subcommand flag
   -- and positional shapes are added alongside each operation body as
   -- it gets ported.
-  operation specs() -> List[T = OperationSpec] =
+  operation specs() -> List[OperationSpec] =
     cons(spec_named("init",              "Initialize a new anthill-todo project"),
     cons(spec_named("add",               "Add a new work item"),
     cons(spec_named("status",            "Show work item counts by status"),
@@ -53,7 +53,7 @@ namespace anthill.todo
   sort Main
     requires anthill.cli.Main
 
-    operation main(args: List[T = String]) -> Int
+    operation main(args: List[String]) -> Int
       effects {ConsoleOutput, ConsoleError}
     =
       match parse_argv(specs(), args)
