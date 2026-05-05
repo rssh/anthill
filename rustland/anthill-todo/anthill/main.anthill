@@ -1,17 +1,11 @@
 -- anthill-todo: structured work-item management.
 --
--- This is the anthill side of the rust+anthill realization (proposal
--- 029, WI-164). The companion Rust shim at src/main.rs embeds these
--- .anthill files via include_str!, builds a KB, registers stdlib
--- builtins + persistence handlers + a project-local FileStore, then
--- calls `anthill.todo.Main.main(args)` and forwards its `Int` return
--- value as the process exit code.
---
--- Phase 1b: full OperationSpec registry for all 16 subcommands. Each
--- subcommand has a stub operation `cmd_<name>` that returns 2 with a
--- "not yet implemented" message. Phases 2+ replace the stubs with real
--- implementations driven by `anthill.reflect.KB.execute` (read-only)
--- and `anthill.persistence.Store.{persist,retract,flush}` (mutating).
+-- The anthill side of the rust+anthill realization (proposal 029).
+-- The companion Rust shim at src/main.rs embeds these .anthill files
+-- via include_str!, builds a KB, registers stdlib builtins +
+-- persistence handlers + a project-local FileStore, then calls
+-- `anthill.todo.Main.main(args)` and forwards its `Int` return as the
+-- process exit code.
 namespace anthill.todo
   import anthill.cli.Main
   import anthill.prelude.{List}
@@ -26,12 +20,10 @@ namespace anthill.todo
   import anthill.prelude.Eq.{eq}
   export Main, specs
 
-  -- The 16-subcommand registry (matches the legacy Rust binary's
-  -- TodoCommand enum at rustland/anthill-todo/src/main.rs).
-  -- v1: no params declared on the specs themselves — `parse_argv`
-  -- treats them as bare positional dispatch. Per-subcommand parameter
-  -- shapes (acceptance lists, --depends, --description, --acceptance)
-  -- land alongside their operation bodies in subsequent phases.
+  -- The 16-subcommand registry, mirroring the legacy Rust binary's
+  -- TodoCommand enum. Specs carry no params yet — per-subcommand flag
+  -- and positional shapes are added alongside each operation body as
+  -- it gets ported.
   operation specs() -> List[T = OperationSpec] =
     cons(spec_named("init",              "Initialize a new anthill-todo project"),
     cons(spec_named("add",               "Add a new work item"),
@@ -78,34 +70,20 @@ namespace anthill.todo
         case parse_ok(ParsedArgs(name, _)) ->
           dispatch(name)
 
-    -- Phase 1b dispatch: every subcommand routes to its stub. As real
-    -- implementations land they replace the corresponding `not_yet`
-    -- arm with the operation body.
+    -- Implemented subcommands match their name; everything else in the
+    -- registry falls through to `not_yet`. As each subcommand is ported
+    -- it gets its own arm here.
     operation dispatch(name: String) -> Int
       effects {ConsoleOutput, ConsoleError}
     =
       if eq(name, "skill") then cmd_skill()
-      else if eq(name, "init") then not_yet(name)
-      else if eq(name, "status") then not_yet(name)
-      else if eq(name, "list") then not_yet(name)
-      else if eq(name, "next") then not_yet(name)
-      else if eq(name, "show") then not_yet(name)
-      else if eq(name, "graph") then not_yet(name)
-      else if eq(name, "add") then not_yet(name)
-      else if eq(name, "feedback") then not_yet(name)
-      else if eq(name, "claim") then not_yet(name)
-      else if eq(name, "deliver") then not_yet(name)
-      else if eq(name, "verify") then not_yet(name)
-      else if eq(name, "update") then not_yet(name)
-      else if eq(name, "delete") then not_yet(name)
-      else if eq(name, "add-dependency") then not_yet(name)
-      else if eq(name, "remove-dependency") then not_yet(name)
       else not_yet(name)
 
     operation not_yet(name: String) -> Int
       effects ConsoleError
     =
       let _ = eprintln(console(), "anthill-todo: subcommand not yet ported to anthill")
+      let _ = eprintln(console(), name)
       2
 
     operation cmd_skill() -> Int
