@@ -26,6 +26,7 @@ static STDLIB_SOURCES: &[(&str, &str)] = &[
     ("anthill/prelude/nothing", include_str!("../../../stdlib/anthill/prelude/nothing.anthill")),
     ("anthill/prelude/set", include_str!("../../../stdlib/anthill/prelude/set.anthill")),
     ("anthill/prelude/map", include_str!("../../../stdlib/anthill/prelude/map.anthill")),
+    ("anthill/prelude/field", include_str!("../../../stdlib/anthill/prelude/field.anthill")),
     ("anthill/prelude/sort", include_str!("../../../stdlib/anthill/prelude/sort.anthill")),
     ("anthill/prelude/meta", include_str!("../../../stdlib/anthill/prelude/meta.anthill")),
     ("anthill/prelude/function", include_str!("../../../stdlib/anthill/prelude/function.anthill")),
@@ -37,6 +38,7 @@ static STDLIB_SOURCES: &[(&str, &str)] = &[
     ("anthill/prelude/lattice", include_str!("../../../stdlib/anthill/prelude/lattice.anthill")),
     ("anthill/prelude/effects", include_str!("../../../stdlib/anthill/prelude/effects.anthill")),
     ("anthill/prelude/effect-set", include_str!("../../../stdlib/anthill/prelude/effect-set.anthill")),
+    ("anthill/prelude/console", include_str!("../../../stdlib/anthill/prelude/console.anthill")),
     ("anthill/prelude/algebra", include_str!("../../../stdlib/anthill/prelude/algebra.anthill")),
     // geometry
     ("anthill/geometry", include_str!("../../../stdlib/anthill/geometry.anthill")),
@@ -48,6 +50,8 @@ static STDLIB_SOURCES: &[(&str, &str)] = &[
     ("anthill/realization/platform", include_str!("../../../stdlib/anthill/realization/platform.anthill")),
     ("anthill/realization/rust_std", include_str!("../../../stdlib/anthill/realization/rust_std.anthill")),
     ("anthill/realization/cpp_std", include_str!("../../../stdlib/anthill/realization/cpp_std.anthill")),
+    ("anthill/realization/witness", include_str!("../../../stdlib/anthill/realization/witness.anthill")),
+    ("anthill/realization/policy", include_str!("../../../stdlib/anthill/realization/policy.anthill")),
     // persistence
     ("anthill/persistence/store", include_str!("../../../stdlib/anthill/persistence/store.anthill")),
     ("anthill/persistence/filesystem", include_str!("../../../stdlib/anthill/persistence/filesystem.anthill")),

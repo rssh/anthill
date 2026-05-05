@@ -17,6 +17,7 @@ use anthill_core::persistence::term_ser;
 use smallvec::SmallVec;
 
 mod stdlib_embedded;
+mod anthill_bundle;
 
 static SKILL_MD: &str = r#"---
 name: anthill-todo
@@ -1487,6 +1488,21 @@ fn run_add(kb: &KnowledgeBase, project_dir: &Path, description: &str, depends_on
 // ── Entry point ─────────────────────────────────────────────────
 
 fn main() -> ExitCode {
+    // Pre-clap detection of `--anthill`: when set, route to the anthill
+    // bundle (WI-009) instead of the legacy clap dispatch. We strip the
+    // flag from argv before clap sees it. The flag is hidden from
+    // `--help` because the bundle is still a partial port — most
+    // subcommands fall back to a "not yet ported" message until phases
+    // 2+ replace the stubs.
+    let raw_args: Vec<String> = std::env::args().collect();
+    if let Some(idx) = raw_args.iter().position(|a| a == "--anthill") {
+        let mut bundle_argv: Vec<String> = raw_args.iter().enumerate()
+            .filter(|(i, _)| *i != 0 && *i != idx)
+            .map(|(_, s)| s.clone())
+            .collect();
+        return run_anthill_bundle(&mut bundle_argv);
+    }
+
     let cli = Cli::parse();
 
     // These commands don't need project dir
@@ -1544,6 +1560,72 @@ fn main() -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+// ── Anthill-bundle entry point (WI-009) ─────────────────────────
+
+/// Build a KB from embedded stdlib + bundle, register builtins and
+/// effect handlers, then call `anthill.todo.Main.main(argv)`. The
+/// caller has already stripped `--anthill` and the binary's argv[0]
+/// from `argv`.
+fn run_anthill_bundle(argv: &mut Vec<String>) -> ExitCode {
+    use anthill_core::eval::{builtins, Interpreter, Value};
+    use anthill_core::kb::load::NullResolver;
+
+    let (stdlib_parsed, stdlib_errors) = stdlib_embedded::parse_embedded_stdlib();
+    if !stdlib_errors.is_empty() {
+        for e in &stdlib_errors { eprintln!("error: {e}"); }
+        return ExitCode::from(2);
+    }
+    let (bundle_parsed, bundle_errors) = anthill_bundle::parse_embedded_bundle();
+    if !bundle_errors.is_empty() {
+        for e in &bundle_errors { eprintln!("error: {e}"); }
+        return ExitCode::from(2);
+    }
+
+    let mut kb = KnowledgeBase::new();
+    let all_refs: Vec<&ParsedFile> = stdlib_parsed.iter().chain(bundle_parsed.iter()).collect();
+    if let Err(errs) = load::load_all(&mut kb, &all_refs, &NullResolver) {
+        let mut had_fatal = false;
+        for e in &errs {
+            if e.is_type_error() {
+                had_fatal = true;
+                eprintln!("error: {e}");
+            } else {
+                eprintln!("warning: {e}");
+            }
+        }
+        if had_fatal { return ExitCode::from(2); }
+    }
+
+    let mut interp = Interpreter::new(kb);
+    if let Err(e) = builtins::register_standard_builtins(&mut interp) {
+        eprintln!("error: registering builtins: {e}");
+        return ExitCode::FAILURE;
+    }
+    if let Err(e) = interp.register_standard_effect_handlers() {
+        eprintln!("error: registering effect handlers: {e}");
+        return ExitCode::FAILURE;
+    }
+
+    // Build args as List[String] Value.
+    let elements: Vec<Value> = argv.iter().map(|s| Value::Str(s.clone())).collect();
+    let args_value = match interp.build_list_value(elements, &[]) {
+        Ok(v) => v,
+        Err(e) => { eprintln!("error: building args list: {e}"); return ExitCode::FAILURE; }
+    };
+
+    match interp.call("anthill.todo.Main.main", &[args_value]) {
+        Ok(Value::Int(n)) => ExitCode::from(n.clamp(0, 255) as u8),
+        Ok(other) => {
+            eprintln!("error: main returned non-Int value: {other:?}");
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]
