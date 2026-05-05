@@ -163,9 +163,16 @@ impl LoadError {
         }
     }
 
-    /// Fatal: codegen and interpretation must not proceed when ill-typed.
+    /// Fatal errors — execution must not proceed:
+    /// - `TypeMismatch`: ill-typed program is unsound.
+    /// - `UnresolvedImport`: imported names won't bind a local alias, so
+    ///   any use-site that refers to them by short name relies on
+    ///   accidental scope walks; better to fail at load time than silently
+    ///   resolve to the wrong (or no) symbol.
     pub fn is_type_error(&self) -> bool {
-        matches!(self, LoadError::TypeMismatch { .. })
+        matches!(self,
+            LoadError::TypeMismatch { .. }
+            | LoadError::UnresolvedImport { .. })
     }
 }
 
@@ -618,6 +625,44 @@ fn find_scope_by_name(kb: &mut KnowledgeBase, qualified: &str) -> Option<TermId>
     }))
 }
 
+/// Walk one level of nested scopes under `base_path` looking for a symbol
+/// whose short name is `short`. Returns the symbol when exactly one match
+/// is found (multiple matches → ambiguous, no match → none).
+///
+/// Used by selective-import resolution to find enum entities, which live
+/// inside the enum's sort scope rather than directly under the surrounding
+/// namespace. For example, `parse_ok` in
+///   namespace ns
+///     enum E { entity parse_ok(...) }
+///   end
+/// has qualified name `ns.E.parse_ok`, not `ns.parse_ok`. An import
+/// `ns.{parse_ok}` should still bind it.
+fn find_in_nested_scope(
+    kb: &KnowledgeBase,
+    base_path: &str,
+    short: &str,
+) -> Option<crate::intern::Symbol> {
+    let needle_suffix = format!(".{short}");
+    let prefix = format!("{base_path}.");
+    let mut matches: SmallVec<[crate::intern::Symbol; 2]> = SmallVec::new();
+    for (qname, sym) in kb.symbols.by_qualified_name.iter() {
+        if !qname.starts_with(&prefix) || !qname.ends_with(&needle_suffix) {
+            continue;
+        }
+        // Require exactly one intermediate segment between base and short:
+        // base.<intermediate>.short. Keeps the search to immediate children
+        // of the base scope (enums and named sub-scopes), not deeper trees.
+        let middle = &qname[prefix.len()..qname.len() - needle_suffix.len()];
+        if middle.is_empty() || middle.contains('.') {
+            continue;
+        }
+        matches.push(*sym);
+    }
+    matches.sort_by_key(|s| s.index());
+    matches.dedup();
+    if matches.len() == 1 { Some(matches[0]) } else { None }
+}
+
 /// Build an instantiation term for `requires Eq[T]`.
 fn build_instantiation_term(
     kb: &mut KnowledgeBase,
@@ -736,11 +781,17 @@ fn process_imports(
                 // if sort contents (operations) are needed, use `requires` or
                 // wildcard import (`import path.*`) instead.
                 //
-                // Two strategies for finding the symbol:
+                // Resolution strategies, in order:
                 // 1. Direct qualified-name lookup (e.g., "anthill.prelude.Eq" as a
-                //    top-level dotted name)
-                // 2. Resolve short name within the base-path scope (e.g., "Term"
-                //    defined inside `namespace anthill.reflect`)
+                //    top-level dotted name).
+                // 2. Resolve short name within the base-path scope (catches names
+                //    defined directly under the namespace).
+                // 3. Walk one level of child sort/enum scopes within the base
+                //    namespace. Without this, importing an enum entity by short
+                //    name (`import anthill.cli.parse.{parse_ok}` where `parse_ok`
+                //    is an entity inside `enum ParseResult`) fails, since its
+                //    qualified name is `anthill.cli.parse.ParseResult.parse_ok`
+                //    rather than `anthill.cli.parse.parse_ok`.
                 let base_scope = find_scope_by_name(kb, &path);
                 if base_scope.is_none() && !kb.symbols.by_qualified_name.contains_key(&path) {
                     // The base path itself doesn't resolve
@@ -752,7 +803,6 @@ fn process_imports(
                 for name in names {
                     let short = join_segments(parse_sym, &name.segments);
                     let qualified = format!("{}.{}", path, short);
-                    // Try qualified lookup first, then resolve within base scope
                     let original_sym = kb.symbols.by_qualified_name.get(&qualified).copied()
                         .or_else(|| {
                             base_scope.and_then(|bs| {
@@ -761,7 +811,8 @@ fn process_imports(
                                     _ => None,
                                 }
                             })
-                        });
+                        })
+                        .or_else(|| find_in_nested_scope(kb, &path, &short));
                     if let Some(sym) = original_sym {
                         kb.symbols.add_import(scope.raw(), &short, sym);
                     } else {

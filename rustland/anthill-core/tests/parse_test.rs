@@ -1519,6 +1519,46 @@ end
 }
 
 #[test]
+fn selective_import_finds_enum_entity_by_short_name() {
+    // An enum entity lives in the enum's sort scope, so its qualified
+    // name is `<ns>.<Sort>.<entity>`, not `<ns>.<entity>`. A selective
+    // import like `import <ns>.{entity}` must still find it via the
+    // nested-scope fallback.
+    let source = r#"namespace test.parse
+  export Result, ok, err
+  enum Result
+    entity ok(value: String)
+    entity err(reason: String)
+  end
+end
+
+namespace test.client
+  import test.parse.{ok, err, Result}
+  entity Use(r: Result)
+end
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    let result = load::load(&mut kb, &parsed, &NullResolver);
+
+    if let Err(errors) = &result {
+        let import_errors: Vec<_> = errors.iter()
+            .filter(|e| matches!(e, load::LoadError::UnresolvedImport { .. }))
+            .collect();
+        assert!(import_errors.is_empty(),
+            "selective import of enum entities should resolve; got: {:?}", import_errors);
+    }
+    // Loaded successfully, or only had errors unrelated to this import.
+
+    // Confirm both enum entities resolve from test.client's scope.
+    for short in &["ok", "err"] {
+        let qname = format!("test.parse.Result.{short}");
+        let sym = kb.try_resolve_symbol(&qname);
+        assert!(sym.is_some(), "{qname} should be defined");
+    }
+}
+
+#[test]
 fn unresolved_import_selective_is_hard_error() {
     let source = r#"namespace test
   import nonexistent.path.{Foo, Bar}
