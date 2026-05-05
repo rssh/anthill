@@ -1,10 +1,4 @@
-//! Embedded `.anthill` files for the bundle's main entry point.
-//!
-//! The bundle is the anthill-side of the rust+anthill realization: a
-//! collection of `.anthill` files that are include_str!'d into the
-//! binary, parsed at startup, and loaded into the KB alongside the
-//! stdlib. The `anthill.todo.Main.main(args)` operation is the program
-//! entry point — see `src/main.rs::run_anthill_bundle`.
+//! Embedded `.anthill` bundle for the rust+anthill realization.
 
 use anthill_core::parse;
 use anthill_core::parse::ir::ParsedFile;

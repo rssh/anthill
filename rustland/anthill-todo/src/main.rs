@@ -1488,19 +1488,13 @@ fn run_add(kb: &KnowledgeBase, project_dir: &Path, description: &str, depends_on
 // ── Entry point ─────────────────────────────────────────────────
 
 fn main() -> ExitCode {
-    // Pre-clap detection of `--anthill`: when set, route to the anthill
-    // bundle (WI-009) instead of the legacy clap dispatch. We strip the
-    // flag from argv before clap sees it. The flag is hidden from
-    // `--help` because the bundle is still a partial port — most
-    // subcommands fall back to a "not yet ported" message until phases
-    // 2+ replace the stubs.
-    let raw_args: Vec<String> = std::env::args().collect();
+    // `--anthill` is hidden from clap's `--help` because the bundle is
+    // still a partial port; route to the bundle pre-clap when present.
+    let mut raw_args: Vec<String> = std::env::args().collect();
     if let Some(idx) = raw_args.iter().position(|a| a == "--anthill") {
-        let mut bundle_argv: Vec<String> = raw_args.iter().enumerate()
-            .filter(|(i, _)| *i != 0 && *i != idx)
-            .map(|(_, s)| s.clone())
-            .collect();
-        return run_anthill_bundle(&mut bundle_argv);
+        raw_args.remove(idx);
+        raw_args.remove(0);
+        return run_anthill_bundle(&raw_args);
     }
 
     let cli = Cli::parse();
@@ -1562,25 +1556,27 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-// ── Anthill-bundle entry point (WI-009) ─────────────────────────
+// ── Anthill-bundle entry point ──────────────────────────────────
 
-/// Build a KB from embedded stdlib + bundle, register builtins and
-/// effect handlers, then call `anthill.todo.Main.main(argv)`. The
-/// caller has already stripped `--anthill` and the binary's argv[0]
-/// from `argv`.
-fn run_anthill_bundle(argv: &mut Vec<String>) -> ExitCode {
+/// Compilation failure — parse, load, or build error.
+const EXIT_COMPILE: u8 = 2;
+/// Runtime failure — interpreter errored during `main`.
+const EXIT_RUNTIME: u8 = 1;
+/// Substituted for a `main` return value outside 0..=255 so an
+/// out-of-range exit can be distinguished from a legitimate 255.
+const EXIT_OUT_OF_RANGE: u8 = 255;
+
+fn run_anthill_bundle(argv: &[String]) -> ExitCode {
     use anthill_core::eval::{builtins, Interpreter, Value};
     use anthill_core::kb::load::NullResolver;
 
     let (stdlib_parsed, stdlib_errors) = stdlib_embedded::parse_embedded_stdlib();
-    if !stdlib_errors.is_empty() {
-        for e in &stdlib_errors { eprintln!("error: {e}"); }
-        return ExitCode::from(2);
-    }
     let (bundle_parsed, bundle_errors) = anthill_bundle::parse_embedded_bundle();
-    if !bundle_errors.is_empty() {
-        for e in &bundle_errors { eprintln!("error: {e}"); }
-        return ExitCode::from(2);
+    for e in stdlib_errors.iter().chain(bundle_errors.iter()) {
+        eprintln!("error: {e}");
+    }
+    if !stdlib_errors.is_empty() || !bundle_errors.is_empty() {
+        return ExitCode::from(EXIT_COMPILE);
     }
 
     let mut kb = KnowledgeBase::new();
@@ -1588,42 +1584,51 @@ fn run_anthill_bundle(argv: &mut Vec<String>) -> ExitCode {
     if let Err(errs) = load::load_all(&mut kb, &all_refs, &NullResolver) {
         let mut had_fatal = false;
         for e in &errs {
-            if e.is_type_error() {
+            if e.is_load_blocking() {
                 had_fatal = true;
                 eprintln!("error: {e}");
             } else {
                 eprintln!("warning: {e}");
             }
         }
-        if had_fatal { return ExitCode::from(2); }
+        if had_fatal { return ExitCode::from(EXIT_COMPILE); }
     }
 
     let mut interp = Interpreter::new(kb);
     if let Err(e) = builtins::register_standard_builtins(&mut interp) {
         eprintln!("error: registering builtins: {e}");
-        return ExitCode::FAILURE;
+        return ExitCode::from(EXIT_RUNTIME);
     }
     if let Err(e) = interp.register_standard_effect_handlers() {
         eprintln!("error: registering effect handlers: {e}");
-        return ExitCode::FAILURE;
+        return ExitCode::from(EXIT_RUNTIME);
     }
 
-    // Build args as List[String] Value.
     let elements: Vec<Value> = argv.iter().map(|s| Value::Str(s.clone())).collect();
     let args_value = match interp.build_list_value(elements, &[]) {
         Ok(v) => v,
-        Err(e) => { eprintln!("error: building args list: {e}"); return ExitCode::FAILURE; }
+        Err(e) => {
+            eprintln!("error: building args list: {e}");
+            return ExitCode::from(EXIT_RUNTIME);
+        }
     };
 
     match interp.call("anthill.todo.Main.main", &[args_value]) {
-        Ok(Value::Int(n)) => ExitCode::from(n.clamp(0, 255) as u8),
+        Ok(Value::Int(n)) => {
+            if (0..=255).contains(&n) {
+                ExitCode::from(n as u8)
+            } else {
+                eprintln!("warning: main returned {n}, outside 0..=255 — clamped");
+                ExitCode::from(EXIT_OUT_OF_RANGE)
+            }
+        }
         Ok(other) => {
             eprintln!("error: main returned non-Int value: {other:?}");
-            ExitCode::FAILURE
+            ExitCode::from(EXIT_RUNTIME)
         }
         Err(e) => {
             eprintln!("error: {e}");
-            ExitCode::FAILURE
+            ExitCode::from(EXIT_RUNTIME)
         }
     }
 }

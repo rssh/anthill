@@ -528,7 +528,7 @@ fn load_kb_with_stdlib(paths: &[PathBuf], verbose: bool, include_stdlib: bool)
     if let Err(load_errors) = load::load_all(&mut kb, &refs, &resolver) {
         let mut had_type_error = false;
         for e in &load_errors {
-            if e.is_type_error() {
+            if e.is_load_blocking() {
                 had_type_error = true;
                 eprintln!("error: {e}");
             } else {

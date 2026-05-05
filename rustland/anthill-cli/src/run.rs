@@ -183,7 +183,7 @@ fn build_kb(paths: &[PathBuf]) -> Result<KnowledgeBase, i32> {
     if let Err(errs) = load::load_all(&mut kb, &all_refs, &resolver) {
         let mut had_type_error = false;
         for e in &errs {
-            if e.is_type_error() {
+            if e.is_load_blocking() {
                 had_type_error = true;
                 eprintln!("error: {e}");
             } else {

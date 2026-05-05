@@ -20,6 +20,7 @@ use crate::span::{Span, SourceId, SourceSpan};
 use super::{KnowledgeBase, SortKind};
 use super::term::{Term, TermId, Var, VarId, HandleKind, Literal};
 use super::occurrence::OccurrenceId;
+use super::typing::{extract_type_param, get_named_arg, list_to_vec};
 
 // ── Load result ──────────────────────────────────────────────
 
@@ -163,13 +164,13 @@ impl LoadError {
         }
     }
 
-    /// Fatal errors — execution must not proceed:
+    /// Errors that block load — execution must not proceed:
     /// - `TypeMismatch`: ill-typed program is unsound.
     /// - `UnresolvedImport`: imported names won't bind a local alias, so
     ///   any use-site that refers to them by short name relies on
     ///   accidental scope walks; better to fail at load time than silently
     ///   resolve to the wrong (or no) symbol.
-    pub fn is_type_error(&self) -> bool {
+    pub fn is_load_blocking(&self) -> bool {
         matches!(self,
             LoadError::TypeMismatch { .. }
             | LoadError::UnresolvedImport { .. })
@@ -2910,8 +2911,56 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// True iff `ty` is `sort_ref(name: <List sym>)`.
+    fn is_list_sort_ref(kb: &KnowledgeBase, ty: TermId) -> bool {
+        let Term::Fn { functor, named_args, .. } = kb.get_term(ty) else { return false };
+        if kb.resolve_sym(*functor) != "sort_ref" { return false; }
+        let Some(name_tid) = get_named_arg(kb, named_args, "name") else { return false };
+        let Term::Ref(target) = kb.get_term(name_tid) else { return false };
+        let n = kb.qualified_name_of(*target);
+        n == "anthill.prelude.List" || n == "anthill.prelude.List.List"
+    }
+
+    /// `Some(element_hint)` if `ty` is List-shaped, else `None` — outer
+    /// `Some` signals "desugar ListLiteral here" (WI-007), inner `Option`
+    /// is the element-type hint to propagate. Recurses through wrappers like
+    /// `Option[T = List[T = X]]` since the runtime stores the inner list
+    /// directly without the `some(…)` envelope.
+    fn find_list_element_type(kb: &KnowledgeBase, ty: TermId) -> Option<Option<TermId>> {
+        if Self::is_list_sort_ref(kb, ty) { return Some(None); }
+        let Term::Fn { functor, named_args, .. } = kb.get_term(ty) else { return None };
+        if kb.resolve_sym(*functor) != "parameterized" { return None; }
+
+        let base_is_list = get_named_arg(kb, named_args, "base")
+            .map(|b| Self::is_list_sort_ref(kb, b))
+            .unwrap_or(false);
+        if base_is_list {
+            return Some(extract_type_param(kb, ty, "T"));
+        }
+
+        let bindings = get_named_arg(kb, named_args, "bindings")?;
+        for binding in list_to_vec(kb, bindings) {
+            if let Term::Fn { named_args: ba, .. } = kb.get_term(binding) {
+                if let Some(value) = get_named_arg(kb, ba, "value") {
+                    if let Some(inner) = Self::find_list_element_type(kb, value) {
+                        return Some(inner);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Convert a parse-time TermId to a KB TermId, re-allocating into the hash-consed store.
     fn convert_term(&mut self, parse_id: TermId) -> TermId {
+        self.convert_term_with_expected(parse_id, None)
+    }
+
+    /// Like `convert_term` but takes an optional expected-type hint that drives
+    /// context-aware ListLiteral desugaring (WI-007). When `expected` is a
+    /// `List`-shaped type, `ListLiteral` is rewritten to `cons/nil`; otherwise
+    /// it stays in the KB as `ListLiteral` for downstream consumers.
+    fn convert_term_with_expected(&mut self, parse_id: TermId, expected: Option<TermId>) -> TermId {
         if let Some(&mapped) = self.term_map.get(&parse_id.raw()) {
             return mapped;
         }
@@ -2937,16 +2986,23 @@ impl<'a> Loader<'a> {
             Term::Fn { functor, pos_args, named_args } => {
                 let new_functor = self.remap_symbol(functor);
 
-                // Desugar ListLiteral → cons/nil list
-                // ListLiteral(a, b, c) → cons(a, cons(b, cons(c, nil)))
-                // ListLiteral(a, b, tail: t) → cons(a, cons(b, t))
-                if self.kb.qualified_name_of(new_functor) == "anthill.reflect.ListLiteral" {
+                // WI-007 context-aware ListLiteral desugaring: only rewrite
+                // `ListLiteral → cons/nil` when the surrounding field type is
+                // List-shaped (recursing through wrappers like
+                // `Option[T = List[T = X]]`). The inner `Option<TermId>` is
+                // the recursive element-type hint, so nested
+                // `[[...], ...]` for `List[T = List[T = X]]` propagates.
+                let elem_hint = expected.and_then(|e| Self::find_list_element_type(self.kb, e));
+                if self.kb.qualified_name_of(new_functor) == "anthill.reflect.ListLiteral"
+                    && elem_hint.is_some()
+                {
+                    let elem_expected = elem_hint.flatten();
                     let items: Vec<TermId> = pos_args.iter()
-                        .map(|&id| self.convert_term(id))
+                        .map(|&id| self.convert_term_with_expected(id, elem_expected))
                         .collect();
                     let tail_term = named_args.iter()
                         .find(|(sym, _)| self.parsed.symbols.name(*sym) == "tail")
-                        .map(|&(_, id)| self.convert_term(id));
+                        .map(|&(_, id)| self.convert_term_with_expected(id, expected));
                     let kb_id = build_list_with_tail(self.kb, &items, tail_term);
                     self.term_map.insert(parse_id.raw(), kb_id);
                     if let Some(desc_texts) = self.parsed.terms.descriptions.get(&parse_id) {
@@ -2960,11 +3016,21 @@ impl<'a> Loader<'a> {
 
                 let new_pos: SmallVec<[TermId; 4]> = pos_args
                     .iter()
-                    .map(|&id| self.convert_term(id))
+                    .enumerate()
+                    .map(|(i, &id)| {
+                        let exp = self.kb.entity_field_types(new_functor)
+                            .and_then(|ft| ft.get(i).map(|(_, t)| *t));
+                        self.convert_term_with_expected(id, exp)
+                    })
                     .collect();
                 let mut new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
                     .iter()
-                    .map(|&(sym, id)| (self.reintern(sym), self.convert_term(id)))
+                    .map(|&(sym, id)| {
+                        let new_sym = self.reintern(sym);
+                        let exp = self.kb.entity_field_types(new_functor)
+                            .and_then(|ft| ft.iter().find(|(s, _)| *s == new_sym).map(|(_, t)| *t));
+                        (new_sym, self.convert_term_with_expected(id, exp))
+                    })
                     .collect();
 
                 // Expand partial named args: fill missing entity fields with fresh vars

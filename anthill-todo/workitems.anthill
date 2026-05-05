@@ -1284,3 +1284,10 @@ fact WorkItem(
   depends_on: [],
   status: Delivered(agent: "claude", at: "2026-05-05T19:53:05Z"))
 
+fact WorkItem(
+  id: "WI-179",
+  description: "Extract embedded stdlib + bundle plumbing into anthill-stl. Today rustland/anthill-cli/src/stdlib_embedded.rs and rustland/anthill-todo/src/stdlib_embedded.rs are near-duplicates that have already drifted (cli copy had cli/spec, cli/parse, cli/help, prelude/console, prelude/field, realization/witness, realization/policy that the todo copy lacked — synced after the gap broke WI-009 phase 1c). The bundle-loading helper rustland/anthill-todo/src/anthill_bundle.rs::parse_embedded_bundle is byte-identical-shape to parse_embedded_stdlib. The run_anthill_bundle function in rustland/anthill-todo/src/main.rs duplicates rustland/anthill-cli/src/run.rs::run_inner substantially: parse stdlib + bundle, build KB, register builtins, register effect handlers, build args list, call main, clamp Int return. Required: extract into anthill-stl (already a workspace member that depends on anthill-core). New module anthill_stl::stdlib::{SOURCES, parse_embedded} as the canonical list; both binaries depend on anthill-stl and call it. New module anthill_stl::runner::{run_with_main(extra_files, stdlib, resolver, main_qname, args) -> Result<i32, BootstrapError>} that both anthill-cli's run command and anthill-todo's --anthill flag use. Remove the EXIT_COMPILE/EXIT_RUNTIME/EXIT_OUT_OF_RANGE constants from each binary; centralize in the runner. Acceptance: deletes rustland/anthill-todo/src/stdlib_embedded.rs and ~70 lines of run_anthill_bundle in main.rs; cargo test green; both binaries still emit identical output for their canonical subcommands. Estimated 130 LOC removed once extraction lands. Not blocking WI-009 — phase 2+ subcommand implementations work fine on the current shape.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
