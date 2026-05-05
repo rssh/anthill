@@ -9,7 +9,6 @@
 namespace anthill.todo
   import anthill.cli.Main
   import anthill.prelude.{List}
-  import anthill.prelude.List.{nil, cons}
   import anthill.prelude.Console.{console, println, eprintln,
                                   ConsoleOutput, ConsoleError}
   import anthill.cli.parse.{parse_argv, ParseResult, ParsedArgs,
@@ -25,23 +24,23 @@ namespace anthill.todo
   -- and positional shapes are added alongside each operation body as
   -- it gets ported.
   operation specs() -> List[OperationSpec] =
-    cons(spec_named("init",              "Initialize a new anthill-todo project"),
-    cons(spec_named("add",               "Add a new work item"),
-    cons(spec_named("status",            "Show work item counts by status"),
-    cons(spec_named("list",              "List work items"),
-    cons(spec_named("next",              "Show next claimable work item"),
-    cons(spec_named("show",              "Show details of a work item"),
-    cons(spec_named("claim",             "Claim a work item"),
-    cons(spec_named("deliver",           "Mark a work item as delivered"),
-    cons(spec_named("verify",            "Mark a delivered work item as verified"),
-    cons(spec_named("feedback",          "Add feedback to a work item"),
-    cons(spec_named("delete",            "Delete a work item"),
-    cons(spec_named("update",            "Update fields of a work item"),
-    cons(spec_named("add-dependency",    "Add a dependency to a work item"),
-    cons(spec_named("remove-dependency", "Remove a dependency from a work item"),
-    cons(spec_named("graph",             "Show dependency graph"),
-    cons(spec_named("skill",             "Print Claude Code skill definition"),
-    nil()))))))))))))))))
+    [ spec_named("init",              "Initialize a new anthill-todo project")
+    , spec_named("add",               "Add a new work item")
+    , spec_named("status",            "Show work item counts by status")
+    , spec_named("list",              "List work items")
+    , spec_named("next",              "Show next claimable work item")
+    , spec_named("show",              "Show details of a work item")
+    , spec_named("claim",             "Claim a work item")
+    , spec_named("deliver",           "Mark a work item as delivered")
+    , spec_named("verify",            "Mark a delivered work item as verified")
+    , spec_named("feedback",          "Add feedback to a work item")
+    , spec_named("delete",            "Delete a work item")
+    , spec_named("update",            "Update fields of a work item")
+    , spec_named("add-dependency",    "Add a dependency to a work item")
+    , spec_named("remove-dependency", "Remove a dependency from a work item")
+    , spec_named("graph",             "Show dependency graph")
+    , spec_named("skill",             "Print Claude Code skill definition")
+    ]
 
   operation spec_named(name: String, description: String) -> OperationSpec =
     OperationSpec(
