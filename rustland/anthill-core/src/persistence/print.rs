@@ -1,19 +1,45 @@
-/// Term printer — converts KB terms back to `.anthill` text.
+/// Term printer — converts terms back to `.anthill` text.
 ///
-/// This is the inverse of parsing: given a `TermId` + `&KnowledgeBase`,
-/// produce the textual representation suitable for writing to `.anthill` files.
+/// Generic over `TermSource` so it works against either a `KnowledgeBase`
+/// (hash-consed) or a `ParsedFile` (parse-IR). The canonical printed form
+/// is the same in both cases — used by persistence-side retract matching.
 
 use crate::kb::KnowledgeBase;
-use crate::kb::term::{Literal, Term, TermId, Var};
+use crate::kb::term::{Literal, Term, TermId, TermSource, Var};
 
-/// Prints KB terms as `.anthill` source text.
-pub struct TermPrinter<'a> {
-    kb: &'a KnowledgeBase,
+/// Append `s` quoted with `.anthill`-syntax escapes for `"`, `\`, `\n`,
+/// `\r`, `\t`. Shared by `TermPrinter` and any other code that needs to
+/// emit a string literal in canonical form.
+pub fn write_anthill_string(s: &str, buf: &mut String) {
+    buf.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => buf.push_str("\\\""),
+            '\\' => buf.push_str("\\\\"),
+            '\n' => buf.push_str("\\n"),
+            '\r' => buf.push_str("\\r"),
+            '\t' => buf.push_str("\\t"),
+            _ => buf.push(ch),
+        }
+    }
+    buf.push('"');
 }
 
-impl<'a> TermPrinter<'a> {
+/// Prints terms as `.anthill` source text.
+pub struct TermPrinter<'a, V: TermSource + ?Sized> {
+    view: &'a V,
+}
+
+impl<'a> TermPrinter<'a, KnowledgeBase> {
     pub fn new(kb: &'a KnowledgeBase) -> Self {
-        Self { kb }
+        Self { view: kb }
+    }
+}
+
+impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
+    /// Construct a printer over an arbitrary `TermSource`.
+    pub fn over(view: &'a V) -> Self {
+        Self { view }
     }
 
     /// Print a term as `.anthill` source text.
@@ -27,9 +53,9 @@ impl<'a> TermPrinter<'a> {
     /// borrowed slice over its positional contents. Used by the
     /// `forall_impl` pretty-printer.
     fn unwrap_tuple(&self, id: TermId) -> Option<&[TermId]> {
-        match self.kb.get_term(id) {
+        match self.view.term(id) {
             Term::Fn { functor, pos_args, named_args }
-                if self.kb.resolve_sym(*functor) == "tuple" && named_args.is_empty() =>
+                if self.view.sym_name(*functor) == "tuple" && named_args.is_empty() =>
             {
                 Some(pos_args.as_slice())
             }
@@ -45,21 +71,21 @@ impl<'a> TermPrinter<'a> {
     }
 
     fn write_term(&self, id: TermId, buf: &mut String) {
-        match self.kb.get_term(id) {
+        match self.view.term(id) {
             Term::Const(lit) => self.write_literal(lit, buf),
             Term::Var(Var::Global(vid)) => {
                 buf.push('?');
-                buf.push_str(self.kb.resolve_sym(vid.name()));
+                buf.push_str(self.view.sym_name(vid.name()));
             }
             Term::Var(Var::DeBruijn(n)) => {
                 buf.push_str(&format!("?#{n}"));
             }
             Term::Var(Var::Rigid(vid)) => {
                 buf.push('!');
-                buf.push_str(self.kb.resolve_sym(vid.name()));
+                buf.push_str(self.view.sym_name(vid.name()));
             }
             Term::Fn { functor, pos_args, named_args } => {
-                let fname = self.kb.resolve_sym(*functor);
+                let fname = self.view.sym_name(*functor);
                 // Round-trip the forall_impl encoding produced by
                 // convert_nested_implication back to surface syntax.
                 if fname == "forall_impl"
@@ -93,7 +119,7 @@ impl<'a> TermPrinter<'a> {
                     for &(sym, tid) in named_args.iter() {
                         if !first { buf.push_str(", "); }
                         first = false;
-                        buf.push_str(self.kb.resolve_sym(sym));
+                        buf.push_str(self.view.sym_name(sym));
                         buf.push_str(": ");
                         self.write_term(tid, buf);
                     }
@@ -101,10 +127,10 @@ impl<'a> TermPrinter<'a> {
                 }
             }
             Term::Ref(sym) => {
-                buf.push_str(self.kb.resolve_sym(*sym));
+                buf.push_str(self.view.sym_name(*sym));
             }
             Term::Ident(sym) => {
-                buf.push_str(self.kb.resolve_sym(*sym));
+                buf.push_str(self.view.sym_name(*sym));
             }
             Term::Bottom => {
                 buf.push_str("bottom");
@@ -128,20 +154,7 @@ impl<'a> TermPrinter<'a> {
                     buf.push_str(".0");
                 }
             }
-            Literal::String(s) => {
-                buf.push('"');
-                for ch in s.chars() {
-                    match ch {
-                        '"' => buf.push_str("\\\""),
-                        '\\' => buf.push_str("\\\\"),
-                        '\n' => buf.push_str("\\n"),
-                        '\r' => buf.push_str("\\r"),
-                        '\t' => buf.push_str("\\t"),
-                        _ => buf.push(ch),
-                    }
-                }
-                buf.push('"');
-            }
+            Literal::String(s) => write_anthill_string(s, buf),
             Literal::Bool(b) => {
                 buf.push_str(if *b { "true" } else { "false" });
             }
@@ -152,11 +165,11 @@ impl<'a> TermPrinter<'a> {
     }
 }
 
-/// Print a fact as a `fact` declaration in `.anthill` syntax.
-///
-/// Produces text like: `fact Term` or `fact Term { meta }`
-pub fn print_fact(kb: &KnowledgeBase, term: TermId, meta: Option<TermId>) -> String {
-    let printer = TermPrinter::new(kb);
+/// Print a fact as a `fact` declaration in `.anthill` syntax. Generic
+/// over `TermSource` so persistence's retract path can canonicalize both
+/// live-KB heads and parse-IR heads through the same code.
+pub fn print_fact<V: TermSource + ?Sized>(view: &V, term: TermId, meta: Option<TermId>) -> String {
+    let printer = TermPrinter::over(view);
     let mut out = String::from("fact ");
     out.push_str(&printer.print_term(term));
     if let Some(meta_id) = meta {

@@ -69,6 +69,14 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.LogicalStream.splitFirst", logical_stream_split_first)?;
     register_if_present(interp, "anthill.reflect.KB.execute", kb_execute)?;
 
+    // Persistence (proposal 007). The operations are declared inside
+    // `sort Store { operation persist … }` so their qualified names are
+    // `anthill.persistence.Store.<op>`. Stores must be registered via
+    // `Interpreter::register_store` before these dispatch.
+    register_if_present(interp, "anthill.persistence.Store.persist", persistence_persist)?;
+    register_if_present(interp, "anthill.persistence.Store.retract", persistence_retract)?;
+    register_if_present(interp, "anthill.persistence.Store.flush",   persistence_flush)?;
+
     register_if_present(interp, "anthill.prelude.Console.print", console_print)?;
     register_if_present(interp, "anthill.prelude.Console.println", console_println)?;
     register_if_present(interp, "anthill.prelude.Console.eprint", console_eprint)?;
@@ -579,6 +587,89 @@ effect_dispatcher!(console_eprintln,  "anthill.prelude.Console.eprintln",  "epri
 effect_dispatcher!(console_read_line, "anthill.prelude.Console.read_line", "read_line", "anthill.prelude.Console.ConsoleInput");
 effect_dispatcher!(modify_get, "Modify.get", "get", "Modify");
 effect_dispatcher!(modify_set, "Modify.set", "set", "Modify");
+
+// ── Persistence builtins (proposal 007 §4) ─────────────────────
+
+/// `anthill.persistence.Store.persist(store, fact, meta) -> FactId`.
+/// `meta` is accepted but not yet consumed — pass `none()`.
+fn persistence_persist(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [store_val, fact_val, _meta_val] = expect_args::<3>("persist", args)?;
+    let key = interp.store_canonical_key(&store_val)?;
+
+    let fact_term = interp.kb.alloc_from_value(&fact_val)
+        .map_err(|e| EvalError::Internal(format!("persist: lower fact: {e:?}")))?;
+
+    let sort = interp.kb.make_name_term("Fact");
+    let domain = interp.kb.make_name_term("anthill.todo");
+    let rule_id = interp.kb.assert_fact(fact_term, sort, domain, None);
+
+    let store = interp.store_registry.get_mut(&key).ok_or_else(|| {
+        EvalError::Internal(format!("persist: no store registered for key `{key}`"))
+    })?;
+    store.persist(&interp.kb, fact_term, sort, domain, None)
+        .map_err(|e| EvalError::Internal(format!("persist: store error: {e}")))?;
+
+    let handle = interp.kb.alloc(crate::kb::term::Term::Const(
+        crate::kb::term::Literal::Handle(crate::kb::term::HandleKind::Fact, rule_id.raw()),
+    ));
+    Ok(Value::Term(handle))
+}
+
+/// `anthill.persistence.Store.retract(store, fact_id) -> Bool`.
+/// `Store::retract` must run before `kb.retract` — the store needs the
+/// head's canonical printed form, and the rule's TermIds may become
+/// invalid after the KB-side retract releases them.
+fn persistence_retract(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [store_val, id_val] = expect_args::<2>("retract", args)?;
+    let key = interp.store_canonical_key(&store_val)?;
+
+    let rule_raw = match &id_val {
+        Value::Term(tid) => match interp.kb.get_term(*tid) {
+            crate::kb::term::Term::Const(crate::kb::term::Literal::Handle(
+                crate::kb::term::HandleKind::Fact,
+                raw,
+            )) => *raw,
+            _ => return Err(EvalError::TypeMismatch {
+                expected: "FactId handle",
+                got: id_val.type_name().to_string(),
+            }),
+        },
+        _ => return Err(EvalError::TypeMismatch {
+            expected: "FactId",
+            got: id_val.type_name().to_string(),
+        }),
+    };
+    let rule_id = crate::kb::RuleId::from_raw(rule_raw);
+
+    if !interp.kb.is_rule_alive(rule_id) {
+        return Ok(Value::Bool(false));
+    }
+
+    {
+        let store = interp.store_registry.get_mut(&key).ok_or_else(|| {
+            EvalError::Internal(format!("retract: no store registered for key `{key}`"))
+        })?;
+        store.retract(&interp.kb, rule_id)
+            .map_err(|e| EvalError::Internal(format!("retract: store error: {e}")))?;
+    }
+    interp.kb.retract(rule_id);
+    Ok(Value::Bool(true))
+}
+
+/// `anthill.persistence.Store.flush(store, delta) -> Bool`.
+/// `delta` is accepted for spec conformance but ignored — the FileStore
+/// tracks its delta internally via the persist / retract buffers.
+fn persistence_flush(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [store_val, _delta_val] = expect_args::<2>("flush", args)?;
+    let key = interp.store_canonical_key(&store_val)?;
+
+    let store = interp.store_registry.get_mut(&key).ok_or_else(|| {
+        EvalError::Internal(format!("flush: no store registered for key `{key}`"))
+    })?;
+    store.flush(&interp.kb)
+        .map_err(|e| EvalError::Internal(format!("flush: store error: {e}")))?;
+    Ok(Value::Bool(true))
+}
 
 #[cfg(test)]
 mod tests {

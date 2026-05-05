@@ -23,7 +23,7 @@ use smallvec::SmallVec;
 
 use crate::intern::{SymbolTable, SymbolDef, SymbolKind, Symbol};
 use crate::span::SourceRegistry;
-use term::{Term, TermId, TermStore, Var, VarId};
+use term::{Term, TermId, TermStore, TermSource, Var, VarId};
 use occurrence::OccurrenceStore;
 use discrim::SubstTree;
 use resolve::BuiltinTag;
@@ -963,6 +963,16 @@ impl KnowledgeBase {
     /// Get the head term of a rule.
     pub fn rule_head(&self, id: RuleId) -> TermId {
         self.rules[id.index()].head
+    }
+
+    /// Whether a rule id refers to a live (non-retracted) rule. Out-of-bounds
+    /// ids return false. Use before reading rule fields when the caller
+    /// can't guarantee the id was just produced.
+    pub fn is_rule_alive(&self, id: RuleId) -> bool {
+        self.rules
+            .get(id.index())
+            .map(|r| !r.retracted)
+            .unwrap_or(false)
     }
 
     /// Get the body literals of a rule (empty for ground facts).
@@ -2052,6 +2062,15 @@ impl KnowledgeBase {
 impl Default for KnowledgeBase {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl TermSource for KnowledgeBase {
+    fn term(&self, id: TermId) -> &Term {
+        self.terms.get(id)
+    }
+    fn sym_name(&self, sym: Symbol) -> &str {
+        self.symbols.name(sym)
     }
 }
 

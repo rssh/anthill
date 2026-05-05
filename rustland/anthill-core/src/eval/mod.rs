@@ -19,6 +19,7 @@ use std::collections::HashMap;
 
 use crate::intern::Symbol;
 use crate::kb::KnowledgeBase;
+use crate::persistence::Store;
 
 pub use error::EvalError;
 pub use frame::{ActivationStack, Frame};
@@ -195,6 +196,13 @@ pub struct Interpreter {
     pub(crate) streams: StreamArenaRef,
     pub(crate) substs: subst_arena::SubstArenaRef,
     pub(crate) effect_handlers: EffectRegistry,
+    /// Registered persistence backends (proposal 007). Keyed by the
+    /// canonical printed form of the store's `Value::Entity` so anthill
+    /// code referencing the same shape (e.g. `FileStore(root: "x",
+    /// convention: Flat)`) routes to the same instance across calls.
+    /// The shim populates this before invoking `main` (see
+    /// `Self::register_store`); persistence builtins look entries up.
+    pub(crate) store_registry: HashMap<String, Box<dyn Store>>,
     pub(crate) config: EvalConfig,
     /// Monotonically increasing step counter, reset on each `call()`.
     /// `run()` increments it once per `step()` and compares against
@@ -225,6 +233,7 @@ impl Interpreter {
             streams: StreamArenaRef::new(),
             substs: subst_arena::SubstArenaRef::new(),
             effect_handlers: EffectRegistry::new(),
+            store_registry: HashMap::new(),
             config,
             step_count: 0,
         }
@@ -253,6 +262,80 @@ impl Interpreter {
             EvalError::UnknownOperation { name: qualified_name.to_string() }
         })?;
         self.builtins.insert(sym, std::sync::Arc::new(f));
+        Ok(())
+    }
+
+    /// Register a persistence backend, keyed by its canonical store-value
+    /// form. Anthill code that calls `persist`/`retract`/`flush` with a
+    /// `Value::Entity` whose canonical form matches `key` routes to this
+    /// instance. Replaces any prior registration under the same key.
+    /// Use [`Self::store_canonical_key`] to compute the key from the
+    /// store's value representation.
+    pub fn register_store(&mut self, key: String, store: Box<dyn Store>) {
+        self.store_registry.insert(key, store);
+    }
+
+    /// Compute the canonical-key string for a store value (`Value::Entity`).
+    /// Same string for any two values that compare equal under
+    /// `Value::structural_eq` modulo named-arg ordering.
+    pub fn store_canonical_key(&self, v: &Value) -> Result<String, EvalError> {
+        let mut buf = String::new();
+        self.write_value_canonical(v, &mut buf)?;
+        Ok(buf)
+    }
+
+    /// Recursive helper for [`Self::store_canonical_key`].
+    fn write_value_canonical(&self, v: &Value, buf: &mut String) -> Result<(), EvalError> {
+        match v {
+            Value::Int(n) => buf.push_str(&n.to_string()),
+            Value::BigInt(n) => buf.push_str(&n.to_string()),
+            Value::Float(f) => {
+                let s = f.to_string();
+                buf.push_str(&s);
+                if !s.contains('.') { buf.push_str(".0"); }
+            }
+            Value::Bool(b) => buf.push_str(if *b { "true" } else { "false" }),
+            Value::Str(s) => crate::persistence::print::write_anthill_string(s, buf),
+            Value::Entity { functor, pos, named } => {
+                buf.push_str(self.kb.resolve_sym(*functor));
+                if pos.is_empty() && named.is_empty() {
+                    return Ok(());
+                }
+                buf.push('(');
+                let mut first = true;
+                for p in pos {
+                    if !first { buf.push_str(", "); }
+                    first = false;
+                    self.write_value_canonical(p, buf)?;
+                }
+                let mut sorted: Vec<&(Symbol, Value)> = named.iter().collect();
+                sorted.sort_by(|a, b| {
+                    self.kb.resolve_sym(a.0).cmp(self.kb.resolve_sym(b.0))
+                });
+                for (sym, val) in sorted {
+                    if !first { buf.push_str(", "); }
+                    first = false;
+                    buf.push_str(self.kb.resolve_sym(*sym));
+                    buf.push_str(": ");
+                    self.write_value_canonical(val, buf)?;
+                }
+                buf.push(')');
+            }
+            Value::Term(tid) => {
+                buf.push_str(&crate::persistence::print::TermPrinter::new(&self.kb).print_term(*tid));
+            }
+            Value::Unit
+            | Value::Tuple { .. }
+            | Value::Closure(_)
+            | Value::Stream(_)
+            | Value::Lazy(_)
+            | Value::Substitution(_) => {
+                return Err(EvalError::TypeMismatch {
+                    expected: "store-shaped Value (Entity / scalar / Term)",
+                    got: v.type_name().to_string(),
+                });
+            }
+        }
         Ok(())
     }
 

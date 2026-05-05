@@ -1,0 +1,41 @@
+-- anthill-todo: structured work-item management.
+--
+-- This is the anthill side of the rust+anthill realization (WI-164,
+-- proposal 029). The companion Rust shim at src/main.rs embeds these
+-- .anthill files via include_str!, builds a KB, registers stdlib
+-- builtins + persistence handlers + a project-local FileStore, then
+-- calls `anthill.todo.Main.main(args)` and forwards its `Int` return
+-- value as the process exit code.
+--
+-- Phase 1 (WI-009): minimum-viable dispatcher with --skill and
+-- placeholder responses for the read-only commands. Mutating
+-- subcommands and the full subcommand catalogue land in later phases.
+namespace anthill.todo
+  import anthill.cli.Main
+  import anthill.prelude.{List}
+  import anthill.prelude.List.{nil, cons}
+  import anthill.prelude.Console.{console, println, eprintln,
+                                  ConsoleOutput, ConsoleError}
+  import anthill.prelude.Eq.{eq}
+  export Main
+
+  sort Main
+    requires anthill.cli.Main
+
+    operation main(args: List[T = String]) -> Int
+      effects {ConsoleOutput, ConsoleError}
+    =
+      match args
+        case nil() ->
+          let _ = println(console(), "anthill-todo: no subcommand")
+          1
+        case cons(head, _) ->
+          if eq(head, "skill") then
+            let _ = println(console(),
+              "anthill-todo skill (WI-009 stub) — see SKILL.md in source for full text")
+            0
+          else
+            let _ = println(console(), "unknown subcommand")
+            1
+  end
+end

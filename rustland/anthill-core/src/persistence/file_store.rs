@@ -2,16 +2,26 @@
 ///
 /// Reads/writes `.anthill` files. Implements `BulkStore`:
 /// - `persist()` buffers facts as text
-/// - `flush()` writes buffered text to files (atomic: temp + rename)
+/// - `retract()` buffers a canonical-printed-form for the rule's head
+/// - `flush()` rewrites affected files (drop matching fact blocks, then
+///   append persisted texts) atomically via temp + rename
 /// - `pull()` reads all `.anthill` files under the root directory
+///
+/// Retract semantics: a fact in the source file is matched by the
+/// canonical printed form of its head term (`TermPrinter::print_term`).
+/// Inter-fact text — comments, blank lines, anything outside a
+/// `fact …(…)` block — is preserved across rewrites. Comments inside a
+/// fact block are not preserved (the block is treated as a single unit).
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::kb::{RuleId, KnowledgeBase};
 use crate::kb::term::TermId;
 use crate::parse;
+use crate::parse::ir::Item;
 
 use super::print;
 use super::{BulkStore, PersistenceError, Store};
@@ -27,11 +37,20 @@ pub enum FileConvention {
     ByDomain,
 }
 
-// ── Pending write ──────────────────────────────────────────────
+// ── Pending operations ─────────────────────────────────────────
 
 struct PendingWrite {
     path: PathBuf,
     text: String,
+}
+
+struct PendingRetract {
+    path: PathBuf,
+    /// Canonical printed form of the rule's head term, captured at
+    /// retract-buffer time before the caller retracts the rule from the
+    /// KB. Compared to the canonical printed form of every parsed fact
+    /// in the target file at flush time.
+    head_canonical: String,
 }
 
 // ── FileStore ──────────────────────────────────────────────────
@@ -40,7 +59,7 @@ pub struct FileStore {
     root: PathBuf,
     convention: FileConvention,
     pending_writes: Vec<PendingWrite>,
-    pending_retracts: Vec<RuleId>,
+    pending_retracts: Vec<PendingRetract>,
 }
 
 impl FileStore {
@@ -115,23 +134,43 @@ impl Store for FileStore {
         Ok(())
     }
 
-    fn retract(&mut self, id: RuleId) -> Result<bool, PersistenceError> {
-        // Stage 0: record the retraction but don't modify files.
-        // File modification on retract is deferred to a future stage.
-        self.pending_retracts.push(id);
+    fn retract(&mut self, kb: &KnowledgeBase, id: RuleId) -> Result<bool, PersistenceError> {
+        if !kb.is_rule_alive(id) {
+            return Ok(false);
+        }
+        let head = kb.rule_head(id);
+        let sort = kb.rule_sort(id);
+        let domain = kb.rule_domain(id);
+        let path = self.fact_path(kb, sort, domain);
+        let head_canonical = print::TermPrinter::new(kb).print_term(head);
+        self.pending_retracts.push(PendingRetract { path, head_canonical });
         Ok(true)
     }
 
     fn flush(&mut self, _kb: &KnowledgeBase) -> Result<(), PersistenceError> {
-        // Group pending writes by path
-        let mut by_path: HashMap<PathBuf, Vec<String>> = HashMap::new();
+        // Group pending operations by path. Retracts apply first; persists
+        // append after.
+        let mut writes_by_path: HashMap<PathBuf, Vec<String>> = HashMap::new();
         for pw in self.pending_writes.drain(..) {
-            by_path.entry(pw.path).or_default().push(pw.text);
+            writes_by_path.entry(pw.path).or_default().push(pw.text);
+        }
+        let mut retracts_by_path: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+        for pr in self.pending_retracts.drain(..) {
+            retracts_by_path.entry(pr.path).or_default().insert(pr.head_canonical);
         }
 
-        // Write each file atomically (temp file + rename)
-        for (path, texts) in by_path {
-            // Ensure parent directory exists
+        // Union of affected paths.
+        let mut affected: HashSet<&PathBuf> = HashSet::new();
+        for p in writes_by_path.keys() {
+            affected.insert(p);
+        }
+        for p in retracts_by_path.keys() {
+            affected.insert(p);
+        }
+        let affected: Vec<PathBuf> = affected.into_iter().cloned().collect();
+
+        for path in affected {
+            // Ensure parent directory exists.
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|e| {
                     PersistenceError::Io(format!(
@@ -141,8 +180,7 @@ impl Store for FileStore {
                 })?;
             }
 
-            // Build content: read existing file (if any) and append new facts
-            let mut content = if path.exists() {
+            let existing = if path.exists() {
                 fs::read_to_string(&path).map_err(|e| {
                     PersistenceError::Io(format!(
                         "failed to read {}: {e}",
@@ -153,11 +191,24 @@ impl Store for FileStore {
                 String::new()
             };
 
-            for text in texts {
-                content.push_str(&text);
+            // Apply retracts: parse the source, drop fact blocks whose head
+            // matches a retract canonical, preserve everything else.
+            let after_retract = match retracts_by_path.get(&path) {
+                Some(retracts) if !retracts.is_empty() => {
+                    apply_retracts(&existing, retracts)?
+                }
+                _ => existing,
+            };
+
+            // Append newly persisted facts (current behaviour).
+            let mut content = after_retract;
+            if let Some(writes) = writes_by_path.get(&path) {
+                for text in writes {
+                    content.push_str(text);
+                }
             }
 
-            // Write atomically: temp file + rename
+            // Atomic write: temp file + rename.
             let temp_path = path.with_extension("anthill.tmp");
             fs::write(&temp_path, &content).map_err(|e| {
                 PersistenceError::Io(format!(
@@ -173,9 +224,6 @@ impl Store for FileStore {
                 ))
             })?;
         }
-
-        // Clear pending retracts (stage 0: no file modification)
-        self.pending_retracts.clear();
 
         Ok(())
     }
@@ -196,4 +244,60 @@ impl BulkStore for FileStore {
 
         Ok(parsed_files)
     }
+}
+
+// ── Retract application ────────────────────────────────────────
+
+/// Parse `source`, identify each `fact …(…)` block whose head term
+/// canonicalizes to a string in `retracts`, and rebuild the source
+/// without those blocks. Inter-fact text (comments, blank lines, other
+/// items) is preserved verbatim.
+///
+/// If multiple in-source facts share the same head canonical, all of
+/// them are removed (a retract canonical is a *content* identifier, and
+/// duplicates on disk mean the user already has a problem).
+fn apply_retracts(source: &str, retracts: &HashSet<String>) -> Result<String, PersistenceError> {
+    let parsed = parse::parse(source).map_err(PersistenceError::Parse)?;
+
+    let mut drop_ranges: Vec<(usize, usize)> = Vec::new();
+    let printer = print::TermPrinter::over(&parsed);
+
+    for item in &parsed.items {
+        let Item::Fact(fact) = item else { continue };
+        let head_canonical = printer.print_term(fact.term);
+        if retracts.contains(&head_canonical) {
+            drop_ranges.push((fact.span.start as usize, fact.span.end as usize));
+        }
+    }
+
+    if drop_ranges.is_empty() {
+        return Ok(source.to_string());
+    }
+
+    drop_ranges.sort_by_key(|(s, _)| *s);
+
+    // Rebuild source by concatenating the regions between drop ranges,
+    // then collapse leftover blank-line clusters where a fact was removed
+    // so the output doesn't accumulate growing blank gaps across repeated
+    // retract cycles.
+    let mut rebuilt = String::with_capacity(source.len());
+    let mut cursor = 0;
+    for (start, end) in &drop_ranges {
+        // Extend the range to swallow the trailing newline (and one
+        // following blank line if present), so removing a fact that's
+        // separated from its successor by a blank line doesn't leave two
+        // blanks in a row.
+        let mut drop_end = *end;
+        let bytes = source.as_bytes();
+        if drop_end < bytes.len() && bytes[drop_end] == b'\n' {
+            drop_end += 1;
+        }
+        if drop_end < bytes.len() && bytes[drop_end] == b'\n' {
+            drop_end += 1;
+        }
+        rebuilt.push_str(&source[cursor..*start]);
+        cursor = drop_end;
+    }
+    rebuilt.push_str(&source[cursor..]);
+    Ok(rebuilt)
 }

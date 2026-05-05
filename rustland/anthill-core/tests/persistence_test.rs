@@ -417,15 +417,194 @@ fn full_round_trip() {
     assert_eq!(parent_results.len(), 1, "should find 1 parent fact");
 }
 
-// ── Retract (stage 0: recorded only) ──────────────────────────
+// ── Retract: file modification at flush ───────────────────────
 
 #[test]
-fn retract_is_recorded() {
+fn retract_unknown_rule_is_noop() {
+    // Buffering a retract for an out-of-bounds RuleId returns Ok(false)
+    // without panicking, and flush is a clean no-op.
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
+    let kb = KnowledgeBase::new();
+
+    let result = store.retract(&kb, RuleId::from_index(999));
+    assert!(matches!(result, Ok(false)));
+
+    // Flush succeeds with no work to do (no file is created).
+    store.flush(&kb).unwrap();
+    assert!(!dir.path().join("facts.anthill").exists());
+}
+
+#[test]
+fn retract_drops_fact_block_from_disk() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
 
-    // Retract returns Ok(true) in stage 0
-    let result = store.retract(RuleId::from_index(0));
-    assert!(result.is_ok());
-    assert!(result.unwrap());
+    let mut kb = KnowledgeBase::new();
+    let sort = kb.make_name_term("Fact");
+    let domain = kb.make_name_term("test");
+
+    // Persist three facts: Foo, Bar, Baz.
+    let foo = kb.make_name_term("Foo");
+    let bar = kb.make_name_term("Bar");
+    let baz = kb.make_name_term("Baz");
+    let foo_id = kb.assert_fact(foo, sort, domain, None);
+    let bar_id = kb.assert_fact(bar, sort, domain, None);
+    let _baz_id = kb.assert_fact(baz, sort, domain, None);
+
+    store.persist(&kb, kb.fact_term(foo_id), sort, domain, None).unwrap();
+    store.persist(&kb, kb.fact_term(bar_id), sort, domain, None).unwrap();
+    store.persist(&kb, baz, sort, domain, None).unwrap();
+    store.flush(&kb).unwrap();
+
+    let path = dir.path().join("facts.anthill");
+    let after_persist = std::fs::read_to_string(&path).unwrap();
+    assert!(after_persist.contains("fact Foo"));
+    assert!(after_persist.contains("fact Bar"));
+    assert!(after_persist.contains("fact Baz"));
+
+    // Retract Bar via the store (must come before kb.retract).
+    store.retract(&kb, bar_id).unwrap();
+    kb.retract(bar_id);
+    store.flush(&kb).unwrap();
+
+    let after_retract = std::fs::read_to_string(&path).unwrap();
+    assert!(after_retract.contains("fact Foo"), "Foo should remain");
+    assert!(after_retract.contains("fact Baz"), "Baz should remain");
+    assert!(!after_retract.contains("fact Bar"), "Bar should be dropped");
+}
+
+#[test]
+fn retract_then_persist_replaces_in_place() {
+    // Claim/deliver-style update: retract the old WorkItem, persist a
+    // new one with the same id, expect a single fact on disk with the
+    // new contents.
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
+
+    let mut kb = KnowledgeBase::new();
+    let sort = kb.make_name_term("Fact");
+    let domain = kb.make_name_term("test");
+
+    let wi_sym = kb.intern("WorkItem");
+    let id_sym = kb.intern("id");
+    let status_sym = kb.intern("status");
+    let id_lit = kb.alloc(Term::Const(Literal::String("WI-X".into())));
+    let open_term = kb.make_name_term("Open");
+    let claimed_term = kb.make_name_term("Claimed");
+
+    let mut named_open = SmallVec::<[(_, _); 2]>::new();
+    named_open.push((id_sym, id_lit));
+    named_open.push((status_sym, open_term));
+    named_open.sort_by_key(|(s, _)| s.index());
+    let wi_open = kb.alloc(Term::Fn {
+        functor: wi_sym,
+        pos_args: SmallVec::new(),
+        named_args: named_open,
+    });
+    let open_id = kb.assert_fact(wi_open, sort, domain, None);
+
+    store.persist(&kb, kb.fact_term(open_id), sort, domain, None).unwrap();
+    store.flush(&kb).unwrap();
+
+    let path = dir.path().join("facts.anthill");
+    let after_open = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(after_open.matches("fact WorkItem(").count(), 1);
+    assert!(after_open.contains("status: Open"));
+
+    // Update: retract the Open fact, persist Claimed.
+    store.retract(&kb, open_id).unwrap();
+    kb.retract(open_id);
+
+    let mut named_claimed = SmallVec::<[(_, _); 2]>::new();
+    named_claimed.push((id_sym, id_lit));
+    named_claimed.push((status_sym, claimed_term));
+    named_claimed.sort_by_key(|(s, _)| s.index());
+    let wi_claimed = kb.alloc(Term::Fn {
+        functor: wi_sym,
+        pos_args: SmallVec::new(),
+        named_args: named_claimed,
+    });
+    let claimed_id = kb.assert_fact(wi_claimed, sort, domain, None);
+    store.persist(&kb, kb.fact_term(claimed_id), sort, domain, None).unwrap();
+    store.flush(&kb).unwrap();
+
+    let after_claim = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        after_claim.matches("fact WorkItem(").count(),
+        1,
+        "exactly one WorkItem fact on disk after update; got:\n{after_claim}"
+    );
+    assert!(after_claim.contains("status: Claimed"));
+    assert!(!after_claim.contains("status: Open"));
+}
+
+#[test]
+fn retract_preserves_inter_fact_text() {
+    // A pre-existing file with a header comment and blank-line spacing
+    // between facts: retract should leave the header and the surviving
+    // facts in their original positions.
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("facts.anthill");
+    let original = "-- header comment\n\nfact A\n\nfact B\n\nfact C\n";
+    std::fs::write(&path, original).unwrap();
+
+    // Load facts into a KB so the store can canonicalize them.
+    let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
+    let parsed = store.pull().expect("pull");
+    let mut kb = KnowledgeBase::new();
+    for pf in &parsed {
+        load::load(&mut kb, pf, &NullResolver).unwrap();
+    }
+
+    // Find the rule for B by walking by_sort and matching the printed head.
+    let fact_sort = kb.make_name_term("Fact");
+    let mut b_id_opt = None;
+    for rid in kb.by_sort(fact_sort) {
+        let head = kb.rule_head(rid);
+        if anthill_core::persistence::print::TermPrinter::new(&kb).print_term(head) == "B" {
+            b_id_opt = Some(rid);
+            break;
+        }
+    }
+    let b_id = b_id_opt.expect("found B rule");
+
+    store.retract(&kb, b_id).unwrap();
+    kb.retract(b_id);
+    store.flush(&kb).unwrap();
+
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert!(after.contains("-- header comment"), "header preserved");
+    assert!(after.contains("fact A"));
+    assert!(after.contains("fact C"));
+    assert!(!after.contains("fact B"));
+}
+
+#[test]
+fn flush_is_idempotent_after_retract() {
+    // Calling flush twice with no new pending operations must not change
+    // the file. Guards against the persist-buffer being replayed.
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
+
+    let mut kb = KnowledgeBase::new();
+    let sort = kb.make_name_term("Fact");
+    let domain = kb.make_name_term("test");
+    let foo = kb.make_name_term("Foo");
+    let bar = kb.make_name_term("Bar");
+    let _foo_id = kb.assert_fact(foo, sort, domain, None);
+    let bar_id = kb.assert_fact(bar, sort, domain, None);
+
+    store.persist(&kb, foo, sort, domain, None).unwrap();
+    store.persist(&kb, bar, sort, domain, None).unwrap();
+    store.retract(&kb, bar_id).unwrap();
+    kb.retract(bar_id);
+    store.flush(&kb).unwrap();
+
+    let first = std::fs::read_to_string(dir.path().join("facts.anthill")).unwrap();
+
+    // Second flush — buffers empty, should be a no-op on disk.
+    store.flush(&kb).unwrap();
+    let second = std::fs::read_to_string(dir.path().join("facts.anthill")).unwrap();
+    assert_eq!(first, second, "flush must be idempotent");
 }

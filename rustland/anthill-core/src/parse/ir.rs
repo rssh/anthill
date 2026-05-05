@@ -13,7 +13,7 @@ use smallvec::SmallVec;
 
 use crate::intern::{SymbolTable, Symbol};
 use crate::span::Span;
-use crate::kb::term::{Term, TermId};
+use crate::kb::term::{Term, TermId, TermSource};
 
 // ── Simple term store (parse-time only) ─────────────────────────
 
@@ -59,6 +59,15 @@ pub struct ParsedFile {
     pub items: Vec<Item>,
     pub symbols: SymbolTable,
     pub terms: SimpleTermStore,
+}
+
+impl TermSource for ParsedFile {
+    fn term(&self, id: TermId) -> &Term {
+        self.terms.get(id)
+    }
+    fn sym_name(&self, sym: Symbol) -> &str {
+        self.symbols.name(sym)
+    }
 }
 
 // ── Name (qualified, with span) ─────────────────────────────────

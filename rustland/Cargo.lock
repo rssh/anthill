@@ -144,6 +144,7 @@ dependencies = [
  "chrono",
  "clap",
  "smallvec",
+ "tempfile",
 ]
 
 [[package]]

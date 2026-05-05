@@ -1023,7 +1023,10 @@ fn update_status_in_source(project_dir: &Path, id: &str, new_status: &str) -> Re
         .ok_or_else(|| format!("no fact block for {id}"))?;
 
     let fact_text = &source[abs_start..abs_end];
-    let status_offset = fact_text.find("status: ").ok_or("no `status:` field")?;
+    // `status` is always written as the last field. rfind so the search
+    // doesn't hit a literal `status: ` substring inside an earlier field's
+    // string value (e.g. a description quoting `status: Open` as an example).
+    let status_offset = fact_text.rfind("status: ").ok_or("no `status:` field")?;
     let status_abs = abs_start + status_offset;
     // status is always written as the last field, so its value runs to the closing `)`.
     let old_end = abs_end - 1;
@@ -1621,5 +1624,56 @@ mod tests {
         ];
         // X not in items — should not panic, just not found
         assert!(!has_transitive_dep(&items, "A", "Z"));
+    }
+
+    // ── update_status_in_source: regression for description-shadowing ──
+
+    /// Regression: the original `update_status_in_source` used
+    /// `fact_text.find("status: ")` and matched the first occurrence,
+    /// including substrings inside the quoted description. Triggered when
+    /// an item's description quoted `status: Open` as part of an example —
+    /// the claim/deliver path would substitute *inside the description*,
+    /// destroying the surrounding fact block. Fix: rfind so the actual
+    /// `status:` field (always written last) wins.
+    #[test]
+    fn update_status_does_not_match_status_in_description() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path();
+        let workitems = project.join("workitems.anthill");
+
+        // A WorkItem whose description literally contains `status: Open`,
+        // verifying the rfind anchor doesn't follow the description's example.
+        let original = "fact WorkItem(\n  \
+            id: \"WI-X\",\n  \
+            description: \"asserts a WorkItem(id: \\\"X\\\", status: Open), retracts it\",\n  \
+            acceptance: [ToolPasses(\"cargo-test\")],\n  \
+            depends_on: [],\n  \
+            status: Open)\n";
+        std::fs::write(&workitems, original).unwrap();
+
+        let new_status = r#"Claimed(agent: "claude", since: "2026-05-05T19:15:00Z")"#;
+        update_status_in_source(project, "WI-X", new_status)
+            .expect("update should succeed");
+
+        let after = std::fs::read_to_string(&workitems).unwrap();
+
+        // Description must be intact — no substitution into the quoted text.
+        assert!(
+            after.contains(r#"description: "asserts a WorkItem(id: \"X\", status: Open), retracts it""#),
+            "description was mutated:\n{after}"
+        );
+
+        // The actual status field was updated to the new value.
+        assert!(
+            after.contains(&format!("status: {new_status}")),
+            "status field not updated:\n{after}"
+        );
+
+        // Block is well-formed — closes with `)\n`.
+        assert!(after.trim_end().ends_with(')'), "fact block not closed:\n{after}");
+
+        // Round-trip: the resulting file must parse without errors.
+        anthill_core::parse::parse(&after)
+            .expect("rewritten fact must parse cleanly");
     }
 }

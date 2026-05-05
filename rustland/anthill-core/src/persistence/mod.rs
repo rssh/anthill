@@ -60,8 +60,12 @@ pub trait Store {
         meta: Option<TermId>,
     ) -> Result<(), PersistenceError>;
 
-    /// Mark a fact for retraction. Returns true if the fact was known.
-    fn retract(&mut self, id: RuleId) -> Result<bool, PersistenceError>;
+    /// Buffer a retraction. The KB is needed to canonicalize the rule's
+    /// head before the caller actually retracts it from the KB. Must be
+    /// called *before* `kb.retract(id)` — afterwards the rule's TermIds
+    /// may be invalid.
+    /// Returns true if the rule was alive at call time.
+    fn retract(&mut self, kb: &KnowledgeBase, id: RuleId) -> Result<bool, PersistenceError>;
 
     /// Flush all buffered writes to storage.
     fn flush(&mut self, kb: &KnowledgeBase) -> Result<(), PersistenceError>;

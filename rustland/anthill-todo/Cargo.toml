@@ -13,3 +13,6 @@ anthill-core = { path = "../anthill-core" }
 clap = { version = "4", features = ["derive"] }
 chrono = "0.4"
 smallvec = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -401,3 +401,18 @@ mod tests {
         assert_eq!(subs.as_slice(), &[a, b]);
     }
 }
+
+// ── TermSource trait ────────────────────────────────────────────
+
+/// Read-only view over a term graph plus the symbol table that names its
+/// functors. Implemented by `KnowledgeBase` (hash-consed) and by
+/// `ParsedFile` (parse-IR + parse-time symbol table). Lets `TermPrinter`
+/// render either without duplicating the printing logic.
+///
+/// Distinct from `kb::term_view::TermView`, which abstracts unification
+/// over `TermId` vs runtime `Value`. This trait is for *rendering*; that
+/// one is for *matching*.
+pub trait TermSource {
+    fn term(&self, id: TermId) -> &Term;
+    fn sym_name(&self, sym: Symbol) -> &str;
+}

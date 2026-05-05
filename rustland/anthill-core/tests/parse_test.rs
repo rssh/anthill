@@ -3642,3 +3642,92 @@ fn incorrect_program_error_includes_line_number() {
     assert!(formatted.contains("Nonexistent"),
         "error should mention the unresolved name, got: {}", formatted);
 }
+
+// ── Regression: descriptions with unicode and embedded keywords ────
+//
+// Real-world anthill-todo descriptions accumulate em-dashes, Greek
+// letters, section / multiplication signs, embedded code-like snippets
+// (`kb.epoch()`), and quoted text that itself contains `status: Open`.
+// The parser must tolerate all of this inside a string literal.
+
+#[test]
+fn parse_workitem_description_with_unicode_punctuation() {
+    // em-dash, Greek alpha, multiplication sign, section sign — all
+    // common in design docs and work-item descriptions.
+    let source = r#"fact WorkItem(
+  id: "WI-177",
+  description: "KB mutation epoch — bridge between live KB mutations and the existing proof cache (proposal 030 phase α: prove.rs:70). state_hash recomputed FROM SCRATCH per record, O(visited × kb_size). See examples/github-todo/docs/anthill-migration.md §6.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+"#;
+    let parsed = parse::parse(source)
+        .expect("WorkItem fact with unicode punctuation must parse");
+    assert_eq!(parsed.items.len(), 1);
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver)
+        .expect("load of unicode-description WorkItem must succeed");
+}
+
+#[test]
+fn parse_description_containing_status_open_substring() {
+    // A description literally containing the substring `status: Open`
+    // — the kind of body that appears when the work item itself
+    // explains a status-update flow. The parser must keep this inside
+    // the string; downstream text-surgery (the `update_status_in_source`
+    // path in anthill-todo) bears the burden of finding the *real*
+    // status field and not the one in the quoted description, but the
+    // parser side is straightforward — the closing `"` always wins.
+    let source = r#"fact WorkItem(
+  id: "WI-X",
+  description: "asserts a WorkItem(id: \"X\", status: Open), retracts it, asserts WorkItem(id: \"X\", status: Claimed(...))",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+"#;
+    let parsed = parse::parse(source)
+        .expect("description with literal `status: Open` substring must parse");
+    assert_eq!(parsed.items.len(), 1);
+
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load");
+
+    // Sanity: the description's String literal carries the embedded
+    // `status: Open` verbatim; the *fact's* status field is just `Open`.
+    let wi_sym = kb.intern("WorkItem");
+    let rules = kb.by_functor(wi_sym);
+    assert_eq!(rules.len(), 1);
+    let head = kb.rule_head(rules[0]);
+    let Term::Fn { named_args, .. } = kb.get_term(head) else {
+        panic!("WorkItem head should be Fn");
+    };
+    let desc = named_args
+        .iter()
+        .find(|(s, _)| kb.resolve_sym(*s) == "description")
+        .map(|(_, t)| *t)
+        .expect("description named arg present");
+    let Term::Const(Literal::String(desc_str)) = kb.get_term(desc) else {
+        panic!("description must be a String const");
+    };
+    assert!(
+        desc_str.contains(r#"status: Open"#),
+        "description should retain the literal `status: Open` substring"
+    );
+    assert!(
+        desc_str.contains(r#"WorkItem(id: "X""#),
+        "description should retain the embedded WorkItem reference"
+    );
+}
+
+#[test]
+fn parse_handles_multiple_facts_with_long_unicode_descriptions() {
+    // Multiple WorkItems back-to-back with WI-177-shaped descriptions —
+    // the file shape `anthill-todo` accumulates over time. Tree-sitter
+    // recovery must not let one fact's content leak into the next.
+    let source = "\
+fact WorkItem(\n  id: \"WI-A\",\n  description: \"em-dash — and § here\",\n  acceptance: [ToolPasses(\"cargo-test\")],\n  depends_on: [],\n  status: Open)\n\n\
+fact WorkItem(\n  id: \"WI-B\",\n  description: \"Greek α and × multiplication, plus quoted \\\"X\\\"\",\n  acceptance: [ToolPasses(\"cargo-test\")],\n  depends_on: [],\n  status: Open)\n\n\
+fact WorkItem(\n  id: \"WI-C\",\n  description: \"plain ASCII, no surprises\",\n  acceptance: [ToolPasses(\"cargo-test\")],\n  depends_on: [],\n  status: Open)\n";
+    let parsed = parse::parse(source).expect("three-fact unicode source must parse");
+    assert_eq!(parsed.items.len(), 3);
+}
