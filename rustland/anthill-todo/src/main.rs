@@ -1570,6 +1570,15 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
     use anthill_core::eval::{builtins, Interpreter, Value};
     use anthill_core::kb::load::NullResolver;
 
+    // `init` runs before any KB exists — it scaffolds the project's
+    // anthill-todo/ directory. Reuse the legacy implementation; once
+    // there's a project to load, the bundle takes over.
+    if argv.first().map(|s| s.as_str()) == Some("init") {
+        let name = argv.get(1).map(|s| s.as_str());
+        run_init(name);
+        return ExitCode::SUCCESS;
+    }
+
     let (stdlib_parsed, stdlib_errors) = stdlib_embedded::parse_embedded_stdlib();
     let (bundle_parsed, bundle_errors) = anthill_bundle::parse_embedded_bundle();
     for e in stdlib_errors.iter().chain(bundle_errors.iter()) {
