@@ -9,13 +9,15 @@
 namespace anthill.todo
   import anthill.cli.Main
   import anthill.prelude.{List, LogicalStream, Unit}
+  import anthill.prelude.Bool.{not}
+  import anthill.prelude.String.{length, substring, toUpper}
   import anthill.prelude.Console.{console, println, eprintln,
                                   ConsoleOutput, ConsoleError}
   import anthill.cli.parse.{parse_argv, ParseResult, ParsedArgs,
                             parse_ok, parse_err,
                             no_subcommand, unknown_subcommand}
   import anthill.cli.spec.{OperationSpec, ParamSpec, ParamKind}
-  import anthill.cli.spec.ParamKind.{positional}
+  import anthill.cli.spec.ParamKind.{positional, flag, bool_flag}
   import anthill.cli.parse.{Binding}
   import anthill.prelude.Option.{Option, none, some}
   import anthill.prelude.Pair.{Pair, pair}
@@ -40,7 +42,7 @@ namespace anthill.todo
     [ spec_named("init",              "Initialize a new anthill-todo project")
     , spec_named("add",               "Add a new work item")
     , spec_named("status",            "Show work item counts by status")
-    , spec_named("list",              "List work items")
+    , spec_list()
     , spec_named("next",              "Show next claimable work item")
     , spec_with_id("show",            "Show details of a work item")
     , spec_named("claim",             "Claim a work item")
@@ -77,6 +79,37 @@ namespace anthill.todo
         nil()),
       parent: none())
 
+  -- `list` accepts --status <name> and --all.
+  operation spec_list() -> OperationSpec =
+    OperationSpec(
+      name: "list",
+      description: "List work items",
+      params: cons(
+        ParamSpec(
+          name: "status",
+          kind: flag(),
+          required: false,
+          description: "Filter by status (Open, Claimed, Delivered, Verified, ...)"),
+        cons(
+          ParamSpec(
+            name: "all",
+            kind: bool_flag(),
+            required: false,
+            description: "Include delivered/verified items"),
+          nil())),
+      parent: none())
+
+  -- Per-WorkItem row precomputed for `cmd_list`. Walking a term's named
+  -- args via `term_field` is O(arity); rolling once into Row avoids
+  -- repeating that walk inside the dependent-count and sort comparators.
+  entity Row(
+    id: String,
+    status: String,
+    description: String,
+    depends: List[T = String],
+    unblocks: Int,
+    has_feedback: Bool)
+
   sort Main
     requires anthill.cli.Main
 
@@ -106,6 +139,7 @@ namespace anthill.todo
       if eq(name, "skill") then cmd_skill()
       else if eq(name, "status") then cmd_status()
       else if eq(name, "show") then cmd_show(bindings)
+      else if eq(name, "list") then cmd_list(bindings)
       else not_yet(name)
 
     -- Find the first Binding with the given name; none() otherwise.
@@ -344,6 +378,449 @@ namespace anthill.todo
               let _ = print_status_line(wi)
               let _ = print_deps(wi)
               0
+
+    -- ── cmd_list helpers ──────────────────────────────────────────
+
+    -- Lift a WorkItem term into the precomputed Row shape. Skips items
+    -- whose `id` field isn't a string (the synthetic entity-declaration
+    -- fact). `unblocks` and `has_feedback` are filled in a second pass
+    -- once the full row list is available — initialize to 0 and false.
+    operation row_of(t: Term) -> Option[T = Row] =
+      match term_field(t, "id")
+        case some(id_term) ->
+          match term_as_string(id_term)
+            case some(id_str) ->
+              let st = status_of(t)
+              let desc = match term_field(t, "description")
+                case some(d) ->
+                  match term_as_string(d)
+                    case some(s) -> s
+                    case none() -> ""
+                case none() -> ""
+              let deps = deps_walk(t)
+              some(Row(
+                id: id_str,
+                status: st,
+                description: desc,
+                depends: deps,
+                unblocks: 0,
+                has_feedback: false))
+            case none() -> none()
+        case none() -> none()
+
+    operation rows_of(items: List[Term]) -> List[Row] =
+      match items
+        case nil() -> nil()
+        case cons(t, rest) ->
+          match row_of(t)
+            case some(r) -> cons(r, rows_of(rest))
+            case none() -> rows_of(rest)
+
+    -- Default visibility: hide Delivered/Verified.
+    operation is_closed(status: String) -> Bool =
+      if eq(status, "Delivered") then true
+      else if eq(status, "Verified") then true
+      else false
+
+    -- Status filter match. The legacy CLI uses eq_ignore_ascii_case;
+    -- emulate via a "Capitalize first letter, lowercase rest" pass so
+    -- "open" / "OPEN" / "Open" all match WorkStatus names that begin
+    -- with a single uppercase letter.
+    operation matches_filter(status: String, filter: String) -> Bool =
+      if eq(status, filter) then true
+      else if eq(status, capitalized(filter)) then true
+      else false
+
+    -- Capitalize "open" → "Open". toUpper is a builtin (String.toUpper).
+    operation capitalized(s: String) -> String =
+      if eq(length(s), 0) then s
+      else concat(toUpper(substring(s, 0, 1)),
+                  substring(s, 1, length(s)))
+
+    operation filter_rows(rows: List[Row],
+                          status_filter: Option[T = String],
+                          show_all: Bool)
+      -> List[Row]
+    =
+      match rows
+        case nil() -> nil()
+        case cons(r, rest) ->
+          match r
+            case Row(_, status, _, _, _, _) ->
+              if keep(status, status_filter, show_all) then
+                cons(r, filter_rows(rest, status_filter, show_all))
+              else filter_rows(rest, status_filter, show_all)
+
+    operation keep(status: String,
+                   status_filter: Option[T = String],
+                   show_all: Bool)
+      -> Bool
+    =
+      match status_filter
+        case some(f) -> matches_filter(status, f)
+        case none() ->
+          if show_all then true
+          else not(is_closed(status))
+
+    -- Look up a status for a given id from the row list. Used by the
+    -- "all deps satisfied" check below.
+    operation status_for(rows: List[Row], id: String) -> Option[T = String] =
+      match rows
+        case nil() -> none()
+        case cons(r, rest) ->
+          match r
+            case Row(rid, status, _, _, _, _) ->
+              if eq(rid, id) then some(status)
+              else status_for(rest, id)
+
+    operation is_satisfied(status: String) -> Bool =
+      if eq(status, "Delivered") then true
+      else if eq(status, "Verified") then true
+      else false
+
+    operation any_unmet(deps: List[String], all_rows: List[Row]) -> Bool =
+      match deps
+        case nil() -> false
+        case cons(dep, rest) ->
+          match status_for(all_rows, dep)
+            case some(s) ->
+              if is_satisfied(s) then any_unmet(rest, all_rows)
+              else true
+            case none() -> true  -- unknown dep counts as unmet
+
+    -- ── Dependents map: id → list of items depending on it ────────
+
+    -- For each row, walk its deps and add a (dep_id, this_id) pair.
+    -- We keep this as a flat List[Pair[String, String]] and let the
+    -- transitive-count walker filter; building a true keyed map adds a
+    -- lot of code without changing complexity for the sizes we hit.
+    operation dependent_pairs(rows: List[Row]) -> List[Pair[String, String]] =
+      match rows
+        case nil() -> nil()
+        case cons(r, rest) ->
+          match r
+            case Row(rid, _, _, deps, _, _) ->
+              concat_lists(
+                pairs_for(rid, deps),
+                dependent_pairs(rest))
+
+    operation pairs_for(rid: String, deps: List[String])
+      -> List[Pair[String, String]]
+    =
+      match deps
+        case nil() -> nil()
+        case cons(d, rest) -> cons(pair(d, rid), pairs_for(rid, rest))
+
+    operation concat_lists(a: List[Pair[String, String]],
+                           b: List[Pair[String, String]])
+      -> List[Pair[String, String]]
+    =
+      match a
+        case nil() -> b
+        case cons(h, rest) -> cons(h, concat_lists(rest, b))
+
+    -- Direct dependents of `id`: every (id, x) pair's second element.
+    operation direct_dependents(pairs: List[Pair[String, String]],
+                                id: String)
+      -> List[String]
+    =
+      match pairs
+        case nil() -> nil()
+        case cons(p, rest) ->
+          match p
+            case pair(k, v) ->
+              if eq(k, id) then cons(v, direct_dependents(rest, id))
+              else direct_dependents(rest, id)
+
+    -- Visited set as a sorted-list of ids. `visited_contains` does a
+    -- linear scan; for the depth we expect, that's fine.
+    operation visited_contains(visited: List[String], id: String) -> Bool =
+      match visited
+        case nil() -> false
+        case cons(h, rest) ->
+          if eq(h, id) then true else visited_contains(rest, id)
+
+    -- Recursive transitive-dependents count. Tracks a per-call visited
+    -- set to enforce *unique* reachable counting — a diamond dep
+    -- pattern (X → A → D and X → B → D) must count D once, not twice.
+    -- (We tried global memoization across rows; the count of a node is
+    -- not a sum-able quantity in shared-path graphs, so per-call
+    -- visited is the right shape.)
+    --
+    -- For the per-row pass (`fill_unblocks`) this is O(N) per row × N
+    -- rows = O(N^2). The user's "topo-sort" idea would amortize
+    -- further, but the correct topo recurrence isn't sum-of-children
+    -- counts — it's union-of-children's-reachable-sets, which needs
+    -- set arithmetic. Leaving that as a perf follow-up; correctness
+    -- comes first.
+
+    operation count_transitive(id: String,
+                               pairs: List[Pair[String, String]],
+                               visited: List[String])
+      -> Pair[Int, List[String]]
+    =
+      if visited_contains(visited, id) then pair(0, visited)
+      else
+        let visited2 = cons(id, visited)
+        let direct = direct_dependents(pairs, id)
+        count_transitive_walk(direct, pairs, visited2)
+
+    operation count_transitive_walk(deps: List[String],
+                                    pairs: List[Pair[String, String]],
+                                    visited: List[String])
+      -> Pair[Int, List[String]]
+    =
+      match deps
+        case nil() -> pair(0, visited)
+        case cons(d, rest) ->
+          match count_transitive(d, pairs, visited)
+            case pair(sub, v2) ->
+              match count_transitive_walk(rest, pairs, v2)
+                case pair(more, v3) -> pair(1 + sub + more, v3)
+
+    -- ── Feedback set ──────────────────────────────────────────────
+
+    -- Collect the set of work-item ids that have at least one Feedback
+    -- fact; used for the [has feedback] annotation.
+    operation feedback_ids() -> List[String] =
+      let fb_facts = facts_of(kb(), "Feedback")
+      collect_feedback_ids(fb_facts)
+
+    operation collect_feedback_ids(facts: List[Term]) -> List[String] =
+      match facts
+        case nil() -> nil()
+        case cons(t, rest) ->
+          match term_field(t, "workitem")
+            case some(wi_term) ->
+              match term_as_string(wi_term)
+                case some(wi_id) -> cons(wi_id, collect_feedback_ids(rest))
+                case none() -> collect_feedback_ids(rest)
+            case none() -> collect_feedback_ids(rest)
+
+    operation list_contains(ids: List[String], id: String) -> Bool =
+      match ids
+        case nil() -> false
+        case cons(h, rest) ->
+          if eq(h, id) then true else list_contains(rest, id)
+
+    -- ── Annotate rows with has_feedback only ───────────────────────
+    -- `unblocks` is filled in later for the (much smaller) ready
+    -- partition; computing it here for every row is O(N^3) in the
+    -- interpreter (each count_transitive walks up to N dependents and
+    -- annotate_rows fires N times).
+
+    operation annotate_rows(rows: List[Row],
+                            fb_ids: List[String])
+      -> List[Row]
+    =
+      match rows
+        case nil() -> nil()
+        case cons(r, rest) ->
+          match r
+            case Row(rid, status, desc, deps, _, _) ->
+              cons(
+                Row(
+                  id: rid,
+                  status: status,
+                  description: desc,
+                  depends: deps,
+                  unblocks: 0,
+                  has_feedback: list_contains(fb_ids, rid)),
+                annotate_rows(rest, fb_ids))
+
+    -- Fill in `unblocks` for the supplied rows. Each row's count uses a
+    -- fresh visited set (correctness for diamond patterns); we call
+    -- this only on the `ready` partition to keep the cost bounded.
+    operation fill_unblocks(rows: List[Row],
+                            pairs: List[Pair[String, String]])
+      -> List[Row]
+    =
+      match rows
+        case nil() -> nil()
+        case cons(r, rest) ->
+          match r
+            case Row(rid, status, desc, deps, _, fb) ->
+              match count_transitive(rid, pairs, nil())
+                case pair(n, _) ->
+                  cons(
+                    Row(
+                      id: rid,
+                      status: status,
+                      description: desc,
+                      depends: deps,
+                      unblocks: n,
+                      has_feedback: fb),
+                    fill_unblocks(rest, pairs))
+
+    -- ── Sorting ───────────────────────────────────────────────────
+
+    -- Order key for "ready": (unblocks desc, id asc). Returns true when
+    -- `a` should come before `b`.
+    operation ready_lt(a: Row, b: Row) -> Bool =
+      match a
+        case Row(aid, _, _, _, ac, _) ->
+          match b
+            case Row(bid, _, _, _, bc, _) ->
+              if eq(ac, bc) then lt(aid, bid)
+              else if lt(ac, bc) then false  -- larger count first
+              else true
+
+    operation insert_ready(rs: List[Row], r: Row) -> List[Row] =
+      match rs
+        case nil() -> cons(r, nil())
+        case cons(h, rest) ->
+          if ready_lt(r, h) then cons(r, cons(h, rest))
+          else cons(h, insert_ready(rest, r))
+
+    operation sort_ready(rs: List[Row]) -> List[Row] =
+      sort_ready_loop(rs, nil())
+
+    operation sort_ready_loop(rs: List[Row], acc: List[Row]) -> List[Row] =
+      match rs
+        case nil() -> acc
+        case cons(h, rest) -> sort_ready_loop(rest, insert_ready(acc, h))
+
+    -- Stable insertion sort by id. We process the input list with an
+    -- accumulator that already holds the prefix in sorted order; new
+    -- elements get appended after any equal-key entries, preserving
+    -- original encounter order for duplicates (legacy Rust slice::sort_by
+    -- is stable, so ties retain input order — the data has duplicate
+    -- WI-169 ids and the bundle must match that ordering).
+    operation insert_by_id(rs: List[Row], r: Row) -> List[Row] =
+      match rs
+        case nil() -> cons(r, nil())
+        case cons(h, rest) ->
+          match r
+            case Row(rid, _, _, _, _, _) ->
+              match h
+                case Row(hid, _, _, _, _, _) ->
+                  if lt(rid, hid) then cons(r, cons(h, rest))
+                  else cons(h, insert_by_id(rest, r))
+
+    -- Left-fold variant — preserves original order on ties because we
+    -- iterate input left-to-right and `insert_by_id` only places
+    -- strictly-less-than items before the head.
+    operation sort_by_id(rs: List[Row]) -> List[Row] =
+      sort_by_id_loop(rs, nil())
+
+    operation sort_by_id_loop(rs: List[Row], acc: List[Row]) -> List[Row] =
+      match rs
+        case nil() -> acc
+        case cons(h, rest) -> sort_by_id_loop(rest, insert_by_id(acc, h))
+
+    -- ── Partition into ready / blocked ────────────────────────────
+
+    operation partition_ready(rows: List[Row], all: List[Row])
+      -> List[Row]
+    =
+      match rows
+        case nil() -> nil()
+        case cons(r, rest) ->
+          match r
+            case Row(_, _, _, deps, _, _) ->
+              if any_unmet(deps, all) then partition_ready(rest, all)
+              else cons(r, partition_ready(rest, all))
+
+    operation partition_blocked(rows: List[Row], all: List[Row])
+      -> List[Row]
+    =
+      match rows
+        case nil() -> nil()
+        case cons(r, rest) ->
+          match r
+            case Row(_, _, _, deps, _, _) ->
+              if any_unmet(deps, all) then cons(r, partition_blocked(rest, all))
+              else partition_blocked(rest, all)
+
+    -- ── Print ─────────────────────────────────────────────────────
+
+    operation deps_suffix(deps: List[String]) -> String =
+      match deps
+        case nil() -> ""
+        case cons(_, _) ->
+          concat(" (depends: ", concat(join_strings(deps, ", "), ")"))
+
+    operation unblocks_suffix(n: Int) -> String =
+      if eq(n, 0) then ""
+      else concat(" [unblocks ", concat(to_string(n), "]"))
+
+    operation feedback_suffix(b: Bool) -> String =
+      if b then " [has feedback]" else ""
+
+    operation render_ready(r: Row) -> String =
+      match r
+        case Row(id, status, desc, deps, n, fb) ->
+          concat("  ",
+            concat(id, concat(" [", concat(status, concat("] ",
+              concat(desc,
+                concat(deps_suffix(deps),
+                  concat(unblocks_suffix(n), feedback_suffix(fb))))))) ))
+
+    operation render_blocked(r: Row) -> String =
+      match r
+        case Row(id, status, desc, deps, _, fb) ->
+          concat("  ",
+            concat(id, concat(" [", concat(status, concat("] ",
+              concat(desc, concat(deps_suffix(deps), feedback_suffix(fb))))))))
+
+    operation print_rows_ready(rs: List[Row]) -> Unit
+      effects ConsoleOutput
+    =
+      match rs
+        case nil() -> ()
+        case cons(r, rest) ->
+          let _ = println(console(), render_ready(r))
+          print_rows_ready(rest)
+
+    operation print_rows_blocked(rs: List[Row]) -> Unit
+      effects ConsoleOutput
+    =
+      match rs
+        case nil() -> ()
+        case cons(r, rest) ->
+          let _ = println(console(), render_blocked(r))
+          print_rows_blocked(rest)
+
+    operation count_rows(rs: List[Row]) -> Int =
+      match rs
+        case nil() -> 0
+        case cons(_, rest) -> 1 + count_rows(rest)
+
+    -- ── cmd_list itself ───────────────────────────────────────────
+
+    operation cmd_list(bindings: List[Binding]) -> Int
+      effects ConsoleOutput
+    =
+      let status_filter = get_binding(bindings, "status")
+      let show_all = match get_binding(bindings, "all")
+        case some(_) -> true
+        case none() -> false
+      let raw_rows = rows_of(facts_of(kb(), "WorkItem"))
+      let pairs = dependent_pairs(raw_rows)
+      let fb_ids = feedback_ids()
+      let annotated = annotate_rows(raw_rows, fb_ids)
+      let filtered = filter_rows(annotated, status_filter, show_all)
+      if eq(count_rows(filtered), 0) then
+        let _ = println(console(), "No work items found.")
+        0
+      else
+        -- Compute `unblocks` only for the (smaller) ready slice; the
+        -- blocked slice doesn't display the count.
+        let ready_unfilled = partition_ready(filtered, annotated)
+        let ready = sort_ready(fill_unblocks(ready_unfilled, pairs))
+        let blocked = sort_by_id(partition_blocked(filtered, annotated))
+        let _ = print_rows_ready(ready)
+        let _ = match blocked
+          case nil() -> ()
+          case cons(_, _) ->
+            let _ = match ready
+              case nil() -> ()
+              case cons(_, _) -> println(console(), "")
+            let _ = println(console(), "  -- blocked --")
+            print_rows_blocked(blocked)
+        let _ = println(console(),
+                        concat(to_string(count_rows(filtered)), " item(s)"))
+        0
 
     operation cmd_skill() -> Int
       effects ConsoleOutput

@@ -56,6 +56,8 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.String.startsWith", string_starts_with)?;
     register_if_present(interp, "anthill.prelude.String.endsWith", string_ends_with)?;
     register_if_present(interp, "anthill.prelude.String.substring", string_substring)?;
+    register_if_present(interp, "anthill.prelude.String.toUpper", string_to_upper)?;
+    register_if_present(interp, "anthill.prelude.String.toLower", string_to_lower)?;
 
     register_if_present(interp, "anthill.prelude.BigInt.to_bigint", bigint_to_bigint)?;
     register_if_present(interp, "anthill.prelude.BigInt.to_int", bigint_to_int)?;
@@ -480,6 +482,22 @@ fn string_ends_with(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
     match (&a, &b) {
         (Value::Str(s), Value::Str(p)) => Ok(Value::Bool(s.ends_with(p.as_str()))),
         _ => Err(type_mismatch("String", &a, Some(&b))),
+    }
+}
+
+fn string_to_upper(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a] = expect_args::<1>("String.toUpper", args)?;
+    match a {
+        Value::Str(s) => Ok(Value::Str(s.to_uppercase())),
+        other => Err(type_mismatch("String", &other, None)),
+    }
+}
+
+fn string_to_lower(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a] = expect_args::<1>("String.toLower", args)?;
+    match a {
+        Value::Str(s) => Ok(Value::Str(s.to_lowercase())),
+        other => Err(type_mismatch("String", &other, None)),
     }
 }
 
