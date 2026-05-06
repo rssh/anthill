@@ -26,6 +26,13 @@ pub struct SimpleTermStore {
     /// Byte-offset spans for terms.
     /// Populated by the converter for each term node that has a source position.
     pub spans: HashMap<TermId, Span>,
+    /// Type annotations on `let pattern : type = value` (proposal 035 form
+    /// (1)). Keyed by the let_expr TermId allocated in convert_let_expr.
+    /// The loader reads this when expanding a let_expr to thread the
+    /// expected-type hint into both the value position (so list-literal
+    /// desugaring and Map.empty inference fire correctly) and the body's
+    /// typing environment.
+    pub let_type_annotations: HashMap<TermId, TypeExpr>,
 }
 
 impl SimpleTermStore {

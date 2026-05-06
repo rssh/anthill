@@ -104,6 +104,83 @@ operation abs(x: Int) -> Int =
         (identifier)))))
 
 =====================================
+Let with type annotation
+=====================================
+
+sort S
+  operation main() -> Int =
+    let x: Int = 7
+    x
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name
+      (identifier))
+    (operation_declaration
+      name: (name
+        (identifier))
+      return_type: (simple_type
+        (name
+          (identifier)))
+      body: (let_chain
+        pattern: (pattern_var
+          (identifier))
+        type: (simple_type
+          (name
+            (identifier)))
+        value: (integer_literal)
+        body: (identifier)))))
+
+=====================================
+Let with parameterized type annotation
+=====================================
+
+sort S
+  operation main() -> Int =
+    let m: Map[K = String, V = Int] = empty()
+    size(m)
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name
+      (identifier))
+    (operation_declaration
+      name: (name
+        (identifier))
+      return_type: (simple_type
+        (name
+          (identifier)))
+      body: (let_chain
+        pattern: (pattern_var
+          (identifier))
+        type: (parameterized_type
+          (name
+            (identifier))
+          (sort_binding
+            param: (name
+              (identifier))
+            type: (simple_type
+              (name
+                (identifier))))
+          (sort_binding
+            param: (name
+              (identifier))
+            type: (simple_type
+              (name
+                (identifier)))))
+        value: (fn_term
+          name: (identifier))
+        body: (fn_term
+          name: (identifier)
+          (identifier))))))
+
+=====================================
 Operation with let body
 =====================================
 

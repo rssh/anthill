@@ -2310,6 +2310,43 @@ end
 }
 
 #[test]
+fn let_with_type_annotation_simple() {
+    // Proposal 035 form (1): typer accepts `let x: Int = 7 ; x` cleanly.
+    // The annotation pins the bound variable's type for the body env.
+    let source = r#"
+sort Demo
+  operation main() -> Int =
+    let x: Int = 7
+    x
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "let with Int annotation should typecheck, got: {:?}", errors);
+}
+
+#[test]
+fn let_with_parameterized_type_annotation() {
+    // Annotation drives the variable's type when the value's inferred
+    // type would otherwise leave parameters free. Even when the typer
+    // can't infer K/V from the empty constructor today, the annotation
+    // still binds the variable to the parameterized form for later use.
+    let source = r#"
+sort Demo
+  import anthill.prelude.{Map}
+  import anthill.prelude.Map.{empty, size}
+
+  operation main() -> Int =
+    let m: Map[K = String, V = Int] = empty()
+    size(m)
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "annotated let should typecheck, got: {:?}", errors);
+}
+
+#[test]
 fn type_check_sorts_op_with_type_param_instantiation() {
     // add(x, x) where x: Int should resolve Numeric.T to Int, return Int
     let source = r#"

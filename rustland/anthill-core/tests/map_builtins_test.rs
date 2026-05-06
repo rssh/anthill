@@ -190,14 +190,14 @@ end
 }
 
 #[test]
-#[ignore = "form (1) needs grammar support for `let x: T = expr` — tracked as follow-up"]
 fn form_1_let_with_type_annotation() {
     // Form (1) of proposal 035: type annotation on the LHS supplies K, V.
-    // Runtime: type-erased, so the call would dispatch identically to forms
-    // (2) and (3). What's missing: the let_chain grammar rule does not
-    // accept `pattern : type` — a real grammar extension. Once the grammar
-    // lands, the converter just needs to discard the annotation; the typer
-    // uses it as expected-type for the RHS to fill in K and V.
+    // Runtime is type-erased — the call dispatches identically to forms
+    // (2) and (3). The annotation is parsed via the let_chain grammar
+    // extension (WI-185), recorded in let_type_annotations, then threaded
+    // onto the kb-side `let_expr` as a `type_name: <type>` named arg so the
+    // typer can later use it as the expected type for the value and as the
+    // bound variable's type in the body.
     let src = r#"
 namespace test.map_form1
   import anthill.prelude.{Map}
@@ -211,6 +211,22 @@ end
     let mut interp = interp_for(src);
     let result = interp.call("test.map_form1.build", &[]).expect("call build");
     assert_eq!(result.as_int(), Some(1));
+}
+
+#[test]
+fn form_1_simple_int_annotation() {
+    // The annotation can be any type, not just parameterized. Smoke test
+    // for the simple case `let x: Int = 7`.
+    let src = r#"
+namespace test.let_anno_int
+  operation main() -> Int
+    = let x: Int = 7
+      x
+end
+"#;
+    let mut interp = interp_for(src);
+    let result = interp.call("test.let_anno_int.main", &[]).expect("call main");
+    assert_eq!(result.as_int(), Some(7));
 }
 
 #[test]

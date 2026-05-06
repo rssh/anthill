@@ -3126,7 +3126,7 @@ impl<'a> Loader<'a> {
                     "match_expr" => self.load_match_expr(&pos_args),
                     "match_branch" => self.load_match_branch(&pos_args),
                     "if_expr" => self.load_if_expr(&pos_args),
-                    "let_expr" => self.load_let_expr(&pos_args),
+                    "let_expr" => self.load_let_expr(parse_id, &pos_args),
                     "lambda" => self.load_lambda_expr(&pos_args),
                     "pattern_var" => self.load_pattern_var(&pos_args),
                     "pattern_wildcard" => self.load_pattern_wildcard(),
@@ -3217,8 +3217,14 @@ impl<'a> Loader<'a> {
         })
     }
 
-    /// let_expr: pos_args[0] = pattern, pos_args[1] = value, pos_args[2] = body
-    fn load_let_expr(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
+    /// let_expr: pos_args[0] = pattern, pos_args[1] = value, pos_args[2] = body.
+    /// The optional `: type` annotation (proposal 035 form (1)) lives in
+    /// `parsed.terms.let_type_annotations` keyed by the parse-time
+    /// `parse_id` of the let_expr — when present, it threads onto the
+    /// kb-side let_expr's `type_name` named arg so the typer can use it
+    /// as expected type for the value position and bind the variable's
+    /// type for the body's environment.
+    fn load_let_expr(&mut self, parse_id: TermId, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
         let (pattern, _) = self.convert_expr_term(pos_args[0]); // Pattern
         let value = self.convert_expr_child(pos_args[1]); // ExprOccurrence
         let body = self.convert_expr_child(pos_args[2]); // ExprOccurrence
@@ -3226,14 +3232,20 @@ impl<'a> Loader<'a> {
         let pattern_key = self.kb.intern("pattern");
         let value_key = self.kb.intern("value");
         let body_key = self.kb.intern("body");
+        let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::from_slice(&[
+            (pattern_key, pattern),
+            (value_key, value),
+            (body_key, body),
+        ]);
+        if let Some(ty_expr) = self.parsed.terms.let_type_annotations.get(&parse_id).cloned() {
+            let ty_term = self.type_expr_to_term(&ty_expr);
+            let type_name_key = self.kb.intern("type_name");
+            named.push((type_name_key, ty_term));
+        }
         self.kb.alloc(Term::Fn {
             functor: let_sym,
             pos_args: SmallVec::new(),
-            named_args: SmallVec::from_slice(&[
-                (pattern_key, pattern),
-                (value_key, value),
-                (body_key, body),
-            ]),
+            named_args: named,
         })
     }
 

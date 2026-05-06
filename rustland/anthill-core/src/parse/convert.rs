@@ -1818,7 +1818,21 @@ impl<'a> Converter<'a> {
             .map(|b| self.convert_expr_body(b))
             .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
 
-        self.alloc_fn_term("let_expr", SmallVec::from_slice(&[pattern, value, body]))
+        // Proposal 035 form (1): optional `: type` annotation between
+        // pattern and `=`. The TypeExpr lives outside the term store —
+        // record it in the side-table keyed by the let_expr's parse
+        // TermId so `load_let_expr` can thread the expected-type hint
+        // into the value position and the body's typing env.
+        let type_anno = self.field(node, "type").map(|t| self.convert_type(t));
+
+        let let_id = self.alloc_fn_term(
+            "let_expr",
+            SmallVec::from_slice(&[pattern, value, body]),
+        );
+        if let Some(ty) = type_anno {
+            self.terms.let_type_annotations.insert(let_id, ty);
+        }
+        let_id
     }
 
     fn convert_lambda_expr(&mut self, node: Node) -> TermId {

@@ -855,7 +855,15 @@ fn check_if_expr(
     Some(TypeResult { ty, env: env.clone(), effects })
 }
 
-/// let_expr: effects = value ∪ body (with local resource scoping)
+/// let_expr: effects = value ∪ body (with local resource scoping).
+///
+/// Optional `type_name` named arg supplies the let-binding's annotation
+/// (proposal 035 form (1)). When present, the annotation overrides the
+/// value's inferred type in the body env so subsequent uses of the
+/// variable typecheck against the annotation rather than the (possibly
+/// looser) inferred RHS type. Type-erased constructors like `Map.empty()`
+/// rely on this — their inferred return type has free type-parameter
+/// variables that the annotation pins down.
 fn check_let_expr(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -864,12 +872,18 @@ fn check_let_expr(
     let pattern = get_named_arg(kb, named_args, "pattern")?;
     let value = get_named_arg(kb, named_args, "value")?;
     let body = get_named_arg(kb, named_args, "body")?;
+    let annotation = get_named_arg(kb, named_args, "type_name");
 
     let value_r = type_check_expr(kb, env, resolve_handle(kb, value));
     let value_ty = value_r.as_ref().map(|r| r.ty);
 
     let mut ext_env = value_r.as_ref().map(|r| r.env.clone()).unwrap_or_else(|| env.clone());
-    extend_env_from_pattern(kb, &mut ext_env, pattern, value_ty);
+    // Annotation, when present, takes precedence as the bound variable's
+    // type. The value's inferred type still drives effect propagation
+    // (read above from value_r.effects); the annotation only affects how
+    // the body sees the variable.
+    let bound_ty = annotation.or(value_ty);
+    extend_env_from_pattern(kb, &mut ext_env, pattern, bound_ty);
 
     // Declare let-bound variable as a local resource for effect scoping
     if let Some(var_name) = extract_pattern_var_name(kb, pattern) {
@@ -1114,7 +1128,7 @@ fn check_tuple_literal(
 /// e.g. extract_type_param(kb, List[T = Int], "T") → Some(Int)
 /// Extract a type parameter from a parameterized type.
 /// e.g. extract_type_param(kb, parameterized(base: sort_ref(List), bindings: [TypeBinding(param: T, value: Int)]), "T") → Some(sort_ref(Int))
-fn extract_type_param(kb: &KnowledgeBase, ty: TermId, param: &str) -> Option<TermId> {
+pub(crate) fn extract_type_param(kb: &KnowledgeBase, ty: TermId, param: &str) -> Option<TermId> {
     if let Term::Fn { functor, named_args, .. } = kb.get_term(ty) {
         let fname = kb.resolve_sym(*functor);
         if fname == "parameterized" {

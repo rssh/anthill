@@ -877,9 +877,15 @@ module.exports = grammar({
       'else', field('else', $._expr_body),
     )),
 
-    // Block-style let: let x = value \n body (no 'in' keyword)
+    // Block-style let: let x = value \n body (no 'in' keyword).
+    // Optional `: type` annotation between pattern and `=` (proposal 035
+    // form (1)): supplies an expected-type hint to the typer for the
+    // value position. The annotation also fixes the bound variable's
+    // type for the body, so subsequent uses can disambiguate against it
+    // (e.g. `Map.empty()` -> Map[K = String, V = Int] from the LHS).
     let_chain: $ => prec.right(seq(
       'let', field('pattern', $._pattern),
+      optional(seq(':', field('type', $._type))),
       '=', field('value', $._expr_body),
       field('body', $._expr_body),
     )),
