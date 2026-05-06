@@ -226,6 +226,15 @@ impl<'a> Converter<'a> {
             } else if o.kind() == "identifier" {
                 let sym = self.intern(self.text(o));
                 segments.push(sym);
+            } else if o.kind() == "instantiation_term" {
+                // Form (3) of proposal 035: `Map[K = String, V = Int].empty()`.
+                // The instantiation term names a sort with type bindings; for
+                // the runtime call path we only need the sort's name segment
+                // (bindings are erased). The type checker reads the bindings
+                // via the original node when it walks the call site.
+                let inst_name = self.field(o, "name").unwrap_or(o);
+                let sym = self.intern(self.text(inst_name));
+                segments.push(sym);
             }
         }
         if let Some(f) = field {

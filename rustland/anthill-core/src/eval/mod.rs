@@ -10,6 +10,7 @@ pub mod effects;
 pub mod error;
 pub mod eval;
 pub mod frame;
+pub mod map_arena;
 pub mod pattern;
 pub mod stream;
 pub mod subst_arena;
@@ -27,6 +28,7 @@ pub use value::Value;
 
 use closure::ClosureArenaRef;
 use effects::EffectRegistry;
+use map_arena::MapArenaRef;
 use stream::StreamArenaRef;
 
 /// Runtime resource limits. Each cap is optional so different embeddings
@@ -195,6 +197,7 @@ pub struct Interpreter {
     pub(crate) closures: ClosureArenaRef,
     pub(crate) streams: StreamArenaRef,
     pub(crate) substs: subst_arena::SubstArenaRef,
+    pub(crate) maps: MapArenaRef,
     pub(crate) effect_handlers: EffectRegistry,
     /// Registered persistence backends (proposal 007). Keyed by the
     /// canonical printed form of the store's `Value::Entity` so anthill
@@ -232,6 +235,7 @@ impl Interpreter {
             closures: ClosureArenaRef::new(),
             streams: StreamArenaRef::new(),
             substs: subst_arena::SubstArenaRef::new(),
+            maps: MapArenaRef::new(),
             effect_handlers: EffectRegistry::new(),
             store_registry: HashMap::new(),
             config,
@@ -329,7 +333,8 @@ impl Interpreter {
             | Value::Closure(_)
             | Value::Stream(_)
             | Value::Lazy(_)
-            | Value::Substitution(_) => {
+            | Value::Substitution(_)
+            | Value::Map(_) => {
                 return Err(EvalError::TypeMismatch {
                     expected: "store-shaped Value (Entity / scalar / Term)",
                     got: v.type_name().to_string(),
@@ -388,6 +393,28 @@ impl Interpreter {
 
     /// Number of live substitution-arena slots. Diagnostic for refcount tests.
     pub fn subst_arena_live_count(&self) -> usize { self.substs.live() }
+
+    /// Number of live map-arena slots. Diagnostic for refcount tests.
+    pub fn map_arena_live_count(&self) -> usize { self.maps.live() }
+
+    /// Allocate a fresh map slot and return a handle.
+    pub fn alloc_map(&self, body: map_arena::MapBody) -> value::MapHandle {
+        self.maps.alloc(body)
+    }
+
+    /// Run `f` with a shared reference to the map body behind `h`.
+    pub fn with_map<R>(
+        &self,
+        h: &value::MapHandle,
+        f: impl FnOnce(&map_arena::MapBody) -> R,
+    ) -> R {
+        self.maps.with_body(h, f)
+    }
+
+    /// Clone the map-arena handle. Same rationale as `subst_arena()`.
+    pub fn map_arena(&self) -> MapArenaRef {
+        self.maps.clone()
+    }
 
     /// Allocate a fresh substitution slot and return a handle.
     pub fn alloc_subst(&self, s: crate::kb::subst::Substitution) -> value::SubstHandle {

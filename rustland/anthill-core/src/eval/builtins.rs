@@ -68,6 +68,16 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Float.isInfinite", float_is_infinite)?;
     register_if_present(interp, "anthill.prelude.Float.isFinite", float_is_finite)?;
 
+    register_if_present(interp, "anthill.prelude.Map.empty", map_empty)?;
+    register_if_present(interp, "anthill.prelude.Map.put", map_put)?;
+    register_if_present(interp, "anthill.prelude.Map.get", map_get)?;
+    register_if_present(interp, "anthill.prelude.Map.contains", map_contains)?;
+    register_if_present(interp, "anthill.prelude.Map.remove", map_remove)?;
+    register_if_present(interp, "anthill.prelude.Map.keys", map_keys)?;
+    register_if_present(interp, "anthill.prelude.Map.values", map_values)?;
+    register_if_present(interp, "anthill.prelude.Map.entries", map_entries)?;
+    register_if_present(interp, "anthill.prelude.Map.size", map_size)?;
+
     register_if_present(interp, "anthill.prelude.LogicalStream.splitFirst", logical_stream_split_first)?;
     register_if_present(interp, "anthill.reflect.KB.execute", kb_execute)?;
     register_if_present(interp, "anthill.reflect.KB.facts_of", kb_facts_of)?;
@@ -789,6 +799,160 @@ fn subst_lookup(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
             named: Vec::new(),
         }),
     }
+}
+
+// ── Map builtins (proposal 035) ─────────────────────────────────
+//
+// `Value::Map(MapHandle)` is the runtime representation of any
+// `Map[K = ?, V = ?]`. K and V are erased — heterogeneity only matters to
+// the type checker. A user that bypasses the typer and stuffs an
+// incompatibly-typed value into a Map gets a silent miss on lookup; the
+// runtime won't double-check.
+//
+// Mutating ops (`put`, `remove`) clone the underlying `IndexMap` to
+// preserve immutability semantics. The cost is O(N) per write; persistent-
+// map data structures are a follow-up if it ever matters.
+
+/// Build an `Option[Term=V]` value with the given functor symbols. Helper for
+/// `get` to avoid repeating the some/none branch.
+fn option_some(some_sym: crate::intern::Symbol, value_key: crate::intern::Symbol, v: Value) -> Value {
+    Value::Entity { functor: some_sym, pos: Vec::new(), named: vec![(value_key, v)] }
+}
+fn option_none(none_sym: crate::intern::Symbol) -> Value {
+    Value::Entity { functor: none_sym, pos: Vec::new(), named: Vec::new() }
+}
+
+fn unsupported_key(v: &Value) -> EvalError {
+    EvalError::TypeMismatch {
+        expected: "Map key (Int / Bool / String / Term)",
+        got: v.type_name().to_string(),
+    }
+}
+
+fn map_empty(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [] = expect_args::<0>("Map.empty", args)?;
+    let handle = interp.alloc_map(super::map_arena::MapBody::new());
+    Ok(Value::Map(handle))
+}
+
+fn map_put(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [m_arg, k_arg, v_arg] = expect_args::<3>("Map.put", args)?;
+    let handle = match m_arg {
+        Value::Map(h) => h,
+        other => return Err(type_mismatch("Map", &other, None)),
+    };
+    let key = super::map_arena::MapKey::try_from_value(&k_arg)
+        .ok_or_else(|| unsupported_key(&k_arg))?;
+    let mut body = interp.maps.clone_body(&handle);
+    body.insert(key, v_arg);
+    let new_handle = interp.alloc_map(body);
+    Ok(Value::Map(new_handle))
+}
+
+fn map_get(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [m_arg, k_arg] = expect_args::<2>("Map.get", args)?;
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    let value_key = interp.kb.intern("value");
+    let handle = match m_arg {
+        Value::Map(h) => h,
+        other => return Err(type_mismatch("Map", &other, None)),
+    };
+    let key = match super::map_arena::MapKey::try_from_value(&k_arg) {
+        Some(k) => k,
+        None => return Err(unsupported_key(&k_arg)),
+    };
+    let found: Option<Value> = interp.maps.with_body(&handle, |b| b.get(&key).cloned());
+    Ok(match found {
+        Some(v) => option_some(some_sym, value_key, v),
+        None => option_none(none_sym),
+    })
+}
+
+fn map_contains(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [m_arg, k_arg] = expect_args::<2>("Map.contains", args)?;
+    let handle = match m_arg {
+        Value::Map(h) => h,
+        other => return Err(type_mismatch("Map", &other, None)),
+    };
+    let key = match super::map_arena::MapKey::try_from_value(&k_arg) {
+        Some(k) => k,
+        None => return Err(unsupported_key(&k_arg)),
+    };
+    let present = interp.maps.with_body(&handle, |b| b.contains_key(&key));
+    Ok(Value::Bool(present))
+}
+
+fn map_remove(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [m_arg, k_arg] = expect_args::<2>("Map.remove", args)?;
+    let handle = match m_arg {
+        Value::Map(h) => h,
+        other => return Err(type_mismatch("Map", &other, None)),
+    };
+    let key = match super::map_arena::MapKey::try_from_value(&k_arg) {
+        Some(k) => k,
+        None => return Err(unsupported_key(&k_arg)),
+    };
+    let mut body = interp.maps.clone_body(&handle);
+    // `shift_remove` preserves the order of the remaining entries — matches
+    // anthill's user-visible semantics that iteration order reflects insertion
+    // order (and stays stable across removals).
+    body.shift_remove(&key);
+    let new_handle = interp.alloc_map(body);
+    Ok(Value::Map(new_handle))
+}
+
+fn map_keys(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [m_arg] = expect_args::<1>("Map.keys", args)?;
+    let handle = match m_arg {
+        Value::Map(h) => h,
+        other => return Err(type_mismatch("Map", &other, None)),
+    };
+    let elements: Vec<Value> = interp.maps.with_body(&handle, |b| {
+        b.keys().map(|k| k.to_value()).collect()
+    });
+    interp.build_list_value(elements, &[])
+}
+
+fn map_values(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [m_arg] = expect_args::<1>("Map.values", args)?;
+    let handle = match m_arg {
+        Value::Map(h) => h,
+        other => return Err(type_mismatch("Map", &other, None)),
+    };
+    let elements: Vec<Value> = interp.maps.with_body(&handle, |b| {
+        b.values().cloned().collect()
+    });
+    interp.build_list_value(elements, &[])
+}
+
+fn map_entries(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [m_arg] = expect_args::<1>("Map.entries", args)?;
+    let handle = match m_arg {
+        Value::Map(h) => h,
+        other => return Err(type_mismatch("Map", &other, None)),
+    };
+    let pair_sym = require_symbol(interp, "anthill.prelude.Pair.pair", "pair")?;
+    let fst_key = interp.kb.intern("fst");
+    let snd_key = interp.kb.intern("snd");
+    let elements: Vec<Value> = interp.maps.with_body(&handle, |b| {
+        b.iter().map(|(k, v)| Value::Entity {
+            functor: pair_sym,
+            pos: Vec::new(),
+            named: vec![(fst_key, k.to_value()), (snd_key, v.clone())],
+        }).collect()
+    });
+    interp.build_list_value(elements, &[])
+}
+
+fn map_size(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [m_arg] = expect_args::<1>("Map.size", args)?;
+    let handle = match m_arg {
+        Value::Map(h) => h,
+        other => return Err(type_mismatch("Map", &other, None)),
+    };
+    let n = interp.maps.with_body(&handle, |b| b.len());
+    Ok(Value::Int(n as i64))
 }
 
 /// Resolve a builtin's target symbol. Tries the fully-qualified name first,

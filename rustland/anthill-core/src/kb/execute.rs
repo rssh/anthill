@@ -223,6 +223,7 @@ impl KnowledgeBase {
             Value::Stream(_) => Err(LowerError::UnsupportedVariant("Stream")),
             Value::Lazy(_) => Err(LowerError::UnsupportedVariant("Lazy")),
             Value::Substitution(_) => Err(LowerError::UnsupportedVariant("Substitution")),
+            Value::Map(_) => Err(LowerError::UnsupportedVariant("Map")),
         }
     }
 

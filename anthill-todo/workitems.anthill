@@ -1320,3 +1320,17 @@ fact WorkItem(
   depends_on: [],
   status: Open)
 
+fact WorkItem(
+  id: "WI-185",
+  description: "Proposal 035 form (1): let-binding type annotation. Surface form `let m: Map[K = String, V = Int] = Map.empty()` requires the let_chain grammar to accept an optional `: type` between pattern and `=`. Today only `let pattern = expr body` parses. Work: (a) tree-sitter grammar — add optional type annotation to let_chain or extend pattern_var with a typed variant; regenerate grammar; tests; (b) converter convert_let_chain — capture the annotation and store on the IR's Let node; (c) loader — pass annotation to convert_term_with_expected on the value position, the same way named-arg field types already drive list-literal desugaring; (d) typer — bind the variable's type in the body's environment so subsequent uses of `m` typecheck against `Map[K = String, V = Int]`. Once the grammar lands the runtime is unaffected (types are erased). Acceptance: the form_1_let_with_type_annotation test in map_builtins_test.rs passes (currently #[ignore]); typer rejects `let m = Map.empty()` with no constraint as 'ambiguous type parameter'. Driver: proposal 035 §What the surface should look like. Independent of WI-186 (free-standing parametric ops).",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-186",
+  description: "Proposal 035: free-standing parametric operations at namespace level. Today operations inside sort bodies inherit the sort's type parameters, but namespace-direct operations have no way to declare their own. Surface: `operation pair[A, B](a: A, b: B) -> Pair[A = A, B = B]`. Work: (a) grammar — extend operation_declaration to allow `[A, B, ...]` between name and `(` for type params; regenerate; tests; (b) converter — collect type param names into IR; (c) loader — register them as type params in the operation's local scope so `A` resolves to a fresh sort var inside param/return type positions; (d) typer — generalize over the declared params and instantiate them at each call site. Acceptance: `pair[A, B](a, b)` parses and typechecks at namespace level with the same semantics as the equivalent declaration inside a sort body; existing sort-nested operations still work. Driver: proposal 035 §Free-standing parametric operations; symmetry argument. Independent of WI-185.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+

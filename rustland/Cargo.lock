@@ -88,6 +88,7 @@ dependencies = [
 name = "anthill-core"
 version = "0.1.0"
 dependencies = [
+ "indexmap",
  "num-bigint",
  "ordered-float",
  "serde",

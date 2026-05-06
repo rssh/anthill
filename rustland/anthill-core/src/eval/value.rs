@@ -9,6 +9,7 @@ use crate::intern::Symbol;
 use crate::kb::term::TermId;
 
 pub use super::closure::ClosureHandle;
+pub use super::map_arena::MapHandle;
 pub use super::stream::StreamHandle;
 pub use super::subst_arena::SubstHandle;
 
@@ -58,6 +59,10 @@ pub enum Value {
     /// interpreter. Yielded by stream `splitFirst` and constructed by
     /// `Substitution.compose`; passed to `Substitution.apply`.
     Substitution(SubstHandle),
+    /// First-class map — arena-refcounted handle into the per-interpreter
+    /// MapArena. Type parameters are erased at runtime; the type checker
+    /// guards against heterogeneous keys/values (proposal 035).
+    Map(MapHandle),
 
     // KB-sourced or already-committed data (hash-consed).
     Term(TermId),
@@ -130,6 +135,7 @@ impl Value {
             Value::Stream(_) => "Stream",
             Value::Lazy(_) => "Lazy",
             Value::Substitution(_) => "Substitution",
+            Value::Map(_) => "Map",
             Value::Term(_) => "Term",
         }
     }

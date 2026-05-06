@@ -2800,6 +2800,27 @@ impl<'a> Loader<'a> {
                 self.kb.symbols.intern(name)
             }
             ResolveResult::NotFound => {
+                // Dotted name: try segment-aware resolution. Resolve the
+                // head segment in scope (Map → anthill.prelude.Map), then
+                // append the trailing segments to its qualified path and
+                // look the result up directly. Covers the dotted-call form
+                // `Map.empty()` and proposal-035 form (3) `Map[...].empty()`,
+                // both of which produce a single joined Symbol "Map.empty"
+                // that doesn't appear in any scope's locals/imports.
+                if let Some((head, tail)) = name.split_once('.') {
+                    if let ResolveResult::Found(head_sym) =
+                        self.kb.symbols.resolve_in_scope(head, scope)
+                    {
+                        let head_qualified = match self.kb.symbols.get(head_sym) {
+                            SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
+                            SymbolDef::Unresolved { name } => name.clone(),
+                        };
+                        let probe = format!("{}.{}", head_qualified, tail);
+                        if let Some(&q_sym) = self.kb.symbols.by_qualified_name.get(&probe) {
+                            return q_sym;
+                        }
+                    }
+                }
                 // Fallback: check entity short-name index, then global short-name search
                 let interned = self.kb.symbols.intern(name);
                 if let Some(qualified) = self.kb.entity_qualified_for_short(interned) {

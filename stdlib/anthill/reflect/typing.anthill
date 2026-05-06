@@ -116,20 +116,76 @@ namespace anthill.reflect.typing
   -- nothing is bottom type — subtype of everything
   rule type_compatible(nothing, ?)
 
-  -- Parameterized types: compatible if base compatible and bindings compatible
-  rule type_compatible(
-    parameterized(base: ?B1, bindings: ?Binds1),
-    parameterized(base: ?B2, bindings: ?Binds2))
-    :- type_compatible(?B1, ?B2),
-       bindings_compatible(?Binds1, ?Binds2)
+  -- ================================================================
+  -- Variance (proposal 035)
+  -- ================================================================
+  -- Per-sort, per-parameter variance is metadata, not behavior — so it
+  -- lives in entity facts, not operations. A user (or the prelude)
+  -- asserts `Covariant(sort, param)` or `Contravariant(sort, param)`
+  -- to opt the parameter out of the safe default.
+  --
+  -- Default (no fact for the pair):           invariant
+  -- Only Covariant asserted:                  covariant
+  -- Only Contravariant asserted:              contravariant
+  -- Both Covariant AND Contravariant asserted: bivariant
+  --
+  -- Bivariance is the right answer for parameters that don't appear in
+  -- input or output positions of any operation on the sort — phantom-
+  -- type tags, capability carriers, compile-time-only restrictions on
+  -- T. Both variance arms fire and the resolver accepts subtype relations
+  -- in either direction. Intentional, not a coherence bug.
 
-  -- Binding list compatibility: every expected binding has a compatible actual binding
-  rule bindings_compatible(?, nil)
-  rule bindings_compatible(?actual,
-    cons(head: TypeBinding(param: ?P, value: ?V2), tail: ?rest))
-    :- list_contains(TypeBinding(param: ?P, value: ?V1), ?actual),
+  entity Covariant(sort: Symbol, param: Symbol)
+  entity Contravariant(sort: Symbol, param: Symbol)
+
+  -- Effective predicate: union of declared (entity facts above) and
+  -- inferred (rules in a follow-up — see WI-184). Variance consumers in
+  -- `check_variance` query these instead of the entities directly so the
+  -- inference layer can plug in later without touching the consumer side.
+
+  rule effective_covariant(?S, ?P) :- Covariant(sort: ?S, param: ?P)
+  rule effective_contravariant(?S, ?P) :- Contravariant(sort: ?S, param: ?P)
+
+  -- Covariant arm: actual <: expected.
+  rule check_variance(?S, ?P, ?V1, ?V2)
+    :- effective_covariant(?S, ?P), type_compatible(?V1, ?V2)
+
+  -- Contravariant arm: expected <: actual (flipped).
+  rule check_variance(?S, ?P, ?V1, ?V2)
+    :- effective_contravariant(?S, ?P), type_compatible(?V2, ?V1)
+
+  -- Default invariant: both directions, only when no variance is in effect.
+  rule check_variance(?S, ?P, ?V1, ?V2)
+    :- not(effective_covariant(?S, ?P)),
+       not(effective_contravariant(?S, ?P)),
        type_compatible(?V1, ?V2),
-       bindings_compatible(?actual, ?rest)
+       type_compatible(?V2, ?V1)
+
+  -- Composition through `requires` (proposal 035 §Variance through requires).
+  -- A is compatible with C if A refines some intermediate B_inst, and
+  -- B_inst itself is compatible with C under B_inst's own sort's variance.
+  -- Rule chosen to terminate: the refines chain is acyclic, and the
+  -- recursive type_compatible call descends to a structurally smaller term.
+
+  rule type_compatible(?A, ?C)
+    :- refines(?A, ?B_inst),
+       type_compatible(?B_inst, ?C)
+
+  -- Parameterized types: compatible if base compatible and per-parameter
+  -- bindings pass the variance check. Replaces the old covariant-by-default
+  -- `bindings_compatible` (which was equivalent to `effective_covariant`
+  -- on every parameter regardless of declaration).
+  rule type_compatible(
+    parameterized(base: sort_ref(name: ?S), bindings: ?Binds1),
+    parameterized(base: sort_ref(name: ?S), bindings: ?Binds2))
+    :- bindings_variance_compatible(?S, ?Binds1, ?Binds2)
+
+  rule bindings_variance_compatible(?, ?, nil)
+  rule bindings_variance_compatible(?S, ?Actual,
+    cons(head: TypeBinding(param: ?P, value: ?V2), tail: ?rest))
+    :- list_contains(TypeBinding(param: ?P, value: ?V1), ?Actual),
+       check_variance(?S, ?P, ?V1, ?V2),
+       bindings_variance_compatible(?S, ?Actual, ?rest)
 
   -- Arrow subtyping: contravariant param, covariant result, covariant effects
   rule type_compatible(
@@ -158,5 +214,21 @@ namespace anthill.reflect.typing
     :- list_contains(TypeField(name: ?N, type: ?T1), ?actual),
        type_compatible(?T1, ?T2),
        fields_compatible(?actual, ?rest)
+
+  -- ================================================================
+  -- Variance migration facts (proposal 035 §Risk: existing tests)
+  -- ================================================================
+  -- Default flipped from covariant to invariant by the rules above. The
+  -- prelude container types that were correctly covariant under the old
+  -- default need explicit declarations so user code that was relying on
+  -- e.g. `List[Cat] <: List[Animal]` keeps working. Mutating containers
+  -- (Map, Set, Cell) intentionally drop to invariant — the previously-
+  -- allowed unsound widening is correctly rejected.
+
+  fact Covariant(sort: List, param: T)
+  fact Covariant(sort: Option, param: T)
+  fact Covariant(sort: Stream, param: T)
+  fact Covariant(sort: Pair, param: A)
+  fact Covariant(sort: Pair, param: B)
 
 end

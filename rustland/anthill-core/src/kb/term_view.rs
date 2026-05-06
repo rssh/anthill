@@ -152,7 +152,11 @@ impl TermView for Value {
                 pos_arity: pos.len(),
                 named_arity: named.len(),
             },
-            Value::Closure(_) | Value::Stream(_) | Value::Lazy(_) | Value::Substitution(_) => ViewHead::Opaque,
+            Value::Closure(_)
+            | Value::Stream(_)
+            | Value::Lazy(_)
+            | Value::Substitution(_)
+            | Value::Map(_) => ViewHead::Opaque,
         }
     }
 

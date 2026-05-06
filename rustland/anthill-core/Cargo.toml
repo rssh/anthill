@@ -8,6 +8,7 @@ description = "Anthill kernel language: terms, parser, KB, stage0"
 smallvec = { version = "1", features = ["const_generics"] }
 ordered-float = "4"
 num-bigint = "0.4"
+indexmap = "2"
 tree-sitter = "0.25"
 tree-sitter-anthill = { path = "../../tree-sitter-anthill" }
 serde = "1"
