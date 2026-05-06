@@ -208,9 +208,20 @@ private class AnthillParserImpl(
     }
 
   private def arrowType[$: P]: P[TypeExpr] =
-    P(arrowParams ~ "->" ~ typeExpr ~ ("@" ~ nonArrowType).?).map {
-      case (params, ret, eff) => TypeExpr.Arrow(params, ret, eff)
+    P(arrowParams ~ "->" ~ typeExpr ~ ("@" ~ effectSet).?).map {
+      case (params, ret, effs) => TypeExpr.Arrow(params, ret, effs.getOrElse(IndexedSeq.empty))
     }
+
+  /** Effect annotation after `@` on an arrow type. Two surface forms,
+    * mirroring the operation-`effects` clause:
+    *   - single: `@ E`            → `IndexedSeq(E)`
+    *   - braced: `@ {E1, E2, …}`  → `IndexedSeq(E1, E2, …)` (may be empty,
+    *     trailing comma allowed). */
+  private def effectSet[$: P]: P[IndexedSeq[TypeExpr]] =
+    P(
+      ("{" ~ typeExpr.rep(sep = ",") ~ ",".? ~ "}").map(_.toIndexedSeq) |
+      nonArrowType.map(IndexedSeq(_))
+    )
 
   private def arrowParams[$: P]: P[IndexedSeq[TypeExpr]] =
     P("(" ~ typeExpr.rep(sep = ",") ~ ")").map(_.toIndexedSeq)
@@ -727,12 +738,10 @@ private class AnthillParserImpl(
     P(
       (keyword("requires") ~/ term.rep(1, sep = ",")).map(ts => (0, ts.toIndexedSeq)) |
       (keyword("ensures") ~/ term.rep(1, sep = ",")).map(ts => (1, ts.toIndexedSeq)) |
-      // Two surface forms: `effects(T1, T2)` (parenthesised list) or
-      // `effects T` (bare single type — used by stdlib iteration/collection/reflect).
-      (keyword("effects") ~/ (
-        ("(" ~ typeExpr.rep(1, sep = ",") ~ ")") |
-        nonArrowType.map(IndexedSeq(_))
-      )).map(ts => (2, ts.map(Effect(_)).toIndexedSeq))
+      // Mirrors rustland's `_effect_set` shared between operation
+      // `effects` and arrow-type `@`: bare single type or braced list
+      // (possibly with trailing comma).
+      (keyword("effects") ~/ effectSet).map(ts => (2, ts.map(Effect(_)).toIndexedSeq))
     )
 
   private def requiresDeclItem[$: P]: P[Item] =

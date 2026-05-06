@@ -44,7 +44,11 @@ enum TypeExpr:
   case Parameterized(name: Name, bindings: IndexedSeq[SortBinding])
   case Variable(termId: TermId, descriptions: IndexedSeq[String])
   case TupleType(fields: IndexedSeq[(TermSymbol, TypeExpr)])
-  case Arrow(params: IndexedSeq[TypeExpr], returnType: TypeExpr, effect: Option[TypeExpr])
+  /** Arrow type: `(A) -> B`, `(A, B) -> C @ E`, or `(A) -> B @ {E1, E2}`.
+    * `effects` empty means no annotation; single-effect surface and
+    * braced effect-set surface both lower into this Vec. Mirrors
+    * `rustland` `TypeExpr::Arrow`. */
+  case Arrow(params: IndexedSeq[TypeExpr], returnType: TypeExpr, effects: IndexedSeq[TypeExpr])
 
 case class SortBinding(param: Option[Name], bound: TypeExpr)
 

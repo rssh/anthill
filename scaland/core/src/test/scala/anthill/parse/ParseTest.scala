@@ -280,6 +280,46 @@ class ParseTest extends munit.FunSuite:
     probeStdlibOk("anthill/cli/parse.anthill")
   }
 
+  // ── Arrow type effect annotations (mirrors rustland 9615010) ────
+
+  /** Pull the arrow type out of `operation run(f: <arrow>) -> B`. */
+  private def parseArrowParam(src: String): TypeExpr.Arrow =
+    val full =
+      s"""sort Demo
+         |  sort A = ?
+         |  sort B = ?
+         |  sort Modifies = ?
+         |  sort Reads = ?
+         |  operation run(f: $src) -> B
+         |end""".stripMargin
+    val pf = Parser.parse(full, "<arrow>").toOption.get
+    val ops = pf.items.collect { case Item.SortWithBodyItem(s) => s }
+      .head.items.collect { case Item.OperationItem(o) => o }
+    val arrow = ops.head.params.head.ty
+    arrow match
+      case a: TypeExpr.Arrow => a
+      case other => fail(s"expected Arrow, got $other"); ???
+
+  test("arrow type without effects: `(A) -> B` has empty effects") {
+    val a = parseArrowParam("(A) -> B")
+    assertEquals(a.effects.length, 0)
+  }
+
+  test("arrow type single effect: `(A) -> B @ Modifies`") {
+    val a = parseArrowParam("(A) -> B @ Modifies")
+    assertEquals(a.effects.length, 1)
+  }
+
+  test("arrow type effect set: `(A) -> B @ {Modifies, Reads}`") {
+    val a = parseArrowParam("(A) -> B @ {Modifies, Reads}")
+    assertEquals(a.effects.length, 2)
+  }
+
+  test("arrow type effect set with trailing comma: `(A) -> B @ {Modifies,}`") {
+    val a = parseArrowParam("(A) -> B @ {Modifies,}")
+    assertEquals(a.effects.length, 1)
+  }
+
   /** Walks the entire stdlib tree and asserts every .anthill file parses.
     * Locks in the WI-162/166/167 parser-coverage achievement: as new
     * stdlib modules are added, this test catches a parser regression
