@@ -8,6 +8,8 @@
 -- process exit code.
 namespace anthill.todo
   import anthill.cli.Main
+  import anthill.persistence.filesystem.{FileStore}
+  import anthill.persistence.{Store}
   import anthill.prelude.{List, LogicalStream, Unit}
   import anthill.prelude.Bool.{not}
   import anthill.prelude.String.{length, substring, toUpper}
@@ -129,7 +131,14 @@ namespace anthill.todo
   sort Main
     requires anthill.cli.Main
 
-    operation main(args: List[String]) -> Int
+    -- main now takes the host-provided store handle and global --agent
+    -- flag in addition to argv. Read-only commands (status / show / list
+    -- / graph / next / skill) ignore the extras; mutating commands
+    -- (feedback / claim / deliver / verify / update / add / delete /
+    -- add-dependency / remove-dependency) thread store + agent through
+    -- so they can call Store.persist + Store.flush and stamp `at:`
+    -- fields with the canonical YYYY-MM-DDTHH:MM:SSZ format.
+    operation main(args: List[String], store: FileStore, agent: String) -> Int
       effects {ConsoleOutput, ConsoleError}
     =
       match parse_argv(specs(), args)
@@ -144,12 +153,13 @@ namespace anthill.todo
           let _ = eprintln(console(), "anthill-todo: argument error")
           2
         case parse_ok(ParsedArgs(name, bindings)) ->
-          dispatch(name, bindings)
+          dispatch(name, bindings, store, agent)
 
     -- Each subcommand reads its own positional/flag bindings; the
     -- OperationSpec for each subcommand declares the params it expects
     -- (see `spec_with_id` for the canonical "needs an id" shape).
-    operation dispatch(name: String, bindings: List[Binding]) -> Int
+    operation dispatch(name: String, bindings: List[Binding],
+                       store: FileStore, agent: String) -> Int
       effects {ConsoleOutput, ConsoleError}
     =
       if eq(name, "skill") then cmd_skill()

@@ -1579,17 +1579,22 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // Strip a leading `-d <dir>` (or `--dir <dir>`) so the bundle dispatch
-    // sees only its own subcommand args. The bundle's parse_argv doesn't
-    // know about the global flag yet — once the bundle's OperationSpec
-    // gains a `globals` field this can move into anthill code.
+    // Strip the global flags `-d <dir>` (`--dir`) and `--agent <name>` so
+    // the bundle dispatch sees only its own subcommand args. The bundle's
+    // parse_argv doesn't know about globals yet — once OperationSpec gains
+    // a `globals` field this can move into anthill code.
     let mut bundle_argv: Vec<String> = Vec::with_capacity(argv.len());
     let mut explicit_dir: Option<PathBuf> = None;
+    let mut agent: String = "user".to_string();
     let mut iter = argv.iter();
     while let Some(arg) = iter.next() {
         if arg == "-d" || arg == "--dir" {
             if let Some(dir) = iter.next() {
                 explicit_dir = Some(PathBuf::from(dir));
+            }
+        } else if arg == "--agent" {
+            if let Some(a) = iter.next() {
+                agent = a.clone();
             }
         } else {
             bundle_argv.push(arg.clone());
@@ -1662,6 +1667,46 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
         return ExitCode::from(EXIT_RUNTIME);
     }
 
+    // Build the FileStore handle the anthill side will receive. Mutating
+    // commands (add / feedback / claim / ...) call `Store.persist` /
+    // `Store.flush` on this entity; the registry routes the dispatch to
+    // the matching FileStore instance backing the project's anthill-todo/
+    // directory. `Flat` convention matches the legacy on-disk layout
+    // (one workitems.anthill, no per-fact subfolders).
+    let store_root = scan_dir(&project_dir);
+    let store_root_str = store_root.to_string_lossy().to_string();
+    let store_value = {
+        use anthill_core::persistence::file_store::{FileConvention, FileStore};
+        let fs_sym = interp.kb_mut().intern("FileStore");
+        let flat_sym = interp.kb_mut().intern("Flat");
+        let root_field = interp.kb_mut().intern("root");
+        let conv_field = interp.kb_mut().intern("convention");
+        let v = Value::Entity {
+            functor: fs_sym,
+            pos: vec![],
+            named: vec![
+                (root_field, Value::Str(store_root_str.clone())),
+                (conv_field, Value::Entity {
+                    functor: flat_sym,
+                    pos: vec![],
+                    named: vec![],
+                }),
+            ],
+        };
+        let key = match interp.store_canonical_key(&v) {
+            Ok(k) => k,
+            Err(e) => {
+                eprintln!("error: computing store key: {e}");
+                return ExitCode::from(EXIT_RUNTIME);
+            }
+        };
+        interp.register_store(
+            key,
+            Box::new(FileStore::new(store_root, FileConvention::Flat)),
+        );
+        v
+    };
+
     let elements: Vec<Value> = bundle_argv.iter().map(|s| Value::Str(s.clone())).collect();
     let args_value = match interp.build_list_value(elements, &[]) {
         Ok(v) => v,
@@ -1670,8 +1715,9 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
             return ExitCode::from(EXIT_RUNTIME);
         }
     };
+    let agent_value = Value::Str(agent);
 
-    match interp.call("anthill.todo.Main.main", &[args_value]) {
+    match interp.call("anthill.todo.Main.main", &[args_value, store_value, agent_value]) {
         Ok(Value::Int(n)) => {
             if (0..=255).contains(&n) {
                 ExitCode::from(n as u8)
