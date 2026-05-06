@@ -1579,6 +1579,23 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // Strip a leading `-d <dir>` (or `--dir <dir>`) so the bundle dispatch
+    // sees only its own subcommand args. The bundle's parse_argv doesn't
+    // know about the global flag yet — once the bundle's OperationSpec
+    // gains a `globals` field this can move into anthill code.
+    let mut bundle_argv: Vec<String> = Vec::with_capacity(argv.len());
+    let mut explicit_dir: Option<PathBuf> = None;
+    let mut iter = argv.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "-d" || arg == "--dir" {
+            if let Some(dir) = iter.next() {
+                explicit_dir = Some(PathBuf::from(dir));
+            }
+        } else {
+            bundle_argv.push(arg.clone());
+        }
+    }
+
     let (stdlib_parsed, stdlib_errors) = stdlib_embedded::parse_embedded_stdlib();
     let (bundle_parsed, bundle_errors) = anthill_bundle::parse_embedded_bundle();
     for e in stdlib_errors.iter().chain(bundle_errors.iter()) {
@@ -1588,8 +1605,40 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
         return ExitCode::from(EXIT_COMPILE);
     }
 
+    // Bulk-pull the project's anthill-todo/ files: domain.anthill defines
+    // WorkItem etc., rules.anthill provides workflow rules, workitems.anthill
+    // carries the user-asserted facts. Without this the bundle's KB only
+    // sees stdlib + the bundle itself, and `sort_query("WorkItem")` fails.
+    let project_dir = match find_project_dir(explicit_dir.as_deref()) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let scan = scan_dir(&project_dir);
+    let project_files = collect_anthill_files(&[scan]);
+    let mut project_parsed: Vec<ParsedFile> = Vec::new();
+    for file in &project_files {
+        let source = match fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => { eprintln!("warning: {}: {e}", file.display()); continue; }
+        };
+        match parse::parse(&source) {
+            Ok(p) => project_parsed.push(p),
+            Err(errs) => {
+                for err in &errs {
+                    eprintln!("warning: {}:{}", file.display(), err.format_with_source(&source));
+                }
+            }
+        }
+    }
+
     let mut kb = KnowledgeBase::new();
-    let all_refs: Vec<&ParsedFile> = stdlib_parsed.iter().chain(bundle_parsed.iter()).collect();
+    let all_refs: Vec<&ParsedFile> = stdlib_parsed.iter()
+        .chain(bundle_parsed.iter())
+        .chain(project_parsed.iter())
+        .collect();
     if let Err(errs) = load::load_all(&mut kb, &all_refs, &NullResolver) {
         let mut had_fatal = false;
         for e in &errs {
@@ -1613,7 +1662,7 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
         return ExitCode::from(EXIT_RUNTIME);
     }
 
-    let elements: Vec<Value> = argv.iter().map(|s| Value::Str(s.clone())).collect();
+    let elements: Vec<Value> = bundle_argv.iter().map(|s| Value::Str(s.clone())).collect();
     let args_value = match interp.build_list_value(elements, &[]) {
         Ok(v) => v,
         Err(e) => {

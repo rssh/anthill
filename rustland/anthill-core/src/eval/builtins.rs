@@ -68,6 +68,12 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
 
     register_if_present(interp, "anthill.prelude.LogicalStream.splitFirst", logical_stream_split_first)?;
     register_if_present(interp, "anthill.reflect.KB.execute", kb_execute)?;
+    register_if_present(interp, "anthill.reflect.KB.facts_of", kb_facts_of)?;
+    register_if_present(interp, "anthill.reflect.Substitution.lookup", subst_lookup)?;
+    register_if_present(interp, "anthill.reflect.term_functor_name", term_functor_name)?;
+    register_if_present(interp, "anthill.reflect.term_field", term_field)?;
+    register_if_present(interp, "anthill.reflect.term_as_string", term_as_string)?;
+    register_if_present(interp, "anthill.prelude.Int.to_string", int_to_string)?;
 
     // Persistence (proposal 007). The operations are declared inside
     // `sort Store { operation persist … }` so their qualified names are
@@ -554,6 +560,217 @@ fn kb_execute(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
         .map_err(|e| EvalError::Internal(format!("execute_logical_query: {}", e)))?;
     let handle = interp.alloc_stream(StreamSource::Resolver(Some(search)));
     Ok(Value::Stream(handle))
+}
+
+/// `anthill.reflect.term_functor_name(t: Term) -> Option[String]`.
+/// Returns the functor's short name for `Fn` / `Ref` terms; none() otherwise.
+/// Anthill code can't construct Symbols cleanly yet, so this surfaces the
+/// functor as a String for direct comparison (`eq(name, "Claimed")`).
+fn term_functor_name(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [arg] = expect_args::<1>("term_functor_name", args)?;
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    let value_key = interp.kb.intern("value");
+
+    let name: Option<String> = match &arg {
+        Value::Term(tid) => match interp.kb.get_term(*tid) {
+            crate::kb::term::Term::Fn { functor, .. } => {
+                Some(interp.kb.resolve_sym(*functor).to_string())
+            }
+            crate::kb::term::Term::Ref(sym) | crate::kb::term::Term::Ident(sym) => {
+                Some(interp.kb.resolve_sym(*sym).to_string())
+            }
+            _ => None,
+        },
+        Value::Entity { functor, .. } => Some(interp.kb.resolve_sym(*functor).to_string()),
+        _ => None,
+    };
+
+    Ok(match name {
+        Some(s) => Value::Entity {
+            functor: some_sym,
+            pos: Vec::new(),
+            named: vec![(value_key, Value::Str(s))],
+        },
+        None => Value::Entity {
+            functor: none_sym,
+            pos: Vec::new(),
+            named: Vec::new(),
+        },
+    })
+}
+
+/// `anthill.reflect.term_field(t: Term, name: String) -> Option[Term]`.
+/// Look up a named arg on a Fn term by its short name. Mirrors the legacy
+/// `extract_named_arg` shim (rustland/anthill-todo/src/main.rs:383) so the
+/// anthill side has the same field-extraction primitive without having to
+/// thread Symbol values through.
+fn term_field(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [term_arg, name_arg] = expect_args::<2>("term_field", args)?;
+    let tid = match &term_arg {
+        Value::Term(t) => *t,
+        other => return Err(type_mismatch("Term", other, None)),
+    };
+    let name = match &name_arg {
+        Value::Str(s) => s.clone(),
+        other => return Err(type_mismatch("String", other, None)),
+    };
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    let value_key = interp.kb.intern("value");
+
+    let found: Option<crate::kb::term::TermId> = match interp.kb.get_term(tid) {
+        crate::kb::term::Term::Fn { named_args, .. } => {
+            let named = named_args.clone();
+            named.iter()
+                .find(|(s, _)| interp.kb.resolve_sym(*s) == name)
+                .map(|(_, t)| *t)
+        }
+        _ => None,
+    };
+
+    Ok(match found {
+        Some(field_tid) => Value::Entity {
+            functor: some_sym,
+            pos: Vec::new(),
+            named: vec![(value_key, Value::Term(field_tid))],
+        },
+        None => Value::Entity {
+            functor: none_sym,
+            pos: Vec::new(),
+            named: Vec::new(),
+        },
+    })
+}
+
+/// `anthill.reflect.term_as_string(t: Term) -> Option[String]`.
+/// Returns `some(s)` when the term is exactly `Const(StringLiteral(_))`;
+/// otherwise none(). Used to extract id/description/agent fields after
+/// drilling into a fact via `term_field`.
+fn term_as_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [arg] = expect_args::<1>("term_as_string", args)?;
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    let value_key = interp.kb.intern("value");
+
+    let s: Option<String> = match &arg {
+        Value::Term(tid) => match interp.kb.get_term(*tid) {
+            crate::kb::term::Term::Const(crate::kb::term::Literal::String(s)) => {
+                Some(s.clone())
+            }
+            _ => None,
+        },
+        Value::Str(s) => Some(s.clone()),
+        _ => None,
+    };
+
+    Ok(match s {
+        Some(v) => Value::Entity {
+            functor: some_sym,
+            pos: Vec::new(),
+            named: vec![(value_key, Value::Str(v))],
+        },
+        None => Value::Entity {
+            functor: none_sym,
+            pos: Vec::new(),
+            named: Vec::new(),
+        },
+    })
+}
+
+/// `anthill.prelude.Int.to_string(n: Int) -> String`. Decimal repr, no
+/// padding. Negative numbers carry a leading `-`. The CLI port uses this
+/// for `"180 work item(s):"` and per-status counts.
+fn int_to_string(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [arg] = expect_args::<1>("Int.to_string", args)?;
+    match arg {
+        Value::Int(n) => Ok(Value::Str(n.to_string())),
+        other => Err(type_mismatch("Int", &other, None)),
+    }
+}
+
+/// `anthill.reflect.KB.facts_of(kb: KB, functor: String) -> List[Term]`.
+/// Returns every asserted fact whose head functor matches the given short
+/// or qualified name. Anthill code uses this as a direct iteration handle
+/// (paired with `term_field` / `term_as_string`) when there is no per-field
+/// constraint to express via `pattern_query`. The returned list is not
+/// streaming — facts are eagerly collected — which is fine for the
+/// anthill-todo workitem set (~hundreds of facts).
+fn kb_facts_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [_kb_arg, name_arg] = expect_args::<2>("KB.facts_of", args)?;
+    let name = match &name_arg {
+        Value::Str(s) => s.clone(),
+        other => return Err(type_mismatch("String", other, None)),
+    };
+
+    // Resolve the functor symbol — try the qualified path first (so users
+    // can pass "anthill.stage0.WorkItem"), then fall back to a plain intern
+    // for short names like "WorkItem" that match the loader's reintern path.
+    let functor_sym = interp.kb.try_resolve_symbol(&name)
+        .unwrap_or_else(|| interp.kb.intern(&name));
+
+    let rule_ids = interp.kb.by_functor(functor_sym);
+    let elements: Vec<Value> = rule_ids.into_iter()
+        .map(|rid| Value::Term(interp.kb.rule_head(rid)))
+        .collect();
+
+    interp.build_list_value(elements, &[])
+}
+
+/// `Substitution.lookup(s: Substitution, name: String) -> Option[Term]`.
+/// Anthill code can't construct logical variables, so it can't pass them to
+/// `Substitution.apply`. `lookup` is the bridge: scan the substitution's
+/// bindings for any `VarId` whose short name matches the query string, and
+/// return the bound term wrapped in `some(...)`. Variables introduced by
+/// query lowering carry the field name from the pattern (e.g. `?status` in
+/// `pattern_query(WorkItem(status: ?status))`), so this is the natural way
+/// to extract field bindings from a stream solution.
+///
+/// Multiple bindings share a name — a fresh `?status` is allocated per query
+/// invocation. `lookup` returns the first match in the substitution's hash
+/// map iteration order; query patterns should use distinct field names per
+/// extraction site to keep the result well-defined.
+///
+/// No KB parameter: `VarId.name()` carries the symbol the loader stamped at
+/// pattern build time, so name resolution is a pure read against the
+/// substitution. `apply` / `compose` still need kb (term-store walks).
+fn subst_lookup(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [subst_val, name_val] = expect_args::<2>("Substitution.lookup", args)?;
+    let handle = match subst_val {
+        Value::Substitution(h) => h,
+        other => return Err(type_mismatch("Substitution", &other, None)),
+    };
+    let name = match &name_val {
+        Value::Str(s) => s.clone(),
+        _ => return Err(type_mismatch("String", &name_val, None)),
+    };
+
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    let value_key = interp.kb.intern("value");
+
+    let arena = interp.subst_arena();
+    let bound: Option<Value> = arena.with_subst(&handle, |s| {
+        for (vid, val) in s.iter() {
+            if interp.kb.resolve_sym(vid.name()) == name {
+                return Some(val.clone());
+            }
+        }
+        None
+    });
+
+    match bound {
+        Some(value) => Ok(Value::Entity {
+            functor: some_sym,
+            pos: Vec::new(),
+            named: vec![(value_key, value)],
+        }),
+        None => Ok(Value::Entity {
+            functor: none_sym,
+            pos: Vec::new(),
+            named: Vec::new(),
+        }),
+    }
 }
 
 /// Resolve a builtin's target symbol. Tries the fully-qualified name first,

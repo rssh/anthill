@@ -8,15 +8,28 @@
 -- process exit code.
 namespace anthill.todo
   import anthill.cli.Main
-  import anthill.prelude.{List}
+  import anthill.prelude.{List, LogicalStream, Unit}
   import anthill.prelude.Console.{console, println, eprintln,
                                   ConsoleOutput, ConsoleError}
   import anthill.cli.parse.{parse_argv, ParseResult, ParsedArgs,
                             parse_ok, parse_err,
                             no_subcommand, unknown_subcommand}
-  import anthill.cli.spec.{OperationSpec}
-  import anthill.prelude.Option.{none}
+  import anthill.cli.spec.{OperationSpec, ParamSpec, ParamKind}
+  import anthill.cli.spec.ParamKind.{positional}
+  import anthill.cli.parse.{Binding}
+  import anthill.prelude.Option.{Option, none, some}
+  import anthill.prelude.Pair.{Pair, pair}
+  import anthill.prelude.Ordered.{lt}
   import anthill.prelude.Eq.{eq}
+  import anthill.prelude.LogicalStream.{splitFirst}
+  import anthill.prelude.Int.{to_string}
+  import anthill.prelude.String.{concat}
+  import anthill.prelude.List.{cons, nil}
+  import anthill.reflect.{KB, Term, Substitution, LogicalQuery,
+                          term_functor_name, term_field, term_as_string}
+  import anthill.reflect.KB.{kb, execute, facts_of}
+  import anthill.reflect.LogicalQuery.{sort_query}
+  import anthill.reflect.Substitution.{lookup}
   export Main, specs
 
   -- The 16-subcommand registry, mirroring the legacy Rust binary's
@@ -29,7 +42,7 @@ namespace anthill.todo
     , spec_named("status",            "Show work item counts by status")
     , spec_named("list",              "List work items")
     , spec_named("next",              "Show next claimable work item")
-    , spec_named("show",              "Show details of a work item")
+    , spec_with_id("show",            "Show details of a work item")
     , spec_named("claim",             "Claim a work item")
     , spec_named("deliver",           "Mark a work item as delivered")
     , spec_named("verify",            "Mark a delivered work item as verified")
@@ -49,6 +62,21 @@ namespace anthill.todo
       params: nil(),
       parent: none())
 
+  -- Spec for subcommands taking a single required positional `id`. Used
+  -- for show/claim/deliver/verify/delete and friends.
+  operation spec_with_id(name: String, description: String) -> OperationSpec =
+    OperationSpec(
+      name: name,
+      description: description,
+      params: cons(
+        ParamSpec(
+          name: "id",
+          kind: positional(),
+          required: true,
+          description: "Work item id (e.g. WI-009)"),
+        nil()),
+      parent: none())
+
   sort Main
     requires anthill.cli.Main
 
@@ -66,17 +94,29 @@ namespace anthill.todo
         case parse_err(_) ->
           let _ = eprintln(console(), "anthill-todo: argument error")
           2
-        case parse_ok(ParsedArgs(name, _)) ->
-          dispatch(name)
+        case parse_ok(ParsedArgs(name, bindings)) ->
+          dispatch(name, bindings)
 
-    -- Implemented subcommands match their name; everything else in the
-    -- registry falls through to `not_yet`. As each subcommand is ported
-    -- it gets its own arm here.
-    operation dispatch(name: String) -> Int
+    -- Each subcommand reads its own positional/flag bindings; the
+    -- OperationSpec for each subcommand declares the params it expects
+    -- (see `spec_with_id` for the canonical "needs an id" shape).
+    operation dispatch(name: String, bindings: List[Binding]) -> Int
       effects {ConsoleOutput, ConsoleError}
     =
       if eq(name, "skill") then cmd_skill()
+      else if eq(name, "status") then cmd_status()
+      else if eq(name, "show") then cmd_show(bindings)
       else not_yet(name)
+
+    -- Find the first Binding with the given name; none() otherwise.
+    operation get_binding(bindings: List[Binding], name: String) -> Option[T = String] =
+      match bindings
+        case nil() -> none()
+        case cons(b, rest) ->
+          match b
+            case Binding(bname, bvalue) ->
+              if eq(bname, name) then some(bvalue)
+              else get_binding(rest, name)
 
     operation not_yet(name: String) -> Int
       effects ConsoleError
@@ -84,6 +124,226 @@ namespace anthill.todo
       let _ = eprintln(console(), "anthill-todo: subcommand not yet ported to anthill")
       let _ = eprintln(console(), name)
       2
+
+    -- Walk a List[Term] of WorkItem facts and tally per-status counts.
+    -- We don't have Map yet; use a List[Pair[String, Int]] as the bucket
+    -- store (linear scan, fine for ~5 distinct statuses).
+
+    -- True for facts that look like real WorkItem rows. The synthetic
+    -- entity declaration the loader emits for `entity WorkItem(...)` has
+    -- no `id: "WI-NNN"` string literal, so legacy collect_workitems
+    -- skipped it; mirror that filter here.
+    operation has_id(t: Term) -> Bool =
+      match term_field(t, "id")
+        case some(id_term) ->
+          match term_as_string(id_term)
+            case some(_) -> true
+            case none() -> false
+        case none() -> false
+
+    operation status_of(t: Term) -> String =
+      match term_field(t, "status")
+        case some(field_term) ->
+          match term_functor_name(field_term)
+            case some(name) -> name
+            case none() -> "?"
+        case none() -> "?"
+
+    -- Bump the count for `status` in `acc`, appending a new entry if
+    -- absent. Returns the rebuilt list (immutable).
+    operation bump(acc: List[Pair[String, Int]], status: String)
+      -> List[Pair[String, Int]]
+    =
+      match acc
+        case nil() -> cons(pair(status, 1), nil())
+        case cons(p, rest) ->
+          match p
+            case pair(k, n) ->
+              if eq(k, status) then cons(pair(k, n + 1), rest)
+              else cons(p, bump(rest, status))
+
+    operation tally(items: List[Term],
+                    acc: List[Pair[String, Int]])
+      -> List[Pair[String, Int]]
+    =
+      match items
+        case nil() -> acc
+        case cons(t, rest) ->
+          if has_id(t) then tally(rest, bump(acc, status_of(t)))
+          else tally(rest, acc)
+
+    operation count_items(items: List[Term]) -> Int =
+      match items
+        case nil() -> 0
+        case cons(t, rest) ->
+          if has_id(t) then 1 + count_items(rest)
+          else count_items(rest)
+
+    -- Insertion sort by string key (ascending). Acceptable for ~5 buckets;
+    -- swap for List.sort once that lands in stdlib.
+    operation insert_sorted(buckets: List[Pair[String, Int]],
+                            entry: Pair[String, Int])
+      -> List[Pair[String, Int]]
+    =
+      match buckets
+        case nil() -> cons(entry, nil())
+        case cons(head, rest) ->
+          match head
+            case pair(hk, _) ->
+              match entry
+                case pair(ek, _) ->
+                  if lt(ek, hk) then cons(entry, cons(head, rest))
+                  else cons(head, insert_sorted(rest, entry))
+
+    operation sort_buckets(buckets: List[Pair[String, Int]])
+      -> List[Pair[String, Int]]
+    =
+      match buckets
+        case nil() -> nil()
+        case cons(head, rest) -> insert_sorted(sort_buckets(rest), head)
+
+    operation print_counts(buckets: List[Pair[String, Int]]) -> Int
+      effects ConsoleOutput
+    =
+      match buckets
+        case nil() -> 0
+        case cons(p, rest) ->
+          match p
+            case pair(k, n) ->
+              let _ = println(console(),
+                              concat("  ",
+                                concat(k, concat(": ", to_string(n)))))
+              print_counts(rest)
+
+    -- Phase 2 first byte-faithful read-only command. Mirrors the legacy
+    -- `run_status` shape: total count line, then per-status breakdown
+    -- ordered alphabetically by status name.
+    operation cmd_status() -> Int
+      effects ConsoleOutput
+    =
+      let items = facts_of(kb(), "WorkItem")
+      let total = count_items(items)
+      if eq(total, 0) then
+        let _ = println(console(), "No work items found.")
+        0
+      else
+        let _ = println(console(),
+                        concat(to_string(total), " work item(s):"))
+        let buckets = sort_buckets(tally(items, nil()))
+        print_counts(buckets)
+
+    -- Filter a list of WorkItem terms to the one whose id field equals
+    -- the target string. Returns none() if missing.
+    operation find_by_id(items: List[Term], id: String) -> Option[T = Term] =
+      match items
+        case nil() -> none()
+        case cons(t, rest) ->
+          match term_field(t, "id")
+            case some(id_term) ->
+              match term_as_string(id_term)
+                case some(id_str) ->
+                  if eq(id_str, id) then some(t)
+                  else find_by_id(rest, id)
+                case none() -> find_by_id(rest, id)
+            case none() -> find_by_id(rest, id)
+
+    -- Walk a `cons(string, ...)`-encoded list and build "a, b, c".
+    -- Used for the `Depends on:` line.
+    operation join_strings_inner(items: List[String], sep: String) -> String =
+      match items
+        case nil() -> ""
+        case cons(s, rest) -> concat(sep, concat(s, join_strings_inner(rest, sep)))
+
+    operation join_strings(items: List[String], sep: String) -> String =
+      match items
+        case nil() -> ""
+        case cons(s, rest) -> concat(s, join_strings_inner(rest, sep))
+
+    -- Drill `t.depends_on` into a List[String]; treat absence as empty.
+    -- The on-disk representation is `depends_on: ["WI-N", "WI-M"]` —
+    -- a List[String] literal that materializes as `cons(string, ...)`
+    -- in the KB.
+    operation deps_strings(t: Term) -> List[String] =
+      match term_field(t, "depends_on")
+        case some(_) -> deps_walk(t)
+        case none() -> nil()
+
+    -- Walk the depends_on cons-chain, extracting each head as a String.
+    operation deps_walk(t: Term) -> List[String] =
+      match term_field(t, "depends_on")
+        case some(list_term) -> deps_walk_list(list_term)
+        case none() -> nil()
+
+    operation deps_walk_list(list_term: Term) -> List[String] =
+      match term_functor_name(list_term)
+        case some(fname) ->
+          if eq(fname, "cons") then
+            match term_field(list_term, "head")
+              case some(h) ->
+                match term_as_string(h)
+                  case some(s) ->
+                    match term_field(list_term, "tail")
+                      case some(rest) -> cons(s, deps_walk_list(rest))
+                      case none() -> cons(s, nil())
+                  case none() -> nil()
+              case none() -> nil()
+          else nil()
+        case none() -> nil()
+
+    operation print_description(wi: Term) -> Unit
+      effects ConsoleOutput
+    =
+      match term_field(wi, "description")
+        case some(d) ->
+          match term_as_string(d)
+            case some(s) -> println(console(), concat("Description: ", s))
+            case none() -> ()
+        case none() -> ()
+
+    operation print_status_line(wi: Term) -> Unit
+      effects ConsoleOutput
+    =
+      match term_field(wi, "status")
+        case some(s) ->
+          match term_functor_name(s)
+            case some(name) -> println(console(), concat("Status:      ", name))
+            case none() -> ()
+        case none() -> ()
+
+    operation print_deps(wi: Term) -> Unit
+      effects ConsoleOutput
+    =
+      let deps = deps_walk(wi)
+      match deps
+        case nil() -> ()
+        case cons(_, _) ->
+          println(console(),
+                  concat("Depends on:  ", join_strings(deps, ", ")))
+
+    -- Find a single workitem by id, then print id / description / status /
+    -- depends_on. Acceptance criteria + Feedback rendering needs TermPrinter
+    -- and cross-fact iteration; deferred to follow-up.
+    operation cmd_show(bindings: List[Binding]) -> Int
+      effects {ConsoleOutput, ConsoleError}
+    =
+      match get_binding(bindings, "id")
+        case none() ->
+          let _ = eprintln(console(), "error: missing work item id")
+          2
+        case some(id) ->
+          let items = facts_of(kb(), "WorkItem")
+          match find_by_id(items, id)
+            case none() ->
+              let _ = eprintln(console(),
+                               concat("error: work item '",
+                                      concat(id, "' not found")))
+              1
+            case some(wi) ->
+              let _ = println(console(), concat("ID:          ", id))
+              let _ = print_description(wi)
+              let _ = print_status_line(wi)
+              let _ = print_deps(wi)
+              0
 
     operation cmd_skill() -> Int
       effects ConsoleOutput

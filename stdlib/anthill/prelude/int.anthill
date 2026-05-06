@@ -4,7 +4,7 @@ namespace anthill.prelude.Int
   import anthill.prelude.Bool.{ite}
   import anthill.prelude.Ordered.{max, gte, lt, gt}
   import anthill.prelude.Numeric.{add, sub}
-  export minValue, maxValue, abs, neg, mod, rem, sign, div, divExact, to_float
+  export minValue, maxValue, abs, neg, mod, rem, sign, div, divExact, to_float, to_string
 
   -- Int satisfies the parametric algebra specs.
   -- These facts declare that eq, neq, compare, gt, lt, gte, lte,
@@ -30,6 +30,7 @@ namespace anthill.prelude.Int
     divExact(a: Int, b: Int) -> Int     -- integer division (truncated); alias of div
     sign(a: Int) -> Int                 -- -1, 0, or 1
     to_float(n: Int) -> Float           -- exact for |n| < 2^53; rounds otherwise
+    to_string(n: Int) -> String         -- decimal representation, no padding
   }
 
   -- Laws

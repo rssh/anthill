@@ -20,7 +20,7 @@ namespace anthill.reflect
   export SourceId, SourceSpan, Occurrence, ExprOccurrence
   export occurrence_term, occurrence_span, occurrence_owner, sub_occurrences, occurrences_of
   export SourceUnit
-  export KB
+  export KB, kb
   export qualified_name, short_name, lookup_symbol, scope, kind
   export LiteralRepr, TermRepr, SetLiteral, TupleLiteral, ListLiteral, SortInfo, EntityInfo, OperationInfo, FieldInfo, DescriptionInfo
   export SortRequiresInfo, SortProvidesInfo, SortView
@@ -28,17 +28,18 @@ namespace anthill.reflect
   export match_expr, if_expr, let_expr, lambda, constructor, var_ref
   export int_lit, bigint_lit, float_lit, string_lit, bool_lit
   export var_pattern, tuple_pattern, named_tuple_pattern, constructor_pattern, literal_pattern, wildcard
-  export Substitution, apply, compose
+  export Substitution, apply, compose, lookup
   export LogicalQuery, empty_query
   export pattern_query, sort_query, conjunction, disjunction
   export negation, guarded, projected, limited
   export nonvar, ground, not
   export field_access
+  export term_functor_name, term_field, term_as_string
   export resolve_sort_instantiation_param
   export ConstraintId
   export reify, reflect
   export sorts, operations, constructors, fields, rules, descriptions
-  export execute, sort_template, instantiation_query
+  export execute, facts_of, sort_template, instantiation_query
   export sort_as_term, term_as_sort, can_be_sort
 
   -- ================================================================
@@ -119,6 +120,25 @@ namespace anthill.reflect
   --   2. Sort component: look up field in sort's scope (e.g., Monoid.Carrier).
   operation field_access(object: Term, field: Symbol) -> Term
 
+  -- Inspect a term's structure by name. These bypass `field_access` /
+  -- `lookup_symbol` (which require Symbol values that anthill code can't
+  -- yet construct cleanly) by accepting String names directly. They are
+  -- the bridge from KB.execute solutions back to per-field values.
+
+  -- Functor short name of a Fn or Ref term (e.g. "WorkItem", "Open",
+  -- "Claimed"). Returns none() for literals, variables, or unstructured
+  -- terms.
+  operation term_functor_name(t: Term) -> Option[T = String]
+
+  -- Extract a named field from a Fn term by short name. Mirrors
+  -- `field_access(t, intern(name))` but with String input. Returns none()
+  -- when the term has no matching named arg or is not Fn-shaped.
+  operation term_field(t: Term, name: String) -> Option[T = Term]
+
+  -- Extract a String literal value from a term. Returns none() unless the
+  -- term is exactly `Const(StringLiteral(_))`.
+  operation term_as_string(t: Term) -> Option[T = String]
+
   -- Negation-as-failure: succeeds if query has no solutions.
   -- Delays if query contains unbound variables (floundering prevention).
   operation not(query: Term) -> Bool
@@ -147,6 +167,12 @@ namespace anthill.reflect
   -- Implementations (e.g. KnowledgeBase) impl this trait.
 
   sort KB
+    -- Singleton constructor for the ambient knowledge base — anthill code
+    -- writes `kb()` to obtain the KB value passed to KB.execute / etc.
+    -- The interpreter ignores its identity (there is one ambient KB per
+    -- interpreter instance); the entity exists so the type checker can
+    -- accept `KB.execute(kb(), q)` without surfacing an abstract sort.
+    entity kb
 
     -- Bridge: opaque Term ↔ structural TermRepr
     operation reify(kb: KB, t: Term) -> TermRepr
@@ -177,6 +203,14 @@ namespace anthill.reflect
     operation execute(kb: KB, query: LogicalQuery)
       -> Stream[T = Substitution, E = Error]
       effects Error
+
+    -- Direct enumeration of asserted facts whose head functor matches the
+    -- given short name. Bypasses LogicalQuery / Substitution lowering for
+    -- the common "iterate every WorkItem" case where the caller has no
+    -- per-field constraint and just wants the fact terms. Returns opaque
+    -- `Term` values; use `term_field` / `term_as_string` / `term_functor_name`
+    -- to inspect them.
+    operation facts_of(kb: KB, functor: String) -> List[T = Term]
 
     -- Extract a sort's fact template as a query
     operation sort_template(kb: KB, sort_name: String) -> LogicalQuery
@@ -387,6 +421,16 @@ namespace anthill.reflect
   sort Substitution
     operation apply(s: Substitution, t: Term, kb: KB) -> Term
     operation compose(s1: Substitution, s2: Substitution, kb: KB) -> Substitution
+
+    -- Look up a logical variable's binding by short name. Returns the bound
+    -- value when the substitution contains a binding for any variable whose
+    -- short name matches; none() otherwise. This is the bridge anthill code
+    -- uses to extract field values from KB.execute solutions, since fresh
+    -- logical variables themselves have no anthill-side representation.
+    -- No KB parameter — the substitution carries each VarId's name, so
+    -- lookup is a pure read; only `apply` / `compose` need kb (term-store
+    -- walks).
+    operation lookup(s: Substitution, name: String) -> Option[T = Term]
   end
 
   -- ================================================================
