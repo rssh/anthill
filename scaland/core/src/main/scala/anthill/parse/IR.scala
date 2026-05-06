@@ -45,9 +45,9 @@ enum TypeExpr:
   case Variable(termId: TermId, descriptions: IndexedSeq[String])
   case TupleType(fields: IndexedSeq[(TermSymbol, TypeExpr)])
   /** Arrow type: `(A) -> B`, `(A, B) -> C @ E`, or `(A) -> B @ {E1, E2}`.
-    * `effects` empty means no annotation; single-effect surface and
-    * braced effect-set surface both lower into this Vec. Mirrors
-    * `rustland` `TypeExpr::Arrow`. */
+    * Empty `effects` means no `@` annotation — the braced surface form
+    * requires at least one element (`commaSep1`), so emptiness can only
+    * come from a missing annotation. Mirrors `rustland` `TypeExpr::Arrow`. */
   case Arrow(params: IndexedSeq[TypeExpr], returnType: TypeExpr, effects: IndexedSeq[TypeExpr])
 
 case class SortBinding(param: Option[Name], bound: TypeExpr)

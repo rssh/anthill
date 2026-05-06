@@ -298,7 +298,7 @@ class ParseTest extends munit.FunSuite:
     val arrow = ops.head.params.head.ty
     arrow match
       case a: TypeExpr.Arrow => a
-      case other => fail(s"expected Arrow, got $other"); ???
+      case other => fail(s"expected Arrow, got $other")
 
   test("arrow type without effects: `(A) -> B` has empty effects") {
     val a = parseArrowParam("(A) -> B")
@@ -315,9 +315,25 @@ class ParseTest extends munit.FunSuite:
     assertEquals(a.effects.length, 2)
   }
 
-  test("arrow type effect set with trailing comma: `(A) -> B @ {Modifies,}`") {
-    val a = parseArrowParam("(A) -> B @ {Modifies,}")
-    assertEquals(a.effects.length, 1)
+  /** Helper for negative cases — parser must reject the source. */
+  private def parseRejected(src: String, label: String): Unit =
+    val full =
+      s"""sort Demo
+         |  sort A = ?
+         |  sort B = ?
+         |  sort Modifies = ?
+         |  operation run(f: $src) -> B
+         |end""".stripMargin
+    Parser.parse(full, "<arrow>") match
+      case Right(_) => fail(s"expected parse failure for $label")
+      case Left(_) => ()
+
+  test("arrow type empty braced effect set `@ {}` is rejected") {
+    parseRejected("(A) -> B @ {}", "empty braced effect set")
+  }
+
+  test("arrow type trailing comma `@ {Modifies,}` is rejected") {
+    parseRejected("(A) -> B @ {Modifies,}", "trailing comma in effect set")
   }
 
   /** Walks the entire stdlib tree and asserts every .anthill file parses.

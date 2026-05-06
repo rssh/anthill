@@ -212,14 +212,17 @@ private class AnthillParserImpl(
       case (params, ret, effs) => TypeExpr.Arrow(params, ret, effs.getOrElse(IndexedSeq.empty))
     }
 
-  /** Effect annotation after `@` on an arrow type. Two surface forms,
-    * mirroring the operation-`effects` clause:
-    *   - single: `@ E`            → `IndexedSeq(E)`
-    *   - braced: `@ {E1, E2, …}`  → `IndexedSeq(E1, E2, …)` (may be empty,
-    *     trailing comma allowed). */
+  /** Effect set, shared by arrow `@` and operation `effects`. Mirrors
+    * rustland's `_effect_set` (`commaSep1`):
+    *   - single:  `E`            → `IndexedSeq(E)`
+    *   - braced:  `{E1, E2, …}`  → `IndexedSeq(E1, E2, …)`
+    *
+    * The braced form requires at least one element and no trailing
+    * comma, matching the rust grammar exactly. The cut after `{`
+    * prevents the bare branch from rescuing `{}` via `setType`. */
   private def effectSet[$: P]: P[IndexedSeq[TypeExpr]] =
     P(
-      ("{" ~ typeExpr.rep(sep = ",") ~ ",".? ~ "}").map(_.toIndexedSeq) |
+      ("{" ~/ typeExpr.rep(1, sep = ",") ~ "}").map(_.toIndexedSeq) |
       nonArrowType.map(IndexedSeq(_))
     )
 
