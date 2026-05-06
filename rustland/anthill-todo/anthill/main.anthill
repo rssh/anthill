@@ -28,9 +28,10 @@ namespace anthill.todo
   import anthill.prelude.String.{concat}
   import anthill.prelude.List.{cons, nil}
   import anthill.reflect.{KB, Term, Substitution, LogicalQuery,
-                          term_functor_name, term_field, term_as_string}
+                          term_functor_name, term_field, term_as_string,
+                          fresh_var, make_fn}
   import anthill.reflect.KB.{kb, execute, facts_of}
-  import anthill.reflect.LogicalQuery.{sort_query}
+  import anthill.reflect.LogicalQuery.{sort_query, pattern_query}
   import anthill.reflect.Substitution.{lookup}
   export Main, specs
 
@@ -43,7 +44,7 @@ namespace anthill.todo
     , spec_named("add",               "Add a new work item")
     , spec_named("status",            "Show work item counts by status")
     , spec_list()
-    , spec_named("next",              "Show next claimable work item")
+    , spec_next()
     , spec_with_id("show",            "Show details of a work item")
     , spec_named("claim",             "Claim a work item")
     , spec_named("deliver",           "Mark a work item as delivered")
@@ -76,6 +77,21 @@ namespace anthill.todo
           kind: positional(),
           required: true,
           description: "Work item id (e.g. WI-009)"),
+        nil()),
+      parent: none())
+
+  -- `next` accepts --all (show every claimable item rather than just
+  -- the head of the list).
+  operation spec_next() -> OperationSpec =
+    OperationSpec(
+      name: "next",
+      description: "Show next claimable work item",
+      params: cons(
+        ParamSpec(
+          name: "all",
+          kind: bool_flag(),
+          required: false,
+          description: "Show all claimable items"),
         nil()),
       parent: none())
 
@@ -141,6 +157,7 @@ namespace anthill.todo
       else if eq(name, "show") then cmd_show(bindings)
       else if eq(name, "list") then cmd_list(bindings)
       else if eq(name, "graph") then cmd_graph()
+      else if eq(name, "next") then cmd_next(bindings)
       else not_yet(name)
 
     -- Find the first Binding with the given name; none() otherwise.
@@ -925,5 +942,88 @@ namespace anthill.todo
       let _ = println(console(), "  add, feedback, claim, deliver, verify, update, delete,")
       let _ = println(console(), "  add-dependency, remove-dependency, graph.")
       0
+
+    -- ── cmd_next ─────────────────────────────────────────────────
+    --
+    -- Show the next claimable work item: items in status Open whose
+    -- dependencies are all Delivered/Verified. With --all, every such
+    -- item; otherwise just the first. WI-182 unblocks this — the
+    -- `fresh_var` and `make_fn` builtins let anthill code construct
+    -- the goal `claimable(?id, ?desc)` and run it via `KB.execute`.
+
+    -- Pull a String binding off a substitution by var name; return
+    -- `fallback` when missing or when the bound term isn't a String
+    -- literal (e.g. a synthetic entity declaration's logical-var
+    -- field).
+    operation extract_string_field(subst: Substitution,
+                                   var_name: String,
+                                   fallback: String) -> String =
+      match lookup(subst, var_name)
+        case none() -> fallback
+        case some(t) ->
+          match term_as_string(t)
+            case none() -> fallback
+            case some(s) -> s
+
+    -- Single-pass stream walk: pull one solution at a time, dedupe by id
+    -- against a running `seen` accumulator, print as we go. Tail-style
+    -- recursion: every recursive call is the last expression in its
+    -- branch, so the deepest stack is bounded by `limit` (1000). No
+    -- intermediate list — `append_pair`-style quadratic build was the
+    -- cause of the stack overflow on real workitem sets.
+    operation walk_solutions(stream: LogicalStream,
+                              show_all: Bool,
+                              limit: Int,
+                              seen: List[String],
+                              printed: Int) -> Int
+      effects ConsoleOutput
+    =
+      if eq(limit, 0) then printed
+      else
+        match splitFirst(stream)
+          case none() -> printed
+          case some(p) ->
+            match p
+              case pair(subst, rest) ->
+                let id = extract_string_field(subst, "id", "?")
+                let desc = extract_string_field(subst, "desc", "")
+                if list_contains_string(seen, id) then
+                  walk_solutions(rest, show_all, limit + (0 - 1), seen, printed)
+                else
+                  let _ = println(console(),
+                                  concat("  ",
+                                    concat(id, concat(" — ", desc))))
+                  if show_all then
+                    walk_solutions(rest, show_all,
+                                   limit + (0 - 1),
+                                   cons(id, seen),
+                                   printed + 1)
+                  else
+                    printed + 1
+
+    operation list_contains_string(xs: List[String], needle: String) -> Bool =
+      match xs
+        case nil() -> false
+        case cons(h, rest) ->
+          if eq(h, needle) then true
+          else list_contains_string(rest, needle)
+
+
+    operation cmd_next(bindings: List[Binding]) -> Int
+      effects {ConsoleOutput, ConsoleError}
+    =
+      let show_all = match get_binding(bindings, "all")
+        case some(_) -> true
+        case none() -> false
+      let id_var = fresh_var("id")
+      let desc_var = fresh_var("desc")
+      let goal = make_fn("anthill.stage0.workflow.claimable",
+                         cons(id_var, cons(desc_var, nil())))
+      let stream = execute(kb(), pattern_query(term: goal))
+      let printed = walk_solutions(stream, show_all, 1000, nil(), 0)
+      if eq(printed, 0) then
+        let _ = println(console(), "No claimable items (all blocked or none open).")
+        0
+      else 0
   end
 end

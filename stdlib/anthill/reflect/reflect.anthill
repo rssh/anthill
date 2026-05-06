@@ -34,7 +34,7 @@ namespace anthill.reflect
   export negation, guarded, projected, limited
   export nonvar, ground, not
   export field_access
-  export term_functor_name, term_field, term_as_string
+  export term_functor_name, term_field, term_as_string, fresh_var, make_fn
   export resolve_sort_instantiation_param
   export ConstraintId
   export reify, reflect
@@ -138,6 +138,26 @@ namespace anthill.reflect
   -- Extract a String literal value from a term. Returns none() unless the
   -- term is exactly `Const(StringLiteral(_))`.
   operation term_as_string(t: Term) -> Option[T = String]
+
+  -- Allocate a fresh logical variable as a Term::Var. Used to construct
+  -- pattern queries (`claimable(?id, ?desc)`) from anthill code: pass the
+  -- result as a named-arg or positional in the constructor expression that
+  -- becomes the goal, then run via `KB.execute(kb(), pattern_query(goal))`
+  -- and recover bindings via `Substitution.lookup(subst, name)`.
+  --
+  -- Two `fresh_var(name)` calls with the same name return Terms backed by
+  -- distinct VarIds — the display name carries through for `lookup`, but
+  -- the resolver's variable identity is the id, not the name.
+  operation fresh_var(name: String) -> Term
+
+  -- Build a Term::Fn whose functor is resolved by qualified-or-short name.
+  -- The expression-level constructor call form `claimable(?id, ?desc)`
+  -- only works for Operations and Entities — rule heads aren't scanned as
+  -- definitions, so referencing them inline fails at evaluation time.
+  -- `make_fn("anthill.stage0.workflow.claimable", cons(id, cons(desc, nil())))`
+  -- is the bridge: the resolver looks up the symbol by name and constructs
+  -- the goal term you can hand to `pattern_query` / `execute`.
+  operation make_fn(name: String, args: List[Term]) -> Term
 
   -- Negation-as-failure: succeeds if query has no solutions.
   -- Delays if query contains unbound variables (floundering prevention).

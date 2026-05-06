@@ -85,6 +85,8 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.reflect.term_functor_name", term_functor_name)?;
     register_if_present(interp, "anthill.reflect.term_field", term_field)?;
     register_if_present(interp, "anthill.reflect.term_as_string", term_as_string)?;
+    register_if_present(interp, "anthill.reflect.fresh_var", reflect_fresh_var)?;
+    register_if_present(interp, "anthill.reflect.make_fn", reflect_make_fn)?;
     register_if_present(interp, "anthill.prelude.Int.to_string", int_to_string)?;
 
     // Persistence (proposal 007). The operations are declared inside
@@ -704,6 +706,111 @@ fn term_as_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
             named: Vec::new(),
         },
     })
+}
+
+/// `anthill.reflect.fresh_var(name: String) -> Term`.
+/// Allocate a fresh logical variable wrapped in a `Term::Var(Var::Global(_))`
+/// so anthill code can build pattern queries with named holes. The display
+/// name is used by `Substitution.lookup` callers to recover bindings by
+/// name (`lookup(subst, "id")`); two fresh vars with the same name produce
+/// distinct `VarId`s — the resolver's identity is the id, not the name.
+///
+/// Pairs with `pattern_query` + `KB.execute` so anthill code can express
+/// goals like `claimable(?id, ?desc)` without needing first-class Symbol
+/// construction. WI-182 / proposal 026: the missing piece for cmd_next.
+fn reflect_fresh_var(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [name_arg] = expect_args::<1>("fresh_var", args)?;
+    let name = match &name_arg {
+        Value::Str(s) => s.clone(),
+        other => return Err(type_mismatch("String", other, None)),
+    };
+    let sym = interp.kb.intern(&name);
+    let vid = interp.kb.fresh_var(sym);
+    let tid = interp.kb.alloc(crate::kb::term::Term::Var(
+        crate::kb::term::Var::Global(vid),
+    ));
+    Ok(Value::Term(tid))
+}
+
+/// `anthill.reflect.make_fn(name: String, args: List[Term]) -> Term`.
+/// Build a `Term::Fn { functor, pos_args, named_args = [] }` whose functor
+/// is resolved by qualified or short name. Companion to `fresh_var`: anthill
+/// code constructs pattern goals like `claimable(?id, ?desc)` by
+/// `make_fn("anthill.stage0.workflow.claimable", cons(id_var, cons(desc_var, nil())))`.
+///
+/// The expression-level alternative — writing the constructor call inline
+/// in source — only works for names registered as Operations or Entities.
+/// Rule-head functors aren't (rule heads are not scanned as definitions),
+/// which is why the `cmd_next` port has to construct its goal through this
+/// builtin rather than calling `claimable(...)` directly.
+fn reflect_make_fn(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    use crate::kb::term::{Term, TermId};
+    let [name_arg, args_arg] = expect_args::<2>("make_fn", args)?;
+    let name = match &name_arg {
+        Value::Str(s) => s.clone(),
+        other => return Err(type_mismatch("String", other, None)),
+    };
+    let functor = interp.kb.try_resolve_symbol(&name)
+        .ok_or_else(|| EvalError::Internal(format!("make_fn: unknown symbol `{name}`")))?;
+
+    // Walk the cons-chain into Vec<TermId>. Cons cells come in two
+    // shapes: `build_list_value` (Rust-side) emits named-arg shape with
+    // `head`/`tail` keys; anthill-source `cons(h, t)` emits positional
+    // shape (args in `pos`, named empty). Try named first, fall back to
+    // positional. Field-name comparison is string-based — the loader may
+    // qualify field symbols, but the canonical short name is `head`/`tail`.
+    let mut pos_vec: Vec<TermId> = Vec::new();
+    let mut cursor = args_arg.clone();
+    loop {
+        match cursor {
+            Value::Entity { functor, pos, named } => {
+                let n = interp.kb.resolve_sym(functor);
+                if n == "nil" || n == "anthill.prelude.List.nil" { break; }
+                if !(n == "cons" || n == "anthill.prelude.List.cons") {
+                    return Err(EvalError::Internal(
+                        format!("make_fn: expected cons/nil, got {n}")
+                    ));
+                }
+                let (head, tail) = if !named.is_empty() {
+                    let h = named.iter()
+                        .find(|(s, _)| interp.kb.resolve_sym(*s) == "head")
+                        .map(|(_, v)| v.clone())
+                        .ok_or_else(|| EvalError::Internal(
+                            "make_fn: cons missing head field".into()
+                        ))?;
+                    let t = named.iter()
+                        .find(|(s, _)| interp.kb.resolve_sym(*s) == "tail")
+                        .map(|(_, v)| v.clone())
+                        .ok_or_else(|| EvalError::Internal(
+                            "make_fn: cons missing tail field".into()
+                        ))?;
+                    (h, t)
+                } else if pos.len() >= 2 {
+                    (pos[0].clone(), pos[1].clone())
+                } else {
+                    return Err(EvalError::Internal(format!(
+                        "make_fn: cons cell shape unrecognized (pos={}, named={})",
+                        pos.len(), named.len(),
+                    )));
+                };
+                let tid = match head {
+                    Value::Term(t) => t,
+                    other => return Err(type_mismatch("Term", &other, None)),
+                };
+                pos_vec.push(tid);
+                cursor = tail;
+            }
+            other => return Err(type_mismatch("List[Term]", &other, None)),
+        }
+    }
+
+    let pos_args = smallvec::SmallVec::from_vec(pos_vec);
+    let tid = interp.kb.alloc(Term::Fn {
+        functor,
+        pos_args,
+        named_args: smallvec::SmallVec::new(),
+    });
+    Ok(Value::Term(tid))
 }
 
 /// `anthill.prelude.Int.to_string(n: Int) -> String`. Decimal repr, no
