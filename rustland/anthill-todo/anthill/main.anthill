@@ -140,6 +140,7 @@ namespace anthill.todo
       else if eq(name, "status") then cmd_status()
       else if eq(name, "show") then cmd_show(bindings)
       else if eq(name, "list") then cmd_list(bindings)
+      else if eq(name, "graph") then cmd_graph()
       else not_yet(name)
 
     -- Find the first Binding with the given name; none() otherwise.
@@ -820,6 +821,97 @@ namespace anthill.todo
             print_rows_blocked(blocked)
         let _ = println(console(),
                         concat(to_string(count_rows(filtered)), " item(s)"))
+        0
+
+    -- ── cmd_graph ─────────────────────────────────────────────────
+
+    -- Find rows whose depends_on list is empty (roots of the dependents
+    -- tree — no precondition).
+    operation find_roots(rows: List[Row]) -> List[Row] =
+      match rows
+        case nil() -> nil()
+        case cons(r, rest) ->
+          match r
+            case Row(_, _, _, deps, _, _) ->
+              match deps
+                case nil() -> cons(r, find_roots(rest))
+                case cons(_, _) -> find_roots(rest)
+
+    operation status_or_unknown(rows: List[Row], id: String) -> String =
+      match status_for(rows, id)
+        case some(s) -> s
+        case none() -> "?"
+
+    -- Print one node and recurse into its direct dependents. Mirrors
+    -- legacy `print_tree` exactly: connector is "" at the root, "├─ "
+    -- for non-last siblings, "└─ " for last; child_prefix continues
+    -- with "│  " or "   " depending on whether `is_last` was true.
+    operation print_tree(id: String,
+                         is_root: Bool,
+                         is_last: Bool,
+                         prefix: String,
+                         rows: List[Row],
+                         pairs: List[Pair[String, String]])
+      -> Unit
+      effects ConsoleOutput
+    =
+      let connector =
+        if is_root then ""
+        else if is_last then "└─ "
+        else "├─ "
+      let status = status_or_unknown(rows, id)
+      let _ = println(console(),
+                      concat(prefix,
+                        concat(connector,
+                          concat(id, concat(" [", concat(status, "]"))))))
+      let child_prefix =
+        if is_root then "   "
+        else if is_last then concat(prefix, "   ")
+        else concat(prefix, "│  ")
+      let children = direct_dependents(pairs, id)
+      print_children(children, child_prefix, rows, pairs)
+
+    operation print_children(children: List[String],
+                             prefix: String,
+                             rows: List[Row],
+                             pairs: List[Pair[String, String]])
+      -> Unit
+      effects ConsoleOutput
+    =
+      match children
+        case nil() -> ()
+        case cons(c, rest) ->
+          let last = match rest
+            case nil() -> true
+            case cons(_, _) -> false
+          let _ = print_tree(c, false, last, prefix, rows, pairs)
+          print_children(rest, prefix, rows, pairs)
+
+    operation print_roots(roots: List[Row],
+                          rows: List[Row],
+                          pairs: List[Pair[String, String]])
+      -> Unit
+      effects ConsoleOutput
+    =
+      match roots
+        case nil() -> ()
+        case cons(r, rest) ->
+          match r
+            case Row(rid, _, _, _, _, _) ->
+              let _ = print_tree(rid, true, true, "", rows, pairs)
+              print_roots(rest, rows, pairs)
+
+    operation cmd_graph() -> Int
+      effects ConsoleOutput
+    =
+      let raw_rows = rows_of(facts_of(kb(), "WorkItem"))
+      if eq(count_rows(raw_rows), 0) then
+        let _ = println(console(), "No work items found.")
+        0
+      else
+        let pairs = dependent_pairs(raw_rows)
+        let roots = find_roots(raw_rows)
+        let _ = print_roots(roots, raw_rows, pairs)
         0
 
     operation cmd_skill() -> Int
