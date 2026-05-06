@@ -87,6 +87,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.reflect.term_as_string", term_as_string)?;
     register_if_present(interp, "anthill.reflect.fresh_var", reflect_fresh_var)?;
     register_if_present(interp, "anthill.reflect.make_fn", reflect_make_fn)?;
+    register_if_present(interp, "anthill.prelude.Time.now", time_now)?;
     register_if_present(interp, "anthill.prelude.Int.to_string", int_to_string)?;
 
     // Persistence (proposal 007). The operations are declared inside
@@ -814,6 +815,17 @@ fn reflect_make_fn(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
         named_args: smallvec::SmallVec::new(),
     });
     Ok(Value::Term(tid))
+}
+
+/// `anthill.prelude.Time.now() -> String`.
+/// Wall-clock timestamp in RFC-3339-with-Z form (`YYYY-MM-DDTHH:MM:SSZ`),
+/// matching the format every legacy `anthill-todo` command writes for
+/// status transitions and feedback. Effectful — declared to depend on
+/// the `Clock` capability so the typer can flag implicit clock reads.
+fn time_now(_interp: &mut Interpreter, _args: &[Value]) -> Result<Value, EvalError> {
+    Ok(Value::Str(
+        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    ))
 }
 
 /// `anthill.prelude.Int.to_string(n: Int) -> String`. Decimal repr, no

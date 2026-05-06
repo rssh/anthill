@@ -1,0 +1,24 @@
+-- Time: clock access. Single operation `now` returning a wall-clock
+-- timestamp in RFC-3339-with-Z form (`YYYY-MM-DDTHH:MM:SSZ`), used by
+-- WI tracking + audit-trail facts to record when an event happened.
+--
+-- The Clock effect tags reads of the wall clock so the typer / runtime
+-- can identify which operations are non-deterministic by virtue of
+-- consulting external state. `anthill run` binds Clock to the host
+-- system time; tests can substitute a frozen-clock handler.
+sort anthill.prelude.Time
+  import anthill.prelude.{String, Effect}
+  export Time, Clock, now
+
+  -- Effect kind. Resource-less — the wall clock is a global shared
+  -- resource, no per-instance handle to thread.
+  sort Clock
+  end
+  fact Effect[T = Clock]
+
+  -- Wall-clock timestamp in `YYYY-MM-DDTHH:MM:SSZ` form (UTC, second
+  -- granularity, `Z` suffix). Format matches the legacy anthill-todo
+  -- timestamps so the printed `at:` field round-trips byte-for-byte.
+  operation now() -> String
+    effects Clock
+end
