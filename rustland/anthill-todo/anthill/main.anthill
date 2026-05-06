@@ -10,6 +10,10 @@ namespace anthill.todo
   import anthill.cli.Main
   import anthill.persistence.filesystem.{FileStore}
   import anthill.persistence.{Store}
+  import anthill.persistence.Store.{persist, flush}
+  import anthill.prelude.Meta.{Meta}
+  import anthill.prelude.Time.{now}
+  import anthill.stage0.{Feedback}
   import anthill.prelude.{List, LogicalStream, Unit}
   import anthill.prelude.Bool.{not}
   import anthill.prelude.String.{length, substring, toUpper}
@@ -51,7 +55,7 @@ namespace anthill.todo
     , spec_named("claim",             "Claim a work item")
     , spec_named("deliver",           "Mark a work item as delivered")
     , spec_named("verify",            "Mark a delivered work item as verified")
-    , spec_named("feedback",          "Add feedback to a work item")
+    , spec_feedback()
     , spec_named("delete",            "Delete a work item")
     , spec_named("update",            "Update fields of a work item")
     , spec_named("add-dependency",    "Add a dependency to a work item")
@@ -80,6 +84,27 @@ namespace anthill.todo
           required: true,
           description: "Work item id (e.g. WI-009)"),
         nil()),
+      parent: none())
+
+  -- `feedback <id> <text>` records a Feedback fact against a work
+  -- item. Both positionals are required.
+  operation spec_feedback() -> OperationSpec =
+    OperationSpec(
+      name: "feedback",
+      description: "Add feedback to a work item",
+      params: cons(
+        ParamSpec(
+          name: "id",
+          kind: positional(),
+          required: true,
+          description: "Work item id (e.g. WI-009)"),
+        cons(
+          ParamSpec(
+            name: "text",
+            kind: positional(),
+            required: true,
+            description: "Feedback content"),
+          nil())),
       parent: none())
 
   -- `next` accepts --all (show every claimable item rather than just
@@ -168,6 +193,7 @@ namespace anthill.todo
       else if eq(name, "list") then cmd_list(bindings)
       else if eq(name, "graph") then cmd_graph()
       else if eq(name, "next") then cmd_next(bindings)
+      else if eq(name, "feedback") then cmd_feedback(bindings, store, agent)
       else not_yet(name)
 
     -- Find the first Binding with the given name; none() otherwise.
@@ -940,6 +966,48 @@ namespace anthill.todo
         let roots = find_roots(raw_rows)
         let _ = print_roots(roots, raw_rows, pairs)
         0
+
+    -- ── cmd_feedback ─────────────────────────────────────────────
+    --
+    -- `feedback <id> <text>` asserts a Feedback fact against the
+    -- target work item, persists it, and flushes the store. Output
+    -- mirrors legacy run_feedback's `feedback on <id>: <text>` line.
+    -- Mutating commands receive `store` (the FileStore handle) and
+    -- `agent` (the global --agent flag, default "user") via dispatch.
+    operation cmd_feedback(bindings: List[Binding],
+                            store: FileStore,
+                            agent: String) -> Int
+      effects {ConsoleOutput, ConsoleError}
+    =
+      let id_opt = get_binding(bindings, "id")
+      let text_opt = get_binding(bindings, "text")
+      match id_opt
+        case none() ->
+          let _ = eprintln(console(), "feedback: missing id")
+          2
+        case some(id) ->
+          match text_opt
+            case none() ->
+              let _ = eprintln(console(), "feedback: missing text")
+              2
+            case some(text) ->
+              do_feedback(store, agent, id, text)
+
+    operation do_feedback(store: FileStore, agent: String,
+                          id: String, text: String) -> Int
+      effects {ConsoleOutput, ConsoleError}
+    =
+      let fact = Feedback(
+        workitem: id,
+        author: agent,
+        content: text,
+        at: now())
+      let _ = persist(store, fact, Meta(entries: nil()))
+      let _ = flush(store, nil())
+      let _ = println(console(),
+                      concat("feedback on ",
+                        concat(id, concat(": ", text))))
+      0
 
     operation cmd_skill() -> Int
       effects ConsoleOutput
