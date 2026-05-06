@@ -164,7 +164,7 @@ namespace anthill.todo
     -- so they can call Store.persist + Store.flush and stamp `at:`
     -- fields with the canonical YYYY-MM-DDTHH:MM:SSZ format.
     operation main(args: List[String], store: FileStore, agent: String) -> Int
-      effects {ConsoleOutput, ConsoleError}
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
     =
       match parse_argv(specs(), args)
         case parse_err(no_subcommand()) ->
@@ -185,7 +185,7 @@ namespace anthill.todo
     -- (see `spec_with_id` for the canonical "needs an id" shape).
     operation dispatch(name: String, bindings: List[Binding],
                        store: FileStore, agent: String) -> Int
-      effects {ConsoleOutput, ConsoleError}
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
     =
       if eq(name, "skill") then cmd_skill()
       else if eq(name, "status") then cmd_status()
@@ -977,7 +977,7 @@ namespace anthill.todo
     operation cmd_feedback(bindings: List[Binding],
                             store: FileStore,
                             agent: String) -> Int
-      effects {ConsoleOutput, ConsoleError}
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
     =
       let id_opt = get_binding(bindings, "id")
       let text_opt = get_binding(bindings, "text")
@@ -995,7 +995,7 @@ namespace anthill.todo
 
     operation do_feedback(store: FileStore, agent: String,
                           id: String, text: String) -> Int
-      effects {ConsoleOutput, ConsoleError}
+      effects {ConsoleOutput, Modify[store], Error}
     =
       let fact = Feedback(
         workitem: id,

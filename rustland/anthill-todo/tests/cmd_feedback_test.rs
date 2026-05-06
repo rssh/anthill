@@ -111,4 +111,9 @@ fn feedback_missing_text_errors_cleanly() {
         .expect("run anthill-todo");
 
     assert!(!out.status.success(), "expected failure for missing text");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("argument error") || stderr.contains("missing text"),
+        "expected diagnostic about missing positional, got stderr: {stderr}",
+    );
 }
