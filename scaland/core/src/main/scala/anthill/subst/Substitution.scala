@@ -32,6 +32,11 @@ class Substitution(
   /** Whether this substitution contains a contradiction. */
   def isContradiction: Boolean = contradiction_
 
+  /** True when applying this substitution to any term is a no-op —
+    * no bindings here and no parent chain that could supply any. Used
+    * by the WI-030 lazy-walk fast path. */
+  def isEmpty: Boolean = bindings.isEmpty && parent.forall(_.isEmpty)
+
   /** Add bindings with path compression.
     * For each (vid, term): scan existing entries where ?w -> Var(vid) and update to ?w -> term,
     * then insert vid -> term. Keeps the substitution always flat.

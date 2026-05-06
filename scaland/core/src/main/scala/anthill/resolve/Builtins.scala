@@ -127,7 +127,13 @@ object Builtins:
       case Some((instArg, resultArg)) =>
         kb.getTerm(instArg) match
           case inner: Term.Fn =>
-            bindResult(kb, resultArg, kb.alloc(Term.Ref(inner.functor)), subst)
+            // Canonical nullary-Fn shape — matches the form used by the
+            // loader for sort references (e.g. SortRequiresInfo facts hold
+            // `sort_ref: Fn(B, [], [])`). Pre-WI-172 the eager
+            // applySubst-each + bindCompressed silently overwrote the
+            // Term.Ref form when later discrim-tree matches re-bound the
+            // same var; lazy walking surfaces the inconsistency.
+            bindResult(kb, resultArg, kb.makeNameTermFromSym(inner.functor), subst)
           case _ => BuiltinResult.Delay
       case None => BuiltinResult.Failure
 

@@ -82,3 +82,36 @@ class SubstitutionTest extends munit.FunSuite:
     assertEquals(s.resolve(v1).map(TermId.raw), Some(TermId.raw(concrete)))
     assertEquals(s.resolve(v2).map(TermId.raw), Some(TermId.raw(concrete)))
   }
+
+  // ── WI-172: isEmpty fast path ────────────────────────────────
+
+  test("isEmpty: fresh substitution is empty") {
+    assert(Substitution().isEmpty)
+  }
+
+  test("isEmpty: substitution with one binding is not empty") {
+    val store = TermStore()
+    val t = store.alloc(Term.Const(Literal.IntLit(1)))
+    val v = VarId(0, sym(0))
+    val s = Substitution()
+    s.bind(v, t)
+    assert(!s.isEmpty)
+  }
+
+  test("isEmpty: child of empty parent with no own bindings is empty") {
+    val parent = Substitution()
+    val child = Substitution.withParent(parent)
+    assert(child.isEmpty)
+  }
+
+  test("isEmpty: child of non-empty parent is not empty (parent supplies bindings)") {
+    val store = TermStore()
+    val t = store.alloc(Term.Const(Literal.IntLit(1)))
+    val v = VarId(0, sym(0))
+    val parent = Substitution()
+    parent.bind(v, t)
+    val child = Substitution.withParent(parent)
+    // Child has no own bindings, but parent does — applying this subst
+    // is NOT a no-op, so isEmpty must be false.
+    assert(!child.isEmpty)
+  }
