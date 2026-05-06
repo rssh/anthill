@@ -757,16 +757,19 @@ fn reflect_make_fn(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
     // shapes: `build_list_value` (Rust-side) emits named-arg shape with
     // `head`/`tail` keys; anthill-source `cons(h, t)` emits positional
     // shape (args in `pos`, named empty). Try named first, fall back to
-    // positional. Field-name comparison is string-based — the loader may
-    // qualify field symbols, but the canonical short name is `head`/`tail`.
+    // positional. Field-name comparison stays string-based — the loader
+    // may qualify field symbols, but the canonical short name is
+    // `head`/`tail`.
+    let cons_sym = interp.reflect.cons;
+    let nil_sym = interp.reflect.nil;
     let mut pos_vec: Vec<TermId> = Vec::new();
     let mut cursor = args_arg.clone();
     loop {
         match cursor {
             Value::Entity { functor, pos, named } => {
-                let n = interp.kb.resolve_sym(functor);
-                if n == "nil" || n == "anthill.prelude.List.nil" { break; }
-                if !(n == "cons" || n == "anthill.prelude.List.cons") {
+                if Some(functor) == nil_sym { break; }
+                if Some(functor) != cons_sym {
+                    let n = interp.kb.resolve_sym(functor);
                     return Err(EvalError::Internal(
                         format!("make_fn: expected cons/nil, got {n}")
                     ));
