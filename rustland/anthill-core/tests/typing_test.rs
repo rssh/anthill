@@ -2979,3 +2979,106 @@ fn typed_span_resolves_to_source_position() {
     let span = errors[0].span(&kb);
     assert!(span.is_some(), "span should be populated for entity-field mismatch");
 }
+
+// ══════════════════════════════════════════════════════════════════
+// WI-186 — Free-standing parametric operations (proposal 035)
+// ══════════════════════════════════════════════════════════════════
+
+#[test]
+fn wi186_smoke_free_standing_logical_var_in_param_type() {
+    // Hypothesis: with `?a` already a valid variable_term in type
+    // positions, a free-standing parametric operation may already
+    // parse + load + typecheck without grammar/loader changes.
+    // Each `?a` is a logical variable in the operation's signature
+    // scope; the typer instantiates it at each call site.
+    let source = r#"
+namespace test.wi186_smoke
+  operation id_int(a: ?a) -> Int
+    = 0
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(),
+        "free-standing op with ?a in param type should typecheck cleanly, got: {:?}",
+        errors);
+}
+
+#[test]
+fn wi186_free_standing_logical_var_in_return_type() {
+    // `?a` in the return type position. With a literal body the typer
+    // must allow a concrete return type to satisfy the polymorphic
+    // declared return.
+    let source = r#"
+namespace test.wi186_ret
+  operation pick(a: ?a, b: ?b) -> ?a
+    = a
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(),
+        "free-standing op with ?a in return type should typecheck cleanly, got: {:?}",
+        errors);
+}
+
+#[test]
+fn wi186_free_standing_parameterized_return_type() {
+    // Real proposal-035 fixture: free-standing parametric op whose
+    // return type uses an existing parametric sort with its bindings
+    // pinned by the operation's logical variables.
+    let source = r#"
+namespace test.wi186_pair
+  import anthill.prelude.{Pair}
+  operation make_pair(a: ?a, b: ?b) -> Pair[A = ?a, B = ?b]
+    = pair(a, b)
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(),
+        "free-standing op returning Pair[?a, ?b] should typecheck cleanly, got: {:?}",
+        errors);
+}
+
+#[test]
+fn wi186_free_standing_call_site_concrete() {
+    // Call a free-standing parametric op with concrete-typed args
+    // and bind into a let with an explicit annotation. The typer
+    // should accept this — it instantiates ?a := String, ?b := Int
+    // at the call site.
+    let source = r#"
+namespace test.wi186_call
+  import anthill.prelude.{Pair}
+  operation make_pair(a: ?a, b: ?b) -> Pair[A = ?a, B = ?b]
+    = pair(a, b)
+  operation main() -> Pair[A = String, B = Int]
+    = make_pair("hi", 7)
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(),
+        "concrete call site for free-standing parametric op should typecheck, got: {:?}",
+        errors);
+}
+
+#[test]
+fn wi186_free_standing_call_site_int_pair() {
+    // Same shape as above with both args of the same primitive type —
+    // exercises the case where ?a and ?b are bound to the same sort.
+    let source = r#"
+namespace test.wi186_call_int
+  import anthill.prelude.{Pair}
+  operation make_pair(a: ?a, b: ?b) -> Pair[A = ?a, B = ?b]
+    = pair(a, b)
+  operation main() -> Pair[A = Int, B = Int]
+    = make_pair(1, 2)
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(),
+        "Int-Int instantiation should typecheck, got: {:?}",
+        errors);
+}
