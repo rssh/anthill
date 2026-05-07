@@ -39,7 +39,7 @@ namespace anthill.todo
                           term_functor_name, term_field, term_as_string,
                           fresh_var, make_fn, find_fact, replace_named_arg}
   import anthill.persistence.Store.{retract}
-  import anthill.stage0.WorkStatus.{Claimed}
+  import anthill.stage0.WorkStatus.{Claimed, Delivered, Verified}
   import anthill.reflect.KB.{kb, execute, facts_of}
   import anthill.reflect.LogicalQuery.{sort_query, pattern_query}
   import anthill.reflect.Substitution.{lookup}
@@ -57,10 +57,10 @@ namespace anthill.todo
     , spec_next()
     , spec_with_id("show",            "Show details of a work item")
     , spec_with_id("claim",           "Claim a work item")
-    , spec_named("deliver",           "Mark a work item as delivered")
-    , spec_named("verify",            "Mark a delivered work item as verified")
+    , spec_with_id("deliver",         "Mark a work item as delivered")
+    , spec_with_id("verify",          "Mark a delivered work item as verified")
     , spec_feedback()
-    , spec_named("delete",            "Delete a work item")
+    , spec_with_id("delete",          "Delete a work item")
     , spec_named("update",            "Update fields of a work item")
     , spec_named("add-dependency",    "Add a dependency to a work item")
     , spec_named("remove-dependency", "Remove a dependency from a work item")
@@ -228,6 +228,9 @@ namespace anthill.todo
       else if eq(name, "feedback") then cmd_feedback(bindings, store, agent)
       else if eq(name, "add") then cmd_add(bindings, store)
       else if eq(name, "claim") then cmd_claim(bindings, store, agent)
+      else if eq(name, "deliver") then cmd_deliver(bindings, store, agent)
+      else if eq(name, "verify") then cmd_verify(bindings, store)
+      else if eq(name, "delete") then cmd_delete(bindings, store)
       else not_yet(name)
 
     -- Find the first Binding with the given name; none() otherwise.
@@ -1224,6 +1227,122 @@ namespace anthill.todo
           let _ = flush(store, nil())
           let _ = println(console(),
             concat("claimed: ", concat(id, concat(" by ", agent))))
+          0
+
+    -- ── cmd_deliver ──────────────────────────────────────────────
+    --
+    -- `deliver <id>` transitions Claimed → Delivered(agent, at).
+    -- Same retract+assert shape as cmd_claim.
+
+    operation cmd_deliver(bindings: List[Binding],
+                           store: FileStore,
+                           agent: String) -> Int
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+    =
+      match get_binding(bindings, "id")
+        case none() ->
+          let _ = eprintln(console(), "deliver: missing id")
+          2
+        case some(id) ->
+          match find_by_id(facts_of(kb(), "WorkItem"), id)
+            case none() ->
+              let _ = eprintln(console(),
+                concat("error: work item '", concat(id, "' not found")))
+              1
+            case some(old_term) -> do_deliver(store, agent, id, old_term)
+
+    operation do_deliver(store: FileStore, agent: String,
+                         id: String, old_term: Term) -> Int
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+    =
+      match find_fact(old_term)
+        case none() ->
+          let _ = eprintln(console(),
+            "internal: WorkItem head missing from KB rule index")
+          1
+        case some(fid) ->
+          let new_term = replace_named_arg(old_term, "status",
+                          Delivered(agent: agent, at: now()))
+          let _ = retract(store, fid)
+          let _ = persist(store, new_term, Meta(entries: nil()))
+          let _ = flush(store, nil())
+          let _ = println(console(),
+            concat("delivered: ", concat(id, concat(" by ", agent))))
+          0
+
+    -- ── cmd_verify ───────────────────────────────────────────────
+    --
+    -- `verify <id>` transitions Delivered → Verified(at). No --agent
+    -- — the verifier identity isn't recorded in the legacy fact shape.
+
+    operation cmd_verify(bindings: List[Binding],
+                          store: FileStore) -> Int
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+    =
+      match get_binding(bindings, "id")
+        case none() ->
+          let _ = eprintln(console(), "verify: missing id")
+          2
+        case some(id) ->
+          match find_by_id(facts_of(kb(), "WorkItem"), id)
+            case none() ->
+              let _ = eprintln(console(),
+                concat("error: work item '", concat(id, "' not found")))
+              1
+            case some(old_term) -> do_verify(store, id, old_term)
+
+    operation do_verify(store: FileStore, id: String, old_term: Term) -> Int
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+    =
+      match find_fact(old_term)
+        case none() ->
+          let _ = eprintln(console(),
+            "internal: WorkItem head missing from KB rule index")
+          1
+        case some(fid) ->
+          let new_term = replace_named_arg(old_term, "status",
+                          Verified(at: now()))
+          let _ = retract(store, fid)
+          let _ = persist(store, new_term, Meta(entries: nil()))
+          let _ = flush(store, nil())
+          let _ = println(console(), concat("verified: ", id))
+          0
+
+    -- ── cmd_delete ───────────────────────────────────────────────
+    --
+    -- `delete <id>` retracts the WorkItem fact entirely — no
+    -- replacement persisted. The IndexedFileStore's source-span
+    -- retract drops the fact block from disk; flush atomically
+    -- rewrites the affected file.
+
+    operation cmd_delete(bindings: List[Binding],
+                          store: FileStore) -> Int
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+    =
+      match get_binding(bindings, "id")
+        case none() ->
+          let _ = eprintln(console(), "delete: missing id")
+          2
+        case some(id) ->
+          match find_by_id(facts_of(kb(), "WorkItem"), id)
+            case none() ->
+              let _ = eprintln(console(),
+                concat("error: work item '", concat(id, "' not found")))
+              1
+            case some(old_term) -> do_delete(store, id, old_term)
+
+    operation do_delete(store: FileStore, id: String, old_term: Term) -> Int
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+    =
+      match find_fact(old_term)
+        case none() ->
+          let _ = eprintln(console(),
+            "internal: WorkItem head missing from KB rule index")
+          1
+        case some(fid) ->
+          let _ = retract(store, fid)
+          let _ = flush(store, nil())
+          let _ = println(console(), concat("deleted: ", id))
           0
 
     -- ── cmd_feedback ─────────────────────────────────────────────
