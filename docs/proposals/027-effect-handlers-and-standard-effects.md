@@ -559,7 +559,7 @@ end
 - `get(c)` — read the current value. Pure (no `effects` clause); observation of mutable state is type-pure (matches Haskell's `IORef.read :: IORef a -> IO a` distinction loosely — reads don't carry the mutation effect).
 - `set(c, value)` — replace the cell's value. Carries `effects Modify[c]`. **Modify has one semantics: mutate.** Whether the mutation rolls back is Cell's branch-interaction contract (branch-local-snapshot per 037), enforced by the runtime — not a property of the operation, the handler, or any flag.
 
-**Default handler:** a `ModifyHandler[Resource = Cell[V], IdentityKey = …]` keyed by Cell's identity (today: functor-only — single instance per V; multi-instance per WI-200). The host realization owns the arena (in Rust: `HashMap<Symbol, Value>` inside `default_modify_handler` at `rustland/.../eval/effects.rs:109`). See 037 §"Cell[V]" interpreter contract.
+**Cell handler:** a `ModifyHandler[Resource = Cell[V], IdentityKey = …]` keyed by Cell's identity. Under the framework's target contract (per 037 §"Cell[V]") the scheme is opaque-handle — a fresh handle per `Cell.new`. The Rust realization currently uses a transitional functor-keyed scheme that pins all `Cell.new(...)` calls to one slot; WI-200 lifts this. The host realization owns the host-side state structure for the active scheme.
 
 **Alternative handlers** (per 037 §"Type-specific Modify handlers" — handlers vary in *state representation*, never in *rollback policy*):
 - *Direct*: the default; fast path with simple state.

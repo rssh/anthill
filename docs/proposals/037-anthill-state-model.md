@@ -163,7 +163,7 @@ The handler internally maps `Resource → IdentityKey`, then keys its state by `
 
 Three concrete identity schemes (matching what handlers will plug in for, per WI-200):
 
-- **Functor-only**: the handler keys all instances of the Resource sort to a single slot. `IdentityKey = Unit`. One instance per Resource type. Today's default Modify handler. Suitable for singletons (KB, a process-wide config cell).
+- **Functor-only**: the handler keys all instances of the Resource sort to a single slot. `IdentityKey = Unit`. One instance per Resource type. Suitable for singletons (KB, a process-wide config cell).
 
   ```anthill
   Cell.new(0)   -- keyed to the single `Cell` slot
@@ -223,7 +223,7 @@ A resource type can expose any operations that suit its purpose. KB exposes `ass
 
 Where does the actual mutable state live? The framework abstracts over location; the handler picks whatever the host language supports efficiently. Common categories (described in framework-neutral terms; the Rust realization examples are illustrative, not normative):
 
-- **Value-tree associative table**: a host-side associative structure keyed by the handler's identity scheme; values are anthill `Value`s. Suitable when the state can be expressed as a Value tree. (Rust realization today: `default_modify_handler`'s in-process map.)
+- **Value-tree associative table**: a host-side associative structure keyed by the handler's identity scheme; values are anthill `Value`s. Suitable when the state can be expressed as a Value tree.
 - **Per-instance backend registry**: an associative structure mapping the instance key to a host-language object that carries non-Value internal state (file handles, network connections, large data structures). Useful when the resource's state spills outside the Value model. (Rust realization today: `store_registry` for FileStore — the values are `Box<dyn Store>`; in another host this would be whatever object/struct/closure the language offers.)
 - **Resource-internal structures**: the handler treats the resource itself as the substrate. KB falls here — its rules and indexes ARE the state, not a value-tree representation of state. The handler's "operations" are direct method calls on the substrate.
 - **Arena**: refcounted, handle-keyed, garbage-collected. Map / Substitution / Stream use this (each value is a handle into a per-resource arena allocated on demand).
@@ -283,11 +283,11 @@ Each resource type needs its own contract spelled out. The framework requires th
 
 | | |
 |---|---|
-| Identity scheme | **Opaque handle** (target contract). Today's default Modify handler keys by `Cell` symbol — functor-only — which collapses all `Cell.new(...)` calls to one slot. WI-200 lifts this; under the target contract `Cell.new` returns a fresh handle per call (Rust `Cell::new`, OCaml `ref`, Haskell `IORef` flavor). |
+| Identity scheme | **Opaque handle**: `Cell.new` returns a fresh handle per call (Rust `Cell::new`, OCaml `ref`, Haskell `IORef` flavor). The Rust realization today uses a transitional functor-keyed scheme that collapses all `Cell.new(...)` calls to one slot; WI-200 replaces it with the opaque-handle scheme that matches the contract. |
 | Operations exposed | `new(initial) -> Cell[V]` (construct), `get(c) -> V` (read), `set(c, v) -> Unit` (write). No `key` operation — Cell's identity is allocation-time. One write op with one semantics (mutate); branch interaction is the contract below. |
-| State location | A host-language structure private to the handler (in the Rust realization today: `default_modify_handler`'s in-process associative table — see `rustland/anthill-core/src/eval/effects.rs:124`). Other handlers may use a version graph (time-travel), a fixture (test), or a wrapped delegate (audit) — different state representations, same operation. The structure shape and the keying primitive are realization details, not part of the framework. |
+| State location | A host-language structure private to the Cell handler. The structure shape and the keying primitive are realization details, not part of the framework — alternative handlers (time-travel, test fixture, audit-wrapped delegate) carry different state representations for the same operation surface. |
 | Dispatch path | Handler-dispatched via the existing Modify effect machinery. |
-| Lifecycle | **Refcounted** (the default): born at `Cell.new(initial)`; reclaimed when no references remain. Optional lexical scoping via `with_resource`. Today's functor-keyed default handler effectively pins Cell state for the process duration (single slot per V, no GC) — that is a side-effect of the functor-only identity scheme, not a lifecycle decision; multi-instance + refcounted GC is contingent on WI-200. |
+| Lifecycle | **Refcounted** (the default): born at `Cell.new(initial)`; reclaimed when no references remain. Optional lexical scoping via `with_resource`. While the transitional functor-keyed Rust scheme is in place, Cell state is effectively pinned for the process duration (single slot per V, no GC) — a side-effect of the functor-only identity scheme, not a lifecycle decision. Refcounted GC follows automatically once WI-200 lifts Cell to opaque-handle. |
 | Branch interaction | **Branch-local snapshot** (per the contract). Today's implementation behaves sticky-under-Branch only because the snapshot machinery isn't wired yet — that is a soundness gap, not the contract. The fix is the runtime `register_undo` + per-branch state cloning (Open Decision 3). |
 | Time-travel readiness | Yes — state is a Value; a versioned handler can layer in transparently. |
 
@@ -393,7 +393,7 @@ These hold for resource-specific ops too (commit, persist, assert) — none of t
 
 ## Multi-instance support
 
-Single-instance-per-functor (today's default) is the simplest case. Multi-instance support requires picking an identity scheme (per §"Resource type plug-in"). WI-200 tracks the design — the framework permits any of the three schemes; a sort declares which it uses.
+Single-instance-per-functor is the simplest identity scheme; the framework permits all three (functor-only, identity-by-key, opaque-handle). The handler picks one per resource. WI-200 tracks the runtime work to make multi-instance schemes available — until then, the Rust realization uses a single type-independent associative table that effectively forces functor-only on every Modify-using resource.
 
 Until WI-200 lands, all stateful resources are functor-keyed (one instance per type). This is OK for KB (one per Interpreter), config cells (singleton), the bundle's WorkItemStore (one per CLI invocation). It's NOT OK for arena-allocated values (Map, Substitution, Stream) — those use opaque handles via separate machinery (`Value::Map(handle)`, etc.) and don't go through the Modify cell.
 
