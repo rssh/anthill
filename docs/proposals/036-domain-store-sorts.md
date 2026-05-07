@@ -4,7 +4,7 @@
 
 ## Tracks: WI-192
 
-## Relates to: WI-188 (entity copy), WI-189 (reify/reflect operators), WI-190 (quasi-quote patterns), WI-194 (commit), WI-195 (Error effect wired), WI-187 (IndexedFileStore — already landed)
+## Relates to: 037 (Modify framework — canonical state model; this proposal is a concrete consumer), WI-188 (entity copy), WI-189 (reify/reflect operators), WI-190 (quasi-quote patterns), WI-194 (commit), WI-195 (Error effect wired), WI-187 (IndexedFileStore — already landed), WI-200 (multi-instance Modify state — resolves the single-instance limitation noted below)
 
 ## Motivation
 
@@ -111,45 +111,46 @@ This is **WI-189** (reify/reflect operators): `let wi: WorkItem = ↓term`.
 
 **Without WI-189**, we can fall back to `Map[String, Term]`. The map carries Term values; `lookup` returns `Option[Term]`; field access still goes through `term_field` / `term_as_string`. That's a partial win — consolidates the indexes but keeps the reflection surface in command bodies.
 
-### 2. Mutating commit through state semantics *(not a blocker — already exists)*
+### 2. Mutating commit through the Modify framework *(not a blocker — already exists)*
 
-`commit` updates `backend`, `by_id`, `by_status`, `id_counter` together. Looking at what anthill already has:
+`commit` updates `backend`, `by_id`, `by_status`, `id_counter` together. Per proposal 037, `Modify[T]` has one semantics — mutate the named resource — and rollback under Branch is the resource's branch-interaction contract.
 
-`stdlib/anthill/prelude/effects.anthill` declares `Modify[T]` with `get(target: T) -> T` and `set(target: T, value: T) -> Unit effects Modify[T]`. That's the State monad. `eval/effects.rs::default_modify_handler` implements it as a `HashMap<Symbol, Value>` keyed by resource functor — the functor symbol of the target value identifies the cell; the stored Value is whatever was last `set`.
+WorkItemStore's state is a value-shaped record (`backend`, `by_id`, `by_status`, `id_counter`), so it plugs into the framework via Cell[V]: state location is "the Modify cell, holding a `wis(...)` Value. Reuses Cell[V] machinery" (per 037's per-resource interpreter contract for WorkItemStore). The `commit` body reads the current `wis(...)` via `get(s)`, computes the next value, and writes it back via `set(s, new)` — these are Cell's standard operations, dispatched through the existing Modify effect machinery.
 
-Per proposal 027 §4, `Modify` has two write ops: sticky `set` and transactional `set_local`. `set` mutations persist across `Branch` backtracks; `set_local` rolls back via the `register_undo` snapshot mechanism. WorkItemStore's `commit` uses sticky `set` — once a WorkItem is persisted to disk and the indexes updated, that state is irreversible; a search-branch backtrack must not roll the maps back into a state that contradicts what's on disk. (Today `set_local` isn't wired; v0.1 lands with `set` only, which is what `commit` needs anyway.)
+The per-resource Branch-interaction is determined by what's *inside* the `wis(...)` value:
+
+- The in-memory parts (`by_id`, `by_status`, `id_counter`) are value-shaped and could be branch-local-snapshot like Cell.
+- The `backend` field is an `IndexedFileStore`, which is **sticky-by-physics** per 037 — the filesystem can't roll back atomically. The `commit` declaration `effects {Modify[s], Modify[backend], Error}` makes the `Modify[backend]` reach explicit.
+
+So WorkItemStore inherits the Store's Branch constraint: until either a buffered Store handler absorbs writes for the branch's duration, or a static constraint rejects `Modify[backend]` ops inside Branch (analogous to the Branch+Consumes constraint from 027), `commit` cannot be called inside `Branch` soundly. For the bundle's v0.1 (one-shot CLI, no Branch use), this is not load-bearing — the gap is documented at the framework level (037 §"Store" contract row), not in this proposal.
 
 #### Forward compatibility with time-travel
 
-A future time-travel effect (versioned resources, audit trails, history queries) should coexist with `Modify` without breaking changes. Five design invariants preserve that compatibility:
+A future time-travel handler (versioned state, audit trails, history queries) should coexist with `Modify` without breaking changes. WorkItemStore's design satisfies the five forward-compat invariants of 037 §"With time-travel":
 
-1. **`set(target, v)` is "advance the head."** The observable contract is "next `get(target)` returns `v`." Whether the handler overwrites a single cell or appends to a version graph is hidden behind that contract. The same `set` works under both default and time-travel handlers.
+1. `set(s, v)`'s observable contract is "next `get(s)` returns `v`."
+2. `get(s)` returns the current head; `get_at` (if added later) lives under a separate `TimeTravel[s]` effect.
+3. `Modify[s]` doesn't expose handler-internal structure.
+4. `set` returns `Unit`, not the prior value.
+5. Operation signatures don't encode rollback policy — that's the resource's contract.
 
-2. **`get(target)` returns the current head.** Always. Time-travel adds `get_at(target, version)` as a *new operation* under a *separate* effect (`TimeTravel[s]`), not as a refinement of `get`.
-
-3. **`Modify[s]` doesn't expose handler-internal structure.** The user-facing surface is `get` / `set` / `set_local`. The handler may store cells as single values or version graphs; the effect's surface doesn't observe the difference.
-
-4. **`set` returns `Unit`, not the prior value.** Returning the displaced value would force the handler to materialize old state even when no history is kept. Callers that need the prior value `get` first.
-
-5. **Sticky vs transactional is encoded in the *operation*, not the handler.** `set` is sticky; `set_local` is transactional. Different ops, same handler. (Today's design.)
-
-WorkItemStore's design satisfies all five invariants — `commit` calls `set` returning `Unit`; `lookup` calls `get`; only `Modify[s]` is declared; no `set_versioned` / `get_at` is mixed in. A future time-travel handler could substitute a versioned representation without changing any user-visible code.
+WorkItemStore's design satisfies all five — `commit` calls `set` returning `Unit`; `lookup` calls `get`; only `Modify[s]` is declared. A future time-travel handler could substitute a versioned representation of the `wis(...)` Value without changing any user-visible code.
 
 #### Single-instance-per-functor limitation
 
-The default Modify handler keys cells by **functor symbol only** (`eval/effects.rs::resource_key`). Two `wis(backend_a, ..., counter: 5)` and `wis(backend_b, ..., counter: 10)` share a single cell — setting one is observable to the other. This is fine for the bundle's WI-192 use case (one CLI invocation = one project = one WorkItemStore) but breaks for multi-instance scenarios:
+Today's transitional Rust scheme (the type-independent `default_modify_handler`) keys cells by **functor symbol only** — `wis(...)` regardless of field values shares a single cell. Two `wis(backend_a, ..., counter: 5)` and `wis(backend_b, ..., counter: 10)` collide. This is fine for the bundle's WI-192 use case (one CLI invocation = one project = one WorkItemStore) but breaks for multi-instance scenarios:
 
 - Tests that exercise `cmd_X` against multiple isolated stores in the same process.
 - A future `anthill-todo-server` managing N project workspaces.
 - Composition where two operations independently want isolated state of the same sort type.
 
-Three design directions for future multi-instance support — each a candidate WI:
+Per 037, identity is a property of the *handler* (`ModifyHandler[Resource, IdentityKey]`), not the resource sort. The framework permits three identity schemes for the handler to pick:
 
-- **Identity-by-field**: sort declares which entity field carries instance identity; cells key by `(functor, identity_value)`.
-- **Opaque resource handles**: new `Value::Resource(uid)` variant; cells key by uid; mkResource allocates a fresh uid per construction.
-- **Per-instance handler scope**: `with_handler(Modify, instance_handler) { ... }` lexically introduces a scoped handler owning one instance's state.
+- **Functor-only** (`IdentityKey = Unit`) — current scheme; one slot per Resource type.
+- **Identity-by-key** (`IdentityKey = String / Int / IdentityKey` opaque type, computed via a sort-declared `key` operation) — multi-instance via a domain key the user supplies (project name, workspace id).
+- **Opaque-handle** (`IdentityKey = ` allocation-time uid) — multi-instance via fresh handles per construction.
 
-WI-192 v0.1 ships with the single-instance limitation. Multi-instance is a separate proposal — likely a generalization of `resource_key` paired with one of the three options above. Documented here so the limitation is visible at design-review time, not surprise at multi-tenant time.
+WI-200 tracks the runtime work to wire per-resource handlers under these schemes. Until WI-200 lands, every Modify-using resource is functor-keyed. WI-192 v0.1 ships under this limitation and uses functor-only on purpose (single-store bundle). Documented here so the limitation is visible at design-review time, not surprise at multi-tenant time.
 
 So a WorkItemStore.commit body looks like:
 
@@ -167,17 +168,19 @@ operation commit(s: WorkItemStore, w: WorkItem) -> Unit
       set(s, updated)
 ```
 
-`s` at every call site is just the resource handle — its field values don't matter because the Modify handler keys by functor symbol (`wis`). Inside, `get(s)` reads the current state, `set(s, new)` writes the next one. Identity of `s` is stable across calls; the state behind it shifts.
+`s` at every call site is just the resource handle. Inside the body, `get(s)` reads the current `wis(...)` value, `set(s, new)` writes the next one — these are Cell's standard operations dispatched via the Modify effect machinery (per 037's per-resource interpreter contract for WorkItemStore). Identity of `s` is stable across calls; the state behind it shifts.
 
-The only runtime work needed: at startup, the host calls `Modify.set(wis_handle, initial_wis)` once — seeding the cell. That's a single effect dispatch through machinery that already works.
+Under v0.1's transitional handler scheme (functor-only identity), the field values inside `s` don't participate in state lookup — the runtime keys all `wis(...)` calls to one slot. That matches the bundle's single-store usage. When WI-200 lands and Cell migrates to opaque-handle identity, `s`'s allocation-time uid will become the keying scheme — multi-store usage falls out without changing user-visible code.
 
-Earlier drafts of this doc considered three other options (functional threading; a new Cell value variant; a separate registry pattern duplicating what Modify already does). All inferior to using existing state semantics. Discarded.
+The only runtime work needed at startup: the host calls `Modify.set(wis_handle, initial_wis)` once, seeding the cell. That's a single effect dispatch through machinery that already works.
+
+Earlier drafts considered three other options (functional threading; a new Cell value variant; a separate registry pattern duplicating what Modify already does). All inferior to using the framework as-is. Discarded.
 
 #### Note: registries and state are the same idea
 
-The runtime today has multiple state stores: the Modify cell, `store_registry`, `IndexedFileStore.source_map`, map_arena, subst_arena, stream_arena, the KB indexes themselves. They differ in (key shape, value shape, access surface), but conceptually they're all instances of the same primitive — *mutable state keyed by identity*. The split between "Modify cell" and "host registry" is forced when the state can't be expressed as an anthill `Value` (FileStore's `Box<dyn Store>` internals, for example). When the state IS expressible as Values — as with WorkItemStore's `(backend, by_id, by_status, id_counter)` — the Modify cell suffices and no new registry is needed.
+This is the framework's central observation, spelled out in 037 §3 "Type-specific Modify handlers": the Modify cell, the host store registry, KB indexes, arenas, source maps are all *handlers for resource-specific Modify effects*. They differ in state representation; they are uniform in dispatch. WorkItemStore's state happens to be value-shaped, so it plugs into the Cell-style handler with no new machinery. Resources whose state spills outside the Value model (e.g. FileStore's per-instance backend objects) get a different state-representation choice but the same dispatch architecture.
 
-A future "first-class resources" proposal could unify these into one abstraction, but it's not on WI-192's path. WI-192 uses the Modify cell as-is; a later refactor could rewire all the registries under a single mechanism without changing user-visible code.
+Cross-reference 037 for the full framework; WI-192 is its first end-to-end consumer.
 
 ### 3. Map keys at sort `WorkStatus` *(may be blocker)*
 
