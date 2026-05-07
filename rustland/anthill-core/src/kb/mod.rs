@@ -360,9 +360,12 @@ impl KnowledgeBase {
             });
         let Some(scope_raw) = body_scope else { return Vec::new() };
         let Some(scope) = self.symbols.scope(scope_raw) else { return Vec::new() };
-        let mut params: Vec<String> = scope.type_params.iter().cloned().collect();
-        params.sort();
-        params
+        // Source-order, not alphabetical: positional sort bindings rely
+        // on declaration order (`Map[String, Int]` mapping index 0→K,
+        // 1→V follows the order K and V were declared, not their
+        // alphabetic sort). The HashSet path is still used by
+        // `is_type_param` membership checks.
+        scope.type_params_ordered.clone()
     }
 
     /// Get the Term for a TermId.

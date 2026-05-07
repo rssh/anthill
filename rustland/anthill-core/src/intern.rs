@@ -85,6 +85,13 @@ pub struct Scope {
     pub parents: Vec<ScopeInclusion>,
     /// Type parameter names (excluded from parent lookups)
     pub type_params: HashSet<String>,
+    /// Type parameter names in declaration order. Parallel to
+    /// `type_params` for membership tests; this is what positional
+    /// sort bindings (e.g. `Map[String, Int]` for a `sort Map { sort
+    /// K = ?; sort V = ? }`) consult to map index 0 → "K", index 1 →
+    /// "V". Insertion-order preserves the source-text declaration
+    /// order, which is the binding contract.
+    pub type_params_ordered: Vec<String>,
 }
 
 // ── SymbolTable ─────────────────────────────────────────────────
@@ -164,11 +171,10 @@ impl SymbolTable {
 
     /// Record a type parameter name for a scope (excluded from parent lookups).
     pub fn add_type_param(&mut self, scope_raw: u32, name: &str) {
-        self.scopes
-            .entry(scope_raw)
-            .or_default()
-            .type_params
-            .insert(name.to_owned());
+        let scope = self.scopes.entry(scope_raw).or_default();
+        if scope.type_params.insert(name.to_owned()) {
+            scope.type_params_ordered.push(name.to_owned());
+        }
     }
 
     /// Record an imported name alias in a scope.

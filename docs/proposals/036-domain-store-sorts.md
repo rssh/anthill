@@ -23,7 +23,9 @@ The pattern is "fact set + a few indexes + domain operations." That's a *sort* i
 
 ## What the surface looks like
 
-A new sort, declared in the project (or in the bundle when shipping rust+anthill):
+`WorkItemStore` is the **anthill-todo subproject's** domain store sort — declared in the project's anthill source, alongside `WorkItem` itself. It does not live in the stdlib. Other projects that want a "store with custom indexes" declare their own (`UserStore`, `ProjectStore`, `RuleAuditStore`) using the same machinery.
+
+The general pattern — *declare a sort that wraps a Store with project-specific indexes and operations* — is what's important. anthill-todo uses it for WorkItem; the example below is what that project files declare.
 
 ```anthill
 sort WorkItemStore
@@ -48,42 +50,50 @@ sort WorkItemStore
     -> List[T = WorkItem]
 
   -- Mutation. Persists the work item to the backend, updates each
-  -- index, increments the counter. The Modify[s] effect carries
-  -- "this operation may write to s" through to the typer; the
-  -- Error effect propagates underlying-store failures (WI-195).
-  operation commit(s: WorkItemStore, w: WorkItem) -> WorkItemStore
-    effects {Modify[s], Error}
+  -- index, increments the counter. The Modify[s] effect dispatches
+  -- through the existing default_modify_handler — get(s) reads the
+  -- current state, set(s, new) writes the next one. Identity of s
+  -- is stable across calls; the state behind it shifts.
+  operation commit(s: WorkItemStore, w: WorkItem) -> Unit
+    effects {Modify[s], Modify[backend], Error}
 
-  operation forget(s: WorkItemStore, id: String) -> WorkItemStore
-    effects {Modify[s], Error}
+  operation forget(s: WorkItemStore, id: String) -> Unit
+    effects {Modify[s], Modify[backend], Error}
 end
 ```
 
 Bundle's `cmd_add` collapses to:
 ```anthill
-operation cmd_add(a: AddArgs, s: WorkItemStore) -> Pair[Int, WorkItemStore] =
+operation cmd_add(a: AddArgs, s: WorkItemStore) -> Int
+  effects {ConsoleOutput, Modify[s], Modify[backend], Error}
+=
   let id = next_id(s)
   let wi = WorkItem(
     id: id, description: a.description,
     acceptance: a.acceptance, depends_on: a.depends,
     status: Open())
-  let s2 = commit(s, wi)
+  let _ = commit(s, wi)
   let _ = println(console(),
                   concat("added: ", concat(id, concat(" — ", a.description))))
-  pair(0, s2)
+  0
 ```
+
+No `Pair[Int, WorkItemStore]` return, no threading — `commit` mutates through the Modify[s] effect; the next `next_id(s)` (or any other read on `s`) sees the updated state. Identity of `s` is stable across the call; contents shift behind it.
 
 `cmd_claim` collapses similarly:
 ```anthill
-operation cmd_claim(a: ClaimArgs, s: WorkItemStore) -> Pair[Int, WorkItemStore] =
+operation cmd_claim(a: ClaimArgs, s: WorkItemStore) -> Int
+  effects {ConsoleOutput, ConsoleError, Modify[s], Modify[backend], Error}
+=
   match lookup(s, a.id)
     case none() -> ...error...
     case some(wi) ->
-      let updated = ... wi with status = Claimed(agent, since) ...
-      pair(0, commit(s, updated))
+      let updated = wi.copy(status = Claimed(agent: a.agent, since: now()))
+      let _ = commit(s, updated)
+      0
 ```
 
-The `... wi with ...` is WI-188 (entity copy form). Without it, we need an explicit re-construction or `replace_named_arg`.
+The `wi.copy(...)` is WI-188 (entity copy form). Without it, we need an explicit re-construction or `replace_named_arg`.
 
 ## What language features the surface needs
 
@@ -210,11 +220,14 @@ Rationale:
 
 ## Decomposition
 
+`WorkItemStore` is project-side: it lives in `anthill-todo/`'s anthill source alongside `domain.anthill` and `rules.anthill`. The bundle's binary embeds it via the existing `BulkStore::pull` path (any `.anthill` file in the project's anthill-todo/ directory is loaded at startup). No bundle-side declaration; the project owns its store sort.
+
 Files affected:
-- `rustland/anthill-todo/anthill/store.anthill` — new file declaring `sort WorkItemStore`, the `wis` entity, and the `from_backend` / `next_id` / `lookup` / `by_status_of` / `commit` / `forget` operations. Operation bodies in anthill (no Rust builtins for v0.1).
-- `rustland/anthill-todo/src/anthill_bundle.rs` — embed the new file.
-- `rustland/anthill-todo/src/main.rs` (`run_anthill_bundle`) — construct the initial `wis(...)` value at startup; pass to `Main.main` as a 4th arg.
-- `rustland/anthill-todo/anthill/main.anthill` — `main` / `dispatch` thread `WorkItemStore`; each command body uses store ops; the ~120 lines of build_row_map / build_dep_map / feedback_set / next_workitem_id / max_id_in / pad3 / etc. retire.
+- `anthill-todo/store.anthill` — **new project-side file** declaring `sort WorkItemStore`, the `wis` entity, and the `next_id` / `lookup` / `by_status_of` / `commit` / `forget` operations. Operation bodies in anthill (no Rust builtins for v0.1). Loaded at runtime via the project's BulkStore::pull, just like domain.anthill and rules.anthill today.
+- `rustland/anthill-todo/src/main.rs` (`run_anthill_bundle`) — construct the initial `wis(...)` value at startup (walk facts_of("WorkItem"), build the maps, scan id_counter), then fire `Modify.set(wis_handle, initial_wis)` once before `Main.main` runs. Pass `wis_handle` to `Main.main` as a 4th arg.
+- `rustland/anthill-todo/anthill/main.anthill` — `main` / `dispatch` thread the WorkItemStore handle (no contents — just a handle for Modify state to key against); each command body uses store ops; the ~120 lines of build_row_map / build_dep_map / feedback_set / next_workitem_id / max_id_in / pad3 / etc. retire.
+
+Other projects that adopt this pattern (UserStore, ProjectStore, RuleAuditStore) follow the same shape: declare in their own project, host wires the initial state, command bodies use store ops. The pattern is *not* anthill-todo-specific — what's anthill-todo-specific is the WorkItem domain.
 
 ## Out of scope
 

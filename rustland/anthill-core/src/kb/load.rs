@@ -3592,14 +3592,32 @@ impl<'a> Loader<'a> {
             TypeExpr::Parameterized { name, bindings } => {
                 let sort_sym = self.remap_name(name);
                 let base = self.kb.make_sort_ref(sort_sym);
+                // Look up the sort's declared type-parameter names in
+                // source order so positional bindings (e.g. `Map[String,
+                // Int]` for `sort Map { sort K = ?; sort V = ? }`) can
+                // map index 0 → "K", index 1 → "V".
+                let declared_params = self.kb.type_params_of_sort(sort_sym);
                 let mut type_bindings: Vec<(Symbol, TermId)> = Vec::new();
+                let mut positional_index: usize = 0;
                 for b in bindings {
                     let bound_term = self.type_expr_to_term(&b.bound);
-                    if let Some(p) = &b.param {
-                        let param_sym = self.reintern(p.last());
-                        type_bindings.push((param_sym, bound_term));
+                    let param_sym = if let Some(p) = &b.param {
+                        // Named binding wins over positional cursor.
+                        Some(self.reintern(p.last()))
+                    } else if positional_index < declared_params.len() {
+                        let param_name = &declared_params[positional_index];
+                        positional_index += 1;
+                        Some(self.kb.intern(param_name))
+                    } else {
+                        // More positional bindings than declared params
+                        // — silently drop. The typer will surface this
+                        // via parameter-mismatch errors when the sort
+                        // is consumed.
+                        None
+                    };
+                    if let Some(sym) = param_sym {
+                        type_bindings.push((sym, bound_term));
                     }
-                    // Positional bindings without param name — skip for now
                 }
                 self.kb.make_parameterized_type(base, &type_bindings)
             }
