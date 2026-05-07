@@ -117,6 +117,8 @@ This is **WI-189** (reify/reflect operators): `let wi: WorkItem = ↓term`.
 
 `stdlib/anthill/prelude/effects.anthill` declares `Modify[T]` with `get(target: T) -> T` and `set(target: T, value: T) -> Unit effects Modify[T]`. That's the State monad. `eval/effects.rs::default_modify_handler` implements it as a `HashMap<Symbol, Value>` keyed by resource functor — the functor symbol of the target value identifies the cell; the stored Value is whatever was last `set`.
 
+Per proposal 027 §4, `Modify` has two write ops: sticky `set` and transactional `set_local`. `set` mutations persist across `Branch` backtracks; `set_local` rolls back via the `register_undo` snapshot mechanism. WorkItemStore's `commit` uses sticky `set` — once a WorkItem is persisted to disk and the indexes updated, that state is irreversible; a search-branch backtrack must not roll the maps back into a state that contradicts what's on disk. (Today `set_local` isn't wired; v0.1 lands with `set` only, which is what `commit` needs anyway.)
+
 So a WorkItemStore.commit body looks like:
 
 ```anthill
