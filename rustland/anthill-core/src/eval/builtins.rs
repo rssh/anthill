@@ -87,6 +87,8 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.reflect.term_as_string", term_as_string)?;
     register_if_present(interp, "anthill.reflect.fresh_var", reflect_fresh_var)?;
     register_if_present(interp, "anthill.reflect.make_fn", reflect_make_fn)?;
+    register_if_present(interp, "anthill.reflect.find_fact", reflect_find_fact)?;
+    register_if_present(interp, "anthill.reflect.replace_named_arg", reflect_replace_named_arg)?;
     register_if_present(interp, "anthill.prelude.Time.now", time_now)?;
     register_if_present(interp, "anthill.prelude.Int.to_string", int_to_string)?;
 
@@ -815,6 +817,94 @@ fn reflect_make_fn(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
         named_args: smallvec::SmallVec::new(),
     });
     Ok(Value::Term(tid))
+}
+
+/// `anthill.reflect.find_fact(t: Term) -> Option[FactId]`.
+/// Look up the asserted fact whose head term-id structurally equals `t`,
+/// returning a `Term::Const(Literal::Handle(Fact, rule_id))` wrapped in
+/// `some(...)`. Used by mutating commands (claim / deliver / verify /
+/// update / delete) to obtain a FactId for `Store.retract` after a
+/// `facts_of`-style query has yielded the matching head.
+///
+/// The KB hash-conses term ids, so equality of the head TermId is
+/// equality of the head term — no recursive structural compare needed.
+fn reflect_find_fact(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    use crate::kb::term::{HandleKind, Literal, Term};
+    let [term_arg] = expect_args::<1>("find_fact", args)?;
+    let target = match &term_arg {
+        Value::Term(t) => *t,
+        other => return Err(type_mismatch("Term", other, None)),
+    };
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    let value_key = interp.kb.intern("value");
+
+    let functor = match interp.kb.get_term(target) {
+        Term::Fn { functor, .. } => Some(*functor),
+        Term::Ref(sym) => Some(*sym),
+        _ => None,
+    };
+    let found = functor.and_then(|f| {
+        interp.kb.by_functor(f).into_iter()
+            .find(|rid| interp.kb.rule_head(*rid) == target)
+    });
+
+    match found {
+        Some(rid) => {
+            let handle = interp.kb.alloc(Term::Const(Literal::Handle(
+                HandleKind::Fact, rid.raw(),
+            )));
+            Ok(Value::Entity {
+                functor: some_sym,
+                pos: Vec::new(),
+                named: vec![(value_key, Value::Term(handle))],
+            })
+        }
+        None => Ok(Value::Entity {
+            functor: none_sym,
+            pos: Vec::new(),
+            named: Vec::new(),
+        }),
+    }
+}
+
+/// `anthill.reflect.replace_named_arg(t: Term, name: String, value: Term)
+/// -> Term`. Return a fresh `Term::Fn` cloned from `t` with the named arg
+/// matching `name` replaced by `value`. If `t` has no such named arg the
+/// result is structurally equal to `t`.
+///
+/// Used by status-transition commands to swap one field on a WorkItem
+/// fact (e.g. `status`) without re-typing every other field on the
+/// anthill side. Field-name comparison is string-based — the loader may
+/// qualify field symbols, but the canonical short name is what callers
+/// pass in.
+fn reflect_replace_named_arg(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    use crate::kb::term::Term;
+    let [term_arg, name_arg, value_arg] = expect_args::<3>("replace_named_arg", args)?;
+    let tid = match &term_arg {
+        Value::Term(t) => *t,
+        other => return Err(type_mismatch("Term", other, None)),
+    };
+    let name = match &name_arg {
+        Value::Str(s) => s.clone(),
+        other => return Err(type_mismatch("String", other, None)),
+    };
+    let new_val_tid = interp.kb.alloc_from_value(&value_arg)
+        .map_err(|e| EvalError::Internal(format!("replace_named_arg: lower value: {e:?}")))?;
+
+    let (functor, pos_args, mut named_args) = match interp.kb.get_term(tid) {
+        Term::Fn { functor, pos_args, named_args } => (*functor, pos_args.clone(), named_args.clone()),
+        _ => return Err(EvalError::Internal(
+            format!("replace_named_arg: expected Fn term, got {:?}", interp.kb.get_term(tid))
+        )),
+    };
+    for entry in named_args.iter_mut() {
+        if interp.kb.resolve_sym(entry.0) == name {
+            entry.1 = new_val_tid;
+        }
+    }
+    let new_term = interp.kb.alloc(Term::Fn { functor, pos_args, named_args });
+    Ok(Value::Term(new_term))
 }
 
 /// `anthill.prelude.Time.now() -> String`.

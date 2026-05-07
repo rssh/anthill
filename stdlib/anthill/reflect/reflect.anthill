@@ -35,6 +35,7 @@ namespace anthill.reflect
   export nonvar, ground, not
   export field_access
   export term_functor_name, term_field, term_as_string, fresh_var, make_fn
+  export find_fact, replace_named_arg
   export resolve_sort_instantiation_param
   export ConstraintId
   export reify, reflect
@@ -158,6 +159,19 @@ namespace anthill.reflect
   -- is the bridge: the resolver looks up the symbol by name and constructs
   -- the goal term you can hand to `pattern_query` / `execute`.
   operation make_fn(name: String, args: List[Term]) -> Term
+
+  -- Look up the asserted fact whose head term equals `t`, returning the
+  -- backing FactId so callers can hand it to `Store.retract`. Mutating
+  -- commands (claim / deliver / verify / update / delete) walk
+  -- `facts_of` to find a target term, then call `find_fact` to get its
+  -- FactId before retracting + asserting the replacement.
+  operation find_fact(t: Term) -> Option[T = FactId]
+
+  -- Return a fresh Term::Fn cloned from `t` with the named arg whose
+  -- short name matches `name` replaced by `value`. Used by status-
+  -- transition commands to swap one field on a WorkItem (e.g. `status`)
+  -- without re-stating every other field on the anthill side.
+  operation replace_named_arg(t: Term, name: String, value: Term) -> Term
 
   -- Negation-as-failure: succeeds if query has no solutions.
   -- Delays if query contains unbound variables (floundering prevention).
