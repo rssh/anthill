@@ -42,11 +42,15 @@ sort Cell
   sort V = ?
   operation get(c: Cell[V]) -> V                              -- read; type-pure
   operation set(c: Cell[V], value: V) -> Unit                  -- sticky write
-    effects Modify[Cell[V]]
+    effects Modify[c]
   operation set_local(c: Cell[V], value: V) -> Unit            -- transactional write
-    effects Modify[Cell[V]], Branch
+    effects Modify[c], Branch
 end
 ```
+
+**Effect-row convention**: `Modify[parameter_name]` — refers to the specific parameter the operation receives, not the type. This identifies *which* resource is mutated, not just "some resource of this type." Matches the existing `Modify[store]` usage on `Store.persist` and `Modify[s]` planned for `WorkItemStore.commit`. Multi-instance distinction (WI-200) and future path-based effects (`Modify[s.backend]`) build on parameter-name references.
+
+The exception is proposal 027's `operation set(target: T, ...) effects Modify[T]` — there `T` is both the Modify sort's type parameter and the type of `target`, so the type form is also the parameter form within the Modify sort body. Outside Modify's body, all derived operations use parameter names (`Modify[c]`, `Modify[store]`, `Modify[s]`).
 
 `Cell[V]` is a concrete sort: "a typed mutable cell holding a V." It exposes the standard get/set/set_local protocol of proposal 027 — the State monad encoding via effect handlers.
 
