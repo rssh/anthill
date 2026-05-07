@@ -40,14 +40,14 @@ fact Effect[T = Modify[?]]
 ```anthill
 sort Cell
   sort V = ?
-  operation cell(initial: V) -> Cell[V]                       -- construct; allocation-only
+  operation new(initial: V) -> Cell[V]                        -- construct; allocation-only
   operation get(c: Cell[V]) -> V                              -- read; type-pure
   operation set(c: Cell[V], value: V) -> Unit
     effects Modify[c]
 end
 ```
 
-Three operations: `cell` (construct), `get` (read), `set` (write). `cell(initial)` allocates a fresh Cell with identity, initialized to `initial`. Construction is **allocation, not mutation** — it doesn't modify any existing Cell, so it doesn't carry `Modify[anything]`. This matches how arena-allocated values are constructed elsewhere in the stdlib (`Map.empty()`, `Substitution.empty()`, `List.nil()` are all effect-pure even though each call yields a fresh handle).
+Three operations: `new` (construct), `get` (read), `set` (write). `Cell.new(initial)` allocates a fresh Cell with identity, initialized to `initial`. The constructor name avoids duplicating the sort name (`Cell.cell` would be awkward) and mirrors the host-language allocation convention (`Cell::new` in Rust, `Cell.apply` in Scala, `cell_new` in C). `new` is not a reserved word in anthill, so the import lands cleanly. Construction is **allocation, not mutation** — it doesn't modify any existing Cell, so it doesn't carry `Modify[anything]`. This matches how arena-allocated values are constructed elsewhere in the stdlib (`Map.empty()`, `Substitution.empty()`, `List.nil()` are all effect-pure even though each call yields a fresh handle).
 
 Construction *does* depend on the active handler (the same way `set` does) — the handler decides how to allocate the cell's identity, where its state lives, and what undo semantics apply. A Branch-installed handler may register the new cell in a per-branch slot so that abandoning the branch reclaims it. A test handler may pre-populate the cell from a fixture. The handler dispatch is the substitution point; the operation surface stays uniform.
 
@@ -206,10 +206,10 @@ Each resource type needs its own contract spelled out. The framework requires th
 | | |
 |---|---|
 | Identity scheme | Functor-only today (default Modify handler keys by `Cell` symbol — single instance per V). WI-200 to lift this. |
-| Operations exposed | `cell(initial) -> Cell[V]` (construct), `get(c) -> V` (read), `set(c, v) -> Unit` (write). One write op; sticky vs transactional via active handler. |
+| Operations exposed | `new(initial) -> Cell[V]` (construct), `get(c) -> V` (read), `set(c, v) -> Unit` (write). One write op; sticky vs transactional via active handler. |
 | State location | `default_modify_handler`'s `HashMap<Symbol, Value>`. |
 | Dispatch path | Handler-dispatched via the existing Modify effect machinery. |
-| Lifecycle | Construction-bounded: born at `cell(initial)`; lives until no references remain (default handler) or until lexical scope exit (`with_resource`). Today's functor-keyed default handler effectively gives Cell process-lifetime per V — multi-instance allocation is contingent on WI-200. |
+| Lifecycle | Construction-bounded: born at `Cell.new(initial)`; lives until no references remain (default handler) or until lexical scope exit (`with_resource`). Today's functor-keyed default handler effectively gives Cell process-lifetime per V — multi-instance allocation is contingent on WI-200. |
 | Branch interaction | Default handler is sticky; Branch installs a compatible handler that makes `set` transactional via `register_undo`, and may also keep newly-allocated cells per-branch so abandoning a branch reclaims them. |
 | Time-travel readiness | Yes — state is a Value; a versioned handler can layer in transparently. |
 

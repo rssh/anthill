@@ -76,8 +76,8 @@ namespace anthill.examples.lf1.follower_transponder
   --         Initialized at 0; the first flip kicks it to -0.45.
 
   entity TransponderFollowerState(
-    prev_distance: Option[T = Float],
-    prev_delta:    Option[T = Float],
+    prev_distance: Option[Float],
+    prev_delta:    Option[Float],
     upc:           Int,
     seq:           Int,
     yaw_cmd:       Float

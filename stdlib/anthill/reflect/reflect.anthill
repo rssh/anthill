@@ -258,12 +258,14 @@ namespace anthill.reflect
     -- The KB analyzes constraint clauses and optimizes recognizable
     -- patterns (e.g. functional dependencies → unique index check).
     operation assert(kb: KB, term: Term, sort: Type) -> Option[T = FactId]
+      effects Modify[kb]
 
     -- Register a guard on the KB: a LogicalQuery that must always hold.
     -- Denials use negation(...) at the top — the inner query must never
     -- be satisfiable. The KB recognizes patterns (e.g. functional
     -- dependencies) and optimizes checking via discrimination tree.
     operation add_guard(kb: KB, guard: LogicalQuery) -> ConstraintId
+      effects Modify[kb]
 
   end
 
