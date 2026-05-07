@@ -56,7 +56,22 @@ Resources that DON'T fit the Cell protocol — KB, Store, WorkItemStore, Map, Su
 
 ### 3. Type-specific Modify handlers — the dispatch story
 
-For every resource type T whose operations mutate, there's a Modify handler installed at startup. Operations on T raise `Modify[T]` effect; the dispatcher routes to T's handler. The handler implements T's specific operations.
+The framework requires a **bidirectional correspondence**:
+- An operation may declare `Modify[T]` only if T has a registered handler.
+- A registered handler exists only for types T that anticipate `Modify[T]` operations.
+
+Bare value types (Int, Bool, String) do **not** admit Modify — they have no handler. Mutable cells wrapping them (`Cell[Int]`) do, because Cell has a handler. Following ML's `Int` vs `IORef Int` and Haskell's `Int` vs `IORef Int` / `STRef Int`. Mutability is a property of the *wrapper*, not the wrapped value.
+
+For every resource type T whose operations mutate, there's at least one Modify handler installed at startup. Operations on T raise `Modify[T]` effect; the dispatcher routes to T's currently-active handler. The handler implements T's specific operations.
+
+A type can have **multiple handlers** — selected by interpreter context:
+- **Direct handler**: the default; fast path with simple state.
+- **Time-travel handler**: maintains a version graph; same operation surface, richer state.
+- **Branch-aware handler**: implements `set_local`-style transactional semantics via `register_undo`.
+- **Audit handler**: logs every operation before delegating to a wrapped handler.
+- **Test handler**: substitutes a mock for the resource's state.
+
+The handler-stack model from proposal 027 §"with_handler" picks the topmost handler matching the effect; switching handlers is the language-level mechanism for time-travel mode, audit mode, test mode, etc.
 
 ```
                         ┌─────────────────────────────────┐
@@ -89,7 +104,9 @@ The framework's invariant: **every mutation declares `Modify[T]`**; **every reso
 
 ## Resource type plug-in
 
-A *resource type* is any anthill sort whose values can be mutated through `Modify[T]`. To plug T into the framework, the resource declares:
+A *resource type* is any anthill sort whose values can be mutated through `Modify[T]`. To plug T into the framework, the resource MUST declare its **interpreter contract**: a per-resource specification covering identity, lifecycle, branch interaction, and time-travel readiness. Each resource has its own contract; the framework doesn't impose a uniform shape — only that all six concerns below are answered.
+
+The interpreter contract for each resource type covers:
 
 ### 1. Identity scheme
 
@@ -125,12 +142,106 @@ The location is an implementation detail. The user-level operations on T are the
 
 How does an operation call reach the state?
 
-- **Handler-dispatched**: operation raises an effect → effect handler intercepts → handler accesses state. Today's path for `Modify.set` / `Modify.get` / `Modify.set_local` (the standard ops on Modify).
-- **Direct builtin**: operation maps to a Rust function that directly accesses state. Today's path for everything else (Store.persist, KB.assert, Map.put).
+- **Handler-dispatched**: operation raises an effect → effect handler intercepts → handler accesses state. Today's path for Cell's get/set/set_local.
+- **Direct builtin**: operation maps to a Rust function that directly accesses state. Today's path for Store.persist, KB.assert, Map.put.
 
-The framework PERMITS both. Handler-dispatched is more flexible (substitute test handlers, audit handlers); direct is faster. A resource may start direct and migrate to handler-dispatched later without changing the type-level surface.
+The framework PERMITS both. Handler-dispatched is more flexible; direct is faster. A resource may start direct and migrate to handler-dispatched without changing the type-level surface. **The effect annotation is the same regardless of dispatch path.**
 
-The crucial invariant: **the effect annotation is the same regardless of dispatch path.** `Modify[T]` is stable across implementation choices.
+### 5. Lifecycle
+
+When does the resource come into existence and when does it go away?
+
+- **Process-lifetime**: KB, the bundle's WorkItemStore, a process-wide config cell. Created once at startup; persists until process exit.
+- **Construction-bounded**: arena values (Map, Substitution, Stream). Created by an op call; refcount-managed; dropped when no references remain.
+- **Lexically-scoped**: cells introduced under a `with_handler(...)` or `with_resource(...)` construct (proposal 027 future direction). Born at scope entry; die at scope exit.
+
+The resource type declares which lifecycle category it falls into. The interpreter manages instantiation and disposal accordingly.
+
+### 6. Branch interaction
+
+How does the resource behave when execution enters a `Branch` choice point?
+
+- **Sticky**: state persists across branch alternatives. Modifications in alt A are observable in alt B. (Today's default for Cell, KB, Store.)
+- **Branch-local snapshot**: the resource is *cloned* at branch entry; each branch sees its own copy; abandoning a branch discards its copy. This is what `set_local` implements via `register_undo`. The interpreter installs a snapshot at branch entry; resources that opt in update the snapshot instead of the parent state.
+- **Frozen**: the resource is read-only inside the branch. Mutations would be a type error. Useful for resources whose mutation under branch is genuinely meaningless (e.g., a Console output that shouldn't double-print).
+
+The resource type declares which model applies. The interpreter consults this when entering `Branch`. **Each resource type's contract must specify what happens at branch entry/exit — silence is a bug.**
+
+For example: a `Cell[V]` declared "branch-local snapshot" gets cloned into a per-branch slot at branch entry; its handler updates the per-branch slot; abandoning the branch drops the slot. A `Cell[V]` declared "sticky" updates the parent state directly.
+
+### 7. Time-travel readiness
+
+Is the resource designed to support a future time-travel handler? If yes, the resource type's operations follow the five forward-compat invariants (§"With time-travel" below). If no, the resource is opaque to time-travel — version graph queries don't apply.
+
+Resources that hold non-Value internal state (FileStore's pending writes, KB's discrim trees) are typically *not* time-travel-ready out of the box; their handler implementations would need to grow versioned variants. Resources whose state is a Value (Cell[V], WorkItemStore's wis(...)) are naturally time-travel-ready — a versioned handler swaps in transparently.
+
+## Per-resource interpreter contracts
+
+Each resource type needs its own contract spelled out. The framework requires this section in any proposal introducing a new state type. Below: the contracts for the resource types that exist (or will exist for WI-192).
+
+### Cell[V]
+
+| | |
+|---|---|
+| Identity scheme | Functor-only today (default Modify handler keys by `Cell` symbol — single instance per V). WI-200 to lift this. |
+| Operations exposed | `get(c) -> V`, `set(c, v) -> Unit`, `set_local(c, v) -> Unit` — proposal 027 §Modify[T]. |
+| State location | `default_modify_handler`'s `HashMap<Symbol, Value>`. |
+| Dispatch path | Handler-dispatched via the existing Modify effect machinery. |
+| Lifecycle | Process-lifetime by default; lexically-scoped via future `with_resource`. |
+| Branch interaction | `set` is sticky; `set_local` is branch-local snapshot via `register_undo`. |
+| Time-travel readiness | Yes — state is a Value; a versioned handler can layer in transparently. |
+
+### KB
+
+| | |
+|---|---|
+| Identity scheme | Singleton (one KB per Interpreter). Multi-KB scenarios use explicit kb-handle threading. |
+| Operations exposed | `assert(kb, term, sort) -> Option[FactId]`, `retract(kb, id) -> Bool`, `execute(kb, query) -> Stream`, `by_functor`, `by_sort`, etc. |
+| State location | KB's internal Rust structures: `rules: Vec<RuleEntry>`, `by_functor: HashMap<...>`, discrimination tree. Not value-shaped. |
+| Dispatch path | Direct builtin today (`kb.assert_fact(...)`); handler-dispatched in principle for substitution. |
+| Lifecycle | Process-lifetime; created with the Interpreter. |
+| Branch interaction | Sticky today. `KB.assume` (designed; partially implemented) provides branch-local snapshot via `register_undo`. |
+| Time-travel readiness | Partial — proposal 030 wires `state_hash` for proof cache; full time-travel needs versioned indexes. WI-201 (candidate). |
+
+**Open per Rule 1**: KB.assert / retract / assume should declare `Modify[kb]` effects (currently silent). `execute` stays effect-`Error` only (queries don't mutate).
+
+### Store (FileStore, IndexedFileStore)
+
+| | |
+|---|---|
+| Identity scheme | Canonical-form String (functor + field values). Multi-instance native. |
+| Operations exposed | `persist(store, fact, meta) -> FactId`, `flush(store, delta) -> Bool`, `retract(store, id) -> Bool`, `pull` (BulkStore). |
+| State location | `store_registry: HashMap<String, Box<dyn Store>>`. The Box holds non-Value internals (pending writes, source map, indexes). |
+| Dispatch path | Direct builtin today. Operations declare `Modify[store]` for effect-row honesty. |
+| Lifecycle | Process-lifetime; instances registered at startup. |
+| Branch interaction | Sticky. No `persist_local` today. Inside Branch, persist writes leak across alternatives — caller's responsibility. |
+| Time-travel readiness | No — `Box<dyn Store>` internals aren't versioned. A future versioned variant would maintain its own history. |
+
+### Map[K, V] / Substitution / Stream (arena values)
+
+| | |
+|---|---|
+| Identity scheme | Opaque arena handle (allocated per construction). Multi-instance native; refcounted. |
+| Operations exposed | `Map.put/get/contains/remove/...`; `Substitution.lookup/apply/compose`; `Stream.splitFirst`. |
+| State location | Per-resource arena (`map_arena`, `subst_arena`, `stream_arena`) — refcount + slot pool. |
+| Dispatch path | Direct builtin. Operations declare `Modify[their_value]` (TODO — currently silent for Map/Substitution; pure for Stream). |
+| Lifecycle | Construction-bounded; refcount drops to zero → slot reclaimed. |
+| Branch interaction | Sticky today. Could be branch-local-snapshot for Map (clone at branch entry) without changing user code. |
+| Time-travel readiness | Yes for Map (Value-shaped); Substitution and Stream have non-Value internals so partial. |
+
+### WorkItemStore (anthill-todo, WI-192)
+
+| | |
+|---|---|
+| Identity scheme | Functor-only for v0.1 (single bundle invocation = single store). WI-200 may lift later. |
+| Operations exposed | `next_id(s) -> String`, `lookup(s, id) -> Option[WorkItem]`, `by_status(s, st) -> List[WorkItem]`, `commit(s, w) -> Unit`, `forget(s, id) -> Unit`. |
+| State location | The Modify cell, holding a `wis(backend, by_id, by_status, id_counter)` Value. Reuses Cell[V] machinery. |
+| Dispatch path | Handler-dispatched via Modify (Cell's handler covers it). |
+| Lifecycle | Process-lifetime; host instantiates wis(...) at startup, calls `Modify.set` once before `Main.main`. |
+| Branch interaction | Sticky (matches the bundle's CLI semantics; no branch use). |
+| Time-travel readiness | Yes — wis(...) is Value-shaped; a future versioned-Cell handler covers it transparently. |
+
+The framework requires this contract for every new resource type. A resource without an interpreter contract is incomplete.
 
 ## Composition rules
 
