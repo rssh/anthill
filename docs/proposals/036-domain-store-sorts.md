@@ -44,7 +44,11 @@ sort WorkItemStore
   operation from_backend(backend: FileStore) -> WorkItemStore
 
   -- Domain queries. O(1) Map.get over the precomputed indexes.
+  -- `next_id` mutates: it increments the counter and returns the
+  -- resulting id, so two calls produce distinct ids. `lookup` and
+  -- `by_status_of` are pure reads.
   operation next_id(s: WorkItemStore) -> String
+    effects Modify[s]
   operation lookup(s: WorkItemStore, id: String) -> Option[T = WorkItem]
   operation by_status_of(s: WorkItemStore, st: WorkStatus)
     -> List[T = WorkItem]
