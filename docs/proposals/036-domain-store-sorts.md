@@ -103,11 +103,11 @@ This is **WI-189** (reify/reflect operators): `let wi: WorkItem = ↓term`.
 
 - **(A) Functional**: `commit` returns a `WorkItemStore`. Caller threads. Pure, composes well, but every command's signature gains the threading and dispatch-level returns become `Pair[Int, WorkItemStore]` (or similar). Verbose at call sites.
 
-- **(B) Mutable cell**: `WorkItemStore` is a reference; `commit` mutates in place. The `Modify[s]` effect goes from annotation to working machinery. Requires runtime support for cell semantics (similar to how `Substitution` arena works today). Cleaner usage; bigger runtime change.
+- **(B) Cell semantics** *(heavier than I first thought; probably not the right path)*: `WorkItemStore` becomes a first-class mutable cell — a new Value variant with arena-managed contents that `Modify[s]` writes through. Requires a new value kind, typer rules for cell coercion, effect-dispatch wiring. Conceptually clean but adds a significant new runtime concept.
 
-- **(C) Hybrid via host-side state**: Like the existing `FileStore` pattern. The `wis(...)` entity is a *handle* (canonical-key based); the actual maps live in interpreter-side Rust state. Operations are Rust builtins (`next_id`, `lookup`, `commit` — registered like the persistence builtins). `Modify[s]` annotates the contract; real mutation happens Rust-side under the canonical key.
+- **(C) Registry pattern**: The `FileStore` pattern, scaled up. `wis(backend)` is a *passive handle* — its only field is the backend reference, which (combined with the sort) forms a canonical key. The actual maps + counter live in interpreter-side Rust state keyed by that canonical string. Operations (`next_id` / `lookup` / `commit`) are Rust builtins that look up the state by key and mutate. `Modify[s]` is annotation; real mutation is the registry's job. Same machinery as today's `FileStore` / `IndexedFileStore`, just one more registry. ~1 week of plumbing.
 
-This is **WI-194** (commit) plus runtime support. (B) and (C) need new infrastructure; (A) is doable today but propagates threading throughout.
+(C) is the right path for the maximalist landing. (A) is doable today with no runtime support. (B) is overkill — we don't need a general cell construct to solve this specific problem.
 
 ### 3. Map keys at sort `WorkStatus` *(may be blocker)*
 
@@ -177,12 +177,12 @@ Given the language gaps above, three landings are possible:
 
 **What's lost:** still functional threading; still status keyed by name (or wait for entity-as-key).
 
-### Strategy C: land alongside WI-188 + WI-189 + cell-semantics commit (WI-194 maximalist)
+### Strategy C: land alongside WI-188 + WI-189 + registry-pattern commit (WI-194 maximalist)
 
-- Same as B plus: `commit` mutates via a real Modify[s] effect; runtime supports the cell pattern.
-- Bundle commands take `s: WorkItemStore`, never return one. Threading retires entirely.
+- Same as B plus: `commit` mutates the registry-side `WorkItemStoreState` via a Rust builtin (the same pattern `FileStore::persist` uses today, just with a richer state struct).
+- Bundle commands take `s: WorkItemStore`, never return one. Threading retires entirely. Modify[s] is annotation; real mutation is the registry's job.
 
-**Cost to land:** 3-4 weeks. The Modify-effect cell semantics is a real runtime change.
+**Cost to land:** ~2 weeks (1 week for WI-188+189, ~1 week for the registry pattern + builtins + bundle ports).
 
 **What's gained:** the ideal shape from the WI-191/192/194 brainstorm. Command bodies are linear, no threading, Error propagates to top-level handler.
 
