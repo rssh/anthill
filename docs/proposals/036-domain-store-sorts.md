@@ -34,9 +34,9 @@ sort WorkItemStore
   -- indexes are entity-fields, not a new "index" keyword — anthill's
   -- existing entity machinery is enough.
   entity wis(
-    backend: FileStore,
-    by_id: Map[K = String, V = WorkItem],
-    by_status: Map[K = WorkStatus, V = List[T = WorkItem]],
+    backend: IndexedFileStore,
+    by_id: Map[String, WorkItem],
+    by_status: Map[WorkStatus, List[WorkItem]],
     id_counter: Int)
 
   -- Construction. Walks the backend's facts once; builds the maps
@@ -49,9 +49,9 @@ sort WorkItemStore
   -- `by_status_of` are pure reads.
   operation next_id(s: WorkItemStore) -> String
     effects Modify[s]
-  operation lookup(s: WorkItemStore, id: String) -> Option[T = WorkItem]
+  operation lookup(s: WorkItemStore, id: String) -> Option[WorkItem]
   operation by_status_of(s: WorkItemStore, st: WorkStatus)
-    -> List[T = WorkItem]
+    -> List[WorkItem]
 
   -- Mutation. Persists the work item to the backend, updates each
   -- index, increments the counter. The Modify[s] effect dispatches
@@ -105,11 +105,11 @@ Walking the surface above, here's what anthill must provide for it to actually w
 
 ### 1. Entity-typed values flowing out of `facts_of` *(blocker)*
 
-`Map[K = String, V = WorkItem]` says "values are typed at the WorkItem entity." Today `facts_of(kb(), "WorkItem")` returns `List[Term]` — opaque term handles. To put a typed WorkItem in the map, we need a coercion `Term → WorkItem` that the typer accepts.
+`Map[String, WorkItem]` says "values are typed at the WorkItem entity." Today `facts_of(kb(), "WorkItem")` returns `List[Term]` — opaque term handles. To put a typed WorkItem in the map, we need a coercion `Term → WorkItem` that the typer accepts.
 
 This is **WI-189** (reify/reflect operators): `let wi: WorkItem = ↓term`.
 
-**Without WI-189**, we can fall back to `Map[K = String, V = Term]`. The map carries Term values; `lookup` returns `Option[Term]`; field access still goes through `term_field` / `term_as_string`. That's a partial win — consolidates the indexes but keeps the reflection surface in command bodies.
+**Without WI-189**, we can fall back to `Map[String, Term]`. The map carries Term values; `lookup` returns `Option[Term]`; field access still goes through `term_field` / `term_as_string`. That's a partial win — consolidates the indexes but keeps the reflection surface in command bodies.
 
 ### 2. Mutating commit through state semantics *(not a blocker — already exists)*
 
@@ -147,11 +147,11 @@ A future "first-class resources" proposal could unify these into one abstraction
 
 ### 3. Map keys at sort `WorkStatus` *(may be blocker)*
 
-`Map[K = WorkStatus, V = ...]` — `WorkStatus` is an enum (`Open` / `Claimed` / `Delivered` / `Verified` / `Rejected` / ...). `Map.put` / `Map.get` use `MapKey::try_from_value`. Today MapKey supports Int / Bool / Str / Term. An enum-entity value is `Value::Entity` — does the existing builtin handle that?
+`Map[WorkStatus, ...]` — `WorkStatus` is an enum (`Open` / `Claimed` / `Delivered` / `Verified` / `Rejected` / ...). `Map.put` / `Map.get` use `MapKey::try_from_value`. Today MapKey supports Int / Bool / Str / Term. An enum-entity value is `Value::Entity` — does the existing builtin handle that?
 
 Probably not directly. We'd need either:
 - Extend `MapKey` to handle `Value::Entity` (keying by canonical form, like `store_canonical_key`).
-- Use `String` keys instead (`Map[K = String, V = ...]`, status name as the key).
+- Use `String` keys instead (`Map[String, ...]`, status name as the key).
 
 The String workaround is fine for the bundle's use case but is a paper cut. **Filing as WI-197 candidate**: extend Map keys to entity values via canonical-form hashing.
 
@@ -191,7 +191,7 @@ Given the language facilities, two landings are reasonable:
 
 ### Strategy A: minimal v0.1, Modify state, today
 
-- WorkItemStore uses `Map[K = String, V = Term]` (not WorkItem) — sidesteps WI-189.
+- WorkItemStore uses `Map[String, Term]` (not WorkItem) — sidesteps WI-189.
 - by_status keyed by status name `String` — sidesteps Map-key-at-entity-value gap (the existing `MapKey` only handles Int/Bool/Str/Term, not enum-Entity values).
 - `commit` mutates via `Modify[s]` state semantics (already wired via `default_modify_handler`). Threading is *not* needed.
 - Bundle commands take `(s: WorkItemStore, ...)` and return `Int` (no threading); commit fires `set(s, new)` internally.
@@ -227,8 +227,9 @@ Rationale:
 `WorkItemStore` is project-side: it lives in `anthill-todo/`'s anthill source alongside `domain.anthill` and `rules.anthill`. The bundle's binary embeds it via the existing `BulkStore::pull` path (any `.anthill` file in the project's anthill-todo/ directory is loaded at startup). No bundle-side declaration; the project owns its store sort.
 
 Files affected:
+- `stdlib/anthill/persistence/filesystem.anthill` — declare `entity IndexedFileStore(root: String, convention: FileConvention)`. Today only `FileStore` is declared even though the bundle's host already wires an `IndexedFileStore` Rust impl behind a `FileStore` Value::Entity (canonical-key shape coincides). Adding the entity makes the Value-side type honest. Both entities can coexist (FileStore for projects that don't need source-span retract; IndexedFileStore for those that do).
 - `anthill-todo/store.anthill` — **new project-side file** declaring `sort WorkItemStore`, the `wis` entity, and the `next_id` / `lookup` / `by_status_of` / `commit` / `forget` operations. Operation bodies in anthill (no Rust builtins for v0.1). Loaded at runtime via the project's BulkStore::pull, just like domain.anthill and rules.anthill today.
-- `rustland/anthill-todo/src/main.rs` (`run_anthill_bundle`) — construct the initial `wis(...)` value at startup (walk facts_of("WorkItem"), build the maps, scan id_counter), then fire `Modify.set(wis_handle, initial_wis)` once before `Main.main` runs. Pass `wis_handle` to `Main.main` as a 4th arg.
+- `rustland/anthill-todo/src/main.rs` (`run_anthill_bundle`) — switch the constructed Value::Entity functor from `FileStore` to `IndexedFileStore`; construct the initial `wis(...)` value at startup (walk facts_of("WorkItem"), build the maps, scan id_counter); fire `Modify.set(wis_handle, initial_wis)` once before `Main.main` runs. Pass `wis_handle` to `Main.main` as a 4th arg.
 - `rustland/anthill-todo/anthill/main.anthill` — `main` / `dispatch` thread the WorkItemStore handle (no contents — just a handle for Modify state to key against); each command body uses store ops; the ~120 lines of build_row_map / build_dep_map / feedback_set / next_workitem_id / max_id_in / pad3 / etc. retire.
 
 Other projects that adopt this pattern (UserStore, ProjectStore, RuleAuditStore) follow the same shape: declare in their own project, host wires the initial state, command bodies use store ops. The pattern is *not* anthill-todo-specific — what's anthill-todo-specific is the WorkItem domain.
