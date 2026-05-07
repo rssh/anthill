@@ -7,6 +7,7 @@
 
 pub mod print;
 pub mod file_store;
+pub mod indexed_file_store;
 pub mod term_ser;
 
 use crate::kb::{RuleId, KnowledgeBase};
@@ -76,4 +77,28 @@ pub trait BulkStore: Store {
     /// Load all persisted `.anthill` files and return them as parsed IR.
     /// The caller loads them into a KB via `kb::load::load()`.
     fn pull(&self) -> Result<Vec<ParsedFile>, PersistenceError>;
+}
+
+/// Stores that index each persisted fact by a backend-specific location
+/// (file path + byte range, SQL row id, content-addressed blob hash, ...)
+/// so retract can drop a specific fact in place without reconstructing
+/// it from a content fingerprint. The persist + pull side of each
+/// implementation populates the index; the trait surfaces the lookup so
+/// retract code can be backend-generic.
+///
+/// Stores that don't track per-fact location (the bare `FileStore`,
+/// in-memory backends, etc.) do not implement `IndexedStore` — callers
+/// that need source-precise retract dispatch on the indexed variant.
+pub trait IndexedStore: Store {
+    /// Backend-specific identifier of where a rule lives in storage.
+    /// `(PathBuf, Span)` for `IndexedFileStore`; `RowId` for a future
+    /// `IndexedSqlStore`; `(BlobHash, Path)` for a content-addressed
+    /// `IndexedGitStore`. Cloneable so the lookup result can be moved
+    /// into the retract buffer without holding a borrow on the store.
+    type Location: Clone;
+
+    /// Look up the storage location of a previously-persisted fact.
+    /// Returns `None` for runtime-asserted facts that never went through
+    /// the store (e.g. asserted directly into the KB by tests).
+    fn location_of(&self, id: RuleId) -> Option<Self::Location>;
 }

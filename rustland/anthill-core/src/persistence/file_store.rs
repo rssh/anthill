@@ -89,6 +89,19 @@ impl FileStore {
         }
     }
 
+    /// Public root accessor for `IndexedFileStore` (sibling type) so it
+    /// can drive its own `pull_with_source` over the same directory
+    /// without re-parsing the FileStore's internals.
+    pub fn root_path(&self) -> &Path {
+        &self.root
+    }
+
+    /// Public wrapper around `collect_anthill_files` so wrapper stores
+    /// (e.g. `IndexedFileStore`) can enumerate the same set of files.
+    pub fn collect_anthill_files_pub(dir: &Path) -> Result<Vec<PathBuf>, PersistenceError> {
+        Self::collect_anthill_files(dir)
+    }
+
     /// Recursively collect all `.anthill` files under a directory.
     fn collect_anthill_files(dir: &Path) -> Result<Vec<PathBuf>, PersistenceError> {
         let mut files = Vec::new();

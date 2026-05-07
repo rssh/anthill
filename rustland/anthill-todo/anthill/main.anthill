@@ -34,9 +34,11 @@ namespace anthill.todo
   import anthill.prelude.Int.{to_string}
   import anthill.prelude.String.{concat}
   import anthill.prelude.List.{cons, nil}
-  import anthill.reflect.{KB, Term, Substitution, LogicalQuery,
+  import anthill.reflect.{KB, Term, Substitution, LogicalQuery, FactId,
                           term_functor_name, term_field, term_as_string,
-                          fresh_var, make_fn}
+                          fresh_var, make_fn, find_fact, replace_named_arg}
+  import anthill.persistence.Store.{retract}
+  import anthill.stage0.WorkStatus.{Claimed}
   import anthill.reflect.KB.{kb, execute, facts_of}
   import anthill.reflect.LogicalQuery.{sort_query, pattern_query}
   import anthill.reflect.Substitution.{lookup}
@@ -53,7 +55,7 @@ namespace anthill.todo
     , spec_list()
     , spec_next()
     , spec_with_id("show",            "Show details of a work item")
-    , spec_named("claim",             "Claim a work item")
+    , spec_with_id("claim",           "Claim a work item")
     , spec_named("deliver",           "Mark a work item as delivered")
     , spec_named("verify",            "Mark a delivered work item as verified")
     , spec_feedback()
@@ -224,6 +226,7 @@ namespace anthill.todo
       else if eq(name, "next") then cmd_next(bindings)
       else if eq(name, "feedback") then cmd_feedback(bindings, store, agent)
       else if eq(name, "add") then cmd_add(bindings, store)
+      else if eq(name, "claim") then cmd_claim(bindings, store, agent)
       else not_yet(name)
 
     -- Find the first Binding with the given name; none() otherwise.
@@ -1139,6 +1142,52 @@ namespace anthill.todo
                       concat("added: ",
                         concat(id, concat(" — ", description))))
       0
+
+    -- ── cmd_claim ────────────────────────────────────────────────
+    --
+    -- `claim <id>` transitions a WorkItem from status Open to
+    -- Claimed(agent: <--agent>, since: now()). Retract+assert path:
+    -- find the head term, look up its FactId, retract on the
+    -- IndexedFileStore (which knows the source span), persist the
+    -- replacement, flush. Skips the legacy `claimable(?id, ?desc)`
+    -- gate for now — a future patch can wire the same gate cmd_next
+    -- uses.
+
+    operation cmd_claim(bindings: List[Binding],
+                         store: FileStore,
+                         agent: String) -> Int
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+    =
+      match get_binding(bindings, "id")
+        case none() ->
+          let _ = eprintln(console(), "claim: missing id")
+          2
+        case some(id) ->
+          match find_by_id(facts_of(kb(), "WorkItem"), id)
+            case none() ->
+              let _ = eprintln(console(),
+                concat("error: work item '", concat(id, "' not found")))
+              1
+            case some(old_term) -> do_claim(store, agent, id, old_term)
+
+    operation do_claim(store: FileStore, agent: String,
+                       id: String, old_term: Term) -> Int
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+    =
+      match find_fact(old_term)
+        case none() ->
+          let _ = eprintln(console(),
+            "internal: WorkItem head missing from KB rule index")
+          1
+        case some(fid) ->
+          let new_status = Claimed(agent: agent, since: now())
+          let new_term = replace_named_arg(old_term, "status", new_status)
+          let _ = retract(store, fid)
+          let _ = persist(store, new_term, Meta(entries: nil()))
+          let _ = flush(store, nil())
+          let _ = println(console(),
+            concat("claimed: ", concat(id, concat(" by ", agent))))
+          0
 
     -- ── cmd_feedback ─────────────────────────────────────────────
     --

@@ -1623,6 +1623,10 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
     };
     let scan = scan_dir(&project_dir);
     let project_files = collect_anthill_files(&[scan]);
+    // Track each parsed project file alongside its on-disk path so the
+    // IndexedFileStore can pair fact RuleIds with byte-range spans
+    // after load.
+    let mut project_paths: Vec<PathBuf> = Vec::new();
     let mut project_parsed: Vec<ParsedFile> = Vec::new();
     for file in &project_files {
         let source = match fs::read_to_string(file) {
@@ -1630,7 +1634,10 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
             Err(e) => { eprintln!("warning: {}: {e}", file.display()); continue; }
         };
         match parse::parse(&source) {
-            Ok(p) => project_parsed.push(p),
+            Ok(p) => {
+                project_paths.push(file.clone());
+                project_parsed.push(p);
+            }
             Err(errs) => {
                 for err in &errs {
                     eprintln!("warning: {}:{}", file.display(), err.format_with_source(&source));
@@ -1644,18 +1651,30 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
         .chain(bundle_parsed.iter())
         .chain(project_parsed.iter())
         .collect();
-    if let Err(errs) = load::load_all(&mut kb, &all_refs, &NullResolver) {
-        let mut had_fatal = false;
-        for e in &errs {
-            if e.is_load_blocking() {
-                had_fatal = true;
-                eprintln!("error: {e}");
-            } else {
-                eprintln!("warning: {e}");
+    let stdlib_count = stdlib_parsed.len();
+    let bundle_count = bundle_parsed.len();
+    let per_file_results = match load::load_all_per_file(&mut kb, &all_refs, &NullResolver) {
+        Ok((_merged, per_file)) => per_file,
+        Err(errs) => {
+            let mut had_fatal = false;
+            for e in &errs {
+                if e.is_load_blocking() {
+                    had_fatal = true;
+                    eprintln!("error: {e}");
+                } else {
+                    eprintln!("warning: {e}");
+                }
             }
+            if had_fatal { return ExitCode::from(EXIT_COMPILE); }
+            Vec::new()
         }
-        if had_fatal { return ExitCode::from(EXIT_COMPILE); }
-    }
+    };
+    // Slice the project sub-range out of the per-file results so the
+    // IndexedFileStore source map reflects only on-disk facts (stdlib
+    // and bundle don't get retracted at runtime).
+    let project_results: Vec<&load::LoadResult> = per_file_results.iter()
+        .skip(stdlib_count + bundle_count)
+        .collect();
 
     let mut interp = Interpreter::new(kb);
     if let Err(e) = builtins::register_standard_builtins(&mut interp) {
@@ -1676,7 +1695,8 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
     let store_root = scan_dir(&project_dir);
     let store_root_str = store_root.to_string_lossy().to_string();
     let store_value = {
-        use anthill_core::persistence::file_store::{FileConvention, FileStore};
+        use anthill_core::persistence::file_store::FileConvention;
+        use anthill_core::persistence::indexed_file_store::IndexedFileStore;
         let fs_sym = interp.kb_mut().intern("FileStore");
         let flat_sym = interp.kb_mut().intern("Flat");
         let root_field = interp.kb_mut().intern("root");
@@ -1700,10 +1720,25 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
                 return ExitCode::from(EXIT_RUNTIME);
             }
         };
-        interp.register_store(
-            key,
-            Box::new(FileStore::new(store_root, FileConvention::Flat)),
-        );
+
+        // Seed the IndexedFileStore's source map: pair each project
+        // file's fact RuleIds (in source order) with the byte ranges
+        // of the corresponding parsed Item::Fact spans. Retract on
+        // any source-loaded RuleId then knows exactly which file and
+        // byte range to drop.
+        let mut store = IndexedFileStore::new(store_root, FileConvention::Flat);
+        for (path, parsed, result) in project_paths.iter()
+            .zip(project_parsed.iter())
+            .zip(project_results.iter())
+            .map(|((p, pf), r)| (p, pf, r))
+        {
+            let spans = parsed.fact_spans();
+            for (rule_id, span) in result.fact_rule_ids.iter().zip(spans.iter()) {
+                store.record_source(*rule_id, path.clone(), *span);
+            }
+        }
+
+        interp.register_store(key, Box::new(store));
         v
     };
 

@@ -68,6 +68,19 @@ pub struct ParsedFile {
     pub terms: SimpleTermStore,
 }
 
+impl ParsedFile {
+    /// Source spans of every top-level `Item::Fact` in this file, in
+    /// source order. Persistence backends zip this with the loader's
+    /// `LoadResult.fact_rule_ids` to record per-fact source locations
+    /// for span-based retract.
+    pub fn fact_spans(&self) -> Vec<Span> {
+        self.items.iter().filter_map(|i| match i {
+            Item::Fact(f) => Some(f.span),
+            _ => None,
+        }).collect()
+    }
+}
+
 impl TermSource for ParsedFile {
     fn term(&self, id: TermId) -> &Term {
         self.terms.get(id)

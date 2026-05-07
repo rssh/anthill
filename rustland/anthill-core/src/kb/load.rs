@@ -26,10 +26,14 @@ use super::typing::{extract_type_param, get_named_arg, list_to_vec};
 
 /// Result of loading a file or set of files.
 /// Contains the sort/enum terms defined, for targeted type checking.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct LoadResult {
     /// Sort and enum terms defined during this load.
     pub defined_sorts: Vec<TermId>,
+    /// RuleIds of facts asserted during this load, in source order.
+    /// Parallel with `parsed.fact_spans()` so persistence backends can
+    /// pair each fact's RuleId with its source byte range.
+    pub fact_rule_ids: Vec<crate::kb::RuleId>,
 }
 
 // ── Source resolution ──────────────────────────────────────────
@@ -1225,13 +1229,17 @@ pub fn load(
     kb.resolve_builtins();
     let mut loaded_paths = HashSet::new();
     let mut all_sorts = Vec::new();
+    let mut all_fact_ids = Vec::new();
     match load_with_visited(kb, parsed, resolver, &mut loaded_paths) {
-        Ok(result) => all_sorts.extend(result.defined_sorts),
+        Ok(result) => {
+            all_sorts.extend(result.defined_sorts);
+            all_fact_ids.extend(result.fact_rule_ids);
+        }
         Err(errs) => all_errors.extend(errs),
     }
     resolve_instantiations(kb);
     if all_errors.is_empty() {
-        Ok(LoadResult { defined_sorts: all_sorts })
+        Ok(LoadResult { defined_sorts: all_sorts, fact_rule_ids: all_fact_ids })
     } else {
         Err(all_errors)
     }
@@ -1278,15 +1286,46 @@ fn load_phase(
     files: &[&ParsedFile],
     resolver: &dyn SourceResolver,
 ) -> Result<LoadResult, Vec<LoadError>> {
+    load_phase_inner(kb, files, resolver).map(|(merged, _)| merged)
+}
+
+/// Same as [`load_phase`] but also returns each file's individual
+/// `LoadResult`, parallel to `files`. Used by `IndexedFileStore` so the
+/// caller can pair each file's `fact_rule_ids` with its on-disk path
+/// without losing the per-file boundary information that the merged
+/// `LoadResult` discards.
+pub fn load_all_per_file(
+    kb: &mut KnowledgeBase,
+    files: &[&ParsedFile],
+    resolver: &dyn SourceResolver,
+) -> Result<(LoadResult, Vec<LoadResult>), Vec<LoadError>> {
+    register_prelude(kb);
+    load_phase_inner(kb, files, resolver)
+}
+
+fn load_phase_inner(
+    kb: &mut KnowledgeBase,
+    files: &[&ParsedFile],
+    resolver: &dyn SourceResolver,
+) -> Result<(LoadResult, Vec<LoadResult>), Vec<LoadError>> {
     let mut all_errors = scan_definitions(kb, files);
     kb.resolve_builtins();
 
     let mut loaded_paths = HashSet::new();
     let mut all_sorts = Vec::new();
+    let mut all_fact_ids = Vec::new();
+    let mut per_file: Vec<LoadResult> = Vec::with_capacity(files.len());
     for parsed in files {
         match load_with_visited(kb, parsed, resolver, &mut loaded_paths) {
-            Ok(result) => all_sorts.extend(result.defined_sorts),
-            Err(errs) => all_errors.extend(errs),
+            Ok(result) => {
+                all_sorts.extend(result.defined_sorts.clone());
+                all_fact_ids.extend(result.fact_rule_ids.clone());
+                per_file.push(result);
+            }
+            Err(errs) => {
+                all_errors.extend(errs);
+                per_file.push(LoadResult::default());
+            }
         }
     }
     resolve_instantiations(kb);
@@ -1295,7 +1334,10 @@ fn load_phase(
     register_specialization_witnesses(kb);
     all_errors.extend(super::typing::type_check_sorts(kb, &all_sorts));
     if all_errors.is_empty() {
-        Ok(LoadResult { defined_sorts: all_sorts })
+        Ok((
+            LoadResult { defined_sorts: all_sorts, fact_rule_ids: all_fact_ids },
+            per_file,
+        ))
     } else {
         Err(all_errors)
     }
@@ -1312,7 +1354,10 @@ fn load_with_visited(
     let mut loader = Loader::new(kb, parsed, resolver, loaded_paths, global);
     loader.load_items(&parsed.items, None);
 
-    let result = LoadResult { defined_sorts: loader.defined_sorts };
+    let result = LoadResult {
+        defined_sorts: loader.defined_sorts,
+        fact_rule_ids: loader.fact_rule_ids,
+    };
     if loader.errors.is_empty() {
         Ok(result)
     } else {
@@ -2716,6 +2761,12 @@ struct Loader<'a> {
     current_owner: Option<Symbol>,
     // Sort/enum terms defined in this file (for targeted type checking)
     defined_sorts: Vec<TermId>,
+    // RuleIds of top-level user `fact …(…)` blocks, in source order.
+    // Persistence backends (IndexedFileStore et al.) zip this with the
+    // corresponding parsed.fact_spans() to populate per-fact source maps
+    // so retract can drop a specific block without reconstructing it
+    // from a content fingerprint.
+    fact_rule_ids: Vec<crate::kb::RuleId>,
 }
 
 impl<'a> Loader<'a> {
@@ -2740,6 +2791,7 @@ impl<'a> Loader<'a> {
             desc_index: HashMap::new(),
             type_param_vars: HashMap::new(),
             defined_sorts: Vec::new(),
+            fact_rule_ids: Vec::new(),
             source_id,
             current_owner: None,
         }
@@ -4108,7 +4160,8 @@ impl<'a> Loader<'a> {
         self.maybe_create_occurrence_ex(f.term, term, false);
 
         let meta = f.meta.as_ref().map(|mb| self.load_meta_block(mb));
-        self.kb.assert_fact(term, fact_sort, domain, meta);
+        let rule_id = self.kb.assert_fact(term, fact_sort, domain, meta);
+        self.fact_rule_ids.push(rule_id);
 
         self.current_owner = prev_owner;
     }
