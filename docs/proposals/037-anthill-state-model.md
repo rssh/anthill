@@ -49,28 +49,36 @@ end
 
 Three operations: `new` (construct), `get` (read), `set` (write). `Cell.new(initial)` allocates a fresh Cell with identity, initialized to `initial`. The constructor name avoids duplicating the sort name (`Cell.cell` would be awkward) and mirrors the host-language allocation convention (`Cell::new` in Rust, `Cell.apply` in Scala, `cell_new` in C). `new` is not a reserved word in anthill, so the import lands cleanly. Construction is **allocation, not mutation** — it doesn't modify any existing Cell, so it doesn't carry `Modify[anything]`. This matches how arena-allocated values are constructed elsewhere in the stdlib (`Map.empty()`, `Substitution.empty()`, `List.nil()` are all effect-pure even though each call yields a fresh handle).
 
-Construction *does* depend on the active handler (the same way `set` does) — the handler decides how to allocate the cell's identity, where its state lives, and what undo semantics apply. A Branch-installed handler may register the new cell in a per-branch slot so that abandoning the branch reclaims it. A test handler may pre-populate the cell from a fixture. The handler dispatch is the substitution point; the operation surface stays uniform.
+**One write operation, not two; and no "sticky" semantics.** Proposal 037 supersedes 027 §4's split between `set` (sticky) and `set_local` (transactional, requires Branch). It also rejects the intermediate framing where "default handler is sticky / Branch-installed handler is transactional" — that framing was *inconsistent*, because **a sticky write inside a logical branch yields an unspecified value from a sibling branch's perspective**. If `set(c, 5)` in alt A leaks into alt B, then B's observation of `c` depends on whether A ran first, which is execution order, not logical content. Logical branches must be logically independent; a Modify with sticky semantics under Branch is unsound.
 
-**One write operation, not two.** Proposal 037 supersedes 027 §4's split between `set` (sticky) and `set_local` (transactional, requires Branch). The split was unnecessarily duplicating the API surface for what's a handler concern, not an operation concern.
+The fix is to drop "sticky" as a Modify concept altogether. **Modify has one semantics: the operation mutates the named resource.** Whether the mutation survives backtracking is **not** a property of the operation or of the handler — it is the **resource's branch-interaction contract**, declared as part of the resource type itself.
 
-In algebraic effects, **operations are stable; handlers determine semantics**. Inside Branch, the runtime installs a *compatible Modify handler* that intercepts every `set` and registers undo on the current snapshot — making the operation transactional without changing its source form. Outside Branch, the default sticky handler is in scope, and `set` writes through as a normal mutation. Same source-level call, different runtime semantics, depending on the active handler.
+Reframed:
 
-The handler is the substitution point:
-- **Default handler**: sticky writes through to the cell's state.
-- **Branch-installed handler**: sticky writes plus `register_undo` on the current snapshot, so abandoning a sibling alt reverts.
-- **Lexically-scoped handler** (`with_resource`, `with_handler`): writes through to the scoped state; reverted on scope exit.
-- **Audit handler**: writes through plus logs each operation.
-- **Test handler**: substitutes a controlled state for the duration of a test.
+- The `set(c, v)` source-level call always means "write `v` to the active state of `c`."
+- "The active state of `c`" depends on the surrounding scope:
+    - Outside any Branch (or other snapshot-establishing scope), there is one state for `c`. The write goes there. There's no rollback because there is nothing to roll back from — not because the operation is "sticky."
+    - Inside Branch, the resource's branch-interaction contract dictates state lifetime. A `Cell` whose contract says **branch-local snapshot** is snapshotted at branch entry; `set` writes to the active snapshot; abandoning the branch reclaims it.
+- The Modify handler does not pick rollback policy. It picks state representation — `HashMap<Symbol, Value>` vs version graph vs test fixture vs audit-wrapped delegate. Two handlers for the same resource differ in *where state lives and how it's represented*, not in *when mutations roll back*.
 
-Branch's contribution is to install its compatible handler at branch entry; it doesn't require an effect-row marker on `set` itself. Composition is clean — adding Branch to a region doesn't force every `set` call site to declare `Branch` in its effect row.
+Branch's contribution is **runtime-level**: when entering a branch, the runtime walks resources whose contracts declare branch-local-snapshot and snapshots them; abandoning a sibling reverts. The Modify handler is unchanged — it always writes to the active state, and "active" is determined by the surrounding scope, not by handler swapping.
 
-The same logic applies to resource-specific operations (KB.assert, Store.persist, WorkItemStore.commit). Each has one mutation-flavor per operation; the handler determines whether it's sticky / transactional / audited / time-travelled. We don't need `assert_local`, `persist_local`, `commit_local` variants — Branch (and other scope-establishing constructs) install handlers that make the existing operations transactional.
+Adding Branch to a region doesn't require an effect-row marker on `set` itself. The composition is clean.
+
+The same logic applies to resource-specific operations (`KB.assert`, `Store.persist`, `WorkItemStore.commit`). Each has one mutation per operation; rollback under Branch is the resource's contract:
+
+- **KB**: contract is branch-local-snapshot — `KB.assert` inside Branch writes to a per-branch fact set (the `register_undo` mechanism). `KB.assume` from prior drafts disappears as a separate operation.
+- **Cell**: contract is branch-local-snapshot — `Cell.set` inside Branch writes to a per-branch slot.
+- **Store** (filesystem-backed): contract is *sticky-by-physics* — the filesystem can't roll back atomically without a buffered handler. Today this means `Store.persist` inside Branch leaks across alternatives; that is a soundness hazard the proposal flags rather than blesses. Either a buffered Store handler is provided, or the framework adds a constraint like "Store ops cannot appear inside Branch" (analogous to the Branch+Consumes constraint from 027).
+- **Console.print** / other irreversible side effects: also sticky-by-physics; same constraint logic applies.
+
+We don't need `assert_local`, `persist_local`, `commit_local` variants. Resources whose physical realities prevent rollback either get a buffered/transactional handler that absorbs the cost, or get a static constraint that prevents their use under Branch.
 
 **Effect-row convention**: `Modify[parameter_name]` — refers to the specific parameter the operation receives, not the type. This identifies *which* resource is mutated, not just "some resource of this type." Matches the existing `Modify[store]` usage on `Store.persist` and `Modify[s]` planned for `WorkItemStore.commit`. Multi-instance distinction (WI-200) and future path-based effects (`Modify[s.backend]`) build on parameter-name references.
 
 The exception is proposal 027's `operation set(target: T, ...) effects Modify[T]` — there `T` is both the Modify sort's type parameter and the type of `target`, so the type form is also the parameter form within the Modify sort body. Outside Modify's body, all derived operations use parameter names (`Modify[c]`, `Modify[store]`, `Modify[s]`).
 
-`Cell[V]` is a concrete sort: "a typed mutable cell holding a V." It exposes the standard get/set protocol — one read, one write. Sticky vs transactional behavior is provided by the active handler, not by separate operations.
+`Cell[V]` is a concrete sort: "a typed mutable cell holding a V." It exposes the standard get/set protocol — one read, one write. Branch-interaction is part of Cell's contract, not the operation's signature.
 
 Resources that fit "small typed state you read and overwrite" declare themselves as `Cell[V]` and inherit the protocol. A counter is `Cell[Int]`. A flag is `Cell[Bool]`. A small record is `Cell[MyRecord]`.
 
@@ -84,16 +92,21 @@ The framework requires a **bidirectional correspondence**:
 
 Bare value types (Int, Bool, String) do **not** admit Modify — they have no handler. Mutable cells wrapping them (`Cell[Int]`) do, because Cell has a handler. Following ML's `Int` vs `IORef Int` and Haskell's `Int` vs `IORef Int` / `STRef Int`. Mutability is a property of the *wrapper*, not the wrapped value.
 
-For every resource type T whose operations mutate, there's at least one Modify handler installed at startup. Operations on T raise `Modify[T]` effect; the dispatcher routes to T's currently-active handler. The handler implements T's specific operations.
+For every resource type T whose operations mutate, there's at least one Modify handler installed at startup. Operations on T raise `Modify[T]` effect; the dispatcher routes to T's currently-active handler. The handler implements T's specific operations against T's state.
 
-A type can have **multiple handlers** — selected by interpreter context:
-- **Direct handler**: the default; fast path with simple state.
-- **Time-travel handler**: maintains a version graph; same operation surface, richer state.
-- **Branch-aware handler**: intercepts `set` calls and registers `register_undo` on the current snapshot, making the same write transactional without source-level changes.
-- **Audit handler**: logs every operation before delegating to a wrapped handler.
-- **Test handler**: substitutes a mock for the resource's state.
+**Handlers vary in state representation, not in rollback policy.** A type can have multiple handlers — selected by interpreter context — but two handlers for the same resource differ in *where state lives and how it's represented*, never in *when mutations roll back*. Rollback is the resource's branch-interaction contract (§"Resource type plug-in"), enforced at the runtime level (§"Composition with Branch"); it is orthogonal to handler choice.
 
-The handler-stack model from proposal 027 §"with_handler" picks the topmost handler matching the effect; switching handlers is the language-level mechanism for time-travel mode, audit mode, test mode, etc.
+Concrete handler variants:
+- **Direct handler**: the default; primary state in a `HashMap<Symbol, Value>` or arena.
+- **Time-travel handler**: state is a version graph instead of a single value; `get` returns the current head, `set` extends the graph. `get_at` (under a separate `TimeTravel[s]` effect) navigates history. Same operation surface, richer state.
+- **Audit handler**: wraps another handler; logs every operation before delegating.
+- **Test handler**: substitutes a controlled fixture for the resource's state.
+- **Read-only handler**: implements `get` from a pre-populated map; raises Error on `set`.
+
+What is *not* a handler:
+- ~~Branch-aware handler~~. Branch interaction is **not** a handler concern — it's the resource's contract enforced by the runtime. The runtime snapshots resources at branch entry per their contract; the same Modify handler writes to whatever state is "active" without knowing whether it's a snapshot or the parent state.
+
+The handler-stack model from proposal 027 §"with_handler" picks the topmost handler matching the effect; switching handlers is the language-level mechanism for time-travel mode, audit mode, test mode, etc. — *all* dimensions that are about state representation, never about rollback semantics.
 
 ```
                         ┌─────────────────────────────────┐
@@ -132,13 +145,65 @@ The interpreter contract for each resource type covers:
 
 ### 1. Identity scheme
 
-How are two values of T distinguished as "different resources"? Three options (per WI-200):
+How are two values of T distinguished as "different resources"? Three options (per WI-200) — and the framework expresses identity through the existing operation mechanism, not through a new keyword or field-shape syntax:
 
-- **Functor-only**: same sort → same identity. One instance per type. Today's default Modify handler. Suitable for singletons (KB, a process-wide config cell).
-- **Identity-by-field**: the sort designates one or more fields as identity. Cells key by `(functor, identity_value)`. Instances coexist as long as identity values differ.
-- **Opaque handle**: a fresh `Value::Resource(uid)` per construction. Maximum isolation; no field shape needed.
+- **Functor-only**: the sort name alone keys the state. One instance per type. Today's default Modify handler. Suitable for singletons (KB, a process-wide config cell).
 
-Resources that can have multiple instances declare which scheme they use; the runtime keys cells accordingly. Default is functor-only (single instance) for backward compatibility.
+  ```anthill
+  Cell.new(0)   -- keyed by `Cell` symbol
+  Cell.new(1)   -- ALSO keyed by `Cell` — collides; second overwrites the first
+  ```
+
+- **Identity-by-key**: the sort declares a `key` operation that returns an *identity-supporting* type — i.e. one that satisfies `Eq` and `Hashable`. The runtime keys instances by `(functor, key(instance))`. Two resource values are the *same* resource iff their `key` results match. The operation is just an ordinary operation — no new syntax needed.
+
+  **What's the identity-supporting type?** Two reasonable choices, neither of which is `Symbol` (hash-consed, meant for syntactic identifiers like sort and operation names — using it for dynamic resource keys would pollute the global intern table monotonically) and neither of which is bare `String` (weakly-typed; loses the "this is a resource key, not arbitrary text" signal at the type level):
+
+    1. **A framework-provided opaque type, `IdentityKey`** (recommended default). Built into the runtime; constructors take `String` / `Int` / structural composites; equality and hashing are framework-defined. User code constructs a `IdentityKey` only via the constructors, never as a raw value, so the type carries the "resource identity" signal at the call site. Implementation is hidden from user code — the runtime may choose interned strings, packed ints, or opaque handles depending on what's efficient.
+
+    2. **The resource's own entity term**, when the resource is naturally an entity. Anthill's hash-consed term machinery already gives entity-shaped values structural identity; `WorkItemStore(project: "anthill")` and `WorkItemStore(project: "anthill")` are the same term, so they are the same resource. No `key` operation needed in that case — the entity *is* the key.
+
+  ```anthill
+  -- Style 1: explicit IdentityKey
+  sort Config
+    operation new(name: String, initial: ConfigData) -> Config
+    operation key(c: Config) -> IdentityKey         -- the identity operation
+    operation get(c: Config) -> ConfigData
+    operation set(c: Config, v: ConfigData) -> Unit
+      effects Modify[c]
+  end
+  -- key(Config.new(name: "db", ...)) == IdentityKey.fromString("db")
+
+  -- Style 2: entity-as-identity (no key operation needed)
+  sort WorkItemStore
+    entity WorkItemStore(project: String)           -- structural identity
+    operation get(s: WorkItemStore) -> ...
+    operation set(s: WorkItemStore, v: ...) -> Unit effects Modify[s]
+  end
+  -- WorkItemStore(project: "anthill") is one resource, project "rustland" is another.
+  ```
+
+  Why an *operation* (in Style 1) rather than a designated field? Because identity may be *computed* (a hash of multiple values, a lookup against an external registry) rather than read directly from one slot. An operation also fits the algebraic-effects discipline cleanly: the runtime asks the resource "what's your key?" via a normal call rather than peeking at internal structure.
+
+  Useful when the resource has a natural domain key the user will reuse (project name, session id, file path, named-config slot).
+
+- **Opaque handle**: a fresh `Value::Resource(uid)` allocated at every construction; the resource declares no `key` operation, and identity is per-allocation. Two calls to `Cell.new(0)` produce two distinct cells even with identical initial values. Identity is allocation-time, not value-time. The current arena machinery for `Map` / `Substitution` / `Stream` uses this scheme — and `Cell[V]` belongs in this category too: cells in Rust (`Cell::new`), OCaml (`ref`), Haskell (`newIORef`) all get identity from allocation, not from a domain key the user supplies.
+
+  ```anthill
+  sort Cell
+    sort V = ?
+    operation new(initial: V) -> Cell[V]    -- fresh handle every call
+    operation get(c: Cell[V]) -> V
+    operation set(c: Cell[V], v: V) -> Unit
+      effects Modify[c]
+  end
+  ```
+
+  ```anthill
+  let c1 = Cell.new(0)   -- handle uid=1
+  let c2 = Cell.new(0)   -- handle uid=2 (distinct, even with same V)
+  ```
+
+Resources that can have multiple instances declare which scheme they use — by declaring (or not declaring) a `key` operation, and by leaving construction value-time vs allocation-time. The runtime keys their state accordingly. Default is functor-only (single instance) for backward compatibility.
 
 ### 2. Operations exposed
 
@@ -181,15 +246,19 @@ The resource type declares which lifecycle category it falls into. The interpret
 
 ### 6. Branch interaction
 
-How does the resource behave when execution enters a `Branch` choice point?
+How does the resource behave when execution enters a `Branch` choice point? Three options — and the framework treats sticky-under-Branch as a soundness hazard, not a normal mode (per §"Cell[V]"):
 
-- **Sticky**: state persists across branch alternatives. Modifications in alt A are observable in alt B. (Today's default for Cell, KB, Store.)
-- **Branch-local snapshot**: the resource is *cloned* at branch entry; each branch sees its own copy; abandoning a branch discards its copy. The Branch-installed Modify handler intercepts each `set` call and registers `register_undo`, so the same operation that's sticky outside Branch becomes transactional inside it. The interpreter installs the compatible handler at branch entry; resources that opt in update the per-branch snapshot instead of the parent state.
-- **Frozen**: the resource is read-only inside the branch. Mutations would be a type error. Useful for resources whose mutation under branch is genuinely meaningless (e.g., a Console output that shouldn't double-print).
+- **Branch-local snapshot** (the canonical sound option): the resource is *cloned* at branch entry; each branch sees its own copy; abandoning a branch discards its copy. The runtime mechanism is `register_undo` per snapshot. This is the model for any resource whose state is value-shaped enough to clone (Cell, KB facts, value-only Maps).
+- **Frozen**: the resource is read-only inside the branch. Mutations under Branch are a type error. Use this when mutation under branch is genuinely meaningless (Console output that shouldn't double-print, sensors that read external state).
+- **Sticky-by-physics** (escape hatch, not a normal mode): the resource cannot be rolled back atomically because its state lives in an external system that doesn't support cheap undo (filesystem, network, hardware). Two acceptable resolutions:
+    1. Provide a *buffered handler* that accumulates writes in memory and only flushes on commit. The buffer is snapshot-able; the resource effectively becomes branch-local-snapshot at the framework level.
+    2. Add a *static constraint* that prevents this resource from being used inside `Branch` (analogous to 027's Branch+Consumes constraint). The compiler rejects the program if a `Modify[r]` op for such a resource appears inside Branch.
 
-The resource type declares which model applies. The interpreter consults this when entering `Branch`. **Each resource type's contract must specify what happens at branch entry/exit — silence is a bug.**
+  Plain sticky-under-Branch — the resource silently leaks writes across alternatives — is **not** an accepted contract. Sibling branches would observe an unspecified value (depends on which branch ran first), which violates the logical-independence-of-branches invariant. Today's implementations of Cell / KB / Store *behave* sticky-under-Branch only because the snapshot machinery (or the constraint) hasn't landed yet — that is a soundness gap, not a design choice. The proposal flags this gap rather than blessing it.
 
-For example: a `Cell[V]` declared "branch-local snapshot" gets cloned into a per-branch slot at branch entry; its handler updates the per-branch slot; abandoning the branch drops the slot. A `Cell[V]` declared "sticky" updates the parent state directly.
+The resource type declares which model applies. The runtime consults this when entering `Branch`. **Each resource type's contract must specify what happens at branch entry/exit — silence is a bug.**
+
+For example: a `Cell[V]` declared "branch-local snapshot" gets cloned into a per-branch slot at branch entry; the (unchanged) Modify handler writes to the active snapshot; abandoning the branch drops the slot. A `Console` declared "frozen" rejects `print` calls inside Branch at compile time.
 
 ### 7. Time-travel readiness
 
@@ -205,12 +274,12 @@ Each resource type needs its own contract spelled out. The framework requires th
 
 | | |
 |---|---|
-| Identity scheme | Functor-only today (default Modify handler keys by `Cell` symbol — single instance per V). WI-200 to lift this. |
-| Operations exposed | `new(initial) -> Cell[V]` (construct), `get(c) -> V` (read), `set(c, v) -> Unit` (write). One write op; sticky vs transactional via active handler. |
-| State location | `default_modify_handler`'s `HashMap<Symbol, Value>`. |
+| Identity scheme | **Opaque handle** (target contract). Today's default Modify handler keys by `Cell` symbol — functor-only — which collapses all `Cell.new(...)` calls to one slot. WI-200 lifts this; under the target contract `Cell.new` returns a fresh handle per call (Rust `Cell::new`, OCaml `ref`, Haskell `IORef` flavor). |
+| Operations exposed | `new(initial) -> Cell[V]` (construct), `get(c) -> V` (read), `set(c, v) -> Unit` (write). No `key` operation — Cell's identity is allocation-time. One write op with one semantics (mutate); branch interaction is the contract below. |
+| State location | `default_modify_handler`'s `HashMap<Symbol, Value>` (default handler). Other handlers may use a version graph (time-travel), a fixture (test), or a wrapped delegate (audit) — different state representations, same operation. |
 | Dispatch path | Handler-dispatched via the existing Modify effect machinery. |
 | Lifecycle | Construction-bounded: born at `Cell.new(initial)`; lives until no references remain (default handler) or until lexical scope exit (`with_resource`). Today's functor-keyed default handler effectively gives Cell process-lifetime per V — multi-instance allocation is contingent on WI-200. |
-| Branch interaction | Default handler is sticky; Branch installs a compatible handler that makes `set` transactional via `register_undo`, and may also keep newly-allocated cells per-branch so abandoning a branch reclaims them. |
+| Branch interaction | **Branch-local snapshot** (per the contract). Today's implementation behaves sticky-under-Branch only because the snapshot machinery isn't wired yet — that is a soundness gap, not the contract. The fix is the runtime `register_undo` + per-branch state cloning (Open Decision 3). |
 | Time-travel readiness | Yes — state is a Value; a versioned handler can layer in transparently. |
 
 ### KB
@@ -222,7 +291,7 @@ Each resource type needs its own contract spelled out. The framework requires th
 | State location | KB's internal Rust structures: `rules: Vec<RuleEntry>`, `by_functor: HashMap<...>`, discrimination tree. Not value-shaped. |
 | Dispatch path | Direct builtin today (`kb.assert_fact(...)`); handler-dispatched in principle for substitution. |
 | Lifecycle | Process-lifetime; created with the Interpreter. |
-| Branch interaction | Sticky today. `KB.assume` (designed; partially implemented) provides branch-local snapshot via `register_undo`. |
+| Branch interaction | **Branch-local snapshot** (per the contract). Today's KB *behaves* sticky-under-Branch because the snapshot machinery isn't fully wired yet — that is a soundness gap. The fix is `register_undo` on KB-level mutations; `KB.assume` from prior drafts disappears once `assert` itself becomes branch-local under Branch. |
 | Time-travel readiness | Partial — proposal 030 wires `state_hash` for proof cache; full time-travel needs versioned indexes. WI-201 (candidate). |
 
 **Open per Rule 1**: KB.assert / retract / assume should declare `Modify[kb]` effects (currently silent). `execute` stays effect-`Error` only (queries don't mutate).
@@ -231,12 +300,12 @@ Each resource type needs its own contract spelled out. The framework requires th
 
 | | |
 |---|---|
-| Identity scheme | Canonical-form String (functor + field values). Multi-instance native. |
+| Identity scheme | **Identity-by-key** (`String`): the canonical-form string of `(functor, field-values)` is the key. Two `Store(...)` values with the same field values denote the same backing store; this is the existing `store_registry` lookup. Implemented today via the registry; consistent with the framework's identity-by-key scheme. |
 | Operations exposed | `persist(store, fact, meta) -> FactId`, `flush(store, delta) -> Bool`, `retract(store, id) -> Bool`, `pull` (BulkStore). |
 | State location | `store_registry: HashMap<String, Box<dyn Store>>`. The Box holds non-Value internals (pending writes, source map, indexes). |
 | Dispatch path | Direct builtin today. Operations declare `Modify[store]` for effect-row honesty. |
 | Lifecycle | Process-lifetime; instances registered at startup. |
-| Branch interaction | Sticky today. No Branch-aware Store handler installed yet, so `persist` writes leak across alternatives — caller's responsibility. The framework permits a future compatible handler that buffers per-branch writes and flushes on commit. |
+| Branch interaction | **Sticky-by-physics** (the filesystem can't roll back atomically). Two acceptable resolutions per the framework: (a) a buffered Store handler that accumulates writes in memory, snapshot-able like Cell, and only flushes on commit; or (b) a static constraint that prevents `Modify[store]` ops inside Branch. Today neither is in place — `persist` writes leak across alternatives, which is a soundness gap until one of (a)/(b) lands. |
 | Time-travel readiness | No — `Box<dyn Store>` internals aren't versioned. A future versioned variant would maintain its own history. |
 
 ### Map[K, V] / Substitution / Stream (arena values)
@@ -248,7 +317,7 @@ Each resource type needs its own contract spelled out. The framework requires th
 | State location | Per-resource arena (`map_arena`, `subst_arena`, `stream_arena`) — refcount + slot pool. |
 | Dispatch path | Direct builtin. Operations declare `Modify[their_value]` (TODO — currently silent for Map/Substitution; pure for Stream). |
 | Lifecycle | Construction-bounded; refcount drops to zero → slot reclaimed. |
-| Branch interaction | Sticky today. Could be branch-local-snapshot for Map (clone at branch entry) without changing user code. |
+| Branch interaction | **Branch-local snapshot** (per the contract — value-shaped state can be cloned). Today's arenas behave sticky-under-Branch because the runtime snapshot hooks aren't wired in yet — soundness gap, fixable transparently when the runtime grows the hooks. |
 | Time-travel readiness | Yes for Map (Value-shaped); Substitution and Stream have non-Value internals so partial. |
 
 ### WorkItemStore (anthill-todo, WI-192)
@@ -260,24 +329,29 @@ Each resource type needs its own contract spelled out. The framework requires th
 | State location | The Modify cell, holding a `wis(backend, by_id, by_status, id_counter)` Value. Reuses Cell[V] machinery. |
 | Dispatch path | Handler-dispatched via Modify (Cell's handler covers it). |
 | Lifecycle | Process-lifetime; host instantiates wis(...) at startup, calls `Modify.set` once before `Main.main`. |
-| Branch interaction | Sticky (matches the bundle's CLI semantics; no branch use). |
+| Branch interaction | **Branch-local snapshot** (inherits Cell's contract). Bundle's CLI doesn't use Branch, so the soundness gap above isn't load-bearing for v0.1 — but the contract is still snapshot, not sticky. |
 | Time-travel readiness | Yes — wis(...) is Value-shaped; a future versioned-Cell handler covers it transparently. |
 
 The framework requires this contract for every new resource type. A resource without an interpreter contract is incomplete.
 
 ## Composition rules
 
-### With Branch (handler swaps determine sticky vs transactional)
+### With Branch (resource contract drives snapshot; not a handler concern)
 
-Proposal 037 supersedes 027 §4's `set` / `set_local` split. Each operation has one source-level form; sticky vs transactional is a HANDLER concern, not an OPERATION concern.
+Proposal 037 supersedes 027 §4's `set` / `set_local` split, AND rejects any framing that has the handler decide sticky-vs-transactional. The Modify operation has one semantics: mutate the named resource. Whether the mutation rolls back is the **resource's branch-interaction contract**, enforced at the runtime level — not by handler swapping.
 
-- Default handler: writes through; sticky. Outside Branch, calls to `set` mutate persistently.
-- Branch-installed compatible handler: same write, plus `register_undo` registers a callback that reverts the cell's value on snapshot abandon. Inside Branch, the same `set` call is transactional.
-- Lexical-scope handlers (`with_resource`, `atomic`): same shape — the scope's handler intercepts and provides its rollback semantics.
+When execution enters a `Branch`:
 
-The framework requires: when entering Branch, the runtime installs a compatible Modify handler for any resource type that opts into branch-local snapshot semantics (per the resource's interpreter contract). Resources that opt into "sticky always" don't get a compatible handler installed — their ops behave the same in or out of Branch.
+1. The runtime walks the resource types touched by the branch body.
+2. For each resource whose contract is **branch-local snapshot**, the runtime clones (or otherwise snapshots) the resource's state into a per-branch slot, and registers an undo callback (`register_undo`) so abandoning a sibling restores the parent state.
+3. For resources whose contract is **frozen**, the type system has already rejected any `Modify[r]` op inside the branch body at compile time.
+4. For resources whose contract is **sticky-by-physics**, either (a) a buffered handler has been installed that absorbs the writes into a snapshot-able buffer, or (b) the same compile-time constraint as Frozen applies. Plain leaky-sticky is not an accepted contract.
 
-No source-level `_local` operations needed. Effect rows stay clean (just `Modify[c]`, never `Modify[c], Branch`).
+The Modify handler is unchanged across these cases. It always writes to the active state of the resource; what "active state" means is whatever the runtime presents as current (parent state, branch snapshot, or buffer).
+
+Effect rows stay clean: just `Modify[c]`, never `Modify[c], Branch`. Adding Branch to a region doesn't perturb the effect row of a `set` call site, because Branch's interaction with state is a runtime mechanism, not a typing-level concern.
+
+No source-level `_local` / `_atomic` / `_transactional` operations exist or are needed.
 
 ### With other Modify effects
 
@@ -294,17 +368,17 @@ If transitivity is desired (path-based effects), the operation declares it expli
 
 ### With Error
 
-`Modify[T]` operations that can fail also declare `Error`. The framework doesn't tie them: under the default (sticky) handler, a `set` that fails leaves state pre-mutation (the handler doesn't write); under a Branch-aware (transactional) handler, the same `set` rolls back via the snapshot mechanism. Error is orthogonal to which handler is active.
+`Modify[T]` operations that can fail also declare `Error`. The framework doesn't tie them: a `set` that raises Error before reaching the handler leaves state untouched; a `set` that completes its mutation and *then* signals an error has already mutated. The atomicity of `set` itself is the handler's responsibility (the handler should not partially-write); rollback under failure is the resource's branch-interaction contract (under `try` / `bracket` constructs that establish a snapshot scope, the runtime restores state on Error the same way it does on branch abandon).
 
 ### With time-travel (forward-compat invariants)
 
 Five invariants the framework holds for any T, so a future time-travel handler can substitute a versioned representation without breaking existing code:
 
-1. `set(target, v)` — observable contract is "next get returns v under the active handler." Handler implementation hidden.
-2. `get(target)` returns the current head under the active handler. Time-travel adds `get_at` under a separate `TimeTravel[s]` effect.
+1. `set(target, v)` — observable contract is "next get returns v." Handler implementation hidden.
+2. `get(target)` returns the current head. Time-travel adds `get_at` under a separate `TimeTravel[s]` effect.
 3. `Modify[T]` surface doesn't expose handler-internal structure (no version IDs, snapshot handles, dirty bits in operation signatures).
 4. `set` returns `Unit` (not the prior value) — capturing the prior value would force every handler to materialize it.
-5. Operation signatures don't encode sticky vs transactional. The active handler picks the semantics; a time-travel handler swaps in without renaming or re-typing the operation.
+5. Operation signatures don't encode rollback policy. Whether mutations roll back is the resource's branch-interaction contract; a time-travel handler swaps in (changing state representation, not rollback policy) without renaming or re-typing the operation.
 
 These hold for resource-specific ops too (commit, persist, assert) — none of them return the prior value or expose handler internals.
 
@@ -346,9 +420,13 @@ Read-only operations don't declare Modify. Observation is type-pure.
 
 The operations on a resource (their signatures, effect rows, semantics) are the same whether dispatch is handler-mediated or direct. Migration between dispatch paths doesn't change user-visible types.
 
-### Rule 5: One operation per mutation; handler determines semantics
+### Rule 5: One operation per mutation; rollback is the resource's contract
 
-Operations have ONE source-level form per mutation. Sticky vs transactional is determined by the active handler, not by separate operations. The runtime installs a compatible Branch-aware handler at Branch entry; the same `set` / `assert` / `commit` operation behaves transactionally there. Resources MUST NOT expose `set_local` / `assert_local` / `commit_local` variants — that duplicates the API surface for a concern that belongs to handlers.
+Operations have ONE source-level form per mutation, with ONE semantics: mutate the named resource. Whether the mutation rolls back is **not** a property of the operation, the handler, or any contextual flag — it is the **resource's branch-interaction contract**, enforced at the runtime level. Modify carries no "sticky" mode and no "transactional" mode; it's just mutation.
+
+A sticky-under-Branch resource is unsound (sibling alts would observe an unspecified value, breaking logical-independence-of-branches), so this is rejected by the framework rather than offered as a choice. Resources whose physics prevent atomic rollback (filesystem, external service) declare **sticky-by-physics** in their contract, which forces one of two acceptable resolutions: a buffered handler that absorbs the writes, or a static constraint that prevents the resource's use under Branch.
+
+Resources MUST NOT expose `set_local` / `assert_local` / `commit_local` variants — that would duplicate the API surface for a concern that belongs to the resource's contract, not to its operation set.
 
 ### Rule 6: Multi-instance via declared identity
 
@@ -370,7 +448,7 @@ The framework above leaves these open; they need answers before WI-192's WorkIte
 
 2. **WorkItemStore identity scheme**: functor-only (single instance) or one of the WI-200 schemes? *Recommendation: functor-only for v0.1; revisit when multi-instance need arises.*
 
-3. **Branch-aware Modify handler timeline**: when does the runtime install the compatible Modify handler at Branch entry? Today's runtime doesn't (Branch's eval-side wiring is partial). Until it does, `set` calls inside Branch are sticky regardless. *Recommendation: defer the implementation; bundle is a one-shot CLI without Branch use.*
+3. **Branch snapshot machinery timeline**: when does the runtime grow the snapshot/`register_undo` hooks that enforce branch-local-snapshot contracts? Today's runtime doesn't have these (Branch's eval-side wiring is partial). Until they land, every resource whose contract says "branch-local snapshot" actually *behaves* sticky-under-Branch — a soundness gap, not a contract feature. *Recommendation: defer the implementation; bundle is a one-shot CLI without Branch use, so the gap isn't load-bearing for v0.1. When Branch lands as a usable feature, the snapshot machinery is a hard prerequisite, not optional.*
 
 4. **`Modify.get` on resources without get/set protocol**: KB / Store / WorkItemStore don't expose `get(s) -> S` because their state isn't a single value. Is this OK? *Recommendation: yes — `get`/`set` are the standard ops on Modify but resources can omit them when they don't fit. The framework allows.*
 
