@@ -41,18 +41,31 @@ fact Effect[T = Modify[?]]
 sort Cell
   sort V = ?
   operation get(c: Cell[V]) -> V                              -- read; type-pure
-  operation set(c: Cell[V], value: V) -> Unit                  -- sticky write
+  operation set(c: Cell[V], value: V) -> Unit
     effects Modify[c]
-  operation set_local(c: Cell[V], value: V) -> Unit            -- transactional write
-    effects Modify[c], Branch
 end
 ```
+
+**One write operation, not two.** Proposal 037 supersedes 027 §4's split between `set` (sticky) and `set_local` (transactional, requires Branch). The split was unnecessarily duplicating the API surface for what's a handler concern, not an operation concern.
+
+In algebraic effects, **operations are stable; handlers determine semantics**. Inside Branch, the runtime installs a *compatible Modify handler* that intercepts every `set` and registers undo on the current snapshot — making the operation transactional without changing its source form. Outside Branch, the default sticky handler is in scope, and `set` writes through as a normal mutation. Same source-level call, different runtime semantics, depending on the active handler.
+
+The handler is the substitution point:
+- **Default handler**: sticky writes through to the cell's state.
+- **Branch-installed handler**: sticky writes plus `register_undo` on the current snapshot, so abandoning a sibling alt reverts.
+- **Lexically-scoped handler** (`with_resource`, `with_handler`): writes through to the scoped state; reverted on scope exit.
+- **Audit handler**: writes through plus logs each operation.
+- **Test handler**: substitutes a controlled state for the duration of a test.
+
+Branch's contribution is to install its compatible handler at branch entry; it doesn't require an effect-row marker on `set` itself. Composition is clean — adding Branch to a region doesn't force every `set` call site to declare `Branch` in its effect row.
+
+The same logic applies to resource-specific operations (KB.assert, Store.persist, WorkItemStore.commit). Each has one mutation-flavor per operation; the handler determines whether it's sticky / transactional / audited / time-travelled. We don't need `assert_local`, `persist_local`, `commit_local` variants — Branch (and other scope-establishing constructs) install handlers that make the existing operations transactional.
 
 **Effect-row convention**: `Modify[parameter_name]` — refers to the specific parameter the operation receives, not the type. This identifies *which* resource is mutated, not just "some resource of this type." Matches the existing `Modify[store]` usage on `Store.persist` and `Modify[s]` planned for `WorkItemStore.commit`. Multi-instance distinction (WI-200) and future path-based effects (`Modify[s.backend]`) build on parameter-name references.
 
 The exception is proposal 027's `operation set(target: T, ...) effects Modify[T]` — there `T` is both the Modify sort's type parameter and the type of `target`, so the type form is also the parameter form within the Modify sort body. Outside Modify's body, all derived operations use parameter names (`Modify[c]`, `Modify[store]`, `Modify[s]`).
 
-`Cell[V]` is a concrete sort: "a typed mutable cell holding a V." It exposes the standard get/set/set_local protocol of proposal 027 — the State monad encoding via effect handlers.
+`Cell[V]` is a concrete sort: "a typed mutable cell holding a V." It exposes the standard get/set protocol — one read, one write. Sticky vs transactional behavior is provided by the active handler, not by separate operations.
 
 Resources that fit "small typed state you read and overwrite" declare themselves as `Cell[V]` and inherit the protocol. A counter is `Cell[Int]`. A flag is `Cell[Bool]`. A small record is `Cell[MyRecord]`.
 
@@ -71,7 +84,7 @@ For every resource type T whose operations mutate, there's at least one Modify h
 A type can have **multiple handlers** — selected by interpreter context:
 - **Direct handler**: the default; fast path with simple state.
 - **Time-travel handler**: maintains a version graph; same operation surface, richer state.
-- **Branch-aware handler**: implements `set_local`-style transactional semantics via `register_undo`.
+- **Branch-aware handler**: intercepts `set` calls and registers `register_undo` on the current snapshot, making the same write transactional without source-level changes.
 - **Audit handler**: logs every operation before delegating to a wrapped handler.
 - **Test handler**: substitutes a mock for the resource's state.
 
@@ -146,7 +159,7 @@ The location is an implementation detail. The user-level operations on T are the
 
 How does an operation call reach the state?
 
-- **Handler-dispatched**: operation raises an effect → effect handler intercepts → handler accesses state. Today's path for Cell's get/set/set_local.
+- **Handler-dispatched**: operation raises an effect → effect handler intercepts → handler accesses state. Today's path for Cell's get/set.
 - **Direct builtin**: operation maps to a Rust function that directly accesses state. Today's path for Store.persist, KB.assert, Map.put.
 
 The framework PERMITS both. Handler-dispatched is more flexible; direct is faster. A resource may start direct and migrate to handler-dispatched without changing the type-level surface. **The effect annotation is the same regardless of dispatch path.**
@@ -166,7 +179,7 @@ The resource type declares which lifecycle category it falls into. The interpret
 How does the resource behave when execution enters a `Branch` choice point?
 
 - **Sticky**: state persists across branch alternatives. Modifications in alt A are observable in alt B. (Today's default for Cell, KB, Store.)
-- **Branch-local snapshot**: the resource is *cloned* at branch entry; each branch sees its own copy; abandoning a branch discards its copy. This is what `set_local` implements via `register_undo`. The interpreter installs a snapshot at branch entry; resources that opt in update the snapshot instead of the parent state.
+- **Branch-local snapshot**: the resource is *cloned* at branch entry; each branch sees its own copy; abandoning a branch discards its copy. The Branch-installed Modify handler intercepts each `set` call and registers `register_undo`, so the same operation that's sticky outside Branch becomes transactional inside it. The interpreter installs the compatible handler at branch entry; resources that opt in update the per-branch snapshot instead of the parent state.
 - **Frozen**: the resource is read-only inside the branch. Mutations would be a type error. Useful for resources whose mutation under branch is genuinely meaningless (e.g., a Console output that shouldn't double-print).
 
 The resource type declares which model applies. The interpreter consults this when entering `Branch`. **Each resource type's contract must specify what happens at branch entry/exit — silence is a bug.**
@@ -188,11 +201,11 @@ Each resource type needs its own contract spelled out. The framework requires th
 | | |
 |---|---|
 | Identity scheme | Functor-only today (default Modify handler keys by `Cell` symbol — single instance per V). WI-200 to lift this. |
-| Operations exposed | `get(c) -> V`, `set(c, v) -> Unit`, `set_local(c, v) -> Unit` — proposal 027 §Modify[T]. |
+| Operations exposed | `get(c) -> V`, `set(c, v) -> Unit`. One write op; sticky vs transactional via active handler. |
 | State location | `default_modify_handler`'s `HashMap<Symbol, Value>`. |
 | Dispatch path | Handler-dispatched via the existing Modify effect machinery. |
 | Lifecycle | Process-lifetime by default; lexically-scoped via future `with_resource`. |
-| Branch interaction | `set` is sticky; `set_local` is branch-local snapshot via `register_undo`. |
+| Branch interaction | Default handler is sticky; Branch installs a compatible handler that makes `set` transactional via `register_undo`. |
 | Time-travel readiness | Yes — state is a Value; a versioned handler can layer in transparently. |
 
 ### KB
@@ -218,7 +231,7 @@ Each resource type needs its own contract spelled out. The framework requires th
 | State location | `store_registry: HashMap<String, Box<dyn Store>>`. The Box holds non-Value internals (pending writes, source map, indexes). |
 | Dispatch path | Direct builtin today. Operations declare `Modify[store]` for effect-row honesty. |
 | Lifecycle | Process-lifetime; instances registered at startup. |
-| Branch interaction | Sticky. No `persist_local` today. Inside Branch, persist writes leak across alternatives — caller's responsibility. |
+| Branch interaction | Sticky today. No Branch-aware Store handler installed yet, so `persist` writes leak across alternatives — caller's responsibility. The framework permits a future compatible handler that buffers per-branch writes and flushes on commit. |
 | Time-travel readiness | No — `Box<dyn Store>` internals aren't versioned. A future versioned variant would maintain its own history. |
 
 ### Map[K, V] / Substitution / Stream (arena values)
@@ -249,15 +262,17 @@ The framework requires this contract for every new resource type. A resource wit
 
 ## Composition rules
 
-### With Branch (sticky vs transactional)
+### With Branch (handler swaps determine sticky vs transactional)
 
-Per proposal 027 §4:
+Proposal 037 supersedes 027 §4's `set` / `set_local` split. Each operation has one source-level form; sticky vs transactional is a HANDLER concern, not an OPERATION concern.
 
-- `set(target, v)` — sticky. Mutation persists across `Branch` backtrack. Default for irreversible writes (committed state).
-- `set_local(target, v)` — transactional. Mutation rolled back via `register_undo` on snapshot abandon. Required when in a Branch context and you want speculative writes.
-- The same protocol applies to resource-specific ops: a resource may expose `commit_local` / `assume` / etc. as transactional variants of its sticky operations.
+- Default handler: writes through; sticky. Outside Branch, calls to `set` mutate persistently.
+- Branch-installed compatible handler: same write, plus `register_undo` registers a callback that reverts the cell's value on snapshot abandon. Inside Branch, the same `set` call is transactional.
+- Lexical-scope handlers (`with_resource`, `atomic`): same shape — the scope's handler intercepts and provides its rollback semantics.
 
-The framework requires: if a resource exposes a sticky operation, it MAY also expose a transactional variant; if it does, the variant carries `Modify[T] + Branch` and uses `register_undo` for rollback.
+The framework requires: when entering Branch, the runtime installs a compatible Modify handler for any resource type that opts into branch-local snapshot semantics (per the resource's interpreter contract). Resources that opt into "sticky always" don't get a compatible handler installed — their ops behave the same in or out of Branch.
+
+No source-level `_local` operations needed. Effect rows stay clean (just `Modify[c]`, never `Modify[c], Branch`).
 
 ### With other Modify effects
 
@@ -274,17 +289,17 @@ If transitivity is desired (path-based effects), the operation declares it expli
 
 ### With Error
 
-`Modify[T]` operations that can fail also declare `Error`. The framework doesn't tie them: a sticky `set` that fails leaves the state pre-mutation (the handler simply doesn't write); a transactional `set_local` rolls back via the existing snapshot mechanism. Error is orthogonal to sticky/transactional.
+`Modify[T]` operations that can fail also declare `Error`. The framework doesn't tie them: under the default (sticky) handler, a `set` that fails leaves state pre-mutation (the handler doesn't write); under a Branch-aware (transactional) handler, the same `set` rolls back via the snapshot mechanism. Error is orthogonal to which handler is active.
 
 ### With time-travel (forward-compat invariants)
 
 Five invariants the framework holds for any T, so a future time-travel handler can substitute a versioned representation without breaking existing code:
 
-1. `set(target, v)` — observable contract is "next get returns v." Handler implementation hidden.
-2. `get(target)` returns the current head. Time-travel adds `get_at` under a separate `TimeTravel[s]` effect.
-3. `Modify[T]` surface doesn't expose handler-internal structure.
-4. `set` returns `Unit` (not the prior value).
-5. Sticky vs transactional encoded in the operation, not the handler.
+1. `set(target, v)` — observable contract is "next get returns v under the active handler." Handler implementation hidden.
+2. `get(target)` returns the current head under the active handler. Time-travel adds `get_at` under a separate `TimeTravel[s]` effect.
+3. `Modify[T]` surface doesn't expose handler-internal structure (no version IDs, snapshot handles, dirty bits in operation signatures).
+4. `set` returns `Unit` (not the prior value) — capturing the prior value would force every handler to materialize it.
+5. Operation signatures don't encode sticky vs transactional. The active handler picks the semantics; a time-travel handler swaps in without renaming or re-typing the operation.
 
 These hold for resource-specific ops too (commit, persist, assert) — none of them return the prior value or expose handler internals.
 
@@ -326,9 +341,9 @@ Read-only operations don't declare Modify. Observation is type-pure.
 
 The operations on a resource (their signatures, effect rows, semantics) are the same whether dispatch is handler-mediated or direct. Migration between dispatch paths doesn't change user-visible types.
 
-### Rule 5: Sticky default; transactional opt-in via `_local` suffix
+### Rule 5: One operation per mutation; handler determines semantics
 
-`set` is sticky; `set_local` is transactional and requires Branch. Resources following the same pattern (e.g., `commit` / `commit_local`) match this convention.
+Operations have ONE source-level form per mutation. Sticky vs transactional is determined by the active handler, not by separate operations. The runtime installs a compatible Branch-aware handler at Branch entry; the same `set` / `assert` / `commit` operation behaves transactionally there. Resources MUST NOT expose `set_local` / `assert_local` / `commit_local` variants — that duplicates the API surface for a concern that belongs to handlers.
 
 ### Rule 6: Multi-instance via declared identity
 
@@ -338,6 +353,10 @@ A resource that supports multiple instances declares its identity scheme (functo
 
 Operations on resources observe these invariants so a future time-travel handler can layer in.
 
+### Rule 8: Modify[T] and handler are bidirectionally required
+
+`Modify[T]` may appear in an effect row only if T has a registered handler (so the runtime knows where to dispatch). A handler for T is meaningful only if at least one operation declares `Modify[T]` (otherwise it can never fire). Bare value types without a wrapper sort (Int, Bool, String, raw functor terms) cannot carry Modify because they have no handler and no place for one to attach. Mutability is a property of the resource type, declared by introducing a sort that owns operations carrying `Modify[T]`.
+
 ## Open decisions before WI-192 implements
 
 The framework above leaves these open; they need answers before WI-192's WorkItemStore lands:
@@ -346,7 +365,7 @@ The framework above leaves these open; they need answers before WI-192's WorkIte
 
 2. **WorkItemStore identity scheme**: functor-only (single instance) or one of the WI-200 schemes? *Recommendation: functor-only for v0.1; revisit when multi-instance need arises.*
 
-3. **`set_local` implementation timeline**: implement now to support transactional retract+persist, or defer (and document that bundle commands aren't atomic on Error)? *Recommendation: defer; bundle is a one-shot CLI where atomicity gain is small.*
+3. **Branch-aware Modify handler timeline**: when does the runtime install the compatible Modify handler at Branch entry? Today's runtime doesn't (Branch's eval-side wiring is partial). Until it does, `set` calls inside Branch are sticky regardless. *Recommendation: defer the implementation; bundle is a one-shot CLI without Branch use.*
 
 4. **`Modify.get` on resources without get/set protocol**: KB / Store / WorkItemStore don't expose `get(s) -> S` because their state isn't a single value. Is this OK? *Recommendation: yes — `get`/`set` are the standard ops on Modify but resources can omit them when they don't fit. The framework allows.*
 
