@@ -49,15 +49,15 @@ end
 
 Three operations: `new` (construct), `get` (read), `set` (write). `Cell.new(initial)` allocates a fresh Cell with identity, initialized to `initial`. The constructor name avoids duplicating the sort name (`Cell.cell` would be awkward) and mirrors the host-language allocation convention (`Cell::new` in Rust, `Cell.apply` in Scala, `cell_new` in C). `new` is not a reserved word in anthill, so the import lands cleanly. Construction is **allocation, not mutation** — it doesn't modify any existing Cell, so it doesn't carry `Modify[anything]`. This matches how arena-allocated values are constructed elsewhere in the stdlib (`Map.empty()`, `Substitution.empty()`, `List.nil()` are all effect-pure even though each call yields a fresh handle).
 
-**One write operation, not two; and no "sticky" semantics.** Proposal 037 supersedes 027 §4's split between `set` (sticky) and `set_local` (transactional, requires Branch). It also rejects the intermediate framing where "default handler is sticky / Branch-installed handler is transactional" — that framing was *inconsistent*, because **a sticky write inside a logical branch yields an unspecified value from a sibling branch's perspective**. If `set(c, 5)` in alt A leaks into alt B, then B's observation of `c` depends on whether A ran first, which is execution order, not logical content. Logical branches must be logically independent; a Modify with sticky semantics under Branch is unsound.
+**`Modify[T]` has one semantics: the operation mutates the named resource.** It carries no rollback flag and no scope flag. Whether the mutation survives backtracking is **not** a property of the operation or of the handler — it is the **resource's branch-interaction contract**, declared as part of the resource type itself.
 
-The fix is to drop "sticky" as a Modify concept altogether. **Modify has one semantics: the operation mutates the named resource.** Whether the mutation survives backtracking is **not** a property of the operation or of the handler — it is the **resource's branch-interaction contract**, declared as part of the resource type itself.
+The reason: a Modify whose mutation simply persisted across logical branches would be unsound. If `set(c, 5)` in alt A persisted into alt B, then B's observation of `c` would depend on whether A ran first — execution order, not logical content. Logical branches must be logically independent. The contract has to live somewhere, and "with the resource type" is the only place that keeps it consistent under arbitrary handler installations.
 
-Reframed:
+How `set(c, v)` reads:
 
-- The `set(c, v)` source-level call always means "write `v` to the active state of `c`."
+- The call always means "write `v` to the active state of `c`."
 - "The active state of `c`" depends on the surrounding scope:
-    - Outside any Branch (or other snapshot-establishing scope), there is one state for `c`. The write goes there. There's no rollback because there is nothing to roll back from — not because the operation is "sticky."
+    - Outside any Branch (or other snapshot-establishing scope), there is one state for `c`. The write goes there. There's no rollback because there is nothing to roll back from.
     - Inside Branch, the resource's branch-interaction contract dictates state lifetime. A `Cell` whose contract says **branch-local snapshot** is snapshotted at branch entry; `set` writes to the active snapshot; abandoning the branch reclaims it.
 - The Modify handler does not pick rollback policy. It picks state representation — a host-language structure (associative table, arena, version graph, test fixture, audit-wrapped delegate, …) keyed by whatever the handler chooses (interned identifier, memory address, integer handle, structural composite). Two handlers for the same resource differ in *where state lives and how it's represented*, not in *when mutations roll back*.
 
@@ -67,12 +67,12 @@ Adding Branch to a region doesn't require an effect-row marker on `set` itself. 
 
 The same logic applies to resource-specific operations (`KB.assert`, `Store.persist`, `WorkItemStore.commit`). Each has one mutation per operation; rollback under Branch is the resource's contract:
 
-- **KB**: contract is branch-local-snapshot — `KB.assert` inside Branch writes to a per-branch fact set (the `register_undo` mechanism). `KB.assume` from prior drafts disappears as a separate operation.
+- **KB**: contract is branch-local-snapshot — `KB.assert` inside Branch writes to a per-branch fact set (the `register_undo` mechanism).
 - **Cell**: contract is branch-local-snapshot — `Cell.set` inside Branch writes to a per-branch slot.
-- **Store** (filesystem-backed): contract is *sticky-by-physics* — the filesystem can't roll back atomically without a buffered handler. Today this means `Store.persist` inside Branch leaks across alternatives; that is a soundness hazard the proposal flags rather than blesses. Either a buffered Store handler is provided, or the framework adds a constraint like "Store ops cannot appear inside Branch" (analogous to the Branch+Consumes constraint from 027).
-- **Console.print** / other irreversible side effects: also sticky-by-physics; same constraint logic applies.
+- **Store** (filesystem-backed): contract is *sticky-by-physics* — the filesystem can't roll back atomically. Either a buffered handler absorbs writes for the branch's duration and flushes on commit, or the type system rejects `Modify[store]` calls inside Branch (analogous to the Branch+Consumes constraint from 027).
+- **Console.print** / other irreversible side effects: also sticky-by-physics; same two resolutions.
 
-We don't need `assert_local`, `persist_local`, `commit_local` variants. Resources whose physical realities prevent rollback either get a buffered/transactional handler that absorbs the cost, or get a static constraint that prevents their use under Branch.
+There are no `assert_local` / `persist_local` / `commit_local` variants — every mutation is one operation, and the contract handles the scope axis.
 
 **Effect-row convention**: `Modify[parameter_name]` — refers to the specific parameter the operation receives, not the type. This identifies *which* resource is mutated, not just "some resource of this type." Matches the existing `Modify[store]` usage on `Store.persist` and `Modify[s]` planned for `WorkItemStore.commit`. Multi-instance distinction (WI-200) and future path-based effects (`Modify[s.backend]`) build on parameter-name references.
 
@@ -345,9 +345,9 @@ The framework requires this contract for every new resource type. A resource wit
 
 ## Composition rules
 
-### With Branch (resource contract drives snapshot; not a handler concern)
+### With Branch (resource contract drives snapshot)
 
-Proposal 037 supersedes 027 §4's `set` / `set_local` split, AND rejects any framing that has the handler decide sticky-vs-transactional. The Modify operation has one semantics: mutate the named resource. Whether the mutation rolls back is the **resource's branch-interaction contract**, enforced at the runtime level — not by handler swapping.
+Modify has one semantics: mutate the named resource. Whether the mutation rolls back when the surrounding execution backtracks is the **resource's branch-interaction contract**, enforced at the runtime level. The Modify handler is not involved — it always writes to whatever the runtime presents as the active state of the resource.
 
 When execution enters a `Branch`:
 
@@ -431,11 +431,11 @@ The operations on a resource (their signatures, effect rows, semantics) are the 
 
 ### Rule 5: One operation per mutation; rollback is the resource's contract
 
-Operations have ONE source-level form per mutation, with ONE semantics: mutate the named resource. Whether the mutation rolls back is **not** a property of the operation, the handler, or any contextual flag — it is the **resource's branch-interaction contract**, enforced at the runtime level. Modify carries no "sticky" mode and no "transactional" mode; it's just mutation.
+Operations have ONE source-level form per mutation, with ONE semantics: mutate the named resource. Whether the mutation rolls back is the **resource's branch-interaction contract**, enforced at the runtime level — not a property of the operation, the handler, or any contextual flag.
 
-A sticky-under-Branch resource is unsound (sibling alts would observe an unspecified value, breaking logical-independence-of-branches), so this is rejected by the framework rather than offered as a choice. Resources whose physics prevent atomic rollback (filesystem, external service) declare **sticky-by-physics** in their contract, which forces one of two acceptable resolutions: a buffered handler that absorbs the writes, or a static constraint that prevents the resource's use under Branch.
+Resources whose physics prevent atomic rollback (filesystem, external service) declare **sticky-by-physics** in their contract, which forces one of two resolutions: a buffered handler that absorbs writes for the branch's duration, or a static constraint that rejects the resource's use under Branch (analogous to the Branch+Consumes constraint from 027). A resource that silently leaks writes across branch alternatives is not an accepted contract — sibling alts would observe an unspecified value (depends on which alt ran first), which breaks logical-independence-of-branches.
 
-Resources MUST NOT expose `set_local` / `assert_local` / `commit_local` variants — that would duplicate the API surface for a concern that belongs to the resource's contract, not to its operation set.
+`set_local` / `assert_local` / `commit_local` and equivalent paired operations are not introduced, since the contract handles the rollback axis.
 
 ### Rule 6: Multi-instance via declared identity
 
