@@ -11,48 +11,28 @@
 //! `.anthill` and BulkStore::pull at next startup picks both up — the
 //! persistence layer is filename-blind by design.
 
+mod common;
+
 use std::fs;
-use std::path::PathBuf;
 use std::process::Command;
+
+use common::setup_project;
 
 const ANTHILL_TODO_BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
-        .parent().unwrap()
-        .to_path_buf()
-}
-
-fn setup_project(tmp: &tempfile::TempDir) -> PathBuf {
-    let proj = tmp.path().to_path_buf();
-    let inner = proj.join("anthill-todo");
-    fs::create_dir(&inner).expect("mkdir anthill-todo");
-
-    // Copy domain + rules from the workspace's own project so the
-    // bundle's `import anthill.stage0.{Feedback}` resolves at scan time.
-    let src_root = workspace_root().join("anthill-todo");
-    for f in ["domain.anthill", "rules.anthill"] {
-        fs::copy(src_root.join(f), inner.join(f)).expect("copy stdlib");
-    }
-
-    // Minimum viable workitems.anthill — one open WI to feedback against.
-    fs::write(inner.join("workitems.anthill"), "\
+const SINGLE_OPEN_WI: &str = "\
 fact WorkItem(
   id: \"WI-001\",
   description: \"test item\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
   status: Open)
-").expect("write workitems");
-
-    proj
-}
+";
 
 #[test]
 fn feedback_persists_fact_to_project_dir() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let proj = setup_project(&tmp);
+    let proj = setup_project(&tmp, SINGLE_OPEN_WI);
 
     let out = Command::new(ANTHILL_TODO_BIN)
         .args([
@@ -99,7 +79,7 @@ fn feedback_persists_fact_to_project_dir() {
 #[test]
 fn feedback_missing_text_errors_cleanly() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let proj = setup_project(&tmp);
+    let proj = setup_project(&tmp, SINGLE_OPEN_WI);
 
     let out = Command::new(ANTHILL_TODO_BIN)
         .args([

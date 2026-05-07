@@ -4,31 +4,14 @@
 //! cmd_feedback plus a freshly-derived id (max-WI-NNN + 1) and
 //! repeatable-flag collection.
 
+mod common;
+
 use std::fs;
-use std::path::PathBuf;
 use std::process::Command;
 
+use common::setup_project;
+
 const ANTHILL_TODO_BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
-
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
-        .parent().unwrap()
-        .to_path_buf()
-}
-
-fn setup_project(tmp: &tempfile::TempDir, workitems: &str) -> PathBuf {
-    let proj = tmp.path().to_path_buf();
-    let inner = proj.join("anthill-todo");
-    fs::create_dir(&inner).expect("mkdir anthill-todo");
-
-    let src_root = workspace_root().join("anthill-todo");
-    for f in ["domain.anthill", "rules.anthill"] {
-        fs::copy(src_root.join(f), inner.join(f)).expect("copy stdlib");
-    }
-    fs::write(inner.join("workitems.anthill"), workitems).expect("write workitems");
-    proj
-}
 
 fn read_all_anthill(inner: &std::path::Path) -> String {
     let mut combined = String::new();

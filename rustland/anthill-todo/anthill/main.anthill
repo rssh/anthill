@@ -87,11 +87,9 @@ namespace anthill.todo
         nil()),
       parent: none())
 
-  -- `add <description> [--depends WI-NNN ...] [--acceptance tool ...]`
-  -- creates a new WorkItem with status: Open. The next id is computed
-  -- by walking existing WorkItem facts and incrementing the max
-  -- WI-NNN suffix. Each --depends/--acceptance flag is repeatable;
-  -- absent --acceptance defaults to a single ToolPasses("cargo-test").
+  -- `add <description>` creates a new Open WorkItem. --depends and
+  -- --acceptance are repeatable; absent --acceptance defaults to
+  -- ToolPasses("cargo-test").
   operation spec_add() -> OperationSpec =
     OperationSpec(
       name: "add",
