@@ -89,19 +89,6 @@ impl FileStore {
         }
     }
 
-    /// Public root accessor for `IndexedFileStore` (sibling type) so it
-    /// can drive its own `pull_with_source` over the same directory
-    /// without re-parsing the FileStore's internals.
-    pub fn root_path(&self) -> &Path {
-        &self.root
-    }
-
-    /// Public wrapper around `collect_anthill_files` so wrapper stores
-    /// (e.g. `IndexedFileStore`) can enumerate the same set of files.
-    pub fn collect_anthill_files_pub(dir: &Path) -> Result<Vec<PathBuf>, PersistenceError> {
-        Self::collect_anthill_files(dir)
-    }
-
     /// Recursively collect all `.anthill` files under a directory.
     fn collect_anthill_files(dir: &Path) -> Result<Vec<PathBuf>, PersistenceError> {
         let mut files = Vec::new();
@@ -296,18 +283,7 @@ fn apply_retracts(source: &str, retracts: &HashSet<String>) -> Result<String, Pe
     let mut rebuilt = String::with_capacity(source.len());
     let mut cursor = 0;
     for (start, end) in &drop_ranges {
-        // Extend the range to swallow the trailing newline (and one
-        // following blank line if present), so removing a fact that's
-        // separated from its successor by a blank line doesn't leave two
-        // blanks in a row.
-        let mut drop_end = *end;
-        let bytes = source.as_bytes();
-        if drop_end < bytes.len() && bytes[drop_end] == b'\n' {
-            drop_end += 1;
-        }
-        if drop_end < bytes.len() && bytes[drop_end] == b'\n' {
-            drop_end += 1;
-        }
+        let drop_end = super::extend_drop_end(source.as_bytes(), *end);
         rebuilt.push_str(&source[cursor..*start]);
         cursor = drop_end;
     }

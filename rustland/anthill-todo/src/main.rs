@@ -1623,21 +1623,18 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
     };
     let scan = scan_dir(&project_dir);
     let project_files = collect_anthill_files(&[scan]);
-    // Track each parsed project file alongside its on-disk path so the
-    // IndexedFileStore can pair fact RuleIds with byte-range spans
-    // after load.
-    let mut project_paths: Vec<PathBuf> = Vec::new();
-    let mut project_parsed: Vec<ParsedFile> = Vec::new();
+    // Each project file pairs its on-disk path with the parsed IR so
+    // the IndexedFileStore can later associate fact RuleIds with their
+    // byte-range spans on disk.
+    struct ProjectFile { path: PathBuf, parsed: ParsedFile }
+    let mut project_items: Vec<ProjectFile> = Vec::new();
     for file in &project_files {
         let source = match fs::read_to_string(file) {
             Ok(s) => s,
             Err(e) => { eprintln!("warning: {}: {e}", file.display()); continue; }
         };
         match parse::parse(&source) {
-            Ok(p) => {
-                project_paths.push(file.clone());
-                project_parsed.push(p);
-            }
+            Ok(parsed) => project_items.push(ProjectFile { path: file.clone(), parsed }),
             Err(errs) => {
                 for err in &errs {
                     eprintln!("warning: {}:{}", file.display(), err.format_with_source(&source));
@@ -1649,10 +1646,9 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
     let mut kb = KnowledgeBase::new();
     let all_refs: Vec<&ParsedFile> = stdlib_parsed.iter()
         .chain(bundle_parsed.iter())
-        .chain(project_parsed.iter())
+        .chain(project_items.iter().map(|pf| &pf.parsed))
         .collect();
-    let stdlib_count = stdlib_parsed.len();
-    let bundle_count = bundle_parsed.len();
+    let project_offset = stdlib_parsed.len() + bundle_parsed.len();
     let per_file_results = match load::load_all_per_file(&mut kb, &all_refs, &NullResolver) {
         Ok((_merged, per_file)) => per_file,
         Err(errs) => {
@@ -1669,12 +1665,6 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
             Vec::new()
         }
     };
-    // Slice the project sub-range out of the per-file results so the
-    // IndexedFileStore source map reflects only on-disk facts (stdlib
-    // and bundle don't get retracted at runtime).
-    let project_results: Vec<&load::LoadResult> = per_file_results.iter()
-        .skip(stdlib_count + bundle_count)
-        .collect();
 
     let mut interp = Interpreter::new(kb);
     if let Err(e) = builtins::register_standard_builtins(&mut interp) {
@@ -1727,14 +1717,12 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
         // any source-loaded RuleId then knows exactly which file and
         // byte range to drop.
         let mut store = IndexedFileStore::new(store_root, FileConvention::Flat);
-        for (path, parsed, result) in project_paths.iter()
-            .zip(project_parsed.iter())
-            .zip(project_results.iter())
-            .map(|((p, pf), r)| (p, pf, r))
+        for (file, result) in project_items.iter()
+            .zip(per_file_results.iter().skip(project_offset))
         {
-            let spans = parsed.fact_spans();
+            let spans = file.parsed.fact_spans();
             for (rule_id, span) in result.fact_rule_ids.iter().zip(spans.iter()) {
-                store.record_source(*rule_id, path.clone(), *span);
+                store.record_source(*rule_id, file.path.clone(), *span);
             }
         }
 

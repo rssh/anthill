@@ -28,9 +28,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::kb::{KnowledgeBase, RuleId};
-use crate::kb::load::{self, NullResolver};
 use crate::kb::term::TermId;
-use crate::parse;
 use crate::span::Span;
 
 use super::file_store::{FileConvention, FileStore};
@@ -56,44 +54,12 @@ impl IndexedFileStore {
         }
     }
 
-    /// Record source location for a single fact. Used by callers that
-    /// drove their own load path (e.g. the bundle's main.rs which
-    /// loads stdlib + bundle + project together via `load_all_per_file`)
-    /// to populate the source map without re-parsing.
+    /// Record source location for a single fact. Callers that drove
+    /// their own load path (e.g. the bundle's main.rs which loads
+    /// stdlib + bundle + project together via `load_all_per_file`)
+    /// populate the source map fact-by-fact without re-parsing.
     pub fn record_source(&mut self, rule_id: RuleId, path: PathBuf, span: Span) {
         self.source_map.insert(rule_id, (path, span));
-    }
-
-    /// Load every `.anthill` file under the store root into `kb` and
-    /// record the (RuleId, file, span) mapping for each top-level fact.
-    /// Used by tests and standalone tools; the bundle's main.rs uses
-    /// `record_source` after its own load pass.
-    pub fn pull_with_source(
-        &mut self,
-        kb: &mut KnowledgeBase,
-    ) -> Result<(), PersistenceError> {
-        let files = FileStore::collect_anthill_files_pub(&self.inner.root_path())?;
-        for path in files {
-            let source = fs::read_to_string(&path).map_err(|e| {
-                PersistenceError::Io(format!("read {}: {e}", path.display()))
-            })?;
-            let parsed = parse::parse(&source).map_err(PersistenceError::Parse)?;
-            let spans = parsed.fact_spans();
-            let result = match load::load(kb, &parsed, &NullResolver) {
-                Ok(r) => r,
-                // Tolerate per-file load issues — what matters for the
-                // source map is the (rule_id, span) pairs the loader
-                // did emit. Hard errors propagate so the caller can
-                // log/abort if needed.
-                Err(errs) => return Err(PersistenceError::Io(format!(
-                    "load {}: {} error(s)", path.display(), errs.len(),
-                ))),
-            };
-            for (rule_id, span) in result.fact_rule_ids.iter().zip(spans.iter()) {
-                self.source_map.insert(*rule_id, (path.clone(), *span));
-            }
-        }
-        Ok(())
     }
 }
 
@@ -178,19 +144,7 @@ impl BulkStore for IndexedFileStore {
     }
 }
 
-/// Drop bytes `[start..end)` from `content`, swallowing one trailing
-/// newline (and one following blank line if present) so removing a fact
-/// separated from its successor by a blank line doesn't leave two
-/// blanks in a row.
 fn drop_range(content: &mut String, start: usize, end: usize) {
-    let bytes = content.as_bytes();
-    let mut drop_end = end;
-    if drop_end < bytes.len() && bytes[drop_end] == b'\n' {
-        drop_end += 1;
-    }
-    let bytes = content.as_bytes();
-    if drop_end < bytes.len() && bytes[drop_end] == b'\n' {
-        drop_end += 1;
-    }
+    let drop_end = super::extend_drop_end(content.as_bytes(), end);
     content.replace_range(start..drop_end, "");
 }

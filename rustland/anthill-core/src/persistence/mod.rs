@@ -46,6 +46,21 @@ impl From<std::io::Error> for PersistenceError {
     }
 }
 
+/// Extend a fact-block byte range to swallow one trailing newline plus
+/// one following blank line, so removing a block separated from its
+/// successor by a blank line doesn't leave two blanks in a row. Shared
+/// between `FileStore::apply_retracts` and `IndexedFileStore::flush`.
+pub(crate) fn extend_drop_end(bytes: &[u8], end: usize) -> usize {
+    let mut drop_end = end;
+    if drop_end < bytes.len() && bytes[drop_end] == b'\n' {
+        drop_end += 1;
+    }
+    if drop_end < bytes.len() && bytes[drop_end] == b'\n' {
+        drop_end += 1;
+    }
+    drop_end
+}
+
 // ── Traits ─────────────────────────────────────────────────────
 
 /// Basic persistence: persist facts, retract, flush buffered writes.
