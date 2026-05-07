@@ -4,7 +4,7 @@
 
 ## Tracks: foundations for WI-192, WI-200, time-travel
 
-## Relates to: 027 (effect handlers and standard effects — establishes Modify), 007 (persistence layer — first non-cell consumer), 030 (proof cache; KB epoch), 035 (parameterized sorts), 036 (domain store sorts — concrete consumer)
+## Relates to: 027 (effect handlers and standard effects — establishes the handler model; this proposal supersedes 027 §Suspension "twin operations" pattern and 027 §"Modify[T]" — see 027's See-also for the cross-link), 007 (persistence layer — first non-cell consumer), 030 (proof cache; KB epoch), 035 (parameterized sorts), 036 (domain store sorts — concrete consumer)
 
 ## Goal
 

@@ -4,7 +4,7 @@
 
 ## Depends on: 002 (arrow sorts with effect annotations), 013 (effects as sorts and facts), 026 (expression evaluator), 026.1 (value-integrated KB queries)
 
-## Relates to: WI-050 (M5 effect handlers), WI-075 (resolver `push_choice` primitive — substrate for the `Branch` handler)
+## Relates to: WI-050 (M5 effect handlers), WI-075 (resolver `push_choice` primitive — substrate for the `Branch` handler), 037 (Modify framework — supersedes the §4 "twin operations" approach for state mutation)
 
 ## Motivation
 
@@ -150,7 +150,7 @@ These are the operations the kernel exposes to handlers. Each must be realized b
 ### Continuation snapshot / resume
 - **`snapshot_eval_state() -> ContSnapshot`** — clone the current activation stack as an opaque snapshot value. Use to capture "the rest of the computation past this operation call" for later resume. Returned snapshot is consumable (single-shot) or cloneable (multi-shot) depending on the runtime's contract; concrete hosts document which.
 - **`resume_with(snapshot: ContSnapshot, value: Value) -> ...`** — re-install the snapshot's activation stack and continue evaluation as if the suspended operation had returned `value`. Used by external resumers (host async callback when a promise resolves; stream-pull function when a generator is pumped; scheduler when picking a parked fiber).
-- **`register_undo(undo: HostCallable)`** — install a callback to fire when the current snapshot is abandoned (resumed from a sibling branch). Used by transactional handlers (`KB.assume`, `Modify.set_local`, etc.) to revert their mutations before a sibling branch sees them. The callback runs at backtrack time, in reverse-registration order for entries on the same snapshot. Sticky operations don't call `register_undo`; their mutations stay.
+- **`register_undo(undo: HostCallable)`** — install a callback to fire when the current snapshot is abandoned (resumed from a sibling branch). Used by Branch-installed compatible Modify handlers (per proposal 037) to make the standard `set` / `assert` / `commit` / `persist` operations transactional inside `Branch` — the handler intercepts each mutation and registers an undo callback that reverts state before a sibling branch sees it. The callback runs at backtrack time, in reverse-registration order for entries on the same snapshot. The default outside-Branch handler doesn't call `register_undo`; its mutations stay sticky.
 
 ### Streams
 - **`stream_alloc(source: StreamSource) -> StreamHandle`** — allocate a stream in the eval-layer arena. Used to expose handler-produced sequences as anthill `LogicalStream` values.
@@ -383,71 +383,61 @@ This means the eval state is **already data**, not host stack. Continuation-capt
 
 4. **State semantics under multi-shot resumption** — the carrier's `Choice` with multi-shot semantics imposes a real constraint on what the runtime cloning model must guarantee. The activation stack is cloned per snapshot (item 1 above), but the *rest* of the runtime — `KnowledgeBase`, stream sources behind handles, handler registry, per-handler captured state — is mutable host state that is *not* automatically per-snapshot.
 
-**The design principle: distinguish sticky and transactional via twin operations, not via flags or handler modes.**
+**The design principle (superseded by proposal 037): one operation per mutation; the active handler determines sticky vs transactional.**
 
-Rather than having one `kb.assert` operation whose rollback semantics depend on a flag (option 1) or on which handler is installed (option 2), the proposal introduces **paired operations** for the cases where rollback semantics genuinely matter:
+> **Superseded by proposal 037.** The original draft of this section described a "twin operations" pattern — `assert`/`assume`, `set`/`set_local`, etc. — where each resource exposed a sticky variant and a transactional `_local` variant requiring `Branch` in its effect row. Proposal 037 (the Modify framework) replaces this with **one operation per mutation**: source-level forms stay stable, and the active handler decides sticky vs transactional. Inside a `Branch`, the runtime installs a *compatible Modify handler* that intercepts each `set` / `assert` / `commit` call and registers `register_undo` automatically, so the same source-level operation behaves transactionally without any `_local` suffix or extra `Branch` row marker. See proposal 037 §"With Branch (handler swaps determine sticky vs transactional)" for the full framework, including the bidirectional `Modify[T]`↔handler correspondence (Rule 8) and the per-resource interpreter contracts.
+>
+> The historical content below is preserved for context. The `_local` variants and the table that pairs them with sticky operations no longer apply; reference 037 for the canonical state model.
 
 ```anthill
+-- Canonical (per proposal 037) — one operation; handler picks semantics.
 sort KB
   ...
-  -- Sticky: survives backtracking. Records a fact you've learned.
   operation assert(kb: KB, term: Term, sort: Type) -> Option[T = FactId]
-    effects Modifies[kb]
+    effects Modify[kb]
+end
 
-  -- Transactional: rolled back on backtrack. Speculates a hypothetical.
-  -- Requires Branch in the effect row — speculating is meaningful only
-  -- where there's something to backtrack from.
-  operation assume(kb: KB, term: Term, sort: Type) -> Option[T = FactId]
-    effects Modifies[kb], Branch
+sort Cell
+  sort V = ?
+  operation new(initial: V) -> Cell[V]                   -- construct
+  operation get(c: Cell[V]) -> V                         -- read; type-pure
+  operation set(c: Cell[V], value: V) -> Unit
+    effects Modify[c]
 end
 ```
 
-Same pattern for typed mutable cells:
+The intent is still visible at the call site (the operation tells you what it mutates) and still type-checked through the effect row. The handler is the substitution point for sticky / transactional / audited / time-travelled semantics; operation signatures don't carry that axis.
 
-```anthill
-sort Modify
-  sort T = ?
-  operation get(target: T) -> T
-  -- Sticky write
-  operation set(target: T, value: T) -> Unit
-    effects Modify[T]
-  -- Transactional write — rolled back on backtrack
-  operation set_local(target: T, value: T) -> Unit
-    effects Modify[T], Branch
-end
-```
+**What's sticky vs transactional in v1 (per 037):**
 
-The intent is in the operation name, visible at the call site, type-checked through the effect row. No flags, no handler-mode switches, no parameter for what's really a semantic distinction.
+| Resource | Operation | Default (outside Branch) | Inside Branch (compatible handler installed) |
+|---|---|---|---|
+| KB facts | `KB.assert` | sticky | transactional via `register_undo` (replaces the historical `KB.assume`) |
+| Cells | `Cell.set` | sticky | transactional via `register_undo` (replaces the historical `Modify.set_local`) |
+| Persistence stores | `Store.persist` | sticky | future compatible handler (per-branch buffer; flush on commit) |
+| Console output | `Console.print/println` | sticky (cannot be unprinted) | sticky (no Branch-aware handler — irreversible) |
+| Stream sources, pure (`Stream[T, ()]`) | source pull | per-snapshot independent positions (clone source on snapshot) | same |
+| Stream sources, effectful (`Stream[T, E≠()]`) | source pull | shared cursor; pumping carries `Consumes` | use statically prevented inside `Branch` via Branch+Consumes constraint |
+| Handler registry | install / `with_handler` | persistent installations are sticky | `with_handler(...)` lexically pops on exit |
+| Reader constant | `ask()` | immutable, no mutation to roll back | same |
 
-**What's sticky vs transactional in v1:**
+The sticky variants follow the resolver's existing model (cheap, no versioning). The transactional behavior is paid for by the Branch-installed handler (per-branch undo log via `register_undo`) — opt-in by entering Branch, not by choosing a different operation.
 
-| Resource | Sticky operation | Transactional operation |
-|---|---|---|
-| KB facts | `KB.assert` | `KB.assume` (requires `Branch`) |
-| Modify cells | `Modify.set` | `Modify.set_local` (requires `Branch`) |
-| Console output | `Console.print/println` | — (cannot be unprinted) |
-| Stream sources, pure (`Stream[T, ()]`) | — | per-snapshot independent positions (clone source on snapshot) |
-| Stream sources, effectful (`Stream[T, E≠()]`) | shared cursor; pumping carries `Consumes` | — (use is statically prevented inside `Branch` via the Branch+Consumes constraint; see Consumes catalog entry) |
-| Handler registry | (persistent installations are sticky) | `with_handler(...)` lexically pops on exit |
-| Reader constant | (immutable, no mutation to roll back) | — |
+**Why one operation per mutation rather than paired sticky/transactional ops** (rationale per proposal 037, contradicting the earlier draft):
 
-The sticky variants follow the resolver's existing model (cheap, no versioning). The transactional variants pay the rollback cost — which is opt-in per call, not a global mode.
+- *Operations are stable; handlers determine semantics.* This is the algebraic-effects discipline. Renaming `set` to `set_local` to express "I want rollback" duplicates the API surface for a concern that belongs to handlers.
+- *Composition stays clean.* Adding `Branch` to a region doesn't force every `set` / `assert` call site to declare `Branch` in its effect row.
+- *Time-travel forward-compatibility.* A future versioned handler (37§"With time-travel") swaps in transparently — operation signatures don't need to change.
+- *The intent the original draft was protecting* (call-site readability, type-system distinction, constraint composition) is preserved by the type-level resource: `Modify[c]` already distinguishes which resource is touched; whether the mutation is rolled back is a property of the surrounding context.
 
-**Why pair operations rather than handler-mode flags:**
+**Implementation of the Branch-aware behavior (preserved from the original):**
 
-- *Intent at the call site.* A reader of `kb.assume(x, T)` knows immediately this is speculative; reading `kb.assert(x, T, mode=Transactional)` requires interpreting a parameter that doesn't tell you what it does without lookup.
-- *Type system carries the distinction.* `assume` requires `Branch` in the effect row; calling it outside a Branch context is a type error. The system catches misuse without runtime checks.
-- *Composition with constraints.* A constraint failure under `assert` is a permanent error (the new fact would violate an invariant); under `assume` it's just "this hypothetical isn't possible" — the speculative branch fails, search continues. The distinction falls out of the operation choice.
-- *Reflection and tooling*. Two distinct operations show up in `KB.operations(...)` queries, IDE assist, codegen — each gets its own treatment. A flag would be invisible to most of these.
-
-**Implementation of the transactional operations:**
-
-The `assume` (and `set_local`) handler uses `RuntimeAPI.snapshot_eval_state()` to know it's running under a multi-shot context, AND maintains a parallel **undo log entry** keyed by the snapshot. When the runtime resumes a sibling branch (via `Choice.alts` resolver-installed alternatives), it walks the undo log entries associated with the snapshot being abandoned and reverts them before the sibling sees the KB.
+A Branch-installed compatible handler uses `RuntimeAPI.snapshot_eval_state()` to know it's running under a multi-shot context, AND maintains a parallel **undo log entry** keyed by the snapshot. When the runtime resumes a sibling branch (via `Choice.alts` resolver-installed alternatives), it walks the undo log entries associated with the snapshot being abandoned and reverts them before the sibling sees the resource.
 
 The runtime exposes one new operation for handlers that want this:
-- **`register_undo(undo_action: FnOnce())`** — install a callback to run when the current snapshot is abandoned (resumed from a sibling). The `assume` and `set_local` handlers call this after performing the mutation.
+- **`register_undo(undo_action: FnOnce())`** — install a callback to run when the current snapshot is abandoned (resumed from a sibling). The Branch-installed Modify handler calls this after performing the mutation.
 
-Sticky operations (`assert`, `set`) simply don't call `register_undo` — their mutations stay.
+The default (outside-Branch) handler simply doesn't call `register_undo` — its mutations stay.
 
 **Implementation requirement that the cloneability discussion surfaces:** at minimum, the activation stack (`Frame`, `ActivationStack`) must be `Clone`. Anything that an `AwaitState` variant transitively holds (closures, in-flight value buffers) must also be cloneable. The audit needed in Phase A is: walk every `AwaitState` field and confirm cloneability, or refactor to make it so. `Value` and `ClosureHandle` are already designed this way; the audit is mostly a confirmation step.
 
@@ -543,37 +533,45 @@ fact Effect[T = Reader[?]]
 
 ### Modify[T] — typed mutable resource
 
+> **See proposal 037 for the full framework.** This section gives the catalog-level summary; the Modify framework — `Modify[T]` as a uniform effect kind, `Cell[V]` as the standard small-state sort with `new`/`get`/`set`, type-specific handlers per resource, the seven per-resource interpreter contract concerns, the eight binding rules, the time-travel forward-compat invariants — is specified in **`docs/proposals/037-anthill-state-model.md`**. The brief catalog entry below is provided so that 027's effect catalog stays self-contained for handler-system context; for state-model questions, 037 is canonical.
+
 ```anthill
 sort Modify
   sort T = ?
-  operation get(target: T) -> T
-  operation set(target: T, value: T) -> Unit
-    effects Modify[T]
-  -- Transactional write — rolled back on backtrack. Requires Branch.
-  operation set_local(target: T, value: T) -> Unit
-    effects Modify[T], Branch
+  -- (no operations on Modify itself; it's an effect annotation)
 end
 fact Effect[T = Modify[?]]
+
+-- The standard small-state resource that exposes the get/set protocol:
+sort Cell
+  sort V = ?
+  operation new(initial: V) -> Cell[V]                   -- construct; allocation-only
+  operation get(c: Cell[V]) -> V                         -- read; type-pure
+  operation set(c: Cell[V], value: V) -> Unit
+    effects Modify[c]
+end
 ```
 
-**Operations:**
-- `get(target)` — read the current value of the resource. Pure (no `effects` clause); reading an inherently mutable resource is technically observation but for typing purposes is treated as pure since it doesn't change anything.
-- `set(target, value)` — replace the resource's value. Sticky: survives backtracking. Carries `effects Modify[T]`.
-- `set_local(target, value)` — speculative replacement, rolled back on backtrack. Carries `effects Modify[T], Branch`. Calling it outside a `Branch` context is a type error.
+**Operations** (Cell's protocol; resource-specific operations live on each resource type — KB, Store, WorkItemStore — per 037's per-resource contracts):
+- `new(initial)` — allocate a fresh Cell with identity. Construction is allocation, not mutation; no `Modify[anything]` effect (matches `Map.empty()`, `List.nil()`).
+- `get(c)` — read the current value. Pure (no `effects` clause); observation of mutable state is type-pure (matches Haskell's `IORef.read :: IORef a -> IO a` distinction loosely — reads don't carry the mutation effect).
+- `set(c, value)` — replace the cell's value. Carries `effects Modify[c]`. Sticky vs transactional is determined by the active handler (per 037 Rule 5), not by the operation: outside Branch the default sticky handler writes through; inside Branch the runtime installs a compatible handler that registers undo via `register_undo` automatically.
 
-**Default handler:** an arena keyed by the target's *functor symbol*. `set(store, v)` and `set(counter, v)` share one handler but live in distinct slots (`store` vs `counter` as functor symbols). The host realization owns the arena (in Rust: a `HashMap<Symbol, Value>` inside the handler's captured state, currently `default_modify_handler` at `rustland/.../eval/effects.rs:109`).
+**Default handler:** an arena keyed by Cell's identity (today: functor-only — single instance per V; multi-instance per WI-200). The host realization owns the arena (in Rust: `HashMap<Symbol, Value>` inside `default_modify_handler` at `rustland/.../eval/effects.rs:109`). See 037 §"Cell[V]" interpreter contract.
 
-**Alternative handlers:**
-- *Read-only*: implement `get` from a pre-populated map; raise an error on `set`.
-- *Logged*: wrap the default handler, recording every write to a log for audit.
-- *Snapshot*: clone state on entry, restore on exit (useful for tests).
-- *Per-resource dispatcher*: a handler that switches on `target`'s functor symbol and routes to per-resource sub-handlers, giving each a distinct resource-specific implementation.
+**Alternative handlers** (per 037 §"Type-specific Modify handlers"):
+- *Direct*: the default; fast path with simple state.
+- *Branch-aware*: intercepts `set` and registers `register_undo` for transactional semantics.
+- *Time-travel*: maintains a version graph; same operation surface, richer state.
+- *Audit*: logs every write, then delegates to a wrapped handler.
+- *Test*: substitutes a controlled state for the duration of a test.
 
-**Subtleties:**
-- The handler is installed per *effect sort* (`Modify`), not per instantiation (`Modify[Store]`, `Modify[Counter]`). Per-instantiation distinction is achievable today by the dispatcher pattern above.
-- Reading is intentionally pure-typed even though it observes mutable state. This matches what most languages do (e.g. `IORef.read` in Haskell is typed `IO`, but the moral analog in dependently-typed languages often treats reads as observation rather than mutation). Discussion can be reopened if this causes surprises.
-- **`set` mutations are sticky across multi-shot branches.** `set(c, 5)` in branch A is observable as `5` when branch B resumes. This is the cheap default and matches the resolver-foundation behavior. Use `set_local` for speculative writes you want rolled back on backtrack — same Modify resource, different operation, different semantics, distinguished by name and effect-row.
-- **The default handler dispatches both `set` and `set_local`** on `op_sym`. The `set_local` codepath additionally calls `RuntimeAPI.register_undo` to install a revert callback on the current snapshot, so resume from a sibling branch sees the prior value.
+**Bidirectional correspondence** (037 Rule 8): `Modify[T]` may appear in an effect row only if T has a registered handler; a handler is meaningful only if some operation declares `Modify[T]`. Bare value types (Int, Bool, String) cannot carry Modify because they have no wrapper sort to attach a handler to — mutability is a property of the resource type. See 037 for the full rule.
+
+**Subtleties** (highlights; 037 has the canonical list):
+- The handler-stack model picks the topmost handler matching `Modify[T]`. Per-resource distinction is the framework's default, not a special pattern.
+- Reading is intentionally pure-typed even though it observes mutable state.
+- `set` mutations are sticky in the default handler. Branch installs a compatible handler that makes the *same* `set` call transactional — no `set_local` operation needed (and per 037 Rule 5, MUST NOT exist).
 
 ### Error[T] — typed failure / abort
 
@@ -826,5 +824,7 @@ Track Rust-side steps as sub-WIs under WI-050 (M5 effect handlers); Scala-side a
 - `013-abstract-effects.md` — the static/declarative side of this story.
 - `026-expression-evaluator.md` §Effects — earlier sketch superseded in detail by this proposal.
 - `026.1-value-integrated-kb-queries.md` — the `LogicalQuery` / `execute` machinery that `Branch`'s handler ultimately drives through.
+- `037-anthill-state-model.md` — **the canonical state model.** Specifies `Modify[T]` as a framework: how resources plug in (interpreter contracts, identity schemes, dispatch paths, branch interaction, time-travel readiness), the per-resource Modify handler architecture, the eight binding rules, and the bidirectional `Modify[T]`↔handler correspondence. Supersedes the §Suspension "twin operations" (`assert`/`assume`, `set`/`set_local`) approach formerly proposed here.
 - WI-050 (M5 effect handlers) — overall implementation milestone.
 - WI-075 (`push_choice` and disjunction) — the resolver-side foundation.
+- WI-200 (multi-instance Modify state) — multi-instance identity schemes for resources whose default is functor-only today.
