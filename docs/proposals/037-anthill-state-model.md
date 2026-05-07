@@ -59,7 +59,7 @@ Reframed:
 - "The active state of `c`" depends on the surrounding scope:
     - Outside any Branch (or other snapshot-establishing scope), there is one state for `c`. The write goes there. There's no rollback because there is nothing to roll back from — not because the operation is "sticky."
     - Inside Branch, the resource's branch-interaction contract dictates state lifetime. A `Cell` whose contract says **branch-local snapshot** is snapshotted at branch entry; `set` writes to the active snapshot; abandoning the branch reclaims it.
-- The Modify handler does not pick rollback policy. It picks state representation — `HashMap<Symbol, Value>` vs version graph vs test fixture vs audit-wrapped delegate. Two handlers for the same resource differ in *where state lives and how it's represented*, not in *when mutations roll back*.
+- The Modify handler does not pick rollback policy. It picks state representation — a host-language structure (associative table, arena, version graph, test fixture, audit-wrapped delegate, …) keyed by whatever the handler chooses (interned identifier, memory address, integer handle, structural composite). Two handlers for the same resource differ in *where state lives and how it's represented*, not in *when mutations roll back*.
 
 Branch's contribution is **runtime-level**: when entering a branch, the runtime walks resources whose contracts declare branch-local-snapshot and snapshots them; abandoning a sibling reverts. The Modify handler is unchanged — it always writes to the active state, and "active" is determined by the surrounding scope, not by handler swapping.
 
@@ -97,7 +97,7 @@ For every resource type T whose operations mutate, there's at least one Modify h
 **Handlers vary in state representation, not in rollback policy.** A type can have multiple handlers — selected by interpreter context — but two handlers for the same resource differ in *where state lives and how it's represented*, never in *when mutations roll back*. Rollback is the resource's branch-interaction contract (§"Resource type plug-in"), enforced at the runtime level (§"Composition with Branch"); it is orthogonal to handler choice.
 
 Concrete handler variants:
-- **Direct handler**: the default; primary state in a `HashMap<Symbol, Value>` or arena.
+- **Direct handler**: the default; state lives in a host-language structure (associative table, arena, slot pool — whatever the host realizes efficiently). The keying is the handler's choice: interned identifier, memory address, integer handle, structural composite. None of this is part of the contract Modify exposes.
 - **Time-travel handler**: state is a version graph instead of a single value; `get` returns the current head, `set` extends the graph. `get_at` (under a separate `TimeTravel[s]` effect) navigates history. Same operation surface, richer state.
 - **Audit handler**: wraps another handler; logs every operation before delegating.
 - **Test handler**: substitutes a controlled fixture for the resource's state.
@@ -127,13 +127,16 @@ The handler-stack model from proposal 027 §"with_handler" picks the topmost han
                                          │
                         ┌────────────────┼────────────────┐
                         ▼                ▼                ▼
-                  HashMap<Sym, V>   KB indexes     store_registry
-                  (or whatever      (assert_fact   (Box<dyn Store>
-                   the handler      / retract /    / pending writes /
-                   chooses)         by_functor)    source_map)
+                 host-side structure  host-side fact   host-side store
+                 (assoc table /       indexes          registry
+                  arena / version     (sort / functor  (per-instance
+                  graph / fixture     / discrim tree)  backend value
+                  — handler's choice)                   + pending writes)
 ```
 
-This brings the existing zoo of state mechanisms (Modify cell, KB, store_registry, arenas, source_map) under one architecture: each is **a specific handler for a specific resource-type's Modify effect**. The Modify-cell HashMap is Cell[V]'s handler. The store_registry is Store's handler. KB's internal indexes are KB's handler. Etc.
+The structures shown are illustrative — they describe what each handler happens to use in the current Rust realization, not what the framework requires. A different host (Scala, C) can pick whatever native structure is efficient; a different handler within the same host can also choose differently. The framework specifies only the dispatch architecture and the contract; everything below the dispatcher is realization.
+
+This brings the existing zoo of state mechanisms (Modify cell, KB indexes, store registry, arenas, source map) under one architecture: each is **a specific handler for a specific resource-type's Modify effect**. The Modify-cell associative table is Cell[V]'s handler. The store registry is Store's handler. KB's internal indexes are KB's handler. Etc.
 
 The framework's invariant: **every mutation declares `Modify[T]`**; **every resource type has a handler** that implements its operations. The resource-specific operation surface varies per type; the dispatch architecture is uniform.
 
@@ -218,14 +221,14 @@ A resource type can expose any operations that suit its purpose. KB exposes `ass
 
 ### 3. State location
 
-Where does the actual mutable state live? The framework abstracts over location; an implementation chooses:
+Where does the actual mutable state live? The framework abstracts over location; the handler picks whatever the host language supports efficiently. Common categories (described in framework-neutral terms; the Rust realization examples are illustrative, not normative):
 
-- **Modify cell** (`default_modify_handler`): a HashMap keyed by the identity scheme; values are anthill `Value`s. Suitable when the state can be expressed as a Value tree.
-- **Resource registry**: a Rust-side `HashMap<Key, Box<dyn ResourceImpl>>` where ResourceImpl carries non-Value internal state (file handles, network connections, large data structures). Today's `store_registry` for FileStore.
-- **KB's own indexes**: KB rules and indexes are the state. Special case — KB IS the substrate, not a value-shaped resource.
-- **Arena**: refcounted, handle-keyed, garbage-collected. Map / Substitution / Stream.
+- **Value-tree associative table**: a host-side associative structure keyed by the handler's identity scheme; values are anthill `Value`s. Suitable when the state can be expressed as a Value tree. (Rust realization today: `default_modify_handler`'s in-process map.)
+- **Per-instance backend registry**: an associative structure mapping the instance key to a host-language object that carries non-Value internal state (file handles, network connections, large data structures). Useful when the resource's state spills outside the Value model. (Rust realization today: `store_registry` for FileStore — the values are `Box<dyn Store>`; in another host this would be whatever object/struct/closure the language offers.)
+- **Resource-internal structures**: the handler treats the resource itself as the substrate. KB falls here — its rules and indexes ARE the state, not a value-tree representation of state. The handler's "operations" are direct method calls on the substrate.
+- **Arena**: refcounted, handle-keyed, garbage-collected. Map / Substitution / Stream use this (each value is a handle into a per-resource arena allocated on demand).
 
-The location is an implementation detail. The user-level operations on T are the same regardless of location — both `Modify.set(target, v)` and `Store.persist(store, fact, meta)` are operations carrying `Modify[their_resource]`; the user can't tell where the state physically lives.
+Location is a realization detail. The user-level operations on T are the same regardless — both `Cell.set(c, v)` and `Store.persist(store, fact, meta)` are operations carrying `Modify[their_resource]`; the user can't tell (and shouldn't have to know) where the state physically lives or what the handler keys it by.
 
 ### 4. Dispatch path
 
@@ -282,7 +285,7 @@ Each resource type needs its own contract spelled out. The framework requires th
 |---|---|
 | Identity scheme | **Opaque handle** (target contract). Today's default Modify handler keys by `Cell` symbol — functor-only — which collapses all `Cell.new(...)` calls to one slot. WI-200 lifts this; under the target contract `Cell.new` returns a fresh handle per call (Rust `Cell::new`, OCaml `ref`, Haskell `IORef` flavor). |
 | Operations exposed | `new(initial) -> Cell[V]` (construct), `get(c) -> V` (read), `set(c, v) -> Unit` (write). No `key` operation — Cell's identity is allocation-time. One write op with one semantics (mutate); branch interaction is the contract below. |
-| State location | `default_modify_handler`'s `HashMap<Symbol, Value>` (default handler). Other handlers may use a version graph (time-travel), a fixture (test), or a wrapped delegate (audit) — different state representations, same operation. |
+| State location | A host-language structure private to the handler (in the Rust realization today: `default_modify_handler`'s in-process associative table — see `rustland/anthill-core/src/eval/effects.rs:124`). Other handlers may use a version graph (time-travel), a fixture (test), or a wrapped delegate (audit) — different state representations, same operation. The structure shape and the keying primitive are realization details, not part of the framework. |
 | Dispatch path | Handler-dispatched via the existing Modify effect machinery. |
 | Lifecycle | **Refcounted** (the default): born at `Cell.new(initial)`; reclaimed when no references remain. Optional lexical scoping via `with_resource`. Today's functor-keyed default handler effectively pins Cell state for the process duration (single slot per V, no GC) — that is a side-effect of the functor-only identity scheme, not a lifecycle decision; multi-instance + refcounted GC is contingent on WI-200. |
 | Branch interaction | **Branch-local snapshot** (per the contract). Today's implementation behaves sticky-under-Branch only because the snapshot machinery isn't wired yet — that is a soundness gap, not the contract. The fix is the runtime `register_undo` + per-branch state cloning (Open Decision 3). |
@@ -294,7 +297,7 @@ Each resource type needs its own contract spelled out. The framework requires th
 |---|---|
 | Identity scheme | Singleton (one KB per Interpreter). Multi-KB scenarios use explicit kb-handle threading. |
 | Operations exposed | `assert(kb, term, sort) -> Option[FactId]`, `retract(kb, id) -> Bool`, `execute(kb, query) -> Stream`, `by_functor`, `by_sort`, etc. |
-| State location | KB's internal Rust structures: `rules: Vec<RuleEntry>`, `by_functor: HashMap<...>`, discrimination tree. Not value-shaped. |
+| State location | KB's internal substrate (the rules, fact indexes, discrimination tree, etc.) — not a value-tree representation; the handler operates on the substrate directly. The Rust realization uses native data structures (e.g. an indexed rule list, a functor → fact map, a discrim tree); other hosts pick equivalent native shapes. |
 | Dispatch path | Direct builtin today (`kb.assert_fact(...)`); handler-dispatched in principle for substitution. |
 | Lifecycle | **Pinned by runtime root**: the interpreter always holds a strong reference to the KB it queries against, so KB stays alive for the process duration. Not a special lifecycle category — just refcounting where the runtime root is one of the references. |
 | Branch interaction | **Branch-local snapshot** (per the contract). Today's KB *behaves* sticky-under-Branch because the snapshot machinery isn't fully wired yet — that is a soundness gap. The fix is `register_undo` on KB-level mutations; `KB.assume` from prior drafts disappears once `assert` itself becomes branch-local under Branch. |
@@ -308,11 +311,11 @@ Each resource type needs its own contract spelled out. The framework requires th
 |---|---|
 | Identity scheme | **Identity-by-key** (`String`): the canonical-form string of `(functor, field-values)` is the key. Two `Store(...)` values with the same field values denote the same backing store; this is the existing `store_registry` lookup. Implemented today via the registry; consistent with the framework's identity-by-key scheme. |
 | Operations exposed | `persist(store, fact, meta) -> FactId`, `flush(store, delta) -> Bool`, `retract(store, id) -> Bool`, `pull` (BulkStore). |
-| State location | `store_registry: HashMap<String, Box<dyn Store>>`. The Box holds non-Value internals (pending writes, source map, indexes). |
+| State location | A per-instance backend registry: an associative structure mapping the instance key to a host-language object carrying the backend internals (pending writes, source map, indexes, file handles). The Rust realization uses `HashMap<String, Box<dyn Store>>`; other hosts pick equivalent shapes (e.g., a Scala `Map[String, Store]` with a sealed trait, a C struct of function pointers + per-instance void pointer). |
 | Dispatch path | Direct builtin today. Operations declare `Modify[store]` for effect-row honesty. |
 | Lifecycle | **Pinned by runtime root**: the host process registers store instances at startup and retains host-side references for the duration. Not a property of Store-as-a-type — a Store the program drops with no host-side root would be reclaimed under refcounted rules. |
 | Branch interaction | **Sticky-by-physics** (the filesystem can't roll back atomically). Two acceptable resolutions per the framework: (a) a buffered Store handler that accumulates writes in memory, snapshot-able like Cell, and only flushes on commit; or (b) a static constraint that prevents `Modify[store]` ops inside Branch. Today neither is in place — `persist` writes leak across alternatives, which is a soundness gap until one of (a)/(b) lands. |
-| Time-travel readiness | No — `Box<dyn Store>` internals aren't versioned. A future versioned variant would maintain its own history. |
+| Time-travel readiness | No — the backend object's internals aren't versioned. A future versioned variant would maintain its own history. |
 
 ### Map[K, V] / Substitution / Stream (arena values)
 
@@ -320,7 +323,7 @@ Each resource type needs its own contract spelled out. The framework requires th
 |---|---|
 | Identity scheme | Opaque arena handle (allocated per construction). Multi-instance native; refcounted. |
 | Operations exposed | `Map.put/get/contains/remove/...`; `Substitution.lookup/apply/compose`; `Stream.splitFirst`. |
-| State location | Per-resource arena (`map_arena`, `subst_arena`, `stream_arena`) — refcount + slot pool. |
+| State location | A per-resource arena (slot pool with refcounting) — host-realized as native arena structures (e.g., the Rust realization names them `map_arena`, `subst_arena`, `stream_arena`). |
 | Dispatch path | Direct builtin. Operations declare `Modify[their_value]` (TODO — currently silent for Map/Substitution; pure for Stream). |
 | Lifecycle | **Refcounted** (the default): refcount drops to zero → slot reclaimed. The canonical implementation of the framework's default lifecycle. |
 | Branch interaction | **Branch-local snapshot** (per the contract — value-shaped state can be cloned). Today's arenas behave sticky-under-Branch because the runtime snapshot hooks aren't wired in yet — soundness gap, fixable transparently when the runtime grows the hooks. |
