@@ -135,6 +135,22 @@ A future time-travel effect (versioned resources, audit trails, history queries)
 
 WorkItemStore's design satisfies all five invariants — `commit` calls `set` returning `Unit`; `lookup` calls `get`; only `Modify[s]` is declared; no `set_versioned` / `get_at` is mixed in. A future time-travel handler could substitute a versioned representation without changing any user-visible code.
 
+#### Single-instance-per-functor limitation
+
+The default Modify handler keys cells by **functor symbol only** (`eval/effects.rs::resource_key`). Two `wis(backend_a, ..., counter: 5)` and `wis(backend_b, ..., counter: 10)` share a single cell — setting one is observable to the other. This is fine for the bundle's WI-192 use case (one CLI invocation = one project = one WorkItemStore) but breaks for multi-instance scenarios:
+
+- Tests that exercise `cmd_X` against multiple isolated stores in the same process.
+- A future `anthill-todo-server` managing N project workspaces.
+- Composition where two operations independently want isolated state of the same sort type.
+
+Three design directions for future multi-instance support — each a candidate WI:
+
+- **Identity-by-field**: sort declares which entity field carries instance identity; cells key by `(functor, identity_value)`.
+- **Opaque resource handles**: new `Value::Resource(uid)` variant; cells key by uid; mkResource allocates a fresh uid per construction.
+- **Per-instance handler scope**: `with_handler(Modify, instance_handler) { ... }` lexically introduces a scoped handler owning one instance's state.
+
+WI-192 v0.1 ships with the single-instance limitation. Multi-instance is a separate proposal — likely a generalization of `resource_key` paired with one of the three options above. Documented here so the limitation is visible at design-review time, not surprise at multi-tenant time.
+
 So a WorkItemStore.commit body looks like:
 
 ```anthill
