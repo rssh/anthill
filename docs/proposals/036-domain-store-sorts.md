@@ -119,6 +119,22 @@ This is **WI-189** (reify/reflect operators): `let wi: WorkItem = ↓term`.
 
 Per proposal 027 §4, `Modify` has two write ops: sticky `set` and transactional `set_local`. `set` mutations persist across `Branch` backtracks; `set_local` rolls back via the `register_undo` snapshot mechanism. WorkItemStore's `commit` uses sticky `set` — once a WorkItem is persisted to disk and the indexes updated, that state is irreversible; a search-branch backtrack must not roll the maps back into a state that contradicts what's on disk. (Today `set_local` isn't wired; v0.1 lands with `set` only, which is what `commit` needs anyway.)
 
+#### Forward compatibility with time-travel
+
+A future time-travel effect (versioned resources, audit trails, history queries) should coexist with `Modify` without breaking changes. Five design invariants preserve that compatibility:
+
+1. **`set(target, v)` is "advance the head."** The observable contract is "next `get(target)` returns `v`." Whether the handler overwrites a single cell or appends to a version graph is hidden behind that contract. The same `set` works under both default and time-travel handlers.
+
+2. **`get(target)` returns the current head.** Always. Time-travel adds `get_at(target, version)` as a *new operation* under a *separate* effect (`TimeTravel[s]`), not as a refinement of `get`.
+
+3. **`Modify[s]` doesn't expose handler-internal structure.** The user-facing surface is `get` / `set` / `set_local`. The handler may store cells as single values or version graphs; the effect's surface doesn't observe the difference.
+
+4. **`set` returns `Unit`, not the prior value.** Returning the displaced value would force the handler to materialize old state even when no history is kept. Callers that need the prior value `get` first.
+
+5. **Sticky vs transactional is encoded in the *operation*, not the handler.** `set` is sticky; `set_local` is transactional. Different ops, same handler. (Today's design.)
+
+WorkItemStore's design satisfies all five invariants — `commit` calls `set` returning `Unit`; `lookup` calls `get`; only `Modify[s]` is declared; no `set_versioned` / `get_at` is mixed in. A future time-travel handler could substitute a versioned representation without changing any user-visible code.
+
 So a WorkItemStore.commit body looks like:
 
 ```anthill
