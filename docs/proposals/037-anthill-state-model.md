@@ -145,48 +145,50 @@ The interpreter contract for each resource type covers:
 
 ### 1. Identity scheme
 
-How are two values of T distinguished as "different resources"? Three options (per WI-200) — and the framework expresses identity through the existing operation mechanism, not through a new keyword or field-shape syntax:
+How are two values of T distinguished as "different resources"? **Identity is a property of the *handler*, not of the resource sort.** The resource sort exposes the user-facing API (`new` / `get` / `set` for Cell, `assert` / `retract` for KB, etc.) and stays free of identity-related declarations. The Modify handler is parameterized by the keying scheme it uses internally:
 
-- **Functor-only**: the sort name alone keys the state. One instance per type. Today's default Modify handler. Suitable for singletons (KB, a process-wide config cell).
+```anthill
+-- Conceptual sketch (handlers live in the realization layer; the
+-- type parameters describe the contract at the framework level):
+sort ModifyHandler
+  sort Resource    = ?     -- the resource type this handler covers
+  sort IdentityKey = ?     -- how this handler distinguishes instances
+end
+```
+
+The handler internally maps `Resource → IdentityKey`, then keys its state by `IdentityKey`. User code never sees `IdentityKey` — it interacts with `Resource` values through the resource sort's operations. Different handlers for the same Resource may pick different IdentityKey types (one might use opaque handles, another might use a structural key), but this is a state-representation choice, not a semantic one.
+
+Three concrete identity schemes (matching what handlers will plug in for, per WI-200):
+
+- **Functor-only**: the handler keys all instances of the Resource sort to a single slot. `IdentityKey = Unit`. One instance per Resource type. Today's default Modify handler. Suitable for singletons (KB, a process-wide config cell).
 
   ```anthill
-  Cell.new(0)   -- keyed by `Cell` symbol
-  Cell.new(1)   -- ALSO keyed by `Cell` — collides; second overwrites the first
+  Cell.new(0)   -- keyed to the single `Cell` slot
+  Cell.new(1)   -- ALSO keyed to that slot — collides; overwrites the first
   ```
 
-- **Identity-by-key**: the sort declares a `key` operation that returns an *identity-supporting* type — i.e. one that satisfies `Eq` and `Hashable`. The runtime keys instances by `(functor, key(instance))`. Two resource values are the *same* resource iff their `key` results match. The operation is just an ordinary operation — no new syntax needed.
+- **Identity-by-key**: the handler computes an `IdentityKey` from the resource value. `IdentityKey` is a framework-provided opaque type (the runtime may choose interned strings, packed ints, or opaque handles depending on what's efficient). Two resource values land in the same slot iff the handler computes the same key for both.
 
-  **What's the identity-supporting type?** Two reasonable choices, neither of which is `Symbol` (hash-consed, meant for syntactic identifiers like sort and operation names — using it for dynamic resource keys would pollute the global intern table monotonically) and neither of which is bare `String` (weakly-typed; loses the "this is a resource key, not arbitrary text" signal at the type level):
+  Why a framework-provided opaque type rather than bare `String`? Because `String` is weakly typed (any string can be passed) and loses the "this is a resource key" signal. And **not** `Symbol` — Symbols are hash-consed, meant for syntactic identifiers like sort and operation names; using them for dynamic resource keys would pollute the global intern table monotonically.
 
-    1. **A framework-provided opaque type, `IdentityKey`** (recommended default). Built into the runtime; constructors take `String` / `Int` / structural composites; equality and hashing are framework-defined. User code constructs a `IdentityKey` only via the constructors, never as a raw value, so the type carries the "resource identity" signal at the call site. Implementation is hidden from user code — the runtime may choose interned strings, packed ints, or opaque handles depending on what's efficient.
-
-    2. **The resource's own entity term**, when the resource is naturally an entity. Anthill's hash-consed term machinery already gives entity-shaped values structural identity; `WorkItemStore(project: "anthill")` and `WorkItemStore(project: "anthill")` are the same term, so they are the same resource. No `key` operation needed in that case — the entity *is* the key.
+  Example resource (where the handler keys by the entity's `name` field):
 
   ```anthill
-  -- Style 1: explicit IdentityKey
   sort Config
+    entity Config(name: String)                    -- structural form
     operation new(name: String, initial: ConfigData) -> Config
-    operation key(c: Config) -> IdentityKey         -- the identity operation
     operation get(c: Config) -> ConfigData
     operation set(c: Config, v: ConfigData) -> Unit
       effects Modify[c]
   end
-  -- key(Config.new(name: "db", ...)) == IdentityKey.fromString("db")
-
-  -- Style 2: entity-as-identity (no key operation needed)
-  sort WorkItemStore
-    entity WorkItemStore(project: String)           -- structural identity
-    operation get(s: WorkItemStore) -> ...
-    operation set(s: WorkItemStore, v: ...) -> Unit effects Modify[s]
-  end
-  -- WorkItemStore(project: "anthill") is one resource, project "rustland" is another.
+  -- Handler: ModifyHandler with Resource = Config, IdentityKey = (the
+  -- name-derived key). Internally: key(Config(name: "db")) →
+  -- IdentityKey.fromString("db").
   ```
 
-  Why an *operation* (in Style 1) rather than a designated field? Because identity may be *computed* (a hash of multiple values, a lookup against an external registry) rather than read directly from one slot. An operation also fits the algebraic-effects discipline cleanly: the runtime asks the resource "what's your key?" via a normal call rather than peeking at internal structure.
+  Useful when the resource has a natural domain key the user will reuse (project name, session id, file path, named-config slot). `WorkItemStore(project: "anthill")` and `WorkItemStore(project: "rustland")` denote two distinct stores under an identity-by-key handler — the entity term is what the handler uses to derive the key.
 
-  Useful when the resource has a natural domain key the user will reuse (project name, session id, file path, named-config slot).
-
-- **Opaque handle**: a fresh `Value::Resource(uid)` allocated at every construction; the resource declares no `key` operation, and identity is per-allocation. Two calls to `Cell.new(0)` produce two distinct cells even with identical initial values. Identity is allocation-time, not value-time. The current arena machinery for `Map` / `Substitution` / `Stream` uses this scheme — and `Cell[V]` belongs in this category too: cells in Rust (`Cell::new`), OCaml (`ref`), Haskell (`newIORef`) all get identity from allocation, not from a domain key the user supplies.
+- **Opaque handle**: the handler allocates a fresh internal slot per construction call; `IdentityKey` is whatever the handler uses to address slots (typically an `Int` uid, hidden from user code). Two calls to `Cell.new(0)` produce two distinct cells even with identical initial values. Identity is allocation-time, not value-time. The current arena machinery for `Map` / `Substitution` / `Stream` uses this scheme — and `Cell[V]` belongs in this category: cells in Rust (`Cell::new`), OCaml (`ref`), Haskell (`newIORef`) all get identity from allocation, not from a domain key the user supplies.
 
   ```anthill
   sort Cell
@@ -203,7 +205,7 @@ How are two values of T distinguished as "different resources"? Three options (p
   let c2 = Cell.new(0)   -- handle uid=2 (distinct, even with same V)
   ```
 
-Resources that can have multiple instances declare which scheme they use — by declaring (or not declaring) a `key` operation, and by leaving construction value-time vs allocation-time. The runtime keys their state accordingly. Default is functor-only (single instance) for backward compatibility.
+The resource sort says nothing about identity; the handler's type parameters say everything. Default for an un-parameterized handler is functor-only (`IdentityKey = Unit`), which keeps backward compatibility.
 
 ### 2. Operations exposed
 
@@ -236,13 +238,17 @@ The framework PERMITS both. Handler-dispatched is more flexible; direct is faste
 
 ### 5. Lifecycle
 
-When does the resource come into existence and when does it go away?
+When does the resource come into existence and when does it go away? The framework's default is **garbage-collected / refcounted** — the resource lives as long as something references it; when no references remain, the runtime reclaims its state. This is the conventional behavior; deviations should be justified.
 
-- **Process-lifetime**: KB, the bundle's WorkItemStore, a process-wide config cell. Created once at startup; persists until process exit.
-- **Construction-bounded**: arena values (Map, Substitution, Stream). Created by an op call; refcount-managed; dropped when no references remain.
-- **Lexically-scoped**: cells introduced under a `with_handler(...)` or `with_resource(...)` construct (proposal 027 future direction). Born at scope entry; die at scope exit.
+- **Refcounted (the default)**: created by a `new` / construction op; the runtime tracks references via the arena machinery (refcount, slot pool); state is reclaimed when refcount drops to zero. Today's behavior for arena values (Map, Substitution, Stream); the target behavior for `Cell[V]` under the opaque-handle scheme. No "process lifetime" — if the program drops the resource, it's gone.
 
-The resource type declares which lifecycle category it falls into. The interpreter manages instantiation and disposal accordingly.
+- **Pinned by runtime root**: a runtime-internal root holds a strong reference for the program's duration. KB is the canonical example — the interpreter always retains the KB it queries against, so even if no anthill-level reference exists, the KB stays alive. The bundle's `WorkItemStore` lives this way today only because the host process installs it at startup and keeps a host-side reference; this is a host choice, not a property of the resource type.
+
+  This is not a special lifecycle *category* — it's just refcounting where one of the references is held outside anthill code. From the program's perspective, the resource is reachable; from the runtime's perspective, ordinary GC rules apply, and the runtime root is part of the reachability graph.
+
+- **Lexically-scoped**: a `with_handler(...)` / `with_resource(...)` construct (proposal 027 future direction) installs the resource for the dynamic extent of a scope. Entry creates state; exit reclaims it. A *region-based* refinement of refcounting where the lifetime is statically known.
+
+The resource sort doesn't need a separate "lifecycle declaration" if it follows the default. Sorts whose lifetime is constrained (scoped, pinned) are the ones that need a contract entry. The interpreter manages instantiation and disposal via the runtime's standard arena/refcount machinery.
 
 ### 6. Branch interaction
 
@@ -278,7 +284,7 @@ Each resource type needs its own contract spelled out. The framework requires th
 | Operations exposed | `new(initial) -> Cell[V]` (construct), `get(c) -> V` (read), `set(c, v) -> Unit` (write). No `key` operation — Cell's identity is allocation-time. One write op with one semantics (mutate); branch interaction is the contract below. |
 | State location | `default_modify_handler`'s `HashMap<Symbol, Value>` (default handler). Other handlers may use a version graph (time-travel), a fixture (test), or a wrapped delegate (audit) — different state representations, same operation. |
 | Dispatch path | Handler-dispatched via the existing Modify effect machinery. |
-| Lifecycle | Construction-bounded: born at `Cell.new(initial)`; lives until no references remain (default handler) or until lexical scope exit (`with_resource`). Today's functor-keyed default handler effectively gives Cell process-lifetime per V — multi-instance allocation is contingent on WI-200. |
+| Lifecycle | **Refcounted** (the default): born at `Cell.new(initial)`; reclaimed when no references remain. Optional lexical scoping via `with_resource`. Today's functor-keyed default handler effectively pins Cell state for the process duration (single slot per V, no GC) — that is a side-effect of the functor-only identity scheme, not a lifecycle decision; multi-instance + refcounted GC is contingent on WI-200. |
 | Branch interaction | **Branch-local snapshot** (per the contract). Today's implementation behaves sticky-under-Branch only because the snapshot machinery isn't wired yet — that is a soundness gap, not the contract. The fix is the runtime `register_undo` + per-branch state cloning (Open Decision 3). |
 | Time-travel readiness | Yes — state is a Value; a versioned handler can layer in transparently. |
 
@@ -290,7 +296,7 @@ Each resource type needs its own contract spelled out. The framework requires th
 | Operations exposed | `assert(kb, term, sort) -> Option[FactId]`, `retract(kb, id) -> Bool`, `execute(kb, query) -> Stream`, `by_functor`, `by_sort`, etc. |
 | State location | KB's internal Rust structures: `rules: Vec<RuleEntry>`, `by_functor: HashMap<...>`, discrimination tree. Not value-shaped. |
 | Dispatch path | Direct builtin today (`kb.assert_fact(...)`); handler-dispatched in principle for substitution. |
-| Lifecycle | Process-lifetime; created with the Interpreter. |
+| Lifecycle | **Pinned by runtime root**: the interpreter always holds a strong reference to the KB it queries against, so KB stays alive for the process duration. Not a special lifecycle category — just refcounting where the runtime root is one of the references. |
 | Branch interaction | **Branch-local snapshot** (per the contract). Today's KB *behaves* sticky-under-Branch because the snapshot machinery isn't fully wired yet — that is a soundness gap. The fix is `register_undo` on KB-level mutations; `KB.assume` from prior drafts disappears once `assert` itself becomes branch-local under Branch. |
 | Time-travel readiness | Partial — proposal 030 wires `state_hash` for proof cache; full time-travel needs versioned indexes. WI-201 (candidate). |
 
@@ -304,7 +310,7 @@ Each resource type needs its own contract spelled out. The framework requires th
 | Operations exposed | `persist(store, fact, meta) -> FactId`, `flush(store, delta) -> Bool`, `retract(store, id) -> Bool`, `pull` (BulkStore). |
 | State location | `store_registry: HashMap<String, Box<dyn Store>>`. The Box holds non-Value internals (pending writes, source map, indexes). |
 | Dispatch path | Direct builtin today. Operations declare `Modify[store]` for effect-row honesty. |
-| Lifecycle | Process-lifetime; instances registered at startup. |
+| Lifecycle | **Pinned by runtime root**: the host process registers store instances at startup and retains host-side references for the duration. Not a property of Store-as-a-type — a Store the program drops with no host-side root would be reclaimed under refcounted rules. |
 | Branch interaction | **Sticky-by-physics** (the filesystem can't roll back atomically). Two acceptable resolutions per the framework: (a) a buffered Store handler that accumulates writes in memory, snapshot-able like Cell, and only flushes on commit; or (b) a static constraint that prevents `Modify[store]` ops inside Branch. Today neither is in place — `persist` writes leak across alternatives, which is a soundness gap until one of (a)/(b) lands. |
 | Time-travel readiness | No — `Box<dyn Store>` internals aren't versioned. A future versioned variant would maintain its own history. |
 
@@ -316,7 +322,7 @@ Each resource type needs its own contract spelled out. The framework requires th
 | Operations exposed | `Map.put/get/contains/remove/...`; `Substitution.lookup/apply/compose`; `Stream.splitFirst`. |
 | State location | Per-resource arena (`map_arena`, `subst_arena`, `stream_arena`) — refcount + slot pool. |
 | Dispatch path | Direct builtin. Operations declare `Modify[their_value]` (TODO — currently silent for Map/Substitution; pure for Stream). |
-| Lifecycle | Construction-bounded; refcount drops to zero → slot reclaimed. |
+| Lifecycle | **Refcounted** (the default): refcount drops to zero → slot reclaimed. The canonical implementation of the framework's default lifecycle. |
 | Branch interaction | **Branch-local snapshot** (per the contract — value-shaped state can be cloned). Today's arenas behave sticky-under-Branch because the runtime snapshot hooks aren't wired in yet — soundness gap, fixable transparently when the runtime grows the hooks. |
 | Time-travel readiness | Yes for Map (Value-shaped); Substitution and Stream have non-Value internals so partial. |
 
@@ -328,7 +334,7 @@ Each resource type needs its own contract spelled out. The framework requires th
 | Operations exposed | `next_id(s) -> String`, `lookup(s, id) -> Option[WorkItem]`, `by_status(s, st) -> List[WorkItem]`, `commit(s, w) -> Unit`, `forget(s, id) -> Unit`. |
 | State location | The Modify cell, holding a `wis(backend, by_id, by_status, id_counter)` Value. Reuses Cell[V] machinery. |
 | Dispatch path | Handler-dispatched via Modify (Cell's handler covers it). |
-| Lifecycle | Process-lifetime; host instantiates wis(...) at startup, calls `Modify.set` once before `Main.main`. |
+| Lifecycle | **Pinned by runtime root** (host-side): the bundle's host installs `wis(...)` at startup and retains a host reference for the CLI's duration. Not a property of `WorkItemStore`-as-a-type — under refcounted rules a dropped store would be reclaimed; the host just doesn't drop it during a single CLI invocation. |
 | Branch interaction | **Branch-local snapshot** (inherits Cell's contract). Bundle's CLI doesn't use Branch, so the soundness gap above isn't load-bearing for v0.1 — but the contract is still snapshot, not sticky. |
 | Time-travel readiness | Yes — wis(...) is Value-shaped; a future versioned-Cell handler covers it transparently. |
 
