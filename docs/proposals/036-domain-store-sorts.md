@@ -97,17 +97,39 @@ This is **WI-189** (reify/reflect operators): `let wi: WorkItem = ↓term`.
 
 **Without WI-189**, we can fall back to `Map[K = String, V = Term]`. The map carries Term values; `lookup` returns `Option[Term]`; field access still goes through `term_field` / `term_as_string`. That's a partial win — consolidates the indexes but keeps the reflection surface in command bodies.
 
-### 2. Either functional commit (return new store) or real Modify effect *(blocker)*
+### 2. Mutating commit through state semantics *(not a blocker — already exists)*
 
-`commit` updates `backend`, `by_id`, `by_status`, `id_counter` together. Three options:
+`commit` updates `backend`, `by_id`, `by_status`, `id_counter` together. Looking at what anthill already has:
 
-- **(A) Functional**: `commit` returns a `WorkItemStore`. Caller threads. Pure, composes well, but every command's signature gains the threading and dispatch-level returns become `Pair[Int, WorkItemStore]` (or similar). Verbose at call sites.
+`stdlib/anthill/prelude/effects.anthill` declares `Modify[T]` with `get(target: T) -> T` and `set(target: T, value: T) -> Unit effects Modify[T]`. That's the State monad. `eval/effects.rs::default_modify_handler` implements it as a `HashMap<Symbol, Value>` keyed by resource functor — the functor symbol of the target value identifies the cell; the stored Value is whatever was last `set`.
 
-- **(B) Cell semantics** *(heavier than I first thought; probably not the right path)*: `WorkItemStore` becomes a first-class mutable cell — a new Value variant with arena-managed contents that `Modify[s]` writes through. Requires a new value kind, typer rules for cell coercion, effect-dispatch wiring. Conceptually clean but adds a significant new runtime concept.
+So a WorkItemStore.commit body looks like:
 
-- **(C) Registry pattern**: The `FileStore` pattern, scaled up. `wis(backend)` is a *passive handle* — its only field is the backend reference, which (combined with the sort) forms a canonical key. The actual maps + counter live in interpreter-side Rust state keyed by that canonical string. Operations (`next_id` / `lookup` / `commit`) are Rust builtins that look up the state by key and mutate. `Modify[s]` is annotation; real mutation is the registry's job. Same machinery as today's `FileStore` / `IndexedFileStore`, just one more registry. ~1 week of plumbing.
+```anthill
+operation commit(s: WorkItemStore, w: WorkItem) -> Unit
+  effects {Modify[s], Modify[backend], Error}
+=
+  match get(s)
+    case wis(backend, by_id, by_status, counter) ->
+      let _ = persist(backend, w, Meta(entries: nil()))
+      let _ = flush(backend, nil())
+      let updated = wis(backend, Map.put(by_id, w.id, w),
+                        add_to_status(by_status, w.status, w),
+                        counter + 1)
+      set(s, updated)
+```
 
-(C) is the right path for the maximalist landing. (A) is doable today with no runtime support. (B) is overkill — we don't need a general cell construct to solve this specific problem.
+`s` at every call site is just the resource handle — its field values don't matter because the Modify handler keys by functor symbol (`wis`). Inside, `get(s)` reads the current state, `set(s, new)` writes the next one. Identity of `s` is stable across calls; the state behind it shifts.
+
+The only runtime work needed: at startup, the host calls `Modify.set(wis_handle, initial_wis)` once — seeding the cell. That's a single effect dispatch through machinery that already works.
+
+Earlier drafts of this doc considered three other options (functional threading; a new Cell value variant; a separate registry pattern duplicating what Modify already does). All inferior to using existing state semantics. Discarded.
+
+#### Note: registries and state are the same idea
+
+The runtime today has multiple state stores: the Modify cell, `store_registry`, `IndexedFileStore.source_map`, map_arena, subst_arena, stream_arena, the KB indexes themselves. They differ in (key shape, value shape, access surface), but conceptually they're all instances of the same primitive — *mutable state keyed by identity*. The split between "Modify cell" and "host registry" is forced when the state can't be expressed as an anthill `Value` (FileStore's `Box<dyn Store>` internals, for example). When the state IS expressible as Values — as with WorkItemStore's `(backend, by_id, by_status, id_counter)` — the Modify cell suffices and no new registry is needed.
+
+A future "first-class resources" proposal could unify these into one abstraction, but it's not on WI-192's path. WI-192 uses the Modify cell as-is; a later refactor could rewire all the registries under a single mechanism without changing user-visible code.
 
 ### 3. Map keys at sort `WorkStatus` *(may be blocker)*
 
@@ -151,49 +173,40 @@ Mechanical and ugly. Functional path costs more lines without WI-188.
 
 ## Implementation strategies
 
-Given the language gaps above, three landings are possible:
+Given the language facilities, two landings are reasonable:
 
-### Strategy A: minimal v0.1, no language extensions
+### Strategy A: minimal v0.1, Modify state, today
 
-- Use `Map[K = String, V = Term]` (not WorkItem) — sidesteps WI-189.
-- Use `Map[K = String, V = ...]` for by_status keyed by status name string — sidesteps the enum-key gap.
-- Functional `commit` — caller threads — sidesteps the Modify mutability gap.
-- Bundle commands take `(s: WorkItemStore, ...)` and return `Pair[Int, WorkItemStore]` where they mutate.
+- WorkItemStore uses `Map[K = String, V = Term]` (not WorkItem) — sidesteps WI-189.
+- by_status keyed by status name `String` — sidesteps Map-key-at-entity-value gap (the existing `MapKey` only handles Int/Bool/Str/Term, not enum-Entity values).
+- `commit` mutates via `Modify[s]` state semantics (already wired via `default_modify_handler`). Threading is *not* needed.
+- Bundle commands take `(s: WorkItemStore, ...)` and return `Int` (no threading); commit fires `set(s, new)` internally.
+- Construction at host: build initial `wis(...)` Value at startup, fire `Modify.set(wis_handle, initial)` once before `Main.main`.
 
-**Cost to land:** ~1-2 days. ~30 lines of new sort declaration + ~50 lines of host plumbing + ~150-line refactor of bundle commands.
+**Cost to land:** ~1-2 days. ~30 lines of new sort declaration + ~30 lines of host plumbing + ~150-line refactor of bundle commands. No language changes.
 
-**What's lost vs the ideal:** type-safe field access (still uses term_field/term_as_string in commands); threading verbosity at call sites; status-key strings instead of WorkStatus values.
+**What's lost vs the ideal:** type-safe field access (commands still use `term_field` / `term_as_string` to read individual WorkItem fields); status-key strings instead of WorkStatus enum values.
 
-**What's gained:** the indexes are centralized in one place; the ~120 lines of glue retire; the bundle's structure mirrors the design even if surface ergonomics aren't ideal.
+**What's gained:** the indexes are centralized in one place; the ~120 lines of glue retire; commands are linear (no threading, no `Pair[Int, S]` return); the abstraction shape matches the ideal end-state.
 
 ### Strategy B: land alongside WI-188 + WI-189
 
-- Wait for entity copy (`wi.copy(status = ...)`) — eliminates manual reconstruction.
-- Wait for `↓Term : WorkItem` — type-safe field access via `wi.id`, `wi.status` etc.
-- Map values are typed `WorkItem`; lookup returns `Option[WorkItem]` with native field access.
-- Functional `commit` still threads but is one-line per call site.
+- WI-188 enables `wi.copy(status = ...)` for in-place field updates.
+- WI-189 lets `Map.get(by_id, id)` return `Option[WorkItem]` with native field access (`wi.id`, `wi.status`).
+- Map values typed `WorkItem`; lookup typed too; commands stop calling `term_field`.
 
-**Cost to land:** 1-2 weeks (WI-188 + WI-189 as prerequisites, then 1-2 days for WI-192).
+**Cost to land:** 1-2 weeks (WI-188 + WI-189 as prerequisites, then ~1 day to retype WorkItemStore over `WorkItem` instead of `Term`).
 
-**What's lost:** still functional threading; still status keyed by name (or wait for entity-as-key).
-
-### Strategy C: land alongside WI-188 + WI-189 + registry-pattern commit (WI-194 maximalist)
-
-- Same as B plus: `commit` mutates the registry-side `WorkItemStoreState` via a Rust builtin (the same pattern `FileStore::persist` uses today, just with a richer state struct).
-- Bundle commands take `s: WorkItemStore`, never return one. Threading retires entirely. Modify[s] is annotation; real mutation is the registry's job.
-
-**Cost to land:** ~2 weeks (1 week for WI-188+189, ~1 week for the registry pattern + builtins + bundle ports).
-
-**What's gained:** the ideal shape from the WI-191/192/194 brainstorm. Command bodies are linear, no threading, Error propagates to top-level handler.
+**What's lost vs the ideal:** still status keyed by name string. Closes when WI-197 (entity-values-as-Map-keys) lands.
 
 ## Recommendation
 
-**Land Strategy A first, file the gap-closing WIs as follow-ups.**
+**Land Strategy A first**, file the gap-closing WIs (WI-188 / WI-189 / WI-197) as follow-ups for Strategy B.
 
 Rationale:
-- Strategy A demonstrates the abstraction with zero language changes. The bundle's structure improves immediately.
-- The follow-up WIs (188 / 189 / 194 / 197) each have independent value beyond the bundle, so they'll land when there's broader motivation.
-- Strategy A's "ugly" parts (Term values in maps, name-keyed status, threading) are localized to ~5 places — they shrink to nothing as the gap-closers land. No throwaway work.
+- Strategy A demonstrates the abstraction with zero language changes. The bundle's structure improves immediately, no threading verbosity.
+- The follow-up WIs each have independent value beyond the bundle.
+- Strategy A's two paper cuts (Term values in maps, name-keyed status) are localized to ~5 places and shrink to nothing as the gap-closers land. No throwaway work.
 
 ## Decomposition
 
@@ -207,7 +220,7 @@ Files affected:
 
 - WI-189 (reify/reflect operators) — see Strategy A vs B.
 - WI-188 (entity copy form) — same.
-- WI-194 (commit / transactions) — Strategy A uses functional commit; cell semantics is C.
+- WI-194 (commit / transactions) — Strategy A uses Modify-state commit (already wired), no separate commit op needed. WI-194 (transactional batches: persist + retract atomically with rollback on Error) becomes useful for cmd_claim/deliver/verify's retract+persist pair but is independent of WI-192.
 - WI-197 candidate (Map keys at entity values) — sidestepped via String keys.
 - IndexedFileStore vs other Store backends — WorkItemStore is composed over an IndexedFileStore today; trait-driven backend swap is out of scope.
 
