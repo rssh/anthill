@@ -121,7 +121,7 @@ The framework's invariant: **every mutation declares `Modify[T]`**; **every reso
 
 ## Resource type plug-in
 
-A *resource type* is any anthill sort whose values can be mutated through `Modify[T]`. To plug T into the framework, the resource MUST declare its **interpreter contract**: a per-resource specification covering identity, lifecycle, branch interaction, and time-travel readiness. Each resource has its own contract; the framework doesn't impose a uniform shape — only that all six concerns below are answered.
+A *resource type* is any anthill sort whose values can be mutated through `Modify[T]`. To plug T into the framework, the resource MUST declare its **interpreter contract**: a per-resource specification covering identity, exposed operations, state location, dispatch path, lifecycle, branch interaction, and time-travel readiness. Each resource has its own contract; the framework doesn't impose a uniform shape — only that all seven concerns below are answered.
 
 The interpreter contract for each resource type covers:
 
@@ -372,7 +372,7 @@ The framework above leaves these open; they need answers before WI-192's WorkIte
 ## Acceptance
 
 Design-level proposal. Acceptance is:
-1. Rules 1–7 accepted as binding for new state designs.
+1. Rules 1–8 accepted as binding for new state designs.
 2. KB.assert / retract effect annotations updated (per open decision 1).
 3. Proposals 027, 035, 036 reference this framework where they touch state semantics.
 4. Future proposals introducing new state cite this framework or document why they diverge.
