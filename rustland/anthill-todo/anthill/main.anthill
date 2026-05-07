@@ -15,7 +15,8 @@ namespace anthill.todo
   import anthill.prelude.Time.{now}
   import anthill.stage0.{Feedback, WorkItem, ToolPasses}
   import anthill.stage0.WorkStatus.{Open}
-  import anthill.prelude.{List, LogicalStream, Unit}
+  import anthill.prelude.{List, LogicalStream, Map, Unit}
+  import anthill.prelude.Map.{empty, put, get, contains}
   import anthill.prelude.Bool.{not}
   import anthill.prelude.String.{length, substring, toUpper}
   import anthill.prelude.Console.{console, println, eprintln,
@@ -549,75 +550,107 @@ namespace anthill.todo
           if show_all then true
           else not(is_closed(status))
 
-    -- Look up a status for a given id from the row list. Used by the
-    -- "all deps satisfied" check below.
-    operation status_for(rows: List[Row], id: String) -> Option[T = String] =
+    -- Build a Map[id → Row] once so per-row lookups (status_for,
+    -- any_unmet) become O(1) instead of O(N). Map.put copies the
+    -- backing indexmap each call (O(N)), so build cost is O(N²);
+    -- but every downstream lookup pays O(1), so over a partition pass
+    -- (N rows × D deps) this drops the total from O(N²·D) to O(N²+N·D).
+    -- WI-183.
+    operation build_row_map(rows: List[Row]) -> Map[K = String, V = Row] =
+      build_row_map_acc(rows, empty())
+
+    operation build_row_map_acc(rows: List[Row], acc: Map[K = String, V = Row])
+      -> Map[K = String, V = Row]
+    =
       match rows
-        case nil() -> none()
+        case nil() -> acc
         case cons(r, rest) ->
           match r
-            case Row(rid, status, _, _, _, _) ->
-              if eq(rid, id) then some(status)
-              else status_for(rest, id)
+            case Row(rid, _, _, _, _, _) ->
+              -- First-wins: legacy linear scan via status_for returns
+              -- the first matching row, so duplicate ids (data permits
+              -- them) keep the original entry. Map.put would overwrite.
+              if contains(acc, rid) then build_row_map_acc(rest, acc)
+              else build_row_map_acc(rest, put(acc, rid, r))
+
+    -- Status lookup via the prebuilt row map.
+    operation status_for_m(row_map: Map[K = String, V = Row], id: String)
+      -> Option[T = String]
+    =
+      match get(row_map, id)
+        case none() -> none()
+        case some(r) ->
+          match r
+            case Row(_, status, _, _, _, _) -> some(status)
 
     operation is_satisfied(status: String) -> Bool =
       if eq(status, "Delivered") then true
       else if eq(status, "Verified") then true
       else false
 
-    operation any_unmet(deps: List[String], all_rows: List[Row]) -> Bool =
+    operation any_unmet(deps: List[String], row_map: Map[K = String, V = Row]) -> Bool =
       match deps
         case nil() -> false
         case cons(dep, rest) ->
-          match status_for(all_rows, dep)
+          match status_for_m(row_map, dep)
             case some(s) ->
-              if is_satisfied(s) then any_unmet(rest, all_rows)
+              if is_satisfied(s) then any_unmet(rest, row_map)
               else true
             case none() -> true  -- unknown dep counts as unmet
 
     -- ── Dependents map: id → list of items depending on it ────────
 
-    -- For each row, walk its deps and add a (dep_id, this_id) pair.
-    -- We keep this as a flat List[Pair[String, String]] and let the
-    -- transitive-count walker filter; building a true keyed map adds a
-    -- lot of code without changing complexity for the sizes we hit.
-    operation dependent_pairs(rows: List[Row]) -> List[Pair[String, String]] =
+    -- Build a Map[id → List[dependent_id]] in one pass. For each row's
+    -- depends_on list, register the row's id under each dependency.
+    -- Replaces the legacy List[Pair[String, String]] flat-pairs
+    -- representation: dependents lookup goes from O(E) per call to
+    -- O(1). WI-183.
+    operation build_dep_map(rows: List[Row])
+      -> Map[K = String, V = List[T = String]]
+    =
+      build_dep_map_acc(rows, empty())
+
+    operation build_dep_map_acc(rows: List[Row],
+                                acc: Map[K = String, V = List[T = String]])
+      -> Map[K = String, V = List[T = String]]
+    =
       match rows
-        case nil() -> nil()
+        case nil() -> acc
         case cons(r, rest) ->
           match r
             case Row(rid, _, _, deps, _, _) ->
-              concat_lists(
-                pairs_for(rid, deps),
-                dependent_pairs(rest))
+              build_dep_map_acc(rest, register_dependents(acc, deps, rid))
 
-    operation pairs_for(rid: String, deps: List[String])
-      -> List[Pair[String, String]]
+    -- For each `dep` in `deps`, append `rid` to dep's existing
+    -- dependents list. Append (vs prepend) preserves the same
+    -- caller-order legacy `direct_dependents` produced — important
+    -- so cmd_graph's tree walk emits siblings in source order.
+    operation register_dependents(m: Map[K = String, V = List[T = String]],
+                                   deps: List[String],
+                                   rid: String)
+      -> Map[K = String, V = List[T = String]]
     =
       match deps
-        case nil() -> nil()
-        case cons(d, rest) -> cons(pair(d, rid), pairs_for(rid, rest))
+        case nil() -> m
+        case cons(d, rest) ->
+          let prior = match get(m, d)
+            case some(existing) -> existing
+            case none() -> nil()
+          register_dependents(put(m, d, append_string(prior, rid)), rest, rid)
 
-    operation concat_lists(a: List[Pair[String, String]],
-                           b: List[Pair[String, String]])
-      -> List[Pair[String, String]]
-    =
-      match a
-        case nil() -> b
-        case cons(h, rest) -> cons(h, concat_lists(rest, b))
+    operation append_string(xs: List[String], x: String) -> List[String] =
+      match xs
+        case nil() -> cons(x, nil())
+        case cons(h, rest) -> cons(h, append_string(rest, x))
 
-    -- Direct dependents of `id`: every (id, x) pair's second element.
-    operation direct_dependents(pairs: List[Pair[String, String]],
-                                id: String)
+    -- Direct dependents of `id` via the prebuilt map.
+    operation direct_dependents_m(dep_map: Map[K = String, V = List[T = String]],
+                                   id: String)
       -> List[String]
     =
-      match pairs
-        case nil() -> nil()
-        case cons(p, rest) ->
-          match p
-            case pair(k, v) ->
-              if eq(k, id) then cons(v, direct_dependents(rest, id))
-              else direct_dependents(rest, id)
+      match get(dep_map, id)
+        case some(deps) -> deps
+        case none() -> nil()
 
     -- Visited set as a sorted-list of ids. `visited_contains` does a
     -- linear scan; for the depth we expect, that's fine.
@@ -642,53 +675,53 @@ namespace anthill.todo
     -- comes first.
 
     operation count_transitive(id: String,
-                               pairs: List[Pair[String, String]],
+                               dep_map: Map[K = String, V = List[T = String]],
                                visited: List[String])
       -> Pair[Int, List[String]]
     =
       if visited_contains(visited, id) then pair(0, visited)
       else
         let visited2 = cons(id, visited)
-        let direct = direct_dependents(pairs, id)
-        count_transitive_walk(direct, pairs, visited2)
+        let direct = direct_dependents_m(dep_map, id)
+        count_transitive_walk(direct, dep_map, visited2)
 
     operation count_transitive_walk(deps: List[String],
-                                    pairs: List[Pair[String, String]],
+                                    dep_map: Map[K = String, V = List[T = String]],
                                     visited: List[String])
       -> Pair[Int, List[String]]
     =
       match deps
         case nil() -> pair(0, visited)
         case cons(d, rest) ->
-          match count_transitive(d, pairs, visited)
+          match count_transitive(d, dep_map, visited)
             case pair(sub, v2) ->
-              match count_transitive_walk(rest, pairs, v2)
+              match count_transitive_walk(rest, dep_map, v2)
                 case pair(more, v3) -> pair(1 + sub + more, v3)
 
     -- ── Feedback set ──────────────────────────────────────────────
 
-    -- Collect the set of work-item ids that have at least one Feedback
-    -- fact; used for the [has feedback] annotation.
-    operation feedback_ids() -> List[String] =
+    -- Membership-set of work-item ids that have at least one Feedback
+    -- fact, used for the [has feedback] annotation. Map[id → true]
+    -- gives O(1) `Map.contains` instead of an O(F) linear scan per row
+    -- on a List[String]. WI-183.
+    operation feedback_set() -> Map[K = String, V = Bool] =
       let fb_facts = facts_of(kb(), "Feedback")
-      collect_feedback_ids(fb_facts)
+      collect_feedback_set(fb_facts, empty())
 
-    operation collect_feedback_ids(facts: List[Term]) -> List[String] =
+    operation collect_feedback_set(facts: List[Term],
+                                    acc: Map[K = String, V = Bool])
+      -> Map[K = String, V = Bool]
+    =
       match facts
-        case nil() -> nil()
+        case nil() -> acc
         case cons(t, rest) ->
           match term_field(t, "workitem")
             case some(wi_term) ->
               match term_as_string(wi_term)
-                case some(wi_id) -> cons(wi_id, collect_feedback_ids(rest))
-                case none() -> collect_feedback_ids(rest)
-            case none() -> collect_feedback_ids(rest)
-
-    operation list_contains(ids: List[String], id: String) -> Bool =
-      match ids
-        case nil() -> false
-        case cons(h, rest) ->
-          if eq(h, id) then true else list_contains(rest, id)
+                case some(wi_id) ->
+                  collect_feedback_set(rest, put(acc, wi_id, true))
+                case none() -> collect_feedback_set(rest, acc)
+            case none() -> collect_feedback_set(rest, acc)
 
     -- ── Annotate rows with has_feedback only ───────────────────────
     -- `unblocks` is filled in later for the (much smaller) ready
@@ -697,7 +730,7 @@ namespace anthill.todo
     -- annotate_rows fires N times).
 
     operation annotate_rows(rows: List[Row],
-                            fb_ids: List[String])
+                            fb_set: Map[K = String, V = Bool])
       -> List[Row]
     =
       match rows
@@ -712,14 +745,14 @@ namespace anthill.todo
                   description: desc,
                   depends: deps,
                   unblocks: 0,
-                  has_feedback: list_contains(fb_ids, rid)),
-                annotate_rows(rest, fb_ids))
+                  has_feedback: contains(fb_set, rid)),
+                annotate_rows(rest, fb_set))
 
     -- Fill in `unblocks` for the supplied rows. Each row's count uses a
     -- fresh visited set (correctness for diamond patterns); we call
     -- this only on the `ready` partition to keep the cost bounded.
     operation fill_unblocks(rows: List[Row],
-                            pairs: List[Pair[String, String]])
+                            dep_map: Map[K = String, V = List[T = String]])
       -> List[Row]
     =
       match rows
@@ -727,7 +760,7 @@ namespace anthill.todo
         case cons(r, rest) ->
           match r
             case Row(rid, status, desc, deps, _, fb) ->
-              match count_transitive(rid, pairs, nil())
+              match count_transitive(rid, dep_map, nil())
                 case pair(n, _) ->
                   cons(
                     Row(
@@ -737,7 +770,7 @@ namespace anthill.todo
                       depends: deps,
                       unblocks: n,
                       has_feedback: fb),
-                    fill_unblocks(rest, pairs))
+                    fill_unblocks(rest, dep_map))
 
     -- ── Sorting ───────────────────────────────────────────────────
 
@@ -797,7 +830,8 @@ namespace anthill.todo
 
     -- ── Partition into ready / blocked ────────────────────────────
 
-    operation partition_ready(rows: List[Row], all: List[Row])
+    operation partition_ready(rows: List[Row],
+                               row_map: Map[K = String, V = Row])
       -> List[Row]
     =
       match rows
@@ -805,10 +839,11 @@ namespace anthill.todo
         case cons(r, rest) ->
           match r
             case Row(_, _, _, deps, _, _) ->
-              if any_unmet(deps, all) then partition_ready(rest, all)
-              else cons(r, partition_ready(rest, all))
+              if any_unmet(deps, row_map) then partition_ready(rest, row_map)
+              else cons(r, partition_ready(rest, row_map))
 
-    operation partition_blocked(rows: List[Row], all: List[Row])
+    operation partition_blocked(rows: List[Row],
+                                 row_map: Map[K = String, V = Row])
       -> List[Row]
     =
       match rows
@@ -816,8 +851,8 @@ namespace anthill.todo
         case cons(r, rest) ->
           match r
             case Row(_, _, _, deps, _, _) ->
-              if any_unmet(deps, all) then cons(r, partition_blocked(rest, all))
-              else partition_blocked(rest, all)
+              if any_unmet(deps, row_map) then cons(r, partition_blocked(rest, row_map))
+              else partition_blocked(rest, row_map)
 
     -- ── Print ─────────────────────────────────────────────────────
 
@@ -883,9 +918,10 @@ namespace anthill.todo
         case some(_) -> true
         case none() -> false
       let raw_rows = rows_of(facts_of(kb(), "WorkItem"))
-      let pairs = dependent_pairs(raw_rows)
-      let fb_ids = feedback_ids()
-      let annotated = annotate_rows(raw_rows, fb_ids)
+      let dep_map = build_dep_map(raw_rows)
+      let fb_set = feedback_set()
+      let annotated = annotate_rows(raw_rows, fb_set)
+      let row_map = build_row_map(annotated)
       let filtered = filter_rows(annotated, status_filter, show_all)
       if eq(count_rows(filtered), 0) then
         let _ = println(console(), "No work items found.")
@@ -893,9 +929,9 @@ namespace anthill.todo
       else
         -- Compute `unblocks` only for the (smaller) ready slice; the
         -- blocked slice doesn't display the count.
-        let ready_unfilled = partition_ready(filtered, annotated)
-        let ready = sort_ready(fill_unblocks(ready_unfilled, pairs))
-        let blocked = sort_by_id(partition_blocked(filtered, annotated))
+        let ready_unfilled = partition_ready(filtered, row_map)
+        let ready = sort_ready(fill_unblocks(ready_unfilled, dep_map))
+        let blocked = sort_by_id(partition_blocked(filtered, row_map))
         let _ = print_rows_ready(ready)
         let _ = match blocked
           case nil() -> ()
@@ -923,8 +959,8 @@ namespace anthill.todo
                 case nil() -> cons(r, find_roots(rest))
                 case cons(_, _) -> find_roots(rest)
 
-    operation status_or_unknown(rows: List[Row], id: String) -> String =
-      match status_for(rows, id)
+    operation status_or_unknown(row_map: Map[K = String, V = Row], id: String) -> String =
+      match status_for_m(row_map, id)
         case some(s) -> s
         case none() -> "?"
 
@@ -936,8 +972,8 @@ namespace anthill.todo
                          is_root: Bool,
                          is_last: Bool,
                          prefix: String,
-                         rows: List[Row],
-                         pairs: List[Pair[String, String]])
+                         row_map: Map[K = String, V = Row],
+                         dep_map: Map[K = String, V = List[T = String]])
       -> Unit
       effects ConsoleOutput
     =
@@ -945,7 +981,7 @@ namespace anthill.todo
         if is_root then ""
         else if is_last then "└─ "
         else "├─ "
-      let status = status_or_unknown(rows, id)
+      let status = status_or_unknown(row_map, id)
       let _ = println(console(),
                       concat(prefix,
                         concat(connector,
@@ -954,13 +990,13 @@ namespace anthill.todo
         if is_root then "   "
         else if is_last then concat(prefix, "   ")
         else concat(prefix, "│  ")
-      let children = direct_dependents(pairs, id)
-      print_children(children, child_prefix, rows, pairs)
+      let children = direct_dependents_m(dep_map, id)
+      print_children(children, child_prefix, row_map, dep_map)
 
     operation print_children(children: List[String],
                              prefix: String,
-                             rows: List[Row],
-                             pairs: List[Pair[String, String]])
+                             row_map: Map[K = String, V = Row],
+                             dep_map: Map[K = String, V = List[T = String]])
       -> Unit
       effects ConsoleOutput
     =
@@ -970,12 +1006,12 @@ namespace anthill.todo
           let last = match rest
             case nil() -> true
             case cons(_, _) -> false
-          let _ = print_tree(c, false, last, prefix, rows, pairs)
-          print_children(rest, prefix, rows, pairs)
+          let _ = print_tree(c, false, last, prefix, row_map, dep_map)
+          print_children(rest, prefix, row_map, dep_map)
 
     operation print_roots(roots: List[Row],
-                          rows: List[Row],
-                          pairs: List[Pair[String, String]])
+                          row_map: Map[K = String, V = Row],
+                          dep_map: Map[K = String, V = List[T = String]])
       -> Unit
       effects ConsoleOutput
     =
@@ -984,8 +1020,8 @@ namespace anthill.todo
         case cons(r, rest) ->
           match r
             case Row(rid, _, _, _, _, _) ->
-              let _ = print_tree(rid, true, true, "", rows, pairs)
-              print_roots(rest, rows, pairs)
+              let _ = print_tree(rid, true, true, "", row_map, dep_map)
+              print_roots(rest, row_map, dep_map)
 
     operation cmd_graph() -> Int
       effects ConsoleOutput
@@ -995,9 +1031,10 @@ namespace anthill.todo
         let _ = println(console(), "No work items found.")
         0
       else
-        let pairs = dependent_pairs(raw_rows)
+        let dep_map = build_dep_map(raw_rows)
+        let row_map = build_row_map(raw_rows)
         let roots = find_roots(raw_rows)
-        let _ = print_roots(roots, raw_rows, pairs)
+        let _ = print_roots(roots, row_map, dep_map)
         0
 
     -- ── cmd_add ──────────────────────────────────────────────────
