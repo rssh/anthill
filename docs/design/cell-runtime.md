@@ -136,36 +136,85 @@ Cell.set(a, [some_entity{field: a}, ...])   -- a's slot holds a list whose first
 
 The Cell reference is buried under a list element under an entity field. The detector must descend into Entity / Tuple / Map / List / Stream / Closure structure recursively, finding any `Value::Cell` reference at any depth.
 
-#### The detector
+#### The detector — distribute walk knowledge across Value and Term
+
+Rather than one big `match` in `detect_cycle` enumerating every variant, give each value-shape its own walk method. The detector orchestrates; per-shape recursion logic stays local.
 
 ```rust
+/// Visit each *directly* referenced Cell slot. Implementations
+/// recurse through their own structural children (Entity fields,
+/// Tuple positions, Map values, captured-env, term args, …) but do
+/// NOT descend through Cell handles into their slot contents — the
+/// caller orchestrates that, holding the visited-set.
+pub trait WalkCells {
+    fn walk_cells(&self, f: &mut dyn FnMut(SlotIdx));
+}
+
+impl WalkCells for Value {
+    fn walk_cells(&self, f: &mut dyn FnMut(SlotIdx)) {
+        match self {
+            Value::Cell(h)                  => f(h.slot),
+            Value::Entity { pos, named, .. }
+            | Value::Tuple { pos, named, .. } => {
+                for v in pos { v.walk_cells(f); }
+                for (_, v) in named { v.walk_cells(f); }
+            }
+            Value::Map(h)     => arena_lookups.with_map(h, |body| {
+                                     for (_, v) in body { v.walk_cells(f); }
+                                 }),
+            Value::Closure(c) => closure_arena.with_env(c, |env| {
+                                     for v in env { v.walk_cells(f); }
+                                 }),
+            Value::Term(tid)  => kb.with_term(*tid, |t| t.walk_cells(f)),
+            Value::Stream(_)  => { /* opaque — see open question */ }
+            _                 => {}                       // primitives
+        }
+    }
+}
+
+impl WalkCells for Term {
+    fn walk_cells(&self, f: &mut dyn FnMut(SlotIdx)) {
+        match self {
+            Term::Fn { pos_args, named_args, .. } => {
+                for tid in pos_args { kb.with_term(*tid, |t| t.walk_cells(f)); }
+                for (_, tid) in named_args { kb.with_term(*tid, |t| t.walk_cells(f)); }
+            }
+            // Term::Const, Term::Var, Term::Ref, etc. — no Cell refs
+            _ => {}
+        }
+    }
+}
+
+/// Detector orchestrates: BFS through the cell graph, marking visited
+/// slots, halting on target.
 fn detect_cycle(
     arena: &CellArena,
     target: SlotIdx,
-    val: &Value,
-    visited: &mut HashSet<SlotIdx>,
+    initial: &Value,
 ) -> Result<(), CycleError> {
-    match val {
-        Value::Cell(h) if h.slot == target => Err(CycleError),
-        Value::Cell(h) if !visited.insert(h.slot) => Ok(()),  // already walked
-        Value::Cell(h) => {
-            let current = arena.read(h.slot);              // descend through slot
-            detect_cycle(arena, target, &current, visited)
-        }
-        Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
-            for v in pos.iter().chain(named.iter().map(|(_, v)| v)) {
-                detect_cycle(arena, target, v, visited)?;
+    let mut visited = HashSet::new();
+    let mut worklist: Vec<Value> = vec![initial.clone()];
+    while let Some(val) = worklist.pop() {
+        let mut hit_target = false;
+        val.walk_cells(&mut |slot| {
+            if slot == target { hit_target = true; }
+            else if visited.insert(slot) {
+                worklist.push(arena.read(slot));
             }
-            Ok(())
-        }
-        Value::Map(h)        => /* descend through map values */,
-        Value::Stream(_)     => /* opaque; assume no Cell — see open question below */,
-        Value::Closure(_)    => /* captured env may hold Cells; walk it */,
-        Value::Term(tid)     => /* walk hash-consed term children */,
-        _                    => Ok(()),
+        });
+        if hit_target { return Err(CycleError); }
     }
+    Ok(())
 }
 ```
+
+Two reasons to factor this way:
+
+1. **Encapsulation.** Each `Value` variant's structural traversal is local to its impl, not buried in a giant `match` in cycle-detection code. New variants slot in by implementing the trait. Same goes for adding fields to existing variants.
+
+2. **Reuse.** Other walks the system needs — type-driven skip analysis, snapshot for Branch, debug-print of reachable cells, GC mark-phase if we ever go that route — all want to enumerate Cell references inside a Value/Term. The trait method is the single source of truth for "what's reachable from here." Cycle detection is one consumer; future code is others.
+
+3. **Testability.** `walk_cells` is independent of the detector — it can be unit-tested per variant ("a Value::Tuple visits each of its positional values exactly once") without setting up an arena.
 
 #### Cost
 
