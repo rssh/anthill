@@ -28,7 +28,11 @@ The pattern is "fact set + a few indexes + domain operations." That's a *sort* i
 The general pattern — *declare a sort that wraps a Store with project-specific indexes and operations* — is what's important. anthill-todo uses it for WorkItem; the example below is what that project files declare.
 
 ```anthill
-sort WorkItemStore
+-- enum (not sort): closes the variant set so a value of WorkItemStore
+-- is always a wis(...). Lets the typer know `s: WorkItemStore` ⇒ s
+-- is wis(...), makes the match in commit's body exhaustive, and gives
+-- the Modify framework a fixed state-shape to work against.
+enum WorkItemStore
   -- A WorkItemStore instance carries the file-backed store plus
   -- precomputed indexes for the queries the bundle needs. The
   -- indexes are entity-fields, not a new "index" keyword — anthill's
@@ -119,11 +123,38 @@ This is **WI-189** (reify/reflect operators): `let wi: WorkItem = ↓term`.
 
 WorkItemStore's state is a value-shaped record (`backend`, `by_id`, `by_status`, `id_counter`), so it plugs into the framework via Cell[V]: state location is "the Modify cell, holding a `wis(...)` Value. Reuses Cell[V] machinery" (per 037's per-resource interpreter contract for WorkItemStore). The `commit` body reads the current `wis(...)` via `get(s)`, computes the next value, and writes it back via `set(s, new)` — these are Cell's standard operations, dispatched through the existing Modify effect machinery.
 
-#### What `Modify[s]` means when `s` is an entity-handle
+#### What `Modify[s]` means: the mechanical walkthrough
 
-Under 037's parameter-name convention, `Modify[X]` reads as "modifies the resource at the parameter named X." Here `s: WorkItemStore` is the parameter — but `WorkItemStore` is declared via `entity wis(...)`, so what `Modify[s]` actually identifies needs a sentence:
+Under 037's parameter-name convention, `Modify[X]` reads as "modifies the resource at the parameter named X." Here `s: WorkItemStore` is the parameter, and because WorkItemStore is `enum` with one variant, `s` is some `wis(b, m1, m2, c1)` value — a hash-consed entity term, immutable like every term in anthill.
 
-`s` is a **handle**. The entity term `wis(backend, by_id, by_status, counter)` is hash-consed and never mutates — what changes is the value the WorkItemStore handler returns when asked "what's the current state for s?" `set(s, new_wis)` doesn't change `s` (the entity is immutable). It changes the slot that `get(s)` reads from. Same as `Cell.set(c, v)` for `c: Cell[V]`: the cell handle stays put, the state behind it shifts. This is the conventional semantics of an `IORef` / `ref` / mutable cell — the address is stable, the contents move.
+But terms are immutable, so what does "modify s" mean? Step by step, in the runtime:
+
+1. **The handler holds the state.** The Modify framework registers a `ModifyHandler[WorkItemStore, IdentityKey]` at startup. The handler owns a slot — a host-side mutable cell — that will hold the *current* `wis(...)` value. This slot is **the** state of the WorkItemStore.
+
+2. **`s` is the slot's address, not the slot's contents.** When `s` is bound to `wis(b, m1, m2, c1)`, the entity term value is used by the handler to pick *which* slot to read/write. Under today's transitional functor-only scheme, all wis-tagged values share one slot; under WI-200's opaque-handle scheme, each `WorkItemStore.new(...)` allocates a fresh slot keyed by uid.
+
+3. **Host seeds the slot once.** At startup, `run_anthill_bundle` builds the initial wis value (walks the backend, fills the maps, scans the id counter) and calls `Modify.set(s, initial_wis)`. The handler now holds initial_wis in its slot.
+
+4. **`get(s)` returns the slot.** Not the entity-value of `s`, but the *current contents* of the handler's slot. After step 3, `get(s)` returns initial_wis.
+
+5. **`set(s, new_wis)` overwrites the slot.** The handler's slot now holds new_wis. `s` (the entity term passed in) is unchanged — it was the address, and the address is still valid; the contents at that address have moved.
+
+6. **Subsequent `get(s)` returns new_wis.** Through the same handler, the slot lookup now sees the value from step 5.
+
+This is the conventional `IORef` / `ref` / `*mut Cell<T>` semantics. The address is a stable name; the contents at that address change. The unusual surface in anthill is that the "address" is itself an entity-shaped value (carrying field values that might or might not match the slot's contents at any given moment) — but those field values are used only as keying material for slot lookup, not as state. State lives in the handler.
+
+A concrete trace through `commit(s, w)`:
+
+| Step | What runs | Effect |
+|---|---|---|
+| 1 | `match get(s)` | Reads slot. Returns `wis(b, m1, m2, c1)` (whatever was last set). |
+| 2 | `case wis(backend, by_id, by_status, counter)` | Destructures the *returned* value, binding local `backend = b`, `by_id = m1`, etc. (These are local bindings to the destructured fields; they are not bound to `s`'s entity-value.) |
+| 3 | `persist(backend, w, ...)` | Goes through Store's handler keyed by `backend`. Mutates the store's slot (writes the file). `backend` handle is unchanged. |
+| 4 | `let updated = wis(backend, Map.put(by_id, ...), ..., counter + 1)` | Constructs a fresh wis term. Pure. |
+| 5 | `set(s, updated)` | Goes through WorkItemStore's handler keyed by `s`. Overwrites the slot with `updated`. `s` handle unchanged. |
+| 6 | (later) `get(s)` from any other operation | Returns `updated`. |
+
+Two distinct mutations happened (Store's slot in step 3, WorkItemStore's slot in step 5). They went through two separate handlers. The `Modify[s]` declaration on commit's signature covers both, transitively (since `s.backend` is reachable from `s`).
 
 #### `Modify[s]` already covers the backend reach
 
