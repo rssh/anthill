@@ -105,14 +105,177 @@ The functor-keyed Modify slot stays in place for *non-Cell* Modify-using resourc
 - `CellHandle::drop` decrements. When the refcount reaches zero, the slot's `value` is taken out (releases any internal refs it held — recursive Drop), and the slot index is pushed onto the free list.
 - `CellArena::alloc` reuses free-list slots before extending the `Vec`.
 
-### Cycle handling
+### Cycle handling — type-level prevention
 
-A Cell can hold a Value that transitively references the Cell itself — direct (`Cell.set(c, Value::Cell(c))`) or indirect (two cells holding each other through any number of levels of nesting). Refcounting alone does NOT reclaim cyclic structures: two cells that point to each other have refcount ≥ 1 forever. Two complementary mitigations:
+A Cell can hold a Value that transitively references the Cell itself — direct (`Cell.set(c, Value::Cell(c))`) or indirect (two cells holding each other through any number of levels of nesting). Refcounting alone does NOT reclaim cyclic structures: two cells that point to each other have refcount ≥ 1 forever.
 
-1. **Cycle prevention at write time** — strict; rejects all cycles. v1 default.
-2. **Cycle collection** (sweep, reachability-based) — permissive; allows cycles but periodically reclaims. Out of scope for v1; would arrive with a more general arena GC story (e.g. `gc-arena`).
+The runtime answers — detect-and-error, or sweep-and-collect — are both *late*. A program that attempts to build a cycle either fails at runtime (detection) or silently leaks until collection (GC). Neither makes incorrect programs analyzable up front.
 
-The strict approach is consistent with anthill's current value model and matches the existing `detect_cycle` in `effects.rs` — but the existing detector is approximate (functor-symbol comparison, doesn't read through arena slots) and works only because v0.1's functor-only Cell is degenerate (one slot total, no second cell to form a back-edge). The cell_arena needs a stronger detector.
+**v1 takes the type-level answer instead: cycles are inexpressible.**
+
+#### The rule
+
+`Cell[T]` is well-typed if and only if `T` is **Cell-free** — i.e., `T` does not transitively contain `Cell` anywhere in its structure (in any field of any entity, any element type of any container, any positional/named arg of any tuple).
+
+Concretely, the typer computes a static `may_contain_cell : Type → Bool` predicate:
+
+```
+may_contain_cell(Cell[_])               = true
+may_contain_cell(Int | Bool | String | Float | Symbol | Term | …)
+                                        = false  (primitives)
+may_contain_cell(Entity Foo(t1, …, tn)) = any may_contain_cell(ti)
+may_contain_cell(Tuple t1 …)            = any may_contain_cell(ti)
+may_contain_cell(List[T] | Option[T] | …) = may_contain_cell(T)
+may_contain_cell(Map[K, V])             = may_contain_cell(K) ∨ may_contain_cell(V)
+may_contain_cell(Closure | Stream | …)  = conservatively true (opaque)
+```
+
+The typer rule: **`Cell[T]` is rejected at typecheck time when `may_contain_cell(T)` is true.**
+
+#### Consequences
+
+- `Cell[Int]`, `Cell[String]`, `Cell[Bool]`: fine.
+- `Cell[Record(name: String, count: Int)]`: fine — entity with primitive fields.
+- `Cell[wis(backend: IndexedFileStore, id_counter: Int)]`: fine — neither field is cell-bearing. (This is exactly WI-203's WorkItemStore state.)
+- `Cell[List[Int]]`, `Cell[Map[String, Int]]`: fine.
+- `Cell[Cell[Int]]`: **rejected** — V is itself a Cell.
+- `Cell[List[Cell[Int]]]`: **rejected** — list element type contains Cell.
+- `Cell[Map[String, Cell[X]]]`: **rejected** — map value type contains Cell.
+- `Cell[Closure]`, `Cell[Stream]`: **rejected** — opaque types are conservatively cell-bearing.
+
+#### What this enables
+
+- **No cycles can form.** Type-impossible. The runtime never has to detect or collect them.
+- **Cell.set is O(1).** No walk, no detect_cycle. Just write the new value.
+- **No `walk_cells` trait.** Not needed at runtime.
+- **No `'gc` lifetime.** Not needed.
+- **No GC pauses.** Not applicable.
+- **Programs are statically analyzable.** A user's mistake is a typer error with a clear message ("Cell[T] requires T to be Cell-free; T = … contains Cell at …"); not a runtime exception, not a slow leak.
+
+#### What this restricts
+
+Cells cannot directly hold:
+- Other cells (no `Cell[Cell[T]]`).
+- Containers of cells (no `Cell[List[Cell]]`, no `Cell[Map[K, Cell[V]]]`).
+- Closures or streams (opaque carriers, conservatively rejected).
+
+Patterns that need "registry of cells" must use a different shape: a single `Cell[Map[String, V]]` with the map's values being non-cell V. Updates rebuild the map (immutable persistent data; cheap with hash-consed Maps). The single outer Cell carries the mutable state; map values are pure.
+
+For more complex graph-shaped state with mutable internal references, the answer is "use a different sort with explicit operations" — design a domain-specific Modifiable sort whose operations express the graph operations safely. (This is exactly the proposal 037 §3 framework: per-resource handlers with their own representation.) Cell is the *simple* leaf-pointer; complex state needs its own sort.
+
+#### Implementation plan changes
+
+The runtime simplifies dramatically vs the earlier (detect_cycle-based) draft:
+
+- ~~`WalkCells` trait~~ — not needed.
+- ~~`detect_cycle` graph walk~~ — not needed.
+- ~~Auto-derived walks for entities~~ — not needed.
+- ~~Stream Native/External invariant by code review~~ — not needed (Stream excluded from Cell payload by typer).
+
+What remains:
+
+- `Value::Cell(CellHandle)` variant.
+- `cell_arena.rs` (slot pool, refcount on clone/drop).
+- Cell.new/get/set builtins.
+- Refcount lifecycle as designed.
+- Typer rule: `may_contain_cell` predicate and the `Cell[T]` rejection.
+- Branch interaction via `register_undo` (unchanged).
+
+The typer rule is the essential addition; the runtime arena work shrinks to ~150 LoC (vs ~400 LoC for arena + walks + detector). Net implementation is *less* code than the runtime-detection approach.
+
+#### Typer enforcement: where the check happens
+
+The static analysis fires at every site where a value enters a Cell — primarily `Cell.new(v)` calls, plus any code that ascribes a `Cell[T]` type explicitly (let-binding type annotations, operation signatures, fact heads).
+
+**Predicate computation (`may_contain_cell`):**
+
+Computed once after sort loading, cached per type symbol. Walk:
+
+```
+may_contain_cell(Cell)                      = true                      // base case
+may_contain_cell(GCCell)                    = true                      // if GCCell variant lands
+may_contain_cell(Int|Bool|String|Float|…)   = false                     // primitives
+may_contain_cell(Symbol|Term|TermId|…)      = false                     // term-store types
+may_contain_cell(Closure|Stream|…)          = true                      // conservatively (opaque)
+may_contain_cell(Entity Foo(f1: T1, …))     = ⋁ may_contain_cell(Ti)    // any field
+may_contain_cell(Tuple t1 …)                = ⋁ may_contain_cell(ti)
+may_contain_cell(List[T] | Option[T])       = may_contain_cell(T)
+may_contain_cell(Map[K, V])                 = may_contain_cell(K) ∨ may_contain_cell(V)
+may_contain_cell(Pair[A, B])                = may_contain_cell(A) ∨ may_contain_cell(B)
+```
+
+For mutually-recursive entity definitions (A has field B, B has field A), iterate to fixed point:
+1. Initialize all entity types to `false`.
+2. For each entity, recompute based on its fields (using current values).
+3. Repeat until no change.
+4. Standard ascending-Kleene-iteration; converges in O(types × fields) total work.
+
+**Hook point in the loader/typer pipeline:**
+
+In `rustland/anthill-core/src/kb/`:
+- After `scan_definitions` (entity declarations registered), but before `load` finishes.
+- A new pass `compute_cell_freeness(kb: &mut KnowledgeBase)` walks all entity sorts, populates a `HashMap<Symbol, bool>` ("does T transitively contain Cell?"), iterates to fixed point.
+- Cached on `KnowledgeBase` as `pub fn may_contain_cell(&self, ty: TermId) -> bool`.
+
+**Check at `Cell.new(v)`:**
+
+The typer's operation-call inference already infers the argument's type. The Cell sort's declared `new(v: V) -> Cell` operation has V as a type parameter; the typer has bound V to the inferred argument type at the call site. Insert:
+
+```rust
+// During typing of `Cell.new(v)`:
+let v_type = infer_type(arg);
+if kb.may_contain_cell(v_type) {
+    return Err(TypeError::CellPayloadCycleRisk {
+        site: call_site_span,
+        v_type,
+        offending_path: kb.cell_path_in_type(v_type),  // diagnostic
+    });
+}
+```
+
+The `cell_path_in_type` helper (used only in error messages) walks the type and reports where the Cell occurs — e.g. `"List[Cell[Int]] : list element type"`. Useful for clear errors, not for the predicate decision (which is just bool).
+
+**Check at `Cell[T]` annotations:**
+
+Same predicate, applied wherever a type expression resolves to `Cell[T]`:
+- Let bindings: `let c: Cell[T] = …` — check at type-binding resolution.
+- Operation params/returns: `operation foo(c: Cell[T]) -> …` — check at sort/operation declaration time.
+- Fact heads with Cell-bearing parameters — check at fact loading.
+- Generic instantiation: `MySort[T = Cell[U]]` — check that `Cell[U]` is well-typed (so U must be Cell-free).
+
+The check is purely a guard on the type expression; it doesn't change any other typing rule.
+
+**Diagnostics:**
+
+Error message pattern:
+```
+error: Cell[T] requires T to be Cell-free
+  --> example.anthill:14:13
+   |
+14 |     let c: Cell[List[Cell[Int]]] = …
+   |             ^^^^^^^^^^^^^^^^^^^ T = `List[Cell[Int]]` contains Cell
+   |                                  at element type of List
+   |
+   = note: cells nested inside cells could form cycles, which would
+           leak. Consider:
+   = help: refactor to Cell[List[Int]] (single outer cell, persistent
+           list updated immutably);
+   = help: use GCCell[List[Cell[Int]]] for graph-shaped state (if/when
+           GCCell variant lands).
+```
+
+The error is the user-facing artifact. Three pieces: where the rejection fires, what type is offending, what the user can do about it.
+
+**Tests:**
+
+A focused test file for the typer rule:
+- `Cell[Int]`, `Cell[String]`, `Cell[wis(IndexedFileStore, Int)]` — accepted.
+- `Cell[Cell[Int]]`, `Cell[List[Cell[Int]]]`, `Cell[Map[String, Cell[X]]]` — rejected with a clear message.
+- `Cell[Closure]`, `Cell[Stream]` — rejected (opaque carriers).
+- Mutually recursive entities with no Cell anywhere — accepted.
+- Mutually recursive entities where one path leads to Cell — `Cell[A]` rejected.
+
+Drives the loader + typer integration end-to-end.
 
 #### Why a graph walk is required
 
@@ -450,6 +613,86 @@ The boundary between "controlled error" and "process abort" is set by:
 5. **Walk completeness for future opaque sorts.** v1 covers all Value variants (Closure via captured-env exposure; walkable Stream variants; runtime-invariant for Native/External/Resolver streams). User-defined opaque sorts arrive later (proposal-driven); when they do, the typer needs a "may-contain-Cell" rule rejecting cell-bearing type parameters in opaque-sort positions. Until that typer rule lands, v1 enforces at construction time: any builtin that constructs an opaque-sort value with Cell-bearing payload errors. The principle: every program either runs cleanly or fails at write time with a clear error — no silent leaks.
 
 6. **Type-driven walk skip** as a perf optimization: when the typer can prove a cell's value type contains no Cell, skip the runtime walk. Requires computing a "may-contain-Cell" flag per anthill type (transitive closure over field/element types). v1 does not include this; file as a perf follow-up if measurements warrant.
+
+## Design variant: optional `GCCell` sort
+
+Cell as designed is strict — `Cell[T]` requires T to be Cell-free, so cycles are inexpressible. This is right for the common case (state cells, configs, counters) but rejects programs that genuinely want graph-shaped mutable state (DAG nodes, observer chains, doubly-linked structures).
+
+A natural extension: a sibling sort `GCCell[T]` with no typer restriction on T, backed by a tracing mark-sweep arena. Programs that need graph state opt in; programs that don't, don't pay GC cost.
+
+### The split
+
+```anthill
+sort anthill.prelude.Cell      -- strict; T must be Cell-free
+sort anthill.prelude.GCCell    -- permissive; any T, including GCCell-bearing
+```
+
+| | `Cell[T]` | `GCCell[T]` |
+|---|---|---|
+| Typer rule on T | `may_contain_cell(T)` rejected | None |
+| Cycle handling | Impossible by construction | Tracing mark-sweep, periodic |
+| Per-write cost | O(1) — refcount + write | O(1) — slot write |
+| Reclamation | Synchronous on refcount → 0 | Pauses for collection |
+| Determinism | Fully deterministic | GC pauses non-deterministic |
+| Implementation cost | ~150 LoC | ~300 LoC (arena + mark-sweep + roots + walk_gccells trait) |
+
+Two distinct Value variants, two arenas:
+- `Value::Cell(CellHandle)` → cell_arena (refcount).
+- `Value::GCCell(GCCellHandle)` → gc_cell_arena (mark-sweep).
+
+The GC infrastructure stays *inside* the gc_cell_arena. The rest of the interpreter — Value, Frame, Substitution, builtins — doesn't see it. No `'gc` lifetime contamination. The collection pause is bounded to the gc_cell_arena's root-walk.
+
+### Why hand-rolled mark-sweep, not `gc-arena`
+
+Same reason the unified design rejected `gc-arena`: `Gc<'gc, ...>` slots inside the arena would require Value to derive `Collect`, propagating `'gc` back through Value and beyond. Manual mark-sweep keeps the GC strictly internal — slots hold plain `Value`s; the `walk_gccells` trait method walks reachable cells from a root set; the sweep pass frees unmarked slots. No lifetime invasion.
+
+### Roots
+
+The mark phase needs a root set: every `Value::GCCell` currently live in the executing program. Sources:
+- The activation stack — every Frame's locals.
+- The current eval pipeline's intermediate Values.
+- Effect handler captured state.
+
+Collection pauses eval, walks these, marks reachable from each, sweeps unmarked. Same general pattern as any mark-sweep collector for an interpreter.
+
+### Walks reused across both sorts
+
+The `walk_cells` / `walk_gccells` traits — auto-derived for entities, manual for arena variants — serve double duty:
+
+- **Cell**: typer-time `may_contain_cell` predicate (the static analog of the walk; never runs at runtime).
+- **GCCell**: runtime mark phase.
+
+The trait machinery isn't wasted by the type-level approach for Cell. It lives in the runtime as the GC mark function for GCCell, and statically as the typer rule for Cell. Same metadata source (entity field types), two consumers.
+
+### When does GC run?
+
+- **Explicit**: `GCCell.collect() -> Int` operation, returns count of slots reclaimed. User triggers; deterministic.
+- **Threshold-based**: when the gc_cell_arena's free_list is empty and would otherwise grow, run collection first. Implicit; bounded growth.
+- **Time-based**: periodic from a host loop. Probably overkill for an interpreter; skip.
+
+### Choosing between Cell and GCCell
+
+The user picks at type-declaration time. Most state goes in `Cell`; if the typer rejects `Cell[T]` because T may contain Cell, the error message redirects to `GCCell` as the intended-graph-state alternative:
+
+```
+error: Cell[T] requires T to be Cell-free; T = `List[Cell[Int]]` contains
+       Cell at element type. Consider using GCCell[T] if you intend
+       graph-shaped state, or refactor T to avoid nested Cells (e.g.
+       Cell[List[Int]] with the outer list reconstructed on update).
+```
+
+### Migration impact
+
+Adding GCCell as a sibling sort doesn't affect existing code:
+- Cell users keep working unchanged.
+- GCCell is new opt-in.
+- The Modify framework's typing-level rules (Modifiable[T = Cell], Modifiable[T = GCCell]) treat both.
+
+### Status
+
+This is a **design variant**, not currently committed-to. The strict-Cell design as written is sufficient for WI-203's WorkItemStore use case (Cell[wis(...)] is well-typed since wis fields are non-Cell). GCCell becomes load-bearing only if a real consumer surfaces graph-shaped mutable state.
+
+If/when GCCell lands, the cell_arena and gc_cell_arena coexist as siblings; neither obviates the other. Both share the walk traits.
 
 ## Why this design and not alternatives
 
