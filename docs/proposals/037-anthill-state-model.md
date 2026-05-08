@@ -364,16 +364,21 @@ No source-level `_local` / `_atomic` / `_transactional` operations exist or are 
 
 ### With other Modify effects
 
-Operations can declare multiple `Modify[X]` effects, one per resource they touch:
+`Modify[X]` is **transitive over reachability at the effect-row level**: changes to X imply changes to any component reachable from X. Declaring `Modify[s]` says "the resource at s may change, including anything inside it." A caller looking at the effect row reads it as the conservative bound on what can change — which is the only safe reading.
 
 ```anthill
 operation commit(s: WorkItemStore, w: WorkItem) -> Unit
-  effects {Modify[s], Modify[backend], Error}    -- modifies both s and s.backend
+  effects {Modify[s], Error}    -- s.backend reachable through s; covered
 ```
 
-The framework treats these independently — handlers for Modify[s] and Modify[backend] are separate. There's no automatic transitivity (Modify[s] does NOT imply Modify[anything reachable from s]).
+This is **effect-row inference only**, not handler dispatch. Each resource still has its own handler keyed by its own identity scheme; the runtime dispatches `Modify[s.backend]` at the *body* call site to the Store handler, not to s's handler. So a function that modifies s.backend goes through Store's handler at the call site, while its outer effect-row says `Modify[s]` (which absorbs the backend reach for the caller's purposes).
 
-If transitivity is desired (path-based effects), the operation declares it explicitly. Future proposal could add path syntax (`Modify[s.backend]` resolves at type-check time).
+Two consequences:
+
+1. **No need to enumerate every reachable resource at the operation header.** Declaring `Modify[s]` is enough when all the writes happen through s.
+2. **Narrowing requires path-effects** (a future feature, not in v1). Saying "I touch s but specifically NOT s.backend" needs syntax like `Modify[s] - Modify[s.backend]` or equivalent — the framework leaves room for this without committing to it.
+
+When path syntax (`Modify[s.backend]`) lands, callers that need precise sub-resource tracking can opt in. The default — broad `Modify[s]` — stays correct.
 
 ### With Error
 

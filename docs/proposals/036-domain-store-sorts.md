@@ -55,21 +55,23 @@ sort WorkItemStore
 
   -- Mutation. Persists the work item to the backend, updates each
   -- index, increments the counter. The Modify[s] effect dispatches
-  -- through the existing default_modify_handler — get(s) reads the
+  -- through the active WorkItemStore handler — get(s) reads the
   -- current state, set(s, new) writes the next one. Identity of s
-  -- is stable across calls; the state behind it shifts.
+  -- is stable across calls; the state behind it shifts. The disk
+  -- write through s.backend is encapsulated by commit (see
+  -- §"What Modify[s] means when s is an entity-handle" below).
   operation commit(s: WorkItemStore, w: WorkItem) -> Unit
-    effects {Modify[s], Modify[backend], Error}
+    effects {Modify[s], Error}
 
   operation forget(s: WorkItemStore, id: String) -> Unit
-    effects {Modify[s], Modify[backend], Error}
+    effects {Modify[s], Error}
 end
 ```
 
 Bundle's `cmd_add` collapses to:
 ```anthill
 operation cmd_add(a: AddArgs, s: WorkItemStore) -> Int
-  effects {ConsoleOutput, Modify[s], Modify[backend], Error}
+  effects {ConsoleOutput, Modify[s], Error}
 =
   let id = next_id(s)
   let wi = WorkItem(
@@ -87,7 +89,7 @@ No `Pair[Int, WorkItemStore]` return, no threading — `commit` mutates through 
 `cmd_claim` collapses similarly:
 ```anthill
 operation cmd_claim(a: ClaimArgs, s: WorkItemStore) -> Int
-  effects {ConsoleOutput, ConsoleError, Modify[s], Modify[backend], Error}
+  effects {ConsoleOutput, ConsoleError, Modify[s], Error}
 =
   match lookup(s, a.id)
     case none() -> ...error...
@@ -117,12 +119,23 @@ This is **WI-189** (reify/reflect operators): `let wi: WorkItem = ↓term`.
 
 WorkItemStore's state is a value-shaped record (`backend`, `by_id`, `by_status`, `id_counter`), so it plugs into the framework via Cell[V]: state location is "the Modify cell, holding a `wis(...)` Value. Reuses Cell[V] machinery" (per 037's per-resource interpreter contract for WorkItemStore). The `commit` body reads the current `wis(...)` via `get(s)`, computes the next value, and writes it back via `set(s, new)` — these are Cell's standard operations, dispatched through the existing Modify effect machinery.
 
-The per-resource Branch-interaction is determined by what's *inside* the `wis(...)` value:
+#### What `Modify[s]` means when `s` is an entity-handle
 
-- The in-memory parts (`by_id`, `by_status`, `id_counter`) are value-shaped and could be branch-local-snapshot like Cell.
-- The `backend` field is an `IndexedFileStore`, which is **sticky-by-physics** per 037 — the filesystem can't roll back atomically. The `commit` declaration `effects {Modify[s], Modify[backend], Error}` makes the `Modify[backend]` reach explicit.
+Under 037's parameter-name convention, `Modify[X]` reads as "modifies the resource at the parameter named X." Here `s: WorkItemStore` is the parameter — but `WorkItemStore` is declared via `entity wis(...)`, so what `Modify[s]` actually identifies needs a sentence:
 
-So WorkItemStore inherits the Store's Branch constraint: until either a buffered Store handler absorbs writes for the branch's duration, or a static constraint rejects `Modify[backend]` ops inside Branch (analogous to the Branch+Consumes constraint from 027), `commit` cannot be called inside `Branch` soundly. For the bundle's v0.1 (one-shot CLI, no Branch use), this is not load-bearing — the gap is documented at the framework level (037 §"Store" contract row), not in this proposal.
+`s` is a **handle**. The entity term `wis(backend, by_id, by_status, counter)` is hash-consed and never mutates — what changes is the value the WorkItemStore handler returns when asked "what's the current state for s?" `set(s, new_wis)` doesn't change `s` (the entity is immutable). It changes the slot that `get(s)` reads from. Same as `Cell.set(c, v)` for `c: Cell[V]`: the cell handle stays put, the state behind it shifts. This is the conventional semantics of an `IORef` / `ref` / mutable cell — the address is stable, the contents move.
+
+#### `Modify[s]` already covers the backend reach
+
+A reader might expect `commit` to declare `Modify[backend]` separately since the body calls `persist(backend, ...) effects {Modify[store], Error}`. It doesn't need to. Per 037's transitivity rule for effect-row inference, `Modify[s]` covers any component reachable through s — including `s.backend`. The single declaration `effects {Modify[s], Error}` is the conservative bound: the caller reads it as "anything inside s may change," which includes the disk write through s.backend.
+
+Handler dispatch at the call site is still per-resource: when `commit`'s body calls `persist(backend, ...)`, that call dispatches to the Store handler keyed by `backend`, not to s's handler. Transitivity is a typing/effect-row concern, not a runtime-dispatch concern.
+
+If `commit` needs to *narrow* (express "I touch s but not its backend"), it would need path-effects to subtract — `Modify[s] - Modify[s.backend]` or equivalent. That's a future direction in 037 and not needed here; commit genuinely does write to the backend, so the broad `Modify[s]` is what we want.
+
+#### Branch-interaction propagates through `s`'s components
+
+The Branch-interaction reasoning has to follow reachability the same way. `s`'s Cell-shaped state is value-tree, so it could in principle be branch-local-snapshot under Branch. But its `backend` field is an `IndexedFileStore`, which 037 declares **sticky-by-physics** — the filesystem can't roll back atomically. Since `commit` transitively mutates the disk, `s`'s effective contract under Branch is the *intersection* of its components — sticky-by-physics overall. Until the framework grows path effects + per-component contract reasoning (or a buffered Store handler absorbs disk writes for the branch's duration, or a static constraint rejects `commit` inside Branch — analogous to the Branch+Consumes constraint from 027), `commit` cannot be called soundly inside `Branch`. For the bundle's v0.1 (one-shot CLI, no Branch use), this is not load-bearing — the gap is documented at the framework level (037 §"Store" contract row).
 
 #### Forward compatibility with time-travel
 
