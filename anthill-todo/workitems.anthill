@@ -1437,3 +1437,4 @@ fact WorkItem(
   depends_on: ["WI-203"],
   status: Open)
 
+fact Feedback(content: "Scope expansion: WI-202 also extends the IndexedFileStore Rust struct with a primary-key index — by_id: HashMap (String to RuleId) populated at pull, maintained on persist/retract. The id field name is a v0.1 convention (every domain entity in an IndexedFileStore is expected to have a String-typed id field; a future generalization via PrimaryKey marker fact is out of scope). retrieve uses the index for O(1) lookup when the pattern has id bound; falls back to O(N) scan otherwise. This makes the Indexed in IndexedFileStore honest in both senses: indexed for retract (WI-187, already landed) AND indexed for query (this WI). Without the primary-key index, retrieve would be O(N) scan-and-unify which is fine at CLI scale but misnames the struct. See proposal 036 §3 for the design.", at: "2026-05-08T09:11:15Z", workitem: "WI-202", author: "user")

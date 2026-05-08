@@ -4,7 +4,7 @@
 
 ## Tracks: WI-192
 
-## Relates to: 037 (Modify framework — canonical state model; this proposal is a concrete consumer), WI-202 (phase 1 prerequisite — IndexedFileStore + QueryableStore foundation: stdlib entity, fact, retrieve builtin), WI-188 (entity copy), WI-189 (reify/reflect operators), WI-190 (quasi-quote patterns), WI-194 (commit), WI-195 (Error effect wired), WI-187 (IndexedFileStore Rust impl — already landed; underpins WI-202), WI-200 (multi-instance Modify state — resolves the single-instance limitation noted below), WI-201 (`Spec.AssociatedType` syntax — would let polymorphic bundle commands drop the explicit `?S where WorkItemStore[?S]` noise)
+## Relates to: 037 (Modify framework — canonical state model; this proposal is a concrete consumer), WI-202 (phase 1 prerequisite — IndexedFileStore primary-key index + QueryableStore + retrieve builtin), WI-188 (entity copy), WI-189 (reify/reflect operators), WI-190 (quasi-quote patterns), WI-194 (commit), WI-195 (Error effect wired), WI-187 (IndexedFileStore source-span retract — already landed; WI-202 extends the struct with the id index), WI-200 (multi-instance Modify state — resolves the single-instance limitation noted below), WI-201 (`Spec.AssociatedType` syntax — would let polymorphic bundle commands drop the explicit `?S where WorkItemStore[?S]` noise)
 
 ## Motivation
 
@@ -233,15 +233,26 @@ This is the framework's central observation, spelled out in 037 §3 "Type-specif
 
 Cross-reference 037 for the full framework; WI-192 is its first end-to-end consumer.
 
-### 3. IndexedFileStore satisfies QueryableStore *(blocker)*
+### 3. IndexedFileStore satisfies QueryableStore — with a real primary-key index *(blocker)*
 
-The design relies on `retrieve(backend, pattern) -> Stream[Term, Error]` from stdlib's `QueryableStore` spec. IndexedFileStore today is `BulkStore` (load-all only); it must additionally satisfy `QueryableStore` for `lookup` / `by_status_of` to work.
+The design relies on `retrieve(backend, pattern) -> Stream[Term, Error]` from stdlib's `QueryableStore` spec. Today's IndexedFileStore (WI-187) is "indexed" only in the *retract* sense — `RuleId → (PathBuf, Span)` for span-based retract. There's no domain-side index, so a naive `retrieve` would be O(N) scan-and-unify.
 
-Required:
-- Declare `fact QueryableStore[IndexedFileStore]` in stdlib (or in the project's `store.anthill`).
-- Implement the `retrieve` Rust-side: pattern-matching against the IndexedFileStore's existing source-span-indexed term cache (already in memory after `pull`). O(N) scan per query is fine at CLI scale.
+For 036's `lookup(s, id)` to be O(1) — and for the design to be honest about the "Indexed" in IndexedFileStore — WI-202 extends the struct with a **primary-key index** maintained alongside the source map:
 
-This subsumes what the in-memory `by_id` / `by_status` maps were doing in earlier drafts — instead of materializing in the WorkItemStore layer, the backend does the materialization once (transparent to the WorkItemStore).
+- New field on the Rust struct: `by_id: HashMap<String, RuleId>` (or a more general `by_field: HashMap<(Symbol, Value), Vec<RuleId>>` if we want multi-key indexing per functor; v0.1 can be id-only).
+- Populated at `pull` time: for each fact, extract the value of its `id` field (when present) and insert into `by_id`.
+- Maintained on `persist` (insert) and `retract` (remove).
+- `retrieve(ifs, pattern)` checks if the pattern has an `id` field bound; if yes, uses the index for O(1) lookup; otherwise falls back to O(N) scan-and-unify.
+
+The "id" field name is a v0.1 convention — every domain entity that lives in an IndexedFileStore is expected to have a String-typed `id` field. A future generalization could let the entity declare its primary-key field via a marker fact (`PrimaryKey[Entity = WorkItem, field = id]` or similar) — out of scope here.
+
+Required for WI-202:
+- Extend the `IndexedFileStore` Rust struct with the `by_id` index.
+- Declare `fact QueryableStore[IndexedFileStore]` in stdlib.
+- Implement `pub trait QueryableStore: Store { fn retrieve(...) -> Stream<...> }` and impl for IndexedFileStore.
+- Register the `retrieve` builtin in `anthill-stl/src/persistence/builtins.rs`.
+
+This subsumes what the in-memory `by_id` / `by_status` maps were doing in earlier WIS drafts — the backend does the indexing once, transparent to the WorkItemStore.
 
 ### 4. Construction at host (Rust) side *(implementation, not language)*
 
