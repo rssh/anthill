@@ -23,62 +23,91 @@ The pattern is "fact set + a few indexes + domain operations." That's a *sort* i
 
 ## What the surface looks like
 
-`WorkItemStore` is the **anthill-todo subproject's** domain store — declared in the project's anthill source, alongside `WorkItem` itself. It does not live in the stdlib. Other projects that want a "store with custom indexes" declare their own (`UserStore`, `ProjectStore`, `RuleAuditStore`) using the same machinery.
+`WorkItemStore` is the **anthill-todo subproject's** domain spec — declared in the project's anthill source, alongside `WorkItem` itself. It does not live in the stdlib. Other projects that want a "store with custom indexes" declare their own (`UserStore`, `ProjectStore`, `RuleAuditStore`) using the same machinery.
 
-The pluggable-backend story (file-system today, GitHub issues and remote API later — see `examples/github-todo/docs/pluggable-backend.md`) is handled at the **backend** level: WorkItemStore's `backend` field is typed as the abstract `Store` sort. Concrete Stores (FileStore, IndexedFileStore, future GitHubStore, future RemoteApiStore) all satisfy `Store` and plug in interchangeably. WorkItemStore itself is concrete — one piece of code, one set of operations — written once over the abstract Store interface.
+To match the pluggable-backend direction (`examples/github-todo/docs/pluggable-backend.md` — local files today; GitHub issues and remote API later) and the reality that **different backends have different capabilities** (GitHub search vs in-memory Map indexing; rate limits; eventual consistency), `WorkItemStore` is shaped as a spec parameterized by `State`. Each backend supplies its own `State` value-shape and its own bodies for the spec's operations. WI-192 ships the file-backed implementation; GitHub and API are separate work items, each adding a new impl sort with `fact WorkItemStore[<its-WIS>]` plus bodies, without touching the spec.
 
 ```anthill
--- ─── Data shape: backend is abstract Store ─────────────────────────
--- The backend field is typed at the abstract `Store` sort (declared
--- in stdlib/anthill/persistence/store.anthill). Any value satisfying
--- `Store` can be plugged in: IndexedFileStore today; GitHubStore /
--- RemoteApiStore later. The WorkItemStore code is the same.
-enum WIS
-  entity wis(
-    backend: Store,                       -- abstract; multiple impls
-    by_id: Map[String, WorkItem],
-    by_status: Map[WorkStatus, List[WorkItem]],
-    id_counter: Int)
+-- ─── 1. Spec — operations declared ONCE, over Cell[State] ─────────
+-- The spec lives over Cell[State] so the Cell protocol (Modify[s],
+-- Cell.get, Cell.set) applies uniformly. State is the data-shape;
+-- each impl picks its own.
+sort WorkItemStore
+  sort State = ?
+
+  -- Mutating operations: Modify[s] covers everything reachable from
+  -- s (per 037's transitivity rule).
+  operation next_id(s: Cell[State]) -> String
+    effects Modify[s]
+  operation commit(s: Cell[State], w: WorkItem) -> Unit
+    effects {Modify[s], Error}
+  operation forget(s: Cell[State], id: String) -> Unit
+    effects {Modify[s], Error}
+
+  -- Read-only operations. No Modify; observation is type-pure.
+  operation lookup(s: Cell[State], id: String) -> Option[WorkItem]
+  operation by_status_of(s: Cell[State], st: WorkStatus)
+    -> List[WorkItem]
 end
 
--- WorkItemStore = a mutable cell holding the WIS data. Cell's
--- protocol (Modify[s], get(s), set(s, v)) applies directly.
-sort WorkItemStore = Cell[WIS]
+-- ─── 2. File-backed impl: a sort that binds State and provides bodies ─
+sort FileBasedWorkitemStore
+  -- The data shape this impl operates over.
+  enum WIS
+    entity wis(
+      backend: IndexedFileStore,
+      by_id: Map[String, WorkItem],
+      by_status: Map[WorkStatus, List[WorkItem]],
+      id_counter: Int)
+  end
 
--- Operations: one set, written once. Each takes s: WorkItemStore
--- (= Cell[WIS]) and uses Cell.get / Cell.set on it. Inside commit,
--- `persist(backend, ...)` dispatches via the Store spec — the
--- concrete backend (FileStore, GitHubStore, ...) determines what
--- runs there.
-operation commit(s: WorkItemStore, w: WorkItem) -> Unit
-  effects {Modify[s], Error}
-=
-  match Cell.get(s)
-    case wis(backend, by_id, by_status, counter) ->
-      let _ = persist(backend, w, Meta(entries: nil()))    -- Store spec dispatch
-      let _ = flush(backend, nil())                         -- Store spec dispatch
-      let updated = wis(backend, Map.put(by_id, w.id, w),
-                        add_to_status(by_status, w.status, w),
-                        counter + 1)
-      Cell.set(s, updated)
+  -- This sort satisfies the spec with State bound to WIS.
+  fact WorkItemStore[WIS]
 
-operation lookup(s: WorkItemStore, id: String) -> Option[WorkItem]
-=
-  match Cell.get(s)
-    case wis(_, by_id, _, _) -> Map.get(by_id, id)
+  -- Bodies. Signatures are inherited from the spec via the fact;
+  -- inside each body s has type Cell[WIS], so Cell.get / Cell.set
+  -- typecheck against WIS.
+  operation commit(s, w) =
+    match Cell.get(s)
+      case wis(backend, by_id, by_status, counter) ->
+        let _ = persist(backend, w, Meta(entries: nil()))
+        let _ = flush(backend, nil())
+        let updated = wis(backend, Map.put(by_id, w.id, w),
+                          add_to_status(by_status, w.status, w),
+                          counter + 1)
+        Cell.set(s, updated)
 
--- (next_id, by_status_of, forget elided — same shape.)
+  operation lookup(s, id) =
+    match Cell.get(s)
+      case wis(_, by_id, _, _) -> Map.get(by_id, id)
+
+  -- (next_id, by_status_of, forget elided — same shape.)
+end
+
+-- ─── 3. Future backends — same shape, separate impl sorts ──────────
+-- sort GitHubBasedWorkitemStore
+--   enum WIS entity wis(token, repo, ...) end
+--   fact WorkItemStore[WIS]
+--   operation commit(s, w) = ... -- suited to GitHub's capabilities
+-- end
+--
+-- sort RemoteApiBasedWorkitemStore
+--   enum WIS entity wis(endpoint, session, ...) end
+--   fact WorkItemStore[WIS]
+--   operation commit(s, w) = ... -- suited to remote API
+-- end
 ```
 
-The polymorphism is in the **backend**, not in WorkItemStore. Switching from local files to GitHub is a host-side decision: build `wis(github_store, ...)` instead of `wis(file_store, ...)`. The WorkItemStore code doesn't change; the Store dispatch carries the backend-specific semantics. This matches `pluggable-backend.md`'s framing — the *type of data sources* is configurable per project, but the WorkItem domain logic is the same.
+This is a typeclass-like layering — and that's appropriate here. Each backend's bodies exploit its own capabilities (FileWIS materializes everything in memory; GitHubWIS would defer to GH search; RemoteApiWIS would batch over a session). The spec captures the contract; the impls capture the variability.
 
 Bundle's `cmd_add` collapses to:
 ```anthill
--- The bundle's commands take s: WorkItemStore (= Cell[WIS]). The
--- concrete backend behind s.backend is whatever the host plugged
--- in (IndexedFileStore today; GitHubStore / RemoteApiStore later)
--- — selected at startup, dispatched at every persist/flush call.
-operation cmd_add(a: AddArgs, s: WorkItemStore) -> Int
+-- The bundle's commands are polymorphic over `?S` satisfying the
+-- spec — they call only spec operations (next_id, commit, lookup,
+-- ...). The host picks one concrete State at startup (`Cell[FileWIS]`
+-- today; `Cell[GitHubWIS]` later) and threads it through.
+operation cmd_add(a: AddArgs, s: ?S) -> Int
+  requires WorkItemStore[?S]
   effects {ConsoleOutput, Modify[s], Error}
 =
   let id = next_id(s)
@@ -92,11 +121,12 @@ operation cmd_add(a: AddArgs, s: WorkItemStore) -> Int
   0
 ```
 
-No `Pair[Int, WorkItemStore]` return, no threading — `commit` mutates through `Modify[s]` (Cell's effect); the next `next_id(s)` (or any other read on `s`) sees the updated state. The Cell handle is stable across the call; the wrapped `wis(...)` value shifts.
+No `Pair[Int, S]` return, no threading — `commit` mutates through `Modify[s]` (Cell's effect, since the State is a `Cell[X]`); the next `next_id(s)` (or any other read on `s`) sees the updated state. The Cell handle is stable across the call; the wrapped value shifts.
 
 `cmd_claim` collapses similarly:
 ```anthill
-operation cmd_claim(a: ClaimArgs, s: WorkItemStore) -> Int
+operation cmd_claim(a: ClaimArgs, s: ?S) -> Int
+  requires WorkItemStore[?S]
   effects {ConsoleOutput, ConsoleError, Modify[s], Error}
 =
   match lookup(s, a.id)
@@ -123,22 +153,22 @@ This is **WI-189** (reify/reflect operators): `let wi: WorkItem = ↓term`.
 
 ### 2. Mutating commit through the Modify framework *(not a blocker — already exists)*
 
-Defining `WorkItemStore = Cell[WIS]` resolves the "how does Modify[s] apply to an entity?" question structurally: the bundle's `s: WorkItemStore` IS a Cell handle (via the type alias). Cell's protocol — `Modify[c]`, `get(c)`, `set(c, v)` — applies straight from the framework. No new state-bearing sort to design; no muddled handle-vs-value question.
+Each spec impl pairs a State type (`Cell[FileWIS]` for the file backend) with operation bodies. Because the State is a `Cell[X]`, Cell's protocol — `Modify[c]`, `get(c)`, `set(c, v)` — applies straight from the framework. No new state-bearing sort to design; no muddled handle-vs-value question.
 
-What commit does, end-to-end:
+What commit does end-to-end (file-backed impl, `?S = Cell[FileWIS]`):
 
 | Step | What runs | Effect |
 |---|---|---|
-| 1 | `match Cell.get(s)` | Reads s's cell slot. Returns the current `wis(b, m1, m2, c1)`. |
-| 2 | `case wis(backend, by_id, by_status, counter)` | Destructures the returned value, binding `backend`, `by_id`, etc. locally. |
-| 3 | `persist(backend, w, ...)` | Goes through Store's handler keyed by `backend`. Mutates the store's slot (writes the file, calls the API, etc., depending on the concrete Store impl). `backend` handle unchanged. |
-| 4 | `let updated = wis(backend, Map.put(by_id, ...), ..., counter + 1)` | Constructs a fresh wis term. Pure. |
+| 1 | `match Cell.get(s)` | Reads s's cell slot. Returns the current `file_wis(b, m1, m2, c1)`. |
+| 2 | `case file_wis(backend, by_id, by_status, counter)` | Destructures the returned value, binding `backend`, `by_id`, etc. locally. |
+| 3 | `persist(backend, w, ...)` | Goes through Store's handler keyed by `backend`. Writes the file. `backend` handle unchanged. |
+| 4 | `let updated = file_wis(backend, Map.put(by_id, ...), ..., counter + 1)` | Constructs a fresh file_wis term. Pure. |
 | 5 | `Cell.set(s, updated)` | Goes through Cell's handler keyed by `s`. Overwrites the cell's slot with `updated`. `s` handle unchanged. |
 | 6 | (later) `Cell.get(s)` from any other operation | Returns `updated`. |
 
 Two distinct mutations: Store's slot in step 3, Cell's slot in step 5. They go through two separate handlers (Store's, Cell's), each keyed by its own resource. The `Modify[s]` declaration on commit's signature covers both transitively (per 037's transitivity rule — `s.backend` is reachable from `s`).
 
-The host's startup work: build the initial `wis(...)` value (walks `facts_of("WorkItem")`, fills the maps, scans `id_counter`), allocate a `Cell[WIS]`, seed it with `Cell.set(handle, initial)`, pass the handle into `Main.main`.
+The host's startup work: build the initial `file_wis(...)` value (walks `facts_of("WorkItem")`, fills the maps, scans `id_counter`), allocate a `Cell[FileWIS]`, seed it with `Cell.set(handle, initial)`, pass the handle into `Main.main`.
 
 #### `Modify[s]` covers the backend reach
 
@@ -150,7 +180,7 @@ Handler dispatch at the call site stays per-resource: `persist(backend, ...)` go
 
 The Branch-interaction reasoning has to follow reachability the same way. `Cell[WIS]`'s state is value-tree, so it could in principle be branch-local-snapshot. But the wis value's `backend` field is a `Store`, which 037 declares **sticky-by-physics** for filesystem-backed impls — the filesystem can't roll back atomically. Since `commit` transitively mutates whatever the backend mutates, the cell's effective contract under Branch is the *intersection* of its components, dominated by the most-restrictive component (the backend). For a file-backed Store, that's sticky-by-physics overall; for a hypothetical purely-in-memory mock backend, branch-local-snapshot would be admissible. Until the framework grows path effects + per-component contract reasoning (or a buffered Store handler absorbs disk writes for the branch's duration, or a static constraint rejects `commit` inside Branch — analogous to the Branch+Consumes constraint from 027), `commit` cannot be called soundly inside `Branch` against a sticky-by-physics backend. For the bundle's v0.1 (one-shot CLI, no Branch use), this is not load-bearing — the gap is documented at the framework level (037 §"Store" contract row).
 
-A switch to a different backend (GitHub issues, remote API) plugs in via the abstract `Store` field. The cell's effective Branch behavior is dictated by whichever concrete Store the host wires in; the WorkItemStore code doesn't change.
+A switch to a different backend (GitHub issues, remote API) brings its own State type and bodies. The cell's effective Branch behavior is dictated by whichever components the impl's State value reaches; e.g. a hypothetical purely-in-memory mock backend would be branch-local-snapshot admissible.
 
 #### Forward compatibility with time-travel
 
@@ -162,11 +192,11 @@ A future time-travel handler (versioned state, audit trails, history queries) sh
 4. `set` returns `Unit`, not the prior value.
 5. Operation signatures don't encode rollback policy — that's the resource's contract.
 
-WorkItemStore's design satisfies all five — `commit` calls `set` returning `Unit`; `lookup` calls `get`; only `Modify[s]` is declared. A future time-travel handler could substitute a versioned representation of the `wis(...)` Value without changing any user-visible code.
+The spec satisfies all five — `commit` calls `Cell.set` returning `Unit`; `lookup` calls `Cell.get`; only `Modify[s]` is declared in the spec's effect rows. A future time-travel handler could substitute a versioned representation of the State `Cell` without changing any user-visible code.
 
 #### Single-instance-per-functor limitation
 
-Today's transitional Rust scheme (the type-independent `default_modify_handler`) keys cells by **functor symbol only** — `wis(...)` regardless of field values shares a single cell. Two `wis(backend_a, ..., counter: 5)` and `wis(backend_b, ..., counter: 10)` collide. This is fine for the bundle's WI-192 use case (one CLI invocation = one project = one WorkItemStore) but breaks for multi-instance scenarios:
+Today's transitional Rust scheme (the type-independent `default_modify_handler`) keys cells by **functor symbol only** — `file_wis(...)` regardless of field values shares a single cell. Two `file_wis(backend_a, ..., counter: 5)` and `file_wis(backend_b, ..., counter: 10)` would collide. This is fine for the bundle's WI-192 use case (one CLI invocation = one project = one WorkItemStore) but breaks for multi-instance scenarios:
 
 - Tests that exercise `cmd_X` against multiple isolated stores in the same process.
 - A future `anthill-todo-server` managing N project workspaces.
@@ -180,33 +210,13 @@ Per 037, identity is a property of the *handler* (`ModifyHandler[Resource, Ident
 
 WI-200 tracks the runtime work to wire per-resource handlers under these schemes. Until WI-200 lands, every Modify-using resource is functor-keyed. WI-192 v0.1 ships under this limitation and uses functor-only on purpose (single-store bundle). Documented here so the limitation is visible at design-review time, not surprise at multi-tenant time.
 
-So a WorkItemStore.commit body looks like:
-
-```anthill
-operation commit(s: WorkItemStore, w: WorkItem) -> Unit
-  effects {Modify[s], Modify[backend], Error}
-=
-  match get(s)
-    case wis(backend, by_id, by_status, counter) ->
-      let _ = persist(backend, w, Meta(entries: nil()))
-      let _ = flush(backend, nil())
-      let updated = wis(backend, Map.put(by_id, w.id, w),
-                        add_to_status(by_status, w.status, w),
-                        counter + 1)
-      set(s, updated)
-```
-
-`s` at every call site is just the resource handle. Inside the body, `get(s)` reads the current `wis(...)` value, `set(s, new)` writes the next one — these are Cell's standard operations dispatched via the Modify effect machinery (per 037's per-resource interpreter contract for WorkItemStore). Identity of `s` is stable across calls; the state behind it shifts.
-
-Under v0.1's transitional handler scheme (functor-only identity), the field values inside `s` don't participate in state lookup — the runtime keys all `wis(...)` calls to one slot. That matches the bundle's single-store usage. When WI-200 lands and Cell migrates to opaque-handle identity, `s`'s allocation-time uid will become the keying scheme — multi-store usage falls out without changing user-visible code.
-
-The only runtime work needed at startup: the host calls `Modify.set(wis_handle, initial_wis)` once, seeding the cell. That's a single effect dispatch through machinery that already works.
+Under v0.1's transitional handler scheme (functor-only identity), the field values inside `s` don't participate in state lookup — the runtime keys all `file_wis(...)` calls to one slot. That matches the bundle's single-store usage. When WI-200 lands and Cell migrates to opaque-handle identity, `s`'s allocation-time uid will become the keying scheme; multi-store usage follows without changing user-visible code.
 
 Earlier drafts considered three other options (functional threading; a new Cell value variant; a separate registry pattern duplicating what Modify already does). All inferior to using the framework as-is. Discarded.
 
 #### Note: registries and state are the same idea
 
-This is the framework's central observation, spelled out in 037 §3 "Type-specific Modify handlers": the Modify cell, the host store registry, KB indexes, arenas, source maps are all *handlers for resource-specific Modify effects*. They differ in state representation; they are uniform in dispatch. WorkItemStore's state happens to be value-shaped, so it plugs into the Cell-style handler with no new machinery. Resources whose state spills outside the Value model (e.g. FileStore's per-instance backend objects) get a different state-representation choice but the same dispatch architecture.
+This is the framework's central observation, spelled out in 037 §3 "Type-specific Modify handlers": the Modify cell, the host store registry, KB indexes, arenas, source maps are all *handlers for resource-specific Modify effects*. They differ in state representation; they are uniform in dispatch. The WorkItemStore spec's state happens to be value-shaped (a `Cell[X]` for some X), so it plugs into the Cell-style handler with no new machinery. Resources whose state spills outside the Value model (e.g. backend objects with non-Value internals) get a different state-representation choice but the same dispatch architecture.
 
 Cross-reference 037 for the full framework; WI-192 is its first end-to-end consumer.
 
