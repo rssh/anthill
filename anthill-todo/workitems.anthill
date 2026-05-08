@@ -1446,3 +1446,10 @@ fact WorkItem(
   status: Open)
 
 fact Feedback(content: "Reordered: WI-203 should land AFTER WI-205 (Modify framework runtime: per-resource handlers + Cell sort). Original WI-203 description assumed v0.1 transitional functor-keyed scheme would suffice; per design feedback the fundamentals must be in place first. Effective dependency: WI-203 depends on WI-202 (IndexedFileStore retrieve, landed in commit 4c08e87) and WI-205 (Modify framework runtime, not yet started).", at: "2026-05-08T10:36:03Z", workitem: "WI-203", author: "user")
+fact WorkItem(
+  id: "WI-206",
+  description: "Reflect operation: is_modifiable(t: Type) -> Bool. Add to stdlib/anthill/reflect/reflect.anthill alongside the existing introspection ops (sort_template, occurrences_of, etc.). Body: queries the KB for fact Modifiable[T = t] (the marker introduced by WI-205); returns true iff such a fact exists. Use cases: (a) defensive programming — a function that takes any type and only mutates if its modifiable, queries is_modifiable before deciding to call set/get; (b) reflection-driven UIs and dispatchers — listing all modifiable resources at runtime; (c) typer-side helpers in user code that mirror the kernel typer rule (the kernel typer enforcing Modify[T] requires Modifiable[T] is WI-205 internal; user code can introspect via this reflect op). Implementation: a Rust builtin that wraps a KB query for the Modifiable fact functor with the type as the T parameter binding. Acceptance: anthill.reflect.is_modifiable(Cell[Int]) returns true after WI-205 lands; is_modifiable(Int) returns false; cargo test green. Independent of WI-205 implementation order — could land before WI-205 (returning false for everything until Modifiable facts are registered) or after.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-205"],
+  status: Open)
+
