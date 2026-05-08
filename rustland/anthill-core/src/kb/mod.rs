@@ -1195,7 +1195,7 @@ impl KnowledgeBase {
 
     /// Map a function over the children of an Fn term, returning the same TermId
     /// if nothing changed (avoids unnecessary allocation and hash-consing).
-    fn map_fn_children(&mut self, term: TermId, mut f: impl FnMut(&mut Self, TermId) -> TermId) -> TermId {
+    pub(crate) fn map_fn_children(&mut self, term: TermId, mut f: impl FnMut(&mut Self, TermId) -> TermId) -> TermId {
         match self.terms.get(term).clone() {
             Term::Fn { functor, pos_args, named_args } => {
                 let mut changed = false;

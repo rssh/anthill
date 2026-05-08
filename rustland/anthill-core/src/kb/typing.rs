@@ -313,6 +313,42 @@ fn merge_effects(a: &[TermId], b: &[TermId]) -> Vec<TermId> {
     result
 }
 
+/// If `expr` is a `var_ref` term, return the symbol the variable refers
+/// to. Used by [`check_apply`] to harvest call-site arg names so
+/// parametric effects like `Modify[c]` (c is a callee's parameter) get
+/// rewritten to `Modify[s]` when the actual arg is the var `s`.
+fn extract_var_ref_sym(kb: &KnowledgeBase, expr: TermId) -> Option<Symbol> {
+    if let Term::Fn { functor, named_args, pos_args } = kb.get_term(expr) {
+        if kb.resolve_sym(*functor) == "var_ref" {
+            return extract_sym_arg(kb, named_args, pos_args, "name");
+        }
+    }
+    None
+}
+
+/// Recursively replace `Term::Ref(s)` with `Term::Ref(map[s])` inside
+/// `term`. Used to substitute param-name references in operation effects
+/// at call sites — e.g., `Cell.set` declares `effects Modify[c]` (with
+/// `c` as its parameter); when called as `Cell.set(s, ...)` from a body,
+/// `Modify[c]` is rewritten to `Modify[s]` so the calling op's declared
+/// `effects Modify[s]` matches. Caller is expected to short-circuit on
+/// empty maps (the typical case) — this fn does not check.
+fn substitute_ref_syms(
+    kb: &mut KnowledgeBase,
+    term: TermId,
+    map: &HashMap<Symbol, Symbol>,
+) -> TermId {
+    match kb.get_term(term).clone() {
+        Term::Ref(s) => map
+            .get(&s)
+            .map_or(term, |&new_sym| kb.alloc(Term::Ref(new_sym))),
+        Term::Fn { .. } => kb.map_fn_children(term, |kb, child| {
+            substitute_ref_syms(kb, child, map)
+        }),
+        _ => term,
+    }
+}
+
 // ── Helpers ────────────────────────────────────────────────────
 
 pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
@@ -601,7 +637,9 @@ fn check_apply(
     // Path 1: known operation — unify args with params to instantiate type params
     if let Some(op) = lookup_operation_info_full(kb, fn_sym) {
         let mut subst = Substitution::new();
-        let mut effects = op.effects.clone();
+        // Collected effects from arg subterms (kept separate from op.effects
+        // because op.effects may need parametric substitution before merging).
+        let mut arg_effects: Vec<TermId> = Vec::new();
 
         // Get actual arguments from the apply node
         let args_tid = get_named_arg(kb, named_args, "args")
@@ -609,6 +647,13 @@ fn check_apply(
         let arg_values: Vec<TermId> = args_tid
             .map(|a| list_to_vec(kb, a))
             .unwrap_or_default();
+
+        // Param-symbol → arg-var-symbol map for parametric effect
+        // substitution. When op declares `effects Modify[c]` (where c
+        // is a parameter) and the call binds c to a var_ref expression
+        // `s`, the call-site emits `Modify[s]` by replacing
+        // Term::Ref(c_sym) with Term::Ref(s_sym) in the effect.
+        let mut param_to_arg_sym: HashMap<Symbol, Symbol> = HashMap::new();
 
         // Unify each arg type with the corresponding param type
         for (i, arg_tid) in arg_values.iter().enumerate() {
@@ -621,17 +666,45 @@ fn check_apply(
             };
 
             if let Some(expr) = arg_expr {
+                // If this arg is a var_ref, record the param→arg-symbol
+                // binding for parametric effect substitution below.
+                if let Some(arg_var_sym) = extract_var_ref_sym(kb, expr) {
+                    if let Some(&(param_sym, _)) = op.params.get(i) {
+                        param_to_arg_sym.insert(param_sym, arg_var_sym);
+                    }
+                }
+
                 if let Some(arg_result) = type_check_expr(kb, env, expr) {
                     // Get the declared param type at this position
                     if let Some(&(_, param_type)) = op.params.get(i) {
                         unify_types(kb, &mut subst, arg_result.ty, param_type);
                     }
-                    effects = merge_effects(&effects, &arg_result.effects);
+                    arg_effects = merge_effects(&arg_effects, &arg_result.effects);
                 }
             }
         }
 
-        // Resolve return type through the substitution
+        // Apply the param-name substitution to op.effects, then merge
+        // with arg_effects. Walking through Term::Ref recursively rewrites
+        // any nested Modify[c]-style references to Modify[s] (and similar
+        // for other param-keyed effects). The common case has no var_ref
+        // args (e.g. `add(1, 2)`) — skip the walk entirely then.
+        let substituted_op_effects: Vec<TermId> = if param_to_arg_sym.is_empty() {
+            op.effects.clone()
+        } else {
+            op.effects
+                .iter()
+                .map(|e| substitute_ref_syms(kb, *e, &param_to_arg_sym))
+                .collect()
+        };
+        let effects = merge_effects(&substituted_op_effects, &arg_effects);
+
+        // Resolve return type through the substitution. Shallow walk
+        // only — propagating type-var bindings deep into parameterized
+        // returns (e.g. Stream.head's `Option[T = T]` → `Option[T =
+        // Term]`) is a separate WI: today's `unify_types` doesn't bind
+        // a sort's type-parameter when the param-side is a bare
+        // `sort_ref(Stream)` and the arg-side is `Stream[T = Term, …]`.
         let resolved_ret = walk_type(kb, &subst, op.return_type);
         return Some(TypeResult { ty: resolved_ret, env: env.clone(), effects });
     }
@@ -941,7 +1014,16 @@ fn check_match_expr(
                 extend_env_from_pattern(kb, &mut branch_env, pat, scr_ty);
                 if let Some(body_r) = type_check_expr(kb, &branch_env, resolve_handle(kb, bod)) {
                     if result_ty.is_none() { result_ty = Some(body_r.ty); }
-                    effects = merge_effects(&effects, &body_r.effects);
+                    // Filter effects on resources local to *this branch's
+                    // pattern bindings* before merging — pattern-bound vars
+                    // (e.g. `b` in `case wis(b, _) -> persist(b, …)`) live
+                    // only inside the case, so their effects shouldn't
+                    // escape. The outer env returned by check_match_expr
+                    // doesn't carry these bindings, so without this filter
+                    // they'd surface as undeclared effects on the enclosing
+                    // operation.
+                    let branch_external = external_effects(kb, &branch_env, &body_r.effects);
+                    effects = merge_effects(&effects, &branch_external);
                 }
             }
         }
@@ -1168,9 +1250,18 @@ fn extend_env_from_pattern(
         match functor_name.as_str() {
             "var_pattern" => {
                 if let Some(sym) = extract_sym_arg(kb, &named_args, &pos_args, "name") {
+                    let name = kb.resolve_sym(sym).to_string();
                     if let Some(ty) = scrutinee_type {
-                        env.bind_var(kb.resolve_sym(sym).to_string(), ty);
+                        env.bind_var(name.clone(), ty);
                     }
+                    // Pattern-bound names are local — effects on them
+                    // shouldn't escape the surrounding match/case scope
+                    // (matches `check_let_expr`'s declare_local_resource
+                    // for let bindings). Without this, a body like
+                    //   match Cell.get(s) case wis(b, _) -> persist(b, ...)
+                    // would surface persist's `Modify[b]` as an external
+                    // effect even though b's lifetime ends at case end.
+                    env.declare_local_resource(name);
                 }
             }
             "constructor_pattern" => {
