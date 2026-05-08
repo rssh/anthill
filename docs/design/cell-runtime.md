@@ -189,26 +189,70 @@ The static analysis fires at every site where a value enters a Cell — primaril
 
 **Predicate computation (`may_contain_cell`):**
 
-Computed once after sort loading, cached per type symbol. Walk:
+The predicate is on **fully-applied types** (with all type parameters bound to concrete arguments). It descends through structure, substituting at parameter-binding sites:
 
 ```
-may_contain_cell(Cell)                      = true                      // base case
-may_contain_cell(GCCell)                    = true                      // if GCCell variant lands
-may_contain_cell(Int|Bool|String|Float|…)   = false                     // primitives
-may_contain_cell(Symbol|Term|TermId|…)      = false                     // term-store types
-may_contain_cell(Closure|Stream|…)          = true                      // conservatively (opaque)
-may_contain_cell(Entity Foo(f1: T1, …))     = ⋁ may_contain_cell(Ti)    // any field
-may_contain_cell(Tuple t1 …)                = ⋁ may_contain_cell(ti)
-may_contain_cell(List[T] | Option[T])       = may_contain_cell(T)
-may_contain_cell(Map[K, V])                 = may_contain_cell(K) ∨ may_contain_cell(V)
-may_contain_cell(Pair[A, B])                = may_contain_cell(A) ∨ may_contain_cell(B)
+may_contain_cell(Cell)                          = true                      // base case
+may_contain_cell(GCCell)                        = true                      // if variant lands
+may_contain_cell(Int|Bool|String|Float|…)       = false                     // primitives
+may_contain_cell(Symbol|Term|TermId|…)          = false                     // term-store types
+may_contain_cell(Closure|Stream|…)              = true                      // conservatively (opaque)
+may_contain_cell(Entity Foo(f1: T1, …, fn: Tn)) = ⋁ may_contain_cell(Ti)    // any field
+may_contain_cell(Tuple t1 …)                    = ⋁ may_contain_cell(ti)
+may_contain_cell(List[T] | Option[T])           = may_contain_cell(T)
+may_contain_cell(Map[K, V])                     = may_contain_cell(K) ∨ may_contain_cell(V)
+may_contain_cell(Pair[A, B])                    = may_contain_cell(A) ∨ may_contain_cell(B)
+may_contain_cell(F[X = A, Y = B, …])            = may_contain_cell(unfold F with A,B,…)
 ```
 
-For mutually-recursive entity definitions (A has field B, B has field A), iterate to fixed point:
-1. Initialize all entity types to `false`.
-2. For each entity, recompute based on its fields (using current values).
-3. Repeat until no change.
-4. Standard ascending-Kleene-iteration; converges in O(types × fields) total work.
+The last rule unfolds parameterized sort applications by substituting arguments into the sort's body, then evaluating the predicate on the result.
+
+**Recursive abstract types:**
+
+Abstract sorts (`sort T = ?`) can be self-recursive — they reach themselves through their own fields:
+
+```anthill
+sort Tree
+  sort T = ?
+  entity node(value: T, children: List[Tree])
+end
+```
+
+`may_contain_cell(Tree[T = Int])` unfolds `node(value: Int, children: List[Tree[T = Int]])`. The fields are: `Int` (false), and `List[Tree[T = Int]]` — which recurses back to `Tree[T = Int]`. Termination via fixed-point under environment of in-progress evaluations:
+
+```
+evaluate(τ, env):
+  if τ in env:                       // already-in-flight (recursive case)
+    return env[τ]                    // tentatively false; will be revised
+  env[τ] = false                     // initial assumption
+  result = compute predicate via the rules above, recursing through env
+  env[τ] = result                    // commit
+  return result
+```
+
+For `Tree[T = Int]` this produces:
+- enter `Tree[T = Int]` with env[Tree[T = Int]] = false
+- evaluate fields: Int → false; List[Tree[T = Int]] → may_contain_cell(Tree[T = Int]) → returns env's `false` (recursion hit)
+- ⋁ false false → false
+- commit env[Tree[T = Int]] = false
+
+Fixed point reached in one pass. For `Tree[T = Cell[X]]`: the `value: T` field has `may_contain_cell(Cell[X]) = true`, immediately drives the OR to true; recursion through children doesn't change it.
+
+Standard Tarski-Kleene fixed-point iteration: monotone over the boolean lattice (false ≤ true), converges in finite steps (one if non-recursive flow already saturates; up to O(distinct types × fields) otherwise).
+
+**Mutually-recursive abstract sorts:**
+
+Same fixed-point machinery handles mutual recursion (`sort A` has field `B`, `sort B` has field `A`). The env tracks all in-flight evaluations; the iteration eventually stabilizes.
+
+**Caching:**
+
+Cache by `(sort_symbol, type_args_tuple)` pairs — same type with same args computes once. Different args (e.g. `Tree[T = Int]` vs `Tree[T = Cell[X]]`) are distinct cache keys.
+
+For unbound type parameters in scope (e.g. inside the body of `sort WorkItemStore { sort State = ? operation foo(s: State) }` — State is bound at use, not declaration), the predicate result depends on the eventual binding. Two stances:
+- **Cautious:** treat unbound `?T` as conservatively `true` — would reject `Cell[?T]` even when T might bind to a Cell-free type. Restricts what generic operations can return.
+- **Deferred:** evaluate the predicate at the call site where `?T` is bound to a concrete type. The check is a per-call-site obligation rather than a per-declaration one.
+
+The latter is correct for the rule's intent. anthill's typer already does call-site checking for similar patterns (effect rows after parameter binding, etc.); the same machinery applies.
 
 **Hook point in the loader/typer pipeline:**
 
