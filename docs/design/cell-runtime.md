@@ -208,6 +208,37 @@ fn detect_cycle(
 }
 ```
 
+**Implementation note: walk_cells must be iterative too.**
+
+The trait method `walk_cells` recurses through structural children (Entity fields, Map values, etc.). A pathologically deep value tree — 10 000 nested Tuples — would blow Rust's host stack. Each `walk_cells` impl on a multi-child variant must use an internal worklist, not recurse:
+
+```rust
+impl WalkCells for Value {
+    fn walk_cells(&self, f: &mut dyn FnMut(SlotIdx)) {
+        let mut stack: Vec<&Value> = vec![self];
+        while let Some(v) = stack.pop() {
+            match v {
+                Value::Cell(h) => f(h.slot),
+                Value::Entity { pos, named, .. }
+                | Value::Tuple { pos, named, .. } => {
+                    stack.extend(pos.iter());
+                    stack.extend(named.iter().map(|(_, v)| v));
+                }
+                Value::Map(h)     => arena.with_map(h, |body| {
+                                         for (_, v) in body { stack.push(v); }
+                                     }),
+                Value::Closure(c) => /* push captured env entries */,
+                Value::Term(tid)  => /* push term children */,
+                Value::Stream(_)  => { /* opaque */ }
+                _                 => {}
+            }
+        }
+    }
+}
+```
+
+The outer `detect_cycle` already uses a worklist for cell-graph traversal; combined with the iterative `walk_cells`, the maximum recursion depth in Rust is O(1) regardless of value-tree depth or cell-graph size. The only resource bound is heap memory for the worklists themselves.
+
 Two reasons to factor this way:
 
 1. **Encapsulation.** Each `Value` variant's structural traversal is local to its impl, not buried in a giant `match` in cycle-detection code. New variants slot in by implementing the trait. Same goes for adding fields to existing variants.
@@ -353,6 +384,23 @@ Migration steps:
 8. **Update wi205_cell_test.rs** — same surface tests still pass under the new representation.
 
 The Modify handler stays in place for non-Cell Modify users (Modify.get/set on plain entities; existing tests in `eval_m5_modify_test.rs`). Cell is a new dispatch path alongside, not a replacement of the Modify handler.
+
+## Failure modes — what crashes vs what errors
+
+A summary of how user-side mistakes manifest:
+
+| What the developer does | Result |
+|---|---|
+| Tries to construct a cycle (`Cell.set(b, a)` after `Cell.set(a, b)`) | `EvalError::CyclicReference` returned to caller — controlled error, surfaceable as `Error[CyclicReference]` at anthill level. No crash. |
+| Constructs a cycle through Stream or Closure (currently a detector gap, see open question 5) | Slow leak. Slot stays alive; eventually OOM if the program loops creating such cycles. Not a crash at the operation level. |
+| Writes infinite recursion (no Cell-specific concern) | `ActivationStack` grows in heap; no host-stack overflow. Eventually OOM → allocator panic → process abort. Same as any non-terminating program. |
+| Constructs a 10 000-deep nested Tuple/Entity tree and Cell.sets it | Iterative `walk_cells` + iterative `detect_cycle` handle it — O(1) Rust stack. Bounded only by heap. |
+| Allocates 10 000 Cells, drops the references | Each handle's `Drop` decrements the slot's refcount; 10 000 slots returned to free_list. No crash, no monotonic growth. |
+
+The boundary between "controlled error" and "process abort" is set by:
+- Stack-bounded operations (walk_cells, detect_cycle): never abort; iterative throughout.
+- Heap-bounded operations (everything Vec/HashMap-backed): abort only on actual OOM, same as any Rust program.
+- Cycle prevention: the explicit programmable error (`CyclicReference`) — the only "developer creates a loop" path that actually fires.
 
 ## Open questions
 
