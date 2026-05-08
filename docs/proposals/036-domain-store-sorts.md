@@ -4,7 +4,7 @@
 
 ## Tracks: WI-192
 
-## Relates to: 037 (Modify framework — canonical state model; this proposal is a concrete consumer), WI-188 (entity copy), WI-189 (reify/reflect operators), WI-190 (quasi-quote patterns), WI-194 (commit), WI-195 (Error effect wired), WI-187 (IndexedFileStore — already landed), WI-200 (multi-instance Modify state — resolves the single-instance limitation noted below)
+## Relates to: 037 (Modify framework — canonical state model; this proposal is a concrete consumer), WI-188 (entity copy), WI-189 (reify/reflect operators), WI-190 (quasi-quote patterns), WI-194 (commit), WI-195 (Error effect wired), WI-187 (IndexedFileStore — already landed), WI-200 (multi-instance Modify state — resolves the single-instance limitation noted below), WI-201 (`Spec.AssociatedType` syntax — would let polymorphic bundle commands drop the explicit `?S where WorkItemStore[?S]` noise)
 
 ## Motivation
 
@@ -82,6 +82,29 @@ sort FileBasedWorkitemStore
       case wis(_, by_id, _, _) -> Map.get(by_id, id)
 
   -- (next_id, by_status_of, forget elided — same shape.)
+
+  -- Bundle commands live inside the impl sort. State is bound, so
+  -- s: Cell[WIS] is concrete; no polymorphism overhead. cmd_add
+  -- calls the spec-op bodies above (resolved through the same
+  -- fact). Different impls write their own cmd_* — fitting, since
+  -- backends with different capabilities (GitHub search, API
+  -- batches) typically need different command logic anyway.
+  operation cmd_add(a: AddArgs, s: Cell[WIS]) -> Int
+    effects {ConsoleOutput, Modify[s], Error}
+  =
+    let id = next_id(s)
+    let wi = WorkItem(
+      id: id, description: a.description,
+      acceptance: a.acceptance, depends_on: a.depends,
+      status: Open())
+    let _ = commit(s, wi)
+    let _ = println(console(),
+                    concat("added: ", concat(id, concat(" — ", a.description))))
+    0
+
+  -- (cmd_claim, cmd_deliver, cmd_verify, cmd_delete, cmd_status,
+  -- cmd_show, cmd_list, cmd_graph, cmd_next, cmd_feedback,
+  -- cmd_update, cmd_add_dep, cmd_remove_dep elided — same shape.)
 end
 
 -- ─── 3. Future backends — same shape, separate impl sorts ──────────
@@ -98,35 +121,12 @@ end
 -- end
 ```
 
-This is a typeclass-like layering — and that's appropriate here. Each backend's bodies exploit its own capabilities (FileWIS materializes everything in memory; GitHubWIS would defer to GH search; RemoteApiWIS would batch over a session). The spec captures the contract; the impls capture the variability.
+This is a typeclass-like layering — and that's appropriate here. Each backend's bodies exploit its own capabilities (FileBasedWorkitemStore materializes everything in memory; GitHubBased would defer to GH search; RemoteApiBased would batch over a session). The spec captures the contract; the impls capture the variability — including the bundle commands, which live inside each impl sort with a concrete `Cell[WIS]` parameter.
 
-Bundle's `cmd_add` collapses to:
+`cmd_claim` shape (also inside `FileBasedWorkitemStore`):
+
 ```anthill
--- The bundle's commands are polymorphic over `?S` satisfying the
--- spec — they call only spec operations (next_id, commit, lookup,
--- ...). The host picks one concrete State at startup (`Cell[FileWIS]`
--- today; `Cell[GitHubWIS]` later) and threads it through.
-operation cmd_add(a: AddArgs, s: ?S) -> Int
-  requires WorkItemStore[?S]
-  effects {ConsoleOutput, Modify[s], Error}
-=
-  let id = next_id(s)
-  let wi = WorkItem(
-    id: id, description: a.description,
-    acceptance: a.acceptance, depends_on: a.depends,
-    status: Open())
-  let _ = commit(s, wi)
-  let _ = println(console(),
-                  concat("added: ", concat(id, concat(" — ", a.description))))
-  0
-```
-
-No `Pair[Int, S]` return, no threading — `commit` mutates through `Modify[s]` (Cell's effect, since the State is a `Cell[X]`); the next `next_id(s)` (or any other read on `s`) sees the updated state. The Cell handle is stable across the call; the wrapped value shifts.
-
-`cmd_claim` collapses similarly:
-```anthill
-operation cmd_claim(a: ClaimArgs, s: ?S) -> Int
-  requires WorkItemStore[?S]
+operation cmd_claim(a: ClaimArgs, s: Cell[WIS]) -> Int
   effects {ConsoleOutput, ConsoleError, Modify[s], Error}
 =
   match lookup(s, a.id)
@@ -138,6 +138,8 @@ operation cmd_claim(a: ClaimArgs, s: ?S) -> Int
 ```
 
 The `wi.copy(...)` is WI-188 (entity copy form). Without it, we need an explicit re-construction or `replace_named_arg`.
+
+No `Pair[Int, S]` return, no threading — `commit` mutates through `Modify[s]` (Cell's effect); the next `next_id(s)` or `lookup(s, ...)` sees the updated state. The Cell handle is stable across the call; the wrapped `wis(...)` value shifts.
 
 ## What language features the surface needs
 
