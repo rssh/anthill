@@ -1740,7 +1740,42 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
     };
     let agent_value = Value::Str(agent);
 
-    match interp.call("anthill.todo.Main.main", &[args_value, store_value, agent_value]) {
+    // Seed Cell[V = WIS] from on-disk WI-NNN max so the next freshly
+    // allocated id doesn't collide. Bundle command bodies still go
+    // through `store: FileStore` until phase 3 wires them to spec ops.
+    let wis_cell_value = {
+        let kb_ref = interp.kb();
+        let mut max_num: u32 = 0;
+        for item in collect_workitems(kb_ref) {
+            if let Some(rest) = item.id.strip_prefix("WI-") {
+                if let Ok(n) = rest.parse::<u32>() {
+                    max_num = max_num.max(n);
+                }
+            }
+        }
+        let id_counter = (max_num as i64) + 1;
+
+        // Build the wis(backend, id_counter) entity. The `backend` field
+        // is the same store_value used by the FileStore registry, so
+        // anthill-side `persist`/`flush` calls through the cell route to
+        // the same underlying IndexedFileStore.
+        let wis_sym = interp.kb_mut().intern("anthill.todo.store.FileBasedWorkitemStore.wis");
+        let backend_field = interp.kb_mut().intern("backend");
+        let counter_field = interp.kb_mut().intern("id_counter");
+        let wis_value = Value::Entity {
+            functor: wis_sym,
+            pos: vec![],
+            named: vec![
+                (backend_field, store_value.clone()),
+                (counter_field, Value::Int(id_counter)),
+            ],
+        };
+        let handle = interp.alloc_cell(wis_value);
+        Value::Cell(handle)
+    };
+
+    match interp.call("anthill.todo.Main.main",
+                      &[args_value, store_value, wis_cell_value, agent_value]) {
         Ok(Value::Int(n)) => {
             if (0..=255).contains(&n) {
                 ExitCode::from(n as u8)

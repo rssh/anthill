@@ -1,0 +1,61 @@
+-- WorkItemStore: project-side spec + file-backed implementation.
+--
+-- Per proposal 036 (Domain Store Sorts) / WI-203, Strategy A. The spec
+-- lives over Cell[V = State] so the Cell protocol (Modify[s], Cell.get,
+-- Cell.set) applies uniformly. State is the data-shape; each impl picks
+-- its own value-shape and bodies via a `fact WorkItemStore[State = …]`.
+--
+-- Strategy A: retrieve results stay Term-typed (no WI-189 reflect-from-
+-- Term yet); lookup returns Option[Term], by_status_of returns
+-- List[Term]. cmd_X bodies coercing Term → WorkItem land in phase 3.
+
+namespace anthill.todo.store
+  import anthill.stage0.{WorkItem, WorkStatus}
+  import anthill.persistence.filesystem.{IndexedFileStore}
+  import anthill.prelude.{Cell, Option, List, Int, String, Unit}
+  import anthill.reflect.{Term}
+  export WorkItemStore, FileBasedWorkitemStore, WIS
+
+  -- ─── 1. Spec ────────────────────────────────────────────────────
+  -- Operations declared once, parameterized by State. Each impl
+  -- supplies its own State value-shape and bodies via a fact.
+  sort WorkItemStore
+    sort State = ?
+
+    -- Mutating ops: Modify[s] covers everything reachable from s
+    -- (per proposal 037 transitivity).
+    operation next_id(s: Cell[V = State]) -> String
+      effects Modify[s]
+    operation commit(s: Cell[V = State], w: WorkItem) -> Unit
+      effects {Modify[s], Error}
+    operation forget(s: Cell[V = State], id: String) -> Unit
+      effects {Modify[s], Error}
+
+    -- Read-only ops. Stream-of-Term until WI-189 lands.
+    operation lookup(s: Cell[V = State], id: String) -> Option[T = Term]
+    operation by_status_of(s: Cell[V = State], st: WorkStatus)
+      -> List[T = Term]
+  end
+
+  -- ─── 2. File-backed impl ────────────────────────────────────────
+  -- The WIS state holds the IndexedFileStore backend plus a fresh-id
+  -- counter. No in-memory by_id / by_status caches: the backend is
+  -- QueryableStore (per WI-202), so every lookup delegates to its
+  -- retrieve query. The Rust IndexedFileStore impl maintains the
+  -- internal cache for fast retrieve — backend concern, transparent
+  -- here.
+  sort FileBasedWorkitemStore
+    enum WIS
+      entity wis(backend: IndexedFileStore, id_counter: Int)
+    end
+
+    fact WorkItemStore[State = WIS]
+
+    -- Operation bodies (next_id / commit / lookup / by_status_of /
+    -- forget) deferred. WI-209 fixed parametric effect substitution at
+    -- call sites (Modify[c] → Modify[s] when calling Cell.set(s, ...)),
+    -- but polymorphic type-arg propagation through ops like Stream.head
+    -- (Stream[T = Term] → Option[T = Term]) is a separate gap (WI-211),
+    -- as is Cell.set's return-type resolution. Bodies land after both.
+  end
+end

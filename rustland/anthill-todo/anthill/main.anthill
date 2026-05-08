@@ -11,6 +11,7 @@ namespace anthill.todo
   import anthill.persistence.filesystem.{FileStore}
   import anthill.persistence.{Store}
   import anthill.persistence.Store.{persist, flush}
+  import anthill.prelude.{Cell}
   import anthill.prelude.Meta.{Meta}
   import anthill.prelude.Time.{now}
   import anthill.stage0.{Feedback, WorkItem, ToolPasses}
@@ -195,7 +196,12 @@ namespace anthill.todo
     -- add-dependency / remove-dependency) thread store + agent through
     -- so they can call Store.persist + Store.flush and stamp `at:`
     -- fields with the canonical YYYY-MM-DDTHH:MM:SSZ format.
-    operation main(args: List[String], store: FileStore, agent: String) -> Int
+    -- WI-203 / proposal 036 phase 2: wis_cell is a Cell holding the
+    -- per-project WorkItemStore state (id_counter + backend handle).
+    -- Phase 2 just receives it; phase 3 wires bundle commands to use
+    -- spec ops (next_id / commit / lookup / by_status_of) on it.
+    operation main(args: List[String], store: FileStore,
+                   wis_cell: Cell, agent: String) -> Int
       effects {ConsoleOutput, ConsoleError, Modify[store], Error}
     =
       match parse_argv(specs(), args)
