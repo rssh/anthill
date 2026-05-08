@@ -208,6 +208,10 @@ namespace anthill.reflect
     -- accept `KB.execute(kb(), q)` without surfacing an abstract sort.
     entity kb
 
+    -- KB admits Modify[kb]: assert / retract / add_guard mutate the
+    -- KB's internal indexes. Required by proposal 037 Rule 8.
+    fact anthill.prelude.Modifiable[T = KB]
+
     -- Bridge: opaque Term ↔ structural TermRepr
     operation reify(kb: KB, t: Term) -> TermRepr
     operation reflect(kb: KB, r: TermRepr) -> Term

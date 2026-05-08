@@ -3,9 +3,11 @@ namespace anthill.persistence.filesystem
   import anthill.reflect.{Term}
   import anthill.prelude.Meta.{Meta}
   import anthill.persistence.{BulkStore, QueryableStore}
+  import anthill.prelude.{Modifiable}
 
   entity FileStore(root: String, convention: FileConvention)
   fact BulkStore
+  fact Modifiable[T = FileStore]
 
   -- IndexedFileStore: FileStore plus a per-rule source map (for
   -- span-based retract) and a primary-key `id` index (for fast
@@ -13,6 +15,7 @@ namespace anthill.persistence.filesystem
   entity IndexedFileStore(root: String, convention: FileConvention)
   fact BulkStore[IndexedFileStore]
   fact QueryableStore[IndexedFileStore]
+  fact Modifiable[T = IndexedFileStore]
 
   -- ================================================================
   -- File conventions: how facts map to files

@@ -1,0 +1,28 @@
+-- Cell: typed mutable reference. The standard small-state sort per
+-- proposal 037 §"Cell[V]". A Cell[V] holds a single V; get reads the
+-- current contents, set replaces them, new allocates a fresh handle
+-- with an initial value. Modify[c] is the effect mutations carry; the
+-- fact `Modifiable[T = Cell[V]]` admits Modify[c] in operation rows.
+sort anthill.prelude.Cell
+  import anthill.prelude.{Unit, Modifiable}
+
+  sort V = ?
+
+  -- Construction. Allocates a fresh cell handle initialized to `v`.
+  -- v0.1: under functor-only identity (WI-200's transitional scheme),
+  -- multiple new() calls collapse to one slot. WI-200 lifts this to
+  -- opaque-handle identity per allocation.
+  operation new(v: V) -> Cell
+
+  -- Read the current value.
+  operation get(c: Cell) -> V
+
+  -- Replace the current value. Mutation is the cell's contract; the
+  -- effect annotation is `Modify[c]` per proposal 037's parameter-name
+  -- convention.
+  operation set(c: Cell, value: V) -> Unit
+    effects Modify[c]
+
+  -- Cell satisfies Modifiable for any V.
+  fact Modifiable[T = Cell]
+end
