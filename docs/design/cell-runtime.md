@@ -242,13 +242,90 @@ When a slot is reclaimed, its `value: Value` is dropped, which may transitively 
 
 ## Branch interaction
 
-Per proposal 037 §"Cell[V]" interpreter contract: **branch-local snapshot**. When execution enters a `Branch`:
+Per proposal 037 §"Cell[V]" interpreter contract: **branch-local snapshot**. The arena is branch-local — mutations inside a `Branch` alt are reverted if the alt is abandoned (a sibling resumes); kept if the alt commits.
 
-1. The runtime walks resources whose contracts are branch-local-snapshot.
-2. For each Cell handle in scope, the slot's current value is captured.
-3. `register_undo` (proposal 027 §RuntimeAPI) installs a callback that restores the captured value if the branch is abandoned.
+The mechanism is **per-mutation undo logging**, not full-arena clone. Pays only for what you change.
 
-The arena layout supports this directly: snapshotting is a `Value::clone()` of the slot's contents, paired with the slot's refcount preserved. v1 of the arena does NOT implement this — `Branch` itself is partially wired (per 037 Open Decision 3) — but the design is forward-compat: snapshot/restore is a new method on the arena, called by Branch entry/exit machinery, with no schema change.
+### Hooks via `register_undo`
+
+Proposal 037 (and 027 §RuntimeAPI) describes `register_undo(undo: HostCallable)` — installs a callback to fire when the current branch snapshot is abandoned. The cell_arena hooks into this:
+
+```rust
+// Cell.set(target, new):
+let prev = arena.read(target.slot);                     // read current
+arena.write(target.slot, new);                          // write new
+runtime.register_undo(move |arena| {
+    arena.write(target.slot, prev);                     // restore if abandoned
+});
+
+// Cell.new(initial):
+let slot = arena.alloc(initial);                        // fresh slot
+runtime.register_undo(move |arena| {
+    arena.dealloc(slot);                                // reclaim if abandoned
+});
+```
+
+Refcount handling rides along: on abandon, restoring a slot's prior value drops the value that was there during the branch (which, since the slot itself is being restored, is the value to be discarded). The drop's `Drop` impl decrements the refcounts of any Cell handles inside the discarded value. On commit, the new value sticks; the prior value's refs are properly released by the `Drop` of `prev` when the closure goes away (since the closure owned `prev`).
+
+### Allocation undo
+
+`Cell.new` inside a branch allocates a fresh slot. On abandon, the slot must be reclaimed. The undo callback dealloc's the slot, returning its index to the free list. The handle returned by `Cell.new` is, on abandon, dangling — but since the branch is abandoned, no anthill-level binding to that handle survives (locals from the abandoned branch's frames are dropped normally as part of the resolver's snapshot rewind).
+
+### What about handles that escape the branch?
+
+A handle returned from inside a branch *upward* (to the resolver as a query result, say) survives even if the branch is abandoned in some technical sense. anthill's resolver doesn't typically pass values across branch boundaries — `Branch` is for nondeterministic search, not for value-returning operations. If a future construct lets a value flow out of a branch alt, the design assumes the COMMIT path is taken (not abandon), so the `register_undo` for that allocation never fires. If a runtime construct violates this invariant — value escape from an abandoned branch — that's a separate soundness gap to flag at the construct's introduction, not at the cell_arena layer.
+
+### Tree-shaped exploration; stack-shaped log
+
+Branches form a **tree**: each choice point has multiple alts; the resolver explores depth-first, abandoning failed alts and backtracking up. The undo *log* however is a **stack** — it tracks the **current DFS path** through the tree.
+
+```
+        root
+        /|\
+       A B C       -- choice with 3 alts
+      /|
+     a b           -- A's alts
+```
+
+DFS traversal + undo-log states:
+
+| Step | Action | Markers on stack | What's reverted at this step |
+|---|---|---|---|
+| 1 | enter A | `[mark_A]` | — (mutations during A's body get logged above mark_A) |
+| 2 | enter a | `[mark_A, mark_a]` | — |
+| 3 | a's body fails | `[mark_A, mark_a]` → replay above mark_a, pop | a's mutations only |
+| 4 | enter b | `[mark_A, mark_b]` | — |
+| 5 | b's body fails | `[mark_A, mark_b]` → replay above mark_b, pop | b's mutations only |
+| 6 | A exhausted (a + b both failed) | `[mark_A]` → replay above mark_A, pop | A's body mutations + any survivors |
+| 7 | enter B | `[mark_B]` | starts fresh from pre-Branch state |
+| … | etc. | | |
+
+Each `register_undo` attaches to the topmost marker. Pop-and-replay restores the runtime to the state at that marker's entry. Multiple sibling alts of the same parent see the parent's pre-mutation state (because by the time the next sibling is entered, the previous sibling's mutations have been replayed).
+
+### Solution-yield semantics
+
+A subtlety: when an alt's body **succeeds** and yields a solution, what happens to the mutations along that path? Two stances, depending on what kind of "Branch" the resolver is implementing:
+
+- **Pure search** (Prolog `assert`/`assume` style — proposal 027 §"Sticky vs transactional"): mutations are **per-search-path**. Yielding a solution doesn't commit; mutations stay only for the duration of that solution being inspected, then unwind on backtrack-to-find-more-solutions.
+- **Speculative-then-keep** (rare; not the design's target): the first successful path's mutations are committed.
+
+The cell_arena's `register_undo` is agnostic — it logs mutations and replays them when the resolver decides to abandon. The resolver's policy on "when does abandon happen" determines the semantics. For v1 (matching proposal 037 §"Cell[V]" — branch-local snapshot), the pure-search stance is correct: mutations made under a Branch never escape that Branch's scope.
+
+### Branch commit
+
+If the entire Branch construct (the outermost `branch(...)` invocation) terminates **normally** (without backtracking past it), the markers below the Branch's outer boundary become non-replayable — the state at that point is the new committed state. The undo-log entries for those depths are dropped (their closure `Drop` impls handle any owned cell-handles).
+
+In effect, "commit" for the cell_arena is `pop without replay`. Nothing special; the undo callbacks are simply forgotten. Closures' `Drop` releases any captured handles cleanly.
+
+### What this does NOT do
+
+- **Snapshot the entire arena up-front.** Naive copy-on-entry is O(arena size) per branch entry; pay-per-mutation is O(mutations). For typical anthill code the arena is small but the branch nesting can be deep — pay-per-mutation wins.
+- **Cross-arena coordination.** If a Cell mutation triggers a related mutation in another arena (Map, Substitution, etc.), each arena registers its own undo. The runtime's undo stack interleaves them in chronological order. Replay is also chronological-reverse.
+
+### v1 status
+
+- The cell_arena ships **with** `register_undo` integration from day one. Without it, the arena is unsound under any future Branch use; better to wire it up correctly while the implementation is fresh.
+- Branch itself is only partially wired today (per 037 Open Decision 3). Until the runtime grows full Branch support, `register_undo` is a no-op (the runtime never abandons; the bundle is one-shot CLI). The cell_arena's `register_undo` calls happen and silently accumulate, then go away with the runtime at process exit. No behavior change visible to current programs; full correctness when Branch lights up.
 
 ## Migration from v0.1
 
