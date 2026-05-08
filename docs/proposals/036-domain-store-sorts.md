@@ -52,36 +52,47 @@ end
 
 -- ─── 2. File-backed impl: a sort that binds State and provides bodies ─
 sort FileBasedWorkitemStore
-  -- The data shape this impl operates over.
+  -- The data shape this impl operates over. NO in-memory by_id /
+  -- by_status caches: the backend already satisfies QueryableStore
+  -- (stdlib `store.anthill` — `retrieve(store, pattern) -> Stream[Term, Error]`),
+  -- so every lookup delegates to backend queries. The Rust
+  -- IndexedFileStore impl maintains its own internal cache to make
+  -- retrieve fast — that's a backend concern, transparent here.
+  -- id_counter is the only domain-store state: a fresh-id counter.
   enum WIS
     entity wis(
       backend: IndexedFileStore,
-      by_id: Map[String, WorkItem],
-      by_status: Map[WorkStatus, List[WorkItem]],
       id_counter: Int)
   end
 
-  -- This sort satisfies the spec with State bound to WIS.
+  -- This sort satisfies the spec with State bound to WIS, AND
+  -- declares the backend is queryable.
   fact WorkItemStore[WIS]
+  fact QueryableStore[IndexedFileStore]
 
-  -- Bodies. Signatures are inherited from the spec via the fact;
-  -- inside each body s has type Cell[WIS], so Cell.get / Cell.set
-  -- typecheck against WIS.
+  -- Bodies. Signatures are inherited from the spec; queries route
+  -- through the backend's retrieve, so the WorkItemStore code is a
+  -- thin domain layer over QueryableStore semantics.
   operation commit(s, w) =
     match Cell.get(s)
-      case wis(backend, by_id, by_status, counter) ->
+      case wis(backend, counter) ->
         let _ = persist(backend, w, Meta(entries: nil()))
         let _ = flush(backend, nil())
-        let updated = wis(backend, Map.put(by_id, w.id, w),
-                          add_to_status(by_status, w.status, w),
-                          counter + 1)
-        Cell.set(s, updated)
+        Cell.set(s, wis(backend, counter + 1))
 
   operation lookup(s, id) =
     match Cell.get(s)
-      case wis(_, by_id, _, _) -> Map.get(by_id, id)
+      case wis(backend, _) ->
+        Stream.first(retrieve(backend, WorkItem(id: id)))
+        -- (Stream returns Term values; WI-189 reflects each into
+        -- a typed WorkItem so the result is Option[WorkItem].)
 
-  -- (next_id, by_status_of, forget elided — same shape.)
+  operation by_status_of(s, st) =
+    match Cell.get(s)
+      case wis(backend, _) ->
+        Stream.collect(retrieve(backend, WorkItem(status: st)))
+
+  -- (next_id reads/bumps id_counter; forget calls retract on backend.)
 
   -- Bundle commands live inside the impl sort. State is bound, so
   -- s: Cell[WIS] is concrete; no polymorphism overhead. cmd_add
@@ -145,32 +156,32 @@ No `Pair[Int, S]` return, no threading — `commit` mutates through `Modify[s]` 
 
 Walking the surface above, here's what anthill must provide for it to actually work:
 
-### 1. Entity-typed values flowing out of `facts_of` *(blocker)*
+### 1. Term → WorkItem reflection on retrieve results *(blocker for typed surface)*
 
-`Map[String, WorkItem]` says "values are typed at the WorkItem entity." Today `facts_of(kb(), "WorkItem")` returns `List[Term]` — opaque term handles. To put a typed WorkItem in the map, we need a coercion `Term → WorkItem` that the typer accepts.
+`retrieve(backend, WorkItem(id: id))` returns `Stream[Term, Error]` — the elements are opaque term handles, not typed WorkItem values. To get back a typed `Option[WorkItem]` from `lookup`, we need a coercion that the typer accepts.
 
 This is **WI-189** (reify/reflect operators): `let wi: WorkItem = ↓term`.
 
-**Without WI-189**, we can fall back to `Map[String, Term]`. The map carries Term values; `lookup` returns `Option[Term]`; field access still goes through `term_field` / `term_as_string`. That's a partial win — consolidates the indexes but keeps the reflection surface in command bodies.
+**Without WI-189**, we work with `Term` values and use `term_field` / `term_as_string` for field access. The structural shape is the same; only the surface is less typed.
 
 ### 2. Mutating commit through the Modify framework *(not a blocker — already exists)*
 
-Each spec impl pairs a State type (`Cell[FileWIS]` for the file backend) with operation bodies. Because the State is a `Cell[X]`, Cell's protocol — `Modify[c]`, `get(c)`, `set(c, v)` — applies straight from the framework. No new state-bearing sort to design; no muddled handle-vs-value question.
+`s: Cell[WIS]` is plainly a Cell handle. Cell's protocol — `Modify[c]`, `get(c)`, `set(c, v)` — applies straight from the framework. No new state-bearing sort to design.
 
-What commit does end-to-end (file-backed impl, `?S = Cell[FileWIS]`):
+What commit does end-to-end (file-backed impl):
 
 | Step | What runs | Effect |
 |---|---|---|
-| 1 | `match Cell.get(s)` | Reads s's cell slot. Returns the current `file_wis(b, m1, m2, c1)`. |
-| 2 | `case file_wis(backend, by_id, by_status, counter)` | Destructures the returned value, binding `backend`, `by_id`, etc. locally. |
-| 3 | `persist(backend, w, ...)` | Goes through Store's handler keyed by `backend`. Writes the file. `backend` handle unchanged. |
-| 4 | `let updated = file_wis(backend, Map.put(by_id, ...), ..., counter + 1)` | Constructs a fresh file_wis term. Pure. |
-| 5 | `Cell.set(s, updated)` | Goes through Cell's handler keyed by `s`. Overwrites the cell's slot with `updated`. `s` handle unchanged. |
-| 6 | (later) `Cell.get(s)` from any other operation | Returns `updated`. |
+| 1 | `match Cell.get(s)` | Reads s's cell slot. Returns `wis(backend, counter)`. |
+| 2 | `case wis(backend, counter)` | Destructures, binding `backend` and `counter` locally. |
+| 3 | `persist(backend, w, ...)` | Routes to Store's handler keyed by `backend`. Writes the file. |
+| 4 | `flush(backend, nil())` | Routes to Store's handler. Flushes pending writes. |
+| 5 | `Cell.set(s, wis(backend, counter + 1))` | Routes to Cell's handler keyed by `s`. Overwrites slot — only id_counter advances. |
+| 6 | (later) `lookup(s, id)` from any other op | Reads `wis(backend, _)` from cell, calls `retrieve(backend, ...)` on the queryable backend. |
 
-Two distinct mutations: Store's slot in step 3, Cell's slot in step 5. They go through two separate handlers (Store's, Cell's), each keyed by its own resource. The `Modify[s]` declaration on commit's signature covers both transitively (per 037's transitivity rule — `s.backend` is reachable from `s`).
+Two distinct mutations: Store's slot in steps 3-4 (the file), Cell's slot in step 5 (id_counter). They route to two separate handlers. The `Modify[s]` declaration on commit's signature covers both transitively (per 037's transitivity rule — `s.backend` is reachable from `s`).
 
-The host's startup work: build the initial `file_wis(...)` value (walks `facts_of("WorkItem")`, fills the maps, scans `id_counter`), allocate a `Cell[FileWIS]`, seed it with `Cell.set(handle, initial)`, pass the handle into `Main.main`.
+The host's startup work: allocate a `Cell[WIS]` initialized to `wis(backend, scan_max_id(backend) + 1)` — one scan to seed the counter; subsequent lookups go through `retrieve` directly.
 
 #### `Modify[s]` covers the backend reach
 
@@ -222,29 +233,29 @@ This is the framework's central observation, spelled out in 037 §3 "Type-specif
 
 Cross-reference 037 for the full framework; WI-192 is its first end-to-end consumer.
 
-### 3. Map keys at sort `WorkStatus` *(may be blocker)*
+### 3. IndexedFileStore satisfies QueryableStore *(blocker)*
 
-`Map[WorkStatus, ...]` — `WorkStatus` is an enum (`Open` / `Claimed` / `Delivered` / `Verified` / `Rejected` / ...). `Map.put` / `Map.get` use `MapKey::try_from_value`. Today MapKey supports Int / Bool / Str / Term. An enum-entity value is `Value::Entity` — does the existing builtin handle that?
+The design relies on `retrieve(backend, pattern) -> Stream[Term, Error]` from stdlib's `QueryableStore` spec. IndexedFileStore today is `BulkStore` (load-all only); it must additionally satisfy `QueryableStore` for `lookup` / `by_status_of` to work.
 
-Probably not directly. We'd need either:
-- Extend `MapKey` to handle `Value::Entity` (keying by canonical form, like `store_canonical_key`).
-- Use `String` keys instead (`Map[String, ...]`, status name as the key).
+Required:
+- Declare `fact QueryableStore[IndexedFileStore]` in stdlib (or in the project's `store.anthill`).
+- Implement the `retrieve` Rust-side: pattern-matching against the IndexedFileStore's existing source-span-indexed term cache (already in memory after `pull`). O(N) scan per query is fine at CLI scale.
 
-The String workaround is fine for the bundle's use case but is a paper cut. **Filing as WI-197 candidate**: extend Map keys to entity values via canonical-form hashing.
+This subsumes what the in-memory `by_id` / `by_status` maps were doing in earlier drafts — instead of materializing in the WorkItemStore layer, the backend does the materialization once (transparent to the WorkItemStore).
 
 ### 4. Construction at host (Rust) side *(implementation, not language)*
 
-The host needs to build the initial `wis(...)` entity. That requires:
-- Reading facts via `facts_of`.
-- Building `Map<MapKey, Value>` Rust-side (the runtime representation).
-- Constructing the `Value::Entity { functor: wis_sym, named: [...] }` with Map-typed values.
-- Registering it for the bundle's `Main.main` call.
+The host needs to build the initial `wis(...)` entity. With the simplified state, that's just:
+- Construct the IndexedFileStore (existing pattern).
+- Scan its facts for the max existing WorkItem id → seed `id_counter`.
+- Build `Value::Entity { functor: wis_sym, named: [(backend, ...), (id_counter, ...)] }`.
+- Allocate a `Cell[WIS]` and seed via `Cell.set` once before `Main.main`.
 
-No language feature. Just plumbing in `run_anthill_bundle`.
+No language feature. ~20 lines of plumbing in `run_anthill_bundle`.
 
 ### 5. Bundle ports its commands *(implementation, not language)*
 
-Mechanical: each command body rewrites to use `next_id` / `lookup` / `by_status_of` / `commit` / `forget`. About 120 lines retire from main.anthill.
+Mechanical: each command body rewrites to use `next_id` / `lookup` / `by_status_of` / `commit` / `forget`. About 120 lines retire from main.anthill (the index-rebuilding glue).
 
 ### 6. Optional: Sort refinement / `requires Store` *(nice-to-have, not blocking)*
 
@@ -266,50 +277,49 @@ Mechanical and ugly. Functional path costs more lines without WI-188.
 
 Given the language facilities, two landings are reasonable:
 
-### Strategy A: minimal v0.1, Modify state, today
+### Strategy A: minimal v0.1 — Term-typed retrieve results
 
-- WorkItemStore uses `Map[String, Term]` (not WorkItem) — sidesteps WI-189.
-- by_status keyed by status name `String` — sidesteps Map-key-at-entity-value gap (the existing `MapKey` only handles Int/Bool/Str/Term, not enum-Entity values).
-- `commit` mutates via `Modify[s]` state semantics (already wired via `default_modify_handler`). Threading is *not* needed.
-- Bundle commands take `(s: WorkItemStore, ...)` and return `Int` (no threading); commit fires `set(s, new)` internally.
-- Construction at host: build initial `wis(...)` Value at startup, fire `Modify.set(wis_handle, initial)` once before `Main.main`.
+- IndexedFileStore declared as satisfying `QueryableStore`; `retrieve` Rust impl walks its in-memory cache (already populated post-pull).
+- WorkItemStore spec + FileBasedWorkitemStore impl as in §"What the surface looks like" — `wis(backend, id_counter)`, no in-memory caches.
+- `lookup` / `by_status_of` work on `Term` values from the retrieve stream (use `term_field` / `term_as_string` to read fields).
+- `commit` mutates via `Modify[s]` (Cell's effect on the wis cell, transitively reaching the backend). Already wired.
+- Bundle commands inside the impl sort, taking `s: Cell[WIS]`.
 
-**Cost to land:** ~1-2 days. ~30 lines of new sort declaration + ~30 lines of host plumbing + ~150-line refactor of bundle commands. No language changes.
+**Cost to land:** ~1-2 days. ~20 lines of new sort declarations (spec + impl) + ~20 lines of host plumbing + Rust-side `retrieve` for IndexedFileStore + ~150-line refactor of bundle commands. No language changes.
 
-**What's lost vs the ideal:** type-safe field access (commands still use `term_field` / `term_as_string` to read individual WorkItem fields); status-key strings instead of WorkStatus enum values.
+**What's lost vs the ideal:** type-safe field access (commands still use `term_field` / `term_as_string` on retrieve results); pattern-matching against `WorkItem(...)` term shapes by hand.
 
-**What's gained:** the indexes are centralized in one place; the ~120 lines of glue retire; commands are linear (no threading, no `Pair[Int, S]` return); the abstraction shape matches the ideal end-state.
+**What's gained:** the indexes don't exist anymore; the ~120 lines of glue retire; commands are linear (no threading, no `Pair[Int, S]` return); single source of truth (the backend); the abstraction shape matches the ideal end-state.
 
 ### Strategy B: land alongside WI-188 + WI-189
 
-- WI-188 enables `wi.copy(status = ...)` for in-place field updates.
-- WI-189 lets `Map.get(by_id, id)` return `Option[WorkItem]` with native field access (`wi.id`, `wi.status`).
-- Map values typed `WorkItem`; lookup typed too; commands stop calling `term_field`.
+- WI-189 enables `↓term : WorkItem` — `Stream.first(retrieve(...))` |> typed `Option[WorkItem]`.
+- WI-188 enables `wi.copy(status = ...)` for in-place field updates inside `cmd_claim` / `cmd_deliver`.
+- Bundle command bodies stop calling `term_field`.
 
-**Cost to land:** 1-2 weeks (WI-188 + WI-189 as prerequisites, then ~1 day to retype WorkItemStore over `WorkItem` instead of `Term`).
-
-**What's lost vs the ideal:** still status keyed by name string. Closes when WI-197 (entity-values-as-Map-keys) lands.
+**Cost to land:** 1-2 weeks (WI-188 + WI-189 as prerequisites, then ~1 day to retype the bundle bodies over `WorkItem` instead of `Term`).
 
 ## Recommendation
 
-**Land Strategy A first**, file the gap-closing WIs (WI-188 / WI-189 / WI-197) as follow-ups for Strategy B.
+**Land Strategy A first**, file the gap-closing WIs (WI-188 / WI-189) as follow-ups for Strategy B.
 
 Rationale:
-- Strategy A demonstrates the abstraction with zero language changes. The bundle's structure improves immediately, no threading verbosity.
+- Strategy A demonstrates the abstraction with zero language changes. The bundle's structure improves immediately, no threading verbosity, no in-memory index machinery.
 - The follow-up WIs each have independent value beyond the bundle.
-- Strategy A's two paper cuts (Term values in maps, name-keyed status) are localized to ~5 places and shrink to nothing as the gap-closers land. No throwaway work.
+- Strategy A's paper cut (Term-typed retrieve results) is localized to ~5 places and shrinks to nothing as WI-189 lands. No throwaway work.
 
 ## Decomposition
 
-`WorkItemStore` is project-side: it lives in `anthill-todo/`'s anthill source alongside `domain.anthill` and `rules.anthill`. The bundle's binary embeds it via the existing `BulkStore::pull` path (any `.anthill` file in the project's anthill-todo/ directory is loaded at startup). No bundle-side declaration; the project owns its store sort.
+The `WorkItemStore` spec and `FileBasedWorkitemStore` impl are project-side: they live in `anthill-todo/`'s anthill source alongside `domain.anthill` and `rules.anthill`. The bundle's binary embeds them via the existing `BulkStore::pull` path. No bundle-side declaration; the project owns its store layout.
 
 Files affected:
-- `stdlib/anthill/persistence/filesystem.anthill` — declare `entity IndexedFileStore(root: String, convention: FileConvention)`. Today only `FileStore` is declared even though the bundle's host already wires an `IndexedFileStore` Rust impl behind a `FileStore` Value::Entity (canonical-key shape coincides). Adding the entity makes the Value-side type honest. Both entities can coexist (FileStore for projects that don't need source-span retract; IndexedFileStore for those that do).
-- `anthill-todo/store.anthill` — **new project-side file** declaring `sort WorkItemStore`, the `wis` entity, and the `next_id` / `lookup` / `by_status_of` / `commit` / `forget` operations. Operation bodies in anthill (no Rust builtins for v0.1). Loaded at runtime via the project's BulkStore::pull, just like domain.anthill and rules.anthill today.
-- `rustland/anthill-todo/src/main.rs` (`run_anthill_bundle`) — switch the constructed Value::Entity functor from `FileStore` to `IndexedFileStore`; construct the initial `wis(...)` value at startup (walk facts_of("WorkItem"), build the maps, scan id_counter); fire `Modify.set(wis_handle, initial_wis)` once before `Main.main` runs. Pass `wis_handle` to `Main.main` as a 4th arg.
-- `rustland/anthill-todo/anthill/main.anthill` — `main` / `dispatch` thread the WorkItemStore handle (no contents — just a handle for Modify state to key against); each command body uses store ops; the ~120 lines of build_row_map / build_dep_map / feedback_set / next_workitem_id / max_id_in / pad3 / etc. retire.
+- `stdlib/anthill/persistence/filesystem.anthill` — declare `entity IndexedFileStore(root: String, convention: FileConvention)` plus `fact QueryableStore[IndexedFileStore]`. Today only `FileStore` is declared even though the bundle's host already wires an `IndexedFileStore` Rust impl. Adding the entity makes the Value-side type honest; the QueryableStore fact unlocks `retrieve` for downstream consumers.
+- `rustland/anthill-stl/...` — implement `retrieve(IndexedFileStore, pattern) -> Stream[Term, Error]` as a builtin. The IndexedFileStore Rust impl already keeps the pulled facts in memory; `retrieve` walks them, unifying each against the pattern, yielding matches as a Stream.
+- `anthill-todo/store.anthill` — **new project-side file** declaring `sort WorkItemStore` (spec, with `sort State = ?` and operations over `Cell[State]`) and `sort FileBasedWorkitemStore` (impl, with the WIS enum, `fact WorkItemStore[WIS]`, and operation bodies). Operation bodies in anthill (no Rust builtins for v0.1).
+- `rustland/anthill-todo/src/main.rs` (`run_anthill_bundle`) — construct the initial `wis(backend, id_counter_seed)` value at startup (scan `facts_of("WorkItem")` for max id → seed counter); allocate `Cell[WIS]` and seed via `Cell.set` once before `Main.main`. Pass the cell handle to `Main.main`.
+- `rustland/anthill-todo/anthill/main.anthill` — `main` / `dispatch` thread the `Cell[WIS]` handle; each command body uses the FileBasedWorkitemStore operations (lookup / commit / next_id / by_status_of / forget); the ~120 lines of build_row_map / build_dep_map / feedback_set / next_workitem_id / max_id_in / pad3 / etc. retire.
 
-Other projects that adopt this pattern (UserStore, ProjectStore, RuleAuditStore) follow the same shape: declare in their own project, host wires the initial state, command bodies use store ops. The pattern is *not* anthill-todo-specific — what's anthill-todo-specific is the WorkItem domain.
+Other projects that adopt this pattern (UserStore, ProjectStore, RuleAuditStore) follow the same shape: declare a domain spec + per-backend impl in their own project, require the backend to satisfy QueryableStore, command bodies use spec ops. What's anthill-todo-specific is the WorkItem domain and the file-backed impl.
 
 ## Out of scope
 
