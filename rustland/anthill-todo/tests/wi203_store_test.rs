@@ -2,10 +2,11 @@
 //!
 //! Phase 2 (per proposal 036): the project-side `store.anthill` declares
 //! the spec (over `Cell[V = State]`) and the file-backed impl
-//! (`enum WIS { entity wis(...) }` + `fact WorkItemStore[State = WIS]`).
-//! Bundle command bodies aren't yet rewritten to use it (phase 3); this
-//! test verifies the declarations load alongside domain.anthill /
-//! rules.anthill and the fact is asserted.
+//! (`enum WIS { entity wis(...) }` + `fact WorkItemStore[State = WIS]`)
+//! plus the operation bodies (next_id / lookup / by_status_of / commit).
+//! Bundle commands aren't yet rewritten to call them (phase 3). This
+//! test verifies the whole file loads + type-checks under the bundle
+//! path: parse, resolution, and typing all succeed.
 
 mod common;
 

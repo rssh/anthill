@@ -684,12 +684,13 @@ fn check_apply(
             }
         }
 
-        // Apply the param-name substitution to op.effects, then merge
-        // with arg_effects. Walking through Term::Ref recursively rewrites
-        // any nested Modify[c]-style references to Modify[s] (and similar
-        // for other param-keyed effects). The common case has no var_ref
-        // args (e.g. `add(1, 2)`) — skip the walk entirely then.
-        let substituted_op_effects: Vec<TermId> = if param_to_arg_sym.is_empty() {
+        // Apply param-name substitution to op.effects (WI-209), then
+        // walk each through `walk_type_deep` so type-var bindings from
+        // arg-unification propagate into nested positions in the effect
+        // (e.g. `Stream.head`'s `effects E` → `Error` once `vid_E` is
+        // bound by `unify_parameterized_with_sort_ref`). Skip the
+        // param-name walk when no var_ref args were seen.
+        let pre_substituted: Vec<TermId> = if param_to_arg_sym.is_empty() {
             op.effects.clone()
         } else {
             op.effects
@@ -697,15 +698,15 @@ fn check_apply(
                 .map(|e| substitute_ref_syms(kb, *e, &param_to_arg_sym))
                 .collect()
         };
+        let substituted_op_effects: Vec<TermId> = pre_substituted
+            .iter()
+            .map(|e| walk_type_deep(kb, &subst, *e))
+            .collect();
         let effects = merge_effects(&substituted_op_effects, &arg_effects);
 
-        // Resolve return type through the substitution. Shallow walk
-        // only — propagating type-var bindings deep into parameterized
-        // returns (e.g. Stream.head's `Option[T = T]` → `Option[T =
-        // Term]`) is a separate WI: today's `unify_types` doesn't bind
-        // a sort's type-parameter when the param-side is a bare
-        // `sort_ref(Stream)` and the arg-side is `Stream[T = Term, …]`.
-        let resolved_ret = walk_type(kb, &subst, op.return_type);
+        // Resolve return type deeply so `Option[T = Var(vid_T)]`
+        // collapses to `Option[T = Term]` once `vid_T` is bound.
+        let resolved_ret = walk_type_deep(kb, &subst, op.return_type);
         return Some(TypeResult { ty: resolved_ret, env: env.clone(), effects });
     }
 
@@ -1371,6 +1372,12 @@ pub fn unify_types(kb: &KnowledgeBase, subst: &mut Substitution, a: TermId, b: T
         (Some("parameterized"), Some("parameterized")) => {
             unify_parameterized(kb, subst, a_resolved, b_resolved)
         }
+        (Some("parameterized"), Some("sort_ref")) => {
+            unify_parameterized_with_sort_ref(kb, subst, a_resolved, b_resolved)
+        }
+        (Some("sort_ref"), Some("parameterized")) => {
+            unify_parameterized_with_sort_ref(kb, subst, b_resolved, a_resolved)
+        }
         (Some("arrow"), Some("arrow")) => {
             unify_arrow(kb, subst, a_resolved, b_resolved)
         }
@@ -1379,6 +1386,78 @@ pub fn unify_types(kb: &KnowledgeBase, subst: &mut Substitution, a: TermId, b: T
         }
         _ => types_compatible(kb, a_resolved, b_resolved),
     }
+}
+
+/// Unify `parameterized(B, [P = V, …])` with `sort_ref(B)`.
+///
+/// `sort_ref(B)` doesn't pin B's sort-level type parameters — they're
+/// the loader-cached unification Vars shared across B's signature
+/// (per `sort T = ?` registration in `load.rs`). Binding each P's
+/// canonical Var to V in the substitution propagates the parameterized
+/// side's bindings into B's return-type and effect positions.
+///
+/// Bases must match. Type params not bound on the parameterized side
+/// stay unbound (caller didn't constrain them — width subtyping).
+fn unify_parameterized_with_sort_ref(
+    kb: &KnowledgeBase,
+    subst: &mut Substitution,
+    parameterized: TermId,
+    sort_ref: TermId,
+) -> bool {
+    let pbase = match kb.get_term(parameterized) {
+        Term::Fn { named_args, .. } => {
+            match get_named_arg(kb, named_args, "base") {
+                Some(b) => b,
+                None => return types_compatible(kb, parameterized, sort_ref),
+            }
+        }
+        _ => return types_compatible(kb, parameterized, sort_ref),
+    };
+    let pbase_sym = match extract_sort_ref_sym(kb, pbase) {
+        Some(s) => s,
+        None => return types_compatible(kb, parameterized, sort_ref),
+    };
+    let sref_sym = match extract_sort_ref_sym(kb, sort_ref) {
+        Some(s) => s,
+        None => return types_compatible(kb, parameterized, sort_ref),
+    };
+    if pbase_sym != sref_sym {
+        return types_compatible(kb, parameterized, sort_ref);
+    }
+
+    let bindings_tid = match kb.get_term(parameterized) {
+        Term::Fn { named_args, .. } => get_named_arg(kb, named_args, "bindings"),
+        _ => None,
+    };
+    if let Some(bt) = bindings_tid {
+        for binding in list_to_vec(kb, bt) {
+            let psym = match binding_param_sym(kb, binding) {
+                Some(s) => s,
+                None => continue,
+            };
+            let value = match binding_value(kb, binding) {
+                Some(v) => v,
+                None => continue,
+            };
+            let qualified = format!(
+                "{}.{}",
+                kb.qualified_name_of(pbase_sym),
+                kb.resolve_sym(psym),
+            );
+            let qualified_sym = match kb.try_resolve_symbol(&qualified) {
+                Some(s) => s,
+                None => continue,
+            };
+            if let Some(alias_target) = resolve_sort_alias(kb, qualified_sym) {
+                if let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) {
+                    if !occurs_in(kb, *vid, value) {
+                        subst.bind(*vid, value);
+                    }
+                }
+            }
+        }
+    }
+    true
 }
 
 /// Occurs check: does `vid` appear anywhere inside `term`?
@@ -1390,6 +1469,22 @@ fn occurs_in(kb: &KnowledgeBase, vid: VarId, term: TermId) -> bool {
                 || named_args.iter().any(|(_, t)| occurs_in(kb, vid, *t))
         }
         _ => false,
+    }
+}
+
+/// Like [`walk_type`] but recurses into `Term::Fn` children so Var
+/// bindings propagate into nested positions like `Option[T = Var(vid)]`.
+/// Used at call-site result-resolve points (return type, effect row);
+/// internal unification keeps using the shallow `walk_type` since the
+/// per-functor `unify_parameterized` / `unify_arrow` arms already
+/// recurse structurally.
+fn walk_type_deep(kb: &mut KnowledgeBase, subst: &Substitution, ty: TermId) -> TermId {
+    let resolved = walk_type(kb, subst, ty);
+    match kb.get_term(resolved) {
+        Term::Fn { .. } => {
+            kb.map_fn_children(resolved, |kb, child| walk_type_deep(kb, subst, child))
+        }
+        _ => resolved,
     }
 }
 
@@ -1407,11 +1502,21 @@ fn walk_type(kb: &KnowledgeBase, subst: &Substitution, ty: TermId) -> TermId {
                 Some(s) => s,
                 None => return ty,
             };
+            // Only resolve the sort_ref through its SortAlias-to-Var if
+            // the symbol is a *sort-level type parameter* (registered
+            // via `sort T = ?` inside a sort body). Top-level abstract
+            // sorts like `sort Term = ?` in anthill.reflect also have a
+            // SortAlias-to-Var entry, but they're concrete-but-opaque
+            // types from a typer perspective — collapsing every
+            // sort_ref(Term) into Term's alias Var would lose the
+            // sort_ref form and surface as `TermId(N)` in diagnostics.
+            if !is_sort_param_symbol(kb, sym) {
+                return ty;
+            }
             let alias_target = match resolve_sort_alias(kb, sym) {
                 Some(t) => t,
                 None => return ty,
             };
-            // Alias to Var (type param) → resolve through substitution
             if let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) {
                 subst.resolve_with_term(*vid).map_or(alias_target, |bound| walk_type(kb, subst, bound))
             } else {
@@ -1420,6 +1525,20 @@ fn walk_type(kb: &KnowledgeBase, subst: &Substitution, ty: TermId) -> TermId {
         }
         _ => ty,
     }
+}
+
+/// True iff `sym` is a sort-level type parameter — i.e., its short
+/// name is registered in the type_params set of its defining scope's
+/// parent sort. Distinguishes `sort T = ?` inside `sort Stream { … }`
+/// (which IS a type-param) from `sort Term = ?` at namespace level
+/// (which is a top-level abstract sort, not a type parameter).
+fn is_sort_param_symbol(kb: &KnowledgeBase, sym: Symbol) -> bool {
+    use crate::intern::SymbolDef;
+    let SymbolDef::Resolved { scope_raw, .. } = kb.symbols.get(sym) else {
+        return false;
+    };
+    let short_name = kb.resolve_sym(sym);
+    kb.symbols.is_type_param(*scope_raw, short_name)
 }
 
 /// Look up SortAlias(sort_term, target) for a symbol. Returns the target TermId if found.

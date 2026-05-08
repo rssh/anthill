@@ -12,7 +12,9 @@
 namespace anthill.todo.store
   import anthill.stage0.{WorkItem, WorkStatus}
   import anthill.persistence.filesystem.{IndexedFileStore}
-  import anthill.prelude.{Cell, Option, List, Int, String, Unit}
+  import anthill.persistence.{persist, flush, retrieve}
+  import anthill.prelude.{Cell, Stream, Option, List, Int, String, Unit}
+  import anthill.prelude.Meta.{Meta}
   import anthill.reflect.{Term}
   export WorkItemStore, FileBasedWorkitemStore, WIS
 
@@ -51,11 +53,38 @@ namespace anthill.todo.store
 
     fact WorkItemStore[State = WIS]
 
-    -- Operation bodies (next_id / commit / lookup / by_status_of /
-    -- forget) deferred. WI-209 fixed parametric effect substitution at
-    -- call sites (Modify[c] → Modify[s] when calling Cell.set(s, ...)),
-    -- but polymorphic type-arg propagation through ops like Stream.head
-    -- (Stream[T = Term] → Option[T = Term]) is a separate gap (WI-211),
-    -- as is Cell.set's return-type resolution. Bodies land after both.
+    -- next_id reads the counter, returns a stub String, bumps it.
+    -- Real WI-NNN formatting deferred until Int → String helpers are
+    -- available without WI-189.
+    operation next_id(s: Cell[V = WIS]) -> String
+      effects Modify[s]
+    =
+      match Cell.get(s)
+        case wis(b, c) ->
+          let _ = Cell.set(s, wis(b, c + 1))
+          "WI-???"
+
+    operation lookup(s: Cell[V = WIS], id: String) -> Option[T = Term]
+      effects Error
+    =
+      match Cell.get(s)
+        case wis(b, _) ->
+          Stream.head(retrieve(b, WorkItem(id: id)))
+
+    operation by_status_of(s: Cell[V = WIS], st: WorkStatus) -> List[T = Term]
+      effects Error
+    =
+      match Cell.get(s)
+        case wis(b, _) ->
+          Stream.collect(retrieve(b, WorkItem(status: st)))
+
+    operation commit(s: Cell[V = WIS], w: WorkItem) -> Unit
+      effects {Modify[s], Error}
+    =
+      match Cell.get(s)
+        case wis(b, c) ->
+          let _ = persist(b, w, Meta(entries: nil()))
+          let _ = flush(b, nil())
+          Cell.set(s, wis(b, c + 1))
   end
 end
