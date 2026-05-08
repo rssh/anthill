@@ -110,6 +110,9 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
 
     register_if_present(interp, "Modify.get", modify_get)?;
     register_if_present(interp, "Modify.set", modify_set)?;
+    register_if_present(interp, "anthill.prelude.Cell.new", cell_new)?;
+    register_if_present(interp, "anthill.prelude.Cell.get", cell_get)?;
+    register_if_present(interp, "anthill.prelude.Cell.set", cell_set)?;
 
     Ok(())
 }
@@ -1200,6 +1203,8 @@ effect_dispatcher!(console_eprintln,  "anthill.prelude.Console.eprintln",  "epri
 effect_dispatcher!(console_read_line, "anthill.prelude.Console.read_line", "read_line", "anthill.prelude.Console.ConsoleInput");
 effect_dispatcher!(modify_get, "Modify.get", "get", "Modify");
 effect_dispatcher!(modify_set, "Modify.set", "set", "Modify");
+effect_dispatcher!(cell_get,   "anthill.prelude.Cell.get", "get", "Modify");
+effect_dispatcher!(cell_set,   "anthill.prelude.Cell.set", "set", "Modify");
 
 // ── Persistence builtins (proposal 007 §4) ─────────────────────
 
@@ -1282,6 +1287,22 @@ fn persistence_flush(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     store.flush(&interp.kb)
         .map_err(|e| EvalError::Internal(format!("flush: store error: {e}")))?;
     Ok(Value::Bool(true))
+}
+
+/// `anthill.prelude.Cell.new(initial) -> Cell`. Constructs a Cell
+/// handle and seeds the modify slot. v0.1: under functor-only identity
+/// (WI-200's transitional scheme), repeated `new` calls share one slot.
+fn cell_new(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [initial] = expect_args::<1>("Cell.new", args)?;
+    let cell_sym = interp.kb_mut().intern("anthill.prelude.Cell.Cell");
+    let cell_value = Value::Entity {
+        functor: cell_sym,
+        pos: Vec::new(),
+        named: Vec::new(),
+    };
+    let set_sym = require_symbol(interp, "anthill.prelude.Cell.set", "set")?;
+    interp.invoke_effect_handler("Modify", set_sym, &[cell_value.clone(), initial])?;
+    Ok(cell_value)
 }
 
 /// `anthill.persistence.QueryableStore.retrieve(store, pattern) -> Stream[Term, Error]`.
