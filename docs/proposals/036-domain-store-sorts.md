@@ -4,7 +4,7 @@
 
 ## Tracks: WI-192
 
-## Relates to: 037 (Modify framework — canonical state model; this proposal is a concrete consumer), WI-188 (entity copy), WI-189 (reify/reflect operators), WI-190 (quasi-quote patterns), WI-194 (commit), WI-195 (Error effect wired), WI-187 (IndexedFileStore — already landed), WI-200 (multi-instance Modify state — resolves the single-instance limitation noted below), WI-201 (`Spec.AssociatedType` syntax — would let polymorphic bundle commands drop the explicit `?S where WorkItemStore[?S]` noise)
+## Relates to: 037 (Modify framework — canonical state model; this proposal is a concrete consumer), WI-202 (phase 1 prerequisite — IndexedFileStore + QueryableStore foundation: stdlib entity, fact, retrieve builtin), WI-188 (entity copy), WI-189 (reify/reflect operators), WI-190 (quasi-quote patterns), WI-194 (commit), WI-195 (Error effect wired), WI-187 (IndexedFileStore Rust impl — already landed; underpins WI-202), WI-200 (multi-instance Modify state — resolves the single-instance limitation noted below), WI-201 (`Spec.AssociatedType` syntax — would let polymorphic bundle commands drop the explicit `?S where WorkItemStore[?S]` noise)
 
 ## Motivation
 
