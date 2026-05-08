@@ -224,6 +224,7 @@ impl KnowledgeBase {
             Value::Lazy(_) => Err(LowerError::UnsupportedVariant("Lazy")),
             Value::Substitution(_) => Err(LowerError::UnsupportedVariant("Substitution")),
             Value::Map(_) => Err(LowerError::UnsupportedVariant("Map")),
+            Value::Cell(_) => Err(LowerError::UnsupportedVariant("Cell")),
         }
     }
 

@@ -8,6 +8,7 @@
 use crate::intern::Symbol;
 use crate::kb::term::TermId;
 
+pub use super::cell_arena::CellHandle;
 pub use super::closure::ClosureHandle;
 pub use super::map_arena::MapHandle;
 pub use super::stream::StreamHandle;
@@ -63,6 +64,14 @@ pub enum Value {
     /// MapArena. Type parameters are erased at runtime; the type checker
     /// guards against heterogeneous keys/values (proposal 035).
     Map(MapHandle),
+    /// Mutable typed cell — arena-refcounted handle into the
+    /// per-interpreter CellArena. Identity is the slot index (allocation-
+    /// time uid); each `Cell.new` returns a fresh handle. The held value
+    /// is mutated in place via `Cell.set`. Cycles are inexpressible:
+    /// the typer's `may_contain_cell` rule rejects `Cell[T]` whenever T
+    /// transitively contains Cell, so the runtime never has to detect
+    /// cycles. See proposal 037 §"Cell[V]" + `docs/design/cell-runtime.md`.
+    Cell(CellHandle),
 
     // KB-sourced or already-committed data (hash-consed).
     Term(TermId),
@@ -136,6 +145,7 @@ impl Value {
             Value::Lazy(_) => "Lazy",
             Value::Substitution(_) => "Substitution",
             Value::Map(_) => "Map",
+            Value::Cell(_) => "Cell",
             Value::Term(_) => "Term",
         }
     }

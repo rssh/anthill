@@ -28,7 +28,7 @@ Three observations carried over from the proposal:
 
 - **Each `Cell.new` returns a distinct cell.** Repeated calls — including in deep recursion — produce non-aliased cells. This is non-negotiable for correctness; without it, recursive code mutating local cells silently breaks.
 - **Slots are reclaimed when the Cell handle is no longer reachable.** No monotonic growth. Recursive allocation is a normal pattern; the arena must keep up.
-- **Cycles are detectable** (a Cell holding itself, or two Cells referencing each other). Existing Modify handler code already does this; the new arena should preserve the check.
+- **Cycles are inexpressible.** The typer's `may_contain_cell`-style rule (see §"Cycle handling — type-level prevention") rejects payload types that could close a loop, so the runtime never sees a cycle and `Cell.set` is unconditional O(1). The earlier Modify handler's runtime walk goes away.
 - **Branch-aware** (eventually). When the runtime grows snapshot/`register_undo` for `Branch`, Cell's slots participate per the framework's branch-local-snapshot contract. v1 of the arena does not implement this; it is a forward-compat constraint on the data layout.
 
 ## Runtime model
@@ -75,9 +75,8 @@ A new `Value::Cell(CellHandle)` variant identifies cells in user-visible Values.
 2. `interp.cells.with_value(h, |v| v.clone())`.
 
 `Cell.set(c, new)`:
-1. Cycle-check `new` against `c` (transitively does `new` reference c?). Reuses the existing cycle detector from `effects.rs`.
-2. Match `c` as `Value::Cell(h)` → set the slot's value to `new`.
-3. Return `Value::Unit`.
+1. Match `c` as `Value::Cell(h)` → set the slot's value to `new`. No cycle check at this layer — the typer's static rule (§"Cycle handling") ensures `new`'s type can't reach back to `c`'s cell type, so a cycle is unconstructible.
+2. Return `Value::Unit`.
 
 The Modify effect row on `set` (`Modify[c]`) is satisfied because `Cell` has a `Modifiable` fact. Runtime dispatch routes `Cell.set` calls directly to the Cell builtin (no shared Modify handler involved); the framework's "per-resource handler" mechanism is realized as the Cell builtin owning its arena.
 
@@ -113,399 +112,286 @@ The runtime answers — detect-and-error, or sweep-and-collect — are both *lat
 
 **v1 takes the type-level answer instead: cycles are inexpressible.**
 
-#### The rule
+#### The rule — `acyclic_cell` as a discharged predicate
 
-`Cell[T]` is well-typed if and only if `T` is **Cell-free** — i.e., `T` does not transitively contain `Cell` anywhere in its structure (in any field of any entity, any element type of any container, any positional/named arg of any tuple).
+The constraint is **not** a hardcoded typer rule. It's an open predicate `acyclic_cell(T)` on the payload type, with `Cell.new(v: V)` (and `Cell[V]` annotations more generally) requiring it. The kernel discharges `acyclic_cell(V)` at every site, by:
 
-Concretely, the typer computes a static `may_contain_cell : Type → Bool` predicate:
+1. **Fact lookup.** If any fact `acyclic_cell[T = V]` holds (via the standard SLD resolution), accept.
+2. **Default static walk.** Else, run the algorithm below. If it accepts, accept.
+3. **Reject** if neither holds.
 
-```
-may_contain_cell(Cell[_])               = true
-may_contain_cell(Int | Bool | String | Float | Symbol | Term | …)
-                                        = false  (primitives)
-may_contain_cell(Entity Foo(t1, …, tn)) = any may_contain_cell(ti)
-may_contain_cell(Tuple t1 …)            = any may_contain_cell(ti)
-may_contain_cell(List[T] | Option[T] | …) = may_contain_cell(T)
-may_contain_cell(Map[K, V])             = may_contain_cell(K) ∨ may_contain_cell(V)
-may_contain_cell(Closure | Stream | …)  = conservatively true (opaque)
-```
+This factors the design cleanly:
+- Most code never thinks about it — `Cell[Int]`, `Cell[wis(...)]`, `Cell[List[Int]]` clear the default walk and "just work."
+- Domain-specific sorts that maintain acyclicity through some other mechanism (an age-ordered runtime discipline, a DLL whose public API preserves the invariant, a region-scoped construction protocol) can declare their guarantee with a fact: `fact acyclic_cell[T = dll[E]]`. These types pass the check without going through the static walk.
+- Future proof-system integration plugs in as another way to discharge the fact (e.g., a proved instance via SMT or kernel proofs) — same predicate, new discharge.
 
-The typer rule: **`Cell[T]` is rejected at typecheck time when `may_contain_cell(T)` is true.**
+The default static walk is described next; it's what fires when no explicit `acyclic_cell` fact covers V.
 
-#### Consequences
+#### Default discharge — the static walk
 
-- `Cell[Int]`, `Cell[String]`, `Cell[Bool]`: fine.
-- `Cell[Record(name: String, count: Int)]`: fine — entity with primitive fields.
-- `Cell[wis(backend: IndexedFileStore, id_counter: Int)]`: fine — neither field is cell-bearing. (This is exactly WI-203's WorkItemStore state.)
-- `Cell[List[Int]]`, `Cell[Map[String, Int]]`: fine.
-- `Cell[Cell[Int]]`: **rejected** — V is itself a Cell.
-- `Cell[List[Cell[Int]]]`: **rejected** — list element type contains Cell.
-- `Cell[Map[String, Cell[X]]]`: **rejected** — map value type contains Cell.
-- `Cell[Closure]`, `Cell[Stream]`: **rejected** — opaque types are conservatively cell-bearing.
+A runtime cycle through `Cell` requires a *type-graph cycle*: payload type T must transitively reach back to `Cell[T]` itself, or to some other `Cell[U]` whose payload reaches back to `Cell[T]`, etc. Plain nesting like `Cell[Cell[Int]]` or `Cell[List[Cell[Int]]]` cannot form a cycle — the inner `Cell[Int]` holds Int, and Int has no path back to any outer Cell. The default walk allows these and only rejects when the descent through the type graph closes a loop through the same Cell type already seen in the chain.
 
-#### What this enables
+The check at a `Cell[T]` site is a depth-first walk over T's structure carrying a set of *Cell types currently in the descent chain* (call it `topCells`). When the walk hits another `Cell[U]`: if `Cell[U] ∈ topCells`, that's a cycle — reject. Otherwise recurse into U with `Cell[U]` added to `topCells`. Non-Cell type structure (entities, lists, maps, tuples, abstract-sort unfoldings) recurses without changing `topCells`; a separate `visiting` set handles non-cell recursive sorts so the walk terminates.
 
-- **No cycles can form.** Type-impossible. The runtime never has to detect or collect them.
-- **Cell.set is O(1).** No walk, no detect_cycle. Just write the new value.
-- **No `walk_cells` trait.** Not needed at runtime.
-- **No `'gc` lifetime.** Not needed.
-- **No GC pauses.** Not applicable.
-- **Programs are statically analyzable.** A user's mistake is a typer error with a clear message ("Cell[T] requires T to be Cell-free; T = … contains Cell at …"); not a runtime exception, not a slow leak.
-
-#### What this restricts
-
-Cells cannot directly hold:
-- Other cells (no `Cell[Cell[T]]`).
-- Containers of cells (no `Cell[List[Cell]]`, no `Cell[Map[K, Cell[V]]]`).
-- Closures or streams (opaque carriers, conservatively rejected).
-
-Patterns that need "registry of cells" must use a different shape: a single `Cell[Map[String, V]]` with the map's values being non-cell V. Updates rebuild the map (immutable persistent data; cheap with hash-consed Maps). The single outer Cell carries the mutable state; map values are pure.
-
-For more complex graph-shaped state with mutable internal references, the answer is "use a different sort with explicit operations" — design a domain-specific Modifiable sort whose operations express the graph operations safely. (This is exactly the proposal 037 §3 framework: per-resource handlers with their own representation.) Cell is the *simple* leaf-pointer; complex state needs its own sort.
-
-#### Implementation plan changes
-
-The runtime simplifies dramatically vs the earlier (detect_cycle-based) draft:
-
-- ~~`WalkCells` trait~~ — not needed.
-- ~~`detect_cycle` graph walk~~ — not needed.
-- ~~Auto-derived walks for entities~~ — not needed.
-- ~~Stream Native/External invariant by code review~~ — not needed (Stream excluded from Cell payload by typer).
-
-What remains:
-
-- `Value::Cell(CellHandle)` variant.
-- `cell_arena.rs` (slot pool, refcount on clone/drop).
-- Cell.new/get/set builtins.
-- Refcount lifecycle as designed.
-- Typer rule: `may_contain_cell` predicate and the `Cell[T]` rejection.
-- Branch interaction via `register_undo` (unchanged).
-
-The typer rule is the essential addition; the runtime arena work shrinks to ~150 LoC (vs ~400 LoC for arena + walks + detector). Net implementation is *less* code than the runtime-detection approach.
-
-#### Typer enforcement: where the check happens
-
-The static analysis fires at every site where a value enters a Cell — primarily `Cell.new(v)` calls, plus any code that ascribes a `Cell[T]` type explicitly (let-binding type annotations, operation signatures, fact heads).
-
-**Predicate computation (`may_contain_cell`):**
-
-The predicate is on **fully-applied types** (with all type parameters bound to concrete arguments). It descends through structure, substituting at parameter-binding sites:
+##### Algorithm
 
 ```
-may_contain_cell(Cell)                          = true                      // base case
-may_contain_cell(GCCell)                        = true                      // if variant lands
-may_contain_cell(Int|Bool|String|Float|…)       = false                     // primitives
-may_contain_cell(Symbol|Term|TermId|…)          = false                     // term-store types
-may_contain_cell(Closure|Stream|…)              = true                      // conservatively (opaque)
-may_contain_cell(Entity Foo(f1: T1, …, fn: Tn)) = ⋁ may_contain_cell(Ti)    // any field
-may_contain_cell(Tuple t1 …)                    = ⋁ may_contain_cell(ti)
-may_contain_cell(List[T] | Option[T])           = may_contain_cell(T)
-may_contain_cell(Map[K, V])                     = may_contain_cell(K) ∨ may_contain_cell(V)
-may_contain_cell(Pair[A, B])                    = may_contain_cell(A) ∨ may_contain_cell(B)
-may_contain_cell(F[X = A, Y = B, …])            = may_contain_cell(unfold F with A,B,…)
+-- check at every site where a Cell[T] type is constructed (Cell.new(v),
+-- annotations, fact heads, ...). Decision:
+--   ACCEPT  → the program may construct values of this Cell type
+--   REJECT  → typer error: cycle possible through this Cell
+
+is_cell_well_typed(Cell[T]):
+  return descend(T,
+                 topCells = { Cell[T] },         -- Cell types in the current chain
+                 visiting = { Cell[T] })         -- termination guard for sort recursion
+
+descend(τ, topCells, visiting):
+  if τ ∈ visiting:
+    return ACCEPT                                -- recursion through non-Cell sort: terminate
+  let visiting' = visiting ∪ { τ }
+
+  match τ:
+    Cell[U]:
+      if Cell[U] ∈ topCells:
+        return REJECT                            -- cycle through this Cell type
+      return descend(U,
+                     topCells ∪ { Cell[U] },
+                     visiting')
+
+    Int | Bool | String | Float | Symbol | Term | …:
+      return ACCEPT                              -- primitives have no payload
+
+    Entity Foo(f1: T1, …, fn: Tn):
+      return ⋀ descend(Ti, topCells, visiting')
+
+    Tuple t1 … tn:
+      return ⋀ descend(ti, topCells, visiting')
+
+    List[T] | Option[T] | … (single-param containers):
+      return descend(T, topCells, visiting')
+
+    Map[K, V]:
+      return descend(K, topCells, visiting')
+           ∧ descend(V, topCells, visiting')
+
+    AbstractSort F[X = A, Y = B, …]:
+      -- unfold F's body with type-args substituted, descend into the
+      -- resulting fully-applied form. visiting' guards termination on
+      -- sorts that recurse through their own fields without going
+      -- through Cell.
+      return descend(unfold(F, [X→A, Y→B, …]),
+                     topCells, visiting')
+
+    Closure | Stream | <user-defined opaque sort>:
+      return REJECT                              -- conservative: opaque captures
+                                                 -- aren't introspectable. A future
+                                                 -- "no-Cell-captures" annotation
+                                                 -- could relax this per-sort.
+
+    -- Type variables (?T): two stances —
+    --   (a) cautious: REJECT (treat as if T could bind to a top Cell)
+    --   (b) deferred: ACCEPT here; re-run the check at the call site
+    --       where ?T is bound to a concrete type.
+    -- (b) matches anthill's existing call-site checking for parametric
+    -- effects/types and is the intended stance.
 ```
 
-The last rule unfolds parameterized sort applications by substituting arguments into the sort's body, then evaluating the predicate on the result.
+##### Worked examples
 
-**Recursive abstract types:**
+| Type expression | Walk | Decision |
+|---|---|---|
+| `Cell[Int]` | descend(Int, {Cell[Int]}) → primitive | ACCEPT |
+| `Cell[Cell[Int]]` | descend(Cell[Int], {Cell[Cell[Int]]}) → Cell[Int] ∉ topCells → descend(Int, {Cell[Cell[Int]], Cell[Int]}) → primitive | ACCEPT |
+| `Cell[List[Cell[Int]]]` | descend(List[Cell[Int]], {Cell[List[Cell[Int]]]}) → descend(Cell[Int], …) → Cell[Int] ∉ topCells → descend(Int, …) | ACCEPT |
+| `Cell[wis(backend: IFS, id_counter: Int)]` | entity with non-cell fields | ACCEPT (WI-203's case) |
+| `Cell[A]` where `sort A { entity wrap(value: Cell[A]) }` | descend(A, {Cell[A]}) → unfold wrap(value: Cell[A]) → descend(Cell[A], {Cell[A]}) → Cell[A] ∈ topCells | **REJECT** — cycle |
+| `Cell[A]` where A = `sort A { entity x(t: Int, more: List[A]) }` | descend(A, …) → unfold → descend(List[A]) → descend(A) → A ∈ visiting → terminate | ACCEPT — no Cell on the recursion path |
+| `Cell[A]` where `sort A { entity wrap(b: B) }` and `sort B { entity wrap(a: Cell[A]) }` | descend(A) → unfold → descend(B) → unfold → descend(Cell[A]) → Cell[A] ∈ topCells | **REJECT** — cycle through B |
+| `Cell[Closure]` | Closure variant → conservative reject | REJECT (until per-sort opt-in lands) |
 
-Abstract sorts (`sort T = ?`) can be self-recursive — they reach themselves through their own fields:
+##### Where the check fires
+
+The kernel attaches an implicit `acyclic_cell(V)` discharge obligation to `Cell.new` and to any `Cell[V]` annotation site. Whether this surfaces in the language as an explicit `require acyclic_cell(V)` clause on the operation, as a sort-level constraint on `Cell` itself, or as a hidden kernel check is a surface-syntax decision that can land separately — the architecture and obligation set are the same either way. Specifically:
+
+- `Cell.new(v)`: V is inferred from v's type. Discharge `acyclic_cell(V)` — fact lookup first, default walk as fallback.
+- `Cell[T]` annotations (let-bindings, op param/return types, fact heads, generic instantiations): same discharge on the annotated form.
+- `MySort[T = Cell[U]]`: discharge `acyclic_cell(U)` before considering MySort's instantiation.
+
+##### Sketch — extending coverage via facts
 
 ```anthill
-sort Tree
-  sort T = ?
-  entity node(value: T, children: List[Tree])
+-- Default: kernel walks the type graph (the algorithm above). No fact
+-- needed for ordinary cases like Cell[Int], Cell[wis(...)],
+-- Cell[List[Int]], Cell[Cell[Int]] — they clear the walk on their own.
+
+-- A domain sort declares its invariant with a fact:
+sort dll
+  sort E = ?
+  entity Node(prev: Cell[dll[E = E]], next: Cell[dll[E = E]], data: E)
+  -- … operations push_front, push_back, delete, … that preserve
+  -- acyclicity by construction in their bodies.
+end
+
+-- The author asserts the guarantee:
+fact acyclic_cell[T = dll[E = ?]]
+-- (or per-instantiation, depending on how strong the invariant is)
+
+-- Now `Cell[dll[E = Int]]` is well-typed via the fact, even though the
+-- default walk would reject it (dll's type graph closes a Cell-loop
+-- through Node.prev / Node.next).
+```
+
+The fact's discharge story (why it holds) lives outside the kernel — it might be a paper proof, an SMT discharge under proposal 030, a runtime age-ordered discipline, or just author trust. The kernel only checks the fact exists at the site; it doesn't verify *why* the author believes it.
+
+##### Caching
+
+Cache the decision keyed by `(Cell[T], topCells)` — same Cell type with same incoming chain decides identically. For most call sites `topCells` is a singleton, so the cache key collapses to the type expression itself; deeper sites add the chain.
+
+##### Implementation hook
+
+Same place the earlier first-cut sketch was going to land:
+- After `scan_definitions` in `rustland/anthill-core/src/kb/`, a new pass walks each entity/sort declaration and pre-computes any `topCells`-free decisions.
+- A predicate `kb.cell_well_typed(ty: TermId, top_cells: &HashSet<TermId>) -> bool` is the runtime entry point; the typer's `Cell.new` arm calls it with `top_cells` seeded from any enclosing `Cell[U]` annotations.
+
+#### Discharge by data-flow on operation bodies (extension; future direction)
+
+The static walk above rejects sorts whose type graph closes a Cell-loop (e.g., a doubly-linked list `dll(prev: Cell[dll], next: Cell[dll], data: E)` — both fields close a Cell-cycle through `dll` itself). Many such sorts are *operationally* acyclic: the public API only ever produces values whose runtime cell graph is acyclic, even though the type graph isn't. They want a third discharge mechanism — beyond fact-lookup and the static walk — that **proves the operation set preserves acyclicity**.
+
+The proof obligation lifts to a **local syntactic check** on operation bodies.
+
+##### The proof obligation per operation
+
+Given a sort `V` with the precondition "every input `v: V` is acyclic" and the postcondition "every produced `v: V` is acyclic," each operation must show that its body, when executed on acyclic inputs, produces an acyclic output. The inputs being acyclic is the inductive hypothesis; the output being acyclic is what we have to show. (Empty-list / construct-from-primitives base cases are vacuous.)
+
+##### The local rule per `Cell.set`
+
+The body of an operation is a sequence of `Cell.new`, `Cell.get`, `Cell.set`, and ordinary expressions. `Cell.new` is unconditional (a fresh slot can't be in any cycle). `Cell.get` is observation-only. The interesting case is `Cell.set(c, v)`.
+
+For each pointer field `f` in `v` (a field whose static type is a `Cell[…]` or `Option[Cell[…]]` etc.), classify `v.f` into one of three categories:
+
+| Category | Definition | Why no cycle is introduced |
+|---|---|---|
+| **fresh** | `v.f` was just allocated (or is `none`) by a `Cell.new` in this op, and has not been linked into the prior heap | A fresh cell has no incoming references, so no path can pass *through* it back to `c`. |
+| **unchanged** | `v.f = c.prior.f` (the same value the slot already had on this field) | No new edge — the f-graph is unchanged for this slot. |
+| **downstream** | `v.f` is reachable from `c` by following `f`-pointers in the prior heap (i.e., `v.f` was already "below" `c` in the f-graph) | Re-pointing `c.f` to something reachable from `c.f` only shortens chains — never closes them. |
+
+A `Cell.set(c, v)` discharges the obligation if **every pointer field of v** falls into one of these categories. An operation discharges acyclicity-preservation if every `Cell.set` in its body discharges, and every `Cell.new` is unconstrained.
+
+Per-field independence matters: the f-graph and g-graph are separate, and writing both fields in one `set` only needs each to satisfy the rule. (push_front below illustrates: it writes a `prev` whose target is fresh, and a `next` whose target is unchanged — both clear, and neither field's graph cycles.)
+
+##### Worked example — DLL push_front
+
+```anthill
+sort dll
+  sort E = ?
+  entity Node(
+    prev: Option[Cell[dll[E = E]]],
+    next: Option[Cell[dll[E = E]]],
+    data: E,
+  )
+end
+
+operation push_front(head: Option[Cell[dll[E]]], v: E) -> Option[Cell[dll[E]]] =
+  let new_cell = Cell.new(Node(prev: none, next: head, data: v))   -- ❶
+  let _ = match head with                                          -- ❷
+          | some(head_cell) ->
+              let h = Cell.get(head_cell)
+              Cell.set(head_cell, Node(
+                prev: some(new_cell),
+                next: h.next,
+                data: h.data))
+          | none -> ()
+        end
+  some(new_cell)
 end
 ```
 
-`may_contain_cell(Tree[T = Int])` unfolds `node(value: Int, children: List[Tree[T = Int]])`. The fields are: `Int` (false), and `List[Tree[T = Int]]` — which recurses back to `Tree[T = Int]`. Termination via fixed-point under environment of in-progress evaluations:
+Discharging:
 
-```
-evaluate(τ, env):
-  if τ in env:                       // already-in-flight (recursive case)
-    return env[τ]                    // tentatively false; will be revised
-  env[τ] = false                     // initial assumption
-  result = compute predicate via the rules above, recursing through env
-  env[τ] = result                    // commit
-  return result
-```
+- ❶ `Cell.new(...)` — unconditional. `new_cell` is **fresh**. The `next: head` *inside* the freshly-allocated value is fine because `Cell.new` doesn't impose any constraint on the cell's contents (the constraint is only on incoming references to the new cell, of which there are none).
 
-For `Tree[T = Int]` this produces:
-- enter `Tree[T = Int]` with env[Tree[T = Int]] = false
-- evaluate fields: Int → false; List[Tree[T = Int]] → may_contain_cell(Tree[T = Int]) → returns env's `false` (recursion hit)
-- ⋁ false false → false
-- commit env[Tree[T = Int]] = false
+- ❷ `Cell.set(head_cell, Node(prev: some(new_cell), next: h.next, data: h.data))` — head_cell is *not* fresh (it's a parameter). Check each pointer field:
 
-Fixed point reached in one pass. For `Tree[T = Cell[X]]`: the `value: T` field has `may_contain_cell(Cell[X]) = true`, immediately drives the OR to true; recursion through children doesn't change it.
+  - **prev**: `some(new_cell)`. `new_cell` is **fresh** (just allocated in step ❶, hasn't been written into any other cell yet). ✓
+  - **next**: `h.next` where `h = Cell.get(head_cell)`. `h.next` is `head_cell.prior.next` — **unchanged** from the prior value. ✓
 
-Standard Tarski-Kleene fixed-point iteration: monotone over the boolean lattice (false ≤ true), converges in finite steps (one if non-recursive flow already saturates; up to O(distinct types × fields) otherwise).
+  All fields cleared; the `set` discharges.
 
-**Mutually-recursive abstract sorts:**
+Acyclicity is preserved.
 
-Same fixed-point machinery handles mutual recursion (`sort A` has field `B`, `sort B` has field `A`). The env tracks all in-flight evaluations; the iteration eventually stabilizes.
-
-**Caching:**
-
-Cache by `(sort_symbol, type_args_tuple)` pairs — same type with same args computes once. Different args (e.g. `Tree[T = Int]` vs `Tree[T = Cell[X]]`) are distinct cache keys.
-
-For unbound type parameters in scope (e.g. inside the body of `sort WorkItemStore { sort State = ? operation foo(s: State) }` — State is bound at use, not declaration), the predicate result depends on the eventual binding. Two stances:
-- **Cautious:** treat unbound `?T` as conservatively `true` — would reject `Cell[?T]` even when T might bind to a Cell-free type. Restricts what generic operations can return.
-- **Deferred:** evaluate the predicate at the call site where `?T` is bound to a concrete type. The check is a per-call-site obligation rather than a per-declaration one.
-
-The latter is correct for the rule's intent. anthill's typer already does call-site checking for similar patterns (effect rows after parameter binding, etc.); the same machinery applies.
-
-**Hook point in the loader/typer pipeline:**
-
-In `rustland/anthill-core/src/kb/`:
-- After `scan_definitions` (entity declarations registered), but before `load` finishes.
-- A new pass `compute_cell_freeness(kb: &mut KnowledgeBase)` walks all entity sorts, populates a `HashMap<Symbol, bool>` ("does T transitively contain Cell?"), iterates to fixed point.
-- Cached on `KnowledgeBase` as `pub fn may_contain_cell(&self, ty: TermId) -> bool`.
-
-**Check at `Cell.new(v)`:**
-
-The typer's operation-call inference already infers the argument's type. The Cell sort's declared `new(v: V) -> Cell` operation has V as a type parameter; the typer has bound V to the inferred argument type at the call site. Insert:
-
-```rust
-// During typing of `Cell.new(v)`:
-let v_type = infer_type(arg);
-if kb.may_contain_cell(v_type) {
-    return Err(TypeError::CellPayloadCycleRisk {
-        site: call_site_span,
-        v_type,
-        offending_path: kb.cell_path_in_type(v_type),  // diagnostic
-    });
-}
-```
-
-The `cell_path_in_type` helper (used only in error messages) walks the type and reports where the Cell occurs — e.g. `"List[Cell[Int]] : list element type"`. Useful for clear errors, not for the predicate decision (which is just bool).
-
-**Check at `Cell[T]` annotations:**
-
-Same predicate, applied wherever a type expression resolves to `Cell[T]`:
-- Let bindings: `let c: Cell[T] = …` — check at type-binding resolution.
-- Operation params/returns: `operation foo(c: Cell[T]) -> …` — check at sort/operation declaration time.
-- Fact heads with Cell-bearing parameters — check at fact loading.
-- Generic instantiation: `MySort[T = Cell[U]]` — check that `Cell[U]` is well-typed (so U must be Cell-free).
-
-The check is purely a guard on the type expression; it doesn't change any other typing rule.
-
-**Diagnostics:**
-
-Error message pattern:
-```
-error: Cell[T] requires T to be Cell-free
-  --> example.anthill:14:13
-   |
-14 |     let c: Cell[List[Cell[Int]]] = …
-   |             ^^^^^^^^^^^^^^^^^^^ T = `List[Cell[Int]]` contains Cell
-   |                                  at element type of List
-   |
-   = note: cells nested inside cells could form cycles, which would
-           leak. Consider:
-   = help: refactor to Cell[List[Int]] (single outer cell, persistent
-           list updated immutably);
-   = help: use GCCell[List[Cell[Int]]] for graph-shaped state (if/when
-           GCCell variant lands).
-```
-
-The error is the user-facing artifact. Three pieces: where the rejection fires, what type is offending, what the user can do about it.
-
-**Tests:**
-
-A focused test file for the typer rule:
-- `Cell[Int]`, `Cell[String]`, `Cell[wis(IndexedFileStore, Int)]` — accepted.
-- `Cell[Cell[Int]]`, `Cell[List[Cell[Int]]]`, `Cell[Map[String, Cell[X]]]` — rejected with a clear message.
-- `Cell[Closure]`, `Cell[Stream]` — rejected (opaque carriers).
-- Mutually recursive entities with no Cell anywhere — accepted.
-- Mutually recursive entities where one path leads to Cell — `Cell[A]` rejected.
-
-Drives the loader + typer integration end-to-end.
-
-#### Why a graph walk is required
-
-Two recursive `Cell.set` calls suffice to construct a cycle the symbol-walk misses:
+##### Worked example — DLL delete (subset/downstream)
 
 ```anthill
-let a = Cell.new(0)
-let b = Cell.new(0)
-Cell.set(a, b)   -- a's slot ← Value::Cell(b);  walk on b finds: 0; OK
-Cell.set(b, a)   -- b's slot ← Value::Cell(a);  walk on a finds: ?
+operation delete(node: Cell[dll[E]]) -> Unit =
+  let n = Cell.get(node)
+  let _ = match n.prev, n.next with
+          | some(prev), some(next) ->
+              -- splice node out:
+              let p = Cell.get(prev)
+              let nx = Cell.get(next)
+              let _ = Cell.set(prev, Node(prev: p.prev, next: some(next), data: p.data))
+              Cell.set(next, Node(prev: some(prev), next: nx.next, data: nx.data))
+          | …handle head/tail…
+        end
+  ()
+end
 ```
 
-For the second set's check to reject correctly, walking `a` must read a's *current slot contents* (`Value::Cell(b)`) and recurse into that — discovering b is the target. The walk has to traverse the arena, not just the value structure.
+For `Cell.set(prev, Node(prev: p.prev, next: some(next), data: p.data))`:
+- **prev**: `p.prev` = `prev.prior.prev` — **unchanged**. ✓
+- **next**: `some(next)`. Is `next` reachable from `prev` via `next`-pointers in the prior heap? Yes: `prev.next` was `node`, `node.next` was `next`. So `next` is **downstream** of `prev` via the next-graph. ✓
 
-Worse, Cells can be nested arbitrarily inside other values:
+For `Cell.set(next, Node(prev: some(prev), next: nx.next, data: nx.data))`:
+- **prev**: `some(prev)`. `prev` is downstream of `next` via the prev-graph in the prior heap (`next.prev` was `node`, `node.prev` was `prev`). ✓
+- **next**: `nx.next` — **unchanged**. ✓
+
+Discharges.
+
+##### Worked example — a cycle attempt is rejected
 
 ```anthill
-let a = Cell.new(0)
-Cell.set(a, [some_entity{field: a}, ...])   -- a's slot holds a list whose first element is an entity whose `field` is a
+operation cycle_back(head: Cell[dll[E]]) -> Unit =
+  let last = walk_to_last(head)                  -- last: Cell[dll[E]], not fresh
+  let l = Cell.get(last)
+  Cell.set(last, Node(prev: l.prev, next: some(head), data: l.data))
+end
 ```
 
-The Cell reference is buried under a list element under an entity field. The detector must descend into Entity / Tuple / Map / List / Stream / Closure structure recursively, finding any `Value::Cell` reference at any depth.
+For `Cell.set(last, Node(prev: l.prev, next: some(head), data: l.data))`:
+- **prev**: unchanged. ✓
+- **next**: `some(head)`. Is `head` downstream of `last` via the next-graph? In an acyclic next-graph terminating at `last`, *no* — `head` is upstream of `last`, not downstream. Not unchanged either (was `none` for the tail). Not fresh. **Reject.**
 
-#### The detector — distribute walk knowledge across Value and Term
+The check refuses the operation at typer time, even though no runtime walk is performed.
 
-Rather than one big `match` in `detect_cycle` enumerating every variant, give each value-shape its own walk method. The detector orchestrates; per-shape recursion logic stays local.
+##### What the rule cannot handle
 
-**Most walk implementations are auto-generated from type information.**
+Operations that **swap edges** (re-parent / rotate) — common in self-balancing trees, graph rewriting — do neither fresh, unchanged, nor downstream:
 
-For entity sorts, anthill already has the field types in the KB (every entity has its `entity Foo(name: T1, name2: T2, …)` declaration). The walk is mechanical: visit each field's value, recursing via T's own walk. The loader generates a per-functor walk function at load time — no manual coding per sort. Same approach for tuples (positional + named field types known) and term arms (Term::Fn children are TermIds; walk recurses through `kb.with_term`).
-
-Generated walks make the detector exhaustive *by construction*: every entity sort declared in the program (stdlib + user) automatically participates. New sorts don't need new walk impls — just new entity declarations.
-
-Manual impls are reserved for the cases where structure isn't expressible in anthill types:
-- `Value::Cell(h)` — visit the slot index (the orchestrator descends).
-- `Value::Map(h)` — read arena, walk values.
-- `Value::Closure(h)` — read closure arena, walk captured env.
-- `Value::Stream(h)` — variant-by-variant: walkable variants (Pure, MPlus) recurse; opaque variants (Native, External, Resolver) covered by the runtime invariant on construction.
-- Primitives — no descent.
-
-That's six manual impls, total. Everything else — every entity sort the program declares — is derived.
-
-```rust
-/// Visit each *directly* referenced Cell slot. Implementations
-/// recurse through their own structural children (Entity fields,
-/// Tuple positions, Map values, captured-env, term args, …) but do
-/// NOT descend through Cell handles into their slot contents — the
-/// caller orchestrates that, holding the visited-set.
-pub trait WalkCells {
-    fn walk_cells(&self, f: &mut dyn FnMut(SlotIdx));
-}
-
-impl WalkCells for Value {
-    fn walk_cells(&self, f: &mut dyn FnMut(SlotIdx)) {
-        match self {
-            Value::Cell(h)                  => f(h.slot),
-            Value::Entity { pos, named, .. }
-            | Value::Tuple { pos, named, .. } => {
-                for v in pos { v.walk_cells(f); }
-                for (_, v) in named { v.walk_cells(f); }
-            }
-            Value::Map(h)     => arena_lookups.with_map(h, |body| {
-                                     for (_, v) in body { v.walk_cells(f); }
-                                 }),
-            Value::Closure(c) => closure_arena.with_env(c, |env| {
-                                     for v in env { v.walk_cells(f); }
-                                 }),
-            Value::Term(tid)  => kb.with_term(*tid, |t| t.walk_cells(f)),
-            Value::Stream(_)  => { /* opaque — see open question */ }
-            _                 => {}                       // primitives
-        }
-    }
-}
-
-impl WalkCells for Term {
-    fn walk_cells(&self, f: &mut dyn FnMut(SlotIdx)) {
-        match self {
-            Term::Fn { pos_args, named_args, .. } => {
-                for tid in pos_args { kb.with_term(*tid, |t| t.walk_cells(f)); }
-                for (_, tid) in named_args { kb.with_term(*tid, |t| t.walk_cells(f)); }
-            }
-            // Term::Const, Term::Var, Term::Ref, etc. — no Cell refs
-            _ => {}
-        }
-    }
-}
-
-/// Detector orchestrates: BFS through the cell graph, marking visited
-/// slots, halting on target.
-fn detect_cycle(
-    arena: &CellArena,
-    target: SlotIdx,
-    initial: &Value,
-) -> Result<(), CycleError> {
-    let mut visited = HashSet::new();
-    let mut worklist: Vec<Value> = vec![initial.clone()];
-    while let Some(val) = worklist.pop() {
-        let mut hit_target = false;
-        val.walk_cells(&mut |slot| {
-            if slot == target { hit_target = true; }
-            else if visited.insert(slot) {
-                worklist.push(arena.read(slot));
-            }
-        });
-        if hit_target { return Err(CycleError); }
-    }
-    Ok(())
-}
+```anthill
+-- AVL rotate_left: redirect node's right pointer to a sibling that is
+-- not downstream of node (it's a sibling subtree), then make the
+-- sibling's left pointer point to node (definitely upstream).
 ```
 
-**Implementation note: walk_cells must be iterative too.**
+Such ops need stronger reasoning: either the runtime age-ordered discipline (option A in the brainstorm), or a proper proof discharge through proposal 030's proof cache, or a domain-specific invariant ("this is a known-acyclic transformation" — paper proof). The data-flow check cleanly identifies which operations need richer discharge.
 
-The trait method `walk_cells` recurses through structural children (Entity fields, Map values, etc.). A pathologically deep value tree — 10 000 nested Tuples — would blow Rust's host stack. Each `walk_cells` impl on a multi-child variant must use an internal worklist, not recurse:
+##### Where this lives
 
-```rust
-impl WalkCells for Value {
-    fn walk_cells(&self, f: &mut dyn FnMut(SlotIdx)) {
-        let mut stack: Vec<&Value> = vec![self];
-        while let Some(v) = stack.pop() {
-            match v {
-                Value::Cell(h) => f(h.slot),
-                Value::Entity { pos, named, .. }
-                | Value::Tuple { pos, named, .. } => {
-                    stack.extend(pos.iter());
-                    stack.extend(named.iter().map(|(_, v)| v));
-                }
-                Value::Map(h)     => arena.with_map(h, |body| {
-                                         for (_, v) in body { stack.push(v); }
-                                     }),
-                Value::Closure(c) => /* push captured env entries */,
-                Value::Term(tid)  => /* push term children */,
-                Value::Stream(_)  => { /* opaque */ }
-                _                 => {}
-            }
-        }
-    }
-}
-```
+- **Predicate definition**: an anthill sort `acyclic_cell` whose logical content is "no cell in this V-rooted graph reaches itself via any pointer field." First-order definable using a `cell_reaches_via_f` relation per pointer field.
+- **Discharge mechanism — fact lookup**: `fact acyclic_cell[T = V] :- ops_of(V) all preserve acyclicity` — the kernel's per-operation data-flow checker emits this when V's operations all clear the rule.
+- **Discharge mechanism — proof cache**: per proposal 030, paper proofs / SMT proofs that an operation preserves acyclicity discharge the same fact. Same predicate, different evidence.
+- **Discharge mechanism — runtime age-ordered**: a separate sort `OrderedCell[V]` whose runtime invariant ("Cell.set(c, v) requires every cell reachable from v to have allocation-age strictly less than c's") implies acyclicity at construction. `fact acyclic_cell[T = OrderedCell[V]]` is unconditional once the runtime check is in place.
 
-The outer `detect_cycle` already uses a worklist for cell-graph traversal; combined with the iterative `walk_cells`, the maximum recursion depth in Rust is O(1) regardless of value-tree depth or cell-graph size. The only resource bound is heap memory for the worklists themselves.
+The data-flow rule above is one way to populate `acyclic_cell` facts automatically. It's the cheapest discharge (no proof system, no runtime cost) and covers a useful slice (linked structures, tree builds, deletion). Beyond that slice, the other mechanisms take over.
 
-Two reasons to factor this way:
+(Filed as a follow-up to WI-207; the runtime side of WI-205 and the static walk of WI-207 don't depend on this extension landing.)
 
-1. **Encapsulation.** Each `Value` variant's structural traversal is local to its impl, not buried in a giant `match` in cycle-detection code. New variants slot in by implementing the trait. Same goes for adding fields to existing variants.
+#### Why no runtime cycle check
 
-2. **Reuse.** Other walks the system needs — type-driven skip analysis, snapshot for Branch, debug-print of reachable cells, GC mark-phase if we ever go that route — all want to enumerate Cell references inside a Value/Term. The trait method is the single source of truth for "what's reachable from here." Cycle detection is one consumer; future code is others.
+Once the typer rule is in place, `Cell.set(c, v)` is `arena.write(handle, v)` — a single slot write, no walk, no detection. Cycles are inexpressible at the type level, so they cannot form at runtime. There is no `walk_cells`, no `detect_cycle`, no `WalkCells` trait — they would be enforcing an invariant the typer already enforced.
 
-3. **Testability.** `walk_cells` is independent of the detector — it can be unit-tested per variant ("a Value::Tuple visits each of its positional values exactly once") without setting up an arena.
-
-#### Cost
-
-Per `Cell.set(c, v)`: walks `v`'s value tree once, reads through each distinct Cell handle's slot once (visited-set bounded), recursively walks each slot's contents. Worst case: O(|value-tree| + Σ|cell-slot-contents reachable from v|).
-
-For the dominant use cases — primitive-valued cells, cells holding small records — this is a few-node walk with no arena reads. For deep graph-shaped data, it's a real graph traversal.
-
-There is no "fast-path bail." The naive bail "scan for any Value::Cell" is itself a recursive walk through the value tree (a Value::Cell may be buried under arbitrary Entity / Tuple / List nesting), so it does the same work as `detect_cycle` itself in the cell-free case. They tie.
-
-The real optimization is **type-driven skip**: when the typer knows the cell's value type contains no Cell — e.g. `Cell[Int]`, `Cell[wis(IndexedFileStore, Int)]` where neither inner type carries Cell — skip the walk entirely. This requires the typer to compute and surface a "may-contain-Cell" flag per type. v1 of the cell_arena does NOT include this optimization; if perf measurements show the walk dominates, file a follow-up to add typer-driven skip.
-
-For v1: every `Cell.set` runs `detect_cycle`. Programs that mutate primitive-valued cells in tight loops will see one pass over a small value per set — negligible. Programs that build complex graph structures pay the proportional cost.
-
-#### Walkable values — the v1 invariant
-
-The detector must catch every cycle a developer can construct. Letting some patterns slip past as a "leak risk" makes incorrect programs hard to analyze: a developer's bug becomes a slow OOM somewhere downstream rather than a clear write-time error. v1 closes the gap.
-
-The invariant: **every Value variant is walkable for cells.** Each variant's `walk_cells` impl descends into the variant's contents through whatever runtime state holds them — even if that state is technically "opaque to anthill code." The runtime owns the data; it can introspect for the detector even when user code can't.
-
-| Variant | How `walk_cells` reaches its cell-bearing children |
-|---|---|
-| `Value::Cell(h)` | Visits the slot; caller orchestrates descent into slot contents |
-| `Value::Entity { pos, named, .. }` | Walks positional + named fields |
-| `Value::Tuple { pos, named }` | Walks positional + named |
-| `Value::Map(h)` | `arena.with_map(h, |body| …)` — walks each value |
-| `Value::Term(tid)` | `kb.with_term(tid, …)` — walks Fn children, Ref/Const are leaves |
-| `Value::Closure(h)` | `closure_arena.with_env(h, |env| …)` — walks each captured value |
-| `Value::Stream(h)` | Walks variant-by-variant: `Pure(v)` walks v; `MPlus(l, r)` walks both children's handles; `Empty` no-op; `Resolver`/`Native`/`External` exposed via construction-time invariant (next paragraph) |
-
-**Stream's `Native`/`External` / `Resolver` variants** hold Rust-side closures or trait objects whose internals aren't introspectable from anthill's runtime. The invariant we maintain instead: **builtins that construct these variants do not capture Value::Cell handles in the closures or trait objects.** This is enforceable by code review of the small number of builtins that allocate Streams (anthill-stl + eval/stream.rs), and provable: the captures are visible in the construction-site code. The invariant then says: a `Value::Stream` that the user can hold is guaranteed to not contain Cells (even invisibly), so `walk_cells` can return without recursing into the opaque tail.
-
-**Rationale for this invariant over a runtime check:** the alternative would be making every native/external Stream constructor pass through a verifier that scans for Cells in its captured state. That's both expensive and brittle (Rust doesn't expose closure captures via reflection). Code-review enforcement of "no Cells in stream-state-closures" is cheaper, narrowly scoped, and verifiable.
-
-**For user-defined entity sorts** (everything declared with `entity Foo(field: T, …)`): auto-generated walks. The loader scans field types when registering the sort, emits a walk function that descends into each field per its type's walk. Anthill code can declare arbitrary deeply-nested entity hierarchies and they all participate without per-sort coding.
-
-**For future user-defined opaque sorts** (sorts with operations returning values, no structural reflection): the typer rule. When a user declares such a sort, the typer rejects type parameters that may contain Cell. E.g. `MyOpaque[Cell[Int]]` is rejected; `MyOpaque[Int]` is fine. The "may-contain-cell" analysis is a transitive closure over field/element types — the same data the auto-generated walks consume, used statically. (Filed as a parallel typer work item; v1 of cell_arena ships the runtime walks; the typer rule for opaque sorts lands separately.)
-
-Net effect of the invariant: **no cycle a user can construct from anthill code escapes detection**. Programs are write-time correct or fail at write time with `EvalError::CyclicReference` — never silently leak.
+(Earlier drafts of this doc proposed a runtime arena walk on every `Cell.set`. That approach is superseded; the runtime walk machinery moves to the optional `GCCell` sibling sort below, where it's the mark phase of a tracing collector — a different consumer of the same metadata.)
 
 ### Drop ordering
 
@@ -615,11 +501,11 @@ Target state (this doc):
 Migration steps:
 
 1. **Add `Value::Cell(CellHandle)` variant** — `value.rs`. Ripple through pattern-match exhaustiveness, printers, arena diagnostics.
-2. **Add `cell_arena.rs`** — slot pool, refcount on clone/drop, alloc/with_value/set, mirrors map_arena.rs.
+2. **Add `cell_arena.rs`** — slot pool, refcount on clone/drop, alloc/with_value/write, mirrors map_arena.rs.
 3. **Add `cells: CellArenaRef` field on `Interpreter`** (eval/mod.rs).
 4. **Rewrite `cell_new`/`cell_get`/`cell_set` builtins** to allocate from / dispatch through the arena instead of the Modify handler.
-5. **Cycle detection** — port `detect_cycle` from effects.rs to operate on `Value::Cell` references.
-6. **Tests** — recursion test (deep allocation, no aliasing); refcount test (slot reclaimed when handle dropped); cycle-prevention test.
+5. **Typer rule** — `may_contain_cell` predicate populated as a load-time pass on the KB; check fires at every `Cell.new` call site and `Cell[T]` type annotation. (Replaces the runtime cycle walk from earlier drafts.)
+6. **Tests** — recursion test (deep allocation, no aliasing); refcount test (slot reclaimed when handle dropped); typer-rejection tests for `Cell[Cell[Int]]`, `Cell[List[Cell[X]]]`, etc.
 7. **Diagnostics** — TermPrinter for Value::Cell (handle id, current value rendered).
 8. **Update wi205_cell_test.rs** — same surface tests still pass under the new representation.
 
@@ -631,22 +517,20 @@ A summary of how user-side mistakes manifest:
 
 | What the developer does | Result |
 |---|---|
-| Tries to construct a cycle (`Cell.set(b, a)` after `Cell.set(a, b)`) | `EvalError::CyclicReference` returned to caller — controlled error, surfaceable as `Error[CyclicReference]` at anthill level. No crash. |
-| Constructs a cycle through a Closure | `EvalError::CyclicReference` — Closures expose their captured env via `closure_arena.with_env`; `walk_cells` descends into the env values; cycle caught at write time. |
-| Constructs a cycle through a Stream | `EvalError::CyclicReference` for walkable variants (Pure, MPlus); for Native/External/Resolver variants, the runtime invariant "stream-state closures don't capture Cells" is enforced by code review of builtins. Either way, no silent leak. |
-| Constructs a cycle through a future user-defined opaque sort | Typer rule rejects "MyOpaque[T]" when T may transitively contain Cell. v1 of cell_arena ships without this typer rule; in the meantime, Cells inside user-defined opaque sorts are caught at runtime by the construction-site builtin (or fail to compile if the typer rule lands first). |
+| Tries to write a `Cell` value into another `Cell` (`Cell[Cell[Int]]`, `Cell[List[Cell[T]]]`, `Cell[Closure]`, `Cell[Stream]`, …) | **Compile-time error** at the `Cell.new(v)` call or the `Cell[T]` annotation — the typer's `may_contain_cell` rule rejects it with a clear "Cell[T] requires T to be Cell-free" diagnostic. No runtime path. |
+| Wants graph-shaped mutable state with internal cell references | Use the optional `GCCell[T]` sibling sort (when it lands; see "Design variant" below) — permissive on T, backed by tracing mark-sweep. |
 | Writes infinite recursion (no Cell-specific concern) | `ActivationStack` grows in heap; no host-stack overflow. Eventually OOM → allocator panic → process abort. Same as any non-terminating program. |
-| Constructs a 10 000-deep nested Tuple/Entity tree and Cell.sets it | Iterative `walk_cells` + iterative `detect_cycle` handle it — O(1) Rust stack. Bounded only by heap. |
+| Builds and `Cell.set`s a 10 000-deep nested Tuple/Entity tree | `Cell.set` is O(1) — a single slot write. Tree depth is irrelevant; the value passes through by handle. |
 | Allocates 10 000 Cells, drops the references | Each handle's `Drop` decrements the slot's refcount; 10 000 slots returned to free_list. No crash, no monotonic growth. |
 
 The boundary between "controlled error" and "process abort" is set by:
-- Stack-bounded operations (walk_cells, detect_cycle): never abort; iterative throughout.
+- Cycle prevention: **compile-time only** — there is no runtime `CyclicReference` for `Cell` because cycles are inexpressible. Errors fire at typecheck, not at write time.
 - Heap-bounded operations (everything Vec/HashMap-backed): abort only on actual OOM, same as any Rust program.
-- Cycle prevention: the explicit programmable error (`CyclicReference`) — the only "developer creates a loop" path that actually fires.
+- The runtime `Cell.set` is unconditional and constant-time; no analysis runs on the value being written.
 
 ## Open questions
 
-1. **Should the cycle-prevention check be opt-out?** The current Modify handler enforces it unconditionally with a depth bound. Some user code may legitimately want cyclic structure (e.g. doubly-linked nodes). v1 keeps strict; revisit if a real consumer surfaces the need.
+1. **Graph-shaped mutable state.** Some user code legitimately wants cyclic structure (doubly-linked nodes, observer chains). The strict typer rule rules these out for `Cell`; the answer is the optional `GCCell[T]` sibling sort (see "Design variant" below). v1 ships without `GCCell`; revisit when a real consumer surfaces the need.
 
 2. **Interaction with `with_resource`/lexical scoping** (proposal 027 future direction). When that lands, cells allocated inside a `with_resource(...) { ... }` block die at scope exit regardless of refcount — this is a new code path on the arena (a "scope-bound free" mechanism). Out of scope for v1.
 
@@ -654,9 +538,7 @@ The boundary between "controlled error" and "process abort" is set by:
 
 4. **Concurrency.** The arena uses `Rc<RefCell<...>>`, single-threaded. Same constraint as the rest of the evaluator. Multi-threaded anthill code is a separate (much later) story.
 
-5. **Walk completeness for future opaque sorts.** v1 covers all Value variants (Closure via captured-env exposure; walkable Stream variants; runtime-invariant for Native/External/Resolver streams). User-defined opaque sorts arrive later (proposal-driven); when they do, the typer needs a "may-contain-Cell" rule rejecting cell-bearing type parameters in opaque-sort positions. Until that typer rule lands, v1 enforces at construction time: any builtin that constructs an opaque-sort value with Cell-bearing payload errors. The principle: every program either runs cleanly or fails at write time with a clear error — no silent leaks.
-
-6. **Type-driven walk skip** as a perf optimization: when the typer can prove a cell's value type contains no Cell, skip the runtime walk. Requires computing a "may-contain-Cell" flag per anthill type (transitive closure over field/element types). v1 does not include this; file as a perf follow-up if measurements warrant.
+5. **`may_contain_cell` for future opaque sorts.** When user-defined opaque sorts arrive (proposal-driven), the typer rule must extend to reject cell-bearing type parameters in opaque-sort positions. The conservative default — opaque sorts treated as `may_contain_cell = true` — keeps v1 sound; refining it as opaque-sort declarations gain the means to advertise "I don't capture Cell" is a follow-up.
 
 ## Design variant: optional `GCCell` sort
 
@@ -742,7 +624,7 @@ If/when GCCell lands, the cell_arena and gc_cell_arena coexist as siblings; neit
 
 **Why not extend the existing Modify handler with a uid-keyed sub-map?** The single shared HashMap mixes resources of different types. Each resource type wants its own state representation (per proposal 037 §3). Cell-specific arena is the cleanest realization; it also matches the existing pattern for Map / Substitution / Stream — same shape, three precedents to copy.
 
-**Why not use Rust's `Rc<RefCell<Value>>` directly inside `Value::Cell`?** That would make every Value::Cell its own little piece of shared state, no central arena. Three downsides: (a) no slot reuse across arena lifetimes — each cell's allocation/free is a separate heap op; (b) no central place to apply the cycle detector (each cell would need its own); (c) breaks consistency with the other arenas (Map/Substitution/Stream all use the slot-pool pattern). The arena pattern wins.
+**Why not use Rust's `Rc<RefCell<Value>>` directly inside `Value::Cell`?** That would make every Value::Cell its own little piece of shared state, no central arena. Three downsides: (a) no slot reuse across arena lifetimes — each cell's allocation/free is a separate heap op; (b) no central registry for branch-snapshot accounting (every Cell would need its own undo wiring); (c) breaks consistency with the other arenas (Map/Substitution/Stream all use the slot-pool pattern). The arena pattern wins.
 
 **Why not put Cell inside the existing map_arena / subst_arena?** They're typed for their domains (Map values, substitutions). A separate cell_arena keeps the typing tight; the structural similarity is a copy template, not a shared instance.
 
@@ -756,8 +638,8 @@ When the cell_arena WI lands:
 4. Cell.new/get/set builtins use arena, drop the Modify-handler delegation.
 5. Recursion test: 1000 deep `Cell.new` calls each see their own value at unwind.
 6. Refcount test: drop the only handle, verify slot reclaimed (free list grew).
-7. Cycle-prevention test: `Cell.set(c, Value::Cell(c))` returns `EvalError::CyclicReference`.
+7. Typer rule fires: a program with `let c: Cell[Cell[Int]] = …` (or equivalent at a `Cell.new` call site whose argument has cell-bearing type) is rejected at load time with a clear `Cell[T] requires T to be Cell-free` diagnostic.
 8. All existing wi205_cell_test.rs tests still pass.
 9. `Print` of a `Value::Cell` doesn't panic.
 
-The Cell sort's anthill-side declaration in stdlib stays unchanged — the migration is purely under the dispatch builtin layer.
+The Cell sort's anthill-side declaration in stdlib stays unchanged — the migration is purely under the dispatch builtin layer plus the new typer pass.

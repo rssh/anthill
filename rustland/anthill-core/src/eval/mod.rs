@@ -5,6 +5,7 @@
 //! handlers are deferred.
 
 pub mod builtins;
+pub mod cell_arena;
 pub mod closure;
 pub mod effects;
 pub mod error;
@@ -26,6 +27,7 @@ pub use error::EvalError;
 pub use frame::{ActivationStack, Frame};
 pub use value::Value;
 
+use cell_arena::CellArenaRef;
 use closure::ClosureArenaRef;
 use effects::EffectRegistry;
 use map_arena::MapArenaRef;
@@ -198,6 +200,7 @@ pub struct Interpreter {
     pub(crate) streams: StreamArenaRef,
     pub(crate) substs: subst_arena::SubstArenaRef,
     pub(crate) maps: MapArenaRef,
+    pub(crate) cells: CellArenaRef,
     pub(crate) effect_handlers: EffectRegistry,
     /// Registered persistence backends (proposal 007). Keyed by the
     /// canonical printed form of the store's `Value::Entity` so anthill
@@ -236,6 +239,7 @@ impl Interpreter {
             streams: StreamArenaRef::new(),
             substs: subst_arena::SubstArenaRef::new(),
             maps: MapArenaRef::new(),
+            cells: CellArenaRef::new(),
             effect_handlers: EffectRegistry::new(),
             store_registry: HashMap::new(),
             config,
@@ -334,7 +338,8 @@ impl Interpreter {
             | Value::Stream(_)
             | Value::Lazy(_)
             | Value::Substitution(_)
-            | Value::Map(_) => {
+            | Value::Map(_)
+            | Value::Cell(_) => {
                 return Err(EvalError::TypeMismatch {
                     expected: "store-shaped Value (Entity / scalar / Term)",
                     got: v.type_name().to_string(),
@@ -414,6 +419,31 @@ impl Interpreter {
     /// Clone the map-arena handle. Same rationale as `subst_arena()`.
     pub fn map_arena(&self) -> MapArenaRef {
         self.maps.clone()
+    }
+
+    /// Number of live cell-arena slots. Diagnostic for refcount tests.
+    pub fn cell_arena_live_count(&self) -> usize { self.cells.live() }
+
+    /// Allocate a fresh cell slot and return an owning handle.
+    pub fn alloc_cell(&self, value: Value) -> value::CellHandle {
+        self.cells.alloc(value)
+    }
+
+    /// Snapshot the value held in `h`.
+    pub fn read_cell(&self, h: &value::CellHandle) -> Value {
+        self.cells.read(h)
+    }
+
+    /// Replace the value in `h`; returns the prior value.
+    pub fn write_cell(&self, h: &value::CellHandle, new: Value) -> Value {
+        self.cells.write(h, new)
+    }
+
+    /// Clone the cell-arena handle (cheap `Rc` bump). Same rationale as
+    /// `subst_arena()`: lets a caller hold a borrow on the arena while
+    /// `&mut self` on the interpreter is in flight.
+    pub fn cell_arena(&self) -> CellArenaRef {
+        self.cells.clone()
     }
 
     /// Allocate a fresh substitution slot and return a handle.

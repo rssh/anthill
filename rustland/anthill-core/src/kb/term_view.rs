@@ -156,7 +156,8 @@ impl TermView for Value {
             | Value::Stream(_)
             | Value::Lazy(_)
             | Value::Substitution(_)
-            | Value::Map(_) => ViewHead::Opaque,
+            | Value::Map(_)
+            | Value::Cell(_) => ViewHead::Opaque,
         }
     }
 

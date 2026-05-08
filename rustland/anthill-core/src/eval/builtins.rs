@@ -1203,8 +1203,6 @@ effect_dispatcher!(console_eprintln,  "anthill.prelude.Console.eprintln",  "epri
 effect_dispatcher!(console_read_line, "anthill.prelude.Console.read_line", "read_line", "anthill.prelude.Console.ConsoleInput");
 effect_dispatcher!(modify_get, "Modify.get", "get", "Modify");
 effect_dispatcher!(modify_set, "Modify.set", "set", "Modify");
-effect_dispatcher!(cell_get,   "anthill.prelude.Cell.get", "get", "Modify");
-effect_dispatcher!(cell_set,   "anthill.prelude.Cell.set", "set", "Modify");
 
 // ── Persistence builtins (proposal 007 §4) ─────────────────────
 
@@ -1289,20 +1287,43 @@ fn persistence_flush(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     Ok(Value::Bool(true))
 }
 
-/// `anthill.prelude.Cell.new(initial) -> Cell`. Constructs a Cell
-/// handle and seeds the modify slot. v0.1: under functor-only identity
-/// (WI-200's transitional scheme), repeated `new` calls share one slot.
+/// `anthill.prelude.Cell.new(initial) -> Cell`. Allocates a fresh slot
+/// in the cell arena, seeded with `initial`, and returns a refcounted
+/// handle. Each call yields a distinct cell — identity is the slot
+/// index, not any value-level structure (per `docs/design/cell-runtime.md`
+/// §"Identity scheme"). Cycle prevention is the typer's job; runtime
+/// has no walk to do here.
 fn cell_new(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [initial] = expect_args::<1>("Cell.new", args)?;
-    let cell_sym = interp.kb_mut().intern("anthill.prelude.Cell.Cell");
-    let cell_value = Value::Entity {
-        functor: cell_sym,
-        pos: Vec::new(),
-        named: Vec::new(),
-    };
-    let set_sym = require_symbol(interp, "anthill.prelude.Cell.set", "set")?;
-    interp.invoke_effect_handler("Modify", set_sym, &[cell_value.clone(), initial])?;
-    Ok(cell_value)
+    let handle = interp.alloc_cell(initial);
+    Ok(Value::Cell(handle))
+}
+
+/// `anthill.prelude.Cell.get(c) -> V`. Reads the current value held in
+/// the cell. Type-pure: no `Modify` effect (reading is observation, per
+/// proposal 037 §"Read operations").
+fn cell_get(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [c] = expect_args::<1>("Cell.get", args)?;
+    match c {
+        Value::Cell(h) => Ok(interp.read_cell(&h)),
+        other => Err(type_mismatch("Cell handle", &other, None)),
+    }
+}
+
+/// `anthill.prelude.Cell.set(c, v) -> Unit`. Replaces the cell's value
+/// with `v`. O(1): a single slot write — no cycle walk (the typer
+/// guarantees `v` cannot reach `c`'s Cell type, see design doc).
+/// Returns `Unit` per the five forward-compat invariants in proposal 037
+/// §"With time-travel" — `set` MUST NOT return the prior value.
+fn cell_set(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [c, new_val] = expect_args::<2>("Cell.set", args)?;
+    match c {
+        Value::Cell(h) => {
+            interp.write_cell(&h, new_val);
+            Ok(Value::Unit)
+        }
+        other => Err(type_mismatch("Cell handle", &other, None)),
+    }
 }
 
 /// `anthill.persistence.QueryableStore.retrieve(store, pattern) -> Stream[Term, Error]`.
