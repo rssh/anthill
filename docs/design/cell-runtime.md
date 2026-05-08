@@ -140,6 +140,21 @@ The Cell reference is buried under a list element under an entity field. The det
 
 Rather than one big `match` in `detect_cycle` enumerating every variant, give each value-shape its own walk method. The detector orchestrates; per-shape recursion logic stays local.
 
+**Most walk implementations are auto-generated from type information.**
+
+For entity sorts, anthill already has the field types in the KB (every entity has its `entity Foo(name: T1, name2: T2, …)` declaration). The walk is mechanical: visit each field's value, recursing via T's own walk. The loader generates a per-functor walk function at load time — no manual coding per sort. Same approach for tuples (positional + named field types known) and term arms (Term::Fn children are TermIds; walk recurses through `kb.with_term`).
+
+Generated walks make the detector exhaustive *by construction*: every entity sort declared in the program (stdlib + user) automatically participates. New sorts don't need new walk impls — just new entity declarations.
+
+Manual impls are reserved for the cases where structure isn't expressible in anthill types:
+- `Value::Cell(h)` — visit the slot index (the orchestrator descends).
+- `Value::Map(h)` — read arena, walk values.
+- `Value::Closure(h)` — read closure arena, walk captured env.
+- `Value::Stream(h)` — variant-by-variant: walkable variants (Pure, MPlus) recurse; opaque variants (Native, External, Resolver) covered by the runtime invariant on construction.
+- Primitives — no descent.
+
+That's six manual impls, total. Everything else — every entity sort the program declares — is derived.
+
 ```rust
 /// Visit each *directly* referenced Cell slot. Implementations
 /// recurse through their own structural children (Entity fields,
@@ -259,38 +274,31 @@ The real optimization is **type-driven skip**: when the typer knows the cell's v
 
 For v1: every `Cell.set` runs `detect_cycle`. Programs that mutate primitive-valued cells in tight loops will see one pass over a small value per set — negligible. Programs that build complex graph structures pay the proportional cost.
 
-#### Structurally walkable vs operationally accessible
+#### Walkable values — the v1 invariant
 
-The cycle detector only works on **structurally walkable** references — values reachable by descending through the value tree without calling user-level operations. A Cell stored as a positional or named arg of an Entity is walkable; a Cell stored inside a Map's body, or a Term's args, is walkable (the runtime exposes those structures via arena reads).
+The detector must catch every cycle a developer can construct. Letting some patterns slip past as a "leak risk" makes incorrect programs hard to analyze: a developer's bug becomes a slow OOM somewhere downstream rather than a clear write-time error. v1 closes the gap.
 
-References reachable only by **calling an operation** are *not* walkable. Any sort whose values are opaque from outside — whose contents can only be inspected via operation calls — has this property:
+The invariant: **every Value variant is walkable for cells.** Each variant's `walk_cells` impl descends into the variant's contents through whatever runtime state holds them — even if that state is technically "opaque to anthill code." The runtime owns the data; it can introspect for the detector even when user code can't.
 
-- **Closure** — its body executes; what it returns may contain Cells, but the detector can't pre-compute that without running the closure.
-- **Stream** — `splitFirst` yields elements; the next element might contain a Cell, but pumping the stream is a side-effecting operation the detector can't perform.
-- **Any user-defined sort** with `entity Foo` plus `operation produce(f: Foo) -> SomeValue` and no structural fields exposing the inner state. Like Stream, like Closure, like Map (sort of — `Map` exposes its body via arena read, but the body isn't part of the Value's structural tree).
-- **Term** with a `QuotedRepr` or other lazy form whose contents are only computed on demand.
+| Variant | How `walk_cells` reaches its cell-bearing children |
+|---|---|
+| `Value::Cell(h)` | Visits the slot; caller orchestrates descent into slot contents |
+| `Value::Entity { pos, named, .. }` | Walks positional + named fields |
+| `Value::Tuple { pos, named }` | Walks positional + named |
+| `Value::Map(h)` | `arena.with_map(h, |body| …)` — walks each value |
+| `Value::Term(tid)` | `kb.with_term(tid, …)` — walks Fn children, Ref/Const are leaves |
+| `Value::Closure(h)` | `closure_arena.with_env(h, |env| …)` — walks each captured value |
+| `Value::Stream(h)` | Walks variant-by-variant: `Pure(v)` walks v; `MPlus(l, r)` walks both children's handles; `Empty` no-op; `Resolver`/`Native`/`External` exposed via construction-time invariant (next paragraph) |
 
-These are all the same shape: opaque from a value-walk's perspective. A Cell holding such a value, where the value would *in principle* return a reference to the Cell when its operations are called, forms an "operational cycle" that structural walk cannot detect.
+**Stream's `Native`/`External` / `Resolver` variants** hold Rust-side closures or trait objects whose internals aren't introspectable from anthill's runtime. The invariant we maintain instead: **builtins that construct these variants do not capture Value::Cell handles in the closures or trait objects.** This is enforceable by code review of the small number of builtins that allocate Streams (anthill-stl + eval/stream.rs), and provable: the captures are visible in the construction-site code. The invariant then says: a `Value::Stream` that the user can hold is guaranteed to not contain Cells (even invisibly), so `walk_cells` can return without recursing into the opaque tail.
 
-This is **not a Stream-specific gap**; it's a fundamental limit of structural cycle detection. Same constraint applies to Rust's `Rc<T>` cycle handling: detection there is also user responsibility (via `Weak`) because the runtime can't introspect closures or trait objects.
+**Rationale for this invariant over a runtime check:** the alternative would be making every native/external Stream constructor pass through a verifier that scans for Cells in its captured state. That's both expensive and brittle (Rust doesn't expose closure captures via reflection). Code-review enforcement of "no Cells in stream-state-closures" is cheaper, narrowly scoped, and verifiable.
 
-#### What v1 does and doesn't catch
+**For user-defined entity sorts** (everything declared with `entity Foo(field: T, …)`): auto-generated walks. The loader scans field types when registering the sort, emits a walk function that descends into each field per its type's walk. Anthill code can declare arbitrary deeply-nested entity hierarchies and they all participate without per-sort coding.
 
-The detector descends into:
-- `Value::Cell` (reads slot contents).
-- `Value::Entity` (positional + named fields).
-- `Value::Tuple` (positional + named).
-- `Value::Map` (via arena read of map body, then values).
-- `Value::Term` (via term-store read of children).
+**For future user-defined opaque sorts** (sorts with operations returning values, no structural reflection): the typer rule. When a user declares such a sort, the typer rejects type parameters that may contain Cell. E.g. `MyOpaque[Cell[Int]]` is rejected; `MyOpaque[Int]` is fine. The "may-contain-cell" analysis is a transitive closure over field/element types — the same data the auto-generated walks consume, used statically. (Filed as a parallel typer work item; v1 of cell_arena ships the runtime walks; the typer rule for opaque sorts lands separately.)
 
-The detector does **not** descend into:
-- `Value::Closure` (captured env opaque from this layer; possibly addable but cost depends on env exposure).
-- `Value::Stream` (no structural form; would require pumping).
-- Any user-defined sort backed by an opaque arena handle without a structural reflection path.
-
-Practical implication: cycles formed entirely through structural references (Cells in Entities, Tuples, Maps, Terms) are caught and rejected. Cycles formed through operationally-accessible references (Cells captured by closures, yielded by streams, hidden behind opaque user sorts) are **not** caught — they leak.
-
-The strict approach rules out genuinely cyclic Cell graphs at write time for the design's target use cases (state cells, registries, counters, in-memory caches). Cycles through opaque sorts are a user-side concern, the same way Rust's Rc cycles are — document and move on. If a real consumer surfaces "I need to store closures-capturing-cells in cells without leaking," the answer is either explicit `Weak` (a future addition) or a tracing GC (the gc-arena option flagged earlier).
+Net effect of the invariant: **no cycle a user can construct from anthill code escapes detection**. Programs are write-time correct or fail at write time with `EvalError::CyclicReference` — never silently leak.
 
 ### Drop ordering
 
@@ -417,7 +425,9 @@ A summary of how user-side mistakes manifest:
 | What the developer does | Result |
 |---|---|
 | Tries to construct a cycle (`Cell.set(b, a)` after `Cell.set(a, b)`) | `EvalError::CyclicReference` returned to caller — controlled error, surfaceable as `Error[CyclicReference]` at anthill level. No crash. |
-| Constructs a cycle through any *opaque* sort — Closure, Stream, or any user sort whose contents are accessed only via operations (see open question 5) | Slow leak. Slot stays alive; eventually OOM if the program loops creating such cycles. Not a crash at the operation level. Not Stream-specific — fundamental limit of structural cycle detection. |
+| Constructs a cycle through a Closure | `EvalError::CyclicReference` — Closures expose their captured env via `closure_arena.with_env`; `walk_cells` descends into the env values; cycle caught at write time. |
+| Constructs a cycle through a Stream | `EvalError::CyclicReference` for walkable variants (Pure, MPlus); for Native/External/Resolver variants, the runtime invariant "stream-state closures don't capture Cells" is enforced by code review of builtins. Either way, no silent leak. |
+| Constructs a cycle through a future user-defined opaque sort | Typer rule rejects "MyOpaque[T]" when T may transitively contain Cell. v1 of cell_arena ships without this typer rule; in the meantime, Cells inside user-defined opaque sorts are caught at runtime by the construction-site builtin (or fail to compile if the typer rule lands first). |
 | Writes infinite recursion (no Cell-specific concern) | `ActivationStack` grows in heap; no host-stack overflow. Eventually OOM → allocator panic → process abort. Same as any non-terminating program. |
 | Constructs a 10 000-deep nested Tuple/Entity tree and Cell.sets it | Iterative `walk_cells` + iterative `detect_cycle` handle it — O(1) Rust stack. Bounded only by heap. |
 | Allocates 10 000 Cells, drops the references | Each handle's `Drop` decrements the slot's refcount; 10 000 slots returned to free_list. No crash, no monotonic growth. |
@@ -437,7 +447,7 @@ The boundary between "controlled error" and "process abort" is set by:
 
 4. **Concurrency.** The arena uses `Rc<RefCell<...>>`, single-threaded. Same constraint as the rest of the evaluator. Multi-threaded anthill code is a separate (much later) story.
 
-5. **Opaque-sort cycle gaps.** Detection only walks structurally-reachable values. Cycles through *operationally-accessible* references — anything reached by calling an operation rather than by descending into a value — are not caught. The canonical cases are Closures and Streams, but this generalizes: any user-defined sort whose contents are accessed only via its operations has the same property. Same constraint as Rust's `Rc<T>` cycle handling. If a real consumer surfaces a need, the answers are explicit `Weak` references (future addition) or tracing GC (`gc-arena`). v1 documents the gap and moves on; the target use cases (state cells, counters, registries) don't hit it.
+5. **Walk completeness for future opaque sorts.** v1 covers all Value variants (Closure via captured-env exposure; walkable Stream variants; runtime-invariant for Native/External/Resolver streams). User-defined opaque sorts arrive later (proposal-driven); when they do, the typer needs a "may-contain-Cell" rule rejecting cell-bearing type parameters in opaque-sort positions. Until that typer rule lands, v1 enforces at construction time: any builtin that constructs an opaque-sort value with Cell-bearing payload errors. The principle: every program either runs cleanly or fails at write time with a clear error — no silent leaks.
 
 6. **Type-driven walk skip** as a perf optimization: when the typer can prove a cell's value type contains no Cell, skip the runtime walk. Requires computing a "may-contain-Cell" flag per anthill type (transitive closure over field/element types). v1 does not include this; file as a perf follow-up if measurements warrant.
 
