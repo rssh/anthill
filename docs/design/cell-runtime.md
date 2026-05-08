@@ -259,13 +259,38 @@ The real optimization is **type-driven skip**: when the typer knows the cell's v
 
 For v1: every `Cell.set` runs `detect_cycle`. Programs that mutate primitive-valued cells in tight loops will see one pass over a small value per set — negligible. Programs that build complex graph structures pay the proportional cost.
 
-#### Closures and Streams
+#### Structurally walkable vs operationally accessible
 
-Closures capturing cells *can* form cycles (cell holds a closure whose captured env contains the cell). The detector must descend into the captured environment when walking a `Value::Closure`. Doable but additional work.
+The cycle detector only works on **structurally walkable** references — values reachable by descending through the value tree without calling user-level operations. A Cell stored as a positional or named arg of an Entity is walkable; a Cell stored inside a Map's body, or a Term's args, is walkable (the runtime exposes those structures via arena reads).
 
-Streams are opaque (the resolver pumps them lazily; we can't structurally walk a `SearchStream`). v1 treats Streams as cycle-opaque — a Stream holding a Cell that holds the Stream is undetectable at write time. Document the gap; the design assumes streams aren't a typical sink for Cells. If this becomes a real pattern, add a "stream cycle barrier" — disallow storing Streams in Cells or vice versa via typer rule.
+References reachable only by **calling an operation** are *not* walkable. Any sort whose values are opaque from outside — whose contents can only be inspected via operation calls — has this property:
 
-The strict approach rules out genuinely cyclic Cell graphs at write time, which is fine for the design's target use cases (state cells, registries, counters, in-memory caches).
+- **Closure** — its body executes; what it returns may contain Cells, but the detector can't pre-compute that without running the closure.
+- **Stream** — `splitFirst` yields elements; the next element might contain a Cell, but pumping the stream is a side-effecting operation the detector can't perform.
+- **Any user-defined sort** with `entity Foo` plus `operation produce(f: Foo) -> SomeValue` and no structural fields exposing the inner state. Like Stream, like Closure, like Map (sort of — `Map` exposes its body via arena read, but the body isn't part of the Value's structural tree).
+- **Term** with a `QuotedRepr` or other lazy form whose contents are only computed on demand.
+
+These are all the same shape: opaque from a value-walk's perspective. A Cell holding such a value, where the value would *in principle* return a reference to the Cell when its operations are called, forms an "operational cycle" that structural walk cannot detect.
+
+This is **not a Stream-specific gap**; it's a fundamental limit of structural cycle detection. Same constraint applies to Rust's `Rc<T>` cycle handling: detection there is also user responsibility (via `Weak`) because the runtime can't introspect closures or trait objects.
+
+#### What v1 does and doesn't catch
+
+The detector descends into:
+- `Value::Cell` (reads slot contents).
+- `Value::Entity` (positional + named fields).
+- `Value::Tuple` (positional + named).
+- `Value::Map` (via arena read of map body, then values).
+- `Value::Term` (via term-store read of children).
+
+The detector does **not** descend into:
+- `Value::Closure` (captured env opaque from this layer; possibly addable but cost depends on env exposure).
+- `Value::Stream` (no structural form; would require pumping).
+- Any user-defined sort backed by an opaque arena handle without a structural reflection path.
+
+Practical implication: cycles formed entirely through structural references (Cells in Entities, Tuples, Maps, Terms) are caught and rejected. Cycles formed through operationally-accessible references (Cells captured by closures, yielded by streams, hidden behind opaque user sorts) are **not** caught — they leak.
+
+The strict approach rules out genuinely cyclic Cell graphs at write time for the design's target use cases (state cells, registries, counters, in-memory caches). Cycles through opaque sorts are a user-side concern, the same way Rust's Rc cycles are — document and move on. If a real consumer surfaces "I need to store closures-capturing-cells in cells without leaking," the answer is either explicit `Weak` (a future addition) or a tracing GC (the gc-arena option flagged earlier).
 
 ### Drop ordering
 
@@ -392,7 +417,7 @@ A summary of how user-side mistakes manifest:
 | What the developer does | Result |
 |---|---|
 | Tries to construct a cycle (`Cell.set(b, a)` after `Cell.set(a, b)`) | `EvalError::CyclicReference` returned to caller — controlled error, surfaceable as `Error[CyclicReference]` at anthill level. No crash. |
-| Constructs a cycle through Stream or Closure (currently a detector gap, see open question 5) | Slow leak. Slot stays alive; eventually OOM if the program loops creating such cycles. Not a crash at the operation level. |
+| Constructs a cycle through any *opaque* sort — Closure, Stream, or any user sort whose contents are accessed only via operations (see open question 5) | Slow leak. Slot stays alive; eventually OOM if the program loops creating such cycles. Not a crash at the operation level. Not Stream-specific — fundamental limit of structural cycle detection. |
 | Writes infinite recursion (no Cell-specific concern) | `ActivationStack` grows in heap; no host-stack overflow. Eventually OOM → allocator panic → process abort. Same as any non-terminating program. |
 | Constructs a 10 000-deep nested Tuple/Entity tree and Cell.sets it | Iterative `walk_cells` + iterative `detect_cycle` handle it — O(1) Rust stack. Bounded only by heap. |
 | Allocates 10 000 Cells, drops the references | Each handle's `Drop` decrements the slot's refcount; 10 000 slots returned to free_list. No crash, no monotonic growth. |
@@ -412,7 +437,7 @@ The boundary between "controlled error" and "process abort" is set by:
 
 4. **Concurrency.** The arena uses `Rc<RefCell<...>>`, single-threaded. Same constraint as the rest of the evaluator. Multi-threaded anthill code is a separate (much later) story.
 
-5. **Stream / Closure cycle gaps.** `detect_cycle` for v1 doesn't fully descend into Streams (opaque) or may not fully resolve closure-captured-cells (depending on how the closure runtime exposes its captured env). Document as "cycles via Streams or Closures are undetected at write time → leak risk for these specific patterns." If the patterns become real, either (a) extend the detector or (b) impose a typer rule prohibiting Streams/Closures inside Cells.
+5. **Opaque-sort cycle gaps.** Detection only walks structurally-reachable values. Cycles through *operationally-accessible* references — anything reached by calling an operation rather than by descending into a value — are not caught. The canonical cases are Closures and Streams, but this generalizes: any user-defined sort whose contents are accessed only via its operations has the same property. Same constraint as Rust's `Rc<T>` cycle handling. If a real consumer surfaces a need, the answers are explicit `Weak` references (future addition) or tracing GC (`gc-arena`). v1 documents the gap and moves on; the target use cases (state cells, counters, registries) don't hit it.
 
 6. **Type-driven walk skip** as a perf optimization: when the typer can prove a cell's value type contains no Cell, skip the runtime walk. Requires computing a "may-contain-Cell" flag per anthill type (transitive closure over field/element types). v1 does not include this; file as a perf follow-up if measurements warrant.
 
