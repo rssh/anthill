@@ -21,6 +21,7 @@ use crate::parse::ir::ParsedFile;
 pub enum PersistenceError {
     Io(String),
     Parse(Vec<ParseError>),
+    NotQueryable,
 }
 
 impl std::fmt::Display for PersistenceError {
@@ -34,6 +35,9 @@ impl std::fmt::Display for PersistenceError {
                 }
                 Ok(())
             }
+            PersistenceError::NotQueryable => write!(
+                f, "persistence: store does not implement pattern-based retrieve"
+            ),
         }
     }
 }
@@ -85,6 +89,22 @@ pub trait Store {
 
     /// Flush all buffered writes to storage.
     fn flush(&mut self, kb: &KnowledgeBase) -> Result<(), PersistenceError>;
+
+    /// Pattern-based retrieval. The contract — declared formally on the
+    /// anthill side via `fact QueryableStore[X]` — is that a store
+    /// satisfying `QueryableStore` returns every persisted fact unifying
+    /// with `pattern`. The default implementation returns `NotQueryable`;
+    /// stores that satisfy `QueryableStore` override.
+    ///
+    /// Returns the matching fact `TermId`s in arbitrary order. The caller
+    /// (the `retrieve` builtin) wraps the result as a `Stream[Term, Error]`.
+    fn retrieve(
+        &self,
+        _kb: &KnowledgeBase,
+        _pattern: TermId,
+    ) -> Result<Vec<TermId>, PersistenceError> {
+        Err(PersistenceError::NotQueryable)
+    }
 }
 
 /// Bulk loading: read all persisted facts back as parsed files.

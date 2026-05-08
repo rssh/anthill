@@ -99,6 +99,8 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.persistence.Store.persist", persistence_persist)?;
     register_if_present(interp, "anthill.persistence.Store.retract", persistence_retract)?;
     register_if_present(interp, "anthill.persistence.Store.flush",   persistence_flush)?;
+    register_if_present(interp, "anthill.persistence.QueryableStore.retrieve",
+                        persistence_retrieve)?;
 
     register_if_present(interp, "anthill.prelude.Console.print", console_print)?;
     register_if_present(interp, "anthill.prelude.Console.println", console_println)?;
@@ -1280,6 +1282,30 @@ fn persistence_flush(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     store.flush(&interp.kb)
         .map_err(|e| EvalError::Internal(format!("flush: store error: {e}")))?;
     Ok(Value::Bool(true))
+}
+
+/// `anthill.persistence.QueryableStore.retrieve(store, pattern) -> Stream[Term, Error]`.
+fn persistence_retrieve(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [store_val, pattern_val] = expect_args::<2>("retrieve", args)?;
+    let key = interp.store_canonical_key(&store_val)?;
+
+    let pattern_term = interp.kb.alloc_from_value(&pattern_val)
+        .map_err(|e| EvalError::Internal(format!("retrieve: lower pattern: {e:?}")))?;
+
+    let hits = {
+        let store = interp.store_registry.get(&key).ok_or_else(|| {
+            EvalError::Internal(format!("retrieve: no store registered for key `{key}`"))
+        })?;
+        store.retrieve(&interp.kb, pattern_term)
+            .map_err(|e| EvalError::Internal(format!("retrieve: store error: {e}")))?
+    };
+
+    let mut iter = hits.into_iter();
+    let source = StreamSource::Native(Box::new(move || {
+        iter.next().map(Value::Term)
+    }));
+    let handle = interp.alloc_stream(source);
+    Ok(Value::Stream(handle))
 }
 
 #[cfg(test)]

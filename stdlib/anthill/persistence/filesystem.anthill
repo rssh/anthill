@@ -2,10 +2,17 @@
 namespace anthill.persistence.filesystem
   import anthill.reflect.{Term}
   import anthill.prelude.Meta.{Meta}
-  import anthill.persistence.{BulkStore}
+  import anthill.persistence.{BulkStore, QueryableStore}
 
   entity FileStore(root: String, convention: FileConvention)
   fact BulkStore
+
+  -- IndexedFileStore: FileStore plus a per-rule source map (for
+  -- span-based retract) and a primary-key `id` index (for fast
+  -- retrieve). Indexes are populated by the host at pull time.
+  entity IndexedFileStore(root: String, convention: FileConvention)
+  fact BulkStore[IndexedFileStore]
+  fact QueryableStore[IndexedFileStore]
 
   -- ================================================================
   -- File conventions: how facts map to files
