@@ -107,14 +107,85 @@ The functor-keyed Modify slot stays in place for *non-Cell* Modify-using resourc
 
 ### Cycle handling
 
-A Cell can hold a Value that transitively references the Cell itself — direct (`Cell.set(c, Value::Cell(c))`) or indirect (two cells holding each other). The existing `detect_cycle` in `effects.rs` (`MAX_DEPTH = 1024`) ports over: `Cell.set` walks the new value before storing, raising `EvalError::CyclicReference` if the target is reached.
+A Cell can hold a Value that transitively references the Cell itself — direct (`Cell.set(c, Value::Cell(c))`) or indirect (two cells holding each other through any number of levels of nesting). Refcounting alone does NOT reclaim cyclic structures: two cells that point to each other have refcount ≥ 1 forever. Two complementary mitigations:
 
-Note: refcounting alone does NOT reclaim cyclic structures — two cells that point to each other have refcount ≥ 1 forever. Two complementary mitigations:
+1. **Cycle prevention at write time** — strict; rejects all cycles. v1 default.
+2. **Cycle collection** (sweep, reachability-based) — permissive; allows cycles but periodically reclaims. Out of scope for v1; would arrive with a more general arena GC story (e.g. `gc-arena`).
 
-1. **Cycle prevention at write time** (the `detect_cycle` walk above) — strict; rejects all cycles. v1 default, matches today's Modify handler.
-2. **Cycle collection** (sweep, reachability-based) — permissive; allows cycles but periodically reclaims. Out of scope for v1; would arrive with a more general arena GC story.
+The strict approach is consistent with anthill's current value model and matches the existing `detect_cycle` in `effects.rs` — but the existing detector is approximate (functor-symbol comparison, doesn't read through arena slots) and works only because v0.1's functor-only Cell is degenerate (one slot total, no second cell to form a back-edge). The cell_arena needs a stronger detector.
 
-The strict approach is consistent with anthill's current value-model (terms are tree-shaped, no cycles in the term store). It rules out genuinely cyclic Cell graphs, which is fine for the design's target use cases (state cells, registries, counters).
+#### Why a graph walk is required
+
+Two recursive `Cell.set` calls suffice to construct a cycle the symbol-walk misses:
+
+```anthill
+let a = Cell.new(0)
+let b = Cell.new(0)
+Cell.set(a, b)   -- a's slot ← Value::Cell(b);  walk on b finds: 0; OK
+Cell.set(b, a)   -- b's slot ← Value::Cell(a);  walk on a finds: ?
+```
+
+For the second set's check to reject correctly, walking `a` must read a's *current slot contents* (`Value::Cell(b)`) and recurse into that — discovering b is the target. The walk has to traverse the arena, not just the value structure.
+
+Worse, Cells can be nested arbitrarily inside other values:
+
+```anthill
+let a = Cell.new(0)
+Cell.set(a, [some_entity{field: a}, ...])   -- a's slot holds a list whose first element is an entity whose `field` is a
+```
+
+The Cell reference is buried under a list element under an entity field. The detector must descend into Entity / Tuple / Map / List / Stream / Closure structure recursively, finding any `Value::Cell` reference at any depth.
+
+#### The detector
+
+```rust
+fn detect_cycle(
+    arena: &CellArena,
+    target: SlotIdx,
+    val: &Value,
+    visited: &mut HashSet<SlotIdx>,
+) -> Result<(), CycleError> {
+    match val {
+        Value::Cell(h) if h.slot == target => Err(CycleError),
+        Value::Cell(h) if !visited.insert(h.slot) => Ok(()),  // already walked
+        Value::Cell(h) => {
+            let current = arena.read(h.slot);              // descend through slot
+            detect_cycle(arena, target, &current, visited)
+        }
+        Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
+            for v in pos.iter().chain(named.iter().map(|(_, v)| v)) {
+                detect_cycle(arena, target, v, visited)?;
+            }
+            Ok(())
+        }
+        Value::Map(h)        => /* descend through map values */,
+        Value::Stream(_)     => /* opaque; assume no Cell — see open question below */,
+        Value::Closure(_)    => /* captured env may hold Cells; walk it */,
+        Value::Term(tid)     => /* walk hash-consed term children */,
+        _                    => Ok(()),
+    }
+}
+```
+
+#### Cost
+
+Per `Cell.set(c, v)`: walks `v`'s value tree once, reads through each distinct Cell handle's slot once (visited-set bounded), recursively walks each slot's contents. Worst case: O(|value-tree| + Σ|cell-slot-contents reachable from v|).
+
+For the dominant use cases — primitive-valued cells, cells holding small records — this is a few-node walk with no arena reads. For deep graph-shaped data, it's a real graph traversal.
+
+There is no "fast-path bail." The naive bail "scan for any Value::Cell" is itself a recursive walk through the value tree (a Value::Cell may be buried under arbitrary Entity / Tuple / List nesting), so it does the same work as `detect_cycle` itself in the cell-free case. They tie.
+
+The real optimization is **type-driven skip**: when the typer knows the cell's value type contains no Cell — e.g. `Cell[Int]`, `Cell[wis(IndexedFileStore, Int)]` where neither inner type carries Cell — skip the walk entirely. This requires the typer to compute and surface a "may-contain-Cell" flag per type. v1 of the cell_arena does NOT include this optimization; if perf measurements show the walk dominates, file a follow-up to add typer-driven skip.
+
+For v1: every `Cell.set` runs `detect_cycle`. Programs that mutate primitive-valued cells in tight loops will see one pass over a small value per set — negligible. Programs that build complex graph structures pay the proportional cost.
+
+#### Closures and Streams
+
+Closures capturing cells *can* form cycles (cell holds a closure whose captured env contains the cell). The detector must descend into the captured environment when walking a `Value::Closure`. Doable but additional work.
+
+Streams are opaque (the resolver pumps them lazily; we can't structurally walk a `SearchStream`). v1 treats Streams as cycle-opaque — a Stream holding a Cell that holds the Stream is undetectable at write time. Document the gap; the design assumes streams aren't a typical sink for Cells. If this becomes a real pattern, add a "stream cycle barrier" — disallow storing Streams in Cells or vice versa via typer rule.
+
+The strict approach rules out genuinely cyclic Cell graphs at write time, which is fine for the design's target use cases (state cells, registries, counters, in-memory caches).
 
 ### Drop ordering
 
@@ -166,6 +237,10 @@ The Modify handler stays in place for non-Cell Modify users (Modify.get/set on p
 3. **Print form.** `Value::Cell(handle)` has no natural structural rendering — the arena holds the value, but printing through the handle would force a borrow on every print. Likely render as `Cell#<id>=<value>` (the slot index plus a snapshot of the held value at print time). Diagnostic-only; not part of the round-trip.
 
 4. **Concurrency.** The arena uses `Rc<RefCell<...>>`, single-threaded. Same constraint as the rest of the evaluator. Multi-threaded anthill code is a separate (much later) story.
+
+5. **Stream / Closure cycle gaps.** `detect_cycle` for v1 doesn't fully descend into Streams (opaque) or may not fully resolve closure-captured-cells (depending on how the closure runtime exposes its captured env). Document as "cycles via Streams or Closures are undetected at write time → leak risk for these specific patterns." If the patterns become real, either (a) extend the detector or (b) impose a typer rule prohibiting Streams/Closures inside Cells.
+
+6. **Type-driven walk skip** as a perf optimization: when the typer can prove a cell's value type contains no Cell, skip the runtime walk. Requires computing a "may-contain-Cell" flag per anthill type (transitive closure over field/element types). v1 does not include this; file as a perf follow-up if measurements warrant.
 
 ## Why this design and not alternatives
 
