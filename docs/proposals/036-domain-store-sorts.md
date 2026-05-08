@@ -23,57 +23,61 @@ The pattern is "fact set + a few indexes + domain operations." That's a *sort* i
 
 ## What the surface looks like
 
-`WorkItemStore` is the **anthill-todo subproject's** domain store sort — declared in the project's anthill source, alongside `WorkItem` itself. It does not live in the stdlib. Other projects that want a "store with custom indexes" declare their own (`UserStore`, `ProjectStore`, `RuleAuditStore`) using the same machinery.
+`WorkItemStore` is the **anthill-todo subproject's** domain store — declared in the project's anthill source, alongside `WorkItem` itself. It does not live in the stdlib. Other projects that want a "store with custom indexes" declare their own (`UserStore`, `ProjectStore`, `RuleAuditStore`) using the same machinery.
 
-The general pattern — *declare a sort that wraps a Store with project-specific indexes and operations* — is what's important. anthill-todo uses it for WorkItem; the example below is what that project files declare.
+The pluggable-backend story (file-system today, GitHub issues and remote API later — see `examples/github-todo/docs/pluggable-backend.md`) is handled at the **backend** level: WorkItemStore's `backend` field is typed as the abstract `Store` sort. Concrete Stores (FileStore, IndexedFileStore, future GitHubStore, future RemoteApiStore) all satisfy `Store` and plug in interchangeably. WorkItemStore itself is concrete — one piece of code, one set of operations — written once over the abstract Store interface.
 
 ```anthill
--- enum (not sort): closes the variant set so a value of WorkItemStore
--- is always a wis(...). Lets the typer know `s: WorkItemStore` ⇒ s
--- is wis(...), makes the match in commit's body exhaustive, and gives
--- the Modify framework a fixed state-shape to work against.
-enum WorkItemStore
-  -- A WorkItemStore instance carries the file-backed store plus
-  -- precomputed indexes for the queries the bundle needs. The
-  -- indexes are entity-fields, not a new "index" keyword — anthill's
-  -- existing entity machinery is enough.
+-- ─── Data shape: backend is abstract Store ─────────────────────────
+-- The backend field is typed at the abstract `Store` sort (declared
+-- in stdlib/anthill/persistence/store.anthill). Any value satisfying
+-- `Store` can be plugged in: IndexedFileStore today; GitHubStore /
+-- RemoteApiStore later. The WorkItemStore code is the same.
+enum WIS
   entity wis(
-    backend: IndexedFileStore,
+    backend: Store,                       -- abstract; multiple impls
     by_id: Map[String, WorkItem],
     by_status: Map[WorkStatus, List[WorkItem]],
     id_counter: Int)
-
-  -- Construction. Walks the backend's facts once; builds the maps
-  -- and the id counter. Called once at startup by the host.
-  operation from_backend(backend: FileStore) -> WorkItemStore
-
-  -- Domain queries. O(1) Map.get over the precomputed indexes.
-  -- `next_id` mutates: it increments the counter and returns the
-  -- resulting id, so two calls produce distinct ids. `lookup` and
-  -- `by_status_of` are pure reads.
-  operation next_id(s: WorkItemStore) -> String
-    effects Modify[s]
-  operation lookup(s: WorkItemStore, id: String) -> Option[WorkItem]
-  operation by_status_of(s: WorkItemStore, st: WorkStatus)
-    -> List[WorkItem]
-
-  -- Mutation. Persists the work item to the backend, updates each
-  -- index, increments the counter. The Modify[s] effect dispatches
-  -- through the active WorkItemStore handler — get(s) reads the
-  -- current state, set(s, new) writes the next one. Identity of s
-  -- is stable across calls; the state behind it shifts. The disk
-  -- write through s.backend is encapsulated by commit (see
-  -- §"What Modify[s] means when s is an entity-handle" below).
-  operation commit(s: WorkItemStore, w: WorkItem) -> Unit
-    effects {Modify[s], Error}
-
-  operation forget(s: WorkItemStore, id: String) -> Unit
-    effects {Modify[s], Error}
 end
+
+-- WorkItemStore = a mutable cell holding the WIS data. Cell's
+-- protocol (Modify[s], get(s), set(s, v)) applies directly.
+sort WorkItemStore = Cell[WIS]
+
+-- Operations: one set, written once. Each takes s: WorkItemStore
+-- (= Cell[WIS]) and uses Cell.get / Cell.set on it. Inside commit,
+-- `persist(backend, ...)` dispatches via the Store spec — the
+-- concrete backend (FileStore, GitHubStore, ...) determines what
+-- runs there.
+operation commit(s: WorkItemStore, w: WorkItem) -> Unit
+  effects {Modify[s], Error}
+=
+  match Cell.get(s)
+    case wis(backend, by_id, by_status, counter) ->
+      let _ = persist(backend, w, Meta(entries: nil()))    -- Store spec dispatch
+      let _ = flush(backend, nil())                         -- Store spec dispatch
+      let updated = wis(backend, Map.put(by_id, w.id, w),
+                        add_to_status(by_status, w.status, w),
+                        counter + 1)
+      Cell.set(s, updated)
+
+operation lookup(s: WorkItemStore, id: String) -> Option[WorkItem]
+=
+  match Cell.get(s)
+    case wis(_, by_id, _, _) -> Map.get(by_id, id)
+
+-- (next_id, by_status_of, forget elided — same shape.)
 ```
+
+The polymorphism is in the **backend**, not in WorkItemStore. Switching from local files to GitHub is a host-side decision: build `wis(github_store, ...)` instead of `wis(file_store, ...)`. The WorkItemStore code doesn't change; the Store dispatch carries the backend-specific semantics. This matches `pluggable-backend.md`'s framing — the *type of data sources* is configurable per project, but the WorkItem domain logic is the same.
 
 Bundle's `cmd_add` collapses to:
 ```anthill
+-- The bundle's commands take s: WorkItemStore (= Cell[WIS]). The
+-- concrete backend behind s.backend is whatever the host plugged
+-- in (IndexedFileStore today; GitHubStore / RemoteApiStore later)
+-- — selected at startup, dispatched at every persist/flush call.
 operation cmd_add(a: AddArgs, s: WorkItemStore) -> Int
   effects {ConsoleOutput, Modify[s], Error}
 =
@@ -88,7 +92,7 @@ operation cmd_add(a: AddArgs, s: WorkItemStore) -> Int
   0
 ```
 
-No `Pair[Int, WorkItemStore]` return, no threading — `commit` mutates through the Modify[s] effect; the next `next_id(s)` (or any other read on `s`) sees the updated state. Identity of `s` is stable across the call; contents shift behind it.
+No `Pair[Int, WorkItemStore]` return, no threading — `commit` mutates through `Modify[s]` (Cell's effect); the next `next_id(s)` (or any other read on `s`) sees the updated state. The Cell handle is stable across the call; the wrapped `wis(...)` value shifts.
 
 `cmd_claim` collapses similarly:
 ```anthill
@@ -119,54 +123,34 @@ This is **WI-189** (reify/reflect operators): `let wi: WorkItem = ↓term`.
 
 ### 2. Mutating commit through the Modify framework *(not a blocker — already exists)*
 
-`commit` updates `backend`, `by_id`, `by_status`, `id_counter` together. Per proposal 037, `Modify[T]` has one semantics — mutate the named resource — and rollback under Branch is the resource's branch-interaction contract.
+Defining `WorkItemStore = Cell[WIS]` resolves the "how does Modify[s] apply to an entity?" question structurally: the bundle's `s: WorkItemStore` IS a Cell handle (via the type alias). Cell's protocol — `Modify[c]`, `get(c)`, `set(c, v)` — applies straight from the framework. No new state-bearing sort to design; no muddled handle-vs-value question.
 
-WorkItemStore's state is a value-shaped record (`backend`, `by_id`, `by_status`, `id_counter`), so it plugs into the framework via Cell[V]: state location is "the Modify cell, holding a `wis(...)` Value. Reuses Cell[V] machinery" (per 037's per-resource interpreter contract for WorkItemStore). The `commit` body reads the current `wis(...)` via `get(s)`, computes the next value, and writes it back via `set(s, new)` — these are Cell's standard operations, dispatched through the existing Modify effect machinery.
-
-#### What `Modify[s]` means: the mechanical walkthrough
-
-Under 037's parameter-name convention, `Modify[X]` reads as "modifies the resource at the parameter named X." Here `s: WorkItemStore` is the parameter, and because WorkItemStore is `enum` with one variant, `s` is some `wis(b, m1, m2, c1)` value — a hash-consed entity term, immutable like every term in anthill.
-
-But terms are immutable, so what does "modify s" mean? Step by step, in the runtime:
-
-1. **The handler holds the state.** The Modify framework registers a `ModifyHandler[WorkItemStore, IdentityKey]` at startup. The handler owns a slot — a host-side mutable cell — that will hold the *current* `wis(...)` value. This slot is **the** state of the WorkItemStore.
-
-2. **`s` is the slot's address, not the slot's contents.** When `s` is bound to `wis(b, m1, m2, c1)`, the entity term value is used by the handler to pick *which* slot to read/write. Under today's transitional functor-only scheme, all wis-tagged values share one slot; under WI-200's opaque-handle scheme, each `WorkItemStore.new(...)` allocates a fresh slot keyed by uid.
-
-3. **Host seeds the slot once.** At startup, `run_anthill_bundle` builds the initial wis value (walks the backend, fills the maps, scans the id counter) and calls `Modify.set(s, initial_wis)`. The handler now holds initial_wis in its slot.
-
-4. **`get(s)` returns the slot.** Not the entity-value of `s`, but the *current contents* of the handler's slot. After step 3, `get(s)` returns initial_wis.
-
-5. **`set(s, new_wis)` overwrites the slot.** The handler's slot now holds new_wis. `s` (the entity term passed in) is unchanged — it was the address, and the address is still valid; the contents at that address have moved.
-
-6. **Subsequent `get(s)` returns new_wis.** Through the same handler, the slot lookup now sees the value from step 5.
-
-This is the conventional `IORef` / `ref` / `*mut Cell<T>` semantics. The address is a stable name; the contents at that address change. The unusual surface in anthill is that the "address" is itself an entity-shaped value (carrying field values that might or might not match the slot's contents at any given moment) — but those field values are used only as keying material for slot lookup, not as state. State lives in the handler.
-
-A concrete trace through `commit(s, w)`:
+What commit does, end-to-end:
 
 | Step | What runs | Effect |
 |---|---|---|
-| 1 | `match get(s)` | Reads slot. Returns `wis(b, m1, m2, c1)` (whatever was last set). |
-| 2 | `case wis(backend, by_id, by_status, counter)` | Destructures the *returned* value, binding local `backend = b`, `by_id = m1`, etc. (These are local bindings to the destructured fields; they are not bound to `s`'s entity-value.) |
-| 3 | `persist(backend, w, ...)` | Goes through Store's handler keyed by `backend`. Mutates the store's slot (writes the file). `backend` handle is unchanged. |
+| 1 | `match Cell.get(s)` | Reads s's cell slot. Returns the current `wis(b, m1, m2, c1)`. |
+| 2 | `case wis(backend, by_id, by_status, counter)` | Destructures the returned value, binding `backend`, `by_id`, etc. locally. |
+| 3 | `persist(backend, w, ...)` | Goes through Store's handler keyed by `backend`. Mutates the store's slot (writes the file, calls the API, etc., depending on the concrete Store impl). `backend` handle unchanged. |
 | 4 | `let updated = wis(backend, Map.put(by_id, ...), ..., counter + 1)` | Constructs a fresh wis term. Pure. |
-| 5 | `set(s, updated)` | Goes through WorkItemStore's handler keyed by `s`. Overwrites the slot with `updated`. `s` handle unchanged. |
-| 6 | (later) `get(s)` from any other operation | Returns `updated`. |
+| 5 | `Cell.set(s, updated)` | Goes through Cell's handler keyed by `s`. Overwrites the cell's slot with `updated`. `s` handle unchanged. |
+| 6 | (later) `Cell.get(s)` from any other operation | Returns `updated`. |
 
-Two distinct mutations happened (Store's slot in step 3, WorkItemStore's slot in step 5). They went through two separate handlers. The `Modify[s]` declaration on commit's signature covers both, transitively (since `s.backend` is reachable from `s`).
+Two distinct mutations: Store's slot in step 3, Cell's slot in step 5. They go through two separate handlers (Store's, Cell's), each keyed by its own resource. The `Modify[s]` declaration on commit's signature covers both transitively (per 037's transitivity rule — `s.backend` is reachable from `s`).
 
-#### `Modify[s]` already covers the backend reach
+The host's startup work: build the initial `wis(...)` value (walks `facts_of("WorkItem")`, fills the maps, scans `id_counter`), allocate a `Cell[WIS]`, seed it with `Cell.set(handle, initial)`, pass the handle into `Main.main`.
 
-A reader might expect `commit` to declare `Modify[backend]` separately since the body calls `persist(backend, ...) effects {Modify[store], Error}`. It doesn't need to. Per 037's transitivity rule for effect-row inference, `Modify[s]` covers any component reachable through s — including `s.backend`. The single declaration `effects {Modify[s], Error}` is the conservative bound: the caller reads it as "anything inside s may change," which includes the disk write through s.backend.
+#### `Modify[s]` covers the backend reach
 
-Handler dispatch at the call site is still per-resource: when `commit`'s body calls `persist(backend, ...)`, that call dispatches to the Store handler keyed by `backend`, not to s's handler. Transitivity is a typing/effect-row concern, not a runtime-dispatch concern.
+A reader might expect `commit` to declare `Modify[backend]` separately since the body calls `persist(backend, ...) effects {Modify[store], Error}`. It doesn't need to: per 037's transitivity rule, `Modify[s]` covers any component reachable through s — including the backend reachable via `Cell.get(s).backend`. The declaration `effects {Modify[s], Error}` is the conservative bound: "anything reachable from s may change," which includes the disk write.
 
-If `commit` needs to *narrow* (express "I touch s but not its backend"), it would need path-effects to subtract — `Modify[s] - Modify[s.backend]` or equivalent. That's a future direction in 037 and not needed here; commit genuinely does write to the backend, so the broad `Modify[s]` is what we want.
+Handler dispatch at the call site stays per-resource: `persist(backend, ...)` goes through the Store handler keyed by `backend`, while `Cell.set(s, ...)` goes through Cell's handler keyed by `s`. Transitivity is a typing/effect-row concern, not a runtime-dispatch one.
 
 #### Branch-interaction propagates through `s`'s components
 
-The Branch-interaction reasoning has to follow reachability the same way. `s`'s Cell-shaped state is value-tree, so it could in principle be branch-local-snapshot under Branch. But its `backend` field is an `IndexedFileStore`, which 037 declares **sticky-by-physics** — the filesystem can't roll back atomically. Since `commit` transitively mutates the disk, `s`'s effective contract under Branch is the *intersection* of its components — sticky-by-physics overall. Until the framework grows path effects + per-component contract reasoning (or a buffered Store handler absorbs disk writes for the branch's duration, or a static constraint rejects `commit` inside Branch — analogous to the Branch+Consumes constraint from 027), `commit` cannot be called soundly inside `Branch`. For the bundle's v0.1 (one-shot CLI, no Branch use), this is not load-bearing — the gap is documented at the framework level (037 §"Store" contract row).
+The Branch-interaction reasoning has to follow reachability the same way. `Cell[WIS]`'s state is value-tree, so it could in principle be branch-local-snapshot. But the wis value's `backend` field is a `Store`, which 037 declares **sticky-by-physics** for filesystem-backed impls — the filesystem can't roll back atomically. Since `commit` transitively mutates whatever the backend mutates, the cell's effective contract under Branch is the *intersection* of its components, dominated by the most-restrictive component (the backend). For a file-backed Store, that's sticky-by-physics overall; for a hypothetical purely-in-memory mock backend, branch-local-snapshot would be admissible. Until the framework grows path effects + per-component contract reasoning (or a buffered Store handler absorbs disk writes for the branch's duration, or a static constraint rejects `commit` inside Branch — analogous to the Branch+Consumes constraint from 027), `commit` cannot be called soundly inside `Branch` against a sticky-by-physics backend. For the bundle's v0.1 (one-shot CLI, no Branch use), this is not load-bearing — the gap is documented at the framework level (037 §"Store" contract row).
+
+A switch to a different backend (GitHub issues, remote API) plugs in via the abstract `Store` field. The cell's effective Branch behavior is dictated by whichever concrete Store the host wires in; the WorkItemStore code doesn't change.
 
 #### Forward compatibility with time-travel
 
