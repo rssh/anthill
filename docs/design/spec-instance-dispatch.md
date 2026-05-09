@@ -142,31 +142,48 @@ Two readings of "why a fact" — both deserve answers.
 
 In Anthill, type-system data lives in the same KB as everything else — sort relations, instantiation bindings, satisfaction claims, even effect rows are *all* facts. There is no separate type registry. So "find the impl for this spec" reduces to "query the KB," and the natural shape of that query is `by_functor`. The index is built at load time and consulted at typer time — semantically static dispatch, despite being expressed via the same primitive that backs SLD resolution at runtime.
 
-**Why `fact Spec[State = T]` specifically? It doesn't carry impl identity.**
+**Which fact form, and does Anthill already have it?**
 
-Real gap. The bare fact `WorkItemStore[State = WIS]` records that *some* sort claims to satisfy `WorkItemStore` at `State = WIS`. It does not say which sort. The dispatch chain needs the asserting sort (`FileBasedWorkitemStore`) so it can resolve `commit` inside it.
+Yes. Anthill has a symmetric pair of sort-level relation reflect entities (`stdlib/anthill/reflect/reflect.anthill`):
 
-Two ways to close the gap:
+```anthill
+entity SortRequiresInfo(
+  sort_ref : Term,         -- the sort that has the requirement
+  spec     : Term          -- a SortView wrapping the required spec + bindings
+)
 
-- **(a) Track the fact owner at load time.** When the loader loads `fact Spec[State = T]` *inside* `sort Impl { ... }`, the loader's `current_scope` is the impl sort. Add an internal index `fact_owner_sort: HashMap<RuleId, Symbol>` recording the impl. Dispatch: `by_functor(Spec)` → match bindings → `fact_owner_sort[rid]` → impl symbol.
+entity SortProvidesInfo(
+  sort_ref : Term,         -- the providing/implementing sort
+  spec     : Term          -- a SortView wrapping the satisfied spec + bindings
+)
+```
 
-- **(b) Auto-emit a tagged reflect entity.** When the loader sees the fact in an impl-sort body, emit a synthetic fact alongside it:
+These mirror the user-facing constructs:
 
-  ```anthill
-  fact SpecImpl(
-    spec     = WorkItemStore,
-    impl     = FileBasedWorkitemStore,
-    bindings = [(State, WIS)]
-  )
-  ```
+| User syntax | Loader emits | Meaning |
+|---|---|---|
+| `requires Spec[bindings]` (sort or namespace body) | `SortRequiresInfo(sort_ref, SortView(Spec, bindings))` | "I depend on Spec at these bindings." |
+| `provides Spec[bindings]` (inside a sort body) | `SortProvidesInfo(sort_ref, SortView(Spec, bindings))` | "I claim to satisfy Spec at these bindings." |
 
-  Dispatch queries `SpecImpl` directly: `by_functor(SpecImpl-sym)` filtered by `spec` and `bindings` → `impl`. The `SpecImpl` entity is also queryable from user code, codegen, and tools — it becomes the canonical "X realizes Y" predicate at the in-anthill level.
+`SortProvidesInfo` is exactly the predicate WI-210 needs. The `register_specialization_witnesses` pass (`load.rs` ~line 1993) and `resolve_provides_spec` (~line 2182) already walk it for proof-obligation discharge under proposal 030. WI-210's dispatch query is one more consumer of the same data.
 
-(Note: do not conflate with `Implementation` in `stdlib/anthill/realization/realization.anthill`. That entity binds anthill sorts to Rust/Scala/C++ host artifacts — a different concern. We need a separate, in-anthill `SpecImpl` reflect entity.)
+**No new reflect entity. WI-210 reuses `SortProvidesInfo`.** The earlier `SpecImpl` proposal was redundant; this section drops it.
 
-**Recommendation: (b).** It costs one new reflect entity (~10 lines in `stdlib/anthill/reflect/`) plus loader auto-emission (~20 lines in `load_fact` when `current_scope` is a sort and the fact's functor names a spec sort). The win is a single source of truth for spec/impl mapping that everything downstream (typer dispatch, future codegen for `<impl>.<op>` thunks, persistence-side validation, doc tooling) can consume uniformly.
+### `fact` vs `provides` — what the loader actually does today
 
-(a) is acceptable as a stop-gap if we don't want the new reflect entity for v1, but the side-channel index then has to be re-derived by every consumer. The implementation cost difference is small; (b) wins on architecture.
+Kernel-language §1418 says:
+
+> When `fact S[T]` appears inside a sort body, it means both spec satisfaction AND operation inheritance.
+
+…but the loader currently emits `SortProvidesInfo` only for `provides Spec[...]` clauses (`load_provides_clause`). The `fact Spec[...]` path (`load_fact`) just asserts the bare fact, with no `SortProvidesInfo` companion. So the kernel-language documentation is ahead of the implementation.
+
+Two options to close that gap:
+
+- **(a)** WI-210 only depends on `provides Spec[...]` syntax. Update `anthill-todo/store.anthill` to write `provides WorkItemStore[State = WIS]` instead of `fact WorkItemStore[State = WIS]`. Smaller change, but contradicts the kernel-language spec text.
+
+- **(b)** Update the loader: when `load_fact` sees a fact whose functor names a sort that has `sort <Param> = ?` declarations, *and* `current_scope` is itself a sort, auto-emit a `SortProvidesInfo` alongside the bare fact. Both `fact` and `provides` then work uniformly. Aligns with the kernel-language spec text.
+
+**Recommendation: (b).** ~20 lines in `load_fact`, makes existing user code (and the kernel-language documentation) correct without a syntax migration.
 
 ### The dispatch algorithm
 
@@ -174,12 +191,12 @@ At each call site `f(arg, …)` where `f` resolves (or could resolve) to a spec 
 
 1. Type-check the arguments.
 2. From the arg types, infer the spec's State binding(s). For the WorkItemStore case: `s : Cell[V = ?T]` → `?T` resolves via WI-211's machinery to the State binding.
-3. Search KB for `SpecImpl(spec = Spec, bindings = [...])` facts (using `by_functor` on `SpecImpl`'s symbol). Filter by spec, then unify the recorded `bindings` against the inferred State binding.
-4. If exactly one matching impl is found: rewrite the call's resolved symbol to that impl's operation symbol (`<impl>.f`).
+3. Search KB for `SortProvidesInfo` facts where the `spec` field's `SortView` names the dispatched spec, then unify each candidate's recorded bindings against the inferred bindings.
+4. If exactly one matching impl is found: extract `sort_ref` (the impl sort) from the `SortProvidesInfo` head, look up `<impl>.<op-short-name>` symbol, rewrite the resolved call.
 5. If zero impls match: typer error ("no impl of `Spec.f` for `State = <T>`").
 6. If multiple impls match: see "Coherence" below.
 
-Step 3 reuses the existing `by_functor` index, keyed by the `SpecImpl` symbol — a single load-time index lookup, no SLD search loop. Step 4 is a textual rewrite at the typer's resolved-call layer (similar to how typeclass methods resolve in Rust trait dispatch).
+Step 3 reuses the existing `by_functor` index keyed by `SortProvidesInfo`'s symbol — a single load-time index lookup, no SLD search loop. The `resolve_provides_spec` helper at `load.rs` ~line 2182 already extracts the `(spec_qn, substitution)` from a `SortProvidesInfo`'s spec view; WI-210 calls it directly. Step 4 is a textual rewrite at the typer's resolved-call layer (similar to how typeclass methods resolve in Rust trait dispatch).
 
 This makes the dispatch a **typer pass**, not a runtime mechanism. The runtime sees a direct call to the impl's symbol — same path as any other function call.
 
@@ -297,7 +314,7 @@ end
 Semantics:
 
 - `?E` ranges over **effect rows** (sets of effect terms). Allowed bindings include the empty set, a single effect, or a finite set of effects.
-- Each impl binds `?E` via its `SpecImpl` record. The default binding is `∅` — an impl that omits the binding pins `?E := {}`.
+- Each impl binds `?E` via its `provides`/`fact` clause's bindings. The default binding is `∅` — an impl that omits the binding pins `?E := {}`.
 - At the call site, the spec's row is rewritten by replacing `...?E` with the dispatched impl's binding.
 - The effect-compat check at impl-decl substitutes `?E := <impl's binding>` first, then applies the per-element `<:` rule against the resulting concrete row.
 
@@ -320,18 +337,7 @@ sort LoggingWorkitemStore                      -- decorator: adds Trace
 end
 ```
 
-`SpecImpl` is correspondingly extended to carry both **type bindings** and **effect bindings**:
-
-```anthill
-entity SpecImpl(
-  spec            : Sort,
-  impl            : Sort,
-  type_bindings   : List[T = SortBinding],
-  effect_bindings : List[T = EffectBinding]    -- new
-)
-```
-
-(The loader auto-emits the corresponding `SpecImpl` from the user's `fact Spec[State = WIS, E = {Network}]` form, splitting type bindings from effect bindings by inspecting which spec parameters are abstract sorts vs effect-row variables.)
+The existing `SortProvidesInfo` already records the spec via a `SortView` term whose named bindings can mix type values and effect-row values — no schema change. The loader (the same path that emits `SortProvidesInfo` for `provides Spec[...]` clauses, plus the WI-210 extension that emits it for `fact Spec[...]` inside a sort body) just records each binding the user wrote, including effect-row bindings like `E = {Network}`. The typer at dispatch time inspects each spec parameter's kind (abstract sort vs effect-row variable) to know whether to use it for type unification or effect-row substitution.
 
 ### The compatibility rule, with `?E`
 
@@ -353,7 +359,7 @@ If every impl of a spec has the *same* effect row (modulo subtyping), don't decl
 
 ### Where the check fires
 
-1. **At impl-declaration time** (`kb/load.rs::load_sort_with_body`, after the impl op's body has been typed): for each impl op declared by an impl sort that asserts `SpecImpl(spec=Spec, impl=Self, bindings=B)`, compare its effect row against `spec_effects(op)[B]`. Reject with a diagnostic if not a subset:
+1. **At impl-declaration time** (`kb/load.rs::load_sort_with_body`, after the impl op's body has been typed): for each impl op declared by an impl sort that emits a `SortProvidesInfo(sort_ref=Self, spec=SortView(Spec, bindings=B))`, compare its effect row against `spec_effects(op)[B]`. Reject with a diagnostic if not a subset:
 
    ```
    error: FileBasedWorkitemStore.commit declares effect Network not allowed by spec WorkItemStore.commit
@@ -432,7 +438,7 @@ A natural extension is **specificity** as a secondary key: a fully-concrete impl
 ### Algorithm under (B)
 
 ```
-1. Collect candidates: SpecImpl records whose bindings unify with the inferred bindings.
+1. Collect candidates: `SortProvidesInfo` records whose `spec` view's spec name matches and whose bindings unify with the inferred bindings.
 2. Compute priority(call_site, candidate) for each.
 3. Bucket candidates by priority.
 4. Take the lowest-priority bucket.
@@ -449,7 +455,7 @@ The match table from the multi-arg example becomes a *priority-ranked* table; co
 
 - No stdlib defaults exist yet; (C) is sufficient and simpler.
 - Implementing the priority function correctly requires settling scope-distance semantics across imports, which is its own design call.
-- The `SpecImpl` mechanism already records everything (B) needs — when we add (B), the typer change is local to the dispatch query, not the loader or the entity.
+- The `SortProvidesInfo` mechanism already records everything (B) needs — when we add (B), the typer change is local to the dispatch query, not the loader or the entity.
 
 When stdlib starts shipping default impls (or a project signals it wants to override one), upgrade to (B) at that point. The transition is monotonic: every (C)-acceptable program is also (B)-acceptable.
 
@@ -530,7 +536,7 @@ Resolution of `commit(s, build_workitem(args))`:
    - `s : Cell[V = WIS]` (from `cmd_add`'s param).
    - `build_workitem(args) : WorkItem` (from inference).
 4. WI-211 binds State → WIS in the per-call subst.
-5. **WI-210 step**: search `kb.by_functor(SpecImpl-sym)` for facts where `spec = WorkItemStore` and `bindings ⊇ [(State, WIS)]`. Find the auto-emitted `SpecImpl(spec=WorkItemStore, impl=FileBasedWorkitemStore, bindings=[(State, WIS)])`. Single match → impl is `FileBasedWorkitemStore`.
+5. **WI-210 step**: search `kb.by_functor(SortProvidesInfo-sym)` for records whose `spec` view names `WorkItemStore` and whose bindings ⊇ `[(State, WIS)]`. Find the auto-emitted `SortProvidesInfo(sort_ref=FileBasedWorkitemStore, spec=SortView(WorkItemStore, [State = WIS]))`. Single match → impl is `FileBasedWorkitemStore`.
 6. Rewrite the call's resolved symbol from `WorkItemStore.commit` to `FileBasedWorkitemStore.commit`.
 7. Type-check the body call against `FileBasedWorkitemStore.commit`'s signature (which itself uses signature inheritance from the spec — see open question 1).
 
@@ -566,15 +572,15 @@ sort FileToFileTransfer
 end
 ```
 
-The KB ends up with three `SpecImpl` records auto-emitted by the loader:
+The KB ends up with three `SortProvidesInfo` records auto-emitted by the loader:
 
 ```
-SpecImpl(spec=Transfer, impl=FileToGitHubTransfer,
-         bindings=[(SrcState, WIS),   (DstState, GHWIS)])
-SpecImpl(spec=Transfer, impl=GitHubToFileTransfer,
-         bindings=[(SrcState, GHWIS), (DstState, WIS)])
-SpecImpl(spec=Transfer, impl=FileToFileTransfer,
-         bindings=[(SrcState, WIS),   (DstState, WIS)])
+SortProvidesInfo(sort_ref=FileToGitHubTransfer,
+                 spec=SortView(Transfer, SrcState = WIS,   DstState = GHWIS))
+SortProvidesInfo(sort_ref=GitHubToFileTransfer,
+                 spec=SortView(Transfer, SrcState = GHWIS, DstState = WIS))
+SortProvidesInfo(sort_ref=FileToFileTransfer,
+                 spec=SortView(Transfer, SrcState = WIS,   DstState = WIS))
 ```
 
 ### Tracing the call
@@ -592,7 +598,7 @@ operation cmd_archive(src: Cell[V = WIS], dst: Cell[V = GHWIS]) -> Unit
 2. WI-211 unifies each arg type against its declared param type:
    - `Cell[V = WIS]` ≡ `Cell[V = SrcState]` → binds `SrcState → WIS`.
    - `Cell[V = GHWIS]` ≡ `Cell[V = DstState]` → binds `DstState → GHWIS`.
-3. WI-210 dispatch query: search `SpecImpl(spec=Transfer, bindings ⊇ [(SrcState, WIS), (DstState, GHWIS)])`. Match each candidate against the *full* binding set — every binding the call inferred must agree with the candidate's recorded bindings.
+3. WI-210 dispatch query: search `SortProvidesInfo` records whose spec view names `Transfer` and whose bindings ⊇ `[(SrcState, WIS), (DstState, GHWIS)]`. Match each candidate against the *full* binding set — every binding the call inferred must agree with the candidate's recorded bindings.
 
 | Candidate | SrcState | DstState | Match? |
 |---|---|---|---|
@@ -612,9 +618,9 @@ If we dispatched only on `src` (matching `SrcState = WIS`), candidates `FileToGi
 1. From args, infer a binding set B = {(P₁ → T₁), (P₂ → T₂), …}
    for the spec's type parameters.
 
-2. Search SpecImpl(spec = <spec-sym>) records.
+2. Search SortProvidesInfo records whose spec view names `<spec-sym>`.
 
-3. A SpecImpl record matches iff its recorded `bindings` agree with
+3. A SortProvidesInfo record matches iff its recorded `bindings` agree with
    B on every parameter that appears in both — under unification,
    so unbound type params on either side don't block a match.
 
@@ -634,14 +640,14 @@ This is OQ #5 ("call sites that want the spec / don't want dispatch") generalize
 
 ## Implementation plan (sketched)
 
-1. **Define the `SpecImpl` reflect entity** (~10 lines, `stdlib/anthill/reflect/`):
+1. **Reuse `SortProvidesInfo`** (no schema change needed — already in `stdlib/anthill/reflect/reflect.anthill`):
    ```anthill
-   entity SpecImpl(spec: Sort, impl: Sort, bindings: List[T = SortBinding])
+   entity SortProvidesInfo(sort_ref: Term, spec: Term)   -- spec is a SortView
    ```
-   (Reuses existing `SortBinding` from the reflect layer.)
+   Already auto-emitted by `load_provides_clause` for the `provides Spec[bindings]` syntax.
 
-2. **Auto-emit SpecImpl in the loader** (~20 lines, `load.rs::load_fact`):
-   When `current_scope` is a sort *and* the fact's functor names a sort that has at least one `sort <Param> = ?` declaration, emit a `SpecImpl(spec=<functor>, impl=<current_scope>, bindings=<fact's named args>)` fact alongside.
+2. **Make `fact Spec[bindings]` (inside a sort body) emit `SortProvidesInfo`** (~20 lines, `load.rs::load_fact`):
+   When `current_scope` is a sort *and* the fact's functor names another sort that has at least one `sort <Param> = ?` declaration, emit a `SortProvidesInfo(sort_ref=<current_scope>, spec=SortView(<functor>, <fact's named args>))` alongside the bare fact. This brings the loader in line with kernel-language §1418 ("`fact S[T]` inside a sort body means spec satisfaction") and lets existing user code (including `anthill-todo/store.anthill`) work without a syntax change. `provides Spec[...]` keeps working unchanged.
 
 3. **Detect spec ops** (~30 lines, `kb/typing.rs`):
    A symbol is a "spec op" iff it's declared inside a sort that has at least one `sort <Param> = ?` declaration *and* the sort declares the op without a body. Helper:
@@ -654,15 +660,15 @@ This is OQ #5 ("call sites that want the spec / don't want dispatch") generalize
    After arg unification (and WI-211's `unify_parameterized_with_sort_ref` populating the per-call subst):
    - Check if `fn_sym` is a spec op. If not, dispatch as before.
    - Read State's binding from the subst.
-   - Search `by_functor(SpecImpl-sym)` facts; filter by `spec = spec_sort_sym` and unify recorded `bindings` against the inferred State.
+   - Search `by_functor(SortProvidesInfo-sym)` records; filter via `resolve_provides_spec` (existing helper at `load.rs` ~2182) to get `(spec_qn, substitution)`; keep candidates where `spec_qn` matches `spec_sort_sym` and the `substitution` unifies against the inferred bindings.
    - If exactly one match: extract `impl` from the fact, look up `<impl>.<op-short-name>` symbol, rewrite the resolved call.
    - If zero/multiple: typer error per coherence rule (C).
    - The call's effect row is the *spec's* effect row, post-substitution (no change from today — WI-209 already handles this).
 
 5. **Effect-compatibility check at impl declaration** (~30 lines, `kb/load.rs::load_sort_with_body` post-load pass, or `kb/typing.rs` post-pass):
-   For each impl op in a sort that asserts `SpecImpl(...)`:
+   For each impl op in a sort that emits a `SortProvidesInfo(...)`:
    - Look up the matching spec op's effect row.
-   - Substitute the spec's params per the `SpecImpl.bindings` and the impl op's param names.
+   - Substitute the spec's params per the `SortView` bindings and the impl op's param names.
    - Check `impl_effects ⊆ spec_effects`. Reject with the diagnostic shown in "Effect compatibility" §"Where the check fires" if not.
 
 6. **Tests**:
@@ -791,4 +797,4 @@ When WI-210 lands:
 
 Land WI-210 as **static dispatch + coherence rule (C) + explicit impl signatures**. Defer dynamic dispatch and signature inheritance as separate WIs. Bundle phase 3 unblocks immediately.
 
-Plan to upgrade to coherence rule (B) — `(candidate, priority)` table with priority = scope distance, ties → error — once stdlib starts shipping default impls or a project signals it wants to override one. The `SpecImpl` reflect entity already carries everything (B) needs; the upgrade is local to the typer's dispatch query. Every (C)-accepted program is also (B)-accepted, so the transition is monotonic.
+Plan to upgrade to coherence rule (B) — `(candidate, priority)` table with priority = scope distance, ties → error — once stdlib starts shipping default impls or a project signals it wants to override one. `SortProvidesInfo` already carries everything (B) needs; the upgrade is local to the typer's dispatch query. Every (C)-accepted program is also (B)-accepted, so the transition is monotonic.
