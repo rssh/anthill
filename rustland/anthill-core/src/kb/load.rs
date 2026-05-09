@@ -4191,43 +4191,87 @@ impl<'a> Loader<'a> {
         self.current_owner = prev_owner;
     }
 
-    /// If `fact_term` is `Spec[bindings]` and `domain` is a sort body,
-    /// and `Spec` is a parameterized sort (has `sort <Param> = ?`),
-    /// emit a `SortProvidesInfo(sort_ref=domain, spec=SortView(Spec, bindings))`
-    /// alongside the bare fact. No-op when any condition fails.
+    /// If `fact_term` is `Spec[bindings]` claiming spec satisfaction,
+    /// emit a `SortProvidesInfo(sort_ref=<carrier>, spec=SortView(Spec,
+    /// <named bindings>))` alongside the bare fact. Two recognised
+    /// shapes (kernel-language §1418 + the stdlib namespace-level
+    /// convention):
+    /// - **Sort-body**: `current_scope` is a sort. The carrier is
+    ///   `current_scope` itself; bindings come from the fact.
+    /// - **Namespace-level**: `current_scope` is a namespace.
+    ///   The carrier is derived from the fact's first binding value
+    ///   (the type that satisfies the spec).
+    ///
+    /// Positional bindings are translated to named bindings via
+    /// `type_params_of_sort` — `fact Ring[Float]` and
+    /// `fact Ring[T = Float]` produce equivalent `SortView` records.
     fn maybe_emit_fact_provides_info(&mut self, fact_term: TermId, domain: TermId) {
-        // domain must be a sort term — Term::Fn with Sort-kind functor.
+        // fact_term must be `Fn { functor, … }` where functor is a Sort
+        // with at least one type parameter (i.e. a spec).
+        let (fact_functor, fact_pos_args, fact_named_args) =
+            match self.kb.get_term(fact_term) {
+                Term::Fn { functor, pos_args, named_args } => {
+                    (*functor, pos_args.clone(), named_args.clone())
+                }
+                _ => return,
+            };
+        if !matches!(self.kb.kind_of(fact_functor), Some(SymbolKind::Sort)) {
+            return;
+        }
+        let spec_params = self.kb.type_params_of_sort(fact_functor);
+        if spec_params.is_empty() {
+            return;
+        }
+
+        // Translate positional bindings → named, using the spec's
+        // declared parameter order. type_params_of_sort returns short
+        // names; positional[i] binds to params[i].
+        let mut named: SmallVec<[(Symbol, TermId); 2]> = fact_named_args.clone();
+        for (i, pos_val) in fact_pos_args.iter().enumerate() {
+            let param_name = match spec_params.get(i) {
+                Some(n) => n.clone(),
+                None => continue,
+            };
+            let param_sym = self.kb.intern(&param_name);
+            // Skip if user already supplied this name explicitly.
+            if named.iter().any(|(s, _)| *s == param_sym) {
+                continue;
+            }
+            named.push((param_sym, *pos_val));
+        }
+
+        // Determine sort_ref (the carrier). For sort-body facts, it's
+        // the enclosing sort. For namespace-level facts, it's the
+        // first binding value's underlying sort symbol.
         let domain_functor = match self.kb.get_term(domain) {
             Term::Fn { functor, .. } => *functor,
             _ => return,
         };
-        if !matches!(self.kb.kind_of(domain_functor), Some(SymbolKind::Sort)) {
-            return;
-        }
-
-        // fact_term must be `Fn { functor, named_args }` where functor
-        // is itself a Sort with at least one type parameter (i.e. a spec).
-        let (fact_functor, fact_named_args) = match self.kb.get_term(fact_term) {
-            Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        let sort_ref_term = match self.kb.kind_of(domain_functor) {
+            Some(SymbolKind::Sort) => domain,
+            Some(SymbolKind::Namespace) => {
+                // Derive carrier from the first binding's value.
+                let carrier_sym = named
+                    .first()
+                    .and_then(|(_, val)| self.fact_value_to_sort_sym(*val));
+                match carrier_sym {
+                    Some(sym) => self.kb.make_name_term_from_sym(sym),
+                    None => return,
+                }
+            }
             _ => return,
         };
-        if !matches!(self.kb.kind_of(fact_functor), Some(SymbolKind::Sort)) {
-            return;
-        }
-        if self.kb.type_params_of_sort(fact_functor).is_empty() {
-            return;
-        }
 
-        // Build SortView(spec_name_term, …bindings).
+        // Build SortView(spec_name_term, …named bindings).
         let sort_view_sym = self.kb.resolve_symbol("anthill.reflect.SortView");
         let spec_name_term = self.kb.make_name_term_from_sym(fact_functor);
         let sort_view_term = self.kb.alloc(Term::Fn {
             functor: sort_view_sym,
             pos_args: SmallVec::from_elem(spec_name_term, 1),
-            named_args: fact_named_args,
+            named_args: named,
         });
 
-        // Build SortProvidesInfo(sort_ref = domain, spec = sort_view_term).
+        // Build SortProvidesInfo(sort_ref, spec).
         let provides_sym = self.kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
         let sort_ref_arg = self.kb.intern("sort_ref");
         let spec_arg = self.kb.intern("spec");
@@ -4236,13 +4280,30 @@ impl<'a> Loader<'a> {
             functor: provides_sym,
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_slice(&[
-                (sort_ref_arg, domain),
+                (sort_ref_arg, sort_ref_term),
                 (spec_arg, sort_view_term),
             ]),
         });
 
         let provides_sort = self.kb.make_name_term("Requirement");
         self.kb.assert_fact(provides_term, provides_sort, domain, None);
+    }
+
+    /// Extract the underlying sort symbol from a fact-binding value
+    /// term. Handles `Ref`, `Ident`, and nullary `Fn` shapes — the
+    /// forms `convert_term` produces for plain sort references.
+    fn fact_value_to_sort_sym(&self, value: TermId) -> Option<Symbol> {
+        match self.kb.get_term(value) {
+            Term::Ref(s) | Term::Ident(s) => Some(*s),
+            Term::Fn { functor, .. } => {
+                if matches!(self.kb.kind_of(*functor), Some(SymbolKind::Sort)) {
+                    Some(*functor)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 
     fn load_rule(&mut self, r: &Rule, domain: TermId) {

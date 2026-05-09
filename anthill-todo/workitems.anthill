@@ -1496,3 +1496,10 @@ fact WorkItem(
   depends_on: ["WI-210"],
   status: Open)
 
+fact WorkItem(
+  id: "WI-213",
+  description: "Builtin sort concept — let primitive sorts (Int, Float, String, Bool, BigInt) carry a body the same way user-defined sorts do, so spec-satisfaction facts and operations declared 'on Int' live in the right place. Concretely: today PRELUDE_SORTS (rustland/anthill-core/src/kb/load.rs:853) registers Int/Float/etc. as bare global symbols with SymbolKind::Sort but no body. Stdlib works around this by putting `fact Eq[T = Int]` at namespace anthill.prelude.Int — but that namespace SHADOWS the builtin sort name: when convert_term loads the binding value `Int`, scope-walk resolves it to the namespace symbol `anthill.prelude.Int` (a Namespace), not the builtin sort `Int`. Consequence: WI-210's deterministic dispatch (Phase 3) sees a binding-value mismatch (per-call value Int vs candidate value anthill.prelude.Int), reports 'no impl,' and breaks `add(x, x)` for x:Int. Phase 3's enforcement is therefore parked; `lookup_spec_op_dispatch` and `find_unique_impl_op` helpers stay pub for re-wiring once this lands. WI-210's bundle phase 3 driver (anthill-todo/store.anthill) is unaffected — it uses `fact Spec[State = X]` inside a sort body, no namespace shadowing. Direction: see proposal 038 (filed alongside) for two design routes that AVOID NEW KEYWORDS — (a) `[builtin]` meta annotation on a regular sort declaration, or (b) declare the sort in stdlib (with abstract body) and bind to the host runtime via the existing `provides Sort language rust ... end` Implementation block. Acceptance: cargo-test green; the Phase 3 hook re-wires in kb/typing.rs::check_apply without the parked TODO; the parked Phase 3 dispatch tests (Unique / NoMatch / Ambiguous) added to wi210_dispatch_test.rs pass; `add(x, x)` for x:Int type-checks via Int's spec satisfaction.",
+  acceptance: [],
+  depends_on: ["WI-210"],
+  status: Open)
+

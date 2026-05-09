@@ -708,35 +708,15 @@ fn check_apply(
         // collapses to `Option[T = Term]` once `vid_T` is bound.
         let resolved_ret = walk_type_deep(kb, &subst, op.return_type);
 
-        // WI-210: if `fn_sym` is a body-less operation declared on a
-        // spec sort (a parametric sort), validate that exactly one
-        // impl satisfies the spec at the per-call substitution.
-        // Dispatch is opt-in per spec — `NoCandidates` (no
-        // SortProvidesInfo for this spec at all) is a no-op so
-        // existing stdlib specs called without explicit impl
-        // declarations keep working. Coherence rule (C): rejects
-        // `NoMatch` (candidates exist but none match the bindings)
-        // and `Ambiguous` (more than one match).
-        if let Some(spec_sort_sym) = lookup_spec_op_dispatch(kb, fn_sym) {
-            let outcome = find_unique_impl_op(kb, &subst, spec_sort_sym, fn_sym);
-            let diag = match outcome {
-                DispatchOutcome::NoCandidates | DispatchOutcome::Unique(_) => None,
-                DispatchOutcome::NoMatch => Some(format!(
-                    "WI-210 dispatch failed: no impl of `{}` for the inferred bindings",
-                    kb.qualified_name_of(fn_sym),
-                )),
-                DispatchOutcome::Ambiguous => Some(format!(
-                    "WI-210 dispatch failed: ambiguous impls for `{}` at the inferred bindings",
-                    kb.qualified_name_of(fn_sym),
-                )),
-            };
-            if let Some(msg) = diag {
-                let mut env_with_diag = env.clone();
-                env_with_diag.diagnostics.push(msg);
-                return Some(TypeResult { ty: resolved_ret, env: env_with_diag, effects });
-            }
-        }
-
+        // WI-210 dispatch hook is parked here pending proposal-038
+        // (builtin sorts) — its absence today causes namespace-level
+        // facts like `fact Numeric[Int]` to resolve the binding
+        // value `Int` to the namespace `anthill.prelude.Int` rather
+        // than the builtin sort `Int`, breaking deterministic
+        // candidate matching. The helpers `lookup_spec_op_dispatch`
+        // and `find_unique_impl_op` (and the `DispatchOutcome` enum)
+        // remain pub so the hook can be wired in once the structural
+        // ambiguity is resolved (WI-213).
         return Some(TypeResult { ty: resolved_ret, env: env.clone(), effects });
     }
 

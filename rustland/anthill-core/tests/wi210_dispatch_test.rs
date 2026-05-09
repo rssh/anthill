@@ -90,33 +90,34 @@ fn fact_clause_inside_sort_body_emits_provides_info() {
 }
 
 #[test]
-fn fact_clause_outside_sort_does_not_emit_provides_info() {
-    // Namespace-level facts must NOT emit SortProvidesInfo —
-    // SortProvidesInfo's sort_ref must be a sort, not a namespace.
-    // (The existing `provides_block` form for namespaces does
-    // something different — it's the cross-language Implementation
-    // path, not in-anthill spec satisfaction.)
+fn fact_clause_at_namespace_emits_with_carrier_as_sort_ref() {
+    // Namespace-level `fact Spec[bindings]` (the stdlib convention
+    // for primitive carriers like Int satisfying Numeric) emits a
+    // SortProvidesInfo with sort_ref = the carrier (first binding
+    // value), not the namespace itself. Mirrors the proposal-036
+    // pattern semantically: "X satisfies Spec at these bindings,"
+    // where X is the carrier. Pending WI-213 (builtin sort concept)
+    // which will let stdlib put these facts inside a real sort body.
     let src = r#"
-        namespace wi210.fact_outside
-          export Wi210OutSpec
-          sort Wi210OutSpec
+        namespace wi210.ns_emits
+          export Wi210NsSpec, Wi210NsCarrier
+          sort Wi210NsSpec
             sort State = ?
           end
-          fact Wi210OutSpec[State = Wi210OutSpec]
+          sort Wi210NsCarrier
+            entity wi210_nc
+          end
+          fact Wi210NsSpec[State = Wi210NsCarrier]
         end
     "#;
     let mut kb = load_with(src);
     let heads = provides_info_heads(&mut kb);
-    // Search for a SortProvidesInfo whose sort_ref is the namespace
-    // wi210.fact_outside (not a sort) — this would be the unwanted
-    // emission. The bare fact itself is fine; it's the auto-emit we
-    // must avoid here.
-    let bad = heads.iter().any(|h|
-        h.contains("Wi210OutSpec") && h.contains("sort_ref: wi210")
+    let found = heads.iter().any(|h|
+        h.contains("Wi210NsCarrier") && h.contains("Wi210NsSpec")
     );
-    assert!(!bad,
-        "namespace-level fact must not emit SortProvidesInfo with the \
-         namespace as sort_ref; saw:\n{heads:#?}");
+    assert!(found,
+        "namespace-level fact must emit SortProvidesInfo with the \
+         carrier as sort_ref; saw:\n{heads:#?}");
 }
 
 #[test]
@@ -217,149 +218,37 @@ fn lookup_spec_op_dispatch_rejects_op_on_non_parametric_sort() {
         "op on non-parametric sort must not be a spec op");
 }
 
-// ─── Phase 3: dispatch hook in check_apply ──────────────────────
-
-/// Returns the diagnostic error strings (from env.diagnostics) tagged
-/// with "WI-210 dispatch failed" — the marker we push when Phase 3
-/// finds zero or multiple matching impls.
-fn dispatch_diagnostics(errors: &[anthill_core::kb::load::LoadError]) -> Vec<String> {
-    errors.iter()
-        .map(|e| format!("{e:?}"))
-        .filter(|s| s.contains("WI-210 dispatch failed"))
-        .collect()
-}
-
-#[test]
-fn dispatch_succeeds_when_unique_impl_matches() {
-    // A spec with one type param + one body-less op, an impl that
-    // pins State, and a caller that invokes Spec.op. Phase 3 should
-    // find a unique impl via SortProvidesInfo and succeed.
-    let src = r#"
-        namespace wi210p3.unique
-          export Wi210Spec3, Wi210Impl3, Wi210Caller3
-          sort Wi210Spec3
-            sort State = ?
-            operation spec_op(s: State) -> State
-          end
-          sort Wi210Impl3
-            entity wi210_i3
-            fact Wi210Spec3[State = Wi210Impl3]
-            operation spec_op(s: Wi210Impl3) -> Wi210Impl3 = s
-          end
-          sort Wi210Caller3
-            entity wi210_c3
-            operation use_spec(x: Wi210Impl3) -> Wi210Impl3 =
-              Wi210Spec3.spec_op(x)
-          end
-        end
-    "#;
-    let (_kb, _result, errors) = load_capturing_errors(src);
-    let diag = dispatch_diagnostics(&errors);
-    assert!(diag.is_empty(),
-        "expected no WI-210 dispatch errors; got:\n{diag:#?}\n\
-         all errors: {errors:#?}");
-}
+// ─── Phase 3 dispatch tests: parked pending proposal-038 ──────────
+//
+// The dispatch helpers `lookup_spec_op_dispatch` and
+// `find_unique_impl_op` are tested via the Phase 2 unit tests above.
+// The end-to-end check_apply hook is currently NOT wired in: stdlib's
+// namespace-level `fact Numeric[Int]` produces a SortProvidesInfo
+// whose binding value resolves to the namespace `anthill.prelude.Int`
+// rather than the builtin sort `Int`, breaking deterministic
+// candidate matching. Re-enable Phase 3 (and add the dispatch tests
+// for `Unique` / `NoMatch` / `Ambiguous`) once the builtin-sort
+// concept lands (WI-213 / proposal 038).
 
 #[test]
-fn dispatch_legacy_when_no_provides_records_exist() {
-    // Spec exists with no `provides`/`fact Spec[…]` declarations
-    // anywhere. WI-210 is opt-in per spec: `NoCandidates` is a
-    // no-op so legacy stdlib specs (Numeric, Map, …) keep working.
-    let src = r#"
-        namespace wi210p3.no_impl
-          export Wi210Spec4, Wi210Caller4
-          sort Wi210Spec4
-            sort State = ?
-            operation spec_op(s: State) -> State
-          end
-          sort Wi210Caller4
-            entity wi210_c4
-            operation use_spec(x: Wi210Caller4) -> Wi210Caller4 =
-              Wi210Spec4.spec_op(x)
-          end
-        end
-    "#;
-    let (_kb, _result, errors) = load_capturing_errors(src);
-    let diag = dispatch_diagnostics(&errors);
-    assert!(diag.is_empty(),
-        "spec with zero SortProvidesInfo records must not trigger \
-         WI-210 dispatch failure (opt-in per spec); got: {diag:#?}");
-}
-
-#[test]
-fn dispatch_fails_when_provides_exist_but_none_match_bindings() {
-    // Spec has an impl for one binding (Wi210Carrier4a) but the
-    // caller invokes with a different type (Wi210Carrier4b). With
-    // the opt-in trigger satisfied (≥1 SortProvidesInfo for the
-    // spec) and zero matching candidates, dispatch fails.
-    let src = r#"
-        namespace wi210p3.bind_mismatch
-          export Wi210Spec4, Wi210Carrier4a, Wi210Carrier4b, Wi210Impl4a, Wi210Caller4
-          sort Wi210Spec4
-            sort State = ?
-            operation spec_op(s: State) -> State
-          end
-          sort Wi210Carrier4a
-            entity wi210_carrier4a
-          end
-          sort Wi210Carrier4b
-            entity wi210_carrier4b
-          end
-          sort Wi210Impl4a
-            entity wi210_i4a
-            fact Wi210Spec4[State = Wi210Carrier4a]
-            operation spec_op(s: Wi210Carrier4a) -> Wi210Carrier4a = s
-          end
-          sort Wi210Caller4
-            entity wi210_c4
-            operation use_spec(x: Wi210Carrier4b) -> Wi210Carrier4b =
-              Wi210Spec4.spec_op(x)
-          end
-        end
-    "#;
-    let (_kb, _result, errors) = load_capturing_errors(src);
-    let diag = dispatch_diagnostics(&errors);
-    assert!(!diag.is_empty(),
-        "expected dispatch failure for binding mismatch; got: {errors:#?}");
-    assert!(diag.iter().any(|d| d.contains("Wi210Spec4")),
-        "expected diagnostic to mention Wi210Spec4; got:\n{diag:#?}");
-}
-
-#[test]
-fn dispatch_fails_when_two_impls_share_binding() {
-    // Two impls both claim `Spec5[State = Carrier5]` — the call's
-    // bindings would match both, so coherence rule (C) rejects.
-    let src = r#"
-        namespace wi210p3.ambig
-          export Wi210Spec5, Wi210Carrier5, Wi210ImplA5, Wi210ImplB5, Wi210Caller5
-          sort Wi210Spec5
-            sort State = ?
-            operation spec_op(s: State) -> State
-          end
-          sort Wi210Carrier5
-            entity wi210_carrier5
-          end
-          sort Wi210ImplA5
-            entity wi210_ia5
-            fact Wi210Spec5[State = Wi210Carrier5]
-            operation spec_op(s: Wi210Carrier5) -> Wi210Carrier5 = s
-          end
-          sort Wi210ImplB5
-            entity wi210_ib5
-            fact Wi210Spec5[State = Wi210Carrier5]
-            operation spec_op(s: Wi210Carrier5) -> Wi210Carrier5 = s
-          end
-          sort Wi210Caller5
-            entity wi210_c5
-            operation use_spec(x: Wi210Carrier5) -> Wi210Carrier5 =
-              Wi210Spec5.spec_op(x)
-          end
-        end
-    "#;
-    let (_kb, _result, errors) = load_capturing_errors(src);
-    let diag = dispatch_diagnostics(&errors);
-    assert!(!diag.is_empty(),
-        "expected dispatch failure for two-matching-impls case; got: {errors:#?}");
+fn stdlib_namespace_facts_emit_provides_info_for_numeric() {
+    // Stdlib's `fact Numeric[Int]` at namespace anthill.prelude.Int
+    // (after Phase 1's namespace-level handling) should emit a
+    // SortProvidesInfo recording Int as a Numeric impl. Pending
+    // WI-213 (builtin sort concept) which lets stdlib put these
+    // facts inside `builtin sort Int { ... }` bodies — but the
+    // semantics are equivalent: Int satisfies Numeric.
+    let mut kb = load_with("");
+    let heads = provides_info_heads(&mut kb);
+    let dump: Vec<&String> = heads.iter()
+        .filter(|h| h.contains("Numeric"))
+        .collect();
+    eprintln!("WI210-DBG Numeric SortProvidesInfo heads: {dump:#?}");
+    let int_numeric = heads.iter().any(|h|
+        h.contains("Numeric") && h.contains("Int")
+    );
+    assert!(int_numeric,
+        "expected Int to be recorded as a Numeric impl; saw heads with Numeric:\n{dump:#?}");
 }
 
 #[test]
