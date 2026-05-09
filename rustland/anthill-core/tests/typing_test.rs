@@ -3082,3 +3082,62 @@ end
         "Int-Int instantiation should typecheck, got: {:?}",
         errors);
 }
+
+// ══════════════════════════════════════════════════════════════════
+// WI-031 end-to-end acceptance:
+// load non-trivial source → type_check_sorts → verify typing facts
+// (SortInfo, SortRequiresInfo) emitted for known sorts and requires
+// ══════════════════════════════════════════════════════════════════
+
+#[test]
+fn wi031_stdlib_load_then_typecheck_then_verify_typing_facts() {
+    // 1) Non-trivial load: full stdlib (~30 .anthill files: prelude, reflect,
+    //    realization, logic, persistence, kernel, cli).
+    let (mut kb, result) = load_stdlib_kb_with_result();
+
+    // 2) Run the WI-031 typing pass on every loaded sort.
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "stdlib should type-check clean, got: {:?}", errors);
+
+    // 3a) SortInfo facts emitted for known stdlib sorts.
+    let sort_info_sym = kb.resolve_symbol("anthill.reflect.SortInfo");
+    let name_field = kb.intern("name");
+    for qn in ["anthill.prelude.Eq",
+               "anthill.prelude.Ordered",
+               "anthill.prelude.Numeric",
+               "anthill.logic.Minimal.Minimal",
+               "anthill.logic.Constructive.Constructive",
+               "anthill.logic.Classical.Classical"] {
+        let sort_term = kb.resolve_qualified_name_term(qn);
+        let Term::Fn { functor: sort_functor, .. } = *kb.get_term(sort_term) else {
+            panic!("{qn} did not resolve to Fn term");
+        };
+        let found = kb.by_functor(sort_info_sym).iter().any(|rid| {
+            let head = kb.fact_term(*rid);
+            let Term::Fn { named_args, .. } = kb.get_term(head) else { return false };
+            named_args.iter().any(|(f, v)| *f == name_field && match kb.get_term(*v) {
+                Term::Fn { functor, .. } => *functor == sort_functor,
+                Term::Ref(s) => *s == sort_functor,
+                _ => false,
+            })
+        });
+        assert!(found, "no SortInfo fact found for {qn}");
+    }
+
+    // 3b) SortRequiresInfo facts: reuse the public `requires_chain` walk
+    // (same module, kb/typing.rs). All asserted pairs are direct stdlib
+    // requires — they appear at depth 0 of the chain.
+    let pairs = [
+        ("anthill.prelude.Ordered",                  "anthill.prelude.Eq"),
+        ("anthill.prelude.Numeric",                  "anthill.prelude.Ordered"),
+        ("anthill.logic.Constructive.Constructive",  "anthill.logic.Minimal.Minimal"),
+        ("anthill.logic.Classical.Classical",        "anthill.logic.Constructive.Constructive"),
+    ];
+    for (requirer, spec) in pairs {
+        let r_sym = kb.resolve_symbol(requirer);
+        let s_sym = kb.resolve_symbol(spec);
+        let chain = requires_chain(&kb, r_sym);
+        assert!(chain.iter().any(|e| e.required_sort == s_sym),
+            "no SortRequiresInfo fact found for `{requirer} requires {spec}`");
+    }
+}

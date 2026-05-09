@@ -201,7 +201,7 @@ fact WorkItem(
   description: "Implement typing pass in Rust: walk operations/facts/rules in KB after load_all, invoke type checking, report errors with file:line. The typing spec rules exist in typing_pass_spec.anthill but are not yet executed by the Rust pipeline.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-001"],
-  status: Delivered(agent: "user", at: "2026-03-31T15:27:44Z"))
+  status: Verified(at: "2026-05-09T11:35:21Z"))
 
 fact Feedback(content: "Spec only - Rust implementation needed, see WI-031", at: "2026-03-30T19:11:02Z", workitem: "WI-018", author: "user")
 fact WorkItem(
