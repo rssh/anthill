@@ -71,6 +71,15 @@ When the typer sees `commit(s, w)`, it must:
 
 This document calls that rule **"dispatch via fact"**. The rest of the document picks the simplest viable mechanism for the v1 (single-impl) world, and flags what changes when multi-impl scenarios arrive.
 
+## Terminology note: "dispatch" = compile-time
+
+Throughout this doc, **"dispatch" means *static* (compile-time / typer-time) dispatch** unless explicitly qualified as "dynamic." This follows the standard Rust convention (Rust book §18.2):
+
+> *static dispatch* — "the compiler knows what method you're calling at compile time" (monomorphization).
+> *dynamic dispatch* — "the compiler can't tell at compile time which method you're calling … at runtime, Rust uses the pointers inside the trait object to know which method to call" (vtable).
+
+WI-210 lands the *static* form: the spec→impl rewrite happens in `kb/typing.rs::check_apply` during the typing pass. The runtime sees a direct call to the resolved impl symbol, with no runtime fact lookup or vtable indirection. The *dynamic* form is deferred (see "Dynamic dispatch" below).
+
 ## Goal
 
 Make `commit(s, w)` (and similar spec-op calls) dispatch from the spec to the right impl body, found via the chain:
