@@ -125,32 +125,30 @@ fn extract_unsat_core(s: &str) -> Vec<String> {
 /// model text. Skips anything more complex (lambdas,
 /// uninterpreted-fn entries, datatype constructors).
 fn extract_define_funs(model: &str) -> Vec<(String, String)> {
+    const MARKER: &str = "(define-fun ";
     let mut out = Vec::new();
-    // Find every `(define-fun NAME () SORT VALUE)` occurrence.
     let mut rest = model;
-    while let Some(idx) = rest.find("(define-fun ") {
-        let after = &rest[idx + "(define-fun ".len()..];
-        // Read NAME up to next whitespace.
+    while let Some(idx) = rest.find(MARKER) {
+        // Advance past the marker once; reusing the find result avoids
+        // an O(n²) rescan from position 0 on every iteration.
+        let after = &rest[idx + MARKER.len()..];
         let name_end = after.find(char::is_whitespace).unwrap_or(after.len());
         let name = after[..name_end].to_string();
         let after_name = after[name_end..].trim_start();
-        // Look for `()` — i.e. nullary signature.
+        // Nullary signature `()`. Anything else (lambda body) — skip
+        // and let the next iteration find the next marker.
         if !after_name.starts_with("()") {
-            // Higher-arity define-fun (lambda body) — skip.
-            rest = &after[1..];
+            rest = after;
             continue;
         }
         let after_arity = after_name[2..].trim_start();
-        // Read SORT up to next whitespace.
         let sort_end = after_arity.find(char::is_whitespace).unwrap_or(after_arity.len());
         let after_sort = after_arity[sort_end..].trim_start();
-        // Value runs to the matching close-paren of the outer
-        // define-fun. Use balanced-paren scan over after_sort.
         let value = take_balanced_value(after_sort);
         if !name.is_empty() && !value.is_empty() {
             out.push((name, value.trim().to_string()));
         }
-        rest = &after[1..];
+        rest = after;
     }
     out
 }
