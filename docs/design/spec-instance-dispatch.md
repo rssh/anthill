@@ -416,6 +416,82 @@ Concrete consumer examples (none exist yet, but anticipated):
 
 The pattern only works if (a) defaults exist and (b) overriding them is automatic and *local*. That's what scoped priority gives you.
 
+### Concrete worked example: `project.anthill` as the explicit pin
+
+A natural use of the priority chain in practice: let `project.anthill` (the bootstrap config at the project root) be the place where a project nominates *which* impl to use when more than one is available. The priority chain becomes:
+
+1. **`project.anthill` explicit pin** — highest priority. The project's top-level config picks an impl when there's a real choice (file vs GitHub vs in-memory).
+2. **Local project provider** — medium priority. A `provides WorkItemStore[...]` (or `fact WorkItemStore[...]` inside a sort body) declared somewhere in the project's own anthill files.
+3. **Stdlib fallback** — lowest priority. A default impl shipped by stdlib for the same spec.
+
+Example layout for `anthill-todo`:
+
+```anthill
+-- stdlib/anthill/persistence/in_memory_store.anthill   (shipped with stdlib)
+sort InMemoryWorkitemStore
+  enum InMemWIS  entity in_mem_wis(map: Term, counter: Int)  end
+  fact WorkItemStore[State = InMemWIS]      -- low-priority default
+  operation commit(s, w) = ... end
+end
+```
+
+```anthill
+-- anthill-todo/store.anthill   (project-local)
+sort FileBasedWorkitemStore
+  enum WIS  entity wis(backend: IndexedFileStore, id_counter: Int)  end
+  fact WorkItemStore[State = WIS]           -- medium-priority project default
+  operation commit(s, w) = ... end
+end
+
+sort GitHubWorkitemStore
+  enum GHWIS  entity gh_wis(...)  end
+  fact WorkItemStore[State = GHWIS]
+  operation commit(s, w) = ... end
+end
+```
+
+```anthill
+-- anthill-todo/project.anthill   (project root config)
+fact Project(name: "anthill", language: "rust", ...)
+
+-- Explicit pin: build this project against the GitHub backend.
+provides WorkItemStore[State = GHWIS]
+```
+
+For a call `commit(s, w)` where `s : Cell[V = GHWIS]`:
+
+| Candidate impl source | Scope distance | Bindings match? | Priority |
+|---|---|---|---|
+| `project.anthill`'s `provides` (delegates to `GitHubWorkitemStore`) | 0 (project root) | ✓ `State = GHWIS` | **chosen** |
+| `FileBasedWorkitemStore` (local) | 1 (project subnamespace) | ✗ `State = WIS` | filtered out anyway |
+| `GitHubWorkitemStore` (local) | 1 | ✓ | shadowed by tier-0 pin |
+| `InMemoryWorkitemStore` (stdlib) | N (imported) | ✗ `State = InMemWIS` | filtered out anyway |
+
+Without the `project.anthill` pin (drop the `provides` line), the priority-1 candidate wins by default — `GitHubWorkitemStore` if `s : Cell[V = GHWIS]`, `FileBasedWorkitemStore` if `s : Cell[V = WIS]`. With multiple priority-1 candidates that all match the bindings, ties → error per rule (B); the project must add a `project.anthill` pin to disambiguate.
+
+This composes cleanly with the bindings-based filter from rule (C): bindings narrow the candidate set first, then priority picks among the survivors. So `project.anthill` doesn't override the State binding — it only chooses among impls that *agree* with the inferred bindings.
+
+### Why `project.anthill` is the right home for the pin
+
+`project.anthill` is the natural file for build-wide policy that doesn't belong in any single source file: language target (`language: "rust"`), build tool, environment-specific config, and now the choice of which impl backs each spec. It already loads first (per kernel-language §8.8 "Bootstrap"), so its facts are visible when later files type-check. And it sits at the project's *outermost* scope — the right place to express "for this build, prefer X over Y."
+
+### Algorithm under (B), now with `project.anthill`
+
+```
+1. Collect candidates: SortProvidesInfo records whose spec view's spec name
+   matches and whose bindings unify with the inferred bindings.
+2. Compute priority(call_site, candidate) for each:
+     0  — declared in project.anthill (or a similarly outermost scope).
+     1  — declared in the same project, in any namespaced source file.
+     N  — declared in an imported (stdlib or third-party) namespace,
+          N = number of import-resolution steps.
+3. Pick the lowest-priority bucket.
+   - 1 candidate: rewrite the call to that impl's op.
+   - >1 candidates: error ("ambiguous: candidates X and Y are both at
+                          priority N; pin one in project.anthill").
+   - 0 candidates: error ("no impl of Spec.f for the inferred bindings").
+```
+
 ### What's the priority function?
 
 The simplest and most defensible definition: **priority = number of scope-walk steps from the call site to where the impl was declared.** Lower is closer; closer wins.
