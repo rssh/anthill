@@ -260,15 +260,7 @@ fn store_anthill_emits_provides_info_for_workitemstore() {
     // `fact WorkItemStore[State = WIS]` inside `sort
     // FileBasedWorkitemStore`. After WI-210 phase 1, this should
     // produce a SortProvidesInfo record.
-    use std::path::PathBuf;
-
-    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors().nth(2).unwrap().to_path_buf();
-    let store_path = workspace.join("anthill-todo/store.anthill");
-    let store_src = std::fs::read_to_string(&store_path)
-        .expect("read anthill-todo/store.anthill");
-
-    let mut kb = load_with(&store_src);
+    let mut kb = load_with_store();
     let heads = provides_info_heads(&mut kb);
     let found = heads.iter().any(|h|
         h.contains("FileBasedWorkitemStore") && h.contains("WorkItemStore")
@@ -280,39 +272,82 @@ fn store_anthill_emits_provides_info_for_workitemstore() {
 
 // ─── Phase 3 dispatch outcome tests (proposal 038) ────────────────
 
-/// Build a per-call substitution that binds the `T` param of `spec_qn`
-/// to the named carrier sort. Mirrors what the typer's `check_apply`
-/// constructs when unifying the call args against the op's params.
-fn subst_with_t(kb: &mut KnowledgeBase, spec_qn: &str, carrier_qn: &str) -> Substitution {
+/// Build a per-call substitution that binds the named type-param of
+/// `spec_qn` (e.g. "T", "State") to the named carrier sort. Mirrors
+/// what the typer's `check_apply` constructs when unifying the call
+/// args against the op's params.
+fn subst_with_param(
+    kb: &mut KnowledgeBase,
+    spec_qn: &str,
+    param_short: &str,
+    carrier_qn: &str,
+) -> Substitution {
     use anthill_core::kb::term::{Term, Var};
-    let t_qn = format!("{spec_qn}.T");
-    let t_sym = kb.try_resolve_symbol(&t_qn)
-        .unwrap_or_else(|| panic!("{} not registered", t_qn));
+    let param_qn = format!("{spec_qn}.{param_short}");
+    let param_sym = kb.try_resolve_symbol(&param_qn)
+        .unwrap_or_else(|| panic!("{} not registered", param_qn));
     let alias_sym = kb.try_resolve_symbol("SortAlias").expect("SortAlias");
-    let mut t_var = None;
+    let mut param_var = None;
     for rid in kb.by_functor(alias_sym) {
         if !kb.rule_body(rid).is_empty() { continue; }
         let head = kb.rule_head(rid);
         if let Term::Fn { pos_args, .. } = kb.get_term(head).clone() {
             if pos_args.len() < 2 { continue; }
             if let Term::Fn { functor, .. } = kb.get_term(pos_args[0]) {
-                if *functor == t_sym {
+                if *functor == param_sym {
                     if let Term::Var(Var::Global(v)) = kb.get_term(pos_args[1]) {
-                        t_var = Some(*v);
+                        param_var = Some(*v);
                     }
                 }
             }
         }
     }
-    let t_var = t_var.unwrap_or_else(|| panic!("T's SortAlias not found for {spec_qn}"));
+    let param_var = param_var.unwrap_or_else(||
+        panic!("{}'s SortAlias not found for {spec_qn}", param_short));
 
     let carrier_sym = kb.try_resolve_symbol(carrier_qn)
         .unwrap_or_else(|| panic!("{} not registered", carrier_qn));
     let carrier_term = kb.make_sort_ref(carrier_sym);
 
     let mut subst = Substitution::new();
-    subst.bind_term(t_var, carrier_term);
+    subst.bind_term(param_var, carrier_term);
     subst
+}
+
+fn subst_with_t(kb: &mut KnowledgeBase, spec_qn: &str, carrier_qn: &str) -> Substitution {
+    subst_with_param(kb, spec_qn, "T", carrier_qn)
+}
+
+/// Read `anthill-todo/store.anthill` and load it on top of stdlib + rustland
+/// bindings. Used by the WorkItemStore dispatch tests below.
+fn load_with_store() -> KnowledgeBase {
+    let path = common::workspace_root().join("anthill-todo/store.anthill");
+    let src = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    load_with(&src)
+}
+
+/// Run dispatch for `WorkItemStore.<op_short>` at the State=WIS binding;
+/// panic with diagnostics if the outcome isn't `Unique`. Returns the loaded
+/// KB plus the resolved impl op symbol.
+fn dispatch_workitemstore_op(op_short: &str) -> (KnowledgeBase, anthill_core::intern::Symbol) {
+    let mut kb = load_with_store();
+    let op_qn = format!("anthill.todo.store.WorkItemStore.{op_short}");
+    let op_sym = kb.try_resolve_symbol(&op_qn)
+        .unwrap_or_else(|| panic!("{op_qn} not registered"));
+    let spec_sort = lookup_spec_op_dispatch(&kb, op_sym)
+        .unwrap_or_else(|| panic!("{op_qn} is not a spec op"));
+    let subst = subst_with_param(
+        &mut kb,
+        "anthill.todo.store.WorkItemStore",
+        "State",
+        "anthill.todo.store.FileBasedWorkitemStore.WIS",
+    );
+    let op_short_sym = kb.intern(op_short);
+    match find_unique_impl_op(&kb, &subst, spec_sort, op_short_sym) {
+        DispatchOutcome::Unique(s) => (kb, s),
+        other => panic!("expected Unique dispatch for {op_qn} at State=WIS; got {other:?}"),
+    }
 }
 
 #[test]
@@ -384,6 +419,113 @@ fn dispatch_ambiguous_when_two_impls_match_same_binding() {
     let outcome = find_unique_impl_op(&kb, &subst, spec_sort, op_short);
     assert_eq!(outcome, DispatchOutcome::Ambiguous,
         "expected Ambiguous when two impls provide the same binding; got {outcome:?}");
+}
+
+#[test]
+fn dispatch_unique_finds_filebased_impl_for_workitemstore_commit() {
+    // WI-210 acceptance smoke test: commit(s, w) for s: Cell[V = WIS] must
+    // dispatch to FileBasedWorkitemStore.commit. Multi-arg State-binding
+    // case, against anthill-todo's actual store.anthill.
+    let (kb, impl_sym) = dispatch_workitemstore_op("commit");
+    let impl_qn = kb.qualified_name_of(impl_sym).to_string();
+    assert!(
+        impl_qn.contains("FileBasedWorkitemStore") && impl_qn.ends_with(".commit"),
+        "expected impl to be FileBasedWorkitemStore.commit; got {impl_qn}"
+    );
+}
+
+#[test]
+fn dispatch_unique_finds_filebased_impl_for_workitemstore_lookup() {
+    // Different return type from commit (Option[Term] vs Unit) — pins that
+    // dispatch isn't accidentally keyed on signature shape.
+    let _ = dispatch_workitemstore_op("lookup");
+}
+
+#[test]
+fn dispatch_commit_s_w_type_checks_via_workitemstore_satisfaction() {
+    use anthill_core::kb::term::Term;
+    use smallvec::SmallVec;
+    // Exercises the typer's check_apply path end-to-end (parse → unify →
+    // dispatch), not just the manual-subst entry point above.
+    let domain_src = std::fs::read_to_string(
+        common::workspace_root().join("anthill-todo/domain.anthill")
+    ).expect("read domain.anthill");
+    let store_src = std::fs::read_to_string(
+        common::workspace_root().join("anthill-todo/store.anthill")
+    ).expect("read store.anthill");
+    let combined = format!("{domain_src}\n{store_src}");
+
+    let mut kb = load_with(&combined);
+    let commit_sym = kb.try_resolve_symbol("anthill.todo.store.WorkItemStore.commit")
+        .expect("WorkItemStore.commit registered");
+    let cell_sym = kb.try_resolve_symbol("anthill.prelude.Cell")
+        .expect("Cell registered");
+    let wis_sym = kb.try_resolve_symbol("anthill.todo.store.FileBasedWorkitemStore.WIS")
+        .expect("FileBasedWorkitemStore.WIS registered");
+    let workitem_sym = kb.try_resolve_symbol("anthill.stage0.WorkItem")
+        .expect("anthill.stage0.WorkItem registered");
+
+    // Cell[V = WIS] must use the canonical `parameterized(...)` form —
+    // a bare `Term::Fn(Cell, [V=WIS])` doesn't match the spec param's
+    // stored type and unify_types falls through to types_compatible.
+    let v_field = kb.intern("V");
+    let wis_ty = kb.make_sort_ref(wis_sym);
+    let cell_base = kb.make_sort_ref(cell_sym);
+    let cell_wis = kb.make_parameterized_type(cell_base, &[(v_field, wis_ty)]);
+    let workitem_ty = kb.make_sort_ref(workitem_sym);
+
+    let apply_arg_sym = kb.try_resolve_symbol("anthill.reflect.ApplyArg")
+        .expect("ApplyArg registered");
+    let var_ref_sym = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
+        .expect("var_ref registered");
+    let name_arg = kb.intern("name");
+    let value_arg = kb.intern("value");
+    let s_sym = kb.intern("s");
+    let w_sym = kb.intern("w");
+    let apply_sym = kb.intern("apply");
+    let fn_arg = kb.intern("fn");
+    let args_arg = kb.intern("args");
+
+    let s_ref = kb.alloc(Term::Ref(s_sym));
+    let w_ref = kb.alloc(Term::Ref(w_sym));
+    let commit_ref = kb.alloc(Term::Ref(commit_sym));
+
+    let var_s = kb.alloc(Term::Fn {
+        functor: var_ref_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(name_arg, s_ref)]),
+    });
+    let var_w = kb.alloc(Term::Fn {
+        functor: var_ref_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(name_arg, w_ref)]),
+    });
+    let arg_s = kb.alloc(Term::Fn {
+        functor: apply_arg_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(name_arg, s_ref), (value_arg, var_s)]),
+    });
+    let arg_w = kb.alloc(Term::Fn {
+        functor: apply_arg_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(name_arg, w_ref), (value_arg, var_w)]),
+    });
+    let args_list = kb.build_list(&[arg_s, arg_w]);
+
+    let apply_term = kb.alloc(Term::Fn {
+        functor: apply_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(fn_arg, commit_ref), (args_arg, args_list)]),
+    });
+
+    let mut env = TypingEnv::empty();
+    env.bind_var("s".to_string(), cell_wis);
+    env.bind_var("w".to_string(), workitem_ty);
+
+    let result = type_check_expr(&mut kb, &env, apply_term);
+    assert!(result.is_some(),
+        "expected commit(s, w) for s:Cell[V=WIS] / w:WorkItem to type-check \
+         (dispatch should resolve to FileBasedWorkitemStore.commit)");
 }
 
 #[test]

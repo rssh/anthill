@@ -25,6 +25,14 @@ pub fn collect_anthill_files(dir: &std::path::Path) -> Vec<PathBuf> {
     files
 }
 
+/// Workspace root (the `oss/anthill/` directory containing rustland/, stdlib/,
+/// anthill-todo/, etc.). Computed from the anthill-core crate's manifest
+/// directory.
+#[allow(dead_code)]
+pub fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
 /// Path to stdlib/anthill/ relative to the anthill-core crate root.
 pub fn stdlib_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill")
