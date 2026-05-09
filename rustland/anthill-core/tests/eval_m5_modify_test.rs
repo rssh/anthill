@@ -129,10 +129,10 @@ fn m5_modify_rust_side_roundtrip() {
     let target = Value::Entity { functor: target_sym, pos: Vec::new(), named: Vec::new() };
 
     let set_sym = interp.kb_mut().intern("set");
-    interp.invoke_effect_handler("Modify", set_sym, &[target.clone(), Value::Int(100)])
+    interp.invoke_effect_handler("anthill.prelude.Modify", set_sym, &[target.clone(), Value::Int(100)])
         .expect("set ok");
     let get_sym = interp.kb_mut().intern("get");
-    let got = interp.invoke_effect_handler("Modify", get_sym, &[target])
+    let got = interp.invoke_effect_handler("anthill.prelude.Modify", get_sym, &[target])
         .expect("get ok");
     assert_eq!(got.as_int(), Some(100));
 }
@@ -143,13 +143,13 @@ fn m5_modify_handler_taken_is_none() {
     // surface a clean "no handler" error rather than panicking.
     let mut interp = interp_for("namespace test.m5_take end\n");
     register_modify_handler(&mut interp);
-    let taken = interp.take_effect_handler("Modify");
+    let taken = interp.take_effect_handler("anthill.prelude.Modify");
     assert!(taken.is_some(), "take returns the previously-registered handler");
 
     let target_sym = interp.kb_mut().intern("x");
     let target = Value::Entity { functor: target_sym, pos: Vec::new(), named: Vec::new() };
     let get_sym = interp.kb_mut().intern("get");
-    let err = interp.invoke_effect_handler("Modify", get_sym, &[target]).unwrap_err();
+    let err = interp.invoke_effect_handler("anthill.prelude.Modify", get_sym, &[target]).unwrap_err();
     assert!(
         matches!(&err, EvalError::Internal(m) if m.contains("no handler")),
         "expected 'no handler' Internal, got {err:?}",

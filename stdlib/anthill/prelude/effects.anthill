@@ -25,60 +25,63 @@
 --   a specific resource its own handler, replace the global Modify handler
 --   with a dispatcher that switches on the target symbol.
 
--- Effect: meta-sort for effect registration.
--- fact Effect[T = Modify[?]] means "Modify[target] for any target is a valid effect."
-sort anthill.prelude.Effect {
-  sort T = ?
-}
+namespace anthill.prelude
 
--- Modifiable: marks a type as admitting `Modify[T]` in effect rows.
--- Per proposal 037 Rule 8 (bidirectional Modify[T]↔handler
--- correspondence): only types with a registered handler can be
--- modified. A `fact Modifiable[T = X]` is the typing-level token;
--- the runtime must back it with a registered handler before any
--- `Modify[X]` operation actually fires.
-sort anthill.prelude.Modifiable {
-  sort T = ?
-}
+  -- Effect: meta-sort for effect registration.
+  -- fact Effect[T = Modify[?]] means "Modify[target] for any target is a valid effect."
+  sort Effect {
+    sort T = ?
+  }
 
--- Well-known effect kinds.
--- Each sort defines its operations — the "pseudo API" that the effect provides.
+  -- Modifiable: marks a type as admitting `Modify[T]` in effect rows.
+  -- Per proposal 037 Rule 8 (bidirectional Modify[T]↔handler
+  -- correspondence): only types with a registered handler can be
+  -- modified. A `fact Modifiable[T = X]` is the typing-level token;
+  -- the runtime must back it with a registered handler before any
+  -- `Modify[X]` operation actually fires.
+  sort Modifiable {
+    sort T = ?
+  }
 
-sort Modify
-  import anthill.prelude.{Unit}
-  sort T = ?
-  operation get(target: T) -> T
-  operation set(target: T, value: T) -> Unit effects Modify[T]
+  -- Well-known effect kinds.
+  -- Each sort defines its operations — the "pseudo API" that the effect provides.
+
+  sort Modify
+    import anthill.prelude.{Unit}
+    sort T = ?
+    operation get(target: T) -> T
+    operation set(target: T, value: T) -> Unit effects Modify[T]
+  end
+
+  sort Error
+    import anthill.prelude.{Nothing}
+    sort T = ?
+    operation raise(error: T) -> Nothing effects Error[T]
+  end
+
+  sort Suspension
+  end
+
+  sort Branch
+    import anthill.prelude.{Nothing}
+    operation fail() -> Nothing effects Branch
+  end
+
+  -- Payload for match-failure errors. Raised through `Error[MatchFailed]` by
+  -- the evaluator when a `match` expression has no matching arm. The
+  -- exhaustiveness-checked typer removes `Error[MatchFailed]` from a match's
+  -- inferred effect row when all arms are covered.
+  sort MatchFailed
+    import anthill.reflect.{Occurrence, Term}
+    entity match_failed(occurrence: Occurrence, scrutinee: Term)
+  end
+
+  -- Register as effects
+  fact Effect[T = Modify[?]]
+  fact Effect[T = Error[?]]
+  fact Effect[T = Suspension]
+  fact Effect[T = Branch]
 end
-
-sort Error
-  import anthill.prelude.{Nothing}
-  sort T = ?
-  operation raise(error: T) -> Nothing effects Error[T]
-end
-
-sort Suspension
-end
-
-sort Branch
-  import anthill.prelude.{Nothing}
-  operation fail() -> Nothing effects Branch
-end
-
--- Payload for match-failure errors. Raised through `Error[MatchFailed]` by
--- the evaluator when a `match` expression has no matching arm. The
--- exhaustiveness-checked typer removes `Error[MatchFailed]` from a match's
--- inferred effect row when all arms are covered.
-sort MatchFailed
-  import anthill.reflect.{Occurrence, Term}
-  entity match_failed(occurrence: Occurrence, scrutinee: Term)
-end
-
--- Register as effects
-fact Effect[T = Modify[?]]
-fact Effect[T = Error[?]]
-fact Effect[T = Suspension]
-fact Effect[T = Branch]
 
 -- Effect relationships:
 -- Modify implies the ability to read

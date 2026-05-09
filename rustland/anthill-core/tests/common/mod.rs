@@ -143,6 +143,7 @@ pub fn scripted_console_input(lines: &[&str]) -> (
 /// stdio-binding side effects of `register_standard_effect_handlers`.
 #[allow(dead_code)]
 pub fn register_modify_handler(interp: &mut Interpreter) {
-    interp.register_effect_handler("Modify", anthill_core::eval::effects::default_modify_handler())
+    interp.register_effect_handler("anthill.prelude.Modify",
+        anthill_core::eval::effects::default_modify_handler())
         .expect("register Modify handler");
 }

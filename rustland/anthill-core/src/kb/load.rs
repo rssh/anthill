@@ -757,7 +757,26 @@ fn process_imports(
     errors: &mut Vec<LoadError>,
 ) {
     for imp in imports {
-        let path = join_segments(parse_sym, &imp.path.segments);
+        let raw_path = join_segments(parse_sym, &imp.path.segments);
+        // Implicit-prelude fallback: a single-segment path like `Modify` that
+        // doesn't resolve at top level falls back to `anthill.prelude.<path>`.
+        // Mirrors the global short-name visibility of post-WI-215 prelude
+        // effect sorts (Modify, Error, Suspension, Branch, MatchFailed).
+        let path = if !raw_path.contains('.')
+            && kb.symbols.by_qualified_name.get(&raw_path).is_none()
+            && find_scope_by_name(kb, &raw_path).is_none()
+        {
+            let candidate = format!("anthill.prelude.{raw_path}");
+            if kb.symbols.by_qualified_name.contains_key(&candidate)
+                || find_scope_by_name(kb, &candidate).is_some()
+            {
+                candidate
+            } else {
+                raw_path
+            }
+        } else {
+            raw_path
+        };
         match &imp.kind {
             ImportKind::Plain => {
                 // `import anthill.prelude.List` → make "List" resolvable locally
@@ -851,6 +870,28 @@ fn process_imports(
 /// Primitive sort names that are always available in the global scope.
 /// These correspond to the stdlib primitive types (Int, Float, String, Bool).
 pub const PRELUDE_SORTS: &[&str] = &["Int", "BigInt", "Float", "String", "Bool"];
+
+/// Effect sorts declared inside `namespace anthill.prelude` in
+/// stdlib/anthill/prelude/effects.anthill that user code references by
+/// short name (e.g. `effects {Modify[s], Error}`). Adding them to the
+/// global scope's import list reproduces the implicit-prelude behaviour
+/// that file-top-level bare `sort X` declarations had before WI-215.
+pub const IMPLICIT_PRELUDE_EFFECTS: &[&str] =
+    &["Modify", "Error", "Suspension", "Branch", "MatchFailed"];
+
+/// Wire the implicit-prelude effect sorts (Modify, Error, …) into the
+/// global scope's imports. Called after `scan_definitions` so the
+/// qualified symbols already exist. Idempotent: re-adding an existing
+/// import is harmless.
+pub fn register_implicit_prelude_effects(kb: &mut KnowledgeBase) {
+    let global_raw = kb.make_name_term("_global").raw();
+    for &short in IMPLICIT_PRELUDE_EFFECTS {
+        let qualified = format!("anthill.prelude.{short}");
+        if let Some(&sym) = kb.symbols.by_qualified_name.get(&qualified) {
+            kb.symbols.add_import(global_raw, short, sym);
+        }
+    }
+}
 
 /// KB-internal meta-sort names. Used as sort-of-sort markers (e.g. the sort
 /// of a Fact entry is `Fact`). Not defined in any `.anthill` file.
@@ -1317,6 +1358,7 @@ fn load_phase_inner(
 ) -> Result<(LoadResult, Vec<LoadResult>), Vec<LoadError>> {
     let mut all_errors = scan_definitions(kb, files);
     kb.resolve_builtins();
+    register_implicit_prelude_effects(kb);
 
     let mut loaded_paths = HashSet::new();
     let mut all_sorts = Vec::new();
