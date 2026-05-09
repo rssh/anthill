@@ -111,9 +111,43 @@ Co-locating Rust's `i64` binding inside `stdlib/anthill/prelude/int.anthill` wou
   - WI-210 dispatch — sees the `SortProvidesInfo` records emitted from the satisfaction facts inside the block, keyed on the `Int` sort symbol (the abstract sort, not a namespace doppelgänger).
 - **Multi-host coexistence**: a project that targets multiple languages loads multiple binding files; each contributes its own `Implementation` fact tagged with its `language`. The interpreter at runtime selects only its own language's facts (via a `language: "rust"` filter on the Project fact, or an equivalent runtime-time selector).
 
+### Loader changes
+
+`load_provides_block` (load.rs:4943) currently has an early return for non-`anthill` languages:
+
+```rust
+fn load_provides_block(&mut self, pb: &ProvidesBlock, domain: TermId) {
+    if self.parsed.symbols.name(pb.language) != "anthill" { return; }   // <— stubs out everything else
+    for item in &pb.items {
+        match item { … }   // recurses for anthill only
+    }
+}
+```
+
+Two concrete steps:
+
+1. **Remove the early return; recurse into items for any language.** Items inside the block (`Fact`, `Rule`, `Proof`, `RuleBlock`) are loaded the same way they would be at namespace level. A `fact Eq[T = Int]` inside `provides Int language rust { … }` emits the regular fact AND triggers Phase 1's `SortProvidesInfo` auto-emit (sort-body path: `current_scope` during the recursion is the binding's spec sort, derived from the block's outer name). "Int satisfies Eq" is a true anthill-spec-level statement regardless of host; only the carrier differs.
+
+2. **Emit one `Implementation` fact per block** (host-binding metadata). The block's `carrier`, `artifact`, `profile` clauses populate the `Implementation` entity (already defined in `stdlib/anthill/realization/realization.anthill`):
+
+   ```anthill
+   fact Implementation(
+     target      : "anthill.prelude.Int",
+     artifact    : "rustland/anthill-stl/src/prelude/int.rs",
+     language    : "rust",
+     profile     : some("std"),
+     description : none,
+     carrier     : [CarrierBinding(sort_name: "Int", host_type: "i64")],
+     namespace_map : []
+   )
+   ```
+
+   Codegen/interpreter consume `Implementation` by `(language, profile)` filter; WI-210 dispatch consumes the host-agnostic `SortProvidesInfo` records emitted in step 1.
+
+The `provides_block` already supports `Artifact`, `Carrier`, `NamespaceMap` items (`ProvidesItem::Artifact`, etc.) — they currently feed into nothing for non-anthill blocks. The proposal also wires those through to the Implementation fact's fields.
+
 ### Open questions
 
-- **Loader change**: `load_provides_block` (load.rs:4943) currently only recurses into inner items for `language anthill`; for other languages it stubs out. Step 1 is to wire up satisfaction-fact emission inside non-anthill `provides` blocks — items inside should emit `SortProvidesInfo` tied to the spec sort, regardless of the host language.
 - **Implementation entity**: has `carrier: List[CarrierBinding]`, `target: String`, `artifact: String`, `profile: Option[T = String]` — we lean on this for the type→host-type mapping. The satisfaction facts emitted inside the block are *additional* SortProvidesInfo records, not new fields on Implementation.
 - **Interpreter selection (via profile)**: each runtime — rustland's eval, scaland's eval, future C++/Lua interpreters — has different needs from the same host language. A standalone-codegen build wants the production carrier and `[std]` profile; an embedded interpreter loaded into a hosting application wants smaller dependencies and possibly different carriers; a bootstrap stage may strip everything else.
 
