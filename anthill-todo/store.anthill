@@ -14,6 +14,9 @@ namespace anthill.todo.store
   import anthill.persistence.filesystem.{IndexedFileStore}
   import anthill.persistence.{persist, flush, retrieve}
   import anthill.prelude.{Cell, Stream, Option, List, Int, String, Unit}
+  import anthill.prelude.Int.{to_string}
+  import anthill.prelude.String.{concat}
+  import anthill.prelude.Ordered.{lt}
   import anthill.prelude.Meta.{Meta}
   import anthill.reflect.{Term}
   export WorkItemStore, FileBasedWorkitemStore, WIS
@@ -53,16 +56,23 @@ namespace anthill.todo.store
 
     fact WorkItemStore[State = WIS]
 
-    -- next_id reads the counter, returns a stub String, bumps it.
-    -- Real WI-NNN formatting deferred until Int → String helpers are
-    -- available without WI-189.
+    -- Format an Int as a 3-zero-padded decimal string. Larger numbers
+    -- expand naturally (`WI-1000` is fine).
+    operation pad3(n: Int) -> String =
+      if lt(n, 10) then concat("00", to_string(n))
+      else if lt(n, 100) then concat("0", to_string(n))
+      else to_string(n)
+
+    -- next_id reads the counter, formats it as `WI-NNN`, bumps it.
+    -- Bundle host seeds the counter to max-existing-id + 1 at startup,
+    -- so the first call after a fresh project yields `WI-001`.
     operation next_id(s: Cell[V = WIS]) -> String
       effects Modify[s]
     =
       match Cell.get(s)
         case wis(b, c) ->
           let _ = Cell.set(s, wis(b, c + 1))
-          "WI-???"
+          concat("WI-", pad3(c))
 
     operation lookup(s: Cell[V = WIS], id: String) -> Option[T = Term]
       effects Error
