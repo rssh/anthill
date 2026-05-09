@@ -6,6 +6,71 @@
 
 ## Relates to: WI-209 (parametric effect substitution at call sites — landed), WI-211 (sort-level type-param instantiation — landed; this WI builds on it), WI-186 (free-standing parametric ops — same shape, no fact indirection), WI-079 (typing-pass parity), proposal 027 (effect handlers — alternative architecture for the same problem), WI-119 (provides-discharge brainstorm).
 
+## Problem
+
+### The setting
+
+Anthill supports a spec/impl split for interface-style programming (proposal 036, "Domain Store Sorts"). The interface is one sort; each implementation is another sort that carries the operation bodies. The two are tied together by a fact.
+
+We use a concrete running example throughout this document: the work-item store in `anthill-todo/store.anthill`. The interface is `WorkItemStore`; the file-backed implementation is `FileBasedWorkitemStore`. The interface declares operations like `commit`, `lookup`, `next_id`; the implementation supplies their bodies plus a value-shape (`enum WIS`) for the interface's abstract `State` parameter.
+
+### How spec and impl look in source
+
+- **Spec** — declares operations + their signatures, with one or more abstract type parameters (e.g. `sort State = ?`). No operation bodies.
+- **Impl** — picks a concrete value-shape for the spec's parameters via `fact Spec[State = T]`, and supplies operation bodies.
+
+```anthill
+-- Spec
+sort WorkItemStore
+  sort State = ?
+  operation commit(s: Cell[V = State], w: WorkItem) -> Unit
+    effects {Modify[s], Error}    -- declaration only, no body
+  operation lookup(s: Cell[V = State], id: String) -> Option[T = Term]
+end
+
+-- Impl
+sort FileBasedWorkitemStore
+  enum WIS
+    entity wis(backend: IndexedFileStore, id_counter: Int)
+  end
+  fact WorkItemStore[State = WIS]   -- "I implement WorkItemStore with State = WIS"
+  operation commit(s, w) =          -- with body
+    match Cell.get(s)
+      case wis(b, c) -> let _ = persist(b, w, ...) ...
+end
+```
+
+So in source there are now **two** definitions of `commit`: the spec's declaration (no body, abstract `State`) and the impl's body (concrete `WIS`).
+
+### What goes wrong at the call site
+
+A caller in another file (e.g. `main.anthill`) writes the natural thing:
+
+```anthill
+operation cmd_add(s: Cell[V = WIS], w: WorkItem) -> Unit
+  effects {Modify[s], Error}
+=
+  commit(s, w)             -- which `commit` does this resolve to?
+```
+
+The user wants to think of `commit` as just "the commit operation on a workitem store" — they shouldn't have to know whether it's file-backed or GitHub-backed at the call site. But the typer sees two candidate symbols, neither of which can be picked naively:
+
+- The **spec's** `commit` is the canonical *name* (the abstraction the user is programming against), but has **no body** — calling it directly would have nothing to run.
+- The **impl's** `commit` has the body, but referring to it directly (`FileBasedWorkitemStore.commit(s, w)`) defeats the spec/impl split — every call site would hard-code an impl.
+
+### What the typer needs to do
+
+When the typer sees `commit(s, w)`, it must:
+
+1. Recognize that `commit` names a spec operation.
+2. Look at the actual arg types (`s : Cell[V = WIS]`) to figure out the State binding (`State = WIS`).
+3. Find the fact `WorkItemStore[State = WIS]` in the KB.
+4. Identify the sort that asserted that fact — `FileBasedWorkitemStore`.
+5. Resolve `commit` *inside that sort* — the impl's body.
+6. Rewrite the call to target that impl body.
+
+This document calls that rule **"dispatch via fact"**. The rest of the document picks the simplest viable mechanism for the v1 (single-impl) world, and flags what changes when multi-impl scenarios arrive.
+
 ## Goal
 
 Make `commit(s, w)` (and similar spec-op calls) dispatch from the spec to the right impl body, found via the chain:
@@ -58,16 +123,52 @@ For a single-impl world (today's anthill-todo), **sub-problem 1 is sufficient.**
 
 ## Static dispatch (the proposed v1)
 
-At each call site `f(arg, …)` where `f` is in scope as a spec operation:
+### Why look this up via a fact?
+
+Two readings of "why a fact" — both deserve answers.
+
+**Why use a KB fact at all (rather than a separate type-system table)?**
+
+In Anthill, type-system data lives in the same KB as everything else — sort relations, instantiation bindings, satisfaction claims, even effect rows are *all* facts. There is no separate type registry. So "find the impl for this spec" reduces to "query the KB," and the natural shape of that query is `by_functor`. The index is built at load time and consulted at typer time — semantically static dispatch, despite being expressed via the same primitive that backs SLD resolution at runtime.
+
+**Why `fact Spec[State = T]` specifically? It doesn't carry impl identity.**
+
+Real gap. The bare fact `WorkItemStore[State = WIS]` records that *some* sort claims to satisfy `WorkItemStore` at `State = WIS`. It does not say which sort. The dispatch chain needs the asserting sort (`FileBasedWorkitemStore`) so it can resolve `commit` inside it.
+
+Two ways to close the gap:
+
+- **(a) Track the fact owner at load time.** When the loader loads `fact Spec[State = T]` *inside* `sort Impl { ... }`, the loader's `current_scope` is the impl sort. Add an internal index `fact_owner_sort: HashMap<RuleId, Symbol>` recording the impl. Dispatch: `by_functor(Spec)` → match bindings → `fact_owner_sort[rid]` → impl symbol.
+
+- **(b) Auto-emit a tagged reflect entity.** When the loader sees the fact in an impl-sort body, emit a synthetic fact alongside it:
+
+  ```anthill
+  fact SpecImpl(
+    spec     = WorkItemStore,
+    impl     = FileBasedWorkitemStore,
+    bindings = [(State, WIS)]
+  )
+  ```
+
+  Dispatch queries `SpecImpl` directly: `by_functor(SpecImpl-sym)` filtered by `spec` and `bindings` → `impl`. The `SpecImpl` entity is also queryable from user code, codegen, and tools — it becomes the canonical "X realizes Y" predicate at the in-anthill level.
+
+(Note: do not conflate with `Implementation` in `stdlib/anthill/realization/realization.anthill`. That entity binds anthill sorts to Rust/Scala/C++ host artifacts — a different concern. We need a separate, in-anthill `SpecImpl` reflect entity.)
+
+**Recommendation: (b).** It costs one new reflect entity (~10 lines in `stdlib/anthill/reflect/`) plus loader auto-emission (~20 lines in `load_fact` when `current_scope` is a sort and the fact's functor names a spec sort). The win is a single source of truth for spec/impl mapping that everything downstream (typer dispatch, future codegen for `<impl>.<op>` thunks, persistence-side validation, doc tooling) can consume uniformly.
+
+(a) is acceptable as a stop-gap if we don't want the new reflect entity for v1, but the side-channel index then has to be re-derived by every consumer. The implementation cost difference is small; (b) wins on architecture.
+
+### The dispatch algorithm
+
+At each call site `f(arg, …)` where `f` resolves (or could resolve) to a spec operation:
 
 1. Type-check the arguments.
 2. From the arg types, infer the spec's State binding(s). For the WorkItemStore case: `s : Cell[V = ?T]` → `?T` resolves via WI-211's machinery to the State binding.
-3. Search KB for `fact Spec[State = <T>]` facts where Spec contains the named operation. Each fact identifies an impl sort.
-4. If exactly one matching impl is found: rewrite the call's resolved symbol to the impl's operation symbol (`<impl>.f`).
+3. Search KB for `SpecImpl(spec = Spec, bindings = [...])` facts (using `by_functor` on `SpecImpl`'s symbol). Filter by spec, then unify the recorded `bindings` against the inferred State binding.
+4. If exactly one matching impl is found: rewrite the call's resolved symbol to that impl's operation symbol (`<impl>.f`).
 5. If zero impls match: typer error ("no impl of `Spec.f` for `State = <T>`").
 6. If multiple impls match: see "Coherence" below.
 
-Step 3's fact lookup uses the existing `by_functor` index keyed by the spec's symbol — a single SLD-style query. Step 4 is a textual rewrite at the typer's resolved-call layer (similar to how typeclass methods are resolved in Rust trait dispatch).
+Step 3 reuses the existing `by_functor` index, keyed by the `SpecImpl` symbol — a single load-time index lookup, no SLD search loop. Step 4 is a textual rewrite at the typer's resolved-call layer (similar to how typeclass methods resolve in Rust trait dispatch).
 
 This makes the dispatch a **typer pass**, not a runtime mechanism. The runtime sees a direct call to the impl's symbol — same path as any other function call.
 
@@ -174,26 +275,37 @@ Resolution of `commit(s, build_workitem(args))`:
    - `s : Cell[V = WIS]` (from `cmd_add`'s param).
    - `build_workitem(args) : WorkItem` (from inference).
 4. WI-211 binds State → WIS in the per-call subst.
-5. **WI-210 step**: search `kb.by_functor(WorkItemStore-symbol)` for facts. Find `fact WorkItemStore[State = WIS]` asserted by `FileBasedWorkitemStore`. Single match.
+5. **WI-210 step**: search `kb.by_functor(SpecImpl-sym)` for facts where `spec = WorkItemStore` and `bindings ⊇ [(State, WIS)]`. Find the auto-emitted `SpecImpl(spec=WorkItemStore, impl=FileBasedWorkitemStore, bindings=[(State, WIS)])`. Single match → impl is `FileBasedWorkitemStore`.
 6. Rewrite the call's resolved symbol from `WorkItemStore.commit` to `FileBasedWorkitemStore.commit`.
 7. Type-check the body call against `FileBasedWorkitemStore.commit`'s signature (which itself uses signature inheritance from the spec — see open question 1).
 
 Result: the runtime sees a direct call to `FileBasedWorkitemStore.commit`. No vtable, no fact lookup at run time.
 
-## Implementation plan (sketched, ~150 LoC in `kb/typing.rs`)
+## Implementation plan (sketched)
 
-1. **Detect spec ops.** A symbol is a "spec op" iff it's declared inside a sort that:
-   - Has at least one `sort <Param> = ?` declaration.
-   - Has no body for this op (declaration only).
+1. **Define the `SpecImpl` reflect entity** (~10 lines, `stdlib/anthill/reflect/`):
+   ```anthill
+   entity SpecImpl(spec: Sort, impl: Sort, bindings: List[T = SortBinding])
+   ```
+   (Reuses existing `SortBinding` from the reflect layer.)
 
-   New helper: `lookup_spec_op_dispatch(kb, op_sym) -> Option<DispatchSpec>` returning `(spec_sort_sym, state_param_name)`.
+2. **Auto-emit SpecImpl in the loader** (~20 lines, `load.rs::load_fact`):
+   When `current_scope` is a sort *and* the fact's functor names a sort that has at least one `sort <Param> = ?` declaration, emit a `SpecImpl(spec=<functor>, impl=<current_scope>, bindings=<fact's named args>)` fact alongside.
 
-2. **At call resolution time**, in `check_apply`'s known-operation path (after unifying arg types):
+3. **Detect spec ops** (~30 lines, `kb/typing.rs`):
+   A symbol is a "spec op" iff it's declared inside a sort that has at least one `sort <Param> = ?` declaration *and* the sort declares the op without a body. Helper:
+   ```rust
+   fn lookup_spec_op_dispatch(kb, op_sym) -> Option<DispatchSpec>
+   ```
+   Returning `(spec_sort_sym, state_param_names)`.
+
+4. **Hook dispatch into `check_apply`** (~50 lines, `kb/typing.rs`):
+   After arg unification (and WI-211's `unify_parameterized_with_sort_ref` populating the per-call subst):
    - Check if `fn_sym` is a spec op. If not, dispatch as before.
-   - Read State's binding from the per-call subst (already populated by WI-211's `unify_parameterized_with_sort_ref`).
-   - Search `by_functor(spec_sort_sym)` facts for matching State binding.
-   - If exactly one match: extract the impl sort, look up `<impl>.<op-short-name>` symbol, rewrite the resolved call.
-   - If zero/multiple: typer error.
+   - Read State's binding from the subst.
+   - Search `by_functor(SpecImpl-sym)` facts; filter by `spec = spec_sort_sym` and unify recorded `bindings` against the inferred State.
+   - If exactly one match: extract `impl` from the fact, look up `<impl>.<op-short-name>` symbol, rewrite the resolved call.
+   - If zero/multiple: typer error per coherence rule (C).
 
 3. **Tests**:
    - Direct: `commit(s, w)` where `s: Cell[V = WIS]` resolves to `FileBasedWorkitemStore.commit`.
