@@ -193,6 +193,92 @@ Anthill's runtime is interpreter-based, so the natural dynamic-dispatch shape is
 
 For WI-210 v1: defer. File a follow-up if a real consumer surfaces.
 
+## Effect compatibility between spec and impl
+
+A spec declares an effect row per operation; each impl supplies its own. They can differ — and the typer needs a rule for when an impl is **compatible** with the spec it claims to satisfy.
+
+### The rule: impl effects ⊆ spec effects
+
+```
+impl_effects(op)  ⊆  spec_effects(op)[<spec params> := <impl bindings>]
+```
+
+(after parametric substitution; see "What about parametric effects?" below.)
+
+Why subset, not superset, not equality?
+
+The spec's effect row is the **contract** the caller programs against. When code in `main.anthill` calls `commit(s, w)` resolved through `WorkItemStore.commit`'s declared `{Modify[s], Error}`, the surrounding handler stack is set up for those effects and only those. If a dispatched impl raised an effect outside the set (say `Network`), the runtime would have no path to handle it, and the caller's reasoning about reachable effects would be unsound. **The spec's row is an upper bound; the impl can do less but never more.**
+
+Equality is too strict: a pure-in-memory `InMemoryWorkitemStore.commit` legitimately never raises `Error` and shouldn't have to lie about it.
+
+### Examples
+
+```anthill
+sort WorkItemStore
+  sort State = ?
+  operation commit(s: Cell[V = State], w: WorkItem) -> Unit
+    effects {Modify[s], Error}
+end
+```
+
+| Impl | Effect row (post-subst) | Compatible? |
+|---|---|---|
+| `FileBasedWorkitemStore.commit` | `{Modify[s], Error}` | ✓ exact match |
+| `InMemoryWorkitemStore.commit` | `{Modify[s]}` | ✓ proper subset — `Error` never raised |
+| `GitHubWorkitemStore.commit` | `{Modify[s], Error, Network}` | ✗ superset — `Network` not in spec |
+| `LoggingWorkitemStore.commit` | `{Modify[s], Error, Trace[Logger]}` | ✗ superset — `Trace` not in spec |
+
+### What the call site sees
+
+The call's static effect row is **always the spec's effect row, post-substitution** — regardless of which impl was dispatched.
+
+```anthill
+operation cmd_add(s: Cell[V = WIS], w: WorkItem) -> Unit
+  effects {Modify[s], Error}     -- caller's row matches the spec's
+=
+  commit(s, w)                   -- dispatches to FileBasedWorkitemStore.commit,
+                                 -- but the call's row is still {Modify[s], Error},
+                                 -- not whatever the impl happens to declare.
+```
+
+Two reasons this is the right rule:
+
+- **Transparency**: dispatch choice doesn't change the caller's effect contract. Swapping `FileBasedWorkitemStore` for `InMemoryWorkitemStore` (which has a smaller row) doesn't break the caller's effect plumbing.
+- **Forward compatibility**: if a new impl is added later with a strictly-smaller row, no caller needs to update.
+
+The impl's actual smaller row is just a local property of the impl body, checked at impl-load time — not propagated to call sites.
+
+### Where the check fires
+
+1. **At impl-declaration time** (`kb/load.rs::load_sort_with_body`, after the impl op's body has been typed): for each impl op declared by an impl sort that asserts `SpecImpl(spec=Spec, impl=Self, bindings=B)`, compare its effect row against `spec_effects(op)[B]`. Reject with a diagnostic if not a subset:
+
+   ```
+   error: FileBasedWorkitemStore.commit declares effect Network not allowed by spec WorkItemStore.commit
+     --> store.anthill:81:5
+        |
+   81  |   operation commit(s: Cell[V = WIS], w: WorkItem) -> Unit
+        |     effects {Modify[s], Error, Network}
+        |                                ^^^^^^^ not in WorkItemStore.commit's effect row
+        |
+        = note: spec declares effects {Modify[s], Error}; impl can have at most these.
+   ```
+
+2. **At call-site type-checking time** (`kb/typing.rs::check_apply`): the call's effect row is the *spec's*, post-substitution. The impl's local row is irrelevant to the caller's view.
+
+The check at (1) is the main new work; (2) requires no change beyond what WI-209/WI-211 already do — those already substitute the spec's row at the call site.
+
+### What about parametric effects?
+
+WI-209 substitutes `Modify[c]` → `Modify[s]` at call sites by mapping parameter symbols. Effect-row compatibility uses the same substitution: substitute *both* rows (spec and impl) by their respective parameter-name mappings, then check subset.
+
+If the spec declares `effects {Modify[s], Error}` (param `s`) and the impl declares `effects {Modify[c], Error}` (param `c` — same role, different name), both substitute to `{Modify[<actual-arg-sym>], Error}` and the check passes trivially.
+
+### Out of scope (v1)
+
+- **Effect polymorphism** — `effects {Modify[s], Error, ...?E}` in the spec, with each impl pinning `?E`. The natural answer for "this impl genuinely needs `Network`" but adds parametric effect rows. Not in v1; if needed, declare separate specs (`WorkItemStore` vs `RemoteWorkItemStore`).
+- **Effect subsorting** (e.g. `RaiseEither[E1] ≤ RaiseEither[E1, E2]`) — today every effect compares structurally. If a future effect framework introduces a subsort lattice, the subset check must be lifted to lattice ≤ rather than set membership.
+- **Per-call effect narrowing** — declaring at a call site that the call only needs a subset of the spec's effects (so the caller's handler stack is smaller). Useful for optimization; defer until a consumer asks.
+
 ## Coherence
 
 What if two sorts assert `fact WorkItemStore[State = WIS]` (same Spec, same State binding)?
@@ -468,13 +554,22 @@ This is OQ #5 ("call sites that want the spec / don't want dispatch") generalize
    - Search `by_functor(SpecImpl-sym)` facts; filter by `spec = spec_sort_sym` and unify recorded `bindings` against the inferred State.
    - If exactly one match: extract `impl` from the fact, look up `<impl>.<op-short-name>` symbol, rewrite the resolved call.
    - If zero/multiple: typer error per coherence rule (C).
+   - The call's effect row is the *spec's* effect row, post-substitution (no change from today — WI-209 already handles this).
 
-3. **Tests**:
+5. **Effect-compatibility check at impl declaration** (~30 lines, `kb/load.rs::load_sort_with_body` post-load pass, or `kb/typing.rs` post-pass):
+   For each impl op in a sort that asserts `SpecImpl(...)`:
+   - Look up the matching spec op's effect row.
+   - Substitute the spec's params per the `SpecImpl.bindings` and the impl op's param names.
+   - Check `impl_effects ⊆ spec_effects`. Reject with the diagnostic shown in "Effect compatibility" §"Where the check fires" if not.
+
+6. **Tests**:
    - Direct: `commit(s, w)` where `s: Cell[V = WIS]` resolves to `FileBasedWorkitemStore.commit`.
    - Negative: same call where no `fact WorkItemStore[State = WIS]` exists — typer error.
    - Negative: two impls assert the fact — typer error (coherence rule C).
+   - Effect subset: impl with `effects {Modify[s]}` accepted against spec `{Modify[s], Error}`.
+   - Effect superset: impl with `effects {Modify[s], Error, Network}` rejected against spec `{Modify[s], Error}`.
 
-4. **Acceptance**: cargo-test green; bundle phase 3 prerequisites cleared (a smoke test where `commit(s, w)` from main.anthill dispatches to the right body).
+7. **Acceptance**: cargo-test green; bundle phase 3 prerequisites cleared (a smoke test where `commit(s, w)` from main.anthill dispatches to the right body).
 
 ## Open questions
 
@@ -585,6 +680,8 @@ When WI-210 lands:
 - Convergence with WI-186 free-standing parametrics — incremental opportunity, not a hard dependency.
 - Signature inheritance for impl ops (per open question 1) — follow-up; WI-210 ships under explicit-signature assumption.
 - Coherence rule (B) (scoped priority + low-priority defaults) — planned evolution, not an "if-needed" follow-up; (C) ships v1 because no stdlib defaults exist yet. See "Coherence" §"Why (B) is the interesting rule" for the priority-table design.
+- Effect polymorphism in specs (`effects {..., ?E}`) — out of scope; v1 requires impls to subset the spec's concretely-declared effect row. See "Effect compatibility" §"Out of scope (v1)".
+- Effect subsorting / lattice (e.g. `RaiseEither[E1] ≤ RaiseEither[E1, E2]`) — out of scope; subset check uses structural set membership today.
 - Self-typed specs (where the spec uses `Self` rather than `Cell[V = State]`) — handled in principle by extracting bindings from any param; not specifically tested in v1.
 
 ## Recommendation
