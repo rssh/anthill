@@ -98,6 +98,14 @@ object Loader:
           val sortTerm = kb.makeNameTermFromSym(sym)
           kb.registerSort(sortTerm, SortKind.Abstract)
           kb.symbols.addExport(scopeTerm.raw, shortName)
+          // `sort T = ?` inside a SortWithBody (or enum) declares a type
+          // parameter local to the enclosing sort. The resolver uses this
+          // marker to keep T from leaking into ambient name-resolution from
+          // sibling sorts that share the same canonical parameter name.
+          sort.definition match
+            case _: TypeExpr.Variable if isSortScope(kb, scopeTerm) =>
+              kb.symbols.addTypeParam(scopeTerm.raw, shortName)
+            case _ => ()
 
         case Item.EntityItem(entity) =>
           val shortName = joinSegments(fileSym, entity.name.segments)
@@ -517,6 +525,14 @@ object Loader:
 
   private def joinSegments(symbols: SymbolTable, segments: IndexedSeq[TermSymbol]): String =
     segments.map(symbols.name).mkString(".")
+
+  private def isSortScope(kb: KnowledgeBase, scope: TermId): Boolean =
+    kb.getTerm(scope) match
+      case f: Term.Fn if f.posArgs.isEmpty && f.namedArgs.isEmpty =>
+        kb.symbols.get(f.functor) match
+          case SymbolDef.Resolved(_, _, SymbolKind.Sort, _) => true
+          case _ => false
+      case _ => false
 
   private def makeQualified(prefix: String, name: String): String =
     if prefix.isEmpty then name else s"$prefix.$name"
