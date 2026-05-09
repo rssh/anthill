@@ -128,6 +128,13 @@ struct RuleEntry {
     /// `var_{shared_arity}..var_{arity-1}` (the step-introduced new
     /// vars) get emitted as declare-consts.
     shared_arity: u32,
+    /// Citation handle for labeled rules. Indexed under
+    /// `rules_by_label` so `rule_id_by_qn` resolves a rule by its
+    /// label even when the head's functor differs from the label
+    /// (e.g. `rule simple_lemma: gte(?x, 3.0) :- ...` — head functor
+    /// is `gte`, label is `simple_lemma`). `None` for unlabeled rules
+    /// (they remain reachable through `by_functor` on the head).
+    label: Option<Symbol>,
 }
 
 // ── Sort kind ───────────────────────────────────────────────────
@@ -152,6 +159,7 @@ pub struct KnowledgeBase {
     by_sort: HashMap<TermId, Vec<RuleId>>,
     by_functor: HashMap<Symbol, Vec<RuleId>>,
     by_domain: HashMap<TermId, Vec<RuleId>>,
+    rules_by_label: HashMap<Symbol, Vec<RuleId>>,
 
     // Entity-of indexes: entity → parent sort (1-level, non-transitive).
     // Materialized indexes for EntityOf(entity, parent) facts.
@@ -226,6 +234,7 @@ impl KnowledgeBase {
             rules: Vec::new(),
             by_sort: HashMap::new(),
             by_functor: HashMap::new(),
+            rules_by_label: HashMap::new(),
             by_domain: HashMap::new(),
             sort_entities: HashMap::new(),
             entity_parent: HashMap::new(),
@@ -412,9 +421,10 @@ impl KnowledgeBase {
             domain,
             meta,
             retracted: false,
-            arity: 0, // set by to_debruijn after loading
-            globals: Vec::new(), // set by assert_rule_debruijn_with_conclusion
+            arity: 0,
+            globals: Vec::new(),
             shared_arity: 0,
+            label: None,
         });
 
         // Update indexes
@@ -807,6 +817,7 @@ impl KnowledgeBase {
         let domain = entry.domain;
         let meta = entry.meta;
         let body: Vec<TermId> = entry.body.clone();
+        let label = entry.label;
 
         // Remove from indexes
         if let Some(v) = self.by_sort.get_mut(&sort) {
@@ -817,6 +828,11 @@ impl KnowledgeBase {
         }
         if let Term::Fn { functor, .. } = *self.terms.get(head) {
             if let Some(v) = self.by_functor.get_mut(&functor) {
+                v.retain(|&rid| rid != id);
+            }
+        }
+        if let Some(label_sym) = label {
+            if let Some(v) = self.rules_by_label.get_mut(&label_sym) {
                 v.retain(|&rid| rid != id);
             }
         }
@@ -1382,8 +1398,36 @@ impl KnowledgeBase {
     /// Convenience for the common pattern of looking up a rule's
     /// metadata (globals, shared_arity, ...) by name.
     pub fn rule_id_by_qn(&self, qn: &str) -> Option<RuleId> {
-        self.try_resolve_symbol(qn)
-            .and_then(|sym| self.by_functor(sym).first().copied())
+        let sym = self.try_resolve_symbol(qn)?;
+        if let Some(ids) = self.rules_by_label.get(&sym) {
+            if let Some(&rid) = ids.first() {
+                return Some(rid);
+            }
+        }
+        self.by_functor(sym).first().copied()
+    }
+
+    /// Citation handle for labeled rules. `None` for unlabeled rules
+    /// (those resolve via `by_functor` on the head).
+    pub fn rule_label(&self, id: RuleId) -> Option<Symbol> {
+        self.rules[id.index()].label
+    }
+
+    /// Tag an already-asserted rule with a citation label so
+    /// `rule_id_by_qn(label_qn)` resolves it even when the head's
+    /// functor differs from the label (post-proposal-032 unified
+    /// head-as-conclusion encoding). Idempotent re-tagging with the
+    /// same label is allowed; a different label is a programming bug
+    /// and panics.
+    pub fn set_rule_label(&mut self, id: RuleId, label: Symbol) {
+        let entry = &mut self.rules[id.index()];
+        match entry.label {
+            Some(existing) if existing == label => return,
+            Some(existing) => panic!(
+                "rule {id:?} already labeled {existing:?}, cannot re-tag as {label:?}"),
+            None => entry.label = Some(label),
+        }
+        self.rules_by_label.entry(label).or_default().push(id);
     }
 
     /// Assert a rule using a CALLER-PROVIDED Global VarIds list as

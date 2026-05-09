@@ -266,6 +266,26 @@ pub fn lift_rule_to_implication_clause(
 
 // ── Implementation ──────────────────────────────────────────────────
 
+/// Outcome of classifying a rule's head for SMT translation.
+enum HeadShape {
+    /// `⊥` denial form — no result var, no conclusion.
+    Bottom,
+    /// Predicate / equation / entity destructure (e.g. `gte(?x, 3.0)`,
+    /// `?a = ?b`, `LinkParameters(...)`). Head IS the conclusion under
+    /// proposal 032; routed through `process_body_goal`.
+    Predicate,
+    /// `rule_qn(?result)` — single DeBruijn pos_arg as the result
+    /// variable. Used by upper-bound obligations.
+    FunctionLike { result_idx: u32 },
+    /// 0-arg synthesized label-functor head + non-empty
+    /// `rule_conclusion(rid)`. Pre-WI-143 transitional shape; consumed
+    /// via the legacy conclusion-vec path until the loader switches.
+    LabelFunctor,
+    /// Shape the v0 emitter cannot translate; the carried message is
+    /// surfaced as a `SmtGenError` to the caller.
+    Unsupported(String),
+}
+
 struct Emitter<'kb> {
     kb: &'kb KnowledgeBase,
     /// `(field_const, value)` to emit at the top of the document.
@@ -345,11 +365,8 @@ impl<'kb> Emitter<'kb> {
     /// the SMT-LIB equation that defines the head's result variable.
     fn collect_rule(&mut self, rule_qn: &str) -> Result<(), SmtGenError> {
         self.visited_rules.insert(rule_qn.to_string());
-        let sym = self.kb.try_resolve_symbol(rule_qn)
+        let rid = self.kb.rule_id_by_qn(rule_qn)
             .ok_or_else(|| SmtGenError::new(format!("rule '{rule_qn}' not found")))?;
-        let rules = self.kb.by_functor(sym);
-        let rid = *rules.first().ok_or_else(||
-            SmtGenError::new(format!("rule '{rule_qn}' has no clauses")))?;
 
         // Loaded rules use de Bruijn-indexed variables (the parser's
         // `?name` form is interned to a position; the user-given
@@ -358,32 +375,23 @@ impl<'kb> Emitter<'kb> {
         // only sees consts and ops so the names don't matter for
         // soundness.
         //
-        // Two head shapes:
-        //  - `rule_qn(?result)` — single pos_arg, the result var.
-        //    Used by upper-bound obligations.
-        //  - `rule_qn` — bare (no pos_args). Satisfiability mode.
-        //    Also the shape produced by the proposal-032 transitional
-        //    loader for labeled rules (label-functor as 0-arg head).
+        // Head shapes the dispatcher recognises (see `classify_head`):
+        //  - `rule_qn(?result)` (FunctionLike) — single pos_arg, the
+        //    result var. Used by upper-bound obligations.
+        //  - `gte(?x, 3.0)` / `LinkParameters(...)` / `?a = ?b`
+        //    (Predicate) — head IS the conclusion (proposal 032 unified
+        //    encoding); routed through `process_body_goal` and split
+        //    off into `conclusion_assertions`.
+        //  - `⊥` (Bottom) — denial form, conclusion stays empty.
+        //  - 0-arg label-functor + non-empty `rule_conclusion(rid)`
+        //    (LabelFunctor) — transitional pre-WI-143 shape; consumed
+        //    via the legacy conclusion-vec path.
         let head = self.kb.rule_head(rid);
-        let head_pos_count = match self.kb.get_term(head) {
-            Term::Fn { pos_args, .. } => pos_args.len(),
-            _ => return Err(SmtGenError::new(format!(
-                "rule head must be Fn, got {:?}", self.kb.get_term(head)))),
-        };
-        if head_pos_count == 1 {
-            let pos = match self.kb.get_term(head) {
-                Term::Fn { pos_args, .. } => pos_args[0],
-                _ => unreachable!(),
-            };
-            let result_idx = match self.kb.get_term(pos) {
-                Term::Var(Var::DeBruijn(i)) => *i,
-                other => return Err(SmtGenError::new(format!(
-                    "v0: rule head's pos_arg must be DeBruijn var, got {other:?}"))),
-            };
+        let head_shape = self.classify_head(rid);
+        if let HeadShape::FunctionLike { result_idx } = head_shape {
             self.result_var = synthetic_var_name(result_idx);
-        } else if head_pos_count != 0 {
-            return Err(SmtGenError::new(format!(
-                "v0: rule head must have 0 or 1 pos_args, got {head_pos_count}")));
+        } else if let HeadShape::Unsupported(msg) = &head_shape {
+            return Err(SmtGenError::new(msg.clone()));
         }
 
         // Walk the body. Three clause shapes we accept:
@@ -398,14 +406,24 @@ impl<'kb> Emitter<'kb> {
             self.process_body_goal(*goal, &mut local_bindings)?;
         }
 
-        // Process the `-:` (conclusion) clause goals if any. Each
-        // goal is translated through the same machinery as the body
-        // (so equalities, inequalities, rule calls, entity destructure
-        // all work), but the resulting assertions are siphoned into
+        // Conclusion goals: under the unified encoding the rule head
+        // IS the conclusion (Predicate shape) and is routed through
+        // `process_body_goal`. The transitional `LabelFunctor` shape
+        // still consumes the legacy `rule_conclusion(rid)` vec while
+        // the loader produces it; that fallback becomes dead code
+        // once the loader stops synthesizing 0-arg label-functor heads.
+        // Each goal is translated through the same machinery as the
+        // body; the resulting assertions are siphoned into
         // `conclusion_assertions` instead of `assertions`. Discharge
         // and lift consume the two buckets differently — see
         // render_satisfiability_with / lift_rule_to_implication_clause.
-        let conclusion_goals: Vec<TermId> = self.kb.rule_conclusion(rid).to_vec();
+        let conclusion_goals: Vec<TermId> = match head_shape {
+            HeadShape::Bottom => Vec::new(),
+            HeadShape::FunctionLike { .. } => Vec::new(),
+            HeadShape::Predicate => vec![head],
+            HeadShape::LabelFunctor => self.kb.rule_conclusion(rid).to_vec(),
+            HeadShape::Unsupported(_) => unreachable!("returned above"),
+        };
         if !conclusion_goals.is_empty() {
             let body_count = self.assertions.len();
             for goal in &conclusion_goals {
@@ -460,12 +478,8 @@ impl<'kb> Emitter<'kb> {
         // Equation goal: `?var = <expr>` binds the DeBruijn index of
         // ?var to the SMT translation of <expr>. Variable references
         // elsewhere in the body get substituted inline at translate
-        // time. The loader treats `=` in goal position as
-        // `anthill.prelude.Eq.eq(lhs, rhs)`, so we recognise that
-        // functor (and its short forms) too.
-        if qn == "=" || qn == "anthill.prelude.Eq.eq"
-            || self.kb.resolve_sym(*functor) == "=" || self.kb.resolve_sym(*functor) == "eq"
-        {
+        // time.
+        if is_eq_functor(self.kb, *functor) {
             if pos_args.len() != 2 {
                 return Err(SmtGenError::new(format!(
                     "= goal: expected 2 pos_args, got {}", pos_args.len())));
@@ -988,6 +1002,53 @@ impl<'kb> Emitter<'kb> {
         self.kb.entity_field_types(sym).is_some()
     }
 
+    /// Classify a rule's head for the `collect_rule` dispatcher. The
+    /// classification mirrors what `process_body_goal` would do if
+    /// asked to translate the head as a goal: predicate-like heads
+    /// (`gte/lte/eq/...` or entity destructures) become the
+    /// conclusion under proposal 032; function-like heads
+    /// (`rule_qn(?result)`) drive upper-bound mode; the legacy 0-arg
+    /// label-functor + conclusion-vec shape stays as a transitional
+    /// fallback while the loader still produces it.
+    fn classify_head(&self, rid: anthill_core::kb::RuleId) -> HeadShape {
+        let head = self.kb.rule_head(rid);
+        let term = self.kb.get_term(head);
+        let (functor, pos_args) = match term {
+            Term::Bottom => return HeadShape::Bottom,
+            Term::Fn { functor, pos_args, .. } => (*functor, pos_args.clone()),
+            other => return HeadShape::Unsupported(format!(
+                "rule head must be Fn or Bottom, got {other:?}")),
+        };
+        let qn = self.kb.qualified_name_of(functor);
+        if is_eq_functor(self.kb, functor)
+            || map_inequality_op(&qn).is_some()
+            || self.is_known_entity(functor)
+        {
+            return HeadShape::Predicate;
+        }
+        if pos_args.len() == 1 {
+            let result_idx = match self.kb.get_term(pos_args[0]) {
+                Term::Var(Var::DeBruijn(i)) => *i,
+                other => return HeadShape::Unsupported(format!(
+                    "v0: function-like rule head's pos_arg must be DeBruijn var, got {other:?}")),
+            };
+            return HeadShape::FunctionLike { result_idx };
+        }
+        if pos_args.is_empty() {
+            if !self.kb.rule_conclusion(rid).is_empty() {
+                return HeadShape::LabelFunctor;
+            }
+            // Transitional synthesized 0-arg label-functor for
+            // denial rules (`rule X: ⊥ :- ...`); behaves like
+            // `Term::Bottom` — empty conclusion, body walks for
+            // free vars only.
+            return HeadShape::Bottom;
+        }
+        HeadShape::Unsupported(format!(
+            "v0: rule head shape not supported (functor={qn}, pos_args={})",
+            pos_args.len()))
+    }
+
     /// For each entity referenced in the rule body, find its
     /// (single) ground fact in the KB and resolve every field to a
     /// Real value. Multi-fact handling is a v1 concern.
@@ -1257,6 +1318,16 @@ fn map_inequality_op(qn: &str) -> Option<&'static str> {
         "anthill.prelude.Ordered.gt"  | "Ordered.gt"  | "gt"  => Some(">"),
         _ => None,
     }
+}
+
+/// True if `sym` names the equation predicate. Loader desugars `=`
+/// to `anthill.prelude.Eq.eq` in goal position; `Term::Fn` may also
+/// carry the unqualified short form during construction.
+fn is_eq_functor(kb: &KnowledgeBase, sym: anthill_core::intern::Symbol) -> bool {
+    let qn = kb.qualified_name_of(sym);
+    if qn == "=" || qn == "anthill.prelude.Eq.eq" { return true; }
+    let short = kb.resolve_sym(sym);
+    short == "=" || short == "eq"
 }
 
 /// Read a `Term::Const(Literal::{Float,Int})` as an f64. Anything
