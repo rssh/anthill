@@ -197,17 +197,72 @@ For WI-210 v1: defer. File a follow-up if a real consumer surfaces.
 
 What if two sorts assert `fact WorkItemStore[State = WIS]` (same Spec, same State binding)?
 
-Three options, in increasing strictness:
+Three options, in increasing flexibility:
 
 | | What it does | Tradeoff |
 |---|---|---|
 | **A. Last-wins** | The most recently asserted fact's impl is picked. | Order-dependent; fragile across module loads. |
-| **B. Scoped priority** | Local (project-side) impls override stdlib impls. | Lets users specialize; needs scope walk. |
-| **C. Reject as ambiguous** | Typer error: "two impls for `WorkItemStore[State = WIS]`". | Forces explicit qualification; no surprises. |
+| **B. Scoped priority** | Build a `(candidate, priority)` table; pick lowest priority; ties → error. | Enables low-priority defaults (see below). Needs a priority function and a priority computation per call site. |
+| **C. Reject as ambiguous** | Typer error: "two impls for `WorkItemStore[State = WIS]`". | Forces explicit qualification; no surprises, but no defaults. |
 
-(C) is what Haskell does (incoherent instances are an error). (B) is more flexible; Rust's orphan rules approximate it. (A) is the cheapest implementation but has order-of-load surprises.
+(C) is what Haskell does (incoherent instances are an error). (A) is the cheapest implementation but has order-of-load surprises. (B) is the natural evolution and is the long-term answer once stdlib defaults arrive.
 
-Proposal: **(C) for v1.** The user can use shape C (qualified impl) to disambiguate. Add (B) when a real consumer needs to override.
+### Why (B) is the interesting rule: low-priority defaults
+
+Under (C), the moment two impls match the same `(spec, bindings)` tuple it's an error — there is no way for stdlib (or any shared library) to ship a *default* impl that a user's local project can override. Every shared library author must either ship no default, or accept that any user who wants their own impl must first ask the library author to remove theirs. That's bad ergonomics.
+
+Under (B), the dispatch query computes a priority for each matching candidate and picks the *best*. The library's default sits at high priority (= low precedence); the user's local impl sits at low priority (= high precedence) and wins automatically. Ties remain errors — so the user can't accidentally double-define.
+
+Concrete consumer examples (none exist yet, but anticipated):
+
+- Stdlib ships a default `Show[T]` impl for any sort with constructors. A project that wants custom rendering for `WorkItem` declares its own `Show` impl; it wins for `WorkItem` calls without disturbing other types.
+- Stdlib ships a default `Persist[Backend = FileBackend]` impl using JSON. A project that wants YAML files declares `Persist[Backend = FileBackend]` locally; it wins.
+- Stdlib ships a fallback `Ordered[Int]`; a project that wants reverse ordering for a specific sort overrides.
+
+The pattern only works if (a) defaults exist and (b) overriding them is automatic and *local*. That's what scoped priority gives you.
+
+### What's the priority function?
+
+The simplest and most defensible definition: **priority = number of scope-walk steps from the call site to where the impl was declared.** Lower is closer; closer wins.
+
+Concretely, for a call site `c` and an impl declared in scope `s`:
+
+```
+priority(c, impl_in_s) = scope_distance(c, s)
+
+  where scope_distance =
+    0   if s is the call's enclosing namespace,
+    +1  per parent-namespace step,
+    +K  per import-edge crossed (K ≥ 1 — pick a constant; ties favor parents over imports if K = 1).
+```
+
+This is the same intuition Scala's implicit resolution uses ("closer scope wins") and that Rust crate-local impls use when reasoning about coherence. Specifics of the constants matter less than the monotonicity.
+
+A natural extension is **specificity** as a secondary key: a fully-concrete impl outranks a parametric one (one with `Var` placeholders in its bindings) at the same scope distance. Today every Anthill impl pins all type parameters concretely, so specificity is moot — but once parametric impls land (paired with WI-186), the priority function needs both keys: `(scope_distance, -specificity_depth)`, lexicographic.
+
+### Algorithm under (B)
+
+```
+1. Collect candidates: SpecImpl records whose bindings unify with the inferred bindings.
+2. Compute priority(call_site, candidate) for each.
+3. Bucket candidates by priority.
+4. Take the lowest-priority bucket.
+   - If size 1: pick that impl. Rewrite the call.
+   - If size > 1: error ("ambiguous: candidates X and Y are both at priority N for this call site").
+   - If size 0: error ("no impl of Spec.f for given bindings").
+```
+
+The match table from the multi-arg example becomes a *priority-ranked* table; coherence rule (C) is the special case where every bucket has size ≤ 1 already (no defaults).
+
+### v1 recommendation, revised
+
+**Stay with (C) for v1**, but treat (B) as the planned evolution rather than an "if a consumer needs it" follow-up. The reasons:
+
+- No stdlib defaults exist yet; (C) is sufficient and simpler.
+- Implementing the priority function correctly requires settling scope-distance semantics across imports, which is its own design call.
+- The `SpecImpl` mechanism already records everything (B) needs — when we add (B), the typer change is local to the dispatch query, not the loader or the entity.
+
+When stdlib starts shipping default impls (or a project signals it wants to override one), upgrade to (B) at that point. The transition is monotonic: every (C)-acceptable program is also (B)-acceptable.
 
 ## Coherence with WI-186 (free-standing parametric ops)
 
@@ -529,9 +584,11 @@ When WI-210 lands:
 - Convergence with proposal 027 effect handlers — separate proposal.
 - Convergence with WI-186 free-standing parametrics — incremental opportunity, not a hard dependency.
 - Signature inheritance for impl ops (per open question 1) — follow-up; WI-210 ships under explicit-signature assumption.
-- Coherence rule (B) (scoped priority override) — start with (C); revisit when a consumer needs override.
+- Coherence rule (B) (scoped priority + low-priority defaults) — planned evolution, not an "if-needed" follow-up; (C) ships v1 because no stdlib defaults exist yet. See "Coherence" §"Why (B) is the interesting rule" for the priority-table design.
 - Self-typed specs (where the spec uses `Self` rather than `Cell[V = State]`) — handled in principle by extracting bindings from any param; not specifically tested in v1.
 
 ## Recommendation
 
 Land WI-210 as **static dispatch + coherence rule (C) + explicit impl signatures**. Defer dynamic dispatch and signature inheritance as separate WIs. Bundle phase 3 unblocks immediately.
+
+Plan to upgrade to coherence rule (B) — `(candidate, priority)` table with priority = scope distance, ties → error — once stdlib starts shipping default impls or a project signals it wants to override one. The `SpecImpl` reflect entity already carries everything (B) needs; the upgrade is local to the typer's dispatch query. Every (C)-accepted program is also (B)-accepted, so the transition is monotonic.
