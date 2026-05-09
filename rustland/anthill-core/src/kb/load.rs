@@ -4181,7 +4181,68 @@ impl<'a> Loader<'a> {
         let rule_id = self.kb.assert_fact(term, fact_sort, domain, meta);
         self.fact_rule_ids.push(rule_id);
 
+        // WI-210: when `fact Spec[bindings]` appears inside a sort body
+        // and Spec is itself a parameterized sort, also emit a
+        // SortProvidesInfo so dispatch (and proposal-030 specialization
+        // witnesses) can find the impl. Mirrors load_provides_clause.
+        // Brings the loader in line with kernel-language §1418.
+        self.maybe_emit_fact_provides_info(term, domain);
+
         self.current_owner = prev_owner;
+    }
+
+    /// If `fact_term` is `Spec[bindings]` and `domain` is a sort body,
+    /// and `Spec` is a parameterized sort (has `sort <Param> = ?`),
+    /// emit a `SortProvidesInfo(sort_ref=domain, spec=SortView(Spec, bindings))`
+    /// alongside the bare fact. No-op when any condition fails.
+    fn maybe_emit_fact_provides_info(&mut self, fact_term: TermId, domain: TermId) {
+        // domain must be a sort term — Term::Fn with Sort-kind functor.
+        let domain_functor = match self.kb.get_term(domain) {
+            Term::Fn { functor, .. } => *functor,
+            _ => return,
+        };
+        if !matches!(self.kb.kind_of(domain_functor), Some(SymbolKind::Sort)) {
+            return;
+        }
+
+        // fact_term must be `Fn { functor, named_args }` where functor
+        // is itself a Sort with at least one type parameter (i.e. a spec).
+        let (fact_functor, fact_named_args) = match self.kb.get_term(fact_term) {
+            Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+            _ => return,
+        };
+        if !matches!(self.kb.kind_of(fact_functor), Some(SymbolKind::Sort)) {
+            return;
+        }
+        if self.kb.type_params_of_sort(fact_functor).is_empty() {
+            return;
+        }
+
+        // Build SortView(spec_name_term, …bindings).
+        let sort_view_sym = self.kb.resolve_symbol("anthill.reflect.SortView");
+        let spec_name_term = self.kb.make_name_term_from_sym(fact_functor);
+        let sort_view_term = self.kb.alloc(Term::Fn {
+            functor: sort_view_sym,
+            pos_args: SmallVec::from_elem(spec_name_term, 1),
+            named_args: fact_named_args,
+        });
+
+        // Build SortProvidesInfo(sort_ref = domain, spec = sort_view_term).
+        let provides_sym = self.kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
+        let sort_ref_arg = self.kb.intern("sort_ref");
+        let spec_arg = self.kb.intern("spec");
+        self.kb.register_entity_fields(provides_sym, vec![sort_ref_arg, spec_arg]);
+        let provides_term = self.kb.alloc(Term::Fn {
+            functor: provides_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (sort_ref_arg, domain),
+                (spec_arg, sort_view_term),
+            ]),
+        });
+
+        let provides_sort = self.kb.make_name_term("Requirement");
+        self.kb.assert_fact(provides_term, provides_sort, domain, None);
     }
 
     fn load_rule(&mut self, r: &Rule, domain: TermId) {
