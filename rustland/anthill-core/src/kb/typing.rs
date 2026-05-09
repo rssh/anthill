@@ -854,40 +854,6 @@ fn operation_has_no_body(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
     false
 }
 
-/// WI-210 — term-level analog of [`super::load::resolve_provides_spec`].
-/// Walks a `SortProvidesInfo.spec` field (a `SortView(base, …named)`
-/// term, or a bare functor when there are no bindings) and returns
-/// the spec functor symbol plus its bindings keyed by the param's
-/// symbol with the value as a TermId — both ready for unification
-/// against a per-call substitution.
-pub fn resolve_provides_spec_terms(
-    kb: &KnowledgeBase,
-    spec: TermId,
-) -> Option<(Symbol, Vec<(Symbol, TermId)>)> {
-    match kb.get_term(spec) {
-        Term::Fn { functor, pos_args, named_args } => {
-            let f_short = kb.resolve_sym(*functor);
-            if f_short == "SortView" || kb.qualified_name_of(*functor).ends_with(".SortView") {
-                let base = pos_args.first().copied()?;
-                let base_sym = match kb.get_term(base) {
-                    Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
-                    _ => return None,
-                };
-                let bindings: Vec<(Symbol, TermId)> = named_args
-                    .iter()
-                    .map(|(k, v)| (*k, *v))
-                    .collect();
-                Some((base_sym, bindings))
-            } else {
-                // Plain functor with no bindings (e.g. `provides Foo`).
-                Some((*functor, Vec::new()))
-            }
-        }
-        Term::Ref(s) | Term::Ident(s) => Some((*s, Vec::new())),
-        _ => None,
-    }
-}
-
 /// Infer the type of a constructor application, including type parameter instantiation.
 /// e.g., cons(head: 1, tail: nil) → parameterized(List, [T=Int])
 fn infer_constructor_type(
