@@ -1084,7 +1084,7 @@ fact WorkItem(
   description: "scaland resync — stdlib / Prelude alignment. Make Scala's prelude + source-resolver aware of new stdlib files: stdlib/anthill/prelude/algebra.anthill (Ring, VectorSpace per WI-138); stdlib/anthill/geometry.anthill (Vec3 + algebraic-law rules per WI-137 — already parses post-WI-142 but not yet loaded by Prelude); stdlib/anthill/realization/witness.anthill (ProofWitness, SmtVerdict, SortBinding entities — registration only, no checking); stdlib/anthill/prelude/float.anthill (abs, sqrt, sin, cos, etc.). Recommendation: load via SourceResolver as ordinary .anthill files at startup, not embedded in Prelude.scala (parallel to how rustland's stdlib_embedded.rs handles these). Files: scaland/core/src/main/scala/anthill/load/Prelude.scala, load/SourceResolver.scala. Acceptance: sbt test green; new ParserIntegrationTest cases load each of the four stdlib files end-to-end and assert sort/entity/rule counts.",
   acceptance: [ToolPasses("scaland-sbt-test")],
   depends_on: ["WI-142"],
-  status: Delivered(agent: "user", at: "2026-05-02T10:02:35Z"))
+  status: Verified(at: "2026-05-09T15:59:43Z"))
 
 fact WorkItem(
   id: "WI-154",

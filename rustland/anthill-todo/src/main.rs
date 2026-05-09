@@ -971,6 +971,51 @@ fn replace_named_arg(kb: &mut KnowledgeBase, term: TermId, field: &str, new_valu
 
 /// Find the `fact ...()` block in source files whose body contains the given id.
 /// Returns (file_path, source_text, block_start, block_end).
+/// Byte index just past the closing `)` of the `fact ...(...)` block
+/// starting at `fact_start`. The depth counter ignores `(` / `)` inside
+/// string literals and `--` / `{- -}` comments, so an unbalanced paren
+/// in a description doesn't desync the scan. Returns `None` if no
+/// closing paren is reached — the caller must bail rather than retry
+/// at the same offset.
+fn fact_block_end(source: &str, fact_start: usize) -> Option<usize> {
+    let mut depth: i32 = 0;
+    let mut in_fact = false;
+    let mut chars = source[fact_start..].char_indices();
+    while let Some((i, ch)) = chars.next() {
+        match ch {
+            '"' => {
+                // `\"` escapes the quote; `\\` escapes the backslash.
+                while let Some((_, c)) = chars.next() {
+                    if c == '\\' { chars.next(); continue; }
+                    if c == '"' { break; }
+                }
+            }
+            '-' if chars.clone().next().map(|(_, c)| c) == Some('-') => {
+                while let Some((_, c)) = chars.next() {
+                    if c == '\n' { break; }
+                }
+            }
+            '{' if chars.clone().next().map(|(_, c)| c) == Some('-') => {
+                chars.next();
+                let mut prev_dash = false;
+                while let Some((_, c)) = chars.next() {
+                    if prev_dash && c == '}' { break; }
+                    prev_dash = c == '-';
+                }
+            }
+            '(' => { depth += 1; in_fact = true; }
+            ')' => {
+                depth -= 1;
+                if in_fact && depth == 0 {
+                    return Some(fact_start + i + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn find_fact_block(project_dir: &Path, id: &str) -> Option<(PathBuf, String, usize, usize)> {
     let files = collect_anthill_files(&[scan_dir(project_dir)]);
     let id_marker = format!("id: \"{id}\"");
@@ -988,22 +1033,7 @@ fn find_fact_block(project_dir: &Path, id: &str) -> Option<(PathBuf, String, usi
         let mut pos = 0;
         while let Some(fact_start) = source[pos..].find("fact ") {
             let abs_start = pos + fact_start;
-            let mut depth: i32 = 0;
-            let mut in_fact = false;
-            let mut abs_end = abs_start;
-            for (i, ch) in source[abs_start..].char_indices() {
-                match ch {
-                    '(' => { depth += 1; in_fact = true; }
-                    ')' => {
-                        depth -= 1;
-                        if in_fact && depth == 0 {
-                            abs_end = abs_start + i + 1;
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            let Some(abs_end) = fact_block_end(&source, abs_start) else { break };
 
             if source[abs_start..abs_end].contains(&id_marker) {
                 return Some((file.clone(), source, abs_start, abs_end));
@@ -1178,78 +1208,27 @@ fn run_delete(project_dir: &Path, id: &str) {
             continue;
         }
 
-        // Remove the fact block containing this ID.
-        // Matches both single-line `fact WorkItem(...)` and multi-line `fact WorkItem(\n...\n)`
-        let mut result = String::new();
-        let mut skip = false;
-        let mut paren_depth: i32 = 0;
         let mut found = false;
+        let mut result = String::with_capacity(source.len());
+        let mut pos = 0;
+        while let Some(fact_offset) = source[pos..].find("fact ") {
+            let abs_start = pos + fact_offset;
+            let Some(abs_end) = fact_block_end(&source, abs_start) else { break };
 
-        for line in source.lines() {
-            let trimmed = line.trim();
-
-            // Detect start of a fact containing our ID
-            if !skip && trimmed.starts_with("fact ") && source[result.len()..].contains(&id_marker) {
-                // Check if this specific fact block contains the ID
-                // by scanning ahead from current position
-                let remaining = &source[result.len()..];
-                let fact_start = remaining.find("fact ").unwrap();
-                // Find the matching closing paren
-                let mut depth: i32 = 0;
-                let mut end_pos = fact_start;
-                let mut in_fact = false;
-                for (i, ch) in remaining[fact_start..].char_indices() {
-                    match ch {
-                        '(' => { depth += 1; in_fact = true; }
-                        ')' => {
-                            depth -= 1;
-                            if in_fact && depth == 0 {
-                                end_pos = fact_start + i + 1;
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                let fact_text = &remaining[fact_start..end_pos];
-                if fact_text.contains(&id_marker) {
-                    skip = true;
-                    paren_depth = 0;
-                    found = true;
-                    // Track paren depth for this line
-                    for ch in trimmed.chars() {
-                        match ch {
-                            '(' => paren_depth += 1,
-                            ')' => paren_depth -= 1,
-                            _ => {}
-                        }
-                    }
-                    if paren_depth <= 0 {
-                        skip = false;
-                    }
-                    continue;
-                }
+            if source[abs_start..abs_end].contains(&id_marker) {
+                result.push_str(&source[pos..abs_start]);
+                let after = source[abs_end..]
+                    .strip_prefix('\n')
+                    .map_or(abs_end, |_| abs_end + 1);
+                pos = after;
+                found = true;
+            } else {
+                result.push_str(&source[pos..abs_end]);
+                pos = abs_end;
             }
-
-            if skip {
-                for ch in trimmed.chars() {
-                    match ch {
-                        '(' => paren_depth += 1,
-                        ')' => paren_depth -= 1,
-                        _ => {}
-                    }
-                }
-                if paren_depth <= 0 {
-                    skip = false;
-                }
-                continue;
-            }
-
-            result.push_str(line);
-            result.push('\n');
         }
+        result.push_str(&source[pos..]);
 
-        // Remove trailing blank lines
         while result.ends_with("\n\n") {
             result.pop();
         }
