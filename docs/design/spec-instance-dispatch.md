@@ -197,19 +197,53 @@ For WI-210 v1: defer. File a follow-up if a real consumer surfaces.
 
 A spec declares an effect row per operation; each impl supplies its own. They can differ — and the typer needs a rule for when an impl is **compatible** with the spec it claims to satisfy.
 
-### The rule: impl effects ⊆ spec effects
+### The rule: each impl effect is covered by some spec effect
 
 ```
-impl_effects(op)  ⊆  spec_effects(op)[<spec params> := <impl bindings>]
+∀ ie ∈ impl_effects(op).  ∃ se ∈ spec_effects(op)[<spec params> := <impl bindings>].
+                          ie  <:  se
 ```
 
 (after parametric substitution; see "What about parametric effects?" below.)
 
-Why subset, not superset, not equality?
+The naive "subset" wording is the special case where `<:` is structural equality. Subtyping makes the rule strictly more permissive: an impl effect can be a *narrower form* of a spec effect — and that's frequently desirable (e.g. an impl raises `IOError` against a spec that declares the broader `Error`).
 
-The spec's effect row is the **contract** the caller programs against. When code in `main.anthill` calls `commit(s, w)` resolved through `WorkItemStore.commit`'s declared `{Modify[s], Error}`, the surrounding handler stack is set up for those effects and only those. If a dispatched impl raised an effect outside the set (say `Network`), the runtime would have no path to handle it, and the caller's reasoning about reachable effects would be unsound. **The spec's row is an upper bound; the impl can do less but never more.**
+Why this direction (impl-element-covered-by-spec-element), not the reverse?
 
-Equality is too strict: a pure-in-memory `InMemoryWorkitemStore.commit` legitimately never raises `Error` and shouldn't have to lie about it.
+The spec's effect row is the **contract** the caller programs against. When code in `main.anthill` calls `commit(s, w)` resolved through `WorkItemStore.commit`'s declared `{Modify[s], Error}`, the surrounding handler stack is set up for handlers that cover those effects (or wider). If a dispatched impl raised an effect *not* covered by any spec effect — say `Network` — the runtime would have no handler path for it, and the caller's reasoning about reachable effects would be unsound. **Each impl effect must be reachable from some spec effect under `<:`; the spec is an upper bound under subtyping.**
+
+Equality is too strict: a pure-in-memory `InMemoryWorkitemStore.commit` legitimately never raises `Error` and shouldn't have to lie about it. Set-subset (every impl effect is *exactly* some spec effect) is also too strict: it disallows the natural `IOError <: Error` narrowing.
+
+### What does `<:` mean for an effect term?
+
+> **`<:` is already formalized in code as `types_lesseq` (alias for `types_compatible`)** (`rustland/anthill-core/src/kb/typing.rs:1671`). The kernel-language spec only documents two clauses explicitly — entity-of-sort 1-level (§11.6) and `Function[A,B] <: Function[A,B,E]` (§"Function sort") — but the implementation is much richer. `types_lesseq(actual, expected)` is exactly `actual <: expected` with reflexivity included (the strict version is `is_subtype` at line 1716; documenting the relation in the kernel spec is filed separately).
+>
+> What the implementation already handles:
+>
+> - **Sort-refs**: `sort_ref_compatible` (line 1722) — equality, entity-of-sort, requires-chain refinement.
+> - **Parameterized types**: `parameterized_compatible` (line 1980) — base must be compatible, and each binding is checked **covariantly** (the per-binding call is `types_compatible(actual_value, expected_value)`, not equality).
+> - **Arrow types**: `arrow_compatible` (line 2053) — explicit "contravariant param, covariant result, covariant effects" rule.
+> - **Named tuples**: `named_tuple_compatible` (line 2106) — structural per-field compatibility.
+>
+> WI-210 should **reuse `types_compatible` for effect-element comparison**, not invent a parallel relation. Per the existing code, this means binding positions are **covariant**, not invariant — `Modify[s] <: Modify[t]` if `s <: t`, and `Stream[T = Int] <: Stream[T = Number]` if `Int <: Number` (when those entity-of relations exist).
+>
+> Documenting `<:` in the kernel-language spec to match the implementation is a separate cleanup — but for WI-210's purposes the primitive is already there.
+
+In effect-term terms:
+
+| Shape of `ie` and `se` | When `ie <: se` (= `types_lesseq(ie, se)`) |
+|---|---|
+| Both atomic (`Branch`, `Console`, `Error`) | Sort-ref compatibility: equality, entity-of-sort (e.g. `IOError <: Error`), or requires-chain refinement. |
+| Both parameterized (`Modify[s]`, `Stream[T = X, E = Y]`) | Bases compatible, and each spec-side binding's value is `<:` the corresponding impl-side value. **Covariant** in binding positions. |
+| Mixed (one atomic, one parameterized) | False — different shape. |
+
+So the working form is exactly:
+
+```
+ie <: se   ⇔   types_lesseq(ie, se)
+```
+
+— no new code path needed for the binding/variance machinery; WI-210 invokes the existing primitive. (`is_subtype` is the strict version, used when reflexivity must be excluded.)
 
 ### Examples
 
@@ -223,30 +257,99 @@ end
 
 | Impl | Effect row (post-subst) | Compatible? |
 |---|---|---|
-| `FileBasedWorkitemStore.commit` | `{Modify[s], Error}` | ✓ exact match |
-| `InMemoryWorkitemStore.commit` | `{Modify[s]}` | ✓ proper subset — `Error` never raised |
-| `GitHubWorkitemStore.commit` | `{Modify[s], Error, Network}` | ✗ superset — `Network` not in spec |
-| `LoggingWorkitemStore.commit` | `{Modify[s], Error, Trace[Logger]}` | ✗ superset — `Trace` not in spec |
+| `FileBasedWorkitemStore.commit` | `{Modify[s], Error}` | ✓ each `ie` equals some `se`. |
+| `InMemoryWorkitemStore.commit` | `{Modify[s]}` | ✓ omitted `Error` is fine — every impl effect is still covered by some spec effect. |
+| `IOWorkitemStore.commit` | `{Modify[s], IOError}` (where `IOError <: Error`) | ✓ `IOError <: Error` via entity-of-sort; covariant in the error class. |
+| `GitHubWorkitemStore.commit` (with no `?E` declared) | `{Modify[s], Error, Network}` | ✗ `Network` is not `<:` any spec effect. (See "Effect polymorphism" below for how to make this valid by declaring `?E` on the spec.) |
+| `LoggingWorkitemStore.commit` (with no `?E` declared) | `{Modify[s], Error, Trace[Logger]}` | ✗ `Trace[Logger]` is not `<:` any spec effect — same fix via `?E`. |
 
 ### What the call site sees
 
-The call's static effect row is **always the spec's effect row, post-substitution** — regardless of which impl was dispatched.
+The call's static effect row is the **spec's effect row, post-substitution** — where "substitution" covers both type parameters (State → WIS, …) and the effect-rest variable `?E` introduced below.
 
 ```anthill
 operation cmd_add(s: Cell[V = WIS], w: WorkItem) -> Unit
-  effects {Modify[s], Error}     -- caller's row matches the spec's
+  effects {Modify[s], Error}     -- caller's row when ?E binds to ∅ for this impl.
 =
-  commit(s, w)                   -- dispatches to FileBasedWorkitemStore.commit,
-                                 -- but the call's row is still {Modify[s], Error},
-                                 -- not whatever the impl happens to declare.
+  commit(s, w)                   -- dispatches to FileBasedWorkitemStore.commit;
+                                 -- the call's row is the spec's row with
+                                 -- ?E := {} (since File pins ?E to ∅).
 ```
 
-Two reasons this is the right rule:
+**Transparency, qualified.** When the spec declares no `?E`, dispatch choice doesn't change the caller's effect contract — swapping `FileBasedWorkitemStore` for `InMemoryWorkitemStore` doesn't perturb caller effect plumbing because both impls live within the same fixed spec row. When the spec *does* declare `?E`, dispatch determines `?E`'s binding, so the caller's effective row varies by impl. That's the point of `?E` — it's the language tool for saying "this op has additional impl-determined effects."
 
-- **Transparency**: dispatch choice doesn't change the caller's effect contract. Swapping `FileBasedWorkitemStore` for `InMemoryWorkitemStore` (which has a smaller row) doesn't break the caller's effect plumbing.
-- **Forward compatibility**: if a new impl is added later with a strictly-smaller row, no caller needs to update.
+The impl's body-level effect row is checked locally against `(spec_fixed ∪ ?E_binding)` at impl-load time; only the spec's row (post-substitution) flows to the call site.
 
-The impl's actual smaller row is just a local property of the impl body, checked at impl-load time — not propagated to call sites.
+### Effect polymorphism (`?E`) — in scope for v1
+
+A spec can declare an **effect-rest variable** in its operation's effect row. Syntax (extending the existing `effects { … }` block):
+
+```anthill
+sort WorkItemStore
+  sort State = ?
+  effect ?E              -- declares ?E as an unspecified effect-row variable
+
+  operation commit(s: Cell[V = State], w: WorkItem) -> Unit
+    effects {Modify[s], Error, ...?E}        -- ?E spliced into the row
+end
+```
+
+Semantics:
+
+- `?E` ranges over **effect rows** (sets of effect terms). Allowed bindings include the empty set, a single effect, or a finite set of effects.
+- Each impl binds `?E` via its `SpecImpl` record. The default binding is `∅` — an impl that omits the binding pins `?E := {}`.
+- At the call site, the spec's row is rewritten by replacing `...?E` with the dispatched impl's binding.
+- The effect-compat check at impl-decl substitutes `?E := <impl's binding>` first, then applies the per-element `<:` rule against the resulting concrete row.
+
+Each impl is now:
+
+```anthill
+sort FileBasedWorkitemStore                    -- file impl: no extra effects
+  fact WorkItemStore[State = WIS, E = {}]
+  operation commit(s, w) effects {Modify[s], Error} = ...
+end
+
+sort GitHubWorkitemStore                       -- GitHub impl: needs Network
+  fact WorkItemStore[State = GHWIS, E = {Network}]
+  operation commit(s, w) effects {Modify[s], Error, Network} = ...
+end
+
+sort LoggingWorkitemStore                      -- decorator: adds Trace
+  fact WorkItemStore[State = WIS, E = {Trace[Logger]}]
+  operation commit(s, w) effects {Modify[s], Error, Trace[Logger]} = ...
+end
+```
+
+`SpecImpl` is correspondingly extended to carry both **type bindings** and **effect bindings**:
+
+```anthill
+entity SpecImpl(
+  spec            : Sort,
+  impl            : Sort,
+  type_bindings   : List[T = SortBinding],
+  effect_bindings : List[T = EffectBinding]    -- new
+)
+```
+
+(The loader auto-emits the corresponding `SpecImpl` from the user's `fact Spec[State = WIS, E = {Network}]` form, splitting type bindings from effect bindings by inspecting which spec parameters are abstract sorts vs effect-row variables.)
+
+### The compatibility rule, with `?E`
+
+```
+∀ ie ∈ impl_effects(op).
+  ∃ se ∈ ( spec_fixed_effects(op)[<spec params> := <impl bindings>]
+           ∪
+           ?E_binding(impl) ).
+  ie <: se
+```
+
+Each impl effect must be `<:` to *some* effect in the spec's fixed row OR in the impl's own `?E` binding. The `?E` binding is what gives an impl room to declare additional effects — without polluting the spec's contract for impls that don't need them.
+
+Symmetrically: the impl's effect row must not exceed `spec_fixed ∪ ?E_binding`. If `GitHubWorkitemStore.commit` omits `Network` from its `?E` binding but uses it in the body, the impl-decl check rejects: "effect Network not allowed by WorkItemStore[E = ∅]'s row."
+
+### When you don't need `?E`
+
+If every impl of a spec has the *same* effect row (modulo subtyping), don't declare `?E` — keep the row fixed and let `<:` handle the small variation. `?E` exists for the case where impls need genuinely disjoint additional effects.
 
 ### Where the check fires
 

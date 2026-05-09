@@ -1668,6 +1668,15 @@ fn unify_named_tuple(kb: &KnowledgeBase, subst: &mut Substitution, a: TermId, b:
 
 /// Check if `actual` type is compatible with (subtype of) `expected` type.
 /// Works on Type entity terms: sort_ref, parameterized, arrow, named_tuple, type_var, nothing.
+/// Lattice `≤` on type terms — `actual <: expected` with reflexivity.
+/// Alias for [`types_compatible`]; prefer this name when the directional
+/// nature of the relation matters (subtype check, effect-element
+/// compatibility, etc.). The strict (irreflexive) version is
+/// [`is_subtype`].
+pub fn types_lesseq(kb: &KnowledgeBase, actual: TermId, expected: TermId) -> bool {
+    types_compatible(kb, actual, expected)
+}
+
 pub fn types_compatible(kb: &KnowledgeBase, actual: TermId, expected: TermId) -> bool {
     if actual == expected {
         return true;
