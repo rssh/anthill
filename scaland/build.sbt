@@ -2,7 +2,7 @@ val scala3Version = "3.6.3"
 
 lazy val root = project
   .in(file("."))
-  .aggregate(core, anthillScalaGen)
+  .aggregate(core, anthillScalaGen, anthillSmtGen)
   .settings(
     name := "anthill-scaland"
   )
@@ -26,6 +26,20 @@ lazy val anthillScalaGen = project
   .dependsOn(core)
   .settings(
     name := "anthill-scala-gen",
+    version := "0.1.0-SNAPSHOT",
+    scalaVersion := scala3Version,
+    libraryDependencies ++= Seq(
+      "org.scalameta" %% "munit" % "1.0.0" % Test
+    )
+  )
+
+// SMT-LIB 2.6 emitter (Z3 / CVC5 target). Mirrors rustland's
+// anthill-smt-gen; v0 ports the comm_delay_max round-trip path.
+lazy val anthillSmtGen = project
+  .in(file("anthill-smt-gen"))
+  .dependsOn(core)
+  .settings(
+    name := "anthill-smt-gen",
     version := "0.1.0-SNAPSHOT",
     scalaVersion := scala3Version,
     libraryDependencies ++= Seq(
