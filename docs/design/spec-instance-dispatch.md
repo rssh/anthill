@@ -98,6 +98,8 @@ Each has a different resolution story:
 
 The interesting question is **shape B** (and the implicit form of A from outside the impl, e.g. main.anthill calling `commit(s, w)` where it's not in scope).
 
+> **Note: `WorkItemStore.commit(s, w)` is a qualified-name call, not method-call syntax.** Anthill's `.` is strictly field access (`docs/kernel-language.md` §6.7), not universal call syntax (UFCS). The grammar's disambiguator is the trailing `(...)`: `A.B(x)` parses as `fn_term(name: "A.B", args: [x])`, while `A.B` alone parses as `field_access(A, B)`. So `state.commit(w)` does **not** mean `commit(state, w)` — it would try to read a `commit` field on `state`'s sort, which is ill-formed for `Cell[V = WIS]`. Adding UFCS-style method dispatch (`x.f(y)` ≡ `f(x, y)` when there's no field `f`) is a separate language extension and out of scope here.
+
 ## Two related but distinct sub-problems
 
 Worth separating these — they have different difficulty.
