@@ -114,8 +114,38 @@ Co-locating Rust's `i64` binding inside `stdlib/anthill/prelude/int.anthill` wou
 ### Open questions
 
 - **Loader change**: `load_provides_block` (load.rs:4943) currently only recurses into inner items for `language anthill`; for other languages it stubs out. Step 1 is to wire up satisfaction-fact emission inside non-anthill `provides` blocks — items inside should emit `SortProvidesInfo` tied to the spec sort, regardless of the host language.
-- **Implementation entity**: has `carrier: List[CarrierBinding]`, `target: String`, `artifact: String` — we lean on this for the type→host-type mapping. The satisfaction facts emitted inside the block are *additional* SortProvidesInfo records, not new fields on Implementation.
-- **Interpreter selection**: the runtime (rustland's eval) needs to know which language tag's `Implementation` facts to consume. Conventionally `language: "rust"` for rustland; configurable via the Project fact's `language` field (already present in `anthill-todo/project.anthill`).
+- **Implementation entity**: has `carrier: List[CarrierBinding]`, `target: String`, `artifact: String`, `profile: Option[T = String]` — we lean on this for the type→host-type mapping. The satisfaction facts emitted inside the block are *additional* SortProvidesInfo records, not new fields on Implementation.
+- **Interpreter selection (via profile)**: each runtime — rustland's eval, scaland's eval, future C++/Lua interpreters — has different needs from the same host language. A standalone-codegen build wants the production carrier and `[std]` profile; an embedded interpreter loaded into a hosting application wants smaller dependencies and possibly different carriers; a bootstrap stage may strip everything else.
+
+  Use the existing `profile: Option[T = String]` field on `Implementation` (and `LanguageMapping`) for this. Conventional profile names:
+  - `"embedded-interpreter"` — bindings for use when the host language is hosting the anthill interpreter.
+  - `"bootstrap-interpreter"` — minimal initial set for stage0 / bootstrap.
+  - `"std"` (default) — standard production codegen / runtime.
+
+  ```anthill
+  -- rustland/anthill-stl/anthill/int.anthill
+  provides Int language rust
+    profile "std"
+    carrier Int = "i64"
+    fact Eq[T = Int]
+    fact Ordered[T = Int]
+    fact Numeric[T = Int]
+  end
+
+  provides Int language rust
+    profile "embedded-interpreter"
+    carrier Int = "i64"
+    -- typically same carrier; embedded-interpreter profile may
+    -- elide some provider-side helpers or pull a different builtin
+    -- registration set.
+    fact Eq[T = Int]
+    fact Ordered[T = Int]
+    fact Numeric[T = Int]
+  end
+  ```
+
+  Each interpreter at startup filters `Implementation` facts by `language = <its host>` AND `profile = <its mode>` (e.g., rustland's eval consumes `language = "rust", profile = "embedded-interpreter"`). The Project fact's `language`/`profile` fields select the production-vs-embedded mode at build time.
+
 - **Pure-anthill bindings**: for sorts where the runtime is anthill itself (no host), the spec stays in stdlib without a `provides … language rust` companion. Spec satisfaction facts go directly inside the sort body (Phase 1 sort-body path), as proposal 036 does for `WorkItemStore`/`FileBasedWorkitemStore`.
 
 ### Migration scope
