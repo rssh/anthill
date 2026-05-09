@@ -277,89 +277,95 @@ end
 | `FileBasedWorkitemStore.commit` | `{Modify[s], Error}` | ✓ each `ie` equals some `se`. |
 | `InMemoryWorkitemStore.commit` | `{Modify[s]}` | ✓ omitted `Error` is fine — every impl effect is still covered by some spec effect. |
 | `IOWorkitemStore.commit` | `{Modify[s], IOError}` (where `IOError <: Error`) | ✓ `IOError <: Error` via entity-of-sort; covariant in the error class. |
-| `GitHubWorkitemStore.commit` (with no `?E` declared) | `{Modify[s], Error, Network}` | ✗ `Network` is not `<:` any spec effect. (See "Effect polymorphism" below for how to make this valid by declaring `?E` on the spec.) |
-| `LoggingWorkitemStore.commit` (with no `?E` declared) | `{Modify[s], Error, Trace[Logger]}` | ✗ `Trace[Logger]` is not `<:` any spec effect — same fix via `?E`. |
+| `GitHubWorkitemStore.commit` (no effect param on spec) | `{Modify[s], Error, Network}` | ✗ `Network` is not `<:` any spec effect. (See "Effect polymorphism" below for how to make this valid by declaring `sort E = ?` on the spec and using `effects E`.) |
+| `LoggingWorkitemStore.commit` (no effect param on spec) | `{Modify[s], Error, Trace[Logger]}` | ✗ `Trace[Logger]` is not `<:` any spec effect — same fix via `sort E = ?`. |
 
 ### What the call site sees
 
-The call's static effect row is the **spec's effect row, post-substitution** — where "substitution" covers both type parameters (State → WIS, …) and the effect-rest variable `?E` introduced below.
+The call's static effect row is the **spec's effect row, post-substitution** — where "substitution" covers both type parameters (State → WIS, …) and any abstract sort parameters used in effect position (see "Effect polymorphism" below).
 
 ```anthill
 operation cmd_add(s: Cell[V = WIS], w: WorkItem) -> Unit
-  effects {Modify[s], Error}     -- caller's row when ?E binds to ∅ for this impl.
+  effects {Modify[s], Error}     -- caller's row matches the spec's
 =
-  commit(s, w)                   -- dispatches to FileBasedWorkitemStore.commit;
-                                 -- the call's row is the spec's row with
-                                 -- ?E := {} (since File pins ?E to ∅).
+  commit(s, w)                   -- dispatches to FileBasedWorkitemStore.commit,
+                                 -- which pins E to a no-extra-effects value.
 ```
 
-**Transparency, qualified.** When the spec declares no `?E`, dispatch choice doesn't change the caller's effect contract — swapping `FileBasedWorkitemStore` for `InMemoryWorkitemStore` doesn't perturb caller effect plumbing because both impls live within the same fixed spec row. When the spec *does* declare `?E`, dispatch determines `?E`'s binding, so the caller's effective row varies by impl. That's the point of `?E` — it's the language tool for saying "this op has additional impl-determined effects."
+**Transparency, qualified.** When the spec's effect row is fully concrete, dispatch choice doesn't change the caller's effect contract — swapping `FileBasedWorkitemStore` for `InMemoryWorkitemStore` doesn't perturb caller effect plumbing because both impls live within the same fixed spec row. When the spec uses an effect-typed type parameter (e.g. `effects E` where `E` is `sort E = ?`), dispatch determines E's binding, so the caller's effective row varies by impl. That's the point — it's the language tool for saying "this op has additional impl-determined effects."
 
-The impl's body-level effect row is checked locally against `(spec_fixed ∪ ?E_binding)` at impl-load time; only the spec's row (post-substitution) flows to the call site.
+The impl's body-level effect row is checked locally against the spec's row (with E substituted) at impl-load time; only the spec's row (post-substitution) flows to the call site.
 
-### Effect polymorphism (`?E`) — in scope for v1
+### Effect polymorphism — already supported via `sort E = ?`
 
-A spec can declare an **effect-rest variable** in its operation's effect row. Syntax (extending the existing `effects { … }` block):
+This is **not new machinery**. Anthill already supports effect-typed abstract sort parameters; `Stream` (`stdlib/anthill/prelude/stream.anthill`) is the working witness:
+
+```anthill
+sort anthill.prelude.Stream
+  sort T = ?              -- element type
+  sort E = ?              -- effect required to observe
+
+  operation head(s: Stream) -> Option[T = T]
+    effects E             -- E used directly in effects position
+  ...
+end
+```
+
+A logical variable / abstract sort param can stand anywhere a type term can — including inside an `effects { … }` row. WI-211's `unify_parameterized_with_sort_ref` binds `E` from the call's actual `Stream[T = Term, E = Error]`; WI-209's `walk_type_deep` substitutes E in the call's effect row. That whole path already works (it's why `Stream.head(retrieve(b, …))` in `store.anthill`'s `lookup` body type-checks today).
+
+For WI-210 dispatch, the same machinery applies — once SortProvidesInfo binds the spec's params (including any effect-typed param) to the impl's pinned values, the substitution flows through unchanged. **No new grammar, no new IR, no new typer code — Phase 5 of the implementation plan is removed.**
+
+### Worked example: WorkItemStore with disjoint impl effect rows
 
 ```anthill
 sort WorkItemStore
   sort State = ?
-  effect ?E              -- declares ?E as an unspecified effect-row variable
+  sort E = ?              -- abstract sort param, used in effect position below
 
   operation commit(s: Cell[V = State], w: WorkItem) -> Unit
-    effects {Modify[s], Error, ...?E}        -- ?E spliced into the row
+    effects {Modify[s], Error, E}        -- E is one element of the row
 end
-```
 
-Semantics:
-
-- `?E` ranges over **effect rows** (sets of effect terms). Allowed bindings include the empty set, a single effect, or a finite set of effects.
-- Each impl binds `?E` via its `provides`/`fact` clause's bindings. The default binding is `∅` — an impl that omits the binding pins `?E := {}`.
-- At the call site, the spec's row is rewritten by replacing `...?E` with the dispatched impl's binding.
-- The effect-compat check at impl-decl substitutes `?E := <impl's binding>` first, then applies the per-element `<:` rule against the resulting concrete row.
-
-Each impl is now:
-
-```anthill
 sort FileBasedWorkitemStore                    -- file impl: no extra effects
-  fact WorkItemStore[State = WIS, E = {}]
+  fact WorkItemStore[State = WIS, E = nothing]
   operation commit(s, w) effects {Modify[s], Error} = ...
 end
 
 sort GitHubWorkitemStore                       -- GitHub impl: needs Network
-  fact WorkItemStore[State = GHWIS, E = {Network}]
+  fact WorkItemStore[State = GHWIS, E = Network]
   operation commit(s, w) effects {Modify[s], Error, Network} = ...
 end
 
 sort LoggingWorkitemStore                      -- decorator: adds Trace
-  fact WorkItemStore[State = WIS, E = {Trace[Logger]}]
+  fact WorkItemStore[State = WIS, E = Trace[Logger]]
   operation commit(s, w) effects {Modify[s], Error, Trace[Logger]} = ...
 end
 ```
 
-The existing `SortProvidesInfo` already records the spec via a `SortView` term whose named bindings can mix type values and effect-row values — no schema change. The loader (the same path that emits `SortProvidesInfo` for `provides Spec[...]` clauses, plus the WI-210 extension that emits it for `fact Spec[...]` inside a sort body) just records each binding the user wrote, including effect-row bindings like `E = {Network}`. The typer at dispatch time inspects each spec parameter's kind (abstract sort vs effect-row variable) to know whether to use it for type unification or effect-row substitution.
+The neutral element used by impls with no extra effects (here written `nothing`) is whatever stdlib provides as the "no-op effect" — a small follow-up question for stdlib (see "Open question: neutral effect" at the bottom of this section).
 
-### The compatibility rule, with `?E`
+### The compatibility rule
 
 ```
 ∀ ie ∈ impl_effects(op).
-  ∃ se ∈ ( spec_fixed_effects(op)[<spec params> := <impl bindings>]
-           ∪
-           ?E_binding(impl) ).
+  ∃ se ∈ spec_effects(op)[<spec params> := <impl bindings>].
   ie <: se
 ```
 
-Each impl effect must be `<:` to *some* effect in the spec's fixed row OR in the impl's own `?E` binding. The `?E` binding is what gives an impl room to declare additional effects — without polluting the spec's contract for impls that don't need them.
+After substitution of all spec parameters (type and effect-typed alike) per the impl's `SortProvidesInfo` bindings, the spec's row becomes concrete. The check is the per-element `<:` rule already described above. No special case for E — the substitution machinery handles it as an ordinary type parameter that happens to land in effects position.
 
-Symmetrically: the impl's effect row must not exceed `spec_fixed ∪ ?E_binding`. If `GitHubWorkitemStore.commit` omits `Network` from its `?E` binding but uses it in the body, the impl-decl check rejects: "effect Network not allowed by WorkItemStore[E = ∅]'s row."
+### Open question: neutral effect for "no extra effects"
 
-### When you don't need `?E`
+When an impl has no additional effects beyond the spec's fixed ones, its `fact Spec[..., E = ???]` needs *something* to bind E to. Two options:
 
-If every impl of a spec has the *same* effect row (modulo subtyping), don't declare `?E` — keep the row fixed and let `<:` handle the small variation. `?E` exists for the case where impls need genuinely disjoint additional effects.
+- A stdlib `nothing` (or `Pure`, `Empty`) sort representing the empty effect set.
+- An impl simply omitting `E` from the bindings, leaving E as an unbound logical variable that resolves to whatever the call site needs.
+
+Either works for v1; pick when implementing. (Not a blocker for WI-210 — Stream already chooses concrete bindings everywhere it's used.)
 
 ### Where the check fires
 
-1. **At impl-declaration time** (`kb/load.rs::load_sort_with_body`, after the impl op's body has been typed): for each impl op declared by an impl sort that emits a `SortProvidesInfo(sort_ref=Self, spec=SortView(Spec, bindings=B))`, compare its effect row against `spec_effects(op)[B]`. Reject with a diagnostic if not a subset:
+1. **At impl-declaration time** (post-pass on `kb/typing.rs::check_operation_bodies`, which already validates each op's body effects against its declared row at line 2640): for each impl op declared by an impl sort that emits a `SortProvidesInfo(sort_ref=Self, spec=SortView(Spec, bindings=B))`, compare its declared effect row against `spec_effects(op)[B]`. Reject with a diagnostic if not a subset:
 
    ```
    error: FileBasedWorkitemStore.commit declares effect Network not allowed by spec WorkItemStore.commit
@@ -384,9 +390,11 @@ If the spec declares `effects {Modify[s], Error}` (param `s`) and the impl decla
 
 ### Out of scope (v1)
 
-- **Effect polymorphism** — `effects {Modify[s], Error, ...?E}` in the spec, with each impl pinning `?E`. The natural answer for "this impl genuinely needs `Network`" but adds parametric effect rows. Not in v1; if needed, declare separate specs (`WorkItemStore` vs `RemoteWorkItemStore`).
 - **Effect subsorting** (e.g. `RaiseEither[E1] ≤ RaiseEither[E1, E2]`) — today every effect compares structurally. If a future effect framework introduces a subsort lattice, the subset check must be lifted to lattice ≤ rather than set membership.
 - **Per-call effect narrowing** — declaring at a call site that the call only needs a subset of the spec's effects (so the caller's handler stack is smaller). Useful for optimization; defer until a consumer asks.
+- **Variance annotations** on type parameters — currently effect comparisons treat binding positions as covariant via the existing `parameterized_compatible` rule; introducing `+T` / `-T` annotations is a separate proposal.
+
+(Note: effect polymorphism — using an abstract sort param like `sort E = ?` in effect position, as Stream does — is *already* supported and works automatically via WI-209 + WI-211. See "Effect polymorphism" subsection above.)
 
 ## Coherence
 
@@ -736,10 +744,10 @@ This is OQ #5 ("call sites that want the spec / don't want dispatch") generalize
    After arg unification (and WI-211's `unify_parameterized_with_sort_ref` populating the per-call subst):
    - Check if `fn_sym` is a spec op. If not, dispatch as before.
    - Read State's binding from the subst.
-   - Search `by_functor(SortProvidesInfo-sym)` records; filter via `resolve_provides_spec` (existing helper at `load.rs` ~2182) to get `(spec_qn, substitution)`; keep candidates where `spec_qn` matches `spec_sort_sym` and the `substitution` unifies against the inferred bindings.
-   - If exactly one match: extract `impl` from the fact, look up `<impl>.<op-short-name>` symbol, rewrite the resolved call.
+   - Search `by_functor(SortProvidesInfo-sym)` records; for each, call a new helper `resolve_provides_spec_terms(kb, spec) -> Option<(Symbol, Vec<(Symbol, TermId)>)>` (~25 LoC, modeled on the existing string-level `resolve_provides_spec` at `load.rs:2182`). Keep candidates where the spec symbol matches `spec_sort_sym` and each recorded `(param, value)` unifies against the per-call subst.
+   - If exactly one match: extract `sort_ref` (the impl) from the `SortProvidesInfo` head, look up `<impl>.<op-short-name>` symbol, rewrite the resolved call.
    - If zero/multiple: typer error per coherence rule (C).
-   - The call's effect row is the *spec's* effect row, post-substitution (no change from today — WI-209 already handles this).
+   - The call's effect row is the *spec's* effect row, post-substitution (no change from today — WI-209 + WI-211 already handle this, including the case where one of the spec's parameters is an effect-typed `sort E = ?`).
 
 5. **Effect-compatibility check at impl declaration** (~30 lines, `kb/load.rs::load_sort_with_body` post-load pass, or `kb/typing.rs` post-pass):
    For each impl op in a sort that emits a `SortProvidesInfo(...)`:
@@ -865,7 +873,7 @@ When WI-210 lands:
 - Convergence with WI-186 free-standing parametrics — incremental opportunity, not a hard dependency.
 - Signature inheritance for impl ops (per open question 1) — follow-up; WI-210 ships under explicit-signature assumption.
 - Coherence rule (B) (scoped priority + low-priority defaults) — planned evolution, not an "if-needed" follow-up; (C) ships v1 because no stdlib defaults exist yet. See "Coherence" §"Why (B) is the interesting rule" for the priority-table design.
-- Effect polymorphism in specs (`effects {..., ?E}`) — out of scope; v1 requires impls to subset the spec's concretely-declared effect row. See "Effect compatibility" §"Out of scope (v1)".
+- Variance annotations on type parameters — see "Effect compatibility" §"Out of scope (v1)". Effect polymorphism via `sort E = ?` (Stream-style) is *in* scope and works automatically via the existing WI-209 + WI-211 substitution machinery.
 - Effect subsorting / lattice (e.g. `RaiseEither[E1] ≤ RaiseEither[E1, E2]`) — out of scope; subset check uses structural set membership today.
 - Self-typed specs (where the spec uses `Self` rather than `Cell[V = State]`) — handled in principle by extracting bindings from any param; not specifically tested in v1.
 
