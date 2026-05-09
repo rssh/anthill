@@ -3109,8 +3109,9 @@ fn wi031_stdlib_load_then_typecheck_then_verify_typing_facts() {
                "anthill.logic.Constructive.Constructive",
                "anthill.logic.Classical.Classical"] {
         let sort_term = kb.resolve_qualified_name_term(qn);
-        let Term::Fn { functor: sort_functor, .. } = *kb.get_term(sort_term) else {
-            panic!("{qn} did not resolve to Fn term");
+        let sort_functor = match kb.get_term(sort_term) {
+            Term::Fn { functor, .. } => *functor,
+            _ => panic!("{qn} did not resolve to Fn term"),
         };
         let found = kb.by_functor(sort_info_sym).iter().any(|rid| {
             let head = kb.fact_term(*rid);
