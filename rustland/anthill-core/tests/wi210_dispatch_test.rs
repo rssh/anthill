@@ -422,6 +422,29 @@ fn dispatch_ambiguous_when_two_impls_match_same_binding() {
 }
 
 #[test]
+fn dispatch_polymorphic_candidate_matches_any_per_call_value() {
+    // LogicalStream's `fact Stream[T]` (T = LogicalStream's own type-param)
+    // records a universally-quantified impl. The matcher must treat such
+    // a candidate's binding value as a wildcard against the per-call concrete.
+    let mut kb = load_with("");
+    let head_sym = kb.try_resolve_symbol("anthill.prelude.Stream.head")
+        .expect("Stream.head registered");
+    let spec_sort = lookup_spec_op_dispatch(&kb, head_sym)
+        .expect("Stream.head is a spec op");
+    let subst = subst_with_param(
+        &mut kb,
+        "anthill.prelude.Stream",
+        "T",
+        "anthill.prelude.Int",
+    );
+    let op_short = kb.intern("head");
+    let outcome = find_unique_impl_op(&kb, &subst, spec_sort, op_short);
+    assert!(matches!(outcome, DispatchOutcome::Unique(_)),
+        "expected Unique dispatch for Stream.head with polymorphic LogicalStream \
+         impl candidate at T=Int; got {outcome:?}");
+}
+
+#[test]
 fn dispatch_unique_finds_filebased_impl_for_workitemstore_commit() {
     // WI-210 acceptance smoke test: commit(s, w) for s: Cell[V = WIS] must
     // dispatch to FileBasedWorkitemStore.commit. Multi-arg State-binding

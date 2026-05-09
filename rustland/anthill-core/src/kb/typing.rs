@@ -1035,6 +1035,12 @@ fn dispatch_values_match(
     per_call_value: TermId,
     candidate_value: TermId,
 ) -> bool {
+    // A universally-quantified candidate matches any per-call value. The
+    // fact-loading path stores type-params as `Term::Ref`, the op-signature
+    // path as `Term::Var`; both shapes mean "for any T."
+    if is_type_param_value(kb, candidate_value) {
+        return true;
+    }
     if types_lesseq(kb, per_call_value, candidate_value) {
         return true;
     }
@@ -1042,6 +1048,17 @@ fn dispatch_values_match(
     let candidate_sym = sort_sym_of_term(kb, candidate_value);
     match (per_call_sym, candidate_sym) {
         (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// True iff `value` references an abstract type-parameter — directly as a
+/// `Term::Var`, or as a `Term::Ref` / `Term::Ident` to a sort-level type-param
+/// symbol (the loader signal for `sort T = ?`).
+fn is_type_param_value(kb: &KnowledgeBase, value: TermId) -> bool {
+    match kb.get_term(value) {
+        Term::Var(_) => true,
+        Term::Ref(sym) | Term::Ident(sym) => is_sort_param_symbol(kb, *sym),
         _ => false,
     }
 }
