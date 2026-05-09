@@ -292,6 +292,102 @@ Resolution of `commit(s, build_workitem(args))`:
 
 Result: the runtime sees a direct call to `FileBasedWorkitemStore.commit`. No vtable, no fact lookup at run time.
 
+## Multi-arg dispatch — when several args jointly pick the impl
+
+The `commit` example uses a single dispatch-key argument (the cell `s`). Real spec ops can have **multiple type parameters whose bindings are populated from different arguments** — the impl is determined by the joint binding, not by any single arg.
+
+A natural domain-grounded example: a *Transfer* spec that copies work items between two backends.
+
+```anthill
+sort Transfer
+  sort SrcState = ?
+  sort DstState = ?
+  operation copy_all(src: Cell[V = SrcState], dst: Cell[V = DstState]) -> Unit
+    effects {Modify[src], Modify[dst], Error}
+end
+
+sort FileToGitHubTransfer
+  fact Transfer[SrcState = WIS, DstState = GHWIS]
+  operation copy_all(src, dst) = ...           -- file → GitHub flow
+end
+
+sort GitHubToFileTransfer
+  fact Transfer[SrcState = GHWIS, DstState = WIS]
+  operation copy_all(src, dst) = ...           -- GitHub → file flow
+end
+
+sort FileToFileTransfer
+  fact Transfer[SrcState = WIS, DstState = WIS]
+  operation copy_all(src, dst) = ...           -- file → file (e.g. archive)
+end
+```
+
+The KB ends up with three `SpecImpl` records auto-emitted by the loader:
+
+```
+SpecImpl(spec=Transfer, impl=FileToGitHubTransfer,
+         bindings=[(SrcState, WIS),   (DstState, GHWIS)])
+SpecImpl(spec=Transfer, impl=GitHubToFileTransfer,
+         bindings=[(SrcState, GHWIS), (DstState, WIS)])
+SpecImpl(spec=Transfer, impl=FileToFileTransfer,
+         bindings=[(SrcState, WIS),   (DstState, WIS)])
+```
+
+### Tracing the call
+
+```anthill
+operation cmd_archive(src: Cell[V = WIS], dst: Cell[V = GHWIS]) -> Unit
+  effects {Modify[src], Modify[dst], Error}
+=
+  copy_all(src, dst)            -- which impl?
+```
+
+1. Type-check the args:
+   - `src : Cell[V = WIS]`
+   - `dst : Cell[V = GHWIS]`
+2. WI-211 unifies each arg type against its declared param type:
+   - `Cell[V = WIS]` ≡ `Cell[V = SrcState]` → binds `SrcState → WIS`.
+   - `Cell[V = GHWIS]` ≡ `Cell[V = DstState]` → binds `DstState → GHWIS`.
+3. WI-210 dispatch query: search `SpecImpl(spec=Transfer, bindings ⊇ [(SrcState, WIS), (DstState, GHWIS)])`. Match each candidate against the *full* binding set — every binding the call inferred must agree with the candidate's recorded bindings.
+
+| Candidate | SrcState | DstState | Match? |
+|---|---|---|---|
+| FileToGitHubTransfer | WIS | GHWIS | ✓ |
+| GitHubToFileTransfer | GHWIS | WIS | ✗ (SrcState mismatch) |
+| FileToFileTransfer | WIS | WIS | ✗ (DstState mismatch) |
+
+Single match → resolved call rewrites to `FileToGitHubTransfer.copy_all`.
+
+### Why neither arg alone is enough
+
+If we dispatched only on `src` (matching `SrcState = WIS`), candidates `FileToGitHubTransfer` and `FileToFileTransfer` both pass — ambiguous. Same on the `dst` side — `FileToGitHubTransfer` and `GitHubToFileTransfer` both involve a `GHWIS`-shaped state. The full binding tuple is what makes the call unambiguous.
+
+### Algorithm restatement (for n type params)
+
+```
+1. From args, infer a binding set B = {(P₁ → T₁), (P₂ → T₂), …}
+   for the spec's type parameters.
+
+2. Search SpecImpl(spec = <spec-sym>) records.
+
+3. A SpecImpl record matches iff its recorded `bindings` agree with
+   B on every parameter that appears in both — under unification,
+   so unbound type params on either side don't block a match.
+
+4. Coherence rule (C): exactly one match → rewrite. Zero / multiple → typer error.
+```
+
+The single-arg case is just n = 1; the algorithm doesn't change.
+
+### Edge: partial bindings
+
+If the call leaves some type parameter *unbound* (e.g. one arg has type `Cell[V = ?S]` for an unknown `?S` from the surrounding scope), the binding set is partial. Two stances:
+
+- **v1: reject** — fall through to coherence-rule-(C)-style error ("can't pick a unique impl when SrcState is unbound; either provide a typed arg or call the impl directly via shape C"). Matches the static-only stance.
+- **future**: defer to dynamic dispatch when at least one matching impl exists.
+
+This is OQ #5 ("call sites that want the spec / don't want dispatch") generalized to the multi-param case.
+
 ## Implementation plan (sketched)
 
 1. **Define the `SpecImpl` reflect entity** (~10 lines, `stdlib/anthill/reflect/`):
