@@ -782,6 +782,112 @@ fn lookup_operation_info_full(kb: &KnowledgeBase, functor: Symbol) -> Option<Ope
     None
 }
 
+/// WI-210 — `op_sym` is a "spec operation" if it is declared in a sort
+/// that has at least one `sort <Param> = ?` declaration AND the
+/// operation has no body. Spec operations are subject to call-site
+/// dispatch via `SortProvidesInfo` lookup.
+///
+/// Returns the *parent sort* symbol (the spec sort) when `op_sym`
+/// qualifies; `None` otherwise.
+pub fn lookup_spec_op_dispatch(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
+    use crate::intern::{SymbolDef, SymbolKind};
+
+    // The parent sort's qualified name is the op's qualified name
+    // with the last segment stripped off.
+    let op_qn = kb.qualified_name_of(op_sym);
+    let (parent_qn, _short) = op_qn.rsplit_once('.')?;
+
+    let parent_sym = kb.try_resolve_symbol(parent_qn)?;
+    if !matches!(
+        kb.symbols.get(parent_sym),
+        SymbolDef::Resolved { kind: SymbolKind::Sort, .. }
+    ) {
+        return None;
+    }
+    if kb.type_params_of_sort(parent_sym).is_empty() {
+        return None;
+    }
+
+    // The op must be body-less (declaration only). We reuse the same
+    // OperationInfo lookup machinery as `lookup_operation_info_full`
+    // but read the `body` field instead.
+    if !operation_has_no_body(kb, op_sym) {
+        return None;
+    }
+
+    Some(parent_sym)
+}
+
+/// True iff the OperationInfo for `op_sym` records body = none.
+/// (Operations declared without a body ⇒ specs / abstract decls.)
+fn operation_has_no_body(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
+    let op_info_sym = match kb.try_resolve_symbol("anthill.reflect.OperationInfo") {
+        Some(s) => s,
+        None => return false,
+    };
+    for rid in kb.by_functor(op_info_sym) {
+        if !kb.rule_body(rid).is_empty() { continue; }
+        let head = kb.rule_head(rid);
+        let named_args = match kb.get_term(head) {
+            Term::Fn { named_args, .. } => named_args,
+            _ => continue,
+        };
+
+        let name_sym = match named_args.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "name")
+            .and_then(|(_, v)| match kb.get_term(*v) { Term::Ref(s) => Some(*s), _ => None })
+        {
+            Some(s) => s,
+            None => continue,
+        };
+        if name_sym != op_sym { continue; }
+
+        let body_opt = match named_args.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "body")
+            .map(|(_, v)| *v)
+        {
+            Some(t) => t,
+            None => return true,  // no body field at all
+        };
+        return unwrap_option(kb, body_opt).is_none();
+    }
+    false
+}
+
+/// WI-210 — term-level analog of [`super::load::resolve_provides_spec`].
+/// Walks a `SortProvidesInfo.spec` field (a `SortView(base, …named)`
+/// term, or a bare functor when there are no bindings) and returns
+/// the spec functor symbol plus its bindings keyed by the param's
+/// symbol with the value as a TermId — both ready for unification
+/// against a per-call substitution.
+pub fn resolve_provides_spec_terms(
+    kb: &KnowledgeBase,
+    spec: TermId,
+) -> Option<(Symbol, Vec<(Symbol, TermId)>)> {
+    match kb.get_term(spec) {
+        Term::Fn { functor, pos_args, named_args } => {
+            let f_short = kb.resolve_sym(*functor);
+            if f_short == "SortView" || kb.qualified_name_of(*functor).ends_with(".SortView") {
+                let base = pos_args.first().copied()?;
+                let base_sym = match kb.get_term(base) {
+                    Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
+                    _ => return None,
+                };
+                let bindings: Vec<(Symbol, TermId)> = named_args
+                    .iter()
+                    .map(|(k, v)| (*k, *v))
+                    .collect();
+                Some((base_sym, bindings))
+            } else {
+                // Plain functor with no bindings (e.g. `provides Foo`).
+                Some((*functor, Vec::new()))
+            }
+        }
+        Term::Ref(s) | Term::Ident(s) => Some((*s, Vec::new())),
+        _ => None,
+    }
+}
+
 /// Infer the type of a constructor application, including type parameter instantiation.
 /// e.g., cons(head: 1, tail: nil) → parameterized(List, [T=Int])
 fn infer_constructor_type(

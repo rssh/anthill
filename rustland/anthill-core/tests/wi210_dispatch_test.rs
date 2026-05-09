@@ -11,6 +11,7 @@ mod common;
 
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::typing::{lookup_spec_op_dispatch, resolve_provides_spec_terms};
 use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 
@@ -130,6 +131,139 @@ fn fact_for_non_spec_sort_does_not_emit_provides_info() {
     );
     assert!(!found,
         "fact for non-parametric sort must not emit SortProvidesInfo; saw:\n{heads:#?}");
+}
+
+// ─── Phase 2: spec-op detection helper ──────────────────────────
+
+#[test]
+fn lookup_spec_op_dispatch_recognizes_body_less_op_on_parametric_sort() {
+    // WorkItemStore declares `commit` without a body; State is `?`;
+    // this op is dispatch-eligible.
+    let src = r#"
+        namespace wi210p2.spec
+          export Wi210Spec
+          sort Wi210Spec
+            sort State = ?
+            operation wi210_op(s: State) -> State
+          end
+        end
+    "#;
+    let kb = load_with(src);
+    let op_sym = kb.try_resolve_symbol("wi210p2.spec.Wi210Spec.wi210_op")
+        .expect("op symbol registered");
+    let parent = lookup_spec_op_dispatch(&kb, op_sym)
+        .expect("body-less op on parametric sort should be a spec op");
+    let parent_qn = kb.qualified_name_of(parent);
+    assert_eq!(parent_qn, "wi210p2.spec.Wi210Spec",
+        "spec-op's parent sort should be Wi210Spec; got {parent_qn}");
+}
+
+#[test]
+fn lookup_spec_op_dispatch_rejects_op_with_body() {
+    // Op has a body — even though the parent has type params, this
+    // op is the impl, not the spec.
+    let src = r#"
+        namespace wi210p2.with_body
+          export Wi210Impl
+          sort Wi210Impl
+            sort State = ?
+            operation wi210_op(s: State) -> State = s
+          end
+        end
+    "#;
+    let kb = load_with(src);
+    let op_sym = kb.try_resolve_symbol("wi210p2.with_body.Wi210Impl.wi210_op")
+        .expect("op symbol registered");
+    assert!(lookup_spec_op_dispatch(&kb, op_sym).is_none(),
+        "op with body must not be a spec op (would dispatch to itself)");
+}
+
+#[test]
+fn lookup_spec_op_dispatch_rejects_op_on_non_parametric_sort() {
+    // Sort has no `sort X = ?` declaration; this op is just a
+    // free-standing operation, not a spec op.
+    let src = r#"
+        namespace wi210p2.no_params
+          export Wi210Plain
+          sort Wi210Plain
+            entity wi210_e
+            operation wi210_op(x: Wi210Plain) -> Wi210Plain
+          end
+        end
+    "#;
+    let kb = load_with(src);
+    let op_sym = kb.try_resolve_symbol("wi210p2.no_params.Wi210Plain.wi210_op")
+        .expect("op symbol registered");
+    assert!(lookup_spec_op_dispatch(&kb, op_sym).is_none(),
+        "op on non-parametric sort must not be a spec op");
+}
+
+// ─── Phase 2: resolve_provides_spec_terms ──────────────────────
+
+#[test]
+fn resolve_provides_spec_terms_extracts_bindings_from_sort_view() {
+    // After phase 1 wires fact-emit, store.anthill produces a
+    // SortProvidesInfo containing `SortView(WorkItemStore, State =
+    // WIS)`. The term-level resolver should hand back the
+    // WorkItemStore symbol + a binding (State_sym -> WIS_term).
+    let src = r#"
+        namespace wi210p2.resolve
+          export Wi210SpecB, Wi210ImplC
+          sort Wi210SpecB
+            sort State = ?
+          end
+          sort Wi210ImplC
+            fact Wi210SpecB[State = Wi210ImplC]
+          end
+        end
+    "#;
+    let kb = load_with(src);
+    let provides_sym = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo")
+        .expect("SortProvidesInfo registered");
+    let spec_b_sym = kb.try_resolve_symbol("wi210p2.resolve.Wi210SpecB")
+        .expect("Wi210SpecB registered");
+
+    // Find the SortProvidesInfo head whose spec view names Wi210SpecB.
+    let mut found = None;
+    for rid in kb.by_functor(provides_sym) {
+        if !kb.rule_body(rid).is_empty() { continue; }
+        let head = kb.rule_head(rid);
+        if let anthill_core::kb::term::Term::Fn { named_args, .. } = kb.get_term(head) {
+            let spec_tid = named_args.iter()
+                .find(|(s, _)| kb.resolve_sym(*s) == "spec")
+                .map(|(_, v)| *v);
+            if let Some(spec_tid) = spec_tid {
+                if let Some((spec_sym, _)) = resolve_provides_spec_terms(&kb, spec_tid) {
+                    if spec_sym == spec_b_sym {
+                        found = Some(spec_tid);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let spec_tid = found.expect("expected a SortProvidesInfo for Wi210SpecB");
+
+    let (spec_sym, bindings) = resolve_provides_spec_terms(&kb, spec_tid)
+        .expect("resolver should accept SortView term");
+    assert_eq!(spec_sym, spec_b_sym, "spec sym mismatch");
+    assert_eq!(bindings.len(), 1, "expected exactly one binding (State)");
+    // The binding key's short name is "State" — Phase 3 dispatch
+    // will match this short name against the spec sort's declared
+    // params (`type_params_of_sort` returns short names).
+    assert_eq!(kb.resolve_sym(bindings[0].0), "State",
+        "expected binding key short-name to be State");
+    // The binding value is a Term::Fn naming Wi210ImplC.
+    let value = bindings[0].1;
+    let impl_c_sym = kb.try_resolve_symbol("wi210p2.resolve.Wi210ImplC")
+        .expect("Wi210ImplC registered");
+    let value_functor = match kb.get_term(value) {
+        anthill_core::kb::term::Term::Fn { functor, .. } => *functor,
+        anthill_core::kb::term::Term::Ref(s) | anthill_core::kb::term::Term::Ident(s) => *s,
+        _ => panic!("unexpected binding value shape"),
+    };
+    assert_eq!(value_functor, impl_c_sym,
+        "expected binding value to point at Wi210ImplC");
 }
 
 #[test]
