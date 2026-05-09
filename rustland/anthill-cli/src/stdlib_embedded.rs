@@ -59,6 +59,12 @@ static STDLIB_SOURCES: &[(&str, &str)] = &[
     ("anthill/cli/spec", include_str!("../../../stdlib/anthill/cli/spec.anthill")),
     ("anthill/cli/parse", include_str!("../../../stdlib/anthill/cli/parse.anthill")),
     ("anthill/cli/help", include_str!("../../../stdlib/anthill/cli/help.anthill")),
+    // rustland host bindings (proposal 038)
+    ("rustland/anthill-stl/int", include_str!("../../anthill-stl/anthill/int.anthill")),
+    ("rustland/anthill-stl/bigint", include_str!("../../anthill-stl/anthill/bigint.anthill")),
+    ("rustland/anthill-stl/float", include_str!("../../anthill-stl/anthill/float.anthill")),
+    ("rustland/anthill-stl/string", include_str!("../../anthill-stl/anthill/string.anthill")),
+    ("rustland/anthill-stl/bool", include_str!("../../anthill-stl/anthill/bool.anthill")),
 ];
 
 /// Parse all embedded stdlib sources. Returns (parsed files, warnings).

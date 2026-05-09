@@ -1,0 +1,10 @@
+-- Rust binding for anthill.prelude.BigInt. Proposal 038.
+namespace anthill.prelude
+  provides BigInt language rust
+    artifact "rustland/anthill-stl/src/prelude/bigint.rs"
+    carrier BigInt = "num_bigint::BigInt"
+    fact Eq[T = BigInt]
+    fact Ordered[T = BigInt]
+    fact Numeric[T = BigInt]
+  end
+end

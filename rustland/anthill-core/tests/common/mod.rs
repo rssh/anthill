@@ -30,6 +30,24 @@ pub fn stdlib_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill")
 }
 
+/// Path to rustland/anthill-stl/anthill/ — Rust host bindings for the
+/// builtin spec sorts (proposal 038).
+pub fn rust_stl_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../anthill-stl/anthill")
+}
+
+/// Collect all .anthill files from stdlib + the Rust host bindings.
+/// Use this in place of `collect_anthill_files(&stdlib_dir())` for tests
+/// that depend on `fact Spec[Carrier]` records emitted by the rustland
+/// `provides Carrier language rust` blocks.
+#[allow(dead_code)]
+pub fn collect_stdlib_and_rust_bindings() -> Vec<PathBuf> {
+    let mut files = collect_anthill_files(&stdlib_dir());
+    files.extend(collect_anthill_files(&rust_stl_dir()));
+    files.sort();
+    files
+}
+
 /// Path to anthill-testcases/ relative to the anthill-core crate root.
 #[allow(dead_code)]
 pub fn testcases_dir() -> PathBuf {
@@ -47,8 +65,7 @@ pub fn examples_dir() -> PathBuf {
 /// integration test; previously hand-copied in each file.
 #[allow(dead_code)]
 pub fn load_kb_with(source: &str) -> KnowledgeBase {
-    let dir = stdlib_dir();
-    let files = collect_anthill_files(&dir);
+    let files = collect_stdlib_and_rust_bindings();
     assert!(!files.is_empty(), "stdlib empty");
 
     let mut parsed: Vec<_> = files.iter()

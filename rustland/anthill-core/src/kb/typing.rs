@@ -708,15 +708,43 @@ fn check_apply(
         // collapses to `Option[T = Term]` once `vid_T` is bound.
         let resolved_ret = walk_type_deep(kb, &subst, op.return_type);
 
-        // WI-210 dispatch hook is parked here pending proposal-038
-        // (builtin sorts) — its absence today causes namespace-level
-        // facts like `fact Numeric[Int]` to resolve the binding
-        // value `Int` to the namespace `anthill.prelude.Int` rather
-        // than the builtin sort `Int`, breaking deterministic
-        // candidate matching. The helpers `lookup_spec_op_dispatch`
-        // and `find_unique_impl_op` (and the `DispatchOutcome` enum)
-        // remain pub so the hook can be wired in once the structural
-        // ambiguity is resolved (WI-213).
+        // WI-210 phase 3 dispatch (proposal 038): if `fn_sym` is a spec
+        // op (declared without body on a parametric sort), look up the
+        // unique impl op based on the per-call substitution. The proposal-
+        // 038 unification of builtin-sort symbols (Int as the same Symbol
+        // whether referenced bare or via anthill.prelude.Int) makes
+        // candidate matching deterministic — `fact Numeric[T = Int]` in
+        // the rustland binding emits a SortProvidesInfo whose binding
+        // value resolves to the same Int sort as the per-call subst sees.
+        if let Some(spec_sort) = lookup_spec_op_dispatch(kb, fn_sym) {
+            // The op's short name (e.g. "add" for "anthill.prelude.Numeric.add")
+            // joins with the impl sort to find the impl operation symbol.
+            let op_qn = kb.qualified_name_of(fn_sym).to_string();
+            let op_short = op_qn.rsplit_once('.').map(|(_, s)| s).unwrap_or(&op_qn);
+            let op_short_sym = kb.intern(op_short);
+            match find_unique_impl_op(kb, &subst, spec_sort, op_short_sym) {
+                DispatchOutcome::NoCandidates | DispatchOutcome::Unique(_) => {}
+                DispatchOutcome::NoMatch => {
+                    // Surface to stderr so users notice; signal failure to
+                    // the caller via None. Per the proposal: NoMatch means
+                    // the spec has impls but none match the per-call
+                    // bindings (likely a missing impl declaration).
+                    eprintln!(
+                        "WI-210 dispatch failed: no impl of {} for the per-call bindings",
+                        op_qn
+                    );
+                    return None;
+                }
+                DispatchOutcome::Ambiguous => {
+                    eprintln!(
+                        "WI-210 dispatch failed: multiple impls of {} match the per-call bindings (coherence rule)",
+                        op_qn
+                    );
+                    return None;
+                }
+            }
+        }
+
         return Some(TypeResult { ty: resolved_ret, env: env.clone(), effects });
     }
 
@@ -874,6 +902,9 @@ pub fn find_unique_impl_op(
     };
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
     let op_short = kb.resolve_sym(op_short_sym).to_string();
+    // Hoisted out of the candidate loop — the spec op symbol doesn't
+    // depend on which `SortProvidesInfo` record we're examining.
+    let spec_op_sym = kb.try_resolve_symbol(&format!("{spec_qn}.{op_short}"));
     let mut matches: Vec<Symbol> = Vec::new();
     let mut saw_candidate_for_spec = false;
 
@@ -955,7 +986,13 @@ pub fn find_unique_impl_op(
         }
         if !all_match { continue; }
 
-        // Look up `<impl_qn>.<op_short>` to find the impl op symbol.
+        // Look up `<impl_qn>.<op_short>` to find the impl op symbol. For
+        // host-language bindings (proposal 038) the carrier sort typically
+        // doesn't declare an op of its own — the host runtime backs the
+        // spec op directly. Fall back to the spec op symbol so the
+        // candidate still counts as a match (Unique outcome) for dispatch
+        // purposes; codegen / the interpreter consult `Implementation`
+        // facts to find the actual host artifact.
         let impl_sort_sym = match kb.get_term(sort_ref_tid) {
             Term::Fn { functor, .. }
             | Term::Ref(functor)
@@ -963,9 +1000,9 @@ pub fn find_unique_impl_op(
             _ => continue,
         };
         let impl_qn = kb.qualified_name_of(impl_sort_sym).to_string();
-        let impl_op_qn = format!("{impl_qn}.{op_short}");
-        if let Some(impl_op_sym) = kb.try_resolve_symbol(&impl_op_qn) {
-            matches.push(impl_op_sym);
+        let resolved_impl = kb.try_resolve_symbol(&format!("{impl_qn}.{op_short}"));
+        if let Some(s) = resolved_impl.or(spec_op_sym) {
+            matches.push(s);
         }
     }
 
@@ -1819,25 +1856,35 @@ fn is_sort_param_symbol(kb: &KnowledgeBase, sym: Symbol) -> bool {
 }
 
 /// Look up SortAlias(sort_term, target) for a symbol. Returns the target TermId if found.
+///
+/// Two passes with exact-Symbol-identity precedence over short-name fallback.
+/// The fallback exists for legacy callers that pass a short-name symbol when
+/// the SortAlias's pos-arg holds the qualified one. The precedence matters
+/// because parameter short names like "T" recur across sorts (Eq.T, Numeric.T,
+/// List.T, …) — without exact-match-first the fallback would return whichever
+/// alias appeared first in by_functor order, causing proposal-038 / WI-210
+/// dispatch to resolve the wrong logical Var.
 fn resolve_sort_alias(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
     let alias_sym = kb.try_resolve_symbol("SortAlias")?;
     let sort_name = kb.resolve_sym(sym);
-
-    for rid in kb.by_functor(alias_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
-        let head = kb.rule_head(rid);
-        if let Term::Fn { pos_args, .. } = kb.get_term(head) {
-            if pos_args.len() >= 2 {
-                // pos_args[0] = sort term, pos_args[1] = target
-                if let Term::Fn { functor, .. } = kb.get_term(pos_args[0]) {
-                    if *functor == sym || kb.resolve_sym(*functor) == sort_name {
-                        return Some(pos_args[1]);
+    let find = |matches: fn(&KnowledgeBase, Symbol, Symbol, &str) -> bool| {
+        for rid in kb.by_functor(alias_sym) {
+            if !kb.rule_body(rid).is_empty() { continue; }
+            let head = kb.rule_head(rid);
+            if let Term::Fn { pos_args, .. } = kb.get_term(head) {
+                if pos_args.len() >= 2 {
+                    if let Term::Fn { functor, .. } = kb.get_term(pos_args[0]) {
+                        if matches(kb, *functor, sym, sort_name) {
+                            return Some(pos_args[1]);
+                        }
                     }
                 }
             }
         }
-    }
-    None
+        None
+    };
+    find(|_, f, s, _| f == s)
+        .or_else(|| find(|kb, f, _, n| kb.resolve_sym(f) == n))
 }
 
 /// Unify two parameterized types: bases must unify, each binding value must unify.

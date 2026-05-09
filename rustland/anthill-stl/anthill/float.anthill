@@ -1,0 +1,13 @@
+-- Rust binding for anthill.prelude.Float. Proposal 038.
+namespace anthill.prelude
+  import anthill.prelude.algebra.{Ring}
+
+  provides Float language rust
+    artifact "rustland/anthill-stl/src/prelude/float.rs"
+    carrier Float = "f64"
+    fact Eq[T = Float]
+    fact Ordered[T = Float]
+    fact Numeric[T = Float]
+    fact Ring[Float]
+  end
+end

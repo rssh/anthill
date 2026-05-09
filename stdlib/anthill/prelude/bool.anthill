@@ -1,9 +1,9 @@
--- Bool: operations on the built-in Bool type
-namespace anthill.prelude.Bool
+-- Bool: abstract spec for the built-in boolean sort.
+-- Spec satisfaction fact (Eq[Bool]) lives in the per-language binding files
+-- (e.g. rustland/anthill-stl/anthill/bool.anthill) — see proposal 038.
+sort anthill.prelude.Bool
   import anthill.prelude.{Eq}
   export and, or, not, ite
-
-  fact Eq[T = Bool]
 
   operation {
     and(a: Bool, b: Bool) -> Bool

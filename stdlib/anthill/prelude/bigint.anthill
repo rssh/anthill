@@ -1,18 +1,14 @@
--- BigInt: arbitrary-precision integer operations
+-- BigInt: abstract spec for arbitrary-precision integer operations.
 -- Used for ZK field elements, cryptographic constants, and values exceeding i64.
 -- Literals that overflow i64 are automatically parsed as BigInt.
-namespace anthill.prelude.BigInt
+-- Spec satisfaction facts (Eq[BigInt], Ordered[BigInt], Numeric[BigInt]) live
+-- in the per-language binding files (e.g. rustland/anthill-stl/anthill/bigint.anthill)
+-- — see proposal 038.
+sort anthill.prelude.BigInt
   import anthill.prelude.{Eq, Ordered, Numeric}
   import anthill.prelude.Ordered.{gt}
   import anthill.prelude.Numeric.{sub}
   export to_bigint, to_int, to_float
-
-  -- BigInt satisfies the parametric algebra specs.
-  -- These facts declare that eq, neq, compare, gt, lt, gte, lte,
-  -- add, sub, mul are available for BigInt values (provided by builtins).
-  fact Eq[BigInt]
-  fact Ordered[BigInt]
-  fact Numeric[BigInt]
 
   -- Conversion operations
   operation to_bigint(n: Int) -> BigInt

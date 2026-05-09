@@ -882,11 +882,6 @@ const KERNEL_FUNCTORS: &[&str] = &[
 pub fn register_prelude(kb: &mut KnowledgeBase) {
     let global = kb.make_name_term("_global");
     let global_raw = global.raw();
-    for &name in PRELUDE_SORTS {
-        if !kb.symbols.by_qualified_name.contains_key(name) {
-            kb.symbols.define(name, name, SymbolKind::Sort, global_raw);
-        }
-    }
     for &name in KERNEL_META_SORTS {
         if !kb.symbols.by_qualified_name.contains_key(name) {
             kb.symbols.define(name, name, SymbolKind::Sort, global_raw);
@@ -1035,18 +1030,30 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.define("sub", "anthill.prelude.Numeric.sub", SymbolKind::Operation, num_sort_term.raw());
     kb.symbols.define("mul", "anthill.prelude.Numeric.mul", SymbolKind::Operation, num_sort_term.raw());
 
-    // anthill.prelude.BigInt namespace (conversion operations)
-    let bigint_ns_sym = kb.symbols.define("BigInt", "anthill.prelude.BigInt", SymbolKind::Namespace, prelude_term.raw());
-    let bigint_ns_term = kb.alloc(Term::Fn {
-        functor: bigint_ns_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+    // Proposal 038: register primitive sorts at anthill.prelude scope so
+    // stdlib's `sort anthill.prelude.Int { ... }` reuses the same Symbol,
+    // alias the bare QN for try_resolve_symbol("Int"), import into _global.
+    for &name in PRELUDE_SORTS {
+        let qualified = format!("anthill.prelude.{name}");
+        let sym = kb.symbols.define(name, &qualified, SymbolKind::Sort, prelude_term.raw());
+        let sort_term = kb.alloc(Term::Fn {
+            functor: sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+        });
+        kb.symbols.add_parent(sort_term.raw(), ScopeInclusion {
+            parent_scope_raw: prelude_term.raw(),
+            instantiation_term_raw: prelude_term.raw(),
+            is_enclosing: true,
+        });
+        kb.symbols.by_qualified_name.insert(name.to_string(), sym);
+        kb.symbols.add_import(global_raw, name, sym);
+    }
+    // BigInt conversion operations — pre-registered so stdlib body reuses them.
+    let bigint_sym = kb.symbols.by_qualified_name["anthill.prelude.BigInt"];
+    let bigint_term = kb.alloc(Term::Fn {
+        functor: bigint_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
     });
-    kb.symbols.add_parent(bigint_ns_term.raw(), ScopeInclusion {
-        parent_scope_raw: prelude_term.raw(),
-        instantiation_term_raw: prelude_term.raw(),
-        is_enclosing: true,
-    });
-    kb.symbols.define("to_bigint", "anthill.prelude.BigInt.to_bigint", SymbolKind::Operation, bigint_ns_term.raw());
-    kb.symbols.define("to_int", "anthill.prelude.BigInt.to_int", SymbolKind::Operation, bigint_ns_term.raw());
+    kb.symbols.define("to_bigint", "anthill.prelude.BigInt.to_bigint", SymbolKind::Operation, bigint_term.raw());
+    kb.symbols.define("to_int", "anthill.prelude.BigInt.to_int", SymbolKind::Operation, bigint_term.raw());
 
     // anthill.reflect namespace
     let reflect_sym = kb.symbols.define("reflect", "anthill.reflect", SymbolKind::Namespace, anthill_term.raw());
@@ -5059,24 +5066,165 @@ impl<'a> Loader<'a> {
         self.kb.assert_fact(provides_term, provides_sort, domain, None);
     }
 
-    /// Standalone `provides Spec language X ... end`. For anthill we
-    /// recurse into the inner items; host languages are stubbed out
-    /// pending Implementation-fact wiring.
-    fn load_provides_block(&mut self, pb: &ProvidesBlock, domain: TermId) {
-        if self.parsed.symbols.name(pb.language) != "anthill" { return; }
+    /// Standalone `provides Spec language X ... end`. Proposal 038.
+    ///
+    /// Inner facts/rules/proofs are loaded against the spec sort as their
+    /// domain — so a `fact Eq[T = Int]` inside `provides Int language rust`
+    /// triggers Phase 1's SortProvidesInfo auto-emit through the sort-body
+    /// path, recording the carrier as the spec sort symbol (not a namespace
+    /// doppelgänger). For non-anthill languages, additionally emit an
+    /// `Implementation` fact (anthill.realization.Implementation) carrying
+    /// the carrier/artifact/namespace-map metadata so codegen and
+    /// interpreters can locate the host bindings by `(language, profile)`.
+    fn load_provides_block(&mut self, pb: &ProvidesBlock, _domain: TermId) {
+        let spec_term = self.sort_inst_to_term(&pb.spec);
+        let prev_scope = self.current_scope;
+        self.current_scope = spec_term;
+
         for item in &pb.items {
             match item {
-                ProvidesItem::Rule(r) => self.load_rule(r, domain),
+                ProvidesItem::Rule(r) => self.load_rule(r, spec_term),
                 ProvidesItem::RuleBlock(rb) => {
-                    for r in &rb.entries { self.load_rule(r, domain); }
+                    for r in &rb.entries { self.load_rule(r, spec_term); }
                 }
-                ProvidesItem::Fact(f) => self.load_fact(f, domain),
-                ProvidesItem::Proof(p) => self.load_proof(p, domain),
+                ProvidesItem::Fact(f) => self.load_fact(f, spec_term),
+                ProvidesItem::Proof(p) => self.load_proof(p, spec_term),
                 ProvidesItem::Artifact(_)
                 | ProvidesItem::Carrier(_)
                 | ProvidesItem::NamespaceMap(_) => {}
             }
         }
+
+        self.current_scope = prev_scope;
+
+        if self.parsed.symbols.name(pb.language) != "anthill" {
+            self.emit_implementation_fact(pb, spec_term);
+        }
+    }
+
+    /// Build and assert an `anthill.realization.Implementation` fact from
+    /// a `provides Spec language X ... end` block. Populates target,
+    /// artifact, language, profile, carrier, and namespace_map fields per
+    /// the entity definition in stdlib/anthill/realization/realization.anthill.
+    fn emit_implementation_fact(&mut self, pb: &ProvidesBlock, spec_term: TermId) {
+        // target: qualified name of the spec sort, as a String literal.
+        let spec_functor = match self.kb.get_term(spec_term) {
+            Term::Fn { functor, .. } => *functor,
+            _ => return,
+        };
+        let target_qn = match self.kb.symbols.get(spec_functor) {
+            SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
+            SymbolDef::Unresolved { name } => name.clone(),
+        };
+        let target_term = self.kb.alloc(Term::Const(
+            super::term::Literal::String(target_qn.clone())));
+
+        // language: from pb.language (parsed-symbol → string).
+        let language_str = self.parsed.symbols.name(pb.language).to_string();
+        let language_term = self.kb.alloc(Term::Const(
+            super::term::Literal::String(language_str)));
+
+        // artifact: first Artifact item, defaulting to "" if absent.
+        let artifact_str = pb.items.iter().find_map(|item| match item {
+            ProvidesItem::Artifact(s) => Some(s.clone()),
+            _ => None,
+        }).unwrap_or_default();
+        let artifact_term = self.kb.alloc(Term::Const(
+            super::term::Literal::String(artifact_str)));
+
+        // profile and description default to none (Option[T = String]).
+        let none_sym = self.kb.resolve_symbol("anthill.prelude.Option.none");
+        let none_term = self.kb.alloc(Term::Fn {
+            functor: none_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+        });
+
+        // carrier: cons-list of CarrierBinding terms collected from each
+        // `carrier` clause inside the block.
+        let cb_sym = self.kb.resolve_symbol("anthill.realization.CarrierBinding");
+        let sort_name_arg = self.kb.intern("sort_name");
+        let host_type_arg = self.kb.intern("host_type");
+        let mut carrier_terms: Vec<TermId> = Vec::new();
+        for item in &pb.items {
+            if let ProvidesItem::Carrier(bindings) = item {
+                for b in bindings {
+                    let sort_name = self.parsed.symbols.name(b.anthill_param).to_string();
+                    let sort_name_term = self.kb.alloc(Term::Const(
+                        super::term::Literal::String(sort_name)));
+                    let host_type_term = self.host_type_to_string_term(b.host_type);
+                    carrier_terms.push(self.kb.alloc(Term::Fn {
+                        functor: cb_sym,
+                        pos_args: SmallVec::new(),
+                        named_args: SmallVec::from_slice(&[
+                            (sort_name_arg, sort_name_term),
+                            (host_type_arg, host_type_term),
+                        ]),
+                    }));
+                }
+            }
+        }
+        let carrier_list = build_list(self.kb, &carrier_terms);
+
+        // namespace_map: cons-list of NamespaceMapping terms.
+        let nm_sym = self.kb.resolve_symbol("anthill.realization.NamespaceMapping");
+        let ns_arg = self.kb.intern("namespace");
+        let host_module_arg = self.kb.intern("host_module");
+        let mut nm_terms: Vec<TermId> = Vec::new();
+        for item in &pb.items {
+            if let ProvidesItem::NamespaceMap(entries) = item {
+                for e in entries {
+                    let ns_name = self.parsed.symbols.name(e.anthill_namespace).to_string();
+                    let ns_name_term = self.kb.alloc(Term::Const(
+                        super::term::Literal::String(ns_name)));
+                    let host_mod_term = self.host_type_to_string_term(e.host_module);
+                    nm_terms.push(self.kb.alloc(Term::Fn {
+                        functor: nm_sym,
+                        pos_args: SmallVec::new(),
+                        named_args: SmallVec::from_slice(&[
+                            (ns_arg, ns_name_term),
+                            (host_module_arg, host_mod_term),
+                        ]),
+                    }));
+                }
+            }
+        }
+        let nm_list = build_list(self.kb, &nm_terms);
+
+        // Assemble the Implementation fact.
+        let impl_sym = self.kb.resolve_symbol("anthill.realization.Implementation");
+        let target_arg = self.kb.intern("target");
+        let artifact_arg = self.kb.intern("artifact");
+        let language_arg = self.kb.intern("language");
+        let profile_arg = self.kb.intern("profile");
+        let description_arg = self.kb.intern("description");
+        let carrier_arg = self.kb.intern("carrier");
+        let nm_field = self.kb.intern("namespace_map");
+
+        let impl_term = self.kb.alloc(Term::Fn {
+            functor: impl_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (target_arg, target_term),
+                (artifact_arg, artifact_term),
+                (language_arg, language_term),
+                (profile_arg, none_term),
+                (description_arg, none_term),
+                (carrier_arg, carrier_list),
+                (nm_field, nm_list),
+            ]),
+        });
+        let impl_sort = self.kb.make_name_term("anthill.realization.Implementation");
+        self.kb.assert_fact(impl_term, impl_sort, spec_term, None);
+    }
+
+    /// Convert a parsed host_type term (typically a `Term::Const(String)`
+    /// like `"i64"`) into a String-literal KB term. Falls back to
+    /// stringifying via `convert_term` for non-literal forms.
+    fn host_type_to_string_term(&mut self, parse_id: TermId) -> TermId {
+        if let Term::Const(super::term::Literal::String(s)) = self.parsed.terms.get(parse_id) {
+            let s = s.clone();
+            return self.kb.alloc(Term::Const(super::term::Literal::String(s)));
+        }
+        self.convert_term(parse_id)
     }
 
     fn emit_desc_fact(&mut self, target: TermId, text: &str, domain: TermId) {

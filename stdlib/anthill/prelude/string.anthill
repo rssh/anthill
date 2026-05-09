@@ -1,11 +1,9 @@
--- String: operations on the built-in String type
-namespace anthill.prelude.String
+-- String: abstract spec for the built-in string sort.
+-- Spec satisfaction facts (Eq[String], Ordered[String]) live in the per-language
+-- binding files (e.g. rustland/anthill-stl/anthill/string.anthill) — see proposal 038.
+sort anthill.prelude.String
   import anthill.prelude.{Eq, Ordered}
   export concat, length, isEmpty, contains, startsWith, endsWith, substring, indexOf, replace, trim, toUpper, toLower, split
-
-  -- String satisfies equality and lexicographic ordering
-  fact Eq[T = String]
-  fact Ordered[T = String]
 
   operation {
     concat(a: String, b: String) -> String

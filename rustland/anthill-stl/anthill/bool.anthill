@@ -1,0 +1,8 @@
+-- Rust binding for anthill.prelude.Bool. Proposal 038.
+namespace anthill.prelude
+  provides Bool language rust
+    artifact "rustland/anthill-stl/src/prelude/bool.rs"
+    carrier Bool = "bool"
+    fact Eq[T = Bool]
+  end
+end

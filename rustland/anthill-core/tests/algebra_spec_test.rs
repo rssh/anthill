@@ -10,8 +10,7 @@ use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::parse;
 
 fn load_with(extra: &str) -> KnowledgeBase {
-    let stdlib = common::stdlib_dir();
-    let files = common::collect_anthill_files(&stdlib);
+    let files = common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files.iter().map(|p| {
         let src = std::fs::read_to_string(p)
             .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
