@@ -10,12 +10,24 @@
 mod common;
 
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::load::{self, NullResolver, LoadResult};
 use anthill_core::kb::typing::lookup_spec_op_dispatch;
 use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 
+/// Phase 1/2 helper: discards errors. Used by tests that only inspect
+/// post-load KB state (e.g. SortProvidesInfo emission) and don't
+/// require the load to be error-free.
 fn load_with(extra: &str) -> KnowledgeBase {
+    load_capturing_errors(extra).0
+}
+
+/// Phase 3 helper: returns errors so dispatch-failure diagnostics
+/// can be asserted directly. The WI-210 dispatch-failure marker
+/// surfaces as a LoadError via load_phase_inner's all_errors.
+fn load_capturing_errors(
+    extra: &str,
+) -> (KnowledgeBase, LoadResult, Vec<load::LoadError>) {
     let stdlib = common::stdlib_dir();
     let files = common::collect_anthill_files(&stdlib);
     let mut parsed: Vec<_> = files.iter().map(|p| {
@@ -29,8 +41,10 @@ fn load_with(extra: &str) -> KnowledgeBase {
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
     kb.register_standard_builtins();
-    let _ = load::load_all(&mut kb, &refs, &NullResolver);
-    kb
+    match load::load_all(&mut kb, &refs, &NullResolver) {
+        Ok(r) => (kb, r, vec![]),
+        Err(errs) => (kb, LoadResult::default(), errs),
+    }
 }
 
 /// Render every `SortProvidesInfo` head the KB knows about, sorted.
@@ -118,10 +132,15 @@ fn fact_for_non_spec_sort_does_not_emit_provides_info() {
             entity wi210_green
           end
           sort Wi210Holder
-            fact Wi210Color[bound = wi210_red]
+            fact Wi210Color[count = 0]
           end
         end
     "#;
+    // Wi210Color has no `sort X = ?` decl, so the gate must skip
+    // SortProvidesInfo emission regardless of whether the binding
+    // shape is parametric-looking. Using a literal (`0`) for the
+    // value keeps the fixture independent of cross-sort name
+    // resolution.
     // Wi210Color has no `sort X = ?` decl, so even with bracket
     // notation this should not be treated as spec satisfaction.
     let mut kb = load_with(src);
@@ -196,6 +215,151 @@ fn lookup_spec_op_dispatch_rejects_op_on_non_parametric_sort() {
         .expect("op symbol registered");
     assert!(lookup_spec_op_dispatch(&kb, op_sym).is_none(),
         "op on non-parametric sort must not be a spec op");
+}
+
+// ─── Phase 3: dispatch hook in check_apply ──────────────────────
+
+/// Returns the diagnostic error strings (from env.diagnostics) tagged
+/// with "WI-210 dispatch failed" — the marker we push when Phase 3
+/// finds zero or multiple matching impls.
+fn dispatch_diagnostics(errors: &[anthill_core::kb::load::LoadError]) -> Vec<String> {
+    errors.iter()
+        .map(|e| format!("{e:?}"))
+        .filter(|s| s.contains("WI-210 dispatch failed"))
+        .collect()
+}
+
+#[test]
+fn dispatch_succeeds_when_unique_impl_matches() {
+    // A spec with one type param + one body-less op, an impl that
+    // pins State, and a caller that invokes Spec.op. Phase 3 should
+    // find a unique impl via SortProvidesInfo and succeed.
+    let src = r#"
+        namespace wi210p3.unique
+          export Wi210Spec3, Wi210Impl3, Wi210Caller3
+          sort Wi210Spec3
+            sort State = ?
+            operation spec_op(s: State) -> State
+          end
+          sort Wi210Impl3
+            entity wi210_i3
+            fact Wi210Spec3[State = Wi210Impl3]
+            operation spec_op(s: Wi210Impl3) -> Wi210Impl3 = s
+          end
+          sort Wi210Caller3
+            entity wi210_c3
+            operation use_spec(x: Wi210Impl3) -> Wi210Impl3 =
+              Wi210Spec3.spec_op(x)
+          end
+        end
+    "#;
+    let (_kb, _result, errors) = load_capturing_errors(src);
+    let diag = dispatch_diagnostics(&errors);
+    assert!(diag.is_empty(),
+        "expected no WI-210 dispatch errors; got:\n{diag:#?}\n\
+         all errors: {errors:#?}");
+}
+
+#[test]
+fn dispatch_legacy_when_no_provides_records_exist() {
+    // Spec exists with no `provides`/`fact Spec[…]` declarations
+    // anywhere. WI-210 is opt-in per spec: `NoCandidates` is a
+    // no-op so legacy stdlib specs (Numeric, Map, …) keep working.
+    let src = r#"
+        namespace wi210p3.no_impl
+          export Wi210Spec4, Wi210Caller4
+          sort Wi210Spec4
+            sort State = ?
+            operation spec_op(s: State) -> State
+          end
+          sort Wi210Caller4
+            entity wi210_c4
+            operation use_spec(x: Wi210Caller4) -> Wi210Caller4 =
+              Wi210Spec4.spec_op(x)
+          end
+        end
+    "#;
+    let (_kb, _result, errors) = load_capturing_errors(src);
+    let diag = dispatch_diagnostics(&errors);
+    assert!(diag.is_empty(),
+        "spec with zero SortProvidesInfo records must not trigger \
+         WI-210 dispatch failure (opt-in per spec); got: {diag:#?}");
+}
+
+#[test]
+fn dispatch_fails_when_provides_exist_but_none_match_bindings() {
+    // Spec has an impl for one binding (Wi210Carrier4a) but the
+    // caller invokes with a different type (Wi210Carrier4b). With
+    // the opt-in trigger satisfied (≥1 SortProvidesInfo for the
+    // spec) and zero matching candidates, dispatch fails.
+    let src = r#"
+        namespace wi210p3.bind_mismatch
+          export Wi210Spec4, Wi210Carrier4a, Wi210Carrier4b, Wi210Impl4a, Wi210Caller4
+          sort Wi210Spec4
+            sort State = ?
+            operation spec_op(s: State) -> State
+          end
+          sort Wi210Carrier4a
+            entity wi210_carrier4a
+          end
+          sort Wi210Carrier4b
+            entity wi210_carrier4b
+          end
+          sort Wi210Impl4a
+            entity wi210_i4a
+            fact Wi210Spec4[State = Wi210Carrier4a]
+            operation spec_op(s: Wi210Carrier4a) -> Wi210Carrier4a = s
+          end
+          sort Wi210Caller4
+            entity wi210_c4
+            operation use_spec(x: Wi210Carrier4b) -> Wi210Carrier4b =
+              Wi210Spec4.spec_op(x)
+          end
+        end
+    "#;
+    let (_kb, _result, errors) = load_capturing_errors(src);
+    let diag = dispatch_diagnostics(&errors);
+    assert!(!diag.is_empty(),
+        "expected dispatch failure for binding mismatch; got: {errors:#?}");
+    assert!(diag.iter().any(|d| d.contains("Wi210Spec4")),
+        "expected diagnostic to mention Wi210Spec4; got:\n{diag:#?}");
+}
+
+#[test]
+fn dispatch_fails_when_two_impls_share_binding() {
+    // Two impls both claim `Spec5[State = Carrier5]` — the call's
+    // bindings would match both, so coherence rule (C) rejects.
+    let src = r#"
+        namespace wi210p3.ambig
+          export Wi210Spec5, Wi210Carrier5, Wi210ImplA5, Wi210ImplB5, Wi210Caller5
+          sort Wi210Spec5
+            sort State = ?
+            operation spec_op(s: State) -> State
+          end
+          sort Wi210Carrier5
+            entity wi210_carrier5
+          end
+          sort Wi210ImplA5
+            entity wi210_ia5
+            fact Wi210Spec5[State = Wi210Carrier5]
+            operation spec_op(s: Wi210Carrier5) -> Wi210Carrier5 = s
+          end
+          sort Wi210ImplB5
+            entity wi210_ib5
+            fact Wi210Spec5[State = Wi210Carrier5]
+            operation spec_op(s: Wi210Carrier5) -> Wi210Carrier5 = s
+          end
+          sort Wi210Caller5
+            entity wi210_c5
+            operation use_spec(x: Wi210Carrier5) -> Wi210Carrier5 =
+              Wi210Spec5.spec_op(x)
+          end
+        end
+    "#;
+    let (_kb, _result, errors) = load_capturing_errors(src);
+    let diag = dispatch_diagnostics(&errors);
+    assert!(!diag.is_empty(),
+        "expected dispatch failure for two-matching-impls case; got: {errors:#?}");
 }
 
 #[test]

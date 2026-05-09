@@ -707,6 +707,36 @@ fn check_apply(
         // Resolve return type deeply so `Option[T = Var(vid_T)]`
         // collapses to `Option[T = Term]` once `vid_T` is bound.
         let resolved_ret = walk_type_deep(kb, &subst, op.return_type);
+
+        // WI-210: if `fn_sym` is a body-less operation declared on a
+        // spec sort (a parametric sort), validate that exactly one
+        // impl satisfies the spec at the per-call substitution.
+        // Dispatch is opt-in per spec — `NoCandidates` (no
+        // SortProvidesInfo for this spec at all) is a no-op so
+        // existing stdlib specs called without explicit impl
+        // declarations keep working. Coherence rule (C): rejects
+        // `NoMatch` (candidates exist but none match the bindings)
+        // and `Ambiguous` (more than one match).
+        if let Some(spec_sort_sym) = lookup_spec_op_dispatch(kb, fn_sym) {
+            let outcome = find_unique_impl_op(kb, &subst, spec_sort_sym, fn_sym);
+            let diag = match outcome {
+                DispatchOutcome::NoCandidates | DispatchOutcome::Unique(_) => None,
+                DispatchOutcome::NoMatch => Some(format!(
+                    "WI-210 dispatch failed: no impl of `{}` for the inferred bindings",
+                    kb.qualified_name_of(fn_sym),
+                )),
+                DispatchOutcome::Ambiguous => Some(format!(
+                    "WI-210 dispatch failed: ambiguous impls for `{}` at the inferred bindings",
+                    kb.qualified_name_of(fn_sym),
+                )),
+            };
+            if let Some(msg) = diag {
+                let mut env_with_diag = env.clone();
+                env_with_diag.diagnostics.push(msg);
+                return Some(TypeResult { ty: resolved_ret, env: env_with_diag, effects });
+            }
+        }
+
         return Some(TypeResult { ty: resolved_ret, env: env.clone(), effects });
     }
 
@@ -816,6 +846,201 @@ pub fn lookup_spec_op_dispatch(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sym
     }
 
     Some(parent_sym)
+}
+
+/// WI-210 — dispatch result for a spec-op call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchOutcome {
+    /// No `SortProvidesInfo` records exist for this spec at all.
+    /// Dispatch is opt-in per spec: with zero candidates, the call
+    /// type-checks against the spec's signature (legacy semantics)
+    /// — no impl is required. Stdlib specs like `Numeric` and `Map`
+    /// rely on this to be called without explicit impl declarations.
+    NoCandidates,
+    /// Exactly one candidate's bindings match the per-call subst.
+    /// Carries the impl operation symbol for the runtime to call.
+    Unique(Symbol),
+    /// Candidates exist but none match the inferred bindings.
+    /// User likely forgot to declare an impl at the right binding.
+    NoMatch,
+    /// Two or more candidates match — coherence rule (C) rejects.
+    Ambiguous,
+}
+
+/// WI-210 — given a spec sort and a per-call substitution, find the
+/// unique impl operation symbol that satisfies the spec at the
+/// substitution's bindings. Walks `SortProvidesInfo` records, matching
+/// each candidate's recorded bindings against the per-call subst by
+/// the existing binding-keyed unification model:
+/// - The candidate's `SortView(Spec, [(name, value), ...])` carries
+///   bindings whose keys are the user's short identifiers.
+/// - For each binding, construct the spec parameter's qualified name
+///   (`<spec_qn>.<binding short name>`), resolve its SortAlias to a
+///   `Var(vid)`, look up the per-call value at `vid`, and check via
+///   `dispatch_values_match`.
+/// - All bindings must match; the spec's base symbol must equal
+///   `spec_sort`.
+pub fn find_unique_impl_op(
+    kb: &KnowledgeBase,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    op_short_sym: Symbol,
+) -> DispatchOutcome {
+    use smallvec::SmallVec;
+
+    let provides_sym = match kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") {
+        Some(s) => s,
+        None => return DispatchOutcome::NoCandidates,
+    };
+    let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+    let op_short = kb.resolve_sym(op_short_sym).to_string();
+    let mut matches: Vec<Symbol> = Vec::new();
+    let mut saw_candidate_for_spec = false;
+
+    for rid in kb.by_functor(provides_sym) {
+        if !kb.rule_body(rid).is_empty() { continue; }
+        let head = kb.rule_head(rid);
+        let head_named = match kb.get_term(head) {
+            Term::Fn { named_args, .. } => named_args.clone(),
+            _ => continue,
+        };
+
+        let sort_ref_tid = match get_named_arg(kb, &head_named, "sort_ref") {
+            Some(t) => t,
+            None => continue,
+        };
+        let spec_view_tid = match get_named_arg(kb, &head_named, "spec") {
+            Some(t) => t,
+            None => continue,
+        };
+
+        // Unwrap SortView(base, …named) — or accept a bare functor for
+        // the no-bindings case (parallel to resolve_provides_spec).
+        let (view_base_sym, view_bindings): (Symbol, SmallVec<[(Symbol, TermId); 2]>) =
+            match kb.get_term(spec_view_tid) {
+                Term::Fn { functor, pos_args, named_args } => {
+                    let f_qn = kb.qualified_name_of(*functor);
+                    if f_qn == "anthill.reflect.SortView" || f_qn.ends_with(".SortView") {
+                        let base = match pos_args.first().copied() {
+                            Some(t) => t,
+                            None => continue,
+                        };
+                        let base_sym = match kb.get_term(base) {
+                            Term::Fn { functor, .. }
+                            | Term::Ref(functor)
+                            | Term::Ident(functor) => *functor,
+                            _ => continue,
+                        };
+                        (base_sym, named_args.clone())
+                    } else {
+                        (*functor, SmallVec::new())
+                    }
+                }
+                Term::Ref(s) | Term::Ident(s) => (*s, SmallVec::new()),
+                _ => continue,
+            };
+
+        if view_base_sym != spec_sort {
+            continue;
+        }
+        saw_candidate_for_spec = true;
+
+        // Match each candidate binding against the per-call subst at
+        // the spec parameter's logical Var.
+        let mut all_match = true;
+        for (binding_short_sym, candidate_value) in &view_bindings {
+            let binding_short = kb.resolve_sym(*binding_short_sym);
+            let param_qn = format!("{spec_qn}.{binding_short}");
+            let param_qn_sym = match kb.try_resolve_symbol(&param_qn) {
+                Some(s) => s,
+                None => { all_match = false; break; }
+            };
+            let alias_target = match resolve_sort_alias(kb, param_qn_sym) {
+                Some(t) => t,
+                None => { all_match = false; break; }
+            };
+            let vid = match kb.get_term(alias_target) {
+                Term::Var(Var::Global(v)) => *v,
+                _ => { all_match = false; break; }
+            };
+            let per_call_value = match subst.resolve_with_term(vid) {
+                Some(v) => v,
+                None => { all_match = false; break; }
+            };
+            let lesseq = dispatch_values_match(kb, per_call_value, *candidate_value);
+            if !lesseq {
+                all_match = false;
+                break;
+            }
+        }
+        if !all_match { continue; }
+
+        // Look up `<impl_qn>.<op_short>` to find the impl op symbol.
+        let impl_sort_sym = match kb.get_term(sort_ref_tid) {
+            Term::Fn { functor, .. }
+            | Term::Ref(functor)
+            | Term::Ident(functor) => *functor,
+            _ => continue,
+        };
+        let impl_qn = kb.qualified_name_of(impl_sort_sym).to_string();
+        let impl_op_qn = format!("{impl_qn}.{op_short}");
+        if let Some(impl_op_sym) = kb.try_resolve_symbol(&impl_op_qn) {
+            matches.push(impl_op_sym);
+        }
+    }
+
+    if !saw_candidate_for_spec {
+        // No SortProvidesInfo records exist for this spec — dispatch
+        // is opt-in per spec, so this is not an error. The call
+        // type-checks against the spec's signature alone. Stdlib
+        // specs (Numeric, Map, …) rely on this.
+        return DispatchOutcome::NoCandidates;
+    }
+    // Coherence rule (C): exactly one match wins.
+    match matches.len() {
+        0 => DispatchOutcome::NoMatch,
+        1 => DispatchOutcome::Unique(matches.into_iter().next().unwrap()),
+        _ => DispatchOutcome::Ambiguous,
+    }
+}
+
+/// WI-210 — compare a per-call subst's binding (a typer-side Type term,
+/// e.g. `sort_ref(name: Ref(X))`) against a candidate's `SortView`
+/// binding value (typically a bare `Ref(X)` from the loader's
+/// `convert_term`). The two shapes carry the same nominal sort but
+/// differ in wrapping; `types_lesseq` doesn't bridge them. We
+/// extract the underlying sort symbol from each side and compare.
+/// Falls through to `types_lesseq` for the same-shape case so that
+/// future work (parameterized values, entity-of-sort subtyping in
+/// binding values) keeps working as the relation grows.
+fn dispatch_values_match(
+    kb: &KnowledgeBase,
+    per_call_value: TermId,
+    candidate_value: TermId,
+) -> bool {
+    if types_lesseq(kb, per_call_value, candidate_value) {
+        return true;
+    }
+    let per_call_sym = sort_sym_of_term(kb, per_call_value);
+    let candidate_sym = sort_sym_of_term(kb, candidate_value);
+    match (per_call_sym, candidate_sym) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Extract the underlying sort symbol from a term in any of the
+/// shapes a binding value may take: `sort_ref(name: Ref(X))`,
+/// bare `Ref(X)` / `Ident(X)`, or a nullary `Fn { functor: X, … }`.
+fn sort_sym_of_term(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> {
+    if let Some(s) = extract_sort_ref_sym(kb, t) {
+        return Some(s);
+    }
+    match kb.get_term(t) {
+        Term::Ref(s) | Term::Ident(s) => Some(*s),
+        Term::Fn { functor, .. } => Some(*functor),
+        _ => None,
+    }
 }
 
 /// True iff the OperationInfo for `op_sym` records body = none.
