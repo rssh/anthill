@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft. Filed alongside WI-213. Driver is WI-210 phase 3 (spec/impl call-site dispatch); the issue surfaced when stdlib's namespace-level `fact Numeric[Int]` failed deterministic candidate matching.
+Draft. Driver is WI-210 phase 3 (spec/impl call-site dispatch); the issue surfaced when stdlib's namespace-level `fact Numeric[Int]` failed deterministic candidate matching.
 
 ## Problem
 
