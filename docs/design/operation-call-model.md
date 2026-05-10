@@ -2,7 +2,7 @@
 
 ## Status: Decision (post-brainstorm)
 
-## Tracks: WI-204 (port cmd_X), WI-218 (static-dispatch rewrite shipped — needs follow-up patch), WI-210 (spec/impl call-site dispatch)
+## Tracks: WI-204 (port cmd_X), WI-218 (initial static-dispatch rewrite landed; soundness patch pending — see Implementation roadmap), WI-210 (spec/impl call-site dispatch)
 
 ## Brainstorm: see `operation-call-model-brainstorm.md` for the exploration. This doc is the resulting design only.
 
@@ -107,14 +107,21 @@ Building an requirement value:
 construct_requirement(impl_functor, requirements)
 ```
 
-`requirements` is a list of expressions (each evaluating to an requirement value at runtime). The expressions can be:
+`requirements` is a list of expressions (each evaluating to a `Value::Requirement(handle)` at runtime). The grammar of allowed source expressions:
 
-- `requirement_at_current(j)` — read the constructor's frame.requirements[j].
-- `requirement_at_sort(requirement_at_current(j), k)` — project from the k-th bundled requirement of an requirement value at slot j.
-- A load-time-constant reference — for requirements resolvable from project facts.
-- A nested `construct_requirement(...)` — for chained sub-requirements.
+```
+req_source ::= requirement_at_current(j)                    -- frame slot
+            | requirement_at_sort(req_source, k)             -- projection chain
+            | construct_requirement(impl, [req_source ...])  -- nested construction
+            | const_requirement(symbol)                      -- load-time-constant ref to a registered impl
+```
 
-The typer at the construction site walks the impl's `requirements` (its transitive closure) and emits one expression per slot, choosing the source from the constructor's available requirement scope (frame slots + projections from those + project facts).
+- **`requirement_at_current(j)`** — reads the enclosing frame's slot j. Used when the construction site has the needed dep already in its requirements scope.
+- **`requirement_at_sort(req_source, k)`** — projects from a chain. Used at dispatch sites where sub-deps live inside the dispatching value.
+- **Nested `construct_requirement(...)`** — used when the typer has resolved a sub-impl at this construction site (typical for conditional instances chains).
+- **`const_requirement(symbol)`** — a reference to a globally-registered impl (e.g., a non-conditional `fact Eq[T = Int]` resolves to a single canonical IntEq value). At runtime this materializes as a single shared arena slot, identified by the symbol; only allocated lazily on first use.
+
+The typer at the construction site walks the impl's `requirements` (its transitive closure) and emits one expression per slot, choosing the most direct source from the construction's available scope.
 
 ### Eval handling for requirement_at_current and requirement_at_sort
 
@@ -149,9 +156,9 @@ What changes between direct and dispatch is the **IR transform** at the call sit
 
 - The callee is op_short of an impl reached through `frame.requirements[i]`.
 - The callee's `requirements` is its impl-side transitive closure.
-- Each slot of `requirements` is sourced as one of:
-  - **Sort-level deps** of the impl — from the requirement value's bundled requirements: `requirement_at_sort(requirement_at_current(i), k)`.
-  - **Op-level / extra deps** introduced by the op's own type-params or its body's calls outside the sort — from caller's frame: `requirement_at_current(j)`.
+- Each slot of `requirements` is sourced from one of:
+  - **The dispatching value's bundle** — for deps the impl declared as part of its sort-level `requires`: `requirement_at_sort(requirement_at_current(i), k)`.
+  - **The caller's frame** — for deps that aren't covered by the dispatching value's bundle. In v0 this only happens for cross-sort deps that the body discovered (e.g., a body calls `C.foo` where C is in `Sort.requires` of the enclosing sort but not of the dispatched impl). In a future per-op-requires extension, op-level deps would also source here.
 
 Worked example (using only sort-level requires, the v0 case):
 
@@ -180,7 +187,7 @@ The runtime then pushes a new frame with `frame.requirements = [<Eq requirement>
 
 > **Future extension (out of v0 scope)**: per-operation `requires` clauses (e.g., `op bar[U](u: U) requires Ord[U]`) would mix sort-level and op-level deps in `cmp`'s requirements list. The op-level slot would source from the caller's frame (`requirement_at_current(j)`) rather than from the dispatching value's bundle. Mechanism is the same; the only difference is where the slot's source comes from. Per-op requires is listed in "Out of scope" — see that section.
 
-The trivial case where dispatch's `requirements = []` only happens when the callee's `requirements = []` — i.e., the dispatched op has no deps at all (a leaf op like `IntEq.eq`). The realistic generic case (`eq` through `Eq[List[X]]`, `cmp` above, anything with sort-level requires) always has at least one entry.
+A dispatch site has `requirements = []` only when the callee is a **leaf op** with no deps — e.g., `IntEq.eq`, where IntEq's body uses nothing else. Realistic generic ops with sort-level requires (e.g., `Eq[List[X]]`'s eq, `cmp` above) always have at least one entry.
 
 ### Requirement values carry their own requirements
 
@@ -253,15 +260,17 @@ Recursive: if `Numeric[T=Int]` (e.g., IntNum) has its own requirements, IntNum's
 
 ### Putting it together: dispatch end-to-end
 
-When `apply_within(fn = requirement_at_current(0, "eq"), args = [x, y], requirements = E)` reduces:
+When `apply_within(fn = requirement_at_current(0, "eq"), args = [x, y], requirements = E)` reduces, the eval performs (in order):
 
-1. Read `frame.requirements[0]` → the IntEq requirement value V.
-2. Resolve `<V.functor>.eq` → IntEq.eq's impl symbol.
-3. Evaluate `args` and `E` (via existing AwaitState path; `E`'s entries may include `requirement_at_sort(requirement_at_current(0), k)` projections that read into V).
-4. Push new frame:
+1. **Resolve the impl symbol** — read `frame.requirements[0]` → the IntEq requirement value V; look up `<V.functor>.eq` → IntEq.eq's impl symbol. This step is the dispatch lookup. It happens **first** because steps 2 and 3 are driven by the impl's signature (param symbols, expected requirements length).
+2. **Evaluate the apply's `requirements` slot** (`E`) via AwaitState. `E`'s entries may include `requirement_at_sort(requirement_at_current(0), k)` projections that themselves read into V. Each entry reduces to a `Value::Requirement(handle)` and is buffered.
+3. **Evaluate `args`** via AwaitState, buffering Values.
+4. **Push new frame**:
    - `locals` = zip(impl.params, evaluated args)
-   - `requirements`   = evaluated `E`        ← always from the apply's requirements slot
-   - `expr`   = impl body
+   - `requirements` = evaluated `E`        ← always from the apply's requirements slot
+   - `expr` = impl body
+
+(Step 1 is purely a lookup that doesn't reduce sub-expressions; it doesn't conflict with the AwaitState ordering in steps 2-3. The "Eval mechanics: AwaitState with requirements" section below details how steps 2-3 interleave under the unified `ApplyWithin` AwaitState variant.)
 
 So requirement values are essentially closure-like: each one carries the sort + the resolved requirements needed to invoke its ops. The IR transform at the dispatch site reads from the requirement value (via `requirement_at_sort`) to construct the callee's `requirements` list. The runtime is uniform — `frame.requirements` always comes from `apply_within.requirements`, regardless of whether the call is direct or dispatched.
 

@@ -10,7 +10,8 @@ Conventions used below:
 
 - `requirement_at_current(i)` reads `frame.requirements[i]` (the i-th requirement in this body's frame).
 - `requirement_at_current(i, op_short)` is the fn-position form: dispatch `op_short` through `frame.requirements[i]`.
-- `requirement_at_sort(requirement_expr, k)` projects into an requirement value to read its k-th bundled requirement (used at dispatch sites to forward an requirement value's deps onward — see Example 8).
+- `requirement_at_sort(requirement_expr, k)` projects into a requirement value to read its k-th bundled requirement (used at dispatch sites to forward a requirement value's deps onward — see Example 8).
+- **"Self bound"** describes a body that calls a same-sort spec op — e.g., `Eq.neq` calling `eq`, or `Monad.mapM` calling `bind`. The body needs the dispatching impl's other ops, so its `requirements[0]` holds that impl's requirement value (a value whose functor is the impl's name). The convention is informal — `requirements` is just a list, and "Self" is one of its entries when the body uses a same-sort op.
 - IR is rendered in a slightly informal sugared form for readability; actual `Term::Fn { functor: apply_within, named_args: [...] }` shapes are larger but mechanical.
 - Each example shows: source, the per-op requirements derived by body walk, the elaborated body, and the call-site translations from a hypothetical caller.
 
@@ -330,7 +331,7 @@ fact Monad[M = StateT[S = ?S, M = ?M]] :- Monad[M = ?M]            -- conditiona
 
 ### Per-op requirements (Monad.mapM)
 
-`Monad.mapM`'s body has five spec-op calls (pure, bind, bind, recursive mapM, pure) all using Self == "this Monad instance." Self bound: requirements = `[Monad[M = M]]`.
+`Monad.mapM`'s body has five spec-op calls (pure, bind, bind, recursive mapM, pure) all using Self == "this Monad instance." Self bound — the body's `requirements` has one slot: `[Monad]` (the Self instance, which the caller passes in as `frame.requirements[0]`).
 
 ### Elaborated body of `Monad.mapM`
 
@@ -406,10 +407,15 @@ This body uses M's bind. So StateT's bind body's requirements = [Monad[M = M]] (
 
 Some caller has a value of type `StateT[Int, Option, X]` and calls `bind` on it.
 
-- SLD synthesis: want Monad[StateT[Int, Option]]. Match conditional clause `Monad[StateT[?S, ?M]] :- Monad[?M]` with `?S = Int, ?M = Option`. Subgoal: Monad[Option]. Find: `fact Monad[M = Option]` → OptionMonad.
-- The conditional clause's *resolved requirement value* is some StateT-Monad-instance constructed by the StateT machinery, which internally references OptionMonad.
-- At the caller's `bind` call site, `requirements = [<resolved_StateT_Monad_instance>]`.
-- That instance's bind body, when entered, has its `frame.requirements[0]` = the inner OptionMonad reference (passed through by the StateT-Monad-instance construction).
+- SLD synthesis: want `Monad[StateT[Int, Option]]`. Match conditional clause `Monad[StateT[?S, ?M]] :- Monad[?M]` with `?S = Int, ?M = Option`. Subgoal: `Monad[Option]`. Find: `fact Monad[M = Option]` → OptionMonad.
+- The IR transform emits two nested `construct_requirement` calls:
+  ```
+  let inner = construct_requirement(OptionMonad, [])                  -- OptionMonad
+  let outer = construct_requirement(StateTMonad, [inner])              -- StateTMonad bundling OptionMonad
+  ```
+  Where `StateTMonad` is the impl sort body (the conditional clause). It has `requirements = [Monad[?M]]` — one slot for the inner monad. The construction passes `inner` (= OptionMonad's requirement value) into that slot.
+- At the caller's `bind` call site, `requirements = [outer]` — the StateTMonad value, which carries OptionMonad in its bundle.
+- StateTMonad's `bind` body, when entered, has `frame.requirements[0]` = OptionMonad (the bundled inner). Inside, calls like `requirement_at_current(0, "bind")` dispatch through OptionMonad.
 
 Each layer's body uses `requirement_at_current(0)` for its inner Monad. The chain materializes step-by-step as the call stack descends — never as one giant pre-built data structure.
 
@@ -631,20 +637,33 @@ The body code is identical in every frame; only `frame.requirements` differs.
 
 ### Refcount lifecycle for this chain
 
-Starting at the outer call's frame push (after step 1 above):
+Tracking refcounts step-by-step. Each `Clone` of a `RequirementHandle` bumps the arena slot's refcount; `Drop` decrements; rc=0 frees. The outer call begins after the three `construct_requirement` steps land in the caller's locals (each with rc=1, plus their bundled-into bumps).
 
+After construction the rcs are:
 ```
-env_LLX:  caller-local + IR-eval-step + frame.requirements (transient) → various transient bumps then drop
-env_LX:   env_LLX.requirements[0] + caller-local + (passed into outer frame.requirements)
-env_X:    env_LX.requirements[0] + (passed into inner frames as needed)
+env_X:    rc=2  (caller-local +1, env_LX.requirements[0] +1)
+env_LX:   rc=2  (caller-local +1, env_LLX.requirements[0] +1)
+env_LLX:  rc=1  (caller-local +1)
 ```
 
-When outer call returns, caller's local drops:
-- `env_LLX` rc → 0; freed; cascades drop on its `requirements[0]` (= env_LX).
-- `env_LX` rc decrements; if no other holder, also frees; cascades on its `requirements[0]` (= env_X).
-- `env_X` rc decrements; if no other holder, also frees.
+The outer apply_within evaluates `requirement_at_sort(requirement_at_current(j), 0)` to populate the call's `requirements` slot. That projection clones env_LLX.requirements[0] = env_LX:
+```
+env_LX:   rc=3  (+1 in apply_within's evaluated buffer)
+```
 
-No cycle ⇒ refcount cascades cleanly.
+The outer call then pushes a frame with `frame.requirements = [env_LX]` (move from buffer to frame; net +0). Body executes; transient bumps come from the body's own `apply_within` evaluations, each balanced by frame pop. When the outer call returns:
+```
+env_LX:   rc=2  (-1 from frame.requirements pop)
+```
+
+When the caller drops its three locals:
+```
+env_LLX:  rc=0  → freed; cascades drop on env_LX
+env_LX:   rc=1  (caller-local -1, then env_LLX cascade -1) → ... rc=0 → freed; cascades on env_X
+env_X:    rc=1  (caller-local -1, then env_LX cascade -1) → ... rc=0 → freed
+```
+
+Drop ordering matters: each freed slot's `RequirementSlot::drop` must release the inner handles **after** the outer arena borrow ends (the existing `release_and_take` pattern in `cell_arena.rs` handles this). No cycle ⇒ no leak.
 
 ### Notes
 
