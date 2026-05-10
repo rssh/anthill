@@ -27,37 +27,37 @@ use smallvec::SmallVec;
 use crate::intern::Symbol;
 
 use super::term::{Term, TermId};
-use super::typing::{lookup_spec_op_dispatch, requires_chain, resolve_handle};
+use super::typing::{list_to_vec, lookup_spec_op_dispatch, requires_chain, resolve_handle};
 use super::KnowledgeBase;
 
 /// A single requirement entry: a spec sort plus the bindings the
 /// caller's body needs the requirement value to be at. The bindings
 /// match the user-facing named-arg form (e.g. `T = Int`, `combine = ...`).
 /// Equality is structural; same (spec, bindings) pair is one goal.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpRequirement {
     pub spec_sort: Symbol,
+    /// Per-call type-arg bindings (e.g. `T = Int`). Reserved for the
+    /// post-rewrite-pass refinement: callers will substitute these via
+    /// the typer's per-call subst before unioning into their own
+    /// requirements list. v0 leaves this empty; coverage matching uses
+    /// `spec_sort` only until the rewrite pass populates it.
     pub bindings: SmallVec<[(Symbol, TermId); 2]>,
 }
-
-impl PartialEq for OpRequirement {
-    fn eq(&self, other: &Self) -> bool {
-        self.spec_sort == other.spec_sort && self.bindings == other.bindings
-    }
-}
-impl Eq for OpRequirement {}
 
 /// Compute the transitive requirements list for `op_sym`. Returns the
 /// positional list, ordered by depth-first body traversal.
 pub fn op_requirements(kb: &KnowledgeBase, op_sym: Symbol) -> Vec<OpRequirement> {
     let mut memo: HashMap<Symbol, Vec<OpRequirement>> = HashMap::new();
     let mut in_progress: Vec<Symbol> = Vec::new();
-    compute_op_requirements(kb, op_sym, &mut in_progress, &mut memo)
+    let syms = WalkSymbols::resolve(kb);
+    compute_op_requirements(kb, op_sym, &syms, &mut in_progress, &mut memo)
 }
 
 fn compute_op_requirements(
     kb: &KnowledgeBase,
     op_sym: Symbol,
+    syms: &WalkSymbols,
     in_progress: &mut Vec<Symbol>,
     memo: &mut HashMap<Symbol, Vec<OpRequirement>>,
 ) -> Vec<OpRequirement> {
@@ -72,28 +72,23 @@ fn compute_op_requirements(
     }
     in_progress.push(op_sym);
 
-    let body = lookup_op_body(kb, op_sym);
+    let body = crate::eval::eval::lookup_operation_body(kb, op_sym).map(|(t, _)| t);
     let mut result: Vec<OpRequirement> = Vec::new();
 
     if let Some(body_term) = body {
-        walk_calls(kb, body_term, &mut |callee_sym, callee_bindings| {
-            // Direct contribution: callee is a spec op.
+        walk_calls(kb, body_term, syms, &mut |callee_sym, callee_bindings| {
             if let Some(spec_sort) = lookup_spec_op_dispatch(kb, callee_sym) {
                 push_unique(&mut result, OpRequirement {
                     spec_sort,
                     bindings: callee_bindings.clone(),
                 });
             }
-
-            // Transitive contribution: pull in callee's own requirements,
-            // each substituted by the call-site's bindings. v0
-            // simplification: we don't substitute (the design's
-            // substitute(other_op.requirements, call_subst) needs the
-            // typer's full subst machinery). For ground call sites
-            // (no open T), the callee's bindings are already concrete
-            // and we just inherit them as-is.
+            // Transitive contribution. v0 simplification: callee's
+            // bindings are not substituted by call-site subst — the
+            // rewrite pass will refine this when it produces the
+            // per-call bindings the design's substitute() needs.
             let transitive =
-                compute_op_requirements(kb, callee_sym, in_progress, memo);
+                compute_op_requirements(kb, callee_sym, syms, in_progress, memo);
             for req in transitive {
                 push_unique(&mut result, req);
             }
@@ -111,79 +106,52 @@ fn push_unique(list: &mut Vec<OpRequirement>, item: OpRequirement) {
     }
 }
 
-/// Look up the body term for an operation. Mirrors
-/// `eval::eval::lookup_operation_body` minus the params return.
-fn lookup_op_body(kb: &KnowledgeBase, op_sym: Symbol) -> Option<TermId> {
-    let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo")?;
-    let body_field = "body";
-    let name_field = "name";
-    for rid in kb.by_functor(op_info_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
-        let head = kb.rule_head(rid);
-        let named_args = match kb.get_term(head) {
-            Term::Fn { named_args, .. } => named_args.clone(),
-            _ => continue,
-        };
-        let name_match = named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == name_field)
-            .and_then(|(_, v)| match kb.get_term(*v) {
-                Term::Ref(s) => Some(*s),
-                _ => None,
-            });
-        if name_match != Some(op_sym) { continue; }
-        let body_opt = named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == body_field)
-            .map(|(_, v)| *v)?;
-        return super::typing::unwrap_option(kb, body_opt);
+/// Reflect-symbol cache for the body walker. Resolved once per
+/// `op_requirements` invocation so `walk_calls` can compare functors
+/// via `Symbol` equality rather than `qualified_name_of` string-compare
+/// on every `Term::Fn` visited. The `fn` field key isn't a global
+/// qualified symbol, so we fall back to string compare for that one.
+struct WalkSymbols {
+    apply: Option<Symbol>,
+    apply_within: Option<Symbol>,
+}
+
+impl WalkSymbols {
+    fn resolve(kb: &KnowledgeBase) -> Self {
+        Self {
+            apply: kb.try_resolve_symbol("anthill.reflect.Expr.apply"),
+            apply_within: kb.try_resolve_symbol("anthill.reflect.Expr.apply_within"),
+        }
     }
-    None
 }
 
 /// Walk a body term, invoking `visit(callee_sym, callee_bindings)` for
 /// every apply / apply_within node found. `callee_bindings` is the
-/// per-call substitution as a list of (param_short, value_term) pairs —
-/// for v0 we extract this from the apply's named args (TODO: full
-/// typer-driven substitution). The walker visits `apply` and the
-/// requirement-aware variants; literals, lambdas, etc. are descended
-/// recursively for nested calls.
+/// per-call substitution; v0 leaves it empty (the rewrite pass will
+/// populate it from the typer's per-call subst).
 fn walk_calls(
     kb: &KnowledgeBase,
     tid: TermId,
+    syms: &WalkSymbols,
     visit: &mut dyn FnMut(Symbol, SmallVec<[(Symbol, TermId); 2]>),
 ) {
-    // Resolve occurrence handles to the underlying term — operation
-    // bodies are stored as `Const(Handle(Occurrence, ...))` references
-    // into the occurrence table, not as direct Fn nodes.
+    // Operation bodies are stored as `Const(Handle(Occurrence, ...))`
+    // references into the occurrence table, not as direct Fn nodes.
     let tid = resolve_handle(kb, tid);
     let term = kb.get_term(tid).clone();
-    match term {
-        Term::Fn { functor, pos_args, named_args } => {
-            // If this is an apply / apply_within node, harvest the call.
-            let functor_qn = kb.qualified_name_of(functor);
-            let is_apply = functor_qn == "anthill.reflect.Expr.apply"
-                || functor_qn == "anthill.reflect.Expr.apply_within";
-
-            if is_apply {
-                if let Some(fn_sym) = extract_apply_target(kb, &named_args) {
-                    // For v0, supply empty bindings — proper extraction
-                    // requires running the typer's per-call subst, which
-                    // is heavy machinery to invoke for analysis. Spec
-                    // sort identity suffices for the dependency graph;
-                    // bindings are optional refinement.
-                    visit(fn_sym, SmallVec::new());
-                }
-            }
-
-            // Recurse into all sub-terms — args, requirements channel,
-            // pattern guards, etc. all may contain nested calls.
-            for &p in &pos_args {
-                walk_calls(kb, p, visit);
-            }
-            for &(_, t) in &named_args {
-                walk_calls(kb, t, visit);
+    if let Term::Fn { functor, pos_args, named_args } = term {
+        let f = Some(functor);
+        if f == syms.apply || f == syms.apply_within {
+            if let Some(fn_sym) = extract_apply_target(kb, &named_args) {
+                visit(fn_sym, SmallVec::new());
             }
         }
-        Term::Ref(_) | Term::Ident(_) | Term::Const(_) | Term::Var(_) | Term::Bottom => {}
+        for &p in &pos_args {
+            walk_calls(kb, p, syms, visit);
+        }
+        for &(_, t) in &named_args {
+            walk_calls(kb, t, syms, visit);
+        }
     }
 }
 
@@ -248,7 +216,6 @@ fn operations_of_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<Symbol> {
         Some(s) => s,
         None => return Vec::new(),
     };
-    let mut out = Vec::new();
     for rid in kb.by_functor(sort_info_sym) {
         if !kb.rule_body(rid).is_empty() { continue; }
         let head = kb.rule_head(rid);
@@ -271,33 +238,15 @@ fn operations_of_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<Symbol> {
             Some(t) => t,
             None => continue,
         };
-        // Walk the cons-list — each element is a Ref to an op symbol.
-        let mut cur = ops_tid;
-        loop {
-            match kb.get_term(cur) {
-                Term::Fn { named_args: la, .. } => {
-                    let head = la.iter()
-                        .find(|(s, _)| kb.resolve_sym(*s) == "head")
-                        .map(|(_, v)| *v);
-                    let tail = la.iter()
-                        .find(|(s, _)| kb.resolve_sym(*s) == "tail")
-                        .map(|(_, v)| *v);
-                    match (head, tail) {
-                        (Some(h), Some(t)) => {
-                            if let Term::Ref(s) = kb.get_term(h) {
-                                out.push(*s);
-                            }
-                            cur = t;
-                        }
-                        _ => break,
-                    }
-                }
-                _ => break,
-            }
-        }
-        return out;
+        return list_to_vec(kb, ops_tid)
+            .into_iter()
+            .filter_map(|t| match kb.get_term(t) {
+                Term::Ref(s) => Some(*s),
+                _ => None,
+            })
+            .collect();
     }
-    out
+    Vec::new()
 }
 
 #[cfg(test)]
