@@ -360,6 +360,48 @@ operation render_any(x: ?dyn Display) -> String = show(x)
 
 `?dyn Display` is the "any thing satisfying Display" carrier — vtable territory. Anthill's plan is "`dyn` is opt-in"; this is where it has to be actually implemented.
 
+### Abstract monad — instance chains, same-env multi-call, closure env capture
+
+```anthill
+sort Monad
+  sort M = ?     -- M is a parametric sort, not a value-type
+  operation pure(x: ?A) -> M[T = ?A]
+  operation bind(m: M[T = ?A], f: ?A -> M[T = ?B]) -> M[T = ?B]
+
+  -- Generic operation derived from pure + bind
+  operation mapM(f: ?A -> M[T = ?B], xs: List[T = ?A]) -> M[T = List[T = ?B]] =
+    match xs
+      case nil() -> pure(nil())
+      case cons(x, rest) ->
+        bind(f(x), \y ->
+          bind(mapM(f, rest), \ys ->
+            pure(cons(y, ys))))
+end
+
+fact Monad[M = Option]    operation pure(x) = some(x)    operation bind(m, f) = ...
+
+-- Conditional / chained instance: Monad transformer
+fact Monad[M = StateT[S = ?S, M = ?M]] :- Monad[M = ?M]
+operation pure(x) = ...
+operation bind(m, f) = ...
+
+fact Monad[M = ExceptT[E = ?E, M = ?M]] :- Monad[M = ?M]
+operation pure(x) = ...
+operation bind(m, f) = ...
+```
+
+This case adds four pressures the simpler examples don't:
+
+- **Instance chains.** `StateT[Int, ExceptT[Err, Option]]` triggers an SLD walk through three conditional clauses. The synthesized env IS a chain of resolved Monad instances (three levels deep). M can't enumerate this combinatorially; D handles it natively because env construction IS an SLD query.
+
+- **Same-env multi-call within one body.** `mapM`'s body has five spec-op calls (pure, bind, bind, pure, plus recursive mapM) all dispatching against the same Monad env. Performance-relevant for D: cache the env lookup per frame rather than re-resolving each apply.
+
+- **Closure env capture.** The lambdas `\y -> ...` are monadic continuations. When they invoke bind / pure later, they need the same env mapM's frame had. Closures must capture `EnvironmentId` at creation. Plan M clones lambdas alongside the body; plan D requires concrete env-capture in closure values.
+
+- **Effect-tracking interaction.** StateT carries a `Modify` effect; ExceptT carries `Error`. The composed monad's effect row depends on the resolution chain. Dispatch and effect resolution become entangled. Not v0 work, but the model has to leave room.
+
+Why this matters for the M-vs-D choice: monad transformers are the case where Rust's monomorphization approach famously breaks down. The Rust ecosystem doesn't have a thriving monad-transformer library precisely because the cost shape is wrong — every `StateT<S, ExceptT<E, M>>` combination clones bodies. Lean and Haskell handle this gracefully because their runtime threads dictionaries / environments. If anthill commits to plan M, transformer-style abstractions will be expensive to use; if it commits to D / H, they're free.
+
 ### Cross-bound interaction (a deeper case)
 
 ```anthill
@@ -442,6 +484,7 @@ The alternative — plan M (Rust + C++ style) — is cleaner for codegen but:
 - Defeats hash-consing for generic specs.
 - Explodes the term store on stdlib-heavy projects (every Eq/Ordered/Numeric instance gets its own clones of derived methods, plus every conditional instance over Pair/List/Option/Tuple gets cloned per concrete combo).
 - Requires explicit cycle-breaking for recursive instances (`F[T = F[T = ...]]`).
+- **Breaks down on monad transformer stacks.** `StateT[S, ExceptT[E, M]]` style abstractions clone bodies per stack level × per type-arg combo — exponential. Rust's ecosystem reflects this: the monad-transformer pattern, ubiquitous in Haskell and natural in Lean, is rare in Rust precisely because the mono cost shape is wrong.
 - Doesn't compose well with conditional instances at scale — Lean's experience here is instructive: GHC and Lean both default to dict-passing at runtime even though they have access to LLVM specialization.
 
 Plan E (explicit-module / functor style, OCaml-inspired) is orthogonal to M/D/H. Worth considering as a layer on top of D for cases where the user wants explicit instantiation visible at the source level. Could be added later as syntax sugar.
