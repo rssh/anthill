@@ -37,9 +37,19 @@ Every scope (sort or operation) carries:
 - `substitution` — the type-arg bindings.
 - `Vec<resolved_requires>` — for each `requires` bound, the resolved `(bound_spec, impl_sort)` pair plus the sub-substitution that pins it.
 
-**Aggregation is a side effect of body type-checking, not a separate pass.** As the typer walks an operation's body, each spec-op call it encounters records the env that call needs. After typing the body, the operation's `required_envs` set is a natural byproduct. Sort-level `required_envs` is the union across the sort's operations — again, no separate computation.
+### Three derived analyses
 
-At runtime, the envs slot of a frame is **already populated** by the caller before the body executes. The body never re-aggregates; it just indexes into the collected vector via `env_at(i)`. Aggregation is an analysis fact at compile time, not a runtime operation.
+1. **Sort.requires** — source-level explicit (e.g. `requires A; requires Eq[T = T]`). What envs an instantiator of this sort must supply.
+
+2. **Op.required_envs** — derived from the body. As the typer walks an operation's body, every spec-op call records the env that call needs (direct contribution); calls to other ops in the same sort inherit those callees' `required_envs` (transitive contribution). This is THE env signature of the operation: call sites insert exactly this many env values into the apply's `envs` slot.
+
+3. **Sort.aggregated_envs** — derived as the union of the sort's operations' `required_envs`. Should equal (or be a subset of) `Sort.requires`. Used for a consistency check: if an op's body uses an env not in the sort's declared `requires`, that's a hard error.
+
+The aggregation isn't a separate pass — it's a side effect of typing each body. Per-op `required_envs` falls out as the typer walks calls; sort-level union is trivial.
+
+### Runtime is unaffected
+
+The envs slot of a frame is **already populated** by the caller before the body executes. The body never aggregates; it just indexes into `frame.envs[i]` via `env_at(i)`. Aggregation is an analysis fact at compile time, not a runtime operation.
 
 ## CallKind classification
 
