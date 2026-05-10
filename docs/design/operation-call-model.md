@@ -23,7 +23,71 @@ lambda_within(params, body, captured_envs)
 
 `envs` (or `captured_envs`) is a positional vector of resolved env values. Each value is a sort-tagged entity: `Value::Entity { functor: <impl_sort_name>, ... }`.
 
-Body references to spec ops use indexed access: `env_at(i).foo(x)` — i is the position in the enclosing scope's env slot. Position is canonicalized at signature time (sorted by bound's qualified name, or declaration order).
+Body references to spec ops use a new fn-position term form:
+
+```
+env_dispatch(env_index, op_short)
+```
+
+This represents "look up `frame.envs[env_index]`, get its functor, resolve `<functor>.<op_short>` to the actual impl op symbol." It appears inside `apply_within`'s `fn` slot when the body does spec-op dispatch through the env channel:
+
+```
+apply_within(
+  fn = env_dispatch(0, "eq"),
+  args = [x, y],
+  envs = []                    -- this call has its own envs slot, typically empty
+)
+```
+
+Position in the enclosing scope's env slot is canonicalized at signature time (sorted by bound's qualified name, or declaration order).
+
+### Why `env_dispatch` is the minimum new form
+
+Without it, the rewrite would need either:
+- Mingling env values into the args list (collapses the env / args structural distinction we just chose to preserve), OR
+- Allocating a fresh apply with a known impl-symbol fn (which can't work for defer-to-env since the impl isn't pinned at body site).
+
+`env_dispatch` is the smallest fn-position addition that lets the body refer to "the impl op accessible through env slot i" without resolving anything at body-rewrite time. The eval resolves the actual impl symbol at apply-time using `frame.envs[i]`.
+
+### Env values carry their own sub-envs
+
+Each impl sort has its own `required_envs` — the impl's body might use envs beyond what the spec dictates. `IntEq.eq`'s body might use Numeric and Show, even though `Eq.eq`'s spec doesn't mention them.
+
+Therefore env values are recursive: they bundle their impl's resolved sub-envs at construction time:
+
+```rust
+// Conceptually (extending Value::Entity):
+Value::Entity {
+    functor: IntEq,
+    pos: ...,
+    named: ...,
+    captured_envs: SmallVec<[Value; 2]>,    // resolved sub-envs for IntEq.required_envs
+}
+```
+
+When the typer at a caller's site builds the IntEq env value (to pass to a body that has `requires Eq`), it walks `IntEq.required_envs` and resolves each from the caller's own env scope:
+
+```
+env_value = construct_env(
+    impl_sort = IntEq,
+    captured_envs = [<resolved Numeric[T=Int]>, <resolved Show[T=Int]>]
+)
+```
+
+Recursive: if `Numeric[T=Int]` (e.g., IntNum) has its own required_envs, IntNum_value bundles them too. Walk terminates at impls with no requires.
+
+### Dispatch reads bundled envs from the env value
+
+When `apply_within(fn = env_dispatch(0, "eq"), args = [x, y], envs = [])` reduces:
+
+1. Read `frame.envs[0]` → the IntEq env value V.
+2. Resolve `<V.functor>.eq` → IntEq.eq's symbol.
+3. Push new frame: `frame.locals` from args, `frame.envs` from **V.captured_envs** (NOT from this apply's envs slot, which is typically empty for env_dispatch calls).
+4. Invoke IntEq.eq's body.
+
+So env values are essentially closure-like: each one carries the sort + the resolved sub-envs needed to invoke any of its ops. The dispatch through `env_dispatch` reads the env value's bundled envs as the source for the called op's frame.
+
+This matches Haskell dictionaries (records of methods + sub-dictionaries) and Lean instances (instance values carry resolved sub-instances). It's the natural shape once we accept that impls have their own requires.
 
 ### Why separate slots and not collapse-into-args
 
@@ -51,6 +115,25 @@ Every scope (sort or operation) carries:
 Bodies can contain qualified calls like `C.foo(x)` where C is a different sort with its own requires. When B's body calls `C.foo`, the call needs an env for whatever C requires. But C's requires aren't in B's syntactically-declared `Sort.requires` — they're discovered by walking B's body.
 
 So body walking is necessary to discover the full env requirements implied by a sort's operations. Sort-level closure (over explicit `requires` declarations only) is insufficient — it can't surface env needs that come from qualified calls inside bodies.
+
+### Impls have their own requires (independent of the spec)
+
+A spec like `sort Eq { sort T = ?; operation eq(a, b) -> Bool }` declares the protocol. But each impl might use additional envs in its body. For example:
+
+```anthill
+sort IntEq
+  fact Eq[T = Int]
+  requires Numeric[T = Int]      -- IntEq.eq's body uses Numeric
+  requires Show[T = Int]
+  operation eq(a, b) = ...        -- body uses add() and show() internally
+end
+```
+
+`Op.required_envs(IntEq.eq) = [Numeric[T=Int], Show[T=Int]]` — derived from IntEq's body, not Eq's spec.
+
+This means env values aren't just sort tags — they bundle their impl's resolved env scope. When the typer builds an IntEq env value at a call site, it walks IntEq's `required_envs` and resolves each from the caller's env scope. The env value carries those resolutions; the dispatch through it (`env_dispatch`) reads the bundled envs as the call's frame envs.
+
+See "Env values carry their own sub-envs" below in the IR section.
 
 ### Op.required_envs computation
 
