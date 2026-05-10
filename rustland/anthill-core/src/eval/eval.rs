@@ -11,7 +11,7 @@ use smallvec::SmallVec;
 
 use crate::intern::Symbol;
 use crate::kb::term::{HandleKind, Literal, Term, TermId};
-use crate::kb::typing::{get_named_arg, resolve_handle, unwrap_option};
+use crate::kb::typing::{resolve_handle, unwrap_option};
 use crate::kb::KnowledgeBase;
 
 use super::closure::Closure;
@@ -1264,47 +1264,13 @@ fn sort_named_canonical(kb: &KnowledgeBase, functor: Symbol, named: &mut Vec<(Sy
 }
 
 /// Walk OperationInfo facts for a functor, return (body term, params).
-/// Mirrors `kb::typing::check_operation_bodies` but yields the body
-/// expression `TermId` directly via `resolve_handle`.
-///
-/// WI-053 / WI-054 track a cache + shared-helper refactor so per-call
-/// lookup becomes O(1) instead of linear in OperationInfo fact count.
+/// Thin wrapper over `kb::op_info::lookup_operation_info`. Returns
+/// `None` for body-less ops (specs).
 pub fn lookup_operation_body(
     kb: &KnowledgeBase,
     functor: Symbol,
 ) -> Option<(TermId, Vec<(Symbol, TermId)>)> {
-    let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo")?;
-    for rid in kb.by_functor(op_info_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
-        let head = kb.rule_head(rid);
-        let named_args = match kb.get_term(head) {
-            Term::Fn { named_args, .. } => named_args,
-            _ => continue,
-        };
-
-        let name_sym = get_named_arg(kb, named_args, "name")
-            .and_then(|v| term_as_symbol(kb, v));
-        if name_sym != Some(functor) { continue; }
-
-        let body_opt = get_named_arg(kb, named_args, "body")?;
-        let body_handle = unwrap_option(kb, body_opt)?;
-        let body_term = resolve_handle(kb, body_handle);
-
-        let mut params = Vec::new();
-        if let Some(params_tid) = get_named_arg(kb, named_args, "params") {
-            for param_tid in &crate::kb::typing::list_to_vec(kb, params_tid) {
-                if let Term::Fn { named_args: pargs, .. } = kb.get_term(*param_tid) {
-                    let pname = get_named_arg(kb, pargs, "name")
-                        .and_then(|v| term_as_symbol(kb, v));
-                    let ptype = get_named_arg(kb, pargs, "type_name");
-                    if let (Some(n), Some(t)) = (pname, ptype) {
-                        params.push((n, t));
-                    }
-                }
-            }
-        }
-
-        return Some((body_term, params));
-    }
-    None
+    let rec = crate::kb::op_info::lookup_operation_info(kb, functor)?;
+    let body = rec.body?;
+    Some((body, rec.params))
 }

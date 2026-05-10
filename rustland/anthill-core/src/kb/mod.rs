@@ -11,6 +11,7 @@ pub mod load;
 pub mod resolve;
 pub mod occurrence;
 pub mod typing;
+pub mod op_info;
 pub mod op_requirements;
 pub mod term_view;
 pub mod execute;

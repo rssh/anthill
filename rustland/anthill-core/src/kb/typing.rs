@@ -860,57 +860,15 @@ struct OperationInfoFull {
 }
 
 /// Look up complete OperationInfo for a functor.
+/// Thin wrapper over `kb::op_info::lookup_operation_info` for the
+/// fields the typer cares about (params + return + effects, no body).
 fn lookup_operation_info_full(kb: &KnowledgeBase, functor: Symbol) -> Option<OperationInfoFull> {
-    let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo")?;
-    for rid in kb.by_functor(op_info_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
-        let head = kb.rule_head(rid);
-        let named_args = match kb.get_term(head) {
-            Term::Fn { named_args, .. } => named_args,
-            _ => continue,
-        };
-
-        let name_sym = match named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "name")
-            .and_then(|(_, v)| match kb.get_term(*v) { Term::Ref(s) => Some(*s), _ => None })
-        {
-            Some(s) => s,
-            None => continue,
-        };
-        if name_sym != functor { continue; }
-
-        let return_type = named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "return_type")
-            .map(|(_, v)| *v)?;
-
-        let effects = named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "effects")
-            .map(|(_, v)| list_to_vec(kb, *v))
-            .unwrap_or_default();
-
-        let mut params = Vec::new();
-        if let Some(params_tid) = named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "params")
-            .map(|(_, v)| *v)
-        {
-            for param_tid in &list_to_vec(kb, params_tid) {
-                if let Term::Fn { named_args: pargs, .. } = kb.get_term(*param_tid) {
-                    let pname = pargs.iter()
-                        .find(|(s, _)| kb.resolve_sym(*s) == "name")
-                        .and_then(|(_, v)| match kb.get_term(*v) { Term::Ref(s) => Some(*s), _ => None });
-                    let ptype = pargs.iter()
-                        .find(|(s, _)| kb.resolve_sym(*s) == "type_name")
-                        .map(|(_, v)| *v);
-                    if let (Some(name), Some(ty)) = (pname, ptype) {
-                        params.push((name, ty));
-                    }
-                }
-            }
-        }
-
-        return Some(OperationInfoFull { params, return_type, effects });
-    }
-    None
+    let rec = super::op_info::lookup_operation_info(kb, functor)?;
+    Some(OperationInfoFull {
+        params: rec.params,
+        return_type: rec.return_type,
+        effects: rec.effects,
+    })
 }
 
 /// WI-210 — `op_sym` is a "spec operation" if it is declared in a sort
@@ -3073,16 +3031,13 @@ fn extract_parent_name(kb: &KnowledgeBase, parent: TermId) -> String {
 
 /// Check operation bodies against their declared return types.
 fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &mut Vec<TypeError>) {
-    let op_info_sym = match kb.try_resolve_symbol("anthill.reflect.OperationInfo") {
-        Some(s) => s,
-        None => return,
-    };
-
     struct OpInfo {
         op_sym: Symbol,
         return_type: TermId,
         declared_effects: Vec<TermId>,
         body_expr: TermId,
+        // Param-name as a String for the typer's variable-name lookup;
+        // the underlying record uses Symbol.
         params: Vec<(String, TermId)>,
         span: Option<Span>,
     }
@@ -3090,78 +3045,29 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
     let mut ops_to_check = Vec::new();
 
     for &op_sym in op_syms {
-        // Find OperationInfo for this operation
-        for rid in kb.by_functor(op_info_sym) {
-            if !kb.rule_body(rid).is_empty() { continue; }
-            let head = kb.rule_head(rid);
-            let named_args = match kb.get_term(head) {
-                Term::Fn { named_args, .. } => named_args.clone(),
-                _ => continue,
-            };
-
-            let name_sym = match named_args.iter()
-                .find(|(s, _)| kb.resolve_sym(*s) == "name")
-                .and_then(|(_, v)| match kb.get_term(*v) { Term::Ref(s) => Some(*s), _ => None })
-            {
-                Some(s) => s,
-                None => continue,
-            };
-            if name_sym != op_sym { continue; }
-
-            let return_type = match named_args.iter()
-                .find(|(s, _)| kb.resolve_sym(*s) == "return_type")
-                .map(|(_, v)| *v)
-            {
-                Some(t) => t,
-                None => continue,
-            };
-
-            let body_opt = match named_args.iter()
-                .find(|(s, _)| kb.resolve_sym(*s) == "body")
-                .map(|(_, v)| *v)
-            {
-                Some(t) => t,
-                None => continue,
-            };
-            let body_handle = match unwrap_option(kb, body_opt) {
-                Some(h) => h,
-                None => continue,
-            };
-            let body_expr = resolve_handle(kb, body_handle);
-
-            let declared_effects = named_args.iter()
-                .find(|(s, _)| kb.resolve_sym(*s) == "effects")
-                .map(|(_, v)| list_to_vec(kb, *v))
-                .unwrap_or_default();
-
-            let mut params = Vec::new();
-            if let Some(params_tid) = named_args.iter()
-                .find(|(s, _)| kb.resolve_sym(*s) == "params")
-                .map(|(_, v)| *v)
-            {
-                for param_tid in &list_to_vec(kb, params_tid) {
-                    if let Term::Fn { named_args: pargs, .. } = kb.get_term(*param_tid) {
-                        let pname = pargs.iter()
-                            .find(|(s, _)| kb.resolve_sym(*s) == "name")
-                            .and_then(|(_, v)| match kb.get_term(*v) { Term::Ref(s) => Some(*s), _ => None })
-                            .map(|s| kb.resolve_sym(s).to_string());
-                        let ptype = pargs.iter()
-                            .find(|(s, _)| kb.resolve_sym(*s) == "type_name")
-                            .map(|(_, v)| *v);
-                        if let (Some(name), Some(ty)) = (pname, ptype) {
-                            params.push((name, ty));
-                        }
-                    }
-                }
-            }
-
-            let span = kb.occurrences.by_functor(name_sym)
-                .first()
-                .map(|&occ_id| kb.occurrences.span(occ_id).span);
-
-            ops_to_check.push(OpInfo { op_sym: name_sym, return_type, declared_effects, body_expr, params, span });
-            break; // found the OperationInfo for this op
-        }
+        let rec = match super::op_info::lookup_operation_info(kb, op_sym) {
+            Some(r) => r,
+            None => continue,
+        };
+        // Body-less ops (specs) have no body to type-check.
+        let body_expr = match rec.body {
+            Some(b) => b,
+            None => continue,
+        };
+        let span = kb.occurrences.by_functor(rec.op_sym)
+            .first()
+            .map(|&occ_id| kb.occurrences.span(occ_id).span);
+        let params: Vec<(String, TermId)> = rec.params.into_iter()
+            .map(|(s, t)| (kb.resolve_sym(s).to_string(), t))
+            .collect();
+        ops_to_check.push(OpInfo {
+            op_sym: rec.op_sym,
+            return_type: rec.return_type,
+            declared_effects: rec.effects,
+            body_expr,
+            params,
+            span,
+        });
     }
 
     for op in &ops_to_check {
