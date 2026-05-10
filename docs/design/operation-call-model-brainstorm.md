@@ -242,23 +242,89 @@ sort B
 end
 ```
 
+#### Compile-time env representation
+
+At typing time, every scope (sort or operation) carries:
+
+```
+(sort_id, substitution, Vec<resolved_requires>)
+```
+
+- `sort_id` — the enclosing sort.
+- `substitution` — type-arg bindings (B.T → Int, etc.).
+- `Vec<resolved_requires>` — for each `requires` bound, the resolved `(bound_spec, impl_sort)` pair plus the sub-substitution that pins it.
+
+**Aggregation rule (bottom-up)**: per-op env requirement = explicit requires + requires inferred from called ops; per-sort env requirement = union over its ops. Vector ordering is canonicalized (sorted by bound's qualified name, or declaration order).
+
+#### IR support: explicit env slot
+
+To make the env channel structural, three new IR variants:
+
+```
+apply_within(fn, args, envs)
+ho_apply_within(pred, args, envs)
+constructor_within(name, args, envs)
+```
+
+The env-less forms (`apply`, `ho_apply`, `constructor`) become canonical aliases for `_within(..., envs=[])`. After migration, **only the `_within` forms exist** — one canonical apply shape with three slots: fn, args, envs. The eval handles one case, not two.
+
+Properties of the explicit IR:
+- **One canonical shape** — every call carries an env slot; empty when no env is needed.
+- **Reflection-clean** — fn / args / envs are distinct channels; useful for proof records, debug, codegen.
+- **Codegen-friendly** — each target picks how to render the env slot (Rust merges into args or `impl Trait` bounds + mono; Scala emits `using`; Lua emits a separate positional list).
+
+#### Frame structure (runtime)
+
+Mirroring the IR:
+
+```rust
+struct Frame {
+    expr: TermId,
+    locals: SmallVec<[(Symbol, Value); 4]>,  // regular param bindings
+    envs:   SmallVec<[Value; 2]>,             // resolved env values
+    awaiting: Option<AwaitState>,
+    ...
+}
+```
+
+`envs` is just another structural field alongside `locals`. **Not new runtime machinery in the bad sense** — it's the runtime form of the IR's env slot, the way `locals` is the runtime form of the args slot. The eval treats them symmetrically: locals come from args, envs come from the envs slot.
+
+#### Translation
+
 After elaboration:
 
-1. **Signature gains an env param**: `bar(x: T, env_A: A) = ...`. Source still writes `bar(x)`; the env param is hidden in source syntax but explicit in the elaborated term.
-2. **Body rewrites spec-op calls**: `foo(x)` → `env_A.foo(x)`. References to A's ops indirect through the env param.
-3. **Call sites get rewritten**: at D's call to `bar(arg)` (where D has `fact A[T = Int]` resolved to IntFoo), insert the env: `bar(arg, IntFoo_value)`. The typer fills in `IntFoo_value` based on D's resolved environment.
-4. **Eval is unchanged**. Env is a regular `Value::Entity` (functor = impl sort name). Calling `env.foo(args)` is regular dispatch against the value's functor — same machinery anthill already uses for `Cell.get(s)`, `Stream.head(s)`, etc. No new state in frames, no new lookup table.
-5. **Closures capture env normally**. `\y -> bind(env_M, ...)` captures `env_M` as any local would. Monadic continuations handle envs via standard variable capture.
-
-Properties:
-
-- **Term store**: bodies stay one TermId per spec op (shared across all instantiations). Apply terms are slightly larger (one extra arg per env), but still hash-consed.
-- **Hash-consing preserved**: identical generic bodies share TermIds.
-- **Eval per apply**: regular variable lookup + regular dispatch — zero new machinery vs today.
-- **Codegen target**: trivial. Rust emits the env as an explicit param (or monos away if T is fully ground at the Rust call site); Scala emits `using`; Lua emits a positional arg; C++ emits a constructor parameter. The elaborated IR is uniform; surface is target-specific.
-- **Recursive cases**: env is just a value passed through recursion; no special handling needed. `F[T = F[T = Int]]` recurses with env=F[T=Int]'s instance, which is itself a value.
+1. **Signature**: `bar` declares `requires A` aggregated. The IR encodes `bar.required_envs = [A]` (length 1 because B's only requires bound is A).
+2. **Body rewrite**: `foo(x)` (a spec call) becomes `apply_within(fn=env_at(0).foo, args=[x], envs=[])` — A's env is referenced positionally by index 0.
+3. **Call site rewrite**: `bar(arg)` from D's perspective becomes `apply_within(fn=bar, args=[arg], envs=[<D's resolved A as Value::Entity>])`. The typer at D's site walks D's `fact A[…]` to find the resolved impl, builds the env value, inserts it.
+4. **Frame entry**: when bar's frame is pushed, `frame.envs[0]` = the A-impl value passed in. Inside the body, `env_at(0).foo(x)` reads `frame.envs[0]`, dispatches `foo` against its functor.
+5. **Eval is unchanged structurally**: dispatch on a value via existing entity-dispatch machinery. Indexed access into `frame.envs` is constant-time.
+6. **Closures capture envs the same way they capture locals**: snapshot both fields. Monadic continuations and lambdas handle envs via standard capture.
 
 The env value at runtime is sort-tagged: `Value::Entity { functor: <impl_sort_name>, ... }`. Dispatching `env.foo(args)` resolves through `OperationInfo` lookup keyed on the impl sort's qualified name — anthill already does this for direct impl calls. No new dispatch path.
+
+#### Properties
+
+- **Term store**: bodies stay one TermId per spec op (shared across all instantiations). Apply terms gain an env slot but stay hash-consed.
+- **Hash-consing preserved**.
+- **Eval per apply**: indexed `frame.envs[i]` lookup + regular dispatch.
+- **Codegen target**: trivial. Each target picks its preferred surface for the env slot.
+- **Recursive cases**: env is just a value passed through recursion.
+
+#### Diamond / multi-bound
+
+`sort B { requires A; requires Eq[T = T]; ... }` — operations using both A's and Eq's ops have an `envs` slot of length 2:
+
+```
+apply_within(fn=bar, args=[x], envs=[<A_impl>, <Eq_impl>])
+```
+
+Inside bar's body: `foo(x)` (an A op) is `env_at(0).foo(x)`; `eq(x, y)` (an Eq op) is `env_at(1).eq(x, y)`. Position-indexed; ordering canonicalized at signature time.
+
+#### Conditional / chained instances (monad transformers)
+
+For `fact Monad[M = StateT[S = ?S, M = ?M]] :- Monad[M = ?M]`, SLD synthesis at the call site walks the chain. The env slot at any one call site holds the OUTERMOST resolution (StateT's instance). When that StateT's bind body internally calls `bind` on its inner M, that's a NEW call with its own env slot holding ExceptT's resolution. The chain materializes step-by-step as the call stack descends.
+
+So the env slot at any one call carries one resolved instance per `requires` bound on the calling sort — finite, small, local. The chain doesn't have to be reified as one giant data structure; it spreads naturally across frames.
 
 ### (D) Side-table dispatch keyed on environment (the heavier alternative)
 
