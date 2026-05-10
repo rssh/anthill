@@ -364,7 +364,7 @@ fact WorkItem(
   description: "refactor OperationInfo lookup into shared helper. Three callers currently duplicate the walk-OperationInfo-facts pattern: kb::typing::lookup_operation_info_full (typing.rs:546), kb::typing::check_operation_bodies (typing.rs:2180, hand-inlined), eval::lookup_operation_body (eval.rs:389). Extract pub fn lookup_operation_info(kb, functor) -> Option<OpInfoRecord> returning { params, return_type, effects, body: Option<TermId> } in kb/ (new op_info.rs or typing.rs). Collapse the three callers. Non-functional refactor; acceptance is all anthill-core tests still green.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-042"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-10T20:55:26Z"))
 
 fact WorkItem(
   id: "WI-055",
