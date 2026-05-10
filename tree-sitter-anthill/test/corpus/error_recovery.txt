@@ -1,0 +1,86 @@
+=====================================
+:error
+Bad effects clause keeps surrounding operation parseable (WI-092)
+=====================================
+
+sort Robot {
+  operation step(r: Robot) -> Robot
+    requires gt(steps(r), 0)
+    effects (Modify self)
+}
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name
+      (identifier))
+    (ERROR
+      (operation_entry
+        name: (name
+          (identifier))
+        (param
+          name: (identifier)
+          type: (simple_type
+            (name
+              (identifier))))
+        return_type: (simple_type
+          (name
+            (identifier)))
+        (operation_clause
+          (requires_clause
+            (rule_body
+              (fn_term
+                name: (identifier)
+                (fn_term
+                  name: (identifier)
+                  (identifier))
+                (integer_literal)))))
+        (operation_clause
+          (effects_clause
+            (ERROR)
+            (simple_type
+              (name
+                (identifier))))))
+      (name
+        (identifier)))))
+
+=====================================
+:error
+Bad effects clause does not consume `ensures` keyword (WI-092)
+=====================================
+
+operation step(r: Robot) -> Robot
+  effects (Modify self)
+  ensures true
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (param
+      name: (identifier)
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))
+    (operation_clause
+      (effects_clause
+        (ERROR)
+        (simple_type
+          (name
+            (identifier))))))
+  (ERROR
+    (name
+      (identifier)))
+  (operation_declaration
+    name: (name
+      (identifier))
+    (operation_clause
+      (ensures_clause
+        (rule_body
+          (boolean_literal))))))

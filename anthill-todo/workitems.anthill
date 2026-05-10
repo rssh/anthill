@@ -631,7 +631,7 @@ fact WorkItem(
   description: "Parser error span recovery: tighten the failure window so a single-construct error inside a sort body does not subsume the rest of the body in the error span. Symptom observed during WI-085 diagnosis: a malformed effects clause (\"effects (Modify self)\" instead of \"effects Modify[self]\") at byte 316 produced a parse error spanning 316..1947 — almost the entire sort body. Bisection by truncating the file made later innocent constructs (multi-line imports, trailing effects before end) look like they were the trigger, since each truncation either ended on the bad clause (failed) or after it (passed). Fixing the real bug was easy once isolated, but the diagnostic was actively misleading. Improvement: per-clause recovery in the operation/sort body so the error span ends at the next recognizable clause boundary (\"effects\", \"requires\", \"operation\", \"end\"). Should not require grammar changes — tree-sitter has explicit ERROR recovery hooks. Likely a few-hour change to grammar.js plus regenerate.  Driver: improves debuggability for everyone authoring anthill specs; webots-modelling/lf1 was the first project with enough hand-authored binding files to surface this.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-10T16:46:47Z"))
 
 fact WorkItem(
   id: "WI-093",

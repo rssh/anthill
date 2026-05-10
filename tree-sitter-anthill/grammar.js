@@ -339,12 +339,27 @@ module.exports = grammar({
     ensures_clause: $ => seq('ensures', $.rule_body),
     effects_clause: $ => seq('effects', $._effect_set),
 
-    // Effect set — single type or braced list. Shared between
-    // `effects_clause` (operation declarations) and `arrow_type`
-    // (the `@` annotation).
+    // Effect set — single effect type or braced list. Shared between
+    // `effects_clause` (operation declarations) and the arrow-type
+    // `@` annotation.
+    //
+    // The single-effect form rejects type variants that begin with `(`
+    // (tuple_type, arrow_type) — neither is meaningful as an effect.
+    // Accepting them would let a malformed clause like
+    // `effects (Modify self)` (a common typo for `Modify[self]`)
+    // consume the `(` as the start of an arrow/tuple type and cascade
+    // error recovery across the enclosing sort body. With `(` rejected
+    // up-front the parser fails at the bad token and resyncs at the
+    // next clause keyword.
     _effect_set: $ => choice(
-      $._type,                                          // single: E
-      seq('{', commaSep1($._type), '}'),                // multiple: {A, B}
+      $._effect_type,                                   // single: E
+      seq('{', commaSep1($._effect_type), '}'),         // multiple: {A, B}
+    ),
+
+    _effect_type: $ => choice(
+      $.simple_type,
+      $.parameterized_type,
+      $.variable_term,
     ),
 
     // =========================================================
