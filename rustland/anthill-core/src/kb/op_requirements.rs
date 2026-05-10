@@ -27,7 +27,7 @@ use smallvec::SmallVec;
 use crate::intern::Symbol;
 
 use super::term::{Term, TermId};
-use super::typing::{lookup_spec_op_dispatch, resolve_handle};
+use super::typing::{lookup_spec_op_dispatch, requires_chain, resolve_handle};
 use super::KnowledgeBase;
 
 /// A single requirement entry: a spec sort plus the bindings the
@@ -200,6 +200,106 @@ fn extract_apply_target(
     }
 }
 
+/// Sort-level requirements coverage: a per-op requirement is
+/// "uncovered" if no entry in the enclosing sort's `requires` chain
+/// matches its spec_sort. Per `docs/design/operation-call-model.md`
+/// §"Sort-level requirements", such a body is an error: "B's body
+/// uses Eq[T] but `requires Eq[T]` isn't declared".
+#[derive(Debug, Clone)]
+pub struct UncoveredRequirement {
+    pub sort: Symbol,
+    pub op: Symbol,
+    pub requirement: OpRequirement,
+}
+
+/// Walk all operations of `sort_sym` and report any spec-sort
+/// requirements that aren't covered by the sort's declared
+/// `requires` chain. Bindings are not yet refined (v0 simplification),
+/// so coverage is checked at the spec_sort level only — a `requires Eq`
+/// (or `requires Eq[T]`) covers any per-op `Eq[*]` requirement.
+pub fn check_sort_requirements_coverage(
+    kb: &KnowledgeBase,
+    sort_sym: Symbol,
+) -> Vec<UncoveredRequirement> {
+    let chain = requires_chain(kb, sort_sym);
+    let declared: std::collections::HashSet<Symbol> =
+        chain.iter().map(|e| e.required_sort).collect();
+
+    let mut uncovered = Vec::new();
+    for op_sym in operations_of_sort(kb, sort_sym) {
+        for req in op_requirements(kb, op_sym) {
+            if !declared.contains(&req.spec_sort) {
+                uncovered.push(UncoveredRequirement {
+                    sort: sort_sym,
+                    op: op_sym,
+                    requirement: req,
+                });
+            }
+        }
+    }
+    uncovered
+}
+
+/// Operation symbols declared on a sort. Walks `SortInfo` facts looking
+/// for the sort's `operations` list. The list entries are `Term::Ref`
+/// pointing at each op's qualified symbol.
+fn operations_of_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<Symbol> {
+    let sort_info_sym = match kb.try_resolve_symbol("anthill.reflect.SortInfo") {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for rid in kb.by_functor(sort_info_sym) {
+        if !kb.rule_body(rid).is_empty() { continue; }
+        let head = kb.rule_head(rid);
+        let named_args = match kb.get_term(head) {
+            Term::Fn { named_args, .. } => named_args.clone(),
+            _ => continue,
+        };
+        let name_match = named_args.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "name")
+            .and_then(|(_, v)| match kb.get_term(*v) {
+                Term::Ref(s) => Some(*s),
+                Term::Fn { functor, .. } => Some(*functor),
+                _ => None,
+            });
+        if name_match != Some(sort_sym) { continue; }
+        let ops_tid = match named_args.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "operations")
+            .map(|(_, v)| *v)
+        {
+            Some(t) => t,
+            None => continue,
+        };
+        // Walk the cons-list — each element is a Ref to an op symbol.
+        let mut cur = ops_tid;
+        loop {
+            match kb.get_term(cur) {
+                Term::Fn { named_args: la, .. } => {
+                    let head = la.iter()
+                        .find(|(s, _)| kb.resolve_sym(*s) == "head")
+                        .map(|(_, v)| *v);
+                    let tail = la.iter()
+                        .find(|(s, _)| kb.resolve_sym(*s) == "tail")
+                        .map(|(_, v)| *v);
+                    match (head, tail) {
+                        (Some(h), Some(t)) => {
+                            if let Term::Ref(s) = kb.get_term(h) {
+                                out.push(*s);
+                            }
+                            cur = t;
+                        }
+                        _ => break,
+                    }
+                }
+                _ => break,
+            }
+        }
+        return out;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,6 +407,52 @@ end
         let b_reqs = op_requirements(&kb, b_sym);
         assert!(a_reqs.is_empty(), "a → b → a cycle should produce empty reqs; got {a_reqs:?}");
         assert!(b_reqs.is_empty(), "b → a → b cycle should produce empty reqs; got {b_reqs:?}");
+    }
+
+    #[test]
+    fn coverage_passes_when_sort_declares_required_spec() {
+        // Sort B has an op that calls Eq.eq AND declares `requires Eq[T]`.
+        // The coverage check should pass with no uncovered requirements.
+        let src = r#"
+namespace test.wi222.coverage_ok
+  import anthill.prelude.Eq.{eq}
+  import anthill.prelude.{Eq, Bool}
+  sort CoverageOk
+    sort T = ?
+    requires Eq[T]
+    operation use_eq(a: T, b: T) -> Bool = eq(a, b)
+  end
+end
+"#;
+        let kb = load_with_src(src);
+        let sort_sym = kb.try_resolve_symbol("test.wi222.coverage_ok.CoverageOk")
+            .expect("CoverageOk registered");
+        let uncovered = check_sort_requirements_coverage(&kb, sort_sym);
+        assert!(uncovered.is_empty(),
+            "sort with matching requires clause should have no uncovered \
+             requirements; got {uncovered:?}");
+    }
+
+    #[test]
+    fn coverage_flags_undeclared_requirement() {
+        // Sort calls Eq.eq but does NOT declare `requires Eq[T]`. The
+        // coverage check should flag the op's Eq requirement as uncovered.
+        let src = r#"
+namespace test.wi222.coverage_missing
+  import anthill.prelude.Eq.{eq}
+  import anthill.prelude.{Bool}
+  sort CoverageMissing
+    operation oops(a: Int, b: Int) -> Bool = eq(a, b)
+  end
+end
+"#;
+        let kb = load_with_src(src);
+        let sort_sym = kb.try_resolve_symbol("test.wi222.coverage_missing.CoverageMissing")
+            .expect("CoverageMissing registered");
+        let eq_sort = kb.try_resolve_symbol("anthill.prelude.Eq").unwrap();
+        let uncovered = check_sort_requirements_coverage(&kb, sort_sym);
+        assert!(uncovered.iter().any(|u| u.requirement.spec_sort == eq_sort),
+            "sort calling eq() without `requires Eq[T]` must be flagged; got {uncovered:?}");
     }
 
     #[test]
