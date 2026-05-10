@@ -37,7 +37,9 @@ Every scope (sort or operation) carries:
 - `substitution` — the type-arg bindings.
 - `Vec<resolved_requires>` — for each `requires` bound, the resolved `(bound_spec, impl_sort)` pair plus the sub-substitution that pins it.
 
-**Aggregation rule (bottom-up)**: per-op env requirement = explicit requires + requires inferred from called ops. Per-sort env requirement = union over operations. Vector ordering canonicalized.
+**Aggregation is a side effect of body type-checking, not a separate pass.** As the typer walks an operation's body, each spec-op call it encounters records the env that call needs. After typing the body, the operation's `required_envs` set is a natural byproduct. Sort-level `required_envs` is the union across the sort's operations — again, no separate computation.
+
+At runtime, the envs slot of a frame is **already populated** by the caller before the body executes. The body never re-aggregates; it just indexes into the collected vector via `env_at(i)`. Aggregation is an analysis fact at compile time, not a runtime operation.
 
 ## CallKind classification
 
@@ -91,6 +93,8 @@ struct Closure {
 
 Body access `env_at(i).foo(x)` reads `frame.envs[i]`, dispatches `foo` against the value's functor — the existing entity-dispatch mechanism handles this. No new dispatch path.
 
+**Why `captured_envs` is essential**: passing a lambda to a higher-order function is the canonical case. The HO function's frame may have a totally different env scope than the lambda's creation scope, but when the lambda's body runs, it needs envs from where it was *created*, not from where it's *invoked*. The closure carries its env vector with it. Same mechanism as captured locals; same reason.
+
 ## Codegen
 
 Each target picks how to render the env slot per its idiom:
@@ -115,8 +119,7 @@ The KB stays canonical (one body per spec op); each codegen pass chooses its sur
 | **WI-218 soundness patch** | In `find_unique_impl_op`, return `Deferred` (skip rewrite) when the call is EnvOpen (open-T OR open-bound). Generic bodies become unsound-but-explicit instead of silent-mis-rewrite. ~50 lines. |
 | **CallKind classification** | Populate `dispatch_kind: HashMap<TermId, CallKind>` at typing time. Required by all subsequent phases. |
 | **IR variants** | Introduce `apply_within`, `ho_apply_within`, `constructor_within`, `lambda_within`. Migration: existing terms get rewritten to `_within` form with empty envs. The eval handles both forms during the migration window; env-less forms removed after. |
-| **Env aggregation** | Bottom-up per-op + per-sort env requirement analysis. Populates `required_envs: Vec<BoundResolution>` on each op's metadata. |
-| **Body rewrite** | Inside generic bodies, spec-op calls become `apply_within(fn=env_at(i).<op>, args=…, envs=[])` — i is the position of the relevant bound in the enclosing scope's env slot. |
+| **Body rewrite + env aggregation** | Inside generic bodies, spec-op calls become `apply_within(fn=env_at(i).<op>, args=…, envs=[])` — i is the position of the relevant bound in the enclosing scope's env slot. Env aggregation (per-op + per-sort `required_envs`) falls out as a side effect of the body-typing walk; not a separate pass. |
 | **Call-site rewrite** | Callers fill in env args. The typer at the caller's site walks the caller's env scope to find the resolved impl, builds the env value, inserts into the apply term's `envs` slot. |
 | **Frame `envs` field** | Add to `Frame` struct; populate on call entry; read for `env_at(i)` access. |
 | **Closure `captured_envs` field** | Add to `Closure`; snapshot at lambda construction; restore on closure invocation. |
