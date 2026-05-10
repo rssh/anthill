@@ -65,6 +65,15 @@ impl Interpreter {
     }
 
     fn reduce_expr(&mut self, tid: TermId) -> Result<StepOutcome, EvalError> {
+        // WI-218: if this term is a spec-op apply that the typer rewrote
+        // to point at the impl op, evaluate the rewritten apply instead.
+        // The rewrite map is populated by `kb/typing.rs::check_apply` at
+        // type-checking time; the original term's `fn` symbol points at
+        // the spec op (no body), the rewritten term's points at the
+        // impl op (has body). dispatch_origin preserves the original
+        // spec op symbol for reflection / debug; runtime uses only the
+        // term-substitution map.
+        let tid = self.kb.dispatch_rewrites.get(&tid).copied().unwrap_or(tid);
         let term = self.kb.get_term(tid).clone();
         match term {
             Term::Const(lit) => {

@@ -593,7 +593,7 @@ pub fn type_check_expr(
                         .unwrap_or_default();
                     infer_constructor_type(kb, env, name_sym, &ctor_args, &SmallVec::new())
                 }
-                "apply" => check_apply(kb, env, &named_args, &pos_args),
+                "apply" => check_apply(kb, env, expr, &named_args, &pos_args),
                 "if_expr" => check_if_expr(kb, env, &named_args),
                 "let_expr" => check_let_expr(kb, env, &named_args),
                 "match_expr" => check_match_expr(kb, env, &named_args),
@@ -629,6 +629,7 @@ pub fn type_check_expr(
 fn check_apply(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
+    apply_term: TermId,
     named_args: &SmallVec<[(Symbol, TermId); 2]>,
     pos_args: &SmallVec<[TermId; 4]>,
 ) -> Option<TypeResult> {
@@ -723,7 +724,21 @@ fn check_apply(
             let op_short = op_qn.rsplit_once('.').map(|(_, s)| s).unwrap_or(&op_qn);
             let op_short_sym = kb.intern(op_short);
             match find_unique_impl_op(kb, &subst, spec_sort, op_short_sym) {
-                DispatchOutcome::NoCandidates | DispatchOutcome::Unique(_) => {}
+                DispatchOutcome::NoCandidates => {}
+                DispatchOutcome::Unique(impl_op_sym) => {
+                    // WI-218: rewrite the apply's `fn` from spec op to
+                    // impl op. Allocate a new apply term with the same
+                    // args + the impl symbol; record (original →
+                    // rewritten) in dispatch_rewrites and (rewritten →
+                    // original spec sym) in dispatch_origin. A post-
+                    // typing pass walks operation bodies and substitutes
+                    // these rewrites bottom-up so the eval sees direct
+                    // impl calls.
+                    if impl_op_sym != fn_sym {
+                        record_apply_rewrite(kb, apply_term, named_args,
+                                             pos_args, fn_sym, impl_op_sym);
+                    }
+                }
                 DispatchOutcome::NoMatch => {
                     // Surface to stderr so users notice; signal failure to
                     // the caller via None. Per the proposal: NoMatch means
@@ -757,6 +772,47 @@ fn check_apply(
     }
 
     None
+}
+
+/// WI-218: allocate a rewritten `apply` term with `fn = impl_op_sym`,
+/// keeping the same args. Record (original → rewritten) in
+/// `kb.dispatch_rewrites` and (rewritten → spec_op_sym) in
+/// `kb.dispatch_origin`. The post-typing rewrite pass uses these maps
+/// to substitute the rewritten term into operation bodies bottom-up.
+fn record_apply_rewrite(
+    kb: &mut KnowledgeBase,
+    original_apply: TermId,
+    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    pos_args: &SmallVec<[TermId; 4]>,
+    spec_op_sym: Symbol,
+    impl_op_sym: Symbol,
+) {
+    if kb.dispatch_rewrites.contains_key(&original_apply) {
+        // Idempotent — the same apply term may be type-checked through
+        // multiple paths (e.g. when the typer is invoked twice on a
+        // body). The first rewrite is canonical.
+        return;
+    }
+    // Reuse the apply term's existing functor symbol rather than re-interning
+    // the short name "apply" — the latter risks producing a different Symbol
+    // value than the loader's `anthill.reflect.Expr.apply`, which the eval's
+    // reflect-symbol cache compares against.
+    let apply_functor = match kb.get_term(original_apply) {
+        Term::Fn { functor, .. } => *functor,
+        _ => return,
+    };
+    let fn_arg = kb.intern("fn");
+    let new_fn_ref = kb.alloc(Term::Ref(impl_op_sym));
+    let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
+        .iter()
+        .map(|(s, t)| if *s == fn_arg { (*s, new_fn_ref) } else { (*s, *t) })
+        .collect();
+    let rewritten_apply = kb.alloc(Term::Fn {
+        functor: apply_functor,
+        pos_args: pos_args.clone(),
+        named_args: new_named,
+    });
+    kb.record_dispatch_rewrite(original_apply, rewritten_apply, spec_op_sym);
 }
 
 /// Full operation info for type checking: params with types, return type, effects.

@@ -224,6 +224,18 @@ pub struct KnowledgeBase {
     // populated by host code via `register_route_handler`. See
     // `kb/route.rs` and proposal 007 §11.
     pub(crate) routes: route::RouteRegistry,
+
+    // WI-218 — static-dispatch rewrite tables.
+    // `dispatch_rewrites`: original apply TermId → rewritten apply TermId
+    //   (with `fn` substituted from spec op to impl op). The
+    //   post-typing rewrite pass uses this to substitute apply terms
+    //   bottom-up in operation bodies.
+    // `dispatch_origin`: rewritten apply TermId → original spec op symbol.
+    //   Read by reflection / proof-record specialization / debug tooling
+    //   for provenance ("this was originally Spec.op, dispatched to
+    //   Impl.op"). The interpreter never reads it.
+    pub(crate) dispatch_rewrites: HashMap<TermId, TermId>,
+    pub(crate) dispatch_origin: HashMap<TermId, Symbol>,
 }
 
 impl KnowledgeBase {
@@ -255,7 +267,37 @@ impl KnowledgeBase {
             resolved_requires_facts: HashSet::new(),
             sources: SourceRegistry::new(),
             routes: route::RouteRegistry::new(),
+            dispatch_rewrites: HashMap::new(),
+            dispatch_origin: HashMap::new(),
         }
+    }
+
+    /// Record that `original_apply` should be rewritten to `rewritten_apply`
+    /// (a new apply term with `fn` substituted from spec op to impl op),
+    /// and remember `spec_op_sym` as the original spec call's symbol.
+    /// WI-218: typing-time spec→impl rewrite for static dispatch.
+    pub(crate) fn record_dispatch_rewrite(
+        &mut self,
+        original_apply: TermId,
+        rewritten_apply: TermId,
+        spec_op_sym: Symbol,
+    ) {
+        self.dispatch_rewrites.insert(original_apply, rewritten_apply);
+        self.dispatch_origin.insert(rewritten_apply, spec_op_sym);
+    }
+
+    /// True iff `term` was rewritten from a spec-op call. Returns the
+    /// original spec op symbol for provenance / debug / reflection.
+    /// The interpreter does not consult this — runtime semantics use
+    /// the rewritten term's `fn` directly.
+    pub fn dispatch_origin_of(&self, term: TermId) -> Option<Symbol> {
+        self.dispatch_origin.get(&term).copied()
+    }
+
+    /// Iterate (rewritten_term, original_spec_op) pairs. Useful for
+    /// reflection, debug tooling, and tests.
+    pub fn dispatch_origin_iter(&self) -> impl Iterator<Item = (TermId, Symbol)> + '_ {
+        self.dispatch_origin.iter().map(|(t, s)| (*t, *s))
     }
 
     /// Has this SortRequiresInfo fact already been finalized
