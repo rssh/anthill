@@ -116,6 +116,86 @@ end
 }
 
 #[test]
+fn apply_within_with_requirement_dispatch_resolves_via_handle_functor() {
+    // Defer-to-requirement form: apply_within's `fn` is
+    // `requirement_at_current(slot: 0, op: Some(Eq.eq))`. The eval reads
+    // frame.requirements[0]'s functor (an impl sort name like
+    // `IntEqImpl`) and resolves `IntEqImpl.eq` for dispatch. The op
+    // body's return value confirms the right impl ran.
+    let src = r#"
+namespace test.wi223.dispatch_form
+  -- Two impl ops with the same short name. Dispatching through
+  -- requirement_at_current(slot=0, op=foo) picks one or the other based
+  -- on the functor of frame.requirements[0].
+  sort IntFooImpl
+    operation foo() -> Int = 100
+  end
+  sort StringFooImpl
+    operation foo() -> Int = 200
+  end
+end
+"#;
+    let mut kb = load_kb_with(src);
+    let int_impl = kb.try_resolve_symbol("test.wi223.dispatch_form.IntFooImpl")
+        .expect("IntFooImpl registered");
+    let foo_short = kb.intern("foo");
+
+    let aw_sym = kb.try_resolve_symbol("anthill.reflect.Expr.apply_within")
+        .unwrap();
+    let raac_sym = kb.try_resolve_symbol("anthill.reflect.Expr.requirement_at_current")
+        .unwrap();
+    let some_sym = kb.try_resolve_symbol("anthill.prelude.Option.some")
+        .expect("Option.some registered");
+
+    // Build `requirement_at_current(slot: 0, op: some(foo_short))`.
+    let zero = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(0)));
+    let foo_ref = kb.alloc(Term::Ref(foo_short));
+    let value_field = kb.intern("value");
+    let some_wrap = kb.alloc(Term::Fn {
+        functor: some_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(value_field, foo_ref)]),
+    });
+    let slot_field = kb.intern("slot");
+    let op_field = kb.intern("op");
+    let dispatch_fn = kb.alloc(Term::Fn {
+        functor: raac_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[
+            (slot_field, zero),
+            (op_field, some_wrap),
+        ]),
+    });
+
+    // apply_within(fn = dispatch_fn, args = [], requirements = [])
+    let fn_field = kb.intern("fn");
+    let args_field = kb.intern("args");
+    let reqs_field = kb.intern("requirements");
+    let nil = make_nil(&mut kb);
+    let aw_term = kb.alloc(Term::Fn {
+        functor: aw_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[
+            (fn_field, dispatch_fn),
+            (args_field, nil),
+            (reqs_field, nil),
+        ]),
+    });
+
+    let mut interp = Interpreter::new(kb);
+
+    // Seed an IntFooImpl requirement at slot 0; dispatch should pick
+    // IntFooImpl.foo, returning 100.
+    let int_req = interp.alloc_requirement(int_impl, SmallVec::new());
+    let mut requirements: SmallVec<[_; 2]> = SmallVec::new();
+    requirements.push(int_req);
+    let value = interp.run_with_requirements(aw_term, requirements)
+        .expect("apply_within with dispatch form should reduce");
+    assert_eq!(value.as_int(), Some(100),
+        "IntFooImpl.foo should run when frame.requirements[0] is IntFooImpl");
+}
+
+#[test]
 fn apply_within_threads_requirements_to_callee_frame_for_introspection() {
     // The callee's body is `requirement_at_current(slot: 0)`, exercising
     // the full thread-through: apply_within evaluates the requirements

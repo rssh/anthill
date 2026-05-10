@@ -393,6 +393,76 @@ impl Interpreter {
         }
     }
 
+    /// Resolve `apply_within`'s `fn` field to the impl op symbol that
+    /// should actually be called. Two cases per the design's rewrite
+    /// table (`docs/design/operation-call-model.md` §"Call rewrite cases"):
+    ///
+    /// - **Direct / Pin-now**: `fn` is a Symbol — return it as-is.
+    /// - **Defer-to-requirement**: `fn` is
+    ///   `requirement_at_current(slot, op = Some(op_short))`. Read
+    ///   `frame.requirements[slot]`'s functor (the impl sort name), then
+    ///   resolve `<impl_qn>.<op_short>` to the impl op symbol.
+    fn resolve_apply_within_fn(&self, fn_tid: TermId) -> Result<Symbol, EvalError> {
+        if let Some(sym) = term_as_symbol(&self.kb, fn_tid) {
+            return Ok(sym);
+        }
+        let term = self.kb.get_term(fn_tid).clone();
+        let sx = &self.reflect;
+        let (functor, named_args) = match term {
+            Term::Fn { functor, named_args, .. } => (functor, named_args),
+            _ => return Err(EvalError::Internal(format!(
+                "apply_within 'fn' is neither a Symbol nor a Fn term: {:?}",
+                self.kb.get_term(fn_tid)
+            ))),
+        };
+        if Some(functor) != sx.requirement_at_current {
+            return Err(EvalError::Internal(format!(
+                "apply_within 'fn' must be a Symbol or requirement_at_current(slot, op); \
+                 got functor {}",
+                self.kb.resolve_sym(functor)
+            )));
+        }
+        let slot_tid = named_arg(&named_args, self.fields.slot)
+            .ok_or_else(|| EvalError::Internal(
+                "requirement_at_current dispatch form missing 'slot'".into(),
+            ))?;
+        let slot = extract_static_int(&self.kb, slot_tid, &self.fields)
+            .ok_or_else(|| EvalError::Internal(
+                "requirement_at_current dispatch 'slot' is not a static Int".into(),
+            ))? as usize;
+        let op_tid = named_arg(&named_args, self.fields.op)
+            .ok_or_else(|| EvalError::Internal(
+                "requirement_at_current dispatch form missing 'op'".into(),
+            ))?;
+        let op_inner = unwrap_option(&self.kb, op_tid).ok_or_else(|| {
+            EvalError::Internal(
+                "requirement_at_current 'op' must be Some(<symbol>) when used in fn position".into(),
+            )
+        })?;
+        let op_short = term_as_symbol(&self.kb, op_inner).ok_or_else(|| {
+            EvalError::Internal(
+                "requirement_at_current 'op' inner is not a Symbol".into(),
+            )
+        })?;
+        let top = self.stack.top().ok_or_else(|| {
+            EvalError::Internal("requirement-dispatch on empty stack".into())
+        })?;
+        let handle = top.requirements.get(slot).ok_or_else(|| {
+            EvalError::Internal(format!(
+                "requirement_at_current dispatch slot={slot}: frame has only \
+                 {} requirements",
+                top.requirements.len()
+            ))
+        })?;
+        let impl_functor = handle.functor();
+        let impl_qn = self.kb.qualified_name_of(impl_functor).to_string();
+        let op_short_name = self.kb.resolve_sym(op_short);
+        let target_qn = format!("{impl_qn}.{op_short_name}");
+        self.kb.try_resolve_symbol(&target_qn).ok_or_else(|| {
+            EvalError::UnknownOperation { name: target_qn }
+        })
+    }
+
     // ── Binder starts: update top.awaiting, push child frame. ──────
 
     fn start_if(
@@ -495,16 +565,12 @@ impl Interpreter {
     ) -> Result<StepOutcome, EvalError> {
         let fn_tid = named_arg(named_args, self.fields.fn_)
             .ok_or_else(|| EvalError::Internal("apply_within missing 'fn'".into()))?;
-        // The fn-position requirement_at_current dispatch form is
-        // out-of-scope for this commit — `fn` must be a Symbol pointing
-        // at a concrete operation (Direct or Pin-now rewrite case).
-        let target = term_as_symbol(&self.kb, fn_tid).ok_or_else(|| {
-            EvalError::Internal(
-                "apply_within 'fn' is not a Symbol — requirement-dispatch \
-                 form not yet supported"
-                    .into(),
-            )
-        })?;
+        // `fn` is either a plain Symbol (Direct / Pin-now rewrite cases)
+        // or `requirement_at_current(slot, op = Some(op_short))` — the
+        // Defer-to-requirement form. In the latter case we look up the
+        // requirement value at slot, read its functor, and resolve
+        // <functor>.<op_short> to the impl op to call.
+        let target = self.resolve_apply_within_fn(fn_tid)?;
 
         // Evaluate the requirements channel synchronously to a vec of
         // owned RequirementHandles. Empty when the rewrite pass left it
