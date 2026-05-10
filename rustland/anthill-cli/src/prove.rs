@@ -1685,9 +1685,13 @@ fn run_smt_subquery(
         }
         stats.misses += 1;
     }
+    // PID-suffix the path so concurrent `anthill prove` invocations on
+    // the same rule (e.g. parallel test threads each spawning their own
+    // anthill subprocess) don't trample each other's SMT2 file mid-z3.
     let path = std::env::temp_dir().join(format!(
-        "anthill_prove_{}.smt2",
-        sanitize_filename(rule_qn)
+        "anthill_prove_{}_{}.smt2",
+        sanitize_filename(rule_qn),
+        std::process::id(),
     ));
     if let Err(e) = std::fs::write(&path, &smt) {
         return DispatchOutcome::no_witness(
