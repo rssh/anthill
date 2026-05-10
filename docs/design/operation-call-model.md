@@ -120,6 +120,8 @@ Value::Entity {
 }
 ```
 
+The entries in `capture_env` are **references**, not embedded copies. Multiple env values can share the same sub-env via standard reference semantics (Arc-style or arena-allocated). Memory cost per entry is pointer-sized; underlying env value data lives once and is referenced from many places.
+
 When the typer at a caller's site builds the IntEq env value (to pass to a body that has `requires Eq`), it walks `IntEq.required_envs` and resolves each from the caller's own env scope:
 
 ```
@@ -129,7 +131,7 @@ env_value = construct_env(
 )
 ```
 
-Recursive: if `Numeric[T=Int]` (e.g., IntNum) has its own required_envs, IntNum_value bundles them too. Walk terminates at impls with no requires.
+Recursive: if `Numeric[T=Int]` (e.g., IntNum) has its own required_envs, IntNum_value bundles them too. Walk terminates at impls with no requires. Sub-env values are referenced by multiple constructors as needed; no duplication.
 
 ### Dispatch reads bundled envs from the env value
 
