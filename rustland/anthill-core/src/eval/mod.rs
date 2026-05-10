@@ -478,6 +478,17 @@ impl Interpreter {
         self.requirements.alloc(functor, requirements)
     }
 
+    /// Test-only: read a closure's snapshotted `requirements` channel.
+    /// Used to verify that lambda construction captures the enclosing
+    /// frame's requirements (acceptance #4 of WI-223).
+    #[doc(hidden)]
+    pub fn closure_requirements_for_test(
+        &self,
+        h: &value::ClosureHandle,
+    ) -> smallvec::SmallVec<[value::RequirementHandle; 1]> {
+        self.closures.with(h, |c| c.requirements.clone())
+    }
+
     /// Test-only entry point: drive a single expression as the body of an
     /// ad-hoc operation, with `frame.requirements` pre-seeded. Used to
     /// verify the WI-223 requirement IR reductions
