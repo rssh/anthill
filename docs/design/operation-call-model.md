@@ -229,19 +229,36 @@ At each instantiation site (`fact Spec[T = Bind]` with ground bindings), clone t
 
 ### (D) Side-table dispatch keyed on environment (Scala-`using` / Haskell-class style)
 
-Bodies stay generic. The KB carries:
+Bodies stay generic. The split between KB-level (compile/load-time) state and interpreter-level (runtime per-frame) state:
 
+**KB carries** (built at fact-load time, read-mostly thereafter):
 ```
-dispatch_rewrites: HashMap<(TermId, Environment), TermId>
+dispatch_rewrites: HashMap<(TermId, EnvironmentId), TermId>
+environments:      Vec<Environment>           -- interned envs; EnvironmentId indexes into this
+env_for_op:        HashMap<Symbol, Vec<EnvironmentId>>  -- which envs each op can be invoked with
 ```
 
-where `Environment` is the chain of `requires`-resolution decisions and type-arg pins active at the resolution scope. At each apply, the eval consults the side table for the rewritten target.
+`Environment` is the resolved chain of `requires`-resolution decisions plus type-arg pins active at the resolution scope. Constructed by SLD synthesis over `SortProvidesInfo` facts at load time. Hash-consed (interned via `EnvironmentId`) so equal envs share one entry. The KB's role is exactly its current role for `OperationInfo`, `SortProvidesInfo`, etc. — a precomputed, queryable analysis result.
 
-- Term store grows: O(generic-apply-count × environments) of side-table entries (single TermId pointers each). Bodies stay one TermId per spec op.
-- Hash-consing: bodies stay canonical.
-- Eval per apply: one HashMap lookup keyed on `(apply_tid, environment)`.
-- Codegen for native targets: codegen step has to do its own clone-and-substitute on emit (since target Rust's runtime doesn't have the side table). The codegen runs the same algorithm M would have run at load time, but per-target.
+**Interpreter carries** (per-frame, runtime):
+```
+struct Frame {
+    ...                        -- existing fields: locals, expr, awaiting, etc.
+    env: EnvironmentId,         -- current resolution scope
+}
+```
+
+Each frame remembers its env. Calling into a generic op pushes a frame whose env is the CALLER's env (Lean's convention) or the resolved env at the call site if the call needs a fresh resolution. Closures capture `env` along with their other state.
+
+The interpreter never *constructs* envs at runtime — it only *carries* them through frames and consults the KB's `dispatch_rewrites[(current_apply_tid, current_env)]` lookup at apply sites. The static-dispatch invariant is preserved: all envs are built at load time via SLD synthesis; runtime is pure lookup.
+
+- Term store grows: O(generic-apply-count × envs) of side-table entries (TermId pointers). Bodies stay one TermId per spec op.
+- Hash-consing: bodies stay canonical; envs hash-consed via `EnvironmentId`.
+- Eval per apply: one HashMap lookup keyed on `(apply_tid, env_id)`.
+- Codegen for native targets: codegen step does its own clone-and-substitute on emit (target Rust doesn't have the side table at runtime). Per-target.
 - Recursive cases: lazy population by actual runtime needs; `dyn` becomes optional.
+
+This mirrors how WI-218 currently splits work between KB and interpreter: the KB carries the typing-time analysis result (`dispatch_rewrites`), the interpreter only consults it at `reduce_expr`. Plan D extends this: the map's key gains an env component, and frames learn to carry an `EnvironmentId`.
 
 ### (H) Hybrid
 
