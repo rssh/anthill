@@ -129,14 +129,12 @@ fn extract_define_funs(model: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut rest = model;
     while let Some(idx) = rest.find(MARKER) {
-        // Advance past the marker once; reusing the find result avoids
-        // an O(n²) rescan from position 0 on every iteration.
+        // Advance past the matched marker (vs. one byte past idx) so
+        // each iteration's `find` doesn't re-scan the marker tail.
         let after = &rest[idx + MARKER.len()..];
         let name_end = after.find(char::is_whitespace).unwrap_or(after.len());
         let name = after[..name_end].to_string();
         let after_name = after[name_end..].trim_start();
-        // Nullary signature `()`. Anything else (lambda body) — skip
-        // and let the next iteration find the next marker.
         if !after_name.starts_with("()") {
             rest = after;
             continue;
