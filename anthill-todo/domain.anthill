@@ -102,8 +102,9 @@ namespace anthill.stage0
   end
 
   enum WorkStatus
-    entity Draft
-    entity Open
+    entity Draft         -- description still being authored; not ready for review
+    entity PreOpened     -- captured idea / future direction; not yet committed to the active queue (cannot be claimed until promoted to Open)
+    entity Open          -- in the active queue; available to claim
     entity Claimed(agent: String, since: String)
     entity Delivered(agent: String, at: String)
     entity Verified(at: String)
