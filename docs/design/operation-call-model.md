@@ -1,29 +1,46 @@
 # The operation-call model
 
-## Status: Draft
+## Status: Brainstorming draft
 
 ## Tracks: WI-204 (port cmd_X via spec ops), WI-218 (static-dispatch rewrite), WI-210 (spec/impl call-site dispatch via fact)
 
 ## Relates to: spec-instance-dispatch.md (the WI-210 design); proposal 030 (specialization witnesses); proposal 036 (Domain Store Sorts)
 
-## Problem
+## The core insight
 
-Today anthill has three syntactic shapes for an operation call:
+An operation declared inside a sort with `requires X` is **implicitly a function over an X-resolution environment**. Calling that operation requires the caller to supply a resolved environment — the impl picks for X (and X's transitive requires) at the call's resolution scope.
 
-1. **Bare name in a monomorphic context** — `commit(s, w)` where `s : Cell[V = WIS]`. The type-checker can resolve which impl's `commit` to invoke based on per-call substitution: `WIS` is a ground sort, so dispatch to `FileBasedWorkitemStore.commit`.
+The same is true for operations whose signature uses the enclosing sort's open type-params: those bodies are implicitly polymorphic over the type-arg environment.
 
-2. **Bare name in a generic body** — `foo(x)` where `x : T` and `T` is the enclosing sort's own type-param. The dispatch decision can't be made at the body's typing time because `T` is open.
+**How that environment is delivered is an implementation choice**, downstream of the semantics. The two main options are body cloning (Rust-style monomorphization) and side-table dispatch keyed on environment (Haskell-class / Scala-`using`-style). The type system and language surface describe the environment *requirement*; the runtime/compile machinery is downstream.
 
+This framing came out of brainstorming and reframes WI-218: today's typer commits to a dispatch decision before the environment is fully resolved. That's a soundness bug regardless of which materialization we eventually pick.
+
+## Language analogs
+
+The shape we're describing already exists in mainstream languages:
+
+- **Scala 3 `using` / `given`**. `def bar(x: T)(using a: A[T])` binds an A-environment via the `using` parameter; `given intA: A[Int]` provides one. The compiler resolves `given` instances at call sites and threads them through. The body is shared; environment is plumbed.
+- **Haskell type classes**. Generic function takes an implicit dictionary parameter (`Show a => a -> String`); each instance supplies a dictionary value; dispatch goes through it. SPECIALIZE pragma opts into monomorphization for specific cases.
+- **OCaml functors**. `module B (A: ASIG) = struct ... end` is a parametric module; `module BInt = B(IntA)` instantiates explicitly. Bodies are shared; environment is the functor argument. No silent dispatch — every instantiation is named.
+- **Rust traits**. `<T: Trait>` generic functions are monomorphized per type-arg; `dyn Trait` opts into vtable dispatch. The default is body cloning.
+
+Anthill's `requires` clause is structurally Scala's `using` parameter or Haskell's class constraint. The runtime semantics can be Rust-style (clone bodies) or Haskell/Scala-style (thread environments) — same abstract model, different materialization.
+
+## Problem (what's broken in WI-218 today)
+
+Anthill currently has three syntactic shapes for an operation call:
+
+1. **Bare name in a fully-pinned context** — `commit(s, w)` where `s : Cell[V = WIS]`. Environment is fully determined locally: WIS is ground, no `requires` is open. WI-218's static rewrite works.
+2. **Bare name in an open environment** — `foo(x)` inside an operation body whose enclosing sort has either an open type-param OR an open `requires` chain that the body's sort doesn't pick. Environment isn't fully resolved here.
 3. **Qualified impl name** — `C1.foo(x)`, `FileBasedWorkitemStore.commit(s, w)`. No dispatch needed; the impl is named directly.
 
-WI-210 introduced dispatch-via-fact for shape (1). WI-218 added the static rewrite (replace `<Spec>.<op>` with `<Impl>.<op>` at typing time) so the eval invokes the impl body directly. Both work for shape (1) and don't apply to shape (3).
+WI-218 handles (1) and (3). It fails (2) in two distinct ways — both are environment-resolution failures:
 
-**The current implementation fails shape (2)** in two distinct ways:
+- **Open-T**: per-call subst's value for the spec param is a `Term::Var` (the enclosing sort's open T). Environment's type-arg side isn't pinned.
+- **Open-bound**: the call goes through a `requires A` (or `requires A[T = String]`) whose target's impl pick belongs to the enclosing sort's future instantiator, not to the enclosing sort itself. Environment's bound-resolution side isn't pinned, even if the type-args are ground.
 
-- **Open-T case**: the per-call subst's value for the spec's type-param is a `Term::Var` (the enclosing sort's open T). `find_unique_impl_op` sees the Var, walks `SortProvidesInfo` records, and silently picks the first universally-quantified candidate. The body gets rewritten to a specific impl that may be wrong for the eventual instantiation.
-- **Ground-via-require case**: the spec op is reached through a `requires` clause whose target binding is concrete at B's site (e.g. `requires A[T = String]`). The per-call subst is fully ground. `find_unique_impl_op` proceeds and picks whichever impl satisfies `A[T = String]`. But that choice is **the future instantiator's** — D, the sort that asserts `fact B[T = …]` and supplies (or declines to supply) the matching A satisfaction. If two A[T = String] impls exist (or one exists today and another is added later), B.bar's locked-in choice is wrong.
-
-Both failures share a common root: **the dispatch decision needs information not available at B.bar's typing site**. The first wants the type-arg ground value; the second wants the bound's resolver. Either way, B is the wrong scope to commit.
+Both share a root: **the environment's resolution scope is outer than B**. The body is wrong to commit.
 
 ### Concrete example
 
@@ -37,7 +54,7 @@ sort B
   sort T = ?
   requires A
   operation bar(x: T) -> String =
-    String.concat("B", foo(x))      -- shape (2): generic body
+    String.concat("B", foo(x))      -- shape (2): open env
 end
 
 sort C1
@@ -59,191 +76,273 @@ sort ClientCall
 end
 ```
 
-When the typer checks `B.bar`'s body, the `foo(x)` call has per-call subst `A.T → Var(B.T)` — `B.T` is open. The current WI-218 rewrites it to `C1.foo` (because `C1`'s candidate binding `T = T` matches anything per `is_type_param_value`, and `C2`'s `T = String` doesn't match a Var).
+WI-218 today rewrites B.bar's `foo(x)` to `C1.foo` (matching C1's universally-quantified candidate). But `B.bar` is meant to work for any T; the impl pick belongs to whoever instantiates B.
 
-But `B.bar` is meant to work for any `T`. If a user writes `D[T = String] satisfies B`, the dispatch should pick `C2`. If they write `D[T = Int] satisfies B`, it should pick `C1` (or whichever satisfies `A[T = Int]`). The decision belongs to D, not B.
+## Operation-call kinds (model-independent)
 
-### Why "deferred / dynamic" alone isn't enough
-
-A natural fix is "leave it generic, dispatch at runtime via vtable." Java does this. But anthill commits to **static dispatch** for two reasons:
-
-- **Codegen target alignment.** Rustland's codegen emits Rust traits; rustus and the cpp/scala targets do similar monomorphization. A vtable-only model loses the static-dispatch property the codegen depends on.
-- **Proof-record specialization** (proposal 030) is keyed on (spec sort, impl sort) pairs. Dispatch must be statically resolvable so the witness records can be cited at compile time.
-
-So the dispatch must be resolved **before runtime**. The question is *when*: at the body's site (impossible — too early) or at the instantiation site (correct — the generic's T becomes ground).
-
-## Taxonomy
-
-| Shape | Where T is bound | When dispatch resolves | Mechanism |
-|-------|------------------|------------------------|-----------|
-| (1) Monomorphic | Ground at body site | Body typing | WI-218 rewrite (today) |
-| (2) Generic-via-Self-bound | Bound at outer instantiation site | Instantiation typing | **Monomorphization** (this doc) |
-| (3) Qualified impl | n/a — direct lookup | n/a | Direct |
-
-The three shapes are tied by a shared mental model: every operation call has a *resolution scope* — the smallest scope where all spec-T's become ground. Shape (1)'s resolution scope is the call site itself; shape (2)'s is the outer instantiation; shape (3) doesn't go through dispatch.
-
-## The "require" clause is a Self-bound
-
-`sort B { requires A; ... }` declares that B's instances must also satisfy A. In Rust this is `trait B<T>: A<T>`. The require clause IS the bound that makes B.bar's `foo(x)` resolvable — at B's instantiation site (the sort that asserts `fact B[T = X]`), that sort must also have an A binding for X.
-
-So the resolution path for B.bar's `foo(x)` is:
-
-```
-B.bar's body                        -- generic, T is B.T (open Var)
-  └─ foo(x) referenced through `requires A`
-       at instantiation `D { fact B[T = Int]; fact A[T = Int] }`:
-       └─ D's A[T = Int] satisfaction → A's impl at T = Int
-            └─ rewrite foo to that impl's foo
-```
-
-The rewrite happens in a **monomorphized copy** of B.bar specialized to D — not in B.bar itself.
-
-## Design
-
-### Operation-call kinds
-
-Each apply term in an operation body gets classified into one of three **call kinds** at typing time:
+Each apply term in an operation body classifies into one of three kinds at typing time. This classification is independent of how we materialize the environment.
 
 ```
 enum CallKind {
   Direct,                                 -- shape (3): qualified, fn = impl op
-  Monomorphic { impl_op: Sym },           -- shape (1): rewritten to impl op via WI-218
-  Generic { spec_op: Sym, via: Source },  -- shape (2): defers to monomorphization
+  EnvFullyPinned { impl_op: Sym },        -- shape (1): env resolved locally; rewrite at body site
+  EnvOpen { spec_op: Sym, source: Source },  -- shape (2): env not pinned; defer to outer scope
 }
 
 enum Source {
-  OpenTypeParam { spec_param: VarId },     -- per-call subst's value is a Var
-  RequiresChain { bound: SortRef, ... },   -- reached via the enclosing sort's `requires`
+  OpenTypeParam { spec_param: VarId },    -- per-call subst's value is a Var
+  OpenBound { bound: SortRef, ... },      -- reached via `requires` whose impl pick is outer
 }
 ```
 
-A call is **Generic** iff *either* condition holds:
+A call is **EnvOpen** iff *either* condition holds:
 
-1. **Open-T**: at least one per-call binding value resolves to a `Term::Var` that is the enclosing sort's own open type-param. The dispatch needs the future instantiator's type-arg ground value.
-2. **Via-Requires**: the spec op is reached through a `requires` clause on the enclosing sort. Even if the requires' binding is concrete at this site (e.g. `requires A[T = String]`), the dispatch decision is the future instantiator's responsibility — they pick which `A[T = String]` impl B uses, not B itself.
+1. **Open-T**: at least one per-call binding value resolves to a Var that is the enclosing sort's own open type-param.
+2. **Open-bound**: the spec op is reached through a `requires` clause on the enclosing sort; the impl satisfaction is the future instantiator's responsibility, even if the requires' type-args are ground.
 
-A call is **Monomorphic** only when neither condition holds: the spec op is reached *not* through a `requires` chain (so the enclosing sort itself is committing to a binding for the spec, not delegating), AND every per-call binding is ground.
+A call is **EnvFullyPinned** when neither condition holds: not via `requires`, all type-args ground.
 
-A call is **Direct** when the fn symbol is already an impl op — no dispatch needed.
+A call is **Direct** when the fn symbol is already an impl op.
 
-The two `Generic` triggers correspond to the two failures in the Problem section. The classification has to detect both; the open-T check alone is not sufficient.
+The two `EnvOpen` triggers correspond to the two failures in the Problem section. Detection has to cover both.
 
-### Why the require-chain check is required
+## Materialization: where the implementation choice lives
 
-In the example:
+Once the call is classified, the environment has to be made available at runtime. There are several materialization strategies.
 
-```anthill
-sort B { requires A[T = String]; operation bar(x) = ... foo(x) ... }
+### (M) Body-cloning monomorphization (Rust-style)
+
+At each instantiation site (`fact Spec[T = Bind]` with ground bindings), clone the generic operation bodies, substitute type-args, re-run dispatch classification, register cloned bodies as specialized OperationInfo facts. The eval invokes the specialized body directly.
+
+- Term store grows: O(specs × instantiations × generic-op-count). Hash-consing offers no help since every clone differs by at least one substituted symbol.
+- Eval per apply: direct symbol jump via OperationInfo lookup. No per-call indirection.
+- Codegen-friendly: each (impl, type-arg) pair is its own first-class fact in the source-of-truth KB.
+- Recursive cases (`F[T = F[T = Int]]`) need bounded expansion or explicit `dyn` annotation.
+
+### (D) Side-table dispatch keyed on environment (Scala-`using` / Haskell-class style)
+
+Bodies stay generic. The KB carries:
+
+```
+dispatch_rewrites: HashMap<(TermId, Environment), TermId>
 ```
 
-B's operation body references `foo` (an A op). Per-call subst is ground (T = String). But B's own `requires A[T = String]` is the bound; it tells the typer "B will be satisfied by something that ALSO satisfies A[T = String]." Which sort actually satisfies A[T = String] is up to whoever asserts `fact B[T = …]` — call them D. D's pick (C2a vs C2b) is the dispatch target for foo inside B.bar's specialization.
+where `Environment` is the chain of `requires`-resolution decisions and type-arg pins active at the resolution scope. At each apply, the eval consults the side table for the rewritten target.
 
-If B were to commit to one of the candidates at its own typing time, D's freedom to pick differently would be silently overridden. So the require chain is itself a form of "open-ness" — not in the type-arg, but in the impl identity.
+- Term store grows: O(generic-apply-count × environments) of side-table entries (single TermId pointers each). Bodies stay one TermId per spec op.
+- Hash-consing: bodies stay canonical.
+- Eval per apply: one HashMap lookup keyed on `(apply_tid, environment)`.
+- Codegen for native targets: codegen step has to do its own clone-and-substitute on emit (since target Rust's runtime doesn't have the side table). The codegen runs the same algorithm M would have run at load time, but per-target.
+- Recursive cases: lazy population by actual runtime needs; `dyn` becomes optional.
 
-### Why the open-T check is required
+### (H) Hybrid
 
-In the example:
+Side-table dispatch for the eval-driven path; codegen-time monomorphization per target. Each codegen target chooses its preferred materialization (Rust → mono; Scala → mono via `using`; Lua → dict-passing). The KB stays canonical.
+
+### (E) Explicit-module style (OCaml-functor inspired)
+
+Make the environment-supplying step explicit at the source level: `module BInt = B(IntA)` style, where the user spells out the instantiation. Trade implicit `using` resolution for explicit functor application. No silent dispatch, more verbose.
+
+E doesn't strictly conflict with M, D, or H — it's a surface-syntax change that pairs with any runtime materialization. We could combine E with D (explicit instantiation, shared bodies) to maximize clarity at minimal runtime cost.
+
+## Non-trivial cases
+
+The simple B/C1/C2 example covers the basic shape but misses several patterns that real code hits.
+
+### Default method override
 
 ```anthill
-sort B { sort T = ?; requires A; operation bar(x: T) = ... foo(x) ... }
+sort Eq
+  sort T = ?
+  operation eq(a: T, b: T) -> Bool
+  operation neq(a: T, b: T) -> Bool = not(eq(a, b))   -- default body
+end
+
+sort IntEq
+  fact Eq[T = Int]
+  operation eq(a, b) = ...
+end
 ```
 
-Even without a concrete binding on the requires (just `requires A`), B's own T is open. `foo(x)` has `A.T → Var(B.T)`. We can't pick A's impl without knowing what B.T will be at instantiation. (Once D writes `fact B[T = Int]`, T is ground and we can pick A[T = Int]'s impl — that's the monomorphization point.)
+`neq`'s body calls `eq` — same Self bound, no explicit `requires`. Inside `IntEq` (which inherits the default neq), `eq` should dispatch to `IntEq.eq`. This is "Self-dispatch": the implicit bound is `Self : Eq[T]`. Both M and D handle this; the question is how the default body is registered (in Eq, then specialized; or pre-specialized at fact-load).
 
-The two cases together: anything reachable through a `requires` chain stays Generic; anything with an open Var in the subst stays Generic. Only calls that are neither — direct impl-sort references with all-ground bindings — get the WI-218 monomorphic rewrite.
+This pattern is widespread — every `Eq`, `Ordered`, `Numeric` impl in stdlib likely inherits at least one default body that calls a primitive method.
 
-### Monomorphization pass
+### Diamond dependency
 
-When a fact `X { fact B[T = Bind] }` is loaded with all of `Bind` ground, the loader queues a monomorphization task: copy B's generic operation bodies into X's namespace, substituting `B.T → Bind`.
+```anthill
+sort A
+sort B requires A
+sort C requires A
+sort D { fact B[T = Int]; fact C[T = Int]; ... }
+```
 
-For each generic op `B.bar`:
+D must supply ONE `A[T = Int]` satisfaction that's consistent for both the B-bound and the C-bound. Coherence at the outermost site, transitive across multiple bounds. If D supplies A inconsistently (or doesn't supply at all), error.
 
-1. **Clone the body** with substitution `{B.T → Bind}` applied bottom-up. The clone produces a new TermId tree where `var_ref` to `B.T` becomes `Bind`.
-2. **Re-run dispatch classification** on the cloned body. `foo(x)` in the clone now has `A.T → Bind` (ground) — it's a Monomorphic call. WI-218 rewrites apply.
-3. **Register a specialized OperationInfo** under `X.bar` (or `B[T = Bind].bar`, depending on how the namespace is encoded) with the monomorphized body. The eval finds it directly.
+### Functor over parametric sort (higher-kinded)
 
-The clone-and-rewrite pass is the runtime view of "B.bar specialized for X". Each `(generic spec, ground binding)` pair gets one specialized body. Code-size grows with the number of distinct bindings, same as Rust's monomorphization.
+```anthill
+sort Functor
+  sort F = ?           -- F is a parametric sort, not a value-type
+  operation map(f: ?A -> ?B, xs: F[A]) -> F[B]
+end
 
-### `requires` chains drive the dispatch graph
+sort ListFunctor
+  fact Functor[F = List]
+  operation map(f, xs) = ...
+end
+```
 
-The bound on B (`requires A`) tells the monomorphization pass **what to look for** at the instantiation site. When monomorphizing B.bar for X's `fact B[T = Int]`:
+F is a sort-with-its-own-arity. Dispatch on F's impl AND on the per-call A/B bindings. Higher-kinded — a strong test for whichever model we pick.
 
-1. Walk B's `requires A` chain.
-2. At X's namespace, look up `A` impls satisfying `A[T = Int]`. (X must have a fact for that — checked at X's load time per WI-210 coherence.)
-3. Bind A's resolution in the monomorphization context.
-4. Inside the cloned body, `foo(x)` is now a Monomorphic call against the bound A impl. Rewrite via WI-218.
+### Mutual recursion across requires
 
-The chain composes recursively. If B requires A, A requires Eq, …, the monomorphization walks the whole chain at the outermost instantiation.
+```anthill
+sort B requires A; operation foo() = bar()
+sort A requires B; operation bar() = foo()
+```
 
-### What about polymorphic recursion / unbounded specialization?
+B's instances need A; A's instances need B; circular. Either accept (M produces co-fixpoint specializations; D records lazy entries) or reject (require explicit `dyn` cycle-break).
 
-Generic-recursive instances (`List[T = List[T = Int]]`) are handled by Rust via finite expansion + dynamic dispatch fallback for genuinely-recursive cases. Anthill should:
+### Phantom-only type-param
 
-- Permit finite monomorphization for non-recursive bindings.
-- For recursive cases (sort F where F.body refers to F[T = F[T = Int]]), require explicit `dyn` annotation or compile-error. **This is the only place vtable-style late binding has to enter the picture, and only as an explicit user opt-in.**
+```anthill
+sort Tagged
+  sort Tag = ?
+  sort T = ?
+  entity tagged(v: T)
+end
+sort UserId  -- wants Tagged[Tag = User, T = Int]
+sort PostId  -- wants Tagged[Tag = Post, T = Int]
+```
 
-In the v0 of this design we can skip the recursive case entirely (compile-error at the outer fact load) and add the `dyn` escape later.
+`Tag` isn't used in operation bodies. M generates two clones differing only in dead `Tag`. D's side table can dedup if it hashes on the parts that affect dispatch. M needs a phantom-detection pass to avoid waste.
 
-### Coherence (multi-impl)
+### Conditional / per-T defaults
 
-WI-210 already specifies coherence for monomorphic dispatch (priority table or reject-as-ambiguous). The same rules apply at monomorphization:
+```anthill
+fact Display[T = Int]    { ... }       -- explicit
+fact Display[T = ?A]     { ... } where ?A : Numeric  -- conditional default
+```
 
-- If X picks `A` ambiguously (two `fact A[T = Int]` candidates), reject at X's load time.
-- If a generic-body call's monomorphization context has no candidate for the required A binding, reject at X's load time (not at B's body).
+The dispatch table has rules with their own bounds. Resolving dispatch becomes a small constraint solve. Not a v0 concern but the model must accommodate.
 
-The `requires` chain pins coherence at the outer site, where the user has the most context to disambiguate.
+### Existential / down-cast
 
-## What this means for surface syntax
+```anthill
+operation render_any(x: ?dyn Display) -> String = show(x)
+```
 
-Mostly nothing. The three existing call shapes stay:
+`?dyn Display` is the "any thing satisfying Display" carrier — vtable territory. Anthill's plan is "`dyn` is opt-in"; this is where it has to be actually implemented.
 
-- Shape (1) and (3) work as today.
-- Shape (2) works **after monomorphization lands**. Until then, generic bodies that reference spec ops compile-error with a clear message ("call to `foo` from generic body requires monomorphization, not yet implemented").
+### Cross-bound interaction (a deeper case)
 
-No new syntax needed for the primary path. The recursive-case `dyn` annotation is a future extension.
+```anthill
+sort B
+  sort T = ?
+  requires Eq[T = T]       -- B's instances must satisfy Eq for same T
+  requires Ordered[T = T]  -- and Ordered too
+  operation sort(xs: List[T = T]) -> List[T = T] = ... eq(...) ... lt(...) ...
+end
+```
 
-## Implementation roadmap
+`B.sort`'s body uses both `eq` (from Eq bound) and `lt` (from Ordered bound). At an instantiation `D { fact B[T = Int]; fact Eq[T = Int]; fact Ordered[T = Int] }`, the environment has TWO impl picks (one per bound). Resolution must pin both.
 
-| Phase | Scope | Status |
-|-------|-------|--------|
-| **WI-218 patch (soundness)** | In `find_unique_impl_op`, return a new `Deferred` outcome (skip rewrite) when *either* condition holds: (a) per-call subst contains a Var that's the enclosing sort's own type-param; (b) the spec op is reached through a `requires` chain on the enclosing sort. The body retains the spec-op call; eval errors loudly until monomorphization lands. Generic bodies become unsound-but-explicit (clear error) instead of unsound-and-silent (current state). | Open. ~50 lines: subst-shape check + requires-chain detection. |
-| **Generic-call classification** | Extend `dispatch_origin` (or add `dispatch_kind: HashMap<TermId, CallKind>`) so each apply records its call kind at typing time. Generic calls store the spec op + bound info for later use. | Open. Modest. |
-| **Monomorphization pass** | At fact load (`fact Spec[T = Bind]` with ground Bind), clone+substitute generic bodies, re-classify and rewrite. Register specialized OperationInfo facts. | Open. Substantial — this is the bulk of the work. |
-| **Recursive-case handling** | Detect cycles in monomorphization expansion; reject or require explicit `dyn` annotation. | Open. Small once detection lands. |
-| **Dynamic dispatch (escape hatch)** | `dyn Spec` annotation; vtable-style late binding for genuinely-runtime-decided cases. | Future, optional. |
+This is the diamond pattern's inner mechanism: the environment is a *set* of resolutions, not a single one. M's specialized body has both rewrites baked in; D's side-table entry covers both apply terms, keyed on the same environment.
 
-## Soundness invariants
+## Comparison
 
-After this design lands, the invariants are:
+| Dimension | (M) Body cloning | (D) Side-table | (H) Hybrid |
+|-----------|------------------|------------------|----------|
+| Term-store growth | O(K × N) — high | O(call-sites × envs) — low | low (KB) + per-target mono on emit |
+| Eval per apply | Direct symbol jump | One HashMap lookup | Lookup |
+| Hash-consing | Defeated for generics | Preserved | Preserved |
+| Anthill KB idiom | Foreign | Native (side tables exist) | Native |
+| Codegen Rust target | Natural | Re-mono on emit | Re-mono on emit |
+| Codegen Scala target | Natural | Re-mono on emit | Re-mono on emit |
+| Codegen Lua / dynamic | Wasteful | Natural | Per-target choice |
+| Proof-record specialization | Each spec is a fact | Records reference (body, env) tuples | Records reference (body, env) tuples |
+| Reflection | Specialized bodies are normal facts | Reflection threads env | Reflection threads env |
+| Eval frame plumbing | None new | Each frame carries an env | Each frame carries an env |
+| Recursive instances | Combinatorial explosion at load | Lazy by runtime use | Lazy |
+| Diamond / multi-bound | One specialized body bakes in all | Side-table key includes all | Same as D |
+| Implementation cost (first cut) | Substantial | Substantial | Substantial |
 
-1. **No silent dispatch**: every `apply` term whose `fn` is a spec op either gets resolved at typing time (Monomorphic / Generic-via-bound after monomorphization) or is rejected with a clear diagnostic.
-2. **Static dispatch preserved**: every dispatched call's resolution is known at compile time. The eval reads `dispatch_rewrites` for the rewrite, never resolves dispatch at runtime.
-3. **Coherence at outermost site**: ambiguity in `requires` chains is rejected at the instantiation that introduces the choice, with the user-visible context to fix it.
+## Possible plans
+
+### Plan M — body cloning at load time
+
+1. WI-218 soundness patch (model-independent).
+2. CallKind classification (model-independent).
+3. Body clone + substitution pass at fact load.
+4. Naming convention for specialized bodies (mangled vs sub-namespace).
+5. Recursive-case detection.
+6. Reflection updates.
+7. Codegen consumes specialized bodies directly.
+
+### Plan D — side-table dispatch
+
+1. WI-218 soundness patch (model-independent).
+2. CallKind classification (model-independent).
+3. Environment representation design (chain of (spec, impl, args) triples? Hash-consed?).
+4. Side-table population at fact load (eager) or on demand (lazy).
+5. Eval frame extension: thread environment.
+6. Apply-time lookup keyed on `(tid, env)`.
+7. Per-target codegen-time monomorphization.
+
+### Plan H — hybrid
+
+1. Steps 1–6 of plan D (interpreter primary path).
+2. Each codegen target adds its own clone-and-substitute step on emit (if its target language requires it).
+
+## Recommendation (my current lean)
+
+Plan H, with D as the interpreter primary path:
+
+- Term-store stays canonical. Hash-consing keeps working as the load-bearing property of the KB.
+- Eval is simple-ish (one extra lookup per apply). Constant-time.
+- Each codegen target picks its own materialization. Rust target re-monos on emit because that's how Rust works; future Lua target might keep the dict-passing.
+- The mental model is well-trodden (Scala `using`, Haskell type classes, OCaml functors). Easier to explain to new contributors.
+
+The cost is the eval frame plumbing — every frame learns to carry an environment, every closure captures one. This is invasive but bounded; once in place, the model handles all the non-trivial cases above without further machinery.
+
+The alternative — plan M — is cleaner for codegen but defeats hash-consing and explodes the term store on stdlib-heavy projects (every Eq/Ordered/Numeric instance gets its own clones of derived methods).
+
+Plan E (explicit-module / functor style) is orthogonal. Worth considering as a layer on top of D for cases where the user wants explicit instantiation visible at the source level. Could be added later as syntax sugar.
 
 ## Open questions
 
-- **Where does `dispatch_kind` live?** Side-table on the KB (consistent with `dispatch_origin`), or a structural field on apply terms? The WI-218 discussion landed on side-table; same logic applies here.
-- **Where do specialized bodies live?** Sub-namespace of the impl sort (`X.B.bar`)? Or a flat namespace with mangled names? Affects reflection, debug, and codegen. Rust uses mangled names; that's probably right for anthill too.
-- **How does the loader know when to monomorphize?** Eagerly at fact-load time (one pass over all `fact Spec[T = Bind]` facts), or lazily on first use? Eager is simpler and aligns with Rust; lazy saves work for unused specializations.
-- **Interaction with proposal 030 (specialization witnesses)**: the witness records should reference the monomorphized body, not the generic one. Need to thread monomorphization through the witness emission.
+- **Environment representation in D**: linked list of `(spec, impl, args)` triples? Hash-consed for equality? Affects per-frame cost and side-table key cost.
+- **Eager vs lazy population in D**: eager simpler, lazy bounded by use.
+- **Default-body specialization**: when does a default body get its rewrites? Per-impl at fact-load, per-call-site at use time, or pre-computed?
+- **Phantom-param optimization**: detect unused params and dedup environment keys.
+- **Coherence resolution**: per-bound priority table, or a single project-wide priority? OCaml has explicit ordering via module application; Scala has implicit-resolution rules.
+- **Interaction with proposal 030 (specialization witnesses)**: witnesses reference (body, env) tuples in D, individual specialized bodies in M.
 
 ## Migration path from current state
 
-WI-218 today is sound for shape (1), unsound for shape (2). The unsound behavior bites only when generic bodies call spec ops via `requires` chains. **No code in the current tree triggers it**: store.anthill's `FileBasedWorkitemStore.commit` body is not generic over a spec; the bundle's `cmd_X` bodies are not inside generic sorts.
+Whichever plan we pick, the first phase is model-independent:
 
-So current code is safe. The unsoundness is latent — a hazard for anyone writing generic specs with `requires` chains.
+1. **WI-218 soundness patch** — return `Deferred` for `EnvOpen` calls. Generic bodies become unsound-but-explicit (clear error) instead of unsound-and-silent (current state).
+2. **CallKind classification** — populate `dispatch_kind: HashMap<TermId, CallKind>` at typing time. Required by both M and D.
+3. **Pick M, D, or H** — based on benchmark on real workloads (stdlib's Eq/Ordered/Numeric chains, future server-side query workloads, the cmd_X port).
+4. **Implement** the chosen model.
+5. **Re-port** generic bodies that hit WI-218's limitation once the chosen model is in.
 
-The phased migration:
-1. **Land the WI-218 soundness patch** — turn the latent unsoundness into an explicit error. Small, immediate.
-2. **File a new WI** for monomorphization with this doc as the design.
-3. **Decide** lazy vs eager monomorphization, body-namespace mangling, and `dispatch_kind` storage shape — open questions above.
-4. **Implement** the monomorphization pass.
-5. **Re-port** B.bar-style generic bodies (and anything that hit the WI-218 generic-body limitation) once mono is in.
+Steps 1 and 2 land independently of the M/D/H decision. They're worth doing soon; they fix the soundness bug and prepare the infrastructure for whichever materialization we pick.
+
+## Soundness invariants (any plan)
+
+1. **No silent dispatch**: every `apply` term whose `fn` is a spec op either gets resolved at typing time (EnvFullyPinned) or at the outer instantiation site (EnvOpen, after env materialization), or is rejected with a clear diagnostic.
+2. **Static dispatch preserved**: every dispatched call's resolution is known at compile/load time. The eval's per-call lookup just reads a precomputed answer.
+3. **Coherence at outermost site**: ambiguity in `requires` chains is rejected at the instantiation that introduces the choice, with the user-visible context to fix it.
 
 ## Acceptance for the design (this doc)
 
-- This doc lands. Discusses the three call shapes, their resolution scopes, and the monomorphization-as-real-solution position.
-- A new WI is filed for the monomorphization pass with this doc as the design reference.
-- WI-218 is amended with a soundness-patch follow-up note.
+- This doc lands as a brainstorming reference.
+- A new WI is filed for the WI-218 soundness patch (model-independent).
+- A separate WI is filed for CallKind classification (model-independent).
+- A design decision is made on M/D/H (plus possibly E), with rationale recorded as an addendum to this doc.
+- The chosen-plan WI(s) are filed.
 
 The implementation acceptance lives in the per-phase WIs.
