@@ -93,9 +93,10 @@ pub(crate) struct ReflectSymbols {
     // WI-222 / WI-223 — requirement-aware IR variants and primitives.
     // Resolved if `reflect.anthill` declares them; remain `None`
     // otherwise so older stdlibs surface a clean "unhandled functor"
-    // error rather than misbehaving. The four `_within` fields are
-    // reserved for the apply-time wiring (follow-up to WI-223 Phase A).
-    #[allow(dead_code)] pub apply_within: Option<Symbol>,
+    // error rather than misbehaving. The three remaining `_within`
+    // fields are reserved for higher-order / constructor / lambda
+    // dispatch wiring.
+    pub apply_within: Option<Symbol>,
     #[allow(dead_code)] pub ho_apply_within: Option<Symbol>,
     #[allow(dead_code)] pub constructor_within: Option<Symbol>,
     #[allow(dead_code)] pub lambda_within: Option<Symbol>,

@@ -35,6 +35,17 @@ pub enum AwaitState {
         buffered: Vec<Value>,
         remaining: Vec<TermId>,
     },
+    /// WI-223: an `apply_within` node — like ApplyArgs but threads a
+    /// pre-evaluated `requirements` channel through to the callee
+    /// frame at dispatch time. Per `docs/design/operation-call-model.md`
+    /// §"Eval mechanics: AwaitState with requirements", requirements
+    /// are evaluated before args; this variant carries them forward.
+    ApplyWithinArgs {
+        target: Symbol,
+        buffered: Vec<Value>,
+        remaining: Vec<TermId>,
+        requirements: SmallVec<[crate::eval::value::RequirementHandle; 2]>,
+    },
     /// A constructor node is collecting (possibly named) field values.
     ConstructorArgs {
         ctor_sym: Symbol,

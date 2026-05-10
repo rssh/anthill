@@ -276,7 +276,9 @@ impl KnowledgeBase {
     /// (a new apply term with `fn` substituted from spec op to impl op),
     /// and remember `spec_op_sym` as the original spec call's symbol.
     /// WI-218: typing-time spec→impl rewrite for static dispatch.
-    pub(crate) fn record_dispatch_rewrite(
+    /// Exposed publicly so tests and out-of-tree elaboration passes can
+    /// stage their own term-level rewrites alongside the typer's.
+    pub fn record_dispatch_rewrite(
         &mut self,
         original_apply: TermId,
         rewritten_apply: TermId,

@@ -141,6 +141,9 @@ impl Interpreter {
         if Some(functor) == sx.apply {
             return self.start_apply(named_args);
         }
+        if Some(functor) == sx.apply_within {
+            return self.start_apply_within(named_args);
+        }
         if Some(functor) == sx.constructor {
             return self.start_constructor(named_args);
         }
@@ -478,6 +481,70 @@ impl Interpreter {
         )
     }
 
+    /// WI-223: reduce `apply_within(fn, args, requirements)`. Per the
+    /// design (`docs/design/operation-call-model.md` §"Eval mechanics:
+    /// AwaitState with requirements"), evaluate the requirements
+    /// channel first, then args, then push the callee frame with the
+    /// resolved requirements installed in `frame.requirements`.
+    /// Requirements reduce synchronously via the chain grammar
+    /// (requirement_at_current / requirement_at_sort /
+    /// construct_requirement) — no AwaitState needed for them.
+    fn start_apply_within(
+        &mut self,
+        named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    ) -> Result<StepOutcome, EvalError> {
+        let fn_tid = named_arg(named_args, self.fields.fn_)
+            .ok_or_else(|| EvalError::Internal("apply_within missing 'fn'".into()))?;
+        // The fn-position requirement_at_current dispatch form is
+        // out-of-scope for this commit — `fn` must be a Symbol pointing
+        // at a concrete operation (Direct or Pin-now rewrite case).
+        let target = term_as_symbol(&self.kb, fn_tid).ok_or_else(|| {
+            EvalError::Internal(
+                "apply_within 'fn' is not a Symbol — requirement-dispatch \
+                 form not yet supported"
+                    .into(),
+            )
+        })?;
+
+        // Evaluate the requirements channel synchronously to a vec of
+        // owned RequirementHandles. Empty when the rewrite pass left it
+        // as a plain Direct/Pin-now call with no deps.
+        let reqs_tid = named_arg(named_args, self.fields.requirements)
+            .ok_or_else(|| {
+                EvalError::Internal("apply_within missing 'requirements'".into())
+            })?;
+        let req_terms = list_terms(&self.kb, reqs_tid, self.fields.head, self.fields.tail);
+        let mut requirements: SmallVec<[super::value::RequirementHandle; 2]> = SmallVec::new();
+        for tid in req_terms {
+            let h = self.eval_requirement_chain(resolve_handle(&self.kb, tid))?;
+            requirements.push(h);
+        }
+
+        let args_tid = named_arg(named_args, self.fields.args)
+            .ok_or_else(|| EvalError::Internal("apply_within missing 'args'".into()))?;
+        let arg_terms = crate::kb::typing::list_to_vec(&self.kb, args_tid);
+
+        if arg_terms.is_empty() {
+            return self.dispatch_call_with_requirements(target, Vec::new(), requirements);
+        }
+
+        let mut remaining: Vec<TermId> = Vec::with_capacity(arg_terms.len());
+        for arg_tid in arg_terms {
+            let (_name, value_inner) = decode_apply_arg(&self.kb, arg_tid, &self.fields)?;
+            remaining.push(value_inner);
+        }
+        let first = remaining.remove(0);
+        self.suspend_and_push(
+            AwaitState::ApplyWithinArgs {
+                target,
+                buffered: Vec::new(),
+                remaining,
+                requirements,
+            },
+            resolve_handle(&self.kb, first),
+        )
+    }
+
     fn start_constructor(
         &mut self,
         named_args: &SmallVec<[(Symbol, TermId); 2]>,
@@ -570,6 +637,15 @@ impl Interpreter {
         target: Symbol,
         arg_values: Vec<Value>,
     ) -> Result<StepOutcome, EvalError> {
+        self.dispatch_call_with_requirements(target, arg_values, SmallVec::new())
+    }
+
+    fn dispatch_call_with_requirements(
+        &mut self,
+        target: Symbol,
+        arg_values: Vec<Value>,
+        requirements: SmallVec<[super::value::RequirementHandle; 2]>,
+    ) -> Result<StepOutcome, EvalError> {
         // 1. Local closure bound to target?
         let target_name = self.kb.resolve_sym(target).to_string();
         let local_closure = {
@@ -582,6 +658,10 @@ impl Interpreter {
                 })
         };
         if let Some(handle) = local_closure {
+            // Closures override apply.requirements with their own
+            // (the HO-call exception). The caller's `requirements`
+            // here are discarded — see closure invocation in the design.
+            drop(requirements);
             return self.enter_closure(handle, arg_values);
         }
 
@@ -594,7 +674,7 @@ impl Interpreter {
         // 3. Anthill-defined operation body.
         let (body_term, params) = lookup_operation_body(&self.kb, target)
             .ok_or_else(|| EvalError::UnknownOperation { name: target_name })?;
-        self.enter_operation(target, body_term, &params, arg_values)
+        self.enter_operation(target, body_term, &params, arg_values, requirements)
     }
 
     fn enter_operation(
@@ -603,6 +683,7 @@ impl Interpreter {
         body_term: TermId,
         params: &[(Symbol, TermId)],
         arg_values: Vec<Value>,
+        requirements: SmallVec<[super::value::RequirementHandle; 2]>,
     ) -> Result<StepOutcome, EvalError> {
         if arg_values.len() != params.len() {
             return Err(EvalError::ArityMismatch {
@@ -625,15 +706,14 @@ impl Interpreter {
         let top = self.stack.top_mut()
             .ok_or_else(|| EvalError::Internal("enter_operation with no parent".into()))?;
         // WI-223: callee's frame.requirements come from apply_within's
-        // requirements slot. Until WI-222 rewrites apply → apply_within,
-        // we install an empty channel — generic bodies that read
-        // requirement_at_current(i) will see this and surface a clear
-        // "no requirement available" error rather than silently wrong.
+        // requirements slot. Plain `apply` calls install an empty channel
+        // — generic bodies reading requirement_at_current(i) will surface
+        // a clear "out of range" error rather than silently wrong.
         *top = Frame {
             op: target,
             expr: body_term,
             locals,
-            requirements: SmallVec::new(),
+            requirements,
             awaiting: None,
         };
         Ok(StepOutcome::Continue)
@@ -781,6 +861,39 @@ impl Interpreter {
                         expr: resolve_handle(&self.kb, next_expr),
                         locals,
                         requirements,
+                        awaiting: None,
+                    })?;
+                    return Ok(StepOutcome::Continue);
+                }
+                AwaitState::ApplyWithinArgs {
+                    target,
+                    mut buffered,
+                    mut remaining,
+                    requirements,
+                } => {
+                    buffered.push(v);
+                    if remaining.is_empty() {
+                        return self.dispatch_call_with_requirements(
+                            target,
+                            buffered,
+                            requirements,
+                        );
+                    }
+                    let next_expr = remaining.remove(0);
+                    let top = self.stack.top_mut().unwrap();
+                    top.awaiting = Some(AwaitState::ApplyWithinArgs {
+                        target,
+                        buffered,
+                        remaining,
+                        requirements,
+                    });
+                    let (op, locals, frame_requirements) =
+                        (top.op, top.locals.clone(), top.requirements.clone());
+                    self.stack.push(Frame {
+                        op,
+                        expr: resolve_handle(&self.kb, next_expr),
+                        locals,
+                        requirements: frame_requirements,
                         awaiting: None,
                     })?;
                     return Ok(StepOutcome::Continue);
@@ -1090,7 +1203,7 @@ fn sort_named_canonical(kb: &KnowledgeBase, functor: Symbol, named: &mut Vec<(Sy
 ///
 /// WI-053 / WI-054 track a cache + shared-helper refactor so per-call
 /// lookup becomes O(1) instead of linear in OperationInfo fact count.
-pub(crate) fn lookup_operation_body(
+pub fn lookup_operation_body(
     kb: &KnowledgeBase,
     functor: Symbol,
 ) -> Option<(TermId, Vec<(Symbol, TermId)>)> {
