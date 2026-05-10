@@ -37,15 +37,46 @@ Every scope (sort or operation) carries:
 - `substitution` — the type-arg bindings.
 - `Vec<resolved_requires>` — for each `requires` bound, the resolved `(bound_spec, impl_sort)` pair plus the sub-substitution that pins it.
 
-### Two analyses, one explicit and one derived
+### Body walking is necessary
 
-1. **Sort.requires** — source-level explicit (e.g. `requires A; requires Eq[T = T]`). What envs an instantiator of this sort must supply. **No derivation needed.**
+Bodies can contain qualified calls like `C.foo(x)` where C is a different sort with its own requires. When B's body calls `C.foo`, the call needs an env for whatever C requires. But C's requires aren't in B's syntactically-declared `Sort.requires` — they're discovered by walking B's body.
 
-2. **Op.required_envs** — derived from the body. As the typer walks an operation's body, every spec-op call records the env that call needs (direct contribution); calls to other ops in the same sort inherit those callees' `required_envs` (transitive contribution). This is THE env signature of the operation: call sites insert exactly this many env values into the apply's `envs` slot.
+So body walking is necessary to discover the full env requirements implied by a sort's operations. Sort-level closure (over explicit `requires` declarations only) is insufficient — it can't surface env needs that come from qualified calls inside bodies.
 
-There's no separate "sort-level aggregated envs" analysis to compute. The consistency check (an op's body must only use envs available in `Sort.requires`) happens naturally at call-site rewrite: when the typer tries to fill in an env-arg from the enclosing sort's env scope and finds nothing, it errors. No need to pre-compute a union.
+### Op.required_envs computation
 
-The derivation isn't a separate pass — it's a side effect of typing each body. Per-op `required_envs` falls out as the typer walks calls.
+For each operation, `required_envs` has two contributions:
+
+```
+op.required_envs =
+    direct:    {env_for(callee.spec_sort) | callee in body, callee is a spec op}
+  ∪ transitive: ⋃ { other_op.required_envs | other_op in body, callee is in this sort or another }
+```
+
+Transitive includes calls to ops in the SAME sort (mutual recursion → fixed-point) AND calls to ops in OTHER sorts (qualified `C.foo` calls — pull in C.foo's required_envs).
+
+This is real analysis. Two implementation choices:
+
+- **Eager**: explicit pre-pass that walks per-sort call graphs, computes SCCs, runs fixed-point. Output: per-op `required_envs` map across all loaded sorts.
+- **Demand-driven**: when typing a body's call, recursively type the callee's body first; memoize. Cycle detection for mutual recursion.
+
+Either is valid. Lean's elaborator and GHC's constraint inference both do this (eagerly).
+
+### Sort-level envs
+
+Once per-op `required_envs` is computed, the sort-level full set is the union across the sort's ops. This must equal (or be a subset of) `Sort.requires` declared in source — if a body uses an env not in the declared `Sort.requires`, that's an error: "B's body calls C.foo which needs env_Z, but B doesn't declare `requires Z`."
+
+The sort-level union ISN'T a separate analysis output — it's just the union of computed per-op values. The validity check is per-op (each op's required_envs ⊆ Sort.requires).
+
+### Could we avoid body walk by inferring requires?
+
+In principle yes: instead of declaring `Sort.requires` source-explicit and validating, we could let body walking *generate* the sort's requires. The user's sort declaration would be: list operations and bodies; the typer infers what envs the sort needs.
+
+This is what Haskell GHC does for type-class methods (constraint inference). It's a possible future direction, but it makes the source less self-documenting (a user reading the sort declaration must walk all bodies to know what's required). For v0, keep `Sort.requires` source-explicit and validate via body walk.
+
+### Runtime is unaffected
+
+The envs slot of a frame is **already populated** by the caller before the body executes. The body never recomputes anything; it just indexes into `frame.envs[i]` via `env_at(i)`. All analysis is at compile time; runtime is pure lookup.
 
 ### Runtime is unaffected
 
