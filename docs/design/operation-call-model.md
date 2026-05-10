@@ -18,14 +18,122 @@ This framing came out of brainstorming and reframes WI-218: today's typer commit
 
 ## Language analogs
 
-The shape we're describing already exists in mainstream languages:
+The shape we're describing already exists in mainstream languages, with different choices on three axes: **(R) resolution** (how is the right impl found?), **(M) materialization** (how is the body delivered to runtime?), and **(C) compositionality** (can instances be derived from other instances?).
 
-- **Scala 3 `using` / `given`**. `def bar(x: T)(using a: A[T])` binds an A-environment via the `using` parameter; `given intA: A[Int]` provides one. The compiler resolves `given` instances at call sites and threads them through. The body is shared; environment is plumbed.
-- **Haskell type classes**. Generic function takes an implicit dictionary parameter (`Show a => a -> String`); each instance supplies a dictionary value; dispatch goes through it. SPECIALIZE pragma opts into monomorphization for specific cases.
-- **OCaml functors**. `module B (A: ASIG) = struct ... end` is a parametric module; `module BInt = B(IntA)` instantiates explicitly. Bodies are shared; environment is the functor argument. No silent dispatch — every instantiation is named.
-- **Rust traits**. `<T: Trait>` generic functions are monomorphized per type-arg; `dyn Trait` opts into vtable dispatch. The default is body cloning.
+### Scala 3 `using` / `given`
 
-Anthill's `requires` clause is structurally Scala's `using` parameter or Haskell's class constraint. The runtime semantics can be Rust-style (clone bodies) or Haskell/Scala-style (thread environments) — same abstract model, different materialization.
+```scala
+def bar[T](x: T)(using a: A[T]): String = "B" + a.foo(x)
+given intA: A[Int] = new A[Int] { ... }
+```
+
+- **R**: implicit-resolution rules over `given` declarations at the call site.
+- **M**: dictionary-passing — body is shared, instance is a runtime value.
+- **C**: yes — `given listEq[T](using Eq[T]): Eq[List[T]] = ...`.
+
+### Haskell type classes
+
+```haskell
+class Show a where show :: a -> String
+instance Show Int where show n = ...
+foo :: Show a => a -> String   -- "Show a =>" is the dictionary parameter
+```
+
+- **R**: class-resolution at compile time, instances looked up by type.
+- **M**: dictionary-passing by default; SPECIALIZE pragma opts into monomorphization.
+- **C**: yes — `instance Show a => Show [a] where show xs = ...`.
+
+### OCaml functors
+
+```ocaml
+module B (A : ASIG) = struct
+  let bar (x : A.t) = "B" ^ A.foo x
+end
+module BInt = B(IntA)   (* explicit instantiation *)
+```
+
+- **R**: explicit. The user spells out `B(IntA)`. No search.
+- **M**: shared bodies + applied modules pointing at them. Closer to D than M.
+- **C**: yes via functor application chains, but explicit at every step.
+
+### Rust traits
+
+```rust
+trait Eq { fn eq(&self, other: &Self) -> bool; }
+impl Eq for i32 { ... }
+fn foo<T: Eq>(a: T, b: T) -> bool { a.eq(&b) }
+```
+
+- **R**: trait-resolution at compile time, instances looked up via `impl Trait for Type` declarations.
+- **M**: monomorphization per `<T>` instantiation; `dyn Trait` opts into vtable.
+- **C**: yes — `impl<T: Eq> Eq for Vec<T> { ... }`.
+
+### C++20 concepts (≈ Rust traits, two key differences)
+
+```cpp
+template<std::equality_comparable T>
+bool same(T a, T b) { return a == b; }
+```
+
+- **R**: ad-hoc overload resolution + concept satisfaction check. Concepts are pure *constraints* — they describe what's needed, not what's provided. The body source comes from the type's own member functions or free functions found via ADL.
+- **M**: full monomorphization per instantiation, like Rust. Each `same<int>`, `same<string>`, etc. is a separate compiled function.
+- **C**: yes via partial template specialization (`template<typename T> struct Hash<vector<T>> { ... }`), now constrainable with concepts.
+
+C++ is "Rust's mono with messier resolution." For our design, C++ doesn't add new options beyond Rust — it confirms plan M is natural for native targets but doesn't suggest anything novel.
+
+The structural difference C++ does highlight: concepts are *constraints*, separate from body source. Anthill's `requires X` is constraint-shaped (like a concept) but the body source comes from `fact Spec[T = X]` (structured, like a Rust impl block). So anthill cleanly separates the C++ "constraint" idea from the Rust "structured impl database" idea.
+
+### Lean 4 instances
+
+```lean
+class A (T : Type) where foo : T → String
+instance : A Int where foo := toString
+def bar [A T] (x : T) : String := "B" ++ A.foo x
+```
+
+- **R**: search-based instance synthesis. The elaborator walks the global instance database with bounded backtracking. Composable, prioritized, with explicit decidability rules.
+- **M**: dictionary-passing as the runtime model; native compilation specializes via inlining + LLVM optimization.
+- **C**: yes, deeply — `instance [Eq T] : Eq (List T) := ...` is conditional instance derivation. The synthesized environment for the conditional's body has open slots filled by recursive search.
+
+Lean's instance synthesis is **a structured search procedure**. Composable instances mean the runtime environment can be a *chain* of resolved instances built up by search:
+
+```lean
+-- Want: Eq (List (Int × String))
+-- Search walks: instance [Eq T] [Eq U] : Eq (T × U), instance [Eq T] : Eq (List T)
+-- Composes to: Eq Int + Eq String → Eq (Int × String) → Eq (List (Int × String))
+```
+
+For each step, the elaborator records the resolved instance. The composed environment carries all the resolutions.
+
+### Per-operation environment declarations
+
+Lean (and Scala) put the environment requirement on the **operation**, not just the sort:
+
+```lean
+def bar [A T] (x : T) : String := ...    -- bar needs A, but the enclosing module doesn't impose it
+```
+
+Anthill today puts `requires` on the *sort*. This is a granularity question: does B always require A, or do only some of B's operations? Per-operation envs are more granular but mean the env-requirement appears in the call signature; per-sort envs are simpler but coarser.
+
+We don't have to pick now, but the design should leave room for per-op envs as a refinement.
+
+## Anthill's structural fit
+
+Plotting anthill against this matrix:
+
+| | Resolution | Materialization (current) | Materialization (proposed) | Compositionality |
+|---|---|---|---|---|
+| Anthill | SLD over SortProvidesInfo (latent) | WI-218 broken rewrite | TBD (M / D / H) | yes — `fact Spec[…] :- subgoals` |
+
+Anthill's resolution structure is **Lean-like**: SLD with bodies = instance synthesis with conditional instances. The KB is the instance database. We already have search-with-backtracking; we don't need to invent it.
+
+The materialization choice is the open question. Each of M / D / H corresponds to a known mainstream language's choice:
+
+- M ≈ Rust + C++
+- D ≈ Haskell + Scala (using/given)
+- H ≈ Lean (dict-passing runtime + LLVM-time partial specialization)
+
+Anthill's `requires` clause is structurally Scala's `using` parameter / Lean's instance argument / OCaml's functor parameter. The runtime semantics can be Rust-style (clone bodies) or Haskell/Scala/Lean-style (thread environments) — same abstract model, different materialization.
 
 ## Problem (what's broken in WI-218 today)
 
@@ -254,6 +362,7 @@ This is the diamond pattern's inner mechanism: the environment is a *set* of res
 
 | Dimension | (M) Body cloning | (D) Side-table | (H) Hybrid |
 |-----------|------------------|------------------|----------|
+| Closest mainstream analog | Rust, C++ | Haskell, Scala 3 `using` | Lean 4, OCaml functors |
 | Term-store growth | O(K × N) — high | O(call-sites × envs) — low | low (KB) + per-target mono on emit |
 | Eval per apply | Direct symbol jump | One HashMap lookup | Lookup |
 | Hash-consing | Defeated for generics | Preserved | Preserved |
@@ -266,29 +375,34 @@ This is the diamond pattern's inner mechanism: the environment is a *set* of res
 | Eval frame plumbing | None new | Each frame carries an env | Each frame carries an env |
 | Recursive instances | Combinatorial explosion at load | Lazy by runtime use | Lazy |
 | Diamond / multi-bound | One specialized body bakes in all | Side-table key includes all | Same as D |
+| Conditional instances (`fact Spec[…] :- subgoals`) | Each derivation cloned per concrete | One body, side-table per env | One body, side-table per env |
+| Reuses anthill's SLD machinery | No — rewrites at typing time | Yes — env construction IS an SLD query | Yes |
 | Implementation cost (first cut) | Substantial | Substantial | Substantial |
 
 ## Possible plans
 
-### Plan M — body cloning at load time
+### Plan M — body cloning at load time (Rust / C++ style)
 
 1. WI-218 soundness patch (model-independent).
 2. CallKind classification (model-independent).
 3. Body clone + substitution pass at fact load.
 4. Naming convention for specialized bodies (mangled vs sub-namespace).
-5. Recursive-case detection.
+5. Recursive-case detection (since plan M can't handle `F[T = F[T = ...]]` without explicit `dyn`).
 6. Reflection updates.
 7. Codegen consumes specialized bodies directly.
 
-### Plan D — side-table dispatch
+Plan M aligns with Rust's monomorphization and C++'s template instantiation. Both default to this. The cost shape is well-understood (binary growth, optimization opportunities) but defeats anthill's hash-consing canonicity.
+
+### Plan D — side-table dispatch (Lean 4 / Scala using / Haskell-class style)
 
 1. WI-218 soundness patch (model-independent).
 2. CallKind classification (model-independent).
-3. Environment representation design (chain of (spec, impl, args) triples? Hash-consed?).
-4. Side-table population at fact load (eager) or on demand (lazy).
-5. Eval frame extension: thread environment.
-6. Apply-time lookup keyed on `(tid, env)`.
-7. Per-target codegen-time monomorphization.
+3. Environment representation design (chain of `(spec, impl, args)` triples? Hash-consed? An SLD answer substitution + the resolved ProvidesInfo records?).
+4. **Express instance synthesis as an SLD query** over `SortProvidesInfo` facts. Conditional instances (`fact Spec[…] :- subgoals`) become clauses with bodies; resolution composes via existing SLD machinery. This is the Lean-style search-based synthesis.
+5. Side-table population at fact load (eager) or on demand (lazy).
+6. Eval frame extension: thread environment.
+7. Apply-time lookup keyed on `(tid, env)`.
+8. Per-target codegen-time monomorphization (where the target needs it — Rust does, Lua doesn't).
 
 ### Plan H — hybrid
 
@@ -297,18 +411,34 @@ This is the diamond pattern's inner mechanism: the environment is a *set* of res
 
 ## Recommendation (my current lean)
 
-Plan H, with D as the interpreter primary path:
+Plan H, with D as the interpreter primary path. Or equivalently: **Lean's runtime model**.
 
 - Term-store stays canonical. Hash-consing keeps working as the load-bearing property of the KB.
 - Eval is simple-ish (one extra lookup per apply). Constant-time.
-- Each codegen target picks its own materialization. Rust target re-monos on emit because that's how Rust works; future Lua target might keep the dict-passing.
-- The mental model is well-trodden (Scala `using`, Haskell type classes, OCaml functors). Easier to explain to new contributors.
+- Each codegen target picks its own materialization. Rust target re-monos on emit; future Lua target keeps dict-passing.
+- The mental model is well-trodden (Scala `using`, Haskell type classes, OCaml functors, Lean instances). Easier to explain to new contributors.
+- **Conditional / compositional instances come for free**. Anthill's SLD resolution is exactly Lean's instance synthesis. `fact Eq[T = List[T = ?A]] :- Eq[T = ?A]` is `instance [Eq T] : Eq (List T)`. We don't need to build an instance-search engine; we already have one.
 
-The cost is the eval frame plumbing — every frame learns to carry an environment, every closure captures one. This is invasive but bounded; once in place, the model handles all the non-trivial cases above without further machinery.
+The cost is the eval frame plumbing — every frame learns to carry an environment, every closure captures one. This is invasive but bounded; once in place, the model handles all the non-trivial cases (default override, diamond, functor over parametric, conditional instances, mutual recursion) without further machinery.
 
-The alternative — plan M — is cleaner for codegen but defeats hash-consing and explodes the term store on stdlib-heavy projects (every Eq/Ordered/Numeric instance gets its own clones of derived methods).
+The alternative — plan M (Rust + C++ style) — is cleaner for codegen but:
+- Defeats hash-consing for generic specs.
+- Explodes the term store on stdlib-heavy projects (every Eq/Ordered/Numeric instance gets its own clones of derived methods, plus every conditional instance over Pair/List/Option/Tuple gets cloned per concrete combo).
+- Requires explicit cycle-breaking for recursive instances (`F[T = F[T = ...]]`).
+- Doesn't compose well with conditional instances at scale — Lean's experience here is instructive: GHC and Lean both default to dict-passing at runtime even though they have access to LLVM specialization.
 
-Plan E (explicit-module / functor style) is orthogonal. Worth considering as a layer on top of D for cases where the user wants explicit instantiation visible at the source level. Could be added later as syntax sugar.
+Plan E (explicit-module / functor style, OCaml-inspired) is orthogonal to M/D/H. Worth considering as a layer on top of D for cases where the user wants explicit instantiation visible at the source level. Could be added later as syntax sugar.
+
+### Why Lean's experience is the strongest data point
+
+Of the language analogs above, Lean is the one whose internal model maps most directly to anthill:
+
+- Anthill has SLD resolution; Lean has search-based instance synthesis. **Same machinery.**
+- Anthill has hash-consed terms; Lean has elaborated terms with definitional equality. **Same canonicity property.**
+- Anthill has facts with bodies (conditional rules); Lean has conditional instances. **Same compositionality.**
+- Anthill has the proof-record specialization story (proposal 030); Lean has elaboration-time records of which instance was picked. **Same need for auditable resolution.**
+
+When a language with closely-matching primitives (Lean) has settled on dict-passing-with-specialization-as-optimization (plan H equivalent), that's a strong design signal. Rust's monomorphization works because Rust doesn't have search-based instance synthesis or compositional instances at the same scale — the trade-offs are different there.
 
 ## Open questions
 
