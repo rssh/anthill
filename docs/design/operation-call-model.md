@@ -68,11 +68,15 @@ Once per-op `required_envs` is computed, the sort-level full set is the union ac
 
 The sort-level union ISN'T a separate analysis output — it's just the union of computed per-op values. The validity check is per-op (each op's required_envs ⊆ Sort.requires).
 
-### Could we avoid body walk by inferring requires?
+### Two different things to distinguish
 
-In principle yes: instead of declaring `Sort.requires` source-explicit and validating, we could let body walking *generate* the sort's requires. The user's sort declaration would be: list operations and bodies; the typer infers what envs the sort needs.
+(1) **Conditional instance derivation**: `fact Eq[T = List[T = ?A]] :- Eq[T = ?A]` — derive `Eq[List[Int]]` from `Eq[Int]`. Anthill **already has this** via Horn-clause facts; SLD resolution handles it natively. Same mechanism as Haskell's `instance Eq a => Eq [a]`. Not a future feature — first-class today.
 
-This is what Haskell GHC does for type-class methods (constraint inference). It's a possible future direction, but it makes the source less self-documenting (a user reading the sort declaration must walk all bodies to know what's required). For v0, keep `Sort.requires` source-explicit and validate via body walk.
+(2) **Constraint inference of sort.requires from bodies**: instead of declaring `Sort.requires` source-explicit and validating, let body walking *generate* the sort's requires. The user lists operations and bodies; the typer infers what envs the sort needs and prints them as the inferred signature. This is what Haskell GHC does for top-level let bindings (`foo x = show (x + 1)` → inferred `(Show a, Num a) => a -> String`).
+
+(1) is about resolution; (2) is about signature inference. Different mechanisms.
+
+For anthill v0: keep `Sort.requires` source-explicit and validate (need body walk for validation regardless). (2) is a possible future direction — less syntax, but less self-documenting (a user reading a sort declaration must walk all bodies to see what's required).
 
 ### Runtime is unaffected
 
