@@ -23,31 +23,62 @@ lambda_within(params, body, captured_envs)
 
 `envs` (or `captured_envs`) is a positional vector of resolved env values. Each value is a sort-tagged entity: `Value::Entity { functor: <impl_sort_name>, ... }`.
 
-Body references to spec ops use a new fn-position term form:
+Body references to spec ops use a new top-level Expr form, parallel to `apply_within`:
 
 ```
-env_dispatch(env_index, op_short)
+env_dispatch(env_index, op_short, args)
 ```
 
-This represents "look up `frame.envs[env_index]`, get its functor, resolve `<functor>.<op_short>` to the actual impl op symbol." It appears inside `apply_within`'s `fn` slot when the body does spec-op dispatch through the env channel:
+This represents a complete env-dispatched call: "look up `frame.envs[env_index]`, get its functor, resolve `<functor>.<op_short>` to the actual impl op symbol, invoke with these args."
+
+Concretely, after rewriting `eq(x, y)` inside a body where Eq is at env slot 0:
 
 ```
-apply_within(
-  fn = env_dispatch(0, "eq"),
-  args = [x, y],
-  envs = []                    -- this call has its own envs slot, typically empty
+env_dispatch(
+  env_index = 0,
+  op_short = "eq",
+  args = [x, y]
 )
 ```
 
-Position in the enclosing scope's env slot is canonicalized at signature time (sorted by bound's qualified name, or declaration order).
+The three args:
 
-### Why `env_dispatch` is the minimum new form
+| Arg | What |
+|---|---|
+| `env_index` | which env value in `frame.envs[]` to dispatch through |
+| `op_short` | which op of that impl to invoke (looked up via `<functor>.<op_short>`) |
+| `args` | args to pass to the op |
 
-Without it, the rewrite would need either:
-- Mingling env values into the args list (collapses the env / args structural distinction we just chose to preserve), OR
-- Allocating a fresh apply with a known impl-symbol fn (which can't work for defer-to-env since the impl isn't pinned at body site).
+Position of envs in the enclosing scope is canonicalized at signature time (sorted by bound's qualified name, or declaration order).
 
-`env_dispatch` is the smallest fn-position addition that lets the body refer to "the impl op accessible through env slot i" without resolving anything at body-rewrite time. The eval resolves the actual impl symbol at apply-time using `frame.envs[i]`.
+### Why `env_dispatch` is its own top-level form
+
+Earlier drafts had `env_dispatch(env_index, op_short)` as a fn-position term inside `apply_within(fn=…, args, envs)`. This nested form is awkward: the eval would have to evaluate the fn-form (deref env_index, compose with op_short) then feed the result back to apply_within. With env_dispatch as a top-level Expr, the eval handles everything in one node:
+
+```
+reduce env_dispatch(env_index, op_short, args):
+  env_value = frame.envs[env_index]
+  impl_sym  = resolve(env_value.functor + "." + op_short)
+  // evaluate args (existing AwaitState path: similar to ApplyArgs)
+  push new frame:
+    locals = zip(impl_sym.params, evaluated_args)
+    envs   = env_value.captured_envs       // the recursive env bundle from the env value
+    expr   = impl_sym.body
+```
+
+The new frame's envs comes entirely from `env_value.captured_envs` (the env value's bundled sub-envs). No additional envs slot at the dispatch site — there's nothing for it to carry that isn't already in the env value.
+
+### No additional envs slot at the dispatch site
+
+We considered a 4-arg form `env_dispatch(env_index, op_short, args, envs)` for symmetry with `apply_within`, but every walkthrough confirms the slot is empty in v0. The recursive `Eq[List[List[X]]]` case carries the full chain through `env_value.captured_envs`, with nothing flowing through a dispatch-side envs slot. Keeping the form 3-arg avoids carrying a perpetually-empty slot through the IR. If a future feature surfaces a need (e.g., a profile flag injecting ambient context, an explicit `with-env` form), we extend the IR then.
+
+### Without env_dispatch, the rewrite is awkward
+
+Alternatives we'd be forced into:
+- Mingling env values into args (collapses the env / args structural distinction we chose to preserve), OR
+- Allocating an apply with a known impl-symbol fn (impossible for defer-to-env: the impl isn't pinned at body site).
+
+`env_dispatch` is the minimum new IR form that lets the body refer to "the impl op accessible through env slot i" without resolving anything at body-rewrite time. The eval resolves the impl symbol at runtime using `frame.envs[i].functor`.
 
 ### Env values carry their own sub-envs
 
