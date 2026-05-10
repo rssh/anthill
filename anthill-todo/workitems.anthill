@@ -1563,7 +1563,7 @@ fact WorkItem(
   description: "WI-218 soundness patch: defer-to-requirement detection. Per docs/design/operation-call-model.md §'Defer-to-requirement detection', the current find_unique_impl_op (typing.rs:947-1008) only checks open-T (call's per-call subst has a Var that's the body's open type-param). It misses the open-bound trigger: a call whose type-args are ground but reaches a spec op via the enclosing sort's requires clause. Without this, ground-via-requires calls are silently mis-rewritten by Pin-now to a single impl, producing incorrect dispatch when the impl was meant to vary per requirement. Fix: in check_apply, when classifying a spec-op call, additionally check whether the spec sort appears in Sort.requires of the enclosing sort with a unification-matching binding. If yes, return Deferred (skip Pin-now rewrite) and emit the apply_within / requirement_at_current dispatch form once that IR lands (WI-222). For now, until WI-222 ships the new IR, return Deferred meaning 'don't rewrite' — the call stays as a spec-op call and runtime fails loudly. Acceptance: cargo-test green; new test pins that a spec op called via requires-binding does not get Pin-now-rewritten to a single impl. ~50 lines in kb/typing.rs. Reference: docs/design/operation-call-model.md §'Defer-to-requirement detection' for the classify(call) pseudocode; §'Implementation roadmap' lists this as the first phase.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-218"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-10T17:11:44Z"))
 
 fact WorkItem(
   id: "WI-222",

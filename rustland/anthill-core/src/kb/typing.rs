@@ -189,7 +189,18 @@ pub struct TypingEnv {
     type_bindings: HashMap<String, TermId>,
     expected_collection_type: Option<TermId>,
     local_resources: Vec<String>,
+    /// WI-221: enclosing sort for defer-to-requirement detection plus a
+    /// cached `requires_chain` snapshot. The chain is consulted for every
+    /// spec-op call site under this body; caching once per body avoids
+    /// re-walking `SortRequiresInfo` per apply.
+    enclosing: Option<EnclosingSort>,
     pub diagnostics: Vec<String>,
+}
+
+#[derive(Clone)]
+struct EnclosingSort {
+    sort: Symbol,
+    requires: Vec<RequiresEntry>,
 }
 
 impl TypingEnv {
@@ -199,8 +210,28 @@ impl TypingEnv {
             type_bindings: HashMap::new(),
             expected_collection_type: None,
             local_resources: Vec::new(),
+            enclosing: None,
             diagnostics: Vec::new(),
         }
+    }
+
+    /// Set the sort whose body is currently being type-checked and
+    /// snapshot its `requires` chain (cheap-ish: one `SortRequiresInfo`
+    /// scan via `requires_chain`). `check_apply` reads the cached chain
+    /// per spec-op dispatch without re-walking facts.
+    pub fn set_enclosing_sort(&mut self, kb: &KnowledgeBase, sort: Option<Symbol>) {
+        self.enclosing = sort.map(|s| EnclosingSort {
+            sort: s,
+            requires: requires_chain(kb, s),
+        });
+    }
+
+    pub fn enclosing_sort(&self) -> Option<Symbol> {
+        self.enclosing.as_ref().map(|e| e.sort)
+    }
+
+    fn enclosing_requires(&self) -> Option<&[RequiresEntry]> {
+        self.enclosing.as_ref().map(|e| e.requires.as_slice())
     }
 
     pub fn bind_var(&mut self, name: String, ty: TermId) {
@@ -723,7 +754,8 @@ fn check_apply(
             let op_qn = kb.qualified_name_of(fn_sym).to_string();
             let op_short = op_qn.rsplit_once('.').map(|(_, s)| s).unwrap_or(&op_qn);
             let op_short_sym = kb.intern(op_short);
-            match find_unique_impl_op(kb, &subst, spec_sort, op_short_sym) {
+            let enclosing_requires = env.enclosing_requires().unwrap_or(&[]);
+            match find_unique_impl_op(kb, &subst, spec_sort, op_short_sym, enclosing_requires) {
                 DispatchOutcome::NoCandidates => {}
                 DispatchOutcome::Unique(impl_op_sym) => {
                     // WI-218: rewrite the apply's `fn` from spec op to
@@ -756,6 +788,11 @@ fn check_apply(
                         op_qn
                     );
                     return None;
+                }
+                DispatchOutcome::Deferred => {
+                    // WI-221: skip Pin-now rewrite — impl varies per
+                    // requirement value supplied at runtime. WI-222 will
+                    // emit the apply_within / requirement_at_current form.
                 }
             }
         }
@@ -929,6 +966,102 @@ pub enum DispatchOutcome {
     NoMatch,
     /// Two or more candidates match — coherence rule (C) rejects.
     Ambiguous,
+    /// WI-221 (defer-to-requirement, open-bound trigger): spec sort
+    /// reached via the enclosing sort's `requires` chain. Impl varies
+    /// per requirement value at runtime, so Pin-now rewrite is skipped.
+    /// See `docs/design/operation-call-model.md` §"Defer-to-requirement
+    /// detection".
+    Deferred,
+}
+
+/// WI-221 — defer-to-requirement detection (open-bound trigger). Returns
+/// true iff `spec_sort` appears in the supplied `requires` chain with a
+/// binding that unifies with the per-call subst. The chain is cached on
+/// `TypingEnv` (see `set_enclosing_sort`) to avoid re-walking
+/// `SortRequiresInfo` per apply check.
+fn matches_via_requires(
+    kb: &KnowledgeBase,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    chain: &[RequiresEntry],
+) -> bool {
+    use smallvec::SmallVec;
+    let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+
+    for entry in chain {
+        if entry.required_sort != spec_sort {
+            continue;
+        }
+        // Extract bindings from the entry's SortView term. Plain
+        // bindingless requires (e.g. `requires Paintable`) match
+        // unconditionally — any per-call subst for this spec is reached
+        // via the requires.
+        let bindings: SmallVec<[(Symbol, TermId); 2]> = match kb.get_term(entry.spec) {
+            Term::Fn { functor, named_args, pos_args } => {
+                let f_qn = kb.qualified_name_of(*functor);
+                if f_qn == "anthill.reflect.SortView" || f_qn.ends_with(".SortView") {
+                    named_args.clone()
+                } else if pos_args.is_empty() && named_args.is_empty() {
+                    // Plain sort term, e.g. `requires Paintable`.
+                    SmallVec::new()
+                } else {
+                    continue;
+                }
+            }
+            Term::Ref(_) | Term::Ident(_) => SmallVec::new(),
+            _ => continue,
+        };
+
+        if bindings.is_empty() {
+            return true;
+        }
+
+        // The post-`resolve_requires_bindings` SortView for a `requires`
+        // entry carries bindings for both type-params (e.g. `T`) and
+        // auto-bound operations (e.g. `eq`, `neq`). Only the type-param
+        // bindings constrain the per-call substitution — op bindings are
+        // resolved against the enclosing sort's operations and don't
+        // participate in defer-to-requirement matching. We detect a
+        // type-param slot via SortAlias resolution: only spec params
+        // produce a `Term::Var` alias target. If no type-param bindings
+        // surface (spec has no params, or all bindings are ops), the
+        // entry matches vacuously.
+        let mut all_match = true;
+        for (binding_short_sym, entry_value) in &bindings {
+            let binding_short = kb.resolve_sym(*binding_short_sym);
+            let param_qn = format!("{spec_qn}.{binding_short}");
+            let param_qn_sym = match kb.try_resolve_symbol(&param_qn) {
+                Some(s) => s,
+                None => continue,
+            };
+            let alias_target = match resolve_sort_alias(kb, param_qn_sym) {
+                Some(t) => t,
+                None => continue,
+            };
+            let vid = match kb.get_term(alias_target) {
+                Term::Var(Var::Global(v)) => *v,
+                _ => continue,
+            };
+            let per_call_value = match subst.resolve_with_term(vid) {
+                Some(v) => v,
+                None => { all_match = false; break; }
+            };
+            // Either side may be a wildcard (a type-param value): the
+            // requires entry might use the enclosing sort's open T
+            // (`requires Eq[T]`) or a concrete carrier (`requires Eq[T=Int]`).
+            // Symmetric match — try both directions.
+            if !dispatch_values_match(kb, per_call_value, *entry_value)
+                && !dispatch_values_match(kb, *entry_value, per_call_value)
+            {
+                all_match = false;
+                break;
+            }
+        }
+        if all_match {
+            return true;
+        }
+    }
+    false
 }
 
 /// WI-210 — given a spec sort and a per-call substitution, find the
@@ -944,13 +1077,27 @@ pub enum DispatchOutcome {
 ///   `dispatch_values_match`.
 /// - All bindings must match; the spec's base symbol must equal
 ///   `spec_sort`.
+///
+/// `enclosing_requires` (WI-221): when non-empty, the function first
+/// checks whether the call should be deferred (open-bound trigger — the
+/// spec sort is reached via the caller's `requires` chain). If so,
+/// returns [`DispatchOutcome::Deferred`] without consulting candidates.
+/// See `docs/design/operation-call-model.md` §"Defer-to-requirement
+/// detection" for the full rationale.
 pub fn find_unique_impl_op(
     kb: &KnowledgeBase,
     subst: &Substitution,
     spec_sort: Symbol,
     op_short_sym: Symbol,
+    enclosing_requires: &[RequiresEntry],
 ) -> DispatchOutcome {
     use smallvec::SmallVec;
+
+    if !enclosing_requires.is_empty()
+        && matches_via_requires(kb, subst, spec_sort, enclosing_requires)
+    {
+        return DispatchOutcome::Deferred;
+    }
 
     let provides_sym = match kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") {
         Some(s) => s,
@@ -2173,6 +2320,7 @@ fn sort_sym_compatible(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym: Sym
 // ── Requires chain ─────────────────────────────────────────────
 
 /// A direct requires entry: sort A requires spec B with the given SortView term.
+#[derive(Clone)]
 pub struct RequiresEntry {
     /// The base sort symbol of the required spec (e.g., Eq in `requires Eq[T=Int]`).
     pub required_sort: Symbol,
@@ -3018,6 +3166,14 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
 
     for op in &ops_to_check {
         let mut env = TypingEnv::empty();
+        // WI-221: snapshot the enclosing sort + its requires chain so
+        // defer-to-requirement detection in `check_apply` runs from a
+        // cached chain instead of re-walking SortRequiresInfo per call.
+        let op_qn = kb.qualified_name_of(op.op_sym).to_string();
+        let parent_sym = op_qn
+            .rsplit_once('.')
+            .and_then(|(parent_qn, _)| kb.try_resolve_symbol(parent_qn));
+        env.set_enclosing_sort(kb, parent_sym);
         for (name, ty) in &op.params {
             env.bind_var(name.clone(), *ty);
         }

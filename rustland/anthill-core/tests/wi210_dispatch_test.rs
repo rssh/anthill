@@ -344,7 +344,7 @@ fn dispatch_workitemstore_op(op_short: &str) -> (KnowledgeBase, anthill_core::in
         "anthill.todo.store.FileBasedWorkitemStore.WIS",
     );
     let op_short_sym = kb.intern(op_short);
-    match find_unique_impl_op(&kb, &subst, spec_sort, op_short_sym) {
+    match find_unique_impl_op(&kb, &subst, spec_sort, op_short_sym, &[]) {
         DispatchOutcome::Unique(s) => (kb, s),
         other => panic!("expected Unique dispatch for {op_qn} at State=WIS; got {other:?}"),
     }
@@ -362,7 +362,7 @@ fn dispatch_unique_finds_int_impl_for_numeric_add() {
         .expect("Numeric.add is a spec op");
     let subst = subst_with_t(&mut kb, "anthill.prelude.Numeric", "anthill.prelude.Int");
     let op_short = kb.intern("add");
-    let outcome = find_unique_impl_op(&kb, &subst, spec_sort, op_short);
+    let outcome = find_unique_impl_op(&kb, &subst, spec_sort, op_short, &[]);
     assert!(matches!(outcome, DispatchOutcome::Unique(_)),
         "expected Unique impl for Numeric add at T=Int; got {outcome:?}");
 }
@@ -379,7 +379,7 @@ fn dispatch_no_match_when_carrier_lacks_impl() {
         .expect("Numeric.add is a spec op");
     let subst = subst_with_t(&mut kb, "anthill.prelude.Numeric", "anthill.prelude.Bool");
     let op_short = kb.intern("add");
-    let outcome = find_unique_impl_op(&kb, &subst, spec_sort, op_short);
+    let outcome = find_unique_impl_op(&kb, &subst, spec_sort, op_short, &[]);
     assert_eq!(outcome, DispatchOutcome::NoMatch,
         "expected NoMatch for Numeric.add at T=Bool (no Bool/Numeric binding); got {outcome:?}");
 }
@@ -416,7 +416,7 @@ fn dispatch_ambiguous_when_two_impls_match_same_binding() {
         .expect("AmbSpec.amb_op is a spec op");
     let subst = subst_with_t(&mut kb, "wi210p3.amb.AmbSpec", "wi210p3.amb.AmbCarrier");
     let op_short = kb.intern("amb_op");
-    let outcome = find_unique_impl_op(&kb, &subst, spec_sort, op_short);
+    let outcome = find_unique_impl_op(&kb, &subst, spec_sort, op_short, &[]);
     assert_eq!(outcome, DispatchOutcome::Ambiguous,
         "expected Ambiguous when two impls provide the same binding; got {outcome:?}");
 }
@@ -438,7 +438,7 @@ fn dispatch_polymorphic_candidate_matches_any_per_call_value() {
         "anthill.prelude.Int",
     );
     let op_short = kb.intern("head");
-    let outcome = find_unique_impl_op(&kb, &subst, spec_sort, op_short);
+    let outcome = find_unique_impl_op(&kb, &subst, spec_sort, op_short, &[]);
     assert!(matches!(outcome, DispatchOutcome::Unique(_)),
         "expected Unique dispatch for Stream.head with polymorphic LogicalStream \
          impl candidate at T=Int; got {outcome:?}");
