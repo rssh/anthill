@@ -209,7 +209,7 @@ fact WorkItem(
   description: "Expression type-checking: implement type_check for all expression forms (literals, variables, constructors, application, if/match/let/lambda) per typing_pass_spec.anthill",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-031"],
-  status: Delivered(agent: "claude", at: "2026-04-12T20:11:19Z"))
+  status: Verified(at: "2026-05-10T16:24:23Z"))
 
 fact WorkItem(
   id: "WI-033",
