@@ -144,6 +144,20 @@ impl Interpreter {
         if Some(functor) == sx.constructor {
             return self.start_constructor(named_args);
         }
+        // WI-223 — requirement-typed value forms. Each yields a
+        // `Value::Requirement(handle)` (or, for the requirement_at_current
+        // dispatch form with `op`, drives a spec-op invocation through the
+        // bundled functor). See `docs/design/operation-call-model.md`
+        // §"Two primitives: requirement_at_current and requirement_at_sort".
+        if Some(functor) == sx.requirement_at_current {
+            return self.reduce_requirement_at_current(named_args);
+        }
+        if Some(functor) == sx.requirement_at_sort {
+            return self.reduce_requirement_at_sort(named_args);
+        }
+        if Some(functor) == sx.construct_requirement {
+            return self.reduce_construct_requirement(named_args);
+        }
 
         // A bare reference to a nullary operation: functor is the operation's
         // name and both arg lists are empty. Dispatch through the same path.
@@ -187,12 +201,193 @@ impl Interpreter {
         let env = self.stack.top()
             .map(|f| f.locals.clone())
             .unwrap_or_default();
+        // WI-223: snapshot the enclosing frame's requirements so the
+        // closure restores them on invocation (lexical scope at lambda
+        // creation, not invocation site). Frame-side SmallVec is sized 2,
+        // closure-side is sized 1 (most lambdas hold 0–1 reqs); collect
+        // across the size boundary.
+        let requirements: SmallVec<[super::value::RequirementHandle; 1]> = self.stack.top()
+            .map(|f| f.requirements.iter().cloned().collect())
+            .unwrap_or_default();
         let handle = self.closures.alloc(Closure {
             param_pattern: param_tid,
             body: body_term,
             env,
+            requirements,
         });
         self.deliver(Value::Closure(handle))
+    }
+
+    // ── Requirement-typed value reductions (WI-223) ────────────────
+    //
+    // The grammar in `docs/design/operation-call-model.md` §"Two
+    // primitives" restricts these to chains rooted at
+    // `requirement_at_current`, so reduction is direct (no AwaitState
+    // dance — the chain is statically resolvable to arena handles).
+
+    fn reduce_requirement_at_current(
+        &mut self,
+        named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    ) -> Result<StepOutcome, EvalError> {
+        let slot_tid = named_arg(named_args, self.fields.slot)
+            .ok_or_else(|| EvalError::Internal(
+                "requirement_at_current missing 'slot'".into(),
+            ))?;
+        let slot = extract_static_int(&self.kb, slot_tid, &self.fields)
+            .ok_or_else(|| EvalError::Internal(
+                "requirement_at_current 'slot' is not a static Int".into(),
+            ))? as usize;
+        // The fn-position dispatch form (op = Some(...)) requires the
+        // apply_within wiring to drive a spec-op call through the
+        // bundled functor. Until that lands, reject in value position.
+        if let Some(op_tid) = named_arg(named_args, self.fields.op) {
+            if unwrap_option(&self.kb, op_tid).is_some() {
+                return Err(EvalError::Internal(
+                    "requirement_at_current dispatch form (op = Some) only \
+                     valid as fn of apply_within (not yet wired)".into(),
+                ));
+            }
+        }
+        let handle = {
+            let top = self.stack.top().ok_or_else(|| {
+                EvalError::Internal("requirement_at_current on empty stack".into())
+            })?;
+            top.requirements.get(slot).cloned().ok_or_else(|| {
+                EvalError::Internal(format!(
+                    "requirement_at_current(slot={slot}): frame has only {} \
+                     requirements",
+                    top.requirements.len()
+                ))
+            })?
+        };
+        self.deliver(Value::Requirement(handle))
+    }
+
+    fn reduce_requirement_at_sort(
+        &mut self,
+        named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    ) -> Result<StepOutcome, EvalError> {
+        let chain_tid = named_arg(named_args, self.fields.chain)
+            .ok_or_else(|| EvalError::Internal(
+                "requirement_at_sort missing 'chain'".into(),
+            ))?;
+        let slot_tid = named_arg(named_args, self.fields.slot)
+            .ok_or_else(|| EvalError::Internal(
+                "requirement_at_sort missing 'slot'".into(),
+            ))?;
+        let slot = extract_static_int(&self.kb, slot_tid, &self.fields)
+            .ok_or_else(|| EvalError::Internal(
+                "requirement_at_sort 'slot' is not a static Int".into(),
+            ))? as usize;
+        let parent = self.eval_requirement_chain(resolve_handle(&self.kb, chain_tid))?;
+        let projected = parent.project(slot);
+        self.deliver(Value::Requirement(projected))
+    }
+
+    fn reduce_construct_requirement(
+        &mut self,
+        named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    ) -> Result<StepOutcome, EvalError> {
+        let impl_tid = named_arg(named_args, self.fields.impl_functor)
+            .ok_or_else(|| EvalError::Internal(
+                "construct_requirement missing 'impl_functor'".into(),
+            ))?;
+        let functor_sym = term_as_symbol(&self.kb, impl_tid)
+            .ok_or_else(|| EvalError::Internal(
+                "construct_requirement 'impl_functor' is not a Symbol".into(),
+            ))?;
+        let reqs_tid = named_arg(named_args, self.fields.requirements)
+            .ok_or_else(|| EvalError::Internal(
+                "construct_requirement missing 'requirements'".into(),
+            ))?;
+        let req_terms = list_terms(&self.kb, reqs_tid, self.fields.head, self.fields.tail);
+        let mut handles: SmallVec<[super::value::RequirementHandle; 1]> = SmallVec::new();
+        for tid in req_terms {
+            let h = self.eval_requirement_chain(resolve_handle(&self.kb, tid))?;
+            handles.push(h);
+        }
+        let new_handle = self.requirements.alloc(functor_sym, handles);
+        self.deliver(Value::Requirement(new_handle))
+    }
+
+    /// Synchronously reduce a requirement-typed term to a
+    /// `RequirementHandle`. Walks the chain per the design grammar:
+    /// bottoms out at `requirement_at_current`; intermediate nodes are
+    /// `requirement_at_sort` (projection) or `construct_requirement`
+    /// (allocation). No AwaitState — the grammar is closed under direct
+    /// recursion.
+    fn eval_requirement_chain(
+        &self,
+        tid: TermId,
+    ) -> Result<super::value::RequirementHandle, EvalError> {
+        let term = self.kb.get_term(tid).clone();
+        let sx = &self.reflect;
+        let (functor, named_args) = match term {
+            Term::Fn { functor, named_args, .. } => (functor, named_args),
+            _ => return Err(EvalError::Internal(
+                "requirement chain must be a Term::Fn".into(),
+            )),
+        };
+
+        if Some(functor) == sx.requirement_at_current {
+            let slot_tid = named_arg(&named_args, self.fields.slot)
+                .ok_or_else(|| EvalError::Internal(
+                    "requirement_at_current missing 'slot'".into(),
+                ))?;
+            let slot = extract_static_int(&self.kb, slot_tid, &self.fields)
+                .ok_or_else(|| EvalError::Internal(
+                    "requirement_at_current 'slot' is not a static Int".into(),
+                ))? as usize;
+            let top = self.stack.top().ok_or_else(|| {
+                EvalError::Internal("requirement chain on empty stack".into())
+            })?;
+            top.requirements.get(slot).cloned().ok_or_else(|| {
+                EvalError::Internal(format!(
+                    "requirement_at_current(slot={slot}): frame has only {} \
+                     requirements",
+                    top.requirements.len()
+                ))
+            })
+        } else if Some(functor) == sx.requirement_at_sort {
+            let chain_tid = named_arg(&named_args, self.fields.chain)
+                .ok_or_else(|| EvalError::Internal(
+                    "requirement_at_sort missing 'chain'".into(),
+                ))?;
+            let slot_tid = named_arg(&named_args, self.fields.slot)
+                .ok_or_else(|| EvalError::Internal(
+                    "requirement_at_sort missing 'slot'".into(),
+                ))?;
+            let slot = extract_static_int(&self.kb, slot_tid, &self.fields)
+                .ok_or_else(|| EvalError::Internal(
+                    "requirement_at_sort 'slot' is not a static Int".into(),
+                ))? as usize;
+            let parent = self.eval_requirement_chain(resolve_handle(&self.kb, chain_tid))?;
+            Ok(parent.project(slot))
+        } else if Some(functor) == sx.construct_requirement {
+            let impl_tid = named_arg(&named_args, self.fields.impl_functor)
+                .ok_or_else(|| EvalError::Internal(
+                    "construct_requirement missing 'impl_functor'".into(),
+                ))?;
+            let functor_sym = term_as_symbol(&self.kb, impl_tid)
+                .ok_or_else(|| EvalError::Internal(
+                    "construct_requirement 'impl_functor' is not a Symbol".into(),
+                ))?;
+            let reqs_tid = named_arg(&named_args, self.fields.requirements)
+                .ok_or_else(|| EvalError::Internal(
+                    "construct_requirement missing 'requirements'".into(),
+                ))?;
+            let req_terms = list_terms(&self.kb, reqs_tid, self.fields.head, self.fields.tail);
+            let mut handles: SmallVec<[super::value::RequirementHandle; 1]> = SmallVec::new();
+            for t in req_terms {
+                handles.push(self.eval_requirement_chain(resolve_handle(&self.kb, t))?);
+            }
+            Ok(self.requirements.alloc(functor_sym, handles))
+        } else {
+            Err(EvalError::Internal(format!(
+                "expected requirement-chain term, got functor {}",
+                self.kb.resolve_sym(functor)
+            )))
+        }
     }
 
     // ── Binder starts: update top.awaiting, push child frame. ──────
@@ -330,14 +525,15 @@ impl Interpreter {
                 .chain(remaining.into_iter())
                 .collect(),
         });
-        let (op, locals) = {
+        let (op, locals, requirements) = {
             let top = self.stack.top().unwrap();
-            (top.op, top.locals.clone())
+            (top.op, top.locals.clone(), top.requirements.clone())
         };
         self.stack.push(Frame {
             op,
             expr,
             locals,
+            requirements,
             awaiting: None,
         })?;
         Ok(StepOutcome::Continue)
@@ -353,14 +549,15 @@ impl Interpreter {
         let top = self.stack.top_mut()
             .ok_or_else(|| EvalError::Internal("suspend_and_push with no parent".into()))?;
         top.awaiting = Some(state);
-        let (op, locals) = {
+        let (op, locals, requirements) = {
             let top = self.stack.top().unwrap();
-            (top.op, top.locals.clone())
+            (top.op, top.locals.clone(), top.requirements.clone())
         };
         self.stack.push(Frame {
             op,
             expr: child_expr,
             locals,
+            requirements,
             awaiting: None,
         })?;
         Ok(StepOutcome::Continue)
@@ -427,10 +624,16 @@ impl Interpreter {
         // depth for tail-recursive programs.
         let top = self.stack.top_mut()
             .ok_or_else(|| EvalError::Internal("enter_operation with no parent".into()))?;
+        // WI-223: callee's frame.requirements come from apply_within's
+        // requirements slot. Until WI-222 rewrites apply → apply_within,
+        // we install an empty channel — generic bodies that read
+        // requirement_at_current(i) will see this and surface a clear
+        // "no requirement available" error rather than silently wrong.
         *top = Frame {
             op: target,
             expr: body_term,
             locals,
+            requirements: SmallVec::new(),
             awaiting: None,
         };
         Ok(StepOutcome::Continue)
@@ -457,6 +660,16 @@ impl Interpreter {
         for (sym, v) in bindings {
             locals.push((sym, v));
         }
+        // WI-223: closure invocation overrides the uniform
+        // `frame.requirements = apply_within.requirements` rule with the
+        // requirements snapshotted at lambda construction. Preserves
+        // lexical scope of the lambda's creation site. See
+        // `docs/design/operation-call-model.md` §"Closure invocation:
+        // the one runtime exception". The closure-side SmallVec has inline
+        // size 1 (most lambdas need 0–1 reqs), the frame-side has 2;
+        // collect across the size boundary.
+        let requirements: SmallVec<[super::value::RequirementHandle; 2]> =
+            self.closures.with(&handle, |c| c.requirements.iter().cloned().collect());
         // TCO: same rationale as enter_operation. A closure call in any
         // position is a tail call relative to its own apply frame. The
         // closure inherits its caller's `op` for error-reporting purposes.
@@ -467,6 +680,7 @@ impl Interpreter {
             op,
             expr: body,
             locals,
+            requirements,
             awaiting: None,
         };
         Ok(StepOutcome::Continue)
@@ -560,11 +774,13 @@ impl Interpreter {
                     top.awaiting = Some(AwaitState::ApplyArgs {
                         target, buffered, remaining,
                     });
-                    let (op, locals) = (top.op, top.locals.clone());
+                    let (op, locals, requirements) =
+                        (top.op, top.locals.clone(), top.requirements.clone());
                     self.stack.push(Frame {
                         op,
                         expr: resolve_handle(&self.kb, next_expr),
                         locals,
+                        requirements,
                         awaiting: None,
                     })?;
                     return Ok(StepOutcome::Continue);
@@ -608,11 +824,13 @@ impl Interpreter {
                         buffered_named,
                         remaining,
                     });
-                    let (op, locals) = (top.op, top.locals.clone());
+                    let (op, locals, requirements) =
+                        (top.op, top.locals.clone(), top.requirements.clone());
                     self.stack.push(Frame {
                         op,
                         expr: resolve_handle(&self.kb, next_expr),
                         locals,
+                        requirements,
                         awaiting: None,
                     })?;
                     return Ok(StepOutcome::Continue);
@@ -728,6 +946,60 @@ fn term_as_symbol(kb: &KnowledgeBase, tid: TermId) -> Option<Symbol> {
         Term::Ref(s) | Term::Ident(s) => Some(*s),
         _ => None,
     }
+}
+
+/// Pull a static `i64` out of a slot/index field of a requirement IR
+/// node. Accepts either a bare `Term::Const(Int)` (what the rewrite pass
+/// emits for compile-time-known indices) or an `int_lit(value: ...)`
+/// reflect-entity wrapper (what user code might construct). Returns
+/// `None` for any other shape.
+fn extract_static_int(
+    kb: &KnowledgeBase,
+    tid: TermId,
+    fields: &super::FieldSymbols,
+) -> Option<i64> {
+    match kb.get_term(tid) {
+        Term::Const(Literal::Int(n)) => Some(*n),
+        Term::Fn { named_args, .. } => {
+            let value_tid = named_arg(named_args, fields.value)?;
+            match kb.get_term(value_tid) {
+                Term::Const(Literal::Int(n)) => Some(*n),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Walk a `cons`/`nil` cons-list, returning each element's `head` term.
+/// Non-list shapes fall through as an empty vec — diagnostics fire from
+/// the requirement-IR reductions if a missing `requirements` slot causes
+/// downstream lookup failures.
+fn list_terms(
+    kb: &KnowledgeBase,
+    list_tid: TermId,
+    head_field: Symbol,
+    tail_field: Symbol,
+) -> Vec<TermId> {
+    let mut out = Vec::new();
+    let mut cur = list_tid;
+    loop {
+        match kb.get_term(cur) {
+            Term::Fn { named_args, .. } => {
+                let head = named_arg(named_args, head_field);
+                let tail = named_arg(named_args, tail_field);
+                match (head, tail) {
+                    (Some(h), Some(t)) => {
+                        out.push(h);
+                        cur = t;
+                    }
+                    _ => break,
+                }
+            }
+            _ => break,
+        }
+    }
+    out
 }
 
 fn decode_apply_arg(

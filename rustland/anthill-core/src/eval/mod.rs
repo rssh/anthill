@@ -13,6 +13,7 @@ pub mod eval;
 pub mod frame;
 pub mod map_arena;
 pub mod pattern;
+pub mod requirement_arena;
 pub mod stream;
 pub mod subst_arena;
 pub mod value;
@@ -31,6 +32,7 @@ use cell_arena::CellArenaRef;
 use closure::ClosureArenaRef;
 use effects::EffectRegistry;
 use map_arena::MapArenaRef;
+use requirement_arena::RequirementArenaRef;
 use stream::StreamArenaRef;
 
 /// Runtime resource limits. Each cap is optional so different embeddings
@@ -88,6 +90,18 @@ pub(crate) struct ReflectSymbols {
     pub match_expr: Option<Symbol>,
     pub lambda: Option<Symbol>,
     pub constructor: Option<Symbol>,
+    // WI-222 / WI-223 — requirement-aware IR variants and primitives.
+    // Resolved if `reflect.anthill` declares them; remain `None`
+    // otherwise so older stdlibs surface a clean "unhandled functor"
+    // error rather than misbehaving. The four `_within` fields are
+    // reserved for the apply-time wiring (follow-up to WI-223 Phase A).
+    #[allow(dead_code)] pub apply_within: Option<Symbol>,
+    #[allow(dead_code)] pub ho_apply_within: Option<Symbol>,
+    #[allow(dead_code)] pub constructor_within: Option<Symbol>,
+    #[allow(dead_code)] pub lambda_within: Option<Symbol>,
+    pub requirement_at_current: Option<Symbol>,
+    pub requirement_at_sort: Option<Symbol>,
+    pub construct_requirement: Option<Symbol>,
 
     // Pattern entities
     pub var_pattern: Option<Symbol>,
@@ -120,6 +134,13 @@ impl ReflectSymbols {
             match_expr: r("anthill.reflect.Expr.match_expr"),
             lambda: r("anthill.reflect.Expr.lambda"),
             constructor: r("anthill.reflect.Expr.constructor"),
+            apply_within: r("anthill.reflect.Expr.apply_within"),
+            ho_apply_within: r("anthill.reflect.Expr.ho_apply_within"),
+            constructor_within: r("anthill.reflect.Expr.constructor_within"),
+            lambda_within: r("anthill.reflect.Expr.lambda_within"),
+            requirement_at_current: r("anthill.reflect.Expr.requirement_at_current"),
+            requirement_at_sort: r("anthill.reflect.Expr.requirement_at_sort"),
+            construct_requirement: r("anthill.reflect.Expr.construct_requirement"),
 
             var_pattern: r("anthill.reflect.Pattern.var_pattern"),
             wildcard: r("anthill.reflect.Pattern.wildcard"),
@@ -160,6 +181,13 @@ pub(crate) struct FieldSymbols {
     pub param: Symbol,
     pub head: Symbol,
     pub tail: Symbol,
+    // WI-222 / WI-223 — requirement IR field keys.
+    pub slot: Symbol,
+    pub op: Symbol,
+    pub chain: Symbol,
+    pub impl_functor: Symbol,
+    pub requirements: Symbol,
+    pub predicate: Symbol,
 }
 
 impl FieldSymbols {
@@ -183,6 +211,12 @@ impl FieldSymbols {
             param: kb.intern("param"),
             head: kb.intern("head"),
             tail: kb.intern("tail"),
+            slot: kb.intern("slot"),
+            op: kb.intern("op"),
+            chain: kb.intern("chain"),
+            impl_functor: kb.intern("impl_functor"),
+            requirements: kb.intern("requirements"),
+            predicate: kb.intern("predicate"),
         }
     }
 }
@@ -201,6 +235,7 @@ pub struct Interpreter {
     pub(crate) substs: subst_arena::SubstArenaRef,
     pub(crate) maps: MapArenaRef,
     pub(crate) cells: CellArenaRef,
+    pub(crate) requirements: RequirementArenaRef,
     pub(crate) effect_handlers: EffectRegistry,
     /// Registered persistence backends (proposal 007). Keyed by the
     /// canonical printed form of the store's `Value::Entity` so anthill
@@ -240,6 +275,7 @@ impl Interpreter {
             substs: subst_arena::SubstArenaRef::new(),
             maps: MapArenaRef::new(),
             cells: CellArenaRef::new(),
+            requirements: RequirementArenaRef::new(),
             effect_handlers: EffectRegistry::new(),
             store_registry: HashMap::new(),
             config,
@@ -339,7 +375,8 @@ impl Interpreter {
             | Value::Lazy(_)
             | Value::Substitution(_)
             | Value::Map(_)
-            | Value::Cell(_) => {
+            | Value::Cell(_)
+            | Value::Requirement(_) => {
                 return Err(EvalError::TypeMismatch {
                     expected: "store-shaped Value (Entity / scalar / Term)",
                     got: v.type_name().to_string(),
@@ -381,6 +418,7 @@ impl Interpreter {
             op: sym,
             expr: body_term,
             locals,
+            requirements: smallvec::SmallVec::new(),
             awaiting: None,
         })?;
         self.run()
@@ -423,6 +461,52 @@ impl Interpreter {
 
     /// Number of live cell-arena slots. Diagnostic for refcount tests.
     pub fn cell_arena_live_count(&self) -> usize { self.cells.live() }
+
+    /// Number of live requirement-arena slots. Diagnostic for refcount
+    /// and cascade-drop tests under the WI-223 runtime support.
+    pub fn requirement_arena_live_count(&self) -> usize { self.requirements.live() }
+
+    /// Allocate a fresh requirement slot bundling `(functor, requirements)`
+    /// and return an owning handle. Used by the eval to reduce
+    /// `construct_requirement(impl, [...])` IR forms.
+    pub fn alloc_requirement(
+        &self,
+        functor: Symbol,
+        requirements: smallvec::SmallVec<[value::RequirementHandle; 1]>,
+    ) -> value::RequirementHandle {
+        self.requirements.alloc(functor, requirements)
+    }
+
+    /// Test-only entry point: drive a single expression as the body of an
+    /// ad-hoc operation, with `frame.requirements` pre-seeded. Used to
+    /// verify the WI-223 requirement IR reductions
+    /// (`requirement_at_current` / `requirement_at_sort` /
+    /// `construct_requirement`) before WI-222's rewrite pass produces them
+    /// from real call sites.
+    #[doc(hidden)]
+    pub fn run_with_requirements(
+        &mut self,
+        expr: crate::kb::term::TermId,
+        requirements: smallvec::SmallVec<[value::RequirementHandle; 2]>,
+    ) -> Result<Value, EvalError> {
+        let op = self.kb.intern("__test_requirement_eval");
+        self.step_count = 0;
+        self.stack.push(Frame {
+            op,
+            expr,
+            locals: smallvec::SmallVec::new(),
+            requirements,
+            awaiting: None,
+        })?;
+        self.run()
+    }
+
+    /// Clone the requirement-arena handle. Same rationale as
+    /// `subst_arena()`: lets a caller hold a borrow on the arena while
+    /// `&mut self` on the interpreter is in flight.
+    pub fn requirement_arena(&self) -> RequirementArenaRef {
+        self.requirements.clone()
+    }
 
     /// Allocate a fresh cell slot and return an owning handle.
     pub fn alloc_cell(&self, value: Value) -> value::CellHandle {

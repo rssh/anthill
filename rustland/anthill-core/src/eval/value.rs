@@ -11,6 +11,7 @@ use crate::kb::term::TermId;
 pub use super::cell_arena::CellHandle;
 pub use super::closure::ClosureHandle;
 pub use super::map_arena::MapHandle;
+pub use super::requirement_arena::RequirementHandle;
 pub use super::stream::StreamHandle;
 pub use super::subst_arena::SubstHandle;
 
@@ -72,6 +73,16 @@ pub enum Value {
     /// transitively contains Cell, so the runtime never has to detect
     /// cycles. See proposal 037 §"Cell[V]" + `docs/design/cell-runtime.md`.
     Cell(CellHandle),
+    /// First-class requirement value — arena-refcounted handle into the
+    /// per-interpreter RequirementArena. Materializes a resolved spec
+    /// impl: the slot stores `(functor, sub-requirements)` so bodies
+    /// can dispatch through it via `requirement_at_current(i, op_short)`
+    /// and project sub-deps via `requirement_at_sort(chain, k)`.
+    /// Constructed by the IR's `construct_requirement(impl, [...])`
+    /// form; carried in `frame.requirements` and `closure.requirements`
+    /// channels. See `docs/design/operation-call-model.md` §"Runtime:
+    /// frame, requirement value, closure".
+    Requirement(RequirementHandle),
 
     // KB-sourced or already-committed data (hash-consed).
     Term(TermId),
@@ -146,6 +157,7 @@ impl Value {
             Value::Substitution(_) => "Substitution",
             Value::Map(_) => "Map",
             Value::Cell(_) => "Cell",
+            Value::Requirement(_) => "Requirement",
             Value::Term(_) => "Term",
         }
     }

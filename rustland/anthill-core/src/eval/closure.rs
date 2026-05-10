@@ -28,6 +28,13 @@ pub struct Closure {
     pub param_pattern: TermId,
     pub body: TermId,
     pub env: SmallVec<[(Symbol, Value); 4]>,
+    /// WI-223: requirement scope to install in `frame.requirements` when
+    /// the closure is invoked. Snapshotted at lambda construction time
+    /// (`lambda_within(params, body, requirements)`) — restored on call
+    /// to preserve the lexical scope where the lambda was *created*, not
+    /// where it's *invoked*. The HO-call exception in §"Closure invocation:
+    /// the one runtime exception" of `docs/design/operation-call-model.md`.
+    pub requirements: SmallVec<[crate::eval::value::RequirementHandle; 1]>,
 }
 
 struct Slot {
@@ -215,6 +222,7 @@ mod tests {
             param_pattern: TermId::from_raw(0),
             body: TermId::from_raw(0),
             env: SmallVec::new(),
+            requirements: SmallVec::new(),
         }
     }
 
@@ -255,6 +263,7 @@ mod tests {
             param_pattern: TermId::from_raw(7),
             body: TermId::from_raw(0),
             env: SmallVec::new(),
+            requirements: SmallVec::new(),
         });
         let pat = arena.with(&h, |c| c.param_pattern);
         assert_eq!(pat, TermId::from_raw(7));

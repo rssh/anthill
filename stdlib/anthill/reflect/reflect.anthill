@@ -330,6 +330,30 @@ namespace anthill.reflect
     entity float_lit(value: Float)
     entity string_lit(value: String)
     entity bool_lit(value: Bool)
+
+    -- WI-222 / WI-223: requirement-aware IR variants emitted by the
+    -- requirement-insertion pass. Each carries an explicit `requirements`
+    -- channel — a positional vector of requirement-typed expressions
+    -- (requirement_at_current / requirement_at_sort / construct_requirement)
+    -- that evaluates to the callee's frame.requirements at apply time.
+    -- See `docs/design/operation-call-model.md` §"The IR".
+    entity apply_within(fn: Symbol, args: List[ApplyArg], requirements: List[ExprOccurrence])
+    entity ho_apply_within(predicate: Term, args: List[Term], requirements: List[ExprOccurrence])
+    entity constructor_within(name: Symbol, args: List[ApplyArg], requirements: List[ExprOccurrence])
+    entity lambda_within(param: Pattern, body: ExprOccurrence, requirements: List[ExprOccurrence])
+
+    -- Requirement-typed primitives.
+    -- requirement_at_current(slot, op): in value position the result is
+    -- frame.requirements[slot]; in fn position with `op` set, dispatch
+    -- <handle.functor>.<op> through that requirement value.
+    entity requirement_at_current(slot: Int, op: Option[Symbol])
+    -- requirement_at_sort(chain, slot): project the slot-th bundled
+    -- sub-requirement of `chain`. `chain` is restricted to a chain
+    -- rooted at requirement_at_current — enforced by the typer.
+    entity requirement_at_sort(chain: ExprOccurrence, slot: Int)
+    -- construct_requirement(impl_functor, requirements): allocate a
+    -- fresh requirement value bundling the resolved sub-requirements.
+    entity construct_requirement(impl_functor: Symbol, requirements: List[ExprOccurrence])
   end
 
   entity MatchBranch(

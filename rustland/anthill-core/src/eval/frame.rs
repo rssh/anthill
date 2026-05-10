@@ -60,6 +60,12 @@ pub struct Frame {
     pub expr: TermId,
     /// Lexical bindings in this frame.
     pub locals: SmallVec<[(Symbol, Value); 4]>,
+    /// WI-223: requirement values available to this body. Populated on
+    /// frame push from the call site's `apply_within.requirements` slot
+    /// (or `closure.requirements` for HO calls). Read by the eval when
+    /// reducing `requirement_at_current(i)`. Per `docs/design/operation-
+    /// call-model.md` §"Runtime: frame, requirement value, closure".
+    pub requirements: SmallVec<[crate::eval::value::RequirementHandle; 2]>,
     /// None = fresh (ready to reduce `expr`); Some = suspended, waiting for
     /// the child frame above to deliver a value.
     pub awaiting: Option<AwaitState>,
@@ -119,6 +125,7 @@ mod tests {
             op: Symbol::from_raw(0),
             expr: TermId::from_raw(0),
             locals: SmallVec::new(),
+            requirements: SmallVec::new(),
             awaiting: None,
         }
     }
