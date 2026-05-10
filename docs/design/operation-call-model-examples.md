@@ -95,7 +95,7 @@ end
 apply_within(
   fn = B.bar,
   args = [s],
-  requirements = [<C2 entity-value>]    -- typer resolves D's A[T=String] → C2
+  requirements = [<C2 requirement value>]    -- typer resolves D's A[T=String] → C2
 )
 ```
 
@@ -111,7 +111,7 @@ end
 apply_within(
   fn = B.bar,
   args = [42],
-  requirements = [<C1 entity-value with T binding>]
+  requirements = [<C1 requirement value with T binding>]
 )
 ```
 
@@ -169,7 +169,7 @@ Caller calling `neq(x, y)` for `x, y : Int` (IntEq satisfies Eq[T=Int]):
 apply_within(
   fn = Eq.neq,        -- dispatched from spec name to inherited default
   args = [x, y],
-  requirements = [<IntEq entity-value>]
+  requirements = [<IntEq requirement value>]
 )
 ```
 
@@ -363,12 +363,12 @@ body: match_expr(
                       args = [cons(y, ys)],
                       requirements = []
                     ),
-                    captured_requirements = [0]   -- inner lambda captures requirement from outer lambda's frame
+                    requirements = [requirement_at_current(0)]   -- inner lambda captures requirement from outer lambda's frame
                   )
                 ],
                 requirements = []
               ),
-              captured_requirements = [0]   -- outer lambda captures requirement from mapM's frame
+              requirements = [requirement_at_current(0)]   -- outer lambda captures requirement from mapM's frame
             )
           ],
           requirements = []
@@ -381,7 +381,7 @@ Three things this example showcases:
 
 1. **Same-requirement multi-call**: five calls to spec ops in one body, all reading `requirement_at_current(0)` for the same Monad instance.
 2. **Recursive call passes requirement**: `mapM(f, rest)` recursively calls itself; since recursive mapM also needs requirement_at_current(0), the call's `requirements = [requirement_at_current(0)]` propagates the current frame's Monad requirement.
-3. **Lambda requirement capture**: each `\y -> ...` and `\ys -> ...` lambda captures `requirement_at_current(0)` from its enclosing scope via `captured_requirements = [0]`. When the lambda is invoked (via `bind`), the new frame's `requirements[0]` is populated from the closure's snapshot.
+3. **Lambda requirement capture**: each `\y -> ...` and `\ys -> ...` lambda captures `requirement_at_current(0)` from its enclosing scope via `lambda_within(..., requirements = [requirement_at_current(0)])`. The expression is evaluated at construction time and the resulting handle is stored in `closure.requirements`. When the lambda is invoked (via `bind`), the new frame's `requirements[0]` is populated from the closure's snapshot.
 
 ### Conditional instance: StateT chain
 
@@ -416,7 +416,7 @@ Each layer's body uses `requirement_at_current(0)` for its inner Monad. The chai
 ### Notes
 
 - The monad-transformer pattern works because each level's requirement slot only carries the *direct* requires; deeper resolutions live in deeper frames.
-- `lambda_within(captured_requirements = [0])` is essential here: monadic continuations would lose their Monad requirement without capture.
+- `lambda_within(..., requirements = [requirement_at_current(0)])` is essential here: monadic continuations would lose their Monad requirement without capture.
 - The recursive `mapM(f, rest)` call propagates `requirements = [requirement_at_current(0)]` — the current frame's requirement passes through to the recursive frame.
 
 ## Example 6 — Phantom-only type-param
@@ -590,18 +590,15 @@ The body of EqList.eq executes for outer xss = `cons(xs, rest_xss)`, yss = `cons
 
 1. **Frame for outer call**: `frame.requirements = [env_LX]` (from the apply's requirements slot evaluated).
 
-2. **Inner-element call** `eq(xs, ys)` where `xs, ys : List[X]`:
+2. **Inner-element call** `eq(xs, ys)` where `xs, ys : List[X]`. EqList.eq's body has `requirements = [Eq[?A]]` (length 1), so the IR transform sources the callee's slot 0 by projecting from the caller's dispatching value:
    ```
-   apply_within(fn = requirement_at_current(0, "eq"), args = [xs, ys], requirements = [])
+   apply_within(
+     fn = requirement_at_current(0, "eq"),
+     args = [xs, ys],
+     requirements = [requirement_at_sort(requirement_at_current(0), 0)]   -- env_LX.requirements[0] = env_X
+   )
    ```
-   At runtime: `frame.requirements[0] = env_LX`; functor=EqList → resolve to EqList.eq impl.
-
-   But wait — the body's requirements is `[Eq[?A]]` (length 1), so it expects a requirement at slot 0. The inline IR above shows `requirements = []` — that's not enough. The IR transform actually emits:
-   ```
-   apply_within(fn = requirement_at_current(0, "eq"), args = [xs, ys],
-                requirements = [requirement_at_sort(requirement_at_current(0), 0)])      -- env_LX.requirements[0] = env_X
-   ```
-   Inner-element call's body (entered with `frame.requirements = [env_X]`) — recursing on List[X], which contains X-typed elements.
+   At runtime: `frame.requirements[0] = env_LX`; functor=EqList → resolve to EqList.eq impl. The new frame is entered with `frame.requirements = [env_X]`. Recursing on List[X] now, which contains X-typed elements.
 
 3. **One more level down**: this body's inner-element call `eq(x, y)` where `x, y : X` becomes:
    ```

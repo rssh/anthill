@@ -24,6 +24,19 @@ There is **one** structural concept: a positional list of requirement values, in
 
 Same data shape (vector of requirement values) at every point. We just call it `requirements`.
 
+### Glossary — disambiguating overloaded terms
+
+The word "requirements" is used at four distinct levels of the system. To avoid confusion, the doc uses these qualified forms when the level matters:
+
+| Term | Level | Meaning |
+|---|---|---|
+| **`Sort.requires`** | source | The user-written `requires X` declarations on a sort. Plural reading: a list of source-level constraint declarations. |
+| **`Op.requirements`** | typer metadata | The transitive closure of `SortGoal`s the op's body needs (computed by the typer; see Op.requirements computation). Positional list, declaration-order. |
+| **`apply_within(..., requirements = [...])`** | IR (post-elaboration) | The expressions that evaluate to the callee's `frame.requirements` slot at runtime. |
+| **`frame.requirements`** | runtime | The actual `RequirementHandle` vector populated when a frame is pushed. Read by `requirement_at_current(i)`. |
+
+Whenever the word "requirements" appears unqualified in this doc, context makes the level clear; in cross-section references, the qualified form is used.
+
 ## The IR
 
 Four IR variants gain an requirements channel; the requirement-less forms become canonical aliases for `_within(..., requirements=[])` and are eliminated after migration:
@@ -140,30 +153,34 @@ What changes between direct and dispatch is the **IR transform** at the call sit
   - **Sort-level deps** of the impl — from the requirement value's bundled requirements: `requirement_at_sort(requirement_at_current(i), k)`.
   - **Op-level / extra deps** introduced by the op's own type-params or its body's calls outside the sort — from caller's frame: `requirement_at_current(j)`.
 
-Worked example:
+Worked example (using only sort-level requires, the v0 case):
 
 ```anthill
-sort Foo[T] requires Eq[T]
-  op bar[U](u: U) requires Ord[U] -> Bool
+sort B[T]
+  requires Eq[T]
+  requires Ordered[T]
+  op cmp(a: T, b: T) -> Int
 end
 ```
 
-`bar`'s `requirements = [Eq[T], Ord[U]]`. Dispatching `bar(u)` through a `Foo[T]` requirement value at caller's slot 0, with `Ord[U]` at caller's slot 3:
+`cmp`'s `requirements = [Eq[T], Ordered[T]]` (declaration order). Dispatching `cmp(x, y)` through a `B[T]` requirement value at caller's slot 0:
 
 ```
 apply_within(
-  fn   = requirement_at_current(0, "bar"),
-  args = [u],
+  fn   = requirement_at_current(0, "cmp"),
+  args = [x, y],
   requirements = [
-    requirement_at_sort(requirement_at_current(0), 0),   -- Eq[T] from the Foo requirement value's bundle
-    requirement_at_current(3),               -- Ord[U] from caller's frame
+    requirement_at_sort(requirement_at_current(0), 0),   -- Eq[T] from B's bundle
+    requirement_at_sort(requirement_at_current(0), 1),   -- Ordered[T] from B's bundle
   ]
 )
 ```
 
-The runtime then pushes a new frame with `frame.requirements = [<Eq requirement>, <Ord requirement>]`, bound positionally per `bar`'s `requirements` order.
+The runtime then pushes a new frame with `frame.requirements = [<Eq requirement>, <Ordered requirement>]`, bound positionally per `cmp`'s `requirements` order.
 
-The trivial case where dispatch's `requirements = []` only happens when the callee's `requirements = []` — which means the dispatched op (and the impl's transitive closure for it) has no deps at all. This is rare; the realistic generic case (`eq` through `Eq[List[X]]`, `bar` above, anything with sort-level requires) always has at least one entry.
+> **Future extension (out of v0 scope)**: per-operation `requires` clauses (e.g., `op bar[U](u: U) requires Ord[U]`) would mix sort-level and op-level deps in `cmp`'s requirements list. The op-level slot would source from the caller's frame (`requirement_at_current(j)`) rather than from the dispatching value's bundle. Mechanism is the same; the only difference is where the slot's source comes from. Per-op requires is listed in "Out of scope" — see that section.
+
+The trivial case where dispatch's `requirements = []` only happens when the callee's `requirements = []` — i.e., the dispatched op has no deps at all (a leaf op like `IntEq.eq`). The realistic generic case (`eq` through `Eq[List[X]]`, `cmp` above, anything with sort-level requires) always has at least one entry.
 
 ### Requirement values carry their own requirements
 
@@ -288,14 +305,26 @@ For any concrete `Eq[List[List[Int]]]`, the resolution chain is:
 - Subgoal: `Eq[List[Int]]` — matches same conditional with `?A = Int`.
 - Subgoal: `Eq[Int]` — matches `IntEq`.
 
-Three requirement values constructed, chained:
-- `env_LLI` (functor=EqList, requirements=[<Self ref>, env_LI])
-- `env_LI` (functor=EqList, requirements=[<Self ref>, env_I])
+Three requirement values constructed, chained — **no Self entry**:
+- `env_LLI` (functor=EqList, requirements=[env_LI])
+- `env_LI` (functor=EqList, requirements=[env_I])
 - `env_I` (functor=IntEq, requirements=[])
 
-The chain depth equals the nesting depth of the type. Recursion through Self is handled by knot-tying at construction (env_X.requirements[Self_slot] = env_X itself).
+Each level's `requirements` references only its already-constructed inner level. The chain depth equals the nesting depth of the type. **No cycles** — the arena's refcount alone cleans up the chain when the outermost reference drops.
 
-Requirement values therefore aren't simple sort tags — they're recursive records carrying the impl's resolved requirement scope. This is the anthill analog of Haskell dictionaries / Lean instances.
+### No-cycles policy: how Self is handled
+
+A naive design would put a Self-handle in each conditional impl's `requirements` so the body could recursively dispatch via `requirement_at_current(self_slot, "eq")`. That would create a refcount cycle (env_LX.requirements[Self_slot] = env_LX itself), and refcounting alone would never free the chain.
+
+The design avoids this entirely:
+
+- **Impl-side self-recursion** (e.g., `EqList.eq` recursing on the tail of a List) → emit a **direct call by impl op name** (form (1)): `apply_within(fn = EqList.eq, args = [rest_xs, rest_ys], requirements = [requirement_at_current(0)])`. The recursive frame's `requirements` is forwarded from the current frame; no Self in the requirement value's bundled list. See Examples doc, Example 7 and Example 8.
+
+- **Spec default body needing the dispatching impl** (e.g., `Eq.neq`'s default calling `eq`) → caller passes the impl requirement value into the body's `frame.requirements[0]` and the body dispatches via `requirement_at_current(0, "eq")`. The impl requirement value itself isn't self-referential — IntEq's bundled requirements are its own deps (Numeric, Show), not IntEq itself. See Examples doc, Example 2.
+
+Under this discipline, every entry in a `RequirementSlot.requirements` references only earlier-constructed slots — strictly outward, never inward. Plain refcount cleans up correctly, no cycle detector or weak references required.
+
+Mutually recursive default bodies (e.g., `IntEq.eq` calling `Eq.neq` which calls `eq`) are handled the same way: `IntEq.eq`'s body is invoked through some caller's apply with `requirements = [<IntEq value>]`; if that body calls `Eq.neq` through `requirement_at_current(0, "neq")`, the IntEq value is just **passed forward** in the next call's requirements slot — not stored inside any other requirement value's bundled list. So no cycle arises from mutual recursion either.
 
 **Same shape applies to non-conditional impls too**:
 
@@ -308,28 +337,60 @@ sort IntEq
 end
 ```
 
-`IntEq.eq`'s requirements = [Self?, Numeric[T=Int], Show[T=Int]] — Self if the body recurses, plus the explicit requires. Each requirement value bundles these at construction.
+`IntEq.eq`'s requirements = [Numeric[T=Int], Show[T=Int]] — the explicit requires only. No Self entry. If the body recurses on `eq` directly, that's a direct call to `IntEq.eq` (form (1)).
 
 See "Requirement values carry their own sub-requirements" below in the IR section.
 
 ### Op.requirements computation
 
-For each operation, `requirements` has two contributions:
+For each operation, `requirements` is a **list** (positional, declaration-order) of `SortGoal` entries — see Resolution section for the type. Two contributions:
 
 ```
-op.requirements =
-    direct:    {requirement_for(callee.spec_sort) | callee in body, callee is a spec op}
-  ∪ transitive: ⋃ { other_op.requirements | other_op in body, callee is in this sort or another }
+op.requirements (set view, before ordering) =
+    direct:     { goal_for(callee.spec_sort, callee.type_args)
+                  | callee in body, callee is a spec op }
+  ∪ transitive: ⋃ { substitute(other_op.requirements, callee.subst_at_callsite)
+                    | other_op in body, callee is in this sort or another }
 ```
 
-Transitive includes calls to ops in the SAME sort (mutual recursion → fixed-point) AND calls to ops in OTHER sorts (qualified `C.foo` calls — pull in C.foo's requirements).
+**Substitution**: when calling `other_op` with type-args `subst`, that callee's required goals get `subst` applied before unioning into the caller's requirements. This is what makes `B.bar` calling `C.foo[T = Int]` add `Eq[T = Int]` (not `Eq[T = T]`) to B.bar's requirements.
 
-This is real analysis. Two implementation choices:
+**Ordering**: the set above is then **ordered by appearance in source** — for the sort's own `requires` clauses, declaration order applies; for goals discovered transitively, the order is the depth-first traversal of the body in source order. Result: a stable, deterministic positional list.
 
-- **Eager**: explicit pre-pass that walks per-sort call graphs, computes SCCs, runs fixed-point. Output: per-op `requirements` map across all loaded sorts.
-- **Demand-driven**: when typing a body's call, recursively type the callee's body first; memoize. Cycle detection for mutual recursion.
+**Mutual recursion → fixed-point**: ops that recurse on each other (or via a cycle) form a strongly-connected component. The fixed-point of the equation above stabilizes (the set is monotone — only grows — and bounded by the union of all sorts' `requires` reachable from the SCC). Termination is guaranteed by monotonicity over a finite lattice.
 
-Either is valid. Lean's elaborator and GHC's constraint inference both do this (eagerly).
+**Implementation choices**:
+
+- **Eager**: pre-pass walks per-sort call graphs, computes SCCs, runs fixed-point per SCC. Output: per-op `requirements` map across all loaded sorts. Memoizable.
+- **Demand-driven**: when typing a body's call, recursively type the callee's body first; memoize. Cycle detection for mutual recursion (push the op-id on a stack; if a recursive call loops back, treat the as-yet-unfinished computation as the empty set and let the fixed-point absorb the additions on the way back up).
+
+Both produce the same result. Lean's elaborator and GHC's constraint inference both do this (eagerly).
+
+### Defer-to-requirement detection
+
+The call-rewrite classification (Direct / Pin-now / Defer-to-requirement) needs a precise predicate. For a call `op_call(args)` with type-args `subst` at the call site:
+
+```
+classify(call):
+    if op_call.target is already a concrete impl op symbol:
+        return Direct
+
+    # op_call.target is a spec op symbol; needs resolution.
+    goal = (op_call.spec_sort, subst)
+
+    if goal contains any free type-variable that's an open type-param of the enclosing scope:
+        return DeferToRequirement   # OPEN-T trigger
+
+    if op_call.spec_sort is in Sort.requires(enclosing_sort) for some matching binding:
+        return DeferToRequirement   # OPEN-BOUND trigger
+        # (we have a slot in frame.requirements that holds the right impl;
+        #  use it instead of resolving statically)
+
+    # Otherwise the goal is fully ground and not via requires — resolve to the impl now.
+    return PinNow(resolve(goal, scope))
+```
+
+Both triggers (open-T and open-bound) must be checked; either one fires Defer-to-requirement. The open-bound trigger is what was missing in WI-218's original implementation — a call's type-args might be ground (e.g., `T = Int`), but if the dispatching path comes through `requires Eq[T]`, the impl to invoke depends on which env the caller passed in, not on the static type. Pin-now would silently mis-rewrite to a single impl; Defer-to-requirement is correct.
 
 ### Sort-level requirements
 
@@ -385,9 +446,102 @@ In all three cases, the requirements list at the call site is the **full transit
 
 ## Resolution
 
-Instance synthesis is an SLD query over `SortProvidesInfo` facts. Conditional instances (`fact Spec[…] :- subgoals`) are clauses with bodies; resolution composes via existing SLD machinery. This is the Lean-style search-based synthesis, expressed in anthill's existing primitives.
+Instance synthesis is an SLD query over `SortProvidesInfo` facts. Conditional instances (`fact Spec[…] :- subgoals`) are clauses with bodies; resolution composes via existing SLD machinery.
 
-Coherence at the outermost site: ambiguous `requires` resolution rejects at the instantiation that introduces the choice (per WI-210's coherence rules — priority table or reject-as-ambiguous).
+### The `resolve` function — interface and contract
+
+```
+resolve(goal: SortGoal, scope: ResolutionScope) -> ResolutionResult
+
+where:
+  SortGoal           = (spec_sort: Symbol, type_args: Substitution)
+  ResolutionScope    = (sort: SortId, subst: Substitution, available_requires: Vec<SortGoal>)
+  ResolutionResult   = ResolvedTree | NoMatch | Ambiguous(Vec<ResolvedTree>) | Cyclic
+
+  ResolvedTree       = leaf:    { impl: Symbol, type_args: Substitution }
+                     | conditional: { impl: Symbol, type_args: Substitution, sub_resolutions: Vec<ResolvedTree> }
+                     | from_scope:  { scope_index: usize }    // matched a scope-local available_require
+```
+
+- **`goal`** — the spec sort instance to resolve (e.g., `Eq[T = List[Int]]`).
+- **`scope`** — the calling context: which sort we're resolving inside, its substitution, and what `requires` declarations are already in scope (for callers that have them — e.g., a generic body in sort B with `requires Eq[T]` has `Eq[T = T]` as an available_require at scope_index 0).
+- **`ResolvedTree`** — the recursively-resolved chain. A `leaf` is a non-conditional impl; a `conditional` is an impl whose `:-` body produces sub-goals each resolved; `from_scope` means the goal matched something already in `available_requires` (no new construction needed).
+
+### Algorithm
+
+```
+fn resolve(goal, scope):
+    # Step 1 — try to match an available_require in scope (free).
+    for (i, ar) in scope.available_requires.iter().enumerate():
+        if unify(goal, ar):
+            return from_scope { scope_index: i }
+
+    # Step 2 — search SortProvidesInfo for impls whose head unifies with goal.
+    candidates = sortprovidesinfo_lookup(goal.spec_sort, goal.type_args)
+    matches = []
+    for c in candidates:
+        subst = unify(c.head_pattern, goal)
+        if subst is not None:
+            matches.append((c, subst))
+
+    if matches.is_empty(): return NoMatch
+    if matches.len() > 1:
+        # Step 3 — coherence resolution. See "Coherence" subsection.
+        chosen = pick_highest_priority(matches)  # rejects if priorities tie
+        if chosen is None: return Ambiguous(matches.map(|m| build_tree(m, scope)))
+    else:
+        chosen = matches[0]
+
+    # Step 4 — for conditional impls, recursively resolve the :- subgoals.
+    sub_resolutions = []
+    for subgoal in chosen.impl.requires_pattern_substituted(chosen.subst):
+        # Cycle check — keep a stack of in-progress goals; reject if subgoal recurs.
+        if subgoal in stack: return Cyclic
+        sub = resolve(subgoal, scope)
+        if sub is error: propagate up
+        sub_resolutions.append(sub)
+    return ResolvedTree::conditional { impl: chosen.impl, type_args: chosen.subst, sub_resolutions }
+```
+
+Output `ResolvedTree` is the direct input to the requirement-insertion pass: each node becomes either a `from_scope` reference (`requirement_at_current(i)` or a chain of `requirement_at_sort` from one) or a `construct_requirement(impl, [...])` term whose nested args are themselves emitted from the sub_resolutions.
+
+### Termination — bounded recursion
+
+Conditional instance bodies can in principle recurse forever (`Eq[F[T]] :- Eq[F[T]]`). The cycle check above (the in-progress `stack`) makes resolution terminate, but it's pessimistic: it rejects ill-founded chains rather than trying to find a structural decrease. v0 rejects cyclic resolution; that's enough to stop infinite loops without sophisticated decreasing-measure analysis. (Compare with Haskell's `UndecidableInstances`-protected lookups — same conservative principle.)
+
+The SLD search itself is bounded by the size of the goal's term: each conditional instance's `:-` subgoals must be **structurally smaller** than the head (not enforced at v0, but a future strengthening would add this check, à la Haskell's `Paterson conditions`). For now, cycle detection on the stack is the only termination protection.
+
+### Coherence
+
+When step 2 finds multiple candidates, coherence picks among them or rejects:
+
+- **Priority-based**: each `fact Spec[...]` may carry an explicit priority annotation (future surface syntax; not v0). Higher priority wins.
+- **Specificity-based**: a more-specific instance head (fewer free variables) wins over a more general one (`fact Eq[T = List[Int]]` beats `fact Eq[T = List[T = ?A]]` for the goal `Eq[List[Int]]`). Standard subsumption ordering on patterns.
+- **Reject-as-ambiguous**: if neither rule disambiguates, return `Ambiguous`. The typer rejects the program with a diagnostic listing all candidates.
+
+Coherence at the **diamond join point** (caller D requires B and C, both with `requires A`): `resolve` is called twice — once with `goal = A[T_B]` for the B slot, once with `goal = A[T_C]` for the C slot. If the two resolved trees produce the same `ResolvedTree::leaf { impl: IntA, ... }` for the same type, they unify trivially (D supplies one IntA env). If they pick different impls (because D has `fact A[T = Int]` resolving differently in different scopes), the typer rejects with an "incoherent diamond" diagnostic. v0's rule: each goal independently resolves; coherence is enforced at D's load time by checking that all uses of A within D resolve consistently.
+
+### Error reporting
+
+- `NoMatch`: "no impl provides Eq[List[Int]] in scope; add `fact Eq[T = List[Int]] :- ...` or `requires Eq[T = List[Int]]`."
+- `Ambiguous(candidates)`: "Eq[List[Int]] is ambiguous: matches IntListEq, GenericListEq[T=Int]. Disambiguate with priority annotation."
+- `Cyclic`: "instance resolution for Eq[F[T]] is cyclic: F[T]'s impl requires Eq[F[T]] which requires Eq[F[T]] which..."
+
+Each diagnostic should point to the source position of the ambiguity (the call site or `requires` declaration that introduced the open type-arg).
+
+## Effects and requirements
+
+Anthill operations can carry effect annotations (`effects (Modify[store])`, etc.). Specs declare an **effect upper bound** that any impl must satisfy. The interaction with requirements has three rules:
+
+1. **Spec / impl effect compatibility**: an impl's `effects` must be a subset of the spec's declared effects (`impl.effects ⊆ spec.effects`). Validated at impl-load time, independently of requirement resolution.
+
+2. **Defer-to-requirement call effects**: when a caller dispatches `requirement_at_current(i, "op")`, the call's effect contribution is the **spec's effect upper bound**, not the dispatched impl's specific effects. Reason: dynamic dispatch — the typer doesn't know which impl will be selected, so it has to assume the worst case. Conservative but sound.
+
+3. **Pin-now call effects**: when the typer statically resolves a call to a specific impl (the Pin-now case), the call's effect contribution is **the impl's specific effects** (precise). This is one of Pin-now's wins over Defer-to-requirement.
+
+4. **Default body effect inheritance**: a spec default body (e.g., `Eq.neq`'s body calling `eq`) is type-checked at the spec level using the **spec's effect upper bound** for the called spec ops. The default body's effect signature is fixed at the spec-declaration site. When inherited by an impl, the body's effects don't tighten: the impl pays the upper-bound cost in exchange for not re-typing the default body per impl.
+
+**Effect parameters in `requires` is out of scope for v0.** Anthill's effect system supports polymorphic effects (`sort E = ?`), and one could imagine `requires E[some_effect]` carrying an effect-parameterized constraint. v0 sidesteps this — `requires` clauses constrain only on type sorts, not on effect sorts. Future work would integrate effect-parameterized requirements with the resolution machinery; the design above doesn't preclude it but doesn't define it either.
 
 ## Runtime: frame, requirement value, closure
 
@@ -395,28 +549,28 @@ Coherence at the outermost site: ambiguous `requires` resolution rejects at the 
 struct Frame {
     expr: TermId,
     locals:   SmallVec<[(Symbol, Value); 4]>,
-    requirements:     SmallVec<[Value; 2]>,         // available during this body's execution
+    requirements:  SmallVec<[RequirementHandle; 2]>,  // available during this body's execution
     awaiting: Option<AwaitState>,
     ...
 }
 
-// Requirement values extend the existing entity-value shape with their bundled requirements:
-struct EntityValue {
-    functor: Symbol,
-    pos:     ...,
-    named:   ...,
-    requirements:    SmallVec<[Value; 1]>,          // present (possibly empty) on every entity value
+// Regular Value::Entity is UNCHANGED — no requirements field added.
+// Requirement values live in a separate arena (RequirementArena), accessed via Value::Requirement(handle):
+struct RequirementSlot {
+    functor:      Symbol,                              // the impl sort name (IntEq, EqList, ...)
+    requirements: SmallVec<[RequirementHandle; 1]>,    // bundled deps, refs into the same arena
+    refcount:     u32,
 }
 
 struct Closure {
     body:            TermId,
     params:          SmallVec<[Symbol; 2]>,
     captured_locals: SmallVec<[(Symbol, Value); 2]>,
-    requirements:            SmallVec<[Value; 1]>,  // requirement scope to use when invoked
+    requirements:    SmallVec<[RequirementHandle; 1]>,  // requirement scope to use when invoked
 }
 ```
 
-All three holders carry the same kind of data — a positional vector of requirement values — at different points in execution.
+All three holders (Frame, RequirementSlot, Closure) carry the same kind of data — a positional vector of `RequirementHandle` — at different points in execution.
 
 **Where a frame's `requirements` comes from on push** is uniform: it's whatever `apply_within`'s `requirements` slot evaluated to. Slightly different sources at different call shapes:
 
@@ -472,19 +626,33 @@ For `ho_apply_within(closure_value, args, requirements=...)`:
 2. Evaluate args.
 3. Push new frame: `frame.requirements = closure.requirements` (NOT the call site's requirements slot).
 
-This is the only place the uniform "callee.frame.requirements = caller.apply_within.requirements" rule is overridden — closures must run in the requirement scope where they were *created*, not where they were *invoked*. The call site's `requirements` slot for closure calls is therefore typically empty; if non-empty (a context override, rare), v0 ignores the override.
+This is the only place the uniform "callee.frame.requirements = caller.apply_within.requirements" rule is overridden — closures must run in the requirement scope where they were *created*, not where they were *invoked*. The call site's `requirements` slot for `ho_apply_within` therefore must be empty: **the typer rejects `ho_apply_within(closure, args, requirements = [<non-empty>])` at typing time.** Closures carry their full requirement scope via `closure.requirements`; a caller has no business injecting more.
+
+This rejection rule keeps the IR honest: any non-empty requirements slot at a closure call site is a typer bug, not a silently-ignored override.
 
 ### Why this is the right shape
 
 The unified state makes the requirement / arg distinction explicit through to the eval-state level. Alternative designs (treating requirements as a prefix of args, or splitting into two AwaitState variants) are simpler but lose the structural distinction. The unified state is the cleanest pairing with the IR's three-slot apply.
 
-### A note on hash-consing and side-tables
+### A note on hash-consing
+
+Hash-consing applies to two regions of the IR differently — important to understand which:
+
+**1. Inside generic bodies (post-elaboration)** — hash-consing is preserved.
+
+Generic bodies don't bake concrete requirement values into the apply terms; they reference frame slots via `requirement_at_current(i)` and project via `requirement_at_sort(...)`. The same `apply_within(fn = requirement_at_current(0, "eq"), args = [x, y], requirements = [])` term can appear in many generic bodies and share a single TermId — at runtime, each body's frame supplies its own requirements vector populated by the caller. No occurrence-level keying is needed for body interiors.
+
+**2. At concrete call sites (post-elaboration)** — hash-consing is *not* preserved across callers.
+
+A caller's `apply_within(fn = B.bar, args = [s], requirements = [<C2 requirement value>])` carries a literal resolved instance (or `construct_requirement(C2, ...)`) in the requirements slot. Different callers with different resolutions emit different terms. Two callers of `B.bar` resolving to `C1` vs `C2` produce two distinct apply TermIds.
+
+This is unavoidable — the call site's resolution information IS part of the IR, and structurally different resolutions produce structurally different terms. **Term store growth scales with the number of distinct (callsite, resolution) pairs**, not just the number of distinct callsites. Profiling will tell whether interning resolved instances at load time (one canonical `<IntEq value>` per program) is worth it; the design doesn't preclude that as a v1 optimization.
+
+### Side-table alternative (rejected)
 
 If we chose a side-table approach (requirement mapping kept outside the term) instead of separate IR slots, the side-table would need to be keyed on `OccurrenceId` (positional source identity), NOT `TermId`. Reason: hash-consing collapses structurally-identical calls in different bodies (e.g., `foo(x)` in B's body vs C's body) to the same TermId, but those calls live in different requirement scopes. Side-table indexing by TermId can't disambiguate; OccurrenceId can.
 
-The separate-slots approach (this design) avoids this entirely. Generic bodies don't bake requirement values into the apply term — they carry `requirement_at_current(i)` references that read from the frame's requirement slot at runtime. Same TermId across two bodies is fine because each body's frame has its own requirements populated by the call site. No occurrence-level keying is needed.
-
-This is part of why separate slots beats side-table: simpler indexing scheme, no new positional keys, runtime distinction handled by existing per-frame state.
+The separate-slots approach (this design) avoids the side-table machinery entirely. Generic body interiors share TermIds across instantiations; concrete call sites get distinct TermIds, but that's the same situation any IR with embedded constants has.
 
 ## Codegen
 
@@ -518,11 +686,24 @@ The KB stays canonical (one body per spec op); each codegen pass chooses its sur
 
 ## Out of scope (this design)
 
-- **Per-operation requirement declarations** (Lean `[A T]` per-op style). Anthill keeps per-sort `requires` for now; per-op refinement is a future optimization.
+- **Per-operation requirement declarations** (Lean `[A T]` per-op style). Anthill keeps per-sort `requires` for now; per-op refinement is a future optimization. The Resolution algorithm and dispatch shape extend cleanly when this is added — the only difference is where a slot's source comes from (caller's frame for op-level vs dispatching value's bundle for sort-level). Mechanism is forward-compatible.
 - **Explicit instantiation syntax** (OCaml functor style). Future surface-syntax extension if user feedback requests it.
-- **`dyn Spec` dynamic dispatch**. Opt-in escape hatch for genuinely runtime-decided cases (heterogeneous collections of trait objects). Not v0.
-- **Recursive instance expansion** (`F[T = F[T = ...]]`). Naturally handled by parameter insertion (requirement passes through recursion as a regular value); no combinatorial explosion. No special handling needed.
+- **`dyn Spec` dynamic dispatch**. Opt-in escape hatch for genuinely runtime-decided cases: heterogeneous collections (`List[?dyn Display]`), existential return types, module-boundary erasure. Without `dyn`, **the typer rejects any program where T loses static identity at a `requires` site**. Diagnostic: "type T is open here but no `requires` covers it; add `requires Display[T]` or use `dyn Display`."
+- **Effect-parameterized requirements**. Anthill's effects can be polymorphic (`sort E = ?`); v0's resolution mechanism only handles type-sort goals. `requires E[some_effect]` is conceivable but not built. See "Effects and requirements" section above for the sketch.
+- **Higher-kinded instance synthesis with open inner type-params**. The conditional `fact Monad[M = StateT[S = ?S, M = ?M]] :- Monad[M = ?M]` resolves cleanly when called with ground `M = StateT[Int, Option]`. But meta-programs that synthesize StateT chains generically (where `?S` stays open through resolution) require additional rules: either ground all open type-params at the meta-program boundary, or extend resolution with a higher-rank substitution carry. v0 punts: open type-params at resolution time are an error.
+- **Recursive instance expansion** (`F[T = F[T = ...]]`). Naturally handled by parameter insertion when the chain is finite at the call site — `Eq[List[List[Int]]]` resolves through three concrete construct_requirement calls. The Resolution algorithm's cycle check rejects ill-founded chains (e.g., `F[T] :- F[T]`). v0 has no support for productive co-inductive resolution.
 - **Specialization at the codegen level** (M-style mono on emit for native targets). Each target's codegen pass decides; not a KB-level concern.
+
+## Invariants and rejection rules
+
+These are guarantees the typer / requirement-insertion pass enforces. Programs violating any of these are rejected with a diagnostic.
+
+1. **No silent dispatch**: every spec-op call resolves cleanly via Direct / Pin-now / Defer-to-requirement. A spec op call in a context where neither requirement scope nor static resolution succeeds is an error.
+2. **No bodyless dispatch leaks**: a Pin-now or Direct rewrite to a spec op symbol with no body is rejected. (If the typer would emit `apply_within(fn = Eq.eq, ...)` directly because `T = Int` is ground but no `IntEq` impl is registered, the resolution step earlier returns `NoMatch` and the program is rejected.)
+3. **No open type-args at resolution**: SLD synthesis at a call site requires the goal's type-args to be ground or to match an `available_require`. Open type-vars at resolution are rejected with "type T is unconstrained at this call site".
+4. **Closure call requirements slot must be empty**: `ho_apply_within(closure, args, requirements = [<non-empty>])` is rejected at typing time.
+5. **Sort-level requirements coverage**: per-op `requirements` ⊆ Sort.requires + (transitively-derived from body calls outside the sort). If a body uses a goal not covered by the sort's `requires` and not derivable from the called op's spec, error: "sort B's body uses Eq[T] but `requires Eq[T]` isn't declared".
+6. **Cross-namespace resolution**: `requires X` resolves against `SortProvidesInfo` records for `X` regardless of namespace; the resolver works on global symbol identity, not namespace-scoped name lookup. Importing the symbol is not required at the source level — `requires` is a constraint, not a name reference.
 
 ## References
 
