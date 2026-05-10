@@ -129,11 +129,12 @@ Anthill's resolution structure is **Lean-like**: SLD with bodies = instance synt
 
 The materialization choice is the open question. Each of M / D / H corresponds to a known mainstream language's choice:
 
-- M ≈ Rust + C++
-- D ≈ Haskell + Scala (using/given)
-- H ≈ Lean (dict-passing runtime + LLVM-time partial specialization)
+- M ≈ Rust + C++ (clone bodies per type-arg)
+- P ≈ Scala 3 + Lean 4 + Haskell GHC (insert env as a parameter; runtime sees regular args)
+- D ≈ (no mainstream language — heavier than what they actually do)
+- H ≈ P + per-target mono on emit (Lean's effective behavior under LLVM specialization)
 
-Anthill's `requires` clause is structurally Scala's `using` parameter / Lean's instance argument / OCaml's functor parameter. The runtime semantics can be Rust-style (clone bodies) or Haskell/Scala/Lean-style (thread environments) — same abstract model, different materialization.
+Anthill's `requires` clause is structurally Scala's `using` parameter / Lean's instance argument / OCaml's functor parameter. The runtime semantics can be Rust-style (clone bodies) or Scala/Lean/Haskell-style (env as parameter) — same abstract model, different materialization.
 
 ## Problem (what's broken in WI-218 today)
 
@@ -227,9 +228,43 @@ At each instantiation site (`fact Spec[T = Bind]` with ground bindings), clone t
 - Codegen-friendly: each (impl, type-arg) pair is its own first-class fact in the source-of-truth KB.
 - Recursive cases (`F[T = F[T = Int]]`) need bounded expansion or explicit `dyn` annotation.
 
-### (D) Side-table dispatch keyed on environment (Scala-`using` / Haskell-class style)
+### (P) Parameter insertion (what Scala 3 / Lean 4 / GHC actually do)
 
-Bodies stay generic. The split between KB-level (compile/load-time) state and interpreter-level (runtime per-frame) state:
+The crucial observation: Scala's `using` clause, Lean's `[A T]` instance arg, and Haskell's `(A a =>)` constraint are all **source-level sugar for an extra function parameter**. The compiler inserts the resolved env at the call site as a regular argument; the body accesses it as a regular param. The runtime sees nothing special — no per-frame env state, no lookup table, no environment-threading machinery.
+
+For B.bar:
+
+```anthill
+sort B
+  sort T = ?
+  requires A
+  operation bar(x: T) = String.concat("B", foo(x))
+end
+```
+
+After elaboration:
+
+1. **Signature gains an env param**: `bar(x: T, env_A: A) = ...`. Source still writes `bar(x)`; the env param is hidden in source syntax but explicit in the elaborated term.
+2. **Body rewrites spec-op calls**: `foo(x)` → `env_A.foo(x)`. References to A's ops indirect through the env param.
+3. **Call sites get rewritten**: at D's call to `bar(arg)` (where D has `fact A[T = Int]` resolved to IntFoo), insert the env: `bar(arg, IntFoo_value)`. The typer fills in `IntFoo_value` based on D's resolved environment.
+4. **Eval is unchanged**. Env is a regular `Value::Entity` (functor = impl sort name). Calling `env.foo(args)` is regular dispatch against the value's functor — same machinery anthill already uses for `Cell.get(s)`, `Stream.head(s)`, etc. No new state in frames, no new lookup table.
+5. **Closures capture env normally**. `\y -> bind(env_M, ...)` captures `env_M` as any local would. Monadic continuations handle envs via standard variable capture.
+
+Properties:
+
+- **Term store**: bodies stay one TermId per spec op (shared across all instantiations). Apply terms are slightly larger (one extra arg per env), but still hash-consed.
+- **Hash-consing preserved**: identical generic bodies share TermIds.
+- **Eval per apply**: regular variable lookup + regular dispatch — zero new machinery vs today.
+- **Codegen target**: trivial. Rust emits the env as an explicit param (or monos away if T is fully ground at the Rust call site); Scala emits `using`; Lua emits a positional arg; C++ emits a constructor parameter. The elaborated IR is uniform; surface is target-specific.
+- **Recursive cases**: env is just a value passed through recursion; no special handling needed. `F[T = F[T = Int]]` recurses with env=F[T=Int]'s instance, which is itself a value.
+
+The env value at runtime is sort-tagged: `Value::Entity { functor: <impl_sort_name>, ... }`. Dispatching `env.foo(args)` resolves through `OperationInfo` lookup keyed on the impl sort's qualified name — anthill already does this for direct impl calls. No new dispatch path.
+
+### (D) Side-table dispatch keyed on environment (the heavier alternative)
+
+D was originally drafted as the "Haskell/Scala-style" path, but it's a heavier implementation than what those languages actually do. It keeps bodies completely un-rewritten and stores the dispatch decisions in a side table keyed on `(apply_tid, env_id)`. The interpreter carries env state per frame.
+
+The split between KB-level (compile/load-time) state and interpreter-level (runtime per-frame) state:
 
 **KB carries** (built at fact-load time, read-mostly thereafter):
 ```
@@ -419,24 +454,26 @@ This is the diamond pattern's inner mechanism: the environment is a *set* of res
 
 ## Comparison
 
-| Dimension | (M) Body cloning | (D) Side-table | (H) Hybrid |
-|-----------|------------------|------------------|----------|
-| Closest mainstream analog | Rust, C++ | Haskell, Scala 3 `using` | Lean 4, OCaml functors |
-| Term-store growth | O(K × N) — high | O(call-sites × envs) — low | low (KB) + per-target mono on emit |
-| Eval per apply | Direct symbol jump | One HashMap lookup | Lookup |
-| Hash-consing | Defeated for generics | Preserved | Preserved |
-| Anthill KB idiom | Foreign | Native (side tables exist) | Native |
-| Codegen Rust target | Natural | Re-mono on emit | Re-mono on emit |
-| Codegen Scala target | Natural | Re-mono on emit | Re-mono on emit |
-| Codegen Lua / dynamic | Wasteful | Natural | Per-target choice |
-| Proof-record specialization | Each spec is a fact | Records reference (body, env) tuples | Records reference (body, env) tuples |
-| Reflection | Specialized bodies are normal facts | Reflection threads env | Reflection threads env |
-| Eval frame plumbing | None new | Each frame carries an env | Each frame carries an env |
-| Recursive instances | Combinatorial explosion at load | Lazy by runtime use | Lazy |
-| Diamond / multi-bound | One specialized body bakes in all | Side-table key includes all | Same as D |
-| Conditional instances (`fact Spec[…] :- subgoals`) | Each derivation cloned per concrete | One body, side-table per env | One body, side-table per env |
-| Reuses anthill's SLD machinery | No — rewrites at typing time | Yes — env construction IS an SLD query | Yes |
-| Implementation cost (first cut) | Substantial | Substantial | Substantial |
+| Dimension | (M) Body cloning | (P) Param insertion | (D) Side-table | (H) Hybrid |
+|-----------|------------------|---------------------|----------------|------------|
+| Closest mainstream analog | Rust, C++ | **Scala 3, Lean 4, GHC** | (heavier than any actual lang) | per-target mix |
+| Body shape | cloned per env | rewritten once (env-param indirection) | unchanged | per target |
+| Term-store growth | O(K × N) — high | O(specs) — low | O(specs) — low + side-table | per target |
+| Eval per apply | Direct symbol jump | Regular var lookup + dispatch | One HashMap lookup | Lookup or jump |
+| Eval frame plumbing | None new | None new | Each frame carries an env_id | Each frame carries an env_id |
+| New runtime machinery | None | **None** | Side-table + frame env | Side-table + frame env |
+| Hash-consing | Defeated for generics | Preserved | Preserved | Preserved |
+| Anthill KB idiom | Foreign | Native (env is a Value) | Native (side-table extends WI-218's) | Native |
+| Codegen Rust target | Natural | Trivial (env as param) | Re-mono on emit | Re-mono on emit |
+| Codegen Scala target | Natural | Direct (`using`) | Re-mono on emit | Direct |
+| Codegen Lua / dynamic | Wasteful | Natural (regular arg) | Natural | Natural |
+| Proof-record specialization | Each spec is a fact | Records reference (body, env-arg) | Records reference (body, env-id) | Either |
+| Reflection | Specialized bodies are normal facts | Env is a value — reflectable | Reflection threads env | Either |
+| Recursive instances | Combinatorial explosion at load | Env value passes through recursion | Lazy by runtime use | Lazy |
+| Diamond / multi-bound | One specialized body bakes in all | Multiple env params (one per bound) | Side-table key includes all | Either |
+| Conditional instances (`fact Spec[…] :- subgoals`) | Each derivation cloned | Resolved env value built once at call site | Side-table per env | Either |
+| Reuses anthill's SLD machinery | No | Yes — call-site resolution is SLD query | Yes — env construction IS an SLD query | Yes |
+| Implementation cost (first cut) | Substantial | **Modest** — typing-time rewrites only | Substantial | Substantial |
 
 ## Possible plans
 
@@ -452,35 +489,48 @@ This is the diamond pattern's inner mechanism: the environment is a *set* of res
 
 Plan M aligns with Rust's monomorphization and C++'s template instantiation. Both default to this. The cost shape is well-understood (binary growth, optimization opportunities) but defeats anthill's hash-consing canonicity.
 
-### Plan D — side-table dispatch (Lean 4 / Scala using / Haskell-class style)
+### Plan P — parameter insertion (Scala 3 / Lean 4 / Haskell GHC actual implementation)
 
 1. WI-218 soundness patch (model-independent).
 2. CallKind classification (model-independent).
-3. Environment representation design (chain of `(spec, impl, args)` triples? Hash-consed? An SLD answer substitution + the resolved ProvidesInfo records?).
-4. **Express instance synthesis as an SLD query** over `SortProvidesInfo` facts. Conditional instances (`fact Spec[…] :- subgoals`) become clauses with bodies; resolution composes via existing SLD machinery. This is the Lean-style search-based synthesis.
-5. Side-table population at fact load (eager) or on demand (lazy).
-6. Eval frame extension: thread environment.
-7. Apply-time lookup keyed on `(tid, env)`.
-8. Per-target codegen-time monomorphization (where the target needs it — Rust does, Lua doesn't).
+3. **Signature elaboration**: spec ops with `requires X` (or whose enclosing sort has open T's affecting the spec op) gain implicit env params. The KB stores the elaborated signatures; surface syntax is unchanged.
+4. **Body rewrite**: spec-op calls inside generic bodies become env-param-indirected calls. `foo(x)` → `env_A.foo(x)` where `env_A` is the auto-inserted parameter. One body rewrite per generic op, not per env.
+5. **Call-site rewrite**: callers fill in env args. The typer at the call site walks the caller's `fact A[…]` (potentially via SLD synthesis for conditional instances) to find the resolved impl and inserts a reference to it as the env arg in the apply term.
+6. **Env value representation**: `Value::Entity { functor: <impl_sort_name>, ... }`. Existing eval dispatch on entity values handles `env.foo(args)`.
+7. **Eval is unchanged**. No new state, no new lookup, no new closure machinery.
+8. Per-target codegen: Rust target may opt into mono on emit (re-substitute env at compile time, eliminate the env param); Scala emits `using`; Lua emits a positional arg.
+
+### Plan D — side-table dispatch (skip)
+
+D was an over-engineered alternative to P. It invents per-frame env state and side-table lookups; P achieves the same observable behavior using only existing primitives. Skip D unless something rules out P.
 
 ### Plan H — hybrid
 
-1. Steps 1–6 of plan D (interpreter primary path).
-2. Each codegen target adds its own clone-and-substitute step on emit (if its target language requires it).
+Plan P naturally generalizes to hybrid: the elaborated form has env params, but each codegen target can opt to monomorphize on emit (re-substituting env values into specialized bodies for native targets where that's preferred). The KB stays canonical; codegens pick their materialization.
+
+1. Steps 1–7 of plan P.
+2. Each codegen target chooses: emit envs as explicit params (P-style on the target side), or re-substitute and mono on emit (M-style on the target side).
 
 ## Recommendation (my current lean)
 
-Plan H, with D as the interpreter primary path. Or equivalently: **Lean's runtime model**.
+**Plan P (parameter insertion).** This is what Scala 3, Lean 4, and Haskell GHC actually do. It was originally subsumed under "plan D" in this doc, but the distinction matters: plan P needs no new runtime machinery, while plan D introduces frame-level env state and a side-table lookup at every apply.
 
-- Term-store stays canonical. Hash-consing keeps working as the load-bearing property of the KB.
-- Eval is simple-ish (one extra lookup per apply). Constant-time.
-- Each codegen target picks its own materialization. Rust target re-monos on emit; future Lua target keeps dict-passing.
-- The mental model is well-trodden (Scala `using`, Haskell type classes, OCaml functors, Lean instances). Easier to explain to new contributors.
-- **Conditional / compositional instances come for free**. Anthill's SLD resolution is exactly Lean's instance synthesis. `fact Eq[T = List[T = ?A]] :- Eq[T = ?A]` is `instance [Eq T] : Eq (List T)`. We don't need to build an instance-search engine; we already have one.
+Plan P:
 
-The cost is the eval frame plumbing — every frame learns to carry an environment, every closure captures one. This is invasive but bounded; once in place, the model handles all the non-trivial cases (default override, diamond, functor over parametric, conditional instances, mutual recursion) without further machinery.
+- Term-store stays canonical. Hash-consing preserved.
+- Eval unchanged. Env is a `Value::Entity` flowing through regular arg-passing. Closures capture env via standard variable capture.
+- The work is entirely at typing time: signature elaboration (insert env params), body rewrite (spec-call → env-param indirection), call-site rewrite (insert resolved env arg).
+- Each codegen target maps cleanly: Rust emits env as explicit param (or monos away if T is fully ground); Scala emits `using`; Lua emits a positional arg; C++ emits a constructor argument.
+- The mental model is exactly what Scala / Lean / Haskell users already know — no new abstractions to teach.
+- **Conditional / compositional instances come for free**. Anthill's SLD resolution is exactly Lean's instance synthesis. `fact Eq[T = List[T = ?A]] :- Eq[T = ?A]` is `instance [Eq T] : Eq (List T)`. The KB is the instance database; resolution at the call site is just a query.
 
-The alternative — plan M (Rust + C++ style) — is cleaner for codegen but:
+No new runtime machinery. No frame-level env state. No side-table lookup. The interpreter doesn't need to know that dispatch happened — it just sees a `Value::Entity` arg flow into a function and the function calling methods on it.
+
+The alternatives:
+
+**Plan D (side-table dispatch)** is what I originally drafted as the "Haskell/Scala-style" path. It's strictly worse than P: it invents new runtime machinery (frame env state, side-table lookups) to achieve what P achieves with existing primitives (regular arg passing, regular dispatch on entity values). No mainstream language uses D as its primary materialization. Skip it.
+
+**Plan M (Rust + C++ style)** is cleaner for codegen but:
 - Defeats hash-consing for generic specs.
 - Explodes the term store on stdlib-heavy projects (every Eq/Ordered/Numeric instance gets its own clones of derived methods, plus every conditional instance over Pair/List/Option/Tuple gets cloned per concrete combo).
 - Requires explicit cycle-breaking for recursive instances (`F[T = F[T = ...]]`).
@@ -489,16 +539,19 @@ The alternative — plan M (Rust + C++ style) — is cleaner for codegen but:
 
 Plan E (explicit-module / functor style, OCaml-inspired) is orthogonal to M/D/H. Worth considering as a layer on top of D for cases where the user wants explicit instantiation visible at the source level. Could be added later as syntax sugar.
 
-### Why Lean's experience is the strongest data point
+### Why parameter insertion is the right level of abstraction
 
-Of the language analogs above, Lean is the one whose internal model maps most directly to anthill:
+Three mainstream languages converge on this technique:
 
-- Anthill has SLD resolution; Lean has search-based instance synthesis. **Same machinery.**
-- Anthill has hash-consed terms; Lean has elaborated terms with definitional equality. **Same canonicity property.**
-- Anthill has facts with bodies (conditional rules); Lean has conditional instances. **Same compositionality.**
-- Anthill has the proof-record specialization story (proposal 030); Lean has elaboration-time records of which instance was picked. **Same need for auditable resolution.**
+- **Scala 3**: `using` clauses are syntactic sugar for explicit parameters. After elaboration, the IR has the env as a regular function arg. The JVM runtime does not know about `using`.
+- **Haskell GHC**: type-class constraints (`Show a =>`) compile to dictionary parameters. The runtime sees regular function args; class methods are field projections on the dict.
+- **Lean 4**: `[A T]` instance args elaborate to explicit parameters. The runtime carries instance values; instance methods are field projections.
 
-When a language with closely-matching primitives (Lean) has settled on dict-passing-with-specialization-as-optimization (plan H equivalent), that's a strong design signal. Rust's monomorphization works because Rust doesn't have search-based instance synthesis or compositional instances at the same scale — the trade-offs are different there.
+Three different language designs, one materialization technique. The reason is the same in each: **the env IS a value at runtime**. There's no need for a separate "environment" abstraction at the runtime level — values flow through arg-passing, fields are accessed normally, closures capture by reference. The runtime stays minimal.
+
+Anthill's situation maps onto this directly: a resolved instance is a sort-tagged value (`Value::Entity { functor: <impl_sort>, ... }`). Anthill's eval already dispatches operations on entity values via `OperationInfo` lookup keyed on the value's functor. Plan P just leverages the existing dispatch mechanism by putting envs into the regular value flow.
+
+Plan D (side-table + frame env) would invent new machinery to do what plan P does with existing primitives. There's no upside.
 
 ## Open questions
 
