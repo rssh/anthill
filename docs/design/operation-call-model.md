@@ -37,15 +37,15 @@ Every scope (sort or operation) carries:
 - `substitution` — the type-arg bindings.
 - `Vec<resolved_requires>` — for each `requires` bound, the resolved `(bound_spec, impl_sort)` pair plus the sub-substitution that pins it.
 
-### Three derived analyses
+### Two analyses, one explicit and one derived
 
-1. **Sort.requires** — source-level explicit (e.g. `requires A; requires Eq[T = T]`). What envs an instantiator of this sort must supply.
+1. **Sort.requires** — source-level explicit (e.g. `requires A; requires Eq[T = T]`). What envs an instantiator of this sort must supply. **No derivation needed.**
 
 2. **Op.required_envs** — derived from the body. As the typer walks an operation's body, every spec-op call records the env that call needs (direct contribution); calls to other ops in the same sort inherit those callees' `required_envs` (transitive contribution). This is THE env signature of the operation: call sites insert exactly this many env values into the apply's `envs` slot.
 
-3. **Sort.aggregated_envs** — derived as the union of the sort's operations' `required_envs`. Should equal (or be a subset of) `Sort.requires`. Used for a consistency check: if an op's body uses an env not in the sort's declared `requires`, that's a hard error.
+There's no separate "sort-level aggregated envs" analysis to compute. The consistency check (an op's body must only use envs available in `Sort.requires`) happens naturally at call-site rewrite: when the typer tries to fill in an env-arg from the enclosing sort's env scope and finds nothing, it errors. No need to pre-compute a union.
 
-The aggregation isn't a separate pass — it's a side effect of typing each body. Per-op `required_envs` falls out as the typer walks calls; sort-level union is trivial.
+The derivation isn't a separate pass — it's a side effect of typing each body. Per-op `required_envs` falls out as the typer walks calls.
 
 ### Runtime is unaffected
 
