@@ -258,36 +258,50 @@ At typing time, every scope (sort or operation) carries:
 
 #### IR support: explicit env slot
 
-To make the env channel structural, three new IR variants:
+To make the env channel structural, four new IR variants:
 
 ```
 apply_within(fn, args, envs)
 ho_apply_within(pred, args, envs)
 constructor_within(name, args, envs)
+lambda_within(params, body, captured_envs)
 ```
 
-The env-less forms (`apply`, `ho_apply`, `constructor`) become canonical aliases for `_within(..., envs=[])`. After migration, **only the `_within` forms exist** — one canonical apply shape with three slots: fn, args, envs. The eval handles one case, not two.
+The env-less forms (`apply`, `ho_apply`, `constructor`, `lambda`) become canonical aliases for `_within(..., envs=[])` / `lambda_within(..., captured_envs=[])`. After migration, **only the `_within` forms exist** — one canonical shape with the env channel as a first-class slot. The eval handles one case, not two.
+
+`lambda_within` is essential because anthill's bodies are lambda-heavy (every `do` block, every monadic continuation, every match-arm closure). The typer aggregates env requirements across the lambda's body and records them as `captured_envs`; at closure construction, the eval snapshots envs from the enclosing frame using this index, the same way it already snapshots captured locals.
 
 Properties of the explicit IR:
 - **One canonical shape** — every call carries an env slot; empty when no env is needed.
 - **Reflection-clean** — fn / args / envs are distinct channels; useful for proof records, debug, codegen.
 - **Codegen-friendly** — each target picks how to render the env slot (Rust merges into args or `impl Trait` bounds + mono; Scala emits `using`; Lua emits a separate positional list).
 
-#### Frame structure (runtime)
+#### Frame and closure structure (runtime)
 
 Mirroring the IR:
 
 ```rust
 struct Frame {
     expr: TermId,
-    locals: SmallVec<[(Symbol, Value); 4]>,  // regular param bindings
-    envs:   SmallVec<[Value; 2]>,             // resolved env values
+    locals: SmallVec<[(Symbol, Value); 4]>,
+    envs:   SmallVec<[Value; 2]>,
     awaiting: Option<AwaitState>,
     ...
 }
+
+struct Closure {
+    body: TermId,
+    params: SmallVec<[Symbol; 2]>,
+    captured_locals: SmallVec<[(Symbol, Value); 2]>,
+    captured_envs:   SmallVec<[Value; 1]>,    // NEW
+}
 ```
 
-`envs` is just another structural field alongside `locals`. **Not new runtime machinery in the bad sense** — it's the runtime form of the IR's env slot, the way `locals` is the runtime form of the args slot. The eval treats them symmetrically: locals come from args, envs come from the envs slot.
+`envs` and `captured_envs` are just additional structural fields. **Not new runtime machinery in the bad sense** — they're the runtime forms of the IR's env slots, mirroring how `locals` and `captured_locals` are the runtime forms of the args slots. The eval treats them symmetrically.
+
+Closure invocation: when `ho_apply_within(closure, args, envs=[])` runs, the closure's `captured_envs` populate the new frame's `envs` (the call's own envs slot is typically empty since the closure carries its env requirements). Closure construction: when `lambda_within` is reduced, the eval snapshots envs from the enclosing frame's `envs[]` indexed by the lambda's `captured_envs` field.
+
+This handles the lambda chain in `\x -> bind(env_M, \y -> ...)` correctly: each lambda's closure captures env_M from its enclosing scope, the same way local capture chains work today.
 
 #### Translation
 
