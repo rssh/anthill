@@ -25,6 +25,15 @@ lambda_within(params, body, captured_envs)
 
 Body references to spec ops use indexed access: `env_at(i).foo(x)` — i is the position in the enclosing scope's env slot. Position is canonicalized at signature time (sorted by bound's qualified name, or declaration order).
 
+### Why separate slots and not collapse-into-args
+
+An alternative is to encode envs as the leading N entries of a regular `args` list (Scala / Lean / GHC style — env params are just function parameters). That avoids new IR variants and AwaitState extension at the cost of structural visibility. We chose separate slots because:
+
+- **Reinterpretation independence**: future analyses (re-derive env requirements, recompute resolution after a SortProvidesInfo change, swap an env at a debug breakpoint) operate on the env channel without touching args. With collapsed-into-args, every reinterpretation pass has to re-partition based on op metadata.
+- **Codegen flexibility**: each target chooses how to render the env channel (Scala `using`, Rust `&impl Trait`, Lua positional). A separate slot in the elaborated IR lets each codegen pass decide its own surface; collapsing pushes that decision earlier.
+- **Reflection / proof records**: distinguishing "this is an env" from "this is a regular arg" is information proposal-030 specialization witnesses can use; preserving it structurally is cheap.
+- **Hash-consing of bodies is preserved either way**: bodies access envs by position (`env_at(i)`) or by name in source (`env_A`); they don't bake in concrete env values. So generic bodies share TermIds across instantiations regardless of which encoding we pick. The separate-slot encoding doesn't lose this.
+
 ## Compile-time representation
 
 Every scope (sort or operation) carries:
@@ -86,24 +95,17 @@ The envs slot of a frame is **already populated** by the caller before the body 
 
 The envs slot of a frame is **already populated** by the caller before the body executes. The body never aggregates; it just indexes into `frame.envs[i]` via `env_at(i)`. Aggregation is an analysis fact at compile time, not a runtime operation.
 
-## CallKind classification
+## Call rewrite cases
 
-At typing time, every apply/lambda gets classified:
+At typing time, the body-rewrite pass examines each call and chooses one of three actions. This is **typer-internal logic**, not a persistent IR or analysis output — after the rewrite, the IR shows the result and the classification is consumed.
 
-```rust
-enum CallKind {
-    Direct,                                  // qualified, fn = impl op
-    EnvFullyPinned { impl_op: Sym },         // env resolved locally; rewrite at body site (today's WI-218)
-    EnvOpen { spec_op: Sym, source: Source } // env not pinned; insert env-arg from caller's env scope
-}
+| Case | Trigger | Rewrite |
+|---|---|---|
+| Direct | fn is already an impl op | leave the call alone |
+| Pin-now | fn is a spec op AND per-call subst is fully ground AND not via `requires` | resolve to impl, rewrite `fn` to that impl symbol (today's WI-218 path) |
+| Defer-to-env | fn is a spec op AND per-call subst has a Var that is the body's open type-param OR fn is reached via `requires` | rewrite to access through env: `apply_within(fn = env_at(i).<op>, args, envs = [])` where `i` is the position of the relevant bound in the enclosing scope's env slot |
 
-enum Source {
-    OpenTypeParam { spec_param: VarId },     // per-call subst's value is a Var
-    OpenBound { bound: SortRef, ... },       // reached via `requires` whose impl pick is outer
-}
-```
-
-A call is **EnvOpen** iff *either* condition holds: open-T (per-call subst has a Var) OR open-bound (reached via `requires`). Both must trigger; the open-T check alone misses ground-via-requires (the WI-218 latent bug).
+The defer-to-env case has two triggers (open-T and open-bound). Both must fire — the open-T check alone misses the ground-via-requires case (WI-218's latent bug). See the "Body walking is necessary" section above for why both triggers exist.
 
 ## Resolution
 
@@ -140,6 +142,60 @@ Body access `env_at(i).foo(x)` reads `frame.envs[i]`, dispatches `foo` against t
 
 **Why `captured_envs` is essential**: passing a lambda to a higher-order function is the canonical case. The HO function's frame may have a totally different env scope than the lambda's creation scope, but when the lambda's body runs, it needs envs from where it was *created*, not from where it's *invoked*. The closure carries its env vector with it. Same mechanism as captured locals; same reason.
 
+## Eval mechanics: AwaitState with envs
+
+The eval's `AwaitState` continuation mechanism currently handles arg evaluation via something like `ApplyArgs { target, buffered, remaining }`. With env-aware IR, the apply path has two sub-evaluation lists (args and envs).
+
+### Unified `ApplyWithin` state
+
+```rust
+enum AwaitState {
+    ApplyWithin {
+        target: Symbol,
+        buffered_args: Vec<Value>,
+        remaining_args: Vec<TermId>,
+        buffered_envs: Vec<Value>,
+        remaining_envs: Vec<TermId>,
+    },
+    ...
+}
+```
+
+Evaluate envs first (typically trivial — env values are inserted by the typer as `Term::Ref` to interned Entity values, one reduce-expr step each), then evaluate args, then push the new frame:
+
+- `frame.envs = buffered_envs`
+- `frame.locals` from zipping `buffered_args` with the op's param symbols.
+
+### Per-IR-form behavior
+
+| IR form | Eval-time env work |
+|---|---|
+| `apply_within(fn, args, envs)` | Eval envs (usually trivial); eval args; push frame with both populated |
+| `ho_apply_within(closure_expr, args, envs=[])` | Eval closure; eval args; push frame with `frame.envs = closure.captured_envs` (call's own envs slot typically empty since closure carries them) |
+| `constructor_within(name, args, envs=[])` | envs always empty; constructors don't dispatch through envs. IR carries the slot for shape uniformity. |
+| `lambda_within(params, body, captured_envs)` | One-shot: snapshot locals + envs from enclosing frame using indices in `captured_envs`; deliver `Value::Closure`. No new AwaitState needed. |
+
+### Closure invocation detail
+
+When `ho_apply_within(closure_value, args, envs=[])` runs:
+1. Evaluate the closure expression to a `Value::Closure`.
+2. Evaluate args.
+3. Push new frame: `frame.envs = closure.captured_envs` (NOT the call site's envs slot — closures carry their env requirements with them).
+
+The call site's `envs` slot is typically empty for closure invocation. If it's non-empty (a context override, rare), v0 ignores the override and uses the closure's captured envs — preserves the lexical-scoping property.
+
+### Why this is the right shape
+
+The unified state makes the env / arg distinction explicit through to the eval-state level. Alternative designs (treating envs as a prefix of args, or splitting into two AwaitState variants) are simpler but lose the structural distinction. The unified state is the cleanest pairing with the IR's three-slot apply.
+
+### A note on hash-consing and side-tables
+
+If we chose a side-table approach (env mapping kept outside the term) instead of separate IR slots, the side-table would need to be keyed on `OccurrenceId` (positional source identity), NOT `TermId`. Reason: hash-consing collapses structurally-identical calls in different bodies (e.g., `foo(x)` in B's body vs C's body) to the same TermId, but those calls live in different env scopes. Side-table indexing by TermId can't disambiguate; OccurrenceId can.
+
+The separate-slots approach (this design) avoids this entirely. Generic bodies don't bake env values into the apply term — they carry `env_at(i)` references that read from the frame's env slot at runtime. Same TermId across two bodies is fine because each body's frame has its own envs populated by the call site. No occurrence-level keying is needed.
+
+This is part of why separate slots beats side-table: simpler indexing scheme, no new positional keys, runtime distinction handled by existing per-frame state.
+
 ## Codegen
 
 Each target picks how to render the env slot per its idiom:
@@ -153,7 +209,7 @@ The KB stays canonical (one body per spec op); each codegen pass chooses its sur
 
 ## Soundness invariants
 
-1. **No silent dispatch**: every spec-op call either resolves to EnvFullyPinned (rewrite at body), EnvOpen (env-arg inserted from caller), or fails with a clear diagnostic.
+1. **No silent dispatch**: every spec-op call either resolves at typing time (Pin-now: rewrite to impl) or has its env-arg inserted from the caller's env scope (Defer-to-env), or fails with a clear diagnostic.
 2. **Static dispatch preserved**: every dispatched call's resolution is known at compile/load time. Runtime carries env values; it does not synthesize instances.
 3. **Coherence at outermost site**: ambiguity in `requires` chains is rejected at the instantiation that introduces the choice.
 
@@ -161,8 +217,7 @@ The KB stays canonical (one body per spec op); each codegen pass chooses its sur
 
 | Phase | Scope |
 |-------|-------|
-| **WI-218 soundness patch** | In `find_unique_impl_op`, return `Deferred` (skip rewrite) when the call is EnvOpen (open-T OR open-bound). Generic bodies become unsound-but-explicit instead of silent-mis-rewrite. ~50 lines. |
-| **CallKind classification** | Populate `dispatch_kind: HashMap<TermId, CallKind>` at typing time. Required by all subsequent phases. |
+| **WI-218 soundness patch** | In `find_unique_impl_op`, return `Deferred` (skip rewrite) when the call is defer-to-env (open-T OR open-bound). Generic bodies become unsound-but-explicit instead of silent-mis-rewrite. ~50 lines. |
 | **IR variants** | Introduce `apply_within`, `ho_apply_within`, `constructor_within`, `lambda_within`. Migration: existing terms get rewritten to `_within` form with empty envs. The eval handles both forms during the migration window; env-less forms removed after. |
 | **Body rewrite + env aggregation** | Inside generic bodies, spec-op calls become `apply_within(fn=env_at(i).<op>, args=…, envs=[])` — i is the position of the relevant bound in the enclosing scope's env slot. Env aggregation (per-op + per-sort `required_envs`) falls out as a side effect of the body-typing walk; not a separate pass. |
 | **Call-site rewrite** | Callers fill in env args. The typer at the caller's site walks the caller's env scope to find the resolved impl, builds the env value, inserts into the apply term's `envs` slot. |
