@@ -116,22 +116,38 @@ Bodies can contain qualified calls like `C.foo(x)` where C is a different sort w
 
 So body walking is necessary to discover the full env requirements implied by a sort's operations. Sort-level closure (over explicit `requires` declarations only) is insufficient — it can't surface env needs that come from qualified calls inside bodies.
 
-### Impls have their own requires (independent of the spec)
+### Impls have their own requires from day one
 
-A spec like `sort Eq { sort T = ?; operation eq(a, b) -> Bool }` declares the protocol. But each impl might use additional envs in its body. For example:
+A spec like `sort Eq { sort T = ?; operation eq(a, b) -> Bool }` declares the protocol. Each impl has its own requires set, derived from its body. **This is not a future case** — it's the ground-zero shape.
+
+The canonical example is `Eq[List[List[X]]]`. The conditional instance `fact Eq[T = List[T = ?A]] :- Eq[T = ?A]` has its `:-` body declaring a subgoal — that's the impl's own requires. The body uses both Self (recursion on `List[?A]`) and the subgoal (inner element's Eq). Two distinct envs, both resolved at construction time.
+
+For any concrete `Eq[List[List[Int]]]`, the resolution chain is:
+- `Eq[List[List[Int]]]` matches conditional with `?A = List[Int]`.
+- Subgoal: `Eq[List[Int]]` — matches same conditional with `?A = Int`.
+- Subgoal: `Eq[Int]` — matches `IntEq`.
+
+Three env values constructed, chained:
+- `env_LLI` (functor=EqList, captured_envs=[<Self ref>, env_LI])
+- `env_LI` (functor=EqList, captured_envs=[<Self ref>, env_I])
+- `env_I` (functor=IntEq, captured_envs=[])
+
+The chain depth equals the nesting depth of the type. Recursion through Self is handled by knot-tying at construction (env_X.captured_envs[Self_slot] = env_X itself).
+
+Env values therefore aren't simple sort tags — they're recursive records carrying the impl's resolved env scope. This is the anthill analog of Haskell dictionaries / Lean instances.
+
+**Same shape applies to non-conditional impls too**:
 
 ```anthill
 sort IntEq
   fact Eq[T = Int]
-  requires Numeric[T = Int]      -- IntEq.eq's body uses Numeric
+  requires Numeric[T = Int]
   requires Show[T = Int]
-  operation eq(a, b) = ...        -- body uses add() and show() internally
+  operation eq(a, b) = ...      -- body uses add() and show()
 end
 ```
 
-`Op.required_envs(IntEq.eq) = [Numeric[T=Int], Show[T=Int]]` — derived from IntEq's body, not Eq's spec.
-
-This means env values aren't just sort tags — they bundle their impl's resolved env scope. When the typer builds an IntEq env value at a call site, it walks IntEq's `required_envs` and resolves each from the caller's env scope. The env value carries those resolutions; the dispatch through it (`env_dispatch`) reads the bundled envs as the call's frame envs.
+`IntEq.eq`'s required_envs = [Self?, Numeric[T=Int], Show[T=Int]] — Self if the body recurses, plus the explicit requires. Each env value bundles these at construction.
 
 See "Env values carry their own sub-envs" below in the IR section.
 
