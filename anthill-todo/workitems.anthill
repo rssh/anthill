@@ -1584,7 +1584,7 @@ fact WorkItem(
   description: "Operation-call-model: full SLD-based instance synthesis (replace find_unique_impl_op). Per docs/design/operation-call-model.md §'Resolution', anthill currently uses a single-shot find_unique_impl_op that only handles non-conditional facts. Replace with the full resolve(goal, scope) -> ResolvedTree | NoMatch | Ambiguous(...) | Cyclic algorithm: (a) match available_requires in scope first (free lookup); (b) search SortProvidesInfo for impls whose head pattern unifies with the goal; (c) recursively resolve subgoals from conditional :- bodies, with stack-based cycle detection; (d) coherence via specificity (more-specific instance head wins) + reject-as-ambiguous fallback; (e) error reporting with diagnostics for NoMatch/Ambiguous/Cyclic; (f) integrate with the existing kb::resolve::SearchStream for the actual SLD machinery. Acceptance: cargo-test green; new tests pin (1) leaf instance resolution, (2) one-level conditional (Eq[List[Int]] :- Eq[Int]), (3) two-level conditional (Eq[List[List[Int]]] — Example 8 chain), (4) Ambiguous diagnostic for multiple-matching priorities, (5) Cyclic diagnostic for ill-founded resolution (A :- B; B :- A), (6) NoMatch diagnostic with helpful context, (7) coherence at diamond join points (Example 3). Reference: docs/design/operation-call-model.md §'Resolution' for the full algorithm pseudocode. ~400-500 lines. Depends on WI-222 for the requirement-insertion pass that consumes ResolvedTree output.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-222"],
-  status: Open)
+  status: Delivered(agent: "claude-opus47", at: "2026-05-11T14:37:09Z"))
 
 fact WorkItem(
   id: "WI-225",
