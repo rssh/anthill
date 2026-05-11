@@ -723,7 +723,7 @@ fn read_string_field(
     }
 }
 
-fn rand_suffix() -> String {
+pub(crate) fn rand_suffix() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH)
         .map(|d| d.subsec_nanos()).unwrap_or(0);

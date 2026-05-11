@@ -20,6 +20,7 @@ use anthill_smt_gen::tactic_emit::emit_tactic_from_term;
 use anthill_smt_gen::outcome::parse_z3_output;
 
 use crate::{ProveArgs, load_kb_with_stdlib};
+use crate::check::rand_suffix;
 use crate::witness::{ProofWitness, SmtVerdict};
 
 pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
@@ -1685,13 +1686,13 @@ fn run_smt_subquery(
         }
         stats.misses += 1;
     }
-    // PID-suffix the path so concurrent `anthill prove` invocations on
-    // the same rule (e.g. parallel test threads each spawning their own
-    // anthill subprocess) don't trample each other's SMT2 file mid-z3.
+    // Unique-suffix the path so concurrent `anthill prove` calls on the
+    // same rule — across subprocesses (parallel test threads) and within
+    // one process — don't trample each other's SMT2 file mid-z3.
     let path = std::env::temp_dir().join(format!(
         "anthill_prove_{}_{}.smt2",
         sanitize_filename(rule_qn),
-        std::process::id(),
+        rand_suffix(),
     ));
     if let Err(e) = std::fs::write(&path, &smt) {
         return DispatchOutcome::no_witness(
@@ -1700,18 +1701,29 @@ fn run_smt_subquery(
     let started = std::time::Instant::now();
     let out = match Command::new(&cli.solver).arg(&path).output() {
         Ok(o) => o,
-        Err(e) => return DispatchOutcome::no_witness(
-            Verdict::EmitError(format!("invoke {}: {e}", cli.solver))),
+        Err(e) => {
+            let _ = std::fs::remove_file(&path);
+            return DispatchOutcome::no_witness(
+                Verdict::EmitError(format!("invoke {}: {e}", cli.solver)));
+        }
     };
     let elapsed = started.elapsed().as_secs_f64();
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let outcome = parse_z3_output(&stdout);
-    let verdict = match outcome.verdict.as_str() {
-        "unsat" => Verdict::Proved,
-        "sat" => Verdict::Disproved(stdout.clone()),
-        "unknown" => Verdict::Unknown("z3: unknown".into()),
-        other => Verdict::Unknown(format!("z3 said `{other}` (path: {})", path.display())),
+    let (verdict, keep_smt2) = match outcome.verdict.as_str() {
+        "unsat" => (Verdict::Proved, false),
+        "sat" => (Verdict::Disproved(stdout.clone()), false),
+        "unknown" => (Verdict::Unknown("z3: unknown".into()), false),
+        // Keep the SMT2 dump on the wild-card branch so the path
+        // referenced in the verdict message stays inspectable.
+        other => (
+            Verdict::Unknown(format!("z3 said `{other}` (path: {})", path.display())),
+            true,
+        ),
     };
+    if !keep_smt2 {
+        let _ = std::fs::remove_file(&path);
+    }
     if cli.verbose {
         if !outcome.variable_assignments.is_empty() {
             println!("  model: {} bindings", outcome.variable_assignments.len());
