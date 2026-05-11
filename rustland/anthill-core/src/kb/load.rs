@@ -2290,7 +2290,7 @@ fn resolve_provides_spec(
 /// `build_list` but accepts pre-resolved nil/cons/head/tail symbols
 /// — useful when the caller already resolved them once and wants
 /// to avoid re-lookups in inner loops.
-fn build_cons_list(
+pub(crate) fn build_cons_list(
     kb: &mut KnowledgeBase,
     items: &[TermId],
     nil_sym: Symbol,

@@ -759,16 +759,25 @@ fn check_apply(
                 DispatchOutcome::NoCandidates => {}
                 DispatchOutcome::Unique(impl_op_sym) => {
                     // WI-218: rewrite the apply's `fn` from spec op to
-                    // impl op. Allocate a new apply term with the same
-                    // args + the impl symbol; record (original →
-                    // rewritten) in dispatch_rewrites and (rewritten →
-                    // original spec sym) in dispatch_origin. A post-
-                    // typing pass walks operation bodies and substitutes
-                    // these rewrites bottom-up so the eval sees direct
-                    // impl calls.
+                    // impl op (plain apply). WI-222 Phase E (i): if the
+                    // resolved impl's parent sort declares any
+                    // `requires`, the impl body needs a populated
+                    // `frame.requirements` — emit `apply_within(fn =
+                    // Ref(impl), …)` with projected requirements
+                    // instead of plain apply. For stdlib (host
+                    // bindings, no requires) the original WI-218 path
+                    // remains.
                     if impl_op_sym != fn_sym {
-                        record_apply_rewrite(kb, apply_term, named_args,
-                                             pos_args, fn_sym, impl_op_sym);
+                        if op_callee_needs_requirements(kb, impl_op_sym) {
+                            record_apply_within_concrete(
+                                kb, apply_term, named_args, pos_args,
+                                impl_op_sym, spec_sort, fn_sym,
+                                enclosing_requires,
+                            );
+                        } else {
+                            record_apply_rewrite(kb, apply_term, named_args,
+                                                 pos_args, fn_sym, impl_op_sym);
+                        }
                     }
                 }
                 DispatchOutcome::NoMatch => {
@@ -790,9 +799,41 @@ fn check_apply(
                     return None;
                 }
                 DispatchOutcome::Deferred => {
-                    // WI-221: skip Pin-now rewrite — impl varies per
-                    // requirement value supplied at runtime. WI-222 will
-                    // emit the apply_within / requirement_at_current form.
+                    // WI-222 Phase C+D: emit the apply_within /
+                    // requirement_at_current rewrite. The slot index is
+                    // the matching entry's position in the enclosing
+                    // sort's requires chain (computed independently of
+                    // `find_unique_impl_op` to keep DispatchOutcome flat).
+                    // Phase D additionally projects the caller's slots
+                    // into the callee's expected requirements channel.
+                    if let Some(slot) =
+                        find_requires_slot(kb, &subst, spec_sort, enclosing_requires)
+                    {
+                        record_apply_within_rewrite(
+                            kb, apply_term, named_args, pos_args,
+                            fn_sym, op_short_sym, spec_sort, slot,
+                            enclosing_requires,
+                        );
+                    }
+                }
+            }
+        } else {
+            // WI-222 Phase E (i) Direct case: fn_sym is not a spec op
+            // (lookup_spec_op_dispatch returned None). If its parent
+            // sort declares any `requires`, the callee body still needs
+            // a populated `frame.requirements` — emit `apply_within(fn
+            // = Ref(fn_sym), …)` with projected requirements. Otherwise
+            // leave the call as plain apply (the common case).
+            let enclosing_requires = env.enclosing_requires().unwrap_or(&[]);
+            if op_callee_needs_requirements(kb, fn_sym) {
+                let parent_qn = kb.qualified_name_of(fn_sym).to_string();
+                let parent_qn = parent_qn.rsplit_once('.').map(|(p, _)| p).unwrap_or("");
+                if let Some(parent_sym) = kb.try_resolve_symbol(parent_qn) {
+                    record_apply_within_concrete(
+                        kb, apply_term, named_args, pos_args,
+                        fn_sym, parent_sym, fn_sym,
+                        enclosing_requires,
+                    );
                 }
             }
         }
@@ -850,6 +891,225 @@ fn record_apply_rewrite(
         named_args: new_named,
     });
     kb.record_dispatch_rewrite(original_apply, rewritten_apply, spec_op_sym);
+}
+
+/// WI-222 Phase E (i): true iff `op_sym`'s parent sort declares any
+/// `requires` (transitively). Used to decide whether a call to `op_sym`
+/// must thread a requirements channel — Pin-now and Direct cases emit
+/// `apply_within` instead of plain `apply` when this returns true so
+/// the callee body can read `frame.requirements`.
+fn op_callee_needs_requirements(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
+    let qn = kb.qualified_name_of(op_sym);
+    let Some((parent_qn, _)) = qn.rsplit_once('.') else { return false };
+    let Some(parent_sym) = kb.try_resolve_symbol(parent_qn) else { return false };
+    !requires_chain(kb, parent_sym).is_empty()
+}
+
+/// WI-222 Phase D/E shared: project `caller_requires` into a cons-list
+/// of value-position `requirement_at_current(slot=j)` terms matching
+/// the callee's transitive `requires_chain(callee_spec_sort)`. Returns
+/// the head TermId of the list, or `None` if any stdlib symbol or arg
+/// lookup fails.
+fn build_projected_requirements_list(
+    kb: &mut KnowledgeBase,
+    callee_spec_sort: Symbol,
+    caller_requires: &[RequiresEntry],
+) -> Option<TermId> {
+    let raac_sym = kb.try_resolve_symbol("anthill.reflect.Expr.requirement_at_current")?;
+    let nil_sym = kb.try_resolve_symbol("anthill.prelude.List.nil")?;
+    let cons_sym = kb.try_resolve_symbol("anthill.prelude.List.cons")?;
+    let slot_field = kb.intern("slot");
+    let op_field = kb.intern("op");
+    let head_field = kb.intern("head");
+    let tail_field = kb.intern("tail");
+
+    let callee_chain = requires_chain(kb, callee_spec_sort);
+    let projection_slots: Vec<usize> = callee_chain
+        .iter()
+        .filter_map(|e| {
+            caller_requires
+                .iter()
+                .position(|c| c.required_sort == e.required_sort)
+        })
+        .collect();
+    let proj_terms: Vec<TermId> = projection_slots
+        .iter()
+        .map(|&j| build_req_at_current(kb, raac_sym, slot_field, op_field, j, None))
+        .collect();
+    Some(super::load::build_cons_list(
+        kb, &proj_terms, nil_sym, cons_sym, head_field, tail_field,
+    ))
+}
+
+/// WI-222 Phase E (i): rewrite a Pin-now or Direct apply to apply_within
+/// with a concrete fn (impl/op symbol) and a projected requirements
+/// channel. Used when the callee's parent sort has non-empty
+/// `requires_chain` so the callee body can read `frame.requirements`.
+/// Returns true iff the rewrite was recorded.
+fn record_apply_within_concrete(
+    kb: &mut KnowledgeBase,
+    original_apply: TermId,
+    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    pos_args: &SmallVec<[TermId; 4]>,
+    fn_target_sym: Symbol,
+    callee_spec_sort: Symbol,
+    spec_op_sym: Symbol,
+    caller_requires: &[RequiresEntry],
+) -> bool {
+    use smallvec::SmallVec;
+
+    if kb.dispatch_rewrites.contains_key(&original_apply) {
+        return false;
+    }
+    let aw_sym = match kb.try_resolve_symbol("anthill.reflect.Expr.apply_within") {
+        Some(s) => s,
+        None => return false,
+    };
+    let orig_args_tid = match get_named_arg(kb, named_args, "args") {
+        Some(t) => t,
+        None => return false,
+    };
+    let requirements_list = match build_projected_requirements_list(
+        kb, callee_spec_sort, caller_requires,
+    ) {
+        Some(t) => t,
+        None => return false,
+    };
+
+    let fn_ref = kb.alloc(Term::Ref(fn_target_sym));
+    let fn_field = kb.intern("fn");
+    let args_field = kb.intern("args");
+    let reqs_field = kb.intern("requirements");
+
+    let rewritten = kb.alloc(Term::Fn {
+        functor: aw_sym,
+        pos_args: pos_args.clone(),
+        named_args: SmallVec::from_slice(&[
+            (fn_field, fn_ref),
+            (args_field, orig_args_tid),
+            (reqs_field, requirements_list),
+        ]),
+    });
+    kb.record_dispatch_rewrite(original_apply, rewritten, spec_op_sym);
+    true
+}
+
+/// Allocate `requirement_at_current(slot=N[, op=<some_wrap>])`. When
+/// `op_wrap` is `Some`, the result is a dispatch fn-position term; when
+/// `None`, it's a value-position projection. Internalises the field
+/// symbols so the two shapes share their construction.
+fn build_req_at_current(
+    kb: &mut KnowledgeBase,
+    raac_sym: Symbol,
+    slot_field: Symbol,
+    op_field: Symbol,
+    slot: usize,
+    op_wrap: Option<TermId>,
+) -> TermId {
+    let slot_lit = kb.alloc(Term::Const(Literal::Int(slot as i64)));
+    let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    named.push((slot_field, slot_lit));
+    if let Some(wrap) = op_wrap {
+        named.push((op_field, wrap));
+    }
+    kb.alloc(Term::Fn {
+        functor: raac_sym,
+        pos_args: SmallVec::new(),
+        named_args: named,
+    })
+}
+
+/// WI-222 Phase C+D — defer-to-requirement rewrite. Builds an
+/// `apply_within(fn = requirement_at_current(slot, op = some(op_short)),
+/// args = <orig>, requirements = [<projections>])` term and records it
+/// as the rewrite for `original_apply`. The runtime (WI-223) reads the
+/// `requirement_at_current` form, looks up `frame.requirements[slot]`'s
+/// functor at dispatch time, and resolves `<functor>.<op_short>` as
+/// the impl op to call. The projected requirements list becomes the
+/// callee's `frame.requirements`.
+///
+/// `slot` is the position of the matching entry in the enclosing op's
+/// `requires` chain (see `find_requires_slot`).
+///
+/// `spec_sort` is the deferred callee's spec sort (e.g. `Membership`).
+/// Phase D walks `requires_chain(spec_sort)` (the callee's transitive
+/// requires) and for each entry emits `requirement_at_current(j)` where
+/// `j` is the position of that entry in `caller_requires`. Because both
+/// chains are transitive, every callee dep must appear somewhere in
+/// `caller_requires` — Phase B's coverage check is the static guarantee.
+/// If any projection lookup fails (a typer bug or coverage gap), the
+/// rewrite emits a partial list rather than panicking; the runtime
+/// would then surface a frame-too-small error at the actual dispatch.
+///
+/// Reference: docs/design/operation-call-model.md §"Call rewrite cases"
+/// (Defer-to-requirement row), §"Two primitives".
+fn record_apply_within_rewrite(
+    kb: &mut KnowledgeBase,
+    original_apply: TermId,
+    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    pos_args: &SmallVec<[TermId; 4]>,
+    spec_op_sym: Symbol,
+    op_short_sym: Symbol,
+    spec_sort: Symbol,
+    slot: usize,
+    caller_requires: &[RequiresEntry],
+) -> bool {
+    use smallvec::SmallVec;
+
+    if kb.dispatch_rewrites.contains_key(&original_apply) {
+        return false;
+    }
+
+    // Resolve the stdlib symbols we need for the rewrite. Any missing
+    // symbol means stdlib isn't loaded — bail out silently rather than
+    // panic, mirroring the conservative approach in record_apply_rewrite.
+    let aw_sym = match kb.try_resolve_symbol("anthill.reflect.Expr.apply_within") {
+        Some(s) => s,
+        None => return false,
+    };
+    let raac_sym = match kb.try_resolve_symbol("anthill.reflect.Expr.requirement_at_current") {
+        Some(s) => s,
+        None => return false,
+    };
+
+    // Original apply's `args` list — reused verbatim.
+    let orig_args_tid = match get_named_arg(kb, named_args, "args") {
+        Some(t) => t,
+        None => return false,
+    };
+    let requirements_list =
+        match build_projected_requirements_list(kb, spec_sort, caller_requires) {
+            Some(t) => t,
+            None => return false,
+        };
+
+    // Build `some(op_short)` — the dispatch form requires the op short
+    // name so the runtime can resolve `<impl_qn>.<op_short>` after
+    // reading `frame.requirements[slot]`'s functor.
+    let op_ref = kb.alloc(Term::Ref(op_short_sym));
+    let some_wrap = super::load::build_some(kb, op_ref);
+
+    let fn_field = kb.intern("fn");
+    let args_field = kb.intern("args");
+    let reqs_field = kb.intern("requirements");
+    let slot_field = kb.intern("slot");
+    let op_field = kb.intern("op");
+
+    // Build `requirement_at_current(slot=N, op=some(op_short))` for the fn position.
+    let req_at_current =
+        build_req_at_current(kb, raac_sym, slot_field, op_field, slot, Some(some_wrap));
+
+    let rewritten = kb.alloc(Term::Fn {
+        functor: aw_sym,
+        pos_args: pos_args.clone(),
+        named_args: SmallVec::from_slice(&[
+            (fn_field, req_at_current),
+            (args_field, orig_args_tid),
+            (reqs_field, requirements_list),
+        ]),
+    });
+    kb.record_dispatch_rewrite(original_apply, rewritten, spec_op_sym);
+    true
 }
 
 /// Full operation info for type checking: params with types, return type, effects.
@@ -932,21 +1192,23 @@ pub enum DispatchOutcome {
     Deferred,
 }
 
-/// WI-221 — defer-to-requirement detection (open-bound trigger). Returns
-/// true iff `spec_sort` appears in the supplied `requires` chain with a
-/// binding that unifies with the per-call subst. The chain is cached on
+/// WI-221/WI-222 — defer-to-requirement detection (open-bound trigger).
+/// Returns the **slot index** (position in `chain`) of the first matching
+/// requires entry, or `None` if the spec sort isn't reached via this
+/// chain. WI-222 needs the slot to populate `requirement_at_current(slot
+/// = N)` in the rewritten `apply_within`. The chain is cached on
 /// `TypingEnv` (see `set_enclosing_sort`) to avoid re-walking
 /// `SortRequiresInfo` per apply check.
-fn matches_via_requires(
+pub fn find_requires_slot(
     kb: &KnowledgeBase,
     subst: &Substitution,
     spec_sort: Symbol,
     chain: &[RequiresEntry],
-) -> bool {
+) -> Option<usize> {
     use smallvec::SmallVec;
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
 
-    for entry in chain {
+    for (idx, entry) in chain.iter().enumerate() {
         if entry.required_sort != spec_sort {
             continue;
         }
@@ -971,7 +1233,7 @@ fn matches_via_requires(
         };
 
         if bindings.is_empty() {
-            return true;
+            return Some(idx);
         }
 
         // The post-`resolve_requires_bindings` SortView for a `requires`
@@ -1001,8 +1263,16 @@ fn matches_via_requires(
                 _ => continue,
             };
             let per_call_value = match subst.resolve_with_term(vid) {
+                // Unbound spec param: this is the OPEN-T defer trigger.
+                // The call's binding was not constrained to a concrete
+                // carrier (often because the typer unified two free Vars
+                // and bound the *other* direction). Per
+                // `docs/design/operation-call-model.md` §"Defer-to-
+                // requirement detection", an open type-var in the goal
+                // means defer — the impl is determined at runtime by the
+                // requirement value the caller passed. Match this entry.
+                None => continue,
                 Some(v) => v,
-                None => { all_match = false; break; }
             };
             // Either side may be a wildcard (a type-param value): the
             // requires entry might use the enclosing sort's open T
@@ -1016,10 +1286,10 @@ fn matches_via_requires(
             }
         }
         if all_match {
-            return true;
+            return Some(idx);
         }
     }
-    false
+    None
 }
 
 /// WI-210 — given a spec sort and a per-call substitution, find the
@@ -1052,7 +1322,7 @@ pub fn find_unique_impl_op(
     use smallvec::SmallVec;
 
     if !enclosing_requires.is_empty()
-        && matches_via_requires(kb, subst, spec_sort, enclosing_requires)
+        && find_requires_slot(kb, subst, spec_sort, enclosing_requires).is_some()
     {
         return DispatchOutcome::Deferred;
     }
