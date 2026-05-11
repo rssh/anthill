@@ -905,40 +905,226 @@ fn op_callee_needs_requirements(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
     !requires_chain(kb, parent_sym).is_empty()
 }
 
-/// WI-222 Phase D/E shared: project `caller_requires` into a cons-list
-/// of value-position `requirement_at_current(slot=j)` terms matching
-/// the callee's transitive `requires_chain(callee_spec_sort)`. Returns
-/// the head TermId of the list, or `None` if any stdlib symbol or arg
-/// lookup fails.
+/// WI-227: interned stdlib symbols + field names needed to allocate
+/// the three requirement-projection IR forms. Resolved once at the
+/// entry point so the recursive search doesn't re-look-up per dep.
+/// `pub` only so the WI-227 test file can drive `build_dep_projection`
+/// directly with synthetic inputs.
+pub struct ProjectionSyms {
+    /// `anthill.reflect.Expr.requirement_at_current`
+    pub raac: Symbol,
+    /// `anthill.reflect.Expr.requirement_at_sort`
+    pub ras: Symbol,
+    /// `anthill.reflect.Expr.construct_requirement`
+    pub construct: Symbol,
+    /// `anthill.prelude.List.nil`
+    pub nil: Symbol,
+    /// `anthill.prelude.List.cons`
+    pub cons: Symbol,
+    pub slot: Symbol,
+    pub chain: Symbol,
+    pub impl_functor: Symbol,
+    pub requirements: Symbol,
+    pub head: Symbol,
+    pub tail: Symbol,
+}
+
+impl ProjectionSyms {
+    pub fn resolve(kb: &mut KnowledgeBase) -> Option<Self> {
+        Some(Self {
+            raac: kb.try_resolve_symbol("anthill.reflect.Expr.requirement_at_current")?,
+            ras: kb.try_resolve_symbol("anthill.reflect.Expr.requirement_at_sort")?,
+            construct: kb.try_resolve_symbol("anthill.reflect.Expr.construct_requirement")?,
+            nil: kb.try_resolve_symbol("anthill.prelude.List.nil")?,
+            cons: kb.try_resolve_symbol("anthill.prelude.List.cons")?,
+            slot: kb.intern("slot"),
+            chain: kb.intern("chain"),
+            impl_functor: kb.intern("impl_functor"),
+            requirements: kb.intern("requirements"),
+            head: kb.intern("head"),
+            tail: kb.intern("tail"),
+        })
+    }
+}
+
+/// WI-222 Phase D/E shared, refactored under WI-227: project
+/// `caller_requires` into a cons-list of value-position projection
+/// terms matching the callee's transitive `requires_chain(callee_spec_sort)`.
+/// Each callee dep is resolved via a three-strategy recursive search
+/// (see `build_dep_projection`): flat slot lookup, nested
+/// `requirement_at_sort`, then `SortProvidesInfo`-driven static
+/// construction. Returns the head TermId of the list, or `None` if any
+/// stdlib symbol lookup fails.
 fn build_projected_requirements_list(
     kb: &mut KnowledgeBase,
     callee_spec_sort: Symbol,
     caller_requires: &[RequiresEntry],
 ) -> Option<TermId> {
-    let raac_sym = kb.try_resolve_symbol("anthill.reflect.Expr.requirement_at_current")?;
-    let nil_sym = kb.try_resolve_symbol("anthill.prelude.List.nil")?;
-    let cons_sym = kb.try_resolve_symbol("anthill.prelude.List.cons")?;
-    let slot_field = kb.intern("slot");
-    let op_field = kb.intern("op");
-    let head_field = kb.intern("head");
-    let tail_field = kb.intern("tail");
-
+    let syms = ProjectionSyms::resolve(kb)?;
     let callee_chain = requires_chain(kb, callee_spec_sort);
-    let projection_slots: Vec<usize> = callee_chain
+    // Hoist Strategy 2's per-slot `requires_chain` walk out of the dep
+    // loop: it depends only on `caller_requires`, not on the current
+    // dep, so the worst-case cost drops from O(deps × slots × |SortRequiresInfo|)
+    // to O(slots × |SortRequiresInfo|).
+    let caller_sub_chains: Vec<Vec<RequiresEntry>> = caller_requires
         .iter()
-        .filter_map(|e| {
-            caller_requires
-                .iter()
-                .position(|c| c.required_sort == e.required_sort)
-        })
+        .map(|ar| requires_chain(kb, ar.required_sort))
         .collect();
-    let proj_terms: Vec<TermId> = projection_slots
-        .iter()
-        .map(|&j| build_req_at_current(kb, raac_sym, slot_field, op_field, j, None))
-        .collect();
+    let mut proj_terms: Vec<TermId> = Vec::with_capacity(callee_chain.len());
+    for dep in &callee_chain {
+        if let Some(t) = build_dep_projection(
+            kb, dep, caller_requires, &caller_sub_chains, &syms,
+        ) {
+            proj_terms.push(t);
+        }
+    }
     Some(super::load::build_cons_list(
-        kb, &proj_terms, nil_sym, cons_sym, head_field, tail_field,
+        kb, &proj_terms, syms.nil, syms.cons, syms.head, syms.tail,
     ))
+}
+
+/// WI-227: recursively search for an IR projection that delivers a
+/// requirement value satisfying `dep` at runtime, given `caller_requires`
+/// as the caller's frame-level requirement slots. Tries flat slot
+/// match, then nested-handle match via `caller_sub_chains[i]`, then SLD
+/// resolution against `SortProvidesInfo`. `caller_sub_chains` must be
+/// `[requires_chain(c.required_sort) for c in caller_requires]` — the
+/// nested-search index, computed once by the caller.
+///
+/// `pub` so the WI-227 test file can drive each strategy synthetically.
+///
+/// Reference: docs/design/operation-call-model.md §"Two primitives",
+/// §"Call rewrite cases".
+pub fn build_dep_projection(
+    kb: &mut KnowledgeBase,
+    dep: &RequiresEntry,
+    caller_requires: &[RequiresEntry],
+    caller_sub_chains: &[Vec<RequiresEntry>],
+    syms: &ProjectionSyms,
+) -> Option<TermId> {
+    // Strategy 1 — flat.
+    if let Some(i) = caller_requires
+        .iter()
+        .position(|c| c.required_sort == dep.required_sort)
+    {
+        return Some(build_flat_req(kb, syms, i));
+    }
+
+    // Strategy 2 — nested via caller slots' transitive `requires_chain`.
+    // The slot's runtime requirement value bundles its spec's deps in
+    // the same order, so a single `requirement_at_sort` projects them.
+    for (i, sub_chain) in caller_sub_chains.iter().enumerate() {
+        if let Some(k) = sub_chain
+            .iter()
+            .position(|s| s.required_sort == dep.required_sort)
+        {
+            let inner = build_flat_req(kb, syms, i);
+            return Some(build_req_at_sort(kb, syms, inner, k));
+        }
+    }
+
+    // Strategy 3 — static construction via SortProvidesInfo. Build a
+    // SortGoal from the dep's spec bindings and run SLD resolution.
+    let goal = goal_from_requires_entry(kb, dep)?;
+    let scope = ResolutionScope { available_requires: caller_requires };
+    match resolve(kb, &goal, &scope) {
+        ResolutionResult::Resolved(tree) => emit_tree_as_projection(kb, &tree, syms),
+        _ => None,
+    }
+}
+
+/// WI-227: translate a `ResolvedTree` into a projection IR term.
+/// `FromScope` becomes `requirement_at_current(slot=scope_index)`;
+/// `Leaf` becomes `construct_requirement(impl, nil)`; `Conditional`
+/// recursively emits sub-projections and wraps them in a
+/// `construct_requirement(impl, cons_list)`.
+fn emit_tree_as_projection(
+    kb: &mut KnowledgeBase,
+    tree: &ResolvedTree,
+    syms: &ProjectionSyms,
+) -> Option<TermId> {
+    match tree {
+        ResolvedTree::FromScope { scope_index, .. } => {
+            Some(build_flat_req(kb, syms, *scope_index))
+        }
+        ResolvedTree::Leaf { impl_sort, .. } => {
+            let nil_list = super::load::build_cons_list(
+                kb, &[], syms.nil, syms.cons, syms.head, syms.tail,
+            );
+            Some(build_construct_requirement(kb, syms, *impl_sort, nil_list))
+        }
+        ResolvedTree::Conditional { impl_sort, sub_resolutions, .. } => {
+            let mut sub_terms: SmallVec<[TermId; 4]> = SmallVec::new();
+            for sub in sub_resolutions {
+                sub_terms.push(emit_tree_as_projection(kb, sub, syms)?);
+            }
+            let list = super::load::build_cons_list(
+                kb, &sub_terms, syms.nil, syms.cons, syms.head, syms.tail,
+            );
+            Some(build_construct_requirement(kb, syms, *impl_sort, list))
+        }
+    }
+}
+
+/// Build a value-position `requirement_at_current(slot=i)` — shared by
+/// Strategy 1, the inner of Strategy 2, and `FromScope` emission. The
+/// projection path never emits the `op` field; only the dispatch-fn
+/// position carries it (see `record_apply_within_rewrite`).
+fn build_flat_req(kb: &mut KnowledgeBase, syms: &ProjectionSyms, i: usize) -> TermId {
+    let slot_lit = kb.alloc(Term::Const(Literal::Int(i as i64)));
+    kb.alloc(Term::Fn {
+        functor: syms.raac,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(syms.slot, slot_lit)]),
+    })
+}
+
+/// Build `requirement_at_sort(chain = <inner>, slot = <k>)`.
+fn build_req_at_sort(
+    kb: &mut KnowledgeBase,
+    syms: &ProjectionSyms,
+    inner: TermId,
+    k: usize,
+) -> TermId {
+    let slot_lit = kb.alloc(Term::Const(Literal::Int(k as i64)));
+    kb.alloc(Term::Fn {
+        functor: syms.ras,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(syms.chain, inner), (syms.slot, slot_lit)]),
+    })
+}
+
+/// Build `construct_requirement(impl_functor = <Ref(impl)>, requirements = <list>)`.
+fn build_construct_requirement(
+    kb: &mut KnowledgeBase,
+    syms: &ProjectionSyms,
+    impl_sym: Symbol,
+    requirements_list: TermId,
+) -> TermId {
+    let impl_ref = kb.alloc(Term::Ref(impl_sym));
+    kb.alloc(Term::Fn {
+        functor: syms.construct,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[
+            (syms.impl_functor, impl_ref),
+            (syms.requirements, requirements_list),
+        ]),
+    })
+}
+
+/// Extract a `SortGoal` from a `RequiresEntry`'s SortView, keeping only
+/// type-parameter bindings (op bindings don't constrain dispatch).
+fn goal_from_requires_entry(kb: &KnowledgeBase, entry: &RequiresEntry) -> Option<SortGoal> {
+    let (_, raw_bindings) = unwrap_spec_view(kb, entry.spec)?;
+    let spec_qn = kb.qualified_name_of(entry.required_sort).to_string();
+    let bindings: SmallVec<[(Symbol, TermId); 2]> = raw_bindings
+        .into_iter()
+        .filter(|(k, _)| is_type_param_binding(kb, *k, &spec_qn))
+        .collect();
+    Some(SortGoal {
+        spec_sort: entry.required_sort,
+        bindings,
+    })
 }
 
 /// WI-222 Phase E (i): rewrite a Pin-now or Direct apply to apply_within
