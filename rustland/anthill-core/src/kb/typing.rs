@@ -5,6 +5,7 @@
 /// Effects are tracked as List[Type] alongside the value type.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use smallvec::SmallVec;
 
@@ -755,7 +756,7 @@ fn check_apply(
             let op_short = op_qn.rsplit_once('.').map(|(_, s)| s).unwrap_or(&op_qn);
             let op_short_sym = kb.intern(op_short);
             let enclosing_requires = env.enclosing_requires().unwrap_or(&[]);
-            let (outcome, resolved_tree) = dispatch_spec_op_with_tree(
+            let (outcome, resolved_tree) = dispatch_spec_op_cached(
                 kb, &subst, spec_sort, op_short_sym, enclosing_requires,
             );
             match outcome {
@@ -1035,22 +1036,22 @@ pub fn build_dep_projection(
     caller_sub_chains: &[Vec<RequiresEntry>],
     syms: &ProjectionSyms,
 ) -> Option<TermId> {
-    // Strategy 1 — flat.
+    // Strategy 1 — flat, binding-aware. Match by (required_sort, bindings)
+    // so a caller with Eq[T=X] at slot 0 does NOT match dep Eq[T=Y]
+    // (WI-226 correctness fix).
     if let Some(i) = caller_requires
         .iter()
-        .position(|c| c.required_sort == dep.required_sort)
+        .position(|c| entries_cover(kb, c, dep))
     {
         return Some(build_flat_req(kb, syms, i));
     }
 
-    // Strategy 2 — nested via caller slots' transitive `requires_chain`.
-    // The slot's runtime requirement value bundles its spec's deps in
-    // the same order, so a single `requirement_at_sort` projects them.
+    // Strategy 2 — nested via caller slots' transitive `requires_chain`,
+    // binding-aware. The slot's runtime requirement value bundles its
+    // spec's deps in the same order, so a single `requirement_at_sort`
+    // projects them.
     for (i, sub_chain) in caller_sub_chains.iter().enumerate() {
-        if let Some(k) = sub_chain
-            .iter()
-            .position(|s| s.required_sort == dep.required_sort)
-        {
+        if let Some(k) = sub_chain.iter().position(|s| entries_cover(kb, s, dep)) {
             let inner = build_flat_req(kb, syms, i);
             return Some(build_req_at_sort(kb, syms, inner, k));
         }
@@ -1064,6 +1065,56 @@ pub fn build_dep_projection(
         ResolutionResult::Resolved(tree) => emit_tree_as_projection(kb, &tree, syms),
         _ => None,
     }
+}
+
+/// WI-226: binding-aware predicate for slot matching in
+/// `build_dep_projection`. True iff `caller`'s spec covers `dep`'s spec
+/// — same `required_sort` AND every type-param binding of `dep` is
+/// satisfied by `caller`'s binding for the same key (either identical
+/// or with one side being a type-param wildcard, mirroring
+/// `requires_entry_covers_goal`'s flexibility).
+fn entries_cover(kb: &KnowledgeBase, caller: &RequiresEntry, dep: &RequiresEntry) -> bool {
+    if caller.required_sort != dep.required_sort {
+        return false;
+    }
+    let Some((_, caller_bindings)) = unwrap_spec_view(kb, caller.spec) else {
+        return false;
+    };
+    let Some((_, dep_bindings)) = unwrap_spec_view(kb, dep.spec) else {
+        return false;
+    };
+    // Bindingless `requires X` matches any dep; no constraints to check.
+    if dep_bindings.is_empty() {
+        return true;
+    }
+    let spec_qn = kb.qualified_name_of(dep.required_sort).to_string();
+    for (dep_k, dep_val) in &dep_bindings {
+        if !is_type_param_binding(kb, *dep_k, &spec_qn) {
+            continue;
+        }
+        // Find the caller's binding for the same key (compare by
+        // resolved short name to be robust against differently-interned
+        // copies of the same short symbol).
+        let caller_val = caller_bindings
+            .iter()
+            .find(|(ck, _)| {
+                *ck == *dep_k || kb.resolve_sym(*ck) == kb.resolve_sym(*dep_k)
+            })
+            .map(|(_, v)| *v);
+        let Some(caller_val) = caller_val else {
+            return false;
+        };
+        // Either side a type-param wildcard ⇒ unconstrained, accept.
+        if is_type_param_value(kb, caller_val) || is_type_param_value(kb, *dep_val) {
+            continue;
+        }
+        if !dispatch_values_match(kb, caller_val, *dep_val)
+            && !dispatch_values_match(kb, *dep_val, caller_val)
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// WI-227: translate a `ResolvedTree` into a projection IR term.
@@ -1537,7 +1588,7 @@ pub fn find_requires_slot(
 /// A goal in instance resolution: "find an impl that provides `spec_sort`
 /// at the given bindings." Bindings keyed by the spec's short
 /// parameter names (`T`, `State`, …) per the `SortView` convention.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SortGoal {
     pub spec_sort: Symbol,
     pub bindings: SmallVec<[(Symbol, TermId); 2]>,
@@ -2414,15 +2465,25 @@ pub fn find_unique_impl_op(
 /// sub_resolutions for conditional instances, which the requirement-
 /// insertion pass turns into nested `construct_requirement` IR.
 ///
-/// `enclosing_requires` (WI-221): when non-empty, the function first
-/// checks whether the call should be deferred (open-bound trigger — the
-/// spec sort is reached via the caller's `requires` chain). If so,
-/// returns `(DispatchOutcome::Deferred, None)` without consulting
-/// candidates.
-///
-/// Takes `&mut KnowledgeBase` because `resolve` may allocate freshly
-/// substituted subgoal terms for conditional resolution.
+/// Delegates to `dispatch_spec_op_cached` — the legacy compat path
+/// (`find_unique_impl_op`) thus also benefits from WI-226 Cache B.
 pub fn dispatch_spec_op_with_tree(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    op_short_sym: Symbol,
+    enclosing_requires: &[RequiresEntry],
+) -> (DispatchOutcome, Option<ResolvedTree>) {
+    dispatch_spec_op_cached(kb, subst, spec_sort, op_short_sym, enclosing_requires)
+}
+
+/// WI-226 — cached variant of `dispatch_spec_op_with_tree`. Repeated
+/// spec-op calls at the same `(SortGoal, scope)` hit the per-KB memo
+/// (`kb.resolve_cache`) and skip the SLD walk. The defer-trigger
+/// check (which depends on `subst` via `find_requires_slot`) runs
+/// uncached because it reads typer-side vars; the rest is keyed on the
+/// canonicalized goal + scope.
+pub fn dispatch_spec_op_cached(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
     spec_sort: Symbol,
@@ -2434,8 +2495,26 @@ pub fn dispatch_spec_op_with_tree(
     {
         return (DispatchOutcome::Deferred, None);
     }
-
     let goal = sort_goal_from_subst(kb, subst, spec_sort);
+    let key = (goal.clone(), enclosing_requires.to_vec());
+    if let Some(cached) = kb.resolve_cache.borrow().get(&key) {
+        return cached.clone();
+    }
+    let result = resolve_at_goal(kb, &goal, spec_sort, op_short_sym, enclosing_requires);
+    kb.resolve_cache.borrow_mut().insert(key, result.clone());
+    result
+}
+
+/// Resolve a pre-built `SortGoal` to a `(DispatchOutcome, Option<ResolvedTree>)`.
+/// Shared body of `dispatch_spec_op_with_tree` and `dispatch_spec_op_cached`
+/// — they differ only in pre-check (defer trigger) and memoization.
+fn resolve_at_goal(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    spec_sort: Symbol,
+    op_short_sym: Symbol,
+    enclosing_requires: &[RequiresEntry],
+) -> (DispatchOutcome, Option<ResolvedTree>) {
     let scope = ResolutionScope { available_requires: enclosing_requires };
 
     // Peek the candidate set so we can preserve the WI-210 legacy
@@ -3579,7 +3658,7 @@ fn sort_sym_compatible(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym: Sym
 // ── Requires chain ─────────────────────────────────────────────
 
 /// A direct requires entry: sort A requires spec B with the given SortView term.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct RequiresEntry {
     /// The base sort symbol of the required spec (e.g., Eq in `requires Eq[T=Int]`).
     pub required_sort: Symbol,
@@ -3589,10 +3668,22 @@ pub struct RequiresEntry {
 
 /// Collect the full transitive requires chain for a sort.
 /// Returns all (required_sort_sym, spec_term) pairs reachable from `sort_sym`.
+///
+/// WI-226: memoized on `kb.requires_chain_cache`. Top-level memoization
+/// only — recursive sub-frames inside `collect_requires` bypass the
+/// cache because a cycle-truncated sub-result can't be canonicalized
+/// (would corrupt the cache entry for the inner sort). Subsequent
+/// queries for the same `sort_sym` are an O(1) HashMap hit.
 pub fn requires_chain(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
+    if let Some(cached) = kb.requires_chain_cache.borrow().get(&sort_sym) {
+        return (**cached).clone();
+    }
     let mut result = Vec::new();
     let mut visited = Vec::new();
     collect_requires(kb, sort_sym, &mut result, &mut visited);
+    kb.requires_chain_cache
+        .borrow_mut()
+        .insert(sort_sym, Rc::new(result.clone()));
     result
 }
 

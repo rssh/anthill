@@ -19,7 +19,9 @@ pub mod route;
 pub(crate) mod persist_subst;
 pub(crate) mod discrim;
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use smallvec::SmallVec;
 
@@ -238,6 +240,37 @@ pub struct KnowledgeBase {
     //   Impl.op"). The interpreter never reads it.
     pub(crate) dispatch_rewrites: HashMap<TermId, TermId>,
     pub(crate) dispatch_origin: HashMap<TermId, Symbol>,
+
+    // WI-226 Cache A — memoized transitive `requires` closure per sort.
+    // `requires_chain(kb, S)` is recursive over SortRequiresInfo; without
+    // memo every defer/Pin-now call site rewalks `by_functor` once per
+    // level. RefCell-wrapped so `requires_chain` keeps its `&KnowledgeBase`
+    // signature (the cache is the only interior-mutable piece).
+    //
+    // Lifetime: the cache fills lazily during typing (after `load_all`
+    // finishes asserting facts), so the usual flow keeps it valid for
+    // the KB's lifetime. Code paths that assert new `SortRequiresInfo`
+    // facts post-typing must call `invalidate_requires_chain_cache`.
+    pub(crate) requires_chain_cache: RefCell<HashMap<Symbol, Rc<Vec<crate::kb::typing::RequiresEntry>>>>,
+
+    // WI-226 Cache B — memoized spec-op SLD dispatch results, keyed by
+    // `(SortGoal, scope)`. Saves re-walking `SortProvidesInfo` for
+    // repeated spec-op calls at the same (spec, bindings, scope) — common
+    // in bodies that call `eq(a, b); eq(c, d); …` at the same T.
+    //
+    // The scope is captured as `Vec<RequiresEntry>` in the key, so calls
+    // from different enclosing sorts don't collide. Within one body the
+    // scope is fixed and the key effectively reduces to the goal.
+    //
+    // Same lifetime caveat as Cache A: callers asserting new
+    // `SortProvidesInfo` post-typing must call
+    // `invalidate_resolve_cache`.
+    pub(crate) resolve_cache: RefCell<
+        HashMap<
+            (crate::kb::typing::SortGoal, Vec<crate::kb::typing::RequiresEntry>),
+            (crate::kb::typing::DispatchOutcome, Option<crate::kb::typing::ResolvedTree>),
+        >,
+    >,
 }
 
 impl KnowledgeBase {
@@ -271,7 +304,41 @@ impl KnowledgeBase {
             routes: route::RouteRegistry::new(),
             dispatch_rewrites: HashMap::new(),
             dispatch_origin: HashMap::new(),
+            requires_chain_cache: RefCell::new(HashMap::new()),
+            resolve_cache: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Drop the memoized `requires_chain` results. Called when a new
+    /// `SortRequiresInfo` fact is asserted after the cache filled, so
+    /// stale chains can't be served. WI-226. Public so test fixtures
+    /// and out-of-tree elaboration passes can clear the cache between
+    /// staged assertions.
+    #[allow(dead_code)]
+    pub fn invalidate_requires_chain_cache(&self) {
+        self.requires_chain_cache.borrow_mut().clear();
+    }
+
+    /// Drop the memoized spec-op SLD dispatch results. Called when a
+    /// new `SortProvidesInfo` fact is asserted after the cache filled.
+    /// WI-226.
+    #[allow(dead_code)]
+    pub fn invalidate_resolve_cache(&self) {
+        self.resolve_cache.borrow_mut().clear();
+    }
+
+    /// WI-226: number of entries in the resolve cache. Diagnostic /
+    /// test inspector — counts how many `(goal, scope)` pairs have
+    /// been memoized.
+    pub fn resolve_cache_len(&self) -> usize {
+        self.resolve_cache.borrow().len()
+    }
+
+    /// WI-226: does the `requires_chain` cache hold an entry for
+    /// `sort_sym`? Diagnostic / test inspector — distinguishes
+    /// pre-first-call (empty) from post-first-call (memoized) state.
+    pub fn requires_chain_cache_contains(&self, sort_sym: Symbol) -> bool {
+        self.requires_chain_cache.borrow().contains_key(&sort_sym)
     }
 
     /// Record that `original_apply` should be rewritten to `rewritten_apply`
