@@ -1480,7 +1480,7 @@ fact WorkItem(
   description: "Spec/impl call-site dispatch via fact (WI-209b, problem B). Design doc + implementation: when user code calls a spec operation like commit(s, w) where s: Cell[V = WIS], the typer/resolver should dispatch to the impl sort's commit body — found via the chain s's V → State binding → fact Spec[State = T] → impl sort that asserted the fact. Two big design questions to settle in the doc before implementation: (1) static vs dynamic dispatch — Rust-trait-like monomorphization at typer time vs vtable-style runtime KB lookup. Today's bundle has only one impl per invocation so static is feasible; future anthill-todo-server with multiple project workspaces may want dynamic. (2) coherence — what if two sorts assert fact Spec[State = WIS]? Pick by priority? Reject as ambiguous? Lessons from Haskell's incoherent instances. Open: interaction with WI-079 typing-pass parity; whether WI-209a's substituted-signature path is enough for static dispatch (likely yes); how this composes with proposal 037 Modify framework's per-resource handler dispatch (similar shape, different keying). Workaround until this lands: bundle commands call impl ops by qualified name (FileBasedWorkitemStore.commit(s, wi)) instead of spec name. Acceptance: design doc landed in docs/proposals/ or docs/design/; implementation behind dispatch passes a smoke test (commit(s, wi) where s: Cell[V = WIS] dispatches to FileBasedWorkitemStore.commit body).",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-209"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-11T18:05:02Z"))
 
 fact WorkItem(
   id: "WI-211",
