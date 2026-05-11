@@ -1292,61 +1292,258 @@ pub fn find_requires_slot(
     None
 }
 
-/// WI-210 — given a spec sort and a per-call substitution, find the
-/// unique impl operation symbol that satisfies the spec at the
-/// substitution's bindings. Walks `SortProvidesInfo` records, matching
-/// each candidate's recorded bindings against the per-call subst by
-/// the existing binding-keyed unification model:
-/// - The candidate's `SortView(Spec, [(name, value), ...])` carries
-///   bindings whose keys are the user's short identifiers.
-/// - For each binding, construct the spec parameter's qualified name
-///   (`<spec_qn>.<binding short name>`), resolve its SortAlias to a
-///   `Var(vid)`, look up the per-call value at `vid`, and check via
-///   `dispatch_values_match`.
-/// - All bindings must match; the spec's base symbol must equal
-///   `spec_sort`.
-///
-/// `enclosing_requires` (WI-221): when non-empty, the function first
-/// checks whether the call should be deferred (open-bound trigger — the
-/// spec sort is reached via the caller's `requires` chain). If so,
-/// returns [`DispatchOutcome::Deferred`] without consulting candidates.
-/// See `docs/design/operation-call-model.md` §"Defer-to-requirement
-/// detection" for the full rationale.
-pub fn find_unique_impl_op(
-    kb: &KnowledgeBase,
-    subst: &Substitution,
-    spec_sort: Symbol,
-    op_short_sym: Symbol,
-    enclosing_requires: &[RequiresEntry],
-) -> DispatchOutcome {
-    use smallvec::SmallVec;
+// ── WI-224 — SLD-based instance synthesis ──────────────────────
+//
+// Replacement for the original single-shot `find_unique_impl_op`. Per
+// `docs/design/operation-call-model.md` §"Resolution": instance
+// synthesis is an SLD query over `SortProvidesInfo`. Each candidate's
+// head may be a non-conditional fact (a "leaf" impl with no further
+// requirements) or a conditional impl whose sort declares its own
+// `requires` chain (the subgoals).
+//
+// `find_unique_impl_op` (kept as a thin compatibility wrapper) now
+// delegates to `resolve`.
 
-    if !enclosing_requires.is_empty()
-        && find_requires_slot(kb, subst, spec_sort, enclosing_requires).is_some()
-    {
-        return DispatchOutcome::Deferred;
+/// A goal in instance resolution: "find an impl that provides `spec_sort`
+/// at the given bindings." Bindings keyed by the spec's short
+/// parameter names (`T`, `State`, …) per the `SortView` convention.
+#[derive(Clone, Debug)]
+pub struct SortGoal {
+    pub spec_sort: Symbol,
+    pub bindings: SmallVec<[(Symbol, TermId); 2]>,
+}
+
+/// Context for `resolve` — the `requires` entries already in scope
+/// (matched at scope_index `i` so the requirement-insertion pass can
+/// emit `requirement_at_current(i)`).
+#[derive(Clone)]
+pub struct ResolutionScope<'a> {
+    pub available_requires: &'a [RequiresEntry],
+}
+
+/// The synthesized resolution chain. Returned to the requirement-
+/// insertion pass which emits the IR (`construct_requirement` /
+/// `requirement_at_current` / projections) per node.
+#[derive(Clone, Debug)]
+pub enum ResolvedTree {
+    /// Non-conditional impl. `impl_sort` is the carrier sort symbol
+    /// (e.g., `IntEq`), `bindings` is the head's per-binding values
+    /// after impl-param substitution.
+    Leaf {
+        impl_sort: Symbol,
+        spec_sort: Symbol,
+        bindings: SmallVec<[(Symbol, TermId); 2]>,
+    },
+    /// Conditional impl: head matched + sub_resolutions resolved.
+    Conditional {
+        impl_sort: Symbol,
+        spec_sort: Symbol,
+        bindings: SmallVec<[(Symbol, TermId); 2]>,
+        sub_resolutions: Vec<ResolvedTree>,
+    },
+    /// Matched an entry in `scope.available_requires`. No new
+    /// construction needed — the caller's `frame.requirements[slot]`
+    /// already holds the right requirement value.
+    FromScope {
+        scope_index: usize,
+        spec_sort: Symbol,
+    },
+}
+
+impl ResolvedTree {
+    /// The spec sort this tree resolves (for diagnostics / WI-226).
+    pub fn spec_sort(&self) -> Symbol {
+        match self {
+            ResolvedTree::Leaf { spec_sort, .. }
+            | ResolvedTree::Conditional { spec_sort, .. }
+            | ResolvedTree::FromScope { spec_sort, .. } => *spec_sort,
+        }
     }
 
+    /// The impl carrier sort. `None` for `FromScope` — no specific
+    /// impl is pinned; the runtime reads the slot's bundled handle.
+    pub fn impl_sort(&self) -> Option<Symbol> {
+        match self {
+            ResolvedTree::Leaf { impl_sort, .. }
+            | ResolvedTree::Conditional { impl_sort, .. } => Some(*impl_sort),
+            ResolvedTree::FromScope { .. } => None,
+        }
+    }
+}
+
+/// Outcome of `resolve`. The error variants carry enough context to
+/// produce a user diagnostic (NoMatch / Ambiguous / Cyclic).
+#[derive(Clone, Debug)]
+pub enum ResolutionResult {
+    Resolved(ResolvedTree),
+    /// No candidate's head unifies with the goal.
+    NoMatch { goal_text: String, hint: String },
+    /// Multiple candidates match and specificity coherence couldn't
+    /// pick a unique winner. `candidate_impl_qns` lists the colliding
+    /// carriers for the diagnostic.
+    Ambiguous { goal_text: String, candidate_impl_qns: Vec<String> },
+    /// Detected a cycle in conditional-instance resolution. `path` is
+    /// the goal stack at the point the cycle was detected.
+    Cyclic { path: Vec<String> },
+}
+
+/// Public entry point — instance synthesis for `goal` in `scope`.
+/// Takes a mutable KB because conditional resolution allocates
+/// freshly-substituted subgoal terms (impl-param `Ref(EqList.A)`
+/// replaced by the matched per-call value) for the recursive
+/// resolution step.
+pub fn resolve(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    scope: &ResolutionScope,
+) -> ResolutionResult {
+    let mut stack: Vec<SortGoal> = Vec::new();
+    resolve_inner(kb, goal, scope, &mut stack)
+}
+
+fn resolve_inner(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    scope: &ResolutionScope,
+    stack: &mut Vec<SortGoal>,
+) -> ResolutionResult {
+    for (i, ar) in scope.available_requires.iter().enumerate() {
+        if ar.required_sort != goal.spec_sort {
+            continue;
+        }
+        if requires_entry_covers_goal(kb, ar, goal) {
+            return ResolutionResult::Resolved(ResolvedTree::FromScope {
+                scope_index: i,
+                spec_sort: goal.spec_sort,
+            });
+        }
+    }
+
+    if stack.iter().any(|g| goals_equal(kb, g, goal)) {
+        let mut path: Vec<String> = stack.iter().map(|g| format_goal(kb, g)).collect();
+        path.push(format_goal(kb, goal));
+        return ResolutionResult::Cyclic { path };
+    }
+    stack.push(goal.clone());
+
+    let (candidates, _saw_any) = collect_provides_candidates(kb, goal);
+
+    if candidates.is_empty() {
+        stack.pop();
+        return ResolutionResult::NoMatch {
+            goal_text: format_goal(kb, goal),
+            hint: format!(
+                "no impl provides {}; add `fact {0}[…]` or `requires {0}[…]` in scope",
+                kb.qualified_name_of(goal.spec_sort)
+            ),
+        };
+    }
+
+    let chosen = match pick_most_specific(kb, &candidates) {
+        Some(idx) => &candidates[idx],
+        None => {
+            stack.pop();
+            let candidate_impl_qns: Vec<String> = candidates
+                .iter()
+                .map(|c| kb.qualified_name_of(c.impl_sort).to_string())
+                .collect();
+            return ResolutionResult::Ambiguous {
+                goal_text: format_goal(kb, goal),
+                candidate_impl_qns,
+            };
+        }
+    };
+
+    // Save chosen's data before recursing: `resolve_inner` takes &mut kb
+    // (it allocates substituted subgoal terms) and `chosen` borrows
+    // `candidates` immutably; cloning out releases that borrow.
+    let chosen_impl_sort = chosen.impl_sort;
+    let chosen_bindings = chosen.resolved_head_bindings.clone();
+    let chosen_impl_subst = chosen.impl_subst.clone();
+    drop(candidates);
+
+    let sub_goals: Vec<SortGoal> = candidate_sub_goals_owned(
+        kb, chosen_impl_sort, &chosen_impl_subst,
+    );
+    let mut sub_resolutions: Vec<ResolvedTree> = Vec::with_capacity(sub_goals.len());
+    for sg in &sub_goals {
+        match resolve_inner(kb, sg, scope, stack) {
+            ResolutionResult::Resolved(t) => sub_resolutions.push(t),
+            err => {
+                stack.pop();
+                return err;
+            }
+        }
+    }
+    stack.pop();
+
+    let tree = if sub_resolutions.is_empty() {
+        ResolvedTree::Leaf {
+            impl_sort: chosen_impl_sort,
+            spec_sort: goal.spec_sort,
+            bindings: chosen_bindings,
+        }
+    } else {
+        ResolvedTree::Conditional {
+            impl_sort: chosen_impl_sort,
+            spec_sort: goal.spec_sort,
+            bindings: chosen_bindings,
+            sub_resolutions,
+        }
+    };
+    ResolutionResult::Resolved(tree)
+}
+
+/// A SortProvidesInfo candidate matched against a goal. Carries the
+/// impl sort + the impl-side substitution (impl param → resolved
+/// value) used to instantiate the impl's `requires_chain` subgoals.
+struct Candidate {
+    /// The carrier sort symbol (e.g., `IntEq`, `EqList`).
+    impl_sort: Symbol,
+    /// Head bindings after impl-param substitution — used for the
+    /// resolved tree node's `bindings` slot.
+    resolved_head_bindings: SmallVec<[(Symbol, TermId); 2]>,
+    /// Impl-side substitution: maps the impl sort's type-param symbols
+    /// to the values they got from matching the goal. Used to
+    /// instantiate the impl's `requires_chain` subgoals.
+    impl_subst: SmallVec<[(Symbol, TermId); 2]>,
+    /// True iff the candidate's head is fully-ground (no impl-params
+    /// referenced) — i.e., a strictly more-specific instance than a
+    /// candidate whose head still carries impl-params. Used by
+    /// `pick_most_specific`.
+    head_specificity: u32,
+}
+
+/// Walk `SortProvidesInfo` facts, return those whose head pattern
+/// unifies with `goal.bindings`. Also reports whether *any* record
+/// existed for `goal.spec_sort` (regardless of binding match) — the
+/// caller uses this to distinguish "no impls registered for this spec
+/// at all" from "candidates exist but none match" without re-walking
+/// the index.
+fn collect_provides_candidates(
+    kb: &KnowledgeBase,
+    goal: &SortGoal,
+) -> (Vec<Candidate>, bool) {
     let provides_sym = match kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") {
         Some(s) => s,
-        None => return DispatchOutcome::NoCandidates,
+        None => return (Vec::new(), false),
     };
-    let spec_qn = kb.qualified_name_of(spec_sort).to_string();
-    let op_short = kb.resolve_sym(op_short_sym).to_string();
-    // Hoisted out of the candidate loop — the spec op symbol doesn't
-    // depend on which `SortProvidesInfo` record we're examining.
-    let spec_op_sym = kb.try_resolve_symbol(&format!("{spec_qn}.{op_short}"));
-    let mut matches: Vec<Symbol> = Vec::new();
-    let mut saw_candidate_for_spec = false;
+    // Spec's type-param short names — hoisted out of the candidate
+    // loop so the inner binding-walk just does a string membership
+    // check instead of format!+resolve+sort-alias per binding.
+    let type_param_names: Vec<String> = kb.type_params_of_sort(goal.spec_sort);
 
+    let mut out: Vec<Candidate> = Vec::new();
+    let mut saw_any_for_spec = false;
     for rid in kb.by_functor(provides_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.rule_body(rid).is_empty() {
+            continue;
+        }
         let head = kb.rule_head(rid);
         let head_named = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args.clone(),
             _ => continue,
         };
-
         let sort_ref_tid = match get_named_arg(kb, &head_named, "sort_ref") {
             Some(t) => t,
             None => continue,
@@ -1355,100 +1552,635 @@ pub fn find_unique_impl_op(
             Some(t) => t,
             None => continue,
         };
-
-        // Unwrap SortView(base, …named) — or accept a bare functor for
-        // the no-bindings case (parallel to resolve_provides_spec).
-        let (view_base_sym, view_bindings): (Symbol, SmallVec<[(Symbol, TermId); 2]>) =
-            match kb.get_term(spec_view_tid) {
-                Term::Fn { functor, pos_args, named_args } => {
-                    let f_qn = kb.qualified_name_of(*functor);
-                    if f_qn == "anthill.reflect.SortView" || f_qn.ends_with(".SortView") {
-                        let base = match pos_args.first().copied() {
-                            Some(t) => t,
-                            None => continue,
-                        };
-                        let base_sym = match kb.get_term(base) {
-                            Term::Fn { functor, .. }
-                            | Term::Ref(functor)
-                            | Term::Ident(functor) => *functor,
-                            _ => continue,
-                        };
-                        (base_sym, named_args.clone())
-                    } else {
-                        (*functor, SmallVec::new())
-                    }
-                }
-                Term::Ref(s) | Term::Ident(s) => (*s, SmallVec::new()),
-                _ => continue,
-            };
-
-        if view_base_sym != spec_sort {
+        let impl_sort = match kb.get_term(sort_ref_tid) {
+            Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
+            _ => continue,
+        };
+        let Some((view_base_sym, view_bindings)) = unwrap_spec_view(kb, spec_view_tid) else {
+            continue;
+        };
+        if view_base_sym != goal.spec_sort {
             continue;
         }
-        saw_candidate_for_spec = true;
+        saw_any_for_spec = true;
 
-        // Match each candidate binding against the per-call subst at
-        // the spec parameter's logical Var.
+        let impl_param_set = impl_param_symbols(kb, impl_sort);
+        let mut impl_subst: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        let mut head_specificity: u32 = 0;
         let mut all_match = true;
-        for (binding_short_sym, candidate_value) in &view_bindings {
-            let binding_short = kb.resolve_sym(*binding_short_sym);
-            let param_qn = format!("{spec_qn}.{binding_short}");
-            let param_qn_sym = match kb.try_resolve_symbol(&param_qn) {
-                Some(s) => s,
-                None => { all_match = false; break; }
-            };
-            let alias_target = match resolve_sort_alias(kb, param_qn_sym) {
+        let mut resolved_head_bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        for (binding_short, candidate_value) in &view_bindings {
+            let short_name = kb.resolve_sym(*binding_short);
+            if !type_param_names.iter().any(|n| n == short_name) {
+                // Op-binding (auto-bound `eq`/`neq`/…) — doesn't drive
+                // dispatch.
+                continue;
+            }
+            let per_call_value = match goal_binding_value(kb, goal, *binding_short) {
                 Some(t) => t,
-                None => { all_match = false; break; }
+                None => {
+                    all_match = false;
+                    break;
+                }
             };
-            let vid = match kb.get_term(alias_target) {
-                Term::Var(Var::Global(v)) => *v,
-                _ => { all_match = false; break; }
-            };
-            let per_call_value = match subst.resolve_with_term(vid) {
-                Some(v) => v,
-                None => { all_match = false; break; }
-            };
-            let lesseq = dispatch_values_match(kb, per_call_value, *candidate_value);
-            if !lesseq {
+            if !match_candidate_against_goal(
+                kb,
+                *candidate_value,
+                per_call_value,
+                &impl_param_set,
+                &mut impl_subst,
+                &mut head_specificity,
+            ) {
                 all_match = false;
                 break;
             }
+            // Build resolved head bindings inline; consumers want the
+            // per-callsite ground value (not the candidate's free
+            // pattern).
+            resolved_head_bindings.push((*binding_short, per_call_value));
         }
-        if !all_match { continue; }
+        if !all_match {
+            continue;
+        }
+        out.push(Candidate {
+            impl_sort,
+            resolved_head_bindings,
+            impl_subst,
+            head_specificity,
+        });
+    }
+    (out, saw_any_for_spec)
+}
 
-        // Look up `<impl_qn>.<op_short>` to find the impl op symbol. For
-        // host-language bindings (proposal 038) the carrier sort typically
-        // doesn't declare an op of its own — the host runtime backs the
-        // spec op directly. Fall back to the spec op symbol so the
-        // candidate still counts as a match (Unique outcome) for dispatch
-        // purposes; codegen / the interpreter consult `Implementation`
-        // facts to find the actual host artifact.
-        let impl_sort_sym = match kb.get_term(sort_ref_tid) {
-            Term::Fn { functor, .. }
-            | Term::Ref(functor)
-            | Term::Ident(functor) => *functor,
+
+/// Unwrap a `SortView(base, …named)` term into `(base_sort_sym,
+/// named_bindings)`. Accepts a bare functor (no SortView wrap) as the
+/// no-bindings case. Returns `None` for shapes that don't fit either
+/// case (caller must filter).
+fn unwrap_spec_view(
+    kb: &KnowledgeBase,
+    spec_view_tid: TermId,
+) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
+    match kb.get_term(spec_view_tid) {
+        Term::Fn { functor, pos_args, named_args } => {
+            let f_qn = kb.qualified_name_of(*functor);
+            if f_qn == "anthill.reflect.SortView" || f_qn.ends_with(".SortView") {
+                let base_sym = pos_args.first().copied().and_then(|t| match kb.get_term(t) {
+                    Term::Fn { functor, .. }
+                    | Term::Ref(functor)
+                    | Term::Ident(functor) => Some(*functor),
+                    _ => None,
+                })?;
+                Some((base_sym, named_args.clone()))
+            } else {
+                Some((*functor, SmallVec::new()))
+            }
+        }
+        Term::Ref(s) | Term::Ident(s) => Some((*s, SmallVec::new())),
+        _ => None,
+    }
+}
+
+/// Look up `goal.bindings[short]` (the per-call value for the spec's
+/// short parameter name). Compared by **resolved short name** rather
+/// than symbol-identity: the candidate's binding_short and the goal's
+/// stored key may have been interned through different paths (the
+/// candidate-side loader vs. the goal-construction call below) — but
+/// they always render to the same short name (e.g. "T").
+fn goal_binding_value(kb: &KnowledgeBase, goal: &SortGoal, short: Symbol) -> Option<TermId> {
+    if let Some(v) = goal.bindings.iter().find(|(k, _)| *k == short).map(|(_, v)| *v) {
+        return Some(v);
+    }
+    let name = kb.resolve_sym(short);
+    goal.bindings
+        .iter()
+        .find(|(k, _)| kb.resolve_sym(*k) == name)
+        .map(|(_, v)| *v)
+}
+
+/// Type-param short-name symbols declared on an impl sort. Used to
+/// distinguish impl-param `Ref(EqList.A)` from concrete refs (e.g.,
+/// `Ref(Int)`) when matching the candidate's head.
+fn impl_param_symbols(kb: &KnowledgeBase, impl_sort: Symbol) -> SmallVec<[Symbol; 2]> {
+    let mut out: SmallVec<[Symbol; 2]> = SmallVec::new();
+    let impl_qn = kb.qualified_name_of(impl_sort).to_string();
+    for short in kb.type_params_of_sort(impl_sort) {
+        let qn = format!("{impl_qn}.{short}");
+        if let Some(s) = kb.try_resolve_symbol(&qn) {
+            out.push(s);
+        }
+    }
+    out
+}
+
+/// Match a candidate-side value (potentially containing impl-param
+/// `Ref`s) against a per-call value. Captures impl-subst bindings on
+/// the way; returns false on shape mismatch. Recursive on parametric
+/// values so `List[T = A]` properly binds `A` to the per-call's `T`.
+fn match_candidate_against_goal(
+    kb: &KnowledgeBase,
+    candidate_value: TermId,
+    per_call_value: TermId,
+    impl_params: &[Symbol],
+    impl_subst: &mut SmallVec<[(Symbol, TermId); 2]>,
+    specificity: &mut u32,
+) -> bool {
+    // (1) Candidate side is an impl-param ref → bind it (or check
+    // consistency with an earlier binding).
+    if let Some(p) = impl_param_ref(kb, candidate_value, impl_params) {
+        if let Some((_, prev)) = impl_subst.iter().find(|(k, _)| *k == p) {
+            return values_structurally_equal(kb, *prev, per_call_value);
+        }
+        impl_subst.push((p, per_call_value));
+        // An impl-param ref contributes no specificity weight.
+        return true;
+    }
+    // (2) Candidate side is a parametric Fn — recurse into its bindings.
+    if let Some((c_base, c_bindings)) = parametric_value_parts(kb, candidate_value) {
+        // Per-call side must also be parametric with the same base.
+        let (p_base, p_bindings) = match parametric_value_parts(kb, per_call_value) {
+            Some(parts) => parts,
+            None => {
+                // A type-param wildcard on the per-call side can match
+                // a structured candidate — accept (the WI-218 path
+                // already treats this case as `Deferred`).
+                if is_type_param_value(kb, per_call_value) {
+                    return true;
+                }
+                return false;
+            }
+        };
+        if c_base != p_base {
+            return false;
+        }
+        *specificity = specificity.saturating_add(1);
+        // Each candidate binding must find a matching per-call binding.
+        for (k, c_val) in &c_bindings {
+            let p_val = match p_bindings.iter().find(|(kk, _)| kk == k).map(|(_, v)| *v) {
+                Some(v) => v,
+                None => return false,
+            };
+            if !match_candidate_against_goal(
+                kb,
+                *c_val,
+                p_val,
+                impl_params,
+                impl_subst,
+                specificity,
+            ) {
+                return false;
+            }
+        }
+        return true;
+    }
+    // (3) Concrete sort ref/identifier — use the existing shallow check.
+    if dispatch_values_match(kb, per_call_value, candidate_value) {
+        *specificity = specificity.saturating_add(1);
+        return true;
+    }
+    false
+}
+
+/// If `value` is `Ref(sym)` / `Ident(sym)` where `sym` is one of
+/// `impl_params`, return `Some(sym)`. None otherwise.
+fn impl_param_ref(kb: &KnowledgeBase, value: TermId, impl_params: &[Symbol]) -> Option<Symbol> {
+    let sym = match kb.get_term(value) {
+        Term::Ref(s) | Term::Ident(s) => *s,
+        _ => return None,
+    };
+    if impl_params.contains(&sym) {
+        Some(sym)
+    } else {
+        None
+    }
+}
+
+/// Decompose a parametric value `Functor(named: [(k, v), ...])` into
+/// `(functor, named_args)`. Returns `None` for non-parametric shapes
+/// (bare refs, sort_ref wraps, literals).
+fn parametric_value_parts(
+    kb: &KnowledgeBase,
+    value: TermId,
+) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
+    match kb.get_term(value) {
+        Term::Fn { functor, named_args, pos_args } => {
+            // sort_ref(name: ...) wraps a concrete sort ref; not
+            // parametric for our purpose.
+            let f_qn = kb.qualified_name_of(*functor);
+            if f_qn == "sort_ref" || f_qn.ends_with(".sort_ref") {
+                return None;
+            }
+            // SortView is the candidate-side parametric encoding —
+            // unwrap into (base, bindings).
+            if f_qn == "anthill.reflect.SortView" || f_qn.ends_with(".SortView") {
+                let base = pos_args
+                    .first()
+                    .copied()
+                    .and_then(|t| match kb.get_term(t) {
+                        Term::Fn { functor, .. }
+                        | Term::Ref(functor)
+                        | Term::Ident(functor) => Some(*functor),
+                        _ => None,
+                    });
+                return base.map(|b| (b, named_args.clone()));
+            }
+            // parameterized(base, bindings = [Binding(P, V), ...]) is
+            // the typer-side encoding. Translate into (base, [(P, V)]).
+            if f_qn == "parameterized" {
+                let base = get_named_arg(kb, named_args, "base")
+                    .and_then(|t| match kb.get_term(t) {
+                        Term::Fn { functor, .. }
+                        | Term::Ref(functor)
+                        | Term::Ident(functor) => Some(*functor),
+                        _ => None,
+                    });
+                let bindings_tid = get_named_arg(kb, named_args, "bindings");
+                let mut out: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                if let Some(bt) = bindings_tid {
+                    for binding in list_to_vec(kb, bt) {
+                        if let (Some(p), Some(v)) =
+                            (binding_param_sym(kb, binding), binding_value(kb, binding))
+                        {
+                            out.push((p, v));
+                        }
+                    }
+                }
+                return base.map(|b| (b, out));
+            }
+            // Generic Fn — non-empty named_args means parametric.
+            if !named_args.is_empty() {
+                Some((*functor, named_args.clone()))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Structural equality check on two term values — used when an impl
+/// param is encountered twice in the head and must bind consistently.
+fn values_structurally_equal(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
+    if a == b {
+        return true;
+    }
+    // Hash-consing collapses identical structures into one TermId, so
+    // distinct ids generally indicate a shape difference. Still, walk
+    // sort_ref / parametric forms to catch the shallow encoding noise.
+    let a_sym = sort_sym_of_term(kb, a);
+    let b_sym = sort_sym_of_term(kb, b);
+    match (a_sym, b_sym) {
+        (Some(x), Some(y)) if x == y => {
+            // Check nested bindings if parametric.
+            match (parametric_value_parts(kb, a), parametric_value_parts(kb, b)) {
+                (Some((_, ab)), Some((_, bb))) => {
+                    if ab.len() != bb.len() {
+                        return false;
+                    }
+                    ab.iter().all(|(k, av)| {
+                        bb.iter()
+                            .find(|(kk, _)| kk == k)
+                            .map_or(false, |(_, bv)| values_structurally_equal(kb, *av, *bv))
+                    })
+                }
+                _ => true,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Coherence-by-specificity. Picks the candidate with the strictly-
+/// highest `head_specificity` count. Returns `None` if no unique
+/// winner (multiple candidates tied at the max).
+fn pick_most_specific(_kb: &KnowledgeBase, candidates: &[Candidate]) -> Option<usize> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let max = candidates.iter().map(|c| c.head_specificity).max().unwrap();
+    let mut winners = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.head_specificity == max);
+    let first = winners.next()?;
+    if winners.next().is_some() {
+        return None;
+    }
+    Some(first.0)
+}
+
+/// Build subgoals for a chosen conditional candidate by substituting
+/// the impl-side substitution into the impl sort's `requires_chain`.
+/// Filters out op-bindings (which the loader stores alongside type-
+/// param bindings on a `SortView` — see `find_requires_slot`'s same
+/// distinction) — only type-param bindings drive resolution.
+fn candidate_sub_goals_owned(
+    kb: &mut KnowledgeBase,
+    impl_sort: Symbol,
+    impl_subst: &[(Symbol, TermId)],
+) -> Vec<SortGoal> {
+    let chain = requires_chain(kb, impl_sort);
+    let mut out: Vec<SortGoal> = Vec::with_capacity(chain.len());
+    for entry in &chain {
+        let required_sort = entry.required_sort;
+        let Some((_, entry_bindings)) = unwrap_spec_view(kb, entry.spec) else {
+            continue;
+        };
+        let spec_qn = kb.qualified_name_of(required_sort).to_string();
+        let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        for (k, v) in &entry_bindings {
+            // Op-bindings (auto-bound `eq`, `neq`, …) don't constrain
+            // resolution — skip.
+            if !is_type_param_binding(kb, *k, &spec_qn) {
+                continue;
+            }
+            let substituted = substitute_impl_params_alloc(kb, *v, impl_subst);
+            bindings.push((*k, substituted));
+        }
+        out.push(SortGoal {
+            spec_sort: required_sort,
+            bindings,
+        });
+    }
+    out
+}
+
+/// True iff `short` names a type-parameter (vs an op) of the spec at
+/// `spec_qn`. Determined by checking whether `<spec_qn>.<short>`
+/// resolves to a SortAlias-bearing symbol — only spec params do.
+fn is_type_param_binding(kb: &KnowledgeBase, short: Symbol, spec_qn: &str) -> bool {
+    let short_name = kb.resolve_sym(short).to_string();
+    let qn = format!("{spec_qn}.{short_name}");
+    let Some(s) = kb.try_resolve_symbol(&qn) else {
+        return false;
+    };
+    resolve_sort_alias(kb, s).is_some()
+}
+
+/// Replace every `Ref(p)` / `Ident(p)` / nullary `Fn(p, [], [])` in
+/// `term` where `p` is in `impl_subst` with its bound value. The
+/// nullary-Fn shape is what `convert_term` produces for a bare name
+/// like `A` inside a `requires Eq[T = A]` clause — it's structurally
+/// the same as `Ref(A)` for resolution purposes. Allocates new Fn
+/// terms when children need substitution; returns the original TermId
+/// otherwise.
+fn substitute_impl_params_alloc(
+    kb: &mut KnowledgeBase,
+    term: TermId,
+    impl_subst: &[(Symbol, TermId)],
+) -> TermId {
+    match kb.get_term(term).clone() {
+        Term::Ref(s) | Term::Ident(s) => {
+            if let Some((_, v)) = impl_subst.iter().find(|(k, _)| *k == s) {
+                *v
+            } else {
+                term
+            }
+        }
+        Term::Fn { functor, pos_args, named_args }
+            if pos_args.is_empty() && named_args.is_empty() =>
+        {
+            // Nullary Fn — treat as a name reference.
+            if let Some((_, v)) = impl_subst.iter().find(|(k, _)| *k == functor) {
+                return *v;
+            }
+            term
+        }
+        Term::Fn { functor, pos_args, named_args } => {
+            let mut changed = false;
+            let new_pos: SmallVec<[TermId; 4]> = pos_args.iter().map(|t| {
+                let nt = substitute_impl_params_alloc(kb, *t, impl_subst);
+                if nt != *t { changed = true; }
+                nt
+            }).collect();
+            let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args.iter().map(|(k, t)| {
+                let nt = substitute_impl_params_alloc(kb, *t, impl_subst);
+                if nt != *t { changed = true; }
+                (*k, nt)
+            }).collect();
+            if !changed { return term; }
+            kb.alloc(Term::Fn {
+                functor,
+                pos_args: new_pos,
+                named_args: new_named,
+            })
+        }
+        _ => term,
+    }
+}
+
+/// True iff `entry`'s bindings cover `goal`. Used at the
+/// `available_requires` lookup step (step 1 of `resolve`).
+/// Filters out op-bindings (auto-bound `eq`, `neq`, …) — only type-
+/// param bindings constrain matching.
+fn requires_entry_covers_goal(
+    kb: &KnowledgeBase,
+    entry: &RequiresEntry,
+    goal: &SortGoal,
+) -> bool {
+    let Some((_, entry_bindings)) = unwrap_spec_view(kb, entry.spec) else {
+        return false;
+    };
+    if entry_bindings.is_empty() {
+        return true;
+    }
+    let spec_qn = kb.qualified_name_of(goal.spec_sort).to_string();
+    for (k, e_val) in &entry_bindings {
+        if !is_type_param_binding(kb, *k, &spec_qn) {
+            continue;
+        }
+        let g_val = match goal_binding_value(kb, goal, *k) {
+            Some(v) => v,
+            None => return false,
+        };
+        if is_type_param_value(kb, *e_val) || is_type_param_value(kb, g_val) {
+            continue;
+        }
+        if !dispatch_values_match(kb, g_val, *e_val)
+            && !dispatch_values_match(kb, *e_val, g_val)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Structural equality between two goals for cycle detection.
+/// Binding keys compared by resolved short name (see `goal_binding_value`).
+fn goals_equal(kb: &KnowledgeBase, a: &SortGoal, b: &SortGoal) -> bool {
+    if a.spec_sort != b.spec_sort {
+        return false;
+    }
+    if a.bindings.len() != b.bindings.len() {
+        return false;
+    }
+    a.bindings.iter().all(|(k, av)| {
+        let kn = kb.resolve_sym(*k);
+        b.bindings
+            .iter()
+            .find(|(kk, _)| kk == k || kb.resolve_sym(*kk) == kn)
+            .map_or(false, |(_, bv)| values_structurally_equal(kb, *av, *bv))
+    })
+}
+
+/// Human-readable goal text for diagnostics ("Eq[T = Int]").
+fn format_goal(kb: &KnowledgeBase, goal: &SortGoal) -> String {
+    let mut out = kb.qualified_name_of(goal.spec_sort).to_string();
+    if !goal.bindings.is_empty() {
+        out.push('[');
+        let mut first = true;
+        for (k, v) in &goal.bindings {
+            if !first {
+                out.push_str(", ");
+            }
+            first = false;
+            out.push_str(kb.resolve_sym(*k));
+            out.push_str(" = ");
+            out.push_str(&format_term_for_goal(kb, *v));
+        }
+        out.push(']');
+    }
+    out
+}
+
+/// Render a binding value compactly. Sort symbols → short name;
+/// parametric forms → `Base[K = V]`.
+fn format_term_for_goal(kb: &KnowledgeBase, t: TermId) -> String {
+    if let Some(sym) = extract_sort_ref_sym(kb, t) {
+        return kb.qualified_name_of(sym).to_string();
+    }
+    match kb.get_term(t) {
+        Term::Ref(s) | Term::Ident(s) => kb.qualified_name_of(*s).to_string(),
+        Term::Fn { functor, pos_args, named_args } => {
+            let base = kb.qualified_name_of(*functor).to_string();
+            if pos_args.is_empty() && named_args.is_empty() {
+                base
+            } else {
+                let mut s = base;
+                s.push('[');
+                let mut first = true;
+                for (k, v) in named_args.iter() {
+                    if !first { s.push_str(", "); }
+                    first = false;
+                    s.push_str(kb.resolve_sym(*k));
+                    s.push_str(" = ");
+                    s.push_str(&format_term_for_goal(kb, *v));
+                }
+                s.push(']');
+                s
+            }
+        }
+        Term::Const(Literal::Int(i)) => i.to_string(),
+        _ => format!("<term#{}>", t.raw()),
+    }
+}
+
+/// Build a `SortGoal` from a per-call substitution at a spec sort,
+/// reading each declared spec param via its SortAlias-to-Var. Used by
+/// `find_unique_impl_op` (compat wrapper) and by external callers
+/// constructing a goal from typer state.
+pub fn sort_goal_from_subst(
+    kb: &KnowledgeBase,
+    subst: &Substitution,
+    spec_sort: Symbol,
+) -> SortGoal {
+    let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+    let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    for short in kb.type_params_of_sort(spec_sort) {
+        let short_sym = match kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) {
+            Some(s) => s,
+            None => continue,
+        };
+        let alias_target = match resolve_sort_alias(kb, short_sym) {
+            Some(t) => t,
+            None => continue,
+        };
+        let vid = match kb.get_term(alias_target) {
+            Term::Var(Var::Global(v)) => *v,
             _ => continue,
         };
-        let impl_qn = kb.qualified_name_of(impl_sort_sym).to_string();
-        let resolved_impl = kb.try_resolve_symbol(&format!("{impl_qn}.{op_short}"));
-        if let Some(s) = resolved_impl.or(spec_op_sym) {
-            matches.push(s);
+        if let Some(val) = subst.resolve_with_term(vid) {
+            let short_intern = kb.try_resolve_symbol(&short).unwrap_or_else(|| {
+                // Spec param's *short* name (e.g. "T") may not be registered
+                // as a top-level symbol; fall back to its qualified form.
+                short_sym
+            });
+            bindings.push((short_intern, val));
         }
     }
-
-    if !saw_candidate_for_spec {
-        // No SortProvidesInfo records exist for this spec — dispatch
-        // is opt-in per spec, so this is not an error. The call
-        // type-checks against the spec's signature alone. Stdlib
-        // specs (Numeric, Map, …) rely on this.
-        return DispatchOutcome::NoCandidates;
+    SortGoal {
+        spec_sort,
+        bindings,
     }
-    // Coherence rule (C): exactly one match wins.
-    match matches.len() {
-        0 => DispatchOutcome::NoMatch,
-        1 => DispatchOutcome::Unique(matches.into_iter().next().unwrap()),
-        _ => DispatchOutcome::Ambiguous,
+}
+
+/// WI-210/WI-224 — find the unique impl operation symbol for a spec-op
+/// call. Delegates to `resolve` (the SLD machinery) and translates the
+/// `ResolutionResult` into the flat `DispatchOutcome` the typer
+/// consumes.
+///
+/// `enclosing_requires` (WI-221): when non-empty, the function first
+/// checks whether the call should be deferred (open-bound trigger — the
+/// spec sort is reached via the caller's `requires` chain). If so,
+/// returns `DispatchOutcome::Deferred` without consulting candidates.
+///
+/// Takes `&mut KnowledgeBase` because `resolve` may allocate freshly
+/// substituted subgoal terms for conditional resolution. All extant
+/// callers already have `&mut kb` in scope (typer's `check_apply` is
+/// `&mut kb`; tests pass `&mut kb` after this change).
+pub fn find_unique_impl_op(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    op_short_sym: Symbol,
+    enclosing_requires: &[RequiresEntry],
+) -> DispatchOutcome {
+    if !enclosing_requires.is_empty()
+        && find_requires_slot(kb, subst, spec_sort, enclosing_requires).is_some()
+    {
+        return DispatchOutcome::Deferred;
+    }
+
+    let goal = sort_goal_from_subst(kb, subst, spec_sort);
+    let scope = ResolutionScope { available_requires: enclosing_requires };
+
+    // Peek the candidate set so we can preserve the WI-210 legacy
+    // semantics: a spec with no `SortProvidesInfo` records at all
+    // type-checks without dispatch (`NoCandidates`); a spec with
+    // records but no binding match is an error (`NoMatch`). `resolve`
+    // collapses both into its NoMatch variant.
+    let (candidates, saw_any) = collect_provides_candidates(kb, &goal);
+    if candidates.is_empty() {
+        for ar in scope.available_requires {
+            if ar.required_sort == goal.spec_sort && requires_entry_covers_goal(kb, ar, &goal) {
+                return DispatchOutcome::Deferred;
+            }
+        }
+        return if saw_any { DispatchOutcome::NoMatch } else { DispatchOutcome::NoCandidates };
+    }
+    drop(candidates);
+
+    let mut stack: Vec<SortGoal> = Vec::new();
+    match resolve_inner(kb, &goal, &scope, &mut stack) {
+        ResolutionResult::Resolved(tree) => match tree {
+            ResolvedTree::Leaf { impl_sort, .. }
+            | ResolvedTree::Conditional { impl_sort, .. } => {
+                let op_short = kb.resolve_sym(op_short_sym).to_string();
+                let impl_qn = kb.qualified_name_of(impl_sort).to_string();
+                let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+                let resolved = kb
+                    .try_resolve_symbol(&format!("{impl_qn}.{op_short}"))
+                    .or_else(|| kb.try_resolve_symbol(&format!("{spec_qn}.{op_short}")));
+                match resolved {
+                    Some(s) => DispatchOutcome::Unique(s),
+                    None => DispatchOutcome::NoMatch,
+                }
+            }
+            ResolvedTree::FromScope { .. } => DispatchOutcome::Deferred,
+        },
+        ResolutionResult::NoMatch { .. } => DispatchOutcome::NoMatch,
+        ResolutionResult::Ambiguous { .. } => DispatchOutcome::Ambiguous,
+        ResolutionResult::Cyclic { .. } => DispatchOutcome::NoMatch,
     }
 }
 

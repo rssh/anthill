@@ -524,12 +524,15 @@ impl<'a> Converter<'a> {
                 let type_node = self.field(child, "type");
                 match (param_node, type_node) {
                     (Some(p), Some(t)) => {
-                        // Explicit: Eq[T = Int] — convert the type to a Ref term
+                        // Explicit: Eq[T = Int] — convert the type to a term.
+                        // WI-224 fix: when t is `parameterized_type`, preserve
+                        // its inner bindings as a Term::Fn (so conditional-
+                        // resolution can read them); only `simple_type` /
+                        // bare names collapse to `Term::Ref(Name)`.
                         let param_name = self.convert_name(p);
                         let param_sym = self.intern_name(&param_name);
-                        let type_name = self.convert_type_to_name(t);
-                        let type_sym = self.intern_name(&type_name);
-                        named_args.push((param_sym, self.terms.alloc(Term::Ref(type_sym))));
+                        let value_tid = self.convert_type_value(t);
+                        named_args.push((param_sym, value_tid));
                     }
                     (Some(p), None) => {
                         // Positional: List[Int] — value binds to next param in order
@@ -543,6 +546,11 @@ impl<'a> Converter<'a> {
                         // become `Term::Ref(Name)`; variable forms and
                         // tuple/arrow types fall through to convert_term
                         // (which handles them correctly).
+                        // (Preserve the legacy flatten behavior here;
+                        // only the (Some, Some) path got upgraded for
+                        // WI-224 conditional-resolution support, since
+                        // that's where the regressions on positional
+                        // type values would otherwise appear.)
                         let tid = match t.kind() {
                             "simple_type" | "parameterized_type" => {
                                 let name = self.convert_type_to_name(t);
@@ -559,6 +567,71 @@ impl<'a> Converter<'a> {
         }
 
         self.terms.alloc(Term::Fn { functor, pos_args, named_args })
+    }
+
+    /// WI-224 helper — convert a `_type` CST node into a Term value
+    /// suitable for use as a fact-binding value. Preserves parametric
+    /// inner shapes (`List[T = Int]` → `Fn(List, [(T, Int)])`) instead
+    /// of flattening to bare `Ref(List)`. Bare names and variables
+    /// still collapse to `Term::Ref` / `Term::Var`. Other term shapes
+    /// (function calls in binding-value position, etc.) fall back to
+    /// the legacy flatten-to-name behavior to preserve compatibility
+    /// with existing programs that use such shapes.
+    fn convert_type_value(&mut self, node: Node) -> TermId {
+        match node.kind() {
+            "simple_type" => {
+                let name = self.convert_type_to_name(node);
+                let sym = self.intern_name(&name);
+                self.terms.alloc(Term::Ref(sym))
+            }
+            "parameterized_type" => {
+                let name_node = self.child_by_kind(node, "name").unwrap_or(node);
+                let name = self.convert_name(name_node);
+                let functor = self.intern_name(&name);
+                let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
+                let mut named_args: SmallVec<[(crate::intern::Symbol, TermId); 2]> =
+                    SmallVec::new();
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    if child.kind() == "sort_binding" {
+                        let param_node = self.field(child, "param");
+                        let type_node = self.field(child, "type");
+                        match (param_node, type_node) {
+                            (Some(p), Some(t)) => {
+                                let param_name = self.convert_name(p);
+                                let param_sym = self.intern_name(&param_name);
+                                let value_tid = self.convert_type_value(t);
+                                named_args.push((param_sym, value_tid));
+                            }
+                            (Some(p), None) => {
+                                let name = self.convert_name(p);
+                                let sym = self.intern_name(&name);
+                                pos_args.push(self.terms.alloc(Term::Ref(sym)));
+                            }
+                            (None, Some(t)) => {
+                                pos_args.push(self.convert_type_value(t));
+                            }
+                            (None, None) => {}
+                        }
+                    }
+                }
+                self.terms.alloc(Term::Fn { functor, pos_args, named_args })
+            }
+            // Variables (`?` / `?x`) — preserve as Var terms (the
+            // legacy `convert_term` path). Resolution treats these as
+            // wildcards, not as named refs.
+            "variable_term" | "variable" => self.convert_term(node),
+            // For other non-type term shapes (function calls, tuples,
+            // arrows) appearing in binding-value position, preserve
+            // the legacy behavior: collapse to `Ref(Name)`. The
+            // post-WI-224 SLD resolver doesn't need to introspect
+            // these shapes.
+            _ => {
+                let name = self.convert_type_to_name(node);
+                let sym = self.intern_name(&name);
+                self.terms.alloc(Term::Ref(sym))
+            }
+        }
     }
 
     /// Extract a Name from a type CST node (simple_type or parameterized_type).

@@ -128,14 +128,14 @@ fn dispatch_defers_when_call_reaches_spec_via_requires() {
 
     // Sanity check: with no enclosing sort, the existing Pin-now path
     // resolves Eq[T=Int] to a Unique impl (Int's `fact Eq[T = Int]`).
-    let pin_now = find_unique_impl_op(&kb, &subst, spec_sort, op_short, &[]);
+    let pin_now = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
     assert!(matches!(pin_now, DispatchOutcome::Unique(_)),
         "without enclosing sort, expected Unique (Pin-now); got {pin_now:?}");
 
     // WI-221 patch: with Wi221Box as enclosing sort (whose `requires`
     // chain covers Eq[T=Int]), dispatch must defer.
     let chain = requires_chain(&kb, enclosing);
-    let deferred = find_unique_impl_op(&kb, &subst, spec_sort, op_short, &chain);
+    let deferred = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &chain);
     assert_eq!(deferred, DispatchOutcome::Deferred,
         "WI-221: expected Deferred when call reaches Eq.eq via Wi221Box's \
          `requires Eq[T = Int]` clause; got {deferred:?}");
@@ -172,7 +172,7 @@ fn dispatch_pins_when_enclosing_sort_does_not_require_spec() {
         .expect("Wi221Plain registered");
     let chain = requires_chain(&kb, enclosing);
 
-    let outcome = find_unique_impl_op(&kb, &subst, spec_sort, op_short, &chain);
+    let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &chain);
     assert!(matches!(outcome, DispatchOutcome::Unique(_)),
         "WI-221: enclosing sort without `requires Eq[T=Int]` must not \
          defer — Pin-now still applies. Got {outcome:?}");
@@ -212,7 +212,7 @@ fn dispatch_defers_when_requires_uses_open_param() {
         .expect("Wi221Generic registered");
     let chain = requires_chain(&kb, enclosing);
 
-    let outcome = find_unique_impl_op(&kb, &subst, spec_sort, op_short, &chain);
+    let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &chain);
     assert_eq!(outcome, DispatchOutcome::Deferred,
         "WI-221: `requires Eq[T]` (with T as the sort's open param) must \
          defer for any per-call ground binding — the impl varies per \

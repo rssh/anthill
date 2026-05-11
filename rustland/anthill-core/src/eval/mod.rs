@@ -414,15 +414,60 @@ impl Interpreter {
         for (i, (pname, _)) in params.iter().enumerate() {
             locals.push((*pname, args[i].clone()));
         }
+        // Entry-point requirement seeding: if `sym`'s parent sort
+        // declares any `requires`, the WI-222 requirement-insertion
+        // pass will have rewritten internal calls inside the body to
+        // read `requirement_at_current(i)` against the body's frame
+        // requirements. For an externally-driven entry call (e.g.
+        // `anthill run … --` invoking a sort's `main`), the caller
+        // has no requirement values to pass — but the body still
+        // expects the slots to exist. Seed self-referential requirement
+        // values whose functor = parent sort. Same-sort recursion
+        // resolves <parent_sort>.<op> to the impl op correctly; mutual-
+        // sort dispatch is undefined for this no-context entry (and
+        // would need a richer entry API to express which impls back
+        // the parent's `requires`).
+        let requirements = self.seed_entry_requirements(sym);
         self.step_count = 0;
         self.stack.push(Frame {
             op: sym,
             expr: body_term,
             locals,
-            requirements: smallvec::SmallVec::new(),
+            requirements,
             awaiting: None,
         })?;
         self.run()
+    }
+
+    /// Build the initial `frame.requirements` for an entry-point call
+    /// to `op_sym`. Walks the parent sort's `requires_chain` and
+    /// allocates one `Requirement{functor: parent_sort, requirements:
+    /// []}` per slot — a self-referential placeholder sufficient for
+    /// same-sort recursion. Returns empty if the op's parent has no
+    /// `requires` (the common case).
+    fn seed_entry_requirements(
+        &self,
+        op_sym: Symbol,
+    ) -> smallvec::SmallVec<[value::RequirementHandle; 2]> {
+        let op_qn = self.kb.qualified_name_of(op_sym);
+        let Some((parent_qn, _)) = op_qn.rsplit_once('.') else {
+            return smallvec::SmallVec::new();
+        };
+        let Some(parent_sym) = self.kb.try_resolve_symbol(parent_qn) else {
+            return smallvec::SmallVec::new();
+        };
+        let chain = crate::kb::typing::requires_chain(&self.kb, parent_sym);
+        let mut out: smallvec::SmallVec<[value::RequirementHandle; 2]> =
+            smallvec::SmallVec::new();
+        for _ in &chain {
+            // Self-referential: functor = parent sort, no bundled deps.
+            // Adequate for same-sort recursion (the dominant case for
+            // CLI entry-point bodies); cross-sort dispatch through the
+            // requirement would need a richer entry API.
+            let h = self.requirements.alloc(parent_sym, smallvec::SmallVec::new());
+            out.push(h);
+        }
+        out
     }
 
     /// Override the activation-stack depth cap. Kept as a convenience wrapper
