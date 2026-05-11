@@ -755,7 +755,10 @@ fn check_apply(
             let op_short = op_qn.rsplit_once('.').map(|(_, s)| s).unwrap_or(&op_qn);
             let op_short_sym = kb.intern(op_short);
             let enclosing_requires = env.enclosing_requires().unwrap_or(&[]);
-            match find_unique_impl_op(kb, &subst, spec_sort, op_short_sym, enclosing_requires) {
+            let (outcome, resolved_tree) = dispatch_spec_op_with_tree(
+                kb, &subst, spec_sort, op_short_sym, enclosing_requires,
+            );
+            match outcome {
                 DispatchOutcome::NoCandidates => {}
                 DispatchOutcome::Unique(impl_op_sym) => {
                     // WI-218: rewrite the apply's `fn` from spec op to
@@ -764,15 +767,20 @@ fn check_apply(
                     // `requires`, the impl body needs a populated
                     // `frame.requirements` — emit `apply_within(fn =
                     // Ref(impl), …)` with projected requirements
-                    // instead of plain apply. For stdlib (host
-                    // bindings, no requires) the original WI-218 path
-                    // remains.
+                    // instead of plain apply. WI-228: the projection
+                    // list is built from `resolved_tree`'s
+                    // sub_resolutions so conditional impls produce
+                    // nested `construct_requirement` IR.
                     if impl_op_sym != fn_sym {
-                        if op_callee_needs_requirements(kb, impl_op_sym) {
+                        let impl_sort = impl_parent_of_op(kb, impl_op_sym);
+                        let needs_reqs = impl_sort
+                            .map(|s| !requires_chain(kb, s).is_empty())
+                            .unwrap_or(false);
+                        if needs_reqs {
                             record_apply_within_concrete(
                                 kb, apply_term, named_args, pos_args,
-                                impl_op_sym, spec_sort, fn_sym,
-                                enclosing_requires,
+                                impl_op_sym, impl_sort.unwrap(), fn_sym,
+                                enclosing_requires, resolved_tree.as_ref(),
                             );
                         } else {
                             record_apply_rewrite(kb, apply_term, named_args,
@@ -825,14 +833,12 @@ fn check_apply(
             // = Ref(fn_sym), …)` with projected requirements. Otherwise
             // leave the call as plain apply (the common case).
             let enclosing_requires = env.enclosing_requires().unwrap_or(&[]);
-            if op_callee_needs_requirements(kb, fn_sym) {
-                let parent_qn = kb.qualified_name_of(fn_sym).to_string();
-                let parent_qn = parent_qn.rsplit_once('.').map(|(p, _)| p).unwrap_or("");
-                if let Some(parent_sym) = kb.try_resolve_symbol(parent_qn) {
+            if let Some(parent_sym) = impl_parent_of_op(kb, fn_sym) {
+                if !requires_chain(kb, parent_sym).is_empty() {
                     record_apply_within_concrete(
                         kb, apply_term, named_args, pos_args,
                         fn_sym, parent_sym, fn_sym,
-                        enclosing_requires,
+                        enclosing_requires, None,
                     );
                 }
             }
@@ -893,16 +899,15 @@ fn record_apply_rewrite(
     kb.record_dispatch_rewrite(original_apply, rewritten_apply, spec_op_sym);
 }
 
-/// WI-222 Phase E (i): true iff `op_sym`'s parent sort declares any
-/// `requires` (transitively). Used to decide whether a call to `op_sym`
-/// must thread a requirements channel — Pin-now and Direct cases emit
-/// `apply_within` instead of plain `apply` when this returns true so
-/// the callee body can read `frame.requirements`.
-fn op_callee_needs_requirements(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
+/// Resolve `op_sym`'s parent sort by stripping the last qualified-name
+/// segment. The parent owns the op's `requires_chain` — the right
+/// `callee_spec_sort` to feed into `build_projected_requirements_list`
+/// (WI-228 fix: the previous Pin-now path passed the spec sort instead
+/// of the impl's parent, so projections walked an empty chain).
+fn impl_parent_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     let qn = kb.qualified_name_of(op_sym);
-    let Some((parent_qn, _)) = qn.rsplit_once('.') else { return false };
-    let Some(parent_sym) = kb.try_resolve_symbol(parent_qn) else { return false };
-    !requires_chain(kb, parent_sym).is_empty()
+    let (parent_qn, _) = qn.rsplit_once('.')?;
+    kb.try_resolve_symbol(parent_qn)
 }
 
 /// WI-227: interned stdlib symbols + field names needed to allocate
@@ -980,6 +985,34 @@ fn build_projected_requirements_list(
     }
     Some(super::load::build_cons_list(
         kb, &proj_terms, syms.nil, syms.cons, syms.head, syms.tail,
+    ))
+}
+
+/// WI-228: build the apply_within `requirements` list directly from a
+/// `ResolvedTree`'s sub_resolutions. Used by the Pin-now path where SLD
+/// resolution already produced the full impl-side tree — each
+/// sub_resolution becomes one entry in the requirements list, emitted
+/// via `emit_tree_as_projection` (so nested Conditionals turn into
+/// nested `construct_requirement`, and FromScope leaves turn into
+/// `requirement_at_current`).
+///
+/// `Leaf` and `FromScope` at the outer node carry no sub_resolutions
+/// — the impl has no requires, so the list is nil.
+fn build_projected_requirements_list_from_tree(
+    kb: &mut KnowledgeBase,
+    tree: &ResolvedTree,
+) -> Option<TermId> {
+    let syms = ProjectionSyms::resolve(kb)?;
+    let sub_resolutions: &[ResolvedTree] = match tree {
+        ResolvedTree::Conditional { sub_resolutions, .. } => sub_resolutions,
+        ResolvedTree::Leaf { .. } | ResolvedTree::FromScope { .. } => &[],
+    };
+    let mut sub_terms: SmallVec<[TermId; 4]> = SmallVec::new();
+    for sub in sub_resolutions {
+        sub_terms.push(emit_tree_as_projection(kb, sub, &syms)?);
+    }
+    Some(super::load::build_cons_list(
+        kb, &sub_terms, syms.nil, syms.cons, syms.head, syms.tail,
     ))
 }
 
@@ -1127,11 +1160,17 @@ fn goal_from_requires_entry(kb: &KnowledgeBase, entry: &RequiresEntry) -> Option
     })
 }
 
-/// WI-222 Phase E (i): rewrite a Pin-now or Direct apply to apply_within
-/// with a concrete fn (impl/op symbol) and a projected requirements
-/// channel. Used when the callee's parent sort has non-empty
-/// `requires_chain` so the callee body can read `frame.requirements`.
-/// Returns true iff the rewrite was recorded.
+/// WI-222 Phase E (i) / WI-228: rewrite a Pin-now or Direct apply to
+/// apply_within with a concrete fn (impl/op symbol) and a projected
+/// requirements channel. Used when the callee's parent sort has non-
+/// empty `requires_chain` so the callee body can read
+/// `frame.requirements`. Returns true iff the rewrite was recorded.
+///
+/// When `resolved_tree` is `Some`, the requirements list is built from
+/// the SLD-resolved sub_resolutions (WI-228 path) — conditional impls
+/// produce nested `construct_requirement` IR. When `None`, the
+/// per-dep search runs against the callee's `requires_chain`
+/// (Direct-call path; no SLD tree available).
 fn record_apply_within_concrete(
     kb: &mut KnowledgeBase,
     original_apply: TermId,
@@ -1141,6 +1180,7 @@ fn record_apply_within_concrete(
     callee_spec_sort: Symbol,
     spec_op_sym: Symbol,
     caller_requires: &[RequiresEntry],
+    resolved_tree: Option<&ResolvedTree>,
 ) -> bool {
     use smallvec::SmallVec;
 
@@ -1155,11 +1195,15 @@ fn record_apply_within_concrete(
         Some(t) => t,
         None => return false,
     };
-    let requirements_list = match build_projected_requirements_list(
-        kb, callee_spec_sort, caller_requires,
-    ) {
-        Some(t) => t,
-        None => return false,
+    let requirements_list = match resolved_tree {
+        Some(tree) => match build_projected_requirements_list_from_tree(kb, tree) {
+            Some(t) => t,
+            None => return false,
+        },
+        None => match build_projected_requirements_list(kb, callee_spec_sort, caller_requires) {
+            Some(t) => t,
+            None => return false,
+        },
     };
 
     let fn_ref = kb.alloc(Term::Ref(fn_target_sym));
@@ -1972,7 +2016,11 @@ fn parametric_value_parts(
             }
             // parameterized(base, bindings = [Binding(P, V), ...]) is
             // the typer-side encoding. Translate into (base, [(P, V)]).
-            if f_qn == "parameterized" {
+            // Match both the bare short name (from loader-side conversion)
+            // and the fully-qualified `anthill.prelude.Type.parameterized`
+            // (which is what the typer's reified arg-type unification
+            // produces).
+            if f_qn == "parameterized" || f_qn.ends_with(".parameterized") {
                 let base = get_named_arg(kb, named_args, "base")
                     .and_then(|t| match kb.get_term(t) {
                         Term::Fn { functor, .. }
@@ -2266,7 +2314,7 @@ fn format_term_for_goal(kb: &KnowledgeBase, t: TermId) -> String {
 /// `find_unique_impl_op` (compat wrapper) and by external callers
 /// constructing a goal from typer state.
 pub fn sort_goal_from_subst(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     subst: &Substitution,
     spec_sort: Symbol,
 ) -> SortGoal {
@@ -2291,7 +2339,8 @@ pub fn sort_goal_from_subst(
                 // as a top-level symbol; fall back to its qualified form.
                 short_sym
             });
-            bindings.push((short_intern, val));
+            let canonical = canonicalize_type_value(kb, val);
+            bindings.push((short_intern, canonical));
         }
     }
     SortGoal {
@@ -2300,20 +2349,56 @@ pub fn sort_goal_from_subst(
     }
 }
 
+/// WI-228: convert the typer's reified `Type.parameterized(base = sort_ref(name: X),
+/// bindings = [TypeBinding(param: P, value: V), ...])` representation
+/// into the canonical `Fn(X, [], [(P, V)*])` shape SLD matching expects.
+/// Recurses into binding values so nested parametric types canonicalize
+/// at every level.
+///
+/// Returns the input unchanged when (a) the term is not in
+/// `parameterized` shape (e.g. plain `Ref(Int)` or an already-canonical
+/// `Fn(List, [], [(T, Ref(Int))])`), or (b) it is parameterized but no
+/// child binding rewrote AND the functor already matches the unwrapped
+/// base — i.e. nothing needed translating. The change-detection
+/// short-circuit keeps the common case (already-canonical input)
+/// allocation-free.
+///
+/// Note: cannot reuse `parametric_value_parts` here because its
+/// `parameterized` arm extracts the base via the raw functor of the
+/// `base` field, which for the typer's encoding is the `sort_ref`
+/// functor rather than the underlying sort sym; this function unwraps
+/// `sort_ref(name: X)` to X explicitly.
+fn canonicalize_type_value(kb: &mut KnowledgeBase, ty: TermId) -> TermId {
+    use smallvec::SmallVec;
+    let term = kb.get_term(ty).clone();
+    let Term::Fn { functor, named_args, .. } = term else {
+        return ty;
+    };
+    let f_qn = kb.qualified_name_of(functor);
+    if !(f_qn == "parameterized" || f_qn.ends_with(".parameterized")) {
+        return ty;
+    }
+    let Some(base_tid) = get_named_arg(kb, &named_args, "base") else { return ty };
+    let Some(base_sym) = extract_sort_ref_sym(kb, base_tid) else { return ty };
+    let Some(bindings_tid) = get_named_arg(kb, &named_args, "bindings") else { return ty };
+    let mut canonical_named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    for binding in list_to_vec(kb, bindings_tid) {
+        let Some(param_sym) = binding_param_sym(kb, binding) else { continue };
+        let Some(value_tid) = binding_value(kb, binding) else { continue };
+        let canonical_value = canonicalize_type_value(kb, value_tid);
+        canonical_named.push((param_sym, canonical_value));
+    }
+    kb.alloc(Term::Fn {
+        functor: base_sym,
+        pos_args: SmallVec::new(),
+        named_args: canonical_named,
+    })
+}
+
 /// WI-210/WI-224 — find the unique impl operation symbol for a spec-op
-/// call. Delegates to `resolve` (the SLD machinery) and translates the
-/// `ResolutionResult` into the flat `DispatchOutcome` the typer
-/// consumes.
-///
-/// `enclosing_requires` (WI-221): when non-empty, the function first
-/// checks whether the call should be deferred (open-bound trigger — the
-/// spec sort is reached via the caller's `requires` chain). If so,
-/// returns `DispatchOutcome::Deferred` without consulting candidates.
-///
-/// Takes `&mut KnowledgeBase` because `resolve` may allocate freshly
-/// substituted subgoal terms for conditional resolution. All extant
-/// callers already have `&mut kb` in scope (typer's `check_apply` is
-/// `&mut kb`; tests pass `&mut kb` after this change).
+/// call. Thin wrapper over `dispatch_spec_op_with_tree` that drops the
+/// `ResolvedTree`. Callers that need the tree (WI-228: requirement
+/// projection for Pin-now) call `dispatch_spec_op_with_tree` directly.
 pub fn find_unique_impl_op(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -2321,10 +2406,33 @@ pub fn find_unique_impl_op(
     op_short_sym: Symbol,
     enclosing_requires: &[RequiresEntry],
 ) -> DispatchOutcome {
+    dispatch_spec_op_with_tree(kb, subst, spec_sort, op_short_sym, enclosing_requires).0
+}
+
+/// WI-228 — same as `find_unique_impl_op` but also returns the full
+/// `ResolvedTree` (when one was produced). The tree carries the impl's
+/// sub_resolutions for conditional instances, which the requirement-
+/// insertion pass turns into nested `construct_requirement` IR.
+///
+/// `enclosing_requires` (WI-221): when non-empty, the function first
+/// checks whether the call should be deferred (open-bound trigger — the
+/// spec sort is reached via the caller's `requires` chain). If so,
+/// returns `(DispatchOutcome::Deferred, None)` without consulting
+/// candidates.
+///
+/// Takes `&mut KnowledgeBase` because `resolve` may allocate freshly
+/// substituted subgoal terms for conditional resolution.
+pub fn dispatch_spec_op_with_tree(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    op_short_sym: Symbol,
+    enclosing_requires: &[RequiresEntry],
+) -> (DispatchOutcome, Option<ResolvedTree>) {
     if !enclosing_requires.is_empty()
         && find_requires_slot(kb, subst, spec_sort, enclosing_requires).is_some()
     {
-        return DispatchOutcome::Deferred;
+        return (DispatchOutcome::Deferred, None);
     }
 
     let goal = sort_goal_from_subst(kb, subst, spec_sort);
@@ -2339,34 +2447,39 @@ pub fn find_unique_impl_op(
     if candidates.is_empty() {
         for ar in scope.available_requires {
             if ar.required_sort == goal.spec_sort && requires_entry_covers_goal(kb, ar, &goal) {
-                return DispatchOutcome::Deferred;
+                return (DispatchOutcome::Deferred, None);
             }
         }
-        return if saw_any { DispatchOutcome::NoMatch } else { DispatchOutcome::NoCandidates };
+        let outcome = if saw_any {
+            DispatchOutcome::NoMatch
+        } else {
+            DispatchOutcome::NoCandidates
+        };
+        return (outcome, None);
     }
     drop(candidates);
 
     let mut stack: Vec<SortGoal> = Vec::new();
     match resolve_inner(kb, &goal, &scope, &mut stack) {
-        ResolutionResult::Resolved(tree) => match tree {
+        ResolutionResult::Resolved(tree) => match &tree {
             ResolvedTree::Leaf { impl_sort, .. }
             | ResolvedTree::Conditional { impl_sort, .. } => {
                 let op_short = kb.resolve_sym(op_short_sym).to_string();
-                let impl_qn = kb.qualified_name_of(impl_sort).to_string();
+                let impl_qn = kb.qualified_name_of(*impl_sort).to_string();
                 let spec_qn = kb.qualified_name_of(spec_sort).to_string();
                 let resolved = kb
                     .try_resolve_symbol(&format!("{impl_qn}.{op_short}"))
                     .or_else(|| kb.try_resolve_symbol(&format!("{spec_qn}.{op_short}")));
                 match resolved {
-                    Some(s) => DispatchOutcome::Unique(s),
-                    None => DispatchOutcome::NoMatch,
+                    Some(s) => (DispatchOutcome::Unique(s), Some(tree)),
+                    None => (DispatchOutcome::NoMatch, None),
                 }
             }
-            ResolvedTree::FromScope { .. } => DispatchOutcome::Deferred,
+            ResolvedTree::FromScope { .. } => (DispatchOutcome::Deferred, None),
         },
-        ResolutionResult::NoMatch { .. } => DispatchOutcome::NoMatch,
-        ResolutionResult::Ambiguous { .. } => DispatchOutcome::Ambiguous,
-        ResolutionResult::Cyclic { .. } => DispatchOutcome::NoMatch,
+        ResolutionResult::NoMatch { .. } => (DispatchOutcome::NoMatch, None),
+        ResolutionResult::Ambiguous { .. } => (DispatchOutcome::Ambiguous, None),
+        ResolutionResult::Cyclic { .. } => (DispatchOutcome::NoMatch, None),
     }
 }
 
