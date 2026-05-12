@@ -250,10 +250,10 @@ pub struct KnowledgeBase {
     pub(crate) requires_chain_cache: RefCell<HashMap<Symbol, Rc<Vec<crate::kb::typing::RequiresEntry>>>>,
 
     // WI-230 — memoized substitution-composed `requires` tree per sort.
-    // Each entry is the `Rc<Vec<RequireNode>>` `requires_tree(kb, S)`
+    // Each entry is the `Rc<Vec<RequiresNode>>` `requires_tree(kb, S)`
     // returns. Same lifetime as Cache A: fills lazily during typing;
     // invalidated by `invalidate_requires_chain_cache`.
-    pub(crate) requires_tree_cache: RefCell<HashMap<Symbol, Rc<Vec<crate::kb::typing::RequireNode>>>>,
+    pub(crate) requires_tree_cache: RefCell<HashMap<Symbol, Rc<Vec<crate::kb::typing::RequiresNode>>>>,
 
     // WI-231 — per-call-site classification side-table produced by the
     // typer (`check_apply`) and consumed by the requirement-insertion
@@ -280,7 +280,7 @@ pub struct KnowledgeBase {
     pub(crate) resolve_cache: RefCell<
         HashMap<
             (crate::kb::typing::SortGoal, Vec<crate::kb::typing::RequiresEntry>),
-            (crate::kb::typing::DispatchOutcome, Option<crate::kb::typing::ResolvedTree>),
+            (crate::kb::typing::DispatchOutcome, Option<crate::kb::typing::ResolvedRequiresNode>),
         >,
     >,
 }

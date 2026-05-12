@@ -1,4 +1,4 @@
-//! WI-228 — thread WI-224's `ResolvedTree` through dispatch into the
+//! WI-228 — thread WI-224's `ResolvedRequiresNode` through dispatch into the
 //! requirement-projection IR emitter.
 //!
 //! Before WI-228, `find_unique_impl_op` collapsed both `Leaf` and
@@ -12,7 +12,7 @@
 //! spec_sort`, and the spec has no `requires`).
 //!
 //! After WI-228, `dispatch_spec_op_with_tree` returns the full
-//! `ResolvedTree` alongside the impl symbol; `record_apply_within_concrete`
+//! `ResolvedRequiresNode` alongside the impl symbol; `record_apply_within_concrete`
 //! threads it into `build_projected_requirements_list_from_tree`, which
 //! walks `tree.sub_resolutions` and emits one IR entry per impl-side
 //! `requires` slot via WI-227's `emit_tree_as_projection`. A
@@ -20,7 +20,7 @@
 //! through real dispatch.
 //!
 //! Reference: docs/design/operation-call-model.md §"Resolution"
-//! ("Output ResolvedTree is the direct input to the requirement-
+//! ("Output ResolvedRequiresNode is the direct input to the requirement-
 //! insertion pass"); WI-227 commit 91578d2 for the IR emitter.
 
 mod common;

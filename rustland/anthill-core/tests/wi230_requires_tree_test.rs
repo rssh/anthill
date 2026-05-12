@@ -5,14 +5,14 @@
 //! 1. Tree shape mirrors the declared `requires` hierarchy.
 //! 2. Substitution composition: a leaf in Wi222Outer's tree carries
 //!    `T = Wi222Outer.T` directly, not `T = Ordered.T` (root-scoped).
-//! 3. `flatten_require_tree` reproduces the same set of entries that
+//! 3. `flatten_requires_tree` reproduces the same set of entries that
 //!    `requires_chain` returns (consistency between tree and flat views).
 
 mod common;
 
 use anthill_core::kb::term::Term;
 use anthill_core::kb::typing::{
-    flatten_require_tree, requires_chain, requires_tree, RequireNode, RequiresEntry,
+    flatten_requires_tree, requires_chain, requires_tree, RequiresNode, RequiresEntry,
 };
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
@@ -133,7 +133,7 @@ end
     // loader represents a bare name reference as either `Term::Ref(s)`
     // or nullary `Term::Fn(s, [], [])`; both shapes mean "Ref(s)" for
     // substitution purposes.
-    fn extract_t_binding(kb: &KnowledgeBase, node: &RequireNode) -> Option<anthill_core::intern::Symbol> {
+    fn extract_t_binding(kb: &KnowledgeBase, node: &RequiresNode) -> Option<anthill_core::intern::Symbol> {
         let term = kb.get_term(node.entry.spec);
         let named_args = match term {
             Term::Fn { named_args, .. } => named_args,
@@ -182,7 +182,7 @@ end
 
 #[test]
 fn requires_chain_flatten_matches_required_sorts() {
-    // requires_chain (substituted) and flatten_require_tree(tree) must
+    // requires_chain (substituted) and flatten_requires_tree(tree) must
     // produce the same sequence of required_sort symbols. The bindings
     // may differ from the pre-WI-230 declared form (substitution is
     // now applied) but the required_sort sequence is invariant.
@@ -209,7 +209,7 @@ end
         .expect("Outer");
 
     let tree = requires_tree(&mut kb, outer);
-    let flat_from_tree: Vec<_> = flatten_require_tree(&tree)
+    let flat_from_tree: Vec<_> = flatten_requires_tree(&tree)
         .into_iter()
         .map(|e| e.required_sort)
         .collect();
@@ -218,7 +218,7 @@ end
 
     assert_eq!(
         flat_from_tree, flat_chain_sorts,
-        "flatten_require_tree(requires_tree(s)) must match requires_chain(s) in required_sort order"
+        "flatten_requires_tree(requires_tree(s)) must match requires_chain(s) in required_sort order"
     );
 
     // Pre-order traversal yields Middle then Leaf for Outer's chain.

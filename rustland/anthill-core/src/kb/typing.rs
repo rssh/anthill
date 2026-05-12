@@ -809,12 +809,16 @@ fn check_apply(
                     if let Some(slot) =
                         find_requires_slot(kb, &subst, spec_sort, enclosing_requires)
                     {
+                        // WI-232: capture the matched entry so
+                        // req_insertion::run can read it directly,
+                        // without re-indexing the chain at emit time.
+                        let resolved_spec = enclosing_requires[slot].clone();
                         kb.classify_apply(
                             apply_term,
                             CallClass::DeferToRequirement {
                                 spec_op_sym: fn_sym,
                                 op_short_sym,
-                                spec_sort,
+                                resolved_spec,
                                 slot,
                                 enclosing_sort,
                             },
@@ -988,7 +992,7 @@ fn build_projected_requirements_list(
 }
 
 /// WI-228: build the apply_within `requirements` list directly from a
-/// `ResolvedTree`'s sub_resolutions. Used by the Pin-now path where SLD
+/// `ResolvedRequiresNode`'s sub_resolutions. Used by the Pin-now path where SLD
 /// resolution already produced the full impl-side tree — each
 /// sub_resolution becomes one entry in the requirements list, emitted
 /// via `emit_tree_as_projection` (so nested Conditionals turn into
@@ -999,12 +1003,12 @@ fn build_projected_requirements_list(
 /// — the impl has no requires, so the list is nil.
 fn build_projected_requirements_list_from_tree(
     kb: &mut KnowledgeBase,
-    tree: &ResolvedTree,
+    tree: &ResolvedRequiresNode,
 ) -> Option<TermId> {
     let syms = ProjectionSyms::resolve(kb)?;
-    let sub_resolutions: &[ResolvedTree] = match tree {
-        ResolvedTree::Conditional { sub_resolutions, .. } => sub_resolutions,
-        ResolvedTree::Leaf { .. } | ResolvedTree::FromScope { .. } => &[],
+    let sub_resolutions: &[ResolvedRequiresNode] = match tree {
+        ResolvedRequiresNode::Conditional { sub_resolutions, .. } => sub_resolutions,
+        ResolvedRequiresNode::Leaf { .. } | ResolvedRequiresNode::FromScope { .. } => &[],
     };
     let mut sub_terms: SmallVec<[TermId; 4]> = SmallVec::new();
     for sub in sub_resolutions {
@@ -1115,27 +1119,27 @@ fn entries_cover(kb: &KnowledgeBase, caller: &RequiresEntry, dep: &RequiresEntry
     true
 }
 
-/// WI-227: translate a `ResolvedTree` into a projection IR term.
+/// WI-227: translate a `ResolvedRequiresNode` into a projection IR term.
 /// `FromScope` becomes `requirement_at_current(slot=scope_index)`;
 /// `Leaf` becomes `construct_requirement(impl, nil)`; `Conditional`
 /// recursively emits sub-projections and wraps them in a
 /// `construct_requirement(impl, cons_list)`.
 fn emit_tree_as_projection(
     kb: &mut KnowledgeBase,
-    tree: &ResolvedTree,
+    tree: &ResolvedRequiresNode,
     syms: &ProjectionSyms,
 ) -> Option<TermId> {
     match tree {
-        ResolvedTree::FromScope { scope_index, .. } => {
+        ResolvedRequiresNode::FromScope { scope_index, .. } => {
             Some(build_flat_req(kb, syms, *scope_index))
         }
-        ResolvedTree::Leaf { impl_sort, .. } => {
+        ResolvedRequiresNode::Leaf { impl_sort, .. } => {
             let nil_list = super::load::build_cons_list(
                 kb, &[], syms.nil, syms.cons, syms.head, syms.tail,
             );
             Some(build_construct_requirement(kb, syms, *impl_sort, nil_list))
         }
-        ResolvedTree::Conditional { impl_sort, sub_resolutions, .. } => {
+        ResolvedRequiresNode::Conditional { impl_sort, sub_resolutions, .. } => {
             let mut sub_terms: SmallVec<[TermId; 4]> = SmallVec::new();
             for sub in sub_resolutions {
                 sub_terms.push(emit_tree_as_projection(kb, sub, syms)?);
@@ -1229,7 +1233,7 @@ pub(crate) fn record_apply_within_concrete(
     callee_spec_sort: Symbol,
     spec_op_sym: Symbol,
     caller_requires: &[RequiresEntry],
-    resolved_tree: Option<&ResolvedTree>,
+    resolved_tree: Option<&ResolvedRequiresNode>,
 ) -> bool {
     use smallvec::SmallVec;
 
@@ -1481,16 +1485,22 @@ pub enum CallClass {
         callee_spec_sort: Symbol,
         spec_op_sym: Symbol,
         enclosing_sort: Option<Symbol>,
-        resolved_tree: Option<ResolvedTree>,
+        resolved_tree: Option<ResolvedRequiresNode>,
     },
     /// Defer-to-requirement (WI-222 Phase C+D): dispatch deferred to
     /// runtime via `apply_within(fn = requirement_at_current(slot,
     /// op = some(op_short)), args, requirements = …)`. The impl is
     /// determined at dispatch time by reading `frame.requirements[slot]`.
+    ///
+    /// WI-232: `resolved_spec` is the matched requires entry from the
+    /// caller's chain — `enclosing_requires[slot]` at classification
+    /// time. Embedding it eliminates the slot→entry re-indexing in
+    /// `req_insertion::run`; `resolved_spec.required_sort` replaces the
+    /// previous parallel `spec_sort` field.
     DeferToRequirement {
         spec_op_sym: Symbol,
         op_short_sym: Symbol,
-        spec_sort: Symbol,
+        resolved_spec: RequiresEntry,
         slot: usize,
         enclosing_sort: Option<Symbol>,
     },
@@ -1654,7 +1664,7 @@ pub struct ResolutionScope<'a> {
 /// insertion pass which emits the IR (`construct_requirement` /
 /// `requirement_at_current` / projections) per node.
 #[derive(Clone, Debug)]
-pub enum ResolvedTree {
+pub enum ResolvedRequiresNode {
     /// Non-conditional impl. `impl_sort` is the carrier sort symbol
     /// (e.g., `IntEq`), `bindings` is the head's per-binding values
     /// after impl-param substitution.
@@ -1668,7 +1678,7 @@ pub enum ResolvedTree {
         impl_sort: Symbol,
         spec_sort: Symbol,
         bindings: SmallVec<[(Symbol, TermId); 2]>,
-        sub_resolutions: Vec<ResolvedTree>,
+        sub_resolutions: Vec<ResolvedRequiresNode>,
     },
     /// Matched an entry in `scope.available_requires`. No new
     /// construction needed — the caller's `frame.requirements[slot]`
@@ -1679,13 +1689,13 @@ pub enum ResolvedTree {
     },
 }
 
-impl ResolvedTree {
+impl ResolvedRequiresNode {
     /// The spec sort this tree resolves (for diagnostics / WI-226).
     pub fn spec_sort(&self) -> Symbol {
         match self {
-            ResolvedTree::Leaf { spec_sort, .. }
-            | ResolvedTree::Conditional { spec_sort, .. }
-            | ResolvedTree::FromScope { spec_sort, .. } => *spec_sort,
+            ResolvedRequiresNode::Leaf { spec_sort, .. }
+            | ResolvedRequiresNode::Conditional { spec_sort, .. }
+            | ResolvedRequiresNode::FromScope { spec_sort, .. } => *spec_sort,
         }
     }
 
@@ -1693,9 +1703,9 @@ impl ResolvedTree {
     /// impl is pinned; the runtime reads the slot's bundled handle.
     pub fn impl_sort(&self) -> Option<Symbol> {
         match self {
-            ResolvedTree::Leaf { impl_sort, .. }
-            | ResolvedTree::Conditional { impl_sort, .. } => Some(*impl_sort),
-            ResolvedTree::FromScope { .. } => None,
+            ResolvedRequiresNode::Leaf { impl_sort, .. }
+            | ResolvedRequiresNode::Conditional { impl_sort, .. } => Some(*impl_sort),
+            ResolvedRequiresNode::FromScope { .. } => None,
         }
     }
 }
@@ -1704,7 +1714,7 @@ impl ResolvedTree {
 /// produce a user diagnostic (NoMatch / Ambiguous / Cyclic).
 #[derive(Clone, Debug)]
 pub enum ResolutionResult {
-    Resolved(ResolvedTree),
+    Resolved(ResolvedRequiresNode),
     /// No candidate's head unifies with the goal.
     NoMatch { goal_text: String, hint: String },
     /// Multiple candidates match and specificity coherence couldn't
@@ -1741,7 +1751,7 @@ fn resolve_inner(
             continue;
         }
         if requires_entry_covers_goal(kb, ar, goal) {
-            return ResolutionResult::Resolved(ResolvedTree::FromScope {
+            return ResolutionResult::Resolved(ResolvedRequiresNode::FromScope {
                 scope_index: i,
                 spec_sort: goal.spec_sort,
             });
@@ -1794,7 +1804,7 @@ fn resolve_inner(
     let sub_goals: Vec<SortGoal> = candidate_sub_goals_owned(
         kb, chosen_impl_sort, &chosen_impl_subst,
     );
-    let mut sub_resolutions: Vec<ResolvedTree> = Vec::with_capacity(sub_goals.len());
+    let mut sub_resolutions: Vec<ResolvedRequiresNode> = Vec::with_capacity(sub_goals.len());
     for sg in &sub_goals {
         match resolve_inner(kb, sg, scope, stack) {
             ResolutionResult::Resolved(t) => sub_resolutions.push(t),
@@ -1807,13 +1817,13 @@ fn resolve_inner(
     stack.pop();
 
     let tree = if sub_resolutions.is_empty() {
-        ResolvedTree::Leaf {
+        ResolvedRequiresNode::Leaf {
             impl_sort: chosen_impl_sort,
             spec_sort: goal.spec_sort,
             bindings: chosen_bindings,
         }
     } else {
-        ResolvedTree::Conditional {
+        ResolvedRequiresNode::Conditional {
             impl_sort: chosen_impl_sort,
             spec_sort: goal.spec_sort,
             bindings: chosen_bindings,
@@ -2496,7 +2506,7 @@ fn canonicalize_type_value(kb: &mut KnowledgeBase, ty: TermId) -> TermId {
 
 /// WI-210/WI-224 — find the unique impl operation symbol for a spec-op
 /// call. Thin wrapper over `dispatch_spec_op_with_tree` that drops the
-/// `ResolvedTree`. Callers that need the tree (WI-228: requirement
+/// `ResolvedRequiresNode`. Callers that need the tree (WI-228: requirement
 /// projection for Pin-now) call `dispatch_spec_op_with_tree` directly.
 pub fn find_unique_impl_op(
     kb: &mut KnowledgeBase,
@@ -2509,7 +2519,7 @@ pub fn find_unique_impl_op(
 }
 
 /// WI-228 — same as `find_unique_impl_op` but also returns the full
-/// `ResolvedTree` (when one was produced). The tree carries the impl's
+/// `ResolvedRequiresNode` (when one was produced). The tree carries the impl's
 /// sub_resolutions for conditional instances, which the requirement-
 /// insertion pass turns into nested `construct_requirement` IR.
 ///
@@ -2521,7 +2531,7 @@ pub fn dispatch_spec_op_with_tree(
     spec_sort: Symbol,
     op_short_sym: Symbol,
     enclosing_requires: &[RequiresEntry],
-) -> (DispatchOutcome, Option<ResolvedTree>) {
+) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
     dispatch_spec_op_cached(kb, subst, spec_sort, op_short_sym, enclosing_requires)
 }
 
@@ -2537,7 +2547,7 @@ pub fn dispatch_spec_op_cached(
     spec_sort: Symbol,
     op_short_sym: Symbol,
     enclosing_requires: &[RequiresEntry],
-) -> (DispatchOutcome, Option<ResolvedTree>) {
+) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
     if !enclosing_requires.is_empty()
         && find_requires_slot(kb, subst, spec_sort, enclosing_requires).is_some()
     {
@@ -2553,7 +2563,7 @@ pub fn dispatch_spec_op_cached(
     result
 }
 
-/// Resolve a pre-built `SortGoal` to a `(DispatchOutcome, Option<ResolvedTree>)`.
+/// Resolve a pre-built `SortGoal` to a `(DispatchOutcome, Option<ResolvedRequiresNode>)`.
 /// Shared body of `dispatch_spec_op_with_tree` and `dispatch_spec_op_cached`
 /// — they differ only in pre-check (defer trigger) and memoization.
 fn resolve_at_goal(
@@ -2562,7 +2572,7 @@ fn resolve_at_goal(
     spec_sort: Symbol,
     op_short_sym: Symbol,
     enclosing_requires: &[RequiresEntry],
-) -> (DispatchOutcome, Option<ResolvedTree>) {
+) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
     let scope = ResolutionScope { available_requires: enclosing_requires };
 
     // Peek the candidate set so we can preserve the WI-210 legacy
@@ -2589,8 +2599,8 @@ fn resolve_at_goal(
     let mut stack: Vec<SortGoal> = Vec::new();
     match resolve_inner(kb, &goal, &scope, &mut stack) {
         ResolutionResult::Resolved(tree) => match &tree {
-            ResolvedTree::Leaf { impl_sort, .. }
-            | ResolvedTree::Conditional { impl_sort, .. } => {
+            ResolvedRequiresNode::Leaf { impl_sort, .. }
+            | ResolvedRequiresNode::Conditional { impl_sort, .. } => {
                 let op_short = kb.resolve_sym(op_short_sym).to_string();
                 let impl_qn = kb.qualified_name_of(*impl_sort).to_string();
                 let spec_qn = kb.qualified_name_of(spec_sort).to_string();
@@ -2602,7 +2612,7 @@ fn resolve_at_goal(
                     None => (DispatchOutcome::NoMatch, None),
                 }
             }
-            ResolvedTree::FromScope { .. } => (DispatchOutcome::Deferred, None),
+            ResolvedRequiresNode::FromScope { .. } => (DispatchOutcome::Deferred, None),
         },
         ResolutionResult::NoMatch { .. } => (DispatchOutcome::NoMatch, None),
         ResolutionResult::Ambiguous { .. } => (DispatchOutcome::Ambiguous, None),
@@ -3723,16 +3733,16 @@ pub struct RequiresEntry {
 ///
 /// This mirrors the runtime arena's `RequirementSlot` tree shape (slot
 /// = node, sub-handles = sub_requires) and the typer's
-/// `ResolvedTree::Conditional { sub_resolutions }`. All three layers
+/// `ResolvedRequiresNode::Conditional { sub_resolutions }`. All three layers
 /// now share one tree skeleton; consumers can walk them by the same
 /// recursion.
 #[derive(Clone, Debug)]
-pub struct RequireNode {
+pub struct RequiresNode {
     pub entry: RequiresEntry,
-    pub sub_requires: Vec<RequireNode>,
+    pub sub_requires: Vec<RequiresNode>,
 }
 
-impl RequireNode {
+impl RequiresNode {
     /// Walk the tree and accumulate every node's entry into a flat list
     /// (pre-order). Back-compat for callers that consumed the old
     /// `Vec<RequiresEntry>` shape; new code should walk the tree directly.
@@ -3746,7 +3756,7 @@ impl RequireNode {
 
 /// WI-230 flatten helper for a forest of top-level nodes (the shape
 /// `requires_tree` returns).
-pub fn flatten_require_tree(nodes: &[RequireNode]) -> Vec<RequiresEntry> {
+pub fn flatten_requires_tree(nodes: &[RequiresNode]) -> Vec<RequiresEntry> {
     let mut out = Vec::new();
     for node in nodes {
         node.flatten_into(&mut out);
@@ -3757,7 +3767,7 @@ pub fn flatten_require_tree(nodes: &[RequireNode]) -> Vec<RequiresEntry> {
 /// Collect the full transitive requires chain for a sort.
 /// Returns all (required_sort_sym, spec_term) pairs reachable from `sort_sym`.
 ///
-/// WI-230: now a thin wrapper over `requires_tree` + `flatten_require_tree`.
+/// WI-230: now a thin wrapper over `requires_tree` + `flatten_requires_tree`.
 /// Substituted bindings flow through (each entry's spec is root-scoped),
 /// which differs from the pre-WI-230 behavior of returning each entry
 /// in its *declaring* sort's view. Consumers that compared bindings via
@@ -3771,7 +3781,7 @@ pub fn flatten_require_tree(nodes: &[RequireNode]) -> Vec<RequiresEntry> {
 /// preserves the `&KnowledgeBase` signature.
 pub fn requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
     let tree = requires_tree(kb, sort_sym);
-    flatten_require_tree(&tree)
+    flatten_requires_tree(&tree)
 }
 
 /// WI-230 — pre-WI-230 flat chain (no substitution composition). Used
@@ -3786,7 +3796,7 @@ pub fn requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresE
 /// (consumers of the flat form ignore bindings anyway).
 pub fn requires_chain_flat(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
     if let Some(cached) = kb.requires_tree_cache.borrow().get(&sort_sym) {
-        return flatten_require_tree(&cached);
+        return flatten_requires_tree(&cached);
     }
     // No cache yet — build the flat chain directly (without substitution)
     // and skip the tree-cache write (we don't have &mut). Subsequent
@@ -3818,8 +3828,8 @@ fn collect_requires_unsubstituted(
 /// WI-230 — build the substitution-composed `requires` tree for
 /// `sort_sym`. Top-level memoized on `kb.requires_tree_cache`: first
 /// call walks `SortRequiresInfo` and substitutes; subsequent calls
-/// for the same sort return the same `Rc<Vec<RequireNode>>` from cache.
-pub fn requires_tree(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Rc<Vec<RequireNode>> {
+/// for the same sort return the same `Rc<Vec<RequiresNode>>` from cache.
+pub fn requires_tree(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Rc<Vec<RequiresNode>> {
     if let Some(cached) = kb.requires_tree_cache.borrow().get(&sort_sym) {
         return cached.clone();
     }
@@ -3836,13 +3846,13 @@ pub fn requires_tree(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Rc<Vec<Require
 /// (`subst`) from parent into the child level — at each step, the
 /// child's raw spec gets its `Ref(<parent's-param-qualified>)` atoms
 /// rewritten to whatever the parent bound them to. Returns the list
-/// of top-level RequireNodes (one per direct `requires` of `sort_sym`).
+/// of top-level RequiresNodes (one per direct `requires` of `sort_sym`).
 fn build_requires_tree(
     kb: &mut KnowledgeBase,
     sort_sym: Symbol,
     subst: &HashMap<Symbol, TermId>,
     visited: &mut Vec<Symbol>,
-) -> Vec<RequireNode> {
+) -> Vec<RequiresNode> {
     if visited.contains(&sort_sym) {
         // Cycle break — return empty so siblings still get walked.
         return Vec::new();
@@ -3859,7 +3869,7 @@ fn build_requires_tree(
         };
         let child_subst = build_child_subst_map(kb, &entry);
         let sub_requires = build_requires_tree(kb, raw.required_sort, &child_subst, visited);
-        nodes.push(RequireNode { entry, sub_requires });
+        nodes.push(RequiresNode { entry, sub_requires });
     }
 
     visited.pop();

@@ -18,7 +18,7 @@ use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::subst::Substitution;
 use anthill_core::kb::typing::{
-    resolve, sort_goal_from_subst, ResolutionScope, ResolvedTree, ResolutionResult, SortGoal,
+    resolve, sort_goal_from_subst, ResolutionScope, ResolvedRequiresNode, ResolutionResult, SortGoal,
     requires_chain_flat,
 };
 use anthill_core::kb::term::{Term, TermId, Var};
@@ -117,7 +117,7 @@ fn leaf_resolution_picks_concrete_impl() {
     let scope = empty_scope(&subst);
     let result = resolve(&mut kb, &goal, &scope);
     match result {
-        ResolutionResult::Resolved(ResolvedTree::Leaf { impl_sort, .. }) => {
+        ResolutionResult::Resolved(ResolvedRequiresNode::Leaf { impl_sort, .. }) => {
             let impl_qn = kb.qualified_name_of(impl_sort).to_string();
             assert!(impl_qn.ends_with(".Int") || impl_qn == "anthill.prelude.Int"
                 || impl_qn.ends_with("IntEq"),
@@ -159,7 +159,7 @@ fn one_level_conditional_resolves_via_subgoal() {
     let subst = Substitution::new();
     let scope = empty_scope(&subst);
     match resolve(&mut kb, &goal, &scope) {
-        ResolutionResult::Resolved(ResolvedTree::Conditional { impl_sort, sub_resolutions, .. }) => {
+        ResolutionResult::Resolved(ResolvedRequiresNode::Conditional { impl_sort, sub_resolutions, .. }) => {
             let impl_qn = kb.qualified_name_of(impl_sort).to_string();
             assert_eq!(impl_qn, "test.wi224.one_level.EqList",
                 "expected EqList as the conditional impl; got {impl_qn}");
@@ -167,7 +167,7 @@ fn one_level_conditional_resolves_via_subgoal() {
                 "EqList has one requires (`Eq[T=A]`); got {} sub_resolutions",
                 sub_resolutions.len());
             match &sub_resolutions[0] {
-                ResolvedTree::Leaf { impl_sort: inner, .. } => {
+                ResolvedRequiresNode::Leaf { impl_sort: inner, .. } => {
                     let inner_qn = kb.qualified_name_of(*inner).to_string();
                     assert!(inner_qn.contains("Int"),
                         "expected inner subgoal to resolve to an Int leaf; got {inner_qn}");
@@ -217,7 +217,7 @@ fn two_level_conditional_chains_recursively() {
     let subst = Substitution::new();
     let scope = empty_scope(&subst);
     match resolve(&mut kb, &goal, &scope) {
-        ResolutionResult::Resolved(ResolvedTree::Conditional {
+        ResolutionResult::Resolved(ResolvedRequiresNode::Conditional {
             impl_sort, sub_resolutions, ..
         }) => {
             let impl_qn = kb.qualified_name_of(impl_sort).to_string();
@@ -225,14 +225,14 @@ fn two_level_conditional_chains_recursively() {
             assert_eq!(sub_resolutions.len(), 1);
             // The middle layer must also be a Conditional EqList…
             match &sub_resolutions[0] {
-                ResolvedTree::Conditional { impl_sort: mid, sub_resolutions: inner, .. } => {
+                ResolvedRequiresNode::Conditional { impl_sort: mid, sub_resolutions: inner, .. } => {
                     let mid_qn = kb.qualified_name_of(*mid).to_string();
                     assert_eq!(mid_qn, "test.wi224.two_level.EqList",
                         "middle layer must be EqList; got {mid_qn}");
                     assert_eq!(inner.len(), 1);
                     // …whose inner sub_resolution bottoms out at an Int leaf.
                     match &inner[0] {
-                        ResolvedTree::Leaf { impl_sort: leaf, .. } => {
+                        ResolvedRequiresNode::Leaf { impl_sort: leaf, .. } => {
                             let leaf_qn = kb.qualified_name_of(*leaf).to_string();
                             assert!(leaf_qn.contains("Int"),
                                 "expected the leaf to mention Int; got {leaf_qn}");
@@ -437,16 +437,16 @@ fn diamond_coherence_picks_same_a_impl_for_both_branches() {
 
     // Walk each tree to the DiamondA subgoal and confirm both pick
     // the same A impl.
-    fn pick_a(kb: &KnowledgeBase, t: &ResolvedTree, target: &str) -> Option<String> {
+    fn pick_a(kb: &KnowledgeBase, t: &ResolvedRequiresNode, target: &str) -> Option<String> {
         match t {
-            ResolvedTree::Leaf { impl_sort, spec_sort, .. } => {
+            ResolvedRequiresNode::Leaf { impl_sort, spec_sort, .. } => {
                 if kb.qualified_name_of(*spec_sort).ends_with(target) {
                     Some(kb.qualified_name_of(*impl_sort).to_string())
                 } else {
                     None
                 }
             }
-            ResolvedTree::Conditional { impl_sort, spec_sort, sub_resolutions, .. } => {
+            ResolvedRequiresNode::Conditional { impl_sort, spec_sort, sub_resolutions, .. } => {
                 if kb.qualified_name_of(*spec_sort).ends_with(target) {
                     return Some(kb.qualified_name_of(*impl_sort).to_string());
                 }
@@ -455,7 +455,7 @@ fn diamond_coherence_picks_same_a_impl_for_both_branches() {
                 }
                 None
             }
-            ResolvedTree::FromScope { .. } => None,
+            ResolvedRequiresNode::FromScope { .. } => None,
         }
     }
     let a_under_b = pick_a(&kb, &b_tree, ".DiamondA")
@@ -493,7 +493,7 @@ fn available_requires_match_short_circuits_resolution() {
     let goal = goal_for(&mut kb, "anthill.prelude.Eq", "T", "anthill.prelude.Int");
     let scope = ResolutionScope { available_requires: &chain };
     match resolve(&mut kb, &goal, &scope) {
-        ResolutionResult::Resolved(ResolvedTree::FromScope { scope_index, .. }) => {
+        ResolutionResult::Resolved(ResolvedRequiresNode::FromScope { scope_index, .. }) => {
             assert_eq!(scope_index, 0,
                 "Eq[T=Int] should match the first available_requires slot");
         }

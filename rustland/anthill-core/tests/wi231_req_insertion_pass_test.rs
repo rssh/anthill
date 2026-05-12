@@ -44,12 +44,12 @@ end
 
     // Find the Defer row and confirm its data.
     let defer_row = kb.call_classifications_iter().find_map(|(_, c)| match c {
-        CallClass::DeferToRequirement { spec_op_sym, op_short_sym, spec_sort, slot, enclosing_sort } => {
-            Some((*spec_op_sym, *op_short_sym, *spec_sort, *slot, *enclosing_sort))
+        CallClass::DeferToRequirement { spec_op_sym, op_short_sym, resolved_spec, slot, enclosing_sort } => {
+            Some((*spec_op_sym, *op_short_sym, resolved_spec.clone(), *slot, *enclosing_sort))
         }
         _ => None,
     });
-    let (spec_op_sym, op_short_sym, spec_sort, slot, enclosing_sort) = defer_row
+    let (spec_op_sym, op_short_sym, resolved_spec, slot, enclosing_sort) = defer_row
         .expect("typer must classify Wi231Defer.use_eq's eq() call as DeferToRequirement");
 
     // Sanity check the captured fields.
@@ -60,7 +60,9 @@ end
         .expect("Wi231Defer");
     assert_eq!(spec_op_sym, eq_sym, "spec_op_sym must be Eq.eq");
     assert_eq!(kb.resolve_sym(op_short_sym), "eq");
-    assert_eq!(spec_sort, eq_sort, "spec_sort must be Eq");
+    // WI-232: resolved_spec carries the matched RequiresEntry; its
+    // required_sort replaces the previous parallel `spec_sort` field.
+    assert_eq!(resolved_spec.required_sort, eq_sort, "resolved_spec.required_sort must be Eq");
     assert_eq!(slot, 0, "Eq is at slot 0 of Wi231Defer's requires chain");
     assert_eq!(
         enclosing_sort,
@@ -187,4 +189,84 @@ end
         post_clear_count, pre_count,
         "re-running req_insertion::run must not change the rewrite count"
     );
+}
+
+#[test]
+fn wi232_resolved_spec_carries_matched_entry_not_just_symbol() {
+    // WI-232 acceptance: `CallClass::DeferToRequirement.resolved_spec`
+    // is the *entry from the caller's chain* the typer matched against
+    // — not just the spec sort symbol. That means `resolved_spec.spec`
+    // (the SortView TermId with bindings) is preserved and consumers
+    // can read bindings directly without re-indexing the chain.
+    //
+    // We also exercise the chain-memoization path indirectly by giving
+    // the enclosing sort *two* spec-op call sites: both end up in the
+    // side-table and both must produce dispatch rewrites in one pass.
+    let src = r#"
+namespace test.wi232.resolved_spec
+  import anthill.prelude.Eq.{eq, neq}
+  import anthill.prelude.{Eq, Bool}
+  export Wi232Two
+  sort Wi232Two
+    sort T = ?
+    requires Eq[T]
+    operation use_eq(a: T, b: T) -> Bool = eq(a, b)
+    operation use_neq(a: T, b: T) -> Bool = neq(a, b)
+  end
+end
+"#;
+    let kb = load_kb_with(src);
+
+    let eq_sort = kb.try_resolve_symbol("anthill.prelude.Eq").expect("Eq sort");
+
+    // Every Defer row in this KB belongs to Wi232Two and must point at
+    // the same matched entry — `required_sort = Eq`, spec TermId is the
+    // SortView that the loader built for `requires Eq[T]`.
+    let mut defer_rows: Vec<_> = kb
+        .call_classifications_iter()
+        .filter_map(|(tid, c)| match c {
+            CallClass::DeferToRequirement { resolved_spec, .. } => {
+                Some((tid, resolved_spec.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        defer_rows.len() >= 2,
+        "Wi232Two has two spec-op calls (eq, neq); both must classify as Defer; got {}",
+        defer_rows.len()
+    );
+
+    // Every row's resolved_spec carries the Eq required_sort and a
+    // non-null spec TermId (the SortView with bindings).
+    for (tid, entry) in defer_rows.drain(..) {
+        assert_eq!(
+            entry.required_sort, eq_sort,
+            "every Defer row's resolved_spec must point at Eq (apply tid {:?})",
+            tid
+        );
+        // spec is a TermId — accessor on KB resolves to a Fn term.
+        let spec_term = kb.get_term(entry.spec);
+        let is_fn = matches!(spec_term, anthill_core::kb::term::Term::Fn { .. });
+        assert!(
+            is_fn,
+            "resolved_spec.spec must be a Fn (the SortView), got {:?}",
+            spec_term
+        );
+    }
+
+    // Both call sites end up rewritten — the chain-memoized pass walks
+    // both Defer rows and emits both rewrites in one run.
+    let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.eq").expect("Eq.eq");
+    let neq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.neq").expect("Eq.neq");
+    let eq_rewrites = kb
+        .dispatch_origin_iter()
+        .filter(|(_, s)| *s == eq_sym)
+        .count();
+    let neq_rewrites = kb
+        .dispatch_origin_iter()
+        .filter(|(_, s)| *s == neq_sym)
+        .count();
+    assert!(eq_rewrites >= 1, "eq rewrite must be emitted");
+    assert!(neq_rewrites >= 1, "neq rewrite must be emitted");
 }

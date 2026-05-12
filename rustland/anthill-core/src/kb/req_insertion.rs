@@ -23,7 +23,18 @@
 //! `run(kb)` is the canonical entry point; external code can replace
 //! it by reading `kb.call_classifications_iter()` and emitting its
 //! own rewrites.
+//!
+//! WI-232: chain memoization. The pre-WI-232 pass recomputed
+//! `requires_chain(enclosing_sort)` once per classification row, so a
+//! sort with N spec-op calls walked the chain N times. After WI-232 the
+//! pass keeps a per-sort cache and computes each chain at most once.
+//! For `DeferToRequirement` rows the matched entry is now carried in
+//! `CallClass.resolved_spec` itself, so the chain is only needed for
+//! the projection-list construction inside `record_apply_within_rewrite`.
 
+use std::collections::HashMap;
+
+use crate::intern::Symbol;
 use crate::kb::term::Term;
 use crate::kb::typing::{
     record_apply_rewrite, record_apply_within_concrete,
@@ -42,6 +53,13 @@ pub fn run(kb: &mut KnowledgeBase) {
         .call_classifications_iter()
         .map(|(k, v)| (k, v.clone()))
         .collect();
+
+    // WI-232: per-enclosing-sort chain cache. The chain is stable across
+    // every call site sharing the same enclosing sort, so compute once
+    // and clone the slice into each `record_*` call. Keyed by the
+    // enclosing sort symbol; absent key means "no enclosing sort" (chain
+    // is empty).
+    let mut chain_cache: HashMap<Symbol, Vec<RequiresEntry>> = HashMap::new();
 
     for (apply_term, class) in entries {
         // Re-extract named_args / pos_args from the apply term itself.
@@ -66,9 +84,7 @@ pub fn run(kb: &mut KnowledgeBase) {
                 enclosing_sort,
                 resolved_tree,
             } => {
-                let caller_requires: Vec<RequiresEntry> = enclosing_sort
-                    .map(|s| requires_chain(kb, s))
-                    .unwrap_or_default();
+                let caller_requires = chain_for(kb, &mut chain_cache, enclosing_sort);
                 record_apply_within_concrete(
                     kb, apply_term, &named_args, &pos_args,
                     fn_target_sym, callee_spec_sort, spec_op_sym,
@@ -78,19 +94,40 @@ pub fn run(kb: &mut KnowledgeBase) {
             CallClass::DeferToRequirement {
                 spec_op_sym,
                 op_short_sym,
-                spec_sort,
+                resolved_spec,
                 slot,
                 enclosing_sort,
             } => {
-                let caller_requires: Vec<RequiresEntry> = enclosing_sort
-                    .map(|s| requires_chain(kb, s))
-                    .unwrap_or_default();
+                let caller_requires = chain_for(kb, &mut chain_cache, enclosing_sort);
                 record_apply_within_rewrite(
                     kb, apply_term, &named_args, &pos_args,
-                    spec_op_sym, op_short_sym, spec_sort, slot,
+                    spec_op_sym, op_short_sym,
+                    resolved_spec.required_sort, slot,
                     &caller_requires,
                 );
             }
         }
     }
+}
+
+/// WI-232 — fetch the caller's `requires` chain for `enclosing_sort`,
+/// computing it at most once per sort across the whole pass. Returns
+/// a clone of the cached vec so the borrow on `cache` is released
+/// before the caller passes the slice into the `&mut KB` record_*
+/// helpers.
+fn chain_for(
+    kb: &mut KnowledgeBase,
+    cache: &mut HashMap<Symbol, Vec<RequiresEntry>>,
+    enclosing_sort: Option<Symbol>,
+) -> Vec<RequiresEntry> {
+    let s = match enclosing_sort {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    if let Some(cached) = cache.get(&s) {
+        return cached.clone();
+    }
+    let chain = requires_chain(kb, s);
+    cache.insert(s, chain.clone());
+    chain
 }
