@@ -1351,15 +1351,36 @@ pub fn load_all_per_file(
     load_phase_inner(kb, files, resolver)
 }
 
+#[allow(unused_assignments)]
 fn load_phase_inner(
     kb: &mut KnowledgeBase,
     files: &[&ParsedFile],
     resolver: &dyn SourceResolver,
 ) -> Result<(LoadResult, Vec<LoadResult>), Vec<LoadError>> {
-    let mut all_errors = scan_definitions(kb, files);
-    kb.resolve_builtins();
-    register_implicit_prelude_effects(kb);
+    // WI-233: per-sub-phase timing, gated by ANTHILL_LOAD_TIMING=1.
+    // Surfaces which step of the load pipeline dominates wall time
+    // (scan / load / resolve / witnesses / typecheck / req_insertion).
+    let timing = std::env::var("ANTHILL_LOAD_TIMING").map(|v| v == "1").unwrap_or(false);
+    let mut t = std::time::Instant::now();
+    macro_rules! mark {
+        ($label:expr) => {
+            if timing {
+                let now = std::time::Instant::now();
+                eprintln!("[load_timing]   {}: {:?}", $label, now.duration_since(t));
+                t = now;
+            }
+        };
+    }
 
+    let mut all_errors = scan_definitions(kb, files);
+    mark!("scan_definitions");
+    kb.resolve_builtins();
+    mark!("resolve_builtins");
+    register_implicit_prelude_effects(kb);
+    mark!("register_implicit_prelude_effects");
+
+    let item_timing = std::env::var("ANTHILL_ITEM_TIMING").map(|v| v == "1").unwrap_or(false);
+    if item_timing { reset_item_timings(); }
     let mut loaded_paths = HashSet::new();
     let mut all_sorts = Vec::new();
     let mut all_fact_ids = Vec::new();
@@ -1377,17 +1398,27 @@ fn load_phase_inner(
             }
         }
     }
+    mark!(&format!("load_with_visited x {}", files.len()));
+    if item_timing {
+        print_item_timings(&format!("load_with_visited x {}", files.len()));
+    }
     resolve_instantiations(kb);
+    mark!("resolve_instantiations");
     register_requires_axiom_witnesses(kb);
+    mark!("register_requires_axiom_witnesses");
     register_induction_axiom_witnesses(kb);
+    mark!("register_induction_axiom_witnesses");
     register_specialization_witnesses(kb);
+    mark!("register_specialization_witnesses");
     all_errors.extend(super::typing::type_check_sorts(kb, &all_sorts));
+    mark!(&format!("type_check_sorts ({} sorts)", all_sorts.len()));
     // WI-231: the typer tagged each spec-op call site in
     // `kb.call_classifications`; run the requirement-insertion pass
     // to emit the IR rewrites into `kb.dispatch_rewrites`. Skipping
     // this call would leave the IR in the typed-but-unelaborated
     // state (useful for alternative codegen targets).
     super::req_insertion::run(kb);
+    mark!("req_insertion::run");
     if all_errors.is_empty() {
         Ok((
             LoadResult { defined_sorts: all_sorts, fact_rule_ids: all_fact_ids },
@@ -2789,6 +2820,30 @@ fn resolve_by_short_name(kb: &KnowledgeBase, name: &str) -> Option<Symbol> {
     found
 }
 
+// WI-233: per-item-kind aggregator (count, total time). Gated by
+// ANTHILL_ITEM_TIMING=1. Aggregates across all files in a pass; the
+// outer phase reset+print helpers below.
+thread_local! {
+    static ITEM_TIMINGS: std::cell::RefCell<std::collections::HashMap<&'static str, (u32, std::time::Duration)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+pub fn reset_item_timings() {
+    ITEM_TIMINGS.with(|m| m.borrow_mut().clear());
+}
+
+pub fn print_item_timings(label: &str) {
+    ITEM_TIMINGS.with(|m| {
+        let m = m.borrow();
+        let mut entries: Vec<_> = m.iter().collect();
+        entries.sort_by_key(|(_, (_, d))| std::cmp::Reverse(*d));
+        eprintln!("[item_timing/{label}]");
+        for (kind, (count, total)) in entries {
+            eprintln!("  {kind:>16}: {count:>5} items, {total:?}");
+        }
+    });
+}
+
 struct Loader<'a> {
     kb: &'a mut KnowledgeBase,
     parsed: &'a ParsedFile,
@@ -3753,31 +3808,49 @@ impl<'a> Loader<'a> {
         let domain = domain.unwrap_or_else(|| self.kb.make_name_term("_global"));
         self.current_scope = domain;
 
+        // WI-233: per-item-kind timing/count, gated by
+        // ANTHILL_ITEM_TIMING=1. Aggregated across all `load_items`
+        // invocations into thread-local counters; printed by the
+        // outermost caller at end-of-pass.
+        let timing = std::env::var("ANTHILL_ITEM_TIMING").map(|v| v == "1").unwrap_or(false);
+
         for item in items {
-            match item {
-                Item::Namespace(n) => self.load_namespace(n),
-                Item::AbstractSort(s) => self.load_abstract_sort(s, domain),
-                Item::SortWithBody(s) => self.load_sort_with_body(s, domain),
-                Item::Rule(r) => self.load_rule(r, domain),
-                Item::Operation(o) => self.load_operation(o, domain),
-                Item::RequiresDecl(r) => self.load_requires_decl(r, domain),
-                Item::Entity(e) => self.load_entity(e, domain),
-                Item::Fact(f) => self.load_fact(f, domain),
-                Item::Constraint(c) => self.load_constraint(c, domain),
+            let t0 = if timing { Some(std::time::Instant::now()) } else { None };
+            let kind = match item {
+                Item::Namespace(n) => { self.load_namespace(n); "Namespace" }
+                Item::AbstractSort(s) => { self.load_abstract_sort(s, domain); "AbstractSort" }
+                Item::SortWithBody(s) => { self.load_sort_with_body(s, domain); "SortWithBody" }
+                Item::Rule(r) => { self.load_rule(r, domain); "Rule" }
+                Item::Operation(o) => { self.load_operation(o, domain); "Operation" }
+                Item::RequiresDecl(r) => { self.load_requires_decl(r, domain); "RequiresDecl" }
+                Item::Entity(e) => { self.load_entity(e, domain); "Entity" }
+                Item::Fact(f) => { self.load_fact(f, domain); "Fact" }
+                Item::Constraint(c) => { self.load_constraint(c, domain); "Constraint" }
                 Item::OperationBlock(ob) => {
                     for op in &ob.entries {
                         self.load_operation(op, domain);
                     }
+                    "OperationBlock"
                 }
                 Item::RuleBlock(rb) => {
                     for rule in &rb.entries {
                         self.load_rule(rule, domain);
                     }
+                    "RuleBlock"
                 }
-                Item::Describe(d) => self.load_describe(d, domain),
-                Item::Proof(p) => self.load_proof(p, domain),
-                Item::ProvidesClause(pc) => self.load_provides_clause(pc, domain),
-                Item::ProvidesBlock(pb) => self.load_provides_block(pb, domain),
+                Item::Describe(d) => { self.load_describe(d, domain); "Describe" }
+                Item::Proof(p) => { self.load_proof(p, domain); "Proof" }
+                Item::ProvidesClause(pc) => { self.load_provides_clause(pc, domain); "ProvidesClause" }
+                Item::ProvidesBlock(pb) => { self.load_provides_block(pb, domain); "ProvidesBlock" }
+            };
+            if let Some(t0) = t0 {
+                let dt = t0.elapsed();
+                ITEM_TIMINGS.with(|m| {
+                    let mut m = m.borrow_mut();
+                    let entry = m.entry(kind).or_insert((0u32, std::time::Duration::ZERO));
+                    entry.0 += 1;
+                    entry.1 += dt;
+                });
             }
         }
 

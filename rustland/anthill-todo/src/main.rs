@@ -287,6 +287,19 @@ fn scan_dir(project_dir: &Path) -> PathBuf {
 // ── KB loading ──────────────────────────────────────────────────
 
 fn load_kb(project_dir: &Path, stdlib_path: Option<&Path>) -> Result<KnowledgeBase, String> {
+    // WI-233: phase timings, gated by ANTHILL_TODO_TIMING=1. Lets a
+    // user see which phase of `load_kb` dominates the wall time.
+    let timing = std::env::var("ANTHILL_TODO_TIMING").map(|v| v == "1").unwrap_or(false);
+    let t_start = std::time::Instant::now();
+    let mut t_phase = t_start;
+    let mark = |label: &str, prev: &mut std::time::Instant| {
+        if timing {
+            let now = std::time::Instant::now();
+            eprintln!("[timing] {label}: {:?}", now.duration_since(*prev));
+            *prev = now;
+        }
+    };
+
     // Phase 1: Parse stdlib (embedded or from disk)
     let mut stdlib_parsed: Vec<ParsedFile> = Vec::new();
 
@@ -311,6 +324,7 @@ fn load_kb(project_dir: &Path, stdlib_path: Option<&Path>) -> Result<KnowledgeBa
             eprintln!("warning: {e}");
         }
     }
+    mark(&format!("parse stdlib ({} files)", stdlib_parsed.len()), &mut t_phase);
 
     // Phase 2: Parse project files (only from anthill-todo/ subdir, not whole project)
     let scan = scan_dir(project_dir);
@@ -328,6 +342,7 @@ fn load_kb(project_dir: &Path, stdlib_path: Option<&Path>) -> Result<KnowledgeBa
             }
         }
     }
+    mark(&format!("parse project ({} files)", domain_parsed.len()), &mut t_phase);
 
     if stdlib_parsed.is_empty() && domain_parsed.is_empty() {
         return Err("no .anthill files found".into());
@@ -346,6 +361,7 @@ fn load_kb(project_dir: &Path, stdlib_path: Option<&Path>) -> Result<KnowledgeBa
             eprintln!("warning: {e}");
         }
     }
+    mark("load_stdlib (scan + load + typecheck + req_insertion)", &mut t_phase);
 
     let domain_refs: Vec<&ParsedFile> = domain_parsed.iter().collect();
     if let Err(errs) = load::load_incremental(&mut kb, &domain_refs, &resolver) {
@@ -353,6 +369,7 @@ fn load_kb(project_dir: &Path, stdlib_path: Option<&Path>) -> Result<KnowledgeBa
             eprintln!("warning: {e}");
         }
     }
+    mark("load_incremental (project)", &mut t_phase);
 
     // Load .toml/.json data files (only from scan dir, not whole project)
     let data_files = collect_data_files(&[scan]);
@@ -373,6 +390,10 @@ fn load_kb(project_dir: &Path, stdlib_path: Option<&Path>) -> Result<KnowledgeBa
                 for e in &errs { eprintln!("warning: {}: {e}", file.display()); }
             }
         }
+    }
+    mark("load data files (toml/json)", &mut t_phase);
+    if timing {
+        eprintln!("[timing] TOTAL: {:?}", t_start.elapsed());
     }
 
     Ok(kb)

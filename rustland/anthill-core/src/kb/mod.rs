@@ -175,6 +175,13 @@ pub struct KnowledgeBase {
     // Discrimination tree index for structural term matching
     discrim: SubstTree<RuleId>,
 
+    // WI-233: dedup index for ground facts (body-empty rules). Keyed by
+    // (head, sort, domain) so `assert_fact` can short-circuit on a
+    // duplicate in O(1) instead of scanning `by_sort[sort]` linearly.
+    // Pre-WI-233 the scan averaged ~180 entries per call on a stdlib
+    // load; this index brings it to a single hash lookup.
+    fact_dedup: HashMap<(TermId, TermId, TermId), RuleId>,
+
     // Builtin dispatch: functor symbol → builtin tag
     builtins: HashMap<Symbol, BuiltinTag>,
 
@@ -299,6 +306,7 @@ impl KnowledgeBase {
             entity_parent: HashMap::new(),
             sort_info: HashMap::new(),
             discrim: SubstTree::new(),
+            fact_dedup: HashMap::new(),
             builtins: HashMap::new(),
             entity_fields: HashMap::new(),
             entity_short_to_qualified: HashMap::new(),
@@ -591,6 +599,15 @@ impl KnowledgeBase {
         // Index by top-level functor
         if let Term::Fn { functor, .. } = *self.terms.get(head) {
             self.by_functor.entry(functor).or_default().push(rule_id);
+        }
+
+        // WI-233: ground-fact dedup index. Inserted only for body-empty
+        // entries — rules with a body are matched structurally via the
+        // discrim tree, not exact-equality. We do not overwrite an
+        // existing entry; the dedup check in `assert_fact` upstream
+        // routes duplicates to the existing RuleId before we get here.
+        if self.rules[rule_id.index()].body.is_empty() {
+            self.fact_dedup.entry((head, sort, domain)).or_insert(rule_id);
         }
 
         // Discrimination tree index (insert_pattern handles vars in head)
@@ -943,17 +960,22 @@ impl KnowledgeBase {
         domain: TermId,
         meta: Option<TermId>,
     ) -> RuleId {
-        // Dedup: check if this exact fact already exists
-        if let Some(ids) = self.by_sort.get(&sort) {
-            for &rid in ids {
-                let entry = &self.rules[rid.index()];
-                if !entry.retracted
-                    && entry.head == term
-                    && entry.domain == domain
-                    && entry.body.is_empty()
-                {
-                    return rid;
-                }
+        // WI-233: O(1) ground-fact dedup. Pre-WI-233 this was a linear
+        // scan over `by_sort[sort]` which approached O(N²) total work
+        // across many same-sort facts (~180 entries scanned per call
+        // on the stdlib load; ~224 per call for the project workitem
+        // set). At current N the wins are in the noise (~1-2ms in
+        // release) but the algorithmic improvement matters as workitem
+        // sets grow.
+        if let Some(&rid) = self.fact_dedup.get(&(term, sort, domain)) {
+            // Re-check `retracted` — the entry stays in the dedup map
+            // even after retract() so re-asserting after retract
+            // returns the same RuleId rather than allocating a new
+            // slot. If callers want re-assert-after-retract to revive
+            // the fact, they go through assert_rule directly.
+            let entry = &self.rules[rid.index()];
+            if !entry.retracted {
+                return rid;
             }
         }
         self.assert_rule(term, vec![], sort, domain, meta)
@@ -989,6 +1011,20 @@ impl KnowledgeBase {
         if let Some(label_sym) = label {
             if let Some(v) = self.rules_by_label.get_mut(&label_sym) {
                 v.retain(|&rid| rid != id);
+            }
+        }
+
+        // WI-233: ground-fact dedup index. Remove only if this RuleId
+        // is the one currently keyed at (head, sort, domain) — a
+        // previously-retracted-then-re-asserted fact may have a
+        // different RuleId at that key.
+        if body.is_empty() {
+            if let std::collections::hash_map::Entry::Occupied(e) =
+                self.fact_dedup.entry((head, sort, domain))
+            {
+                if *e.get() == id {
+                    e.remove();
+                }
             }
         }
 
