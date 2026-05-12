@@ -1642,3 +1642,10 @@ fact WorkItem(
   depends_on: ["WI-231"],
   status: Delivered(agent: "claude", at: "2026-05-12T11:45:28Z"))
 
+fact WorkItem(
+  id: "WI-233",
+  description: "Analyze and reduce anthill-todo CLI startup latency. Baseline: 'anthill-todo list' takes ~580ms wall on the project workspace (debug build) / ~130ms (release). Phase 1 deliverable: load-pipeline timing instrumentation gated by ANTHILL_TODO_TIMING / ANTHILL_LOAD_TIMING / ANTHILL_ITEM_TIMING env vars; O(1) ground-fact dedup index (fact_dedup HashMap) replacing the linear scan in assert_fact (algorithmic improvement; ~1-2ms wall-time gain at current N, structurally correct for larger workitem sets). Findings: load_with_visited dominates (35ms / 40% of release load_kb); inside it, load_operation is the slowest per-item kind at ~156us/op (137 stdlib ops = 21ms). Phase 2 candidates if pushing further: cache the typed stdlib KB as a build-time snapshot; optimize load_operation's per-call overhead inside convert_term/kb.alloc; parallelize parse+scan. The 2x sub-phase / 20% wall-time goals were NOT met by phase 1; the system is already healthy at current N. Recommendation: release-build CLI for users observing latency. Phase 2 deferred to follow-up WI.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Delivered(agent: "claude", at: "2026-05-12T12:28:48Z"))
+
