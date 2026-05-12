@@ -19,7 +19,7 @@ use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::subst::Substitution;
 use anthill_core::kb::typing::{
     resolve, sort_goal_from_subst, ResolutionScope, ResolvedTree, ResolutionResult, SortGoal,
-    requires_chain,
+    requires_chain_flat,
 };
 use anthill_core::kb::term::{Term, TermId, Var};
 use anthill_core::parse;
@@ -489,7 +489,7 @@ fn available_requires_match_short_circuits_resolution() {
     let mut kb = load_with(src);
     let holder = kb.try_resolve_symbol("test.wi224.scope.Wi224Holder")
         .expect("Wi224Holder registered");
-    let chain = requires_chain(&kb, holder);
+    let chain = requires_chain_flat(&kb, holder);
     let goal = goal_for(&mut kb, "anthill.prelude.Eq", "T", "anthill.prelude.Int");
     let scope = ResolutionScope { available_requires: &chain };
     match resolve(&mut kb, &goal, &scope) {

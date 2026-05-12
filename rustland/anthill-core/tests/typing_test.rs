@@ -1645,7 +1645,7 @@ end
 // types_compatible tests
 // ══════════════════════════════════════════════════════════════════
 
-use anthill_core::kb::typing::{types_compatible, is_subtype, requires_chain, check_obligations, type_check_sorts};
+use anthill_core::kb::typing::{types_compatible, is_subtype, requires_chain_flat, check_obligations, type_check_sorts};
 
 #[test]
 fn subtype_same_sort_ref() {
@@ -1904,7 +1904,7 @@ fn requires_compatible() {
 fn requires_chain_ordered_includes_eq() {
     let kb = load_stdlib_kb();
     let ordered_sym = kb.resolve_symbol("anthill.prelude.Ordered");
-    let chain = requires_chain(&kb, ordered_sym);
+    let chain = requires_chain_flat(&kb, ordered_sym);
     let eq_name = "Eq";
     assert!(chain.iter().any(|e| kb.resolve_sym(e.required_sort) == eq_name),
         "Ordered's requires chain should include Eq");
@@ -1916,7 +1916,7 @@ fn obligations_spec_sort_not_checked() {
     // They declare a transitive requirement — obligation checking applies to concrete sorts.
     let kb = load_stdlib_kb();
     let ordered_sym = kb.resolve_symbol("anthill.prelude.Ordered");
-    let chain = requires_chain(&kb, ordered_sym);
+    let chain = requires_chain_flat(&kb, ordered_sym);
     assert!(!chain.is_empty(), "Ordered should have requires entries");
     // Ordered itself is a spec — it doesn't need to implement Eq's operations.
     // A concrete sort that requires Ordered would need to provide both.
@@ -3137,7 +3137,7 @@ fn wi031_stdlib_load_then_typecheck_then_verify_typing_facts() {
     for (requirer, spec) in pairs {
         let r_sym = kb.resolve_symbol(requirer);
         let s_sym = kb.resolve_symbol(spec);
-        let chain = requires_chain(&kb, r_sym);
+        let chain = requires_chain_flat(&kb, r_sym);
         assert!(chain.iter().any(|e| e.required_sort == s_sym),
             "no SortRequiresInfo fact found for `{requirer} requires {spec}`");
     }

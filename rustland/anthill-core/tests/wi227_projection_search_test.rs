@@ -166,7 +166,7 @@ fn nested_handle_emits_requirement_at_sort_chain() {
 
     let caller_sub_chains: Vec<Vec<RequiresEntry>> = caller_requires
         .iter()
-        .map(|ar| anthill_core::kb::typing::requires_chain(&kb, ar.required_sort))
+        .map(|ar| anthill_core::kb::typing::requires_chain_flat(&kb, ar.required_sort))
         .collect();
     let projection = build_dep_projection(
         &mut kb, &dep, &caller_requires, &caller_sub_chains, &syms,
@@ -262,7 +262,7 @@ fn ground_dep_emits_construct_requirement() {
 
     let caller_sub_chains: Vec<Vec<RequiresEntry>> = caller_requires
         .iter()
-        .map(|ar| anthill_core::kb::typing::requires_chain(&kb, ar.required_sort))
+        .map(|ar| anthill_core::kb::typing::requires_chain_flat(&kb, ar.required_sort))
         .collect();
     let projection = build_dep_projection(
         &mut kb, &dep, &caller_requires, &caller_sub_chains, &syms,

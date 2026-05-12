@@ -220,7 +220,7 @@ impl TypingEnv {
     /// snapshot its `requires` chain (cheap-ish: one `SortRequiresInfo`
     /// scan via `requires_chain`). `check_apply` reads the cached chain
     /// per spec-op dispatch without re-walking facts.
-    pub fn set_enclosing_sort(&mut self, kb: &KnowledgeBase, sort: Option<Symbol>) {
+    pub fn set_enclosing_sort(&mut self, kb: &mut KnowledgeBase, sort: Option<Symbol>) {
         self.enclosing = sort.map(|s| EnclosingSort {
             sort: s,
             requires: requires_chain(kb, s),
@@ -3658,7 +3658,7 @@ fn sort_sym_compatible(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym: Sym
 // ── Requires chain ─────────────────────────────────────────────
 
 /// A direct requires entry: sort A requires spec B with the given SortView term.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RequiresEntry {
     /// The base sort symbol of the required spec (e.g., Eq in `requires Eq[T=Int]`).
     pub required_sort: Symbol,
@@ -3666,28 +3666,94 @@ pub struct RequiresEntry {
     pub spec: TermId,
 }
 
+/// WI-230 — tree-shaped declaration of a sort's `requires` chain. Each
+/// node holds one `RequiresEntry` plus a recursive `Vec` of sub-entries
+/// (the required spec's *own* `requires`, transitively). Substitution
+/// is composed top-down so each node's `entry.spec` carries the
+/// *root-scoped* view of bindings — Eq in `Wi222Outer requires Ordered
+/// requires Eq` reads `T = Wi222Outer.T` directly, not `T = Ordered.T`.
+///
+/// This mirrors the runtime arena's `RequirementSlot` tree shape (slot
+/// = node, sub-handles = sub_requires) and the typer's
+/// `ResolvedTree::Conditional { sub_resolutions }`. All three layers
+/// now share one tree skeleton; consumers can walk them by the same
+/// recursion.
+#[derive(Clone, Debug)]
+pub struct RequireNode {
+    pub entry: RequiresEntry,
+    pub sub_requires: Vec<RequireNode>,
+}
+
+impl RequireNode {
+    /// Walk the tree and accumulate every node's entry into a flat list
+    /// (pre-order). Back-compat for callers that consumed the old
+    /// `Vec<RequiresEntry>` shape; new code should walk the tree directly.
+    pub fn flatten_into(&self, out: &mut Vec<RequiresEntry>) {
+        out.push(self.entry.clone());
+        for sub in &self.sub_requires {
+            sub.flatten_into(out);
+        }
+    }
+}
+
+/// WI-230 flatten helper for a forest of top-level nodes (the shape
+/// `requires_tree` returns).
+pub fn flatten_require_tree(nodes: &[RequireNode]) -> Vec<RequiresEntry> {
+    let mut out = Vec::new();
+    for node in nodes {
+        node.flatten_into(&mut out);
+    }
+    out
+}
+
 /// Collect the full transitive requires chain for a sort.
 /// Returns all (required_sort_sym, spec_term) pairs reachable from `sort_sym`.
 ///
-/// WI-226: memoized on `kb.requires_chain_cache`. Top-level memoization
-/// only — recursive sub-frames inside `collect_requires` bypass the
-/// cache because a cycle-truncated sub-result can't be canonicalized
-/// (would corrupt the cache entry for the inner sort). Subsequent
-/// queries for the same `sort_sym` are an O(1) HashMap hit.
-pub fn requires_chain(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
-    if let Some(cached) = kb.requires_chain_cache.borrow().get(&sort_sym) {
-        return (**cached).clone();
+/// WI-230: now a thin wrapper over `requires_tree` + `flatten_require_tree`.
+/// Substituted bindings flow through (each entry's spec is root-scoped),
+/// which differs from the pre-WI-230 behavior of returning each entry
+/// in its *declaring* sort's view. Consumers that compared bindings via
+/// `dispatch_values_match` continue to work — the equivalence is
+/// preserved under symmetric matching with type-param wildcards.
+///
+/// Takes `&mut KnowledgeBase` because substitution composition may
+/// allocate freshly-substituted `Term::Fn` nodes. Consumers that only
+/// read `required_sort` (and never compare bindings) should use
+/// `requires_chain_flat` instead — it doesn't substitute and so
+/// preserves the `&KnowledgeBase` signature.
+pub fn requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
+    let tree = requires_tree(kb, sort_sym);
+    flatten_require_tree(&tree)
+}
+
+/// WI-230 — pre-WI-230 flat chain (no substitution composition). Used
+/// by consumers that only filter on `required_sort` and don't read the
+/// spec bindings — `sort_refines`, `check_obligations`,
+/// `seed_entry_requirements`, etc. Keeps `&KnowledgeBase` so callers
+/// up the `types_compatible` chain don't need to convert to `&mut`.
+///
+/// Memoized on the same `requires_tree_cache` as `requires_tree` since
+/// the flat shape can be derived by flattening the tree. The
+/// substituted bindings in the tree are dropped in the flatten step
+/// (consumers of the flat form ignore bindings anyway).
+pub fn requires_chain_flat(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
+    if let Some(cached) = kb.requires_tree_cache.borrow().get(&sort_sym) {
+        return flatten_require_tree(&cached);
     }
+    // No cache yet — build the flat chain directly (without substitution)
+    // and skip the tree-cache write (we don't have &mut). Subsequent
+    // calls on a populated tree cache hit the fast path above.
     let mut result = Vec::new();
-    let mut visited = Vec::new();
-    collect_requires(kb, sort_sym, &mut result, &mut visited);
-    kb.requires_chain_cache
-        .borrow_mut()
-        .insert(sort_sym, Rc::new(result.clone()));
+    let mut visited: Vec<Symbol> = Vec::new();
+    collect_requires_unsubstituted(kb, sort_sym, &mut result, &mut visited);
     result
 }
 
-fn collect_requires(
+/// WI-230 internal: the pre-WI-230 transitive walk, without
+/// substitution composition. Equivalent to the old `collect_requires`.
+/// Used as a fallback by `requires_chain_flat` when the tree cache
+/// isn't yet populated for the queried sort.
+fn collect_requires_unsubstituted(
     kb: &KnowledgeBase,
     sort_sym: Symbol,
     result: &mut Vec<RequiresEntry>,
@@ -3695,12 +3761,72 @@ fn collect_requires(
 ) {
     if visited.contains(&sort_sym) { return; }
     visited.push(sort_sym);
+    for entry in direct_requires(kb, sort_sym) {
+        result.push(entry.clone());
+        collect_requires_unsubstituted(kb, entry.required_sort, result, visited);
+    }
+}
 
-    let requires_sym = match kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") {
-        Some(s) => s,
-        None => return,
+/// WI-230 — build the substitution-composed `requires` tree for
+/// `sort_sym`. Top-level memoized on `kb.requires_tree_cache`: first
+/// call walks `SortRequiresInfo` and substitutes; subsequent calls
+/// for the same sort return the same `Rc<Vec<RequireNode>>` from cache.
+pub fn requires_tree(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Rc<Vec<RequireNode>> {
+    if let Some(cached) = kb.requires_tree_cache.borrow().get(&sort_sym) {
+        return cached.clone();
+    }
+    let mut visited: Vec<Symbol> = Vec::new();
+    let nodes = build_requires_tree(kb, sort_sym, &HashMap::new(), &mut visited);
+    let rc = Rc::new(nodes);
+    kb.requires_tree_cache
+        .borrow_mut()
+        .insert(sort_sym, rc.clone());
+    rc
+}
+
+/// WI-230 internal: recursive tree builder. Threads a substitution map
+/// (`subst`) from parent into the child level — at each step, the
+/// child's raw spec gets its `Ref(<parent's-param-qualified>)` atoms
+/// rewritten to whatever the parent bound them to. Returns the list
+/// of top-level RequireNodes (one per direct `requires` of `sort_sym`).
+fn build_requires_tree(
+    kb: &mut KnowledgeBase,
+    sort_sym: Symbol,
+    subst: &HashMap<Symbol, TermId>,
+    visited: &mut Vec<Symbol>,
+) -> Vec<RequireNode> {
+    if visited.contains(&sort_sym) {
+        // Cycle break — return empty so siblings still get walked.
+        return Vec::new();
+    }
+    visited.push(sort_sym);
+
+    let raw_entries = direct_requires(kb, sort_sym);
+    let mut nodes = Vec::with_capacity(raw_entries.len());
+    for raw in raw_entries {
+        let substituted_spec = substitute_in_spec(kb, raw.spec, subst);
+        let entry = RequiresEntry {
+            required_sort: raw.required_sort,
+            spec: substituted_spec,
+        };
+        let child_subst = build_child_subst_map(kb, &entry);
+        let sub_requires = build_requires_tree(kb, raw.required_sort, &child_subst, visited);
+        nodes.push(RequireNode { entry, sub_requires });
+    }
+
+    visited.pop();
+    nodes
+}
+
+/// WI-230 internal: walk `SortRequiresInfo` for one sort and return
+/// its direct (non-transitive) requires entries. Same logic as the
+/// pre-WI-230 `collect_requires` but without the recursive descent —
+/// the tree builder owns recursion.
+fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
+    let mut out = Vec::new();
+    let Some(requires_sym) = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") else {
+        return out;
     };
-
     let sort_name = kb.resolve_sym(sort_sym);
 
     for rid in kb.by_functor(requires_sym) {
@@ -3711,7 +3837,7 @@ fn collect_requires(
             _ => continue,
         };
 
-        // Check if this SortRequiresInfo is for our sort
+        // Check that this SortRequiresInfo is for our sort.
         let sort_ref_tid = match named_args.iter()
             .find(|(s, _)| kb.resolve_sym(*s) == "sort_ref")
             .map(|(_, v)| *v)
@@ -3727,7 +3853,7 @@ fn collect_requires(
             continue;
         }
 
-        // Get spec field — SortView(base_sort, bindings...)
+        // Extract spec (SortView) and the base sort it describes.
         let spec_tid = match named_args.iter()
             .find(|(s, _)| kb.resolve_sym(*s) == "spec")
             .map(|(_, v)| *v)
@@ -3735,36 +3861,84 @@ fn collect_requires(
             Some(t) => t,
             None => continue,
         };
-
-        // Extract base sort from spec:
-        // - SortView(base_sort, bindings...): pos_args[0] is the base sort term
-        // - Plain sort term (nullary Fn): functor is the sort itself
         let base_functor = match kb.get_term(spec_tid) {
             Term::Fn { functor, pos_args, named_args, .. } if !pos_args.is_empty() => {
-                // SortView: base sort is in pos_args[0]
                 match kb.get_term(pos_args[0]) {
                     Term::Fn { functor, .. } => *functor,
                     _ => continue,
                 }
             }
             Term::Fn { functor, pos_args, named_args, .. }
-                if pos_args.is_empty() && named_args.is_empty() => {
-                // Plain sort term: `requires Paintable`
+                if pos_args.is_empty() && named_args.is_empty() =>
+            {
                 *functor
             }
             _ => continue,
         };
 
-        result.push(RequiresEntry { required_sort: base_functor, spec: spec_tid });
-
-        // Transitive: follow base sort's requires
-        collect_requires(kb, base_functor, result, visited);
+        out.push(RequiresEntry { required_sort: base_functor, spec: spec_tid });
     }
+    out
+}
+
+/// WI-230 internal: substitution-aware deep walk. Replaces both
+/// `Term::Ref(s)` AND nullary `Term::Fn(s, [], [])` (the loader's
+/// alternative encoding for a bare name reference; see WI-224's
+/// `substitute_impl_params_alloc`) where `s` is in `map` with the
+/// mapped TermId. Recurses into non-nullary `Term::Fn` children.
+/// Allocates fresh `Term::Fn` nodes only when a child was actually
+/// rewritten (preserves hash-cons identity for unchanged sub-terms).
+fn substitute_in_spec(
+    kb: &mut KnowledgeBase,
+    spec: TermId,
+    map: &HashMap<Symbol, TermId>,
+) -> TermId {
+    if map.is_empty() {
+        return spec;
+    }
+    match kb.get_term(spec).clone() {
+        Term::Ref(s) => map.get(&s).copied().unwrap_or(spec),
+        Term::Fn { functor, pos_args, named_args }
+            if pos_args.is_empty() && named_args.is_empty() =>
+        {
+            // Nullary Fn — treat as a name reference.
+            map.get(&functor).copied().unwrap_or(spec)
+        }
+        Term::Fn { .. } => kb.map_fn_children(spec, |kb, child| {
+            substitute_in_spec(kb, child, map)
+        }),
+        _ => spec,
+    }
+}
+
+/// WI-230 internal: from an entry whose spec has already been
+/// substituted to the current scope, build the substitution map to
+/// pass into the entry's required_sort sub-tree. Maps each binding's
+/// *qualified* param symbol (e.g. `anthill.prelude.Eq.T`) to its
+/// substituted value, so the child's raw spec (which uses qualified
+/// `Ref(Eq.T)`) translates one more level toward root scope.
+fn build_child_subst_map(
+    kb: &KnowledgeBase,
+    entry: &RequiresEntry,
+) -> HashMap<Symbol, TermId> {
+    let mut map = HashMap::new();
+    let Some((base_sort, bindings)) = unwrap_spec_view(kb, entry.spec) else {
+        return map;
+    };
+    let base_qn = kb.qualified_name_of(base_sort).to_string();
+    for (short_sym, value) in &bindings {
+        let short_name = kb.resolve_sym(*short_sym);
+        let param_qn = format!("{base_qn}.{short_name}");
+        if let Some(param_qualified) = kb.try_resolve_symbol(&param_qn) {
+            map.insert(param_qualified, *value);
+        }
+    }
+    map
 }
 
 /// Check if sort A refines sort B via `requires` chain.
 fn sort_refines(kb: &KnowledgeBase, a_sym: Symbol, b_sym: Symbol) -> bool {
-    let chain = requires_chain(kb, a_sym);
+    let chain = requires_chain_flat(kb, a_sym);
     let b_name = kb.resolve_sym(b_sym);
     chain.iter().any(|entry| {
         entry.required_sort == b_sym || kb.resolve_sym(entry.required_sort) == b_name
@@ -3789,7 +3963,7 @@ pub struct MissingObligation {
 pub fn check_obligations(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<MissingObligation> {
     let mut missing = Vec::new();
     let sort_name = kb.resolve_sym(sort_sym).to_string();
-    let chain = requires_chain(kb, sort_sym);
+    let chain = requires_chain_flat(kb, sort_sym);
 
     // Collect operations provided by this sort
     let provided_ops = sort_operation_names(kb, sort_sym);

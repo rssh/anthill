@@ -456,7 +456,7 @@ impl Interpreter {
         let Some(parent_sym) = self.kb.try_resolve_symbol(parent_qn) else {
             return smallvec::SmallVec::new();
         };
-        let chain = crate::kb::typing::requires_chain(&self.kb, parent_sym);
+        let chain = crate::kb::typing::requires_chain_flat(&self.kb, parent_sym);
         let mut out: smallvec::SmallVec<[value::RequirementHandle; 2]> =
             smallvec::SmallVec::new();
         for _ in &chain {

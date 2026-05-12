@@ -242,16 +242,17 @@ pub struct KnowledgeBase {
     pub(crate) dispatch_origin: HashMap<TermId, Symbol>,
 
     // WI-226 Cache A — memoized transitive `requires` closure per sort.
-    // `requires_chain(kb, S)` is recursive over SortRequiresInfo; without
-    // memo every defer/Pin-now call site rewalks `by_functor` once per
-    // level. RefCell-wrapped so `requires_chain` keeps its `&KnowledgeBase`
-    // signature (the cache is the only interior-mutable piece).
-    //
-    // Lifetime: the cache fills lazily during typing (after `load_all`
-    // finishes asserting facts), so the usual flow keeps it valid for
-    // the KB's lifetime. Code paths that assert new `SortRequiresInfo`
-    // facts post-typing must call `invalidate_requires_chain_cache`.
+    // After WI-230, this cache is dormant — `requires_chain` now routes
+    // through `requires_tree_cache` (the tree-shaped cache). Kept here
+    // to avoid breaking the `requires_chain_cache_contains` accessor
+    // tests rely on; cleared at the same time as the tree cache.
     pub(crate) requires_chain_cache: RefCell<HashMap<Symbol, Rc<Vec<crate::kb::typing::RequiresEntry>>>>,
+
+    // WI-230 — memoized substitution-composed `requires` tree per sort.
+    // Each entry is the `Rc<Vec<RequireNode>>` `requires_tree(kb, S)`
+    // returns. Same lifetime as Cache A: fills lazily during typing;
+    // invalidated by `invalidate_requires_chain_cache`.
+    pub(crate) requires_tree_cache: RefCell<HashMap<Symbol, Rc<Vec<crate::kb::typing::RequireNode>>>>,
 
     // WI-226 Cache B — memoized spec-op SLD dispatch results, keyed by
     // `(SortGoal, scope)`. Saves re-walking `SortProvidesInfo` for
@@ -305,18 +306,19 @@ impl KnowledgeBase {
             dispatch_rewrites: HashMap::new(),
             dispatch_origin: HashMap::new(),
             requires_chain_cache: RefCell::new(HashMap::new()),
+            requires_tree_cache: RefCell::new(HashMap::new()),
             resolve_cache: RefCell::new(HashMap::new()),
         }
     }
 
     /// Drop the memoized `requires_chain` results. Called when a new
     /// `SortRequiresInfo` fact is asserted after the cache filled, so
-    /// stale chains can't be served. WI-226. Public so test fixtures
-    /// and out-of-tree elaboration passes can clear the cache between
-    /// staged assertions.
+    /// stale chains can't be served. WI-226 / WI-230. Clears both the
+    /// flat chain cache and the tree cache.
     #[allow(dead_code)]
     pub fn invalidate_requires_chain_cache(&self) {
         self.requires_chain_cache.borrow_mut().clear();
+        self.requires_tree_cache.borrow_mut().clear();
     }
 
     /// Drop the memoized spec-op SLD dispatch results. Called when a
@@ -334,11 +336,13 @@ impl KnowledgeBase {
         self.resolve_cache.borrow().len()
     }
 
-    /// WI-226: does the `requires_chain` cache hold an entry for
-    /// `sort_sym`? Diagnostic / test inspector — distinguishes
-    /// pre-first-call (empty) from post-first-call (memoized) state.
+    /// WI-226 / WI-230: does the `requires_chain` (tree) cache hold an
+    /// entry for `sort_sym`? Diagnostic / test inspector —
+    /// distinguishes pre-first-call (empty) from post-first-call
+    /// (memoized) state. After WI-230 this points at the tree cache,
+    /// which is the canonical source of `requires_chain` results.
     pub fn requires_chain_cache_contains(&self, sort_sym: Symbol) -> bool {
-        self.requires_chain_cache.borrow().contains_key(&sort_sym)
+        self.requires_tree_cache.borrow().contains_key(&sort_sym)
     }
 
     /// Record that `original_apply` should be rewritten to `rewritten_apply`

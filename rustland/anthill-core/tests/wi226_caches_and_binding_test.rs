@@ -42,11 +42,11 @@ fn load_stdlib_only() -> KnowledgeBase {
 
 #[test]
 fn requires_chain_memoizes_top_level_query() {
-    // Cache A acceptance: requires_chain populates kb.requires_chain_cache
-    // on first call, and subsequent calls for the same sort return the
-    // cached value (verifiable by reading the cache directly — the
-    // entry exists after first call but didn't before).
-    let kb = load_stdlib_only();
+    // Cache A acceptance: requires_chain populates the requires-tree
+    // cache on first call, and subsequent calls for the same sort
+    // return the cached value (verifiable via
+    // `requires_chain_cache_contains` — false before, true after).
+    let mut kb = load_stdlib_only();
     let ordered_sym = kb
         .try_resolve_symbol("anthill.prelude.Ordered")
         .expect("Ordered sort");
@@ -57,7 +57,7 @@ fn requires_chain_memoizes_top_level_query() {
         "cache must start empty for Ordered"
     );
 
-    let first = requires_chain(&kb, ordered_sym);
+    let first = requires_chain(&mut kb, ordered_sym);
     // After first call, the cache holds Ordered's chain.
     assert!(
         kb.requires_chain_cache_contains(ordered_sym),
@@ -66,7 +66,7 @@ fn requires_chain_memoizes_top_level_query() {
 
     // Second call returns the same content (structural equality on
     // (required_sort, spec) — both Symbol/TermId Copy).
-    let second = requires_chain(&kb, ordered_sym);
+    let second = requires_chain(&mut kb, ordered_sym);
     assert_eq!(
         first.len(),
         second.len(),
@@ -168,7 +168,7 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
 
     let caller_sub_chains: Vec<Vec<RequiresEntry>> = caller_requires
         .iter()
-        .map(|ar| requires_chain(&kb, ar.required_sort))
+        .map(|ar| requires_chain(&mut kb, ar.required_sort))
         .collect();
 
     let projection = build_dep_projection(

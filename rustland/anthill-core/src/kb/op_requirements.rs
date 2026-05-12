@@ -27,7 +27,7 @@ use smallvec::SmallVec;
 use crate::intern::Symbol;
 
 use super::term::{Term, TermId};
-use super::typing::{list_to_vec, lookup_spec_op_dispatch, requires_chain, resolve_handle};
+use super::typing::{list_to_vec, lookup_spec_op_dispatch, requires_chain_flat, resolve_handle};
 use super::KnowledgeBase;
 
 /// A single requirement entry: a spec sort plus the bindings the
@@ -189,7 +189,7 @@ pub fn check_sort_requirements_coverage(
     kb: &KnowledgeBase,
     sort_sym: Symbol,
 ) -> Vec<UncoveredRequirement> {
-    let chain = requires_chain(kb, sort_sym);
+    let chain = requires_chain_flat(kb, sort_sym);
     let declared: std::collections::HashSet<Symbol> =
         chain.iter().map(|e| e.required_sort).collect();
 
