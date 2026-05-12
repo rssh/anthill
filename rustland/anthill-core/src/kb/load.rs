@@ -1382,6 +1382,12 @@ fn load_phase_inner(
     register_induction_axiom_witnesses(kb);
     register_specialization_witnesses(kb);
     all_errors.extend(super::typing::type_check_sorts(kb, &all_sorts));
+    // WI-231: the typer tagged each spec-op call site in
+    // `kb.call_classifications`; run the requirement-insertion pass
+    // to emit the IR rewrites into `kb.dispatch_rewrites`. Skipping
+    // this call would leave the IR in the typed-but-unelaborated
+    // state (useful for alternative codegen targets).
+    super::req_insertion::run(kb);
     if all_errors.is_empty() {
         Ok((
             LoadResult { defined_sorts: all_sorts, fact_rule_ids: all_fact_ids },

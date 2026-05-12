@@ -13,6 +13,7 @@ pub mod occurrence;
 pub mod typing;
 pub mod op_info;
 pub mod op_requirements;
+pub mod req_insertion;
 pub mod term_view;
 pub mod execute;
 pub mod route;
@@ -254,6 +255,16 @@ pub struct KnowledgeBase {
     // invalidated by `invalidate_requires_chain_cache`.
     pub(crate) requires_tree_cache: RefCell<HashMap<Symbol, Rc<Vec<crate::kb::typing::RequireNode>>>>,
 
+    // WI-231 — per-call-site classification side-table produced by the
+    // typer (`check_apply`) and consumed by the requirement-insertion
+    // pass (`kb::req_insertion::run`). Keyed by the apply term's
+    // TermId; value is the `CallClass` describing what kind of
+    // rewrite (if any) the call site should receive. External codegen
+    // targets can read this directly to implement alternative
+    // elaborations. See `docs/design/operation-call-model.md`
+    // §"Pass structure".
+    pub(crate) call_classifications: HashMap<TermId, crate::kb::typing::CallClass>,
+
     // WI-226 Cache B — memoized spec-op SLD dispatch results, keyed by
     // `(SortGoal, scope)`. Saves re-walking `SortProvidesInfo` for
     // repeated spec-op calls at the same (spec, bindings, scope) — common
@@ -308,7 +319,34 @@ impl KnowledgeBase {
             requires_chain_cache: RefCell::new(HashMap::new()),
             requires_tree_cache: RefCell::new(HashMap::new()),
             resolve_cache: RefCell::new(HashMap::new()),
+            call_classifications: HashMap::new(),
         }
+    }
+
+    /// WI-231: read-only iterator over the call-site classifications
+    /// produced by the typer. Exposed so external codegen targets can
+    /// implement alternative elaborations without invoking the
+    /// standard `req_insertion::run` pass.
+    pub fn call_classifications_iter(
+        &self,
+    ) -> impl Iterator<Item = (TermId, &crate::kb::typing::CallClass)> {
+        self.call_classifications.iter().map(|(k, v)| (*k, v))
+    }
+
+    /// WI-231: look up a single classification by apply-term TermId.
+    pub fn call_classification_of(
+        &self,
+        apply_term: TermId,
+    ) -> Option<&crate::kb::typing::CallClass> {
+        self.call_classifications.get(&apply_term)
+    }
+
+    /// WI-231: insert a classification row. Called from the typer
+    /// during `check_apply`. `pub(crate)` so out-of-crate code can't
+    /// inject classifications, but the in-crate `req_insertion::run`
+    /// and tests can clear/read freely.
+    pub(crate) fn classify_apply(&mut self, apply_term: TermId, class: crate::kb::typing::CallClass) {
+        self.call_classifications.insert(apply_term, class);
     }
 
     /// Drop the memoized `requires_chain` results. Called when a new

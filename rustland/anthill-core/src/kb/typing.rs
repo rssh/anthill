@@ -759,41 +759,39 @@ fn check_apply(
             let (outcome, resolved_tree) = dispatch_spec_op_cached(
                 kb, &subst, spec_sort, op_short_sym, enclosing_requires,
             );
+            let enclosing_sort = env.enclosing_sort();
             match outcome {
                 DispatchOutcome::NoCandidates => {}
                 DispatchOutcome::Unique(impl_op_sym) => {
-                    // WI-218: rewrite the apply's `fn` from spec op to
-                    // impl op (plain apply). WI-222 Phase E (i): if the
-                    // resolved impl's parent sort declares any
-                    // `requires`, the impl body needs a populated
-                    // `frame.requirements` — emit `apply_within(fn =
-                    // Ref(impl), …)` with projected requirements
-                    // instead of plain apply. WI-228: the projection
-                    // list is built from `resolved_tree`'s
-                    // sub_resolutions so conditional impls produce
-                    // nested `construct_requirement` IR.
+                    // WI-231: tag the call site. The requirement-
+                    // insertion pass (`req_insertion::run`) reads the
+                    // side-table and emits the actual IR rewrite — no
+                    // inline emission here. WI-218 / WI-222 Phase E (i) /
+                    // WI-228 semantics encoded by which CallClass
+                    // variant we tag.
                     if impl_op_sym != fn_sym {
                         let impl_sort = impl_parent_of_op(kb, impl_op_sym);
                         let needs_reqs = impl_sort
                             .map(|s| !requires_chain(kb, s).is_empty())
                             .unwrap_or(false);
-                        if needs_reqs {
-                            record_apply_within_concrete(
-                                kb, apply_term, named_args, pos_args,
-                                impl_op_sym, impl_sort.unwrap(), fn_sym,
-                                enclosing_requires, resolved_tree.as_ref(),
-                            );
+                        let class = if needs_reqs {
+                            CallClass::ConcreteApplyWithin {
+                                fn_target_sym: impl_op_sym,
+                                callee_spec_sort: impl_sort.unwrap(),
+                                spec_op_sym: fn_sym,
+                                enclosing_sort,
+                                resolved_tree: resolved_tree.clone(),
+                            }
                         } else {
-                            record_apply_rewrite(kb, apply_term, named_args,
-                                                 pos_args, fn_sym, impl_op_sym);
-                        }
+                            CallClass::PinNow {
+                                spec_op_sym: fn_sym,
+                                impl_op_sym,
+                            }
+                        };
+                        kb.classify_apply(apply_term, class);
                     }
                 }
                 DispatchOutcome::NoMatch => {
-                    // Surface to stderr so users notice; signal failure to
-                    // the caller via None. Per the proposal: NoMatch means
-                    // the spec has impls but none match the per-call
-                    // bindings (likely a missing impl declaration).
                     eprintln!(
                         "WI-210 dispatch failed: no impl of {} for the per-call bindings",
                         op_qn
@@ -808,38 +806,38 @@ fn check_apply(
                     return None;
                 }
                 DispatchOutcome::Deferred => {
-                    // WI-222 Phase C+D: emit the apply_within /
-                    // requirement_at_current rewrite. The slot index is
-                    // the matching entry's position in the enclosing
-                    // sort's requires chain (computed independently of
-                    // `find_unique_impl_op` to keep DispatchOutcome flat).
-                    // Phase D additionally projects the caller's slots
-                    // into the callee's expected requirements channel.
                     if let Some(slot) =
                         find_requires_slot(kb, &subst, spec_sort, enclosing_requires)
                     {
-                        record_apply_within_rewrite(
-                            kb, apply_term, named_args, pos_args,
-                            fn_sym, op_short_sym, spec_sort, slot,
-                            enclosing_requires,
+                        kb.classify_apply(
+                            apply_term,
+                            CallClass::DeferToRequirement {
+                                spec_op_sym: fn_sym,
+                                op_short_sym,
+                                spec_sort,
+                                slot,
+                                enclosing_sort,
+                            },
                         );
                     }
                 }
             }
         } else {
-            // WI-222 Phase E (i) Direct case: fn_sym is not a spec op
-            // (lookup_spec_op_dispatch returned None). If its parent
-            // sort declares any `requires`, the callee body still needs
-            // a populated `frame.requirements` — emit `apply_within(fn
-            // = Ref(fn_sym), …)` with projected requirements. Otherwise
-            // leave the call as plain apply (the common case).
-            let enclosing_requires = env.enclosing_requires().unwrap_or(&[]);
+            // WI-222 Phase E (i) Direct case: fn_sym is not a spec op.
+            // If its parent sort declares any `requires`, tag for an
+            // `apply_within(fn = Ref(fn_sym), …)` rewrite. Otherwise no
+            // tag and the call stays as plain apply.
             if let Some(parent_sym) = impl_parent_of_op(kb, fn_sym) {
                 if !requires_chain(kb, parent_sym).is_empty() {
-                    record_apply_within_concrete(
-                        kb, apply_term, named_args, pos_args,
-                        fn_sym, parent_sym, fn_sym,
-                        enclosing_requires, None,
+                    kb.classify_apply(
+                        apply_term,
+                        CallClass::ConcreteApplyWithin {
+                            fn_target_sym: fn_sym,
+                            callee_spec_sort: parent_sym,
+                            spec_op_sym: fn_sym,
+                            enclosing_sort: env.enclosing_sort(),
+                            resolved_tree: None,
+                        },
                     );
                 }
             }
@@ -864,7 +862,7 @@ fn check_apply(
 /// `kb.dispatch_rewrites` and (rewritten → spec_op_sym) in
 /// `kb.dispatch_origin`. The post-typing rewrite pass uses these maps
 /// to substitute the rewritten term into operation bodies bottom-up.
-fn record_apply_rewrite(
+pub(crate) fn record_apply_rewrite(
     kb: &mut KnowledgeBase,
     original_apply: TermId,
     named_args: &SmallVec<[(Symbol, TermId); 2]>,
@@ -1222,7 +1220,7 @@ fn goal_from_requires_entry(kb: &KnowledgeBase, entry: &RequiresEntry) -> Option
 /// produce nested `construct_requirement` IR. When `None`, the
 /// per-dep search runs against the callee's `requires_chain`
 /// (Direct-call path; no SLD tree available).
-fn record_apply_within_concrete(
+pub(crate) fn record_apply_within_concrete(
     kb: &mut KnowledgeBase,
     original_apply: TermId,
     named_args: &SmallVec<[(Symbol, TermId); 2]>,
@@ -1324,7 +1322,7 @@ fn build_req_at_current(
 ///
 /// Reference: docs/design/operation-call-model.md §"Call rewrite cases"
 /// (Defer-to-requirement row), §"Two primitives".
-fn record_apply_within_rewrite(
+pub(crate) fn record_apply_within_rewrite(
     kb: &mut KnowledgeBase,
     original_apply: TermId,
     named_args: &SmallVec<[(Symbol, TermId); 2]>,
@@ -1446,6 +1444,56 @@ pub fn lookup_spec_op_dispatch(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sym
     }
 
     Some(parent_sym)
+}
+
+/// WI-231 — per-call-site classification produced by the typer for
+/// consumption by the requirement-insertion pass (`kb/req_insertion.rs`).
+/// Each tagged apply site has one row in `kb.call_classifications`;
+/// `req_insertion::run` walks the table and emits the corresponding
+/// rewrite into `kb.dispatch_rewrites`.
+///
+/// External codegen targets (Rust monomorphization, reflection
+/// tooling, alternative elaborations) can read this side-table
+/// directly and choose to emit their own elaboration rather than
+/// invoking the standard pass.
+///
+/// Reference: docs/design/operation-call-model.md §"Pass structure:
+/// typer first, requirement-insertion separate".
+#[derive(Clone, Debug)]
+pub enum CallClass {
+    /// Pin-now rewrite from a spec op to a concrete impl op (WI-218).
+    /// The impl's parent sort has no `requires`, so the call becomes
+    /// a plain `apply(fn = Ref(impl_op_sym), args)` — no apply_within
+    /// wrap, no requirements channel.
+    PinNow {
+        spec_op_sym: Symbol,
+        impl_op_sym: Symbol,
+    },
+    /// Pin-now to an impl whose parent sort has `requires`, OR a
+    /// Direct call to a non-spec op whose parent has `requires`
+    /// (WI-222 Phase E (i)). Emits `apply_within(fn = Ref(fn_target),
+    /// args, requirements = …)`. `resolved_tree` is `Some` for the
+    /// Pin-now path (WI-228 tree-threaded projection); `None` for
+    /// Direct (falls back to per-dep search against `caller_requires`
+    /// derived from `enclosing_sort`).
+    ConcreteApplyWithin {
+        fn_target_sym: Symbol,
+        callee_spec_sort: Symbol,
+        spec_op_sym: Symbol,
+        enclosing_sort: Option<Symbol>,
+        resolved_tree: Option<ResolvedTree>,
+    },
+    /// Defer-to-requirement (WI-222 Phase C+D): dispatch deferred to
+    /// runtime via `apply_within(fn = requirement_at_current(slot,
+    /// op = some(op_short)), args, requirements = …)`. The impl is
+    /// determined at dispatch time by reading `frame.requirements[slot]`.
+    DeferToRequirement {
+        spec_op_sym: Symbol,
+        op_short_sym: Symbol,
+        spec_sort: Symbol,
+        slot: usize,
+        enclosing_sort: Option<Symbol>,
+    },
 }
 
 /// WI-210 — dispatch result for a spec-op call.
