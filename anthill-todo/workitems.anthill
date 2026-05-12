@@ -1628,3 +1628,10 @@ fact WorkItem(
   depends_on: ["WI-226"],
   status: Delivered(agent: "claude", at: "2026-05-12T05:26:44Z"))
 
+fact WorkItem(
+  id: "WI-231",
+  description: "Operation-call-model: factor requirement-insertion into a separate pass with a public API. Per docs/design/operation-call-model.md Pass structure section, the typer and requirement-insertion should be distinct passes; typed-but-unelaborated IR is a valid intermediate state, and apply_within / requirement_at_current / construct_requirement are outputs of an exchangeable elaboration. Today they're emitted inline inside check_apply (typing.rs the three emission paths: record_apply_rewrite, record_apply_within_concrete, record_apply_within_rewrite). Scope: a) add per-call-site classification side-table on KB: HashMap TermId to CallClass where CallClass enumerates Direct, PinNow with impl_op and resolved_tree, Defer with spec_sort/slot/op_short, PinNowConcrete with fn_target_sym/impl_parent_sym/spec_op_sym, DirectWithRequires with fn_sym/parent_sym. b) Refactor check_apply: write a CallClass row to the side-table instead of emitting IR. c) Create kb/req_insertion.rs with pub fn run(kb mut KnowledgeBase) that walks kb.call_classifications and emits the rewrites; resolves ProjectionSyms once at entry, reuses requires_tree cache, applies WI-227 emit_tree_as_projection for Pin-now resolved_tree. d) Invoke req_insertion::run from load_all at the end of typing. e) Expose call_classifications + CallClass + req_insertion::run as pub so external codegen targets (Rust monomorphization, reflection tooling, alternative elaborations) can read the classifications directly OR skip/replace the standard pass. Acceptance: cargo-test green; new tests pin (1) side-table populated correctly during typing; (2) running req_insertion::run produces the same dispatch_rewrites entries the inline approach did; (3) skipping req_insertion::run leaves dispatch_rewrites empty. Reference: docs/design/operation-call-model.md Pass structure section.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-230"],
+  status: Delivered(agent: "claude", at: "2026-05-12T06:00:04Z"))
+
