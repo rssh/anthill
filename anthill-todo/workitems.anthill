@@ -1635,3 +1635,10 @@ fact WorkItem(
   depends_on: ["WI-230"],
   status: Delivered(agent: "claude", at: "2026-05-12T06:00:04Z"))
 
+fact WorkItem(
+  id: "WI-232",
+  description: "Cleanup pass: consolidate obligation/resolution vocabulary and eliminate redundant work in req_insertion. (1) Rename RequireNode -> RequiresNode (S-consistency with RequiresEntry; the language keyword is 'requires'). (2) Rename ResolvedTree -> ResolvedRequiresNode (make parallel with RequiresNode explicit; signals 'decision-augmented obligation tree'). (3) Embed RequiresEntry as 'resolved_spec' field in CallClass::DeferToRequirement instead of carrying just 'slot'+'spec_sort' — eliminates the redundant requires_chain recomputation in req_insertion::run. After this change, req_insertion::run memoizes the chain per enclosing_sort. (4) Apply analogous resolved_spec field to ConcreteApplyWithin and audit which enclosing_sort usages can be dropped once classifications carry their own resolved data. (5) Optional: drop the public-facing 'requires_chain' (mut-taking, substituting variant) once req_insertion no longer needs it — keep only requires_tree + requires_chain_flat. Acceptance: (a) the rename compiles + all tests pass; (b) req_insertion::run no longer recomputes the chain per call site (memoization); (c) a new test asserts that classify_apply populates resolved_spec correctly. Driver: discussion in dialogue follow-up to WI-231 — three persistent tree representations had naming and field-level redundancy that obscured the layering; this WI rationalizes the typer-side vocabulary without touching the runtime arena.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-231"],
+  status: Delivered(agent: "claude", at: "2026-05-12T11:45:28Z"))
+
