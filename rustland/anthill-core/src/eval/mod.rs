@@ -392,6 +392,18 @@ impl Interpreter {
     /// stdlib + user code must already be loaded. If the operation is
     /// backed by a registered Rust builtin (no anthill body), the builtin
     /// runs directly without a frame push.
+    ///
+    /// Requirements (dictionary values for the parent sort's `requires`
+    /// chain) are auto-seeded as self-referential placeholders: each slot
+    /// is a `Requirement { functor: parent_sort, requirements: [] }`. That
+    /// shape covers same-sort recursion (the dominant CLI entry case) but
+    /// not cross-sort dispatch — when the parent sort's `requires` names a
+    /// different sort (e.g. `requires WorkItemStore[State]`), the
+    /// placeholder won't reach the named impl and the body will surface a
+    /// dispatch/slot mismatch at runtime. Use
+    /// [`Self::call_with_requirements`] to supply real impl-rooted
+    /// dictionaries from the host. See `docs/design/operation-call-model.md`
+    /// §"Host-to-entry-op boundary".
     pub fn call(&mut self, qualified_name: &str, args: &[Value]) -> Result<Value, EvalError> {
         let sym = self.kb.try_resolve_symbol(qualified_name).ok_or_else(|| {
             EvalError::UnknownOperation { name: qualified_name.to_string() }
@@ -399,9 +411,77 @@ impl Interpreter {
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
             return (builtin)(self, args);
         }
+        let requirements = self.seed_entry_requirements(sym);
+        self.invoke_op_with_requirements(sym, args, requirements)
+    }
+
+    /// Variant of [`Self::call`] that lets the host supply real
+    /// impl-rooted dictionaries for the entry op's `requires` chain,
+    /// instead of [`Self::seed_entry_requirements`]'s self-referential
+    /// placeholders.
+    ///
+    /// `chain_dicts` is one handle per entry in the parent sort's
+    /// flattened `requires` chain (in declaration order). The frame's
+    /// Self slot (slot 0) is auto-allocated by this method as a
+    /// self-referential placeholder for the parent sort — host callers
+    /// don't see it. The supplied handles populate slots 1..=N.
+    ///
+    /// Required when the parent sort declares `requires X[…]` for a
+    /// different sort X (e.g. `sort Main { requires
+    /// WorkItemStore[State] }`): plain [`Self::call`] would seed slot 1
+    /// with `Requirement{ functor: Main, … }`, and body-side
+    /// `WorkItemStore.lookup(…)` would dispatch through the placeholder
+    /// — wrong impl, runtime mis-dispatch.
+    ///
+    /// Use [`Self::alloc_requirement`] to build each handle. See
+    /// `docs/design/operation-call-model.md` §"Host-to-entry-op boundary".
+    pub fn call_with_requirements(
+        &mut self,
+        qualified_name: &str,
+        args: &[Value],
+        chain_dicts: smallvec::SmallVec<[value::RequirementHandle; 2]>,
+    ) -> Result<Value, EvalError> {
+        let sym = self.kb.try_resolve_symbol(qualified_name).ok_or_else(|| {
+            EvalError::UnknownOperation { name: qualified_name.to_string() }
+        })?;
+        if let Some(builtin) = self.builtins.get(&sym).cloned() {
+            return (builtin)(self, args);
+        }
+        let parent_sym = crate::kb::typing::impl_parent_of_op(&self.kb, sym);
+        let expected = parent_sym
+            .map(|p| crate::kb::typing::requires_chain_flat(&self.kb, p).len())
+            .unwrap_or(0);
+        if chain_dicts.len() != expected {
+            return Err(EvalError::Internal(format!(
+                "call_with_requirements({qualified_name}): expected {expected} \
+                 requirement slot(s) (the parent sort's flattened requires \
+                 chain), got {got}",
+                got = chain_dicts.len(),
+            )));
+        }
+        // Slot 0 is Self (the entry op's parent sort), slots 1..=N are
+        // the supplied chain dicts. See operation-call-model.md
+        // §"Host-to-entry-op boundary".
+        let mut requirements: smallvec::SmallVec<[value::RequirementHandle; 2]> =
+            smallvec::SmallVec::new();
+        if let Some(p) = parent_sym {
+            requirements.push(self.requirements.alloc(p, smallvec::SmallVec::new()));
+        }
+        requirements.extend(chain_dicts);
+        self.invoke_op_with_requirements(sym, args, requirements)
+    }
+
+    /// Shared body of [`Self::call`] and [`Self::call_with_requirements`]:
+    /// validate arity, build the frame's locals, push, run.
+    fn invoke_op_with_requirements(
+        &mut self,
+        sym: Symbol,
+        args: &[Value],
+        requirements: smallvec::SmallVec<[value::RequirementHandle; 2]>,
+    ) -> Result<Value, EvalError> {
         let (body_term, params) = eval::lookup_operation_body(&self.kb, sym)
             .ok_or_else(|| EvalError::OperationBodyMissing {
-                name: qualified_name.to_string(),
+                name: self.kb.qualified_name_of(sym).to_string(),
             })?;
         if args.len() != params.len() {
             return Err(EvalError::ArityMismatch {
@@ -414,20 +494,6 @@ impl Interpreter {
         for (i, (pname, _)) in params.iter().enumerate() {
             locals.push((*pname, args[i].clone()));
         }
-        // Entry-point requirement seeding: if `sym`'s parent sort
-        // declares any `requires`, the WI-222 requirement-insertion
-        // pass will have rewritten internal calls inside the body to
-        // read `requirement_at_current(i)` against the body's frame
-        // requirements. For an externally-driven entry call (e.g.
-        // `anthill run … --` invoking a sort's `main`), the caller
-        // has no requirement values to pass — but the body still
-        // expects the slots to exist. Seed self-referential requirement
-        // values whose functor = parent sort. Same-sort recursion
-        // resolves <parent_sort>.<op> to the impl op correctly; mutual-
-        // sort dispatch is undefined for this no-context entry (and
-        // would need a richer entry API to express which impls back
-        // the parent's `requires`).
-        let requirements = self.seed_entry_requirements(sym);
         self.step_count = 0;
         self.stack.push(Frame {
             op: sym,
@@ -439,33 +505,26 @@ impl Interpreter {
         self.run()
     }
 
-    /// Build the initial `frame.requirements` for an entry-point call
-    /// to `op_sym`. Walks the parent sort's `requires_chain` and
-    /// allocates one `Requirement{functor: parent_sort, requirements:
-    /// []}` per slot — a self-referential placeholder sufficient for
-    /// same-sort recursion. Returns empty if the op's parent has no
-    /// `requires` (the common case).
+    /// Build the initial `frame.requirements` for an entry-point call.
+    /// Per WI-234 / Model 1 the layout is: slot 0 = Self (the entry op's
+    /// parent sort), slots 1..=N = one per entry in the parent's flattened
+    /// `requires` chain. Both Self and chain entries are self-referential
+    /// placeholders (`functor = parent_sort, sub_requires = []`) — adequate
+    /// for same-sort recursion but mis-dispatches when the parent's
+    /// `requires` clause names a different sort. Cross-sort entries
+    /// should use [`Self::call_with_requirements`].
     fn seed_entry_requirements(
         &self,
         op_sym: Symbol,
     ) -> smallvec::SmallVec<[value::RequirementHandle; 2]> {
-        let op_qn = self.kb.qualified_name_of(op_sym);
-        let Some((parent_qn, _)) = op_qn.rsplit_once('.') else {
-            return smallvec::SmallVec::new();
-        };
-        let Some(parent_sym) = self.kb.try_resolve_symbol(parent_qn) else {
+        let Some(parent_sym) = crate::kb::typing::impl_parent_of_op(&self.kb, op_sym) else {
             return smallvec::SmallVec::new();
         };
         let chain = crate::kb::typing::requires_chain_flat(&self.kb, parent_sym);
         let mut out: smallvec::SmallVec<[value::RequirementHandle; 2]> =
-            smallvec::SmallVec::new();
-        for _ in &chain {
-            // Self-referential: functor = parent sort, no bundled deps.
-            // Adequate for same-sort recursion (the dominant case for
-            // CLI entry-point bodies); cross-sort dispatch through the
-            // requirement would need a richer entry API.
-            let h = self.requirements.alloc(parent_sym, smallvec::SmallVec::new());
-            out.push(h);
+            smallvec::SmallVec::with_capacity(chain.len() + 1);
+        for _ in 0..=chain.len() {
+            out.push(self.requirements.alloc(parent_sym, smallvec::SmallVec::new()));
         }
         out
     }

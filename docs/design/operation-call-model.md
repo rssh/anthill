@@ -770,6 +770,51 @@ The original draft introduced two body-side primitives that have since been remo
 
 Only `requirement_at_sort(dict, k)` and `construct_requirement(impl, [...])` remain as requirement-specific IR primitives. They survive because dictionary values are a distinct runtime kind (not entities), with positional/nameless sub-instances that Anthill's general value mechanisms can't access or construct.
 
+## Host-to-entry-op boundary
+
+The operation-call model assumes every body runs inside an activation frame whose `requirements` channel is populated by some caller's `apply_within` reduction. That covers all *in-program* calls — but the **outermost** call comes from the host (Rust, in the current realization) and there is no anthill-side caller to populate the frame.
+
+The runtime currently exposes two host APIs for the boundary; the choice depends on whether the entry op's parent sort uses *same-sort* or *cross-sort* requires.
+
+### Same-sort recursion → `Interpreter::call(qname, args)`
+
+If the entry op's parent sort declares `requires` only of itself (the dominant CLI case — a bundle's `sort Main { requires anthill.cli.Main; … }` where `anthill.cli.Main` is the same sort the entry is defined inside), the runtime seeds `frame.requirements` with **self-referential placeholders**: each slot is `Requirement { functor: <parent_sort>, sub_requires: [] }`. Body-side `requirement_at_current(slot=k)` reads return a placeholder whose `functor` equals the parent sort — adequate when the body's only dispatch path is back into the same sort's ops.
+
+Slot layout: slot 0 is **Self** (the enclosing op's dispatching dict); slots `1..=N` are the parent sort's flattened `requires` chain, in declaration order. All entries are self-referential placeholders.
+
+### Cross-sort requires → `Interpreter::call_with_requirements(qname, args, chain_dicts)`
+
+When the parent sort declares `requires X[…]` for a different sort `X` (e.g. `sort Main { sort State = ?; requires WorkItemStore[State]; … }`), the self-referential placeholder is **not enough**: the body's `WorkItemStore.lookup(s, id)` call dispatches through slot 1, whose placeholder has `functor = Main` rather than `functor = FileBasedWorkitemStore`. Either the lookup mis-resolves (the dispatching-dict's `sort` is wrong) or the impl's body reads sub-instances that the placeholder's empty `sub_requires` doesn't contain.
+
+The fix is for the host to supply **real impl-rooted dictionaries** for the chain entries:
+
+```rust
+// Build a dictionary for `WorkItemStore[State = WIS]` rooted at FileBasedWorkitemStore.
+let filebased = interp.kb_mut().intern("anthill.todo.store.FileBasedWorkitemStore");
+let dict = interp.alloc_requirement(filebased, SmallVec::new());
+
+// Invoke Main.main with the dictionary in slot 1.
+// Slot 0 (Self) is auto-allocated by the runtime as a self-referential placeholder.
+let mut chain_dicts: SmallVec<[_; 2]> = SmallVec::new();
+chain_dicts.push(dict);
+interp.call_with_requirements("anthill.todo.Main.main",
+                              &[args_val, store_val, wis_cell_val, agent_val],
+                              chain_dicts)?;
+```
+
+The caller supplies one handle per entry in the parent sort's flattened `requires` chain (in declaration order); the runtime prepends the Self slot automatically. Handle structure must reflect each impl's own `requires` chain — an impl that itself has `requires Y` is allocated with `sub_requires = [<Y dictionary>]`, recursively.
+
+The host API is value-level only; the **typer** doesn't see the caller's intent. The caller must shape the dictionaries to match what the body dispatches through. Mismatches surface as opaque slot reads or `unknown operation` errors mid-body; the boundary's arity check (`chain_dicts.len() == requires_chain_flat(parent).len()`) catches the obvious case at the entry.
+
+### When to pick which
+
+- `interp.call` is the default. Use it for any op whose parent sort declares only same-sort `requires`, or no `requires` at all. The seeded placeholders sit unused by such bodies and cost nothing.
+- `interp.call_with_requirements` is mandatory when the entry op's parent sort declares cross-sort `requires`. Without it, dispatch through those slots fails at runtime.
+
+Inference of the right dictionary from the value-level args (e.g. peek at the `wis(...)` functor inside a `Cell[?S]` argument to deduce `State = WIS` and select FileBasedWorkitemStore) is a future direction — `call_with_requirements` is the explicit-impl baseline that ships first.
+
+(WI-236 — landed alongside this section.)
+
 ## Codegen
 
 Each target picks how to render the requirement slot per its idiom:

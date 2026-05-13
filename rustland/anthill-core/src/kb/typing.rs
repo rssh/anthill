@@ -928,7 +928,7 @@ pub(crate) fn record_apply_rewrite(
 /// `callee_spec_sort` to feed into `build_projected_requirements_list`
 /// (WI-228 fix: the previous Pin-now path passed the spec sort instead
 /// of the impl's parent, so projections walked an empty chain).
-fn impl_parent_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
+pub fn impl_parent_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     let qn = kb.qualified_name_of(op_sym);
     let (parent_qn, _) = qn.rsplit_once('.')?;
     kb.try_resolve_symbol(parent_qn)
