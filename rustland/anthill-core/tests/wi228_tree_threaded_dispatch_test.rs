@@ -108,11 +108,19 @@ end
         other => panic!("apply_within fn must be Ref(impl); got {other:?}"),
     }
 
-    // requirements list = cons(construct_requirement(Int, nil), nil).
-    // Outer: EqList's sole `requires Eq[T = A]` at A = Int.
-    // Inner: rustland's `fact Eq[T = Int]` resolves to Int as carrier
-    //        (no IntEq sort exists — the stdlib uses Int directly).
-    // Tail: nil — EqList declares only one require.
+    // WI-234 Model 1: requirements is a single-entry list containing
+    // the dispatching dict (the whole resolved tree, not just its
+    // sub-resolutions). Shape:
+    //   requirements = cons(
+    //     construct_requirement(EqList, [          -- the dispatching dict
+    //       construct_requirement(Int, [])         -- EqList's sole sub-instance
+    //     ]),
+    //     nil
+    //   )
+    let eqlist_sym = kb
+        .try_resolve_symbol("test.wi228.pin_now_tree.EqList")
+        .expect("EqList sort registered");
+
     let reqs_tid = get_named_arg(kb, &named_args, "requirements").expect("requirements arg");
     let (list_functor, list_named) = match kb.get_term(reqs_tid) {
         Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
@@ -120,52 +128,87 @@ end
     };
     assert_eq!(
         list_functor, cons_sym,
-        "EqList has one transitive dep; pre-WI-228 emitted nil here. Got {}",
+        "single dispatching dict wrapped in cons; got {}",
         kb.qualified_name_of(list_functor)
     );
 
-    // Tail of the outer cons must be nil — EqList has exactly one require.
+    // Tail = nil (single-entry list under Model 1).
     let tail_tid = get_named_arg(kb, &list_named, "tail").expect("cons tail");
     let tail_functor = match kb.get_term(tail_tid) {
         Term::Fn { functor, .. } => *functor,
         other => panic!("tail must be Fn; got {other:?}"),
     };
-    assert_eq!(tail_functor, nil_sym, "single-dep list's tail must be nil");
+    assert_eq!(tail_functor, nil_sym, "single-entry list's tail must be nil");
 
-    // Head: construct_requirement(impl_functor = Ref(Int), requirements = nil).
+    // Head = construct_requirement(EqList, [<sub>]) — the dispatching
+    // dict for the callee, with EqList as the impl carrier.
     let head_tid = get_named_arg(kb, &list_named, "head").expect("cons head");
     let (head_functor, head_named) = match kb.get_term(head_tid) {
         Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
-        other => panic!("head must be Fn; got {other:?}"),
+        other => panic!("dispatching dict must be Fn; got {other:?}"),
     };
     assert_eq!(
         head_functor, cr_sym,
-        "WI-228: conditional sub-resolution must emit construct_requirement (not requirement_at_current); got {}",
+        "Pin-now's dispatching dict must be construct_requirement; got {}",
         kb.qualified_name_of(head_functor)
     );
 
-    let impl_tid =
-        get_named_arg(kb, &head_named, "impl_functor").expect("construct_requirement impl_functor");
-    let impl_sym = match kb.get_term(impl_tid) {
+    let outer_impl_tid = get_named_arg(kb, &head_named, "impl_functor")
+        .expect("outer construct_requirement impl_functor");
+    let outer_impl_sym = match kb.get_term(outer_impl_tid) {
         Term::Ref(s) | Term::Ident(s) => *s,
         other => panic!("impl_functor must be a Ref; got {other:?}"),
     };
     assert_eq!(
-        impl_sym, int_sym,
-        "Eq[T = Int]'s carrier is Int (per anthill-stl/anthill/int.anthill's \
-         `fact Eq[T = Int]`); got {}",
-        kb.qualified_name_of(impl_sym)
+        outer_impl_sym, eqlist_sym,
+        "outer dispatching dict carrier must be EqList; got {}",
+        kb.qualified_name_of(outer_impl_sym)
+    );
+
+    // Inner: EqList's sub_requires has one entry — the resolved Eq[T = Int]
+    // = Int (per the stdlib's `fact Eq[T = Int]`).
+    let outer_subreqs_tid = get_named_arg(kb, &head_named, "requirements")
+        .expect("outer construct_requirement requirements");
+    let (outer_subreqs_functor, outer_subreqs_named) = match kb.get_term(outer_subreqs_tid) {
+        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        other => panic!("outer sub-reqs must be Fn; got {other:?}"),
+    };
+    assert_eq!(
+        outer_subreqs_functor, cons_sym,
+        "EqList has one require → its sub-reqs cons-list has one entry"
+    );
+    let inner_head_tid = get_named_arg(kb, &outer_subreqs_named, "head")
+        .expect("inner cons head");
+    let (inner_head_functor, inner_head_named) = match kb.get_term(inner_head_tid) {
+        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        other => panic!("inner head must be Fn; got {other:?}"),
+    };
+    assert_eq!(
+        inner_head_functor, cr_sym,
+        "sub-instance for Eq[T=Int] must be construct_requirement(Int, []); got {}",
+        kb.qualified_name_of(inner_head_functor)
+    );
+    let inner_impl_tid = get_named_arg(kb, &inner_head_named, "impl_functor")
+        .expect("inner construct_requirement impl_functor");
+    let inner_impl_sym = match kb.get_term(inner_impl_tid) {
+        Term::Ref(s) | Term::Ident(s) => *s,
+        other => panic!("inner impl_functor must be a Ref; got {other:?}"),
+    };
+    assert_eq!(
+        inner_impl_sym, int_sym,
+        "Eq[T = Int]'s carrier is Int (per stdlib's `fact Eq[T = Int]`); got {}",
+        kb.qualified_name_of(inner_impl_sym)
     );
 
     // Innermost requirements list = nil — Int has no transitive deps.
-    let sub_reqs_tid = get_named_arg(kb, &head_named, "requirements")
+    let innermost_tid = get_named_arg(kb, &inner_head_named, "requirements")
         .expect("inner construct_requirement requirements arg");
-    let sub_functor = match kb.get_term(sub_reqs_tid) {
+    let innermost_functor = match kb.get_term(innermost_tid) {
         Term::Fn { functor, .. } => *functor,
-        other => panic!("inner requirements must be Fn; got {other:?}"),
+        other => panic!("innermost requirements must be Fn; got {other:?}"),
     };
     assert_eq!(
-        sub_functor, nil_sym,
-        "Int has no requires; nested requirements must be nil"
+        innermost_functor, nil_sym,
+        "Int has no requires; innermost requirements must be nil"
     );
 }

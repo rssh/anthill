@@ -272,6 +272,17 @@ pub struct KnowledgeBase {
     // §"Pass structure".
     pub(crate) call_classifications: HashMap<TermId, crate::kb::typing::CallClass>,
 
+    // WI-235 — per-operation body overrides produced by
+    // `req_insertion::run`'s hoist phase. Maps op symbol → new body
+    // TermId (typically a `let_expr` wrapping the original body to
+    // pre-allocate hoisted dispatching dicts). Consulted by
+    // `eval::eval::lookup_operation_body` ahead of the OperationInfo
+    // fact. Distinct from `dispatch_rewrites` because the wrapping
+    // let's `body` field references the original body's TermId — using
+    // `dispatch_rewrites` would substitute the inner body recursively
+    // and loop forever.
+    pub(crate) op_body_overrides: HashMap<Symbol, TermId>,
+
     // WI-226 Cache B — memoized spec-op SLD dispatch results, keyed by
     // `(SortGoal, scope)`. Saves re-walking `SortProvidesInfo` for
     // repeated spec-op calls at the same (spec, bindings, scope) — common
@@ -324,6 +335,7 @@ impl KnowledgeBase {
             routes: route::RouteRegistry::new(),
             dispatch_rewrites: HashMap::new(),
             dispatch_origin: HashMap::new(),
+            op_body_overrides: HashMap::new(),
             requires_chain_cache: RefCell::new(HashMap::new()),
             requires_tree_cache: RefCell::new(HashMap::new()),
             resolve_cache: RefCell::new(HashMap::new()),
@@ -419,6 +431,24 @@ impl KnowledgeBase {
     /// reflection, debug tooling, and tests.
     pub fn dispatch_origin_iter(&self) -> impl Iterator<Item = (TermId, Symbol)> + '_ {
         self.dispatch_origin.iter().map(|(t, s)| (*t, *s))
+    }
+
+    /// Look up the rewritten TermId an original term maps to, if any.
+    /// Reflection / tooling / external-elaboration consumers read this
+    /// to see what an apply (or any term) was rewritten to.
+    pub fn dispatch_rewrite_of(&self, original: TermId) -> Option<TermId> {
+        self.dispatch_rewrites.get(&original).copied()
+    }
+
+    /// WI-235: record a body override for `op_sym`. See
+    /// `op_body_overrides` field doc for the substitution-loop hazard
+    /// that makes this distinct from `dispatch_rewrites`.
+    pub fn set_op_body_override(&mut self, op_sym: Symbol, new_body: TermId) {
+        self.op_body_overrides.insert(op_sym, new_body);
+    }
+
+    pub fn op_body_override(&self, op_sym: Symbol) -> Option<TermId> {
+        self.op_body_overrides.get(&op_sym).copied()
     }
 
     /// Has this SortRequiresInfo fact already been finalized

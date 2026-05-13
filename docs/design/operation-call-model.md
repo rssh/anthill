@@ -1,45 +1,77 @@
 # The operation-call model
 
-## Status: Decision (post-brainstorm)
+## Status: Decision (post-brainstorm; revised after WI-228+ implementation review)
 
-## Tracks: WI-204 (port cmd_X), WI-218 (initial static-dispatch rewrite landed; soundness patch pending — see Implementation roadmap), WI-210 (spec/impl call-site dispatch)
+## Tracks: WI-204 (port cmd_X), WI-218 (static-dispatch rewrite), WI-210 (spec/impl call-site dispatch), WI-222–WI-233 (elaboration / dictionary model)
 
 ## Brainstorm: see `operation-call-model-brainstorm.md` for the exploration. This doc is the resulting design only.
 
+## Revision note
+
+An earlier draft introduced custom IR primitives `requirement_at_current(i)` (and the fused `requirement_at_current(i, op_short)` fn-position variant) to read positionally from a separate `frame.requirements` slot. Implementation experience (WI-222 through WI-229) showed the asymmetry was unnecessary: requirements are just **extra params** with elaborator-synthesized names, accessed via the ordinary `var_ref` mechanism — exactly the same way regular value-level params are. Requirement *values themselves* (the dictionaries, a.k.a. sort-meta values) remain a distinct runtime kind because their internal sub-instances are positional and nameless (the `requires` clauses they came from have no source-level names), so `requirement_at_sort(dict, k)` and `construct_requirement(impl, [subs])` are kept as primitives for sub-instance projection and construction. The fused dispatch-in-fn-position form is dropped: dispatch becomes an interpreter rule on `apply_within` when `fn` is a spec-op symbol.
+
+This doc reflects the revised model. The earlier shape is summarized in §"Earlier draft" at the end for historical context.
+
 ## Decision in one paragraph
 
-An operation declared inside a sort with `requires X` (or whose signature uses the sort's open type-params) is implicitly a function over an X-resolution **environment**. We materialize the environment as **parameter insertion** (Scala `using` / Lean instance arg / GHC dictionary-passing): every operation gains an additional argument `requirements` — the *transitive closure* of requirement values its body needs. The typer adds an explicit requirements slot to apply / ho_apply / constructor / lambda IR forms; requirements become first-class runtime values; the eval gains a `frame.requirements` field structurally parallel to `frame.locals`. No body cloning, no side-table dispatch, no instantiation-context threading.
+An operation declared inside a sort with `requires X` (or whose signature uses the sort's open type-params) is implicitly a function over an X-resolution **environment**. We materialize the environment as **parameter insertion** (Scala `using` / Lean instance arg / GHC dictionary-passing): every operation gains additional inserted params — one **slot** per top-level requirement (the direct `requires` declarations plus deps discovered by body walking). Each slot is filled with a **tree-shaped dictionary value**: a `(functor, sub_dicts)` pair whose sub-dicts are themselves dictionary values for the impl's own requires-chain. The typer adds an explicit requirements channel to apply / ho_apply / constructor / lambda IR forms; dictionaries become first-class runtime values; the eval gains a `frame.requirements` field structurally parallel to `frame.locals`. No body cloning, no side-table dispatch, no instantiation-context threading.
 
-## One concept: `requirements`
+## One concept: `ResolvedSortNode` (sort instantiation)
 
-There is **one** structural concept: a positional list of requirement values, in canonical order. It appears in several places — same data, different lifecycle:
+Operations are defined on sorts. A **`ResolvedSortNode`** is a sort identity paired with the resolved list of its own requirements — recursively, since each sub-requirement is itself a `ResolvedSortNode`:
 
-| Location | Lifecycle |
-|---|---|
-| `frame.requirements` | Live during execution. Set when the frame is pushed; read by `requirement_at_current(i)`. |
-| `requirement_value.requirements` | Saved on the value at construction. Used later (when the value is dispatched through) as a source for `requirement_at_sort(requirement_value, k)` projections. |
-| `closure.requirements` | Saved on the closure at lambda construction. Becomes the new frame's `requirements` on invocation. |
-| `apply_within(fn, args, requirements)` | Wire form — list of expressions evaluated at the call to produce the callee's `frame.requirements`. |
-| `construct_requirement(impl, requirements)` | Wire form — list of expressions evaluated to bundle into the new requirement value. |
+```
+ResolvedSortNode {
+    sort:          Symbol,                   // the impl sort (IntEq, EqList, ...)
+    sub_requires:  Vec<ResolvedSortNode>,    // positional; one per the sort's own `requires` clause
+}
+```
 
-Same data shape (vector of requirement values) at every point. We just call it `requirements`.
+This single tree-shaped concept appears at multiple lifecycles — typer metadata, IR, runtime — under different names:
+
+| Where it appears | Name in code / IR | Lifecycle |
+|---|---|---|
+| Typer metadata (per-op slot trees) | `RequiresNode` (WI-230) | Compile-time. Computed by body walk + resolution; one tree per top-level slot the op exposes. |
+| Runtime value | `Value::Requirement(RequirementHandle)` → `RequirementSlot` in arena | Live during execution. The runtime materialization of a `ResolvedSortNode`. Also called a "sort instantiation" or a "dictionary." |
+| Frame slot binding | `frame.requirements[<synthesized_name>]` | Live during execution. Each top-level slot in an op's signature is bound at frame push to one runtime `ResolvedSortNode`. |
+| Closure capture | `closure.requirements` | Saved at lambda construction; restored on closure invocation. |
+| IR — call site | `apply_within(..., requirements = [<expr>, ...])` | Wire form: list of expressions evaluated to produce `ResolvedSortNode`s for the callee's frame. |
+| IR — construction | `construct_requirement(impl, [<expr>, ...])` | Wire form: builds a `ResolvedSortNode` with `sort = impl` and sub-tree from the expression list. |
+
+The two existing code names (`RequiresNode` typer-side, `RequirementSlot` runtime) are the same conceptual entity at two lifecycles. The doc uses **`ResolvedSortNode`** when speaking conceptually and the specific name when speaking about a specific layer.
+
+### Why one concept matters
+
+The same recursive structure governs:
+
+- **Dispatch.** Given a `ResolvedSortNode`, you know which sort's ops to invoke (it's the `sort` field). The interpreter's `apply_within` dispatch rule on a spec-op `fn` reads the dispatching node's `sort` and looks up `sort_ops_table[sort][op_short]` (a direct table lookup; sort symbols carry their ops table).
+- **Sub-requirement supply.** When invoking an op on a `ResolvedSortNode`, the callee's frame is populated from the node's `sub_requires` (its impl-side requirements), zipped against the impl's synthesized requirement param names.
+- **Construction.** Building a `ResolvedSortNode` (via `construct_requirement` at the IR level) is exactly the operation of *instantiating a sort* with its resolved sub-instances — the SLD resolution chain materialized.
+
+### Two access mechanisms
+
+A body reaches into the `ResolvedSortNode` structure two ways:
+
+- **Top-level slots** (the body's own inserted requirement params) — named by the elaborator, read via ordinary `var_ref(<synthesized_name>)`. Same mechanism as regular value-level params.
+- **Sub-nodes inside a `ResolvedSortNode`** — positional and nameless (impl-side `requires` clauses have no source-level names). Projected via `requirement_at_sort(node_expr, k)`.
 
 ### Glossary — disambiguating overloaded terms
 
-The word "requirements" is used at four distinct levels of the system. To avoid confusion, the doc uses these qualified forms when the level matters:
+The word "requirements" is used at several levels of the system; underneath, they all reference instances of the one structural concept (`ResolvedSortNode`). To avoid confusion, the doc uses these qualified forms when the level matters:
 
 | Term | Level | Meaning |
 |---|---|---|
 | **`Sort.requires`** | source | The user-written `requires X` declarations on a sort. Plural reading: a list of source-level constraint declarations. |
-| **`Op.requirements`** | typer metadata | The transitive closure of `SortGoal`s the op's body needs (computed by the typer; see Op.requirements computation). Positional list, declaration-order. |
-| **`apply_within(..., requirements = [...])`** | IR (post-elaboration) | The expressions that evaluate to the callee's `frame.requirements` slot at runtime. |
-| **`frame.requirements`** | runtime | The actual `RequirementHandle` vector populated when a frame is pushed. Read by `requirement_at_current(i)`. |
+| **`Op.requirements`** | typer metadata | The positional, declaration-order list of top-level slots the op exposes. Each entry is a `RequiresNode` (the typer-side form of `ResolvedSortNode`) — tree-shaped, with sub-requirements nested inside. The elaborator assigns a synthesized symbol name to each top-level entry for body-side `var_ref` access. |
+| **`apply_within(..., requirements = [...])`** | IR (post-elaboration) | The expressions that evaluate to the callee's `frame.requirements` slot at runtime. Each expression evaluates to one `ResolvedSortNode`. |
+| **`frame.requirements`** | runtime | The `ResolvedSortNode`s populated when a frame is pushed. Stored as `[(Symbol, Value)]` keyed by the elaborator-synthesized names from `Op.requirements`. Read from the body via `var_ref(name)`. |
+| **`ResolvedSortNode`** | conceptual | The unifying entity — `(sort, sub_requires)`. Manifests at the levels above. Called `RequiresNode` at typer side, `RequirementSlot` at runtime arena, "dictionary" / "sort instantiation" informally. |
 
 Whenever the word "requirements" appears unqualified in this doc, context makes the level clear; in cross-section references, the qualified form is used.
 
 ## The IR
 
-Four IR variants gain an requirements channel; the requirement-less forms become canonical aliases for `_within(..., requirements=[])` and are eliminated after migration:
+Four IR variants gain a requirements channel; the requirement-less forms become canonical aliases for `_within(..., requirements=[])` and are eliminated after migration:
 
 ```
 apply_within(fn, args, requirements)
@@ -48,60 +80,63 @@ constructor_within(name, args, requirements)
 lambda_within(params, body, requirements)
 ```
 
-`requirements` is a positional vector of expressions producing requirement values. Each requirement value at runtime is `Value::Requirement(RequirementHandle)` — an arena handle into the RequirementArena (parallel to `Closure`/`Cell`/`Map`). The arena slot stores `{ functor: <impl_sort_name>, requirements: [<sub-handles>] }` — the impl identity plus the deps it was constructed with.
+`requirements` is a positional vector of expressions producing dictionary values (one per `Op.requirements` entry in the callee). Each dictionary value at runtime is `Value::Requirement(RequirementHandle)` — an arena handle into the RequirementArena (parallel to `Closure`/`Cell`/`Map`). The arena slot stores `{ functor: <impl_sort_name>, requirements: [<sub-handles>] }` — the impl identity plus the deps it was constructed with.
 
-### Two primitives: `requirement_at_current` and `requirement_at_sort`
+Dictionary values are a distinct runtime kind, not entities — their internal sub-instances are positional and nameless, so they need a dedicated projection primitive (`requirement_at_sort`) that doesn't exist for entities.
 
-**IR-level grammar** for requirement-typed expressions:
+### How bodies refer to requirements
+
+Requirement params are **named variables**, exactly like value-level params. The elaborator inserts them into each op's signature with synthesized symbol names; the body reads them via ordinary `var_ref(<name>)`.
+
+A body's inserted requirement params are:
+
+1. **`__req_self_<spec>`** (or just `__req_self`) — by convention, the name of the **first** inserted requirement param. Bound to the `ResolvedSortNode` the body is running under (the dispatching dictionary). "Self" is a naming convention only — there's nothing structurally special about it beyond being the first argument.
+2. **One named param per entry in the enclosing op's `requires`-chain** — bound to the corresponding sub-instance of the Self dictionary at frame push. E.g., for an op of a sort declaring `requires Eq[T], requires Ord[T]`, the body has `__req_eq` and `__req_ord` (or similarly-named) params, bound to `Self.sub_requires[0]` and `Self.sub_requires[1]` respectively.
+
+The runtime populates all of these named bindings at frame push by expanding the dispatching dictionary's sub-tree. The body never sees explicit projection — it just uses `var_ref(__req_eq)` for the Eq dictionary, `var_ref(__req_ord)` for the Ord dictionary, etc.
+
+`requirement_at_sort(dict_expr, k)` is *not* used inside bodies in the common case. It appears at the IR level only at **call sites** when the caller needs to project a sub-instance out of a wrapping dictionary to supply as the apply's `requirements[0]`, or inside `construct_requirement` when building a dictionary from sub-pieces.
+
+There is **no** `requirement_at_current(i)` primitive. There are no positional slot reads. Future per-operation `requires` would add more inserted requirement params alongside the sort-level ones; in source surface they might appear as named requirement parameters (e.g., `op foo[...] requires (eq_b: Eq[B])`).
+
+### The one primitive: `requirement_at_sort`
+
+Sub-instances *inside* a dictionary value remain positional and nameless — they correspond to the impl's own `requires` clauses, which have no source-level names. To project the k-th sub-instance out of a dictionary value, the IR has one primitive:
 
 ```
-requirement_chain ::= requirement_at_current(i)             -- bottoms out at a frame slot
-           | requirement_at_sort(requirement_chain, k)    -- projection chain
+requirement_at_sort(dict_expr, k)    -- yields dict_expr.requirements[k]
 ```
 
-`requirement_at_sort`'s first argument is restricted to an requirement_chain — it's never an arbitrary expression, a local variable, or a `construct_requirement`. The typer enforces this by construction: requirement-typed positions in the IR are filled only with chains rooted at a frame slot. This makes IR validation and eval mechanically simple — an requirement_chain always evaluates by descending a known path, never by reducing an arbitrary sub-expression first.
+`dict_expr` is any expression evaluating to a `Value::Requirement` — typically `var_ref(<some_req_param>)`, but composes freely (`requirement_at_sort(requirement_at_sort(var_ref(__req_0), 1), 0)` reads a sub-sub-instance).
 
+### Channel cardinality (v0)
 
-The body needs to refer to requirements in two scopes:
+For v0 (sort-level `requires` only, no per-operation `requires`), every `apply_within`'s `requirements` channel has **exactly one entry** — the dispatching `ResolvedSortNode` (dictionary):
 
-- **The body's own `frame.requirements`** — what the caller passed. Use `requirement_at_current(i)`.
-- **The bundled `requirements` of an requirement value** — needed at dispatch sites to forward the requirement value's deps onward. Use `requirement_at_sort(requirement_expr, k)`.
+- **Defer** (`fn` = spec-op qualified symbol): the dict's functor determines which impl is invoked.
+- **Pin-now / Direct** (`fn` = impl-op qualified symbol): no runtime dispatch, but the same single-entry shape carries the impl's own dictionary so the callee's frame can be populated from its sub-tree at frame entry.
+
+Short example — Defer dispatch with var_ref to a caller's own requirement param:
 
 ```
-requirement_at_current(i)                  -- value form: yields frame.requirements[i]
-requirement_at_current(i, op_short)        -- fn-position form: dispatch op_short through frame.requirements[i]
-requirement_at_sort(requirement_expr, k)         -- value form: yields requirement_expr.requirements[k]
+apply_within(fn = Eq.eq, args = [x, y], requirements = [var_ref(__req_self_eq)])
 ```
 
-`requirement_at_current(i, op_short)` looks up `frame.requirements[i]`, reads its functor, and resolves `<functor>.<op_short>` to the impl op symbol that fn-position will invoke.
+The single dictionary expression can be sourced as:
 
-`requirement_at_sort(e, k)` is structural projection into an requirement value — getting the k-th component of its bundled `requirements`. It composes: `requirement_at_sort(requirement_at_current(0), 1)` reads the second bundled requirement from the requirement at slot 0 of the current frame.
+- **`var_ref(<name>)`** — one of the caller's own inserted requirement params (the typical case).
+- **`requirement_at_sort(<dict_expr>, k)`** — the k-th positional sub-instance of a caller-scope dictionary (used when the dispatching dict is one level deep in a wrapping dictionary's sub-tree).
+- **`construct_requirement(impl, [...])`** — a literal built at elaboration time when the typer statically resolves the impl tree (Pin-now).
 
-Where each appears in the IR:
+The callee's other inserted slot bindings come from this dictionary's `sub_requires` at frame entry — the impl's `requires` chain materialized as bundled sub-instances.
 
-1. **As the fn of an apply** (requirement-dispatched call):
-   ```
-   apply_within(fn = requirement_at_current(0, "eq"), args = [x, y], requirements = [...])
-   ```
-   The `requirements` list here is **not** empty in general — see the dispatch section below.
+For complete worked-out scenarios — Self-bound default bodies, conditional impls, monad transformer chains, Pin-now sub-trees — see `operation-call-model-examples.md`.
 
-2. **Inside `requirements` slots of an apply** (passing requirements forward):
-   ```
-   apply_within(fn = B.bar, args = [x], requirements = [requirement_at_current(0), requirement_at_sort(requirement_at_current(1), 0)])
-   ```
-   This forwards the caller's requirement slot 0 directly, and the 0-th bundled requirement of the caller's requirement slot 1.
-
-3. **Inside `requirements` of a `construct_requirement`** (requirement value construction):
-   ```
-   construct_requirement(IntEq, requirements = [requirement_at_current(0), requirement_at_sort(requirement_at_current(1), 0)])
-   ```
-   The constructed requirement value's `requirements[i]` is sourced from a mix of the constructor's frame requirements and projections from those frame requirements.
-
-Together, `requirement_at_current` and `requirement_at_sort` cover every place an requirement-typed expression needs to reach in the IR.
+> **Future extension**: per-operation `requires` clauses would let the channel hold more than one entry (the dispatching dict for the call's spec, plus one per per-op require). The separate-slot encoding scales naturally; see §"Why separate slots and not collapse-into-args" for the trade-off vs. folding into `args`.
 
 ### Construction site
 
-Building an requirement value:
+Building a dictionary value:
 
 ```
 construct_requirement(impl_functor, requirements)
@@ -110,57 +145,67 @@ construct_requirement(impl_functor, requirements)
 `requirements` is a list of expressions (each evaluating to a `Value::Requirement(handle)` at runtime). The grammar of allowed source expressions:
 
 ```
-req_source ::= requirement_at_current(j)                    -- frame slot
-            | requirement_at_sort(req_source, k)             -- projection chain
+req_source ::= var_ref(name)                                 -- caller-scope requirement param
+            | requirement_at_sort(req_source, k)             -- positional projection from a dictionary
             | construct_requirement(impl, [req_source ...])  -- nested construction
             | const_requirement(symbol)                      -- load-time-constant ref to a registered impl
 ```
 
-- **`requirement_at_current(j)`** — reads the enclosing frame's slot j. Used when the construction site has the needed dep already in its requirements scope.
-- **`requirement_at_sort(req_source, k)`** — projects from a chain. Used at dispatch sites where sub-deps live inside the dispatching value.
-- **Nested `construct_requirement(...)`** — used when the typer has resolved a sub-impl at this construction site (typical for conditional instances chains).
+- **`var_ref(name)`** — references one of the enclosing scope's requirement params (synthesized by the elaborator from the enclosing op's `Op.requirements`). Used when the construction site has the needed dep already in its requirements scope.
+- **`requirement_at_sort(req_source, k)`** — projects the k-th sub-instance out of a dictionary value. Used when sub-deps live inside another dictionary already in scope.
+- **Nested `construct_requirement(...)`** — used when the typer has resolved a sub-impl at this construction site (typical for conditional-instance chains).
 - **`const_requirement(symbol)`** — a reference to a globally-registered impl (e.g., a non-conditional `fact Eq[T = Int]` resolves to a single canonical IntEq value). At runtime this materializes as a single shared arena slot, identified by the symbol; only allocated lazily on first use.
 
 The typer at the construction site walks the impl's `requirements` (its transitive closure) and emits one expression per slot, choosing the most direct source from the construction's available scope.
 
-### Eval handling for requirement_at_current and requirement_at_sort
+### Eval handling for requirement_at_sort and apply_within dispatch
 
-When the eval reduces `requirement_at_current(i)` (value form):
-
-```
-return frame.requirements[i]
-```
-
-When the eval reduces `requirement_at_sort(requirement_expr, k)`:
+When the eval reduces `requirement_at_sort(dict_expr, k)`:
 
 ```
-requirement_value = eval(requirement_expr)        // typically requirement_at_current(j), so frame.requirements[j]
-return requirement_value.requirements[k]
+dict_value = eval(dict_expr)        // typically var_ref(<req_name>), so frame.requirements lookup
+return dict_value.requirements[k]
 ```
 
-When the eval reduces an apply whose fn is `requirement_at_current(i, op_short)`:
+Body-side requirement reads (`var_ref(<req_name>)`) are the ordinary local-variable lookup path — no new eval logic. The runtime looks up the symbol in `frame.requirements` (or in a unified frame.locals; see Runtime section); both options are runtime layout choices that don't affect the IR or the eval verbs.
+
+When the eval reduces an `apply_within(fn, args, requirements)` (single-entry channel under v0):
 
 ```
-requirement_value = frame.requirements[i]
-impl_sym  = resolve(requirement_value.functor + "." + op_short)
-// then the apply proceeds as if fn were impl_sym
+dict_value = eval(requirements[0])           // the dispatching ResolvedSortNode
+if fn is an impl-op symbol (e.g., IntEq.eq):
+    impl_sym = fn                            // no dispatch — fn names the impl
+else (fn is a spec-op symbol, e.g., Eq.eq):
+    impl_sym = sort_ops_table[dict_value.sort][fn.op_short]
+
+push new frame for impl_sym:
+    locals       = zip(impl.params, eval(args))
+    requirements = bind impl's inserted requirement param names to:
+                     [0] dict_value                        (the Self slot)
+                     [i+1..] dict_value.sub_requires[i]    (one per impl's `requires`)
 ```
 
-The eval's existing apply path consumes `impl_sym` for the OperationInfo lookup and frame push.
+**Sort symbols carry their own operations table.** Each sort symbol (e.g., `IntEq`, `EqList`) is associated in the KB with a mapping `op_short → impl_op_symbol` recording its declared operations. The dispatch lookup `sort_ops_table[dict_value.sort][fn.op_short]` is a direct table lookup, not a string concatenation + name resolution. (Conceptually equivalent to a C++ vtable / Haskell dictionary's method slot.)
 
-### Dispatch site: building the callee's requirements
+The dispatching dictionary at `requirements[0]` is both:
+1. **The dispatch key** for spec-op `fn` — its `sort` field selects which impl's operations table to consult.
+2. **The source of the callee's frame requirements** — bound to the callee's Self param, with its sub-tree expanded to the callee's per-`requires` inserted param names.
 
-The runtime rule is **uniform**: the callee's `frame.requirements` always equals the caller's `apply_within.requirements` (evaluated). This holds for direct calls AND requirement-dispatched calls — there is no special "requirements come from the requirement value" runtime path.
+This is **the** dispatch rule. No fn-position requirement form, no separate dispatch metadata. The single `requirements[0]` entry does both jobs.
 
-What changes between direct and dispatch is the **IR transform** at the call site, i.e. *what* expressions appear in the `requirements` slot. At a dispatch site `apply_within(fn=requirement_at_current(i, op_short), args, requirements)`:
+### Dispatch site: supplying the dispatching dictionary
 
-- The callee is op_short of an impl reached through `frame.requirements[i]`.
-- The callee's `requirements` is its impl-side transitive closure.
-- Each slot of `requirements` is sourced from one of:
-  - **The dispatching value's bundle** — for deps the impl declared as part of its sort-level `requires`: `requirement_at_sort(requirement_at_current(i), k)`.
-  - **The caller's frame** — for deps that aren't covered by the dispatching value's bundle. In v0 this only happens for cross-sort deps that the body discovered (e.g., a body calls `C.foo` where C is in `Sort.requires` of the enclosing sort but not of the dispatched impl). In a future per-op-requires extension, op-level deps would also source here.
+The runtime rule is **uniform**: at every `apply_within`, `requirements[0]` is the dispatching `ResolvedSortNode`; the callee's frame is populated from it (Self + sub-tree expansion). This holds for Direct, Pin-now, and Defer alike.
 
-Worked example (using only sort-level requires, the v0 case):
+What changes between the three call-rewrite cases is **how the caller sources that single dictionary**:
+
+- **`fn`** — impl-op qualified symbol (`IntEq.eq`) for Direct / Pin-now; spec-op qualified symbol (`Eq.eq`) for Defer.
+- **`requirements[0]`** — sourced from the caller's own scope as one of:
+  - **`var_ref(<req_param_name>)`** — the caller has the right dictionary already as one of its inserted requirement params.
+  - **`requirement_at_sort(var_ref(<req_param_name>), k)`** — the caller has a *wrapping* dictionary whose k-th sub-instance is the right one.
+  - **`construct_requirement(impl, [...])`** — the caller's typer resolved the dictionary tree statically (Pin-now sub-tree).
+
+Worked example:
 
 ```anthill
 sort B[T]
@@ -170,24 +215,39 @@ sort B[T]
 end
 ```
 
-`cmp`'s `requirements = [Eq[T], Ordered[T]]` (declaration order). Dispatching `cmp(x, y)` through a `B[T]` requirement value at caller's slot 0:
+In a generic caller `op outer(...) requires B[T]` (the elaborator synthesizes `__req_self_b` for the inserted B-dictionary param), dispatching `cmp(x, y)` becomes:
 
 ```
 apply_within(
-  fn   = requirement_at_current(0, "cmp"),
+  fn   = B.cmp,                              -- spec-op symbol (Defer)
   args = [x, y],
-  requirements = [
-    requirement_at_sort(requirement_at_current(0), 0),   -- Eq[T] from B's bundle
-    requirement_at_sort(requirement_at_current(0), 1),   -- Ordered[T] from B's bundle
-  ]
+  requirements = [var_ref(__req_self_b)]     -- the dispatching B-dictionary
 )
 ```
 
-The runtime then pushes a new frame with `frame.requirements = [<Eq requirement>, <Ordered requirement>]`, bound positionally per `cmp`'s `requirements` order.
+The interpreter sees `fn` is a spec-op, evaluates `requirements[0]` to a `ResolvedSortNode` `V`, reads `V.sort` (some impl of B, e.g. `BImpl`), looks up `sort_ops_table[BImpl][cmp]` → `BImpl.cmp`, and pushes the callee's frame with:
 
-> **Future extension (out of v0 scope)**: per-operation `requires` clauses (e.g., `op bar[U](u: U) requires Ord[U]`) would mix sort-level and op-level deps in `cmp`'s requirements list. The op-level slot would source from the caller's frame (`requirement_at_current(j)`) rather than from the dispatching value's bundle. Mechanism is the same; the only difference is where the slot's source comes from. Per-op requires is listed in "Out of scope" — see that section.
+- `locals = [a → x, b → y]`
+- `requirements = [__req_self_b → V, __req_eq → V.sub_requires[0], __req_ord → V.sub_requires[1]]`
 
-A dispatch site has `requirements = []` only when the callee is a **leaf op** with no deps — e.g., `IntEq.eq`, where IntEq's body uses nothing else. Realistic generic ops with sort-level requires (e.g., `Eq[List[X]]`'s eq, `cmp` above) always have at least one entry.
+`BImpl.cmp`'s body uses `var_ref(__req_eq)` and `var_ref(__req_ord)` to access the Eq and Ord dictionaries — they're already named bindings on the frame.
+
+> **Future extension (out of v0 scope)**: per-operation `requires` clauses (e.g., `op bar[U](u: U) requires Ord[U]`) would let the apply's `requirements` channel hold more than one entry — one for the dispatching dict, one per per-op require. Mechanism stays uniform; cardinality grows.
+
+For Pin-now where the impl is statically resolved, the same shape applies — `requirements[0]` is a `construct_requirement` literal:
+
+```
+apply_within(
+  fn   = BImpl.cmp,                                        -- impl-op symbol (no dispatch)
+  args = [x, y],
+  requirements = [construct_requirement(BImpl, [           -- statically constructed dict
+    construct_requirement(IntEq, []),
+    construct_requirement(IntOrdered, [])
+  ])]
+)
+```
+
+`BImpl.cmp`'s frame is populated identically: Self bound to the literal, sub-instances bound from its sub-tree.
 
 ### Requirement values carry their own requirements
 
@@ -239,7 +299,7 @@ Two different substitutions at the same source site → two different IR sub-tre
 | `Eq[List[Int]]` | `construct_requirement(EqList, [construct_requirement(IntEq, [])])` | `EqList → IntEq` |
 | `Eq[List[String]]` | `construct_requirement(EqList, [construct_requirement(StringEq, [])])` | `EqList → StringEq` |
 
-Same functor at the outer level (`EqList`) — same body, shared at runtime. Different bundled inner requirements encode the substitution. The body uses `requirement_at_current(0, "eq")` to dispatch through whatever inner requirement got bundled — `IntEq.eq` vs `StringEq.eq` — without ever consulting a stored substitution.
+Same functor at the outer level (`EqList`) — same body, shared at runtime. Different bundled inner requirements encode the substitution. The body uses `apply_within(fn = Eq.eq, ..., requirements = [requirement_at_sort(var_ref(__req_self), 0)])` to dispatch through whatever inner requirement got bundled — `IntEq.eq` vs `StringEq.eq` — without ever consulting a stored substitution.
 
 This matches the dictionary-passing contract: type-class machinery is compile-time, dictionaries are value-level. Anthill requirement values carry no runtime substitution — they ARE the substitution, encoded as a (functor, sub-requirements) pair.
 
@@ -260,19 +320,19 @@ Recursive: if `Numeric[T=Int]` (e.g., IntNum) has its own requirements, IntNum's
 
 ### Putting it together: dispatch end-to-end
 
-When `apply_within(fn = requirement_at_current(0, "eq"), args = [x, y], requirements = E)` reduces, the eval performs (in order):
+When `apply_within(fn = Eq.eq, args = [x, y], requirements = [E])` reduces (Defer case), the eval performs (in order):
 
-1. **Resolve the impl symbol** — read `frame.requirements[0]` → the IntEq requirement value V; look up `<V.functor>.eq` → IntEq.eq's impl symbol. This step is the dispatch lookup. It happens **first** because steps 2 and 3 are driven by the impl's signature (param symbols, expected requirements length).
-2. **Evaluate the apply's `requirements` slot** (`E`) via AwaitState. `E`'s entries may include `requirement_at_sort(requirement_at_current(0), k)` projections that themselves read into V. Each entry reduces to a `Value::Requirement(handle)` and is buffered.
-3. **Evaluate `args`** via AwaitState, buffering Values.
+1. **Evaluate `E`** via AwaitState → a single dictionary value `V`. (`E` is typically `var_ref(<req_name>)`, `requirement_at_sort(...)`, or a small `construct_requirement`.)
+2. **Evaluate `args`** via AwaitState, buffering Values.
+3. **Resolve the impl symbol** — read `V.sort` and look up `sort_ops_table[V.sort][eq]` → the impl-op symbol to invoke. (A direct table lookup, not name resolution; sort symbols carry their own operations table.)
 4. **Push new frame**:
    - `locals` = zip(impl.params, evaluated args)
-   - `requirements` = evaluated `E`        ← always from the apply's requirements slot
+   - `requirements` = `[(Self_Eq, V)] ++ [(impl_req_name_i, V.sub_requires[i]) for i in impl.requires]`
    - `expr` = impl body
 
-(Step 1 is purely a lookup that doesn't reduce sub-expressions; it doesn't conflict with the AwaitState ordering in steps 2-3. The "Eval mechanics: AwaitState with requirements" section below details how steps 2-3 interleave under the unified `ApplyWithin` AwaitState variant.)
+For Pin-now / Direct (`fn` is already an impl-op symbol), step 3 is skipped — `impl_sym = fn`. Steps 1, 2, 4 are identical.
 
-So requirement values are essentially closure-like: each one carries the sort + the resolved requirements needed to invoke its ops. The IR transform at the dispatch site reads from the requirement value (via `requirement_at_sort`) to construct the callee's `requirements` list. The runtime is uniform — `frame.requirements` always comes from `apply_within.requirements`, regardless of whether the call is direct or dispatched.
+So a dictionary is essentially closure-like: each carries the sort identity + the resolved sub-instances needed to invoke its ops. The IR transform at the dispatch site references the dictionary (via `var_ref`, projection, or literal construction) as the single `requirements[0]` entry. The runtime is uniform — `frame.requirements` always comes from expanding `requirements[0]`'s sub-tree, regardless of whether the call is direct or dispatched.
 
 This matches Haskell dictionaries (records of methods + sub-dictionaries) and Lean instances (instance values carry resolved sub-instances). It's the natural shape once we accept that impls have their own requires.
 
@@ -283,7 +343,7 @@ An alternative is to encode requirements as the leading N entries of a regular `
 - **Reinterpretation independence**: future analyses (re-derive requirements, recompute resolution after a SortProvidesInfo change, swap a requirement at a debug breakpoint) operate on the requirement channel without touching args. With collapsed-into-args, every reinterpretation pass has to re-partition based on op metadata.
 - **Codegen flexibility**: each target chooses how to render the requirement channel (Scala `using`, Rust `&impl Trait`, Lua positional). A separate slot in the elaborated IR lets each codegen pass decide its own surface; collapsing pushes that decision earlier.
 - **Reflection / proof records**: distinguishing "this is a requirement" from "this is a regular arg" is information proposal-030 specialization witnesses can use; preserving it structurally is cheap.
-- **Hash-consing of bodies is preserved either way**: bodies access requirements by position (`requirement_at_current(i)`) or by name in source (`env_A`); they don't bake in concrete requirement values. So generic bodies share TermIds across instantiations regardless of which encoding we pick. The separate-slot encoding doesn't lose this.
+- **Hash-consing of bodies is preserved either way**: bodies access requirements via `var_ref(<synthesized_name>)`; they don't bake in concrete requirement values. So generic bodies share TermIds across instantiations regardless of which encoding we pick. The separate-slot encoding doesn't lose this.
 
 ## Compile-time representation
 
@@ -323,17 +383,17 @@ Each level's `requirements` references only its already-constructed inner level.
 
 ### No-cycles policy: how Self is handled
 
-A naive design would put a Self-handle in each conditional impl's `requirements` so the body could recursively dispatch via `requirement_at_current(self_slot, "eq")`. That would create a refcount cycle (env_LX.requirements[Self_slot] = env_LX itself), and refcounting alone would never free the chain.
+A naive design would put a Self-handle in each conditional impl's `requirements` so the body could recursively dispatch via a Self slot. That would create a refcount cycle (env_LX.requirements[Self_slot] = env_LX itself), and refcounting alone would never free the chain.
 
 The design avoids this entirely:
 
-- **Impl-side self-recursion** (e.g., `EqList.eq` recursing on the tail of a List) → emit a **direct call by impl op name** (form (1)): `apply_within(fn = EqList.eq, args = [rest_xs, rest_ys], requirements = [requirement_at_current(0)])`. The recursive frame's `requirements` is forwarded from the current frame; no Self in the requirement value's bundled list. See Examples doc, Example 7 and Example 8.
+- **Impl-side self-recursion** (e.g., `EqList.eq` recursing on the tail of a List) → emit a **direct call by impl op name**: `apply_within(fn = EqList.eq, args = [rest_xs, rest_ys], requirements = [var_ref(__req_inner_eq)])`. The recursive frame's `requirements` is forwarded from the current frame; no Self in the dictionary's bundled list. See Examples doc, Example 7 and Example 8.
 
-- **Spec default body needing the dispatching impl** (e.g., `Eq.neq`'s default calling `eq`) → caller passes the impl requirement value into the body's `frame.requirements[0]` and the body dispatches via `requirement_at_current(0, "eq")`. The impl requirement value itself isn't self-referential — IntEq's bundled requirements are its own deps (Numeric, Show), not IntEq itself. See Examples doc, Example 2.
+- **Spec default body needing the dispatching impl** (e.g., `Eq.neq`'s default calling `eq`) → caller passes the impl dictionary into the body as one of its requirement params (`__req_self_eq`); the body dispatches via `apply_within(fn = Eq.eq, args = [...], requirements = [var_ref(__req_self_eq)])`. The dictionary itself isn't self-referential — IntEq's bundled requirements are its own deps (Numeric, Show), not IntEq itself. See Examples doc, Example 2.
 
 Under this discipline, every entry in a `RequirementSlot.requirements` references only earlier-constructed slots — strictly outward, never inward. Plain refcount cleans up correctly, no cycle detector or weak references required.
 
-Mutually recursive default bodies (e.g., `IntEq.eq` calling `Eq.neq` which calls `eq`) are handled the same way: `IntEq.eq`'s body is invoked through some caller's apply with `requirements = [<IntEq value>]`; if that body calls `Eq.neq` through `requirement_at_current(0, "neq")`, the IntEq value is just **passed forward** in the next call's requirements slot — not stored inside any other requirement value's bundled list. So no cycle arises from mutual recursion either.
+Mutually recursive default bodies (e.g., `IntEq.eq` calling `Eq.neq` which calls `eq`) are handled the same way: `IntEq.eq`'s body is invoked with the IntEq dictionary as a requirement param; if that body calls `Eq.neq`, the IntEq dictionary is just **passed forward** in the next call's requirements slot via `var_ref(<its_param_name>)` — not stored inside any other dictionary's bundled list. So no cycle arises from mutual recursion either.
 
 **Same shape applies to non-conditional impls too**:
 
@@ -346,32 +406,50 @@ sort IntEq
 end
 ```
 
-`IntEq.eq`'s requirements = [Numeric[T=Int], Show[T=Int]] — the explicit requires only. No Self entry. If the body recurses on `eq` directly, that's a direct call to `IntEq.eq` (form (1)).
+`IntEq.eq`'s requirements = [Numeric[T=Int], Show[T=Int]] — the explicit requires only. No Self entry. If the body recurses on `eq` directly, that's a Direct apply with `fn = IntEq.eq`.
 
 See "Requirement values carry their own sub-requirements" below in the IR section.
 
 ### Op.requirements computation
 
-For each operation, `requirements` is a **list** (positional, declaration-order) of `SortGoal` entries — see Resolution section for the type. Two contributions:
+For each operation, `Op.requirements` is a **`RequiresNode` tree** describing the dispatching dictionary the op runs against. Each node:
 
 ```
-op.requirements (set view, before ordering) =
-    direct:     { goal_for(callee.spec_sort, callee.type_args)
-                  | callee in body, callee is a spec op }
-  ∪ transitive: ⋃ { substitute(other_op.requirements, callee.subst_at_callsite)
-                    | other_op in body, callee is in this sort or another }
+RequiresNode {
+    entry:         RequiresEntry,                  // (spec_sort, type_bindings)
+    sub_requires:  Vec<RequiresNode>,              // the impl's own requires — populated when an impl is resolved
+}
 ```
 
-**Substitution**: when calling `other_op` with type-args `subst`, that callee's required goals get `subst` applied before unioning into the caller's requirements. This is what makes `B.bar` calling `C.foo[T = Int]` add `Eq[T = Int]` (not `Eq[T = T]`) to B.bar's requirements.
+For v0, this is a **single tree** (rooted at the enclosing sort's spec), corresponding to the single dispatching dictionary the op gets at runtime. The elaborator synthesizes named requirement params for the body — one for the root (`__req_self_<spec>`) and one for each entry in the sort's own `requires`-chain (named e.g. `__req_eq`, `__req_ord`).
 
-**Ordering**: the set above is then **ordered by appearance in source** — for the sort's own `requires` clauses, declaration order applies; for goals discovered transitively, the order is the depth-first traversal of the body in source order. Result: a stable, deterministic positional list.
+The tree's structure comes from the sort's declared `requires` chain plus what body walking discovers:
 
-**Mutual recursion → fixed-point**: ops that recurse on each other (or via a cycle) form a strongly-connected component. The fixed-point of the equation above stabilizes (the set is monotone — only grows — and bounded by the union of all sorts' `requires` reachable from the SCC). Termination is guaranteed by monotonicity over a finite lattice.
+```
+op.requirements_tree(sort) =
+    RequiresNode {
+        entry:        (sort, current_type_args),
+        sub_requires: [
+            requirements_tree(req_spec) for req_spec in
+                Sort.requires(sort) ∪ discovered_from_body(sort)
+        ]
+    }
+```
+
+`discovered_from_body` captures cross-sort calls inside bodies (e.g., `B.bar`'s body calling `C.foo` where C is a separate sort with its own requires). Each discovered spec must already be in `Sort.requires(B)` or this is a coverage-rule violation rejected at typing.
+
+**Substitution**: when computing requirements for a particular type-args binding, the sub-tree's bindings inherit the substitution. E.g., `requirements_tree(B[T = Int])` produces a tree whose Eq sub-node has `T = Int` (not `T = T`).
+
+**Ordering** within `sub_requires`: source declaration order in the sort's `requires` block, then depth-first traversal for body-discovered specs.
+
+**Mutual recursion → cycle break**: if an op's requirements-tree computation visits the same `(sort, bindings)` it's currently computing, the back-edge is recorded but not expanded — a `RequiresNode::CycleBack` variant (or omitted entirely, by the WI-230 design). Termination guaranteed.
+
+**Per-op `requires` (future)**: per-operation `requires` clauses would add additional top-level requirement params to the op's signature alongside Self. The op's runtime would have multiple inserted requirement param names, all populated from corresponding entries in the apply's `requirements` channel.
 
 **Implementation choices**:
 
-- **Eager**: pre-pass walks per-sort call graphs, computes SCCs, runs fixed-point per SCC. Output: per-op `requirements` map across all loaded sorts. Memoizable.
-- **Demand-driven**: when typing a body's call, recursively type the callee's body first; memoize. Cycle detection for mutual recursion (push the op-id on a stack; if a recursive call loops back, treat the as-yet-unfinished computation as the empty set and let the fixed-point absorb the additions on the way back up).
+- **Eager**: pre-pass walks per-sort call graphs, computes SCCs, runs fixed-point per SCC. Output: per-op requirements-tree map across all loaded sorts. Memoizable. (Current: WI-230's RequiresNode tree, computed eagerly during typing.)
+- **Demand-driven**: when typing a body's call, recursively type the callee's body first; memoize. Cycle detection on a stack.
 
 Both produce the same result. Lean's elaborator and GHC's constraint inference both do this (eagerly).
 
@@ -419,7 +497,7 @@ For anthill v0: keep `Sort.requires` source-explicit and validate (need body wal
 
 ### Runtime is unaffected
 
-The requirements slot of a frame is **already populated** by the caller before the body executes. The body never recomputes anything; it just indexes into `frame.requirements[i]` via `requirement_at_current(i)` (and projects bundled requirements via `requirement_at_sort`). All analysis — including transitive-closure aggregation of `requirements` — is at compile time; runtime is pure lookup.
+The requirements slot of a frame is **already populated** by the caller before the body executes. The body never recomputes anything; it just reads its inserted requirement params via `var_ref` (and projects bundled sub-instances via `requirement_at_sort`). All analysis — including transitive-closure aggregation of `requirements` — is at compile time; runtime is pure lookup.
 
 ## Pass structure: typer first, requirement-insertion separate
 
@@ -428,7 +506,7 @@ Two distinct passes — they must not be conflated:
 | Pass | Input | Output | What it does |
 |---|---|---|---|
 | **Typer** | parsed body (uses spec ops by name) | typed body (still uses spec ops, with type info attached) + per-op `requirements` metadata | type-checks; computes transitive `requirements` per op; rejects bodies whose used envs aren't covered by `Sort.requires` |
-| **Requirement-insertion** | typed body + `requirements` metadata | rewritten body with `apply_within` / `requirement_at_current` / `construct_requirement` filled in | rewrites every spec-op call into one of the three call-rewrite cases below; constructs requirement values at sites that need them; populates `requirements` slots |
+| **Requirement-insertion** | typed body + `requirements` metadata | rewritten body with `apply_within` / `var_ref` (to inserted req params) / `requirement_at_sort` / `construct_requirement` filled in | rewrites every spec-op call into one of the three call-rewrite cases below; constructs requirement values at sites that need them; populates `requirements` slots |
 
 Why separate them:
 
@@ -443,11 +521,13 @@ So `apply_within` / `requirement_at_*` / `construct_requirement` are **outputs**
 
 At requirement-insertion time, the rewrite pass examines each call and chooses one of three actions:
 
-| Case | Trigger | Rewrite |
-|---|---|---|
-| Direct | fn is already an impl op | leave fn; populate `requirements` from caller's frame matching callee's `requirements` |
-| Pin-now | fn is a spec op AND per-call subst is fully ground AND not via `requires` | resolve to impl, rewrite `fn` to that impl symbol; populate `requirements` from caller's frame |
-| Defer-to-requirement | fn is a spec op AND per-call subst has a Var that is the body's open type-param OR fn is reached via `requires` | `apply_within(fn = requirement_at_current(i, op_short), args, requirements = [...])` where `i` is the position of the relevant bound. The `requirements` list is populated by the IR transform from a mix of `requirement_at_sort(requirement_at_current(i), k)` (sort-level deps) and `requirement_at_current(j)` (op-level deps), matching the callee's `requirements`. |
+All three cases emit `apply_within(fn, args, requirements = [<single dict expr>])`. They differ only in `fn` and in how the single dictionary expression is sourced:
+
+| Case | Trigger | `fn` | `requirements[0]` |
+|---|---|---|---|
+| Direct | fn is already an impl op (e.g., a self-recursive call inside an impl body) | impl-op qn (`EqList.eq`) | `var_ref(<caller's own requirement param>)` — typically forwarding Self |
+| Pin-now | fn is a spec op AND per-call subst is fully ground AND not via `requires` | impl-op qn (statically resolved) | `construct_requirement(impl, [...])` — literal tree, statically built |
+| Defer-to-requirement | fn is a spec op AND per-call subst has a Var that is the body's open type-param OR fn is reached via `requires` | spec-op qn (`Eq.eq`) | `var_ref(<caller's req param>)` or `requirement_at_sort(<...>, k)` — sources the dispatching dict from caller scope; the interpreter reads the dict's `sort` at runtime and looks up `sort_ops_table[sort][op_short]` for the impl op |
 
 The defer-to-requirement case has two triggers (open-T and open-bound). Both must fire — the open-T check alone misses the ground-via-requires case (WI-218's latent bug). See the "Body walking is necessary" section above for why both triggers exist.
 
@@ -512,7 +592,7 @@ fn resolve(goal, scope):
     return ResolvedTree::conditional { impl: chosen.impl, type_args: chosen.subst, sub_resolutions }
 ```
 
-Output `ResolvedTree` is the direct input to the requirement-insertion pass: each node becomes either a `from_scope` reference (`requirement_at_current(i)` or a chain of `requirement_at_sort` from one) or a `construct_requirement(impl, [...])` term whose nested args are themselves emitted from the sub_resolutions.
+Output `ResolvedTree` is the direct input to the requirement-insertion pass: each node becomes either a `from_scope` reference (`var_ref(<inserted_req_name>)` or a chain of `requirement_at_sort` projections from one) or a `construct_requirement(impl, [...])` term whose nested args are themselves emitted from the sub_resolutions.
 
 ### Termination — bounded recursion
 
@@ -544,7 +624,7 @@ Anthill operations can carry effect annotations (`effects (Modify[store])`, etc.
 
 1. **Spec / impl effect compatibility**: an impl's `effects` must be a subset of the spec's declared effects (`impl.effects ⊆ spec.effects`). Validated at impl-load time, independently of requirement resolution.
 
-2. **Defer-to-requirement call effects**: when a caller dispatches `requirement_at_current(i, "op")`, the call's effect contribution is the **spec's effect upper bound**, not the dispatched impl's specific effects. Reason: dynamic dispatch — the typer doesn't know which impl will be selected, so it has to assume the worst case. Conservative but sound.
+2. **Defer-to-requirement call effects**: when a caller dispatches `apply_within(fn = <spec_op>, ..., requirements = [..., <dict>, ...])`, the call's effect contribution is the **spec's effect upper bound**, not the dispatched impl's specific effects. Reason: dynamic dispatch — the typer doesn't know which impl will be selected at runtime, so it has to assume the worst case. Conservative but sound.
 
 3. **Pin-now call effects**: when the typer statically resolves a call to a specific impl (the Pin-now case), the call's effect contribution is **the impl's specific effects** (precise). This is one of Pin-now's wins over Defer-to-requirement.
 
@@ -557,14 +637,14 @@ Anthill operations can carry effect annotations (`effects (Modify[store])`, etc.
 ```rust
 struct Frame {
     expr: TermId,
-    locals:   SmallVec<[(Symbol, Value); 4]>,
-    requirements:  SmallVec<[RequirementHandle; 2]>,  // available during this body's execution
-    awaiting: Option<AwaitState>,
+    locals:        SmallVec<[(Symbol, Value); 4]>,  // regular params
+    requirements:  SmallVec<[(Symbol, Value); 2]>,  // requirement params (synthesized names → dictionary values)
+    awaiting:      Option<AwaitState>,
     ...
 }
 
 // Regular Value::Entity is UNCHANGED — no requirements field added.
-// Requirement values live in a separate arena (RequirementArena), accessed via Value::Requirement(handle):
+// Dictionary values live in a separate arena (RequirementArena), accessed via Value::Requirement(handle):
 struct RequirementSlot {
     functor:      Symbol,                              // the impl sort name (IntEq, EqList, ...)
     requirements: SmallVec<[RequirementHandle; 1]>,    // bundled deps, refs into the same arena
@@ -575,25 +655,40 @@ struct Closure {
     body:            TermId,
     params:          SmallVec<[Symbol; 2]>,
     captured_locals: SmallVec<[(Symbol, Value); 2]>,
-    requirements:    SmallVec<[RequirementHandle; 1]>,  // requirement scope to use when invoked
+    requirements:    SmallVec<[(Symbol, Value); 1]>,  // requirement scope at creation time
 }
 ```
 
-All three holders (Frame, RequirementSlot, Closure) carry the same kind of data — a positional vector of `RequirementHandle` — at different points in execution.
+`frame.requirements` is keyed by elaborator-synthesized names — `Self_<spec>` and one name per entry in the impl's `requires`-chain. The body reads either slot (locals or requirements) uniformly via `var_ref(<name>)`. Implementations may merge into a single `frame.locals` map — they're structurally identical; the separate slot is preserved as metadata for codegen / reflection.
 
-**Where a frame's `requirements` comes from on push** is uniform: it's whatever `apply_within`'s `requirements` slot evaluated to. Slightly different sources at different call shapes:
+The dictionary values themselves (the `Value::Requirement(handle)` payloads) are a distinct runtime kind because their sub-instances are positional/nameless. `RequirementSlot` is a separate arena entry from `Value::Entity`. `requirement_at_sort(dict, k)` is the projection primitive that walks one level of the tree.
 
-| Call shape | What populates the apply's requirements slot at the IR level |
+**How a frame's `requirements` is populated on push**: the apply's `requirements` channel has one entry (the dispatching `ResolvedSortNode`). The runtime evaluates it, then expands the dict's sub-tree into the callee's named param bindings:
+
+```
+dict_value = eval(apply.requirements[0])
+frame.requirements = [
+  (Self_<spec_name>, dict_value),
+  (<impl's requires[0] name>, dict_value.sub_requires[0]),
+  (<impl's requires[1] name>, dict_value.sub_requires[1]),
+  ...
+]
+```
+
+Sources for the single `requirements[0]` expression at the IR level:
+
+| Call shape | What goes in `requirements[0]` |
 |---|---|
-| Direct call | Caller emits a list of `requirement_at_current(j)` (and possibly `requirement_at_sort` projections) sourcing from caller's frame requirements. |
-| Requirement-dispatched call | Caller emits a mix of `requirement_at_sort(requirement_at_current(i), k)` (deps from the requirement value) and `requirement_at_current(j)` (op-level extras). |
+| Direct call (impl-op self-recursion) | `var_ref(<own Self param>)` — forward the current dict. |
+| Pin-now (statically resolved impl) | `construct_requirement(impl, [...])` — literal dict, built at elaboration time. |
+| Defer-dispatched call | `var_ref(<own req param>)` or `requirement_at_sort(var_ref(<...>), k)` — sources the dispatching dictionary from caller scope. |
 | Higher-order (closure) call | Typically empty; closure's saved `requirements` is used instead — see below. |
 
-**Closures carry their own requirements**: passing a lambda to a higher-order function is the canonical case. The HO function's frame may have a totally different requirement scope than the lambda's creation scope, but when the lambda's body runs, it needs requirements from where it was *created*, not from where it's *invoked*. The closure carries its requirement vector with it. Same mechanism as captured locals; same reason.
+**Closures carry their own requirements**: passing a lambda to a higher-order function is the canonical case. The HO function's frame may have a totally different requirement scope than the lambda's creation scope, but when the lambda's body runs, it needs requirements from where it was *created*, not from where it's *invoked*. The closure carries its requirement scope with it. Same mechanism as captured locals; same reason.
 
 For closure invocation specifically, the runtime overrides the uniform rule: `frame.requirements = closure.requirements` (the saved value), regardless of what's in the apply's requirements slot. This is the HO-call exception, and it preserves lexical scoping for closures.
 
-Lambda construction (`lambda_within(params, body, requirements)`): the closure's saved `requirements` is built at construction time from the enclosing frame, with the IR's `requirements` field listing source expressions (each typically `requirement_at_current(j)` or `requirement_at_sort(requirement_at_current(j), k)`) — the same form used at call sites.
+Lambda construction (`lambda_within(params, body, requirements)`): the closure's saved `requirements` is built at construction time from the enclosing frame, with the IR's `requirements` field listing source expressions (each typically `var_ref(<enclosing_req_name>)` or `requirement_at_sort(var_ref(<...>), k)`) — the same form used at call sites.
 
 ## Eval mechanics: AwaitState with requirements
 
@@ -614,19 +709,22 @@ enum AwaitState {
 }
 ```
 
-Evaluate requirements first (each entry is typically `requirement_at_current(j)`, `requirement_at_sort(requirement_at_current(j), k)`, or a small `construct_requirement` — all trivial reductions), then evaluate args, then push the new frame:
+Evaluate `requirements[0]` (typically `var_ref(<req_name>)`, `requirement_at_sort(var_ref(<req_name>), k)`, or a small `construct_requirement` — all trivial reductions), then evaluate args, then push the new frame:
 
-- `frame.requirements = buffered_requirements`
-- `frame.locals` from zipping `buffered_args` with the op's param symbols.
+- `dict_value` = the evaluated `requirements[0]`
+- If `fn` is a spec-op, resolve `impl_sym = <dict_value.functor>.<fn.op_short>`; otherwise `impl_sym = fn`.
+- Push frame with target = `impl_sym`:
+  - `frame.locals` = zip(impl's value-param symbols, evaluated args)
+  - `frame.requirements` = `(Self_<spec>, dict_value)` followed by one entry per impl's `requires`, sourced positionally from `dict_value.sub_requires`.
 
 ### Per-IR-form behavior
 
 | IR form | Eval-time requirement work |
 |---|---|
-| `apply_within(fn, args, requirements)` | Eval requirements; eval args; push frame with both populated. Same path for direct and requirement-dispatched calls. |
+| `apply_within(fn, args, requirements)` | Eval requirements; eval args; (if fn is a spec-op, resolve via dispatching dictionary); push frame with both populated. |
 | `ho_apply_within(closure_expr, args, requirements=[])` | Eval closure; eval args; push frame with `frame.requirements = closure.requirements` (closures override; see below). |
 | `constructor_within(name, args, requirements=[])` | requirements always empty; constructors don't dispatch through requirements. IR carries the slot for shape uniformity. |
-| `lambda_within(params, body, requirements)` | One-shot: snapshot locals + requirements from enclosing frame (each `requirements` entry is an `requirement_at_current` / `requirement_at_sort` expression evaluated immediately); deliver `Value::Closure`. No new AwaitState needed. |
+| `lambda_within(params, body, requirements)` | One-shot: snapshot locals + requirements from enclosing frame (each `requirements` entry is a `var_ref` / `requirement_at_sort` expression evaluated immediately); deliver `Value::Closure`. No new AwaitState needed. |
 
 ### Closure invocation: the one runtime exception
 
@@ -649,7 +747,7 @@ Hash-consing applies to two regions of the IR differently — important to under
 
 **1. Inside generic bodies (post-elaboration)** — hash-consing is preserved.
 
-Generic bodies don't bake concrete requirement values into the apply terms; they reference frame slots via `requirement_at_current(i)` and project via `requirement_at_sort(...)`. The same `apply_within(fn = requirement_at_current(0, "eq"), args = [x, y], requirements = [])` term can appear in many generic bodies and share a single TermId — at runtime, each body's frame supplies its own requirements vector populated by the caller. No occurrence-level keying is needed for body interiors.
+Generic bodies don't bake concrete requirement values into the apply terms; they reference requirement params via `var_ref(<synthesized_name>)` and project sub-instances via `requirement_at_sort(...)`. The same `apply_within(fn = Eq.eq, args = [x, y], requirements = [var_ref(__req_eq)])` term can appear in many generic bodies that happen to synthesize the same names — at runtime, each body's frame supplies its own requirement values populated by the caller. (Bodies that synthesize different names produce distinct TermIds; in practice the elaborator should use a deterministic naming scheme so semantically-identical bodies hash-cons.)
 
 **2. At concrete call sites (post-elaboration)** — hash-consing is *not* preserved across callers.
 
@@ -662,6 +760,15 @@ This is unavoidable — the call site's resolution information IS part of the IR
 If we chose a side-table approach (requirement mapping kept outside the term) instead of separate IR slots, the side-table would need to be keyed on `OccurrenceId` (positional source identity), NOT `TermId`. Reason: hash-consing collapses structurally-identical calls in different bodies (e.g., `foo(x)` in B's body vs C's body) to the same TermId, but those calls live in different requirement scopes. Side-table indexing by TermId can't disambiguate; OccurrenceId can.
 
 The separate-slots approach (this design) avoids the side-table machinery entirely. Generic body interiors share TermIds across instantiations; concrete call sites get distinct TermIds, but that's the same situation any IR with embedded constants has.
+
+### Earlier draft — primitives that were removed
+
+The original draft introduced two body-side primitives that have since been removed:
+
+- **`requirement_at_current(i)`** — positional read of the body's own `frame.requirements[i]`. Removed because requirements are now extra params with elaborator-synthesized names, accessed via ordinary `var_ref(<name>)`. The frame's requirements slot is keyed by symbol, parallel to `frame.locals`.
+- **`requirement_at_current(i, op_short)`** — fn-position fused form that combined slot read + functor extraction + method resolution in a single IR node. Removed because it conflated dispatch with slot access; the dispatch step is now an interpreter rule on `apply_within` when `fn` is a spec-op symbol (the dispatching dictionary is one of the entries in the apply's `requirements` channel).
+
+Only `requirement_at_sort(dict, k)` and `construct_requirement(impl, [...])` remain as requirement-specific IR primitives. They survive because dictionary values are a distinct runtime kind (not entities), with positional/nameless sub-instances that Anthill's general value mechanisms can't access or construct.
 
 ## Codegen
 
@@ -682,16 +789,18 @@ The KB stays canonical (one body per spec op); each codegen pass chooses its sur
 
 ## Implementation roadmap (WIs to file)
 
+WI-218 through WI-233 landed under the earlier draft of this design (frame.requirements as a positional slot, `requirement_at_current` primitives, fn-position dispatch fusion, multi-entry requirements channel). The redesign migrates the existing implementation to Model 1 (single-entry channel, tree expansion at frame push):
+
 | Phase | Scope |
 |-------|-------|
-| **WI-218 soundness patch** | In `find_unique_impl_op`, return `Deferred` (skip rewrite) when the call is defer-to-requirement (open-T OR open-bound). Generic bodies become unsound-but-explicit instead of silent-mis-rewrite. ~50 lines. |
-| **IR variants** | Introduce `apply_within`, `ho_apply_within`, `constructor_within`, `lambda_within`. Migration: existing terms get rewritten to `_within` form with empty requirements. The eval handles both forms during the migration window; requirement-less forms removed after. |
-| **Typer pass** | Type-check bodies (existing infrastructure) + compute per-op `requirements` metadata (transitive closure via body walk + fixed-point). Output: typed bodies still using spec-op names; per-op `requirements` map. |
-| **Requirement-insertion pass** (separate from typer) | Walk typed bodies; for each spec-op call, emit one of the three rewrite cases (Direct / Pin-now / Defer-to-requirement). For calls that introduce requirement values, emit `construct_requirement` with the right deps. Output: rewritten body using `apply_within` and `requirement_at_*` primitives. Independent pass — generated code can skip it or substitute alternatives. |
-| **Frame `requirements` field** | Add to `Frame` struct; populate on call entry; read for `requirement_at_current(i)` access. |
-| **Closure `requirements` field** | Add to `Closure`; snapshot at lambda construction; restore on closure invocation. |
-| **Eval entity-dispatch generalization** | `requirement.foo(args)` already works for entity-typed values; verify all spec-op call paths route through this. |
-| **Per-target codegen** | Each codegen target adds requirement-slot rendering logic. |
+| **Redesign WI (new — supersedes WI-229)** | (1) Remove `requirement_at_current(i)` and the fn-position `(i, op_short)` form from the elaborated IR. (2) For Defer call sites, emit `apply_within(fn = <spec_op_qn>, args, requirements = [<single dispatching dict expr>])` — one entry, no slot-baking in `fn`. (3) Change `build_projected_requirements_list` to return a single dictionary expression rather than the impl's sub-instance list. (4) Move the dispatch step into the interpreter's `apply_within` reduction (spec-op branch). |
+| **Frame.requirements rekeyed + expanded at push** | Change `Frame.requirements` to `SmallVec<[(Symbol, Value); N]>`, parallel to `frame.locals`. At frame push, expand `requirements[0]`'s sub-tree: Self_<spec> bound to the dict, plus one binding per the impl's `requires` chain sourced positionally from `dict.sub_requires`. |
+| **Hoist obsoleted (WI-229 close)** | The let-binding hoist for repeated projections is no longer needed: the body's sub-instance accesses are `var_ref(<named_binding>)` (frame-pre-expanded), not repeated `requirement_at_sort` chains. Close WI-229 with a "superseded by redesign" rationale. |
+| **Typer pass (already landed; minor revision)** | Type-check bodies + compute per-op requirements-tree. Output unchanged; the elaborator now synthesizes a Self name plus one named binding per the impl's requires-chain. |
+| **Requirement-insertion pass (revised)** | Existing pass continues to emit one of the three rewrite cases per call. Each emits the single-entry shape per the redesign WI above. |
+| **Eval frame-push generalization** | Replace existing frame-push logic for `apply_within` to expand `requirements[0]`'s sub-tree into the callee's named requirement bindings. Add spec-op dispatch branch (look up `sort_ops_table[dict.sort][op_short]`). |
+| **Closure.requirements rekeyed** | Mirror Frame.requirements change for closure capture. Closures save their full requirement scope (Self + sub-instances by name). |
+| **Per-target codegen** | Each codegen target adapts to the new IR shape (var_ref for named req params; spec-op fn position for Defer; single-entry channel). |
 
 ## Out of scope (this design)
 
@@ -699,7 +808,7 @@ The KB stays canonical (one body per spec op); each codegen pass chooses its sur
 - **Explicit instantiation syntax** (OCaml functor style). Future surface-syntax extension if user feedback requests it.
 - **`dyn Spec` dynamic dispatch** (surface syntax). Opt-in escape hatch for genuinely runtime-decided cases: heterogeneous collections (`List[?dyn Display]`), existential return types, module-boundary erasure. Not in v0's surface grammar.
 
-  **Forward-compatible with this design**: `dyn Spec` is a thin layer over the static mechanism. A `dyn Spec` value is just `(value, RequirementHandle)` packed — like Rust's fat pointer or Lean's instance value. To use one, unpack and dispatch via the bundled handle using the existing `requirement_at_current(i, op_short)` mechanism. Adding dyn requires only: a `Value::Dyn` variant, a coercion from `(T, RequirementHandle)`, and a dispatch primitive via the bundled handle. No changes to `apply_within`, `resolve`, or the rest of the design.
+  **Forward-compatible with this design**: `dyn Spec` is a thin layer over the static mechanism. A `dyn Spec` value is just `(value, RequirementHandle)` packed — like Rust's fat pointer or Lean's instance value. To use one, unpack and dispatch via the bundled handle by feeding it as a requirement param to a spec-op `apply_within` (the interpreter's existing Defer rule does the rest). Adding dyn requires only: a `Value::Dyn` variant, a coercion from `(T, RequirementHandle)`, and an unpack primitive. No changes to `apply_within`, `resolve`, or the rest of the design.
 
   **Without dyn**, programs that would need it fail to type-check for ordinary reasons: an open type-var not covered by any `requires` and not ground at the call site → resolution returns `NoMatch`. This isn't a special rejection — it's the existing resolution algorithm finding nothing to dispatch through. The diagnostic suggests adding `requires Display[T]` (cover it) or, in a future version, `dyn Display` (defer it to runtime).
 - **Recursive instance expansion** (`F[T = F[T = ...]]`). Naturally handled by parameter insertion when the chain is finite at the call site — `Eq[List[List[Int]]]` resolves through three concrete construct_requirement calls. The Resolution algorithm's cycle check rejects ill-founded chains (e.g., `F[T] :- F[T]`). v0 has no support for productive co-inductive resolution.

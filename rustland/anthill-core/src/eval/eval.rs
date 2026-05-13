@@ -240,17 +240,6 @@ impl Interpreter {
             .ok_or_else(|| EvalError::Internal(
                 "requirement_at_current 'slot' is not a static Int".into(),
             ))? as usize;
-        // The fn-position dispatch form (op = Some(...)) requires the
-        // apply_within wiring to drive a spec-op call through the
-        // bundled functor. Until that lands, reject in value position.
-        if let Some(op_tid) = named_arg(named_args, self.fields.op) {
-            if unwrap_option(&self.kb, op_tid).is_some() {
-                return Err(EvalError::Internal(
-                    "requirement_at_current dispatch form (op = Some) only \
-                     valid as fn of apply_within (not yet wired)".into(),
-                ));
-            }
-        }
         let handle = {
             let top = self.stack.top().ok_or_else(|| {
                 EvalError::Internal("requirement_at_current on empty stack".into())
@@ -385,6 +374,31 @@ impl Interpreter {
                 handles.push(self.eval_requirement_chain(resolve_handle(&self.kb, t))?);
             }
             Ok(self.requirements.alloc(functor_sym, handles))
+        } else if Some(functor) == sx.var_ref {
+            // WI-235: a hoisted dispatching dict is let-bound into
+            // frame.locals and referenced from each call site via
+            // var_ref. Synth names are interned once, so Symbol
+            // equality suffices (no short-name aliasing concerns).
+            let name_tid = named_arg(&named_args, self.fields.name)
+                .ok_or_else(|| EvalError::Internal("var_ref missing 'name'".into()))?;
+            let name_sym = term_as_symbol(&self.kb, name_tid).ok_or_else(|| {
+                EvalError::Internal("var_ref 'name' is not a Symbol".into())
+            })?;
+            let top = self.stack.top().ok_or_else(|| {
+                EvalError::Internal("requirement chain var_ref on empty stack".into())
+            })?;
+            let bound = top.locals.iter().rev().find(|(s, _)| *s == name_sym).map(|(_, v)| v);
+            match bound {
+                Some(Value::Requirement(h)) => Ok(h.clone()),
+                Some(other) => Err(EvalError::Internal(format!(
+                    "var_ref bound to non-Requirement in requirement position: {}",
+                    other.type_name()
+                ))),
+                None => Err(EvalError::Internal(format!(
+                    "var_ref({}) unbound in requirement position",
+                    self.kb.resolve_sym(name_sym)
+                ))),
+            }
         } else {
             Err(EvalError::Internal(format!(
                 "expected requirement-chain term, got functor {}",
@@ -393,74 +407,24 @@ impl Interpreter {
         }
     }
 
-    /// Resolve `apply_within`'s `fn` field to the impl op symbol that
-    /// should actually be called. Two cases per the design's rewrite
-    /// table (`docs/design/operation-call-model.md` §"Call rewrite cases"):
-    ///
-    /// - **Direct / Pin-now**: `fn` is a Symbol — return it as-is.
-    /// - **Defer-to-requirement**: `fn` is
-    ///   `requirement_at_current(slot, op = Some(op_short))`. Read
-    ///   `frame.requirements[slot]`'s functor (the impl sort name), then
-    ///   resolve `<impl_qn>.<op_short>` to the impl op symbol.
-    fn resolve_apply_within_fn(&self, fn_tid: TermId) -> Result<Symbol, EvalError> {
-        if let Some(sym) = term_as_symbol(&self.kb, fn_tid) {
-            return Ok(sym);
-        }
-        let term = self.kb.get_term(fn_tid).clone();
-        let sx = &self.reflect;
-        let (functor, named_args) = match term {
-            Term::Fn { functor, named_args, .. } => (functor, named_args),
-            _ => return Err(EvalError::Internal(format!(
-                "apply_within 'fn' is neither a Symbol nor a Fn term: {:?}",
-                self.kb.get_term(fn_tid)
-            ))),
+    /// Spec-op dispatch via the dispatching dictionary's functor.
+    /// Conceptually a vtable / sort-ops-table lookup; materialized as a
+    /// qualified-name resolution `<dict.functor_qn>.<op_short>`. Falls
+    /// back to `fn_sym` when the impl has no override — supports
+    /// spec-op default-body invocation (e.g., `Eq.neq`'s default when
+    /// the impl doesn't override `neq`).
+    fn dispatch_via_sort_ops_table(
+        &self,
+        fn_sym: Symbol,
+        dispatching_dict: &super::value::RequirementHandle,
+    ) -> Symbol {
+        let fn_qn = self.kb.qualified_name_of(fn_sym);
+        let Some((_, op_short)) = fn_qn.rsplit_once('.') else {
+            return fn_sym;
         };
-        if Some(functor) != sx.requirement_at_current {
-            return Err(EvalError::Internal(format!(
-                "apply_within 'fn' must be a Symbol or requirement_at_current(slot, op); \
-                 got functor {}",
-                self.kb.resolve_sym(functor)
-            )));
-        }
-        let slot_tid = named_arg(&named_args, self.fields.slot)
-            .ok_or_else(|| EvalError::Internal(
-                "requirement_at_current dispatch form missing 'slot'".into(),
-            ))?;
-        let slot = extract_static_int(&self.kb, slot_tid, &self.fields)
-            .ok_or_else(|| EvalError::Internal(
-                "requirement_at_current dispatch 'slot' is not a static Int".into(),
-            ))? as usize;
-        let op_tid = named_arg(&named_args, self.fields.op)
-            .ok_or_else(|| EvalError::Internal(
-                "requirement_at_current dispatch form missing 'op'".into(),
-            ))?;
-        let op_inner = unwrap_option(&self.kb, op_tid).ok_or_else(|| {
-            EvalError::Internal(
-                "requirement_at_current 'op' must be Some(<symbol>) when used in fn position".into(),
-            )
-        })?;
-        let op_short = term_as_symbol(&self.kb, op_inner).ok_or_else(|| {
-            EvalError::Internal(
-                "requirement_at_current 'op' inner is not a Symbol".into(),
-            )
-        })?;
-        let top = self.stack.top().ok_or_else(|| {
-            EvalError::Internal("requirement-dispatch on empty stack".into())
-        })?;
-        let handle = top.requirements.get(slot).ok_or_else(|| {
-            EvalError::Internal(format!(
-                "requirement_at_current dispatch slot={slot}: frame has only \
-                 {} requirements",
-                top.requirements.len()
-            ))
-        })?;
-        let impl_functor = handle.functor();
-        let impl_qn = self.kb.qualified_name_of(impl_functor).to_string();
-        let op_short_name = self.kb.resolve_sym(op_short);
-        let target_qn = format!("{impl_qn}.{op_short_name}");
-        self.kb.try_resolve_symbol(&target_qn).ok_or_else(|| {
-            EvalError::UnknownOperation { name: target_qn }
-        })
+        let impl_qn = self.kb.qualified_name_of(dispatching_dict.functor());
+        let target_qn = format!("{impl_qn}.{op_short}");
+        self.kb.try_resolve_symbol(&target_qn).unwrap_or(fn_sym)
     }
 
     // ── Binder starts: update top.awaiting, push child frame. ──────
@@ -551,40 +515,64 @@ impl Interpreter {
         )
     }
 
-    /// WI-223: reduce `apply_within(fn, args, requirements)`. Per the
-    /// design (`docs/design/operation-call-model.md` §"Eval mechanics:
-    /// AwaitState with requirements"), evaluate the requirements
-    /// channel first, then args, then push the callee frame with the
-    /// resolved requirements installed in `frame.requirements`.
-    /// Requirements reduce synchronously via the chain grammar
-    /// (requirement_at_current / requirement_at_sort /
-    /// construct_requirement) — no AwaitState needed for them.
+    /// WI-223 / WI-234 (Model 1): reduce `apply_within(fn, args,
+    /// requirements)`. The requirements channel has at most one entry —
+    /// the dispatching dictionary; when present, its functor selects
+    /// the impl op for a spec-op `fn`, and its sub-tree is expanded
+    /// into the callee's `frame.requirements` at frame push.
     fn start_apply_within(
         &mut self,
         named_args: &SmallVec<[(Symbol, TermId); 2]>,
     ) -> Result<StepOutcome, EvalError> {
         let fn_tid = named_arg(named_args, self.fields.fn_)
             .ok_or_else(|| EvalError::Internal("apply_within missing 'fn'".into()))?;
-        // `fn` is either a plain Symbol (Direct / Pin-now rewrite cases)
-        // or `requirement_at_current(slot, op = Some(op_short))` — the
-        // Defer-to-requirement form. In the latter case we look up the
-        // requirement value at slot, read its functor, and resolve
-        // <functor>.<op_short> to the impl op to call.
-        let target = self.resolve_apply_within_fn(fn_tid)?;
+        let fn_sym = term_as_symbol(&self.kb, fn_tid).ok_or_else(|| {
+            EvalError::Internal(format!(
+                "apply_within 'fn' must be a Symbol; got {:?}",
+                self.kb.get_term(fn_tid)
+            ))
+        })?;
 
-        // Evaluate the requirements channel synchronously to a vec of
-        // owned RequirementHandles. Empty when the rewrite pass left it
-        // as a plain Direct/Pin-now call with no deps.
         let reqs_tid = named_arg(named_args, self.fields.requirements)
             .ok_or_else(|| {
                 EvalError::Internal("apply_within missing 'requirements'".into())
             })?;
         let req_terms = list_terms(&self.kb, reqs_tid, self.fields.head, self.fields.tail);
-        let mut requirements: SmallVec<[super::value::RequirementHandle; 2]> = SmallVec::new();
-        for tid in req_terms {
-            let h = self.eval_requirement_chain(resolve_handle(&self.kb, tid))?;
-            requirements.push(h);
+        if req_terms.len() > 1 {
+            return Err(EvalError::Internal(format!(
+                "apply_within requirements channel has {} entries; v0 Model 1 \
+                 expects 0 or 1",
+                req_terms.len(),
+            )));
         }
+        let dispatching_dict: Option<super::value::RequirementHandle> =
+            if let Some(first) = req_terms.first() {
+                Some(self.eval_requirement_chain(resolve_handle(&self.kb, *first))?)
+            } else {
+                None
+            };
+
+        let target = match &dispatching_dict {
+            Some(dict) => self.dispatch_via_sort_ops_table(fn_sym, dict),
+            None => fn_sym,
+        };
+
+        // Slot 0 = the dispatching dict (Self); slots 1..N+1 = its
+        // positional sub-instances. Built in target order to avoid
+        // SmallVec::insert's O(N) memmove.
+        let requirements = match dispatching_dict {
+            Some(dict) => {
+                let arity = dict.arity();
+                let mut reqs: SmallVec<[super::value::RequirementHandle; 2]> =
+                    SmallVec::with_capacity(arity + 1);
+                for k in 0..arity {
+                    reqs.push(dict.project(k));
+                }
+                reqs.insert(0, dict);
+                reqs
+            }
+            None => SmallVec::new(),
+        };
 
         let args_tid = named_arg(named_args, self.fields.args)
             .ok_or_else(|| EvalError::Internal("apply_within missing 'args'".into()))?;
@@ -1271,6 +1259,8 @@ pub fn lookup_operation_body(
     functor: Symbol,
 ) -> Option<(TermId, Vec<(Symbol, TermId)>)> {
     let rec = crate::kb::op_info::lookup_operation_info(kb, functor)?;
-    let body = rec.body?;
+    // WI-235: prefer a body override (from `req_insertion::run`'s hoist
+    // phase) so let-wrapping fires before the original body is reduced.
+    let body = kb.op_body_override(functor).or(rec.body)?;
     Some((body, rec.params))
 }

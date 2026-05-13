@@ -195,6 +195,13 @@ pub struct TypingEnv {
     /// spec-op call site under this body; caching once per body avoids
     /// re-walking `SortRequiresInfo` per apply.
     enclosing: Option<EnclosingSort>,
+    /// WI-235: symbol of the operation whose body is currently being
+    /// type-checked. `check_apply` records it in
+    /// `CallClass::ConcreteApplyWithin` so `req_insertion::run` can
+    /// group classifications by owning operation for the
+    /// construct_requirement hoist phase. The body's TermId is derived
+    /// via `lookup_operation_info` when the hoist phase needs it.
+    enclosing_op_sym: Option<Symbol>,
     pub diagnostics: Vec<String>,
 }
 
@@ -212,6 +219,7 @@ impl TypingEnv {
             expected_collection_type: None,
             local_resources: Vec::new(),
             enclosing: None,
+            enclosing_op_sym: None,
             diagnostics: Vec::new(),
         }
     }
@@ -229,6 +237,17 @@ impl TypingEnv {
 
     pub fn enclosing_sort(&self) -> Option<Symbol> {
         self.enclosing.as_ref().map(|e| e.sort)
+    }
+
+    /// WI-235: record the symbol of the operation being type-checked
+    /// so `check_apply` can stamp it onto each classification for
+    /// later body-oriented grouping in `req_insertion::run`.
+    pub fn set_enclosing_op_sym(&mut self, op_sym: Option<Symbol>) {
+        self.enclosing_op_sym = op_sym;
+    }
+
+    pub fn enclosing_op_sym(&self) -> Option<Symbol> {
+        self.enclosing_op_sym
     }
 
     fn enclosing_requires(&self) -> Option<&[RequiresEntry]> {
@@ -780,6 +799,7 @@ fn check_apply(
                                 callee_spec_sort: impl_sort.unwrap(),
                                 spec_op_sym: fn_sym,
                                 enclosing_sort,
+                                enclosing_op_sym: env.enclosing_op_sym(),
                                 resolved_tree: resolved_tree.clone(),
                             }
                         } else {
@@ -840,6 +860,7 @@ fn check_apply(
                             callee_spec_sort: parent_sym,
                             spec_op_sym: fn_sym,
                             enclosing_sort: env.enclosing_sort(),
+                            enclosing_op_sym: env.enclosing_op_sym(),
                             resolved_tree: None,
                         },
                     );
@@ -955,20 +976,19 @@ impl ProjectionSyms {
     }
 }
 
-/// WI-222 Phase D/E shared, refactored under WI-227: project
-/// `caller_requires` into a cons-list of value-position projection
-/// terms matching the callee's transitive `requires_chain(callee_spec_sort)`.
-/// Each callee dep is resolved via a three-strategy recursive search
-/// (see `build_dep_projection`): flat slot lookup, nested
-/// `requirement_at_sort`, then `SortProvidesInfo`-driven static
-/// construction. Returns the head TermId of the list, or `None` if any
-/// stdlib symbol lookup fails.
-fn build_projected_requirements_list(
+/// WI-234 (Model 1): build the dispatching-dict expression for the
+/// Direct path — `construct_requirement(callee_spec_sort, [<projections
+/// per callee chain>])`. Each projection sources its sub-instance from
+/// `caller_requires` via the three-strategy search in
+/// `build_dep_projection`. The caller wraps the result in a
+/// single-entry cons-list to form the `apply_within.requirements`
+/// channel.
+fn build_dispatching_dict_direct(
     kb: &mut KnowledgeBase,
     callee_spec_sort: Symbol,
     caller_requires: &[RequiresEntry],
+    syms: &ProjectionSyms,
 ) -> Option<TermId> {
-    let syms = ProjectionSyms::resolve(kb)?;
     let callee_chain = requires_chain(kb, callee_spec_sort);
     // Hoist Strategy 2's per-slot `requires_chain` walk out of the dep
     // loop: it depends only on `caller_requires`, not on the current
@@ -981,42 +1001,27 @@ fn build_projected_requirements_list(
     let mut proj_terms: Vec<TermId> = Vec::with_capacity(callee_chain.len());
     for dep in &callee_chain {
         if let Some(t) = build_dep_projection(
-            kb, dep, caller_requires, &caller_sub_chains, &syms,
+            kb, dep, caller_requires, &caller_sub_chains, syms,
         ) {
             proj_terms.push(t);
         }
     }
-    Some(super::load::build_cons_list(
+    let sub_reqs_list = super::load::build_cons_list(
         kb, &proj_terms, syms.nil, syms.cons, syms.head, syms.tail,
-    ))
+    );
+    Some(build_construct_requirement(kb, syms, callee_spec_sort, sub_reqs_list))
 }
 
-/// WI-228: build the apply_within `requirements` list directly from a
-/// `ResolvedRequiresNode`'s sub_resolutions. Used by the Pin-now path where SLD
-/// resolution already produced the full impl-side tree — each
-/// sub_resolution becomes one entry in the requirements list, emitted
-/// via `emit_tree_as_projection` (so nested Conditionals turn into
-/// nested `construct_requirement`, and FromScope leaves turn into
-/// `requirement_at_current`).
-///
-/// `Leaf` and `FromScope` at the outer node carry no sub_resolutions
-/// — the impl has no requires, so the list is nil.
-fn build_projected_requirements_list_from_tree(
+/// Wrap a single dispatching-dict expression in the single-entry
+/// cons-list shape used for `apply_within.requirements` under Model 1.
+fn wrap_dispatch_channel(
     kb: &mut KnowledgeBase,
-    tree: &ResolvedRequiresNode,
-) -> Option<TermId> {
-    let syms = ProjectionSyms::resolve(kb)?;
-    let sub_resolutions: &[ResolvedRequiresNode] = match tree {
-        ResolvedRequiresNode::Conditional { sub_resolutions, .. } => sub_resolutions,
-        ResolvedRequiresNode::Leaf { .. } | ResolvedRequiresNode::FromScope { .. } => &[],
-    };
-    let mut sub_terms: SmallVec<[TermId; 4]> = SmallVec::new();
-    for sub in sub_resolutions {
-        sub_terms.push(emit_tree_as_projection(kb, sub, &syms)?);
-    }
-    Some(super::load::build_cons_list(
-        kb, &sub_terms, syms.nil, syms.cons, syms.head, syms.tail,
-    ))
+    dict_term: TermId,
+    syms: &ProjectionSyms,
+) -> TermId {
+    super::load::build_cons_list(
+        kb, &[dict_term], syms.nil, syms.cons, syms.head, syms.tail,
+    )
 }
 
 /// WI-227: recursively search for an IR projection that delivers a
@@ -1152,18 +1157,22 @@ fn emit_tree_as_projection(
     }
 }
 
-/// Build a value-position `requirement_at_current(slot=i)` — shared by
-/// Strategy 1, the inner of Strategy 2, and `FromScope` emission. The
-/// projection path never emits the `op` field; only the dispatch-fn
-/// position carries it (see `record_apply_within_rewrite`).
+/// Build a value-position `requirement_at_current(slot=i+1)` — shared by
+/// Strategy 1, the inner of Strategy 2, and `FromScope` emission.
+///
+/// WI-234 (Model 1): caller's chain index `i` maps to frame slot `i+1`
+/// because slot 0 is reserved for Self (the enclosing op's dispatching
+/// dictionary). The +1 shift is applied here so callers (which still
+/// think in chain-index terms) don't have to know about the Self slot.
 fn build_flat_req(kb: &mut KnowledgeBase, syms: &ProjectionSyms, i: usize) -> TermId {
-    let slot_lit = kb.alloc(Term::Const(Literal::Int(i as i64)));
+    let slot_lit = kb.alloc(Term::Const(Literal::Int((i as i64) + 1)));
     kb.alloc(Term::Fn {
         functor: syms.raac,
         pos_args: SmallVec::new(),
         named_args: SmallVec::from_slice(&[(syms.slot, slot_lit)]),
     })
 }
+
 
 /// Build `requirement_at_sort(chain = <inner>, slot = <k>)`.
 fn build_req_at_sort(
@@ -1244,20 +1253,25 @@ pub(crate) fn record_apply_within_concrete(
         Some(s) => s,
         None => return false,
     };
+    let syms = match ProjectionSyms::resolve(kb) {
+        Some(s) => s,
+        None => return false,
+    };
     let orig_args_tid = match get_named_arg(kb, named_args, "args") {
         Some(t) => t,
         None => return false,
     };
-    let requirements_list = match resolved_tree {
-        Some(tree) => match build_projected_requirements_list_from_tree(kb, tree) {
+    let dict_term = match resolved_tree {
+        Some(tree) => match emit_tree_as_projection(kb, tree, &syms) {
             Some(t) => t,
             None => return false,
         },
-        None => match build_projected_requirements_list(kb, callee_spec_sort, caller_requires) {
+        None => match build_dispatching_dict_direct(kb, callee_spec_sort, caller_requires, &syms) {
             Some(t) => t,
             None => return false,
         },
     };
+    let requirements_list = wrap_dispatch_channel(kb, dict_term, &syms);
 
     let fn_ref = kb.alloc(Term::Ref(fn_target_sym));
     let fn_field = kb.intern("fn");
@@ -1277,116 +1291,52 @@ pub(crate) fn record_apply_within_concrete(
     true
 }
 
-/// Allocate `requirement_at_current(slot=N[, op=<some_wrap>])`. When
-/// `op_wrap` is `Some`, the result is a dispatch fn-position term; when
-/// `None`, it's a value-position projection. Internalises the field
-/// symbols so the two shapes share their construction.
-fn build_req_at_current(
-    kb: &mut KnowledgeBase,
-    raac_sym: Symbol,
-    slot_field: Symbol,
-    op_field: Symbol,
-    slot: usize,
-    op_wrap: Option<TermId>,
-) -> TermId {
-    let slot_lit = kb.alloc(Term::Const(Literal::Int(slot as i64)));
-    let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-    named.push((slot_field, slot_lit));
-    if let Some(wrap) = op_wrap {
-        named.push((op_field, wrap));
-    }
-    kb.alloc(Term::Fn {
-        functor: raac_sym,
-        pos_args: SmallVec::new(),
-        named_args: named,
-    })
-}
-
-/// WI-222 Phase C+D — defer-to-requirement rewrite. Builds an
-/// `apply_within(fn = requirement_at_current(slot, op = some(op_short)),
-/// args = <orig>, requirements = [<projections>])` term and records it
-/// as the rewrite for `original_apply`. The runtime (WI-223) reads the
-/// `requirement_at_current` form, looks up `frame.requirements[slot]`'s
-/// functor at dispatch time, and resolves `<functor>.<op_short>` as
-/// the impl op to call. The projected requirements list becomes the
-/// callee's `frame.requirements`.
-///
-/// `slot` is the position of the matching entry in the enclosing op's
-/// `requires` chain (see `find_requires_slot`).
-///
-/// `spec_sort` is the deferred callee's spec sort (e.g. `Membership`).
-/// Phase D walks `requires_chain(spec_sort)` (the callee's transitive
-/// requires) and for each entry emits `requirement_at_current(j)` where
-/// `j` is the position of that entry in `caller_requires`. Because both
-/// chains are transitive, every callee dep must appear somewhere in
-/// `caller_requires` — Phase B's coverage check is the static guarantee.
-/// If any projection lookup fails (a typer bug or coverage gap), the
-/// rewrite emits a partial list rather than panicking; the runtime
-/// would then surface a frame-too-small error at the actual dispatch.
-///
-/// Reference: docs/design/operation-call-model.md §"Call rewrite cases"
-/// (Defer-to-requirement row), §"Two primitives".
+/// WI-222 Phase C+D / WI-234 (Model 1): defer-to-requirement rewrite.
+/// Emits `apply_within(fn = Ref(spec_op_sym), args = <orig>,
+/// requirements = [requirement_at_current(slot = slot+1)])`. Dispatch
+/// from spec-op to impl-op happens at the apply_within reduction by
+/// reading the dispatching dict's functor. `slot` is the position of
+/// the matching entry in the enclosing op's `requires` chain; the
+/// frame slot it references is `slot + 1` (Self at slot 0 shift).
 pub(crate) fn record_apply_within_rewrite(
     kb: &mut KnowledgeBase,
     original_apply: TermId,
     named_args: &SmallVec<[(Symbol, TermId); 2]>,
     pos_args: &SmallVec<[TermId; 4]>,
     spec_op_sym: Symbol,
-    op_short_sym: Symbol,
-    spec_sort: Symbol,
     slot: usize,
-    caller_requires: &[RequiresEntry],
 ) -> bool {
     use smallvec::SmallVec;
 
     if kb.dispatch_rewrites.contains_key(&original_apply) {
         return false;
     }
-
-    // Resolve the stdlib symbols we need for the rewrite. Any missing
-    // symbol means stdlib isn't loaded — bail out silently rather than
-    // panic, mirroring the conservative approach in record_apply_rewrite.
     let aw_sym = match kb.try_resolve_symbol("anthill.reflect.Expr.apply_within") {
         Some(s) => s,
         None => return false,
     };
-    let raac_sym = match kb.try_resolve_symbol("anthill.reflect.Expr.requirement_at_current") {
+    let syms = match ProjectionSyms::resolve(kb) {
         Some(s) => s,
         None => return false,
     };
-
-    // Original apply's `args` list — reused verbatim.
     let orig_args_tid = match get_named_arg(kb, named_args, "args") {
         Some(t) => t,
         None => return false,
     };
-    let requirements_list =
-        match build_projected_requirements_list(kb, spec_sort, caller_requires) {
-            Some(t) => t,
-            None => return false,
-        };
 
-    // Build `some(op_short)` — the dispatch form requires the op short
-    // name so the runtime can resolve `<impl_qn>.<op_short>` after
-    // reading `frame.requirements[slot]`'s functor.
-    let op_ref = kb.alloc(Term::Ref(op_short_sym));
-    let some_wrap = super::load::build_some(kb, op_ref);
+    let dict_expr = build_flat_req(kb, &syms, slot);
+    let requirements_list = wrap_dispatch_channel(kb, dict_expr, &syms);
 
+    let fn_ref = kb.alloc(Term::Ref(spec_op_sym));
     let fn_field = kb.intern("fn");
     let args_field = kb.intern("args");
     let reqs_field = kb.intern("requirements");
-    let slot_field = kb.intern("slot");
-    let op_field = kb.intern("op");
-
-    // Build `requirement_at_current(slot=N, op=some(op_short))` for the fn position.
-    let req_at_current =
-        build_req_at_current(kb, raac_sym, slot_field, op_field, slot, Some(some_wrap));
 
     let rewritten = kb.alloc(Term::Fn {
         functor: aw_sym,
         pos_args: pos_args.clone(),
         named_args: SmallVec::from_slice(&[
-            (fn_field, req_at_current),
+            (fn_field, fn_ref),
             (args_field, orig_args_tid),
             (reqs_field, requirements_list),
         ]),
@@ -1480,11 +1430,18 @@ pub enum CallClass {
     /// Pin-now path (WI-228 tree-threaded projection); `None` for
     /// Direct (falls back to per-dep search against `caller_requires`
     /// derived from `enclosing_sort`).
+    ///
+    /// WI-235: `enclosing_op_sym` is the owning operation symbol. The
+    /// hoist phase of `req_insertion::run` buckets classifications by
+    /// this field to identify duplicate `construct_requirement` shapes
+    /// per body for let-hoisting; body TermId is derived via
+    /// `lookup_operation_info`.
     ConcreteApplyWithin {
         fn_target_sym: Symbol,
         callee_spec_sort: Symbol,
         spec_op_sym: Symbol,
         enclosing_sort: Option<Symbol>,
+        enclosing_op_sym: Option<Symbol>,
         resolved_tree: Option<ResolvedRequiresNode>,
     },
     /// Defer-to-requirement (WI-222 Phase C+D): dispatch deferred to
@@ -4704,6 +4661,9 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             .rsplit_once('.')
             .and_then(|(parent_qn, _)| kb.try_resolve_symbol(parent_qn));
         env.set_enclosing_sort(kb, parent_sym);
+        // WI-235: stamp the op symbol so per-call classifications carry
+        // an owning-body handle for req_insertion's hoist phase.
+        env.set_enclosing_op_sym(Some(op.op_sym));
         for (name, ty) in &op.params {
             env.bind_var(name.clone(), *ty);
         }

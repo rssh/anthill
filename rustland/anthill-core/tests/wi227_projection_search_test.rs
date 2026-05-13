@@ -53,14 +53,11 @@ fn load_stdlib_only() -> KnowledgeBase {
 
 #[test]
 fn flat_path_emits_requirement_at_current() {
-    // Regression for WI-222 Phase D: a sort declaring `requires Eq[T]`
-    // and calling `eq(...)` must project its own Eq slot via
-    // `requirement_at_current(slot=0)` — the dep is at top level of the
-    // caller's flat chain.
-    //
-    // After WI-227's refactor, Strategy 1 (flat slot match) must still
-    // fire first and emit a plain `requirement_at_current` — not the
-    // nested or static forms.
+    // WI-234 Model 1 regression: a sort declaring `requires Eq[T]` and
+    // calling `eq(...)` must rewrite to apply_within(fn = Ref(Eq.eq),
+    // requirements = [requirement_at_current(slot=1)]) — Strategy 1
+    // emits the single dispatching dict expression for the deferred
+    // call. Slot 1 = Eq[T] at chain[0] + 1 (Self at slot 0).
     let src = r#"
 namespace test.wi227.flat
   import anthill.prelude.Eq.{eq}
@@ -80,17 +77,9 @@ end
     let raac_sym = kb
         .try_resolve_symbol("anthill.reflect.Expr.requirement_at_current")
         .expect("requirement_at_current");
-    let ras_sym = kb
-        .try_resolve_symbol("anthill.reflect.Expr.requirement_at_sort")
-        .expect("requirement_at_sort");
-    let cr_sym = kb
-        .try_resolve_symbol("anthill.reflect.Expr.construct_requirement")
-        .expect("construct_requirement");
+    let cons_sym = kb.try_resolve_symbol("anthill.prelude.List.cons").expect("List.cons");
     let nil_sym = kb.try_resolve_symbol("anthill.prelude.List.nil").expect("List.nil");
 
-    // Locate the eq() defer rewrite — its apply_within.requirements
-    // list must be nil (Eq has no transitive deps). Strategy 1 stops
-    // at the flat-match step before ever consulting Strategy 2 or 3.
     let mut rewritten_for_eq = None;
     for (rewritten_tid, spec_sym) in kb.dispatch_origin_iter() {
         if spec_sym == eq_sym {
@@ -99,32 +88,51 @@ end
     }
     let rewritten_tid = rewritten_for_eq.expect("eq() must be rewritten");
 
-    // fn = requirement_at_current(slot=0, op=some(eq)) — the deferred
-    // dispatch form. Pins WI-222 Phase C output too.
     let named_args = match kb.get_term(rewritten_tid) {
         Term::Fn { named_args, .. } => named_args.clone(),
         other => panic!("rewritten must be Fn; got {other:?}"),
     };
-    let fn_tid = get_named_arg(kb, &named_args, "fn").expect("fn arg");
-    let (fn_functor, _) = match kb.get_term(fn_tid) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
-        other => panic!("fn must be Fn; got {other:?}"),
-    };
-    assert_eq!(
-        fn_functor, raac_sym,
-        "fn-position must be requirement_at_current (Strategy 1 form), not {} \
-         or {}",
-        kb.qualified_name_of(ras_sym),
-        kb.qualified_name_of(cr_sym)
-    );
 
-    // requirements list = nil (Eq.eq has no transitive deps).
+    // Model 1: fn is the spec-op symbol directly.
+    let fn_tid = get_named_arg(kb, &named_args, "fn").expect("fn arg");
+    match kb.get_term(fn_tid) {
+        Term::Ref(s) => assert_eq!(*s, eq_sym,
+            "fn must be Ref(Eq.eq); got Ref({})", kb.qualified_name_of(*s)),
+        other => panic!("fn must be Term::Ref(spec_op); got {other:?}"),
+    }
+
+    // requirements = cons(requirement_at_current(slot=1), nil) —
+    // Strategy 1 flat-match emits requirement_at_current at the shifted
+    // slot index.
     let reqs_tid = get_named_arg(kb, &named_args, "requirements").expect("requirements arg");
-    let reqs_functor = match kb.get_term(reqs_tid) {
-        Term::Fn { functor, .. } => *functor,
+    let (reqs_functor, reqs_named) = match kb.get_term(reqs_tid) {
+        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
         other => panic!("requirements must be Fn; got {other:?}"),
     };
-    assert_eq!(reqs_functor, nil_sym, "empty deps → nil list");
+    assert_eq!(reqs_functor, cons_sym,
+        "Model 1: single dispatching dict wrapped in cons; got {}",
+        kb.qualified_name_of(reqs_functor));
+
+    let head_tid = get_named_arg(kb, &reqs_named, "head").expect("cons head");
+    let (head_functor, head_named) = match kb.get_term(head_tid) {
+        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        other => panic!("dispatching dict must be Fn; got {other:?}"),
+    };
+    assert_eq!(head_functor, raac_sym,
+        "Strategy 1 emits requirement_at_current; got {}",
+        kb.qualified_name_of(head_functor));
+    let head_slot_tid = get_named_arg(kb, &head_named, "slot").expect("slot arg");
+    match kb.get_term(head_slot_tid) {
+        Term::Const(Literal::Int(1)) => {}
+        other => panic!("slot must be Const(Int(1)) (Eq[T] at chain[0]+1); got {other:?}"),
+    }
+
+    let tail_tid = get_named_arg(kb, &reqs_named, "tail").expect("cons tail");
+    let tail_functor = match kb.get_term(tail_tid) {
+        Term::Fn { functor, .. } => *functor,
+        other => panic!("tail must be Fn (nil); got {other:?}"),
+    };
+    assert_eq!(tail_functor, nil_sym, "single-entry list's tail must be nil");
 }
 
 #[test]
@@ -184,7 +192,9 @@ fn nested_handle_emits_requirement_at_sort_chain() {
         kb.qualified_name_of(functor)
     );
 
-    // chain = requirement_at_current(slot=0). No op-wrap (value position).
+    // chain = requirement_at_current(slot=1). WI-234 Model 1: chain
+    // index 0 (Ordered is at caller_requires[0]) maps to frame slot 1
+    // because Self occupies slot 0.
     let chain_tid = get_named_arg(&kb, &named_args, "chain").expect("chain arg");
     let (chain_functor, chain_named) = match kb.get_term(chain_tid) {
         Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
@@ -197,8 +207,8 @@ fn nested_handle_emits_requirement_at_sort_chain() {
     );
     let chain_slot_tid = get_named_arg(&kb, &chain_named, "slot").expect("inner slot");
     match kb.get_term(chain_slot_tid) {
-        Term::Const(Literal::Int(0)) => {}
-        other => panic!("inner slot must be 0 (Ordered is at caller_requires[0]); got {other:?}"),
+        Term::Const(Literal::Int(1)) => {}
+        other => panic!("inner slot must be 1 (Ordered at chain[0]+1 for Self); got {other:?}"),
     }
     assert!(
         get_named_arg(&kb, &chain_named, "op").is_none(),
