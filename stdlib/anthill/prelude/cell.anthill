@@ -9,9 +9,9 @@ sort anthill.prelude.Cell
   sort V = ?
 
   -- Construction. Allocates a fresh cell handle initialized to `v`.
-  -- v0.1: under functor-only identity (WI-200's transitional scheme),
-  -- multiple new() calls collapse to one slot. WI-200 lifts this to
-  -- opaque-handle identity per allocation.
+  -- Identity is the arena slot (opaque-handle scheme per WI-205):
+  -- each call returns a distinct cell, and recursive allocations do
+  -- not alias. See docs/design/cell-runtime.md §"Identity scheme".
   operation new(v: V) -> Cell
 
   -- Read the current value.

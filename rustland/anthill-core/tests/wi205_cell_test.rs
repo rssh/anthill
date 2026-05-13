@@ -158,6 +158,42 @@ end
 }
 
 #[test]
+fn modify_set_get_on_cell_routes_through_arena() {
+    // WI-205 (a) per-resource Modify dispatch: calling Modify.set / .get
+    // directly on a Value::Cell handle (not via Cell.set/get) routes to
+    // the cell arena, identical to Cell.set/get. Distinct cells must
+    // remain independent — confirms the arena, not the functor-keyed
+    // fallback map, is what stores the value.
+    let mut interp = interp_for("namespace test.wi205_modify_cell end\n");
+    register_modify_handler(&mut interp);
+
+    let cell_a = interp.alloc_cell(Value::Int(1));
+    let cell_b = interp.alloc_cell(Value::Int(2));
+    let cell_a_value = Value::Cell(cell_a);
+    let cell_b_value = Value::Cell(cell_b);
+
+    let set_sym = interp.kb_mut().intern("set");
+    let get_sym = interp.kb_mut().intern("get");
+
+    interp.invoke_effect_handler(
+        "anthill.prelude.Modify",
+        set_sym,
+        &[cell_a_value.clone(), Value::Int(100)],
+    ).expect("Modify.set on Cell A");
+
+    let got_a = interp.invoke_effect_handler(
+        "anthill.prelude.Modify", get_sym, &[cell_a_value],
+    ).expect("Modify.get on Cell A");
+    assert_eq!(got_a.as_int(), Some(100), "Cell A should hold the written value");
+
+    let got_b = interp.invoke_effect_handler(
+        "anthill.prelude.Modify", get_sym, &[cell_b_value],
+    ).expect("Modify.get on Cell B");
+    assert_eq!(got_b.as_int(), Some(2),
+        "Cell B should remain untouched — functor-keyed aliasing must not happen");
+}
+
+#[test]
 fn modifiable_facts_for_stdlib_resources_resolve() {
     // Confirm that `Modifiable` is registered as a sort and that
     // FileStore / IndexedFileStore / KB / Cell satisfy it via facts

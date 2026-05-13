@@ -108,26 +108,63 @@ pub fn scripted_console_input_handler(script: SharedInputScript) -> EffectHandle
     })
 }
 
-// ── Default Modify handler (arena-backed cells) ────────────────
+// ── Default Modify handler (per-resource dispatch) ─────────────
 
-/// Default handler for the `Modify` effect. Holds a map from resource
-/// functor → current value. `get(resource)` returns the stored value;
-/// `set(resource, v)` replaces it. The resource must be a
-/// `Value::Entity` (or `Value::Term` wrapping a nullary functor) — the
-/// functor symbol is the arena key. Mixing types for the same resource
-/// is not rejected: the runtime is dynamically typed, and the anthill
-/// typer is the place to catch mismatches.
+/// Default handler for the `Modify` effect. Per WI-205's per-resource
+/// dispatch architecture, routes `get` / `set` based on the target
+/// Value's variant:
+///
+/// - `Value::Cell(h)` → reads/writes go through the interpreter's
+///   `cell_arena` (allocation-time uid; one slot per `Cell.new`).
+/// - `Value::Entity { functor, .. }` or `Value::Term` wrapping a nullary
+///   functor → fallback functor-keyed map. The functor symbol is the
+///   key; mixing types for the same resource is not rejected (runtime
+///   is dynamically typed; the typer is the place to catch mismatches).
+///
+/// The Cell path matches what `Cell.set` does directly; routing
+/// `Modify.set(cell, v)` here gives the same arena semantics, so user
+/// code calling `Modify.set` on a Cell handle behaves identically to
+/// calling `Cell.set`.
 ///
 /// Cycle detection surfaces as [`EvalError::CyclicReference`] when a
-/// `set` would store a value that transitively references itself via
-/// `Value::Term` or entity args — caught by a bounded structural walk.
+/// functor-keyed `set` would store a value that transitively references
+/// itself via `Value::Term` or entity args. Cell-routed `set` skips the
+/// runtime walk — proposal 037 §"Cell[V]" and WI-207's typer-side
+/// `acyclic_cell` rule make cycles inexpressible at the type level.
 pub fn default_modify_handler() -> EffectHandler {
     let cells: Rc<RefCell<HashMap<Symbol, Value>>> =
         Rc::new(RefCell::new(HashMap::new()));
 
     Box::new(move |interp, op_sym, args| {
-        let key = resource_key(interp, args.first())?;
-        match interp.kb().resolve_sym(op_sym) {
+        let target = args.first().ok_or_else(|| EvalError::ArityMismatch {
+            op: "Modify", expected: 1, got: 0,
+        })?;
+        let op_name = interp.kb().resolve_sym(op_sym);
+
+        // Cell arm: route through the cell arena. Identity is the slot,
+        // not the functor; two Cell.new calls produce distinct handles.
+        if let Value::Cell(h) = target {
+            let handle = h.clone();
+            return match op_name {
+                "get" => Ok(interp.read_cell(&handle)),
+                "set" => {
+                    let new_val = args.get(1).cloned().ok_or_else(|| {
+                        EvalError::ArityMismatch {
+                            op: "Modify.set", expected: 2, got: args.len(),
+                        }
+                    })?;
+                    interp.write_cell(&handle, new_val);
+                    Ok(Value::Unit)
+                }
+                other => Err(EvalError::Internal(
+                    format!("Modify[Cell] handler: unknown op `{}`", other),
+                )),
+            };
+        }
+
+        // Fallback: functor-keyed map for anonymous resources.
+        let key = resource_key(interp, Some(target))?;
+        match op_name {
             "get" => {
                 cells.borrow()
                     .get(&key)
@@ -165,7 +202,7 @@ fn resource_key(interp: &Interpreter, arg: Option<&Value>) -> Result<Symbol, Eva
             }),
         },
         other => Err(EvalError::TypeMismatch {
-            expected: "Entity (resource identifier)",
+            expected: "Entity, Cell, or nullary Term (resource identifier)",
             got: other.type_name().to_string(),
         }),
     }
