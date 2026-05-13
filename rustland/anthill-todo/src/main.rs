@@ -1774,8 +1774,38 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
         Value::Cell(handle)
     };
 
-    match interp.call("anthill.todo.Main.main",
-                      &[args_value, store_value, wis_cell_value, agent_value]) {
+    // Build the chain_dicts for Main's flattened requires chain. Walk
+    // the chain via the public requires_chain_flat API and allocate
+    // a dictionary handle per entry — FileBasedWorkitemStore for the
+    // WorkItemStore slot (so cmd_X dispatch lands on the impl), and
+    // self-referential placeholders for every other slot. Walking
+    // dynamically avoids hard-coding the chain length, which can grow
+    // when Main gains more requires.
+    let chain_dicts: smallvec::SmallVec<[_; 2]> = {
+        let main_sym = interp.kb().try_resolve_symbol("anthill.todo.Main")
+            .expect("anthill.todo.Main must be loaded");
+        let workitemstore_sym = interp.kb()
+            .try_resolve_symbol("anthill.todo.store.WorkItemStore");
+        let filebased_sym = interp.kb_mut()
+            .intern("anthill.todo.store.FileBasedWorkitemStore");
+        let entries = anthill_core::kb::typing::requires_chain_flat(
+            interp.kb(), main_sym,
+        );
+        let mut out: smallvec::SmallVec<[_; 2]> = smallvec::SmallVec::new();
+        for entry in &entries {
+            let impl_sym = if Some(entry.required_sort) == workitemstore_sym {
+                filebased_sym
+            } else {
+                entry.required_sort
+            };
+            out.push(interp.alloc_requirement(impl_sym, smallvec::SmallVec::new()));
+        }
+        out
+    };
+
+    match interp.call_with_requirements("anthill.todo.Main.main",
+                      &[args_value, store_value, wis_cell_value, agent_value],
+                      chain_dicts) {
         Ok(Value::Int(n)) => {
             if (0..=255).contains(&n) {
                 ExitCode::from(n as u8)

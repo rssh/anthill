@@ -43,7 +43,8 @@ namespace anthill.todo
   import anthill.stage0.WorkStatus.{Claimed, Delivered, Verified}
   import anthill.reflect.KB.{kb, execute, facts_of}
   import anthill.reflect.LogicalQuery.{sort_query, pattern_query}
-  import anthill.reflect.Substitution.{lookup}
+  import anthill.reflect.{Substitution}
+  import anthill.todo.store.{WorkItemStore}
   export Main, specs
 
   -- The 16-subcommand registry, mirroring the legacy Rust binary's
@@ -187,21 +188,22 @@ namespace anthill.todo
     has_feedback: Bool)
 
   sort Main
+    sort State = ?
     requires anthill.cli.Main
+    requires WorkItemStore[State]
 
-    -- main now takes the host-provided store handle and global --agent
-    -- flag in addition to argv. Read-only commands (status / show / list
-    -- / graph / next / skill) ignore the extras; mutating commands
-    -- (feedback / claim / deliver / verify / update / add / delete /
-    -- add-dependency / remove-dependency) thread store + agent through
-    -- so they can call Store.persist + Store.flush and stamp `at:`
-    -- fields with the canonical YYYY-MM-DDTHH:MM:SSZ format.
-    -- WI-203 / proposal 036 phase 2: wis_cell is a Cell holding the
-    -- per-project WorkItemStore state (id_counter + backend handle).
-    -- Phase 2 just receives it; phase 3 wires bundle commands to use
-    -- spec ops (next_id / commit / lookup / by_status_of) on it.
+    -- main takes the host-provided store handle, the WorkItemStore
+    -- state cell (Cell[State], polymorphic over the impl), and the
+    -- global --agent flag in addition to argv. Read-only commands
+    -- (status / show / list / graph / next / skill) ignore store +
+    -- agent; mutating commands (feedback / claim / deliver / verify /
+    -- update / add / delete / add-dependency / remove-dependency)
+    -- thread them through to stamp `at:` fields with the canonical
+    -- YYYY-MM-DDTHH:MM:SSZ format. cmd_X bodies dispatch through the
+    -- requires WorkItemStore[State] clause — the host picks the impl
+    -- at call time via call_with_requirements (WI-236).
     operation main(args: List[String], store: FileStore,
-                   wis_cell: Cell, agent: String) -> Int
+                   wis_cell: Cell[State], agent: String) -> Int
       effects {ConsoleOutput, ConsoleError, Modify[store], Error}
     =
       match parse_argv(specs(), args)
@@ -216,27 +218,34 @@ namespace anthill.todo
           let _ = eprintln(console(), "anthill-todo: argument error")
           2
         case parse_ok(ParsedArgs(name, bindings)) ->
-          dispatch(name, bindings, store, agent)
+          dispatch(name, bindings, store, agent, wis_cell)
 
     -- Each subcommand reads its own positional/flag bindings; the
     -- OperationSpec for each subcommand declares the params it expects
     -- (see `spec_with_id` for the canonical "needs an id" shape).
+    -- `s: Cell[State]` is the WorkItemStore state cell threaded through
+    -- to every cmd_X; bodies dispatch through the sort-level
+    -- `requires WorkItemStore[State]` and call
+    -- WorkItemStore.{lookup, by_status_of, next_id, commit, forget}
+    -- on it. The host picks the impl (e.g. FileBasedWorkitemStore) by
+    -- calling Main.main via call_with_requirements (WI-236).
     operation dispatch(name: String, bindings: List[Binding],
-                       store: FileStore, agent: String) -> Int
+                       store: FileStore, agent: String,
+                       s: Cell[State]) -> Int
       effects {ConsoleOutput, ConsoleError, Modify[store], Error}
     =
       if eq(name, "skill") then cmd_skill()
-      else if eq(name, "status") then cmd_status()
-      else if eq(name, "show") then cmd_show(bindings)
-      else if eq(name, "list") then cmd_list(bindings)
-      else if eq(name, "graph") then cmd_graph()
-      else if eq(name, "next") then cmd_next(bindings)
-      else if eq(name, "feedback") then cmd_feedback(bindings, store, agent)
-      else if eq(name, "add") then cmd_add(bindings, store)
-      else if eq(name, "claim") then cmd_claim(bindings, store, agent)
-      else if eq(name, "deliver") then cmd_deliver(bindings, store, agent)
-      else if eq(name, "verify") then cmd_verify(bindings, store)
-      else if eq(name, "delete") then cmd_delete(bindings, store)
+      else if eq(name, "status") then cmd_status(s)
+      else if eq(name, "show") then cmd_show(bindings, s)
+      else if eq(name, "list") then cmd_list(bindings, s)
+      else if eq(name, "graph") then cmd_graph(s)
+      else if eq(name, "next") then cmd_next(bindings, s)
+      else if eq(name, "feedback") then cmd_feedback(bindings, store, agent, s)
+      else if eq(name, "add") then cmd_add(bindings, store, s)
+      else if eq(name, "claim") then cmd_claim(bindings, store, agent, s)
+      else if eq(name, "deliver") then cmd_deliver(bindings, store, agent, s)
+      else if eq(name, "verify") then cmd_verify(bindings, store, s)
+      else if eq(name, "delete") then cmd_delete(bindings, store, s)
       else not_yet(name)
 
     -- Find the first Binding with the given name; none() otherwise.
@@ -349,7 +358,7 @@ namespace anthill.todo
     -- Phase 2 first byte-faithful read-only command. Mirrors the legacy
     -- `run_status` shape: total count line, then per-status breakdown
     -- ordered alphabetically by status name.
-    operation cmd_status() -> Int
+    operation cmd_status(s: Cell[State]) -> Int
       effects ConsoleOutput
     =
       let items = facts_of(kb(), "WorkItem")
@@ -454,7 +463,7 @@ namespace anthill.todo
     -- Find a single workitem by id, then print id / description / status /
     -- depends_on. Acceptance criteria + Feedback rendering needs TermPrinter
     -- and cross-fact iteration; deferred to follow-up.
-    operation cmd_show(bindings: List[Binding]) -> Int
+    operation cmd_show(bindings: List[Binding], s: Cell[State]) -> Int
       effects {ConsoleOutput, ConsoleError}
     =
       match get_binding(bindings, "id")
@@ -919,7 +928,7 @@ namespace anthill.todo
 
     -- ── cmd_list itself ───────────────────────────────────────────
 
-    operation cmd_list(bindings: List[Binding]) -> Int
+    operation cmd_list(bindings: List[Binding], s: Cell[State]) -> Int
       effects ConsoleOutput
     =
       let status_filter = get_binding(bindings, "status")
@@ -1032,7 +1041,7 @@ namespace anthill.todo
               let _ = print_tree(rid, true, true, "", row_map, dep_map)
               print_roots(rest, row_map, dep_map)
 
-    operation cmd_graph() -> Int
+    operation cmd_graph(s: Cell[State]) -> Int
       effects ConsoleOutput
     =
       let raw_rows = rows_of(facts_of(kb(), "WorkItem"))
@@ -1155,7 +1164,8 @@ namespace anthill.todo
       concat("WI-", pad3(max_id_in(items, 0) + 1))
 
     operation cmd_add(bindings: List[Binding],
-                      store: FileStore) -> Int
+                      store: FileStore,
+                      s: Cell[State]) -> Int
       effects {ConsoleOutput, ConsoleError, Modify[store], Error}
     =
       match get_binding(bindings, "description")
@@ -1201,7 +1211,8 @@ namespace anthill.todo
 
     operation cmd_claim(bindings: List[Binding],
                          store: FileStore,
-                         agent: String) -> Int
+                         agent: String,
+                         s: Cell[State]) -> Int
       effects {ConsoleOutput, ConsoleError, Modify[store], Error}
     =
       match get_binding(bindings, "id")
@@ -1242,7 +1253,8 @@ namespace anthill.todo
 
     operation cmd_deliver(bindings: List[Binding],
                            store: FileStore,
-                           agent: String) -> Int
+                           agent: String,
+                           s: Cell[State]) -> Int
       effects {ConsoleOutput, ConsoleError, Modify[store], Error}
     =
       match get_binding(bindings, "id")
@@ -1282,7 +1294,8 @@ namespace anthill.todo
     -- — the verifier identity isn't recorded in the legacy fact shape.
 
     operation cmd_verify(bindings: List[Binding],
-                          store: FileStore) -> Int
+                          store: FileStore,
+                          s: Cell[State]) -> Int
       effects {ConsoleOutput, ConsoleError, Modify[store], Error}
     =
       match get_binding(bindings, "id")
@@ -1322,7 +1335,8 @@ namespace anthill.todo
     -- rewrites the affected file.
 
     operation cmd_delete(bindings: List[Binding],
-                          store: FileStore) -> Int
+                          store: FileStore,
+                          s: Cell[State]) -> Int
       effects {ConsoleOutput, ConsoleError, Modify[store], Error}
     =
       match get_binding(bindings, "id")
@@ -1360,7 +1374,8 @@ namespace anthill.todo
     -- `agent` (the global --agent flag, default "user") via dispatch.
     operation cmd_feedback(bindings: List[Binding],
                             store: FileStore,
-                            agent: String) -> Int
+                            agent: String,
+                            s: Cell[State]) -> Int
       effects {ConsoleOutput, ConsoleError, Modify[store], Error}
     =
       let id_opt = get_binding(bindings, "id")
@@ -1420,7 +1435,7 @@ namespace anthill.todo
     operation extract_string_field(subst: Substitution,
                                    var_name: String,
                                    fallback: String) -> String =
-      match lookup(subst, var_name)
+      match Substitution.lookup(subst, var_name)
         case none() -> fallback
         case some(t) ->
           match term_as_string(t)
@@ -1471,7 +1486,7 @@ namespace anthill.todo
           else list_contains_string(rest, needle)
 
 
-    operation cmd_next(bindings: List[Binding]) -> Int
+    operation cmd_next(bindings: List[Binding], s: Cell[State]) -> Int
       effects {ConsoleOutput, ConsoleError}
     =
       let show_all = match get_binding(bindings, "all")
