@@ -63,6 +63,15 @@ static STDLIB_SOURCES: &[(&str, &str)] = &[
     ("anthill/cli/spec", include_str!("../../../stdlib/anthill/cli/spec.anthill")),
     ("anthill/cli/parse", include_str!("../../../stdlib/anthill/cli/parse.anthill")),
     ("anthill/cli/help", include_str!("../../../stdlib/anthill/cli/help.anthill")),
+    // Rust-language spec-satisfaction bindings (anthill-stl). These carry
+    // `fact Eq[T = String]`, `fact Numeric[T = Int]`, etc. — the impls the
+    // typer's spec dispatch resolves against. Without them, `eq(...)` /
+    // `lt(...)` calls in bundle bodies type-check to NoMatch.
+    ("anthill-stl/bool", include_str!("../../anthill-stl/anthill/bool.anthill")),
+    ("anthill-stl/int", include_str!("../../anthill-stl/anthill/int.anthill")),
+    ("anthill-stl/bigint", include_str!("../../anthill-stl/anthill/bigint.anthill")),
+    ("anthill-stl/float", include_str!("../../anthill-stl/anthill/float.anthill")),
+    ("anthill-stl/string", include_str!("../../anthill-stl/anthill/string.anthill")),
 ];
 
 /// Parse all embedded stdlib sources.

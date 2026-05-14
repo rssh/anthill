@@ -13,8 +13,8 @@ namespace anthill.todo
   import anthill.persistence.Store.{persist, flush}
   import anthill.prelude.{Cell}
   import anthill.prelude.Meta.{Meta}
-  import anthill.prelude.Time.{now}
-  import anthill.stage0.{Feedback, WorkItem, ToolPasses}
+  import anthill.prelude.Time.{now, Clock}
+  import anthill.stage0.{Feedback, WorkItem, ToolPasses, AcceptanceCriterion}
   import anthill.stage0.WorkStatus.{Open}
   import anthill.prelude.{List, LogicalStream, Map, Unit}
   import anthill.prelude.Map.{empty, put, get, contains}
@@ -204,7 +204,7 @@ namespace anthill.todo
     -- at call time via call_with_requirements (WI-236).
     operation main(args: List[String], store: FileStore,
                    wis_cell: Cell[State], agent: String) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error, Clock}
     =
       match parse_argv(specs(), args)
         case parse_err(no_subcommand()) ->
@@ -232,7 +232,7 @@ namespace anthill.todo
     operation dispatch(name: String, bindings: List[Binding],
                        store: FileStore, agent: String,
                        s: Cell[State]) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error, Clock}
     =
       if eq(name, "skill") then cmd_skill()
       else if eq(name, "status") then cmd_status(s)
@@ -1088,11 +1088,11 @@ namespace anthill.todo
     -- Wrap each tool name as ToolPasses(tool: <name>) for the WorkItem
     -- acceptance field. Default fallback when the user supplies no
     -- --acceptance flag is a single cargo-test entry.
-    operation tool_to_acceptance(tool: String) -> ToolPasses =
+    operation tool_to_acceptance(tool: String) -> AcceptanceCriterion =
       ToolPasses(tool: tool)
 
     operation tools_to_acceptance(tools: List[String])
-      -> List[ToolPasses]
+      -> List[AcceptanceCriterion]
     =
       match tools
         case nil() -> nil()
@@ -1213,7 +1213,7 @@ namespace anthill.todo
                          store: FileStore,
                          agent: String,
                          s: Cell[State]) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error, Clock}
     =
       match get_binding(bindings, "id")
         case none() ->
@@ -1229,7 +1229,7 @@ namespace anthill.todo
 
     operation do_claim(store: FileStore, agent: String,
                        id: String, old_term: Term) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error, Clock}
     =
       match find_fact(old_term)
         case none() ->
@@ -1255,7 +1255,7 @@ namespace anthill.todo
                            store: FileStore,
                            agent: String,
                            s: Cell[State]) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error, Clock}
     =
       match get_binding(bindings, "id")
         case none() ->
@@ -1271,7 +1271,7 @@ namespace anthill.todo
 
     operation do_deliver(store: FileStore, agent: String,
                          id: String, old_term: Term) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error, Clock}
     =
       match find_fact(old_term)
         case none() ->
@@ -1296,7 +1296,7 @@ namespace anthill.todo
     operation cmd_verify(bindings: List[Binding],
                           store: FileStore,
                           s: Cell[State]) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error, Clock}
     =
       match get_binding(bindings, "id")
         case none() ->
@@ -1311,7 +1311,7 @@ namespace anthill.todo
             case some(old_term) -> do_verify(store, id, old_term)
 
     operation do_verify(store: FileStore, id: String, old_term: Term) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error, Clock}
     =
       match find_fact(old_term)
         case none() ->
@@ -1487,7 +1487,7 @@ namespace anthill.todo
 
 
     operation cmd_next(bindings: List[Binding], s: Cell[State]) -> Int
-      effects {ConsoleOutput, ConsoleError}
+      effects {ConsoleOutput, ConsoleError, Error}
     =
       let show_all = match get_binding(bindings, "all")
         case some(_) -> true
