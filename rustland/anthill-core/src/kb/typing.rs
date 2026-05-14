@@ -934,6 +934,39 @@ pub fn impl_parent_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     kb.try_resolve_symbol(parent_qn)
 }
 
+/// True iff `a` and `b` denote the same logical sort / symbol.
+///
+/// Identity is the resolved `Symbol`; this helper adds two name-based
+/// bridges that exact `Symbol ==` misses:
+///
+/// 1. **Differently-interned resolved copies** of the same sort compare
+///    equal via their (unique) qualified name.
+/// 2. **Resolved ↔ unresolved** of the same sort: some reflection facts
+///    still carry unresolved short-name symbols (`qualified_name_of`
+///    returns just the short name for those). A bare short name matches
+///    the last segment of a qualified name.
+///
+/// Crucially it does NOT match two *fully-qualified* names that merely
+/// share a last segment — `anthill.cli.Main` and `anthill.todo.Main`
+/// stay distinct.
+pub fn same_symbol(kb: &KnowledgeBase, a: Symbol, b: Symbol) -> bool {
+    if a == b {
+        return true;
+    }
+    let aq = kb.qualified_name_of(a);
+    let bq = kb.qualified_name_of(b);
+    if aq == bq {
+        return true;
+    }
+    let a_bare = !aq.contains('.');
+    let b_bare = !bq.contains('.');
+    match (a_bare, b_bare) {
+        (true, false) => bq.rsplit('.').next() == Some(aq),
+        (false, true) => aq.rsplit('.').next() == Some(bq),
+        _ => false,
+    }
+}
+
 /// WI-227: interned stdlib symbols + field names needed to allocate
 /// the three requirement-projection IR forms. Resolved once at the
 /// entry point so the recursive search doesn't re-look-up per dep.
@@ -1099,16 +1132,13 @@ fn entries_cover(kb: &KnowledgeBase, caller: &RequiresEntry, dep: &RequiresEntry
         if !is_type_param_binding(kb, *dep_k, &spec_qn) {
             continue;
         }
-        // Find the caller's binding for the same key. Compare by
-        // qualified name to bridge differently-interned copies of the
-        // same key symbol without matching an unrelated type param
-        // that merely shares a short name (e.g. two specs' `T`).
+        // Find the caller's binding for the same key. `same_symbol`
+        // bridges differently-interned copies of the key without
+        // matching an unrelated type param that merely shares a short
+        // name (e.g. two specs' `T`).
         let caller_val = caller_bindings
             .iter()
-            .find(|(ck, _)| {
-                *ck == *dep_k
-                    || kb.qualified_name_of(*ck) == kb.qualified_name_of(*dep_k)
-            })
+            .find(|(ck, _)| same_symbol(kb, *ck, *dep_k))
             .map(|(_, v)| *v);
         let Some(caller_val) = caller_val else {
             return false;
@@ -2308,7 +2338,7 @@ fn requires_entry_covers_goal(
 }
 
 /// Structural equality between two goals for cycle detection.
-/// Binding keys compared by qualified name to bridge differently-interned
+/// Binding keys compared via `same_symbol` — bridges differently-interned
 /// copies without colliding two specs' same-short-named type params.
 fn goals_equal(kb: &KnowledgeBase, a: &SortGoal, b: &SortGoal) -> bool {
     if a.spec_sort != b.spec_sort {
@@ -2318,10 +2348,9 @@ fn goals_equal(kb: &KnowledgeBase, a: &SortGoal, b: &SortGoal) -> bool {
         return false;
     }
     a.bindings.iter().all(|(k, av)| {
-        let kqn = kb.qualified_name_of(*k);
         b.bindings
             .iter()
-            .find(|(kk, _)| kk == k || kb.qualified_name_of(*kk) == kqn)
+            .find(|(kk, _)| same_symbol(kb, *kk, *k))
             .map_or(false, |(_, bv)| values_structurally_equal(kb, *av, *bv))
     })
 }
@@ -2935,11 +2964,8 @@ fn check_match_expr(
                         }
                     }).collect();
                     let missing: Vec<String> = all_entities.iter()
-                        .filter(|e| !covered_entities.iter().any(|c| {
-                            *c == **e
-                                || kb.qualified_name_of(*c)
-                                    == kb.qualified_name_of(**e)
-                        }))
+                        .filter(|e| !covered_entities.iter()
+                            .any(|c| same_symbol(kb, *c, **e)))
                         .map(|s| kb.resolve_sym(*s).to_string())
                         .collect();
                     if !missing.is_empty() {
@@ -3132,6 +3158,37 @@ pub(crate) fn extract_type_param(kb: &KnowledgeBase, ty: TermId, param: &str) ->
 
 // ── Pattern env extension ──────────────────────────────────────
 
+/// Build a `Substitution` from a `parameterized(base, bindings)` type:
+/// each binding's param symbol resolves (via its `SortAlias`) to a
+/// logical `Var`, bound to the binding's value type. Used so a
+/// constructor pattern's declared field types resolve the scrutinee's
+/// concrete type args (`case some(name)` over `Option[T = String]` →
+/// `name: String`, not `name: T`). Returns `None` when the scrutinee
+/// isn't parameterized or carries no resolvable bindings.
+fn build_pattern_subst(kb: &KnowledgeBase, scrutinee_type: TermId) -> Option<Substitution> {
+    if type_functor_name(kb, scrutinee_type) != Some("parameterized") {
+        return None;
+    }
+    let named_args = match kb.get_term(scrutinee_type) {
+        Term::Fn { named_args, .. } => named_args.clone(),
+        _ => return None,
+    };
+    let bindings_tid = get_named_arg(kb, &named_args, "bindings")?;
+    let mut subst = Substitution::new();
+    let mut any = false;
+    for b in list_to_vec(kb, bindings_tid) {
+        let (Some(param), Some(value)) = (binding_param_sym(kb, b), binding_value(kb, b))
+        else { continue };
+        if let Some(alias) = resolve_sort_alias(kb, param) {
+            if let Term::Var(Var::Global(vid)) = kb.get_term(alias) {
+                subst.bind_term(*vid, value);
+                any = true;
+            }
+        }
+    }
+    if any { Some(subst) } else { None }
+}
+
 fn extend_env_from_pattern(
     kb: &KnowledgeBase,
     env: &mut TypingEnv,
@@ -3164,8 +3221,22 @@ fn extend_env_from_pattern(
                     let field_types = kb.entity_field_types(ctor_sym).map(|f| f.to_vec());
                     let sub_patterns = list_to_vec(kb, args);
                     if let Some(fields) = field_types {
+                        // Substitute the scrutinee's type args into the
+                        // constructor's declared field types. For
+                        // `case some(name)` over `Option[T = String]`,
+                        // `some.value`'s declared type `T` resolves to
+                        // `String` — without this `name` binds to the
+                        // raw type-param term and surfaces as a bare
+                        // `TermId` in later return-type checks.
+                        let subst = scrutinee_type
+                            .and_then(|st| build_pattern_subst(kb, st));
                         for (i, sub_pat) in sub_patterns.iter().enumerate() {
-                            let field_type = fields.get(i).map(|(_, ty)| *ty);
+                            let field_type = fields.get(i).map(|(_, ty)| {
+                                match &subst {
+                                    Some(s) => walk_type(kb, s, *ty),
+                                    None => *ty,
+                                }
+                            });
                             extend_env_from_pattern(kb, env, *sub_pat, field_type);
                         }
                     } else {
@@ -3604,6 +3675,21 @@ pub fn types_compatible(kb: &KnowledgeBase, actual: TermId, expected: TermId) ->
         (Some("parameterized"), Some("parameterized")) => {
             parameterized_compatible(kb, actual, expected)
         }
+        // Name-binding normalization: a bare sort name `S` is `S` with
+        // its type params unconstrained — it is compatible with any
+        // instantiation `S[bindings]` and vice versa. The typer infers
+        // a bare type for nullary constructors (`nil()` → `List`,
+        // `none()` → `Option`), so a body whose branches mix `List` and
+        // `List[T = Row]` must still satisfy a `List[T = Row]` return
+        // annotation. Only the base sort identity is checked here; the
+        // bindings on the parameterized side stand unconstrained
+        // against the bare side.
+        (Some("sort_ref"), Some("parameterized")) => {
+            base_sort_compatible(kb, actual, parameterized_base(kb, expected))
+        }
+        (Some("parameterized"), Some("sort_ref")) => {
+            base_sort_compatible(kb, expected, parameterized_base(kb, actual))
+        }
         (Some("arrow"), Some("arrow")) => {
             arrow_compatible(kb, actual, expected)
         }
@@ -3611,6 +3697,26 @@ pub fn types_compatible(kb: &KnowledgeBase, actual: TermId, expected: TermId) ->
             named_tuple_compatible(kb, actual, expected)
         }
         _ => false,
+    }
+}
+
+/// The `base` sort_ref of a `parameterized(base, bindings)` type term.
+fn parameterized_base(kb: &KnowledgeBase, ty: TermId) -> Option<TermId> {
+    if let Term::Fn { named_args, .. } = kb.get_term(ty) {
+        return get_named_arg(kb, named_args, "base");
+    }
+    None
+}
+
+/// Compare a `sort_ref` against an optional `sort_ref` base (extracted
+/// from a parameterized type's `base` field). Used by the
+/// bare-vs-parameterized arms of `types_compatible` — only the base
+/// sort identity matters; the parameterized side's bindings are left
+/// unconstrained against the bare side.
+fn base_sort_compatible(kb: &KnowledgeBase, sort_ref: TermId, base: Option<TermId>) -> bool {
+    match base {
+        Some(b) => sort_ref_compatible(kb, sort_ref, b),
+        None => false,
     }
 }
 
@@ -3847,11 +3953,6 @@ fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
     let Some(requires_sym) = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") else {
         return out;
     };
-    // Identity is the resolved Symbol; the qualified-name fallback
-    // bridges differently-interned copies of the *same* logical sort
-    // without colliding two sorts that merely share a short name
-    // (e.g. anthill.cli.Main vs anthill.todo.Main).
-    let sort_qn = kb.qualified_name_of(sort_sym);
 
     for rid in kb.by_functor(requires_sym) {
         if !kb.rule_body(rid).is_empty() { continue; }
@@ -3861,7 +3962,10 @@ fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
             _ => continue,
         };
 
-        // Check that this SortRequiresInfo is for our sort.
+        // Check that this SortRequiresInfo is for our sort. `same_symbol`
+        // keys on resolved-Symbol / qualified-name identity so a fact
+        // for anthill.cli.Main is not mistaken for one about
+        // anthill.todo.Main.
         let sort_ref_tid = match named_args.iter()
             .find(|(s, _)| kb.resolve_sym(*s) == "sort_ref")
             .map(|(_, v)| *v)
@@ -3873,7 +3977,7 @@ fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
             Term::Fn { functor, .. } => *functor,
             _ => continue,
         };
-        if sr_functor != sort_sym && kb.qualified_name_of(sr_functor) != sort_qn {
+        if !same_symbol(kb, sr_functor, sort_sym) {
             continue;
         }
 
@@ -3963,13 +4067,7 @@ fn build_child_subst_map(
 /// Check if sort A refines sort B via `requires` chain.
 fn sort_refines(kb: &KnowledgeBase, a_sym: Symbol, b_sym: Symbol) -> bool {
     let chain = requires_chain_flat(kb, a_sym);
-    // Qualified-name fallback bridges differently-interned copies of B
-    // without matching an unrelated same-short-named sort.
-    let b_qn = kb.qualified_name_of(b_sym);
-    chain.iter().any(|entry| {
-        entry.required_sort == b_sym
-            || kb.qualified_name_of(entry.required_sort) == b_qn
-    })
+    chain.iter().any(|entry| same_symbol(kb, entry.required_sort, b_sym))
 }
 
 // ── Obligation checking ────────────────────────────────────────
@@ -4021,10 +4119,6 @@ fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
         None => return Vec::new(),
     };
 
-    // Qualified name, not short — two sorts sharing a short name across
-    // namespaces must not share each other's SortInfo.
-    let sort_qn = kb.qualified_name_of(sort_sym);
-
     for rid in kb.by_functor(sort_info_sym) {
         if !kb.rule_body(rid).is_empty() { continue; }
         let head = kb.rule_head(rid);
@@ -4046,7 +4140,7 @@ fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
             Term::Ref(s) => *s,
             _ => continue,
         };
-        if name_sym != sort_sym && kb.qualified_name_of(name_sym) != sort_qn {
+        if !same_symbol(kb, name_sym, sort_sym) {
             continue;
         }
 
@@ -4313,10 +4407,21 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
 }
 
 /// Extract constructor and operation symbol lists from a SortInfo fact.
+///
+/// WI-237 NOTE: this lookup still matches by SHORT name (the `same_symbol`
+/// audit fix is deliberately NOT applied here). The precise fix exposes
+/// that the anthill-todo bundle's `sort Main` was never type-checked —
+/// its short name collides with `anthill.cli.Main`, so the typer checked
+/// cli.Main's empty SortInfo instead of Main's 12 cmd_X bodies. Applying
+/// `same_symbol` here surfaces a backlog of latent bundle type errors
+/// (return-type propagation, WI-218 static-dispatch rewriting `eq`/`lt`
+/// to bodyless `provides`-block impls → runtime `unknown operation`,
+/// Ordered.lt derived-op dispatch). WI-237 owns landing this fix
+/// together with making the bundle type-clean. The other five audit
+/// sites (direct_requires / sort_operation_names / sort_refines /
+/// dep_binding_satisfied / goals_equal) ARE on `same_symbol`.
 fn find_sort_info(kb: &KnowledgeBase, sort_info_sym: Symbol, sort_functor: Symbol) -> Option<(Vec<Symbol>, Vec<Symbol>)> {
-    // Match by qualified name, not short — short names collide across
-    // namespaces (anthill.cli.Main vs anthill.todo.Main).
-    let sort_qn = kb.qualified_name_of(sort_functor);
+    let sort_name = kb.resolve_sym(sort_functor);
     for rid in kb.by_functor(sort_info_sym) {
         if !kb.rule_body(rid).is_empty() { continue; }
         let head = kb.rule_head(rid);
@@ -4337,7 +4442,7 @@ fn find_sort_info(kb: &KnowledgeBase, sort_info_sym: Symbol, sort_functor: Symbo
             Term::Ref(s) => *s,
             _ => continue,
         };
-        if name_sym != sort_functor && kb.qualified_name_of(name_sym) != sort_qn {
+        if name_sym != sort_functor && kb.resolve_sym(name_sym) != sort_name {
             continue;
         }
 
