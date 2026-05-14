@@ -788,7 +788,21 @@ fn check_apply(
                     // inline emission here. WI-218 / WI-222 Phase E (i) /
                     // WI-228 semantics encoded by which CallClass
                     // variant we tag.
-                    if impl_op_sym != fn_sym {
+                    //
+                    // WI-237: only rewrite to a *concrete* impl op — one
+                    // that has a runnable body. A body-less `impl_op_sym`
+                    // is a spec-level declaration (e.g. the auto-bound
+                    // `anthill.prelude.String.eq` a `provides` block
+                    // registers, or a derived `Ordered.lt` whose body
+                    // lives in a separate `rule {}`). Rewriting the call
+                    // to it produces a runtime `unknown operation`
+                    // (no body, no builtin) or — worse — mis-resolves to
+                    // the wrong sibling op. Leaving the call as the spec
+                    // op lets the runtime resolve it via its registered
+                    // builtin or the spec's own derived rule.
+                    if impl_op_sym != fn_sym
+                        && op_has_runnable_body(kb, impl_op_sym)
+                    {
                         let impl_sort = impl_parent_of_op(kb, impl_op_sym);
                         let needs_reqs = impl_sort
                             .map(|s| !requires_chain(kb, s).is_empty())
@@ -2701,6 +2715,20 @@ fn operation_has_no_body(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
     false
 }
 
+/// True iff `op_sym` resolves to an operation the runtime can actually
+/// invoke by symbol: an `OperationInfo` exists for it AND its `body` is
+/// `some(...)`. A symbol with no `OperationInfo` (e.g. the auto-bound
+/// `anthill.prelude.String.eq` a `provides` block registers) or with
+/// `body = none` (a spec-level declaration / derived op) is NOT a valid
+/// static-dispatch rewrite target — the runtime resolves those via a
+/// registered builtin or the spec's own derived rule. WI-237.
+fn op_has_runnable_body(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
+    match super::op_info::lookup_operation_info(kb, op_sym) {
+        Some(rec) => rec.body.is_some(),
+        None => false,
+    }
+}
+
 /// Infer the type of a constructor application, including type parameter instantiation.
 /// e.g., cons(head: 1, tail: nil) → parameterized(List, [T=Int])
 fn infer_constructor_type(
@@ -4408,18 +4436,19 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
 
 /// Extract constructor and operation symbol lists from a SortInfo fact.
 ///
-/// WI-237 NOTE: this lookup still matches by SHORT name (the `same_symbol`
-/// audit fix is deliberately NOT applied here). The precise fix exposes
-/// that the anthill-todo bundle's `sort Main` was never type-checked —
-/// its short name collides with `anthill.cli.Main`, so the typer checked
-/// cli.Main's empty SortInfo instead of Main's 12 cmd_X bodies. Applying
-/// `same_symbol` here surfaces a backlog of latent bundle type errors
-/// (return-type propagation, WI-218 static-dispatch rewriting `eq`/`lt`
-/// to bodyless `provides`-block impls → runtime `unknown operation`,
-/// Ordered.lt derived-op dispatch). WI-237 owns landing this fix
-/// together with making the bundle type-clean. The other five audit
-/// sites (direct_requires / sort_operation_names / sort_refines /
-/// dep_binding_satisfied / goals_equal) ARE on `same_symbol`.
+/// WI-237 NOTE: still matches by SHORT name — the `same_symbol` audit
+/// fix is the last of the six sites and is deliberately HELD. Applying
+/// it makes the typer actually check the anthill-todo bundle's `sort
+/// Main` cmd_X bodies (its short name collides with `anthill.cli.Main`,
+/// which masked them). That exposes a chain of further issues, fixed
+/// incrementally under WI-237: (done) types_compatible name-binding
+/// normalization, pattern type-arg propagation, anthill-stl spec-fact
+/// embedding, bundle effect declarations, and `op_has_runnable_body`
+/// guarding WI-218 from rewriting spec ops to body-less impl symbols.
+/// (remaining) a req_insertion hoist-scope bug — `var_ref(__hoist_N)
+/// unbound in requirement position` — and `Ordered.lt` derived-op
+/// dispatch returning NoMatch. Diagnostic: `wi237_diag_test.rs`. The
+/// other five audit sites ARE on `same_symbol`.
 fn find_sort_info(kb: &KnowledgeBase, sort_info_sym: Symbol, sort_functor: Symbol) -> Option<(Vec<Symbol>, Vec<Symbol>)> {
     let sort_name = kb.resolve_sym(sort_functor);
     for rid in kb.by_functor(sort_info_sym) {
