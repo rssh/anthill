@@ -3,9 +3,9 @@
 //! Per `docs/design/operation-call-model.md` §"Pass structure: typer
 //! first, requirement-insertion separate", the typer and the IR
 //! elaboration step are distinct passes. The typer walks bodies and
-//! *tags* each spec-op apply site with a `CallClass` row in
-//! `kb.call_classifications` (a side-table). This pass consumes that
-//! side-table and emits the corresponding IR rewrites into
+//! *tags* each spec-op apply site's `OccurrenceEntry` with a
+//! `CallClass` on the `OccurrenceStore`. This pass consumes those
+//! classifications and emits the corresponding IR rewrites into
 //! `kb.dispatch_rewrites`.
 //!
 //! Separating the two passes makes:
@@ -21,8 +21,8 @@
 //!   instead of being scattered across the typer's recursion.
 //!
 //! `run(kb)` is the canonical entry point; external code can replace
-//! it by reading `kb.call_classifications_iter()` and emitting its
-//! own rewrites.
+//! it by reading `kb.occurrence_store().classifications_iter()` and
+//! emitting its own rewrites.
 //!
 //! WI-232: chain memoization. Per-enclosing-sort `requires_chain` is
 //! computed at most once per pass invocation.
@@ -52,11 +52,14 @@ use crate::kb::KnowledgeBase;
 /// on a kb where rewrites already exist is a no-op (the `record_*`
 /// helpers check `kb.dispatch_rewrites.contains_key` before emitting).
 pub fn run(kb: &mut KnowledgeBase) {
-    // Collect into a Vec so we don't hold a borrow on the map while
-    // emitting (each `record_*` mutates `kb.dispatch_rewrites`).
+    // Collect into a Vec so we don't hold a borrow on the store while
+    // emitting (each `record_*` mutates `kb.dispatch_rewrites`). The
+    // classification lives on the apply site's `OccurrenceEntry`; the
+    // `record_*` helpers key off the apply `TermId`, recovered here.
     let entries: Vec<(TermId, CallClass)> = kb
-        .call_classifications_iter()
-        .map(|(k, v)| (k, v.clone()))
+        .occurrence_store()
+        .classifications_iter()
+        .map(|(occ, v)| (kb.occurrence_store().term(occ), v.clone()))
         .collect();
 
     let mut chain_cache: HashMap<Symbol, Vec<RequiresEntry>> = HashMap::new();
@@ -151,13 +154,41 @@ fn hoist_duplicate_dispatching_dicts(
     let mut ops: Vec<&Symbol> = concrete_by_op.keys().collect();
     ops.sort_by_key(|s| s.index());
 
+    // `dispatch_rewrites` is keyed by the (hash-consed) apply TermId.
+    // Two operations can contain a *structurally identical* `apply_within`
+    // term — hash-consing makes them the same TermId. The hoist rewrites
+    // `dispatch_rewrites[apply_tid]` to read this op's `var_ref(__hoist_N)`,
+    // so a term shared across ops would have its rewrite overwritten by
+    // whichever op is processed last, and the other ops' frames would
+    // hit `var_ref(__hoist_N) unbound`. Such cross-op-shared apply terms
+    // must NOT be per-op hoisted — they keep their op-agnostic phase-1
+    // rewrite instead. (A principled fix keys `dispatch_rewrites` by
+    // `(op, TermId)`; that is a larger eval-side change, filed separately.)
+    let cross_op_shared: std::collections::HashSet<TermId> = {
+        let mut seen_in: HashMap<TermId, Symbol> = HashMap::new();
+        let mut shared = std::collections::HashSet::new();
+        for (&op, tids) in concrete_by_op.iter() {
+            for &t in tids {
+                match seen_in.get(&t) {
+                    Some(&other) if other != op => { shared.insert(t); }
+                    _ => { seen_in.entry(t).or_insert(op); }
+                }
+            }
+        }
+        shared
+    };
+
     let mut counter: u32 = 0;
     for &op_sym_ref in &ops {
         let op_sym = *op_sym_ref;
-        let apply_tids = &concrete_by_op[&op_sym];
+        let apply_tids: Vec<TermId> = concrete_by_op[&op_sym].iter()
+            .copied()
+            .filter(|t| !cross_op_shared.contains(t))
+            .collect();
         if apply_tids.len() < 2 {
             continue;
         }
+        let apply_tids = &apply_tids;
         let Some(body_root) = crate::kb::op_info::lookup_operation_info(kb, op_sym)
             .and_then(|r| r.body)
         else { continue };

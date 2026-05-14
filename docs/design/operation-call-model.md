@@ -1,16 +1,23 @@
 # The operation-call model
 
-## Status: Decision (post-brainstorm; revised after WI-228+ implementation review)
+## Status: Design decided — the **names model** (main body) is the agreed target; the implementation still runs the **positional model** (see §"Legacy: the positional model" and §"Implementation roadmap"). Migration pending.
 
 ## Tracks: WI-204 (port cmd_X), WI-218 (static-dispatch rewrite), WI-210 (spec/impl call-site dispatch), WI-222–WI-233 (elaboration / dictionary model)
 
 ## Brainstorm: see `operation-call-model-brainstorm.md` for the exploration. This doc is the resulting design only.
 
-## Revision note
+## Two models: target vs. current implementation
 
-An earlier draft introduced custom IR primitives `requirement_at_current(i)` (and the fused `requirement_at_current(i, op_short)` fn-position variant) to read positionally from a separate `frame.requirements` slot. Implementation experience (WI-222 through WI-229) showed the asymmetry was unnecessary: requirements are just **extra params** with elaborator-synthesized names, accessed via the ordinary `var_ref` mechanism — exactly the same way regular value-level params are. Requirement *values themselves* (the dictionaries, a.k.a. sort-meta values) remain a distinct runtime kind because their internal sub-instances are positional and nameless (the `requires` clauses they came from have no source-level names), so `requirement_at_sort(dict, k)` and `construct_requirement(impl, [subs])` are kept as primitives for sub-instance projection and construction. The fused dispatch-in-fn-position form is dropped: dispatch becomes an interpreter rule on `apply_within` when `fn` is a spec-op symbol.
+This doc describes **two models** for body-side requirement access, and the relationship between them:
 
-This doc reflects the revised model. The earlier shape is summarized in §"Earlier draft" at the end for historical context.
+- The **names model** — the main body below. Requirements are extra params with elaborator-synthesized names, accessed via ordinary `var_ref`, exactly like value-level params. **This is the agreed design target.**
+- The **positional model** — §"Legacy: the positional model" near the end. Requirements are read positionally via `requirement_at_current(slot)` from a separate `frame.requirements` slot vector. **This is what WI-218–WI-236 actually implemented, and what runs today.**
+
+The names model is the decision, reaffirmed after weighing both from first principles. The deciding factor is closure composition: a positional slot index is meaningless inside a lambda body — which runs in a different frame — whereas a requirement *name* is captured by the closure like any other free variable. Names compose with lexical scoping; positional slots do not.
+
+Requirement *values themselves* (the dictionaries) are a distinct runtime kind in **both** models — their internal sub-instances are positional and nameless — so `requirement_at_sort(dict, k)` and `construct_requirement(impl, [subs])` survive as primitives either way.
+
+**The implementation has not yet migrated.** The main body describes the target; §"Legacy: the positional model" and §"Implementation roadmap" describe the current state and the path.
 
 ## Decision in one paragraph
 
@@ -745,9 +752,9 @@ The unified state makes the requirement / arg distinction explicit through to th
 
 Hash-consing applies to two regions of the IR differently — important to understand which:
 
-**1. Inside generic bodies (post-elaboration)** — hash-consing is preserved.
+**1. Inside generic bodies (post-elaboration)** — content hash-consing happens automatically; it is not a property the elaborator must protect.
 
-Generic bodies don't bake concrete requirement values into the apply terms; they reference requirement params via `var_ref(<synthesized_name>)` and project sub-instances via `requirement_at_sort(...)`. The same `apply_within(fn = Eq.eq, args = [x, y], requirements = [var_ref(__req_eq)])` term can appear in many generic bodies that happen to synthesize the same names — at runtime, each body's frame supplies its own requirement values populated by the caller. (Bodies that synthesize different names produce distinct TermIds; in practice the elaborator should use a deterministic naming scheme so semantically-identical bodies hash-cons.)
+Generic bodies don't bake concrete requirement values into the apply terms; they reference requirement params via `var_ref(<synthesized_name>)`. Whether two structurally-identical elaborated bodies share a `TermId` is just the `TermStore` doing its usual job on `alloc` — a memory nicety, not a correctness property. The elaborator should *not* contort to maximize it: name a requirement param after its spec (`__req_eq` for `Eq`, `__req_ord` for `Ord`) — the obvious scheme, deterministic by nature — and let the store hash-cons whatever it hash-cons. Non-deterministic naming (e.g. a per-op counter) is the thing to avoid, and it is also simply unnecessary.
 
 **2. At concrete call sites (post-elaboration)** — hash-consing is *not* preserved across callers.
 
@@ -761,16 +768,22 @@ If we chose a side-table approach (requirement mapping kept outside the term) in
 
 The separate-slots approach (this design) avoids the side-table machinery entirely. Generic body interiors share TermIds across instantiations; concrete call sites get distinct TermIds, but that's the same situation any IR with embedded constants has.
 
-### Earlier draft — primitives that were removed
+## Legacy: the positional model (current implementation)
 
-The original draft introduced two body-side primitives that have since been removed:
+The implementation as of WI-236 uses a **positional model** for body-side requirement access — *not* the names model the main body describes. The names model is the agreed target; this section records what actually runs today, so the doc is honest about the gap. The migration removes everything here — see §"Implementation roadmap".
 
-- **`requirement_at_current(i)`** — positional read of the body's own `frame.requirements[i]`. Removed because requirements are now extra params with elaborator-synthesized names, accessed via ordinary `var_ref(<name>)`. The frame's requirements slot is keyed by symbol, parallel to `frame.locals`.
-- **`requirement_at_current(i, op_short)`** — fn-position fused form that combined slot read + functor extraction + method resolution in a single IR node. Removed because it conflated dispatch with slot access; the dispatch step is now an interpreter rule on `apply_within` when `fn` is a spec-op symbol (the dispatching dictionary is one of the entries in the apply's `requirements` channel).
+In the positional model, a body reads its own requirements positionally:
 
-Only `requirement_at_sort(dict, k)` and `construct_requirement(impl, [...])` remain as requirement-specific IR primitives. They survive because dictionary values are a distinct runtime kind (not entities), with positional/nameless sub-instances that Anthill's general value mechanisms can't access or construct.
+- **`requirement_at_current(slot)`** — positional read of the body's own `frame.requirements[slot]`. `frame.requirements` is a positional `SmallVec<RequirementHandle>` (slot 0 = Self; slots 1..N = the requires-chain in declaration order) — parallel to `frame.locals` but *indexed*, not named.
+- **`requirement_at_current(slot, op_short)`** — an fn-position fused form (slot read + functor extraction + method resolution in one node). Already dropped even within the positional model; dispatch is the interpreter rule on `apply_within` when `fn` is a spec-op symbol.
+
+Why it is being replaced: a positional slot index is relative to the *current activation*, so it does not survive constructs that introduce a different frame — most sharply, a `let` body or a lambda body. A requirement *name* is an ordinary lexically-scoped variable; it composes with `let`, closures, and hoisting for free. See §"Two models" for the rationale.
+
+`requirement_at_sort(dict, k)` and `construct_requirement(impl, [...])` are **not** legacy — they project/construct *inside* a dictionary value (whose sub-instances are positional and nameless in both models) and survive the migration unchanged.
 
 ## Host-to-entry-op boundary
+
+> **Describes the current (legacy positional) implementation.** This section uses `requirement_at_current(slot)` and positional `frame.requirements`. Under the names-model migration the *concepts* are unchanged — the host still seeds the entry frame's requirements — but the access form moves from positional slots to named bindings. See §"Implementation roadmap".
 
 The operation-call model assumes every body runs inside an activation frame whose `requirements` channel is populated by some caller's `apply_within` reduction. That covers all *in-program* calls — but the **outermost** call comes from the host (Rust, in the current realization) and there is no anthill-side caller to populate the frame.
 
@@ -834,7 +847,7 @@ The KB stays canonical (one body per spec op); each codegen pass chooses its sur
 
 ## Implementation roadmap (WIs to file)
 
-WI-218 through WI-233 landed under the earlier draft of this design (frame.requirements as a positional slot, `requirement_at_current` primitives, fn-position dispatch fusion, multi-entry requirements channel). The redesign migrates the existing implementation to Model 1 (single-entry channel, tree expansion at frame push):
+WI-218 through WI-236 landed the **positional model** (frame.requirements as a positional slot vector, `requirement_at_current` primitives, fn-position dispatch fusion, multi-entry requirements channel). The migration moves the implementation to the **names model** (single-entry channel, named requirement params, tree expansion at frame push):
 
 | Phase | Scope |
 |-------|-------|

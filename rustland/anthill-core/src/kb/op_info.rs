@@ -12,8 +12,9 @@ use smallvec::SmallVec;
 
 use crate::intern::Symbol;
 
+use super::occurrence::OccurrenceId;
 use super::term::{Term, TermId};
-use super::typing::{list_to_vec, resolve_handle, unwrap_option};
+use super::typing::{list_to_vec, split_handle, unwrap_option};
 use super::KnowledgeBase;
 
 /// Full `OperationInfo` view for one operation symbol.
@@ -25,9 +26,14 @@ pub struct OpInfoRecord {
     pub return_type: TermId,
     pub effects: Vec<TermId>,
     /// Resolved body term — `None` when the operation is body-less
-    /// (a spec op declaration). Handle wrappers are unwrapped via
-    /// `resolve_handle` so callers see the real expression term.
+    /// (a spec op declaration). The body-root handle is unwrapped via
+    /// `split_handle` so callers see the real expression term; the
+    /// occurrence the handle carried is kept in `body_occ`.
     pub body: Option<TermId>,
+    /// The `OccurrenceId` the body-root handle carried, if any — lets
+    /// the typer enter `type_check_expr` with the body's source
+    /// identity in hand instead of a `by_term`-reconstructed guess.
+    pub body_occ: Option<OccurrenceId>,
 }
 
 /// Walk `OperationInfo` facts, returning the record for `op_sym` if
@@ -54,9 +60,15 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
             .map(|t| list_to_vec(kb, t))
             .unwrap_or_default();
         let params = extract_params(kb, &named_args);
-        let body = find_named(kb, &named_args, "body")
+        let (body_occ, body) = match find_named(kb, &named_args, "body")
             .and_then(|opt| unwrap_option(kb, opt))
-            .map(|h| resolve_handle(kb, h));
+        {
+            Some(h) => {
+                let (occ, inner) = split_handle(kb, h);
+                (occ, Some(inner))
+            }
+            None => (None, None),
+        };
 
         return Some(OpInfoRecord {
             op_sym,
@@ -64,6 +76,7 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
             return_type,
             effects,
             body,
+            body_occ,
         });
     }
     None

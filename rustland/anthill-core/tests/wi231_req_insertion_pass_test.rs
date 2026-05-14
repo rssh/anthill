@@ -1,9 +1,9 @@
 //! WI-231 — factor the requirement-insertion pass out of inline
 //! `check_apply` emission, into a public `kb::req_insertion::run`
-//! entry point that consumes `kb.call_classifications`.
+//! entry point that consumes the typer's call-site classifications.
 //!
 //! Three acceptance points:
-//! 1. The typer populates `call_classifications` for spec-op call sites.
+//! 1. The typer classifies spec-op call sites on their occurrences.
 //! 2. `req_insertion::run` produces the same `dispatch_rewrites` the
 //!    pre-WI-231 inline emission did (no semantic regression).
 //! 3. Without `req_insertion::run`, `dispatch_rewrites` stays empty —
@@ -16,7 +16,7 @@ use anthill_core::kb::typing::CallClass;
 use common::load_kb_with;
 
 #[test]
-fn typer_populates_call_classifications() {
+fn typer_populates_classifications() {
     // A spec-op call from inside a sort that `requires Eq[T]` should
     // produce a `Defer` classification row (open-bound trigger). The
     // typer tags the apply site; the side-table holds the row whether
@@ -36,14 +36,14 @@ end
     let kb = load_kb_with(src);
 
     // At least one classification row must exist (the `eq(a, b)` call).
-    let class_count = kb.call_classifications_iter().count();
+    let class_count = kb.occurrence_store().classifications_iter().count();
     assert!(
         class_count >= 1,
         "typer must populate >= 1 CallClass row for the eq(a, b) call site; got {class_count}"
     );
 
     // Find the Defer row and confirm its data.
-    let defer_row = kb.call_classifications_iter().find_map(|(_, c)| match c {
+    let defer_row = kb.occurrence_store().classifications_iter().find_map(|(_, c)| match c {
         CallClass::DeferToRequirement { spec_op_sym, op_short_sym, resolved_spec, slot, enclosing_sort } => {
             Some((*spec_op_sym, *op_short_sym, resolved_spec.clone(), *slot, *enclosing_sort))
         }
@@ -223,10 +223,11 @@ end
     // the same matched entry — `required_sort = Eq`, spec TermId is the
     // SortView that the loader built for `requires Eq[T]`.
     let mut defer_rows: Vec<_> = kb
-        .call_classifications_iter()
-        .filter_map(|(tid, c)| match c {
+        .occurrence_store()
+        .classifications_iter()
+        .filter_map(|(occ, c)| match c {
             CallClass::DeferToRequirement { resolved_spec, .. } => {
-                Some((tid, resolved_spec.clone()))
+                Some((kb.occurrence_store().term(occ), resolved_spec.clone()))
             }
             _ => None,
         })

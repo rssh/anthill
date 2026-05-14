@@ -545,7 +545,7 @@ fn dispatch_commit_s_w_type_checks_via_workitemstore_satisfaction() {
     env.bind_var("s".to_string(), cell_wis);
     env.bind_var("w".to_string(), workitem_ty);
 
-    let result = type_check_expr(&mut kb, &env, apply_term);
+    let result = type_check_expr(&mut kb, &env, apply_term, None);
     assert!(result.is_some(),
         "expected commit(s, w) for s:Cell[V=WIS] / w:WorkItem to type-check \
          (dispatch should resolve to FileBasedWorkitemStore.commit)");
@@ -610,7 +610,7 @@ fn dispatch_int_add_x_x_type_checks_via_spec_satisfaction() {
     let mut env = TypingEnv::empty();
     env.bind_var("x".to_string(), int_type);
 
-    let result = type_check_expr(&mut kb, &env, apply_term);
+    let result = type_check_expr(&mut kb, &env, apply_term, None);
     assert!(result.is_some(),
         "expected add(x, x) for x:Int to type-check; got None (dispatch likely failed)");
 }

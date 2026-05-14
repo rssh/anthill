@@ -1412,11 +1412,11 @@ fn load_phase_inner(
     mark!("register_specialization_witnesses");
     all_errors.extend(super::typing::type_check_sorts(kb, &all_sorts));
     mark!(&format!("type_check_sorts ({} sorts)", all_sorts.len()));
-    // WI-231: the typer tagged each spec-op call site in
-    // `kb.call_classifications`; run the requirement-insertion pass
-    // to emit the IR rewrites into `kb.dispatch_rewrites`. Skipping
-    // this call would leave the IR in the typed-but-unelaborated
-    // state (useful for alternative codegen targets).
+    // WI-231: the typer tagged each spec-op call site's occurrence
+    // with a `CallClass`; run the requirement-insertion pass to emit
+    // the IR rewrites into `kb.dispatch_rewrites`. Skipping this call
+    // would leave the IR in the typed-but-unelaborated state (useful
+    // for alternative codegen targets).
     super::req_insertion::run(kb);
     mark!("req_insertion::run");
     if all_errors.is_empty() {

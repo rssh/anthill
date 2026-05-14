@@ -59,6 +59,11 @@ struct OccurrenceEntry {
     /// None for top-level or unknown context.
     owner: Option<Symbol>,
     is_expr: bool,
+    /// WI-231 — call-site classification the typer (`check_apply`)
+    /// attached to this occurrence, consumed by `kb::req_insertion::run`.
+    /// Boxed: `CallClass::ConcreteApplyWithin` is large and most
+    /// occurrences carry no classification.
+    classification: Option<Box<crate::kb::typing::CallClass>>,
 }
 
 /// Sequential store for positioned term occurrences.
@@ -94,6 +99,7 @@ impl OccurrenceStore {
             span,
             owner,
             is_expr,
+            classification: None,
         });
         self.by_term.entry(term).or_default().push(id);
         id
@@ -126,6 +132,24 @@ impl OccurrenceStore {
 
     pub fn is_expr(&self, id: OccurrenceId) -> bool {
         self.entries[id.index()].is_expr
+    }
+
+    // ── Classifications (WI-231) ────────────────────────────────
+
+    /// Attach the typer's call-site classification to an occurrence.
+    /// Called from `check_apply`; read back by `kb::req_insertion::run`.
+    pub fn set_classification(&mut self, id: OccurrenceId, class: crate::kb::typing::CallClass) {
+        self.entries[id.index()].classification = Some(Box::new(class));
+    }
+
+    /// Iterate `(OccurrenceId, &CallClass)` for every classified
+    /// occurrence — the requirement-insertion pass's input.
+    pub fn classifications_iter(
+        &self,
+    ) -> impl Iterator<Item = (OccurrenceId, &crate::kb::typing::CallClass)> {
+        self.entries.iter().enumerate().filter_map(|(i, e)| {
+            e.classification.as_deref().map(|c| (OccurrenceId(i as u32), c))
+        })
     }
 
     // ── Indexing ──────────────────────────────────────────────────

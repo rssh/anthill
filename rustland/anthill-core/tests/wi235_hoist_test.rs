@@ -83,12 +83,12 @@ end
     // a var_ref vs a construct_requirement. Look up via the original
     // apply TermId (not dispatch_origin_iter), so we read the CURRENT
     // rewrite — post-hoist updates `dispatch_rewrites` in place.
-    let apply_tids: Vec<_> = kb.call_classifications_iter()
-        .filter_map(|(tid, class)| {
+    let apply_tids: Vec<_> = kb.occurrence_store().classifications_iter()
+        .filter_map(|(occ, class)| {
             match class {
                 anthill_core::kb::typing::CallClass::ConcreteApplyWithin {
                     spec_op_sym, ..
-                } if *spec_op_sym == spec_op => Some(tid),
+                } if *spec_op_sym == spec_op => Some(kb.occurrence_store().term(occ)),
                 _ => None,
             }
         })

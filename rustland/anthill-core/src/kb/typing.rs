@@ -516,12 +516,19 @@ fn sort_term_to_type(kb: &mut KnowledgeBase, sort_term: TermId) -> TermId {
 }
 
 pub fn resolve_handle(kb: &KnowledgeBase, handle_tid: TermId) -> TermId {
+    split_handle(kb, handle_tid).1
+}
+
+/// Like `resolve_handle`, but also returns the `OccurrenceId` the handle carried
+/// (if any) — so a pass traversing occurrence-to-occurrence keeps source identity
+/// instead of discarding it. See `docs/design/expr-occurrences.md`.
+pub fn split_handle(kb: &KnowledgeBase, handle_tid: TermId) -> (Option<OccurrenceId>, TermId) {
     match kb.get_term(handle_tid) {
         Term::Const(Literal::Handle(HandleKind::Occurrence, occ_raw)) => {
             let occ_id = OccurrenceId::from_raw(*occ_raw);
-            kb.occurrences.term(occ_id)
+            (Some(occ_id), kb.occurrences.term(occ_id))
         }
-        _ => handle_tid,
+        _ => (None, handle_tid),
     }
 }
 
@@ -593,6 +600,7 @@ pub fn type_check_expr(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     expr: TermId,
+    current_occ: Option<OccurrenceId>,
 ) -> Option<TypeResult> {
     let term = kb.get_term(expr).clone();
     match &term {
@@ -601,10 +609,10 @@ pub fn type_check_expr(
         Term::Const(Literal::Float(_)) => Some(TypeResult::pure(kb.make_sort_ref_by_name("Float"), env.clone())),
         Term::Const(Literal::String(_)) => Some(TypeResult::pure(kb.make_sort_ref_by_name("String"), env.clone())),
         Term::Const(Literal::Bool(_)) => Some(TypeResult::pure(kb.make_sort_ref_by_name("Bool"), env.clone())),
-        // Handle — resolve and recurse
-        Term::Const(Literal::Handle(HandleKind::Occurrence, occ_raw)) => {
-            let inner = kb.occurrences.term(OccurrenceId::from_raw(*occ_raw));
-            type_check_expr(kb, env, inner)
+        // Handle — unwrap via split_handle, keep the occurrence, recurse
+        Term::Const(Literal::Handle(HandleKind::Occurrence, _)) => {
+            let (occ, inner) = split_handle(kb, expr);
+            type_check_expr(kb, env, inner, occ)
         }
         // Variable reference — pure
         Term::Ref(sym) => {
@@ -644,7 +652,7 @@ pub fn type_check_expr(
                         .unwrap_or_default();
                     infer_constructor_type(kb, env, name_sym, &ctor_args, &SmallVec::new())
                 }
-                "apply" => check_apply(kb, env, expr, &named_args, &pos_args),
+                "apply" => check_apply(kb, env, &named_args, &pos_args, current_occ),
                 "if_expr" => check_if_expr(kb, env, &named_args),
                 "let_expr" => check_let_expr(kb, env, &named_args),
                 "match_expr" => check_match_expr(kb, env, &named_args),
@@ -672,6 +680,25 @@ pub fn type_check_expr(
     }
 }
 
+/// Type-check a child expression slot. Every `Expr` child slot is an
+/// `ExprOccurrence` handle: split off the occurrence and recurse with it
+/// in hand, so the child's source identity flows instead of being
+/// discarded. See `docs/design/expr-occurrences.md`.
+fn type_check_child(kb: &mut KnowledgeBase, env: &TypingEnv, child: TermId) -> Option<TypeResult> {
+    let (occ, inner) = split_handle(kb, child);
+    type_check_expr(kb, env, inner, occ)
+}
+
+/// Attach a call-site `CallClass` to its occurrence, if the typer is
+/// tracking one. `occ` is `None` only in bare test envs that type-check
+/// un-occurrenced terms directly — the load pipeline always has it, so
+/// classification is simply skipped in those test-only cases.
+fn classify(kb: &mut KnowledgeBase, occ: Option<OccurrenceId>, class: CallClass) {
+    if let Some(occ) = occ {
+        kb.occurrences.set_classification(occ, class);
+    }
+}
+
 // ── Expression form checkers ───────────────────────────────────
 
 /// apply(fn, args): type-check with type parameter instantiation.
@@ -680,9 +707,9 @@ pub fn type_check_expr(
 fn check_apply(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
-    apply_term: TermId,
     named_args: &SmallVec<[(Symbol, TermId); 2]>,
     pos_args: &SmallVec<[TermId; 4]>,
+    current_occ: Option<OccurrenceId>,
 ) -> Option<TypeResult> {
     let fn_sym = extract_sym_arg(kb, named_args, pos_args, "fn")?;
 
@@ -712,12 +739,12 @@ fn check_apply(
             // Extract value from ApplyArg(name, value)
             let arg_expr = if let Term::Fn { named_args: aa, .. } = kb.get_term(*arg_tid) {
                 get_named_arg(kb, aa, "value")
-                    .map(|v| resolve_handle(kb, v))
+                    .map(|v| split_handle(kb, v))
             } else {
                 None
             };
 
-            if let Some(expr) = arg_expr {
+            if let Some((arg_occ, expr)) = arg_expr {
                 // If this arg is a var_ref, record the param→arg-symbol
                 // binding for parametric effect substitution below.
                 if let Some(arg_var_sym) = extract_var_ref_sym(kb, expr) {
@@ -726,7 +753,7 @@ fn check_apply(
                     }
                 }
 
-                if let Some(arg_result) = type_check_expr(kb, env, expr) {
+                if let Some(arg_result) = type_check_expr(kb, env, expr, arg_occ) {
                     // Get the declared param type at this position
                     if let Some(&(_, param_type)) = op.params.get(i) {
                         unify_types(kb, &mut subst, arg_result.ty, param_type);
@@ -822,7 +849,7 @@ fn check_apply(
                                 impl_op_sym,
                             }
                         };
-                        kb.classify_apply(apply_term, class);
+                        classify(kb, current_occ, class);
                     }
                 }
                 DispatchOutcome::NoMatch => {
@@ -847,8 +874,9 @@ fn check_apply(
                         // req_insertion::run can read it directly,
                         // without re-indexing the chain at emit time.
                         let resolved_spec = enclosing_requires[slot].clone();
-                        kb.classify_apply(
-                            apply_term,
+                        classify(
+                            kb,
+                            current_occ,
                             CallClass::DeferToRequirement {
                                 spec_op_sym: fn_sym,
                                 op_short_sym,
@@ -867,8 +895,9 @@ fn check_apply(
             // tag and the call stays as plain apply.
             if let Some(parent_sym) = impl_parent_of_op(kb, fn_sym) {
                 if !requires_chain(kb, parent_sym).is_empty() {
-                    kb.classify_apply(
-                        apply_term,
+                    classify(
+                        kb,
+                        current_occ,
                         CallClass::ConcreteApplyWithin {
                             fn_target_sym: fn_sym,
                             callee_spec_sort: parent_sym,
@@ -1448,14 +1477,16 @@ pub fn lookup_spec_op_dispatch(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sym
 
 /// WI-231 — per-call-site classification produced by the typer for
 /// consumption by the requirement-insertion pass (`kb/req_insertion.rs`).
-/// Each tagged apply site has one row in `kb.call_classifications`;
-/// `req_insertion::run` walks the table and emits the corresponding
-/// rewrite into `kb.dispatch_rewrites`.
+/// Each tagged apply site carries its `CallClass` on the apply
+/// occurrence's `OccurrenceEntry`; `req_insertion::run` walks the
+/// classified occurrences and emits the corresponding rewrite into
+/// `kb.dispatch_rewrites`.
 ///
 /// External codegen targets (Rust monomorphization, reflection
-/// tooling, alternative elaborations) can read this side-table
-/// directly and choose to emit their own elaboration rather than
-/// invoking the standard pass.
+/// tooling, alternative elaborations) can read these classifications
+/// directly (via `kb.occurrence_store().classifications_iter()`) and
+/// choose to emit their own elaboration rather than invoking the
+/// standard pass.
 ///
 /// Reference: docs/design/operation-call-model.md §"Pass structure:
 /// typer first, requirement-insertion separate".
@@ -2756,7 +2787,7 @@ fn infer_constructor_type(
             .find(|(s, _)| *s == field_sym)
             .map(|(_, v)| *v);
         if let Some(arg) = arg_tid {
-            if let Some(r) = type_check_expr(kb, env, resolve_handle(kb, arg)) {
+            if let Some(r) = type_check_child(kb, env, arg) {
                 unify_types(kb, &mut subst, r.ty, declared_type);
                 effects = merge_effects(&effects, &r.effects);
             }
@@ -2768,13 +2799,11 @@ fn infer_constructor_type(
         if let Some(&(_, declared_type)) = field_types.get(i) {
             // For constructor expression form, args are ApplyArg(name, value)
             let actual_arg = if let Term::Fn { named_args: aa, .. } = kb.get_term(arg) {
-                get_named_arg(kb, aa, "value")
-                    .map(|v| resolve_handle(kb, v))
-                    .unwrap_or(arg)
+                get_named_arg(kb, aa, "value").unwrap_or(arg)
             } else {
                 arg
             };
-            if let Some(r) = type_check_expr(kb, env, actual_arg) {
+            if let Some(r) = type_check_child(kb, env, actual_arg) {
                 unify_types(kb, &mut subst, r.ty, declared_type);
                 effects = merge_effects(&effects, &r.effects);
             }
@@ -2861,9 +2890,9 @@ fn check_if_expr(
     let then_b = get_named_arg(kb, named_args, "then_branch")?;
     let else_b = get_named_arg(kb, named_args, "else_branch")?;
 
-    let cond_r = type_check_expr(kb, env, resolve_handle(kb, cond));
-    let then_r = type_check_expr(kb, env, resolve_handle(kb, then_b));
-    let else_r = type_check_expr(kb, env, resolve_handle(kb, else_b));
+    let cond_r = type_check_child(kb, env, cond);
+    let then_r = type_check_child(kb, env, then_b);
+    let else_r = type_check_child(kb, env, else_b);
 
     let ty = then_r.as_ref().map(|r| r.ty)
         .or_else(|| else_r.as_ref().map(|r| r.ty))?;
@@ -2895,7 +2924,7 @@ fn check_let_expr(
     let body = get_named_arg(kb, named_args, "body")?;
     let annotation = get_named_arg(kb, named_args, "type_name");
 
-    let value_r = type_check_expr(kb, env, resolve_handle(kb, value));
+    let value_r = type_check_child(kb, env, value);
     let value_ty = value_r.as_ref().map(|r| r.ty);
 
     let mut ext_env = value_r.as_ref().map(|r| r.env.clone()).unwrap_or_else(|| env.clone());
@@ -2911,7 +2940,7 @@ fn check_let_expr(
         ext_env.declare_local_resource(var_name);
     }
 
-    let body_r = type_check_expr(kb, &ext_env, resolve_handle(kb, body))?;
+    let body_r = type_check_child(kb, &ext_env, body)?;
 
     let mut effects = Vec::new();
     if let Some(ref r) = value_r { effects = merge_effects(&effects, &r.effects); }
@@ -2941,7 +2970,7 @@ fn check_match_expr(
     let scrutinee = get_named_arg(kb, named_args, "scrutinee")?;
     let branches = get_named_arg(kb, named_args, "branches")?;
 
-    let scr_r = type_check_expr(kb, env, resolve_handle(kb, scrutinee));
+    let scr_r = type_check_child(kb, env, scrutinee);
     let scr_ty = scr_r.as_ref().map(|r| r.ty);
 
     let mut effects = Vec::new();
@@ -2960,7 +2989,7 @@ fn check_match_expr(
                 collect_covered_entities(kb, pat, &mut covered_entities, &mut has_wildcard);
                 let mut branch_env = env.clone();
                 extend_env_from_pattern(kb, &mut branch_env, pat, scr_ty);
-                if let Some(body_r) = type_check_expr(kb, &branch_env, resolve_handle(kb, bod)) {
+                if let Some(body_r) = type_check_child(kb, &branch_env, bod) {
                     if result_ty.is_none() { result_ty = Some(body_r.ty); }
                     // Filter effects on resources local to *this branch's
                     // pattern bindings* before merging — pattern-bound vars
@@ -3025,7 +3054,7 @@ fn check_lambda(
     let mut lambda_env = env.clone();
     extend_env_from_pattern(kb, &mut lambda_env, param, param_type);
 
-    let body_r = type_check_expr(kb, &lambda_env, resolve_handle(kb, body));
+    let body_r = type_check_child(kb, &lambda_env, body);
 
     // Build arrow(param, result, effects) type term
     let a_val = param_type.unwrap_or_else(|| {
@@ -3064,7 +3093,7 @@ fn check_list_literal(
 
     // Type-check each element
     for &elem in pos_args.iter() {
-        if let Some(r) = type_check_expr(kb, env, resolve_handle(kb, elem)) {
+        if let Some(r) = type_check_child(kb, env, elem) {
             if element_type.is_none() {
                 element_type = Some(r.ty);
             }
@@ -3075,7 +3104,7 @@ fn check_list_literal(
     // Type-check tail if present
     let tail = get_named_arg(kb, named_args, "tail");
     if let Some(tail_tid) = tail {
-        if let Some(r) = type_check_expr(kb, env, resolve_handle(kb, tail_tid)) {
+        if let Some(r) = type_check_child(kb, env, tail_tid) {
             effects = merge_effects(&effects, &r.effects);
         }
     }
@@ -3107,7 +3136,7 @@ fn check_set_literal(
     }
 
     for &elem in pos_args.iter() {
-        if let Some(r) = type_check_expr(kb, env, resolve_handle(kb, elem)) {
+        if let Some(r) = type_check_child(kb, env, elem) {
             if element_type.is_none() {
                 element_type = Some(r.ty);
             }
@@ -3136,7 +3165,7 @@ fn check_tuple_literal(
     let mut field_types: Vec<(Symbol, TermId)> = Vec::new();
 
     for (i, &elem) in pos_args.iter().enumerate() {
-        if let Some(r) = type_check_expr(kb, env, resolve_handle(kb, elem)) {
+        if let Some(r) = type_check_child(kb, env, elem) {
             let field_name = kb.intern(&format!("_{}", i));
             field_types.push((field_name, r.ty));
             effects = merge_effects(&effects, &r.effects);
@@ -4450,7 +4479,6 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
 /// dispatch returning NoMatch. Diagnostic: `wi237_diag_test.rs`. The
 /// other five audit sites ARE on `same_symbol`.
 fn find_sort_info(kb: &KnowledgeBase, sort_info_sym: Symbol, sort_functor: Symbol) -> Option<(Vec<Symbol>, Vec<Symbol>)> {
-    let sort_name = kb.resolve_sym(sort_functor);
     for rid in kb.by_functor(sort_info_sym) {
         if !kb.rule_body(rid).is_empty() { continue; }
         let head = kb.rule_head(rid);
@@ -4471,7 +4499,7 @@ fn find_sort_info(kb: &KnowledgeBase, sort_info_sym: Symbol, sort_functor: Symbo
             Term::Ref(s) => *s,
             _ => continue,
         };
-        if name_sym != sort_functor && kb.resolve_sym(name_sym) != sort_name {
+        if !same_symbol(kb, name_sym, sort_functor) {
             continue;
         }
 
@@ -4767,6 +4795,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
         return_type: TermId,
         declared_effects: Vec<TermId>,
         body_expr: TermId,
+        body_occ: Option<OccurrenceId>,
         // Param-name as a String for the typer's variable-name lookup;
         // the underlying record uses Symbol.
         params: Vec<(String, TermId)>,
@@ -4785,6 +4814,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             Some(b) => b,
             None => continue,
         };
+        let body_occ = rec.body_occ;
         let span = kb.occurrences.by_functor(rec.op_sym)
             .first()
             .map(|&occ_id| kb.occurrences.span(occ_id).span);
@@ -4796,6 +4826,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             return_type: rec.return_type,
             declared_effects: rec.effects,
             body_expr,
+            body_occ,
             params,
             span,
         });
@@ -4818,7 +4849,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             env.bind_var(name.clone(), *ty);
         }
 
-        if let Some(result) = type_check_expr(kb, &env, op.body_expr) {
+        if let Some(result) = type_check_expr(kb, &env, op.body_expr, op.body_occ) {
             if !types_compatible(kb, result.ty, op.return_type) {
                 errors.push(TypeError::TypeMismatch {
                     occ: None,
