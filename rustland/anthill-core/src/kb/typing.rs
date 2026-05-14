@@ -1099,13 +1099,15 @@ fn entries_cover(kb: &KnowledgeBase, caller: &RequiresEntry, dep: &RequiresEntry
         if !is_type_param_binding(kb, *dep_k, &spec_qn) {
             continue;
         }
-        // Find the caller's binding for the same key (compare by
-        // resolved short name to be robust against differently-interned
-        // copies of the same short symbol).
+        // Find the caller's binding for the same key. Compare by
+        // qualified name to bridge differently-interned copies of the
+        // same key symbol without matching an unrelated type param
+        // that merely shares a short name (e.g. two specs' `T`).
         let caller_val = caller_bindings
             .iter()
             .find(|(ck, _)| {
-                *ck == *dep_k || kb.resolve_sym(*ck) == kb.resolve_sym(*dep_k)
+                *ck == *dep_k
+                    || kb.qualified_name_of(*ck) == kb.qualified_name_of(*dep_k)
             })
             .map(|(_, v)| *v);
         let Some(caller_val) = caller_val else {
@@ -2306,7 +2308,8 @@ fn requires_entry_covers_goal(
 }
 
 /// Structural equality between two goals for cycle detection.
-/// Binding keys compared by resolved short name (see `goal_binding_value`).
+/// Binding keys compared by qualified name to bridge differently-interned
+/// copies without colliding two specs' same-short-named type params.
 fn goals_equal(kb: &KnowledgeBase, a: &SortGoal, b: &SortGoal) -> bool {
     if a.spec_sort != b.spec_sort {
         return false;
@@ -2315,10 +2318,10 @@ fn goals_equal(kb: &KnowledgeBase, a: &SortGoal, b: &SortGoal) -> bool {
         return false;
     }
     a.bindings.iter().all(|(k, av)| {
-        let kn = kb.resolve_sym(*k);
+        let kqn = kb.qualified_name_of(*k);
         b.bindings
             .iter()
-            .find(|(kk, _)| kk == k || kb.resolve_sym(*kk) == kn)
+            .find(|(kk, _)| kk == k || kb.qualified_name_of(*kk) == kqn)
             .map_or(false, |(_, bv)| values_structurally_equal(kb, *av, *bv))
     })
 }
@@ -2933,7 +2936,9 @@ fn check_match_expr(
                     }).collect();
                     let missing: Vec<String> = all_entities.iter()
                         .filter(|e| !covered_entities.iter().any(|c| {
-                            *c == **e || kb.resolve_sym(*c) == kb.resolve_sym(**e)
+                            *c == **e
+                                || kb.qualified_name_of(*c)
+                                    == kb.qualified_name_of(**e)
                         }))
                         .map(|s| kb.resolve_sym(*s).to_string())
                         .collect();
@@ -3842,7 +3847,11 @@ fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
     let Some(requires_sym) = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") else {
         return out;
     };
-    let sort_name = kb.resolve_sym(sort_sym);
+    // Identity is the resolved Symbol; the qualified-name fallback
+    // bridges differently-interned copies of the *same* logical sort
+    // without colliding two sorts that merely share a short name
+    // (e.g. anthill.cli.Main vs anthill.todo.Main).
+    let sort_qn = kb.qualified_name_of(sort_sym);
 
     for rid in kb.by_functor(requires_sym) {
         if !kb.rule_body(rid).is_empty() { continue; }
@@ -3864,7 +3873,7 @@ fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
             Term::Fn { functor, .. } => *functor,
             _ => continue,
         };
-        if sr_functor != sort_sym && kb.resolve_sym(sr_functor) != sort_name {
+        if sr_functor != sort_sym && kb.qualified_name_of(sr_functor) != sort_qn {
             continue;
         }
 
@@ -3954,9 +3963,12 @@ fn build_child_subst_map(
 /// Check if sort A refines sort B via `requires` chain.
 fn sort_refines(kb: &KnowledgeBase, a_sym: Symbol, b_sym: Symbol) -> bool {
     let chain = requires_chain_flat(kb, a_sym);
-    let b_name = kb.resolve_sym(b_sym);
+    // Qualified-name fallback bridges differently-interned copies of B
+    // without matching an unrelated same-short-named sort.
+    let b_qn = kb.qualified_name_of(b_sym);
     chain.iter().any(|entry| {
-        entry.required_sort == b_sym || kb.resolve_sym(entry.required_sort) == b_name
+        entry.required_sort == b_sym
+            || kb.qualified_name_of(entry.required_sort) == b_qn
     })
 }
 
@@ -4009,7 +4021,9 @@ fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
         None => return Vec::new(),
     };
 
-    let sort_name = kb.resolve_sym(sort_sym);
+    // Qualified name, not short — two sorts sharing a short name across
+    // namespaces must not share each other's SortInfo.
+    let sort_qn = kb.qualified_name_of(sort_sym);
 
     for rid in kb.by_functor(sort_info_sym) {
         if !kb.rule_body(rid).is_empty() { continue; }
@@ -4032,7 +4046,7 @@ fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
             Term::Ref(s) => *s,
             _ => continue,
         };
-        if name_sym != sort_sym && kb.resolve_sym(name_sym) != sort_name {
+        if name_sym != sort_sym && kb.qualified_name_of(name_sym) != sort_qn {
             continue;
         }
 
@@ -4300,7 +4314,9 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
 
 /// Extract constructor and operation symbol lists from a SortInfo fact.
 fn find_sort_info(kb: &KnowledgeBase, sort_info_sym: Symbol, sort_functor: Symbol) -> Option<(Vec<Symbol>, Vec<Symbol>)> {
-    let sort_name = kb.resolve_sym(sort_functor);
+    // Match by qualified name, not short — short names collide across
+    // namespaces (anthill.cli.Main vs anthill.todo.Main).
+    let sort_qn = kb.qualified_name_of(sort_functor);
     for rid in kb.by_functor(sort_info_sym) {
         if !kb.rule_body(rid).is_empty() { continue; }
         let head = kb.rule_head(rid);
@@ -4321,7 +4337,7 @@ fn find_sort_info(kb: &KnowledgeBase, sort_info_sym: Symbol, sort_functor: Symbo
             Term::Ref(s) => *s,
             _ => continue,
         };
-        if name_sym != sort_functor && kb.resolve_sym(name_sym) != sort_name {
+        if name_sym != sort_functor && kb.qualified_name_of(name_sym) != sort_qn {
             continue;
         }
 

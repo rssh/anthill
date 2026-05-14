@@ -230,3 +230,67 @@ end
         .expect("Leaf");
     assert_eq!(flat_from_tree, vec![middle, leaf]);
 }
+
+#[test]
+fn requires_chain_does_not_collide_on_short_name() {
+    // Regression: `direct_requires` (and the SortInfo lookups) used to
+    // match reflection facts by SHORT name. Two sorts named `Main` in
+    // different namespaces both resolve_sym to "Main", so the chain
+    // walk for `inner.Main` would pick up `outer.Main`'s requires —
+    // and vice versa during the recursive descent — doubling the
+    // chain. Pin that `requires_chain_flat` keys on the resolved
+    // Symbol / qualified name, not the short name.
+    let src = r#"
+namespace test.collide.outer
+  export Main
+  sort Spec
+    sort T = ?
+  end
+  sort Main
+    sort State = ?
+    requires Spec[T = State]
+  end
+end
+namespace test.collide.inner
+  import test.collide.outer.{Main}
+  sort Helper
+    sort State = ?
+    requires Main[State = State]
+  end
+end
+"#;
+    let mut kb = load_with(src);
+
+    // outer.Main: declares exactly one requires (Spec). The recursive
+    // descent into Spec must NOT pick outer.Main's own requires back
+    // up (Spec's short name doesn't collide here, but the descent
+    // previously mis-attributed via the short-name fallback when any
+    // same-named sort existed). One entry, not more.
+    let outer_main = kb
+        .try_resolve_symbol("test.collide.outer.Main")
+        .expect("outer.Main");
+    let outer_chain = requires_chain(&mut kb, outer_main);
+    assert_eq!(
+        outer_chain.len(), 1,
+        "outer.Main requires only Spec; got {:?}",
+        outer_chain.iter()
+            .map(|e| kb.qualified_name_of(e.required_sort).to_string())
+            .collect::<Vec<_>>()
+    );
+
+    // Helper requires outer.Main, which requires Spec. Flat chain is
+    // [outer.Main, Spec] — exactly 2, no duplication from the short
+    // name `Main` matching anything else.
+    let helper = kb
+        .try_resolve_symbol("test.collide.inner.Helper")
+        .expect("Helper");
+    let helper_chain = requires_chain(&mut kb, helper);
+    let names: Vec<String> = helper_chain.iter()
+        .map(|e| kb.qualified_name_of(e.required_sort).to_string())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["test.collide.outer.Main", "test.collide.outer.Spec"],
+        "Helper's flat chain must be [outer.Main, Spec] with no short-name doubling"
+    );
+}
