@@ -331,25 +331,27 @@ namespace anthill.reflect
     entity string_lit(value: String)
     entity bool_lit(value: Bool)
 
-    -- WI-222 / WI-223: requirement-aware IR variants emitted by the
-    -- requirement-insertion pass. Each carries an explicit `requirements`
-    -- channel — a positional vector of requirement-typed expressions
-    -- (requirement_at_current / requirement_at_sort / construct_requirement)
-    -- that evaluates to the callee's frame.requirements at apply time.
-    -- See `docs/design/operation-call-model.md` §"The IR".
+    -- WI-222 / WI-223 / WI-237: requirement-aware IR variants emitted by
+    -- the requirement-insertion pass. Each carries a `requirements`
+    -- channel — under the names model a single-entry list holding the
+    -- dispatching dictionary; at apply time the eval expands it into the
+    -- callee's name-keyed frame.requirements, which the body reads via
+    -- `var_ref(__req_*)`. See `docs/design/operation-call-model.md` §"The IR".
     entity apply_within(fn: Symbol, args: List[ApplyArg], requirements: List[ExprOccurrence])
     entity ho_apply_within(predicate: Term, args: List[Term], requirements: List[ExprOccurrence])
     entity constructor_within(name: Symbol, args: List[ApplyArg], requirements: List[ExprOccurrence])
     entity lambda_within(param: Pattern, body: ExprOccurrence, requirements: List[ExprOccurrence])
 
     -- Requirement-typed primitives.
-    -- requirement_at_current(slot, op): in value position the result is
-    -- frame.requirements[slot]; in fn position with `op` set, dispatch
-    -- <handle.functor>.<op> through that requirement value.
+    -- requirement_at_current(slot, op): OBSOLETE under the WI-237 names
+    -- model — a body now reads its requirements by name via `var_ref`,
+    -- not positionally. Kept defined-but-unused so older IR snapshots
+    -- still parse; the typer no longer emits it and the eval no longer
+    -- reduces it. Removal is a filed follow-up.
     entity requirement_at_current(slot: Int, op: Option[Symbol])
     -- requirement_at_sort(chain, slot): project the slot-th bundled
-    -- sub-requirement of `chain`. `chain` is restricted to a chain
-    -- rooted at requirement_at_current — enforced by the typer.
+    -- sub-requirement of `chain`. `chain` is a requirement chain rooted
+    -- at a `var_ref` requirement read — enforced by the typer.
     entity requirement_at_sort(chain: ExprOccurrence, slot: Int)
     -- construct_requirement(impl_functor, requirements): allocate a
     -- fresh requirement value bundling the resolved sub-requirements.

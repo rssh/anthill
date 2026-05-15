@@ -29,12 +29,13 @@ pub struct Closure {
     pub body: TermId,
     pub env: SmallVec<[(Symbol, Value); 4]>,
     /// WI-223: requirement scope to install in `frame.requirements` when
-    /// the closure is invoked. Snapshotted at lambda construction time
-    /// (`lambda_within(params, body, requirements)`) — restored on call
-    /// to preserve the lexical scope where the lambda was *created*, not
-    /// where it's *invoked*. The HO-call exception in §"Closure invocation:
-    /// the one runtime exception" of `docs/design/operation-call-model.md`.
-    pub requirements: SmallVec<[crate::eval::value::RequirementHandle; 1]>,
+    /// the closure is invoked. Snapshotted at lambda construction time —
+    /// restored on call to preserve the lexical scope where the lambda
+    /// was *created*, not where it's *invoked*. The HO-call exception in
+    /// §"Closure invocation: the one runtime exception" of
+    /// `docs/design/operation-call-model.md`. Name-keyed (WI-237 names
+    /// model): each entry is `(synthesized __req_* name, handle)`.
+    pub requirements: SmallVec<[(Symbol, crate::eval::value::RequirementHandle); 1]>,
 }
 
 struct Slot {

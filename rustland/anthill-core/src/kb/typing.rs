@@ -1016,8 +1016,9 @@ pub fn same_symbol(kb: &KnowledgeBase, a: Symbol, b: Symbol) -> bool {
 /// `pub` only so the WI-227 test file can drive `build_dep_projection`
 /// directly with synthetic inputs.
 pub struct ProjectionSyms {
-    /// `anthill.reflect.Expr.requirement_at_current`
-    pub raac: Symbol,
+    /// `anthill.reflect.Expr.var_ref` — named requirement-param read
+    /// (names model; replaced the positional `requirement_at_current`).
+    pub var_ref: Symbol,
     /// `anthill.reflect.Expr.requirement_at_sort`
     pub ras: Symbol,
     /// `anthill.reflect.Expr.construct_requirement`
@@ -1032,12 +1033,14 @@ pub struct ProjectionSyms {
     pub requirements: Symbol,
     pub head: Symbol,
     pub tail: Symbol,
+    /// `name` field of `var_ref`.
+    pub name: Symbol,
 }
 
 impl ProjectionSyms {
     pub fn resolve(kb: &mut KnowledgeBase) -> Option<Self> {
         Some(Self {
-            raac: kb.try_resolve_symbol("anthill.reflect.Expr.requirement_at_current")?,
+            var_ref: kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")?,
             ras: kb.try_resolve_symbol("anthill.reflect.Expr.requirement_at_sort")?,
             construct: kb.try_resolve_symbol("anthill.reflect.Expr.construct_requirement")?,
             nil: kb.try_resolve_symbol("anthill.prelude.List.nil")?,
@@ -1048,6 +1051,7 @@ impl ProjectionSyms {
             requirements: kb.intern("requirements"),
             head: kb.intern("head"),
             tail: kb.intern("tail"),
+            name: kb.intern("name"),
         })
     }
 }
@@ -1062,6 +1066,7 @@ impl ProjectionSyms {
 fn build_dispatching_dict_direct(
     kb: &mut KnowledgeBase,
     callee_spec_sort: Symbol,
+    caller_sort: Option<Symbol>,
     caller_requires: &[RequiresEntry],
     syms: &ProjectionSyms,
 ) -> Option<TermId> {
@@ -1077,7 +1082,7 @@ fn build_dispatching_dict_direct(
     let mut proj_terms: Vec<TermId> = Vec::with_capacity(callee_chain.len());
     for dep in &callee_chain {
         if let Some(t) = build_dep_projection(
-            kb, dep, caller_requires, &caller_sub_chains, syms,
+            kb, dep, caller_sort, caller_requires, &caller_sub_chains, syms,
         ) {
             proj_terms.push(t);
         }
@@ -1102,11 +1107,17 @@ fn wrap_dispatch_channel(
 
 /// WI-227: recursively search for an IR projection that delivers a
 /// requirement value satisfying `dep` at runtime, given `caller_requires`
-/// as the caller's frame-level requirement slots. Tries flat slot
+/// as the caller's frame-level requirement chain. Tries named-param
 /// match, then nested-handle match via `caller_sub_chains[i]`, then SLD
 /// resolution against `SortProvidesInfo`. `caller_sub_chains` must be
 /// `[requires_chain(c.required_sort) for c in caller_requires]` — the
 /// nested-search index, computed once by the caller.
+///
+/// `caller_sort` is the enclosing op's parent sort — needed to turn a
+/// caller-chain index into the synthesized `__req_*` param name
+/// (`req_name_for_chain_index`). It is `None` only for ops with no
+/// enclosing sort, in which case `caller_requires` is empty and
+/// Strategies 1 & 2 never fire.
 ///
 /// `pub` so the WI-227 test file can drive each strategy synthetically.
 ///
@@ -1115,18 +1126,20 @@ fn wrap_dispatch_channel(
 pub fn build_dep_projection(
     kb: &mut KnowledgeBase,
     dep: &RequiresEntry,
+    caller_sort: Option<Symbol>,
     caller_requires: &[RequiresEntry],
     caller_sub_chains: &[Vec<RequiresEntry>],
     syms: &ProjectionSyms,
 ) -> Option<TermId> {
-    // Strategy 1 — flat, binding-aware. Match by (required_sort, bindings)
-    // so a caller with Eq[T=X] at slot 0 does NOT match dep Eq[T=Y]
+    // Strategy 1 — named-param, binding-aware. Match by (required_sort,
+    // bindings) so a caller with Eq[T=X] does NOT match dep Eq[T=Y]
     // (WI-226 correctness fix).
     if let Some(i) = caller_requires
         .iter()
         .position(|c| entries_cover(kb, c, dep))
     {
-        return Some(build_flat_req(kb, syms, i));
+        let name = req_name_for_chain_index(kb, caller_sort?, i)?;
+        return Some(build_req_var_ref(kb, syms, name));
     }
 
     // Strategy 2 — nested via caller slots' transitive `requires_chain`,
@@ -1135,7 +1148,8 @@ pub fn build_dep_projection(
     // projects them.
     for (i, sub_chain) in caller_sub_chains.iter().enumerate() {
         if let Some(k) = sub_chain.iter().position(|s| entries_cover(kb, s, dep)) {
-            let inner = build_flat_req(kb, syms, i);
+            let name = req_name_for_chain_index(kb, caller_sort?, i)?;
+            let inner = build_req_var_ref(kb, syms, name);
             return Some(build_req_at_sort(kb, syms, inner, k));
         }
     }
@@ -1145,7 +1159,7 @@ pub fn build_dep_projection(
     let goal = goal_from_requires_entry(kb, dep)?;
     let scope = ResolutionScope { available_requires: caller_requires };
     match resolve(kb, &goal, &scope) {
-        ResolutionResult::Resolved(tree) => emit_tree_as_projection(kb, &tree, syms),
+        ResolutionResult::Resolved(tree) => emit_tree_as_projection(kb, caller_sort, &tree, syms),
         _ => None,
     }
 }
@@ -1200,18 +1214,21 @@ fn entries_cover(kb: &KnowledgeBase, caller: &RequiresEntry, dep: &RequiresEntry
 }
 
 /// WI-227: translate a `ResolvedRequiresNode` into a projection IR term.
-/// `FromScope` becomes `requirement_at_current(slot=scope_index)`;
+/// `FromScope` becomes `var_ref(name = __req_<caller chain slot>)`;
 /// `Leaf` becomes `construct_requirement(impl, nil)`; `Conditional`
 /// recursively emits sub-projections and wraps them in a
-/// `construct_requirement(impl, cons_list)`.
+/// `construct_requirement(impl, cons_list)`. `caller_sort` is the
+/// enclosing op's parent sort, used to name `FromScope` chain slots.
 fn emit_tree_as_projection(
     kb: &mut KnowledgeBase,
+    caller_sort: Option<Symbol>,
     tree: &ResolvedRequiresNode,
     syms: &ProjectionSyms,
 ) -> Option<TermId> {
     match tree {
         ResolvedRequiresNode::FromScope { scope_index, .. } => {
-            Some(build_flat_req(kb, syms, *scope_index))
+            let name = req_name_for_chain_index(kb, caller_sort?, *scope_index)?;
+            Some(build_req_var_ref(kb, syms, name))
         }
         ResolvedRequiresNode::Leaf { impl_sort, .. } => {
             let nil_list = super::load::build_cons_list(
@@ -1222,7 +1239,7 @@ fn emit_tree_as_projection(
         ResolvedRequiresNode::Conditional { impl_sort, sub_resolutions, .. } => {
             let mut sub_terms: SmallVec<[TermId; 4]> = SmallVec::new();
             for sub in sub_resolutions {
-                sub_terms.push(emit_tree_as_projection(kb, sub, syms)?);
+                sub_terms.push(emit_tree_as_projection(kb, caller_sort, sub, syms)?);
             }
             let list = super::load::build_cons_list(
                 kb, &sub_terms, syms.nil, syms.cons, syms.head, syms.tail,
@@ -1232,19 +1249,18 @@ fn emit_tree_as_projection(
     }
 }
 
-/// Build a value-position `requirement_at_current(slot=i+1)` — shared by
-/// Strategy 1, the inner of Strategy 2, and `FromScope` emission.
-///
-/// WI-234 (Model 1): caller's chain index `i` maps to frame slot `i+1`
-/// because slot 0 is reserved for Self (the enclosing op's dispatching
-/// dictionary). The +1 shift is applied here so callers (which still
-/// think in chain-index terms) don't have to know about the Self slot.
-fn build_flat_req(kb: &mut KnowledgeBase, syms: &ProjectionSyms, i: usize) -> TermId {
-    let slot_lit = kb.alloc(Term::Const(Literal::Int((i as i64) + 1)));
+/// Build a value-position `var_ref(name = Ref(name_sym))` — the named
+/// requirement-param read that replaces the positional
+/// `requirement_at_current(slot)` under the names model (WI-237). Shared
+/// by `build_dep_projection` Strategies 1 & 2-inner, `emit_tree_as_projection`'s
+/// `FromScope`, and the `DeferToRequirement` emitter. There is no Self-slot
+/// `+1` shift any more — the Self requirement is the named param `__req_self`.
+fn build_req_var_ref(kb: &mut KnowledgeBase, syms: &ProjectionSyms, name_sym: Symbol) -> TermId {
+    let name_ref = kb.alloc(Term::Ref(name_sym));
     kb.alloc(Term::Fn {
-        functor: syms.raac,
+        functor: syms.var_ref,
         pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[(syms.slot, slot_lit)]),
+        named_args: SmallVec::from_slice(&[(syms.name, name_ref)]),
     })
 }
 
@@ -1316,6 +1332,7 @@ pub(crate) fn record_apply_within_concrete(
     fn_target_sym: Symbol,
     callee_spec_sort: Symbol,
     spec_op_sym: Symbol,
+    caller_sort: Option<Symbol>,
     caller_requires: &[RequiresEntry],
     resolved_tree: Option<&ResolvedRequiresNode>,
 ) -> bool {
@@ -1337,11 +1354,13 @@ pub(crate) fn record_apply_within_concrete(
         None => return false,
     };
     let dict_term = match resolved_tree {
-        Some(tree) => match emit_tree_as_projection(kb, tree, &syms) {
+        Some(tree) => match emit_tree_as_projection(kb, caller_sort, tree, &syms) {
             Some(t) => t,
             None => return false,
         },
-        None => match build_dispatching_dict_direct(kb, callee_spec_sort, caller_requires, &syms) {
+        None => match build_dispatching_dict_direct(
+            kb, callee_spec_sort, caller_sort, caller_requires, &syms,
+        ) {
             Some(t) => t,
             None => return false,
         },
@@ -1366,19 +1385,21 @@ pub(crate) fn record_apply_within_concrete(
     true
 }
 
-/// WI-222 Phase C+D / WI-234 (Model 1): defer-to-requirement rewrite.
+/// WI-222 Phase C+D / WI-237 (names model): defer-to-requirement rewrite.
 /// Emits `apply_within(fn = Ref(spec_op_sym), args = <orig>,
-/// requirements = [requirement_at_current(slot = slot+1)])`. Dispatch
-/// from spec-op to impl-op happens at the apply_within reduction by
-/// reading the dispatching dict's functor. `slot` is the position of
-/// the matching entry in the enclosing op's `requires` chain; the
-/// frame slot it references is `slot + 1` (Self at slot 0 shift).
+/// requirements = [var_ref(name = __req_<slot>)])`. Dispatch from
+/// spec-op to impl-op happens at the apply_within reduction by reading
+/// the dispatching dict's functor. `slot` is the position of the
+/// matching entry in `enclosing_sort`'s `requires` chain; the chain
+/// index is mapped to the synthesized `__req_*` param name via
+/// `req_name_for_chain_index`.
 pub(crate) fn record_apply_within_rewrite(
     kb: &mut KnowledgeBase,
     original_apply: TermId,
     named_args: &SmallVec<[(Symbol, TermId); 2]>,
     pos_args: &SmallVec<[TermId; 4]>,
     spec_op_sym: Symbol,
+    enclosing_sort: Option<Symbol>,
     slot: usize,
 ) -> bool {
     use smallvec::SmallVec;
@@ -1399,7 +1420,15 @@ pub(crate) fn record_apply_within_rewrite(
         None => return false,
     };
 
-    let dict_expr = build_flat_req(kb, &syms, slot);
+    let enclosing_sort = match enclosing_sort {
+        Some(s) => s,
+        None => return false,
+    };
+    let name = match req_name_for_chain_index(kb, enclosing_sort, slot) {
+        Some(n) => n,
+        None => return false,
+    };
+    let dict_expr = build_req_var_ref(kb, &syms, name);
     let requirements_list = wrap_dispatch_channel(kb, dict_expr, &syms);
 
     let fn_ref = kb.alloc(Term::Ref(spec_op_sym));
@@ -3907,6 +3936,79 @@ pub fn flatten_requires_tree(nodes: &[RequiresNode]) -> Vec<RequiresEntry> {
 pub fn requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
     let tree = requires_tree(kb, sort_sym);
     flatten_requires_tree(&tree)
+}
+
+/// Synthesize the requirement-param name for each entry of
+/// `parent_sort`'s transitive `requires` chain. Returns `Rc<Vec<Symbol>>`
+/// in chain order — index `k` is chain slot `k`. Memoized on
+/// `synth_req_names_cache`; invalidated alongside `requires_chain` caches
+/// when new `SortRequiresInfo` facts are asserted.
+///
+/// The name is `__req_<spec short name, lowercased>`; chain entries that
+/// share that base (two-of-the-same-spec, or two specs with the same
+/// short name) are disambiguated by the entry's hash-consed `spec`
+/// TermId — content-derived, never positional, so the name stays a pure
+/// function of `(kb, parent_sort)`. Both the IR emitter (`req_insertion`)
+/// and eval's frame-push call this, so they compute identical names. The
+/// Self slot (`__req_self`) is not part of the chain — frame-push and
+/// the emitter handle it separately.
+///
+/// Uses `requires_chain` (always substitution-composed) rather than
+/// `requires_chain_flat` (whose bindings depend on tree-cache state),
+/// so the names are deterministic across the typer and eval passes.
+pub fn synth_req_names(kb: &mut KnowledgeBase, parent_sort: Symbol) -> Rc<Vec<Symbol>> {
+    if let Some(cached) = kb.synth_req_names_cache.borrow().get(&parent_sort) {
+        return cached.clone();
+    }
+    let chain = requires_chain(kb, parent_sort);
+    let mut bases: Vec<String> = Vec::with_capacity(chain.len());
+    for entry in &chain {
+        let mut s = String::from("__req_");
+        push_short_lc(kb, entry.required_sort, &mut s);
+        bases.push(s);
+    }
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for b in &bases {
+        *counts.entry(b.as_str()).or_default() += 1;
+    }
+    let mut out: Vec<Symbol> = Vec::with_capacity(chain.len());
+    for (entry, base) in chain.iter().zip(bases.iter()) {
+        let name = if counts[base.as_str()] > 1 {
+            format!("{base}_{}", entry.spec.raw())
+        } else {
+            base.clone()
+        };
+        out.push(kb.intern(&name));
+    }
+    let rc = Rc::new(out);
+    kb.synth_req_names_cache.borrow_mut().insert(parent_sort, rc.clone());
+    rc
+}
+
+/// The requirement-param name for chain slot `idx` of `parent_sort`'s
+/// `requires` chain. Thin lookup over [`synth_req_names`]; `None` iff
+/// `idx` is out of range.
+pub fn req_name_for_chain_index(
+    kb: &mut KnowledgeBase,
+    parent_sort: Symbol,
+    idx: usize,
+) -> Option<Symbol> {
+    synth_req_names(kb, parent_sort).get(idx).copied()
+}
+
+/// Append `sym`'s short name (last dotted segment), lowercased with
+/// non-alphanumeric characters mapped to `_`, to `out` — for building
+/// identifier-safe synthesized names.
+fn push_short_lc(kb: &KnowledgeBase, sym: Symbol, out: &mut String) {
+    let name = kb.resolve_sym(sym);
+    let short = name.rsplit('.').next().unwrap_or(name);
+    for ch in short.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push('_');
+        }
+    }
 }
 
 /// WI-230 — pre-WI-230 flat chain (no substitution composition). Used

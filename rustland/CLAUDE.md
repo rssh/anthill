@@ -12,6 +12,11 @@ cargo test -p anthill-core --test github_todo_test  # one integration test file
 cargo test -p anthill-core -- debruijn_multi        # filter by test name
 cargo test -p anthill-core -- --nocapture           # show eprintln output
 cargo build -p anthill-todo                         # build todo CLI
+
+scripts/test.sh [-p crate ...]                      # cargo test with live per-binary progress
+                                                    # (forks pty so "Running ..." lines aren't buffered;
+                                                    # logs to target/test-run-latest.log)
+scripts/test-status.sh                              # report current/last binary + last log write age
 ```
 
 ## Crate Structure

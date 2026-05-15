@@ -171,15 +171,18 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
         .map(|ar| requires_chain(&mut kb, ar.required_sort))
         .collect();
 
+    // `caller_sort` is None — this is a synthetic caller chain with no
+    // enclosing sort; Strategy 1/2 won't fire anyway (binding mismatch),
+    // so the name lookup is never reached.
     let projection = build_dep_projection(
-        &mut kb, &dep, &caller_requires, &caller_sub_chains, &syms,
+        &mut kb, &dep, None, &caller_requires, &caller_sub_chains, &syms,
     )
     .expect("Strategy 3 must resolve Eq[T=String] via the String carrier");
 
-    // The projection must NOT be requirement_at_current(slot=0) — that
-    // would be the pre-WI-226 buggy behavior (matching by required_sort
-    // alone and emitting slot 0 even though caller's binding is Int,
-    // not String). Instead it must be construct_requirement with
+    // The projection must NOT be the caller's slot-0 read — that would
+    // be the pre-WI-226 buggy behavior (matching by required_sort alone
+    // and reusing slot 0 even though caller's binding is Int, not
+    // String). Instead it must be construct_requirement with
     // impl_functor = Ref(String).
     let (functor, named_args) = match kb.get_term(projection) {
         Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),

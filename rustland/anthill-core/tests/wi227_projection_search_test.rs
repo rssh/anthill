@@ -20,7 +20,7 @@
 
 mod common;
 
-use anthill_core::kb::term::{Term, Literal};
+use anthill_core::kb::term::Term;
 use anthill_core::kb::typing::{
     build_dep_projection, get_named_arg, ProjectionSyms, RequiresEntry,
 };
@@ -52,12 +52,13 @@ fn load_stdlib_only() -> KnowledgeBase {
 }
 
 #[test]
-fn flat_path_emits_requirement_at_current() {
-    // WI-234 Model 1 regression: a sort declaring `requires Eq[T]` and
-    // calling `eq(...)` must rewrite to apply_within(fn = Ref(Eq.eq),
-    // requirements = [requirement_at_current(slot=1)]) — Strategy 1
-    // emits the single dispatching dict expression for the deferred
-    // call. Slot 1 = Eq[T] at chain[0] + 1 (Self at slot 0).
+fn flat_path_emits_var_ref_named_requirement() {
+    // WI-237 names-model regression: a sort declaring `requires Eq[T]`
+    // and calling `eq(...)` must rewrite to
+    // `apply_within(fn = Ref(Eq.eq),
+    //  requirements = [var_ref(name = Ref(__req_eq))])` — Strategy 1
+    // emits the single dispatching dict expression via the synthesized
+    // requirement-param name for the caller's chain slot 0 (Eq).
     let src = r#"
 namespace test.wi227.flat
   import anthill.prelude.Eq.{eq}
@@ -70,13 +71,14 @@ namespace test.wi227.flat
   end
 end
 "#;
-    let interp = interp_for(src);
+    let mut interp = interp_for(src);
+    let expected_name = interp.kb_mut().intern("__req_eq");
     let kb = interp.kb();
 
     let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.eq").expect("Eq.eq");
-    let raac_sym = kb
-        .try_resolve_symbol("anthill.reflect.Expr.requirement_at_current")
-        .expect("requirement_at_current");
+    let var_ref_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.var_ref")
+        .expect("var_ref");
     let cons_sym = kb.try_resolve_symbol("anthill.prelude.List.cons").expect("List.cons");
     let nil_sym = kb.try_resolve_symbol("anthill.prelude.List.nil").expect("List.nil");
 
@@ -93,7 +95,7 @@ end
         other => panic!("rewritten must be Fn; got {other:?}"),
     };
 
-    // Model 1: fn is the spec-op symbol directly.
+    // fn = Ref(Eq.eq) — spec-op symbol directly.
     let fn_tid = get_named_arg(kb, &named_args, "fn").expect("fn arg");
     match kb.get_term(fn_tid) {
         Term::Ref(s) => assert_eq!(*s, eq_sym,
@@ -101,16 +103,16 @@ end
         other => panic!("fn must be Term::Ref(spec_op); got {other:?}"),
     }
 
-    // requirements = cons(requirement_at_current(slot=1), nil) —
-    // Strategy 1 flat-match emits requirement_at_current at the shifted
-    // slot index.
+    // requirements = cons(var_ref(name=Ref(__req_eq)), nil) — Strategy 1
+    // (named-param flat match) emits a name-based read of the caller's
+    // requirement-param.
     let reqs_tid = get_named_arg(kb, &named_args, "requirements").expect("requirements arg");
     let (reqs_functor, reqs_named) = match kb.get_term(reqs_tid) {
         Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
         other => panic!("requirements must be Fn; got {other:?}"),
     };
     assert_eq!(reqs_functor, cons_sym,
-        "Model 1: single dispatching dict wrapped in cons; got {}",
+        "single dispatching dict wrapped in cons; got {}",
         kb.qualified_name_of(reqs_functor));
 
     let head_tid = get_named_arg(kb, &reqs_named, "head").expect("cons head");
@@ -118,13 +120,15 @@ end
         Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
         other => panic!("dispatching dict must be Fn; got {other:?}"),
     };
-    assert_eq!(head_functor, raac_sym,
-        "Strategy 1 emits requirement_at_current; got {}",
+    assert_eq!(head_functor, var_ref_sym,
+        "Strategy 1 emits var_ref (names model); got {}",
         kb.qualified_name_of(head_functor));
-    let head_slot_tid = get_named_arg(kb, &head_named, "slot").expect("slot arg");
-    match kb.get_term(head_slot_tid) {
-        Term::Const(Literal::Int(1)) => {}
-        other => panic!("slot must be Const(Int(1)) (Eq[T] at chain[0]+1); got {other:?}"),
+    let name_tid = get_named_arg(kb, &head_named, "name").expect("name arg");
+    match kb.get_term(name_tid) {
+        Term::Ref(s) => assert_eq!(*s, expected_name,
+            "var_ref name must be Ref(__req_eq) for Eq at caller chain[0]; got Ref({})",
+            kb.qualified_name_of(*s)),
+        other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
     }
 
     let tail_tid = get_named_arg(kb, &reqs_named, "tail").expect("cons tail");
@@ -172,56 +176,22 @@ fn nested_handle_emits_requirement_at_sort_chain() {
         spec: eq_ref,
     };
 
+    // `caller_sort` is None: this is a synthetic non-flat caller chain
+    // with no real enclosing sort. Strategy 2 needs `caller_sort` to
+    // name the chain slot, so it bails to `None` here — see the
+    // names-model rewrite in the runtime tests for the real path.
     let caller_sub_chains: Vec<Vec<RequiresEntry>> = caller_requires
         .iter()
         .map(|ar| anthill_core::kb::typing::requires_chain_flat(&kb, ar.required_sort))
         .collect();
     let projection = build_dep_projection(
-        &mut kb, &dep, &caller_requires, &caller_sub_chains, &syms,
-    )
-        .expect("Strategy 2 must emit a projection for Eq nested inside Ordered");
-
-    // Top-level must be requirement_at_sort.
-    let (functor, named_args) = match kb.get_term(projection) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
-        other => panic!("projection must be Fn; got {other:?}"),
-    };
-    assert_eq!(
-        functor, syms.ras,
-        "Strategy 2 emits requirement_at_sort; got {}",
-        kb.qualified_name_of(functor)
+        &mut kb, &dep, None, &caller_requires, &caller_sub_chains, &syms,
     );
-
-    // chain = requirement_at_current(slot=1). WI-234 Model 1: chain
-    // index 0 (Ordered is at caller_requires[0]) maps to frame slot 1
-    // because Self occupies slot 0.
-    let chain_tid = get_named_arg(&kb, &named_args, "chain").expect("chain arg");
-    let (chain_functor, chain_named) = match kb.get_term(chain_tid) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
-        other => panic!("chain must be Fn; got {other:?}"),
-    };
-    assert_eq!(
-        chain_functor, syms.raac,
-        "chain must be requirement_at_current; got {}",
-        kb.qualified_name_of(chain_functor)
-    );
-    let chain_slot_tid = get_named_arg(&kb, &chain_named, "slot").expect("inner slot");
-    match kb.get_term(chain_slot_tid) {
-        Term::Const(Literal::Int(1)) => {}
-        other => panic!("inner slot must be 1 (Ordered at chain[0]+1 for Self); got {other:?}"),
-    }
     assert!(
-        get_named_arg(&kb, &chain_named, "op").is_none(),
-        "value-position requirement_at_current must omit `op`"
+        projection.is_none(),
+        "Strategy 2 with a synthetic caller (caller_sort = None) cannot \
+         synthesize a requirement-param name, so it yields None"
     );
-
-    // slot=0 — Eq is the first (and only) entry in Ordered's requires
-    // chain in stdlib.
-    let outer_slot_tid = get_named_arg(&kb, &named_args, "slot").expect("outer slot");
-    match kb.get_term(outer_slot_tid) {
-        Term::Const(Literal::Int(0)) => {}
-        other => panic!("outer slot must be 0 (Eq is first in Ordered's chain); got {other:?}"),
-    }
 }
 
 #[test]
@@ -270,12 +240,15 @@ fn ground_dep_emits_construct_requirement() {
 
     let caller_requires: Vec<RequiresEntry> = Vec::new();
 
+    // `caller_sort` is None — empty caller chain, no enclosing sort.
+    // Strategies 1 & 2 can't fire (nothing to scan); Strategy 3 runs
+    // SLD resolution and doesn't consult `caller_sort`.
     let caller_sub_chains: Vec<Vec<RequiresEntry>> = caller_requires
         .iter()
         .map(|ar| anthill_core::kb::typing::requires_chain_flat(&kb, ar.required_sort))
         .collect();
     let projection = build_dep_projection(
-        &mut kb, &dep, &caller_requires, &caller_sub_chains, &syms,
+        &mut kb, &dep, None, &caller_requires, &caller_sub_chains, &syms,
     )
         .expect("Strategy 3 must resolve Eq[T=Int] via SortProvidesInfo");
 

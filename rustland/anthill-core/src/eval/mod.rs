@@ -100,7 +100,6 @@ pub(crate) struct ReflectSymbols {
     #[allow(dead_code)] pub ho_apply_within: Option<Symbol>,
     #[allow(dead_code)] pub constructor_within: Option<Symbol>,
     #[allow(dead_code)] pub lambda_within: Option<Symbol>,
-    pub requirement_at_current: Option<Symbol>,
     pub requirement_at_sort: Option<Symbol>,
     pub construct_requirement: Option<Symbol>,
 
@@ -139,7 +138,6 @@ impl ReflectSymbols {
             ho_apply_within: r("anthill.reflect.Expr.ho_apply_within"),
             constructor_within: r("anthill.reflect.Expr.constructor_within"),
             lambda_within: r("anthill.reflect.Expr.lambda_within"),
-            requirement_at_current: r("anthill.reflect.Expr.requirement_at_current"),
             requirement_at_sort: r("anthill.reflect.Expr.requirement_at_sort"),
             construct_requirement: r("anthill.reflect.Expr.construct_requirement"),
 
@@ -189,6 +187,9 @@ pub(crate) struct FieldSymbols {
     pub impl_functor: Symbol,
     pub requirements: Symbol,
     pub predicate: Symbol,
+    /// `__req_self` — the Self-slot requirement-param name (WI-237
+    /// names model). Interned, not a stdlib symbol.
+    pub req_self: Symbol,
 }
 
 impl FieldSymbols {
@@ -218,6 +219,7 @@ impl FieldSymbols {
             impl_functor: kb.intern("impl_functor"),
             requirements: kb.intern("requirements"),
             predicate: kb.intern("predicate"),
+            req_self: kb.intern("__req_self"),
         }
     }
 }
@@ -447,27 +449,34 @@ impl Interpreter {
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
             return (builtin)(self, args);
         }
+        // Names model: `__req_self` → a self-referential placeholder for
+        // the parent sort; `__req_<spec>` → each host-supplied chain
+        // dict, zipped against `synth_req_names`. The arity check uses
+        // the same name list as the bind step so the two can't diverge
+        // (a prior version used `requires_chain_flat` here, which can
+        // see different cache state than `synth_req_names`'s
+        // substitution-composed walk). See operation-call-model.md
+        // §"Host-to-entry-op boundary".
         let parent_sym = crate::kb::typing::impl_parent_of_op(&self.kb, sym);
-        let expected = parent_sym
-            .map(|p| crate::kb::typing::requires_chain_flat(&self.kb, p).len())
-            .unwrap_or(0);
+        let names = parent_sym
+            .map(|p| crate::kb::typing::synth_req_names(&mut self.kb, p));
+        let expected = names.as_ref().map_or(0, |n| n.len());
         if chain_dicts.len() != expected {
             return Err(EvalError::Internal(format!(
                 "call_with_requirements({qualified_name}): expected {expected} \
-                 requirement slot(s) (the parent sort's flattened requires \
-                 chain), got {got}",
+                 requirement slot(s) (the parent sort's requires chain), got {got}",
                 got = chain_dicts.len(),
             )));
         }
-        // Slot 0 is Self (the entry op's parent sort), slots 1..=N are
-        // the supplied chain dicts. See operation-call-model.md
-        // §"Host-to-entry-op boundary".
-        let mut requirements: smallvec::SmallVec<[value::RequirementHandle; 2]> =
+        let mut requirements: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]> =
             smallvec::SmallVec::new();
-        if let Some(p) = parent_sym {
-            requirements.push(self.requirements.alloc(p, smallvec::SmallVec::new()));
+        if let (Some(p), Some(names)) = (parent_sym, names) {
+            let placeholder = self.requirements.alloc(p, smallvec::SmallVec::new());
+            requirements.push((self.fields.req_self, placeholder));
+            for (name, dict) in names.iter().zip(chain_dicts) {
+                requirements.push((*name, dict));
+            }
         }
-        requirements.extend(chain_dicts);
         self.invoke_op_with_requirements(sym, args, requirements)
     }
 
@@ -477,7 +486,7 @@ impl Interpreter {
         &mut self,
         sym: Symbol,
         args: &[Value],
-        requirements: smallvec::SmallVec<[value::RequirementHandle; 2]>,
+        requirements: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]>,
     ) -> Result<Value, EvalError> {
         let (body_term, params) = eval::lookup_operation_body(&self.kb, sym)
             .ok_or_else(|| EvalError::OperationBodyMissing {
@@ -514,17 +523,24 @@ impl Interpreter {
     /// `requires` clause names a different sort. Cross-sort entries
     /// should use [`Self::call_with_requirements`].
     fn seed_entry_requirements(
-        &self,
+        &mut self,
         op_sym: Symbol,
-    ) -> smallvec::SmallVec<[value::RequirementHandle; 2]> {
+    ) -> smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]> {
         let Some(parent_sym) = crate::kb::typing::impl_parent_of_op(&self.kb, op_sym) else {
             return smallvec::SmallVec::new();
         };
-        let chain = crate::kb::typing::requires_chain_flat(&self.kb, parent_sym);
-        let mut out: smallvec::SmallVec<[value::RequirementHandle; 2]> =
-            smallvec::SmallVec::with_capacity(chain.len() + 1);
-        for _ in 0..=chain.len() {
-            out.push(self.requirements.alloc(parent_sym, smallvec::SmallVec::new()));
+        let names = crate::kb::typing::synth_req_names(&mut self.kb, parent_sym);
+        let mut out: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]> =
+            smallvec::SmallVec::with_capacity(names.len() + 1);
+        out.push((
+            self.fields.req_self,
+            self.requirements.alloc(parent_sym, smallvec::SmallVec::new()),
+        ));
+        for name in names.iter() {
+            out.push((
+                *name,
+                self.requirements.alloc(parent_sym, smallvec::SmallVec::new()),
+            ));
         }
         out
     }
@@ -589,7 +605,7 @@ impl Interpreter {
     pub fn closure_requirements_for_test(
         &self,
         h: &value::ClosureHandle,
-    ) -> smallvec::SmallVec<[value::RequirementHandle; 1]> {
+    ) -> smallvec::SmallVec<[(Symbol, value::RequirementHandle); 1]> {
         self.closures.with(h, |c| c.requirements.clone())
     }
 
@@ -603,7 +619,7 @@ impl Interpreter {
     pub fn run_with_requirements(
         &mut self,
         expr: crate::kb::term::TermId,
-        requirements: smallvec::SmallVec<[value::RequirementHandle; 2]>,
+        requirements: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]>,
     ) -> Result<Value, EvalError> {
         let op = self.kb.intern("__test_requirement_eval");
         self.step_count = 0;

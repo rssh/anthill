@@ -262,6 +262,13 @@ pub struct KnowledgeBase {
     // invalidated by `invalidate_requires_chain_cache`.
     pub(crate) requires_tree_cache: RefCell<HashMap<Symbol, Rc<Vec<crate::kb::typing::RequiresNode>>>>,
 
+    // Memoized synthesized requirement-param names per parent sort —
+    // `__req_<spec short name>` in chain order. Same lifetime as the
+    // requires caches (derives from the chain); invalidated by
+    // `invalidate_requires_chain_cache`. Avoids rebuilding the Vec +
+    // collision-disambiguation HashMap on every frame push.
+    pub(crate) synth_req_names_cache: RefCell<HashMap<Symbol, Rc<Vec<Symbol>>>>,
+
     // WI-235 — per-operation body overrides produced by
     // `req_insertion::run`'s hoist phase. Maps op symbol → new body
     // TermId (typically a `let_expr` wrapping the original body to
@@ -328,6 +335,7 @@ impl KnowledgeBase {
             op_body_overrides: HashMap::new(),
             requires_chain_cache: RefCell::new(HashMap::new()),
             requires_tree_cache: RefCell::new(HashMap::new()),
+            synth_req_names_cache: RefCell::new(HashMap::new()),
             resolve_cache: RefCell::new(HashMap::new()),
         }
     }
@@ -340,6 +348,7 @@ impl KnowledgeBase {
     pub fn invalidate_requires_chain_cache(&self) {
         self.requires_chain_cache.borrow_mut().clear();
         self.requires_tree_cache.borrow_mut().clear();
+        self.synth_req_names_cache.borrow_mut().clear();
     }
 
     /// Drop the memoized spec-op SLD dispatch results. Called when a

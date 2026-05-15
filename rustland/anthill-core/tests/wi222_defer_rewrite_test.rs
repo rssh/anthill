@@ -1,4 +1,5 @@
-//! WI-222 Phase C+D / WI-234 (Model 1) — defer-to-requirement IR rewrite.
+//! WI-222 Phase C+D / WI-234 (Model 1) / WI-237 (names model) —
+//! defer-to-requirement IR rewrite.
 //!
 //! When a spec-op call is reached via the enclosing sort's `requires`
 //! chain (open-bound trigger from WI-221), the typer must rewrite the
@@ -8,19 +9,20 @@
 //! the dispatching dict at `requirements[0]` — reads its functor (the
 //! impl sort name) and looks up `<functor>.<op_short>` for the impl op.
 //!
-//! Model 1 shape (WI-234): `fn` is the **spec-op symbol directly** (no
-//! more fn-position `requirement_at_current` fusion); `requirements` is
-//! a **single-entry** list containing the dispatching dict expression
-//! (typically `requirement_at_current(slot=N+1)` — frame slot N+1, with
-//! the +1 shift for Self at slot 0).
+//! Names model shape (WI-237): the dispatching dict is sourced via
+//! `var_ref(name = Ref(__req_<spec>))` — a named requirement-param
+//! read against the caller's frame, replacing the prior positional
+//! `requirement_at_current(slot=N+1)`. The synthesized name comes from
+//! `synth_req_names`/`req_name_for_chain_index` — `__req_<spec short
+//! name, lowercased>` for the entry's position in the enclosing sort's
+//! transitive `requires_chain`.
 //!
 //! Reference: docs/design/operation-call-model.md
-//! §"Call rewrite cases" (Defer-to-requirement row),
-//! §"Channel cardinality (v0)".
+//! §"Names model", §"Channel cardinality (v0)".
 
 mod common;
 
-use anthill_core::kb::term::{Term, Literal};
+use anthill_core::kb::term::Term;
 use anthill_core::kb::typing::get_named_arg;
 use common::interp_for;
 
@@ -28,10 +30,11 @@ use common::interp_for;
 fn deferred_call_rewrites_to_apply_within_with_spec_op_fn() {
     // Sort `Wi222Box` declares `requires Eq[T]` and an op `use_eq` that
     // calls `eq(a, b)`. With the sort's `requires` chain in scope, the
-    // call must classify as Deferred and emit Model-1 shape:
+    // call must classify as Deferred and emit names-model shape:
     // `apply_within(fn = Ref(Eq.eq), args = ...,
-    //  requirements = [requirement_at_current(slot=1)])`.
-    // Slot 1 is Eq[T]'s frame slot (chain index 0 + 1 for Self at slot 0).
+    //  requirements = [var_ref(name = Ref(__req_eq))])`.
+    // The dispatching-dict expression reads the caller's frame
+    // requirement-param `__req_eq` by name (no positional slot).
     let src = r#"
 namespace test.wi222.defer_rewrite
   import anthill.prelude.Eq.{eq}
@@ -44,7 +47,8 @@ namespace test.wi222.defer_rewrite
   end
 end
 "#;
-    let interp = interp_for(src);
+    let mut interp = interp_for(src);
+    let expected_name = interp.kb_mut().intern("__req_eq");
     let kb = interp.kb();
 
     let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.eq")
@@ -63,11 +67,10 @@ end
     let rewritten_tid = rewritten_for_eq
         .expect("Eq.eq call inside `requires Eq[T]` sort must be rewritten");
 
-    // The rewritten term must be `apply_within(fn = Ref(eq_sym), args = ?, requirements = ?)`.
     let aw_sym = kb.try_resolve_symbol("anthill.reflect.Expr.apply_within")
         .expect("apply_within in stdlib");
-    let raac_sym = kb.try_resolve_symbol("anthill.reflect.Expr.requirement_at_current")
-        .expect("requirement_at_current in stdlib");
+    let var_ref_sym = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
+        .expect("var_ref in stdlib");
     let cons_sym = kb.try_resolve_symbol("anthill.prelude.List.cons")
         .expect("List.cons in stdlib");
     let nil_sym = kb.try_resolve_symbol("anthill.prelude.List.nil")
@@ -81,19 +84,20 @@ end
         "deferred call must rewrite to apply_within; got functor {}",
         kb.qualified_name_of(functor));
 
-    // fn = Ref(eq_sym) — Model 1: fn is the spec-op symbol directly,
+    // fn = Ref(eq_sym) — names model: fn is the spec-op symbol directly,
     // dispatch happens at apply_within reduction via the dispatching dict.
     let fn_tid = get_named_arg(kb, &named_args, "fn")
         .expect("apply_within must carry `fn`");
     match kb.get_term(fn_tid) {
         Term::Ref(s) => assert_eq!(*s, eq_sym,
-            "fn-position must be Ref(Eq.eq) under Model 1; got Ref({})",
+            "fn-position must be Ref(Eq.eq); got Ref({})",
             kb.qualified_name_of(*s)),
         other => panic!("apply_within fn must be Term::Ref(spec_op); got {other:?}"),
     }
 
-    // requirements = cons(requirement_at_current(slot=1), nil) — single
-    // dispatching dict, slot 1 = Eq[T] at chain index 0 + 1 (Self shift).
+    // requirements = cons(var_ref(name=Ref(__req_eq)), nil) — single
+    // named-requirement read; Wi222Box's transitive chain is [Eq], the
+    // synthesized name for slot 0 is `__req_eq`.
     let reqs_tid = get_named_arg(kb, &named_args, "requirements")
         .expect("apply_within must carry `requirements`");
     let (reqs_functor, reqs_named) = match kb.get_term(reqs_tid) {
@@ -101,7 +105,7 @@ end
         other => panic!("requirements must be a list term; got {other:?}"),
     };
     assert_eq!(reqs_functor, cons_sym,
-        "Model 1: single dispatching dict must be wrapped in cons(..., nil); got {}",
+        "single dispatching dict must be wrapped in cons(..., nil); got {}",
         kb.qualified_name_of(reqs_functor));
 
     let head_tid = get_named_arg(kb, &reqs_named, "head")
@@ -110,18 +114,17 @@ end
         Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
         other => panic!("dispatching dict must be a Fn; got {other:?}"),
     };
-    assert_eq!(head_functor, raac_sym,
-        "dispatching dict for Defer must be requirement_at_current; got {}",
+    assert_eq!(head_functor, var_ref_sym,
+        "dispatching dict for Defer must be var_ref (names model); got {}",
         kb.qualified_name_of(head_functor));
-    let head_slot_tid = get_named_arg(kb, &head_named, "slot")
-        .expect("requirement_at_current must carry `slot`");
-    match kb.get_term(head_slot_tid) {
-        Term::Const(Literal::Int(1)) => {}
-        other => panic!("slot must be Const(Int(1)) (Eq[T] at chain[0]+1); got {other:?}"),
+    let name_tid = get_named_arg(kb, &head_named, "name")
+        .expect("var_ref must carry `name`");
+    match kb.get_term(name_tid) {
+        Term::Ref(s) => assert_eq!(*s, expected_name,
+            "var_ref name for slot 0 (Eq) must be Ref(__req_eq); got Ref({})",
+            kb.qualified_name_of(*s)),
+        other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
     }
-    // Model 1: no `op` field on dispatching dict (dispatch is on fn-side).
-    assert!(get_named_arg(kb, &head_named, "op").is_none(),
-        "dispatching dict must omit `op` (Model 1 — no fn-position fusion)");
 
     let tail_tid = get_named_arg(kb, &reqs_named, "tail")
         .expect("cons must carry `tail`");
@@ -145,12 +148,14 @@ end
 }
 
 #[test]
-fn slot_index_tracks_position_in_requires_chain() {
+fn requirement_name_tracks_requires_chain_entry() {
     // Sort declares two requires: `Eq[T]` then `Ordered[T]`. A call to
-    // `Ordered.compare(...)` from inside the sort's body must emit
-    // a dispatching-dict expression `requirement_at_current(slot=2)` —
-    // Ordered is at chain index 1, and Model 1's +1 Self shift puts its
-    // frame slot at 2. (Frame layout: [0]=Self, [1]=Eq[T], [2]=Ordered[T].)
+    // `Ordered.compare(...)` from inside the sort's body must emit a
+    // dispatching-dict expression `var_ref(name = Ref(__req_ordered))`
+    // — Ordered's slot in the transitive `requires_chain` (chain shape
+    // `[Eq, Ordered, Eq]` here, with Ordered at index 1) is named via
+    // `synth_req_names` as `__req_ordered` (no collision: only one
+    // Ordered in the chain).
     let src = r#"
 namespace test.wi222.multi_requires
   import anthill.prelude.Ordered.{compare}
@@ -164,11 +169,14 @@ namespace test.wi222.multi_requires
   end
 end
 "#;
-    let interp = interp_for(src);
+    let mut interp = interp_for(src);
+    let expected_name = interp.kb_mut().intern("__req_ordered");
     let kb = interp.kb();
 
     let compare_sym = kb.try_resolve_symbol("anthill.prelude.Ordered.compare")
         .expect("Ordered.compare registered");
+    let var_ref_sym = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
+        .expect("var_ref in stdlib");
 
     let mut rewritten_for_compare = None;
     for (rewritten_tid, spec_sym) in kb.dispatch_origin_iter() {
@@ -180,7 +188,7 @@ end
         .expect("Ordered.compare call inside multi-requires sort must be rewritten");
 
     // Drill into the rewritten apply_within's requirements[0] to find
-    // the dispatching dict's slot.
+    // the dispatching dict's name.
     let named_args = match kb.get_term(rewritten_tid) {
         Term::Fn { named_args, .. } => named_args.clone(),
         other => panic!("rewritten must be Fn; got {other:?}"),
@@ -193,38 +201,37 @@ end
     };
     let head_tid = get_named_arg(kb, &reqs_named, "head")
         .expect("cons must carry `head`");
-    let head_named = match kb.get_term(head_tid) {
-        Term::Fn { named_args, .. } => named_args.clone(),
-        other => panic!("dispatching dict must be Fn (requirement_at_current); got {other:?}"),
+    let (head_functor, head_named) = match kb.get_term(head_tid) {
+        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        other => panic!("dispatching dict must be Fn (var_ref); got {other:?}"),
     };
-    let slot_tid = get_named_arg(kb, &head_named, "slot")
-        .expect("requirement_at_current must carry `slot`");
-    let slot_value = match kb.get_term(slot_tid) {
-        Term::Const(Literal::Int(n)) => *n,
-        other => panic!("slot must be Const(Int); got {other:?}"),
-    };
-    // Eq[T] at chain[0], Ordered[T] at chain[1]. Frame slot for Ordered
-    // = 1 + 1 (Self shift) = 2.
-    assert_eq!(slot_value, 2,
-        "Ordered is chain[1]; frame slot = chain_index+1 (Self at 0) = 2; got {slot_value}");
+    assert_eq!(head_functor, var_ref_sym,
+        "dispatching dict must be var_ref (names model); got {}",
+        kb.qualified_name_of(head_functor));
+    let name_tid = get_named_arg(kb, &head_named, "name")
+        .expect("var_ref must carry `name`");
+    match kb.get_term(name_tid) {
+        Term::Ref(s) => assert_eq!(*s, expected_name,
+            "Ordered's chain slot maps to synthesized `__req_ordered`; got Ref({})",
+            kb.qualified_name_of(*s)),
+        other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
+    }
 }
 
 #[test]
-fn requirements_list_projects_callee_transitive_deps() {
-    // Phase D: when the deferred callee's spec sort itself declares
-    // `requires X`, the apply_within site must populate the
-    // requirements channel with a projection from the caller's slots.
+fn dispatching_dict_is_caller_direct_requirement_var_ref() {
+    // Wi222Outer declares `requires Ordered[T]`; Ordered itself declares
+    // `requires Eq[T]` (from stdlib). Wi222Outer's transitive chain is
+    // [Ordered, Eq], synthesized names [`__req_ordered`, `__req_eq`].
     //
-    // Setup: Wi222Outer declares `requires Ordered[T]`. Ordered itself
-    // declares `requires Eq[T]` (from stdlib). So Wi222Outer's
-    // transitive requires_chain is [Ordered, Eq] — two slots.
-    //
-    // The body calls `compare(a, b)` (an Ordered op). The deferred
-    // dispatch goes through slot 0 (Ordered). Compare's spec sort
-    // (Ordered) requires Eq, so the apply_within must project
-    // `requirement_at_current(slot=1)` (Wi222Outer's Eq slot) into the
-    // requirements list — that becomes the callee impl's frame.requirements,
-    // which it can then use to dispatch its internal `eq()` calls.
+    // The body calls `compare(a, b)`. Names-model emit: the apply_within
+    // carries a single-entry requirements channel with the dispatching
+    // Ordered dictionary, sourced as `var_ref(name = Ref(__req_ordered))`
+    // — the caller's own Ordered slot, by name. The callee's `__req_eq`
+    // binding is populated at runtime by expanding the dispatching
+    // dict's `sub_requires[0]` (Ordered's bundled Eq), not by an IR-time
+    // projection. See operation-call-model.md §"Channel cardinality
+    // (v0)" — every apply_within has exactly one requirements entry.
     let src = r#"
 namespace test.wi222.proj_deps
   import anthill.prelude.Ordered.{compare}
@@ -237,13 +244,14 @@ namespace test.wi222.proj_deps
   end
 end
 "#;
-    let interp = interp_for(src);
+    let mut interp = interp_for(src);
+    let expected_name = interp.kb_mut().intern("__req_ordered");
     let kb = interp.kb();
 
     let compare_sym = kb.try_resolve_symbol("anthill.prelude.Ordered.compare")
         .expect("Ordered.compare registered");
-    let raac_sym = kb.try_resolve_symbol("anthill.reflect.Expr.requirement_at_current")
-        .expect("requirement_at_current registered");
+    let var_ref_sym = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
+        .expect("var_ref registered");
     let cons_sym = kb.try_resolve_symbol("anthill.prelude.List.cons")
         .expect("List.cons registered");
     let nil_sym = kb.try_resolve_symbol("anthill.prelude.List.nil")
@@ -263,8 +271,8 @@ end
         other => panic!("rewritten must be Fn; got {other:?}"),
     };
 
-    // requirements list must be `cons(head=requirement_at_current(slot=N), tail=nil)`
-    // where N is Wi222Outer's slot for Eq (the slot Ordered's chain says compare-impls need).
+    // requirements list must be `cons(head=var_ref(name=Ref(__req_ordered)), tail=nil)`
+    // — single dispatching dict naming the caller's own Ordered slot.
     let reqs_tid = get_named_arg(kb, &named_args, "requirements")
         .expect("apply_within must carry `requirements`");
     let (cons_functor, cons_named) = match kb.get_term(reqs_tid) {
@@ -272,33 +280,29 @@ end
         other => panic!("requirements must be a Fn (cons); got {other:?}"),
     };
     assert_eq!(cons_functor, cons_sym,
-        "Phase D: requirements list must be a non-empty cons (one entry per callee dep); got {}",
+        "names model: requirements list must be a single-entry cons; got {}",
         kb.qualified_name_of(cons_functor));
 
     let head_tid = get_named_arg(kb, &cons_named, "head")
         .expect("cons must carry `head`");
     let (head_functor, head_named) = match kb.get_term(head_tid) {
         Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
-        other => panic!("head must be Fn (requirement_at_current); got {other:?}"),
+        other => panic!("head must be Fn (var_ref); got {other:?}"),
     };
-    assert_eq!(head_functor, raac_sym,
-        "projection must be requirement_at_current; got {}",
+    assert_eq!(head_functor, var_ref_sym,
+        "dispatching dict for Defer must be var_ref (names model); got {}",
         kb.qualified_name_of(head_functor));
 
-    // Value-position projection: no `op` arg (only the dispatch-fn position carries op).
-    assert!(get_named_arg(kb, &head_named, "op").is_none(),
-        "value-position requirement_at_current must omit `op`");
-
-    let proj_slot_tid = get_named_arg(kb, &head_named, "slot")
-        .expect("projection must carry `slot`");
-    // Eq's position in Wi222Outer's transitive chain is 1 (Ordered at 0, Eq at 1).
-    match kb.get_term(proj_slot_tid) {
-        Term::Const(Literal::Int(n)) => assert_eq!(*n, 1,
-            "projection slot for Eq in [Ordered, Eq] chain must be 1; got {n}"),
-        other => panic!("slot must be Const(Int); got {other:?}"),
+    let name_tid = get_named_arg(kb, &head_named, "name")
+        .expect("var_ref must carry `name`");
+    match kb.get_term(name_tid) {
+        Term::Ref(s) => assert_eq!(*s, expected_name,
+            "var_ref must name the caller's Ordered slot (`__req_ordered`); got Ref({})",
+            kb.qualified_name_of(*s)),
+        other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
     }
 
-    // Tail must be nil — Ordered's chain has only one entry (Eq).
+    // Tail must be nil — single-entry channel under v0.
     let tail_tid = get_named_arg(kb, &cons_named, "tail")
         .expect("cons must carry `tail`");
     let tail_functor = match kb.get_term(tail_tid) {
@@ -306,7 +310,7 @@ end
         other => panic!("tail must be Fn (nil); got {other:?}"),
     };
     assert_eq!(tail_functor, nil_sym,
-        "single-projection list's tail must be nil; got {}",
+        "single-entry channel's tail must be nil; got {}",
         kb.qualified_name_of(tail_functor));
 }
 

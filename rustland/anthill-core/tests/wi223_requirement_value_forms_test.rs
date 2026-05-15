@@ -33,40 +33,42 @@ fn alloc_int(kb: &mut KnowledgeBase, n: i64) -> anthill_core::kb::term::TermId {
     kb.alloc(Term::Const(Literal::Int(n)))
 }
 
-/// Build `requirement_at_current(slot: <int>)`.
-fn build_requirement_at_current(
+/// Build `var_ref(name: <sym>)` — a named requirement read (WI-237
+/// names model; replaced the positional `requirement_at_current`).
+fn build_req_var_ref(
     kb: &mut KnowledgeBase,
-    interp_reflect_sym: anthill_core::intern::Symbol,
-    slot: i64,
+    var_ref_sym: anthill_core::intern::Symbol,
+    name_sym: anthill_core::intern::Symbol,
 ) -> anthill_core::kb::term::TermId {
-    let slot_tid = alloc_int(kb, slot);
-    let slot_field = kb.intern("slot");
+    let name_ref = kb.alloc(Term::Ref(name_sym));
+    let name_field = kb.intern("name");
     kb.alloc(Term::Fn {
-        functor: interp_reflect_sym,
+        functor: var_ref_sym,
         pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[(slot_field, slot_tid)]),
+        named_args: SmallVec::from_slice(&[(name_field, name_ref)]),
     })
 }
 
 #[test]
-fn requirement_at_current_yields_frame_slot_handle() {
-    // Pre-seed a single requirement; an op body that reads
-    // `requirement_at_current(slot: 0)` must return a Value::Requirement
+fn var_ref_yields_frame_requirement_handle() {
+    // Pre-seed a single named requirement; an op body that reads
+    // `var_ref(name: __req_probe)` must return a Value::Requirement
     // whose functor matches what we passed in.
     let mut interp = fresh_interp();
     let probe_sym = interp.kb_mut().intern("test.wi223.IntFooImpl");
     let handle = interp.alloc_requirement(probe_sym, SmallVec::new());
     let expected_functor = handle.functor();
 
-    let raac_sym = interp.kb()
-        .try_resolve_symbol("anthill.reflect.Expr.requirement_at_current")
-        .expect("reflect.Expr.requirement_at_current registered (WI-222 schema)");
-    let expr = build_requirement_at_current(interp.kb_mut(), raac_sym, 0);
+    let var_ref_sym = interp.kb()
+        .try_resolve_symbol("anthill.reflect.Expr.var_ref")
+        .expect("reflect.Expr.var_ref registered");
+    let req_name = interp.kb_mut().intern("__req_probe");
+    let expr = build_req_var_ref(interp.kb_mut(), var_ref_sym, req_name);
 
     let mut requirements: SmallVec<[_; 2]> = SmallVec::new();
-    requirements.push(handle);
+    requirements.push((req_name, handle));
     let value = interp.run_with_requirements(expr, requirements)
-        .expect("requirement_at_current should reduce successfully");
+        .expect("var_ref should reduce to the frame requirement");
 
     match value {
         Value::Requirement(h) => {
@@ -78,19 +80,20 @@ fn requirement_at_current_yields_frame_slot_handle() {
 }
 
 #[test]
-fn requirement_at_current_out_of_range_errors() {
-    // Frame has 0 requirements; reading slot 0 must surface a clear error
-    // rather than panicking. Defensive case for the eval loud-failure
-    // discipline.
+fn var_ref_unbound_requirement_errors() {
+    // Frame has 0 requirements; reading `var_ref(name: __req_probe)` as
+    // a value must dispatch_call-miss and surface a clear error rather
+    // than panicking. Defensive case for the eval loud-failure discipline.
     let mut interp = fresh_interp();
-    let raac_sym = interp.kb()
-        .try_resolve_symbol("anthill.reflect.Expr.requirement_at_current")
-        .expect("requirement_at_current registered");
-    let expr = build_requirement_at_current(interp.kb_mut(), raac_sym, 0);
+    let var_ref_sym = interp.kb()
+        .try_resolve_symbol("anthill.reflect.Expr.var_ref")
+        .expect("var_ref registered");
+    let req_name = interp.kb_mut().intern("__req_probe");
+    let expr = build_req_var_ref(interp.kb_mut(), var_ref_sym, req_name);
 
     let result = interp.run_with_requirements(expr, SmallVec::new());
     assert!(result.is_err(),
-        "out-of-range slot must error, not panic; got {result:?}");
+        "unbound requirement name must error, not panic; got {result:?}");
 }
 
 #[test]
@@ -107,14 +110,17 @@ fn requirement_at_sort_projects_sub_handle() {
     bundle.push(child_handle);
     let parent_handle = interp.alloc_requirement(parent_sym, bundle);
 
-    let raac_sym = interp.kb()
-        .try_resolve_symbol("anthill.reflect.Expr.requirement_at_current")
+    let var_ref_sym = interp.kb()
+        .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .unwrap();
     let raas_sym = interp.kb()
         .try_resolve_symbol("anthill.reflect.Expr.requirement_at_sort")
         .expect("requirement_at_sort registered");
 
-    let inner = build_requirement_at_current(interp.kb_mut(), raac_sym, 0);
+    // chain = var_ref(name: __req_parent) — a names-model requirement
+    // read; requirement_at_sort projects its slot 0.
+    let req_name = interp.kb_mut().intern("__req_parent");
+    let inner = build_req_var_ref(interp.kb_mut(), var_ref_sym, req_name);
     let zero = alloc_int(interp.kb_mut(), 0);
     let chain_field = interp.kb_mut().intern("chain");
     let slot_field = interp.kb_mut().intern("slot");
@@ -125,7 +131,7 @@ fn requirement_at_sort_projects_sub_handle() {
     });
 
     let mut requirements: SmallVec<[_; 2]> = SmallVec::new();
-    requirements.push(parent_handle);
+    requirements.push((req_name, parent_handle));
     let value = interp.run_with_requirements(expr, requirements)
         .expect("requirement_at_sort should reduce successfully");
 

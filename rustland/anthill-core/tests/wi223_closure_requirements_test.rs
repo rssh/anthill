@@ -70,8 +70,9 @@ fn lambda_construction_snapshots_enclosing_frame_requirements() {
     );
     let lambda_term = build_lambda(interp.kb_mut(), body);
 
+    let req_name = interp.kb_mut().intern("__req_probe");
     let mut requirements: SmallVec<[_; 2]> = SmallVec::new();
-    requirements.push(h.clone());
+    requirements.push((req_name, h.clone()));
     let value = interp.run_with_requirements(lambda_term, requirements)
         .expect("lambda reduction should succeed");
 
@@ -82,7 +83,7 @@ fn lambda_construction_snapshots_enclosing_frame_requirements() {
     let snapshot = interp.closure_requirements_for_test(&closure_h);
     assert_eq!(snapshot.len(), 1,
         "lambda must snapshot the enclosing frame's single requirement");
-    assert_eq!(snapshot[0].functor(), h.functor(),
+    assert_eq!(snapshot[0].1.functor(), h.functor(),
         "snapshotted handle should reference the same impl");
 }
 
@@ -97,20 +98,20 @@ fn closure_invocation_installs_snapshotted_requirements_in_callee_frame() {
     let probe_sym = interp.kb_mut().intern("test.wi223.closure_reqs.SnapImpl");
     let h = interp.alloc_requirement(probe_sym, SmallVec::new());
 
-    // Body of the lambda: requirement_at_current(slot: 0).
-    let raac_sym = interp.kb()
-        .try_resolve_symbol("anthill.reflect.Expr.requirement_at_current")
+    // Body of the lambda: var_ref(name: __req_probe) — a named
+    // requirement read (WI-237 names model).
+    let var_ref_sym = interp.kb()
+        .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .unwrap();
-    let zero = interp.kb_mut().alloc(
-        Term::Const(anthill_core::kb::term::Literal::Int(0)),
-    );
-    let slot_field = interp.kb_mut().intern("slot");
-    let req_at_current = interp.kb_mut().alloc(Term::Fn {
-        functor: raac_sym,
+    let req_name = interp.kb_mut().intern("__req_probe");
+    let req_name_ref = interp.kb_mut().alloc(Term::Ref(req_name));
+    let name_field0 = interp.kb_mut().intern("name");
+    let req_read = interp.kb_mut().alloc(Term::Fn {
+        functor: var_ref_sym,
         pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[(slot_field, zero)]),
+        named_args: SmallVec::from_slice(&[(name_field0, req_name_ref)]),
     });
-    let lambda_term = build_lambda(interp.kb_mut(), req_at_current);
+    let lambda_term = build_lambda(interp.kb_mut(), req_read);
 
     // let f = <lambda_term> in apply(fn = "f", args = [tuple()])
     let f_sym = interp.kb_mut().intern("f");
@@ -212,7 +213,7 @@ fn closure_invocation_installs_snapshotted_requirements_in_callee_frame() {
     });
 
     let mut requirements: SmallVec<[_; 2]> = SmallVec::new();
-    requirements.push(h.clone());
+    requirements.push((req_name, h.clone()));
     let value = interp.run_with_requirements(let_term, requirements)
         .expect("let-bound closure invocation should reduce");
     match value {

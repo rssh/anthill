@@ -147,14 +147,11 @@ impl Interpreter {
         if Some(functor) == sx.constructor {
             return self.start_constructor(named_args);
         }
-        // WI-223 — requirement-typed value forms. Each yields a
-        // `Value::Requirement(handle)` (or, for the requirement_at_current
-        // dispatch form with `op`, drives a spec-op invocation through the
-        // bundled functor). See `docs/design/operation-call-model.md`
-        // §"Two primitives: requirement_at_current and requirement_at_sort".
-        if Some(functor) == sx.requirement_at_current {
-            return self.reduce_requirement_at_current(named_args);
-        }
+        // WI-223 / WI-237 — requirement-typed value forms. Each yields a
+        // `Value::Requirement(handle)`. A body reads its own frame
+        // requirements by name via `var_ref` (handled in `reduce_var`),
+        // not positionally. See `docs/design/operation-call-model.md`
+        // §"Two primitives".
         if Some(functor) == sx.requirement_at_sort {
             return self.reduce_requirement_at_sort(named_args);
         }
@@ -176,12 +173,19 @@ impl Interpreter {
 
     fn reduce_var(&mut self, sym: Symbol) -> Result<StepOutcome, EvalError> {
         let target_name = self.kb.resolve_sym(sym).to_string();
-        let local = {
+        // Local binding first, then a frame requirement (a body reading
+        // a `__req_*` param by name — WI-237 names model), then dispatch.
+        let bound = {
             let top = self.stack.top()
                 .ok_or_else(|| EvalError::Internal("reduce_var on empty stack".into()))?;
-            find_local(&self.kb, &top.locals, &target_name).cloned()
+            find_local(&self.kb, &top.locals, &target_name)
+                .cloned()
+                .or_else(|| {
+                    find_requirement(&top.requirements, sym)
+                        .map(|h| Value::Requirement(h.clone()))
+                })
         };
-        if let Some(v) = local {
+        if let Some(v) = bound {
             return self.deliver(v);
         }
         self.dispatch_call(sym, Vec::new())
@@ -209,7 +213,7 @@ impl Interpreter {
         // creation, not invocation site). Frame-side SmallVec is sized 2,
         // closure-side is sized 1 (most lambdas hold 0–1 reqs); collect
         // across the size boundary.
-        let requirements: SmallVec<[super::value::RequirementHandle; 1]> = self.stack.top()
+        let requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 1]> = self.stack.top()
             .map(|f| f.requirements.iter().cloned().collect())
             .unwrap_or_default();
         let handle = self.closures.alloc(Closure {
@@ -224,36 +228,10 @@ impl Interpreter {
     // ── Requirement-typed value reductions (WI-223) ────────────────
     //
     // The grammar in `docs/design/operation-call-model.md` §"Two
-    // primitives" restricts these to chains rooted at
-    // `requirement_at_current`, so reduction is direct (no AwaitState
-    // dance — the chain is statically resolvable to arena handles).
-
-    fn reduce_requirement_at_current(
-        &mut self,
-        named_args: &SmallVec<[(Symbol, TermId); 2]>,
-    ) -> Result<StepOutcome, EvalError> {
-        let slot_tid = named_arg(named_args, self.fields.slot)
-            .ok_or_else(|| EvalError::Internal(
-                "requirement_at_current missing 'slot'".into(),
-            ))?;
-        let slot = extract_static_int(&self.kb, slot_tid, &self.fields)
-            .ok_or_else(|| EvalError::Internal(
-                "requirement_at_current 'slot' is not a static Int".into(),
-            ))? as usize;
-        let handle = {
-            let top = self.stack.top().ok_or_else(|| {
-                EvalError::Internal("requirement_at_current on empty stack".into())
-            })?;
-            top.requirements.get(slot).cloned().ok_or_else(|| {
-                EvalError::Internal(format!(
-                    "requirement_at_current(slot={slot}): frame has only {} \
-                     requirements",
-                    top.requirements.len()
-                ))
-            })?
-        };
-        self.deliver(Value::Requirement(handle))
-    }
+    // primitives" restricts these to chains rooted at `var_ref` (a
+    // named frame-requirement read), so reduction is direct (no
+    // AwaitState dance — the chain is statically resolvable to arena
+    // handles).
 
     fn reduce_requirement_at_sort(
         &mut self,
@@ -321,26 +299,7 @@ impl Interpreter {
             )),
         };
 
-        if Some(functor) == sx.requirement_at_current {
-            let slot_tid = named_arg(&named_args, self.fields.slot)
-                .ok_or_else(|| EvalError::Internal(
-                    "requirement_at_current missing 'slot'".into(),
-                ))?;
-            let slot = extract_static_int(&self.kb, slot_tid, &self.fields)
-                .ok_or_else(|| EvalError::Internal(
-                    "requirement_at_current 'slot' is not a static Int".into(),
-                ))? as usize;
-            let top = self.stack.top().ok_or_else(|| {
-                EvalError::Internal("requirement chain on empty stack".into())
-            })?;
-            top.requirements.get(slot).cloned().ok_or_else(|| {
-                EvalError::Internal(format!(
-                    "requirement_at_current(slot={slot}): frame has only {} \
-                     requirements",
-                    top.requirements.len()
-                ))
-            })
-        } else if Some(functor) == sx.requirement_at_sort {
+        if Some(functor) == sx.requirement_at_sort {
             let chain_tid = named_arg(&named_args, self.fields.chain)
                 .ok_or_else(|| EvalError::Internal(
                     "requirement_at_sort missing 'chain'".into(),
@@ -375,10 +334,9 @@ impl Interpreter {
             }
             Ok(self.requirements.alloc(functor_sym, handles))
         } else if Some(functor) == sx.var_ref {
-            // WI-235: a hoisted dispatching dict is let-bound into
-            // frame.locals and referenced from each call site via
-            // var_ref. Synth names are interned once, so Symbol
-            // equality suffices (no short-name aliasing concerns).
+            // WI-237 (names model): a body reads a requirement by its
+            // synthesized `__req_*` name. Synth names are interned once,
+            // so Symbol equality suffices (no short-name aliasing).
             let name_tid = named_arg(&named_args, self.fields.name)
                 .ok_or_else(|| EvalError::Internal("var_ref missing 'name'".into()))?;
             let name_sym = term_as_symbol(&self.kb, name_tid).ok_or_else(|| {
@@ -387,18 +345,12 @@ impl Interpreter {
             let top = self.stack.top().ok_or_else(|| {
                 EvalError::Internal("requirement chain var_ref on empty stack".into())
             })?;
-            let bound = top.locals.iter().rev().find(|(s, _)| *s == name_sym).map(|(_, v)| v);
-            match bound {
-                Some(Value::Requirement(h)) => Ok(h.clone()),
-                Some(other) => Err(EvalError::Internal(format!(
-                    "var_ref bound to non-Requirement in requirement position: {}",
-                    other.type_name()
-                ))),
-                None => Err(EvalError::Internal(format!(
+            find_requirement(&top.requirements, name_sym).cloned().ok_or_else(|| {
+                EvalError::Internal(format!(
                     "var_ref({}) unbound in requirement position",
                     self.kb.resolve_sym(name_sym)
-                ))),
-            }
+                ))
+            })
         } else {
             Err(EvalError::Internal(format!(
                 "expected requirement-chain term, got functor {}",
@@ -557,22 +509,40 @@ impl Interpreter {
             None => fn_sym,
         };
 
-        // Slot 0 = the dispatching dict (Self); slots 1..N+1 = its
-        // positional sub-instances. Built in target order to avoid
-        // SmallVec::insert's O(N) memmove.
-        let requirements = match dispatching_dict {
-            Some(dict) => {
-                let arity = dict.arity();
-                let mut reqs: SmallVec<[super::value::RequirementHandle; 2]> =
-                    SmallVec::with_capacity(arity + 1);
-                for k in 0..arity {
-                    reqs.push(dict.project(k));
+        // Names model (WI-237): expand the dispatching dict into
+        // name-keyed frame requirements — `__req_self` → the dict, and
+        // `__req_<spec>` → each positional sub-instance, named by
+        // `synth_req_names` against the callee's impl parent sort. The
+        // same name synthesis runs in the typer's IR emitter, so a
+        // generic body's `var_ref(__req_*)` reads resolve against this.
+        let requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]> =
+            match dispatching_dict {
+                Some(dict) => {
+                    let names = match crate::kb::typing::impl_parent_of_op(&self.kb, target) {
+                        Some(p) => Some(crate::kb::typing::synth_req_names(&mut self.kb, p)),
+                        None => None,
+                    };
+                    let arity = dict.arity();
+                    let name_count = names.as_ref().map_or(0, |n| n.len());
+                    if arity != name_count {
+                        return Err(EvalError::Internal(format!(
+                            "apply_within frame-push: dispatching dict for {} has \
+                             arity {arity} but its requires chain has {name_count} entries",
+                            self.kb.qualified_name_of(target),
+                        )));
+                    }
+                    let mut reqs: SmallVec<[(Symbol, super::value::RequirementHandle); 2]> =
+                        SmallVec::with_capacity(arity + 1);
+                    reqs.push((self.fields.req_self, dict.clone()));
+                    if let Some(names) = names {
+                        for (k, name) in names.iter().enumerate() {
+                            reqs.push((*name, dict.project(k)));
+                        }
+                    }
+                    reqs
                 }
-                reqs.insert(0, dict);
-                reqs
-            }
-            None => SmallVec::new(),
-        };
+                None => SmallVec::new(),
+            };
 
         let args_tid = named_arg(named_args, self.fields.args)
             .ok_or_else(|| EvalError::Internal("apply_within missing 'args'".into()))?;
@@ -698,7 +668,7 @@ impl Interpreter {
         &mut self,
         target: Symbol,
         arg_values: Vec<Value>,
-        requirements: SmallVec<[super::value::RequirementHandle; 2]>,
+        requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
     ) -> Result<StepOutcome, EvalError> {
         // 1. Local closure bound to target?
         let target_name = self.kb.resolve_sym(target).to_string();
@@ -737,7 +707,7 @@ impl Interpreter {
         body_term: TermId,
         params: &[(Symbol, TermId)],
         arg_values: Vec<Value>,
-        requirements: SmallVec<[super::value::RequirementHandle; 2]>,
+        requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
     ) -> Result<StepOutcome, EvalError> {
         if arg_values.len() != params.len() {
             return Err(EvalError::ArityMismatch {
@@ -759,10 +729,11 @@ impl Interpreter {
         // depth for tail-recursive programs.
         let top = self.stack.top_mut()
             .ok_or_else(|| EvalError::Internal("enter_operation with no parent".into()))?;
-        // WI-223: callee's frame.requirements come from apply_within's
-        // requirements slot. Plain `apply` calls install an empty channel
-        // — generic bodies reading requirement_at_current(i) will surface
-        // a clear "out of range" error rather than silently wrong.
+        // WI-223 / WI-237: callee's frame.requirements come from
+        // apply_within's expanded requirements channel. Plain `apply`
+        // calls install an empty channel — a generic body's
+        // `var_ref(__req_*)` read then surfaces a clear "unbound in
+        // requirement position" error rather than being silently wrong.
         *top = Frame {
             op: target,
             expr: body_term,
@@ -802,7 +773,7 @@ impl Interpreter {
         // the one runtime exception". The closure-side SmallVec has inline
         // size 1 (most lambdas need 0–1 reqs), the frame-side has 2;
         // collect across the size boundary.
-        let requirements: SmallVec<[super::value::RequirementHandle; 2]> =
+        let requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]> =
             self.closures.with(&handle, |c| c.requirements.iter().cloned().collect());
         // TCO: same rationale as enter_operation. A closure call in any
         // position is a tail call relative to its own apply frame. The
@@ -1199,6 +1170,17 @@ fn find_local<'a>(
         }
     }
     None
+}
+
+/// Find a frame-level requirement by its synthesized `__req_*` name.
+/// Synth names are interned once (see `kb::typing::synth_req_names`), so
+/// Symbol equality suffices — unlike `find_local`, which must compare
+/// resolved short names. Reverse order: last binding wins (shadowing).
+fn find_requirement<'a>(
+    reqs: &'a SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
+    name: Symbol,
+) -> Option<&'a super::value::RequirementHandle> {
+    reqs.iter().rev().find(|(s, _)| *s == name).map(|(_, h)| h)
 }
 
 /// Head functor of a value, when one is recoverable.

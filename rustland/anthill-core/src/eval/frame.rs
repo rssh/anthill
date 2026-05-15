@@ -35,16 +35,18 @@ pub enum AwaitState {
         buffered: Vec<Value>,
         remaining: Vec<TermId>,
     },
-    /// WI-223: an `apply_within` node — like ApplyArgs but threads a
-    /// pre-evaluated `requirements` channel through to the callee
+    /// WI-223: an `apply_within` node — like ApplyArgs but threads the
+    /// callee's name-keyed `requirements` channel through to the callee
     /// frame at dispatch time. Per `docs/design/operation-call-model.md`
     /// §"Eval mechanics: AwaitState with requirements", requirements
     /// are evaluated before args; this variant carries them forward.
+    /// `start_apply_within` builds it as the expanded named frame
+    /// requirements (WI-237 names model).
     ApplyWithinArgs {
         target: Symbol,
         buffered: Vec<Value>,
         remaining: Vec<TermId>,
-        requirements: SmallVec<[crate::eval::value::RequirementHandle; 2]>,
+        requirements: SmallVec<[(Symbol, crate::eval::value::RequirementHandle); 2]>,
     },
     /// A constructor node is collecting (possibly named) field values.
     ConstructorArgs {
@@ -71,12 +73,14 @@ pub struct Frame {
     pub expr: TermId,
     /// Lexical bindings in this frame.
     pub locals: SmallVec<[(Symbol, Value); 4]>,
-    /// WI-223: requirement values available to this body. Populated on
-    /// frame push from the call site's `apply_within.requirements` slot
-    /// (or `closure.requirements` for HO calls). Read by the eval when
-    /// reducing `requirement_at_current(i)`. Per `docs/design/operation-
-    /// call-model.md` §"Runtime: frame, requirement value, closure".
-    pub requirements: SmallVec<[crate::eval::value::RequirementHandle; 2]>,
+    /// WI-223 / WI-237: name-keyed requirement values available to this
+    /// body. Populated on frame push from the call site's expanded
+    /// `apply_within.requirements` channel (or `closure.requirements`
+    /// for HO calls). Each entry is `(synthesized __req_* name, handle)`;
+    /// the eval resolves a body's `var_ref(name)` requirement reads
+    /// against it. Per `docs/design/operation-call-model.md` §"Runtime:
+    /// frame, requirement value, closure".
+    pub requirements: SmallVec<[(Symbol, crate::eval::value::RequirementHandle); 2]>,
     /// None = fresh (ready to reduce `expr`); Some = suspended, waiting for
     /// the child frame above to deliver a value.
     pub awaiting: Option<AwaitState>,

@@ -1,4 +1,4 @@
-//! WI-223 — `apply_within` reduction tests (acceptance #2).
+//! WI-223 / WI-237 — `apply_within` reduction tests (acceptance #2).
 //!
 //! Pin that:
 //!   1. `apply_within(fn, args, requirements)` evaluates the requirements
@@ -7,11 +7,13 @@
 //!   2. Plain `apply` paths still install an empty `frame.requirements`
 //!      (no regression).
 //!
-//! The fn-position `requirement_at_current` dispatch form is out of scope
-//! for this commit (still returns "not yet supported" in eval).
+//! Under the names model (WI-237) the callee's frame.requirements are
+//! keyed by synthesized names: `__req_self` for the dispatching dict
+//! plus `__req_<spec>` per impl-parent transitive requires entry. The
+//! body reads them via `var_ref(name = Ref(__req_*))`.
 //!
-//! Reference: docs/design/operation-call-model.md §"Eval mechanics:
-//! AwaitState with requirements".
+//! Reference: docs/design/operation-call-model.md §"Names model",
+//! §"Eval mechanics: AwaitState with requirements".
 
 mod common;
 
@@ -190,15 +192,17 @@ end
 
 #[test]
 fn apply_within_threads_requirements_to_callee_frame_for_introspection() {
-    // The callee's body is `requirement_at_current(slot: 0)`, exercising
-    // the full thread-through: apply_within evaluates the requirements
-    // list, builds the callee frame with frame.requirements = [<handle>],
-    // the body reads slot 0 and yields it as Value::Requirement.
+    // The callee's body is `var_ref(name: Ref(__req_self))`, exercising
+    // the full thread-through under the names model: apply_within
+    // evaluates the requirements list, frame-push binds `__req_self` to
+    // the dispatching dict (and `__req_<spec>` to each transitive entry
+    // — but `read_my_req` has no enclosing sort so there are none).
+    // The body reads `__req_self` by name and yields the handle.
     //
     // Setup: register an anthill op `read_my_req() -> Int`. Override its
     // body via the dispatch_rewrites mechanism: hand-build a
-    // `requirement_at_current(0)` term and rewrite the original body
-    // term to point at it (using the existing dispatch_rewrites map).
+    // `var_ref(name: Ref(__req_self))` term and rewrite the original body
+    // term to point at it.
     let src = r#"
 namespace test.wi223.thread_through
   operation read_my_req() -> Int = 0
@@ -212,25 +216,27 @@ end
         .unwrap();
     let cr_sym = kb.try_resolve_symbol("anthill.reflect.Expr.construct_requirement")
         .unwrap();
-    let raac_sym = kb.try_resolve_symbol("anthill.reflect.Expr.requirement_at_current")
+    let var_ref_sym = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .unwrap();
 
-    // Build requirement_at_current(slot: 0). Used as the body override.
-    let zero = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(0)));
-    let slot_field = kb.intern("slot");
-    let req_at_current = kb.alloc(Term::Fn {
-        functor: raac_sym,
+    // Build var_ref(name: Ref(__req_self)). Used as the body override —
+    // names-model way to fetch the dispatching dict from the frame.
+    let req_self_sym = kb.intern("__req_self");
+    let name_ref = kb.alloc(Term::Ref(req_self_sym));
+    let name_field = kb.intern("name");
+    let var_ref_body = kb.alloc(Term::Fn {
+        functor: var_ref_sym,
         pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[(slot_field, zero)]),
+        named_args: SmallVec::from_slice(&[(name_field, name_ref)]),
     });
 
-    // Rewrite the produce body: dispatch_rewrites swaps source term →
+    // Rewrite the read_my_req body: dispatch_rewrites swaps source term →
     // rewritten term during reduce_expr. The original body is some int
-    // literal; redirect it to req_at_current.
+    // literal; redirect it to the var_ref read of __req_self.
     let original_body = anthill_core::eval::eval::lookup_operation_body(&kb, target_sym)
         .map(|(t, _)| t)
         .expect("read_my_req body");
-    kb.record_dispatch_rewrite(original_body, req_at_current, target_sym);
+    kb.record_dispatch_rewrite(original_body, var_ref_body, target_sym);
 
     // requirements = [construct_requirement(MyImpl, [])]
     let nil = make_nil(&mut kb);
@@ -268,8 +274,8 @@ end
     match value {
         Value::Requirement(h) => {
             assert_eq!(h.functor(), impl_sym,
-                "callee's frame.requirements[0] should be the requirement \
-                 we constructed at the apply_within site");
+                "callee's frame.requirements[__req_self] should be the \
+                 requirement we constructed at the apply_within site");
         }
         other => panic!("expected Value::Requirement(MyImpl), got {other:?}"),
     }
