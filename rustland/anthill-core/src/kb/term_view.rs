@@ -158,7 +158,8 @@ impl TermView for Value {
             | Value::Substitution(_)
             | Value::Map(_)
             | Value::Cell(_)
-            | Value::Requirement(_) => ViewHead::Opaque,
+            | Value::Requirement(_)
+            | Value::Node(_) => ViewHead::Opaque,
         }
     }
 

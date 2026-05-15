@@ -1,6 +1,38 @@
 # Occurrences in the Expr IR
 
-## Status: Design — verified IR architecture + a traversal principle
+## Status: SUPERSEDED by [`occurrence-as-value-type.md`](occurrence-as-value-type.md)
+
+The arena+ID model documented below (`OccurrenceStore` + `OccurrenceId` +
+`Term::Const(Literal::Handle(Occurrence, _))` wrapper) has been replaced by
+a value-typed `NodeOccurrence` with `Rc`-linked trees and a `Value::Node`
+runtime variant. WI-242 implements the migration.
+
+Reasons for the move (see the successor doc for the full argument):
+
+- Hash-consing doesn't apply to occurrences (each is a unique source position).
+- No cross-pass side tables remain — `CallClass` lives on the entry, and
+  WI-243's cleanup retired the rest.
+- Rc-linked trees give cheap reflection bindings (`Rc::clone`), zero-cost
+  eval-frame stash, and `Rc::ptr_eq` for cross-pass identity — covering the
+  one materially load-bearing reason the arena was holding (the 4-byte
+  eval-frame stash).
+- `Term::Const(Literal::Handle(Occurrence, _))` was a wrapper term whose
+  whole content was "I am a u64 around occ_id" — every Expr-walking pass
+  had to unwrap it before inspecting real content.
+
+What the new model preserves from the original principle below:
+
+- The `Expr` IR is still occurrence-structured (every child slot is a
+  `Rc<NodeOccurrence>`, alternating `NodeOccurrence ⇄ NodeKind ⇄ Expr ⇄ NodeOccurrence`).
+- Passes still traverse at the occurrence level, not the bare-content level.
+- Eval still carries occurrences on its step-stack frame for runtime spans.
+- Synthesized occurrences still inherit span from the originating source
+  occurrence (now via `NodeOccurrence::origin: OccurrenceOrigin::Synthesized
+  { from: Rc<NodeOccurrence>, by: PassId }`).
+
+The text below is retained for historical context only — file paths, line
+numbers, and APIs (`split_handle`, `resolve_handle`, `convert_expr_child`'s
+Handle wrap, `OperationInfo.body_occ`) no longer exist after WI-242.
 
 ---
 

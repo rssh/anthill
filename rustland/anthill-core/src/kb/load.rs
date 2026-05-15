@@ -4580,10 +4580,16 @@ impl<'a> Loader<'a> {
         let ensures_list = self.convert_clause_list(&o.ensures);
 
         // Convert expression body if present (within operation scope)
-        // body is Option[ExprOccurrence] — store OccurrenceId handle
+        // body is Option[ExprOccurrence] — store OccurrenceId handle.
+        // WI-242: also materialize a value-typed NodeOccurrence tree and
+        // store it in `kb.op_bodies` so consumers can migrate off the
+        // Handle/OccurrenceStore path. Both representations are populated
+        // in parallel during the transition.
         let (body_opt_term, body_expr_opt) = match o.body {
             Some(body_tid) => {
                 let handle = self.convert_expr_child(body_tid);
+                let node = super::node_occurrence::materialize_from_handle(self.kb, handle);
+                self.kb.set_op_body_node(functor, node);
                 (build_some(self.kb, handle), Some(handle))
             }
             None => (build_none(self.kb), None),

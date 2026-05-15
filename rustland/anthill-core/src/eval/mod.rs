@@ -379,7 +379,8 @@ impl Interpreter {
             | Value::Substitution(_)
             | Value::Map(_)
             | Value::Cell(_)
-            | Value::Requirement(_) => {
+            | Value::Requirement(_)
+            | Value::Node(_) => {
                 return Err(EvalError::TypeMismatch {
                     expected: "store-shaped Value (Entity / scalar / Term)",
                     got: v.type_name().to_string(),

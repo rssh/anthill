@@ -10,6 +10,7 @@ pub mod subst;
 pub mod load;
 pub mod resolve;
 pub mod occurrence;
+pub mod node_occurrence;
 pub mod typing;
 pub mod op_info;
 pub mod op_requirements;
@@ -30,6 +31,7 @@ use crate::intern::{SymbolTable, SymbolDef, SymbolKind, Symbol};
 use crate::span::SourceRegistry;
 use term::{Term, TermId, TermStore, TermSource, Var, VarId};
 use occurrence::OccurrenceStore;
+use node_occurrence::NodeOccurrence;
 use discrim::SubstTree;
 use resolve::BuiltinTag;
 
@@ -220,6 +222,13 @@ pub struct KnowledgeBase {
     // Occurrence store (positioned terms, not hash-consed)
     pub(crate) occurrences: OccurrenceStore,
 
+    /// WI-242 — value-typed operation bodies keyed by operation symbol.
+    /// Populated by the loader alongside the existing Handle-wrapped
+    /// `OperationInfo.body` fact field; consumer migration to read this
+    /// rather than the Handle path is filed as WI-247.
+    /// See `docs/design/occurrence-as-value-type.md`.
+    pub(crate) op_bodies: HashMap<Symbol, Rc<NodeOccurrence>>,
+
     // Entity field type registry: functor symbol → [(field_name, type_term)].
     // Populated during load_entity, used by type_check_sorts.
     entity_field_types: HashMap<Symbol, Vec<(Symbol, TermId)>>,
@@ -315,6 +324,7 @@ impl KnowledgeBase {
             guards: Vec::new(),
             guards_by_sort: HashMap::new(),
             occurrences: OccurrenceStore::new(),
+            op_bodies: HashMap::new(),
             entity_field_types: HashMap::new(),
             resolved_requires_facts: HashSet::new(),
             sources: SourceRegistry::new(),
@@ -431,6 +441,18 @@ impl KnowledgeBase {
 
     pub fn occurrence_store(&self) -> &OccurrenceStore {
         &self.occurrences
+    }
+
+    /// WI-242 — get the value-typed body node for an operation, if the
+    /// loader produced one. None for body-less ops (spec declarations).
+    pub fn op_body_node(&self, op_sym: Symbol) -> Option<&Rc<NodeOccurrence>> {
+        self.op_bodies.get(&op_sym)
+    }
+
+    /// WI-242 — record the value-typed body node for an operation.
+    /// Called by the loader during operation conversion.
+    pub fn set_op_body_node(&mut self, op_sym: Symbol, node: Rc<NodeOccurrence>) {
+        self.op_bodies.insert(op_sym, node);
     }
 
     // ── Term allocation ─────────────────────────────────────────

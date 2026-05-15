@@ -226,6 +226,7 @@ impl KnowledgeBase {
             Value::Map(_) => Err(LowerError::UnsupportedVariant("Map")),
             Value::Cell(_) => Err(LowerError::UnsupportedVariant("Cell")),
             Value::Requirement(_) => Err(LowerError::UnsupportedVariant("Requirement")),
+            Value::Node(_) => Err(LowerError::UnsupportedVariant("Node")),
         }
     }
 

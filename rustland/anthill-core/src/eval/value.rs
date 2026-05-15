@@ -5,7 +5,10 @@
 //! that's already hash-consed. Promotion to `TermId` happens only at KB
 //! boundaries (assert_fact, Modify writes, SharedStream caching).
 
+use std::rc::Rc;
+
 use crate::intern::Symbol;
+use crate::kb::node_occurrence::NodeOccurrence;
 use crate::kb::term::TermId;
 
 pub use super::cell_arena::CellHandle;
@@ -86,6 +89,13 @@ pub enum Value {
 
     // KB-sourced or already-committed data (hash-consed).
     Term(TermId),
+
+    /// WI-242 — positional content binding (operation body, rule head,
+    /// or other NodeOccurrence). Reflection ops like `body_of`, `head_of`,
+    /// `args_of` produce this; consumers walk the `Rc<NodeOccurrence>`
+    /// tree directly. Atomic refcount on clone — no deep copy.
+    /// See `docs/design/occurrence-as-value-type.md`.
+    Node(Rc<NodeOccurrence>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -159,6 +169,7 @@ impl Value {
             Value::Cell(_) => "Cell",
             Value::Requirement(_) => "Requirement",
             Value::Term(_) => "Term",
+            Value::Node(_) => "Node",
         }
     }
 }

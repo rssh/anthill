@@ -8,10 +8,13 @@
 //! into one helper that returns a complete `OpInfoRecord`; callers
 //! then read whatever fields they need.
 
+use std::rc::Rc;
+
 use smallvec::SmallVec;
 
 use crate::intern::Symbol;
 
+use super::node_occurrence::NodeOccurrence;
 use super::occurrence::OccurrenceId;
 use super::term::{Term, TermId};
 use super::typing::{list_to_vec, split_handle, unwrap_option};
@@ -34,6 +37,9 @@ pub struct OpInfoRecord {
     /// the typer enter `type_check_expr` with the body's source
     /// identity in hand instead of a `by_term`-reconstructed guess.
     pub body_occ: Option<OccurrenceId>,
+    /// WI-247 — value-typed body NodeOccurrence read from `kb.op_bodies`.
+    /// Consumers migrate from `body` (Handle-wrapped TermId) to this.
+    pub body_node: Option<Rc<NodeOccurrence>>,
 }
 
 /// Walk `OperationInfo` facts, returning the record for `op_sym` if
@@ -70,6 +76,7 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
             None => (None, None),
         };
 
+        let body_node = kb.op_body_node(op_sym).cloned();
         return Some(OpInfoRecord {
             op_sym,
             params,
@@ -77,6 +84,7 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
             effects,
             body,
             body_occ,
+            body_node,
         });
     }
     None
