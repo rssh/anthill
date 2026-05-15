@@ -46,6 +46,12 @@ pub struct NodeOccurrence {
     /// Symbol of the enclosing declaration (operation, rule label, ...).
     /// `None` for top-level / unknown context.
     pub owner: Option<Symbol>,
+    /// Transitional back-pointer to the legacy `OccurrenceStore` entry
+    /// this NodeOccurrence was materialized from. Used by `classify` to
+    /// dual-write classifications while `req_insertion::run` still reads
+    /// from `kb.occurrences.classifications_iter()`. Removed in WI-251
+    /// when the OccurrenceStore is deleted.
+    pub origin_occ: Option<OccurrenceId>,
 }
 
 impl NodeOccurrence {
@@ -59,6 +65,29 @@ impl NodeOccurrence {
             },
             span,
             owner,
+            origin_occ: None,
+        })
+    }
+
+    /// Build a source-origin expression occurrence with a legacy
+    /// `OccurrenceId` back-pointer. Used by the loader's materializer
+    /// so the typer can dual-write classifications until WI-251 deletes
+    /// the OccurrenceStore.
+    pub fn new_expr_with_origin(
+        expr: Expr,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+        origin_occ: Option<OccurrenceId>,
+    ) -> Rc<Self> {
+        Rc::new(NodeOccurrence {
+            kind: NodeKind::Expr {
+                expr,
+                origin: OccurrenceOrigin::Source,
+                classification: RefCell::new(None),
+            },
+            span,
+            owner,
+            origin_occ,
         })
     }
 
@@ -79,6 +108,7 @@ impl NodeOccurrence {
             },
             span,
             owner,
+            origin_occ: None,
         })
     }
 
@@ -98,6 +128,7 @@ impl NodeOccurrence {
             },
             span,
             owner,
+            origin_occ: None,
         })
     }
 
@@ -287,7 +318,7 @@ pub fn materialize_from_occurrence(
     let span = kb.occurrence_store().span(occ_id);
     let owner = kb.occurrence_store().owner(occ_id);
     let expr = expr_from_term(kb, term_id);
-    NodeOccurrence::new_expr(expr, span, owner)
+    NodeOccurrence::new_expr_with_origin(expr, span, owner, Some(occ_id))
 }
 
 /// Materialize a NodeOccurrence from a Handle-wrapped term. If the term
@@ -316,46 +347,50 @@ fn expr_from_term(kb: &KnowledgeBase, term_id: TermId) -> Expr {
         Term::Ident(s) => Expr::Ident(*s),
         Term::Bottom => Expr::Bottom,
         Term::Fn { functor, pos_args, named_args } => {
+            // Match on a normalized form key — accepts both the loader's
+            // qualified names ("anthill.reflect.Expr.apply") and bare
+            // short names ("apply") used by hand-built test terms.
             let qn = kb.qualified_name_of(*functor);
-            match qn {
-                // Literal-entity forms — extract the wrapped Literal.
-                "anthill.reflect.Expr.int_lit"
-                | "anthill.reflect.Expr.float_lit"
-                | "anthill.reflect.Expr.bigint_lit"
-                | "anthill.reflect.Expr.string_lit"
-                | "anthill.reflect.Expr.bool_lit" => {
+            let short = kb.resolve_sym(*functor);
+            let key = expr_form_key(qn, short);
+            match key {
+                "int_lit"
+                | "float_lit"
+                | "bigint_lit"
+                | "string_lit"
+                | "bool_lit" => {
                     let value_tid = get_named_arg(kb, named_args, "value");
                     match value_tid.map(|t| kb.get_term(t)) {
                         Some(Term::Const(lit)) => Expr::Const(lit.clone()),
                         _ => Expr::Bottom,
                     }
                 }
-                "anthill.reflect.Expr.var_ref" => {
+                "var_ref" => {
                     let name = named_ref(kb, named_args, "name");
                     match name {
                         Some(sym) => Expr::VarRef { name: sym },
                         None => Expr::Bottom,
                     }
                 }
-                "anthill.reflect.Expr.if_expr" => {
+                "if_expr" => {
                     let cond = handle_child(kb, get_named_arg(kb, named_args, "cond"));
                     let then_branch = handle_child(kb, get_named_arg(kb, named_args, "then_branch"));
                     let else_branch = handle_child(kb, get_named_arg(kb, named_args, "else_branch"));
                     Expr::If { condition: cond, then_branch, else_branch }
                 }
-                "anthill.reflect.Expr.let_expr" => {
+                "let_expr" => {
                     let pattern = get_named_arg(kb, named_args, "pattern").unwrap_or(term_id);
                     let value = handle_child(kb, get_named_arg(kb, named_args, "value"));
                     let body = handle_child(kb, get_named_arg(kb, named_args, "body"));
                     let type_annotation = get_named_arg(kb, named_args, "type_name");
                     Expr::Let { pattern, type_annotation, value, body }
                 }
-                "anthill.reflect.Expr.lambda" => {
+                "lambda" => {
                     let param = get_named_arg(kb, named_args, "param").unwrap_or(term_id);
                     let body = handle_child(kb, get_named_arg(kb, named_args, "body"));
                     Expr::Lambda { param, body }
                 }
-                "anthill.reflect.Expr.match_expr" => {
+                "match_expr" => {
                     let scrutinee = handle_child(kb, get_named_arg(kb, named_args, "scrutinee"));
                     let branches_tid = get_named_arg(kb, named_args, "branches");
                     let branches = branches_tid
@@ -363,17 +398,17 @@ fn expr_from_term(kb: &KnowledgeBase, term_id: TermId) -> Expr {
                         .unwrap_or_default();
                     Expr::Match { scrutinee, branches }
                 }
-                "anthill.reflect.Expr.apply" => {
+                "apply" => {
                     let fn_sym = named_ref(kb, named_args, "fn").unwrap_or(*functor);
                     let (pos, named) = materialize_apply_args(kb, get_named_arg(kb, named_args, "args"));
                     Expr::Apply { functor: fn_sym, pos_args: pos, named_args: named }
                 }
-                "anthill.reflect.Expr.constructor" => {
+                "constructor" => {
                     let ctor_sym = named_ref(kb, named_args, "name").unwrap_or(*functor);
                     let (pos, named) = materialize_apply_args(kb, get_named_arg(kb, named_args, "args"));
                     Expr::Constructor { name: ctor_sym, pos_args: pos, named_args: named }
                 }
-                "anthill.reflect.Expr.apply_within" => {
+                "apply_within" => {
                     let fn_sym = named_ref(kb, named_args, "fn").unwrap_or(*functor);
                     let (pos, named) = materialize_apply_args(kb, get_named_arg(kb, named_args, "args"));
                     let requirements = materialize_node_list(kb, get_named_arg(kb, named_args, "requirements"));
@@ -384,7 +419,7 @@ fn expr_from_term(kb: &KnowledgeBase, term_id: TermId) -> Expr {
                         requirements,
                     }
                 }
-                "anthill.reflect.Expr.requirement_at_sort" => {
+                "requirement_at_sort" => {
                     let chain = handle_child(kb, get_named_arg(kb, named_args, "chain"));
                     let slot = get_named_arg(kb, named_args, "slot")
                         .and_then(|t| match kb.get_term(t) {
@@ -394,18 +429,18 @@ fn expr_from_term(kb: &KnowledgeBase, term_id: TermId) -> Expr {
                         .unwrap_or(0);
                     Expr::RequirementAtSort { chain, slot }
                 }
-                "anthill.reflect.Expr.construct_requirement" => {
+                "construct_requirement" => {
                     let impl_functor = named_ref(kb, named_args, "impl_functor").unwrap_or(*functor);
                     let requirements = materialize_node_list(kb, get_named_arg(kb, named_args, "requirements"));
                     Expr::ConstructRequirement { impl_functor, requirements }
                 }
-                "anthill.reflect.ListLiteral" => {
+                "ListLiteral" => {
                     Expr::ListLit(materialize_node_list(kb, Some(term_id)))
                 }
-                "anthill.reflect.SetLiteral" => {
+                "SetLiteral" => {
                     Expr::SetLit(materialize_node_list(kb, Some(term_id)))
                 }
-                "anthill.reflect.TupleLiteral" => {
+                "TupleLiteral" => {
                     let nodes = materialize_node_list(kb, Some(term_id));
                     Expr::TupleLit { positional: nodes, named: Vec::new() }
                 }
@@ -426,6 +461,17 @@ fn expr_from_term(kb: &KnowledgeBase, term_id: TermId) -> Expr {
             }
         }
     }
+}
+
+/// Normalize an Expr-form functor name to its last segment, so the
+/// dispatch works whether the loader emitted a qualified name like
+/// `anthill.reflect.Expr.apply` or a hand-built test produced the bare
+/// short name `apply`. We prefer the qualified name as the source of
+/// truth; if its last segment is empty (unlikely), fall back to the
+/// short name.
+fn expr_form_key<'a>(qn: &'a str, short: &'a str) -> &'a str {
+    let last = qn.rsplit('.').next().unwrap_or(qn);
+    if last.is_empty() { short } else { last }
 }
 
 /// Materialize a child slot from a `Handle(occ_id)` term. If the slot is

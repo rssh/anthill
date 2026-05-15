@@ -11,6 +11,10 @@ use smallvec::SmallVec;
 
 use super::term::{Term, TermId, Literal, HandleKind, Var, VarId};
 use super::occurrence::OccurrenceId;
+use super::node_occurrence::{
+    materialize_from_handle, materialize_from_occurrence,
+    Expr, MatchBranch, NodeKind, NodeOccurrence,
+};
 use super::{KnowledgeBase, SortKind};
 use crate::intern::Symbol;
 use crate::span::Span;
@@ -345,17 +349,16 @@ fn merge_effects(a: &[TermId], b: &[TermId]) -> Vec<TermId> {
     result
 }
 
-/// If `expr` is a `var_ref` term, return the symbol the variable refers
-/// to. Used by [`check_apply`] to harvest call-site arg names so
-/// parametric effects like `Modify[c]` (c is a callee's parameter) get
-/// rewritten to `Modify[s]` when the actual arg is the var `s`.
-fn extract_var_ref_sym(kb: &KnowledgeBase, expr: TermId) -> Option<Symbol> {
-    if let Term::Fn { functor, named_args, pos_args } = kb.get_term(expr) {
-        if kb.resolve_sym(*functor) == "var_ref" {
-            return extract_sym_arg(kb, named_args, pos_args, "name");
-        }
+/// NodeOccurrence-aware var_ref detection — peer of
+/// [`extract_var_ref_sym`] for the [`type_check_node`] dispatch path.
+/// Returns the symbol the variable refers to when `occ`'s Expr is a
+/// `VarRef`; otherwise `None`.
+fn extract_var_ref_sym_node(occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
+    if let NodeKind::Expr { expr: Expr::VarRef { name }, .. } = &occ.kind {
+        Some(*name)
+    } else {
+        None
     }
-    None
 }
 
 /// Recursively replace `Term::Ref(s)` with `Term::Ref(map[s])` inside
@@ -577,106 +580,110 @@ pub fn list_to_vec(kb: &KnowledgeBase, mut term: TermId) -> Vec<TermId> {
 // ── type_check_expr ────────────────────────────────────────────
 
 /// Infer the type of an expression. Returns TypeResult with type, env, and effects.
+/// Public back-compat entry point. The typer's canonical dispatch flow
+/// now walks `Rc<NodeOccurrence>` trees via [`type_check_node`]; this
+/// shim materializes a NodeOccurrence (from a Handle wrapper or by
+/// converting a raw `Term::Fn` shape used by hand-built test inputs)
+/// and delegates.
 pub fn type_check_expr(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     expr: TermId,
     current_occ: Option<OccurrenceId>,
 ) -> Option<TypeResult> {
-    let term = kb.get_term(expr).clone();
-    match &term {
-        // Literals → pure
-        Term::Const(Literal::Int(_)) => Some(TypeResult::pure(kb.make_sort_ref_by_name("Int"), env.clone())),
-        Term::Const(Literal::Float(_)) => Some(TypeResult::pure(kb.make_sort_ref_by_name("Float"), env.clone())),
-        Term::Const(Literal::String(_)) => Some(TypeResult::pure(kb.make_sort_ref_by_name("String"), env.clone())),
-        Term::Const(Literal::Bool(_)) => Some(TypeResult::pure(kb.make_sort_ref_by_name("Bool"), env.clone())),
-        // Handle — unwrap via split_handle, keep the occurrence, recurse
-        Term::Const(Literal::Handle(HandleKind::Occurrence, _)) => {
-            let (occ, inner) = split_handle(kb, expr);
-            type_check_expr(kb, env, inner, occ)
-        }
-        // Variable reference — pure
-        Term::Ref(sym) => {
+    let node = match current_occ {
+        Some(occ_id) => materialize_from_occurrence(kb, occ_id),
+        None => materialize_from_handle(kb, expr),
+    };
+    type_check_node(kb, env, &node)
+}
+
+/// Canonical typer entry — walk a `Rc<NodeOccurrence>` and produce a
+/// `TypeResult`. Dispatches on the wrapped `Expr` variant; each variant
+/// recurses through child slots which are themselves `Rc<NodeOccurrence>`.
+pub fn type_check_node(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+) -> Option<TypeResult> {
+    let expr = match &occ.kind {
+        NodeKind::Expr { expr, .. } => expr,
+        NodeKind::RuleHead { .. } => return None,
+    };
+    match expr {
+        Expr::Const(Literal::Int(_)) => Some(TypeResult::pure(kb.make_sort_ref_by_name("Int"), env.clone())),
+        Expr::Const(Literal::Float(_)) => Some(TypeResult::pure(kb.make_sort_ref_by_name("Float"), env.clone())),
+        Expr::Const(Literal::String(_)) => Some(TypeResult::pure(kb.make_sort_ref_by_name("String"), env.clone())),
+        Expr::Const(Literal::Bool(_)) => Some(TypeResult::pure(kb.make_sort_ref_by_name("Bool"), env.clone())),
+        Expr::Const(_) => None,
+        Expr::Ref(sym) => {
             let name = kb.resolve_sym(*sym).to_string();
             if let Some(ty) = env.lookup_var(&name) {
                 Some(TypeResult::pure(ty, env.clone()))
             } else if kb.is_constructor_symbol(*sym) {
-                infer_constructor_type(kb, env, *sym, &SmallVec::new(), &SmallVec::new())
+                infer_constructor_type_node(kb, env, *sym, &[], &[])
             } else {
                 None
             }
         }
-        Term::Ident(sym) => {
+        Expr::Ident(sym) => {
             let name = kb.resolve_sym(*sym).to_string();
             env.lookup_var(&name).map(|ty| TypeResult::pure(ty, env.clone()))
         }
-        // Fn — expression forms
-        Term::Fn { functor, named_args, pos_args } => {
-            let functor_name = kb.resolve_sym(*functor).to_string();
-            let named_args = named_args.clone();
-            let pos_args = pos_args.clone();
-            match functor_name.as_str() {
-                "int_lit" => Some(TypeResult::pure(kb.make_sort_ref_by_name("Int"), env.clone())),
-                "float_lit" => Some(TypeResult::pure(kb.make_sort_ref_by_name("Float"), env.clone())),
-                "string_lit" => Some(TypeResult::pure(kb.make_sort_ref_by_name("String"), env.clone())),
-                "bool_lit" => Some(TypeResult::pure(kb.make_sort_ref_by_name("Bool"), env.clone())),
-                "var_ref" => {
-                    let name_sym = extract_sym_arg(kb, &named_args, &pos_args, "name")?;
-                    let name = kb.resolve_sym(name_sym).to_string();
-                    env.lookup_var(&name).map(|ty| TypeResult::pure(ty, env.clone()))
-                }
-                "constructor" => {
-                    let name_sym = extract_sym_arg(kb, &named_args, &pos_args, "name")?;
-                    let args_tid = get_named_arg(kb, &named_args, "args");
-                    let ctor_args: SmallVec<[TermId; 4]> = args_tid
-                        .map(|a| list_to_vec(kb, a).into_iter().collect())
-                        .unwrap_or_default();
-                    infer_constructor_type(kb, env, name_sym, &ctor_args, &SmallVec::new())
-                }
-                "apply" => check_apply(kb, env, &named_args, &pos_args, current_occ),
-                "if_expr" => check_if_expr(kb, env, &named_args),
-                "let_expr" => check_let_expr(kb, env, &named_args),
-                "match_expr" => check_match_expr(kb, env, &named_args),
-                "lambda" => check_lambda(kb, env, &named_args),
-                "ListLiteral" | "anthill.reflect.ListLiteral" => {
-                    check_list_literal(kb, env, &pos_args, &named_args)
-                }
-                "SetLiteral" | "anthill.reflect.SetLiteral" => {
-                    check_set_literal(kb, env, &pos_args)
-                }
-                "TupleLiteral" | "anthill.reflect.TupleLiteral" => {
-                    check_tuple_literal(kb, env, &pos_args)
-                }
-                _ => {
-                    let f_sym = *functor;
-                    if kb.is_constructor_symbol(f_sym) {
-                        infer_constructor_type(kb, env, f_sym, &pos_args, &named_args)
-                    } else {
-                        lookup_operation_return_type(kb, f_sym).map(|ty| TypeResult::pure(ty, env.clone()))
-                    }
-                }
-            }
+        Expr::VarRef { name } => {
+            let nm = kb.resolve_sym(*name).to_string();
+            env.lookup_var(&nm).map(|ty| TypeResult::pure(ty, env.clone()))
         }
-        _ => None,
+        Expr::Apply { functor, pos_args, named_args } => {
+            check_apply(kb, env, occ, *functor, pos_args, named_args)
+        }
+        Expr::Constructor { name, pos_args, named_args } => {
+            check_constructor(kb, env, *name, pos_args, named_args)
+        }
+        Expr::If { condition, then_branch, else_branch } => {
+            check_if_expr(kb, env, condition, then_branch, else_branch)
+        }
+        Expr::Let { pattern, type_annotation, value, body } => {
+            check_let_expr(kb, env, *pattern, *type_annotation, value, body)
+        }
+        Expr::Match { scrutinee, branches } => {
+            check_match_expr(kb, env, scrutinee, branches)
+        }
+        Expr::Lambda { param, body } => {
+            check_lambda(kb, env, *param, body)
+        }
+        Expr::ListLit(elems) => check_list_literal(kb, env, elems),
+        Expr::SetLit(elems) => check_set_literal(kb, env, elems),
+        Expr::TupleLit { positional, named } => {
+            check_tuple_literal(kb, env, positional, named)
+        }
+        // Post-elaboration forms — emitted by req_insertion, not the
+        // surface typer. Return None for now (the typer doesn't re-check
+        // elaborated bodies in the current pipeline). Constructor leaves
+        // and bare-functor fallbacks land in `Apply` via the materializer.
+        Expr::HoApply { .. }
+        | Expr::Instantiation { .. }
+        | Expr::ApplyWithin { .. }
+        | Expr::HoApplyWithin { .. }
+        | Expr::ConstructorWithin { .. }
+        | Expr::LambdaWithin { .. }
+        | Expr::RequirementAtSort { .. }
+        | Expr::ConstructRequirement { .. }
+        | Expr::Var(_)
+        | Expr::Bottom => None,
     }
 }
 
-/// Type-check a child expression slot. Every `Expr` child slot is an
-/// `ExprOccurrence` handle: split off the occurrence and recurse with it
-/// in hand, so the child's source identity flows instead of being
-/// discarded. See `docs/design/expr-occurrences.md`.
-fn type_check_child(kb: &mut KnowledgeBase, env: &TypingEnv, child: TermId) -> Option<TypeResult> {
-    let (occ, inner) = split_handle(kb, child);
-    type_check_expr(kb, env, inner, occ)
-}
-
-/// Attach a call-site `CallClass` to its occurrence, if the typer is
-/// tracking one. `occ` is `None` only in bare test envs that type-check
-/// un-occurrenced terms directly — the load pipeline always has it, so
-/// classification is simply skipped in those test-only cases.
-fn classify(kb: &mut KnowledgeBase, occ: Option<OccurrenceId>, class: CallClass) {
-    if let Some(occ) = occ {
-        kb.occurrences.set_classification(occ, class);
+/// Attach a call-site `CallClass` to its occurrence. Writes to the
+/// NodeOccurrence's `RefCell` (the canonical channel for downstream
+/// consumers post-WI-247) and — while the legacy `OccurrenceStore` is
+/// still live (deleted in WI-251) — also propagates to the legacy
+/// classification side-table so `req_insertion::run` continues to read
+/// classifications without migration.
+fn classify(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>, class: CallClass) {
+    occ.set_classification(class.clone());
+    if let Some(occ_id) = occ.origin_occ {
+        kb.occurrences.set_classification(occ_id, class);
     }
 }
 
@@ -688,11 +695,18 @@ fn classify(kb: &mut KnowledgeBase, occ: Option<OccurrenceId>, class: CallClass)
 fn check_apply(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
-    named_args: &SmallVec<[(Symbol, TermId); 2]>,
-    pos_args: &SmallVec<[TermId; 4]>,
-    current_occ: Option<OccurrenceId>,
+    occ: &Rc<NodeOccurrence>,
+    fn_sym: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
 ) -> Option<TypeResult> {
-    let fn_sym = extract_sym_arg(kb, named_args, pos_args, "fn")?;
+    // The materializer can land a constructor invocation in `Apply` when
+    // the surface term used a bare functor (no explicit
+    // `anthill.reflect.Expr.constructor` wrapper). Route those to the
+    // constructor checker first so type-param inference still happens.
+    if kb.is_constructor_symbol(fn_sym) {
+        return check_constructor(kb, env, fn_sym, pos_args, named_args);
+    }
 
     // Path 1: known operation — unify args with params to instantiate type params
     if let Some(op) = lookup_operation_info_full(kb, fn_sym) {
@@ -701,13 +715,6 @@ fn check_apply(
         // because op.effects may need parametric substitution before merging).
         let mut arg_effects: Vec<TermId> = Vec::new();
 
-        // Get actual arguments from the apply node
-        let args_tid = get_named_arg(kb, named_args, "args")
-            .or_else(|| pos_args.get(1).copied());
-        let arg_values: Vec<TermId> = args_tid
-            .map(|a| list_to_vec(kb, a))
-            .unwrap_or_default();
-
         // Param-symbol → arg-var-symbol map for parametric effect
         // substitution. When op declares `effects Modify[c]` (where c
         // is a parameter) and the call binds c to a var_ref expression
@@ -715,32 +722,37 @@ fn check_apply(
         // Term::Ref(c_sym) with Term::Ref(s_sym) in the effect.
         let mut param_to_arg_sym: HashMap<Symbol, Symbol> = HashMap::new();
 
-        // Unify each arg type with the corresponding param type
-        for (i, arg_tid) in arg_values.iter().enumerate() {
-            // Extract value from ApplyArg(name, value)
-            let arg_expr = if let Term::Fn { named_args: aa, .. } = kb.get_term(*arg_tid) {
-                get_named_arg(kb, aa, "value")
-                    .map(|v| split_handle(kb, v))
-            } else {
-                None
-            };
-
-            if let Some((arg_occ, expr)) = arg_expr {
-                // If this arg is a var_ref, record the param→arg-symbol
-                // binding for parametric effect substitution below.
-                if let Some(arg_var_sym) = extract_var_ref_sym(kb, expr) {
-                    if let Some(&(param_sym, _)) = op.params.get(i) {
-                        param_to_arg_sym.insert(param_sym, arg_var_sym);
-                    }
+        // Positional args match op.params by index (mirrors the legacy
+        // arg-list iteration order).
+        for (i, arg_occ) in pos_args.iter().enumerate() {
+            if let Some(arg_var_sym) = extract_var_ref_sym_node(arg_occ) {
+                if let Some(&(param_sym, _)) = op.params.get(i) {
+                    param_to_arg_sym.insert(param_sym, arg_var_sym);
                 }
-
-                if let Some(arg_result) = type_check_expr(kb, env, expr, arg_occ) {
-                    // Get the declared param type at this position
-                    if let Some(&(_, param_type)) = op.params.get(i) {
-                        unify_types(kb, &mut subst, arg_result.ty, param_type);
-                    }
-                    arg_effects = merge_effects(&arg_effects, &arg_result.effects);
+            }
+            if let Some(arg_result) = type_check_node(kb, env, arg_occ) {
+                if let Some(&(_, param_type)) = op.params.get(i) {
+                    unify_types(kb, &mut subst, arg_result.ty, param_type);
                 }
+                arg_effects = merge_effects(&arg_effects, &arg_result.effects);
+            }
+        }
+
+        // Named args match op.params by name. Positional args have
+        // already consumed the leading param slots, so the type-param
+        // bindings already in `subst` flow through.
+        for (arg_name, arg_occ) in named_args.iter() {
+            if let Some(arg_var_sym) = extract_var_ref_sym_node(arg_occ) {
+                param_to_arg_sym.insert(*arg_name, arg_var_sym);
+            }
+            if let Some(arg_result) = type_check_node(kb, env, arg_occ) {
+                if let Some(param_type) = op.params.iter()
+                    .find(|(s, _)| *s == *arg_name)
+                    .map(|(_, t)| *t)
+                {
+                    unify_types(kb, &mut subst, arg_result.ty, param_type);
+                }
+                arg_effects = merge_effects(&arg_effects, &arg_result.effects);
             }
         }
 
@@ -829,7 +841,7 @@ fn check_apply(
                                 impl_op_sym,
                             }
                         };
-                        classify(kb, current_occ, class);
+                        classify(kb, occ, class);
                     }
                 }
                 DispatchOutcome::NoMatch => {
@@ -856,7 +868,7 @@ fn check_apply(
                         let resolved_spec = enclosing_requires[slot].clone();
                         classify(
                             kb,
-                            current_occ,
+                            occ,
                             CallClass::DeferToRequirement {
                                 spec_op_sym: fn_sym,
                                 op_short_sym,
@@ -877,7 +889,7 @@ fn check_apply(
                 if !requires_chain(kb, parent_sym).is_empty() {
                     classify(
                         kb,
-                        current_occ,
+                        occ,
                         CallClass::ConcreteApplyWithin {
                             fn_target_sym: fn_sym,
                             callee_spec_sort: parent_sym,
@@ -901,7 +913,22 @@ fn check_apply(
         }
     }
 
-    None
+    // Path 3: unknown functor — recurse on args for effect propagation
+    // and fall back to the declared return type if any. Mirrors the
+    // legacy default branch of type_check_expr.
+    let mut effects: Vec<TermId> = Vec::new();
+    for arg_occ in pos_args.iter() {
+        if let Some(r) = type_check_node(kb, env, arg_occ) {
+            effects = merge_effects(&effects, &r.effects);
+        }
+    }
+    for (_, arg_occ) in named_args.iter() {
+        if let Some(r) = type_check_node(kb, env, arg_occ) {
+            effects = merge_effects(&effects, &r.effects);
+        }
+    }
+    lookup_operation_return_type(kb, fn_sym)
+        .map(|ty| TypeResult { ty, env: env.clone(), effects })
 }
 
 /// WI-218: allocate a rewritten `apply` term with `fn = impl_op_sym`,
@@ -2762,19 +2789,33 @@ fn op_has_runnable_body(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
     }
 }
 
-/// Infer the type of a constructor application, including type parameter instantiation.
+/// Constructor dispatch via NodeOccurrence — peer of `check_apply`.
+/// Handles both the surface `constructor(name=…, args=[…])` form and
+/// implicit constructor calls (an `Apply` whose functor is a constructor
+/// symbol — routed here from `check_apply`).
+fn check_constructor(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    name: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> Option<TypeResult> {
+    infer_constructor_type_node(kb, env, name, pos_args, named_args)
+}
+
+/// Infer the type of a constructor application from NodeOccurrence
+/// children, including type parameter instantiation.
 /// e.g., cons(head: 1, tail: nil) → parameterized(List, [T=Int])
-fn infer_constructor_type(
+fn infer_constructor_type_node(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     ctor_sym: Symbol,
-    pos_args: &SmallVec<[TermId; 4]>,
-    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
 ) -> Option<TypeResult> {
     let parent_tid = kb.constructor_parent_sort(ctor_sym)?;
     let parent_type = sort_term_to_type(kb, parent_tid);
 
-    // Get the constructor's declared field types
     let field_types = kb.entity_field_types(ctor_sym)?.to_vec();
     if field_types.is_empty() {
         return Some(TypeResult::pure(parent_type, env.clone()));
@@ -2783,36 +2824,24 @@ fn infer_constructor_type(
     let mut subst = Substitution::new();
     let mut effects = Vec::new();
 
-    // Unify named args with field types
     for &(field_sym, declared_type) in &field_types {
-        let arg_tid = named_args.iter()
-            .find(|(s, _)| *s == field_sym)
-            .map(|(_, v)| *v);
-        if let Some(arg) = arg_tid {
-            if let Some(r) = type_check_child(kb, env, arg) {
+        if let Some((_, arg_occ)) = named_args.iter().find(|(s, _)| *s == field_sym) {
+            if let Some(r) = type_check_node(kb, env, arg_occ) {
                 unify_types(kb, &mut subst, r.ty, declared_type);
                 effects = merge_effects(&effects, &r.effects);
             }
         }
     }
 
-    // Unify positional args with field types in order
-    for (i, &arg) in pos_args.iter().enumerate() {
+    for (i, arg_occ) in pos_args.iter().enumerate() {
         if let Some(&(_, declared_type)) = field_types.get(i) {
-            // For constructor expression form, args are ApplyArg(name, value)
-            let actual_arg = if let Term::Fn { named_args: aa, .. } = kb.get_term(arg) {
-                get_named_arg(kb, aa, "value").unwrap_or(arg)
-            } else {
-                arg
-            };
-            if let Some(r) = type_check_child(kb, env, actual_arg) {
+            if let Some(r) = type_check_node(kb, env, arg_occ) {
                 unify_types(kb, &mut subst, r.ty, declared_type);
                 effects = merge_effects(&effects, &r.effects);
             }
         }
     }
 
-    // If any type params were bound, build a parameterized type
     if subst.bindings.is_empty() {
         return Some(TypeResult { ty: parent_type, env: env.clone(), effects });
     }
@@ -2886,15 +2915,13 @@ fn extract_function_type_parts(kb: &KnowledgeBase, fn_type: TermId) -> Option<(T
 fn check_if_expr(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
-    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    condition: &Rc<NodeOccurrence>,
+    then_branch: &Rc<NodeOccurrence>,
+    else_branch: &Rc<NodeOccurrence>,
 ) -> Option<TypeResult> {
-    let cond = get_named_arg(kb, named_args, "cond")?;
-    let then_b = get_named_arg(kb, named_args, "then_branch")?;
-    let else_b = get_named_arg(kb, named_args, "else_branch")?;
-
-    let cond_r = type_check_child(kb, env, cond);
-    let then_r = type_check_child(kb, env, then_b);
-    let else_r = type_check_child(kb, env, else_b);
+    let cond_r = type_check_node(kb, env, condition);
+    let then_r = type_check_node(kb, env, then_branch);
+    let else_r = type_check_node(kb, env, else_branch);
 
     let ty = then_r.as_ref().map(|r| r.ty)
         .or_else(|| else_r.as_ref().map(|r| r.ty))?;
@@ -2919,14 +2946,12 @@ fn check_if_expr(
 fn check_let_expr(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
-    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    pattern: TermId,
+    annotation: Option<TermId>,
+    value: &Rc<NodeOccurrence>,
+    body: &Rc<NodeOccurrence>,
 ) -> Option<TypeResult> {
-    let pattern = get_named_arg(kb, named_args, "pattern")?;
-    let value = get_named_arg(kb, named_args, "value")?;
-    let body = get_named_arg(kb, named_args, "body")?;
-    let annotation = get_named_arg(kb, named_args, "type_name");
-
-    let value_r = type_check_child(kb, env, value);
+    let value_r = type_check_node(kb, env, value);
     let value_ty = value_r.as_ref().map(|r| r.ty);
 
     let mut ext_env = value_r.as_ref().map(|r| r.env.clone()).unwrap_or_else(|| env.clone());
@@ -2942,7 +2967,7 @@ fn check_let_expr(
         ext_env.declare_local_resource(var_name);
     }
 
-    let body_r = type_check_child(kb, &ext_env, body)?;
+    let body_r = type_check_node(kb, &ext_env, body)?;
 
     let mut effects = Vec::new();
     if let Some(ref r) = value_r { effects = merge_effects(&effects, &r.effects); }
@@ -2967,44 +2992,36 @@ fn extract_pattern_var_name(kb: &KnowledgeBase, pattern: TermId) -> Option<Strin
 fn check_match_expr(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
-    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    scrutinee: &Rc<NodeOccurrence>,
+    branches: &[MatchBranch],
 ) -> Option<TypeResult> {
-    let scrutinee = get_named_arg(kb, named_args, "scrutinee")?;
-    let branches = get_named_arg(kb, named_args, "branches")?;
-
-    let scr_r = type_check_child(kb, env, scrutinee);
+    let scr_r = type_check_node(kb, env, scrutinee);
     let scr_ty = scr_r.as_ref().map(|r| r.ty);
 
     let mut effects = Vec::new();
     if let Some(ref r) = scr_r { effects = merge_effects(&effects, &r.effects); }
 
-    let branch_list = list_to_vec(kb, branches);
     let mut result_ty: Option<TermId> = None;
     let mut covered_entities: Vec<Symbol> = Vec::new();
     let mut has_wildcard = false;
 
-    for branch_tid in &branch_list {
-        if let Term::Fn { named_args: br_args, .. } = kb.get_term(*branch_tid).clone() {
-            let pattern = get_named_arg(kb, &br_args, "pattern");
-            let body = get_named_arg(kb, &br_args, "body");
-            if let (Some(pat), Some(bod)) = (pattern, body) {
-                collect_covered_entities(kb, pat, &mut covered_entities, &mut has_wildcard);
-                let mut branch_env = env.clone();
-                extend_env_from_pattern(kb, &mut branch_env, pat, scr_ty);
-                if let Some(body_r) = type_check_child(kb, &branch_env, bod) {
-                    if result_ty.is_none() { result_ty = Some(body_r.ty); }
-                    // Filter effects on resources local to *this branch's
-                    // pattern bindings* before merging — pattern-bound vars
-                    // (e.g. `b` in `case wis(b, _) -> persist(b, …)`) live
-                    // only inside the case, so their effects shouldn't
-                    // escape. The outer env returned by check_match_expr
-                    // doesn't carry these bindings, so without this filter
-                    // they'd surface as undeclared effects on the enclosing
-                    // operation.
-                    let branch_external = external_effects(kb, &branch_env, &body_r.effects);
-                    effects = merge_effects(&effects, &branch_external);
-                }
-            }
+    for branch in branches {
+        let pat = branch.pattern;
+        collect_covered_entities(kb, pat, &mut covered_entities, &mut has_wildcard);
+        let mut branch_env = env.clone();
+        extend_env_from_pattern(kb, &mut branch_env, pat, scr_ty);
+        if let Some(body_r) = type_check_node(kb, &branch_env, &branch.body) {
+            if result_ty.is_none() { result_ty = Some(body_r.ty); }
+            // Filter effects on resources local to *this branch's
+            // pattern bindings* before merging — pattern-bound vars
+            // (e.g. `b` in `case wis(b, _) -> persist(b, …)`) live
+            // only inside the case, so their effects shouldn't
+            // escape. The outer env returned by check_match_expr
+            // doesn't carry these bindings, so without this filter
+            // they'd surface as undeclared effects on the enclosing
+            // operation.
+            let branch_external = external_effects(kb, &branch_env, &body_r.effects);
+            effects = merge_effects(&effects, &branch_external);
         }
     }
 
@@ -3047,16 +3064,14 @@ fn check_match_expr(
 fn check_lambda(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
-    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    param: TermId,
+    body: &Rc<NodeOccurrence>,
 ) -> Option<TypeResult> {
-    let param = get_named_arg(kb, named_args, "param")?;
-    let body = get_named_arg(kb, named_args, "body")?;
-
     let param_type = extract_pattern_type_ann(kb, param);
     let mut lambda_env = env.clone();
     extend_env_from_pattern(kb, &mut lambda_env, param, param_type);
 
-    let body_r = type_check_child(kb, &lambda_env, body);
+    let body_r = type_check_node(kb, &lambda_env, body);
 
     // Build arrow(param, result, effects) type term
     let a_val = param_type.unwrap_or_else(|| {
@@ -3077,25 +3092,23 @@ fn check_lambda(
 
 // ── Collection literals ────────────────────────────────────────
 
-/// ListLiteral: pos_args are elements, named_arg "tail" is optional tail.
-/// Type = List[T = element_type], using expected_collection_type from env if available.
+/// ListLiteral: elems are positional, no source-form tail in the
+/// NodeOccurrence model — the materializer expands cons-list sugar into
+/// the elements vector.
 fn check_list_literal(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
-    pos_args: &SmallVec<[TermId; 4]>,
-    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    elems: &[Rc<NodeOccurrence>],
 ) -> Option<TypeResult> {
     let mut effects = Vec::new();
     let mut element_type: Option<TermId> = None;
 
-    // Try to get expected element type from context
     if let Some(expected) = env.expected_collection_type() {
         element_type = extract_type_param(kb, expected, "T");
     }
 
-    // Type-check each element
-    for &elem in pos_args.iter() {
-        if let Some(r) = type_check_child(kb, env, elem) {
+    for elem in elems.iter() {
+        if let Some(r) = type_check_node(kb, env, elem) {
             if element_type.is_none() {
                 element_type = Some(r.ty);
             }
@@ -3103,15 +3116,6 @@ fn check_list_literal(
         }
     }
 
-    // Type-check tail if present
-    let tail = get_named_arg(kb, named_args, "tail");
-    if let Some(tail_tid) = tail {
-        if let Some(r) = type_check_child(kb, env, tail_tid) {
-            effects = merge_effects(&effects, &r.effects);
-        }
-    }
-
-    // Build parameterized(base: sort_ref(List), bindings: [TypeBinding(param: T, value: element_type)])
     let t_val = element_type.unwrap_or_else(|| {
         let fresh = kb.intern("?T");
         kb.make_type_var(fresh)
@@ -3123,12 +3127,11 @@ fn check_list_literal(
     Some(TypeResult { ty: list_type, env: env.clone(), effects })
 }
 
-/// SetLiteral: pos_args are elements.
-/// Type = Set[T = element_type].
+/// SetLiteral: elems are positional.
 fn check_set_literal(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
-    pos_args: &SmallVec<[TermId; 4]>,
+    elems: &[Rc<NodeOccurrence>],
 ) -> Option<TypeResult> {
     let mut effects = Vec::new();
     let mut element_type: Option<TermId> = None;
@@ -3137,8 +3140,8 @@ fn check_set_literal(
         element_type = extract_type_param(kb, expected, "T");
     }
 
-    for &elem in pos_args.iter() {
-        if let Some(r) = type_check_child(kb, env, elem) {
+    for elem in elems.iter() {
+        if let Some(r) = type_check_node(kb, env, elem) {
             if element_type.is_none() {
                 element_type = Some(r.ty);
             }
@@ -3157,28 +3160,38 @@ fn check_set_literal(
     Some(TypeResult { ty: set_type, env: env.clone(), effects })
 }
 
-/// TupleLiteral: pos_args are fields. Type = Tuple with per-field types.
+/// TupleLiteral: positional fields produce a named-tuple type with
+/// `_0`, `_1`, … field names; explicitly named fields keep their name.
 fn check_tuple_literal(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
-    pos_args: &SmallVec<[TermId; 4]>,
+    positional: &[Rc<NodeOccurrence>],
+    named: &[(Symbol, Rc<NodeOccurrence>)],
 ) -> Option<TypeResult> {
     let mut effects = Vec::new();
     let mut field_types: Vec<(Symbol, TermId)> = Vec::new();
 
-    for (i, &elem) in pos_args.iter().enumerate() {
-        if let Some(r) = type_check_child(kb, env, elem) {
-            let field_name = kb.intern(&format!("_{}", i));
+    for (i, elem) in positional.iter().enumerate() {
+        let field_name = kb.intern(&format!("_{}", i));
+        if let Some(r) = type_check_node(kb, env, elem) {
             field_types.push((field_name, r.ty));
             effects = merge_effects(&effects, &r.effects);
         } else {
-            let field_name = kb.intern(&format!("_{}", i));
             let fresh = kb.intern(&format!("?field_{}", i));
             field_types.push((field_name, kb.make_type_var(fresh)));
         }
     }
+    for (name, elem) in named.iter() {
+        if let Some(r) = type_check_node(kb, env, elem) {
+            field_types.push((*name, r.ty));
+            effects = merge_effects(&effects, &r.effects);
+        } else {
+            let fresh_label = format!("?field_{}", kb.resolve_sym(*name).to_string());
+            let fresh = kb.intern(&fresh_label);
+            field_types.push((*name, kb.make_type_var(fresh)));
+        }
+    }
 
-    // Build named_tuple(fields: List[TypeField])
     let tuple_type = kb.make_named_tuple_type(&field_types);
 
     Some(TypeResult { ty: tuple_type, env: env.clone(), effects })
@@ -4869,10 +4882,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
         op_sym: Symbol,
         return_type: TermId,
         declared_effects: Vec<TermId>,
-        body_expr: TermId,
-        body_occ: Option<OccurrenceId>,
-        // Param-name as a String for the typer's variable-name lookup;
-        // the underlying record uses Symbol.
+        body_node: Rc<NodeOccurrence>,
         params: Vec<(String, TermId)>,
         span: Option<Span>,
     }
@@ -4885,11 +4895,10 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             None => continue,
         };
         // Body-less ops (specs) have no body to type-check.
-        let body_expr = match rec.body {
-            Some(b) => b,
+        let body_node = match rec.body_node {
+            Some(n) => n,
             None => continue,
         };
-        let body_occ = rec.body_occ;
         let span = kb.occurrences.by_functor(rec.op_sym)
             .first()
             .map(|&occ_id| kb.occurrences.span(occ_id).span);
@@ -4900,8 +4909,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             op_sym: rec.op_sym,
             return_type: rec.return_type,
             declared_effects: rec.effects,
-            body_expr,
-            body_occ,
+            body_node,
             params,
             span,
         });
@@ -4921,7 +4929,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             env.bind_var(name.clone(), *ty);
         }
 
-        if let Some(result) = type_check_expr(kb, &env, op.body_expr, op.body_occ) {
+        if let Some(result) = type_check_node(kb, &env, &op.body_node) {
             if !types_compatible(kb, result.ty, op.return_type) {
                 errors.push(TypeError::TypeMismatch {
                     occ: None,
