@@ -8,6 +8,7 @@ use smallvec::SmallVec;
 
 use crate::intern::SymbolTable;
 use crate::kb::term::{Term, TermId};
+use crate::span::Span;
 use super::ir::SimpleTermStore;
 
 // ── Operator properties ─────────────────────────────────────────
@@ -110,6 +111,13 @@ pub fn desugar_infix_chain(
     Ok(result)
 }
 
+/// Span of a synthesized op-node: merge the first and last operand span.
+/// For a prefix op the operator token has no TermId, so the start offset
+/// drops by the operator's width — accepted trade-off.
+fn op_span(terms: &SimpleTermStore, first: TermId, last: TermId) -> Span {
+    Span::merge(terms.span(first), terms.span(last))
+}
+
 fn desugar(
     elements: &[InfixElement<'_>],
     mut pos: usize,
@@ -130,11 +138,15 @@ fn desugar(
             let (right, new_pos) = desugar(elements, pos, entry.priority, terms, symbols)?;
             pos = new_pos;
             let functor = symbols.intern(entry.functor);
-            terms.alloc(Term::Fn {
-                functor,
-                pos_args: SmallVec::from_elem(right, 1),
-                named_args: SmallVec::new(),
-            })
+            let span = op_span(terms, right, right);
+            terms.alloc(
+                Term::Fn {
+                    functor,
+                    pos_args: SmallVec::from_elem(right, 1),
+                    named_args: SmallVec::new(),
+                },
+                span,
+            )
         }
         InfixElement::Operand(tid) => {
             pos += 1;
@@ -184,19 +196,27 @@ fn desugar(
                 let (right, new_pos) = desugar(elements, pos, entry.priority, terms, symbols)?;
                 pos = new_pos;
                 let functor = symbols.intern(cont.functor);
-                left = terms.alloc(Term::Fn {
-                    functor,
-                    pos_args: SmallVec::from_slice(&[left, middle, right]),
-                    named_args: SmallVec::new(),
-                });
+                let span = op_span(terms, left, right);
+                left = terms.alloc(
+                    Term::Fn {
+                        functor,
+                        pos_args: SmallVec::from_slice(&[left, middle, right]),
+                        named_args: SmallVec::new(),
+                    },
+                    span,
+                );
             } else {
                 // No continuation — binary infix
                 let functor = symbols.intern(entry.functor);
-                left = terms.alloc(Term::Fn {
-                    functor,
-                    pos_args: SmallVec::from_slice(&[left, middle]),
-                    named_args: SmallVec::new(),
-                });
+                let span = op_span(terms, left, middle);
+                left = terms.alloc(
+                    Term::Fn {
+                        functor,
+                        pos_args: SmallVec::from_slice(&[left, middle]),
+                        named_args: SmallVec::new(),
+                    },
+                    span,
+                );
             }
         } else {
             // Binary infix
@@ -208,11 +228,15 @@ fn desugar(
             pos = new_pos;
 
             let functor = symbols.intern(entry.functor);
-            left = terms.alloc(Term::Fn {
-                functor,
-                pos_args: SmallVec::from_slice(&[left, right]),
-                named_args: SmallVec::new(),
-            });
+            let span = op_span(terms, left, right);
+            left = terms.alloc(
+                Term::Fn {
+                    functor,
+                    pos_args: SmallVec::from_slice(&[left, right]),
+                    named_args: SmallVec::new(),
+                },
+                span,
+            );
         }
     }
 
@@ -228,6 +252,7 @@ mod tests {
     fn run(ops: &[&str]) -> (SimpleTermStore, SymbolTable, TermId) {
         let mut terms = SimpleTermStore::new();
         let mut symbols = SymbolTable::new();
+        let z = Span::default();
 
         // Build elements: classify by dictionary lookup — if it's a known
         // infix/prefix operator, treat as operator; otherwise as operand.
@@ -237,7 +262,7 @@ mod tests {
                 elements.push(InfixElement::Operator(s));
             } else {
                 let sym = symbols.intern(s);
-                let tid = terms.alloc(Term::Ident(sym));
+                let tid = terms.alloc(Term::Ident(sym), z);
                 elements.push(InfixElement::Operand(tid));
             }
         }
@@ -334,9 +359,10 @@ mod tests {
         let mut terms = SimpleTermStore::new();
         let mut symbols = SymbolTable::new();
 
-        let a = terms.alloc(Term::Ident(symbols.intern("a")));
-        let b = terms.alloc(Term::Ident(symbols.intern("b")));
-        let c = terms.alloc(Term::Ident(symbols.intern("c")));
+        let z = Span::default();
+        let a = terms.alloc(Term::Ident(symbols.intern("a")), z);
+        let b = terms.alloc(Term::Ident(symbols.intern("b")), z);
+        let c = terms.alloc(Term::Ident(symbols.intern("c")), z);
         let elements = vec![
             InfixElement::Operand(a),
             InfixElement::Operator("="),

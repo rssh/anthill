@@ -17,15 +17,21 @@ use crate::kb::term::{Term, TermId, TermSource};
 
 // ── Simple term store (parse-time only) ─────────────────────────
 
+/// Parse-time term paired with its source span. Bundling enforces the
+/// every-term-has-a-span invariant `OccurrenceStore` relies on (see
+/// `docs/design/expr-occurrences.md`).
+#[derive(Debug)]
+pub struct ParseTermEntry {
+    pub term: Term,
+    pub span: Span,
+}
+
 /// A plain term store for parse time — no hash-consing or refcounting.
 #[derive(Debug, Default)]
 pub struct SimpleTermStore {
-    terms: Vec<Term>,
+    entries: Vec<ParseTermEntry>,
     /// Inline description blocks attached to variables: TermId → description texts.
     pub descriptions: HashMap<TermId, Vec<String>>,
-    /// Byte-offset spans for terms.
-    /// Populated by the converter for each term node that has a source position.
-    pub spans: HashMap<TermId, Span>,
     /// Type annotations on `let pattern : type = value` (proposal 035 form
     /// (1)). Keyed by the let_expr TermId allocated in convert_let_expr.
     /// The loader reads this when expanding a let_expr to thread the
@@ -40,22 +46,26 @@ impl SimpleTermStore {
         Self::default()
     }
 
-    pub fn alloc(&mut self, term: Term) -> TermId {
-        let id = TermId::from_raw(self.terms.len() as u32);
-        self.terms.push(term);
+    pub fn alloc(&mut self, term: Term, span: Span) -> TermId {
+        let id = TermId::from_raw(self.entries.len() as u32);
+        self.entries.push(ParseTermEntry { term, span });
         id
     }
 
     pub fn get(&self, id: TermId) -> &Term {
-        &self.terms[id.index()]
+        &self.entries[id.index()].term
+    }
+
+    pub fn span(&self, id: TermId) -> Span {
+        self.entries[id.index()].span
     }
 
     pub fn len(&self) -> usize {
-        self.terms.len()
+        self.entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.terms.is_empty()
+        self.entries.is_empty()
     }
 }
 

@@ -116,13 +116,26 @@ impl<'a> Converter<'a> {
     }
 
     /// Allocate a Fn term with only positional args (no named args).
-    fn alloc_fn_term(&mut self, functor_name: &str, pos_args: SmallVec<[TermId; 4]>) -> TermId {
+    fn alloc_fn_term(
+        &mut self,
+        functor_name: &str,
+        pos_args: SmallVec<[TermId; 4]>,
+        span: Span,
+    ) -> TermId {
         let functor = self.intern(functor_name);
-        self.terms.alloc(Term::Fn {
-            functor,
-            pos_args,
-            named_args: SmallVec::new(),
-        })
+        self.terms.alloc(
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args: SmallVec::new(),
+            },
+            span,
+        )
+    }
+
+    /// Bottom-term factory for error/unwrap_or_else paths.
+    fn alloc_bottom(&mut self, span: Span) -> TermId {
+        self.terms.alloc(Term::Bottom, span)
     }
 
     /// Find the first named child of a given kind.
@@ -317,52 +330,37 @@ impl<'a> Converter<'a> {
 
     // ── Terms ───────────────────────────────────────────────────
 
-    /// Convert a term node and record its source span.
-    fn convert_term_with_span(&mut self, node: Node) -> TermId {
-        let span = self.span(node);
-        let tid = self.convert_term(node);
-        self.terms.spans.insert(tid, span);
-        tid
-    }
-
-    /// Convert a pattern node and record its source span.
-    fn convert_pattern_with_span(&mut self, node: Node) -> TermId {
-        let span = self.span(node);
-        let tid = self.convert_pattern(node);
-        self.terms.spans.insert(tid, span);
-        tid
-    }
-
     fn convert_term(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
         match node.kind() {
             "string_literal" => {
                 let term = Term::Const(Literal::String(decode_string_lit(self.text(node))));
-                self.terms.alloc(term)
+                self.terms.alloc(term, span)
             }
             "integer_literal" => {
                 let text = self.text(node);
                 if let Ok(n) = text.parse::<i64>() {
-                    self.terms.alloc(Term::Const(Literal::Int(n)))
+                    self.terms.alloc(Term::Const(Literal::Int(n)), span)
                 } else if let Ok(big) = text.parse::<num_bigint::BigInt>() {
-                    self.terms.alloc(Term::Const(Literal::BigInt(big)))
+                    self.terms.alloc(Term::Const(Literal::BigInt(big)), span)
                 } else {
                     self.err(format!("invalid integer: {text}"), node);
-                    self.terms.alloc(Term::Const(Literal::Int(0)))
+                    self.terms.alloc(Term::Const(Literal::Int(0)), span)
                 }
             }
             "float_literal" => {
                 let text = self.text(node);
                 match text.parse::<f64>() {
-                    Ok(f) => self.terms.alloc(Term::Const(Literal::Float(OrderedFloat(f)))),
+                    Ok(f) => self.terms.alloc(Term::Const(Literal::Float(OrderedFloat(f))), span),
                     Err(_) => {
                         self.err(format!("invalid float: {text}"), node);
-                        self.terms.alloc(Term::Const(Literal::Float(OrderedFloat(0.0))))
+                        self.terms.alloc(Term::Const(Literal::Float(OrderedFloat(0.0))), span)
                     }
                 }
             }
             "boolean_literal" => {
                 let b = self.text(node) == "true";
-                self.terms.alloc(Term::Const(Literal::Bool(b)))
+                self.terms.alloc(Term::Const(Literal::Bool(b)), span)
             }
             "variable" => {
                 // variable is a single token: ?name or bare ?
@@ -392,7 +390,7 @@ impl<'a> Converter<'a> {
                 } else {
                     self.intern("?")
                 };
-                self.terms.alloc(Term::Ref(sym))
+                self.terms.alloc(Term::Ref(sym), span)
             }
             "infix_term" => self.convert_infix(node),
             "prefix_term" => self.convert_prefix(node),
@@ -407,33 +405,35 @@ impl<'a> Converter<'a> {
             }
             "identifier" => {
                 let sym = self.intern(self.text(node));
-                self.terms.alloc(Term::Ident(sym))
+                self.terms.alloc(Term::Ident(sym), span)
             }
             other => {
                 self.err(format!("unexpected term node: {other}"), node);
-                self.terms.alloc(Term::Bottom)
+                self.alloc_bottom(span)
             }
         }
     }
 
     fn convert_variable_node(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
         let text = self.text(node);
         if text.len() > 1 {
             // Named variable: ?x (shared within scope)
             let name = &text[1..]; // strip leading '?'
             let sym = self.intern(name);
             let vid = self.get_or_create_var(sym);
-            self.terms.alloc(Term::Var(Var::Global(vid)))
+            self.terms.alloc(Term::Var(Var::Global(vid)), span)
         } else {
             // Bare ? — anonymous variable (always fresh, like _ in Prolog)
             let sym = self.intern("_");
             let vid = VarId::new(self.next_var, sym);
             self.next_var += 1;
-            self.terms.alloc(Term::Var(Var::Global(vid)))
+            self.terms.alloc(Term::Var(Var::Global(vid)), span)
         }
     }
 
     fn convert_fn_term(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
         let name_node = self.field(node, "name").unwrap_or(node);
 
         // Check if functor is a variable (HO predicate application: ?P(args))
@@ -473,11 +473,11 @@ impl<'a> Converter<'a> {
 
         if is_ho {
             let ho_apply_sym = self.intern("ho_apply");
-            self.terms.alloc(Term::Fn { functor: ho_apply_sym, pos_args, named_args })
+            self.terms.alloc(Term::Fn { functor: ho_apply_sym, pos_args, named_args }, span)
         } else {
             let name = self.convert_name(name_node);
             let functor = self.intern_name(&name);
-            self.terms.alloc(Term::Fn { functor, pos_args, named_args })
+            self.terms.alloc(Term::Fn { functor, pos_args, named_args }, span)
         }
     }
 
@@ -489,6 +489,7 @@ impl<'a> Converter<'a> {
     /// rule scope; proper inner-binder scoping is handled at SLD resolution
     /// time (WI-108).
     fn convert_nested_implication(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
         let mut binders: SmallVec<[TermId; 4]> = SmallVec::new();
         for n in self.fields_by_name(node, "binder") {
             binders.push(self.convert_variable_node(n));
@@ -500,17 +501,19 @@ impl<'a> Converter<'a> {
             .map(|n| self.convert_rule_body(n).into_iter().collect())
             .unwrap_or_default();
 
-        let binders_tuple = self.alloc_fn_term("tuple", binders);
-        let antecedents_tuple = self.alloc_fn_term("tuple", antecedents);
-        let consequent_tuple = self.alloc_fn_term("tuple", consequent);
+        let binders_tuple = self.alloc_fn_term("tuple", binders, span);
+        let antecedents_tuple = self.alloc_fn_term("tuple", antecedents, span);
+        let consequent_tuple = self.alloc_fn_term("tuple", consequent, span);
         self.alloc_fn_term(
             "forall_impl",
             SmallVec::from_slice(&[binders_tuple, antecedents_tuple, consequent_tuple]),
+            span,
         )
     }
 
     fn convert_instantiation_term(&mut self, node: Node) -> TermId {
         // Eq[Int] or Eq[T = Int] — parameterized type in term position
+        let span = self.span(node);
         let name_node = self.field(node, "name").unwrap_or(node);
         let name = self.convert_name(name_node);
         let functor = self.intern_name(&name);
@@ -525,8 +528,8 @@ impl<'a> Converter<'a> {
                 match (param_node, type_node) {
                     (Some(p), Some(t)) => {
                         // Explicit: Eq[T = Int] — convert the type to a term.
-                        // WI-224 fix: when t is `parameterized_type`, preserve
-                        // its inner bindings as a Term::Fn (so conditional-
+                        // WI-224: when t is `parameterized_type`, preserve its
+                        // inner bindings as a Term::Fn (so conditional
                         // resolution can read them); only `simple_type` /
                         // bare names collapse to `Term::Ref(Name)`.
                         let param_name = self.convert_name(p);
@@ -535,27 +538,27 @@ impl<'a> Converter<'a> {
                         named_args.push((param_sym, value_tid));
                     }
                     (Some(p), None) => {
-                        // Positional: List[Int] — value binds to next param in order
+                        // Positional: List[Int] — value binds to next param in order.
+                        let p_span = self.span(p);
                         let name = self.convert_name(p);
                         let sym = self.intern_name(&name);
-                        pos_args.push(self.terms.alloc(Term::Ref(sym)));
+                        pos_args.push(self.terms.alloc(Term::Ref(sym), p_span));
                     }
                     (None, Some(t)) => {
-                        // Positional binding. Bare names (`List[Int]`)
-                        // and parameterised types (`Tree[List[Int]]`)
-                        // become `Term::Ref(Name)`; variable forms and
-                        // tuple/arrow types fall through to convert_term
-                        // (which handles them correctly).
-                        // (Preserve the legacy flatten behavior here;
-                        // only the (Some, Some) path got upgraded for
-                        // WI-224 conditional-resolution support, since
-                        // that's where the regressions on positional
-                        // type values would otherwise appear.)
+                        // Positional binding. Bare names (`List[Int]`) and
+                        // parameterised types (`Tree[List[Int]]`) become
+                        // `Term::Ref(Name)`; variable forms and tuple/arrow
+                        // types fall through to `convert_term`. Preserves the
+                        // legacy flatten behavior; only the (Some, Some) arm
+                        // got upgraded for WI-224 conditional-resolution
+                        // support — that's where regressions on positional
+                        // type values would surface.
+                        let t_span = self.span(t);
                         let tid = match t.kind() {
                             "simple_type" | "parameterized_type" => {
                                 let name = self.convert_type_to_name(t);
                                 let sym = self.intern_name(&name);
-                                self.terms.alloc(Term::Ref(sym))
+                                self.terms.alloc(Term::Ref(sym), t_span)
                             }
                             _ => self.convert_term(t),
                         };
@@ -566,7 +569,7 @@ impl<'a> Converter<'a> {
             }
         }
 
-        self.terms.alloc(Term::Fn { functor, pos_args, named_args })
+        self.terms.alloc(Term::Fn { functor, pos_args, named_args }, span)
     }
 
     /// WI-224 helper — convert a `_type` CST node into a Term value
@@ -578,11 +581,12 @@ impl<'a> Converter<'a> {
     /// the legacy flatten-to-name behavior to preserve compatibility
     /// with existing programs that use such shapes.
     fn convert_type_value(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
         match node.kind() {
             "simple_type" => {
                 let name = self.convert_type_to_name(node);
                 let sym = self.intern_name(&name);
-                self.terms.alloc(Term::Ref(sym))
+                self.terms.alloc(Term::Ref(sym), span)
             }
             "parameterized_type" => {
                 let name_node = self.child_by_kind(node, "name").unwrap_or(node);
@@ -604,9 +608,10 @@ impl<'a> Converter<'a> {
                                 named_args.push((param_sym, value_tid));
                             }
                             (Some(p), None) => {
+                                let p_span = self.span(p);
                                 let name = self.convert_name(p);
                                 let sym = self.intern_name(&name);
-                                pos_args.push(self.terms.alloc(Term::Ref(sym)));
+                                pos_args.push(self.terms.alloc(Term::Ref(sym), p_span));
                             }
                             (None, Some(t)) => {
                                 pos_args.push(self.convert_type_value(t));
@@ -615,7 +620,7 @@ impl<'a> Converter<'a> {
                         }
                     }
                 }
-                self.terms.alloc(Term::Fn { functor, pos_args, named_args })
+                self.terms.alloc(Term::Fn { functor, pos_args, named_args }, span)
             }
             // Variables (`?` / `?x`) — preserve as Var terms (the
             // legacy `convert_term` path). Resolution treats these as
@@ -629,7 +634,7 @@ impl<'a> Converter<'a> {
             _ => {
                 let name = self.convert_type_to_name(node);
                 let sym = self.intern_name(&name);
-                self.terms.alloc(Term::Ref(sym))
+                self.terms.alloc(Term::Ref(sym), span)
             }
         }
     }
@@ -648,6 +653,7 @@ impl<'a> Converter<'a> {
     fn convert_infix(&mut self, node: Node) -> TermId {
         use super::pratt::{InfixElement, desugar_infix_chain};
 
+        let span = self.span(node);
         let mut elements = Vec::new();
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
@@ -673,7 +679,7 @@ impl<'a> Converter<'a> {
             Ok(tid) => tid,
             Err(msg) => {
                 self.err(format!("infix desugaring: {msg}"), node);
-                self.terms.alloc(Term::Bottom)
+                self.alloc_bottom(span)
             }
         }
     }
@@ -682,6 +688,7 @@ impl<'a> Converter<'a> {
     fn convert_prefix(&mut self, node: Node) -> TermId {
         use super::pratt::prefix_entry;
 
+        let span = self.span(node);
         let mut op_text = None;
         let mut operand_tid = None;
 
@@ -698,7 +705,7 @@ impl<'a> Converter<'a> {
         }
 
         let op = op_text.unwrap_or("!");
-        let operand = operand_tid.unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+        let operand = operand_tid.unwrap_or_else(|| self.terms.alloc(Term::Bottom, span));
 
         let functor_name = match prefix_entry(op) {
             Some(entry) => entry.functor,
@@ -708,37 +715,44 @@ impl<'a> Converter<'a> {
             }
         };
         let functor = self.intern(functor_name);
-        self.terms.alloc(Term::Fn {
-            functor,
-            pos_args: SmallVec::from_elem(operand, 1),
-            named_args: SmallVec::new(),
-        })
+        self.terms.alloc(
+            Term::Fn {
+                functor,
+                pos_args: SmallVec::from_elem(operand, 1),
+                named_args: SmallVec::new(),
+            },
+            span,
+        )
     }
 
     /// Convert field access: `?x.y` → `field_access(?x, Ident(y))`.
     /// Desugars to `Fn { functor: "field_access", pos_args: [object, Ident(field)] }`.
     fn convert_field_access(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
         let object_node = self.field(node, "object").unwrap_or(node);
         let object_tid = self.convert_term(object_node);
 
         let field_node = self.field(node, "field").unwrap_or(node);
+        let field_span = self.span(field_node);
         let field_sym = self.intern(self.text(field_node));
-        let field_tid = self.terms.alloc(Term::Ident(field_sym));
+        let field_tid = self.terms.alloc(Term::Ident(field_sym), field_span);
 
         let functor = self.intern("field_access");
-        self.terms.alloc(Term::Fn {
-            functor,
-            pos_args: SmallVec::from_slice(&[object_tid, field_tid]),
-            named_args: SmallVec::new(),
-        })
+        self.terms.alloc(
+            Term::Fn {
+                functor,
+                pos_args: SmallVec::from_slice(&[object_tid, field_tid]),
+                named_args: SmallVec::new(),
+            },
+            span,
+        )
     }
 
     /// Convert set literal: `{x, y, z}` → `SetLiteral(x, y, z)`.
     /// `{}` → `SetLiteral()`.
     /// Desugaring to Set.insert/empty happens later when scope is known.
     fn convert_set_literal(&mut self, node: Node) -> TermId {
-        let functor = self.intern("SetLiteral");
-
+        let span = self.span(node);
         let mut elements: SmallVec<[TermId; 4]> = SmallVec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -746,18 +760,14 @@ impl<'a> Converter<'a> {
                 elements.push(self.convert_term(child));
             }
         }
-
-        self.terms.alloc(Term::Fn {
-            functor,
-            pos_args: elements,
-            named_args: SmallVec::new(),
-        })
+        self.alloc_fn_term("SetLiteral", elements, span)
     }
 
     /// Convert collection literal: `[x, y, z]` → `ListLiteral(x, y, z)`.
     /// `[]` → `ListLiteral()`.
     /// `[x, y | t]` → `ListLiteral(x, y, tail: t)`.
     fn convert_collection_literal(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
         let functor = self.intern("ListLiteral");
         let tail_node = self.field(node, "tail");
 
@@ -774,14 +784,18 @@ impl<'a> Converter<'a> {
             named_args.push((self.intern("tail"), self.convert_term(t)));
         }
 
-        self.terms.alloc(Term::Fn {
-            functor,
-            pos_args: elements,
-            named_args,
-        })
+        self.terms.alloc(
+            Term::Fn {
+                functor,
+                pos_args: elements,
+                named_args,
+            },
+            span,
+        )
     }
 
     fn convert_tuple_literal(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
         let functor = self.intern("TupleLiteral");
 
         let mut positional: SmallVec<[TermId; 4]> = SmallVec::new();
@@ -818,11 +832,14 @@ impl<'a> Converter<'a> {
             }
         }
 
-        self.terms.alloc(Term::Fn {
-            functor,
-            pos_args: SmallVec::new(),
-            named_args: named,
-        })
+        self.terms.alloc(
+            Term::Fn {
+                functor,
+                pos_args: SmallVec::new(),
+                named_args: named,
+            },
+            span,
+        )
     }
 
     fn convert_tuple_type(&mut self, node: Node) -> TypeExpr {
@@ -933,12 +950,13 @@ impl<'a> Converter<'a> {
     }
 
     fn convert_meta_entry(&mut self, node: Node) -> MetaEntry {
+        let span = self.span(node);
         let key = self.field(node, "key")
             .map(|n| self.convert_name(n))
-            .unwrap_or_else(|| Name::simple(self.intern("?"), self.span(node)));
+            .unwrap_or_else(|| Name::simple(self.intern("?"), span));
         let value = self.field(node, "value")
             .map(|n| self.convert_term(n))
-            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+            .unwrap_or_else(|| self.terms.alloc(Term::Bottom, span));
         MetaEntry { key, value }
     }
 
@@ -1063,7 +1081,7 @@ impl<'a> Converter<'a> {
                 let sym = self.intern("_");
                 let vid = crate::kb::term::VarId::new(self.next_var, sym);
                 self.next_var += 1;
-                let tid = self.terms.alloc(Term::Var(Var::Global(vid)));
+                let tid = self.terms.alloc(Term::Var(Var::Global(vid)), span);
                 TypeExpr::Variable { term_id: tid, descriptions: Vec::new() }
             });
 
@@ -1315,7 +1333,7 @@ impl<'a> Converter<'a> {
     fn convert_fact(&mut self, node: Node) -> Option<Fact> {
         let span = self.span(node);
         let term = self.field(node, "term")
-            .map(|t| self.convert_term_with_span(t))?;
+            .map(|t| self.convert_term(t))?;
         let meta = self.convert_meta_block(node);
         Some(Fact { term, sort: None, meta, span })
     }
@@ -1487,20 +1505,22 @@ impl<'a> Converter<'a> {
     /// `named_arg(name: "...", value: <term>)` term so it can be carried
     /// alongside positional args in proof strategies.
     fn convert_named_arg(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
         let key_node = self.field(node, "name");
         let val_node = self.field(node, "value");
         if let (Some(k), Some(v)) = (key_node, val_node) {
             let key_str = self.terms.alloc(
-                Term::Const(Literal::String(self.text(k).to_string()))
+                Term::Const(Literal::String(self.text(k).to_string())),
+                self.span(k),
             );
             let val_tid = self.convert_term(v);
             let functor = self.intern("named_arg");
             let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
             named_args.push((self.intern("name"), key_str));
             named_args.push((self.intern("value"), val_tid));
-            self.terms.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args })
+            self.terms.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args }, span)
         } else {
-            self.terms.alloc(Term::Bottom)
+            self.alloc_bottom(span)
         }
     }
 
@@ -1824,22 +1844,20 @@ impl<'a> Converter<'a> {
     /// Convert an expression body node (match_expr, if_expr, let_chain,
     /// lambda_expr, or a plain term). Records source spans for all terms.
     fn convert_expr_body(&mut self, node: Node) -> TermId {
-        let span = self.span(node);
-        let tid = match node.kind() {
+        match node.kind() {
             "match_expr" => self.convert_match_expr(node),
             "if_expr" => self.convert_if_expr(node),
             "let_chain" => self.convert_let_expr(node),
             "lambda_expr" => self.convert_lambda_expr(node),
             _ => self.convert_term(node),
-        };
-        self.terms.spans.insert(tid, span);
-        tid
+        }
     }
 
     fn convert_match_expr(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
         let scrutinee = self.field(node, "scrutinee")
-            .map(|n| self.convert_term_with_span(n))
-            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+            .map(|n| self.convert_term(n))
+            .unwrap_or_else(|| self.alloc_bottom(span));
 
         let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
         pos_args.push(scrutinee);
@@ -1847,49 +1865,52 @@ impl<'a> Converter<'a> {
             pos_args.push(self.convert_match_branch(branch));
         }
 
-        self.alloc_fn_term("match_expr", pos_args)
+        self.alloc_fn_term("match_expr", pos_args, span)
     }
 
     fn convert_match_branch(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
         let pattern = self.field(node, "pattern")
-            .map(|p| self.convert_pattern_with_span(p))
-            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+            .map(|p| self.convert_pattern(p))
+            .unwrap_or_else(|| self.alloc_bottom(span));
 
         let body = self.field(node, "body")
             .map(|b| self.convert_expr_body(b))
-            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+            .unwrap_or_else(|| self.alloc_bottom(span));
 
-        self.alloc_fn_term("match_branch", SmallVec::from_slice(&[pattern, body]))
+        self.alloc_fn_term("match_branch", SmallVec::from_slice(&[pattern, body]), span)
     }
 
     fn convert_if_expr(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
         let condition = self.field(node, "condition")
-            .map(|n| self.convert_term_with_span(n))
-            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+            .map(|n| self.convert_term(n))
+            .unwrap_or_else(|| self.alloc_bottom(span));
 
         let then_branch = self.field(node, "then")
             .map(|n| self.convert_expr_body(n))
-            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+            .unwrap_or_else(|| self.alloc_bottom(span));
 
         let else_branch = self.field(node, "else")
             .map(|n| self.convert_expr_body(n))
-            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+            .unwrap_or_else(|| self.alloc_bottom(span));
 
-        self.alloc_fn_term("if_expr", SmallVec::from_slice(&[condition, then_branch, else_branch]))
+        self.alloc_fn_term("if_expr", SmallVec::from_slice(&[condition, then_branch, else_branch]), span)
     }
 
     fn convert_let_expr(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
         let pattern = self.field(node, "pattern")
-            .map(|p| self.convert_pattern_with_span(p))
-            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+            .map(|p| self.convert_pattern(p))
+            .unwrap_or_else(|| self.alloc_bottom(span));
 
         let value = self.field(node, "value")
             .map(|v| self.convert_expr_body(v))
-            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+            .unwrap_or_else(|| self.alloc_bottom(span));
 
         let body = self.field(node, "body")
             .map(|b| self.convert_expr_body(b))
-            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+            .unwrap_or_else(|| self.alloc_bottom(span));
 
         // Proposal 035 form (1): optional `: type` annotation between
         // pattern and `=`. The TypeExpr lives outside the term store —
@@ -1901,6 +1922,7 @@ impl<'a> Converter<'a> {
         let let_id = self.alloc_fn_term(
             "let_expr",
             SmallVec::from_slice(&[pattern, value, body]),
+            span,
         );
         if let Some(ty) = type_anno {
             self.terms.let_type_annotations.insert(let_id, ty);
@@ -1909,40 +1931,43 @@ impl<'a> Converter<'a> {
     }
 
     fn convert_lambda_expr(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
         let param = self.field(node, "param")
-            .map(|p| self.convert_pattern_with_span(p))
-            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+            .map(|p| self.convert_pattern(p))
+            .unwrap_or_else(|| self.alloc_bottom(span));
 
         let body = self.field(node, "body")
             .map(|b| self.convert_expr_body(b))
-            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+            .unwrap_or_else(|| self.alloc_bottom(span));
 
-        self.alloc_fn_term("lambda", SmallVec::from_slice(&[param, body]))
+        self.alloc_fn_term("lambda", SmallVec::from_slice(&[param, body]), span)
     }
 
     // ── Patterns ─────────────────────────────────────────────────
 
     fn convert_pattern(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
         match node.kind() {
             "pattern_wildcard" => {
-                self.alloc_fn_term("pattern_wildcard", SmallVec::new())
+                self.alloc_fn_term("pattern_wildcard", SmallVec::new(), span)
             }
             "pattern_var" | "identifier" => {
                 let id_node = self.child_by_kind(node, "identifier").unwrap_or(node);
                 let sym = self.intern(self.text(id_node));
-                let name_tid = self.terms.alloc(Term::Ident(sym));
-                self.alloc_fn_term("pattern_var", SmallVec::from_elem(name_tid, 1))
+                let name_tid = self.terms.alloc(Term::Ident(sym), self.span(id_node));
+                self.alloc_fn_term("pattern_var", SmallVec::from_elem(name_tid, 1), span)
             }
             "pattern_literal" => {
                 let child = node.named_child(0).unwrap_or(node);
                 let lit_tid = self.convert_term(child);
-                self.alloc_fn_term("pattern_literal", SmallVec::from_elem(lit_tid, 1))
+                self.alloc_fn_term("pattern_literal", SmallVec::from_elem(lit_tid, 1), span)
             }
             "pattern_constructor" => {
                 let name_node = self.field(node, "name").unwrap_or(node);
+                let name_span = self.span(name_node);
                 let name = self.convert_name(name_node);
                 let name_sym = self.intern_name(&name);
-                let name_tid = self.terms.alloc(Term::Ident(name_sym));
+                let name_tid = self.terms.alloc(Term::Ident(name_sym), name_span);
 
                 let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
                 let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
@@ -1950,12 +1975,13 @@ impl<'a> Converter<'a> {
                 let mut cursor = node.walk();
                 for child in node.named_children(&mut cursor) {
                     if child.kind() == "named_pattern_field" {
+                        let child_span = self.span(child);
                         let field_name = self.field(child, "field_name")
                             .map(|n| self.intern(self.text(n)))
                             .unwrap_or_else(|| self.intern("_"));
                         let field_pattern = self.field(child, "field_pattern")
                             .map(|p| self.convert_pattern(p))
-                            .unwrap_or_else(|| self.terms.alloc(Term::Bottom));
+                            .unwrap_or_else(|| self.alloc_bottom(child_span));
                         named_args.push((field_name, field_pattern));
                     } else if is_pattern_kind(child.kind()) {
                         pos_args.push(self.convert_pattern(child));
@@ -1963,10 +1989,10 @@ impl<'a> Converter<'a> {
                 }
 
                 if named_args.is_empty() {
-                    self.alloc_fn_term("pattern_constructor", pos_args)
+                    self.alloc_fn_term("pattern_constructor", pos_args, span)
                 } else {
                     let functor = self.intern("pattern_constructor");
-                    self.terms.alloc(Term::Fn { functor, pos_args, named_args })
+                    self.terms.alloc(Term::Fn { functor, pos_args, named_args }, span)
                 }
             }
             "pattern_tuple" => {
@@ -1978,11 +2004,11 @@ impl<'a> Converter<'a> {
                     }
                 }
 
-                self.alloc_fn_term("pattern_tuple", pos_args)
+                self.alloc_fn_term("pattern_tuple", pos_args, span)
             }
             other => {
                 self.err(format!("unexpected pattern node: {other}"), node);
-                self.terms.alloc(Term::Bottom)
+                self.alloc_bottom(span)
             }
         }
     }

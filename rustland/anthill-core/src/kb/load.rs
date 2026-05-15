@@ -3064,34 +3064,27 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// Create an occurrence for a parse-time term, if it has a recorded span.
-    fn maybe_create_occurrence(
-        &mut self,
-        parse_id: TermId,
-        kb_id: TermId,
-    ) -> Option<OccurrenceId> {
-        self.maybe_create_occurrence_ex(parse_id, kb_id, true)
+    /// Allocate an Expr-position occurrence for a converted term.
+    fn create_occurrence(&mut self, parse_id: TermId, kb_id: TermId) -> OccurrenceId {
+        self.create_occurrence_ex(parse_id, kb_id, true)
     }
 
-    fn maybe_create_occurrence_ex(
+    fn create_occurrence_ex(
         &mut self,
         parse_id: TermId,
         kb_id: TermId,
         is_expr: bool,
-    ) -> Option<OccurrenceId> {
-        if let Some(&span) = self.parsed.terms.spans.get(&parse_id) {
-            let source_span = SourceSpan::from_span(self.source_id, span);
-            let occ_id = self.kb.occurrences.alloc(
-                kb_id, source_span, self.current_owner, is_expr,
-            );
-            if let Term::Fn { functor, .. } = self.kb.terms.get(kb_id) {
-                let functor = *functor;
-                self.kb.occurrences.index_by_functor(occ_id, functor);
-            }
-            Some(occ_id)
-        } else {
-            None
+    ) -> OccurrenceId {
+        let span = self.parsed.terms.span(parse_id);
+        let source_span = SourceSpan::from_span(self.source_id, span);
+        let occ_id = self.kb.occurrences.alloc(
+            kb_id, source_span, self.current_owner, is_expr,
+        );
+        if let Term::Fn { functor, .. } = self.kb.terms.get(kb_id) {
+            let functor = *functor;
+            self.kb.occurrences.index_by_functor(occ_id, functor);
         }
+        occ_id
     }
 
     /// True iff `ty` is `sort_ref(name: <List sym>)`.
@@ -3279,7 +3272,7 @@ impl<'a> Loader<'a> {
     /// Returns (kb_term_id, occurrence_id). The occurrence_id is used by
     /// parent expressions to put Literal::Handle(Occurrence, occ_id) in
     /// ExprOccurrence-typed fields.
-    fn convert_expr_term(&mut self, parse_id: TermId) -> (TermId, Option<OccurrenceId>) {
+    fn convert_expr_term(&mut self, parse_id: TermId) -> (TermId, OccurrenceId) {
         let parse_term = self.parsed.terms.get(parse_id).clone();
         let kb_id = match parse_term {
             Term::Fn { functor, pos_args, named_args } => {
@@ -3302,19 +3295,16 @@ impl<'a> Loader<'a> {
             Term::Ident(_) => self.load_var_ref(parse_id),
             _ => self.convert_term(parse_id),
         };
-        let occ_id = self.maybe_create_occurrence(parse_id, kb_id);
+        let occ_id = self.create_occurrence(parse_id, kb_id);
         (kb_id, occ_id)
     }
 
-    /// Helper: convert child expression and return a Handle literal term
-    /// containing its OccurrenceId (for ExprOccurrence-typed fields).
-    /// Falls back to the raw TermId if no occurrence was created.
+    /// Convert a child expression and wrap it in an `ExprOccurrence`
+    /// handle literal — required for every Expr-typed child slot per
+    /// `docs/design/expr-occurrences.md`.
     fn convert_expr_child(&mut self, parse_id: TermId) -> TermId {
-        let (kb_id, occ_id) = self.convert_expr_term(parse_id);
-        match occ_id {
-            Some(occ) => self.kb.alloc(Term::Const(Literal::Handle(HandleKind::Occurrence, occ.raw()))),
-            None => kb_id,
-        }
+        let (_kb_id, occ_id) = self.convert_expr_term(parse_id);
+        self.kb.alloc(Term::Const(Literal::Handle(HandleKind::Occurrence, occ_id.raw())))
     }
 
     /// match_expr: pos_args[0] = scrutinee, pos_args[1..] = branches
@@ -4303,7 +4293,7 @@ impl<'a> Loader<'a> {
 
         let term = self.convert_term(f.term);
         // Create occurrence for the fact's top-level term (not an expression)
-        self.maybe_create_occurrence_ex(f.term, term, false);
+        self.create_occurrence_ex(f.term, term, false);
 
         let meta = f.meta.as_ref().map(|mb| self.load_meta_block(mb));
         let rule_id = self.kb.assert_fact(term, fact_sort, domain, meta);
