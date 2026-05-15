@@ -195,13 +195,6 @@ pub struct TypingEnv {
     /// spec-op call site under this body; caching once per body avoids
     /// re-walking `SortRequiresInfo` per apply.
     enclosing: Option<EnclosingSort>,
-    /// WI-235: symbol of the operation whose body is currently being
-    /// type-checked. `check_apply` records it in
-    /// `CallClass::ConcreteApplyWithin` so `req_insertion::run` can
-    /// group classifications by owning operation for the
-    /// construct_requirement hoist phase. The body's TermId is derived
-    /// via `lookup_operation_info` when the hoist phase needs it.
-    enclosing_op_sym: Option<Symbol>,
     pub diagnostics: Vec<String>,
 }
 
@@ -219,7 +212,6 @@ impl TypingEnv {
             expected_collection_type: None,
             local_resources: Vec::new(),
             enclosing: None,
-            enclosing_op_sym: None,
             diagnostics: Vec::new(),
         }
     }
@@ -237,17 +229,6 @@ impl TypingEnv {
 
     pub fn enclosing_sort(&self) -> Option<Symbol> {
         self.enclosing.as_ref().map(|e| e.sort)
-    }
-
-    /// WI-235: record the symbol of the operation being type-checked
-    /// so `check_apply` can stamp it onto each classification for
-    /// later body-oriented grouping in `req_insertion::run`.
-    pub fn set_enclosing_op_sym(&mut self, op_sym: Option<Symbol>) {
-        self.enclosing_op_sym = op_sym;
-    }
-
-    pub fn enclosing_op_sym(&self) -> Option<Symbol> {
-        self.enclosing_op_sym
     }
 
     fn enclosing_requires(&self) -> Option<&[RequiresEntry]> {
@@ -840,7 +821,6 @@ fn check_apply(
                                 callee_spec_sort: impl_sort.unwrap(),
                                 spec_op_sym: fn_sym,
                                 enclosing_sort,
-                                enclosing_op_sym: env.enclosing_op_sym(),
                                 resolved_tree: resolved_tree.clone(),
                             }
                         } else {
@@ -903,7 +883,6 @@ fn check_apply(
                             callee_spec_sort: parent_sym,
                             spec_op_sym: fn_sym,
                             enclosing_sort: env.enclosing_sort(),
-                            enclosing_op_sym: env.enclosing_op_sym(),
                             resolved_tree: None,
                         },
                     );
@@ -1537,17 +1516,11 @@ pub enum CallClass {
     /// Direct (falls back to per-dep search against `caller_requires`
     /// derived from `enclosing_sort`).
     ///
-    /// WI-235: `enclosing_op_sym` is the owning operation symbol. The
-    /// hoist phase of `req_insertion::run` buckets classifications by
-    /// this field to identify duplicate `construct_requirement` shapes
-    /// per body for let-hoisting; body TermId is derived via
-    /// `lookup_operation_info`.
     ConcreteApplyWithin {
         fn_target_sym: Symbol,
         callee_spec_sort: Symbol,
         spec_op_sym: Symbol,
         enclosing_sort: Option<Symbol>,
-        enclosing_op_sym: Option<Symbol>,
         resolved_tree: Option<ResolvedRequiresNode>,
     },
     /// Defer-to-requirement (WI-222 Phase C+D): dispatch deferred to
@@ -4944,9 +4917,6 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             .rsplit_once('.')
             .and_then(|(parent_qn, _)| kb.try_resolve_symbol(parent_qn));
         env.set_enclosing_sort(kb, parent_sym);
-        // WI-235: stamp the op symbol so per-call classifications carry
-        // an owning-body handle for req_insertion's hoist phase.
-        env.set_enclosing_op_sym(Some(op.op_sym));
         for (name, ty) in &op.params {
             env.bind_var(name.clone(), *ty);
         }

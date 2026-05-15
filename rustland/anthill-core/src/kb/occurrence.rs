@@ -50,6 +50,39 @@ impl ExprOccurrenceId {
     }
 }
 
+// ── Pass identifiers ────────────────────────────────────────────
+
+/// Identifier for a compiler pass that can synthesize occurrences.
+/// Newtype over Symbol — typed wrapper preventing accidental Symbol mixing;
+/// same 4-byte cost. Passes register once at KB construction (or first use)
+/// via `kb.register_pass("anthill.kb.passes.<name>") -> PassId`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct PassId(Symbol);
+
+impl PassId {
+    pub fn symbol(self) -> Symbol {
+        self.0
+    }
+
+    pub(crate) fn from_symbol(sym: Symbol) -> Self {
+        PassId(sym)
+    }
+}
+
+// ── Occurrence origin ───────────────────────────────────────────
+
+/// Provenance marker for an occurrence — distinguishes user-written occurrences
+/// from those synthesized by a post-load pass.
+///
+/// Synthesizing passes call `alloc_synthesized`, which stamps `Synthesized`
+/// with both a back-pointer to the origin source occurrence (`from`) and the
+/// pass that did the synthesis (`by`). Source occurrences carry no extra data.
+#[derive(Clone, Copy, Debug)]
+pub enum OccurrenceOrigin {
+    Source,
+    Synthesized { from: OccurrenceId, by: PassId },
+}
+
 // ── Store ───────────────────────────────────────────────────────
 
 struct OccurrenceEntry {
@@ -59,6 +92,7 @@ struct OccurrenceEntry {
     /// None for top-level or unknown context.
     owner: Option<Symbol>,
     is_expr: bool,
+    origin: OccurrenceOrigin,
     /// WI-231 — call-site classification the typer (`check_apply`)
     /// attached to this occurrence, consumed by `kb::req_insertion::run`.
     /// Boxed: `CallClass::ConcreteApplyWithin` is large and most
@@ -93,16 +127,7 @@ impl OccurrenceStore {
         owner: Option<Symbol>,
         is_expr: bool,
     ) -> OccurrenceId {
-        let id = OccurrenceId(self.entries.len() as u32);
-        self.entries.push(OccurrenceEntry {
-            term,
-            span,
-            owner,
-            is_expr,
-            classification: None,
-        });
-        self.by_term.entry(term).or_default().push(id);
-        id
+        self.alloc_with_origin(term, span, owner, is_expr, OccurrenceOrigin::Source)
     }
 
     /// Create an expression occurrence (convenience method).
@@ -114,6 +139,53 @@ impl OccurrenceStore {
     ) -> ExprOccurrenceId {
         let id = self.alloc(term, span, owner, true);
         ExprOccurrenceId(id)
+    }
+
+    /// Create a synthesized occurrence wrapping `term`. Span is inherited
+    /// from the origin source occurrence `from`. `by` identifies the
+    /// synthesizing pass — obtain via `KnowledgeBase::register_pass`.
+    pub fn alloc_synthesized(
+        &mut self,
+        term: TermId,
+        from: OccurrenceId,
+        owner: Option<Symbol>,
+        by: PassId,
+        is_expr: bool,
+    ) -> OccurrenceId {
+        let span = self.span(from);
+        self.alloc_with_origin(
+            term, span, owner, is_expr,
+            OccurrenceOrigin::Synthesized { from, by },
+        )
+    }
+
+    /// Create a synthesized expression occurrence (convenience).
+    pub fn alloc_synthesized_expr(
+        &mut self,
+        term: TermId,
+        from: OccurrenceId,
+        owner: Option<Symbol>,
+        by: PassId,
+    ) -> ExprOccurrenceId {
+        let id = self.alloc_synthesized(term, from, owner, by, true);
+        ExprOccurrenceId(id)
+    }
+
+    fn alloc_with_origin(
+        &mut self,
+        term: TermId,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+        is_expr: bool,
+        origin: OccurrenceOrigin,
+    ) -> OccurrenceId {
+        let id = OccurrenceId(self.entries.len() as u32);
+        self.entries.push(OccurrenceEntry {
+            term, span, owner, is_expr, origin,
+            classification: None,
+        });
+        self.by_term.entry(term).or_default().push(id);
+        id
     }
 
     // ── Accessors ───────────────────────────────────────────────
@@ -132,6 +204,11 @@ impl OccurrenceStore {
 
     pub fn is_expr(&self, id: OccurrenceId) -> bool {
         self.entries[id.index()].is_expr
+    }
+
+    /// Provenance of the occurrence (Source or Synthesized).
+    pub fn origin(&self, id: OccurrenceId) -> &OccurrenceOrigin {
+        &self.entries[id.index()].origin
     }
 
     // ── Classifications (WI-231) ────────────────────────────────
@@ -229,6 +306,52 @@ mod tests {
 
         assert_eq!(store.by_term(term), &[occ1, occ2]);
         assert_eq!(store.by_term(TermId::from_raw(999)), &[] as &[OccurrenceId]);
+    }
+
+    #[test]
+    fn alloc_default_is_source() {
+        let mut store = OccurrenceStore::new();
+        let occ = store.alloc(TermId::from_raw(1), make_span(0, 0, 5), None, true);
+        assert!(matches!(store.origin(occ), OccurrenceOrigin::Source));
+    }
+
+    #[test]
+    fn alloc_synthesized_marks_origin_and_inherits_span() {
+        use crate::intern::SymbolTable;
+
+        let mut store = OccurrenceStore::new();
+        let mut symbols = SymbolTable::new();
+        let source_span = make_span(0, 100, 200);
+        let owner_sym = symbols.intern("my_op");
+        let pass_sym = symbols.intern("anthill.kb.passes.test_pass");
+        let pass = PassId::from_symbol(pass_sym);
+
+        // Source occurrence the synth'd one descends from.
+        let source_occ = store.alloc(TermId::from_raw(10), source_span, Some(owner_sym), true);
+
+        // Synthesized occurrence.
+        let synth_occ = store.alloc_synthesized(
+            TermId::from_raw(20),
+            source_occ,
+            Some(owner_sym),
+            pass,
+            true,
+        );
+
+        // Span inherits from `from`.
+        assert_eq!(store.span(synth_occ), source_span);
+        assert_eq!(store.owner(synth_occ), Some(owner_sym));
+        assert_eq!(store.term(synth_occ), TermId::from_raw(20));
+        assert!(store.is_expr(synth_occ));
+
+        // Origin records the back-pointer and the synthesizing pass.
+        match store.origin(synth_occ) {
+            OccurrenceOrigin::Synthesized { from, by } => {
+                assert_eq!(*from, source_occ);
+                assert_eq!(by.symbol(), pass_sym);
+            }
+            OccurrenceOrigin::Source => panic!("expected Synthesized, got Source"),
+        }
     }
 
     #[test]

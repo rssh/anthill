@@ -26,13 +26,6 @@
 //!
 //! WI-232: chain memoization. Per-enclosing-sort `requires_chain` is
 //! computed at most once per pass invocation.
-//!
-//! WI-235: let-hoist phase. After per-call rewrites are emitted, a
-//! second pass identifies `construct_requirement` dispatching-dict
-//! expressions that appear multiple times within the same operation
-//! body (matched by hash-consed TermId) and rewrites them to share a
-//! single `let_expr` binding at the body root. Saves N-1 arena
-//! allocations per body invocation for each duplicated dict shape.
 
 use std::collections::HashMap;
 

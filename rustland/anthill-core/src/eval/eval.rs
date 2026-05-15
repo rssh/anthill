@@ -1241,8 +1241,6 @@ pub fn lookup_operation_body(
     functor: Symbol,
 ) -> Option<(TermId, Vec<(Symbol, TermId)>)> {
     let rec = crate::kb::op_info::lookup_operation_info(kb, functor)?;
-    // WI-235: prefer a body override (from `req_insertion::run`'s hoist
-    // phase) so let-wrapping fires before the original body is reduced.
-    let body = kb.op_body_override(functor).or(rec.body)?;
+    let body = rec.body?;
     Some((body, rec.params))
 }

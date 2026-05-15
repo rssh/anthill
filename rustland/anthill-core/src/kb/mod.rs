@@ -269,17 +269,6 @@ pub struct KnowledgeBase {
     // collision-disambiguation HashMap on every frame push.
     pub(crate) synth_req_names_cache: RefCell<HashMap<Symbol, Rc<Vec<Symbol>>>>,
 
-    // WI-235 — per-operation body overrides produced by
-    // `req_insertion::run`'s hoist phase. Maps op symbol → new body
-    // TermId (typically a `let_expr` wrapping the original body to
-    // pre-allocate hoisted dispatching dicts). Consulted by
-    // `eval::eval::lookup_operation_body` ahead of the OperationInfo
-    // fact. Distinct from `dispatch_rewrites` because the wrapping
-    // let's `body` field references the original body's TermId — using
-    // `dispatch_rewrites` would substitute the inner body recursively
-    // and loop forever.
-    pub(crate) op_body_overrides: HashMap<Symbol, TermId>,
-
     // WI-226 Cache B — memoized spec-op SLD dispatch results, keyed by
     // `(SortGoal, scope)`. Saves re-walking `SortProvidesInfo` for
     // repeated spec-op calls at the same (spec, bindings, scope) — common
@@ -332,7 +321,6 @@ impl KnowledgeBase {
             routes: route::RouteRegistry::new(),
             dispatch_rewrites: HashMap::new(),
             dispatch_origin: HashMap::new(),
-            op_body_overrides: HashMap::new(),
             requires_chain_cache: RefCell::new(HashMap::new()),
             requires_tree_cache: RefCell::new(HashMap::new()),
             synth_req_names_cache: RefCell::new(HashMap::new()),
@@ -412,15 +400,12 @@ impl KnowledgeBase {
         self.dispatch_rewrites.get(&original).copied()
     }
 
-    /// WI-235: record a body override for `op_sym`. See
-    /// `op_body_overrides` field doc for the substitution-loop hazard
-    /// that makes this distinct from `dispatch_rewrites`.
-    pub fn set_op_body_override(&mut self, op_sym: Symbol, new_body: TermId) {
-        self.op_body_overrides.insert(op_sym, new_body);
-    }
-
-    pub fn op_body_override(&self, op_sym: Symbol) -> Option<TermId> {
-        self.op_body_overrides.get(&op_sym).copied()
+    /// Register a synthesizing pass by qualified name. Returns a PassId
+    /// that can be passed to `OccurrenceStore::alloc_synthesized`'s `by:`
+    /// field. Idempotent — re-registering returns the same PassId.
+    /// Passes call this at startup (or first use) to obtain their identifier.
+    pub fn register_pass(&mut self, qualified_name: &str) -> crate::kb::occurrence::PassId {
+        crate::kb::occurrence::PassId::from_symbol(self.symbols.intern(qualified_name))
     }
 
     /// Has this SortRequiresInfo fact already been finalized
