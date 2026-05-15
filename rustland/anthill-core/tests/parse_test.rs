@@ -3535,9 +3535,11 @@ fn parse_records_term_spans() {
     match &parsed.items[0] {
         Item::Operation(op) => {
             let body = op.body.unwrap();
+            let span = parsed.terms.span(body);
             assert!(
-                parsed.terms.spans.contains_key(&body),
-                "expression body should have a span recorded"
+                span.end > span.start,
+                "expression body span should cover a non-empty source range; got {:?}",
+                span,
             );
         }
         other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),

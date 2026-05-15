@@ -2663,7 +2663,7 @@ fn field_name_from_apply_arg(
     arg_term: TermId,
 ) -> Result<String, CppCodegenError> {
     // Unwrap ApplyArg → value
-    let inner = if let Term::Fn { functor, named_args, .. } = kb.get_term(arg_term) {
+    let mut inner = if let Term::Fn { functor, named_args, .. } = kb.get_term(arg_term) {
         if kb.qualified_name_of(*functor) == "anthill.reflect.ApplyArg" {
             find_named(kb, named_args, "value")
                 .or_else(|| find_named(kb, named_args, "expr"))
@@ -2676,6 +2676,11 @@ fn field_name_from_apply_arg(
     } else {
         arg_term
     };
+    // Unwrap the ExprOccurrence handle the loader puts around every
+    // Expr child slot (expr-occurrences.md): the field name lives inside.
+    if let Term::Const(Literal::Handle(HandleKind::Occurrence, id)) = kb.get_term(inner) {
+        inner = kb.occurrence_store().term(OccurrenceId::from_raw(*id));
+    }
     // Unwrap var_ref → name → Ref(<sym>)
     if let Term::Fn { functor, named_args, .. } = kb.get_term(inner) {
         if kb.qualified_name_of(*functor) == "anthill.reflect.Expr.var_ref" {
