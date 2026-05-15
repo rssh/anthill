@@ -38,7 +38,10 @@ pub enum NodeKind {
     Expr {
         expr: Expr,
         origin: OccurrenceOrigin,
-        classification: Option<Box<CallClass>>,
+        /// Typer-attached classification (WI-231). RefCell because the typer
+        /// mutates this after construction while other walkers may hold
+        /// shared Rc references to the same NodeOccurrence.
+        classification: RefCell<Option<Box<CallClass>>>,
     },
     /// Rule head — positional wrapper around a Term-shaped head pattern.
     RuleHead {
@@ -54,67 +57,67 @@ pub enum Expr {
     // Compound — children are NodeOccurrences (alternating back)
     Apply {
         functor: Symbol,
-        pos_args: Vec<NodeOccurrence>,
-        named_args: Vec<(Symbol, NodeOccurrence)>,
+        pos_args: Vec<Rc<NodeOccurrence>>,
+        named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
     },
     HoApply {
-        predicate: Box<NodeOccurrence>,
-        args: Vec<NodeOccurrence>,
+        predicate: Rc<NodeOccurrence>,
+        args: Vec<Rc<NodeOccurrence>>,
     },
     Constructor {
         name: Symbol,
-        pos_args: Vec<NodeOccurrence>,
-        named_args: Vec<(Symbol, NodeOccurrence)>,
+        pos_args: Vec<Rc<NodeOccurrence>>,
+        named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
     },
-    Match { scrutinee: Box<NodeOccurrence>, branches: Vec<MatchBranch> },
+    Match { scrutinee: Rc<NodeOccurrence>, branches: Vec<MatchBranch> },
     If {
-        condition: Box<NodeOccurrence>,
-        then_branch: Box<NodeOccurrence>,
-        else_branch: Box<NodeOccurrence>,
+        condition: Rc<NodeOccurrence>,
+        then_branch: Rc<NodeOccurrence>,
+        else_branch: Rc<NodeOccurrence>,
     },
     Let {
         pattern: TermId,
         type_annotation: Option<TypeExpr>,
-        value: Box<NodeOccurrence>,
-        body: Box<NodeOccurrence>,
+        value: Rc<NodeOccurrence>,
+        body: Rc<NodeOccurrence>,
     },
-    Lambda { param: TermId, body: Box<NodeOccurrence> },
+    Lambda { param: TermId, body: Rc<NodeOccurrence> },
     Instantiation {
         name: Symbol,
-        pos_args: Vec<NodeOccurrence>,
-        named_args: Vec<(Symbol, NodeOccurrence)>,
+        pos_args: Vec<Rc<NodeOccurrence>>,
+        named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
     },
-    ListLit(Vec<NodeOccurrence>),
-    SetLit(Vec<NodeOccurrence>),
+    ListLit(Vec<Rc<NodeOccurrence>>),
+    SetLit(Vec<Rc<NodeOccurrence>>),
     TupleLit {
-        positional: Vec<NodeOccurrence>,
-        named: Vec<(Symbol, NodeOccurrence)>,
+        positional: Vec<Rc<NodeOccurrence>>,
+        named: Vec<(Symbol, Rc<NodeOccurrence>)>,
     },
 
     // Post-elaboration forms (produced by req_insertion / typer rewrites)
     ApplyWithin {
         functor: Symbol,
-        args: Vec<NodeOccurrence>,
-        named_args: Vec<(Symbol, NodeOccurrence)>,
-        requirements: Vec<NodeOccurrence>,
+        args: Vec<Rc<NodeOccurrence>>,
+        named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+        requirements: Vec<Rc<NodeOccurrence>>,
     },
-    HoApplyWithin { predicate: Box<NodeOccurrence>, args: Vec<NodeOccurrence>,
-                    requirements: Vec<NodeOccurrence> },
+    HoApplyWithin { predicate: Rc<NodeOccurrence>, args: Vec<Rc<NodeOccurrence>>,
+                    requirements: Vec<Rc<NodeOccurrence>> },
     ConstructorWithin {
         name: Symbol,
-        pos_args: Vec<NodeOccurrence>,
-        named_args: Vec<(Symbol, NodeOccurrence)>,
-        requirements: Vec<NodeOccurrence>,
+        pos_args: Vec<Rc<NodeOccurrence>>,
+        named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+        requirements: Vec<Rc<NodeOccurrence>>,
     },
     LambdaWithin {
         param: TermId,
-        body: Box<NodeOccurrence>,
-        requirements: Vec<NodeOccurrence>,
+        body: Rc<NodeOccurrence>,
+        requirements: Vec<Rc<NodeOccurrence>>,
     },
-    RequirementAtSort { chain: Box<NodeOccurrence>, slot: i64 },
+    RequirementAtSort { chain: Rc<NodeOccurrence>, slot: i64 },
     ConstructRequirement {
         impl_functor: Symbol,
-        requirements: Vec<NodeOccurrence>,
+        requirements: Vec<Rc<NodeOccurrence>>,
     },
     VarRef { name: Symbol },
 
@@ -128,8 +131,8 @@ pub enum Expr {
 
 pub struct MatchBranch {
     pub pattern: TermId,
-    pub guard: Option<NodeOccurrence>,
-    pub body: NodeOccurrence,
+    pub guard: Option<Rc<NodeOccurrence>>,
+    pub body: Rc<NodeOccurrence>,
     pub span: SourceSpan,
 }
 ```
@@ -137,10 +140,57 @@ pub struct MatchBranch {
 Patterns remain `TermId` (current handling unchanged — minimum work; pattern
 reform is a separate concern).
 
+## Why Rc-linked trees throughout
+
+Every child slot in `Expr` (and `MatchBranch`) is `Rc<NodeOccurrence>`, not bare
+`NodeOccurrence` or `Box<NodeOccurrence>`. The whole tree is Rc-linked from the
+start. Three benefits:
+
+1. **Reflection bindings are cheap.** `body_of(?op, ?body)` etc. need to bind a
+   Value to a NodeOccurrence in the KB. With `Rc`, the binding is one atomic
+   refcount increment (`Rc::clone`); no deep tree copy. With `Box`, reflection
+   would have to deep-clone every time, paying O(tree size) per query.
+
+2. **Eval frame stack stash is free of lifetime issues.** Eval keeps `occ: Rc<NodeOccurrence>`
+   on its step-stack frame for runtime error spans. The Rc owns its share, so
+   the frame can outlive any borrow into the original tree. No lifetime
+   annotations to thread.
+
+3. **Cross-pass / cross-frame identity via `Rc::ptr_eq`.** When the typer's
+   `Synthesized { from: Rc<NodeOccurrence>, by: PassId }` needs to compare
+   "is this the same occurrence as that one?" — pointer equality on Rc is O(1).
+
+Atomic refcount cost is negligible relative to the work each pass does per node.
+
+## Value variant
+
+```rust
+pub enum Value {
+    // ... existing variants ...
+    Int(i64), BigInt(BigInt), Float(f64), Bool(bool), Str(String), Unit,
+    Tuple { pos, named }, Entity { functor, pos, named },
+    Term(TermId),                                // hash-consed KB content
+    Closure(...), Stream(...), Lazy(...),
+    Substitution(...), Map(...), Cell(...), Requirement(...),
+
+    // NEW: positional content
+    Node(Rc<NodeOccurrence>),
+}
+```
+
+One variant. The `NodeKind` inside the Rc'd NodeOccurrence tells you whether
+this binding is Expr-kind, RuleHead-kind, or a future kind. Reflection ops like
+`body_of`, `args_of`, `head_of` all bind this same variant.
+
+No separate Value-side arena. The four reasons that would justify one
+(hash-consing / cross-pass side tables / handle-keyed lookups / 4-byte stash)
+don't materialize for Value bindings — `Rc<NodeOccurrence>` covers the actual
+need (shared ownership across substitutions) without introducing another store.
+
 The `NodeOccurrence::origin` field (when kind is `Expr`) holds
 `OccurrenceOrigin { Source | Synthesized { from, by } }` per WI-243's substrate.
 The `from: OccurrenceId` field becomes `from: Rc<NodeOccurrence>` (pointer
-identity to the source occurrence; cheap clone via Rc).
+identity to the source occurrence via `Rc::ptr_eq`; cheap clone via Rc::clone).
 
 ## Why eliminate the arena (OccurrenceStore + OccurrenceId)
 
