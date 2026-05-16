@@ -217,9 +217,13 @@ impl ConversionTable {
 /// `anthill.realization.OperationImpl` facts. Operations with
 /// expression bodies (e.g. `operation square(x: Int) -> Int = mul(x, x)`)
 /// land here; the body Term is lowered to a C++ expression by
-/// `lower_expr`.
+/// `lower_node`. Post-WI-249 the value is the operation body's
+/// NodeOccurrence root sourced from `kb.op_body_node` — the legacy
+/// `OperationImpl.body` Handle field is no longer read here. The
+/// OperationImpl fact still exists (it's also a realization-side
+/// declaration), but the body is materialized at load time.
 pub struct OpImplTable {
-    by_op: HashMap<Symbol, TermId>,
+    by_op: HashMap<Symbol, std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>>,
 }
 
 impl OpImplTable {
@@ -237,14 +241,19 @@ impl OpImplTable {
                 Term::Ref(s) | Term::Ident(s) => *s,
                 _ => continue,
             };
-            let Some(body) = named_arg(kb, head, "body") else { continue };
-            by_op.insert(op_sym, body);
+            // Read the materialized body NodeOccurrence from the KB.
+            // Ops with no body (spec-level declarations) are skipped.
+            if let Some(node) = kb.op_body_node(op_sym) {
+                by_op.insert(op_sym, node.clone());
+            }
         }
         Self { by_op }
     }
 
-    pub fn lookup(&self, op: Symbol) -> Option<TermId> {
-        self.by_op.get(&op).copied()
+    pub fn lookup(&self, op: Symbol)
+        -> Option<std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>>
+    {
+        self.by_op.get(&op).cloned()
     }
 }
 
@@ -796,9 +805,10 @@ fn synthesise_body_for(
     return_type: &str,
     return_term: TermId,
 ) -> Option<String> {
-    // (1) Expression body via OperationImpl.
-    if let Some(body_term) = ctx.op_impls.lookup(op_sym) {
-        match lower_expr(ctx, body_term) {
+    // (1) Expression body via OperationImpl — sourced from
+    // `kb.op_body_node` as a NodeOccurrence tree after WI-249.
+    if let Some(body_node) = ctx.op_impls.lookup(op_sym) {
+        match lower_node(ctx, &body_node) {
             Ok(expr) => return Some(if return_type == "void" {
                 format!("{expr};")
             } else {
@@ -1563,363 +1573,207 @@ impl Includes {
 ///
 /// String literals are escaped with the same convention the printer
 /// uses (\" \\ \n \r \t).
-fn lower_expr(ctx: &CodegenContext, term: TermId) -> Result<String, CppCodegenError> {
+fn lower_node(
+    ctx: &CodegenContext,
+    occ: &std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>,
+) -> Result<String, CppCodegenError> {
+    use anthill_core::kb::node_occurrence::{Expr, NodeKind};
     let kb = ctx.kb;
-    match kb.get_term(term) {
-        // OperationImpl bodies are stored as `Handle(Occurrence, id)`
-        // pointing into the KB's OccurrenceStore — dereference and
-        // recurse into the underlying expression term.
-        Term::Const(Literal::Handle(HandleKind::Occurrence, id)) => {
-            let occ = OccurrenceId::from_raw(*id);
-            let inner = kb.occurrence_store().term(occ);
-            lower_expr(ctx, inner)
-        }
-        Term::Fn { functor, named_args, .. } => {
-            let qn = kb.qualified_name_of(*functor);
-            match qn {
-                "anthill.reflect.Expr.int_lit"
-                | "anthill.reflect.Expr.float_lit"
-                | "anthill.reflect.Expr.string_lit"
-                | "anthill.reflect.Expr.bool_lit" => {
-                    let value = find_named(kb, named_args, "value").ok_or_else(|| {
-                        CppCodegenError {
-                            message: format!("{qn} missing 'value' field"),
-                        }
-                    })?;
-                    if let Term::Const(lit) = kb.get_term(value) {
-                        Ok(lower_literal(lit))
-                    } else {
-                        Err(CppCodegenError {
-                            message: format!("{qn}'s 'value' is not a Const literal"),
-                        })
-                    }
-                }
-                "anthill.reflect.Expr.var_ref" => {
-                    let name = find_named(kb, named_args, "name").ok_or_else(|| {
-                        CppCodegenError {
-                            message: "var_ref missing 'name' field".into(),
-                        }
-                    })?;
-                    match kb.get_term(name) {
-                        Term::Ref(s) | Term::Ident(s) => {
-                            let qn = kb.qualified_name_of(*s);
-                            // Stdlib wrapper constants used as values
-                            // (`none` on its own line) — lower the
-                            // qualified name through the same table
-                            // that handles `none()` / `some(...)`.
-                            if let Some(rendered) = lower_stdlib_constant(qn) {
-                                return Ok(rendered);
-                            }
-                            // Math constants used as bare values:
-                            // `pi`, `e`, `tau`.
-                            if let Some(rendered) = render_as_math_constant(qn) {
-                                return Ok(rendered);
-                            }
-                            Ok(short_name_of(qn).to_string())
-                        }
-                        other => Err(CppCodegenError {
-                            message: format!("var_ref's 'name' is {other:?}, not a Ref"),
-                        }),
-                    }
-                }
-                "anthill.reflect.Expr.apply" => {
-                    let fn_term = find_named(kb, named_args, "fn").ok_or_else(|| {
-                        CppCodegenError { message: "apply missing 'fn' field".into() }
-                    })?;
-                    let args_term = find_named(kb, named_args, "args").ok_or_else(|| {
-                        CppCodegenError { message: "apply missing 'args' field".into() }
-                    })?;
-                    let (fn_qn, fn_short) = match kb.get_term(fn_term) {
-                        Term::Ref(s) | Term::Ident(s) => {
-                            let qn = kb.qualified_name_of(*s).to_string();
-                            let short = short_name_of(&qn).to_string();
-                            (qn, short)
-                        }
-                        other => return Err(CppCodegenError {
-                            message: format!("apply's 'fn' is {other:?}, not a Ref"),
-                        }),
-                    };
-                    // field_access(object, field) is the desugared form of
-                    // `obj.field` — emit dot syntax instead of a function
-                    // call. Object is the first arg; the field name comes
-                    // from the second arg, which the loader wraps as
-                    // `var_ref(Ref(<field_ident>))`.
-                    if fn_qn == "anthill.reflect.field_access" {
-                        let arg_terms: Vec<TermId> = walk_list(kb, args_term);
-                        if arg_terms.len() != 2 {
-                            return Err(CppCodegenError {
-                                message: format!(
-                                    "field_access expects 2 args, got {}",
-                                    arg_terms.len()
-                                ),
-                            });
-                        }
-                        let object = lower_apply_arg(ctx, arg_terms[0])?;
-                        let field = field_name_from_apply_arg(kb, arg_terms[1])?;
-                        return Ok(format!("{object}.{field}"));
-                    }
-                    // Error.raise(e) ⇒ tl::make_unexpected(e). The op's
-                    // return type was already wrapped in tl::expected by
-                    // operations_in_sort, so this slots in cleanly as
-                    // either the result of a branch or the whole body.
-                    //
-                    // Match either fully-qualified `anthill.prelude.Error.raise`
-                    // or the short `Error.raise` produced when the loader
-                    // doesn't fully qualify imported symbols.
-                    if fn_qn == "anthill.prelude.Error.raise"
-                        || fn_qn == "Error.raise"
-                    {
-                        let arg_terms: Vec<TermId> = walk_list(kb, args_term);
-                        if arg_terms.len() != 1 {
-                            return Err(CppCodegenError {
-                                message: format!(
-                                    "Error.raise expects 1 arg, got {}",
-                                    arg_terms.len()
-                                ),
-                            });
-                        }
-                        ctx.requested_includes.borrow_mut()
-                            .insert("#include <tl/expected.hpp>".to_string());
-                        let payload = lower_apply_arg(ctx, arg_terms[0])?;
-                        return Ok(format!("tl::make_unexpected({payload})"));
-                    }
-                    // Stdlib wrapper constructors that don't map 1:1 to
-                    // a C++ struct (Option/Result) — handled before the
-                    // generic entity-literal path below.
-                    if let Some(rendered) = lower_stdlib_wrapper(ctx, &fn_qn, args_term)? {
-                        return Ok(rendered);
-                    }
-                    // Entity-constructor case: when the loader didn't wrap
-                    // an entity application as `Expr.constructor` (happens
-                    // when a `sort X` and `entity X` share a name), the
-                    // apply node still points at an entity functor — emit
-                    // brace-init instead of a function call.
-                    if let Term::Ref(fn_sym) | Term::Ident(fn_sym) = kb.get_term(fn_term) {
-                        if kb.entity_field_types(*fn_sym).is_some() {
-                            return lower_constructor_literal(ctx, *fn_sym, args_term);
-                        }
-                    }
-                    let mut args = Vec::new();
-                    for a in walk_list(kb, args_term) {
-                        args.push(lower_apply_arg(ctx, a)?);
-                    }
-                    // Typeclass operator dispatch — rewrite known
-                    // prelude operations to C++ operators.
-                    if let Some(rendered) = render_as_operator(&fn_qn, &args) {
-                        return Ok(rendered);
-                    }
-                    // Math vocabulary — `Float.cos(x)` → `std::cos(x)`.
-                    if let Some(rendered) = render_as_math_call(ctx, &fn_qn, &args) {
-                        return Ok(rendered);
-                    }
-                    // Container access via IndexedSeq — works for any
-                    // C++ type with `size()` and `operator[]`.
-                    if let Some(rendered) = render_as_indexed_seq(&fn_qn, &args) {
-                        return Ok(rendered);
-                    }
-                    // Math constant called as a zero-arg op: `pi()` etc.
-                    if args.is_empty() {
-                        if let Some(rendered) = render_as_math_constant(&fn_qn) {
-                            return Ok(rendered);
-                        }
-                    }
-                    Ok(format!("{fn_short}({})", args.join(", ")))
-                }
-                "anthill.reflect.Expr.constructor" => {
-                    let name = find_named(kb, named_args, "name").ok_or_else(|| {
-                        CppCodegenError { message: "constructor missing 'name'".into() }
-                    })?;
-                    let args_term = find_named(kb, named_args, "args").ok_or_else(|| {
-                        CppCodegenError { message: "constructor missing 'args'".into() }
-                    })?;
-                    let name_qn = match kb.get_term(name) {
-                        Term::Ref(s) | Term::Ident(s) => kb.qualified_name_of(*s).to_string(),
-                        other => return Err(CppCodegenError {
-                            message: format!("constructor's 'name' is {other:?}, not a Ref"),
-                        }),
-                    };
-                    // List/Tuple/Set literals → uniform brace-init `{e0,e1,…}`.
-                    // The element type is deduced by the surrounding context
-                    // (typically the declared return type) — works for
-                    // `std::vector<T>{...}` returns under C++17.
-                    if matches!(name_qn.as_str(),
-                        "anthill.reflect.ListLiteral"
-                        | "anthill.reflect.TupleLiteral"
-                        | "anthill.reflect.SetLiteral")
-                    {
-                        let mut parts = Vec::new();
-                        for a in walk_list(kb, args_term) {
-                            parts.push(lower_apply_arg(ctx, a)?);
-                        }
-                        return Ok(format!("{{{}}}", parts.join(", ")));
-                    }
-                    if let Some(rendered) = lower_stdlib_wrapper(ctx, &name_qn, args_term)? {
-                        return Ok(rendered);
-                    }
-                    // Entity literal: emit `EntityName{val0, val1, ...}`
-                    // ordered by field declaration so positional and
-                    // named-arg sources both produce the same C++.
-                    if let Term::Ref(name_sym) | Term::Ident(name_sym) = kb.get_term(name) {
-                        if kb.entity_field_types(*name_sym).is_some() {
-                            return lower_constructor_literal(ctx, *name_sym, args_term);
-                        }
-                    }
-                    Err(CppCodegenError {
-                        message: format!(
-                            "constructor '{name_qn}' is neither a known \
-                             entity nor a recognised collection literal"
-                        ),
-                    })
-                }
-                "anthill.reflect.Expr.match_expr" => {
-                    // Match over a sum-sort scrutinee (carrier =
-                    // `std::variant<…>`) lowered as a chain of
-                    // `std::holds_alternative<Branch>(s) ? body : next`
-                    // ternaries — keeps the body a single expression.
-                    // Only nullary-constructor patterns are supported;
-                    // variable-binding, field-patterns, guards, and
-                    // wildcards are not yet wired up.
-                    let scrutinee = find_named(kb, named_args, "scrutinee").ok_or_else(|| {
-                        CppCodegenError { message: "match_expr missing 'scrutinee'".into() }
-                    })?;
-                    let branches = find_named(kb, named_args, "branches").ok_or_else(|| {
-                        CppCodegenError { message: "match_expr missing 'branches'".into() }
-                    })?;
-                    let scrutinee_s = lower_expr(ctx, scrutinee)?;
-                    let branch_terms = walk_list(kb, branches);
-                    if branch_terms.is_empty() {
-                        return Err(CppCodegenError {
-                            message: "match_expr with no branches".into(),
-                        });
-                    }
-                    lower_match_branches(ctx, &scrutinee_s, &branch_terms)
-                }
-                "anthill.reflect.Expr.if_expr" => {
-                    let cond = find_named(kb, named_args, "cond").ok_or_else(|| {
-                        CppCodegenError { message: "if_expr missing 'cond' field".into() }
-                    })?;
-                    let then_branch = find_named(kb, named_args, "then_branch").ok_or_else(|| {
-                        CppCodegenError {
-                            message: "if_expr missing 'then_branch' field".into(),
-                        }
-                    })?;
-                    let else_branch = find_named(kb, named_args, "else_branch").ok_or_else(|| {
-                        CppCodegenError {
-                            message: "if_expr missing 'else_branch' field".into(),
-                        }
-                    })?;
-                    let cond_s = lower_expr(ctx, cond)?;
-                    let then_s = lower_expr(ctx, then_branch)?;
-                    let else_s = lower_expr(ctx, else_branch)?;
-                    Ok(format!("({cond_s} ? {then_s} : {else_s})"))
-                }
-                "anthill.reflect.Expr.let_expr" => {
-                    // A let-chain `let x = v; body` is emitted as an IIFE so
-                    // the surrounding context can keep a single `return`
-                    // expression. Nested `let_expr` in `body` is flattened
-                    // into one IIFE with multiple statements to avoid one
-                    // lambda per binding.
-                    //
-                    // Wildcard pattern (`let _ = expr; body`) drops the
-                    // value and emits the expression as a discarded
-                    // statement — this is the codegen seam for
-                    // side-effecting calls (Modify[…], Console.println,
-                    // …) that return Unit. `auto _ = expr;` would not
-                    // compile when expr is `void`.
-                    enum Slot {
-                        Bind(String, String),
-                        Discard(String),
-                    }
-                    let mut slots: Vec<Slot> = Vec::new();
-                    let mut current = term;
-                    let body_term = loop {
-                        let (pat, val, body) = match kb.get_term(current) {
-                            Term::Fn { functor, named_args, .. }
-                                if kb.qualified_name_of(*functor)
-                                    == "anthill.reflect.Expr.let_expr" =>
-                            {
-                                let pat = find_named(kb, named_args, "pattern").ok_or_else(
-                                    || CppCodegenError {
-                                        message: "let_expr missing 'pattern'".into(),
-                                    },
-                                )?;
-                                let val = find_named(kb, named_args, "value").ok_or_else(
-                                    || CppCodegenError {
-                                        message: "let_expr missing 'value'".into(),
-                                    },
-                                )?;
-                                let body = find_named(kb, named_args, "body").ok_or_else(
-                                    || CppCodegenError {
-                                        message: "let_expr missing 'body'".into(),
-                                    },
-                                )?;
-                                (pat, val, body)
-                            }
-                            _ => break current,
-                        };
-                        if !is_wildcard_pattern(kb, pat) {
-                            let bind_name = pattern_var_name(kb, pat)?;
-                            check_recursive_lambda(kb, val, &bind_name)?;
-                            let val_s = lower_expr(ctx, val)?;
-                            slots.push(Slot::Bind(bind_name, val_s));
-                        } else {
-                            let val_s = lower_expr(ctx, val)?;
-                            slots.push(Slot::Discard(val_s));
-                        }
-                        // Step into body — may be a Handle wrapper, peel it.
-                        current = match kb.get_term(body) {
-                            Term::Const(Literal::Handle(HandleKind::Occurrence, id)) => {
-                                kb.occurrence_store().term(OccurrenceId::from_raw(*id))
-                            }
-                            _ => body,
-                        };
-                    };
-                    let body_s = lower_expr(ctx, body_term)?;
-                    let mut out = String::from("[&]() { ");
-                    for slot in &slots {
-                        match slot {
-                            Slot::Bind(name, val) => {
-                                out.push_str(&format!("auto {name} = {val}; "));
-                            }
-                            Slot::Discard(val) => {
-                                out.push_str(&format!("{val}; "));
-                            }
-                        }
-                    }
-                    out.push_str(&format!("return {body_s}; }}()"));
-                    Ok(out)
-                }
-                "anthill.reflect.Expr.lambda" => {
-                    let param = find_named(kb, named_args, "param").ok_or_else(|| {
-                        CppCodegenError { message: "lambda missing 'param'".into() }
-                    })?;
-                    let body = find_named(kb, named_args, "body").ok_or_else(|| {
-                        CppCodegenError { message: "lambda missing 'body'".into() }
-                    })?;
-                    let pname = pattern_var_name(kb, param)?;
-                    let body_s = lower_expr(ctx, body)?;
-                    Ok(format!("[=](auto {pname}) {{ return {body_s}; }}"))
-                }
-                "anthill.reflect.ApplyArg" => lower_apply_arg(ctx, term),
-                _ => Err(CppCodegenError {
-                    message: format!("unhandled expression form '{qn}'"),
-                }),
-            }
-        }
-        // Bare Term::Const/Ref/Ident — accepted as a fallback in case
-        // a body is stored unwrapped; the typing pass normally wraps
-        // everything in an Expr.* constructor.
-        Term::Const(lit) => Ok(lower_literal(lit)),
-        Term::Ref(sym) | Term::Ident(sym) => {
+    let expr = match &occ.kind {
+        NodeKind::Expr { expr, .. } => expr,
+        NodeKind::RuleHead { .. } => return Err(CppCodegenError {
+            message: "rule-head occurrence in expression body — \
+                      should never reach cpp-gen".into(),
+        }),
+    };
+    match expr {
+        Expr::Const(lit) => Ok(lower_literal(lit)),
+        Expr::Ref(sym) | Expr::Ident(sym) => {
             let qn = kb.qualified_name_of(*sym);
+            // Stdlib wrapper constants used as values (`none` on its
+            // own line) — lower the qualified name through the same
+            // table that handles `none()` / `some(...)`. Math
+            // constants used as bare values: `pi`, `e`, `tau`.
+            if let Some(rendered) = lower_stdlib_constant(qn) {
+                return Ok(rendered);
+            }
+            if let Some(rendered) = render_as_math_constant(qn) {
+                return Ok(rendered);
+            }
             Ok(short_name_of(qn).to_string())
         }
-        Term::Var(v) => {
-            // Match-pattern bindings (`?w` introduced by
-            // `case some(?w) -> ...`) reach here as logic variables.
-            // Resolve them through the binding stack first; otherwise
-            // it's a stray rule-body variable that has no place in an
-            // expression body.
+        Expr::VarRef { name } => {
+            let qn = kb.qualified_name_of(*name);
+            if let Some(rendered) = lower_stdlib_constant(qn) {
+                return Ok(rendered);
+            }
+            if let Some(rendered) = render_as_math_constant(qn) {
+                return Ok(rendered);
+            }
+            let short = short_name_of(qn);
+            if let Some(access) = ctx.lookup_value_binding(short) {
+                return Ok(access);
+            }
+            Ok(short.to_string())
+        }
+        Expr::Apply { functor, pos_args, named_args } => {
+            let fn_qn = kb.qualified_name_of(*functor).to_string();
+            let fn_short = short_name_of(&fn_qn).to_string();
+
+            // field_access(object, field) is the desugared form of
+            // `obj.field` — emit dot syntax. The second arg is a
+            // var_ref pointing at the field identifier.
+            if fn_qn == "anthill.reflect.field_access" {
+                let combined = combined_args(pos_args, named_args);
+                if combined.len() != 2 {
+                    return Err(CppCodegenError {
+                        message: format!(
+                            "field_access expects 2 args, got {}",
+                            combined.len()
+                        ),
+                    });
+                }
+                let object = lower_node(ctx, combined[0])?;
+                let field = field_name_from_node(kb, combined[1])?;
+                return Ok(format!("{object}.{field}"));
+            }
+            // Error.raise(e) ⇒ tl::make_unexpected(e). The op's return
+            // type was wrapped in tl::expected by operations_in_sort,
+            // so this slots in as a branch result or whole body.
+            if fn_qn == "anthill.prelude.Error.raise"
+                || fn_qn == "Error.raise"
+            {
+                let combined = combined_args(pos_args, named_args);
+                if combined.len() != 1 {
+                    return Err(CppCodegenError {
+                        message: format!(
+                            "Error.raise expects 1 arg, got {}",
+                            combined.len()
+                        ),
+                    });
+                }
+                ctx.requested_includes.borrow_mut()
+                    .insert("#include <tl/expected.hpp>".to_string());
+                let payload = lower_node(ctx, combined[0])?;
+                return Ok(format!("tl::make_unexpected({payload})"));
+            }
+            // Stdlib wrapper constructors that don't map 1:1 to a C++
+            // struct (Option/Result) — handled before the generic
+            // entity-literal path below.
+            if let Some(rendered) = lower_stdlib_wrapper_node(ctx, &fn_qn, pos_args, named_args)? {
+                return Ok(rendered);
+            }
+            // Entity-constructor case: when the loader didn't wrap an
+            // entity application as `Expr.constructor` (a `sort X` /
+            // `entity X` name clash), the apply still points at an
+            // entity functor — emit brace-init instead of a call.
+            if kb.entity_field_types(*functor).is_some() {
+                return lower_constructor_literal_node(ctx, *functor, pos_args, named_args);
+            }
+            let mut args = Vec::new();
+            for a in combined_args(pos_args, named_args) {
+                args.push(lower_node(ctx, a)?);
+            }
+            if let Some(rendered) = render_as_operator(&fn_qn, &args) {
+                return Ok(rendered);
+            }
+            if let Some(rendered) = render_as_math_call(ctx, &fn_qn, &args) {
+                return Ok(rendered);
+            }
+            if let Some(rendered) = render_as_indexed_seq(&fn_qn, &args) {
+                return Ok(rendered);
+            }
+            if args.is_empty() {
+                if let Some(rendered) = render_as_math_constant(&fn_qn) {
+                    return Ok(rendered);
+                }
+            }
+            Ok(format!("{fn_short}({})", args.join(", ")))
+        }
+        Expr::Constructor { name, pos_args, named_args } => {
+            let name_qn = kb.qualified_name_of(*name).to_string();
+            // List/Tuple/Set literals → uniform brace-init.
+            if matches!(name_qn.as_str(),
+                "anthill.reflect.ListLiteral"
+                | "anthill.reflect.TupleLiteral"
+                | "anthill.reflect.SetLiteral")
+            {
+                let mut parts = Vec::new();
+                for a in combined_args(pos_args, named_args) {
+                    parts.push(lower_node(ctx, a)?);
+                }
+                return Ok(format!("{{{}}}", parts.join(", ")));
+            }
+            if let Some(rendered) = lower_stdlib_wrapper_node(ctx, &name_qn, pos_args, named_args)? {
+                return Ok(rendered);
+            }
+            if kb.entity_field_types(*name).is_some() {
+                return lower_constructor_literal_node(ctx, *name, pos_args, named_args);
+            }
+            Err(CppCodegenError {
+                message: format!(
+                    "constructor '{name_qn}' is neither a known \
+                     entity nor a recognised collection literal"
+                ),
+            })
+        }
+        Expr::Match { scrutinee, branches } => {
+            let scrutinee_s = lower_node(ctx, scrutinee)?;
+            if branches.is_empty() {
+                return Err(CppCodegenError {
+                    message: "match_expr with no branches".into(),
+                });
+            }
+            lower_match_branches_node(ctx, &scrutinee_s, branches)
+        }
+        Expr::If { condition, then_branch, else_branch } => {
+            let cond_s = lower_node(ctx, condition)?;
+            let then_s = lower_node(ctx, then_branch)?;
+            let else_s = lower_node(ctx, else_branch)?;
+            Ok(format!("({cond_s} ? {then_s} : {else_s})"))
+        }
+        Expr::Let { .. } => lower_let_chain_node(ctx, occ),
+        Expr::Lambda { param, body } => {
+            let pname = pattern_var_name(kb, *param)?;
+            let body_s = lower_node(ctx, body)?;
+            Ok(format!("[=](auto {pname}) {{ return {body_s}; }}"))
+        }
+        Expr::ListLit(elems) => {
+            let mut parts = Vec::new();
+            for e in elems.iter() {
+                parts.push(lower_node(ctx, e)?);
+            }
+            Ok(format!("{{{}}}", parts.join(", ")))
+        }
+        Expr::SetLit(elems) => {
+            let mut parts = Vec::new();
+            for e in elems.iter() {
+                parts.push(lower_node(ctx, e)?);
+            }
+            Ok(format!("{{{}}}", parts.join(", ")))
+        }
+        Expr::TupleLit { positional, named } => {
+            let mut parts = Vec::new();
+            for e in positional.iter() {
+                parts.push(lower_node(ctx, e)?);
+            }
+            for (_, e) in named.iter() {
+                parts.push(lower_node(ctx, e)?);
+            }
+            Ok(format!("{{{}}}", parts.join(", ")))
+        }
+        Expr::HoApply { .. }
+        | Expr::Instantiation { .. }
+        | Expr::ApplyWithin { .. }
+        | Expr::HoApplyWithin { .. }
+        | Expr::ConstructorWithin { .. }
+        | Expr::LambdaWithin { .. }
+        | Expr::RequirementAtSort { .. }
+        | Expr::ConstructRequirement { .. } => Err(CppCodegenError {
+            message: "post-elaboration / higher-order Expr variant not \
+                      supported by cpp-gen profile yet".into(),
+        }),
+        Expr::Var(v) => {
             let name_sym = match v {
                 anthill_core::kb::term::Var::Global(vid) => vid.name(),
                 anthill_core::kb::term::Var::DeBruijn(_) => return Err(CppCodegenError {
@@ -1942,9 +1796,184 @@ fn lower_expr(ctx: &CodegenContext, term: TermId) -> Result<String, CppCodegenEr
                 ),
             })
         }
-        Term::Bottom => Err(CppCodegenError {
+        Expr::Bottom => Err(CppCodegenError {
             message: "cannot lower Bottom (⊥) to a C++ expression".into(),
         }),
+    }
+}
+
+/// Concatenate positional + named arg slices into a single iteration
+/// order for cpp-gen: pos first, then named. The caller is responsible
+/// for routing field-keyed arguments through `find_in_named` when it
+/// actually needs the field name (e.g. entity-literal field ordering).
+fn combined_args<'a>(
+    pos_args: &'a [std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>],
+    named_args: &'a [(Symbol, std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>)],
+) -> Vec<&'a std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>> {
+    let mut out: Vec<&std::rc::Rc<_>> = Vec::with_capacity(pos_args.len() + named_args.len());
+    for a in pos_args.iter() { out.push(a); }
+    for (_, a) in named_args.iter() { out.push(a); }
+    out
+}
+
+/// Lower a let-chain `let x = v; body` into a single IIFE. Nested
+/// `Expr::Let` in `body` is flattened into one IIFE with multiple
+/// `auto` declarations to avoid one lambda per binding.
+///
+/// Wildcard pattern (`let _ = expr; body`) emits the expression as a
+/// discarded statement — the codegen seam for side-effecting calls
+/// (`Modify[…]`, `Console.println`, …) that return Unit, since
+/// `auto _ = expr;` would not compile when expr is `void`.
+fn lower_let_chain_node(
+    ctx: &CodegenContext,
+    root: &std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>,
+) -> Result<String, CppCodegenError> {
+    use anthill_core::kb::node_occurrence::{Expr, NodeKind};
+    enum Slot {
+        Bind(String, String),
+        Discard(String),
+    }
+    let kb = ctx.kb;
+    let mut slots: Vec<Slot> = Vec::new();
+    let mut current = root.clone();
+    let body_node = loop {
+        let next_body = match &current.kind {
+            NodeKind::Expr { expr: Expr::Let { pattern, value, body, .. }, .. } => {
+                if !is_wildcard_pattern(kb, *pattern) {
+                    let bind_name = pattern_var_name(kb, *pattern)?;
+                    check_recursive_lambda_node(kb, value, &bind_name)?;
+                    let val_s = lower_node(ctx, value)?;
+                    slots.push(Slot::Bind(bind_name, val_s));
+                } else {
+                    let val_s = lower_node(ctx, value)?;
+                    slots.push(Slot::Discard(val_s));
+                }
+                body.clone()
+            }
+            _ => break current,
+        };
+        current = next_body;
+    };
+    let body_s = lower_node(ctx, &body_node)?;
+    let mut out = String::from("[&]() { ");
+    for slot in &slots {
+        match slot {
+            Slot::Bind(name, val) => {
+                out.push_str(&format!("auto {name} = {val}; "));
+            }
+            Slot::Discard(val) => {
+                out.push_str(&format!("{val}; "));
+            }
+        }
+    }
+    out.push_str(&format!("return {body_s}; }}()"));
+    Ok(out)
+}
+
+/// Extract the field name from an Apply arg whose payload is a
+/// `var_ref(Ref(<field>))` occurrence — used for the second arg of
+/// `field_access(object, field)` where the loader wraps the field
+/// identifier as a var_ref.
+fn field_name_from_node(
+    kb: &KnowledgeBase,
+    occ: &std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>,
+) -> Result<String, CppCodegenError> {
+    use anthill_core::kb::node_occurrence::{Expr, NodeKind};
+    if let NodeKind::Expr { expr, .. } = &occ.kind {
+        match expr {
+            Expr::VarRef { name } | Expr::Ref(name) | Expr::Ident(name) => {
+                let qn = kb.qualified_name_of(*name);
+                return Ok(short_name_of(qn).to_string());
+            }
+            _ => {}
+        }
+    }
+    Err(CppCodegenError {
+        message: "field_access: 2nd arg isn't a var_ref or symbol reference".into(),
+    })
+}
+
+/// Reject `let f = lambda(?x) -> ... f ...` — anonymous self-recursion
+/// against the bound name. Profile cpp17-stl emits
+/// `[=](auto x) { return body; }`, which gives the lambda no
+/// self-reference. Workarounds (Y-combinator, `std::function`) either
+/// bloat the call site or introduce refcounted heap closures —
+/// neither is "RAII only". The user should lift the body to a named
+/// operation, which compiles to a regular C++ function and recurses
+/// cleanly by name.
+fn check_recursive_lambda_node(
+    kb: &KnowledgeBase,
+    val: &std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>,
+    bind_name: &str,
+) -> Result<(), CppCodegenError> {
+    use anthill_core::kb::node_occurrence::{Expr, NodeKind};
+    let body = match &val.kind {
+        NodeKind::Expr { expr: Expr::Lambda { body, .. }, .. } => body,
+        _ => return Ok(()),
+    };
+    if !node_references_name(kb, body, bind_name) {
+        return Ok(());
+    }
+    Err(CppCodegenError {
+        message: format!(
+            "recursive anonymous lambda not supported in cpp17-stl \
+             profile (binder '{bind_name}' referenced inside its own \
+             lambda body) — lift the body to a named operation, \
+             which lowers to a regular C++ function and recurses \
+             cleanly by name"
+        ),
+    })
+}
+
+/// Recursive name-reference scan on a NodeOccurrence Expr tree —
+/// compares the short name of every `Ref` / `Ident` / `VarRef` /
+/// `Apply.functor` / `Constructor.name` against `target`. Used only
+/// by `check_recursive_lambda_node` to detect anonymous self-recursion.
+fn node_references_name(
+    kb: &KnowledgeBase,
+    occ: &std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>,
+    target: &str,
+) -> bool {
+    use anthill_core::kb::node_occurrence::{Expr, NodeKind};
+    let expr = match &occ.kind {
+        NodeKind::Expr { expr, .. } => expr,
+        _ => return false,
+    };
+    let matches_sym = |s: Symbol| short_name_of(kb.qualified_name_of(s)) == target;
+    match expr {
+        Expr::Ref(s) | Expr::Ident(s) | Expr::VarRef { name: s } => matches_sym(*s),
+        Expr::Apply { functor, pos_args, named_args } => {
+            matches_sym(*functor)
+                || pos_args.iter().any(|a| node_references_name(kb, a, target))
+                || named_args.iter().any(|(_, a)| node_references_name(kb, a, target))
+        }
+        Expr::Constructor { name, pos_args, named_args } => {
+            matches_sym(*name)
+                || pos_args.iter().any(|a| node_references_name(kb, a, target))
+                || named_args.iter().any(|(_, a)| node_references_name(kb, a, target))
+        }
+        Expr::If { condition, then_branch, else_branch } => {
+            node_references_name(kb, condition, target)
+                || node_references_name(kb, then_branch, target)
+                || node_references_name(kb, else_branch, target)
+        }
+        Expr::Let { value, body, .. } => {
+            node_references_name(kb, value, target)
+                || node_references_name(kb, body, target)
+        }
+        Expr::Match { scrutinee, branches } => {
+            node_references_name(kb, scrutinee, target)
+                || branches.iter().any(|b| node_references_name(kb, &b.body, target))
+        }
+        Expr::Lambda { body, .. } => node_references_name(kb, body, target),
+        Expr::ListLit(es) | Expr::SetLit(es) => {
+            es.iter().any(|a| node_references_name(kb, a, target))
+        }
+        Expr::TupleLit { positional, named } => {
+            positional.iter().any(|a| node_references_name(kb, a, target))
+                || named.iter().any(|(_, a)| node_references_name(kb, a, target))
+        }
+        _ => false,
     }
 }
 
@@ -1953,32 +1982,6 @@ fn find_named(kb: &KnowledgeBase, named_args: &[(Symbol, TermId)], name: &str) -
     named_args.iter()
         .find(|(s, _)| kb.resolve_sym(*s) == name)
         .map(|(_, v)| *v)
-}
-
-/// Unwrap an `ApplyArg(expr: <inner>)` to its inner expression term
-/// and lower that. Apply-call arguments are wrapped in this entity;
-/// the codegen only reads the expression payload (the `name` field
-/// is consumed by the constructor-literal path separately).
-fn lower_apply_arg(ctx: &CodegenContext, term: TermId) -> Result<String, CppCodegenError> {
-    let kb = ctx.kb;
-    if let Term::Fn { functor, named_args, .. } = kb.get_term(term) {
-        if kb.resolve_sym(*functor) == "ApplyArg"
-            || kb.qualified_name_of(*functor) == "anthill.reflect.ApplyArg"
-        {
-            // The expression term is in `expr` (or possibly `value` —
-            // try both for robustness).
-            for key in ["expr", "value"] {
-                if let Some(inner) = find_named(kb, named_args, key) {
-                    return lower_expr(ctx, inner);
-                }
-            }
-            return Err(CppCodegenError {
-                message: "ApplyArg missing 'expr'/'value' field".into(),
-            });
-        }
-    }
-    // Not wrapped — lower directly.
-    lower_expr(ctx, term)
 }
 
 /// Read `sort T = ?` declarations inside a sort's body. Stable
@@ -2223,24 +2226,24 @@ fn lower_stdlib_constant(fn_qn: &str) -> Option<String> {
     lookup_prelude_qn(fn_qn, table).map(str::to_string)
 }
 
-/// Lower stdlib wrapper-constructor calls (Option, Result, …) that
-/// don't map to a C++ struct of the same name. Returns `Ok(Some(s))`
-/// when matched, `Ok(None)` when the functor is not one we
-/// recognise. Today: `Option.{some, none}`.
-fn lower_stdlib_wrapper(
+/// Lower stdlib wrapper-constructor calls (Option, Result, …) from
+/// NodeOccurrence arg slices. Returns `Ok(Some(s))` when matched,
+/// `Ok(None)` when the functor is not one we recognise. Today:
+/// `Option.{some, none}`.
+fn lower_stdlib_wrapper_node(
     ctx: &CodegenContext,
     fn_qn: &str,
-    args_term: TermId,
+    pos_args: &[std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>],
+    named_args: &[(Symbol, std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>)],
 ) -> Result<Option<String>, CppCodegenError> {
     if let Some(c) = lower_stdlib_constant(fn_qn) {
         return Ok(Some(c));
     }
-    let kb = ctx.kb;
     let stripped = fn_qn.strip_prefix("anthill.prelude.").unwrap_or(fn_qn);
     if stripped == "Option.some" || fn_qn == "some" {
         let mut parts = Vec::new();
-        for a in walk_list(kb, args_term) {
-            parts.push(lower_apply_arg(ctx, a)?);
+        for a in combined_args(pos_args, named_args) {
+            parts.push(lower_node(ctx, a)?);
         }
         if parts.len() != 1 {
             return Err(CppCodegenError {
@@ -2252,22 +2255,20 @@ fn lower_stdlib_wrapper(
     Ok(None)
 }
 
-/// Lower an entity-constructor application to brace-initialiser
-/// syntax: `EntityName{val0, val1, ...}`. Args may be positional or
-/// named; either way values are emitted in the entity's field
-/// declaration order so the resulting C++ matches the struct layout
-/// emitted by `emit_entity_struct_by_symbol`.
-fn lower_constructor_literal(
+/// Lower an entity-constructor application from NodeOccurrence args
+/// to brace-initialiser syntax: `EntityName{val0, val1, ...}`. Args
+/// may be positional or named; either way values are emitted in the
+/// entity's field declaration order so the resulting C++ matches the
+/// struct layout emitted by `emit_entity_struct_by_symbol`.
+fn lower_constructor_literal_node(
     ctx: &CodegenContext,
     entity_sym: Symbol,
-    args_term: TermId,
+    pos_args: &[std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>],
+    named_args: &[(Symbol, std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>)],
 ) -> Result<String, CppCodegenError> {
     use std::collections::HashMap;
     let kb = ctx.kb;
     let qn = kb.qualified_name_of(entity_sym);
-    // Cross-namespace constructor literal renders as the
-    // fully-qualified `::ns::Ctor` so the resulting brace-init
-    // resolves inside the surrounding namespace block.
     let short = short_name_of(qn);
     let short_name = qualify_cross_namespace(ctx, qn, short);
     let fields = kb.entity_field_types(entity_sym).ok_or_else(|| {
@@ -2276,13 +2277,12 @@ fn lower_constructor_literal(
 
     let mut named_values: HashMap<String, String> = HashMap::new();
     let mut positional: Vec<String> = Vec::new();
-    for arg in walk_list(kb, args_term) {
-        let (name_opt, value_tid) = unpack_apply_arg(kb, arg)?;
-        let lowered = lower_expr(ctx, value_tid)?;
-        match name_opt {
-            Some(n) => { named_values.insert(n, lowered); }
-            None => positional.push(lowered),
-        }
+    for arg in pos_args.iter() {
+        positional.push(lower_node(ctx, arg)?);
+    }
+    for (name_sym, arg) in named_args.iter() {
+        let n = kb.resolve_sym(*name_sym).to_string();
+        named_values.insert(n, lower_node(ctx, arg)?);
     }
 
     let mut vals = Vec::with_capacity(fields.len());
@@ -2303,42 +2303,6 @@ fn lower_constructor_literal(
     Ok(format!("{short_name}{{{}}}", vals.join(", ")))
 }
 
-/// Pull `(name, value)` out of an `ApplyArg(name: <Option<Ref>>, value: <expr>)`.
-/// Returns `None` for the name when the ApplyArg uses `Option.none`.
-fn unpack_apply_arg(
-    kb: &KnowledgeBase,
-    arg: TermId,
-) -> Result<(Option<String>, TermId), CppCodegenError> {
-    let (functor, named_args) = match kb.get_term(arg) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args),
-        _ => return Ok((None, arg)),
-    };
-    if kb.qualified_name_of(functor) != "anthill.reflect.ApplyArg" {
-        return Ok((None, arg));
-    }
-    let value = find_named(kb, named_args, "value")
-        .or_else(|| find_named(kb, named_args, "expr"))
-        .ok_or_else(|| CppCodegenError {
-            message: "ApplyArg missing 'value'/'expr'".into(),
-        })?;
-    let name_opt = find_named(kb, named_args, "name").and_then(|nt| {
-        // `name` is `Option<Symbol>`: some(Ref(<n>)) or none.
-        if let Term::Fn { functor, named_args, pos_args } = kb.get_term(nt) {
-            let qn = kb.qualified_name_of(*functor);
-            if qn == "anthill.prelude.Option.some" {
-                let inner = find_named(kb, named_args, "value")
-                    .or_else(|| pos_args.first().copied())
-                    .or_else(|| named_args.first().map(|(_, v)| *v))?;
-                if let Term::Ref(s) | Term::Ident(s) = kb.get_term(inner) {
-                    return Some(kb.resolve_sym(*s).to_string());
-                }
-            }
-        }
-        None
-    });
-    Ok((name_opt, value))
-}
-
 /// Lower a sequence of `MatchBranch` terms over a scrutinee expression
 /// to a chain of `<tag-check> ? <body> : <next>` ternaries. The
 /// final branch becomes the catch-all — exhaustiveness is the
@@ -2350,10 +2314,10 @@ fn unpack_apply_arg(
 /// `Option.some` / `Option.none` are special-cased to use
 /// `o.has_value()` / `o.value()` instead of the variant primitives,
 /// since Option lowers to `std::optional<T>` rather than a variant.
-fn lower_match_branches(
+fn lower_match_branches_node(
     ctx: &CodegenContext,
     scrutinee: &str,
-    branches: &[TermId],
+    branches: &[anthill_core::kb::node_occurrence::MatchBranch],
 ) -> Result<String, CppCodegenError> {
     let kb = ctx.kb;
     struct Compiled {
@@ -2361,24 +2325,8 @@ fn lower_match_branches(
         body: String,
     }
     let mut compiled: Vec<Compiled> = Vec::with_capacity(branches.len());
-    for b in branches {
-        let (pattern, body) = match kb.get_term(*b) {
-            Term::Fn { functor, named_args, .. }
-                if kb.qualified_name_of(*functor) == "anthill.reflect.MatchBranch" =>
-            {
-                let pat = find_named(kb, named_args, "pattern").ok_or_else(|| {
-                    CppCodegenError { message: "MatchBranch missing 'pattern'".into() }
-                })?;
-                let body = find_named(kb, named_args, "body").ok_or_else(|| {
-                    CppCodegenError { message: "MatchBranch missing 'body'".into() }
-                })?;
-                (pat, body)
-            }
-            other => return Err(CppCodegenError {
-                message: format!("expected MatchBranch, got {other:?}"),
-            }),
-        };
-        let info = analyse_pattern(kb, pattern, scrutinee)?;
+    for branch in branches {
+        let info = analyse_pattern(kb, branch.pattern, scrutinee)?;
         // Bindings frame: `?w` in the body refers to the local
         // `auto w` introduced by the IIFE, not to the access
         // expression — the latter could re-trigger side effects.
@@ -2388,7 +2336,7 @@ fn lower_match_branches(
             frame.insert(name.clone(), name.clone());
         }
         let _guard = ctx.push_value_bindings(frame);
-        let body_s = lower_expr(ctx, body)?;
+        let body_s = lower_node(ctx, &branch.body)?;
         let body_with_bindings = if info.decls.is_empty() {
             body_s
         } else {
@@ -2546,90 +2494,6 @@ fn is_wildcard_pattern(kb: &KnowledgeBase, pat: TermId) -> bool {
     false
 }
 
-/// Recursively scan an expression term for any name reference whose
-/// short name matches `target`. Used to detect self-referential
-/// anonymous lambdas — `let f = lambda(?x) -> f(x - 1)` is rejected
-/// at codegen time because cpp17-stl has no clean RAII-only lowering
-/// for it (Y-combinator is verbose; `std::function` introduces a
-/// refcounted heap control block).
-fn term_references_name(kb: &KnowledgeBase, term: TermId, target: &str) -> bool {
-    match kb.get_term(term) {
-        Term::Ref(s) | Term::Ident(s) => {
-            short_name_of(kb.qualified_name_of(*s)) == target
-        }
-        Term::Var(v) => {
-            let name_sym = match v {
-                anthill_core::kb::term::Var::Global(vid) => vid.name(),
-                anthill_core::kb::term::Var::DeBruijn(_) => return false,
-                anthill_core::kb::term::Var::Rigid(_) => return false,
-            };
-            kb.resolve_sym(name_sym) == target
-        }
-        Term::Fn { functor, pos_args, named_args, .. } => {
-            if short_name_of(kb.qualified_name_of(*functor)) == target {
-                return true;
-            }
-            for a in pos_args.iter() {
-                if term_references_name(kb, *a, target) {
-                    return true;
-                }
-            }
-            for (_, value) in named_args.iter() {
-                if term_references_name(kb, *value, target) {
-                    return true;
-                }
-            }
-            false
-        }
-        Term::Const(Literal::Handle(HandleKind::Occurrence, id)) => {
-            let inner = kb.occurrence_store().term(OccurrenceId::from_raw(*id));
-            term_references_name(kb, inner, target)
-        }
-        _ => false,
-    }
-}
-
-/// Reject `let f = lambda(?x) -> ... f ...` — anonymous self-recursion.
-/// Profile cpp17-stl emits `[=](auto x) { return body; }`, which gives
-/// the lambda no self-reference. Workarounds (Y-combinator, `std::function`)
-/// either bloat the call site or introduce refcounted heap closures —
-/// neither is "RAII only". The user should lift the body to a named
-/// operation, which compiles to a regular C++ function and recurses
-/// cleanly by name.
-fn check_recursive_lambda(
-    kb: &KnowledgeBase,
-    val: TermId,
-    bind_name: &str,
-) -> Result<(), CppCodegenError> {
-    let peeled = match kb.get_term(val) {
-        Term::Const(Literal::Handle(HandleKind::Occurrence, id)) => {
-            kb.occurrence_store().term(OccurrenceId::from_raw(*id))
-        }
-        _ => val,
-    };
-    let Term::Fn { functor, named_args, .. } = kb.get_term(peeled) else {
-        return Ok(());
-    };
-    if kb.qualified_name_of(*functor) != "anthill.reflect.Expr.lambda" {
-        return Ok(());
-    }
-    let Some(body) = find_named(kb, named_args, "body") else {
-        return Ok(());
-    };
-    if !term_references_name(kb, body, bind_name) {
-        return Ok(());
-    }
-    Err(CppCodegenError {
-        message: format!(
-            "recursive anonymous lambda not supported in cpp17-stl \
-             profile (binder '{bind_name}' referenced inside its own \
-             lambda body) — lift the body to a named operation, \
-             which lowers to a regular C++ function and recurses \
-             cleanly by name"
-        ),
-    })
-}
-
 /// Extract the bound name from a `Pattern.var_pattern(name: Ref(<n>), ...)`.
 /// Used by let / lambda lowering. Constructor / tuple / wildcard /
 /// literal pattern shapes are handled by `pattern_constructor_name`
@@ -2651,56 +2515,6 @@ fn pattern_var_name(kb: &KnowledgeBase, pat: TermId) -> Result<String, CppCodege
     }
     Err(CppCodegenError {
         message: format!("expected var_pattern, got {:?}", kb.get_term(pat)),
-    })
-}
-
-/// Extract the bare field name from an `ApplyArg` whose value is a
-/// `var_ref(name: Ref(<field>))` — used for the second arg of
-/// `field_access(object, field)` where the loader wraps the field
-/// identifier as a var_ref.
-fn field_name_from_apply_arg(
-    kb: &KnowledgeBase,
-    arg_term: TermId,
-) -> Result<String, CppCodegenError> {
-    // Unwrap ApplyArg → value
-    let mut inner = if let Term::Fn { functor, named_args, .. } = kb.get_term(arg_term) {
-        if kb.qualified_name_of(*functor) == "anthill.reflect.ApplyArg" {
-            find_named(kb, named_args, "value")
-                .or_else(|| find_named(kb, named_args, "expr"))
-                .ok_or_else(|| CppCodegenError {
-                    message: "field_access: 2nd ApplyArg missing 'value'".into(),
-                })?
-        } else {
-            arg_term
-        }
-    } else {
-        arg_term
-    };
-    // Unwrap the ExprOccurrence handle the loader puts around every
-    // Expr child slot (expr-occurrences.md): the field name lives inside.
-    if let Term::Const(Literal::Handle(HandleKind::Occurrence, id)) = kb.get_term(inner) {
-        inner = kb.occurrence_store().term(OccurrenceId::from_raw(*id));
-    }
-    // Unwrap var_ref → name → Ref(<sym>)
-    if let Term::Fn { functor, named_args, .. } = kb.get_term(inner) {
-        if kb.qualified_name_of(*functor) == "anthill.reflect.Expr.var_ref" {
-            if let Some(name_term) = find_named(kb, named_args, "name") {
-                if let Term::Ref(s) | Term::Ident(s) = kb.get_term(name_term) {
-                    let qn = kb.qualified_name_of(*s);
-                    return Ok(short_name_of(qn).to_string());
-                }
-            }
-        }
-    }
-    if let Term::Ref(s) | Term::Ident(s) = kb.get_term(inner) {
-        let qn = kb.qualified_name_of(*s);
-        return Ok(short_name_of(qn).to_string());
-    }
-    Err(CppCodegenError {
-        message: format!(
-            "field_access: cannot extract field name from {:?}",
-            kb.get_term(inner)
-        ),
     })
 }
 
