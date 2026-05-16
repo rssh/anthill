@@ -1183,14 +1183,21 @@ fn field_access_sort_component() {
 
 #[test]
 fn typing_pass_spec_parses_and_loads() {
-    // WI-253 made the NodeOccurrence materializer iterative, so it
-    // runs in constant host stack regardless of source nesting.
-    // However the *loader* itself (kb/load.rs::convert_expr_term /
-    // load_let_expr / load_match_expr / …) is still recursive and
-    // its frames push the 624-line typing-pass spec ~0.5 MiB past
-    // Rust's default 2 MiB debug-build stack. A 4 MiB spawned-thread
-    // stack gives ~2x headroom while we file WI-254 for an iterative
-    // loader. Release-mode builds already pass on the default stack.
+    // WI-253: iterative NodeOccurrence materializer (constant host stack).
+    // WI-254: iterative kb/load.rs expression loader (constant host stack
+    //         on the load-side traversal of operation bodies).
+    //
+    // Two recursive walkers still live downstream:
+    //   - `parse/convert.rs::convert_*` — tree-sitter CST → typed IR
+    //     converter (one host frame per source AST level)
+    //   - `kb/typing.rs::type_check_node` and the `check_*` family —
+    //     post-load typer that walks the NodeOccurrence trees
+    //
+    // The 624-line typing_pass_spec.anthill exercises both. A 4 MiB
+    // spawned-thread stack covers parse + load + typer; release-mode
+    // builds already pass on the default 2 MiB stack. Follow-up WIs
+    // (WI-255 iterative typer, WI-256 iterative parse converter) are
+    // tracked separately.
     std::thread::Builder::new()
         .stack_size(4 * 1024 * 1024)
         .spawn(|| {
@@ -1200,13 +1207,12 @@ fn typing_pass_spec_parses_and_loads() {
                 .join("../../docs/proposals/typing_pass_spec.anthill");
             let source = std::fs::read_to_string(&spec_path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", spec_path.display()));
-            let parsed = parse::parse(&source)
-                .unwrap_or_else(|errs| {
-                    for e in &errs {
-                        eprintln!("parse error: {}", e.format_with_source(&source));
-                    }
-                    panic!("typing_pass_spec.anthill has {} parse errors", errs.len());
-                });
+            let parsed = parse::parse(&source).unwrap_or_else(|errs| {
+                for e in &errs {
+                    eprintln!("parse error: {}", e.format_with_source(&source));
+                }
+                panic!("typing_pass_spec.anthill has {} parse errors", errs.len());
+            });
 
             let result = load::load(&mut kb, &parsed, &NullResolver);
             if let Err(errs) = &result {
