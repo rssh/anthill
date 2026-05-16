@@ -1806,5 +1806,12 @@ fact WorkItem(
   description: "Iterative NodeOccurrence materializer: drop the 32 MiB stack workaround on typing_pass_spec_parses_and_loads (tests/include/typing_test.rs). WI-251's materialize_from_handle walks Expr children recursively via handle_child -> materialize_from_handle -> expr_from_term; on a deeply-nested let-chain (the 624-line typing_pass_spec.anthill exceeds Rust's default 2 MiB thread stack). Rewrite the walker to be iterative on tail-recursive cases (let-chain body, match-branch bodies, apply args cons-list — list_to_vec is already iterative but the per-arg materialize is recursive). Two approaches worth weighing: (a) explicit work-stack inside materialize_from_handle pushing (slot, parent_node_slot) pairs; (b) trampoline that returns 'unfinished' nodes and finalizes them bottom-up after the loop. Either way the goal is O(1) host-stack regardless of source nesting. Acceptance: typing_pass_spec_parses_and_loads passes on the default test stack (no std::thread::Builder.stack_size workaround); 'cargo test' / scripts/test.sh green.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
+  status: Claimed(agent: "claude", since: "2026-05-16T10:44:15Z"))
+
+fact WorkItem(
+  id: "WI-254",
+  description: "Iterative loader: kb/load.rs::convert_expr_term + load_let_expr / load_match_expr / load_if_expr / load_lambda_expr / load_apply_or_constructor recurse through each other for sub-expressions. WI-253 made the post-load NodeOccurrence materializer iterative (constant host stack regardless of source nesting), but the loader itself still adds one host stack frame per nesting level. The 624-line typing_pass_spec.anthill ends ~0.5 MiB past Rust's default 2 MiB debug-build stack, so the typing_pass_spec_parses_and_loads test still wraps the work in a 4 MiB spawned thread (tests/include/typing_test.rs). Acceptance: typing_pass_spec_parses_and_loads passes on the default test stack with no std::thread::Builder.stack_size workaround; full workspace tests green. Approach: convert the load_* trio to a work-stack walker mirroring the post-WI-253 materializer (Visit/Build pair, post-order assembly), or thread the parse-IR walker through a stacker::maybe_grow guard.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
   status: Open)
 

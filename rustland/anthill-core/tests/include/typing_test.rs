@@ -1183,14 +1183,16 @@ fn field_access_sort_component() {
 
 #[test]
 fn typing_pass_spec_parses_and_loads() {
-    // The spec file's deeply-nested operation bodies make the
-    // NodeOccurrence materialization walker exceed Rust's default
-    // 2 MiB thread stack post-WI-251 (each frame holds an
-    // `Rc<NodeOccurrence>` ~5x larger than the legacy `OccurrenceId`
-    // 4-byte handle). Run the heavy work in a spawned thread with an
-    // explicit 32 MiB stack so the body parses + loads as before.
+    // WI-253 made the NodeOccurrence materializer iterative, so it
+    // runs in constant host stack regardless of source nesting.
+    // However the *loader* itself (kb/load.rs::convert_expr_term /
+    // load_let_expr / load_match_expr / …) is still recursive and
+    // its frames push the 624-line typing-pass spec ~0.5 MiB past
+    // Rust's default 2 MiB debug-build stack. A 4 MiB spawned-thread
+    // stack gives ~2x headroom while we file WI-254 for an iterative
+    // loader. Release-mode builds already pass on the default stack.
     std::thread::Builder::new()
-        .stack_size(32 * 1024 * 1024)
+        .stack_size(4 * 1024 * 1024)
         .spawn(|| {
             let mut kb = load_stdlib_kb();
 
