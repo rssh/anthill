@@ -107,17 +107,11 @@ struct Guard {
 struct RuleEntry {
     head: TermId,
     body: Vec<TermId>,
-    /// Goals from the optional `-:` (then) clause. When non-empty,
-    /// the rule's positive theorem statement is `∀ vars. body ⇒
-    /// (and conclusion)`. Z3 discharge negates the conjunction
-    /// of these goals; the WI-C1 lift uses them directly. Empty
-    /// for classical violation-shape rules and for facts.
-    conclusion: Vec<TermId>,
     sort: TermId,
     domain: TermId,
     meta: Option<TermId>,
     retracted: bool,
-    /// Number of de Bruijn-encoded free variables in head+body+conclusion.
+    /// Number of de Bruijn-encoded free variables in head+body.
     /// Zero for ground facts. Used by resolver to allocate fresh globals.
     arity: u32,
     /// Pre-DeBruijn Global VarIds in DeBruijn-index order (i.e.
@@ -611,7 +605,6 @@ impl KnowledgeBase {
         self.rules.push(RuleEntry {
             head,
             body,
-            conclusion: Vec::new(), // populated via assert_rule_with_conclusion
             sort,
             domain,
             meta,
@@ -1222,13 +1215,6 @@ impl KnowledgeBase {
         &self.rules[id.index()].body
     }
 
-    /// Get the conclusion literals of a rule (empty for facts and
-    /// classical violation-shape rules without a `-:` clause). When
-    /// non-empty, the rule reads as `∀ vars. body ⇒ (and conclusion)`.
-    pub fn rule_conclusion(&self, id: RuleId) -> &[TermId] {
-        &self.rules[id.index()].conclusion
-    }
-
     /// Get the sort of a rule.
     pub fn rule_sort(&self, id: RuleId) -> TermId {
         self.rules[id.index()].sort
@@ -1541,43 +1527,24 @@ impl KnowledgeBase {
         domain: TermId,
         meta: Option<TermId>,
     ) -> RuleId {
-        self.assert_rule_debruijn_with_conclusion(head, body, Vec::new(), sort, domain, meta)
-    }
-
-    /// Like `assert_rule_debruijn`, but also accepts a `conclusion`
-    /// goal-list (the explicit `-:` clause). DeBruijn-conversion is
-    /// applied across head ∪ body ∪ conclusion together so the same
-    /// variable shares an index across all three.
-    pub fn assert_rule_debruijn_with_conclusion(
-        &mut self,
-        head: TermId,
-        body: Vec<TermId>,
-        conclusion: Vec<TermId>,
-        sort: TermId,
-        domain: TermId,
-        meta: Option<TermId>,
-    ) -> RuleId {
-        let mut combined = body.clone();
-        combined.extend(conclusion.iter().copied());
-        let vars = if combined.is_empty() {
+        let vars = if body.is_empty() {
             self.collect_vars(head)
         } else {
-            self.collect_rule_vars(head, &combined)
+            self.collect_rule_vars(head, &body)
         };
-        self.finalize_rule_debruijn(head, body, conclusion, vars, 0, sort, domain, meta)
+        self.finalize_rule_debruijn(head, body, vars, 0, sort, domain, meta)
     }
 
     /// Shared epilogue for both DeBruijn-asserting paths: convert
-    /// head/body/conclusion against `vars` (in-place when non-empty),
-    /// insert as a Rule, save `arity`, `shared_arity`, and `globals`
-    /// on the entry. Vars list ordering convention follows
+    /// head/body against `vars` (in-place when non-empty), insert as
+    /// a Rule, save `arity`, `shared_arity`, and `globals` on the
+    /// entry. Vars list ordering convention follows
     /// `term_to_debruijn`'s reverse mapping (last entry → DeBruijn 0).
     #[allow(clippy::too_many_arguments)]
     fn finalize_rule_debruijn(
         &mut self,
         head: TermId,
         body: Vec<TermId>,
-        conclusion: Vec<TermId>,
         vars: Vec<VarId>,
         shared_arity: u32,
         sort: TermId,
@@ -1585,24 +1552,17 @@ impl KnowledgeBase {
         meta: Option<TermId>,
     ) -> RuleId {
         let arity = vars.len() as u32;
-        let (db_head, db_body, db_conclusion) = if vars.is_empty() {
-            (head, body, conclusion)
+        let (db_head, db_body) = if vars.is_empty() {
+            (head, body)
         } else {
             let new_head = self.term_to_debruijn(head, &vars);
             let new_body: Vec<TermId> = body.iter()
                 .map(|&b| self.term_to_debruijn(b, &vars))
                 .collect();
-            let new_conclusion: Vec<TermId> = conclusion.iter()
-                .map(|&c| self.term_to_debruijn(c, &vars))
-                .collect();
-            (new_head, new_body, new_conclusion)
+            (new_head, new_body)
         };
         let rule_id = self.assert_rule(db_head, db_body, sort, domain, meta);
-        for &c in &db_conclusion {
-            self.terms.incref(c);
-        }
         let entry = &mut self.rules[rule_id.index()];
-        entry.conclusion = db_conclusion;
         entry.arity = arity;
         entry.shared_arity = shared_arity;
         entry.globals = vars;
@@ -1707,7 +1667,7 @@ impl KnowledgeBase {
         vars.extend(seed_globals.iter().copied());
 
         let shared_arity = seed_globals.len() as u32;
-        self.finalize_rule_debruijn(head, body, Vec::new(), vars, shared_arity, sort, domain, meta)
+        self.finalize_rule_debruijn(head, body, vars, shared_arity, sort, domain, meta)
     }
 
     /// Number of leading DeBruijn slots that are shared with a parent
