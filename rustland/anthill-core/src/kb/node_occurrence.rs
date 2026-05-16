@@ -47,6 +47,119 @@ pub struct NodeOccurrence {
     pub owner: Option<Symbol>,
 }
 
+/// Iterative `Drop` for `NodeOccurrence`. The default Drop walks
+/// every child `Rc<NodeOccurrence>` recursively, which costs one
+/// host stack frame per source nesting level — fine for shallow
+/// expressions but blows the default 2 MiB debug-build stack on the
+/// 624-line typing_pass_spec.anthill (deeply nested let / match /
+/// lambda chains). This implementation drains the entire subtree into
+/// an explicit work stack: each iteration pops an `Rc`, tries to
+/// unwrap it, and steals the unwrapped node's children before the
+/// node drops naturally. Because we steal first, the natural Drop on
+/// the unwrapped node finds an emptied `kind` and adds no further
+/// frames; total host stack stays bounded at ~2 frames regardless of
+/// source nesting.
+impl Drop for NodeOccurrence {
+    fn drop(&mut self) {
+        let mut stack: Vec<Rc<NodeOccurrence>> = Vec::new();
+        drain_node(self, &mut stack);
+        while let Some(rc) = stack.pop() {
+            if let Ok(mut inner) = Rc::try_unwrap(rc) {
+                drain_node(&mut inner, &mut stack);
+                // inner drops here; its kind has been emptied so the
+                // recursive call into this Drop finds nothing to drain.
+            }
+            // Otherwise the Rc is shared — decrementing it leaves the
+            // inner alive, no recursion to bound.
+        }
+    }
+}
+
+/// Extract every direct `Rc<NodeOccurrence>` child of `occ` into the
+/// caller's work stack, replacing each slot with an empty
+/// `Vec`/placeholder so the natural Drop of `occ` finds nothing to
+/// recurse through.
+fn drain_node(occ: &mut NodeOccurrence, stack: &mut Vec<Rc<NodeOccurrence>>) {
+    if let NodeKind::Expr { expr, origin, .. } = &mut occ.kind {
+        if let OccurrenceOrigin::Synthesized { from, .. } = origin {
+            let placeholder = NodeOccurrence::new_expr(Expr::Bottom, empty_span(), None);
+            stack.push(std::mem::replace(from, placeholder));
+        }
+        drain_expr_children(expr, stack);
+    }
+}
+
+/// Steal every child `Rc<NodeOccurrence>` slot of `expr`, pushing the
+/// owned Rcs onto `stack`. Vec-backed slots use `mem::take` (no
+/// allocation); single-Rc slots use `mem::replace` with a fresh
+/// `Expr::Bottom` placeholder (bounded by the slot count per node).
+fn drain_expr_children(expr: &mut Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
+    let mk_placeholder = || NodeOccurrence::new_expr(Expr::Bottom, empty_span(), None);
+    match expr {
+        Expr::Apply { pos_args, named_args, .. }
+        | Expr::Constructor { pos_args, named_args, .. }
+        | Expr::Instantiation { pos_args, named_args, .. } => {
+            for c in std::mem::take(pos_args) { stack.push(c); }
+            for (_, c) in std::mem::take(named_args) { stack.push(c); }
+        }
+        Expr::If { condition, then_branch, else_branch } => {
+            stack.push(std::mem::replace(condition, mk_placeholder()));
+            stack.push(std::mem::replace(then_branch, mk_placeholder()));
+            stack.push(std::mem::replace(else_branch, mk_placeholder()));
+        }
+        Expr::Let { value, body, .. } => {
+            stack.push(std::mem::replace(value, mk_placeholder()));
+            stack.push(std::mem::replace(body, mk_placeholder()));
+        }
+        Expr::Match { scrutinee, branches } => {
+            stack.push(std::mem::replace(scrutinee, mk_placeholder()));
+            for mut b in std::mem::take(branches) {
+                stack.push(std::mem::replace(&mut b.body, mk_placeholder()));
+                if let Some(g) = b.guard.take() {
+                    stack.push(g);
+                }
+            }
+        }
+        Expr::Lambda { body, .. } | Expr::LambdaWithin { body, .. } => {
+            stack.push(std::mem::replace(body, mk_placeholder()));
+        }
+        Expr::ListLit(es) | Expr::SetLit(es) => {
+            for e in std::mem::take(es) { stack.push(e); }
+        }
+        Expr::TupleLit { positional, named } => {
+            for e in std::mem::take(positional) { stack.push(e); }
+            for (_, e) in std::mem::take(named) { stack.push(e); }
+        }
+        Expr::HoApply { predicate, args } => {
+            stack.push(std::mem::replace(predicate, mk_placeholder()));
+            for a in std::mem::take(args) { stack.push(a); }
+        }
+        Expr::ApplyWithin { args, named_args, requirements, .. } => {
+            for a in std::mem::take(args) { stack.push(a); }
+            for (_, a) in std::mem::take(named_args) { stack.push(a); }
+            for r in std::mem::take(requirements) { stack.push(r); }
+        }
+        Expr::HoApplyWithin { predicate, args, requirements } => {
+            stack.push(std::mem::replace(predicate, mk_placeholder()));
+            for a in std::mem::take(args) { stack.push(a); }
+            for r in std::mem::take(requirements) { stack.push(r); }
+        }
+        Expr::ConstructorWithin { pos_args, named_args, requirements, .. } => {
+            for c in std::mem::take(pos_args) { stack.push(c); }
+            for (_, c) in std::mem::take(named_args) { stack.push(c); }
+            for r in std::mem::take(requirements) { stack.push(r); }
+        }
+        Expr::RequirementAtSort { chain, .. } => {
+            stack.push(std::mem::replace(chain, mk_placeholder()));
+        }
+        Expr::ConstructRequirement { requirements, .. } => {
+            for r in std::mem::take(requirements) { stack.push(r); }
+        }
+        Expr::Const(_) | Expr::Ref(_) | Expr::Ident(_)
+        | Expr::Var(_) | Expr::Bottom | Expr::VarRef { .. } => {}
+    }
+}
+
 impl NodeOccurrence {
     /// Build a source-origin expression occurrence.
     pub fn new_expr(expr: Expr, span: SourceSpan, owner: Option<Symbol>) -> Rc<Self> {
@@ -276,78 +389,93 @@ pub struct MatchBranch {
 /// Used by `kb::req_insertion::run` to find classified call sites in
 /// `kb.op_bodies` post-WI-251. Public so tests + tooling can iterate
 /// classifications without re-implementing the walk.
+/// Pre-order traversal of a NodeOccurrence tree: invoke `visit` on
+/// every node whose `classification` RefCell is set. Iterative — uses
+/// an explicit work-stack so deeply-nested let / match / lambda
+/// chains stay flat on the host stack regardless of source nesting
+/// depth.
 pub fn visit_classifications(
-    occ: &Rc<NodeOccurrence>,
+    root: &Rc<NodeOccurrence>,
     visit: &mut impl FnMut(&Rc<NodeOccurrence>, &super::typing::CallClass),
 ) {
-    let NodeKind::Expr { expr, classification, .. } = &occ.kind else {
-        return;
-    };
-    if let Some(c) = classification.borrow().as_deref() {
-        visit(occ, c);
+    let mut stack: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(32);
+    stack.push(Rc::clone(root));
+    while let Some(occ) = stack.pop() {
+        let NodeKind::Expr { expr, classification, .. } = &occ.kind else {
+            continue;
+        };
+        if let Some(c) = classification.borrow().as_deref() {
+            visit(&occ, c);
+        }
+        push_classified_children(expr, &mut stack);
     }
+}
+
+/// Push every child `NodeOccurrence` of `expr` onto `stack` (order
+/// irrelevant for the visit callback contract).
+fn push_classified_children(expr: &Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
     match expr {
         Expr::Apply { pos_args, named_args, .. }
         | Expr::Constructor { pos_args, named_args, .. } => {
-            for c in pos_args.iter() { visit_classifications(c, visit); }
-            for (_, c) in named_args.iter() { visit_classifications(c, visit); }
+            for c in pos_args.iter() { stack.push(Rc::clone(c)); }
+            for (_, c) in named_args.iter() { stack.push(Rc::clone(c)); }
         }
         Expr::If { condition, then_branch, else_branch } => {
-            visit_classifications(condition, visit);
-            visit_classifications(then_branch, visit);
-            visit_classifications(else_branch, visit);
+            stack.push(Rc::clone(condition));
+            stack.push(Rc::clone(then_branch));
+            stack.push(Rc::clone(else_branch));
         }
         Expr::Let { value, body, .. } => {
-            visit_classifications(value, visit);
-            visit_classifications(body, visit);
+            stack.push(Rc::clone(value));
+            stack.push(Rc::clone(body));
         }
         Expr::Match { scrutinee, branches } => {
-            visit_classifications(scrutinee, visit);
+            stack.push(Rc::clone(scrutinee));
             for b in branches.iter() {
-                visit_classifications(&b.body, visit);
+                stack.push(Rc::clone(&b.body));
                 if let Some(g) = &b.guard {
-                    visit_classifications(g, visit);
+                    stack.push(Rc::clone(g));
                 }
             }
         }
-        Expr::Lambda { body, .. } => visit_classifications(body, visit),
+        Expr::Lambda { body, .. } => stack.push(Rc::clone(body)),
         Expr::ListLit(es) | Expr::SetLit(es) => {
-            for e in es.iter() { visit_classifications(e, visit); }
+            for e in es.iter() { stack.push(Rc::clone(e)); }
         }
         Expr::TupleLit { positional, named } => {
-            for e in positional.iter() { visit_classifications(e, visit); }
-            for (_, e) in named.iter() { visit_classifications(e, visit); }
+            for e in positional.iter() { stack.push(Rc::clone(e)); }
+            for (_, e) in named.iter() { stack.push(Rc::clone(e)); }
         }
         Expr::HoApply { predicate, args } => {
-            visit_classifications(predicate, visit);
-            for a in args.iter() { visit_classifications(a, visit); }
+            stack.push(Rc::clone(predicate));
+            for a in args.iter() { stack.push(Rc::clone(a)); }
         }
         Expr::ApplyWithin { args, named_args, requirements, .. } => {
-            for a in args.iter() { visit_classifications(a, visit); }
-            for (_, a) in named_args.iter() { visit_classifications(a, visit); }
-            for r in requirements.iter() { visit_classifications(r, visit); }
+            for a in args.iter() { stack.push(Rc::clone(a)); }
+            for (_, a) in named_args.iter() { stack.push(Rc::clone(a)); }
+            for r in requirements.iter() { stack.push(Rc::clone(r)); }
         }
         Expr::HoApplyWithin { predicate, args, requirements } => {
-            visit_classifications(predicate, visit);
-            for a in args.iter() { visit_classifications(a, visit); }
-            for r in requirements.iter() { visit_classifications(r, visit); }
+            stack.push(Rc::clone(predicate));
+            for a in args.iter() { stack.push(Rc::clone(a)); }
+            for r in requirements.iter() { stack.push(Rc::clone(r)); }
         }
         Expr::ConstructorWithin { pos_args, named_args, requirements, .. } => {
-            for c in pos_args.iter() { visit_classifications(c, visit); }
-            for (_, c) in named_args.iter() { visit_classifications(c, visit); }
-            for r in requirements.iter() { visit_classifications(r, visit); }
+            for c in pos_args.iter() { stack.push(Rc::clone(c)); }
+            for (_, c) in named_args.iter() { stack.push(Rc::clone(c)); }
+            for r in requirements.iter() { stack.push(Rc::clone(r)); }
         }
         Expr::LambdaWithin { body, requirements, .. } => {
-            visit_classifications(body, visit);
-            for r in requirements.iter() { visit_classifications(r, visit); }
+            stack.push(Rc::clone(body));
+            for r in requirements.iter() { stack.push(Rc::clone(r)); }
         }
         Expr::Instantiation { pos_args, named_args, .. } => {
-            for c in pos_args.iter() { visit_classifications(c, visit); }
-            for (_, c) in named_args.iter() { visit_classifications(c, visit); }
+            for c in pos_args.iter() { stack.push(Rc::clone(c)); }
+            for (_, c) in named_args.iter() { stack.push(Rc::clone(c)); }
         }
-        Expr::RequirementAtSort { chain, .. } => visit_classifications(chain, visit),
+        Expr::RequirementAtSort { chain, .. } => stack.push(Rc::clone(chain)),
         Expr::ConstructRequirement { requirements, .. } => {
-            for r in requirements.iter() { visit_classifications(r, visit); }
+            for r in requirements.iter() { stack.push(Rc::clone(r)); }
         }
         Expr::Const(_) | Expr::Ref(_) | Expr::Ident(_)
         | Expr::Var(_) | Expr::Bottom | Expr::VarRef { .. } => {}

@@ -54,6 +54,38 @@ impl<L> DiscrimNode<L> {
     }
 }
 
+/// Iterative `Drop` for `DiscrimNode`. The default Drop walks every
+/// nested `DiscrimNode` value recursively (one host stack frame per
+/// tree depth) — fine for shallow indexes but blows the default 2 MiB
+/// debug-build stack when the discrimination tree gets deep (e.g. the
+/// 624-line typing_pass_spec.anthill builds a deeply-branched index).
+/// Drain children into an explicit work stack and decrement
+/// iteratively so each `DiscrimNode`'s natural Drop finds emptied
+/// fields and adds no further frames.
+impl<L> Drop for DiscrimNode<L> {
+    fn drop(&mut self) {
+        let mut stack: Vec<DiscrimNode<L>> = Vec::new();
+        steal_discrim_children(self, &mut stack);
+        while let Some(mut node) = stack.pop() {
+            steal_discrim_children(&mut node, &mut stack);
+            // `node` drops here; its `concrete` and `var_edges` have
+            // been emptied so the recursive Drop call into this impl
+            // finds nothing to drain.
+        }
+    }
+}
+
+fn steal_discrim_children<L>(node: &mut DiscrimNode<L>, stack: &mut Vec<DiscrimNode<L>>) {
+    for (_, child) in std::mem::take(&mut node.concrete) {
+        stack.push(child);
+    }
+    for (_, child) in std::mem::take(&mut node.var_edges) {
+        stack.push(child);
+    }
+    // `leaves` are owned `L` values (RuleId-shaped in practice) — no
+    // recursive Drop concern.
+}
+
 // ── SubstTree — top-level structure ─────────────────────────────
 
 pub(crate) struct SubstTree<L> {

@@ -557,6 +557,77 @@ pub fn list_to_vec(kb: &KnowledgeBase, mut term: TermId) -> Vec<TermId> {
 }
 
 
+// ── Iterative-typer work ops ───────────────────────────────────
+//
+// Let / Match / Lambda body recursion is the dominant deep-nesting
+// source on typing_pass_spec.anthill. Convert just those three
+// recursion paths to a Visit/Build work-stack walker so chained
+// `let A = …; let B = …; …` and nested matches stay flat on the
+// host stack. Other variants (Apply, Constructor, If, ListLit,
+// SetLit, TupleLit) keep their existing `check_*` helpers; their
+// recursion is bounded by argument count / branch count rather than
+// source nesting depth.
+
+enum TypeWorkOp {
+    Visit { occ: Rc<NodeOccurrence>, env: TypingEnv },
+    Build(TypeBuildFrame),
+}
+
+enum TypeBuildFrame {
+    /// All Apply args finished; drain N = `pos_count + named_keys.len()`
+    /// results, hand them to `check_apply_iter` which runs the
+    /// non-recursive subst / dispatch / classify logic.
+    Apply {
+        occ: Rc<NodeOccurrence>,
+        fn_sym: Symbol,
+        pos_args: Vec<Rc<NodeOccurrence>>,
+        named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+        env: TypingEnv,
+    },
+    /// All Constructor args finished; drain results and call
+    /// `check_constructor_iter`.
+    Constructor {
+        ctor_sym: Symbol,
+        pos_args: Vec<Rc<NodeOccurrence>>,
+        named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+        env: TypingEnv,
+    },
+    /// Value finished; compute the body's ext_env and schedule the
+    /// body Visit, plus a `LetFinal` frame to combine results.
+    LetAfterValue {
+        pattern: TermId,
+        annotation: Option<TermId>,
+        body_occ: Rc<NodeOccurrence>,
+    },
+    /// Body finished; merge effects from `value_r` (popped earlier)
+    /// and `body_r` (on the stack), return the let's TypeResult.
+    LetFinal { value_r: Option<TypeResult> },
+    /// Scrutinee finished; walk the branch patterns for coverage,
+    /// compute each branch's env, schedule body Visits + a
+    /// `MatchFinal` frame.
+    MatchAfterScrutinee {
+        branches: Vec<MatchBranch>,
+        outer_env: TypingEnv,
+    },
+    /// All branch bodies finished; pop `branch_count` results, filter
+    /// per-branch effects against each branch's local resources,
+    /// emit non-exhaustiveness diagnostics, return the match's
+    /// TypeResult.
+    MatchFinal {
+        scr_effects: Vec<TermId>,
+        branch_envs: Vec<TypingEnv>,
+        branch_count: usize,
+        outer_env: TypingEnv,
+        scr_ty: Option<TermId>,
+        covered_entities: Vec<Symbol>,
+        has_wildcard: bool,
+    },
+    /// Lambda body finished; build the `arrow(param, body_ty,
+    /// body_effects)` type and return a pure result (creating a
+    /// lambda is itself effect-free).
+    LambdaBody { param: TermId, outer_env: TypingEnv },
+}
+
 // ── type_check_expr ────────────────────────────────────────────
 
 /// Infer the type of an expression. Returns TypeResult with type, env, and effects.
@@ -575,68 +646,207 @@ pub fn type_check_expr(
 }
 
 /// Canonical typer entry — walk a `Rc<NodeOccurrence>` and produce a
-/// `TypeResult`. Dispatches on the wrapped `Expr` variant; each variant
-/// recurses through child slots which are themselves `Rc<NodeOccurrence>`.
+/// `TypeResult`. Runs a Visit/Build work-stack so the Let / Match /
+/// Lambda body-recursion paths stay flat on the host stack regardless
+/// of source nesting depth. Other variants delegate to their existing
+/// `check_*` helpers (which may call back through here, adding ≤ 1
+/// host frame per Apply / Constructor / If / collection level — those
+/// recursions are bounded by argument count, not source depth).
 pub fn type_check_node(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     occ: &Rc<NodeOccurrence>,
 ) -> Option<TypeResult> {
+    let mut work: Vec<TypeWorkOp> = Vec::with_capacity(32);
+    let mut results: Vec<Option<TypeResult>> = Vec::with_capacity(32);
+    work.push(TypeWorkOp::Visit { occ: Rc::clone(occ), env: env.clone() });
+    while let Some(op) = work.pop() {
+        match op {
+            TypeWorkOp::Visit { occ, env } => visit_type(kb, occ, env, &mut work, &mut results),
+            TypeWorkOp::Build(frame) => build_type(kb, frame, &mut work, &mut results),
+        }
+    }
+    debug_assert_eq!(results.len(), 1, "iterative typer: expected exactly one result");
+    results.pop().flatten()
+}
+
+/// Dispatch a single Visit: produce a leaf TypeResult directly,
+/// delegate to a recursive helper, or push a Build frame + child
+/// Visits for the env-changing Let / Match / Lambda cases.
+fn visit_type(
+    kb: &mut KnowledgeBase,
+    occ: Rc<NodeOccurrence>,
+    env: TypingEnv,
+    work: &mut Vec<TypeWorkOp>,
+    results: &mut Vec<Option<TypeResult>>,
+) {
+    // Expr / MatchBranch don't derive Clone (Expr's classification
+    // RefCell + the implicit sharing through Rc), so we match by
+    // reference and `Rc::clone` / hand-clone the slots we need.
     let expr = match &occ.kind {
         NodeKind::Expr { expr, .. } => expr,
-        NodeKind::RuleHead { .. } => return None,
+        NodeKind::RuleHead { .. } => {
+            results.push(None);
+            return;
+        }
     };
     match expr {
-        Expr::Const(Literal::Int(_)) => Some(TypeResult::pure(kb.make_sort_ref_by_name("Int"), env.clone())),
-        Expr::Const(Literal::Float(_)) => Some(TypeResult::pure(kb.make_sort_ref_by_name("Float"), env.clone())),
-        Expr::Const(Literal::String(_)) => Some(TypeResult::pure(kb.make_sort_ref_by_name("String"), env.clone())),
-        Expr::Const(Literal::Bool(_)) => Some(TypeResult::pure(kb.make_sort_ref_by_name("Bool"), env.clone())),
-        Expr::Const(_) => None,
-        Expr::Ref(sym) => {
-            let name = kb.resolve_sym(*sym).to_string();
-            if let Some(ty) = env.lookup_var(&name) {
-                Some(TypeResult::pure(ty, env.clone()))
-            } else if kb.is_constructor_symbol(*sym) {
-                infer_constructor_type_node(kb, env, *sym, &[], &[])
-            } else {
-                None
-            }
-        }
-        Expr::Ident(sym) => {
-            let name = kb.resolve_sym(*sym).to_string();
-            env.lookup_var(&name).map(|ty| TypeResult::pure(ty, env.clone()))
-        }
-        Expr::VarRef { name } => {
-            let nm = kb.resolve_sym(*name).to_string();
-            env.lookup_var(&nm).map(|ty| TypeResult::pure(ty, env.clone()))
-        }
-        Expr::Apply { functor, pos_args, named_args } => {
-            check_apply(kb, env, occ, *functor, pos_args, named_args)
-        }
-        Expr::Constructor { name, pos_args, named_args } => {
-            check_constructor(kb, env, *name, pos_args, named_args)
-        }
-        Expr::If { condition, then_branch, else_branch } => {
-            check_if_expr(kb, env, condition, then_branch, else_branch)
-        }
+        // ── Iterative cases ─────────────────────────────────────
         Expr::Let { pattern, type_annotation, value, body } => {
-            check_let_expr(kb, env, *pattern, *type_annotation, value, body)
+            let pattern = *pattern;
+            let annotation = *type_annotation;
+            let value_occ = Rc::clone(value);
+            let body_occ = Rc::clone(body);
+            work.push(TypeWorkOp::Build(TypeBuildFrame::LetAfterValue {
+                pattern,
+                annotation,
+                body_occ,
+            }));
+            work.push(TypeWorkOp::Visit { occ: value_occ, env });
         }
         Expr::Match { scrutinee, branches } => {
-            check_match_expr(kb, env, scrutinee, branches)
+            let scrutinee_occ = Rc::clone(scrutinee);
+            let branches_cloned: Vec<MatchBranch> = branches
+                .iter()
+                .map(|b| MatchBranch {
+                    pattern: b.pattern,
+                    guard: b.guard.as_ref().map(Rc::clone),
+                    body: Rc::clone(&b.body),
+                    span: b.span,
+                })
+                .collect();
+            work.push(TypeWorkOp::Build(TypeBuildFrame::MatchAfterScrutinee {
+                branches: branches_cloned,
+                outer_env: env.clone(),
+            }));
+            work.push(TypeWorkOp::Visit { occ: scrutinee_occ, env });
         }
         Expr::Lambda { param, body } => {
-            check_lambda(kb, env, *param, body)
+            let param = *param;
+            let body_occ = Rc::clone(body);
+            let param_type = extract_pattern_type_ann(kb, param);
+            let mut lambda_env = env.clone();
+            extend_env_from_pattern(kb, &mut lambda_env, param, param_type);
+            work.push(TypeWorkOp::Build(TypeBuildFrame::LambdaBody {
+                param,
+                outer_env: env,
+            }));
+            work.push(TypeWorkOp::Visit { occ: body_occ, env: lambda_env });
         }
-        Expr::ListLit(elems) => check_list_literal(kb, env, elems),
-        Expr::SetLit(elems) => check_set_literal(kb, env, elems),
+
+        // ── Leaf cases ──────────────────────────────────────────
+        Expr::Const(Literal::Int(_)) => results.push(Some(
+            TypeResult::pure(kb.make_sort_ref_by_name("Int"), env),
+        )),
+        Expr::Const(Literal::Float(_)) => results.push(Some(
+            TypeResult::pure(kb.make_sort_ref_by_name("Float"), env),
+        )),
+        Expr::Const(Literal::String(_)) => results.push(Some(
+            TypeResult::pure(kb.make_sort_ref_by_name("String"), env),
+        )),
+        Expr::Const(Literal::Bool(_)) => results.push(Some(
+            TypeResult::pure(kb.make_sort_ref_by_name("Bool"), env),
+        )),
+        Expr::Const(_) => results.push(None),
+        Expr::Ref(sym) => {
+            let sym = *sym;
+            let name = kb.resolve_sym(sym).to_string();
+            let r = if let Some(ty) = env.lookup_var(&name) {
+                Some(TypeResult::pure(ty, env))
+            } else if kb.is_constructor_symbol(sym) {
+                check_constructor_iter(kb, &env, sym, &[], &[], &[], &[])
+            } else {
+                None
+            };
+            results.push(r);
+        }
+        Expr::Ident(sym) => {
+            let sym = *sym;
+            let name = kb.resolve_sym(sym).to_string();
+            let r = env.lookup_var(&name).map(|ty| TypeResult::pure(ty, env));
+            results.push(r);
+        }
+        Expr::VarRef { name } => {
+            let name = *name;
+            let nm = kb.resolve_sym(name).to_string();
+            let r = env.lookup_var(&nm).map(|ty| TypeResult::pure(ty, env));
+            results.push(r);
+        }
+
+        // ── Iterative Apply / Constructor ───────────────────────
+        // Push child Visits for every arg in reverse so they pop in
+        // forward order, then a Build frame that drains the
+        // pre-computed arg results and runs the subst / dispatch /
+        // classify logic without recursing through `type_check_node`.
+        Expr::Apply { functor, pos_args, named_args } => {
+            let functor = *functor;
+            let pos_args = pos_args.clone();
+            let named_args = named_args.clone();
+            let occ_clone = Rc::clone(&occ);
+            work.push(TypeWorkOp::Build(TypeBuildFrame::Apply {
+                occ: occ_clone,
+                fn_sym: functor,
+                pos_args: pos_args.clone(),
+                named_args: named_args.clone(),
+                env: env.clone(),
+            }));
+            for (_, arg) in named_args.iter().rev() {
+                work.push(TypeWorkOp::Visit { occ: Rc::clone(arg), env: env.clone() });
+            }
+            for arg in pos_args.iter().rev() {
+                work.push(TypeWorkOp::Visit { occ: Rc::clone(arg), env: env.clone() });
+            }
+        }
+        Expr::Constructor { name, pos_args, named_args } => {
+            let name = *name;
+            let pos_args = pos_args.clone();
+            let named_args = named_args.clone();
+            work.push(TypeWorkOp::Build(TypeBuildFrame::Constructor {
+                ctor_sym: name,
+                pos_args: pos_args.clone(),
+                named_args: named_args.clone(),
+                env: env.clone(),
+            }));
+            for (_, arg) in named_args.iter().rev() {
+                work.push(TypeWorkOp::Visit { occ: Rc::clone(arg), env: env.clone() });
+            }
+            for arg in pos_args.iter().rev() {
+                work.push(TypeWorkOp::Visit { occ: Rc::clone(arg), env: env.clone() });
+            }
+        }
+
+        // ── Recursive-helper cases (depth bounded by source breadth,
+        //    not nesting): if has fixed arity, collection literals
+        //    iterate over flat element lists. Their `check_*` helpers
+        //    re-enter `type_check_node`, adding ≤ 1 host frame per
+        //    level; the iterative dispatch keeps the inner recursion
+        //    flat.
+        Expr::If { condition, then_branch, else_branch } => {
+            let condition = Rc::clone(condition);
+            let then_branch = Rc::clone(then_branch);
+            let else_branch = Rc::clone(else_branch);
+            let r = check_if_expr(kb, &env, &condition, &then_branch, &else_branch);
+            results.push(r);
+        }
+        Expr::ListLit(elems) => {
+            let elems = elems.clone();
+            let r = check_list_literal(kb, &env, &elems);
+            results.push(r);
+        }
+        Expr::SetLit(elems) => {
+            let elems = elems.clone();
+            let r = check_set_literal(kb, &env, &elems);
+            results.push(r);
+        }
         Expr::TupleLit { positional, named } => {
-            check_tuple_literal(kb, env, positional, named)
+            let positional = positional.clone();
+            let named = named.clone();
+            let r = check_tuple_literal(kb, &env, &positional, &named);
+            results.push(r);
         }
+
         // Post-elaboration forms — emitted by req_insertion, not the
-        // surface typer. Return None for now (the typer doesn't re-check
-        // elaborated bodies in the current pipeline). Constructor leaves
-        // and bare-functor fallbacks land in `Apply` via the materializer.
+        // surface typer.
         Expr::HoApply { .. }
         | Expr::Instantiation { .. }
         | Expr::ApplyWithin { .. }
@@ -646,7 +856,203 @@ pub fn type_check_node(
         | Expr::RequirementAtSort { .. }
         | Expr::ConstructRequirement { .. }
         | Expr::Var(_)
-        | Expr::Bottom => None,
+        | Expr::Bottom => results.push(None),
+    }
+}
+
+/// Assemble a Let / Match / Lambda result from its child results.
+fn build_type(
+    kb: &mut KnowledgeBase,
+    frame: TypeBuildFrame,
+    work: &mut Vec<TypeWorkOp>,
+    results: &mut Vec<Option<TypeResult>>,
+) {
+    match frame {
+        TypeBuildFrame::Apply { occ, fn_sym, pos_args, named_args, env } => {
+            let total = pos_args.len() + named_args.len();
+            let drain_start = results.len() - total;
+            let mut arg_results: Vec<Option<TypeResult>> =
+                results.drain(drain_start..).collect();
+            let named_results = arg_results.split_off(pos_args.len());
+            let pos_results = arg_results;
+            let r = check_apply_iter(
+                kb, &env, &occ, fn_sym, &pos_args, &named_args, &pos_results, &named_results,
+            );
+            results.push(r);
+        }
+        TypeBuildFrame::Constructor { ctor_sym, pos_args, named_args, env } => {
+            let total = pos_args.len() + named_args.len();
+            let drain_start = results.len() - total;
+            let mut arg_results: Vec<Option<TypeResult>> =
+                results.drain(drain_start..).collect();
+            let named_results = arg_results.split_off(pos_args.len());
+            let pos_results = arg_results;
+            let r = check_constructor_iter(
+                kb, &env, ctor_sym, &pos_args, &named_args, &pos_results, &named_results,
+            );
+            results.push(r);
+        }
+        TypeBuildFrame::LetAfterValue { pattern, annotation, body_occ } => {
+            let value_r = results.pop().expect("LetAfterValue: missing value result");
+            let value_ty = value_r.as_ref().map(|r| r.ty);
+            // Annotation, when present, takes precedence as the bound
+            // variable's type for the body env. The value's inferred
+            // type still drives effect propagation via `value_r`.
+            let bound_ty = annotation.or(value_ty);
+            let mut ext_env = value_r
+                .as_ref()
+                .map(|r| r.env.clone())
+                .unwrap_or_else(TypingEnv::empty);
+            extend_env_from_pattern(kb, &mut ext_env, pattern, bound_ty);
+            if let Some(var_name) = extract_pattern_var_name(kb, pattern) {
+                ext_env.declare_local_resource(var_name);
+            }
+            work.push(TypeWorkOp::Build(TypeBuildFrame::LetFinal { value_r }));
+            work.push(TypeWorkOp::Visit { occ: body_occ, env: ext_env });
+        }
+        TypeBuildFrame::LetFinal { value_r } => {
+            let body_r = results.pop().expect("LetFinal: missing body result");
+            let Some(body_r) = body_r else {
+                results.push(None);
+                return;
+            };
+            let mut effects = Vec::new();
+            if let Some(ref r) = value_r {
+                effects = merge_effects(&effects, &r.effects);
+            }
+            effects = merge_effects(&effects, &body_r.effects);
+            results.push(Some(TypeResult {
+                ty: body_r.ty,
+                env: body_r.env,
+                effects,
+            }));
+        }
+        TypeBuildFrame::MatchAfterScrutinee { branches, outer_env } => {
+            let scr_r = results.pop().expect("MatchAfterScrutinee: missing scrutinee result");
+            let scr_ty = scr_r.as_ref().map(|r| r.ty);
+            let scr_effects = scr_r.as_ref().map(|r| r.effects.clone()).unwrap_or_default();
+
+            // Coverage / exhaustiveness inputs are derived purely from
+            // pattern terms, independent of body type-checks — compute
+            // here so MatchFinal can run the check without re-walking.
+            let mut covered_entities: Vec<Symbol> = Vec::new();
+            let mut has_wildcard = false;
+            let mut branch_envs: Vec<TypingEnv> = Vec::with_capacity(branches.len());
+            for branch in &branches {
+                collect_covered_entities(
+                    kb,
+                    branch.pattern,
+                    &mut covered_entities,
+                    &mut has_wildcard,
+                );
+                let mut branch_env = outer_env.clone();
+                extend_env_from_pattern(kb, &mut branch_env, branch.pattern, scr_ty);
+                branch_envs.push(branch_env);
+            }
+
+            let branch_count = branches.len();
+            work.push(TypeWorkOp::Build(TypeBuildFrame::MatchFinal {
+                scr_effects,
+                branch_envs: branch_envs.clone(),
+                branch_count,
+                outer_env,
+                scr_ty,
+                covered_entities,
+                has_wildcard,
+            }));
+            for (i, branch) in branches.iter().enumerate().rev() {
+                work.push(TypeWorkOp::Visit {
+                    occ: Rc::clone(&branch.body),
+                    env: branch_envs[i].clone(),
+                });
+            }
+        }
+        TypeBuildFrame::MatchFinal {
+            scr_effects,
+            branch_envs,
+            branch_count,
+            outer_env,
+            scr_ty,
+            covered_entities,
+            has_wildcard,
+        } => {
+            let drain_start = results.len() - branch_count;
+            let mut effects = scr_effects;
+            let mut result_ty: Option<TermId> = None;
+            for (i, body_r_opt) in results.drain(drain_start..).enumerate() {
+                if let Some(body_r) = body_r_opt {
+                    if result_ty.is_none() {
+                        result_ty = Some(body_r.ty);
+                    }
+                    // Filter effects against this branch's locals so
+                    // pattern-bound resources don't leak past the case
+                    // arm (their bindings live only inside the branch).
+                    let branch_external = external_effects(kb, &branch_envs[i], &body_r.effects);
+                    effects = merge_effects(&effects, &branch_external);
+                }
+            }
+
+            let mut result_env = outer_env.clone();
+            if !has_wildcard {
+                if let Some(sty) = scr_ty {
+                    if let Some(sort_sym) = extract_sort_ref_sym(kb, sty) {
+                        let sort_term = kb.make_name_term_from_sym(sort_sym);
+                        if kb.sort_kind(sort_term) == Some(SortKind::Enum) {
+                            let entity_terms = kb.sort_children(sort_term);
+                            let all_entities: Vec<Symbol> = entity_terms
+                                .iter()
+                                .filter_map(|&et| match kb.get_term(et) {
+                                    Term::Fn { functor, .. } => Some(*functor),
+                                    _ => None,
+                                })
+                                .collect();
+                            let missing: Vec<String> = all_entities
+                                .iter()
+                                .filter(|e| {
+                                    !covered_entities
+                                        .iter()
+                                        .any(|c| same_symbol(kb, *c, **e))
+                                })
+                                .map(|s| kb.resolve_sym(*s).to_string())
+                                .collect();
+                            if !missing.is_empty() {
+                                let sort_name = kb.resolve_sym(sort_sym);
+                                result_env.diagnostics.push(format!(
+                                    "non-exhaustive match on {}: missing {}",
+                                    sort_name,
+                                    missing.join(", ")
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            results.push(result_ty.map(|ty| TypeResult {
+                ty,
+                env: result_env,
+                effects,
+            }));
+        }
+        TypeBuildFrame::LambdaBody { param, outer_env } => {
+            let body_r = results.pop().expect("LambdaBody: missing body result");
+            let param_type = extract_pattern_type_ann(kb, param);
+            // Build arrow(param, result, effects) type term
+            let a_val = param_type.unwrap_or_else(|| {
+                let fresh = kb.intern("?param");
+                kb.make_type_var(fresh)
+            });
+            let b_val = body_r.as_ref().map(|r| r.ty).unwrap_or_else(|| {
+                let fresh = kb.intern("?result");
+                kb.make_type_var(fresh)
+            });
+            let body_effects = body_r
+                .as_ref()
+                .map(|r| r.effects.clone())
+                .unwrap_or_default();
+            let fn_type = kb.make_arrow_type(a_val, b_val, &body_effects);
+            // Creating a lambda is itself pure — body effects live in the type.
+            results.push(Some(TypeResult::pure(fn_type, outer_env)));
+        }
     }
 }
 
@@ -664,45 +1070,43 @@ fn classify(_kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>, class: CallClass)
 /// apply(fn, args): type-check with type parameter instantiation.
 /// 1. fn is a known operation → unify arg types with param types, resolve return type
 /// 2. fn is a variable with arrow type → extract return type and effects
-fn check_apply(
+/// Non-recursive Apply checker. Identical to the legacy `check_apply`
+/// but reads per-arg `TypeResult`s from `pos_results` / `named_results`
+/// (pre-computed by the iterative typer's Build phase) instead of
+/// calling `type_check_node` itself. This is the function the iterative
+/// `Build::Apply` arm calls.
+fn check_apply_iter(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     occ: &Rc<NodeOccurrence>,
     fn_sym: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    pos_results: &[Option<TypeResult>],
+    named_results: &[Option<TypeResult>],
 ) -> Option<TypeResult> {
-    // The materializer can land a constructor invocation in `Apply` when
-    // the surface term used a bare functor (no explicit
-    // `anthill.reflect.Expr.constructor` wrapper). Route those to the
-    // constructor checker first so type-param inference still happens.
+    // Materializer fallback: bare-functor constructor invocations land
+    // in `Apply`; route them through the constructor checker so
+    // type-param inference still fires.
     if kb.is_constructor_symbol(fn_sym) {
-        return check_constructor(kb, env, fn_sym, pos_args, named_args);
+        return check_constructor_iter(
+            kb, env, fn_sym, pos_args, named_args, pos_results, named_results,
+        );
     }
 
     // Path 1: known operation — unify args with params to instantiate type params
     if let Some(op) = lookup_operation_info_full(kb, fn_sym) {
         let mut subst = Substitution::new();
-        // Collected effects from arg subterms (kept separate from op.effects
-        // because op.effects may need parametric substitution before merging).
         let mut arg_effects: Vec<TermId> = Vec::new();
-
-        // Param-symbol → arg-var-symbol map for parametric effect
-        // substitution. When op declares `effects Modify[c]` (where c
-        // is a parameter) and the call binds c to a var_ref expression
-        // `s`, the call-site emits `Modify[s]` by replacing
-        // Term::Ref(c_sym) with Term::Ref(s_sym) in the effect.
         let mut param_to_arg_sym: HashMap<Symbol, Symbol> = HashMap::new();
 
-        // Positional args match op.params by index (mirrors the legacy
-        // arg-list iteration order).
         for (i, arg_occ) in pos_args.iter().enumerate() {
             if let Some(arg_var_sym) = extract_var_ref_sym_node(arg_occ) {
                 if let Some(&(param_sym, _)) = op.params.get(i) {
                     param_to_arg_sym.insert(param_sym, arg_var_sym);
                 }
             }
-            if let Some(arg_result) = type_check_node(kb, env, arg_occ) {
+            if let Some(ref arg_result) = pos_results[i] {
                 if let Some(&(_, param_type)) = op.params.get(i) {
                     unify_types(kb, &mut subst, arg_result.ty, param_type);
                 }
@@ -710,14 +1114,11 @@ fn check_apply(
             }
         }
 
-        // Named args match op.params by name. Positional args have
-        // already consumed the leading param slots, so the type-param
-        // bindings already in `subst` flow through.
-        for (arg_name, arg_occ) in named_args.iter() {
+        for (i, (arg_name, arg_occ)) in named_args.iter().enumerate() {
             if let Some(arg_var_sym) = extract_var_ref_sym_node(arg_occ) {
                 param_to_arg_sym.insert(*arg_name, arg_var_sym);
             }
-            if let Some(arg_result) = type_check_node(kb, env, arg_occ) {
+            if let Some(ref arg_result) = named_results[i] {
                 if let Some(param_type) = op.params.iter()
                     .find(|(s, _)| *s == *arg_name)
                     .map(|(_, t)| *t)
@@ -885,20 +1286,16 @@ fn check_apply(
         }
     }
 
-    // Path 3: unknown functor — recurse on args for effect propagation
-    // and fall back to the declared return type if any. Mirrors the
-    // legacy default branch of type_check_expr.
+    // Path 3: unknown functor — collect arg effects (from pre-computed
+    // results) and fall back to the declared return type if any.
     let mut effects: Vec<TermId> = Vec::new();
-    for arg_occ in pos_args.iter() {
-        if let Some(r) = type_check_node(kb, env, arg_occ) {
+    for r in pos_results.iter().chain(named_results.iter()) {
+        if let Some(r) = r {
             effects = merge_effects(&effects, &r.effects);
         }
     }
-    for (_, arg_occ) in named_args.iter() {
-        if let Some(r) = type_check_node(kb, env, arg_occ) {
-            effects = merge_effects(&effects, &r.effects);
-        }
-    }
+    let _ = pos_args;
+    let _ = named_args;
     lookup_operation_return_type(kb, fn_sym)
         .map(|ty| TypeResult { ty, env: env.clone(), effects })
 }
@@ -2761,30 +3158,23 @@ fn op_has_runnable_body(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
     }
 }
 
-/// Constructor dispatch via NodeOccurrence — peer of `check_apply`.
-/// Handles both the surface `constructor(name=…, args=[…])` form and
-/// implicit constructor calls (an `Apply` whose functor is a constructor
-/// symbol — routed here from `check_apply`).
-fn check_constructor(
-    kb: &mut KnowledgeBase,
-    env: &TypingEnv,
-    name: Symbol,
-    pos_args: &[Rc<NodeOccurrence>],
-    named_args: &[(Symbol, Rc<NodeOccurrence>)],
-) -> Option<TypeResult> {
-    infer_constructor_type_node(kb, env, name, pos_args, named_args)
-}
-
-/// Infer the type of a constructor application from NodeOccurrence
-/// children, including type parameter instantiation.
-/// e.g., cons(head: 1, tail: nil) → parameterized(List, [T=Int])
-fn infer_constructor_type_node(
+/// Non-recursive Constructor checker — peer of `check_apply_iter`.
+/// Reads per-arg `TypeResult`s from `pos_results` / `named_results`
+/// (pre-computed by the iterative typer) instead of calling
+/// `type_check_node` itself. Handles both the surface
+/// `constructor(name=…, args=[…])` form and implicit constructor calls
+/// (an `Apply` whose functor is a constructor symbol — routed here
+/// from `check_apply_iter`).
+fn check_constructor_iter(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     ctor_sym: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    pos_results: &[Option<TypeResult>],
+    named_results: &[Option<TypeResult>],
 ) -> Option<TypeResult> {
+    let _ = pos_args; // arg-NodeOccurrence references kept for parity with check_apply_iter
     let parent_tid = kb.constructor_parent_sort(ctor_sym)?;
     let parent_type = sort_term_to_type(kb, parent_tid);
 
@@ -2797,17 +3187,17 @@ fn infer_constructor_type_node(
     let mut effects = Vec::new();
 
     for &(field_sym, declared_type) in &field_types {
-        if let Some((_, arg_occ)) = named_args.iter().find(|(s, _)| *s == field_sym) {
-            if let Some(r) = type_check_node(kb, env, arg_occ) {
+        if let Some((idx, _)) = named_args.iter().enumerate().find(|(_, (s, _))| *s == field_sym) {
+            if let Some(ref r) = named_results[idx] {
                 unify_types(kb, &mut subst, r.ty, declared_type);
                 effects = merge_effects(&effects, &r.effects);
             }
         }
     }
 
-    for (i, arg_occ) in pos_args.iter().enumerate() {
+    for (i, r_opt) in pos_results.iter().enumerate() {
         if let Some(&(_, declared_type)) = field_types.get(i) {
-            if let Some(r) = type_check_node(kb, env, arg_occ) {
+            if let Some(r) = r_opt {
                 unify_types(kb, &mut subst, r.ty, declared_type);
                 effects = merge_effects(&effects, &r.effects);
             }
@@ -2906,48 +3296,6 @@ fn check_if_expr(
     Some(TypeResult { ty, env: env.clone(), effects })
 }
 
-/// let_expr: effects = value ∪ body (with local resource scoping).
-///
-/// Optional `type_name` named arg supplies the let-binding's annotation
-/// (proposal 035 form (1)). When present, the annotation overrides the
-/// value's inferred type in the body env so subsequent uses of the
-/// variable typecheck against the annotation rather than the (possibly
-/// looser) inferred RHS type. Type-erased constructors like `Map.empty()`
-/// rely on this — their inferred return type has free type-parameter
-/// variables that the annotation pins down.
-fn check_let_expr(
-    kb: &mut KnowledgeBase,
-    env: &TypingEnv,
-    pattern: TermId,
-    annotation: Option<TermId>,
-    value: &Rc<NodeOccurrence>,
-    body: &Rc<NodeOccurrence>,
-) -> Option<TypeResult> {
-    let value_r = type_check_node(kb, env, value);
-    let value_ty = value_r.as_ref().map(|r| r.ty);
-
-    let mut ext_env = value_r.as_ref().map(|r| r.env.clone()).unwrap_or_else(|| env.clone());
-    // Annotation, when present, takes precedence as the bound variable's
-    // type. The value's inferred type still drives effect propagation
-    // (read above from value_r.effects); the annotation only affects how
-    // the body sees the variable.
-    let bound_ty = annotation.or(value_ty);
-    extend_env_from_pattern(kb, &mut ext_env, pattern, bound_ty);
-
-    // Declare let-bound variable as a local resource for effect scoping
-    if let Some(var_name) = extract_pattern_var_name(kb, pattern) {
-        ext_env.declare_local_resource(var_name);
-    }
-
-    let body_r = type_check_node(kb, &ext_env, body)?;
-
-    let mut effects = Vec::new();
-    if let Some(ref r) = value_r { effects = merge_effects(&effects, &r.effects); }
-    effects = merge_effects(&effects, &body_r.effects);
-
-    Some(TypeResult { ty: body_r.ty, env: body_r.env, effects })
-}
-
 /// Extract the variable name from a pattern (for var_pattern).
 fn extract_pattern_var_name(kb: &KnowledgeBase, pattern: TermId) -> Option<String> {
     if let Term::Fn { functor, named_args, pos_args, .. } = kb.get_term(pattern) {
@@ -2958,108 +3306,6 @@ fn extract_pattern_var_name(kb: &KnowledgeBase, pattern: TermId) -> Option<Strin
         }
     }
     None
-}
-
-/// match_expr: effects = scrutinee ∪ all branches. Also checks exhaustiveness.
-fn check_match_expr(
-    kb: &mut KnowledgeBase,
-    env: &TypingEnv,
-    scrutinee: &Rc<NodeOccurrence>,
-    branches: &[MatchBranch],
-) -> Option<TypeResult> {
-    let scr_r = type_check_node(kb, env, scrutinee);
-    let scr_ty = scr_r.as_ref().map(|r| r.ty);
-
-    let mut effects = Vec::new();
-    if let Some(ref r) = scr_r { effects = merge_effects(&effects, &r.effects); }
-
-    let mut result_ty: Option<TermId> = None;
-    let mut covered_entities: Vec<Symbol> = Vec::new();
-    let mut has_wildcard = false;
-
-    for branch in branches {
-        let pat = branch.pattern;
-        collect_covered_entities(kb, pat, &mut covered_entities, &mut has_wildcard);
-        let mut branch_env = env.clone();
-        extend_env_from_pattern(kb, &mut branch_env, pat, scr_ty);
-        if let Some(body_r) = type_check_node(kb, &branch_env, &branch.body) {
-            if result_ty.is_none() { result_ty = Some(body_r.ty); }
-            // Filter effects on resources local to *this branch's
-            // pattern bindings* before merging — pattern-bound vars
-            // (e.g. `b` in `case wis(b, _) -> persist(b, …)`) live
-            // only inside the case, so their effects shouldn't
-            // escape. The outer env returned by check_match_expr
-            // doesn't carry these bindings, so without this filter
-            // they'd surface as undeclared effects on the enclosing
-            // operation.
-            let branch_external = external_effects(kb, &branch_env, &body_r.effects);
-            effects = merge_effects(&effects, &branch_external);
-        }
-    }
-
-    // Exhaustiveness check: if scrutinee type is an enum, all entities must be covered
-    let mut result_env = env.clone();
-    if !has_wildcard {
-        if let Some(sty) = scr_ty {
-            if let Some(sort_sym) = extract_sort_ref_sym(kb, sty) {
-                let sort_term = kb.make_name_term_from_sym(sort_sym);
-                if kb.sort_kind(sort_term) == Some(SortKind::Enum) {
-                    let entity_terms = kb.sort_children(sort_term);
-                    let all_entities: Vec<Symbol> = entity_terms.iter().filter_map(|&et| {
-                        match kb.get_term(et) {
-                            Term::Fn { functor, .. } => Some(*functor),
-                            _ => None,
-                        }
-                    }).collect();
-                    let missing: Vec<String> = all_entities.iter()
-                        .filter(|e| !covered_entities.iter()
-                            .any(|c| same_symbol(kb, *c, **e)))
-                        .map(|s| kb.resolve_sym(*s).to_string())
-                        .collect();
-                    if !missing.is_empty() {
-                        let sort_name = kb.resolve_sym(sort_sym);
-                        result_env.diagnostics.push(
-                            format!("non-exhaustive match on {}: missing {}", sort_name, missing.join(", "))
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    result_ty.map(|ty| TypeResult { ty, env: result_env, effects })
-}
-
-/// lambda: body effects are encoded in the function type per proposal 003.
-/// Pure lambda → Function[A, B]. Effectful lambda → Function[A, B, E = effects].
-/// Creating a lambda is itself pure (no effects propagated to enclosing expr).
-fn check_lambda(
-    kb: &mut KnowledgeBase,
-    env: &TypingEnv,
-    param: TermId,
-    body: &Rc<NodeOccurrence>,
-) -> Option<TypeResult> {
-    let param_type = extract_pattern_type_ann(kb, param);
-    let mut lambda_env = env.clone();
-    extend_env_from_pattern(kb, &mut lambda_env, param, param_type);
-
-    let body_r = type_check_node(kb, &lambda_env, body);
-
-    // Build arrow(param, result, effects) type term
-    let a_val = param_type.unwrap_or_else(|| {
-        let fresh = kb.intern("?param");
-        kb.make_type_var(fresh)
-    });
-    let b_val = body_r.as_ref().map(|r| r.ty).unwrap_or_else(|| {
-        let fresh = kb.intern("?result");
-        kb.make_type_var(fresh)
-    });
-    let body_effects = body_r.as_ref().map(|r| r.effects.clone()).unwrap_or_default();
-
-    let fn_type = kb.make_arrow_type(a_val, b_val, &body_effects);
-
-    // Creating a lambda is pure — effects are in the type, not in the evaluation
-    Some(TypeResult::pure(fn_type, env.clone()))
 }
 
 // ── Collection literals ────────────────────────────────────────

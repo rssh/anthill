@@ -113,90 +113,98 @@ struct ClassifiedApply {
 }
 
 /// Walk a body NodeOccurrence tree, pushing one `RawClassified` per
-/// Apply whose `classification` RefCell is set. Children are walked
-/// irrespective of classification — a deeply-nested classified apply
-/// is still emitted.
+/// Apply whose `classification` RefCell is set. Iterative — uses an
+/// explicit work-stack so deeply-nested let / match / lambda chains
+/// (e.g. the 624-line typing_pass_spec.anthill) don't blow the host
+/// stack regardless of source nesting depth.
 fn collect_classified(
-    occ: &Rc<NodeOccurrence>,
+    root: &Rc<NodeOccurrence>,
     out: &mut Vec<RawClassified>,
 ) {
-    let NodeKind::Expr { expr, classification, .. } = &occ.kind else {
-        return;
-    };
-    if let Expr::Apply { functor, .. } = expr {
-        if let Some(class) = classification.borrow().as_deref() {
-            out.push(RawClassified {
-                functor: *functor,
-                class: class.clone(),
-            });
+    let mut stack: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(32);
+    stack.push(Rc::clone(root));
+    while let Some(occ) = stack.pop() {
+        let NodeKind::Expr { expr, classification, .. } = &occ.kind else {
+            continue;
+        };
+        if let Expr::Apply { functor, .. } = expr {
+            if let Some(class) = classification.borrow().as_deref() {
+                out.push(RawClassified {
+                    functor: *functor,
+                    class: class.clone(),
+                });
+            }
         }
+        push_children(expr, &mut stack);
     }
-    walk_children(expr, out);
 }
 
-fn walk_children(expr: &Expr, out: &mut Vec<RawClassified>) {
+/// Push every child `NodeOccurrence` of `expr` onto `stack` (order
+/// irrelevant for collection). Mirrors the structural cases of the
+/// recursive walker but adds no host frames.
+fn push_children(expr: &Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
     match expr {
         Expr::Apply { pos_args, named_args, .. }
         | Expr::Constructor { pos_args, named_args, .. } => {
-            for c in pos_args.iter() { collect_classified(c, out); }
-            for (_, c) in named_args.iter() { collect_classified(c, out); }
+            for c in pos_args.iter() { stack.push(Rc::clone(c)); }
+            for (_, c) in named_args.iter() { stack.push(Rc::clone(c)); }
         }
         Expr::If { condition, then_branch, else_branch } => {
-            collect_classified(condition, out);
-            collect_classified(then_branch, out);
-            collect_classified(else_branch, out);
+            stack.push(Rc::clone(condition));
+            stack.push(Rc::clone(then_branch));
+            stack.push(Rc::clone(else_branch));
         }
         Expr::Let { value, body, .. } => {
-            collect_classified(value, out);
-            collect_classified(body, out);
+            stack.push(Rc::clone(value));
+            stack.push(Rc::clone(body));
         }
         Expr::Match { scrutinee, branches } => {
-            collect_classified(scrutinee, out);
+            stack.push(Rc::clone(scrutinee));
             for b in branches.iter() {
-                collect_classified(&b.body, out);
+                stack.push(Rc::clone(&b.body));
                 if let Some(g) = &b.guard {
-                    collect_classified(g, out);
+                    stack.push(Rc::clone(g));
                 }
             }
         }
-        Expr::Lambda { body, .. } => collect_classified(body, out),
+        Expr::Lambda { body, .. } => stack.push(Rc::clone(body)),
         Expr::ListLit(es) | Expr::SetLit(es) => {
-            for e in es.iter() { collect_classified(e, out); }
+            for e in es.iter() { stack.push(Rc::clone(e)); }
         }
         Expr::TupleLit { positional, named } => {
-            for e in positional.iter() { collect_classified(e, out); }
-            for (_, e) in named.iter() { collect_classified(e, out); }
+            for e in positional.iter() { stack.push(Rc::clone(e)); }
+            for (_, e) in named.iter() { stack.push(Rc::clone(e)); }
         }
         Expr::HoApply { predicate, args } => {
-            collect_classified(predicate, out);
-            for a in args.iter() { collect_classified(a, out); }
+            stack.push(Rc::clone(predicate));
+            for a in args.iter() { stack.push(Rc::clone(a)); }
         }
         Expr::ApplyWithin { args, named_args, requirements, .. } => {
-            for a in args.iter() { collect_classified(a, out); }
-            for (_, a) in named_args.iter() { collect_classified(a, out); }
-            for r in requirements.iter() { collect_classified(r, out); }
+            for a in args.iter() { stack.push(Rc::clone(a)); }
+            for (_, a) in named_args.iter() { stack.push(Rc::clone(a)); }
+            for r in requirements.iter() { stack.push(Rc::clone(r)); }
         }
         Expr::HoApplyWithin { predicate, args, requirements } => {
-            collect_classified(predicate, out);
-            for a in args.iter() { collect_classified(a, out); }
-            for r in requirements.iter() { collect_classified(r, out); }
+            stack.push(Rc::clone(predicate));
+            for a in args.iter() { stack.push(Rc::clone(a)); }
+            for r in requirements.iter() { stack.push(Rc::clone(r)); }
         }
         Expr::ConstructorWithin { pos_args, named_args, requirements, .. } => {
-            for c in pos_args.iter() { collect_classified(c, out); }
-            for (_, c) in named_args.iter() { collect_classified(c, out); }
-            for r in requirements.iter() { collect_classified(r, out); }
+            for c in pos_args.iter() { stack.push(Rc::clone(c)); }
+            for (_, c) in named_args.iter() { stack.push(Rc::clone(c)); }
+            for r in requirements.iter() { stack.push(Rc::clone(r)); }
         }
         Expr::LambdaWithin { body, requirements, .. } => {
-            collect_classified(body, out);
-            for r in requirements.iter() { collect_classified(r, out); }
+            stack.push(Rc::clone(body));
+            for r in requirements.iter() { stack.push(Rc::clone(r)); }
         }
         Expr::Instantiation { pos_args, named_args, .. } => {
-            for c in pos_args.iter() { collect_classified(c, out); }
-            for (_, c) in named_args.iter() { collect_classified(c, out); }
+            for c in pos_args.iter() { stack.push(Rc::clone(c)); }
+            for (_, c) in named_args.iter() { stack.push(Rc::clone(c)); }
         }
-        Expr::RequirementAtSort { chain, .. } => collect_classified(chain, out),
+        Expr::RequirementAtSort { chain, .. } => stack.push(Rc::clone(chain)),
         Expr::ConstructRequirement { requirements, .. } => {
-            for r in requirements.iter() { collect_classified(r, out); }
+            for r in requirements.iter() { stack.push(Rc::clone(r)); }
         }
         Expr::Const(_) | Expr::Ref(_) | Expr::Ident(_)
         | Expr::Var(_) | Expr::Bottom | Expr::VarRef { .. } => {}

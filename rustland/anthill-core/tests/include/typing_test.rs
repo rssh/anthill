@@ -1183,58 +1183,45 @@ fn field_access_sort_component() {
 
 #[test]
 fn typing_pass_spec_parses_and_loads() {
-    // WI-253: iterative NodeOccurrence materializer.
-    // WI-254: iterative kb/load.rs expression loader.
-    // WI-256: iterative parse/convert.rs CST → IR walker.
-    //
-    // One recursive walker still lives downstream:
-    //   - `kb/typing.rs::type_check_node` + `check_*` family — post-load
-    //     typer that walks the NodeOccurrence trees (tracked as WI-255).
-    //
-    // The typer's recursion on the 624-line typing_pass_spec.anthill
-    // still exceeds the default 2 MiB debug-build test stack, so this
-    // test wraps the pipeline in a 4 MiB spawned thread until WI-255.
-    // Release-mode builds already pass on the default 2 MiB stack.
-    std::thread::Builder::new()
-        .stack_size(4 * 1024 * 1024)
-        .spawn(|| {
-            let mut kb = load_stdlib_kb();
+    // The full parse → load → typecheck → requirement-insertion
+    // pipeline runs in constant host stack regardless of source
+    // nesting depth, and the kb's discrimination tree / NodeOccurrence
+    // subtree both drop iteratively. Runs on the default 2 MiB
+    // debug-build test stack with no `thread::Builder.stack_size`
+    // workaround.
+    let mut kb = load_stdlib_kb();
 
-            let spec_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../docs/proposals/typing_pass_spec.anthill");
-            let source = std::fs::read_to_string(&spec_path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", spec_path.display()));
-            let parsed = parse::parse(&source).unwrap_or_else(|errs| {
-                for e in &errs {
-                    eprintln!("parse error: {}", e.format_with_source(&source));
-                }
-                panic!("typing_pass_spec.anthill has {} parse errors", errs.len());
-            });
+    let spec_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/proposals/typing_pass_spec.anthill");
+    let source = std::fs::read_to_string(&spec_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", spec_path.display()));
+    let parsed = parse::parse(&source).unwrap_or_else(|errs| {
+        for e in &errs {
+            eprintln!("parse error: {}", e.format_with_source(&source));
+        }
+        panic!("typing_pass_spec.anthill has {} parse errors", errs.len());
+    });
 
-            let result = load::load(&mut kb, &parsed, &NullResolver);
-            if let Err(errs) = &result {
-                for e in errs {
-                    eprintln!("load error: {e}");
-                }
-                eprintln!("typing_pass_spec.anthill had {} load warnings", errs.len());
-            }
+    let result = load::load(&mut kb, &parsed, &NullResolver);
+    if let Err(errs) = &result {
+        for e in errs {
+            eprintln!("load error: {e}");
+        }
+        eprintln!("typing_pass_spec.anthill had {} load warnings", errs.len());
+    }
 
-            assert!(
-                kb.try_resolve_symbol("anthill.reflect.typing_pass.TypingEnv").is_some(),
-                "TypingEnv sort should be defined"
-            );
-            assert!(
-                kb.try_resolve_symbol("anthill.reflect.typing_pass.type_check").is_some(),
-                "type_check operation should be defined"
-            );
-            assert!(
-                kb.try_resolve_symbol("anthill.reflect.typing_pass.assert_compatible").is_some(),
-                "assert_compatible operation should be defined"
-            );
-        })
-        .unwrap()
-        .join()
-        .unwrap();
+    assert!(
+        kb.try_resolve_symbol("anthill.reflect.typing_pass.TypingEnv").is_some(),
+        "TypingEnv sort should be defined"
+    );
+    assert!(
+        kb.try_resolve_symbol("anthill.reflect.typing_pass.type_check").is_some(),
+        "type_check operation should be defined"
+    );
+    assert!(
+        kb.try_resolve_symbol("anthill.reflect.typing_pass.assert_compatible").is_some(),
+        "assert_compatible operation should be defined"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════
