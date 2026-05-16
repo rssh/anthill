@@ -4685,35 +4685,25 @@ impl<'a> Loader<'a> {
             .unwrap_or_default();
         let meta = r.meta.as_ref().map(|mb| self.load_meta_block(mb));
 
-        // Proposal 032: head is the rule's claim. Labeled rules
-        // remain citable through `RuleEntry.label` + `rules_by_label`
-        // even though the head's functor differs from the label.
+        // Proposal 032: head IS the rule's claim. Labeled rules
+        // remain citable through `RuleEntry.label` + `rules_by_label`.
+        // Multi-head labeled rules (`rule X: H1, H2 :- B`) desugar
+        // into N rules sharing label X, each with head H_i and the
+        // same body B — `using X` fans out to all of them via
+        // `rules_by_label[X]`.
         let label_sym = r.label.as_ref().map(|l| self.remap_name(l));
 
-        let (kb_head, kb_conclusion) = match (&r.label, has_bottom, positive_heads.len()) {
-            // Labeled denial: head = ⊥. Citation via the label index.
-            (Some(_), true, _) => (self.kb.alloc(Term::Bottom), Vec::new()),
+        let kb_heads: Vec<TermId> = match (&r.label, has_bottom, positive_heads.len()) {
+            // Denial: head = ⊥. (Labeled cites via label index;
+            // unlabeled denial is citable only by pattern.)
+            (_, true, _) => vec![self.kb.alloc(Term::Bottom)],
 
-            // Labeled single positive head (equational or otherwise):
-            // head IS the user's term. Citation via the label index.
-            (Some(_), false, 1) => (positive_heads.into_iter().next().unwrap(), Vec::new()),
+            // Labeled — single or multi-head; each head becomes its
+            // own rule sharing the label.
+            (Some(_), false, _) => positive_heads,
 
-            // Labeled multi-head: transitional shape until
-            // proposal-032's N-way desugaring lands. Synthesize a
-            // 0-arg label-functor head and route positive heads to
-            // `conclusion`; smt-gen's `LabelFunctor` fallback
-            // consumes this.
-            (Some(_), false, _) => {
-                let head = self.kb.make_name_term_from_sym(label_sym.unwrap());
-                (head, positive_heads)
-            }
-
-            // Unlabeled denial: head = ⊥. Citable only by pattern.
-            (None, true, _) => (self.kb.alloc(Term::Bottom), Vec::new()),
-
-            // Unlabeled single-head: head term IS the KB identity
-            // (legacy Horn / equational law shape).
-            (None, false, 1) => (positive_heads.into_iter().next().unwrap(), Vec::new()),
+            // Unlabeled single-head: head term IS the KB identity.
+            (None, false, 1) => positive_heads,
 
             // Unlabeled multi-head: no unique citation handle.
             (None, false, _) => {
@@ -4725,18 +4715,19 @@ impl<'a> Loader<'a> {
             }
         };
 
-        let rid = self.kb.assert_rule_debruijn_with_conclusion(
-            kb_head, body, kb_conclusion, rule_sort, domain, meta);
-        if let Some(label) = label_sym {
-            self.kb.set_rule_label(rid, label);
-        }
-
-        // WI-139: equational rules are cite-required by default.
-        if is_equational_head(self.kb, kb_head)
-            && !meta_has_flag(self.kb, meta, "simp")
-            && !meta_has_flag(self.kb, meta, "unfold")
-        {
-            self.kb.unindex_functor(rid);
+        for kb_head in kb_heads {
+            let rid = self.kb.assert_rule_debruijn(
+                kb_head, body.clone(), rule_sort, domain, meta);
+            if let Some(label) = label_sym {
+                self.kb.set_rule_label(rid, label);
+            }
+            // WI-139: equational rules are cite-required by default.
+            if is_equational_head(self.kb, kb_head)
+                && !meta_has_flag(self.kb, meta, "simp")
+                && !meta_has_flag(self.kb, meta, "unfold")
+            {
+                self.kb.unindex_functor(rid);
+            }
         }
 
         self.current_owner = prev_owner;

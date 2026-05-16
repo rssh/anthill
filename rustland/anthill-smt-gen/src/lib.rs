@@ -164,18 +164,21 @@ pub fn emit_satisfiability_check_with_deps(
     Ok((smt, deps))
 }
 
-/// WI-C1 lift: convert a positive-form rule (`R(args) :- premises -:
-/// conclusion`) into a single SMT-LIB *implication clause* suitable
-/// for splicing into a downstream proof's `ProofConfig.assumptions`.
+/// Lift a positive-form rule (`R(args) :- premises -: conclusion`)
+/// into SMT-LIB *implication clauses* suitable for splicing into a
+/// downstream proof's `ProofConfig.assumptions`.
 ///
 /// Deterministic semantics — the `:-` clause is the premise set, the
 /// `-:` clause is the conclusion. No heuristic, no last-clause guess.
 /// The author has explicitly named what they want to prove.
 ///
-/// Returns a string like
-/// `(forall ((var_d Real)) (=> (and <premises>) (and <conclusion>)))`.
-/// When there is exactly one premise (resp. one conclusion clause),
-/// the `(and …)` wrapper is dropped.
+/// Each returned clause is shaped like
+/// `(assert (forall ((var_d Real)) (=> (and <premises>) <conclusion>)))`;
+/// when there is exactly one premise the `(and …)` wrapper is dropped.
+///
+/// Labeled multi-head rules (`rule X: H1, H2 :- B`) resolve to N
+/// labeled rules sharing label X; one clause is emitted per head, so
+/// `using X` splices both `B ⇒ H1` and `B ⇒ H2` into the consumer.
 ///
 /// **Refuses any rule without a `-:` conclusion clause.** Classical
 /// violation-shape rules (no `-:`) are unciteable today: their
@@ -197,6 +200,20 @@ pub fn emit_satisfiability_check_with_deps(
 pub fn lift_rule_to_implication_clause(
     kb: &KnowledgeBase,
     rule_qn: &str,
+) -> Result<Vec<String>, SmtGenError> {
+    let rids = kb.rule_ids_by_qn(rule_qn);
+    if rids.is_empty() {
+        return Err(SmtGenError::new(format!("rule '{rule_qn}' not found")));
+    }
+    rids.into_iter()
+        .map(|rid| lift_one_rid(kb, rule_qn, rid))
+        .collect()
+}
+
+fn lift_one_rid(
+    kb: &KnowledgeBase,
+    rule_qn: &str,
+    rid: anthill_core::kb::RuleId,
 ) -> Result<String, SmtGenError> {
     let mut emitter = Emitter::new(kb);
     // Cited-rule lifts are inherently abstract: chasing the cited
@@ -204,7 +221,7 @@ pub fn lift_rule_to_implication_clause(
     // doesn't quote (unsound for a universal claim) and would also
     // drag in transitive nonlinearity that breaks LRA discharges.
     emitter.abstract_mode = true;
-    emitter.collect_rule(rule_qn)?;
+    emitter.collect_rule_for_rid(rule_qn, rid)?;
     emitter.collect_facts_for_referenced_entities();
 
     if emitter.conclusion_assertions.is_empty() {
@@ -233,9 +250,7 @@ pub fn lift_rule_to_implication_clause(
     // to be emitted, as fresh declare-consts, alongside a ground
     // implication. shared_arity == 0 falls through to a classic
     // universally-quantified lift.
-    let shared_arity = kb.rule_id_by_qn(rule_qn)
-        .map(|rid| kb.rule_shared_arity(rid))
-        .unwrap_or(0);
+    let shared_arity = kb.rule_shared_arity(rid);
 
     if shared_arity == 0 {
         if emitter.free_vars.is_empty() {
@@ -277,10 +292,6 @@ enum HeadShape {
     /// `rule_qn(?result)` — single DeBruijn pos_arg as the result
     /// variable. Used by upper-bound obligations.
     FunctionLike { result_idx: u32 },
-    /// 0-arg synthesized label-functor head + non-empty
-    /// `rule_conclusion(rid)`. Pre-WI-143 transitional shape; consumed
-    /// via the legacy conclusion-vec path until the loader switches.
-    LabelFunctor,
     /// Shape the v0 emitter cannot translate; the carried message is
     /// surfaced as a `SmtGenError` to the caller.
     Unsupported(String),
@@ -363,10 +374,24 @@ impl<'kb> Emitter<'kb> {
 
     /// Find the rule by qualified name. Walk its body and produce
     /// the SMT-LIB equation that defines the head's result variable.
+    /// Picks the first rule resolved by label / by-functor — for
+    /// labeled multi-head rules (multiple rids per label) the
+    /// per-rid path [`Self::collect_rule_for_rid`] should be used by
+    /// the caller iterating over `kb.rule_ids_by_qn(rule_qn)`.
     fn collect_rule(&mut self, rule_qn: &str) -> Result<(), SmtGenError> {
-        self.visited_rules.insert(rule_qn.to_string());
         let rid = self.kb.rule_id_by_qn(rule_qn)
             .ok_or_else(|| SmtGenError::new(format!("rule '{rule_qn}' not found")))?;
+        self.collect_rule_for_rid(rule_qn, rid)
+    }
+
+    /// Walk the given rule's body. Used by the lift fanout to
+    /// process each rid of a labeled multi-head rule independently.
+    fn collect_rule_for_rid(
+        &mut self,
+        rule_qn: &str,
+        rid: anthill_core::kb::RuleId,
+    ) -> Result<(), SmtGenError> {
+        self.visited_rules.insert(rule_qn.to_string());
 
         // Loaded rules use de Bruijn-indexed variables (the parser's
         // `?name` form is interned to a position; the user-given
@@ -383,9 +408,6 @@ impl<'kb> Emitter<'kb> {
         //    encoding); routed through `process_body_goal` and split
         //    off into `conclusion_assertions`.
         //  - `⊥` (Bottom) — denial form, conclusion stays empty.
-        //  - 0-arg label-functor + non-empty `rule_conclusion(rid)`
-        //    (LabelFunctor) — transitional pre-WI-143 shape; consumed
-        //    via the legacy conclusion-vec path.
         let head = self.kb.rule_head(rid);
         let head_shape = self.classify_head(rid);
         if let HeadShape::FunctionLike { result_idx } = head_shape {
@@ -408,20 +430,16 @@ impl<'kb> Emitter<'kb> {
 
         // Conclusion goals: under the unified encoding the rule head
         // IS the conclusion (Predicate shape) and is routed through
-        // `process_body_goal`. The transitional `LabelFunctor` shape
-        // still consumes the legacy `rule_conclusion(rid)` vec while
-        // the loader produces it; that fallback becomes dead code
-        // once the loader stops synthesizing 0-arg label-functor heads.
-        // Each goal is translated through the same machinery as the
-        // body; the resulting assertions are siphoned into
-        // `conclusion_assertions` instead of `assertions`. Discharge
-        // and lift consume the two buckets differently — see
-        // render_satisfiability_with / lift_rule_to_implication_clause.
+        // `process_body_goal`. Each goal is translated through the
+        // same machinery as the body; the resulting assertions are
+        // siphoned into `conclusion_assertions` instead of
+        // `assertions`. Discharge and lift consume the two buckets
+        // differently — see render_satisfiability_with /
+        // lift_rule_to_implication_clause.
         let conclusion_goals: Vec<TermId> = match head_shape {
             HeadShape::Bottom => Vec::new(),
             HeadShape::FunctionLike { .. } => Vec::new(),
             HeadShape::Predicate => vec![head],
-            HeadShape::LabelFunctor => self.kb.rule_conclusion(rid).to_vec(),
             HeadShape::Unsupported(_) => unreachable!("returned above"),
         };
         if !conclusion_goals.is_empty() {
@@ -1007,9 +1025,7 @@ impl<'kb> Emitter<'kb> {
     /// asked to translate the head as a goal: predicate-like heads
     /// (`gte/lte/eq/...` or entity destructures) become the
     /// conclusion under proposal 032; function-like heads
-    /// (`rule_qn(?result)`) drive upper-bound mode; the legacy 0-arg
-    /// label-functor + conclusion-vec shape stays as a transitional
-    /// fallback while the loader still produces it.
+    /// (`rule_qn(?result)`) drive upper-bound mode.
     fn classify_head(&self, rid: anthill_core::kb::RuleId) -> HeadShape {
         let head = self.kb.rule_head(rid);
         let term = self.kb.get_term(head);
@@ -1035,13 +1051,8 @@ impl<'kb> Emitter<'kb> {
             return HeadShape::FunctionLike { result_idx };
         }
         if pos_args.is_empty() {
-            if !self.kb.rule_conclusion(rid).is_empty() {
-                return HeadShape::LabelFunctor;
-            }
-            // Transitional synthesized 0-arg label-functor for
-            // denial rules (`rule X: ⊥ :- ...`); behaves like
-            // `Term::Bottom` — empty conclusion, body walks for
-            // free vars only.
+            // 0-arg predicate head (e.g. `rule status_ok :- ...`);
+            // body walks for free vars only, no conclusion.
             return HeadShape::Bottom;
         }
         HeadShape::Unsupported(format!(

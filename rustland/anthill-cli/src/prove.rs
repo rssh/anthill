@@ -663,11 +663,11 @@ fn read_structured_body(
 
 /// Synthesize a transient KB rule for a structured-proof step so
 /// the standard cite-resolution path (lift_rule_to_implication_clause
-/// in smt-gen) can pick it up via `using <step_qn>`. Uses the
-/// transitional encoding from proposal 032: a synthesized 0-arg
-/// label-functor as the KB head with the user's claim as the
-/// conclusion. The rule is registered in the global scope under
-/// `step_qn`; re-registration is idempotent.
+/// in smt-gen) can pick it up via `using <step_qn>`. Head IS the
+/// step's claim (proposal 032 unified encoding); the step is tagged
+/// with `step_qn` as its label so `rule_id_by_qn` resolves it. The
+/// rule is registered in the global scope; re-registration (same
+/// step_qn) is idempotent.
 ///
 /// When `parent_qn` resolves to an existing rule, the step is
 /// asserted in that parent's variable frame so shared variable
@@ -685,28 +685,24 @@ fn synthesize_step_rule(
     let short_name = step_qn.rsplit('.').next().unwrap_or(step_qn);
     let global_scope = kb.make_name_term("_global");
     let label_sym = kb.define_symbol(short_name, step_qn, SymbolKind::Rule, global_scope.raw());
-    if !kb.by_functor(label_sym).is_empty() {
+    if kb.rule_id_by_qn(step_qn).is_some() {
         return;
     }
-    let kb_head = kb.make_name_term_from_sym(label_sym);
     let rule_sort = kb.make_name_term("Rule");
 
     let parent_globals: Vec<_> = kb.rule_id_by_qn(parent_qn)
         .map(|rid| kb.rule_globals(rid).to_vec())
         .unwrap_or_default();
 
-    // Empty seed degenerates to the same DeBruijn assignment as
-    // `assert_rule_debruijn_with_conclusion` — call the in-frame
-    // path unconditionally.
-    kb.assert_rule_debruijn_in_frame(
-        kb_head,
+    let rid = kb.assert_rule_debruijn_in_frame(
+        head_term,
         body_terms,
-        vec![head_term],
         &parent_globals,
         rule_sort,
         global_scope,
         None,
     );
+    kb.set_rule_label(rid, label_sym);
 }
 
 /// Phase-b dispatch for a structured proof body (proposal 031).
@@ -1122,7 +1118,7 @@ fn render_cited_lemmas(
             }
         }
         match lift_rule_to_implication_clause(kb, cited) {
-            Ok(clause) => clauses.push(clause),
+            Ok(lifted) => clauses.extend(lifted),
             Err(e) => {
                 return Err(format!(
                     "cite `{cited}` (in proof `{target_rule_qn}`) could not be \

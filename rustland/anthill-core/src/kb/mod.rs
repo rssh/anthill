@@ -1619,7 +1619,9 @@ impl KnowledgeBase {
 
     /// Resolve a qualified rule name to the first matching `RuleId`.
     /// Convenience for the common pattern of looking up a rule's
-    /// metadata (globals, shared_arity, ...) by name.
+    /// metadata (globals, shared_arity, ...) by name. For labeled
+    /// multi-head rules see [`Self::rule_ids_by_qn`] — they have
+    /// multiple rids sharing one label.
     pub fn rule_id_by_qn(&self, qn: &str) -> Option<RuleId> {
         let sym = self.try_resolve_symbol(qn)?;
         if let Some(ids) = self.rules_by_label.get(&sym) {
@@ -1628,6 +1630,23 @@ impl KnowledgeBase {
             }
         }
         self.by_functor(sym).first().copied()
+    }
+
+    /// All rule ids that resolve to `qn` — label-first, then
+    /// by_functor fallback. Labeled multi-head rules
+    /// (`rule X: H1, H2 :- B`) desugar at load time into N rules
+    /// sharing label X; `using X` fans out over this list so each
+    /// head contributes its own lifted implication clause. For
+    /// unlabeled `qn` the returned ids are the rules whose head's
+    /// functor symbol resolves to `qn` (SLD lookup semantics).
+    pub fn rule_ids_by_qn(&self, qn: &str) -> Vec<RuleId> {
+        let Some(sym) = self.try_resolve_symbol(qn) else { return Vec::new() };
+        if let Some(ids) = self.rules_by_label.get(&sym) {
+            if !ids.is_empty() {
+                return ids.clone();
+            }
+        }
+        self.by_functor(sym)
     }
 
     /// Citation handle for labeled rules. `None` for unlabeled rules
@@ -1666,7 +1685,6 @@ impl KnowledgeBase {
         &mut self,
         head: TermId,
         body: Vec<TermId>,
-        conclusion: Vec<TermId>,
         seed_globals: &[VarId],
         sort: TermId,
         domain: TermId,
@@ -1679,19 +1697,17 @@ impl KnowledgeBase {
         // prepended.
         let seen: std::collections::HashSet<u32> =
             seed_globals.iter().map(|v| v.raw()).collect();
-        let mut combined = body.clone();
-        combined.extend(conclusion.iter().copied());
-        let mut step_vars = if combined.is_empty() {
+        let mut step_vars = if body.is_empty() {
             self.collect_vars(head)
         } else {
-            self.collect_rule_vars(head, &combined)
+            self.collect_rule_vars(head, &body)
         };
         step_vars.retain(|v| !seen.contains(&v.raw()));
         let mut vars: Vec<VarId> = step_vars;
         vars.extend(seed_globals.iter().copied());
 
         let shared_arity = seed_globals.len() as u32;
-        self.finalize_rule_debruijn(head, body, conclusion, vars, shared_arity, sort, domain, meta)
+        self.finalize_rule_debruijn(head, body, Vec::new(), vars, shared_arity, sort, domain, meta)
     }
 
     /// Number of leading DeBruijn slots that are shared with a parent

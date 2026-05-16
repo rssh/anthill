@@ -30,8 +30,10 @@ fn build_simple_kb() -> anthill_core::kb::KnowledgeBase {
 #[test]
 fn lift_emits_forall_implication_from_explicit_conclusion() {
     let kb = build_simple_kb();
-    let clause = lift_rule_to_implication_clause(
+    let clauses = lift_rule_to_implication_clause(
         &kb, "test.lift.simple.simple_lemma").expect("lift");
+    assert_eq!(clauses.len(), 1, "single-head rule lifts to one clause");
+    let clause = &clauses[0];
 
     // The lift now wraps its result in a fully-formed `(assert ...)`
     // statement (WI-150 changed emit_assumptions to splice raw),
@@ -54,8 +56,9 @@ fn lift_emits_forall_implication_from_explicit_conclusion() {
 fn lifted_implication_is_a_z3_tautology() {
     if !z3_available() { return; }
     let kb = build_simple_kb();
-    let clause = lift_rule_to_implication_clause(
+    let clauses = lift_rule_to_implication_clause(
         &kb, "test.lift.simple.simple_lemma").expect("lift");
+    let clause = &clauses[0];
 
     // Strip the `(assert ...)` wrapper since this test wants to
     // negate the implication directly. WI-150 changed the lift to
@@ -63,7 +66,7 @@ fn lifted_implication_is_a_z3_tautology() {
     let inner = clause
         .strip_prefix("(assert ")
         .and_then(|s| s.strip_suffix(')'))
-        .unwrap_or(&clause);
+        .unwrap_or(clause);
     let smt = format!(
         "(set-logic LRA)\n(assert (not {inner}))\n(check-sat)\n"
     );
@@ -99,9 +102,9 @@ fn lift_refuses_rule_without_conclusion_clause() {
 
 fn build_band_kb() -> anthill_core::kb::KnowledgeBase {
     // Multi-clause: premises `?x >= 5 AND ?x <= 10` ⇒ conclusion
-    // `?x >= 5 AND ?x <= 10` (still trivial, but exercises
-    // multi-premise / multi-conclusion ANDing via proposal-032
-    // multi-head conjunctive sugar).
+    // `?x >= 5 AND ?x <= 10`. Under proposal 032 a labeled
+    // multi-head rule desugars at load to N labeled rules sharing
+    // the label; the lift fans out and returns one clause per head.
     let source = r#"
         namespace test.lift.band
           import anthill.prelude.{Float}
@@ -118,13 +121,21 @@ fn build_band_kb() -> anthill_core::kb::KnowledgeBase {
 }
 
 #[test]
-fn lift_emits_multi_premise_and_multi_conclusion_with_and() {
+fn lift_fans_out_one_clause_per_labeled_head() {
     let kb = build_band_kb();
-    let clause = lift_rule_to_implication_clause(
+    let clauses = lift_rule_to_implication_clause(
         &kb, "test.lift.band.band_lemma").expect("lift");
-    // Multi-clause premises and conclusions both wrap in (and …).
-    assert!(clause.matches("(and ").count() >= 2,
-        "multi-clause premise + conclusion should produce two `(and …)` wrappers:\n{clause}");
-    assert!(clause.contains("5.0") && clause.contains("10.0"),
-        "expected both 5.0 and 10.0 literals to surface:\n{clause}");
+    assert_eq!(clauses.len(), 2,
+        "two-head labeled rule fans out into two lifted clauses, got {}: {clauses:?}",
+        clauses.len());
+    let joined = clauses.join("\n");
+    // Each clause has multi-premise (and ...) on the premise side.
+    assert!(joined.matches("(and ").count() >= 2,
+        "each clause's multi-premise side should wrap in (and …):\n{joined}");
+    assert!(joined.contains("5.0") && joined.contains("10.0"),
+        "expected both 5.0 and 10.0 literals to surface:\n{joined}");
+    // Head H1 (>= 3) and H2 (<= 10) split across the two clauses;
+    // the >= ... and <= ... conclusions both show up.
+    assert!(joined.contains("(>="), "expected a >= conclusion:\n{joined}");
+    assert!(joined.contains("(<="), "expected a <= conclusion:\n{joined}");
 }
