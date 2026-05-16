@@ -1518,6 +1518,16 @@ impl KnowledgeBase {
         (new_head, new_body, vars.len() as u32)
     }
 
+    /// Free vars in head ∪ body (ordered for DeBruijn assignment).
+    /// Ground-fact case (empty body) skips the rule-vars merge.
+    fn collect_head_body_vars(&self, head: TermId, body: &[TermId]) -> Vec<VarId> {
+        if body.is_empty() {
+            self.collect_vars(head)
+        } else {
+            self.collect_rule_vars(head, body)
+        }
+    }
+
     /// Assert a rule with de Bruijn conversion applied.
     pub fn assert_rule_debruijn(
         &mut self,
@@ -1527,11 +1537,7 @@ impl KnowledgeBase {
         domain: TermId,
         meta: Option<TermId>,
     ) -> RuleId {
-        let vars = if body.is_empty() {
-            self.collect_vars(head)
-        } else {
-            self.collect_rule_vars(head, &body)
-        };
+        let vars = self.collect_head_body_vars(head, &body);
         self.finalize_rule_debruijn(head, body, vars, 0, sort, domain, meta)
     }
 
@@ -1657,13 +1663,8 @@ impl KnowledgeBase {
         // prepended.
         let seen: std::collections::HashSet<u32> =
             seed_globals.iter().map(|v| v.raw()).collect();
-        let mut step_vars = if body.is_empty() {
-            self.collect_vars(head)
-        } else {
-            self.collect_rule_vars(head, &body)
-        };
-        step_vars.retain(|v| !seen.contains(&v.raw()));
-        let mut vars: Vec<VarId> = step_vars;
+        let mut vars = self.collect_head_body_vars(head, &body);
+        vars.retain(|v| !seen.contains(&v.raw()));
         vars.extend(seed_globals.iter().copied());
 
         let shared_arity = seed_globals.len() as u32;
