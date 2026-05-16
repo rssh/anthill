@@ -71,7 +71,7 @@ impl SourceId {
     }
 }
 
-/// A span with file identity — for cross-file use in the OccurrenceStore.
+/// A span with file identity — for cross-file use in the legacy occurrence side-table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SourceSpan {
     pub source: SourceId,

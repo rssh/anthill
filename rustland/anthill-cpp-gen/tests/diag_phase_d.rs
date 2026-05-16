@@ -1,8 +1,7 @@
 //! Diagnostic: dump body shapes for match, constructor literals,
 //! and collection literals.
 use super::common;
-use anthill_core::kb::term::{HandleKind, Literal, Term};
-use anthill_core::kb::occurrence::OccurrenceId;
+use anthill_core::kb::term::Term;
 use common::load_kb_with_lenient;
 
 #[test]
@@ -55,12 +54,6 @@ fn dump_phase_d_shapes() {
 fn dump_term(kb: &anthill_core::kb::KnowledgeBase, term: anthill_core::kb::term::TermId, indent: usize) {
     let pad = " ".repeat(indent);
     match kb.get_term(term) {
-        Term::Const(Literal::Handle(HandleKind::Occurrence, id)) => {
-            let occ = OccurrenceId::from_raw(*id);
-            let inner = kb.occurrence_store().term(occ);
-            println!("{pad}OccHandle({id}) →");
-            dump_term(kb, inner, indent + 2);
-        }
         Term::Fn { functor, named_args, pos_args } => {
             let qn = kb.qualified_name_of(*functor);
             println!("{pad}Fn {qn:?} pos={} named:", pos_args.len());

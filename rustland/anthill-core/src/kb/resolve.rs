@@ -18,7 +18,6 @@ use super::subst::Substitution;
 use super::term::{Term, TermId, Var, VarId};
 use crate::intern::Symbol;
 use crate::eval::value::Value;
-use super::occurrence::OccurrenceId;
 use super::RuleId;
 use super::KnowledgeBase;
 
@@ -106,13 +105,14 @@ enum BuiltinResult {
     Failure,
 }
 
-/// A resolution candidate — either a regular KB rule/fact or an occurrence.
+/// A resolution candidate — either a regular KB rule/fact or a
+/// scoped assumption. WI-251: the legacy `Occurrence(OccurrenceId, …)`
+/// variant was removed when the legacy occurrence side-table went; reflection
+/// queries now read `kb.op_bodies` (NodeOccurrence trees) directly.
 #[derive(Clone)]
 enum Candidate {
     /// Regular KB rule or fact.
     Rule(RuleId, Substitution),
-    /// Occurrence (always a ground fact — no body).
-    Occurrence(OccurrenceId, Substitution),
     /// Frame-scoped assumed fact (introduced by `forall_impl` discharge —
     /// WI-108). Behaves as a zero-body rule.
     Assumption(Substitution),
@@ -523,22 +523,12 @@ impl SearchStream {
             }
         }
 
-        // 5. Check OccurrenceStore for expression-typed goals
+        // 5. (WI-251) Expression-typed query path: the legacy
+        // the legacy occurrence by-functor index lookup is gone. Reflection queries
+        // that materialized expression occurrences now read from
+        // `kb.op_bodies` (NodeOccurrence trees) at the reflection-op
+        // layer, not via Resolve's candidate selection.
         let mut candidates: Vec<Candidate> = Vec::new();
-        let mut occurrence_terms: HashSet<TermId> = HashSet::new();
-
-        if let Term::Fn { functor, .. } = kb.terms.get(goal) {
-            let functor = *functor;
-            let occ_ids = kb.occurrences.by_functor(functor);
-            for &occ_id in occ_ids {
-                if !kb.occurrences.is_expr(occ_id) { continue; }
-                let head = kb.occurrences.term(occ_id);
-                if let Some(subst) = kb.match_term(goal, head) {
-                    candidates.push(Candidate::Occurrence(occ_id, subst));
-                    occurrence_terms.insert(head);
-                }
-            }
-        }
 
         // 6. Non-builtin goal → query discrimination tree.
         // Cache ground goals (no variables) — their TermId is stable and
@@ -1059,7 +1049,6 @@ impl SearchStream {
 
         // Extract components from candidate
         let (opt_rid, tree_subst) = match candidate {
-            Candidate::Occurrence(_occ_id, subst) => (None, subst),
             Candidate::Rule(rid, subst) => (Some(rid), subst),
             Candidate::Assumption(subst) => (None, subst),
             Candidate::ExternalRow(subst) => (None, subst),

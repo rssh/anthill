@@ -9,7 +9,7 @@
 //! `kb.dispatch_rewrites`.
 //!
 //! WI-251: source-of-truth for classifications moved from the legacy
-//! `OccurrenceStore.classifications` side-table to the
+//! `the legacy occurrence classification side-table` side-table to the
 //! `NodeOccurrence`'s own RefCell. This pass walks `kb.op_bodies`
 //! trees to collect tagged occurrences, then re-builds a TermId-form
 //! apply (with the right functor + args) so the existing

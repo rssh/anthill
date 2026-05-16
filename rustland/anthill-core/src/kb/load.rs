@@ -18,8 +18,7 @@ use crate::intern::{Symbol, SymbolDef, SymbolKind, ScopeInclusion, ResolveResult
 use crate::parse::ir::*;
 use crate::span::{Span, SourceId, SourceSpan};
 use super::{KnowledgeBase, SortKind};
-use super::term::{Term, TermId, Var, VarId, HandleKind, Literal};
-use super::occurrence::OccurrenceId;
+use super::term::{Term, TermId, Var, VarId, Literal};
 use super::typing::{extract_type_param, get_named_arg, list_to_vec};
 
 // ── Load result ──────────────────────────────────────────────
@@ -3064,27 +3063,19 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// Allocate an Expr-position occurrence for a converted term.
-    fn create_occurrence(&mut self, parse_id: TermId, kb_id: TermId) -> OccurrenceId {
-        self.create_occurrence_ex(parse_id, kb_id, true)
-    }
-
-    fn create_occurrence_ex(
-        &mut self,
-        parse_id: TermId,
-        kb_id: TermId,
-        is_expr: bool,
-    ) -> OccurrenceId {
+    /// Record a stored term's source span on the KB's
+    /// `term_spans` / `functor_spans` side-tables — typing.rs and
+    /// other passes read these for error-reporting spans.
+    /// First-write-wins on both keys mirrors the legacy
+    /// `the legacy occurrence by-term index/by_functor.first()` semantics.
+    fn create_occurrence(&mut self, parse_id: TermId, kb_id: TermId) {
         let span = self.parsed.terms.span(parse_id);
         let source_span = SourceSpan::from_span(self.source_id, span);
-        let occ_id = self.kb.occurrences.alloc(
-            kb_id, source_span, self.current_owner, is_expr,
-        );
+        self.kb.term_spans.entry(kb_id).or_insert(source_span);
         if let Term::Fn { functor, .. } = self.kb.terms.get(kb_id) {
             let functor = *functor;
-            self.kb.occurrences.index_by_functor(occ_id, functor);
+            self.kb.functor_spans.entry(functor).or_insert(source_span);
         }
-        occ_id
     }
 
     /// True iff `ty` is `sort_ref(name: <List sym>)`.
@@ -3267,12 +3258,14 @@ impl<'a> Loader<'a> {
 
     /// Convert a parse-time expression term into the KB's Expr representation.
     /// Dispatches on the functor name to restructure positional args into named args.
-    /// Also creates an occurrence in the OccurrenceStore if the term has a span.
-    /// Convert an expression term and create an occurrence.
-    /// Returns (kb_term_id, occurrence_id). The occurrence_id is used by
-    /// parent expressions to put Literal::Handle(Occurrence, occ_id) in
-    /// ExprOccurrence-typed fields.
-    fn convert_expr_term(&mut self, parse_id: TermId) -> (TermId, OccurrenceId) {
+    /// Also creates an occurrence in the legacy occurrence side-table if the term has a span.
+    /// Convert an expression term, also recording its source span on
+    /// `kb.term_spans` (and on `kb.functor_spans` keyed by functor)
+    /// so passes downstream can resolve a span from a stored TermId.
+    /// WI-251 — no longer returns an OccurrenceId; the legacy
+    /// the legacy occurrence side-table was deleted and span lookups go through the
+    /// side-tables directly.
+    fn convert_expr_term(&mut self, parse_id: TermId) -> TermId {
         let parse_term = self.parsed.terms.get(parse_id).clone();
         let kb_id = match parse_term {
             Term::Fn { functor, pos_args, named_args } => {
@@ -3295,16 +3288,17 @@ impl<'a> Loader<'a> {
             Term::Ident(_) => self.load_var_ref(parse_id),
             _ => self.convert_term(parse_id),
         };
-        let occ_id = self.create_occurrence(parse_id, kb_id);
-        (kb_id, occ_id)
+        self.create_occurrence(parse_id, kb_id);
+        kb_id
     }
 
-    /// Convert a child expression and wrap it in an `ExprOccurrence`
-    /// handle literal — required for every Expr-typed child slot per
-    /// `docs/design/expr-occurrences.md`.
+    /// Convert a child expression. WI-251: the legacy `ExprOccurrence`
+    /// Handle wrapper is gone — child slots hold their inner term
+    /// directly. Spans for runtime / typer error reporting flow
+    /// through `kb.term_spans` (populated by `create_occurrence`),
+    /// keyed by the same TermId that lives in the parent's slot.
     fn convert_expr_child(&mut self, parse_id: TermId) -> TermId {
-        let (_kb_id, occ_id) = self.convert_expr_term(parse_id);
-        self.kb.alloc(Term::Const(Literal::Handle(HandleKind::Occurrence, occ_id.raw())))
+        self.convert_expr_term(parse_id)
     }
 
     /// match_expr: pos_args[0] = scrutinee, pos_args[1..] = branches
@@ -3312,7 +3306,7 @@ impl<'a> Loader<'a> {
         let scrutinee = self.convert_expr_child(pos_args[0]); // ExprOccurrence
         let mut branch_terms = Vec::new();
         for &tid in &pos_args[1..] {
-            let (branch_kb_id, _) = self.convert_expr_term(tid); // MatchBranch (not ExprOccurrence)
+            let branch_kb_id = self.convert_expr_term(tid); // MatchBranch (not ExprOccurrence)
             branch_terms.push(branch_kb_id);
         }
         let branches = build_list(self.kb, &branch_terms);
@@ -3331,7 +3325,7 @@ impl<'a> Loader<'a> {
 
     /// match_branch: pos_args[0] = pattern, pos_args[1] = body
     fn load_match_branch(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
-        let (pattern, _) = self.convert_expr_term(pos_args[0]); // Pattern (not ExprOccurrence)
+        let pattern = self.convert_expr_term(pos_args[0]); // Pattern (not ExprOccurrence)
         let body = self.convert_expr_child(pos_args[1]); // ExprOccurrence
         let guard = build_none(self.kb);
         let branch_sym = self.kb.resolve_symbol("anthill.reflect.MatchBranch");
@@ -3377,7 +3371,7 @@ impl<'a> Loader<'a> {
     /// as expected type for the value position and bind the variable's
     /// type for the body's environment.
     fn load_let_expr(&mut self, parse_id: TermId, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
-        let (pattern, _) = self.convert_expr_term(pos_args[0]); // Pattern
+        let pattern = self.convert_expr_term(pos_args[0]); // Pattern
         let value = self.convert_expr_child(pos_args[1]); // ExprOccurrence
         let body = self.convert_expr_child(pos_args[2]); // ExprOccurrence
         let let_sym = self.kb.resolve_symbol("anthill.reflect.Expr.let_expr");
@@ -3403,7 +3397,7 @@ impl<'a> Loader<'a> {
 
     /// lambda: pos_args[0] = param (pattern), pos_args[1] = body
     fn load_lambda_expr(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
-        let (param, _) = self.convert_expr_term(pos_args[0]); // Pattern
+        let param = self.convert_expr_term(pos_args[0]); // Pattern
         let body = self.convert_expr_child(pos_args[1]); // ExprOccurrence
         let lambda_sym = self.kb.resolve_symbol("anthill.reflect.Expr.lambda");
         let param_key = self.kb.intern("param");
@@ -3598,7 +3592,7 @@ impl<'a> Loader<'a> {
         };
         let mut sub_patterns = Vec::new();
         for &tid in &pos_args[1..] {
-            let (pat_id, _) = self.convert_expr_term(tid); // Pattern
+            let pat_id = self.convert_expr_term(tid); // Pattern
             sub_patterns.push(pat_id);
         }
         let args_list = build_list(self.kb, &sub_patterns);
@@ -3616,7 +3610,7 @@ impl<'a> Loader<'a> {
     fn load_pattern_tuple(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
         let mut elements = Vec::new();
         for &tid in pos_args.iter() {
-            let (elem_id, _) = self.convert_expr_term(tid); // Pattern
+            let elem_id = self.convert_expr_term(tid); // Pattern
             elements.push(elem_id);
         }
         let elements_list = build_list(self.kb, &elements);
@@ -4292,8 +4286,9 @@ impl<'a> Loader<'a> {
         }
 
         let term = self.convert_term(f.term);
-        // Create occurrence for the fact's top-level term (not an expression)
-        self.create_occurrence_ex(f.term, term, false);
+        // Record the fact's top-level term span on the side-tables so
+        // typing.rs error formatting can resolve it back to a span.
+        self.create_occurrence(f.term, term);
 
         let meta = f.meta.as_ref().map(|mb| self.load_meta_block(mb));
         let rule_id = self.kb.assert_fact(term, fact_sort, domain, meta);
@@ -4583,7 +4578,7 @@ impl<'a> Loader<'a> {
         // body is Option[ExprOccurrence] — store OccurrenceId handle.
         // WI-242: also materialize a value-typed NodeOccurrence tree and
         // store it in `kb.op_bodies` so consumers can migrate off the
-        // Handle/OccurrenceStore path. Both representations are populated
+        // Handle/the legacy occurrence side-table path. Both representations are populated
         // in parallel during the transition.
         let (body_opt_term, body_expr_opt) = match o.body {
             Some(body_tid) => {

@@ -237,11 +237,12 @@ impl Term {
 
 // ── Literal ─────────────────────────────────────────────────────
 
-/// Kind of opaque handle stored as a literal value.
+/// Kind of opaque handle stored as a literal value. WI-251: the
+/// `Occurrence` variant is gone — expression occurrences live as
+/// `Rc<NodeOccurrence>` trees keyed in `kb.op_bodies`, no longer as
+/// arena-backed handles in term literals.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HandleKind {
-    /// OccurrenceId — positional identity for source expressions.
-    Occurrence,
     /// FactId/RuleId — identity of an asserted fact.
     Fact,
 }

@@ -18,7 +18,7 @@ use crate::kb::term::{Term, TermId, TermSource};
 // ── Simple term store (parse-time only) ─────────────────────────
 
 /// Parse-time term paired with its source span. Bundling enforces the
-/// every-term-has-a-span invariant `OccurrenceStore` relies on (see
+/// every-term-has-a-span invariant the legacy occurrence side-table relies on (see
 /// `docs/design/expr-occurrences.md`).
 #[derive(Debug)]
 pub struct ParseTermEntry {

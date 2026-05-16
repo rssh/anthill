@@ -13,7 +13,7 @@ use smallvec::SmallVec;
 
 use crate::intern::Symbol;
 use crate::kb::node_occurrence::{Expr, MatchBranch, NodeKind, NodeOccurrence};
-use crate::kb::term::{HandleKind, Literal, Term, TermId};
+use crate::kb::term::{Literal, Term, TermId};
 use crate::kb::KnowledgeBase;
 
 use super::closure::Closure;
@@ -920,21 +920,11 @@ impl Interpreter {
             Literal::Bool(b) => Value::Bool(b),
             Literal::String(s) => Value::Str(s),
             Literal::BigInt(n) => Value::BigInt(n),
-            Literal::Handle(HandleKind::Occurrence, raw) => {
-                // Occurrence handle in expression position: unwrap to the
-                // underlying term and evaluate it. This would normally be
-                // resolved by `resolve_handle` earlier, but some paths pass
-                // the raw handle through.
-                let tid = self.kb.occurrences.term(
-                    crate::kb::occurrence::OccurrenceId::from_raw(raw)
-                );
-                return Err(EvalError::Internal(format!(
-                    "unexpected occurrence handle as direct value; resolve first (got tid {:?})",
-                    tid,
-                )));
-            }
             Literal::Handle(_, _) => {
-                return Err(EvalError::Internal("non-occurrence Handle in expression".into()));
+                return Err(EvalError::Internal(
+                    "Handle literal in expression value position — \
+                     unexpected after WI-251 NodeOccurrence cleanup".into(),
+                ));
             }
         })
     }

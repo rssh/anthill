@@ -1,7 +1,7 @@
 /// NodeOccurrence — KB-side positional wrapper for source content.
 ///
 /// Per `docs/design/occurrence-as-value-type.md`. Replaces the arena+ID
-/// `OccurrenceStore` model: every child slot in an `Expr` is a
+/// the legacy occurrence side-table model: every child slot in an `Expr` is a
 /// `Rc<NodeOccurrence>`, alternating `NodeOccurrence ⇄ NodeKind ⇄ Expr ⇄ NodeOccurrence`
 /// all the way down. The tree is `Rc`-linked from the start so reflection
 /// bindings are cheap (`Rc::clone`), eval can stash on its frame stack
@@ -13,9 +13,8 @@ use std::rc::Rc;
 use crate::intern::Symbol;
 use crate::span::SourceSpan;
 
-use super::occurrence::OccurrenceId;
 pub use super::occurrence::PassId;
-use super::term::{HandleKind, Literal, Term, TermId, Var};
+use super::term::{Literal, Term, TermId, Var};
 use super::typing::{get_named_arg, list_to_vec, unwrap_option};
 use super::KnowledgeBase;
 
@@ -46,12 +45,6 @@ pub struct NodeOccurrence {
     /// Symbol of the enclosing declaration (operation, rule label, ...).
     /// `None` for top-level / unknown context.
     pub owner: Option<Symbol>,
-    /// Transitional back-pointer to the legacy `OccurrenceStore` entry
-    /// this NodeOccurrence was materialized from. Used by `classify` to
-    /// dual-write classifications while `req_insertion::run` still reads
-    /// from `kb.occurrences.classifications_iter()`. Removed in WI-251
-    /// when the OccurrenceStore is deleted.
-    pub origin_occ: Option<OccurrenceId>,
 }
 
 impl NodeOccurrence {
@@ -65,29 +58,6 @@ impl NodeOccurrence {
             },
             span,
             owner,
-            origin_occ: None,
-        })
-    }
-
-    /// Build a source-origin expression occurrence with a legacy
-    /// `OccurrenceId` back-pointer. Used by the loader's materializer
-    /// so the typer can dual-write classifications until WI-251 deletes
-    /// the OccurrenceStore.
-    pub fn new_expr_with_origin(
-        expr: Expr,
-        span: SourceSpan,
-        owner: Option<Symbol>,
-        origin_occ: Option<OccurrenceId>,
-    ) -> Rc<Self> {
-        Rc::new(NodeOccurrence {
-            kind: NodeKind::Expr {
-                expr,
-                origin: OccurrenceOrigin::Source,
-                classification: RefCell::new(None),
-            },
-            span,
-            owner,
-            origin_occ,
         })
     }
 
@@ -108,7 +78,6 @@ impl NodeOccurrence {
             },
             span,
             owner,
-            origin_occ: None,
         })
     }
 
@@ -128,7 +97,6 @@ impl NodeOccurrence {
             },
             span,
             owner,
-            origin_occ: None,
         })
     }
 
@@ -390,38 +358,20 @@ pub fn visit_classifications(
 
 /// Materialize the value-typed NodeOccurrence tree rooted at `occ_id`,
 /// walking the loader's KB-encoded Handle/Term tree. Used by the loader
-/// to populate `kb.op_bodies` after `convert_expr_child` finishes
-/// building the Handle-wrapped term tree.
-///
-/// This is the conversion-boundary helper while the codebase still
-/// carries both representations. Once consumer migration finishes, the
-/// loader will build NodeOccurrence trees directly and this walker goes
-/// away alongside the Handle wrapper.
-pub fn materialize_from_occurrence(
-    kb: &KnowledgeBase,
-    occ_id: OccurrenceId,
-) -> Rc<NodeOccurrence> {
-    let term_id = kb.occurrence_store().term(occ_id);
-    let span = kb.occurrence_store().span(occ_id);
-    let owner = kb.occurrence_store().owner(occ_id);
-    let expr = expr_from_term(kb, term_id);
-    NodeOccurrence::new_expr_with_origin(expr, span, owner, Some(occ_id))
-}
-
-/// Materialize a NodeOccurrence from a Handle-wrapped term. If the term
-/// is not a Handle, falls back to building an Expr around it with a
-/// zero/synthetic span — the loader's invariant (post-WI-241) is that
-/// every Expr child slot IS a Handle, so the fallback is just defensive.
+/// Materialize a NodeOccurrence from a stored expression term.
+/// WI-251: the legacy `Handle(Occurrence, _)` wrapper is gone — every
+/// child slot in the Term tree holds its inner expression term
+/// directly. Spans come from `kb.term_span()` (populated by
+/// `load.rs::create_occurrence_ex`); when the term wasn't recorded,
+/// the wrapping NodeOccurrence carries a zero span.
 pub fn materialize_from_handle(
     kb: &KnowledgeBase,
-    handle: TermId,
+    term: TermId,
 ) -> Rc<NodeOccurrence> {
-    if let Term::Const(Literal::Handle(HandleKind::Occurrence, raw)) = kb.get_term(handle) {
-        return materialize_from_occurrence(kb, OccurrenceId::from_raw(*raw));
-    }
-    // Fallback for non-Handle terms — wrap with an empty span.
-    let expr = expr_from_term(kb, handle);
-    let span = SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0);
+    let expr = expr_from_term(kb, term);
+    let span = kb.term_span(term).unwrap_or_else(|| {
+        SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0)
+    });
     NodeOccurrence::new_expr(expr, span, None)
 }
 

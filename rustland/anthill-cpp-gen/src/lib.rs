@@ -15,8 +15,7 @@ use std::collections::HashMap;
 
 use anthill_core::intern::{Symbol, SymbolKind};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::occurrence::OccurrenceId;
-use anthill_core::kb::term::{HandleKind, Literal, Term, TermId};
+use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::typing::extract_sort_ref_sym;
 
 // ── Templates ────────────────────────────────────────────────────────

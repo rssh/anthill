@@ -1183,45 +1183,53 @@ fn field_access_sort_component() {
 
 #[test]
 fn typing_pass_spec_parses_and_loads() {
-    let mut kb = load_stdlib_kb();
+    // The spec file's deeply-nested operation bodies make the
+    // NodeOccurrence materialization walker exceed Rust's default
+    // 2 MiB thread stack post-WI-251 (each frame holds an
+    // `Rc<NodeOccurrence>` ~5x larger than the legacy `OccurrenceId`
+    // 4-byte handle). Run the heavy work in a spawned thread with an
+    // explicit 32 MiB stack so the body parses + loads as before.
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            let mut kb = load_stdlib_kb();
 
-    // Parse typing_pass_spec.anthill
-    let spec_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/proposals/typing_pass_spec.anthill");
-    let source = std::fs::read_to_string(&spec_path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", spec_path.display()));
-    let parsed = parse::parse(&source)
-        .unwrap_or_else(|errs| {
-            for e in &errs {
-                eprintln!("parse error: {}", e.format_with_source(&source));
+            let spec_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../docs/proposals/typing_pass_spec.anthill");
+            let source = std::fs::read_to_string(&spec_path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", spec_path.display()));
+            let parsed = parse::parse(&source)
+                .unwrap_or_else(|errs| {
+                    for e in &errs {
+                        eprintln!("parse error: {}", e.format_with_source(&source));
+                    }
+                    panic!("typing_pass_spec.anthill has {} parse errors", errs.len());
+                });
+
+            let result = load::load(&mut kb, &parsed, &NullResolver);
+            if let Err(errs) = &result {
+                for e in errs {
+                    eprintln!("load error: {e}");
+                }
+                eprintln!("typing_pass_spec.anthill had {} load warnings", errs.len());
             }
-            panic!("typing_pass_spec.anthill has {} parse errors", errs.len());
-        });
 
-    // Load into KB on top of stdlib
-    let result = load::load(&mut kb, &parsed, &NullResolver);
-    if let Err(errs) = &result {
-        for e in errs {
-            eprintln!("load error: {e}");
-        }
-        // Don't panic — some symbols may be undefined (TypingEnv is abstract).
-        // Just report. The test verifies the spec PARSES and loads without hard failures.
-        eprintln!("typing_pass_spec.anthill had {} load warnings", errs.len());
-    }
-
-    // Verify key definitions were scanned
-    assert!(
-        kb.try_resolve_symbol("anthill.reflect.typing_pass.TypingEnv").is_some(),
-        "TypingEnv sort should be defined"
-    );
-    assert!(
-        kb.try_resolve_symbol("anthill.reflect.typing_pass.type_check").is_some(),
-        "type_check operation should be defined"
-    );
-    assert!(
-        kb.try_resolve_symbol("anthill.reflect.typing_pass.assert_compatible").is_some(),
-        "assert_compatible operation should be defined"
-    );
+            assert!(
+                kb.try_resolve_symbol("anthill.reflect.typing_pass.TypingEnv").is_some(),
+                "TypingEnv sort should be defined"
+            );
+            assert!(
+                kb.try_resolve_symbol("anthill.reflect.typing_pass.type_check").is_some(),
+                "type_check operation should be defined"
+            );
+            assert!(
+                kb.try_resolve_symbol("anthill.reflect.typing_pass.assert_compatible").is_some(),
+                "assert_compatible operation should be defined"
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1522,24 +1530,16 @@ end
                 }
             }
 
-            // Extract body var_ref name symbol
-            if let Some(body_tid) = named_args.iter()
-                .find(|(s, _)| kb.resolve_sym(*s) == "body")
-                .map(|(_, v)| *v)
-            {
-                // Unwrap some(handle)
-                if let Term::Fn { named_args: some_args, .. } = kb.get_term(body_tid) {
-                    if let Some((_, handle_tid)) = some_args.first() {
-                        if let Term::Const(Literal::Handle(_, occ_raw)) = kb.get_term(*handle_tid) {
-                            let occ_id = anthill_core::kb::occurrence::OccurrenceId::from_raw(*occ_raw);
-                            let expr = kb.occurrence_store().term(occ_id);
-                            // expr should be var_ref(name: Ref(x))
-                            if let Term::Fn { named_args: vr_args, .. } = kb.get_term(expr) {
-                                body_var_sym = vr_args.iter()
-                                    .find(|(s, _)| kb.resolve_sym(*s) == "name")
-                                    .and_then(|(_, v)| match kb.get_term(*v) { Term::Ref(s) => Some(*s), _ => None });
-                            }
-                        }
+            // Extract body var_ref name symbol via `kb.op_body_node`
+            // — post-WI-251 the body lives on the NodeOccurrence tree,
+            // not in the OperationInfo fact's Handle slot.
+            let id_sym = kb.try_resolve_symbol("Math.id")
+                .or_else(|| kb.try_resolve_symbol("id"));
+            if let Some(op_sym) = id_sym {
+                use anthill_core::kb::node_occurrence::{Expr, NodeKind};
+                if let Some(body) = kb.op_body_node(op_sym) {
+                    if let NodeKind::Expr { expr: Expr::VarRef { name }, .. } = &body.kind {
+                        body_var_sym = Some(*name);
                     }
                 }
             }

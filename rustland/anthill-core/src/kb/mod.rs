@@ -30,7 +30,6 @@ use smallvec::SmallVec;
 use crate::intern::{SymbolTable, SymbolDef, SymbolKind, Symbol};
 use crate::span::SourceRegistry;
 use term::{Term, TermId, TermStore, TermSource, Var, VarId};
-use occurrence::OccurrenceStore;
 use node_occurrence::NodeOccurrence;
 use discrim::SubstTree;
 use resolve::BuiltinTag;
@@ -219,8 +218,18 @@ pub struct KnowledgeBase {
     guards: Vec<Guard>,
     guards_by_sort: HashMap<TermId, Vec<usize>>,
 
-    // Occurrence store (positioned terms, not hash-consed)
-    pub(crate) occurrences: OccurrenceStore,
+    /// WI-251 — span side-table keyed by stored term TermId. Populated
+    /// by `load.rs::create_occurrence_ex` for every expression /
+    /// fact-head / rule-head term registered during load. Replaces the
+    /// legacy `the legacy occurrence by-term index(t).first().span(...)` lookup
+    /// used by typing.rs error-formatting paths.
+    pub(crate) term_spans: HashMap<TermId, crate::span::SourceSpan>,
+    /// WI-251 — first-encountered span keyed by functor symbol.
+    /// Populated alongside `term_spans` so typing.rs can recover a
+    /// representative span for an operation / sort / entity when only
+    /// its symbol is in hand (e.g. `check_operation_bodies`'s
+    /// span-by-op-sym lookup).
+    pub(crate) functor_spans: HashMap<Symbol, crate::span::SourceSpan>,
 
     /// WI-242 — value-typed operation bodies keyed by operation symbol.
     /// Populated by the loader alongside the existing Handle-wrapped
@@ -323,7 +332,8 @@ impl KnowledgeBase {
             entity_of_sort: None,
             guards: Vec::new(),
             guards_by_sort: HashMap::new(),
-            occurrences: OccurrenceStore::new(),
+            term_spans: HashMap::new(),
+            functor_spans: HashMap::new(),
             op_bodies: HashMap::new(),
             entity_field_types: HashMap::new(),
             resolved_requires_facts: HashSet::new(),
@@ -411,7 +421,7 @@ impl KnowledgeBase {
     }
 
     /// Register a synthesizing pass by qualified name. Returns a PassId
-    /// that can be passed to `OccurrenceStore::alloc_synthesized`'s `by:`
+    /// that can be passed to `the legacy alloc_synthesized helper`'s `by:`
     /// field. Idempotent — re-registering returns the same PassId.
     /// Passes call this at startup (or first use) to obtain their identifier.
     pub fn register_pass(&mut self, qualified_name: &str) -> crate::kb::occurrence::PassId {
@@ -439,10 +449,6 @@ impl KnowledgeBase {
         self.sources.name(id)
     }
 
-    pub fn occurrence_store(&self) -> &OccurrenceStore {
-        &self.occurrences
-    }
-
     /// WI-242 — get the value-typed body node for an operation, if the
     /// loader produced one. None for body-less ops (spec declarations).
     pub fn op_body_node(&self, op_sym: Symbol) -> Option<&Rc<NodeOccurrence>> {
@@ -453,6 +459,16 @@ impl KnowledgeBase {
     /// Called by the loader during operation conversion.
     pub fn set_op_body_node(&mut self, op_sym: Symbol, node: Rc<NodeOccurrence>) {
         self.op_bodies.insert(op_sym, node);
+    }
+
+    /// WI-251 — span for a stored term, if the loader recorded one.
+    pub fn term_span(&self, t: TermId) -> Option<crate::span::SourceSpan> {
+        self.term_spans.get(&t).copied()
+    }
+
+    /// WI-251 — first span recorded for `functor` during load, if any.
+    pub fn functor_span(&self, functor: Symbol) -> Option<crate::span::SourceSpan> {
+        self.functor_spans.get(&functor).copied()
     }
 
     /// WI-251 — iterate every operation's `(symbol, body NodeOccurrence)`.

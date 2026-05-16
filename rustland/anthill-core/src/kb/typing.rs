@@ -9,10 +9,9 @@ use std::rc::Rc;
 
 use smallvec::SmallVec;
 
-use super::term::{Term, TermId, Literal, HandleKind, Var, VarId};
-use super::occurrence::OccurrenceId;
+use super::term::{Term, TermId, Literal, Var, VarId};
 use super::node_occurrence::{
-    materialize_from_handle, materialize_from_occurrence,
+    materialize_from_handle,
     Expr, MatchBranch, NodeKind, NodeOccurrence,
 };
 use super::{KnowledgeBase, SortKind};
@@ -4801,11 +4800,9 @@ fn check_entity_facts(kb: &KnowledgeBase, ctor_syms: &[Symbol], errors: &mut Vec
                 _ => continue,
             };
 
-            let span: Option<Span> = kb.occurrences.by_term(head)
-                .first()
-                .or_else(|| kb.occurrences.by_functor(ctor_sym).iter()
-                    .find(|&&occ_id| kb.occurrences.term(occ_id) == head))
-                .map(|&occ_id| kb.occurrences.span(occ_id).span);
+            let span: Option<Span> = kb.term_span(head)
+                .or_else(|| kb.functor_span(ctor_sym))
+                .map(|s| s.span);
 
             for &(field_sym, declared_type) in &field_types {
                 let field_value = match named_args.iter().find(|(s, _)| *s == field_sym) {
@@ -4872,9 +4869,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             Some(n) => n,
             None => continue,
         };
-        let span = kb.occurrences.by_functor(rec.op_sym)
-            .first()
-            .map(|&occ_id| kb.occurrences.span(occ_id).span);
+        let span = kb.functor_span(rec.op_sym).map(|s| s.span);
         let params: Vec<(String, TermId)> = rec.params.into_iter()
             .map(|(s, t)| (kb.resolve_sym(s).to_string(), t))
             .collect();
@@ -5008,9 +5003,7 @@ fn check_pattern_fragment(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Ve
             Term::Fn { functor, .. } => *functor,
             _ => continue,
         };
-        let span = kb.occurrences.by_term(head)
-            .first()
-            .map(|&occ_id| kb.occurrences.span(occ_id).span);
+        let span = kb.term_span(head).map(|s| s.span);
 
         // Rule 1: head must not contain ho_apply (no predicate variables in head)
         if term_contains_functor(kb, head, ho_apply_sym) {
@@ -5149,9 +5142,7 @@ fn check_rule_typing(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Vec<Typ
                 Term::Fn { functor, .. } => *functor,
                 _ => continue,
             };
-            let span = kb.occurrences.by_term(head)
-                .first()
-                .map(|&occ_id| kb.occurrences.span(occ_id).span);
+            let span = kb.term_span(head).map(|s| s.span);
             errors.push(TypeError::Other {
                 span,
                 context: TypeErrorContext::Rule { name: head_sym, field: RuleField::Whole },

@@ -3262,18 +3262,12 @@ fn load_with_stdlib(extra_source: &str) -> KnowledgeBase {
     kb
 }
 
-/// Helper: find the named arg value in a Fn term.
-/// Helper: if term is a Handle(Occurrence, id), dereference to the occurrence's structural term.
-/// Otherwise return the term as-is.
-fn deref_occ(kb: &KnowledgeBase, term_id: TermId) -> TermId {
-    use anthill_core::kb::term::HandleKind;
-    match kb.get_term(term_id) {
-        Term::Const(anthill_core::kb::term::Literal::Handle(HandleKind::Occurrence, id)) => {
-            let occ_id = anthill_core::kb::occurrence::OccurrenceId::from_raw(*id);
-            kb.occurrence_store().term(occ_id)
-        }
-        _ => term_id,
-    }
+/// Helper: post-WI-251 child slots no longer hold a `Handle(Occurrence)`
+/// wrapper — they hold the inner term directly. This helper used to
+/// dereference the Handle; now it's an identity function kept for
+/// callers that still go through it textually.
+fn deref_occ(_kb: &KnowledgeBase, term_id: TermId) -> TermId {
+    term_id
 }
 
 fn get_named_arg<'a>(kb: &'a KnowledgeBase, term_id: TermId, field: &str) -> Option<TermId> {
@@ -3546,7 +3540,11 @@ fn parse_records_term_spans() {
 }
 
 #[test]
-fn load_operation_body_creates_occurrences() {
+fn load_operation_body_creates_node_occurrence() {
+    // WI-251 — operation bodies are now `Rc<NodeOccurrence>` trees
+    // keyed in `kb.op_bodies`. Verifying the loader populates them
+    // is the post-migration analogue of the old occurrence-store
+    // population checks.
     let source = r#"
 sort Math {
   operation double(x: Int) -> Int = add(x, x)
@@ -3556,107 +3554,12 @@ sort Math {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
+    let double_sym = kb.try_resolve_symbol("Math.double")
+        .or_else(|| kb.try_resolve_symbol("double"))
+        .expect("double operation should be resolved");
     assert!(
-        !kb.occurrence_store().is_empty(),
-        "OccurrenceStore should have occurrences from expression body"
-    );
-}
-
-#[test]
-fn load_if_expr_creates_occurrences() {
-    let source = r#"
-sort Math {
-  operation abs(x: Int) -> Int = if gt(x, 0) then x else sub(0, x)
-}
-"#;
-    let parsed = parse::parse(source).expect("parse failed");
-    let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
-
-    let occ_count = kb.occurrence_store().len();
-    assert!(
-        occ_count >= 3,
-        "expected at least 3 occurrences from if expression, got {}",
-        occ_count,
-    );
-}
-
-#[test]
-fn occurrence_has_owner_symbol() {
-    let source = r#"
-sort Math {
-  operation double(x: Int) -> Int = add(x, x)
-}
-"#;
-    let parsed = parse::parse(source).expect("parse failed");
-    let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
-
-    let store = kb.occurrence_store();
-    let has_owner = (0..store.len())
-        .any(|i| {
-            let occ = anthill_core::kb::occurrence::OccurrenceId::from_raw(i as u32);
-            store.owner(occ).is_some()
-        });
-    assert!(has_owner, "at least one occurrence should have an owner symbol");
-}
-
-#[test]
-fn occurrences_indexed_by_functor() {
-    let source = r#"
-sort Math {
-  operation abs(x: Int) -> Int = if gt(x, 0) then x else sub(0, x)
-}
-"#;
-    let parsed = parse::parse(source).expect("parse failed");
-    let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
-
-    // The if_expr functor should be indexed in the OccurrenceStore
-    let if_expr_sym = kb.try_resolve_symbol("anthill.reflect.Expr.if_expr")
-        .expect("if_expr symbol should exist");
-    let occurrences = kb.occurrence_store().by_functor(if_expr_sym);
-    assert!(
-        !occurrences.is_empty(),
-        "if_expr should be indexed by functor in OccurrenceStore"
-    );
-}
-
-#[test]
-fn resolve_finds_occurrence_candidates() {
-    let source = r#"
-sort Math {
-  operation double(x: Int) -> Int = add(x, x)
-}
-"#;
-    let parsed = parse::parse(source).expect("parse failed");
-    let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
-
-    // Build a query pattern: apply(fn: ?f, args: ?a)
-    let apply_sym = kb.try_resolve_symbol("anthill.reflect.Expr.apply")
-        .expect("apply symbol should exist");
-    let fn_key = kb.intern("fn");
-    let args_key = kb.intern("args");
-    let f_sym = kb.intern("f");
-    let a_sym = kb.intern("a");
-    let f_var = kb.fresh_var(f_sym);
-    let a_var = kb.fresh_var(a_sym);
-    let f_term = kb.alloc(Term::Var(Var::Global(f_var)));
-    let a_term = kb.alloc(Term::Var(Var::Global(a_var)));
-
-    use smallvec::SmallVec;
-    let pattern = kb.alloc(Term::Fn {
-        functor: apply_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[(fn_key, f_term), (args_key, a_term)]),
-    });
-
-    // Resolve the pattern — should find occurrence candidates
-    let solutions = kb.resolve(&[pattern], &Default::default());
-    assert!(
-        !solutions.is_empty(),
-        "resolver should find apply(...) occurrence from expression body"
+        kb.op_body_node(double_sym).is_some(),
+        "kb.op_body_node should be populated for `double`"
     );
 }
 

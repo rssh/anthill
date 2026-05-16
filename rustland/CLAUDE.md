@@ -6,18 +6,29 @@ All commands from `rustland/`:
 
 ```bash
 cargo build                                         # build all crates
-cargo test -p anthill-core                          # all anthill-core tests
-cargo test -p anthill-core --lib                    # unit tests only
-cargo test -p anthill-core --test github_todo_test  # one integration test file
-cargo test -p anthill-core -- debruijn_multi        # filter by test name
-cargo test -p anthill-core -- --nocapture           # show eprintln output
 cargo build -p anthill-todo                         # build todo CLI
+```
 
-scripts/test.sh [-p crate ...]                      # cargo test with live per-binary progress
-                                                    # (forks pty so "Running ..." lines aren't buffered;
-                                                    # logs to target/test-run-latest.log)
+**Always run tests via `scripts/test.sh`** — it forks a pty so `Running …`
+lines aren't buffered, logs to `target/test-run-latest.log`, and gives
+live per-binary progress. Plain `cargo test` buffers under
+`| tail` and shows nothing until cargo exits, which makes hangs
+indistinguishable from slow compiles.
+
+```bash
+scripts/test.sh                                     # full workspace, live progress
+scripts/test.sh -p anthill-core                     # one crate
+scripts/test.sh -p anthill-core --lib               # unit tests only
+scripts/test.sh -p anthill-core --test github_todo  # one integration binary
+scripts/test.sh -p anthill-core -- debruijn_multi   # filter by test name
+scripts/test.sh -p anthill-core -- --nocapture      # show eprintln output
+
 scripts/test-status.sh                              # report current/last binary + last log write age
 ```
+
+Reach for raw `cargo test` only when you specifically need a behavior
+`test.sh` doesn't provide (e.g. doc-tests, `--exact`, custom test
+runners).
 
 ## Crate Structure
 
