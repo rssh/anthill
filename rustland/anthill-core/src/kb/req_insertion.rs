@@ -25,7 +25,7 @@ use std::rc::Rc;
 use smallvec::SmallVec;
 
 use crate::intern::Symbol;
-use crate::kb::node_occurrence::{Expr, NodeKind, NodeOccurrence};
+use crate::kb::node_occurrence::{Expr, NodeKind, NodeOccurrence, for_each_child};
 use crate::kb::term::{Term, TermId};
 use crate::kb::typing::{
     record_apply_rewrite, record_apply_within_concrete,
@@ -135,7 +135,7 @@ fn collect_classified(
                 });
             }
         }
-        super::node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
+        for_each_child(expr, |c| stack.push(Rc::clone(c)));
     }
 }
 

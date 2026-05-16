@@ -90,9 +90,13 @@ fn drain_node(occ: &mut NodeOccurrence, stack: &mut Vec<Rc<NodeOccurrence>>) {
 }
 
 /// Steal every child `Rc<NodeOccurrence>` slot of `expr`, pushing the
-/// owned Rcs onto `stack`. Vec-backed slots use `mem::take` (no
-/// allocation); single-Rc slots use `mem::replace` with a fresh
-/// `Expr::Bottom` placeholder (bounded by the slot count per node).
+/// owned Rcs onto `stack`. Vec-backed slots use `mem::take` (one
+/// pointer swap per Vec, regardless of length); single-Rc slots use
+/// `mem::replace` with a fresh `Expr::Bottom` placeholder. The
+/// non-destructive [`for_each_child`] walker can't share this body
+/// because routing it through a per-child callback would force one
+/// slot replacement per Vec element instead of one per Vec — material
+/// for the Drop hot path.
 fn drain_expr_children(expr: &mut Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
     let mk_placeholder = || NodeOccurrence::new_expr(Expr::Bottom, empty_span(), None);
     match expr {
@@ -413,15 +417,11 @@ pub fn visit_classifications(
 
 /// Canonical non-destructive walker over the direct
 /// `Rc<NodeOccurrence>` children of an `Expr`. Invokes `f` once per
-/// child slot. The visit order within a node is unspecified — callers
-/// that need pre/post-order semantics should drive their own
-/// work-stack and decide ordering there. This is the shared
-/// per-variant match used by `visit_classifications` and
-/// `req_insertion::collect_classified`; the destructive `Drop` path
-/// can't share the body because it `mem::take`s entire `Vec`s
-/// wholesale (one slot replacement per Vec instead of one per
-/// element), which doesn't fit the per-child callback shape.
-pub(crate) fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
+/// child slot. The visit order within a node is unspecified —
+/// callers that need pre/post-order semantics should drive their own
+/// work-stack and decide ordering there.
+#[inline]
+pub(super) fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
     match expr {
         Expr::Apply { pos_args, named_args, .. }
         | Expr::Constructor { pos_args, named_args, .. }

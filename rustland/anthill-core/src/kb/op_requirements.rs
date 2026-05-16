@@ -27,7 +27,7 @@ use smallvec::SmallVec;
 use crate::intern::Symbol;
 
 use super::term::{Term, TermId};
-use super::node_occurrence::{Expr, NodeKind, NodeOccurrence};
+use super::node_occurrence::{Expr, NodeKind, NodeOccurrence, for_each_child};
 use super::typing::{list_to_vec, lookup_spec_op_dispatch, requires_chain_flat};
 use super::KnowledgeBase;
 
@@ -117,78 +117,19 @@ fn push_unique(list: &mut Vec<OpRequirement>, item: OpRequirement) {
 /// the per-call substitution; v0 leaves it empty (the rewrite pass
 /// will populate it from the typer's per-call subst).
 fn walk_calls_node(
-    occ: &std::rc::Rc<NodeOccurrence>,
+    root: &std::rc::Rc<NodeOccurrence>,
     visit: &mut dyn FnMut(Symbol, SmallVec<[(Symbol, TermId); 2]>),
 ) {
-    let NodeKind::Expr { expr, .. } = &occ.kind else { return };
-    match expr {
-        Expr::Apply { functor, pos_args, named_args } => {
+    let mut stack: Vec<std::rc::Rc<NodeOccurrence>> = Vec::with_capacity(32);
+    stack.push(std::rc::Rc::clone(root));
+    while let Some(occ) = stack.pop() {
+        let NodeKind::Expr { expr, .. } = &occ.kind else { continue };
+        if let Expr::Apply { functor, .. } | Expr::ApplyWithin { functor, .. } = expr {
+            // v0: per-call bindings empty — the rewrite pass populates
+            // them from the typer's per-call subst.
             visit(*functor, SmallVec::new());
-            for c in pos_args.iter() { walk_calls_node(c, visit); }
-            for (_, c) in named_args.iter() { walk_calls_node(c, visit); }
         }
-        Expr::ApplyWithin { functor, args, named_args, requirements } => {
-            visit(*functor, SmallVec::new());
-            for c in args.iter() { walk_calls_node(c, visit); }
-            for (_, c) in named_args.iter() { walk_calls_node(c, visit); }
-            for r in requirements.iter() { walk_calls_node(r, visit); }
-        }
-        Expr::Constructor { pos_args, named_args, .. } => {
-            for c in pos_args.iter() { walk_calls_node(c, visit); }
-            for (_, c) in named_args.iter() { walk_calls_node(c, visit); }
-        }
-        Expr::If { condition, then_branch, else_branch } => {
-            walk_calls_node(condition, visit);
-            walk_calls_node(then_branch, visit);
-            walk_calls_node(else_branch, visit);
-        }
-        Expr::Let { value, body, .. } => {
-            walk_calls_node(value, visit);
-            walk_calls_node(body, visit);
-        }
-        Expr::Match { scrutinee, branches } => {
-            walk_calls_node(scrutinee, visit);
-            for b in branches.iter() {
-                walk_calls_node(&b.body, visit);
-                if let Some(g) = &b.guard { walk_calls_node(g, visit); }
-            }
-        }
-        Expr::Lambda { body, .. } => walk_calls_node(body, visit),
-        Expr::ListLit(es) | Expr::SetLit(es) => {
-            for e in es.iter() { walk_calls_node(e, visit); }
-        }
-        Expr::TupleLit { positional, named } => {
-            for e in positional.iter() { walk_calls_node(e, visit); }
-            for (_, e) in named.iter() { walk_calls_node(e, visit); }
-        }
-        Expr::HoApply { predicate, args } => {
-            walk_calls_node(predicate, visit);
-            for a in args.iter() { walk_calls_node(a, visit); }
-        }
-        Expr::HoApplyWithin { predicate, args, requirements } => {
-            walk_calls_node(predicate, visit);
-            for a in args.iter() { walk_calls_node(a, visit); }
-            for r in requirements.iter() { walk_calls_node(r, visit); }
-        }
-        Expr::ConstructorWithin { pos_args, named_args, requirements, .. } => {
-            for c in pos_args.iter() { walk_calls_node(c, visit); }
-            for (_, c) in named_args.iter() { walk_calls_node(c, visit); }
-            for r in requirements.iter() { walk_calls_node(r, visit); }
-        }
-        Expr::LambdaWithin { body, requirements, .. } => {
-            walk_calls_node(body, visit);
-            for r in requirements.iter() { walk_calls_node(r, visit); }
-        }
-        Expr::Instantiation { pos_args, named_args, .. } => {
-            for c in pos_args.iter() { walk_calls_node(c, visit); }
-            for (_, c) in named_args.iter() { walk_calls_node(c, visit); }
-        }
-        Expr::RequirementAtSort { chain, .. } => walk_calls_node(chain, visit),
-        Expr::ConstructRequirement { requirements, .. } => {
-            for r in requirements.iter() { walk_calls_node(r, visit); }
-        }
-        Expr::Const(_) | Expr::Ref(_) | Expr::Ident(_)
-        | Expr::Var(_) | Expr::Bottom | Expr::VarRef { .. } => {}
+        for_each_child(expr, |c| stack.push(std::rc::Rc::clone(c)));
     }
 }
 
