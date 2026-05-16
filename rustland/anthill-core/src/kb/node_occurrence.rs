@@ -299,6 +299,93 @@ pub struct MatchBranch {
     pub span: SourceSpan,
 }
 
+/// Walk a NodeOccurrence tree top-down, invoking `visit(occ, class)`
+/// at every `NodeKind::Expr` whose `classification` RefCell is set.
+/// Children of every Expr variant are visited regardless of whether
+/// the parent itself was classified — so deeply-nested classified
+/// applies are still surfaced.
+///
+/// Used by `kb::req_insertion::run` to find classified call sites in
+/// `kb.op_bodies` post-WI-251. Public so tests + tooling can iterate
+/// classifications without re-implementing the walk.
+pub fn visit_classifications(
+    occ: &Rc<NodeOccurrence>,
+    visit: &mut impl FnMut(&Rc<NodeOccurrence>, &super::typing::CallClass),
+) {
+    let NodeKind::Expr { expr, classification, .. } = &occ.kind else {
+        return;
+    };
+    if let Some(c) = classification.borrow().as_deref() {
+        visit(occ, c);
+    }
+    match expr {
+        Expr::Apply { pos_args, named_args, .. }
+        | Expr::Constructor { pos_args, named_args, .. } => {
+            for c in pos_args.iter() { visit_classifications(c, visit); }
+            for (_, c) in named_args.iter() { visit_classifications(c, visit); }
+        }
+        Expr::If { condition, then_branch, else_branch } => {
+            visit_classifications(condition, visit);
+            visit_classifications(then_branch, visit);
+            visit_classifications(else_branch, visit);
+        }
+        Expr::Let { value, body, .. } => {
+            visit_classifications(value, visit);
+            visit_classifications(body, visit);
+        }
+        Expr::Match { scrutinee, branches } => {
+            visit_classifications(scrutinee, visit);
+            for b in branches.iter() {
+                visit_classifications(&b.body, visit);
+                if let Some(g) = &b.guard {
+                    visit_classifications(g, visit);
+                }
+            }
+        }
+        Expr::Lambda { body, .. } => visit_classifications(body, visit),
+        Expr::ListLit(es) | Expr::SetLit(es) => {
+            for e in es.iter() { visit_classifications(e, visit); }
+        }
+        Expr::TupleLit { positional, named } => {
+            for e in positional.iter() { visit_classifications(e, visit); }
+            for (_, e) in named.iter() { visit_classifications(e, visit); }
+        }
+        Expr::HoApply { predicate, args } => {
+            visit_classifications(predicate, visit);
+            for a in args.iter() { visit_classifications(a, visit); }
+        }
+        Expr::ApplyWithin { args, named_args, requirements, .. } => {
+            for a in args.iter() { visit_classifications(a, visit); }
+            for (_, a) in named_args.iter() { visit_classifications(a, visit); }
+            for r in requirements.iter() { visit_classifications(r, visit); }
+        }
+        Expr::HoApplyWithin { predicate, args, requirements } => {
+            visit_classifications(predicate, visit);
+            for a in args.iter() { visit_classifications(a, visit); }
+            for r in requirements.iter() { visit_classifications(r, visit); }
+        }
+        Expr::ConstructorWithin { pos_args, named_args, requirements, .. } => {
+            for c in pos_args.iter() { visit_classifications(c, visit); }
+            for (_, c) in named_args.iter() { visit_classifications(c, visit); }
+            for r in requirements.iter() { visit_classifications(r, visit); }
+        }
+        Expr::LambdaWithin { body, requirements, .. } => {
+            visit_classifications(body, visit);
+            for r in requirements.iter() { visit_classifications(r, visit); }
+        }
+        Expr::Instantiation { pos_args, named_args, .. } => {
+            for c in pos_args.iter() { visit_classifications(c, visit); }
+            for (_, c) in named_args.iter() { visit_classifications(c, visit); }
+        }
+        Expr::RequirementAtSort { chain, .. } => visit_classifications(chain, visit),
+        Expr::ConstructRequirement { requirements, .. } => {
+            for r in requirements.iter() { visit_classifications(r, visit); }
+        }
+        Expr::Const(_) | Expr::Ref(_) | Expr::Ident(_)
+        | Expr::Var(_) | Expr::Bottom | Expr::VarRef { .. } => {}
+    }
+}
+
 // ── Materialization from KB-encoded handle tree ─────────────────
 
 /// Materialize the value-typed NodeOccurrence tree rooted at `occ_id`,

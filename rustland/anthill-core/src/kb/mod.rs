@@ -455,6 +455,13 @@ impl KnowledgeBase {
         self.op_bodies.insert(op_sym, node);
     }
 
+    /// WI-251 — iterate every operation's `(symbol, body NodeOccurrence)`.
+    /// Passes (e.g. `req_insertion::run`) that need to scan all bodies
+    /// consume this; the iteration order is unspecified.
+    pub fn op_bodies_iter(&self) -> impl Iterator<Item = (Symbol, &Rc<NodeOccurrence>)> + '_ {
+        self.op_bodies.iter().map(|(s, n)| (*s, n))
+    }
+
     // ── Term allocation ─────────────────────────────────────────
 
     /// Allocate a term (hash-consed, refcounted).

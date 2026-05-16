@@ -27,13 +27,13 @@ pub enum TypeError {
     /// in the program the mismatch was detected so the user-facing message
     /// can name the field/operation rather than just "type mismatch".
     TypeMismatch {
-        occ: Option<OccurrenceId>,
+        span: Option<Span>,
         context: TypeErrorContext,
         expected: TermId,
         actual: TermId,
     },
     UnknownField {
-        occ: Option<OccurrenceId>,
+        span: Option<Span>,
         entity_name: Symbol,
         field: Symbol,
     },
@@ -41,7 +41,7 @@ pub enum TypeError {
         name: Symbol,
     },
     UnresolvedName {
-        occ: Option<OccurrenceId>,
+        span: Option<Span>,
         name: Symbol,
     },
     /// Catchall for auxiliary typing-pass checks (effect declarations,
@@ -127,13 +127,11 @@ impl TypeError {
         }
     }
 
-    pub fn span(&self, kb: &KnowledgeBase) -> Option<Span> {
+    pub fn span(&self, _kb: &KnowledgeBase) -> Option<Span> {
         match self {
-            TypeError::TypeMismatch { occ, .. }
-            | TypeError::UnknownField { occ, .. }
-            | TypeError::UnresolvedName { occ, .. } => {
-                occ.map(|id| kb.occurrences.span(id).span)
-            }
+            TypeError::TypeMismatch { span, .. }
+            | TypeError::UnknownField { span, .. }
+            | TypeError::UnresolvedName { span, .. } => *span,
             TypeError::Other { span, .. } => *span,
             TypeError::NoParentSort { .. } => None,
         }
@@ -499,23 +497,6 @@ fn sort_term_to_type(kb: &mut KnowledgeBase, sort_term: TermId) -> TermId {
     }
 }
 
-pub fn resolve_handle(kb: &KnowledgeBase, handle_tid: TermId) -> TermId {
-    split_handle(kb, handle_tid).1
-}
-
-/// Like `resolve_handle`, but also returns the `OccurrenceId` the handle carried
-/// (if any) — so a pass traversing occurrence-to-occurrence keeps source identity
-/// instead of discarding it. See `docs/design/expr-occurrences.md`.
-pub fn split_handle(kb: &KnowledgeBase, handle_tid: TermId) -> (Option<OccurrenceId>, TermId) {
-    match kb.get_term(handle_tid) {
-        Term::Const(Literal::Handle(HandleKind::Occurrence, occ_raw)) => {
-            let occ_id = OccurrenceId::from_raw(*occ_raw);
-            (Some(occ_id), kb.occurrences.term(occ_id))
-        }
-        _ => (None, handle_tid),
-    }
-}
-
 pub fn get_named_arg(kb: &KnowledgeBase, named_args: &SmallVec<[(Symbol, TermId); 2]>, key: &str) -> Option<TermId> {
     named_args.iter()
         .find(|(s, _)| kb.resolve_sym(*s) == key)
@@ -589,12 +570,8 @@ pub fn type_check_expr(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     expr: TermId,
-    current_occ: Option<OccurrenceId>,
 ) -> Option<TypeResult> {
-    let node = match current_occ {
-        Some(occ_id) => materialize_from_occurrence(kb, occ_id),
-        None => materialize_from_handle(kb, expr),
-    };
+    let node = materialize_from_handle(kb, expr);
     type_check_node(kb, env, &node)
 }
 
@@ -674,17 +651,13 @@ pub fn type_check_node(
     }
 }
 
-/// Attach a call-site `CallClass` to its occurrence. Writes to the
-/// NodeOccurrence's `RefCell` (the canonical channel for downstream
-/// consumers post-WI-247) and — while the legacy `OccurrenceStore` is
-/// still live (deleted in WI-251) — also propagates to the legacy
-/// classification side-table so `req_insertion::run` continues to read
-/// classifications without migration.
-fn classify(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>, class: CallClass) {
-    occ.set_classification(class.clone());
-    if let Some(occ_id) = occ.origin_occ {
-        kb.occurrences.set_classification(occ_id, class);
-    }
+/// Attach a call-site `CallClass` to its NodeOccurrence's `RefCell`
+/// — the canonical channel for downstream consumers post-WI-251.
+/// `req_insertion::run` walks `kb.op_bodies` and reads the
+/// classification off each Apply NodeOccurrence; eval reads it
+/// directly from the same RefCell at dispatch time.
+fn classify(_kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>, class: CallClass) {
+    occ.set_classification(class);
 }
 
 // ── Expression form checkers ───────────────────────────────────
@@ -2784,7 +2757,7 @@ fn operation_has_no_body(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
 /// registered builtin or the spec's own derived rule. WI-237.
 fn op_has_runnable_body(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
     match super::op_info::lookup_operation_info(kb, op_sym) {
-        Some(rec) => rec.body.is_some(),
+        Some(rec) => rec.body_node.is_some(),
         None => false,
     }
 }
@@ -4932,7 +4905,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
         if let Some(result) = type_check_node(kb, &env, &op.body_node) {
             if !types_compatible(kb, result.ty, op.return_type) {
                 errors.push(TypeError::TypeMismatch {
-                    occ: None,
+                    span: None,
                     context: TypeErrorContext::OperationReturn { op_name: op.op_sym },
                     expected: op.return_type,
                     actual: result.ty,

@@ -27,7 +27,8 @@ use smallvec::SmallVec;
 use crate::intern::Symbol;
 
 use super::term::{Term, TermId};
-use super::typing::{list_to_vec, lookup_spec_op_dispatch, requires_chain_flat, resolve_handle};
+use super::node_occurrence::{Expr, NodeKind, NodeOccurrence};
+use super::typing::{list_to_vec, lookup_spec_op_dispatch, requires_chain_flat};
 use super::KnowledgeBase;
 
 /// A single requirement entry: a spec sort plus the bindings the
@@ -50,14 +51,12 @@ pub struct OpRequirement {
 pub fn op_requirements(kb: &KnowledgeBase, op_sym: Symbol) -> Vec<OpRequirement> {
     let mut memo: HashMap<Symbol, Vec<OpRequirement>> = HashMap::new();
     let mut in_progress: Vec<Symbol> = Vec::new();
-    let syms = WalkSymbols::resolve(kb);
-    compute_op_requirements(kb, op_sym, &syms, &mut in_progress, &mut memo)
+    compute_op_requirements(kb, op_sym, &mut in_progress, &mut memo)
 }
 
 fn compute_op_requirements(
     kb: &KnowledgeBase,
     op_sym: Symbol,
-    syms: &WalkSymbols,
     in_progress: &mut Vec<Symbol>,
     memo: &mut HashMap<Symbol, Vec<OpRequirement>>,
 ) -> Vec<OpRequirement> {
@@ -72,17 +71,14 @@ fn compute_op_requirements(
     }
     in_progress.push(op_sym);
 
-    // op_requirements walks the legacy Handle-wrapped Term tree (it
-    // pre-dates the NodeOccurrence migration), so go directly through
-    // op_info instead of eval::lookup_operation_body (which returns the
-    // value-typed Rc<NodeOccurrence> after WI-248). WI-251 reroutes the
-    // walker onto the NodeOccurrence tree and lets the legacy field die.
-    let body = crate::kb::op_info::lookup_operation_info(kb, op_sym)
-        .and_then(|r| r.body);
+    // WI-251 — walk the NodeOccurrence body tree directly. The legacy
+    // Handle-wrapped Term walk is gone; we now read `kb.op_body_node`
+    // for the operation's value-typed body.
+    let body = kb.op_body_node(op_sym).cloned();
     let mut result: Vec<OpRequirement> = Vec::new();
 
-    if let Some(body_term) = body {
-        walk_calls(kb, body_term, syms, &mut |callee_sym, callee_bindings| {
+    if let Some(body_node) = body {
+        walk_calls_node(&body_node, &mut |callee_sym, callee_bindings| {
             if let Some(spec_sort) = lookup_spec_op_dispatch(kb, callee_sym) {
                 push_unique(&mut result, OpRequirement {
                     spec_sort,
@@ -94,7 +90,7 @@ fn compute_op_requirements(
             // rewrite pass will refine this when it produces the
             // per-call bindings the design's substitute() needs.
             let transitive =
-                compute_op_requirements(kb, callee_sym, syms, in_progress, memo);
+                compute_op_requirements(kb, callee_sym, in_progress, memo);
             for req in transitive {
                 push_unique(&mut result, req);
             }
@@ -112,65 +108,87 @@ fn push_unique(list: &mut Vec<OpRequirement>, item: OpRequirement) {
     }
 }
 
-/// Reflect-symbol cache for the body walker. Resolved once per
-/// `op_requirements` invocation so `walk_calls` can compare functors
-/// via `Symbol` equality rather than `qualified_name_of` string-compare
-/// on every `Term::Fn` visited. The `fn` field key isn't a global
-/// qualified symbol, so we fall back to string compare for that one.
-struct WalkSymbols {
-    apply: Option<Symbol>,
-    apply_within: Option<Symbol>,
-}
-
-impl WalkSymbols {
-    fn resolve(kb: &KnowledgeBase) -> Self {
-        Self {
-            apply: kb.try_resolve_symbol("anthill.reflect.Expr.apply"),
-            apply_within: kb.try_resolve_symbol("anthill.reflect.Expr.apply_within"),
-        }
-    }
-}
-
-/// Walk a body term, invoking `visit(callee_sym, callee_bindings)` for
-/// every apply / apply_within node found. `callee_bindings` is the
-/// per-call substitution; v0 leaves it empty (the rewrite pass will
-/// populate it from the typer's per-call subst).
-fn walk_calls(
-    kb: &KnowledgeBase,
-    tid: TermId,
-    syms: &WalkSymbols,
+/// Walk a NodeOccurrence body tree, invoking `visit(callee_sym, callee_bindings)`
+/// for every `Expr::Apply` or `Expr::ApplyWithin` node found. WI-251:
+/// replaces the legacy Term-walking `walk_calls` (which dereferenced
+/// `Handle(Occurrence, _)` wrappers) — the NodeOccurrence tree
+/// already carries `functor: Symbol` on the Apply variant, so we read
+/// it directly without a reflect-symbol cache. `callee_bindings` is
+/// the per-call substitution; v0 leaves it empty (the rewrite pass
+/// will populate it from the typer's per-call subst).
+fn walk_calls_node(
+    occ: &std::rc::Rc<NodeOccurrence>,
     visit: &mut dyn FnMut(Symbol, SmallVec<[(Symbol, TermId); 2]>),
 ) {
-    // Operation bodies are stored as `Const(Handle(Occurrence, ...))`
-    // references into the occurrence table, not as direct Fn nodes.
-    let tid = resolve_handle(kb, tid);
-    let term = kb.get_term(tid).clone();
-    if let Term::Fn { functor, pos_args, named_args } = term {
-        let f = Some(functor);
-        if f == syms.apply || f == syms.apply_within {
-            if let Some(fn_sym) = extract_apply_target(kb, &named_args) {
-                visit(fn_sym, SmallVec::new());
+    let NodeKind::Expr { expr, .. } = &occ.kind else { return };
+    match expr {
+        Expr::Apply { functor, pos_args, named_args } => {
+            visit(*functor, SmallVec::new());
+            for c in pos_args.iter() { walk_calls_node(c, visit); }
+            for (_, c) in named_args.iter() { walk_calls_node(c, visit); }
+        }
+        Expr::ApplyWithin { functor, args, named_args, requirements } => {
+            visit(*functor, SmallVec::new());
+            for c in args.iter() { walk_calls_node(c, visit); }
+            for (_, c) in named_args.iter() { walk_calls_node(c, visit); }
+            for r in requirements.iter() { walk_calls_node(r, visit); }
+        }
+        Expr::Constructor { pos_args, named_args, .. } => {
+            for c in pos_args.iter() { walk_calls_node(c, visit); }
+            for (_, c) in named_args.iter() { walk_calls_node(c, visit); }
+        }
+        Expr::If { condition, then_branch, else_branch } => {
+            walk_calls_node(condition, visit);
+            walk_calls_node(then_branch, visit);
+            walk_calls_node(else_branch, visit);
+        }
+        Expr::Let { value, body, .. } => {
+            walk_calls_node(value, visit);
+            walk_calls_node(body, visit);
+        }
+        Expr::Match { scrutinee, branches } => {
+            walk_calls_node(scrutinee, visit);
+            for b in branches.iter() {
+                walk_calls_node(&b.body, visit);
+                if let Some(g) = &b.guard { walk_calls_node(g, visit); }
             }
         }
-        for &p in &pos_args {
-            walk_calls(kb, p, syms, visit);
+        Expr::Lambda { body, .. } => walk_calls_node(body, visit),
+        Expr::ListLit(es) | Expr::SetLit(es) => {
+            for e in es.iter() { walk_calls_node(e, visit); }
         }
-        for &(_, t) in &named_args {
-            walk_calls(kb, t, syms, visit);
+        Expr::TupleLit { positional, named } => {
+            for e in positional.iter() { walk_calls_node(e, visit); }
+            for (_, e) in named.iter() { walk_calls_node(e, visit); }
         }
-    }
-}
-
-fn extract_apply_target(
-    kb: &KnowledgeBase,
-    named_args: &SmallVec<[(Symbol, TermId); 2]>,
-) -> Option<Symbol> {
-    let fn_tid = named_args.iter()
-        .find(|(s, _)| kb.resolve_sym(*s) == "fn")
-        .map(|(_, v)| *v)?;
-    match kb.get_term(fn_tid) {
-        Term::Ref(s) | Term::Ident(s) => Some(*s),
-        _ => None,
+        Expr::HoApply { predicate, args } => {
+            walk_calls_node(predicate, visit);
+            for a in args.iter() { walk_calls_node(a, visit); }
+        }
+        Expr::HoApplyWithin { predicate, args, requirements } => {
+            walk_calls_node(predicate, visit);
+            for a in args.iter() { walk_calls_node(a, visit); }
+            for r in requirements.iter() { walk_calls_node(r, visit); }
+        }
+        Expr::ConstructorWithin { pos_args, named_args, requirements, .. } => {
+            for c in pos_args.iter() { walk_calls_node(c, visit); }
+            for (_, c) in named_args.iter() { walk_calls_node(c, visit); }
+            for r in requirements.iter() { walk_calls_node(r, visit); }
+        }
+        Expr::LambdaWithin { body, requirements, .. } => {
+            walk_calls_node(body, visit);
+            for r in requirements.iter() { walk_calls_node(r, visit); }
+        }
+        Expr::Instantiation { pos_args, named_args, .. } => {
+            for c in pos_args.iter() { walk_calls_node(c, visit); }
+            for (_, c) in named_args.iter() { walk_calls_node(c, visit); }
+        }
+        Expr::RequirementAtSort { chain, .. } => walk_calls_node(chain, visit),
+        Expr::ConstructRequirement { requirements, .. } => {
+            for r in requirements.iter() { walk_calls_node(r, visit); }
+        }
+        Expr::Const(_) | Expr::Ref(_) | Expr::Ident(_)
+        | Expr::Var(_) | Expr::Bottom | Expr::VarRef { .. } => {}
     }
 }
 

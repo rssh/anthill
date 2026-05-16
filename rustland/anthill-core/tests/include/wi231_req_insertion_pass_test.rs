@@ -34,15 +34,23 @@ end
 "#;
     let kb = load_kb_with(src);
 
-    // At least one classification row must exist (the `eq(a, b)` call).
-    let class_count = kb.occurrence_store().classifications_iter().count();
+    // Walk `kb.op_bodies` and collect every classified NodeOccurrence
+    // — post-WI-251 the typer writes CallClass onto each Apply
+    // occurrence's RefCell, not into a side-table.
+    let mut rows: Vec<anthill_core::kb::typing::CallClass> = Vec::new();
+    for (_, body) in kb.op_bodies_iter() {
+        anthill_core::kb::node_occurrence::visit_classifications(body, &mut |_, c| {
+            rows.push(c.clone());
+        });
+    }
+    let class_count = rows.len();
     assert!(
         class_count >= 1,
         "typer must populate >= 1 CallClass row for the eq(a, b) call site; got {class_count}"
     );
 
     // Find the Defer row and confirm its data.
-    let defer_row = kb.occurrence_store().classifications_iter().find_map(|(_, c)| match c {
+    let defer_row = rows.iter().find_map(|c| match c {
         CallClass::DeferToRequirement { spec_op_sym, op_short_sym, resolved_spec, slot, enclosing_sort } => {
             Some((*spec_op_sym, *op_short_sym, resolved_spec.clone(), *slot, *enclosing_sort))
         }
@@ -220,17 +228,17 @@ end
 
     // Every Defer row in this KB belongs to Wi232Two and must point at
     // the same matched entry — `required_sort = Eq`, spec TermId is the
-    // SortView that the loader built for `requires Eq[T]`.
-    let mut defer_rows: Vec<_> = kb
-        .occurrence_store()
-        .classifications_iter()
-        .filter_map(|(occ, c)| match c {
-            CallClass::DeferToRequirement { resolved_spec, .. } => {
-                Some((kb.occurrence_store().term(occ), resolved_spec.clone()))
+    // SortView that the loader built for `requires Eq[T]`. Walk
+    // `kb.op_bodies` post-WI-251; the per-Apply RefCell is the
+    // source of truth.
+    let mut defer_rows: Vec<anthill_core::kb::typing::RequiresEntry> = Vec::new();
+    for (_, body) in kb.op_bodies_iter() {
+        anthill_core::kb::node_occurrence::visit_classifications(body, &mut |_occ, c| {
+            if let CallClass::DeferToRequirement { resolved_spec, .. } = c {
+                defer_rows.push(resolved_spec.clone());
             }
-            _ => None,
-        })
-        .collect();
+        });
+    }
     assert!(
         defer_rows.len() >= 2,
         "Wi232Two has two spec-op calls (eq, neq); both must classify as Defer; got {}",
@@ -239,11 +247,10 @@ end
 
     // Every row's resolved_spec carries the Eq required_sort and a
     // non-null spec TermId (the SortView with bindings).
-    for (tid, entry) in defer_rows.drain(..) {
+    for entry in defer_rows.drain(..) {
         assert_eq!(
             entry.required_sort, eq_sort,
-            "every Defer row's resolved_spec must point at Eq (apply tid {:?})",
-            tid
+            "every Defer row's resolved_spec must point at Eq",
         );
         // spec is a TermId — accessor on KB resolves to a Fn term.
         let spec_term = kb.get_term(entry.spec);

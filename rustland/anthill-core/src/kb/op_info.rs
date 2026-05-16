@@ -15,12 +15,17 @@ use smallvec::SmallVec;
 use crate::intern::Symbol;
 
 use super::node_occurrence::NodeOccurrence;
-use super::occurrence::OccurrenceId;
 use super::term::{Term, TermId};
-use super::typing::{list_to_vec, split_handle, unwrap_option};
+use super::typing::list_to_vec;
 use super::KnowledgeBase;
 
 /// Full `OperationInfo` view for one operation symbol.
+///
+/// WI-251 — the legacy `body: Option<TermId>` and `body_occ:
+/// Option<OccurrenceId>` fields were removed. The body is now sourced
+/// exclusively from `kb.op_body_node(op_sym)` as a value-typed
+/// `Rc<NodeOccurrence>`. Consumers that need a body inspect
+/// `body_node` directly.
 #[derive(Debug, Clone)]
 pub struct OpInfoRecord {
     pub op_sym: Symbol,
@@ -28,17 +33,8 @@ pub struct OpInfoRecord {
     pub params: Vec<(Symbol, TermId)>,
     pub return_type: TermId,
     pub effects: Vec<TermId>,
-    /// Resolved body term — `None` when the operation is body-less
-    /// (a spec op declaration). The body-root handle is unwrapped via
-    /// `split_handle` so callers see the real expression term; the
-    /// occurrence the handle carried is kept in `body_occ`.
-    pub body: Option<TermId>,
-    /// The `OccurrenceId` the body-root handle carried, if any — lets
-    /// the typer enter `type_check_expr` with the body's source
-    /// identity in hand instead of a `by_term`-reconstructed guess.
-    pub body_occ: Option<OccurrenceId>,
-    /// WI-247 — value-typed body NodeOccurrence read from `kb.op_bodies`.
-    /// Consumers migrate from `body` (Handle-wrapped TermId) to this.
+    /// Body NodeOccurrence read from `kb.op_bodies`. `None` when the
+    /// operation is body-less (a spec op declaration).
     pub body_node: Option<Rc<NodeOccurrence>>,
 }
 
@@ -66,24 +62,12 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
             .map(|t| list_to_vec(kb, t))
             .unwrap_or_default();
         let params = extract_params(kb, &named_args);
-        let (body_occ, body) = match find_named(kb, &named_args, "body")
-            .and_then(|opt| unwrap_option(kb, opt))
-        {
-            Some(h) => {
-                let (occ, inner) = split_handle(kb, h);
-                (occ, Some(inner))
-            }
-            None => (None, None),
-        };
-
         let body_node = kb.op_body_node(op_sym).cloned();
         return Some(OpInfoRecord {
             op_sym,
             params,
             return_type,
             effects,
-            body,
-            body_occ,
             body_node,
         });
     }
