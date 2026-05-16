@@ -1183,21 +1183,18 @@ fn field_access_sort_component() {
 
 #[test]
 fn typing_pass_spec_parses_and_loads() {
-    // WI-253: iterative NodeOccurrence materializer (constant host stack).
-    // WI-254: iterative kb/load.rs expression loader (constant host stack
-    //         on the load-side traversal of operation bodies).
+    // WI-253: iterative NodeOccurrence materializer.
+    // WI-254: iterative kb/load.rs expression loader.
+    // WI-256: iterative parse/convert.rs CST → IR walker.
     //
-    // Two recursive walkers still live downstream:
-    //   - `parse/convert.rs::convert_*` — tree-sitter CST → typed IR
-    //     converter (one host frame per source AST level)
-    //   - `kb/typing.rs::type_check_node` and the `check_*` family —
-    //     post-load typer that walks the NodeOccurrence trees
+    // One recursive walker still lives downstream:
+    //   - `kb/typing.rs::type_check_node` + `check_*` family — post-load
+    //     typer that walks the NodeOccurrence trees (tracked as WI-255).
     //
-    // The 624-line typing_pass_spec.anthill exercises both. A 4 MiB
-    // spawned-thread stack covers parse + load + typer; release-mode
-    // builds already pass on the default 2 MiB stack. Follow-up WIs
-    // (WI-255 iterative typer, WI-256 iterative parse converter) are
-    // tracked separately.
+    // The typer's recursion on the 624-line typing_pass_spec.anthill
+    // still exceeds the default 2 MiB debug-build test stack, so this
+    // test wraps the pipeline in a 4 MiB spawned thread until WI-255.
+    // Release-mode builds already pass on the default 2 MiB stack.
     std::thread::Builder::new()
         .stack_size(4 * 1024 * 1024)
         .spawn(|| {

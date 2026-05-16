@@ -28,6 +28,116 @@ fn join_name_segments(symbols: &crate::intern::SymbolTable, segments: &[Symbol])
 use super::error::ParseError;
 use super::ir::*;
 
+/// Work-stack opcode for the iterative CST → IR walker covering
+/// term / expression-body / pattern subtrees. `Visit` dispatches a
+/// tree-sitter node (leaf → emit TermId; non-leaf → push a `Build`
+/// frame + child Visits). `Build` consumes already-converted
+/// children from the result stack and assembles the parent. Mirrors
+/// the post-WI-253 NodeOccurrence materializer / kb/load.rs
+/// expression loader pattern, keeping host stack O(1) regardless of
+/// source nesting depth.
+#[derive(Copy, Clone)]
+enum WorkKind {
+    Term,
+    ExprBody,
+    Pattern,
+}
+
+enum WorkOp<'t> {
+    Visit(WorkKind, Node<'t>),
+    Build(BuildFrame<'t>),
+    /// Push a precomputed TermId to the result stack when this op
+    /// pops. Lets `visit_*` stand in a synthetic Bottom for a missing
+    /// optional child without violating sibling result-stack ordering
+    /// (`results.push(bot)` inline would land bot at the wrong slot
+    /// relative to its sibling Visits, which haven't yet popped).
+    Yield(TermId),
+}
+
+/// One slot in a function-application / tuple / pattern-constructor
+/// argument list. Positional slots consume the next result; named
+/// slots carry the field-name symbol and consume one result.
+#[derive(Copy, Clone)]
+enum ArgSlot {
+    Positional,
+    Named(Symbol),
+}
+
+/// One slot in an infix chain. Operands consume the next result;
+/// operator slots carry the operator's source text (heap-allocated
+/// because tree-sitter Node lifetimes don't outlive the build phase).
+enum InfixSlot {
+    Operand,
+    Operator(String),
+}
+
+enum BuildFrame<'t> {
+    // ── Term-side frames ────────────────────────────────────────
+    FnTerm {
+        node: Node<'t>,
+        is_ho: bool,
+        functor: Symbol,
+        slots: SmallVec<[ArgSlot; 4]>,
+    },
+    Infix {
+        node: Node<'t>,
+        slots: SmallVec<[InfixSlot; 8]>,
+    },
+    Prefix {
+        node: Node<'t>,
+        op_text: String,
+    },
+    FieldAccess {
+        node: Node<'t>,
+        field_sym: Symbol,
+        field_span: Span,
+    },
+    SetLiteral {
+        node: Node<'t>,
+        count: usize,
+    },
+    CollectionLiteral {
+        node: Node<'t>,
+        elem_count: usize,
+        has_tail: bool,
+    },
+    TupleLiteral {
+        node: Node<'t>,
+        slots: SmallVec<[ArgSlot; 4]>,
+    },
+    // ── Expression-body frames ──────────────────────────────────
+    MatchExpr {
+        node: Node<'t>,
+        branch_count: usize,
+    },
+    MatchBranch {
+        node: Node<'t>,
+    },
+    IfExpr {
+        node: Node<'t>,
+    },
+    LetExpr {
+        node: Node<'t>,
+        type_anno: Option<TypeExpr>,
+    },
+    LambdaExpr {
+        node: Node<'t>,
+    },
+    // ── Pattern frames ──────────────────────────────────────────
+    PatternLiteral {
+        node: Node<'t>,
+    },
+    PatternConstructor {
+        node: Node<'t>,
+        name_tid: TermId,
+        slots: SmallVec<[ArgSlot; 4]>,
+    },
+    PatternTuple {
+        node: Node<'t>,
+        count: usize,
+    },
+}
+
 pub(super) struct Converter<'a> {
     source: &'a str,
     pub symbols: SymbolTable,
@@ -331,43 +441,82 @@ impl<'a> Converter<'a> {
     // ── Terms ───────────────────────────────────────────────────
 
     fn convert_term(&mut self, node: Node) -> TermId {
+        self.convert_expr_iter(node, WorkKind::Term)
+    }
+
+    /// Iterative CST→IR walker. Single entry point for the recursive
+    /// term / expression-body / pattern subtree converters; runs a
+    /// work-stack loop so host stack usage stays O(1) regardless of
+    /// source nesting depth. Each `Visit(kind, node)` dispatches by
+    /// kind+`node.kind()` to either emit a leaf TermId or push a
+    /// `Build` frame + child `Visit`s; `Build` frames consume
+    /// already-converted children from the result stack and assemble
+    /// the parent.
+    fn convert_expr_iter<'t>(&mut self, root: Node<'t>, init_kind: WorkKind) -> TermId {
+        let mut work: Vec<WorkOp<'t>> = Vec::with_capacity(64);
+        let mut results: Vec<TermId> = Vec::with_capacity(64);
+        work.push(WorkOp::Visit(init_kind, root));
+        while let Some(op) = work.pop() {
+            match op {
+                WorkOp::Visit(kind, node) => match kind {
+                    WorkKind::Term => self.visit_term(node, &mut work, &mut results),
+                    WorkKind::ExprBody => self.visit_expr_body(node, &mut work, &mut results),
+                    WorkKind::Pattern => self.visit_pattern(node, &mut work, &mut results),
+                },
+                WorkOp::Build(frame) => self.build_parse(frame, &mut results),
+                WorkOp::Yield(tid) => results.push(tid),
+            }
+        }
+        debug_assert_eq!(results.len(), 1, "iterative parse: expected exactly one result");
+        results.pop().expect("iterative parse: empty result stack")
+    }
+
+    /// Dispatch a single parse-time term node: produce a leaf TermId
+    /// directly or push a `Build` frame + child `Visit`s.
+    fn visit_term<'t>(
+        &mut self,
+        node: Node<'t>,
+        work: &mut Vec<WorkOp<'t>>,
+        results: &mut Vec<TermId>,
+    ) {
         let span = self.span(node);
         match node.kind() {
             "string_literal" => {
                 let term = Term::Const(Literal::String(decode_string_lit(self.text(node))));
-                self.terms.alloc(term, span)
+                results.push(self.terms.alloc(term, span));
             }
             "integer_literal" => {
                 let text = self.text(node);
-                if let Ok(n) = text.parse::<i64>() {
+                let tid = if let Ok(n) = text.parse::<i64>() {
                     self.terms.alloc(Term::Const(Literal::Int(n)), span)
                 } else if let Ok(big) = text.parse::<num_bigint::BigInt>() {
                     self.terms.alloc(Term::Const(Literal::BigInt(big)), span)
                 } else {
                     self.err(format!("invalid integer: {text}"), node);
                     self.terms.alloc(Term::Const(Literal::Int(0)), span)
-                }
+                };
+                results.push(tid);
             }
             "float_literal" => {
                 let text = self.text(node);
-                match text.parse::<f64>() {
+                let tid = match text.parse::<f64>() {
                     Ok(f) => self.terms.alloc(Term::Const(Literal::Float(OrderedFloat(f))), span),
                     Err(_) => {
                         self.err(format!("invalid float: {text}"), node);
                         self.terms.alloc(Term::Const(Literal::Float(OrderedFloat(0.0))), span)
                     }
-                }
+                };
+                results.push(tid);
             }
             "boolean_literal" => {
                 let b = self.text(node) == "true";
-                self.terms.alloc(Term::Const(Literal::Bool(b)), span)
+                results.push(self.terms.alloc(Term::Const(Literal::Bool(b)), span));
             }
             "variable" => {
-                // variable is a single token: ?name or bare ?
-                self.convert_variable_node(node)
+                let tid = self.convert_variable_node(node);
+                results.push(tid);
             }
             "variable_term" => {
-                // variable_term wraps variable + zero or more description_blocks
                 let var_node = self.child_by_kind(node, "variable").unwrap_or(node);
                 let tid = self.convert_variable_node(var_node);
                 let descs: Vec<String> = self.fields_by_name(node, "description")
@@ -377,11 +526,24 @@ impl<'a> Converter<'a> {
                 if !descs.is_empty() {
                     self.terms.descriptions.insert(tid, descs);
                 }
-                tid
+                results.push(tid);
             }
-            "fn_term" => self.convert_fn_term(node),
-            "nested_implication" => self.convert_nested_implication(node),
-            "instantiation_term" => self.convert_instantiation_term(node),
+            "fn_term" => self.push_fn_term(node, work),
+            "nested_implication" => {
+                // Rare in expression contexts (rule bodies only) — stays
+                // recursive since `convert_rule_body` re-enters
+                // `convert_term` per goal and per-goal depth is bounded
+                // by rule structure rather than nested expressions.
+                let tid = self.convert_nested_implication(node);
+                results.push(tid);
+            }
+            "instantiation_term" => {
+                // Type values are shallow in practice (`Function[A=T, B=U,
+                // E=Es]`); the recursive `convert_instantiation_term`
+                // stays.
+                let tid = self.convert_instantiation_term(node);
+                results.push(tid);
+            }
             "ref_term" => {
                 let name_node = self.child_by_kind(node, "name");
                 let sym = if let Some(n) = name_node {
@@ -390,26 +552,629 @@ impl<'a> Converter<'a> {
                 } else {
                     self.intern("?")
                 };
-                self.terms.alloc(Term::Ref(sym), span)
+                results.push(self.terms.alloc(Term::Ref(sym), span));
             }
-            "infix_term" => self.convert_infix(node),
-            "prefix_term" => self.convert_prefix(node),
-            "field_access" => self.convert_field_access(node),
-            "set_literal" => self.convert_set_literal(node),
-            "collection_literal" => self.convert_collection_literal(node),
-            "tuple_literal" => self.convert_tuple_literal(node),
+            "infix_term" => self.push_infix(node, work),
+            "prefix_term" => self.push_prefix(node, work, results),
+            "field_access" => self.push_field_access(node, work),
+            "set_literal" => self.push_set_literal(node, work),
+            "collection_literal" => self.push_collection_literal(node, work),
+            "tuple_literal" => self.push_tuple_literal(node, work),
             "paren_expr" => {
-                // (a) = a — unwrap parenthesized expression
                 let inner = node.named_child(0).unwrap_or(node);
-                self.convert_term(inner)
+                work.push(WorkOp::Visit(WorkKind::Term, inner));
             }
             "identifier" => {
                 let sym = self.intern(self.text(node));
-                self.terms.alloc(Term::Ident(sym), span)
+                results.push(self.terms.alloc(Term::Ident(sym), span));
             }
             other => {
                 self.err(format!("unexpected term node: {other}"), node);
-                self.alloc_bottom(span)
+                results.push(self.alloc_bottom(span));
+            }
+        }
+    }
+
+    fn push_fn_term<'t>(&mut self, node: Node<'t>, work: &mut Vec<WorkOp<'t>>) {
+        let name_node = self.field(node, "name").unwrap_or(node);
+        let is_ho = name_node.kind() == "variable";
+        let functor = if is_ho {
+            self.intern("ho_apply")
+        } else {
+            let name = self.convert_name(name_node);
+            self.intern_name(&name)
+        };
+
+        // Collect child layout (positional vs named with key) and the
+        // ordered list of child nodes whose TermIds the Build phase
+        // will consume. For HO predicates the variable head slot is
+        // a positional leaf; emit it directly to results in pushed
+        // order so it doesn't need a Visit op.
+        let mut slots: SmallVec<[ArgSlot; 4]> = SmallVec::new();
+        let mut child_nodes: SmallVec<[Node<'t>; 4]> = SmallVec::new();
+        if is_ho {
+            // The HO head is a `variable` leaf; treat it as a positional
+            // child that requires a Visit so we don't have to specialize
+            // build assembly. Each operand still produces a single TermId.
+            slots.push(ArgSlot::Positional);
+            child_nodes.push(name_node);
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child == name_node {
+                continue;
+            }
+            match child.kind() {
+                "named_arg" => {
+                    let key_node = self.field(child, "name");
+                    let val_node = self.field(child, "value");
+                    if let (Some(k), Some(v)) = (key_node, val_node) {
+                        let sym = self.intern(self.text(k));
+                        slots.push(ArgSlot::Named(sym));
+                        child_nodes.push(v);
+                    }
+                }
+                k if is_term_kind(k) => {
+                    slots.push(ArgSlot::Positional);
+                    child_nodes.push(child);
+                }
+                _ => {}
+            }
+        }
+
+        work.push(WorkOp::Build(BuildFrame::FnTerm { node, is_ho, functor, slots }));
+        for child in child_nodes.iter().rev() {
+            work.push(WorkOp::Visit(WorkKind::Term, *child));
+        }
+    }
+
+    fn push_infix<'t>(&mut self, node: Node<'t>, work: &mut Vec<WorkOp<'t>>) {
+        let mut slots: SmallVec<[InfixSlot; 8]> = SmallVec::new();
+        let mut operand_nodes: SmallVec<[Node<'t>; 4]> = SmallVec::new();
+        for i in 0..node.child_count() {
+            let Some(child) = node.child(i) else { continue };
+            let kind = child.kind();
+            if kind == "operator_symbol" {
+                slots.push(InfixSlot::Operator(self.text(child).to_string()));
+            } else if is_term_kind(kind) || kind == "prefix_term" {
+                slots.push(InfixSlot::Operand);
+                operand_nodes.push(child);
+            } else if !child.is_named() {
+                let text = self.text(child);
+                if text != "," {
+                    slots.push(InfixSlot::Operator(text.to_string()));
+                }
+            }
+        }
+        work.push(WorkOp::Build(BuildFrame::Infix { node, slots }));
+        for child in operand_nodes.iter().rev() {
+            work.push(WorkOp::Visit(WorkKind::Term, *child));
+        }
+    }
+
+    fn push_prefix<'t>(
+        &mut self,
+        node: Node<'t>,
+        work: &mut Vec<WorkOp<'t>>,
+        results: &mut Vec<TermId>,
+    ) {
+        let mut op_text: Option<String> = None;
+        let mut operand_node: Option<Node<'t>> = None;
+        for i in 0..node.child_count() {
+            let Some(child) = node.child(i) else { continue };
+            let kind = child.kind();
+            if is_term_kind(kind) || kind == "prefix_term" {
+                operand_node = Some(child);
+            } else if op_text.is_none() {
+                op_text = Some(self.text(child).to_string());
+            }
+        }
+        let op_text = op_text.unwrap_or_else(|| "!".to_string());
+        work.push(WorkOp::Build(BuildFrame::Prefix { node, op_text }));
+        match operand_node {
+            Some(operand) => work.push(WorkOp::Visit(WorkKind::Term, operand)),
+            None => {
+                // Unreachable from valid grammar; emit a Bottom directly
+                // so the Prefix Build drains a slot rather than panicking.
+                let span = self.span(node);
+                results.push(self.terms.alloc(Term::Bottom, span));
+            }
+        }
+    }
+
+    fn push_field_access<'t>(&mut self, node: Node<'t>, work: &mut Vec<WorkOp<'t>>) {
+        let object_node = self.field(node, "object").unwrap_or(node);
+        let field_node = self.field(node, "field").unwrap_or(node);
+        let field_span = self.span(field_node);
+        let field_sym = self.intern(self.text(field_node));
+        work.push(WorkOp::Build(BuildFrame::FieldAccess { node, field_sym, field_span }));
+        work.push(WorkOp::Visit(WorkKind::Term, object_node));
+    }
+
+    fn push_set_literal<'t>(&mut self, node: Node<'t>, work: &mut Vec<WorkOp<'t>>) {
+        let mut elements: SmallVec<[Node<'t>; 4]> = SmallVec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if is_term_kind(child.kind()) {
+                elements.push(child);
+            }
+        }
+        let count = elements.len();
+        work.push(WorkOp::Build(BuildFrame::SetLiteral { node, count }));
+        for child in elements.iter().rev() {
+            work.push(WorkOp::Visit(WorkKind::Term, *child));
+        }
+    }
+
+    fn push_collection_literal<'t>(&mut self, node: Node<'t>, work: &mut Vec<WorkOp<'t>>) {
+        let tail_node = self.field(node, "tail");
+        let mut elements: SmallVec<[Node<'t>; 4]> = SmallVec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if is_term_kind(child.kind()) && tail_node != Some(child) {
+                elements.push(child);
+            }
+        }
+        let elem_count = elements.len();
+        let has_tail = tail_node.is_some();
+        work.push(WorkOp::Build(BuildFrame::CollectionLiteral { node, elem_count, has_tail }));
+        if let Some(t) = tail_node {
+            work.push(WorkOp::Visit(WorkKind::Term, t));
+        }
+        for child in elements.iter().rev() {
+            work.push(WorkOp::Visit(WorkKind::Term, *child));
+        }
+    }
+
+    fn push_tuple_literal<'t>(&mut self, node: Node<'t>, work: &mut Vec<WorkOp<'t>>) {
+        let mut slots: SmallVec<[ArgSlot; 4]> = SmallVec::new();
+        let mut child_nodes: SmallVec<[Node<'t>; 4]> = SmallVec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "named_arg" => {
+                    let key_node = self.field(child, "name");
+                    let val_node = self.field(child, "value");
+                    if let (Some(k), Some(v)) = (key_node, val_node) {
+                        let sym = self.intern(self.text(k));
+                        slots.push(ArgSlot::Named(sym));
+                        child_nodes.push(v);
+                    }
+                }
+                k if is_term_kind(k) => {
+                    slots.push(ArgSlot::Positional);
+                    child_nodes.push(child);
+                }
+                _ => {}
+            }
+        }
+        work.push(WorkOp::Build(BuildFrame::TupleLiteral { node, slots }));
+        for child in child_nodes.iter().rev() {
+            work.push(WorkOp::Visit(WorkKind::Term, *child));
+        }
+    }
+
+    /// Dispatch a single parse-time expression-body node. Falls
+    /// through to `visit_term` for anything that isn't one of the
+    /// recognized expression-body kinds.
+    fn visit_expr_body<'t>(
+        &mut self,
+        node: Node<'t>,
+        work: &mut Vec<WorkOp<'t>>,
+        results: &mut Vec<TermId>,
+    ) {
+        match node.kind() {
+            "match_expr" => {
+                let scrutinee = self.field(node, "scrutinee");
+                let branches: SmallVec<[Node<'t>; 4]> =
+                    self.children_by_kind(node, "match_branch").into_iter().collect();
+                let branch_count = branches.len();
+                work.push(WorkOp::Build(BuildFrame::MatchExpr { node, branch_count }));
+                for branch in branches.iter().rev() {
+                    let pattern = self.field(*branch, "pattern");
+                    let body = self.field(*branch, "body");
+                    let branch_span = self.span(*branch);
+                    work.push(WorkOp::Build(BuildFrame::MatchBranch { node: *branch }));
+                    self.push_child_or_yield(work, body, WorkKind::ExprBody, branch_span);
+                    self.push_child_or_yield(work, pattern, WorkKind::Pattern, branch_span);
+                }
+                let node_span = self.span(node);
+                self.push_child_or_yield(work, scrutinee, WorkKind::Term, node_span);
+            }
+            "if_expr" => {
+                let cond = self.field(node, "condition");
+                let then_b = self.field(node, "then");
+                let else_b = self.field(node, "else");
+                let span = self.span(node);
+                work.push(WorkOp::Build(BuildFrame::IfExpr { node }));
+                self.push_child_or_yield(work, else_b, WorkKind::ExprBody, span);
+                self.push_child_or_yield(work, then_b, WorkKind::ExprBody, span);
+                self.push_child_or_yield(work, cond, WorkKind::Term, span);
+            }
+            "let_chain" => {
+                let pattern = self.field(node, "pattern");
+                let value = self.field(node, "value");
+                let body = self.field(node, "body");
+                let type_anno = self.field(node, "type").map(|t| self.convert_type(t));
+                let span = self.span(node);
+                work.push(WorkOp::Build(BuildFrame::LetExpr { node, type_anno }));
+                self.push_child_or_yield(work, body, WorkKind::ExprBody, span);
+                self.push_child_or_yield(work, value, WorkKind::ExprBody, span);
+                self.push_child_or_yield(work, pattern, WorkKind::Pattern, span);
+            }
+            "lambda_expr" => {
+                let param = self.field(node, "param");
+                let body = self.field(node, "body");
+                let span = self.span(node);
+                work.push(WorkOp::Build(BuildFrame::LambdaExpr { node }));
+                self.push_child_or_yield(work, body, WorkKind::ExprBody, span);
+                self.push_child_or_yield(work, param, WorkKind::Pattern, span);
+            }
+            _ => self.visit_term(node, work, results),
+        }
+    }
+
+    /// Dispatch a single parse-time pattern node.
+    fn visit_pattern<'t>(
+        &mut self,
+        node: Node<'t>,
+        work: &mut Vec<WorkOp<'t>>,
+        results: &mut Vec<TermId>,
+    ) {
+        let span = self.span(node);
+        match node.kind() {
+            "pattern_wildcard" => {
+                let tid = self.alloc_fn_term("pattern_wildcard", SmallVec::new(), span);
+                results.push(tid);
+            }
+            "pattern_var" | "identifier" => {
+                let id_node = self.child_by_kind(node, "identifier").unwrap_or(node);
+                let sym = self.intern(self.text(id_node));
+                let name_tid = self.terms.alloc(Term::Ident(sym), self.span(id_node));
+                let tid = self.alloc_fn_term("pattern_var", SmallVec::from_elem(name_tid, 1), span);
+                results.push(tid);
+            }
+            "pattern_literal" => {
+                let child = node.named_child(0).unwrap_or(node);
+                work.push(WorkOp::Build(BuildFrame::PatternLiteral { node }));
+                work.push(WorkOp::Visit(WorkKind::Term, child));
+            }
+            "pattern_constructor" => {
+                let name_node = self.field(node, "name").unwrap_or(node);
+                let name_span = self.span(name_node);
+                let name = self.convert_name(name_node);
+                let name_sym = self.intern_name(&name);
+                let name_tid = self.terms.alloc(Term::Ident(name_sym), name_span);
+
+                let mut slots: SmallVec<[ArgSlot; 4]> = SmallVec::new();
+                let mut child_ops: SmallVec<[WorkOp<'t>; 4]> = SmallVec::new();
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    if child.kind() == "named_pattern_field" {
+                        let field_name = self.field(child, "field_name")
+                            .map(|n| self.intern(self.text(n)))
+                            .unwrap_or_else(|| self.intern("_"));
+                        slots.push(ArgSlot::Named(field_name));
+                        match self.field(child, "field_pattern") {
+                            Some(p) => child_ops.push(WorkOp::Visit(WorkKind::Pattern, p)),
+                            None => {
+                                let bot = self.alloc_bottom(self.span(child));
+                                child_ops.push(WorkOp::Yield(bot));
+                            }
+                        }
+                    } else if is_pattern_kind(child.kind()) {
+                        slots.push(ArgSlot::Positional);
+                        child_ops.push(WorkOp::Visit(WorkKind::Pattern, child));
+                    }
+                }
+                work.push(WorkOp::Build(BuildFrame::PatternConstructor {
+                    node,
+                    name_tid,
+                    slots,
+                }));
+                for op in child_ops.into_iter().rev() {
+                    work.push(op);
+                }
+            }
+            "pattern_tuple" => {
+                let mut child_nodes: SmallVec<[Node<'t>; 4]> = SmallVec::new();
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    if is_pattern_kind(child.kind()) {
+                        child_nodes.push(child);
+                    }
+                }
+                let count = child_nodes.len();
+                work.push(WorkOp::Build(BuildFrame::PatternTuple { node, count }));
+                for child in child_nodes.iter().rev() {
+                    work.push(WorkOp::Visit(WorkKind::Pattern, *child));
+                }
+            }
+            other => {
+                self.err(format!("unexpected pattern node: {other}"), node);
+                results.push(self.alloc_bottom(span));
+            }
+        }
+    }
+
+    /// Push a child `Visit(kind, node)` if the child node exists, or
+    /// a `Yield(Bottom)` placeholder so the Build frame still drains a
+    /// slot in the right order. Direct `results.push` would land the
+    /// Bottom at the current end-of-stack, which breaks ordering once
+    /// sibling Visits later push their own results.
+    fn push_child_or_yield<'t>(
+        &mut self,
+        work: &mut Vec<WorkOp<'t>>,
+        child: Option<Node<'t>>,
+        kind: WorkKind,
+        fallback_span: Span,
+    ) {
+        match child {
+            Some(n) => work.push(WorkOp::Visit(kind, n)),
+            None => {
+                let bot = self.alloc_bottom(fallback_span);
+                work.push(WorkOp::Yield(bot));
+            }
+        }
+    }
+
+    /// Assemble a parent TermId from its already-converted children.
+    fn build_parse<'t>(&mut self, frame: BuildFrame<'t>, results: &mut Vec<TermId>) {
+        match frame {
+            BuildFrame::FnTerm { node, is_ho, functor, slots } => {
+                let span = self.span(node);
+                let drain_start = results.len() - slots.len();
+                let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
+                let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                for (i, slot) in slots.iter().enumerate() {
+                    let value = results[drain_start + i];
+                    match slot {
+                        ArgSlot::Positional => pos_args.push(value),
+                        ArgSlot::Named(sym) => named_args.push((*sym, value)),
+                    }
+                }
+                results.truncate(drain_start);
+                let _ = is_ho;
+                results.push(self.terms.alloc(
+                    Term::Fn { functor, pos_args, named_args },
+                    span,
+                ));
+            }
+            BuildFrame::Infix { node, slots } => {
+                use super::pratt::{InfixElement, desugar_infix_chain};
+                let span = self.span(node);
+                let operand_count = slots.iter().filter(|s| matches!(s, InfixSlot::Operand)).count();
+                let drain_start = results.len() - operand_count;
+                let mut elements: Vec<InfixElement<'_>> = Vec::with_capacity(slots.len());
+                let mut op_idx = 0;
+                for slot in slots.iter() {
+                    match slot {
+                        InfixSlot::Operand => {
+                            elements.push(InfixElement::Operand(results[drain_start + op_idx]));
+                            op_idx += 1;
+                        }
+                        InfixSlot::Operator(text) => {
+                            elements.push(InfixElement::Operator(text.as_str()));
+                        }
+                    }
+                }
+                let tid = match desugar_infix_chain(&elements, &mut self.terms, &mut self.symbols) {
+                    Ok(tid) => tid,
+                    Err(msg) => {
+                        self.err(format!("infix desugaring: {msg}"), node);
+                        self.alloc_bottom(span)
+                    }
+                };
+                results.truncate(drain_start);
+                results.push(tid);
+            }
+            BuildFrame::Prefix { node, op_text } => {
+                use super::pratt::prefix_entry;
+                let span = self.span(node);
+                let operand = results.pop().expect("prefix: missing operand on result stack");
+                let functor_name = match prefix_entry(&op_text) {
+                    Some(entry) => entry.functor,
+                    None => {
+                        self.err(format!("unknown prefix operator: {op_text}"), node);
+                        "not"
+                    }
+                };
+                let functor = self.intern(functor_name);
+                results.push(self.terms.alloc(
+                    Term::Fn {
+                        functor,
+                        pos_args: SmallVec::from_elem(operand, 1),
+                        named_args: SmallVec::new(),
+                    },
+                    span,
+                ));
+            }
+            BuildFrame::FieldAccess { node, field_sym, field_span } => {
+                let span = self.span(node);
+                let object = results.pop().expect("field_access: missing object");
+                let field_tid = self.terms.alloc(Term::Ident(field_sym), field_span);
+                let functor = self.intern("field_access");
+                results.push(self.terms.alloc(
+                    Term::Fn {
+                        functor,
+                        pos_args: SmallVec::from_slice(&[object, field_tid]),
+                        named_args: SmallVec::new(),
+                    },
+                    span,
+                ));
+            }
+            BuildFrame::SetLiteral { node, count } => {
+                let span = self.span(node);
+                let drain_start = results.len() - count;
+                let elements: SmallVec<[TermId; 4]> =
+                    results[drain_start..].iter().copied().collect();
+                results.truncate(drain_start);
+                results.push(self.alloc_fn_term("SetLiteral", elements, span));
+            }
+            BuildFrame::CollectionLiteral { node, elem_count, has_tail } => {
+                let span = self.span(node);
+                let drain_start = results.len() - (elem_count + usize::from(has_tail));
+                let tail_tid = if has_tail {
+                    Some(results[drain_start + elem_count])
+                } else {
+                    None
+                };
+                let elements: SmallVec<[TermId; 4]> =
+                    results[drain_start..drain_start + elem_count].iter().copied().collect();
+                results.truncate(drain_start);
+                let functor = self.intern("ListLiteral");
+                let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                if let Some(t) = tail_tid {
+                    let tail_key = self.intern("tail");
+                    named_args.push((tail_key, t));
+                }
+                results.push(self.terms.alloc(
+                    Term::Fn {
+                        functor,
+                        pos_args: elements,
+                        named_args,
+                    },
+                    span,
+                ));
+            }
+            BuildFrame::TupleLiteral { node, slots } => {
+                let span = self.span(node);
+                let drain_start = results.len() - slots.len();
+                let mut positional: SmallVec<[TermId; 4]> = SmallVec::new();
+                let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                for (i, slot) in slots.iter().enumerate() {
+                    let value = results[drain_start + i];
+                    match slot {
+                        ArgSlot::Positional => positional.push(value),
+                        ArgSlot::Named(sym) => named.push((*sym, value)),
+                    }
+                }
+                results.truncate(drain_start);
+
+                // All-or-nothing: error if mixing positional and named.
+                if !positional.is_empty() && !named.is_empty() {
+                    self.err("tuple literal cannot mix positional and named arguments", node);
+                }
+                if !positional.is_empty() {
+                    for (i, tid) in positional.into_iter().enumerate() {
+                        let label = self.intern_positional_label(i);
+                        named.push((label, tid));
+                    }
+                }
+                let functor = self.intern("TupleLiteral");
+                results.push(self.terms.alloc(
+                    Term::Fn {
+                        functor,
+                        pos_args: SmallVec::new(),
+                        named_args: named,
+                    },
+                    span,
+                ));
+            }
+            BuildFrame::MatchExpr { node, branch_count } => {
+                let span = self.span(node);
+                let drain_start = results.len() - (branch_count + 1);
+                let scrutinee = results[drain_start];
+                let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::with_capacity(branch_count + 1);
+                pos_args.push(scrutinee);
+                pos_args.extend(results[drain_start + 1..].iter().copied());
+                results.truncate(drain_start);
+                results.push(self.alloc_fn_term("match_expr", pos_args, span));
+            }
+            BuildFrame::MatchBranch { node } => {
+                let span = self.span(node);
+                let drain_start = results.len() - 2;
+                let pattern = results[drain_start];
+                let body = results[drain_start + 1];
+                results.truncate(drain_start);
+                results.push(self.alloc_fn_term(
+                    "match_branch",
+                    SmallVec::from_slice(&[pattern, body]),
+                    span,
+                ));
+            }
+            BuildFrame::IfExpr { node } => {
+                let span = self.span(node);
+                let drain_start = results.len() - 3;
+                let condition = results[drain_start];
+                let then_branch = results[drain_start + 1];
+                let else_branch = results[drain_start + 2];
+                results.truncate(drain_start);
+                results.push(self.alloc_fn_term(
+                    "if_expr",
+                    SmallVec::from_slice(&[condition, then_branch, else_branch]),
+                    span,
+                ));
+            }
+            BuildFrame::LetExpr { node, type_anno } => {
+                let span = self.span(node);
+                let drain_start = results.len() - 3;
+                let pattern = results[drain_start];
+                let value = results[drain_start + 1];
+                let body = results[drain_start + 2];
+                results.truncate(drain_start);
+                let let_id = self.alloc_fn_term(
+                    "let_expr",
+                    SmallVec::from_slice(&[pattern, value, body]),
+                    span,
+                );
+                if let Some(ty) = type_anno {
+                    self.terms.let_type_annotations.insert(let_id, ty);
+                }
+                results.push(let_id);
+            }
+            BuildFrame::LambdaExpr { node } => {
+                let span = self.span(node);
+                let drain_start = results.len() - 2;
+                let param = results[drain_start];
+                let body = results[drain_start + 1];
+                results.truncate(drain_start);
+                results.push(self.alloc_fn_term(
+                    "lambda",
+                    SmallVec::from_slice(&[param, body]),
+                    span,
+                ));
+            }
+            BuildFrame::PatternLiteral { node } => {
+                let span = self.span(node);
+                let value = results.pop().expect("pattern_literal: missing value");
+                results.push(self.alloc_fn_term(
+                    "pattern_literal",
+                    SmallVec::from_elem(value, 1),
+                    span,
+                ));
+            }
+            BuildFrame::PatternConstructor { node, name_tid, slots } => {
+                let span = self.span(node);
+                let drain_start = results.len() - slots.len();
+                let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
+                let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                pos_args.push(name_tid);
+                for (i, slot) in slots.iter().enumerate() {
+                    let value = results[drain_start + i];
+                    match slot {
+                        ArgSlot::Positional => pos_args.push(value),
+                        ArgSlot::Named(sym) => named_args.push((*sym, value)),
+                    }
+                }
+                results.truncate(drain_start);
+                if named_args.is_empty() {
+                    results.push(self.alloc_fn_term("pattern_constructor", pos_args, span));
+                } else {
+                    let functor = self.intern("pattern_constructor");
+                    results.push(self.terms.alloc(
+                        Term::Fn { functor, pos_args, named_args },
+                        span,
+                    ));
+                }
+            }
+            BuildFrame::PatternTuple { node, count } => {
+                let span = self.span(node);
+                let drain_start = results.len() - count;
+                let pos_args: SmallVec<[TermId; 4]> =
+                    results[drain_start..].iter().copied().collect();
+                results.truncate(drain_start);
+                results.push(self.alloc_fn_term("pattern_tuple", pos_args, span));
             }
         }
     }
@@ -432,62 +1197,6 @@ impl<'a> Converter<'a> {
         }
     }
 
-    fn convert_fn_term(&mut self, node: Node) -> TermId {
-        let span = self.span(node);
-        let name_node = self.field(node, "name").unwrap_or(node);
-
-        // Check if functor is a variable (HO predicate application: ?P(args))
-        let is_ho = name_node.kind() == "variable";
-
-        let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
-        let mut named_args: SmallVec<[(crate::intern::Symbol, TermId); 2]> = SmallVec::new();
-
-        if is_ho {
-            // HO predicate: ?P(a, b) → ho_apply(?P, a, b)
-            let var_tid = self.convert_variable_node(name_node);
-            pos_args.push(var_tid);
-        }
-
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            if child == name_node {
-                continue;
-            }
-            match child.kind() {
-                "named_arg" => {
-                    let key_node = self.field(child, "name");
-                    let val_node = self.field(child, "value");
-                    if let (Some(k), Some(v)) = (key_node, val_node) {
-                        let sym = self.intern(self.text(k));
-                        let tid = self.convert_term(v);
-                        named_args.push((sym, tid));
-                    }
-                }
-                _ if is_term_kind(child.kind()) => {
-                    let tid = self.convert_term(child);
-                    pos_args.push(tid);
-                }
-                _ => {}
-            }
-        }
-
-        if is_ho {
-            let ho_apply_sym = self.intern("ho_apply");
-            self.terms.alloc(Term::Fn { functor: ho_apply_sym, pos_args, named_args }, span)
-        } else {
-            let name = self.convert_name(name_node);
-            let functor = self.intern_name(&name);
-            self.terms.alloc(Term::Fn { functor, pos_args, named_args }, span)
-        }
-    }
-
-    /// Lower a `(forall(?h, ?rest), Q -: P)` body goal into a kernel term.
-    ///
-    /// Encoded as `forall_impl(binders, antecedents, consequent)` where each
-    /// positional arg is a `tuple(...)` collecting the relevant terms.
-    /// The binder vars are lowered as ordinary `Var::Global` in the current
-    /// rule scope; proper inner-binder scoping is handled at SLD resolution
-    /// time (WI-108).
     fn convert_nested_implication(&mut self, node: Node) -> TermId {
         let span = self.span(node);
         let mut binders: SmallVec<[TermId; 4]> = SmallVec::new();
@@ -528,10 +1237,10 @@ impl<'a> Converter<'a> {
                 match (param_node, type_node) {
                     (Some(p), Some(t)) => {
                         // Explicit: Eq[T = Int] — convert the type to a term.
-                        // WI-224: when t is `parameterized_type`, preserve its
-                        // inner bindings as a Term::Fn (so conditional
-                        // resolution can read them); only `simple_type` /
-                        // bare names collapse to `Term::Ref(Name)`.
+                        // When t is `parameterized_type`, preserve its inner
+                        // bindings as a Term::Fn (so conditional resolution
+                        // can read them); only `simple_type` / bare names
+                        // collapse to `Term::Ref(Name)`.
                         let param_name = self.convert_name(p);
                         let param_sym = self.intern_name(&param_name);
                         let value_tid = self.convert_type_value(t);
@@ -548,11 +1257,7 @@ impl<'a> Converter<'a> {
                         // Positional binding. Bare names (`List[Int]`) and
                         // parameterised types (`Tree[List[Int]]`) become
                         // `Term::Ref(Name)`; variable forms and tuple/arrow
-                        // types fall through to `convert_term`. Preserves the
-                        // legacy flatten behavior; only the (Some, Some) arm
-                        // got upgraded for WI-224 conditional-resolution
-                        // support — that's where regressions on positional
-                        // type values would surface.
+                        // types fall through to `convert_term`.
                         let t_span = self.span(t);
                         let tid = match t.kind() {
                             "simple_type" | "parameterized_type" => {
@@ -572,14 +1277,13 @@ impl<'a> Converter<'a> {
         self.terms.alloc(Term::Fn { functor, pos_args, named_args }, span)
     }
 
-    /// WI-224 helper — convert a `_type` CST node into a Term value
-    /// suitable for use as a fact-binding value. Preserves parametric
-    /// inner shapes (`List[T = Int]` → `Fn(List, [(T, Int)])`) instead
-    /// of flattening to bare `Ref(List)`. Bare names and variables
-    /// still collapse to `Term::Ref` / `Term::Var`. Other term shapes
-    /// (function calls in binding-value position, etc.) fall back to
-    /// the legacy flatten-to-name behavior to preserve compatibility
-    /// with existing programs that use such shapes.
+    /// Convert a `_type` CST node into a Term value suitable for use
+    /// as a fact-binding value. Preserves parametric inner shapes
+    /// (`List[T = Int]` → `Fn(List, [(T, Int)])`) instead of
+    /// flattening to bare `Ref(List)`. Bare names and variables
+    /// still collapse to `Term::Ref` / `Term::Var`; other term
+    /// shapes fall back to flatten-to-name to preserve compatibility
+    /// with existing programs.
     fn convert_type_value(&mut self, node: Node) -> TermId {
         let span = self.span(node);
         match node.kind() {
@@ -622,15 +1326,12 @@ impl<'a> Converter<'a> {
                 }
                 self.terms.alloc(Term::Fn { functor, pos_args, named_args }, span)
             }
-            // Variables (`?` / `?x`) — preserve as Var terms (the
-            // legacy `convert_term` path). Resolution treats these as
-            // wildcards, not as named refs.
+            // Variables (`?` / `?x`) — preserve as Var terms; resolution
+            // treats these as wildcards, not as named refs.
             "variable_term" | "variable" => self.convert_term(node),
-            // For other non-type term shapes (function calls, tuples,
-            // arrows) appearing in binding-value position, preserve
-            // the legacy behavior: collapse to `Ref(Name)`. The
-            // post-WI-224 SLD resolver doesn't need to introspect
-            // these shapes.
+            // Other non-type term shapes (function calls, tuples, arrows)
+            // appearing in binding-value position collapse to `Ref(Name)`
+            // — the SLD resolver doesn't need to introspect them.
             _ => {
                 let name = self.convert_type_to_name(node);
                 let sym = self.intern_name(&name);
@@ -641,205 +1342,8 @@ impl<'a> Converter<'a> {
 
     /// Extract a Name from a type CST node (simple_type or parameterized_type).
     fn convert_type_to_name(&mut self, node: Node) -> Name {
-        // simple_type is just a name node; parameterized_type starts with a name
         let name_node = self.child_by_kind(node, "name").unwrap_or(node);
         self.convert_name(name_node)
-    }
-
-    /// Desugar infix syntax via Pratt parsing.
-    ///
-    /// Collects the flat chain of operands and operators from the CST node,
-    /// then delegates to the Pratt resolver for precedence/associativity.
-    fn convert_infix(&mut self, node: Node) -> TermId {
-        use super::pratt::{InfixElement, desugar_infix_chain};
-
-        let span = self.span(node);
-        let mut elements = Vec::new();
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                let kind = child.kind();
-                if kind == "operator_symbol" {
-                    // Named operator_symbol node
-                    elements.push(InfixElement::Operator(self.text(child)));
-                } else if is_term_kind(kind) || kind == "prefix_term" {
-                    // Operand (a term node)
-                    elements.push(InfixElement::Operand(self.convert_term(child)));
-                } else if !child.is_named() {
-                    // Anonymous token = keyword operator (!=, or, and, @, etc.)
-                    // or word operator (mod, div)
-                    let text = self.text(child);
-                    if text != "," {
-                        elements.push(InfixElement::Operator(text));
-                    }
-                }
-            }
-        }
-
-        match desugar_infix_chain(&elements, &mut self.terms, &mut self.symbols) {
-            Ok(tid) => tid,
-            Err(msg) => {
-                self.err(format!("infix desugaring: {msg}"), node);
-                self.alloc_bottom(span)
-            }
-        }
-    }
-
-    /// Convert a prefix_term node: `!?a` → `not(?a)`.
-    fn convert_prefix(&mut self, node: Node) -> TermId {
-        use super::pratt::prefix_entry;
-
-        let span = self.span(node);
-        let mut op_text = None;
-        let mut operand_tid = None;
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                let kind = child.kind();
-                if is_term_kind(kind) || kind == "prefix_term" {
-                    operand_tid = Some(self.convert_term(child));
-                } else if op_text.is_none() {
-                    // First non-term child is the operator
-                    op_text = Some(self.text(child));
-                }
-            }
-        }
-
-        let op = op_text.unwrap_or("!");
-        let operand = operand_tid.unwrap_or_else(|| self.terms.alloc(Term::Bottom, span));
-
-        let functor_name = match prefix_entry(op) {
-            Some(entry) => entry.functor,
-            None => {
-                self.err(format!("unknown prefix operator: {op}"), node);
-                "not"
-            }
-        };
-        let functor = self.intern(functor_name);
-        self.terms.alloc(
-            Term::Fn {
-                functor,
-                pos_args: SmallVec::from_elem(operand, 1),
-                named_args: SmallVec::new(),
-            },
-            span,
-        )
-    }
-
-    /// Convert field access: `?x.y` → `field_access(?x, Ident(y))`.
-    /// Desugars to `Fn { functor: "field_access", pos_args: [object, Ident(field)] }`.
-    fn convert_field_access(&mut self, node: Node) -> TermId {
-        let span = self.span(node);
-        let object_node = self.field(node, "object").unwrap_or(node);
-        let object_tid = self.convert_term(object_node);
-
-        let field_node = self.field(node, "field").unwrap_or(node);
-        let field_span = self.span(field_node);
-        let field_sym = self.intern(self.text(field_node));
-        let field_tid = self.terms.alloc(Term::Ident(field_sym), field_span);
-
-        let functor = self.intern("field_access");
-        self.terms.alloc(
-            Term::Fn {
-                functor,
-                pos_args: SmallVec::from_slice(&[object_tid, field_tid]),
-                named_args: SmallVec::new(),
-            },
-            span,
-        )
-    }
-
-    /// Convert set literal: `{x, y, z}` → `SetLiteral(x, y, z)`.
-    /// `{}` → `SetLiteral()`.
-    /// Desugaring to Set.insert/empty happens later when scope is known.
-    fn convert_set_literal(&mut self, node: Node) -> TermId {
-        let span = self.span(node);
-        let mut elements: SmallVec<[TermId; 4]> = SmallVec::new();
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            if is_term_kind(child.kind()) {
-                elements.push(self.convert_term(child));
-            }
-        }
-        self.alloc_fn_term("SetLiteral", elements, span)
-    }
-
-    /// Convert collection literal: `[x, y, z]` → `ListLiteral(x, y, z)`.
-    /// `[]` → `ListLiteral()`.
-    /// `[x, y | t]` → `ListLiteral(x, y, tail: t)`.
-    fn convert_collection_literal(&mut self, node: Node) -> TermId {
-        let span = self.span(node);
-        let functor = self.intern("ListLiteral");
-        let tail_node = self.field(node, "tail");
-
-        let mut elements: SmallVec<[TermId; 4]> = SmallVec::new();
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            if is_term_kind(child.kind()) && tail_node != Some(child) {
-                elements.push(self.convert_term(child));
-            }
-        }
-
-        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-        if let Some(t) = tail_node {
-            named_args.push((self.intern("tail"), self.convert_term(t)));
-        }
-
-        self.terms.alloc(
-            Term::Fn {
-                functor,
-                pos_args: elements,
-                named_args,
-            },
-            span,
-        )
-    }
-
-    fn convert_tuple_literal(&mut self, node: Node) -> TermId {
-        let span = self.span(node);
-        let functor = self.intern("TupleLiteral");
-
-        let mut positional: SmallVec<[TermId; 4]> = SmallVec::new();
-        let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            match child.kind() {
-                "named_arg" => {
-                    let key_node = self.field(child, "name");
-                    let val_node = self.field(child, "value");
-                    if let (Some(k), Some(v)) = (key_node, val_node) {
-                        let sym = self.intern(self.text(k));
-                        let tid = self.convert_term(v);
-                        named.push((sym, tid));
-                    }
-                }
-                _ if is_term_kind(child.kind()) => {
-                    positional.push(self.convert_term(child));
-                }
-                _ => {}
-            }
-        }
-
-        // All-or-nothing: error if mixing positional and named
-        if !positional.is_empty() && !named.is_empty() {
-            self.err("tuple literal cannot mix positional and named arguments", node);
-        }
-
-        if !positional.is_empty() {
-            // Desugar positional to _1, _2, _3, ...
-            for (i, tid) in positional.into_iter().enumerate() {
-                let label = self.intern_positional_label(i);
-                named.push((label, tid));
-            }
-        }
-
-        self.terms.alloc(
-            Term::Fn {
-                functor,
-                pos_args: SmallVec::new(),
-                named_args: named,
-            },
-            span,
-        )
     }
 
     fn convert_tuple_type(&mut self, node: Node) -> TypeExpr {
@@ -1841,177 +2345,13 @@ impl<'a> Converter<'a> {
 
     // ── Expressions ──────────────────────────────────────────────
 
-    /// Convert an expression body node (match_expr, if_expr, let_chain,
-    /// lambda_expr, or a plain term). Records source spans for all terms.
+    /// Convert an expression body node (match_expr / if_expr /
+    /// let_chain / lambda_expr / plain term). Delegates to the
+    /// iterative walker.
     fn convert_expr_body(&mut self, node: Node) -> TermId {
-        match node.kind() {
-            "match_expr" => self.convert_match_expr(node),
-            "if_expr" => self.convert_if_expr(node),
-            "let_chain" => self.convert_let_expr(node),
-            "lambda_expr" => self.convert_lambda_expr(node),
-            _ => self.convert_term(node),
-        }
+        self.convert_expr_iter(node, WorkKind::ExprBody)
     }
 
-    fn convert_match_expr(&mut self, node: Node) -> TermId {
-        let span = self.span(node);
-        let scrutinee = self.field(node, "scrutinee")
-            .map(|n| self.convert_term(n))
-            .unwrap_or_else(|| self.alloc_bottom(span));
-
-        let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
-        pos_args.push(scrutinee);
-        for branch in self.children_by_kind(node, "match_branch") {
-            pos_args.push(self.convert_match_branch(branch));
-        }
-
-        self.alloc_fn_term("match_expr", pos_args, span)
-    }
-
-    fn convert_match_branch(&mut self, node: Node) -> TermId {
-        let span = self.span(node);
-        let pattern = self.field(node, "pattern")
-            .map(|p| self.convert_pattern(p))
-            .unwrap_or_else(|| self.alloc_bottom(span));
-
-        let body = self.field(node, "body")
-            .map(|b| self.convert_expr_body(b))
-            .unwrap_or_else(|| self.alloc_bottom(span));
-
-        self.alloc_fn_term("match_branch", SmallVec::from_slice(&[pattern, body]), span)
-    }
-
-    fn convert_if_expr(&mut self, node: Node) -> TermId {
-        let span = self.span(node);
-        let condition = self.field(node, "condition")
-            .map(|n| self.convert_term(n))
-            .unwrap_or_else(|| self.alloc_bottom(span));
-
-        let then_branch = self.field(node, "then")
-            .map(|n| self.convert_expr_body(n))
-            .unwrap_or_else(|| self.alloc_bottom(span));
-
-        let else_branch = self.field(node, "else")
-            .map(|n| self.convert_expr_body(n))
-            .unwrap_or_else(|| self.alloc_bottom(span));
-
-        self.alloc_fn_term("if_expr", SmallVec::from_slice(&[condition, then_branch, else_branch]), span)
-    }
-
-    fn convert_let_expr(&mut self, node: Node) -> TermId {
-        let span = self.span(node);
-        let pattern = self.field(node, "pattern")
-            .map(|p| self.convert_pattern(p))
-            .unwrap_or_else(|| self.alloc_bottom(span));
-
-        let value = self.field(node, "value")
-            .map(|v| self.convert_expr_body(v))
-            .unwrap_or_else(|| self.alloc_bottom(span));
-
-        let body = self.field(node, "body")
-            .map(|b| self.convert_expr_body(b))
-            .unwrap_or_else(|| self.alloc_bottom(span));
-
-        // Proposal 035 form (1): optional `: type` annotation between
-        // pattern and `=`. The TypeExpr lives outside the term store —
-        // record it in the side-table keyed by the let_expr's parse
-        // TermId so `load_let_expr` can thread the expected-type hint
-        // into the value position and the body's typing env.
-        let type_anno = self.field(node, "type").map(|t| self.convert_type(t));
-
-        let let_id = self.alloc_fn_term(
-            "let_expr",
-            SmallVec::from_slice(&[pattern, value, body]),
-            span,
-        );
-        if let Some(ty) = type_anno {
-            self.terms.let_type_annotations.insert(let_id, ty);
-        }
-        let_id
-    }
-
-    fn convert_lambda_expr(&mut self, node: Node) -> TermId {
-        let span = self.span(node);
-        let param = self.field(node, "param")
-            .map(|p| self.convert_pattern(p))
-            .unwrap_or_else(|| self.alloc_bottom(span));
-
-        let body = self.field(node, "body")
-            .map(|b| self.convert_expr_body(b))
-            .unwrap_or_else(|| self.alloc_bottom(span));
-
-        self.alloc_fn_term("lambda", SmallVec::from_slice(&[param, body]), span)
-    }
-
-    // ── Patterns ─────────────────────────────────────────────────
-
-    fn convert_pattern(&mut self, node: Node) -> TermId {
-        let span = self.span(node);
-        match node.kind() {
-            "pattern_wildcard" => {
-                self.alloc_fn_term("pattern_wildcard", SmallVec::new(), span)
-            }
-            "pattern_var" | "identifier" => {
-                let id_node = self.child_by_kind(node, "identifier").unwrap_or(node);
-                let sym = self.intern(self.text(id_node));
-                let name_tid = self.terms.alloc(Term::Ident(sym), self.span(id_node));
-                self.alloc_fn_term("pattern_var", SmallVec::from_elem(name_tid, 1), span)
-            }
-            "pattern_literal" => {
-                let child = node.named_child(0).unwrap_or(node);
-                let lit_tid = self.convert_term(child);
-                self.alloc_fn_term("pattern_literal", SmallVec::from_elem(lit_tid, 1), span)
-            }
-            "pattern_constructor" => {
-                let name_node = self.field(node, "name").unwrap_or(node);
-                let name_span = self.span(name_node);
-                let name = self.convert_name(name_node);
-                let name_sym = self.intern_name(&name);
-                let name_tid = self.terms.alloc(Term::Ident(name_sym), name_span);
-
-                let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
-                let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-                pos_args.push(name_tid);
-                let mut cursor = node.walk();
-                for child in node.named_children(&mut cursor) {
-                    if child.kind() == "named_pattern_field" {
-                        let child_span = self.span(child);
-                        let field_name = self.field(child, "field_name")
-                            .map(|n| self.intern(self.text(n)))
-                            .unwrap_or_else(|| self.intern("_"));
-                        let field_pattern = self.field(child, "field_pattern")
-                            .map(|p| self.convert_pattern(p))
-                            .unwrap_or_else(|| self.alloc_bottom(child_span));
-                        named_args.push((field_name, field_pattern));
-                    } else if is_pattern_kind(child.kind()) {
-                        pos_args.push(self.convert_pattern(child));
-                    }
-                }
-
-                if named_args.is_empty() {
-                    self.alloc_fn_term("pattern_constructor", pos_args, span)
-                } else {
-                    let functor = self.intern("pattern_constructor");
-                    self.terms.alloc(Term::Fn { functor, pos_args, named_args }, span)
-                }
-            }
-            "pattern_tuple" => {
-                let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
-                let mut cursor = node.walk();
-                for child in node.named_children(&mut cursor) {
-                    if is_pattern_kind(child.kind()) {
-                        pos_args.push(self.convert_pattern(child));
-                    }
-                }
-
-                self.alloc_fn_term("pattern_tuple", pos_args, span)
-            }
-            other => {
-                self.err(format!("unexpected pattern node: {other}"), node);
-                self.alloc_bottom(span)
-            }
-        }
-    }
 }
 
 /// Check if a node kind is a term.
