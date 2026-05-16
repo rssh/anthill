@@ -187,11 +187,16 @@ impl TypeError {
 
 #[derive(Clone)]
 pub struct TypingEnv {
-    var_bindings: HashMap<String, TermId>,
-    type_bindings: HashMap<String, TermId>,
+    // WI-259: Symbol-keyed (was String-keyed). Symbol is a Copy
+    // u32 newtype that's already interned and trivially hashable;
+    // String keys cost a fresh allocation per bind + a hash over
+    // the name's bytes at every lookup, and TypingEnv gets cloned
+    // on every Visit push of the iterative typer.
+    var_bindings: HashMap<Symbol, TermId>,
+    type_bindings: HashMap<Symbol, TermId>,
     expected_collection_type: Option<TermId>,
-    local_resources: Vec<String>,
-    /// WI-221: enclosing sort for defer-to-requirement detection plus a
+    local_resources: Vec<Symbol>,
+    /// Enclosing sort for defer-to-requirement detection plus a
     /// cached `requires_chain` snapshot. The chain is consulted for every
     /// spec-op call site under this body; caching once per body avoids
     /// re-walking `SortRequiresInfo` per apply.
@@ -236,20 +241,20 @@ impl TypingEnv {
         self.enclosing.as_ref().map(|e| e.requires.as_slice())
     }
 
-    pub fn bind_var(&mut self, name: String, ty: TermId) {
+    pub fn bind_var(&mut self, name: Symbol, ty: TermId) {
         self.var_bindings.insert(name, ty);
     }
 
-    pub fn lookup_var(&self, name: &str) -> Option<TermId> {
-        self.var_bindings.get(name).copied()
+    pub fn lookup_var(&self, name: Symbol) -> Option<TermId> {
+        self.var_bindings.get(&name).copied()
     }
 
-    pub fn bind_type(&mut self, param: String, ty: TermId) {
+    pub fn bind_type(&mut self, param: Symbol, ty: TermId) {
         self.type_bindings.insert(param, ty);
     }
 
-    pub fn lookup_type(&self, param: &str) -> Option<TermId> {
-        self.type_bindings.get(param).copied()
+    pub fn lookup_type(&self, param: Symbol) -> Option<TermId> {
+        self.type_bindings.get(&param).copied()
     }
 
     pub fn with_expected_collection_type(&self, ty: Option<TermId>) -> Self {
@@ -262,12 +267,12 @@ impl TypingEnv {
         self.expected_collection_type
     }
 
-    pub fn declare_local_resource(&mut self, name: String) {
+    pub fn declare_local_resource(&mut self, name: Symbol) {
         self.local_resources.push(name);
     }
 
-    pub fn is_local_resource(&self, name: &str) -> bool {
-        self.local_resources.iter().any(|r| r == name)
+    pub fn is_local_resource(&self, name: Symbol) -> bool {
+        self.local_resources.iter().any(|r| *r == name)
     }
 }
 
@@ -293,44 +298,37 @@ impl TypeResult {
 fn external_effects(kb: &KnowledgeBase, env: &TypingEnv, effects: &[TermId]) -> Vec<TermId> {
     effects.iter().filter(|&&effect| {
         // An effect like Modify[store] — check if 'store' is a local resource
-        // Effect terms are sort_ref or parameterized. Extract the resource name.
-        let resource_name = extract_effect_resource_name(kb, effect);
-        match resource_name {
-            Some(name) => !env.is_local_resource(&name),
+        // Effect terms are sort_ref or parameterized. Extract the resource symbol.
+        match extract_effect_resource_sym(kb, effect) {
+            Some(sym) => !env.is_local_resource(sym),
             None => true, // can't determine resource — assume external
         }
     }).copied().collect()
 }
 
-/// Extract the resource name from an effect term.
-/// e.g., Modify[T = store] → "store", or sort_ref(name: Modify) → None (no resource)
-fn extract_effect_resource_name(kb: &KnowledgeBase, effect: TermId) -> Option<String> {
+/// Extract the resource symbol from an effect term.
+/// e.g., Modify[T = store] → Some(store), or sort_ref(name: Modify) → None (no resource)
+fn extract_effect_resource_sym(kb: &KnowledgeBase, effect: TermId) -> Option<Symbol> {
     let functor_name = type_functor_name(kb, effect)?;
     match functor_name {
         "parameterized" => {
-            // parameterized(base: sort_ref(Modify), bindings: [TypeBinding(param: T, value: sort_ref(store))])
             if let Term::Fn { named_args, .. } = kb.get_term(effect) {
                 let bindings_tid = get_named_arg(kb, named_args, "bindings")?;
                 let bindings = list_to_vec(kb, bindings_tid);
-                // Take the first binding's value as the resource
                 for b in &bindings {
                     if let Some(value_tid) = binding_value(kb, *b) {
-                        // The resource could be sort_ref(name: store) or just a Ref
                         if let Some(sym) = extract_sort_ref_sym(kb, value_tid) {
-                            return Some(kb.resolve_sym(sym).to_string());
+                            return Some(sym);
                         }
                         if let Term::Ref(s) = kb.get_term(value_tid) {
-                            return Some(kb.resolve_sym(*s).to_string());
+                            return Some(*s);
                         }
                     }
                 }
             }
             None
         }
-        "sort_ref" => {
-            // A bare effect like sort_ref(Branch) — no resource parameter
-            None
-        }
+        "sort_ref" => None,
         _ => None,
     }
 }
@@ -569,10 +567,15 @@ pub fn list_to_vec(kb: &KnowledgeBase, mut term: TermId) -> Vec<TermId> {
 // source nesting depth.
 
 enum TypeWorkOp {
-    Visit { occ: Rc<NodeOccurrence>, env: TypingEnv },
+    Visit { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv> },
     Build(TypeBuildFrame),
 }
 
+// WI-258: env-carrying frames hold `Rc<TypingEnv>`. Sibling Visits
+// share the same Rc; only the mutating sites (LetAfterValue body env,
+// LambdaBody body env, MatchAfterScrutinee branch envs) clone the
+// inner `TypingEnv` via `Rc::make_mut`. Saves N-1 HashMap clones per
+// multi-arg call site on deep specs.
 enum TypeBuildFrame {
     /// All Apply args finished; drain N = `pos_count + named_keys.len()`
     /// results, hand them to `check_apply_iter` which runs the
@@ -582,7 +585,7 @@ enum TypeBuildFrame {
         fn_sym: Symbol,
         pos_args: Vec<Rc<NodeOccurrence>>,
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
-        env: TypingEnv,
+        env: Rc<TypingEnv>,
     },
     /// All Constructor args finished; drain results and call
     /// `check_constructor_iter`.
@@ -590,7 +593,7 @@ enum TypeBuildFrame {
         ctor_sym: Symbol,
         pos_args: Vec<Rc<NodeOccurrence>>,
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
-        env: TypingEnv,
+        env: Rc<TypingEnv>,
     },
     /// Value finished; compute the body's ext_env and schedule the
     /// body Visit, plus a `LetFinal` frame to combine results.
@@ -599,15 +602,18 @@ enum TypeBuildFrame {
         annotation: Option<TermId>,
         body_occ: Rc<NodeOccurrence>,
     },
-    /// Body finished; merge effects from `value_r` (popped earlier)
-    /// and `body_r` (on the stack), return the let's TypeResult.
-    LetFinal { value_r: Option<TypeResult> },
+    /// Body finished; merge `value_effects` (captured at
+    /// `LetAfterValue` time so we didn't need to keep `value_r`
+    /// alive — its `env` was moved into the body's ext_env, which is
+    /// the whole point of WI-258's COW) with `body_r.effects` and
+    /// return the let's TypeResult.
+    LetFinal { value_effects: Vec<TermId> },
     /// Scrutinee finished; walk the branch patterns for coverage,
     /// compute each branch's env, schedule body Visits + a
     /// `MatchFinal` frame.
     MatchAfterScrutinee {
         branches: Vec<MatchBranch>,
-        outer_env: TypingEnv,
+        outer_env: Rc<TypingEnv>,
     },
     /// All branch bodies finished; pop `branch_count` results, filter
     /// per-branch effects against each branch's local resources,
@@ -615,9 +621,9 @@ enum TypeBuildFrame {
     /// TypeResult.
     MatchFinal {
         scr_effects: Vec<TermId>,
-        branch_envs: Vec<TypingEnv>,
+        branch_envs: Vec<Rc<TypingEnv>>,
         branch_count: usize,
-        outer_env: TypingEnv,
+        outer_env: Rc<TypingEnv>,
         scr_ty: Option<TermId>,
         covered_entities: Vec<Symbol>,
         has_wildcard: bool,
@@ -625,7 +631,7 @@ enum TypeBuildFrame {
     /// Lambda body finished; build the `arrow(param, body_ty,
     /// body_effects)` type and return a pure result (creating a
     /// lambda is itself effect-free).
-    LambdaBody { param: TermId, outer_env: TypingEnv },
+    LambdaBody { param: TermId, outer_env: Rc<TypingEnv> },
 }
 
 // ── type_check_expr ────────────────────────────────────────────
@@ -645,6 +651,14 @@ pub fn type_check_expr(
     type_check_node(kb, env, &node)
 }
 
+/// Move out of `Rc<TypingEnv>` without cloning when sole owner; else
+/// clone the inner `TypingEnv`. Used at TypeResult-construction sites
+/// where we need an owned `TypingEnv` for `TypeResult.env`.
+#[inline]
+fn unwrap_env(env: Rc<TypingEnv>) -> TypingEnv {
+    Rc::try_unwrap(env).unwrap_or_else(|rc| (*rc).clone())
+}
+
 /// Canonical typer entry — walk a `Rc<NodeOccurrence>` and produce a
 /// `TypeResult`. Runs a Visit/Build work-stack so the Let / Match /
 /// Lambda body-recursion paths stay flat on the host stack regardless
@@ -659,7 +673,7 @@ pub fn type_check_node(
 ) -> Option<TypeResult> {
     let mut work: Vec<TypeWorkOp> = Vec::with_capacity(32);
     let mut results: Vec<Option<TypeResult>> = Vec::with_capacity(32);
-    work.push(TypeWorkOp::Visit { occ: Rc::clone(occ), env: env.clone() });
+    work.push(TypeWorkOp::Visit { occ: Rc::clone(occ), env: Rc::new(env.clone()) });
     while let Some(op) = work.pop() {
         match op {
             TypeWorkOp::Visit { occ, env } => visit_type(kb, occ, env, &mut work, &mut results),
@@ -676,7 +690,7 @@ pub fn type_check_node(
 fn visit_type(
     kb: &mut KnowledgeBase,
     occ: Rc<NodeOccurrence>,
-    env: TypingEnv,
+    env: Rc<TypingEnv>,
     work: &mut Vec<TypeWorkOp>,
     results: &mut Vec<Option<TypeResult>>,
 ) {
@@ -717,7 +731,7 @@ fn visit_type(
                 .collect();
             work.push(TypeWorkOp::Build(TypeBuildFrame::MatchAfterScrutinee {
                 branches: branches_cloned,
-                outer_env: env.clone(),
+                outer_env: Rc::clone(&env),
             }));
             work.push(TypeWorkOp::Visit { occ: scrutinee_occ, env });
         }
@@ -725,36 +739,35 @@ fn visit_type(
             let param = *param;
             let body_occ = Rc::clone(body);
             let param_type = extract_pattern_type_ann(kb, param);
-            let mut lambda_env = env.clone();
+            let mut lambda_env = (*env).clone();
             extend_env_from_pattern(kb, &mut lambda_env, param, param_type);
             work.push(TypeWorkOp::Build(TypeBuildFrame::LambdaBody {
                 param,
                 outer_env: env,
             }));
-            work.push(TypeWorkOp::Visit { occ: body_occ, env: lambda_env });
+            work.push(TypeWorkOp::Visit { occ: body_occ, env: Rc::new(lambda_env) });
         }
 
         // ── Leaf cases ──────────────────────────────────────────
         Expr::Const(Literal::Int(_)) => results.push(Some(
-            TypeResult::pure(kb.make_sort_ref_by_name("Int"), env),
+            TypeResult::pure(kb.make_sort_ref_by_name("Int"), unwrap_env(env)),
         )),
         Expr::Const(Literal::Float(_)) => results.push(Some(
-            TypeResult::pure(kb.make_sort_ref_by_name("Float"), env),
+            TypeResult::pure(kb.make_sort_ref_by_name("Float"), unwrap_env(env)),
         )),
         Expr::Const(Literal::String(_)) => results.push(Some(
-            TypeResult::pure(kb.make_sort_ref_by_name("String"), env),
+            TypeResult::pure(kb.make_sort_ref_by_name("String"), unwrap_env(env)),
         )),
         Expr::Const(Literal::Bool(_)) => results.push(Some(
-            TypeResult::pure(kb.make_sort_ref_by_name("Bool"), env),
+            TypeResult::pure(kb.make_sort_ref_by_name("Bool"), unwrap_env(env)),
         )),
         Expr::Const(_) => results.push(None),
         Expr::Ref(sym) => {
             let sym = *sym;
-            let name = kb.resolve_sym(sym).to_string();
-            let r = if let Some(ty) = env.lookup_var(&name) {
-                Some(TypeResult::pure(ty, env))
+            let r = if let Some(ty) = env.lookup_var(sym) {
+                Some(TypeResult::pure(ty, unwrap_env(env)))
             } else if kb.is_constructor_symbol(sym) {
-                check_constructor_iter(kb, &env, sym, &[], &[], &[], &[])
+                check_constructor_iter(kb, &*env, sym, &[], &[], &[], &[])
             } else {
                 None
             };
@@ -762,14 +775,12 @@ fn visit_type(
         }
         Expr::Ident(sym) => {
             let sym = *sym;
-            let name = kb.resolve_sym(sym).to_string();
-            let r = env.lookup_var(&name).map(|ty| TypeResult::pure(ty, env));
+            let r = env.lookup_var(sym).map(|ty| TypeResult::pure(ty, unwrap_env(env)));
             results.push(r);
         }
         Expr::VarRef { name } => {
             let name = *name;
-            let nm = kb.resolve_sym(name).to_string();
-            let r = env.lookup_var(&nm).map(|ty| TypeResult::pure(ty, env));
+            let r = env.lookup_var(name).map(|ty| TypeResult::pure(ty, unwrap_env(env)));
             results.push(r);
         }
 
@@ -788,13 +799,13 @@ fn visit_type(
                 fn_sym: functor,
                 pos_args: pos_args.clone(),
                 named_args: named_args.clone(),
-                env: env.clone(),
+                env: Rc::clone(&env),
             }));
             for (_, arg) in named_args.iter().rev() {
-                work.push(TypeWorkOp::Visit { occ: Rc::clone(arg), env: env.clone() });
+                work.push(TypeWorkOp::Visit { occ: Rc::clone(arg), env: Rc::clone(&env) });
             }
             for arg in pos_args.iter().rev() {
-                work.push(TypeWorkOp::Visit { occ: Rc::clone(arg), env: env.clone() });
+                work.push(TypeWorkOp::Visit { occ: Rc::clone(arg), env: Rc::clone(&env) });
             }
         }
         Expr::Constructor { name, pos_args, named_args } => {
@@ -805,13 +816,13 @@ fn visit_type(
                 ctor_sym: name,
                 pos_args: pos_args.clone(),
                 named_args: named_args.clone(),
-                env: env.clone(),
+                env: Rc::clone(&env),
             }));
             for (_, arg) in named_args.iter().rev() {
-                work.push(TypeWorkOp::Visit { occ: Rc::clone(arg), env: env.clone() });
+                work.push(TypeWorkOp::Visit { occ: Rc::clone(arg), env: Rc::clone(&env) });
             }
             for arg in pos_args.iter().rev() {
-                work.push(TypeWorkOp::Visit { occ: Rc::clone(arg), env: env.clone() });
+                work.push(TypeWorkOp::Visit { occ: Rc::clone(arg), env: Rc::clone(&env) });
             }
         }
 
@@ -825,23 +836,23 @@ fn visit_type(
             let condition = Rc::clone(condition);
             let then_branch = Rc::clone(then_branch);
             let else_branch = Rc::clone(else_branch);
-            let r = check_if_expr(kb, &env, &condition, &then_branch, &else_branch);
+            let r = check_if_expr(kb, &*env, &condition, &then_branch, &else_branch);
             results.push(r);
         }
         Expr::ListLit(elems) => {
             let elems = elems.clone();
-            let r = check_list_literal(kb, &env, &elems);
+            let r = check_list_literal(kb, &*env, &elems);
             results.push(r);
         }
         Expr::SetLit(elems) => {
             let elems = elems.clone();
-            let r = check_set_literal(kb, &env, &elems);
+            let r = check_set_literal(kb, &*env, &elems);
             results.push(r);
         }
         Expr::TupleLit { positional, named } => {
             let positional = positional.clone();
             let named = named.clone();
-            let r = check_tuple_literal(kb, &env, &positional, &named);
+            let r = check_tuple_literal(kb, &*env, &positional, &named);
             results.push(r);
         }
 
@@ -876,7 +887,7 @@ fn build_type(
             let named_results = arg_results.split_off(pos_args.len());
             let pos_results = arg_results;
             let r = check_apply_iter(
-                kb, &env, &occ, fn_sym, &pos_args, &named_args, &pos_results, &named_results,
+                kb, &*env, &occ, fn_sym, &pos_args, &named_args, &pos_results, &named_results,
             );
             results.push(r);
         }
@@ -888,39 +899,33 @@ fn build_type(
             let named_results = arg_results.split_off(pos_args.len());
             let pos_results = arg_results;
             let r = check_constructor_iter(
-                kb, &env, ctor_sym, &pos_args, &named_args, &pos_results, &named_results,
+                kb, &*env, ctor_sym, &pos_args, &named_args, &pos_results, &named_results,
             );
             results.push(r);
         }
         TypeBuildFrame::LetAfterValue { pattern, annotation, body_occ } => {
             let value_r = results.pop().expect("LetAfterValue: missing value result");
-            let value_ty = value_r.as_ref().map(|r| r.ty);
-            // Annotation, when present, takes precedence as the bound
-            // variable's type for the body env. The value's inferred
-            // type still drives effect propagation via `value_r`.
+            // Decompose value_r: move out env (becomes ext_env's base),
+            // keep effects for LetFinal, take ty for bound_ty.
+            let (value_ty, value_effects, mut ext_env) = match value_r {
+                Some(r) => (Some(r.ty), r.effects, r.env),
+                None => (None, Vec::new(), TypingEnv::empty()),
+            };
             let bound_ty = annotation.or(value_ty);
-            let mut ext_env = value_r
-                .as_ref()
-                .map(|r| r.env.clone())
-                .unwrap_or_else(TypingEnv::empty);
             extend_env_from_pattern(kb, &mut ext_env, pattern, bound_ty);
             if let Some(var_name) = extract_pattern_var_name(kb, pattern) {
                 ext_env.declare_local_resource(var_name);
             }
-            work.push(TypeWorkOp::Build(TypeBuildFrame::LetFinal { value_r }));
-            work.push(TypeWorkOp::Visit { occ: body_occ, env: ext_env });
+            work.push(TypeWorkOp::Build(TypeBuildFrame::LetFinal { value_effects }));
+            work.push(TypeWorkOp::Visit { occ: body_occ, env: Rc::new(ext_env) });
         }
-        TypeBuildFrame::LetFinal { value_r } => {
+        TypeBuildFrame::LetFinal { value_effects } => {
             let body_r = results.pop().expect("LetFinal: missing body result");
             let Some(body_r) = body_r else {
                 results.push(None);
                 return;
             };
-            let mut effects = Vec::new();
-            if let Some(ref r) = value_r {
-                effects = merge_effects(&effects, &r.effects);
-            }
-            effects = merge_effects(&effects, &body_r.effects);
+            let effects = merge_effects(&value_effects, &body_r.effects);
             results.push(Some(TypeResult {
                 ty: body_r.ty,
                 env: body_r.env,
@@ -937,7 +942,7 @@ fn build_type(
             // here so MatchFinal can run the check without re-walking.
             let mut covered_entities: Vec<Symbol> = Vec::new();
             let mut has_wildcard = false;
-            let mut branch_envs: Vec<TypingEnv> = Vec::with_capacity(branches.len());
+            let mut branch_envs: Vec<Rc<TypingEnv>> = Vec::with_capacity(branches.len());
             for branch in &branches {
                 collect_covered_entities(
                     kb,
@@ -945,25 +950,29 @@ fn build_type(
                     &mut covered_entities,
                     &mut has_wildcard,
                 );
-                let mut branch_env = outer_env.clone();
+                let mut branch_env = (*outer_env).clone();
                 extend_env_from_pattern(kb, &mut branch_env, branch.pattern, scr_ty);
-                branch_envs.push(branch_env);
+                branch_envs.push(Rc::new(branch_env));
             }
 
             let branch_count = branches.len();
+            // Materialize Visit envs first (Rc::clone from branch_envs),
+            // then move branch_envs into the MatchFinal frame.
+            let visit_envs: Vec<Rc<TypingEnv>> =
+                branch_envs.iter().map(Rc::clone).collect();
             work.push(TypeWorkOp::Build(TypeBuildFrame::MatchFinal {
                 scr_effects,
-                branch_envs: branch_envs.clone(),
+                branch_envs,
                 branch_count,
                 outer_env,
                 scr_ty,
                 covered_entities,
                 has_wildcard,
             }));
-            for (i, branch) in branches.iter().enumerate().rev() {
+            for (branch, env) in branches.iter().zip(visit_envs.into_iter()).rev() {
                 work.push(TypeWorkOp::Visit {
                     occ: Rc::clone(&branch.body),
-                    env: branch_envs[i].clone(),
+                    env,
                 });
             }
         }
@@ -987,12 +996,12 @@ fn build_type(
                     // Filter effects against this branch's locals so
                     // pattern-bound resources don't leak past the case
                     // arm (their bindings live only inside the branch).
-                    let branch_external = external_effects(kb, &branch_envs[i], &body_r.effects);
+                    let branch_external = external_effects(kb, &*branch_envs[i], &body_r.effects);
                     effects = merge_effects(&effects, &branch_external);
                 }
             }
 
-            let mut result_env = outer_env.clone();
+            let mut result_env = (*outer_env).clone();
             if !has_wildcard {
                 if let Some(sty) = scr_ty {
                     if let Some(sort_sym) = extract_sort_ref_sym(kb, sty) {
@@ -1051,7 +1060,7 @@ fn build_type(
                 .unwrap_or_default();
             let fn_type = kb.make_arrow_type(a_val, b_val, &body_effects);
             // Creating a lambda is itself pure — body effects live in the type.
-            results.push(Some(TypeResult::pure(fn_type, outer_env)));
+            results.push(Some(TypeResult::pure(fn_type, unwrap_env(outer_env))));
         }
     }
 }
@@ -1279,8 +1288,7 @@ fn check_apply_iter(
     }
 
     // Path 2: variable with arrow type
-    let fn_name = kb.resolve_sym(fn_sym).to_string();
-    if let Some(fn_type_tid) = env.lookup_var(&fn_name) {
+    if let Some(fn_type_tid) = env.lookup_var(fn_sym) {
         if let Some((ret_type, effects)) = extract_function_type_parts(kb, fn_type_tid) {
             return Some(TypeResult { ty: ret_type, env: env.clone(), effects });
         }
@@ -3296,13 +3304,12 @@ fn check_if_expr(
     Some(TypeResult { ty, env: env.clone(), effects })
 }
 
-/// Extract the variable name from a pattern (for var_pattern).
-fn extract_pattern_var_name(kb: &KnowledgeBase, pattern: TermId) -> Option<String> {
+/// Extract the variable name symbol from a `var_pattern`.
+fn extract_pattern_var_name(kb: &KnowledgeBase, pattern: TermId) -> Option<Symbol> {
     if let Term::Fn { functor, named_args, pos_args, .. } = kb.get_term(pattern) {
         let fname = kb.resolve_sym(*functor);
         if fname == "var_pattern" {
-            return extract_sym_arg(kb, named_args, pos_args, "name")
-                .map(|s| kb.resolve_sym(s).to_string());
+            return extract_sym_arg(kb, named_args, pos_args, "name");
         }
     }
     None
@@ -3490,9 +3497,8 @@ fn extend_env_from_pattern(
         match functor_name.as_str() {
             "var_pattern" => {
                 if let Some(sym) = extract_sym_arg(kb, &named_args, &pos_args, "name") {
-                    let name = kb.resolve_sym(sym).to_string();
                     if let Some(ty) = scrutinee_type {
-                        env.bind_var(name.clone(), ty);
+                        env.bind_var(sym, ty);
                     }
                     // Pattern-bound names are local — effects on them
                     // shouldn't escape the surrounding match/case scope
@@ -3501,7 +3507,7 @@ fn extend_env_from_pattern(
                     //   match Cell.get(s) case wis(b, _) -> persist(b, ...)
                     // would surface persist's `Modify[b]` as an external
                     // effect even though b's lifetime ends at case end.
-                    env.declare_local_resource(name);
+                    env.declare_local_resource(sym);
                 }
             }
             "constructor_pattern" => {
@@ -5099,7 +5105,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
         return_type: TermId,
         declared_effects: Vec<TermId>,
         body_node: Rc<NodeOccurrence>,
-        params: Vec<(String, TermId)>,
+        params: Vec<(Symbol, TermId)>,
         span: Option<Span>,
     }
 
@@ -5116,15 +5122,12 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             None => continue,
         };
         let span = kb.functor_span(rec.op_sym).map(|s| s.span);
-        let params: Vec<(String, TermId)> = rec.params.into_iter()
-            .map(|(s, t)| (kb.resolve_sym(s).to_string(), t))
-            .collect();
         ops_to_check.push(OpInfo {
             op_sym: rec.op_sym,
             return_type: rec.return_type,
             declared_effects: rec.effects,
             body_node,
-            params,
+            params: rec.params,
             span,
         });
     }
@@ -5140,7 +5143,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             .and_then(|(parent_qn, _)| kb.try_resolve_symbol(parent_qn));
         env.set_enclosing_sort(kb, parent_sym);
         for (name, ty) in &op.params {
-            env.bind_var(name.clone(), *ty);
+            env.bind_var(*name, *ty);
         }
 
         if let Some(result) = type_check_node(kb, &env, &op.body_node) {

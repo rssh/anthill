@@ -541,8 +541,10 @@ fn dispatch_commit_s_w_type_checks_via_workitemstore_satisfaction() {
     });
 
     let mut env = TypingEnv::empty();
-    env.bind_var("s".to_string(), cell_wis);
-    env.bind_var("w".to_string(), workitem_ty);
+    let s_sym = kb.intern("s");
+    let w_sym = kb.intern("w");
+    env.bind_var(s_sym, cell_wis);
+    env.bind_var(w_sym, workitem_ty);
 
     let result = type_check_expr(&mut kb, &env, apply_term);
     assert!(result.is_some(),
@@ -607,7 +609,8 @@ fn dispatch_int_add_x_x_type_checks_via_spec_satisfaction() {
     });
 
     let mut env = TypingEnv::empty();
-    env.bind_var("x".to_string(), int_type);
+    let x_sym = kb.intern("x");
+    env.bind_var(x_sym, int_type);
 
     let result = type_check_expr(&mut kb, &env, apply_term);
     assert!(result.is_some(),
