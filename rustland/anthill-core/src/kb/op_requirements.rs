@@ -72,7 +72,13 @@ fn compute_op_requirements(
     }
     in_progress.push(op_sym);
 
-    let body = crate::eval::eval::lookup_operation_body(kb, op_sym).map(|(t, _)| t);
+    // op_requirements walks the legacy Handle-wrapped Term tree (it
+    // pre-dates the NodeOccurrence migration), so go directly through
+    // op_info instead of eval::lookup_operation_body (which returns the
+    // value-typed Rc<NodeOccurrence> after WI-248). WI-251 reroutes the
+    // walker onto the NodeOccurrence tree and lets the legacy field die.
+    let body = crate::kb::op_info::lookup_operation_info(kb, op_sym)
+        .and_then(|r| r.body);
     let mut result: Vec<OpRequirement> = Vec::new();
 
     if let Some(body_term) = body {

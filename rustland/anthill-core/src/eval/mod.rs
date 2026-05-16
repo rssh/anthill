@@ -75,7 +75,16 @@ pub type BuiltinFn =
 /// at `Interpreter::new` via `kb.try_resolve_symbol`. An entry stays `None`
 /// when the corresponding stdlib entity hasn't been loaded — the evaluator
 /// surfaces a clear "unhandled functor" error instead of misbehaving.
+///
+/// Post-WI-248: most expression-form fields are no longer read by the
+/// eval (NodeOccurrence dispatch is structural on the `Expr` variant,
+/// not symbol-keyed). The fields remain populated for backwards-
+/// compat and for any future passes that want a stable handle on the
+/// canonical reflect entities — `#[allow(dead_code)]` lets the build
+/// stay warning-clean. Pattern entities and collection literals are
+/// still read directly (pattern matching and Value construction).
 #[derive(Default, Debug)]
+#[allow(dead_code)]
 pub(crate) struct ReflectSymbols {
     // Expression entities
     pub int_lit: Option<Symbol>,
@@ -90,27 +99,22 @@ pub(crate) struct ReflectSymbols {
     pub match_expr: Option<Symbol>,
     pub lambda: Option<Symbol>,
     pub constructor: Option<Symbol>,
-    // WI-222 / WI-223 — requirement-aware IR variants and primitives.
-    // Resolved if `reflect.anthill` declares them; remain `None`
-    // otherwise so older stdlibs surface a clean "unhandled functor"
-    // error rather than misbehaving. The three remaining `_within`
-    // fields are reserved for higher-order / constructor / lambda
-    // dispatch wiring.
     pub apply_within: Option<Symbol>,
-    #[allow(dead_code)] pub ho_apply_within: Option<Symbol>,
-    #[allow(dead_code)] pub constructor_within: Option<Symbol>,
-    #[allow(dead_code)] pub lambda_within: Option<Symbol>,
+    pub ho_apply_within: Option<Symbol>,
+    pub constructor_within: Option<Symbol>,
+    pub lambda_within: Option<Symbol>,
     pub requirement_at_sort: Option<Symbol>,
     pub construct_requirement: Option<Symbol>,
 
-    // Pattern entities
+    // Pattern entities — still consulted by `eval::pattern::match_pattern`.
     pub var_pattern: Option<Symbol>,
     pub wildcard: Option<Symbol>,
     pub literal_pattern: Option<Symbol>,
     pub constructor_pattern: Option<Symbol>,
     pub tuple_pattern: Option<Symbol>,
 
-    // Collection / list constructors
+    // Collection / list constructors — still consulted by Value
+    // construction in `finish_constructor` / `build_list_value`.
     pub list_literal: Option<Symbol>,
     pub tuple_literal: Option<Symbol>,
     pub set_literal: Option<Symbol>,
@@ -624,9 +628,14 @@ impl Interpreter {
     ) -> Result<Value, EvalError> {
         let op = self.kb.intern("__test_requirement_eval");
         self.step_count = 0;
+        // Test-entry materializes a NodeOccurrence from the test's
+        // legacy Term::Fn input. The materializer handles both Handle-
+        // wrapped trees (loader output) and naked Fn shapes (test
+        // construction); see materialize_from_handle for the fallback.
+        let expr_node = crate::kb::node_occurrence::materialize_from_handle(&self.kb, expr);
         self.stack.push(Frame {
             op,
-            expr,
+            expr: expr_node,
             locals: smallvec::SmallVec::new(),
             requirements,
             awaiting: None,

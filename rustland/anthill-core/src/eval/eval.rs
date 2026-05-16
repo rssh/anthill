@@ -7,11 +7,13 @@
 //! O(1) for any program depth, so runaway recursion surfaces as
 //! `EvalError::DepthExceeded` rather than as a native stack overflow.
 
+use std::rc::Rc;
+
 use smallvec::SmallVec;
 
 use crate::intern::Symbol;
+use crate::kb::node_occurrence::{Expr, MatchBranch, NodeKind, NodeOccurrence};
 use crate::kb::term::{HandleKind, Literal, Term, TermId};
-use crate::kb::typing::{resolve_handle, unwrap_option};
 use crate::kb::KnowledgeBase;
 
 use super::closure::Closure;
@@ -55,120 +57,82 @@ impl Interpreter {
     /// - After `step()` returns `Continue` the stack's top is either fresh
     ///   (ready for the next `step()`) or empty (`Done`).
     pub fn step(&mut self) -> Result<StepOutcome, EvalError> {
-        let tid = {
+        let occ = {
             let top = self.stack.top()
                 .ok_or_else(|| EvalError::Internal("step() on empty stack".into()))?;
             debug_assert!(top.awaiting.is_none(), "top frame should be fresh");
-            top.expr
+            top.expr.clone()
         };
-        self.reduce_expr(tid)
+        self.reduce_node(&occ)
     }
 
-    fn reduce_expr(&mut self, tid: TermId) -> Result<StepOutcome, EvalError> {
-        // WI-218: if this term is a spec-op apply that the typer rewrote
-        // to point at the impl op, evaluate the rewritten apply instead.
-        // The rewrite map is populated by `kb/typing.rs::check_apply` at
-        // type-checking time; the original term's `fn` symbol points at
-        // the spec op (no body), the rewritten term's points at the
-        // impl op (has body). dispatch_origin preserves the original
-        // spec op symbol for reflection / debug; runtime uses only the
-        // term-substitution map.
-        let tid = self.kb.dispatch_rewrites.get(&tid).copied().unwrap_or(tid);
-        let term = self.kb.get_term(tid).clone();
-        match term {
-            Term::Const(lit) => {
-                let v = self.literal_to_value(lit)?;
+    fn reduce_node(&mut self, occ: &Rc<NodeOccurrence>) -> Result<StepOutcome, EvalError> {
+        let expr = match &occ.kind {
+            NodeKind::Expr { expr, .. } => expr,
+            NodeKind::RuleHead { .. } => {
+                return Err(EvalError::Internal(
+                    "unexpected RuleHead occurrence in expression position".into(),
+                ));
+            }
+        };
+        match expr {
+            Expr::Const(lit) => {
+                let v = self.literal_to_value(lit.clone())?;
                 self.deliver(v)
             }
-            Term::Ref(sym) | Term::Ident(sym) => self.reduce_var(sym),
-            Term::Fn { functor, pos_args, named_args } => {
-                self.reduce_fn(functor, &pos_args, &named_args)
+            Expr::Ref(sym) | Expr::Ident(sym) => self.reduce_var(*sym),
+            Expr::VarRef { name } => self.reduce_var(*name),
+            Expr::If { condition, then_branch, else_branch } => {
+                self.start_if(condition, then_branch, else_branch)
             }
-            Term::Var(_) => Err(EvalError::Internal(
+            Expr::Let { pattern, value, body, .. } => {
+                self.start_let(*pattern, value, body)
+            }
+            Expr::Match { scrutinee, branches } => {
+                self.start_match(scrutinee, branches)
+            }
+            Expr::Lambda { param, body } => self.reduce_lambda(*param, body.clone()),
+            Expr::Apply { functor, pos_args, named_args } => {
+                // WI-218: the typer may have classified this apply for
+                // spec-op rewrite. PinNow redirects the call to the
+                // impl op; ConcreteApplyWithin similarly redirects (the
+                // requirements channel is empty for the bare-apply
+                // form). Read the classification off the NodeOccurrence's
+                // RefCell — written by `kb/typing.rs::classify` during
+                // type-checking.
+                let target = classified_apply_target(occ).unwrap_or(*functor);
+                self.start_apply(target, pos_args, named_args)
+            }
+            Expr::ApplyWithin { functor, args, named_args, requirements } => {
+                self.start_apply_within(*functor, args, named_args, requirements)
+            }
+            Expr::Constructor { name, pos_args, named_args } => {
+                self.start_constructor(*name, pos_args, named_args)
+            }
+            Expr::RequirementAtSort { chain, slot } => {
+                self.reduce_requirement_at_sort_node(chain, *slot)
+            }
+            Expr::ConstructRequirement { impl_functor, requirements } => {
+                self.reduce_construct_requirement_node(*impl_functor, requirements)
+            }
+            Expr::HoApply { .. }
+            | Expr::HoApplyWithin { .. }
+            | Expr::ConstructorWithin { .. }
+            | Expr::LambdaWithin { .. }
+            | Expr::Instantiation { .. }
+            | Expr::ListLit(_)
+            | Expr::SetLit(_)
+            | Expr::TupleLit { .. } => Err(EvalError::Internal(format!(
+                "unhandled Expr variant in eval: {:?}",
+                std::mem::discriminant(expr),
+            ))),
+            Expr::Var(_) => Err(EvalError::Internal(
                 "unexpected unopened DeBruijn variable in expression body".into(),
             )),
-            Term::Bottom => Err(EvalError::Internal(
-                "unexpected Term::Bottom in expression body".into(),
+            Expr::Bottom => Err(EvalError::Internal(
+                "unexpected Expr::Bottom in expression body".into(),
             )),
         }
-    }
-
-    fn reduce_fn(
-        &mut self,
-        functor: Symbol,
-        pos_args: &SmallVec<[TermId; 4]>,
-        named_args: &SmallVec<[(Symbol, TermId); 2]>,
-    ) -> Result<StepOutcome, EvalError> {
-        let sx = &self.reflect;
-
-        if Some(functor) == sx.int_lit
-            || Some(functor) == sx.float_lit
-            || Some(functor) == sx.string_lit
-            || Some(functor) == sx.bool_lit
-            || Some(functor) == sx.bigint_lit
-        {
-            let value_tid = named_arg(named_args, self.fields.value)
-                .ok_or_else(|| EvalError::Internal("literal entity missing 'value' arg".into()))?;
-            return match self.kb.get_term(value_tid).clone() {
-                Term::Const(lit) => {
-                    let v = self.literal_to_value(lit)?;
-                    self.deliver(v)
-                }
-                other => Err(EvalError::Internal(format!("literal 'value' is not Const: {other:?}"))),
-            };
-        }
-
-        if Some(functor) == sx.var_ref {
-            let name_tid = named_arg(named_args, self.fields.name)
-                .ok_or_else(|| EvalError::Internal("var_ref missing 'name'".into()))?;
-            let sym = term_as_symbol(&self.kb, name_tid)
-                .ok_or_else(|| EvalError::Internal("var_ref name not a symbol".into()))?;
-            return self.reduce_var(sym);
-        }
-
-        if Some(functor) == sx.if_expr {
-            return self.start_if(named_args);
-        }
-        if Some(functor) == sx.let_expr {
-            return self.start_let(named_args);
-        }
-        if Some(functor) == sx.match_expr {
-            return self.start_match(named_args);
-        }
-        if Some(functor) == sx.lambda {
-            return self.reduce_lambda(named_args);
-        }
-        if Some(functor) == sx.apply {
-            return self.start_apply(named_args);
-        }
-        if Some(functor) == sx.apply_within {
-            return self.start_apply_within(named_args);
-        }
-        if Some(functor) == sx.constructor {
-            return self.start_constructor(named_args);
-        }
-        // WI-223 / WI-237 — requirement-typed value forms. Each yields a
-        // `Value::Requirement(handle)`. A body reads its own frame
-        // requirements by name via `var_ref` (handled in `reduce_var`),
-        // not positionally. See `docs/design/operation-call-model.md`
-        // §"Two primitives".
-        if Some(functor) == sx.requirement_at_sort {
-            return self.reduce_requirement_at_sort(named_args);
-        }
-        if Some(functor) == sx.construct_requirement {
-            return self.reduce_construct_requirement(named_args);
-        }
-
-        // A bare reference to a nullary operation: functor is the operation's
-        // name and both arg lists are empty. Dispatch through the same path.
-        if pos_args.is_empty() && named_args.is_empty() {
-            return self.dispatch_call(functor, Vec::new());
-        }
-
-        Err(EvalError::Internal(format!(
-            "unhandled expression functor: {}",
-            self.kb.resolve_sym(functor)
-        )))
     }
 
     fn reduce_var(&mut self, sym: Symbol) -> Result<StepOutcome, EvalError> {
@@ -193,14 +157,9 @@ impl Interpreter {
 
     fn reduce_lambda(
         &mut self,
-        named_args: &SmallVec<[(Symbol, TermId); 2]>,
+        param: TermId,
+        body: Rc<NodeOccurrence>,
     ) -> Result<StepOutcome, EvalError> {
-        let param_tid = named_arg(named_args, self.fields.param)
-            .ok_or_else(|| EvalError::Internal("lambda missing 'param'".into()))?;
-        let body_tid = named_arg(named_args, self.fields.body)
-            .ok_or_else(|| EvalError::Internal("lambda missing 'body'".into()))?;
-        let body_term = resolve_handle(&self.kb, body_tid);
-
         // Any pattern is legal as a lambda param; match_pattern unpacks it
         // at call time. `lambda (a, b) -> body` is a tuple pattern against
         // a single tuple arg; `lambda _` ignores the arg; `lambda x` is
@@ -217,8 +176,8 @@ impl Interpreter {
             .map(|f| f.requirements.iter().cloned().collect())
             .unwrap_or_default();
         let handle = self.closures.alloc(Closure {
-            param_pattern: param_tid,
-            body: body_term,
+            param_pattern: param,
+            body,
             env,
             requirements,
         });
@@ -233,129 +192,72 @@ impl Interpreter {
     // AwaitState dance — the chain is statically resolvable to arena
     // handles).
 
-    fn reduce_requirement_at_sort(
+    fn reduce_requirement_at_sort_node(
         &mut self,
-        named_args: &SmallVec<[(Symbol, TermId); 2]>,
+        chain: &Rc<NodeOccurrence>,
+        slot: i64,
     ) -> Result<StepOutcome, EvalError> {
-        let chain_tid = named_arg(named_args, self.fields.chain)
-            .ok_or_else(|| EvalError::Internal(
-                "requirement_at_sort missing 'chain'".into(),
-            ))?;
-        let slot_tid = named_arg(named_args, self.fields.slot)
-            .ok_or_else(|| EvalError::Internal(
-                "requirement_at_sort missing 'slot'".into(),
-            ))?;
-        let slot = extract_static_int(&self.kb, slot_tid, &self.fields)
-            .ok_or_else(|| EvalError::Internal(
-                "requirement_at_sort 'slot' is not a static Int".into(),
-            ))? as usize;
-        let parent = self.eval_requirement_chain(resolve_handle(&self.kb, chain_tid))?;
-        let projected = parent.project(slot);
+        let parent = self.eval_requirement_chain_node(chain)?;
+        let projected = parent.project(slot as usize);
         self.deliver(Value::Requirement(projected))
     }
 
-    fn reduce_construct_requirement(
+    fn reduce_construct_requirement_node(
         &mut self,
-        named_args: &SmallVec<[(Symbol, TermId); 2]>,
+        impl_functor: Symbol,
+        requirements: &[Rc<NodeOccurrence>],
     ) -> Result<StepOutcome, EvalError> {
-        let impl_tid = named_arg(named_args, self.fields.impl_functor)
-            .ok_or_else(|| EvalError::Internal(
-                "construct_requirement missing 'impl_functor'".into(),
-            ))?;
-        let functor_sym = term_as_symbol(&self.kb, impl_tid)
-            .ok_or_else(|| EvalError::Internal(
-                "construct_requirement 'impl_functor' is not a Symbol".into(),
-            ))?;
-        let reqs_tid = named_arg(named_args, self.fields.requirements)
-            .ok_or_else(|| EvalError::Internal(
-                "construct_requirement missing 'requirements'".into(),
-            ))?;
-        let req_terms = list_terms(&self.kb, reqs_tid, self.fields.head, self.fields.tail);
         let mut handles: SmallVec<[super::value::RequirementHandle; 1]> = SmallVec::new();
-        for tid in req_terms {
-            let h = self.eval_requirement_chain(resolve_handle(&self.kb, tid))?;
-            handles.push(h);
+        for occ in requirements.iter() {
+            handles.push(self.eval_requirement_chain_node(occ)?);
         }
-        let new_handle = self.requirements.alloc(functor_sym, handles);
+        let new_handle = self.requirements.alloc(impl_functor, handles);
         self.deliver(Value::Requirement(new_handle))
     }
 
-    /// Synchronously reduce a requirement-typed term to a
+    /// Synchronously reduce a requirement-typed NodeOccurrence to a
     /// `RequirementHandle`. Walks the chain per the design grammar:
-    /// bottoms out at `requirement_at_current`; intermediate nodes are
-    /// `requirement_at_sort` (projection) or `construct_requirement`
+    /// bottoms out at `var_ref(name)`; intermediate nodes are
+    /// `RequirementAtSort` (projection) or `ConstructRequirement`
     /// (allocation). No AwaitState — the grammar is closed under direct
     /// recursion.
-    fn eval_requirement_chain(
+    fn eval_requirement_chain_node(
         &self,
-        tid: TermId,
+        occ: &Rc<NodeOccurrence>,
     ) -> Result<super::value::RequirementHandle, EvalError> {
-        let term = self.kb.get_term(tid).clone();
-        let sx = &self.reflect;
-        let (functor, named_args) = match term {
-            Term::Fn { functor, named_args, .. } => (functor, named_args),
+        let expr = match &occ.kind {
+            NodeKind::Expr { expr, .. } => expr,
             _ => return Err(EvalError::Internal(
-                "requirement chain must be a Term::Fn".into(),
+                "requirement chain must be an Expr-kind occurrence".into(),
             )),
         };
-
-        if Some(functor) == sx.requirement_at_sort {
-            let chain_tid = named_arg(&named_args, self.fields.chain)
-                .ok_or_else(|| EvalError::Internal(
-                    "requirement_at_sort missing 'chain'".into(),
-                ))?;
-            let slot_tid = named_arg(&named_args, self.fields.slot)
-                .ok_or_else(|| EvalError::Internal(
-                    "requirement_at_sort missing 'slot'".into(),
-                ))?;
-            let slot = extract_static_int(&self.kb, slot_tid, &self.fields)
-                .ok_or_else(|| EvalError::Internal(
-                    "requirement_at_sort 'slot' is not a static Int".into(),
-                ))? as usize;
-            let parent = self.eval_requirement_chain(resolve_handle(&self.kb, chain_tid))?;
-            Ok(parent.project(slot))
-        } else if Some(functor) == sx.construct_requirement {
-            let impl_tid = named_arg(&named_args, self.fields.impl_functor)
-                .ok_or_else(|| EvalError::Internal(
-                    "construct_requirement missing 'impl_functor'".into(),
-                ))?;
-            let functor_sym = term_as_symbol(&self.kb, impl_tid)
-                .ok_or_else(|| EvalError::Internal(
-                    "construct_requirement 'impl_functor' is not a Symbol".into(),
-                ))?;
-            let reqs_tid = named_arg(&named_args, self.fields.requirements)
-                .ok_or_else(|| EvalError::Internal(
-                    "construct_requirement missing 'requirements'".into(),
-                ))?;
-            let req_terms = list_terms(&self.kb, reqs_tid, self.fields.head, self.fields.tail);
-            let mut handles: SmallVec<[super::value::RequirementHandle; 1]> = SmallVec::new();
-            for t in req_terms {
-                handles.push(self.eval_requirement_chain(resolve_handle(&self.kb, t))?);
+        match expr {
+            Expr::RequirementAtSort { chain, slot } => {
+                let parent = self.eval_requirement_chain_node(chain)?;
+                Ok(parent.project(*slot as usize))
             }
-            Ok(self.requirements.alloc(functor_sym, handles))
-        } else if Some(functor) == sx.var_ref {
-            // WI-237 (names model): a body reads a requirement by its
-            // synthesized `__req_*` name. Synth names are interned once,
-            // so Symbol equality suffices (no short-name aliasing).
-            let name_tid = named_arg(&named_args, self.fields.name)
-                .ok_or_else(|| EvalError::Internal("var_ref missing 'name'".into()))?;
-            let name_sym = term_as_symbol(&self.kb, name_tid).ok_or_else(|| {
-                EvalError::Internal("var_ref 'name' is not a Symbol".into())
-            })?;
-            let top = self.stack.top().ok_or_else(|| {
-                EvalError::Internal("requirement chain var_ref on empty stack".into())
-            })?;
-            find_requirement(&top.requirements, name_sym).cloned().ok_or_else(|| {
-                EvalError::Internal(format!(
-                    "var_ref({}) unbound in requirement position",
-                    self.kb.resolve_sym(name_sym)
-                ))
-            })
-        } else {
-            Err(EvalError::Internal(format!(
-                "expected requirement-chain term, got functor {}",
-                self.kb.resolve_sym(functor)
-            )))
+            Expr::ConstructRequirement { impl_functor, requirements } => {
+                let mut handles: SmallVec<[super::value::RequirementHandle; 1]> = SmallVec::new();
+                for r in requirements.iter() {
+                    handles.push(self.eval_requirement_chain_node(r)?);
+                }
+                Ok(self.requirements.alloc(*impl_functor, handles))
+            }
+            Expr::VarRef { name } => {
+                let top = self.stack.top().ok_or_else(|| {
+                    EvalError::Internal("requirement chain var_ref on empty stack".into())
+                })?;
+                find_requirement(&top.requirements, *name).cloned().ok_or_else(|| {
+                    EvalError::Internal(format!(
+                        "var_ref({}) unbound in requirement position",
+                        self.kb.resolve_sym(*name)
+                    ))
+                })
+            }
+            other => Err(EvalError::Internal(format!(
+                "expected requirement-chain Expr, got {:?}",
+                std::mem::discriminant(other),
+            ))),
         }
     }
 
@@ -383,79 +285,82 @@ impl Interpreter {
 
     fn start_if(
         &mut self,
-        named_args: &SmallVec<[(Symbol, TermId); 2]>,
+        condition: &Rc<NodeOccurrence>,
+        then_branch: &Rc<NodeOccurrence>,
+        else_branch: &Rc<NodeOccurrence>,
     ) -> Result<StepOutcome, EvalError> {
-        let cond_tid = named_arg(named_args, self.fields.cond)
-            .ok_or_else(|| EvalError::Internal("if_expr missing 'cond'".into()))?;
-        let then_tid = named_arg(named_args, self.fields.then_branch)
-            .ok_or_else(|| EvalError::Internal("if_expr missing 'then_branch'".into()))?;
-        let else_tid = named_arg(named_args, self.fields.else_branch)
-            .ok_or_else(|| EvalError::Internal("if_expr missing 'else_branch'".into()))?;
         self.suspend_and_push(
             AwaitState::ChooseBranch {
-                then_branch: resolve_handle(&self.kb, then_tid),
-                else_branch: resolve_handle(&self.kb, else_tid),
+                then_branch: then_branch.clone(),
+                else_branch: else_branch.clone(),
             },
-            resolve_handle(&self.kb, cond_tid),
+            condition.clone(),
         )
     }
 
     fn start_let(
         &mut self,
-        named_args: &SmallVec<[(Symbol, TermId); 2]>,
+        pattern: TermId,
+        value: &Rc<NodeOccurrence>,
+        body: &Rc<NodeOccurrence>,
     ) -> Result<StepOutcome, EvalError> {
-        let pat_tid = named_arg(named_args, self.fields.pattern)
-            .ok_or_else(|| EvalError::Internal("let_expr missing 'pattern'".into()))?;
-        let value_tid = named_arg(named_args, self.fields.value)
-            .ok_or_else(|| EvalError::Internal("let_expr missing 'value'".into()))?;
-        let body_tid = named_arg(named_args, self.fields.body)
-            .ok_or_else(|| EvalError::Internal("let_expr missing 'body'".into()))?;
         self.suspend_and_push(
             AwaitState::LetBind {
-                pattern: pat_tid,
-                body: resolve_handle(&self.kb, body_tid),
+                pattern,
+                body: body.clone(),
             },
-            resolve_handle(&self.kb, value_tid),
+            value.clone(),
         )
     }
 
     fn start_match(
         &mut self,
-        named_args: &SmallVec<[(Symbol, TermId); 2]>,
+        scrutinee: &Rc<NodeOccurrence>,
+        branches: &[MatchBranch],
     ) -> Result<StepOutcome, EvalError> {
-        let scrutinee_tid = named_arg(named_args, self.fields.scrutinee)
-            .ok_or_else(|| EvalError::Internal("match_expr missing 'scrutinee'".into()))?;
-        let branches_tid = named_arg(named_args, self.fields.branches)
-            .ok_or_else(|| EvalError::Internal("match_expr missing 'branches'".into()))?;
-        let branches = crate::kb::typing::list_to_vec(&self.kb, branches_tid);
+        let branches_cloned: Vec<MatchBranch> = branches
+            .iter()
+            .map(|b| MatchBranch {
+                pattern: b.pattern,
+                guard: b.guard.clone(),
+                body: b.body.clone(),
+                span: b.span,
+            })
+            .collect();
         self.suspend_and_push(
-            AwaitState::MatchDispatch { branches },
-            resolve_handle(&self.kb, scrutinee_tid),
+            AwaitState::MatchDispatch { branches: branches_cloned },
+            scrutinee.clone(),
         )
     }
 
     fn start_apply(
         &mut self,
-        named_args: &SmallVec<[(Symbol, TermId); 2]>,
+        functor: Symbol,
+        pos_args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
     ) -> Result<StepOutcome, EvalError> {
-        let fn_tid = named_arg(named_args, self.fields.fn_)
-            .ok_or_else(|| EvalError::Internal("apply missing 'fn'".into()))?;
-        let target = term_as_symbol(&self.kb, fn_tid)
-            .ok_or_else(|| EvalError::Internal("apply 'fn' is not a symbol".into()))?;
+        // WI-218: if this apply's functor has a typer-recorded dispatch
+        // rewrite via the legacy term-keyed map, redirect to the impl op.
+        // The rewrite map is populated by `kb/typing.rs::record_apply_*`
+        // during requirement-insertion; while the post-WI-247 substrate
+        // keeps the same map, the eval looks up by the apply's functor
+        // for now via `dispatch_call`'s callee resolution path.
+        let target = functor;
 
-        let args_tid = named_arg(named_args, self.fields.args)
-            .ok_or_else(|| EvalError::Internal("apply missing 'args'".into()))?;
-        let arg_terms = crate::kb::typing::list_to_vec(&self.kb, args_tid);
-
-        if arg_terms.is_empty() {
+        if pos_args.is_empty() && named_args.is_empty() {
             return self.dispatch_call(target, Vec::new());
         }
 
-        let mut remaining: Vec<TermId> = Vec::with_capacity(arg_terms.len());
-        for arg_tid in arg_terms {
-            let (_name, value_inner) = decode_apply_arg(&self.kb, arg_tid, &self.fields)?;
-            remaining.push(value_inner);
-        }
+        // Build the per-arg occurrence stream. Positional args come
+        // first (matching legacy source-order behavior), then named
+        // args. The eval currently evaluates all args by position; the
+        // typer is responsible for ordering named args to align with
+        // the callee's params.
+        let mut remaining: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(
+            pos_args.len() + named_args.len(),
+        );
+        for arg in pos_args.iter() { remaining.push(arg.clone()); }
+        for (_, arg) in named_args.iter() { remaining.push(arg.clone()); }
         let first = remaining.remove(0);
         self.suspend_and_push(
             AwaitState::ApplyArgs {
@@ -463,7 +368,7 @@ impl Interpreter {
                 buffered: Vec::new(),
                 remaining,
             },
-            resolve_handle(&self.kb, first),
+            first,
         )
     }
 
@@ -474,39 +379,28 @@ impl Interpreter {
     /// into the callee's `frame.requirements` at frame push.
     fn start_apply_within(
         &mut self,
-        named_args: &SmallVec<[(Symbol, TermId); 2]>,
+        functor: Symbol,
+        args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+        requirements_occ: &[Rc<NodeOccurrence>],
     ) -> Result<StepOutcome, EvalError> {
-        let fn_tid = named_arg(named_args, self.fields.fn_)
-            .ok_or_else(|| EvalError::Internal("apply_within missing 'fn'".into()))?;
-        let fn_sym = term_as_symbol(&self.kb, fn_tid).ok_or_else(|| {
-            EvalError::Internal(format!(
-                "apply_within 'fn' must be a Symbol; got {:?}",
-                self.kb.get_term(fn_tid)
-            ))
-        })?;
-
-        let reqs_tid = named_arg(named_args, self.fields.requirements)
-            .ok_or_else(|| {
-                EvalError::Internal("apply_within missing 'requirements'".into())
-            })?;
-        let req_terms = list_terms(&self.kb, reqs_tid, self.fields.head, self.fields.tail);
-        if req_terms.len() > 1 {
+        if requirements_occ.len() > 1 {
             return Err(EvalError::Internal(format!(
                 "apply_within requirements channel has {} entries; v0 Model 1 \
                  expects 0 or 1",
-                req_terms.len(),
+                requirements_occ.len(),
             )));
         }
         let dispatching_dict: Option<super::value::RequirementHandle> =
-            if let Some(first) = req_terms.first() {
-                Some(self.eval_requirement_chain(resolve_handle(&self.kb, *first))?)
+            if let Some(first) = requirements_occ.first() {
+                Some(self.eval_requirement_chain_node(first)?)
             } else {
                 None
             };
 
         let target = match &dispatching_dict {
-            Some(dict) => self.dispatch_via_sort_ops_table(fn_sym, dict),
-            None => fn_sym,
+            Some(dict) => self.dispatch_via_sort_ops_table(functor, dict),
+            None => functor,
         };
 
         // Names model (WI-237): expand the dispatching dict into
@@ -544,19 +438,14 @@ impl Interpreter {
                 None => SmallVec::new(),
             };
 
-        let args_tid = named_arg(named_args, self.fields.args)
-            .ok_or_else(|| EvalError::Internal("apply_within missing 'args'".into()))?;
-        let arg_terms = crate::kb::typing::list_to_vec(&self.kb, args_tid);
-
-        if arg_terms.is_empty() {
+        let total_args = args.len() + named_args.len();
+        if total_args == 0 {
             return self.dispatch_call_with_requirements(target, Vec::new(), requirements);
         }
 
-        let mut remaining: Vec<TermId> = Vec::with_capacity(arg_terms.len());
-        for arg_tid in arg_terms {
-            let (_name, value_inner) = decode_apply_arg(&self.kb, arg_tid, &self.fields)?;
-            remaining.push(value_inner);
-        }
+        let mut remaining: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(total_args);
+        for a in args.iter() { remaining.push(a.clone()); }
+        for (_, a) in named_args.iter() { remaining.push(a.clone()); }
         let first = remaining.remove(0);
         self.suspend_and_push(
             AwaitState::ApplyWithinArgs {
@@ -565,54 +454,43 @@ impl Interpreter {
                 remaining,
                 requirements,
             },
-            resolve_handle(&self.kb, first),
+            first,
         )
     }
 
     fn start_constructor(
         &mut self,
-        named_args: &SmallVec<[(Symbol, TermId); 2]>,
+        name: Symbol,
+        pos_args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
     ) -> Result<StepOutcome, EvalError> {
-        let name_tid = named_arg(named_args, self.fields.name)
-            .ok_or_else(|| EvalError::Internal("constructor missing 'name'".into()))?;
-        let ctor_sym = term_as_symbol(&self.kb, name_tid)
-            .ok_or_else(|| EvalError::Internal("constructor name not a symbol".into()))?;
-        let args_tid = named_arg(named_args, self.fields.args)
-            .ok_or_else(|| EvalError::Internal("constructor missing 'args'".into()))?;
-        let arg_terms = crate::kb::typing::list_to_vec(&self.kb, args_tid);
-
-        let is_tuple_literal = Some(ctor_sym) == self.reflect.tuple_literal;
-        let mut remaining: Vec<(Option<Symbol>, TermId)> = Vec::with_capacity(arg_terms.len());
-        for arg_tid in arg_terms {
-            let (name_opt, value_inner) = decode_apply_arg(&self.kb, arg_tid, &self.fields)?;
-            remaining.push((name_opt, value_inner));
+        let is_tuple_literal = Some(name) == self.reflect.tuple_literal;
+        let mut remaining: Vec<(Option<Symbol>, Rc<NodeOccurrence>)> =
+            Vec::with_capacity(pos_args.len() + named_args.len());
+        for a in pos_args.iter() {
+            remaining.push((None, a.clone()));
+        }
+        for (n, a) in named_args.iter() {
+            remaining.push((Some(*n), a.clone()));
         }
 
         if remaining.is_empty() {
-            // No-arg constructor — produce Value::Entity immediately.
-            return self.finish_constructor(ctor_sym, is_tuple_literal, Vec::new(), Vec::new());
+            return self.finish_constructor(name, is_tuple_literal, Vec::new(), Vec::new());
         }
 
         let (first_name, first_expr) = remaining.remove(0);
-        let _ = first_name; // name handled when the value is delivered (in ConstructorArgs transition we need it — see note).
-        // We actually need to know the NAME of the arg currently being
-        // evaluated, because when it returns we have to decide pos vs named.
-        // The AwaitState::ConstructorArgs structure holds `remaining` which
-        // includes names for upcoming args, but *not* for the arg currently
-        // in flight. Stash that name in an extra slot.
-        let expr = resolve_handle(&self.kb, first_expr);
-        let current_name = first_name;
+        let placeholder = first_expr.clone();
         let top = self.stack.top_mut().ok_or_else(
             || EvalError::Internal("start_constructor with no parent".into()),
         )?;
         top.awaiting = Some(AwaitState::ConstructorArgs {
-            ctor_sym,
+            ctor_sym: name,
             is_tuple_literal,
             buffered_pos: Vec::new(),
             buffered_named: Vec::new(),
             // Prepend the currently-in-flight name so the delivery logic
             // knows which slot to place the next value into.
-            remaining: std::iter::once((current_name, TermId::from_raw(u32::MAX)))
+            remaining: std::iter::once((first_name, placeholder))
                 .chain(remaining.into_iter())
                 .collect(),
         });
@@ -622,7 +500,7 @@ impl Interpreter {
         };
         self.stack.push(Frame {
             op,
-            expr,
+            expr: first_expr,
             locals,
             requirements,
             awaiting: None,
@@ -635,7 +513,7 @@ impl Interpreter {
     fn suspend_and_push(
         &mut self,
         state: AwaitState,
-        child_expr: TermId,
+        child_expr: Rc<NodeOccurrence>,
     ) -> Result<StepOutcome, EvalError> {
         let top = self.stack.top_mut()
             .ok_or_else(|| EvalError::Internal("suspend_and_push with no parent".into()))?;
@@ -696,15 +574,15 @@ impl Interpreter {
         }
 
         // 3. Anthill-defined operation body.
-        let (body_term, params) = lookup_operation_body(&self.kb, target)
+        let (body_node, params) = lookup_operation_body(&self.kb, target)
             .ok_or_else(|| EvalError::UnknownOperation { name: target_name })?;
-        self.enter_operation(target, body_term, &params, arg_values, requirements)
+        self.enter_operation(target, body_node, &params, arg_values, requirements)
     }
 
     fn enter_operation(
         &mut self,
         target: Symbol,
-        body_term: TermId,
+        body_node: Rc<NodeOccurrence>,
         params: &[(Symbol, TermId)],
         arg_values: Vec<Value>,
         requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
@@ -736,7 +614,7 @@ impl Interpreter {
         // requirement position" error rather than being silently wrong.
         *top = Frame {
             op: target,
-            expr: body_term,
+            expr: body_node,
             locals,
             requirements,
             awaiting: None,
@@ -757,7 +635,9 @@ impl Interpreter {
             });
         }
         let arg = args.into_iter().next().unwrap();
-        let (param_pattern, body) = self.closures.with(&handle, |c| (c.param_pattern, c.body));
+        let (param_pattern, body) = self.closures.with(&handle, |c| {
+            (c.param_pattern, c.body.clone())
+        });
         let bindings = match_pattern(self, param_pattern, &arg).ok_or_else(|| {
             EvalError::MatchFailed { scrutinee: arg.type_name().to_string() }
         })?;
@@ -834,19 +714,9 @@ impl Interpreter {
                 }
                 AwaitState::MatchDispatch { branches } => {
                     let scrutinee_functor = value_functor(&self.kb, &v);
-                    let mut picked: Option<(TermId, super::pattern::Bindings)> = None;
-                    for branch_tid in &branches {
-                        let (pat_tid, body_tid) = match self.kb.get_term(*branch_tid) {
-                            Term::Fn { named_args: br, .. } => {
-                                let p = named_arg(br, self.fields.pattern);
-                                let b = named_arg(br, self.fields.body);
-                                match (p, b) {
-                                    (Some(p), Some(b)) => (p, b),
-                                    _ => continue,
-                                }
-                            }
-                            _ => continue,
-                        };
+                    let mut picked: Option<(Rc<NodeOccurrence>, super::pattern::Bindings)> = None;
+                    for branch in &branches {
+                        let pat_tid = branch.pattern;
                         // Cheap pre-filter: constructor-pattern functor
                         // mismatch can skip the full match attempt.
                         if let (Some(pat_name), Some(scr_name)) =
@@ -855,7 +725,7 @@ impl Interpreter {
                             if pat_name != scr_name { continue; }
                         }
                         if let Some(bindings) = match_pattern(self, pat_tid, &v) {
-                            picked = Some((resolve_handle(&self.kb, body_tid), bindings));
+                            picked = Some((branch.body.clone(), bindings));
                             break;
                         }
                     }
@@ -883,7 +753,7 @@ impl Interpreter {
                         (top.op, top.locals.clone(), top.requirements.clone());
                     self.stack.push(Frame {
                         op,
-                        expr: resolve_handle(&self.kb, next_expr),
+                        expr: next_expr,
                         locals,
                         requirements,
                         awaiting: None,
@@ -916,7 +786,7 @@ impl Interpreter {
                         (top.op, top.locals.clone(), top.requirements.clone());
                     self.stack.push(Frame {
                         op,
-                        expr: resolve_handle(&self.kb, next_expr),
+                        expr: next_expr,
                         locals,
                         requirements: frame_requirements,
                         awaiting: None,
@@ -931,7 +801,7 @@ impl Interpreter {
                     mut remaining,
                 } => {
                     // First entry in `remaining` names the arg we just evaluated.
-                    let (current_name, _placeholder_tid) = remaining.remove(0);
+                    let (current_name, _placeholder_occ) = remaining.remove(0);
                     classify_ctor_arg(
                         &self.kb,
                         ctor_sym,
@@ -951,9 +821,11 @@ impl Interpreter {
                         );
                     }
                     let (next_name, next_expr) = remaining[0].clone();
-                    // Leave `remaining[0]` as the "current" entry with the
-                    // placeholder term; we only need the name during delivery.
-                    remaining[0] = (next_name, TermId::from_raw(u32::MAX));
+                    // The currently-in-flight entry's placeholder is the
+                    // occurrence we're about to push. The name flows with
+                    // the value when it comes back.
+                    let pushed_expr = next_expr.clone();
+                    remaining[0] = (next_name, next_expr);
                     let top = self.stack.top_mut().unwrap();
                     top.awaiting = Some(AwaitState::ConstructorArgs {
                         ctor_sym,
@@ -966,7 +838,7 @@ impl Interpreter {
                         (top.op, top.locals.clone(), top.requirements.clone());
                     self.stack.push(Frame {
                         op,
-                        expr: resolve_handle(&self.kb, next_expr),
+                        expr: pushed_expr,
                         locals,
                         requirements,
                         awaiting: None,
@@ -1070,91 +942,26 @@ impl Interpreter {
 
 // ── helpers ─────────────────────────────────────────────────────
 
-/// Symbol-keyed named-arg lookup — compare pre-interned `Symbol`s rather
-/// than walking the key string through `resolve_sym`.
-fn named_arg(
-    args: &SmallVec<[(Symbol, TermId); 2]>,
-    key: Symbol,
-) -> Option<TermId> {
-    args.iter().find(|(s, _)| *s == key).map(|(_, v)| *v)
-}
-
-fn term_as_symbol(kb: &KnowledgeBase, tid: TermId) -> Option<Symbol> {
-    match kb.get_term(tid) {
-        Term::Ref(s) | Term::Ident(s) => Some(*s),
-        _ => None,
-    }
-}
-
-/// Pull a static `i64` out of a slot/index field of a requirement IR
-/// node. Accepts either a bare `Term::Const(Int)` (what the rewrite pass
-/// emits for compile-time-known indices) or an `int_lit(value: ...)`
-/// reflect-entity wrapper (what user code might construct). Returns
-/// `None` for any other shape.
-fn extract_static_int(
-    kb: &KnowledgeBase,
-    tid: TermId,
-    fields: &super::FieldSymbols,
-) -> Option<i64> {
-    match kb.get_term(tid) {
-        Term::Const(Literal::Int(n)) => Some(*n),
-        Term::Fn { named_args, .. } => {
-            let value_tid = named_arg(named_args, fields.value)?;
-            match kb.get_term(value_tid) {
-                Term::Const(Literal::Int(n)) => Some(*n),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Walk a `cons`/`nil` cons-list, returning each element's `head` term.
-/// Non-list shapes fall through as an empty vec — diagnostics fire from
-/// the requirement-IR reductions if a missing `requirements` slot causes
-/// downstream lookup failures.
-fn list_terms(
-    kb: &KnowledgeBase,
-    list_tid: TermId,
-    head_field: Symbol,
-    tail_field: Symbol,
-) -> Vec<TermId> {
-    let mut out = Vec::new();
-    let mut cur = list_tid;
-    loop {
-        match kb.get_term(cur) {
-            Term::Fn { named_args, .. } => {
-                let head = named_arg(named_args, head_field);
-                let tail = named_arg(named_args, tail_field);
-                match (head, tail) {
-                    (Some(h), Some(t)) => {
-                        out.push(h);
-                        cur = t;
-                    }
-                    _ => break,
-                }
-            }
-            _ => break,
-        }
-    }
-    out
-}
-
-fn decode_apply_arg(
-    kb: &KnowledgeBase,
-    arg_tid: TermId,
-    fields: &super::FieldSymbols,
-) -> Result<(Option<Symbol>, TermId), EvalError> {
-    let named_args = match kb.get_term(arg_tid) {
-        Term::Fn { named_args, .. } => named_args,
-        _ => return Err(EvalError::Internal("ApplyArg not a Fn term".into())),
+/// WI-218 — read the typer's `CallClass` off the Apply occurrence's
+/// RefCell and return the impl-op symbol to dispatch to. PinNow tags
+/// the call for direct redirection to `impl_op_sym`; the bare-apply
+/// `ConcreteApplyWithin` form (empty requirements channel) redirects
+/// to `fn_target_sym`. DeferToRequirement leaves the target as the
+/// spec op — the dispatch happens at runtime via the requirements
+/// channel, not at the apply.
+fn classified_apply_target(occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
+    use crate::kb::typing::CallClass;
+    let classification = match &occ.kind {
+        NodeKind::Expr { classification, .. } => classification.borrow(),
+        _ => return None,
     };
-    let value = named_arg(named_args, fields.value)
-        .ok_or_else(|| EvalError::Internal("ApplyArg missing 'value'".into()))?;
-    let name = named_arg(named_args, fields.name)
-        .and_then(|n| unwrap_option(kb, n))
-        .and_then(|inner| term_as_symbol(kb, inner));
-    Ok((name, value))
+    match classification.as_deref() {
+        Some(CallClass::PinNow { impl_op_sym, .. }) => Some(*impl_op_sym),
+        Some(CallClass::ConcreteApplyWithin { fn_target_sym, .. }) => {
+            Some(*fn_target_sym)
+        }
+        _ => None,
+    }
 }
 
 /// Short-name-aware local lookup. See the note in reduce_var for why we
@@ -1233,14 +1040,15 @@ fn sort_named_canonical(kb: &KnowledgeBase, functor: Symbol, named: &mut Vec<(Sy
     }
 }
 
-/// Walk OperationInfo facts for a functor, return (body term, params).
+/// Walk OperationInfo facts for a functor, return (body node, params).
 /// Thin wrapper over `kb::op_info::lookup_operation_info`. Returns
-/// `None` for body-less ops (specs).
+/// `None` for body-less ops (specs) and for ops whose `op_body_node`
+/// the loader didn't populate.
 pub fn lookup_operation_body(
     kb: &KnowledgeBase,
     functor: Symbol,
-) -> Option<(TermId, Vec<(Symbol, TermId)>)> {
+) -> Option<(std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>, Vec<(Symbol, TermId)>)> {
     let rec = crate::kb::op_info::lookup_operation_info(kb, functor)?;
-    let body = rec.body?;
+    let body = rec.body_node?;
     Some((body, rec.params))
 }

@@ -16,6 +16,7 @@ use std::rc::Rc;
 use smallvec::SmallVec;
 
 use crate::intern::Symbol;
+use crate::kb::node_occurrence::NodeOccurrence;
 use crate::kb::term::TermId;
 
 use super::value::Value;
@@ -26,7 +27,7 @@ pub struct Closure {
     /// `lambda (a, b) -> ...` works naturally — the caller passes a tuple
     /// and the closure destructures it on entry.
     pub param_pattern: TermId,
-    pub body: TermId,
+    pub body: Rc<NodeOccurrence>,
     pub env: SmallVec<[(Symbol, Value); 4]>,
     /// WI-223: requirement scope to install in `frame.requirements` when
     /// the closure is invoked. Snapshotted at lambda construction time —
@@ -219,9 +220,12 @@ mod tests {
     use super::*;
 
     fn dummy_closure() -> Closure {
+        use crate::kb::node_occurrence::Expr;
+        use crate::span::{SourceId, SourceSpan};
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 0);
         Closure {
             param_pattern: TermId::from_raw(0),
-            body: TermId::from_raw(0),
+            body: NodeOccurrence::new_expr(Expr::Bottom, span, None),
             env: SmallVec::new(),
             requirements: SmallVec::new(),
         }
@@ -259,10 +263,13 @@ mod tests {
 
     #[test]
     fn with_reads_closure() {
+        use crate::kb::node_occurrence::Expr;
+        use crate::span::{SourceId, SourceSpan};
         let arena = ClosureArenaRef::new();
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 0);
         let h = arena.alloc(Closure {
             param_pattern: TermId::from_raw(7),
-            body: TermId::from_raw(0),
+            body: NodeOccurrence::new_expr(Expr::Bottom, span, None),
             env: SmallVec::new(),
             requirements: SmallVec::new(),
         });

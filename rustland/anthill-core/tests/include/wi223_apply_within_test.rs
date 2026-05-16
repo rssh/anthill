@@ -218,24 +218,26 @@ end
     let var_ref_sym = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .unwrap();
 
-    // Build var_ref(name: Ref(__req_self)). Used as the body override —
-    // names-model way to fetch the dispatching dict from the frame.
+    // Override the read_my_req body with a fresh NodeOccurrence reading
+    // `var_ref(name: __req_self)` — names-model way to fetch the
+    // dispatching dict from the frame. Post-WI-248 the eval walks
+    // `kb.op_bodies` directly, so we replace the body NodeOccurrence
+    // by synthesizing one against the original body: the new occurrence
+    // inherits the span from `from` and records the test pass that
+    // produced it via `OccurrenceOrigin::Synthesized`.
+    let _ = var_ref_sym;
     let req_self_sym = kb.intern("__req_self");
-    let name_ref = kb.alloc(Term::Ref(req_self_sym));
-    let name_field = kb.intern("name");
-    let var_ref_body = kb.alloc(Term::Fn {
-        functor: var_ref_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[(name_field, name_ref)]),
-    });
-
-    // Rewrite the read_my_req body: dispatch_rewrites swaps source term →
-    // rewritten term during reduce_expr. The original body is some int
-    // literal; redirect it to the var_ref read of __req_self.
-    let original_body = anthill_core::eval::eval::lookup_operation_body(&kb, target_sym)
-        .map(|(t, _)| t)
-        .expect("read_my_req body");
-    kb.record_dispatch_rewrite(original_body, var_ref_body, target_sym);
+    let original_body = kb.op_body_node(target_sym)
+        .expect("read_my_req body materialized in kb.op_bodies")
+        .clone();
+    let pass = kb.register_pass("test.wi223.body_override");
+    let body_node = anthill_core::kb::node_occurrence::NodeOccurrence::synthesized_expr(
+        anthill_core::kb::node_occurrence::Expr::VarRef { name: req_self_sym },
+        original_body,
+        pass,
+        Some(target_sym),
+    );
+    kb.set_op_body_node(target_sym, body_node);
 
     // requirements = [construct_requirement(MyImpl, [])]
     let nil = make_nil(&mut kb);

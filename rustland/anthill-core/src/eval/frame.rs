@@ -7,9 +7,12 @@
 //! depth is bounded by `ActivationStack::depth_cap` rather than by the
 //! host Rust stack.
 
+use std::rc::Rc;
+
 use smallvec::SmallVec;
 
 use crate::intern::Symbol;
+use crate::kb::node_occurrence::{MatchBranch, NodeOccurrence};
 use crate::kb::term::TermId;
 
 use super::value::Value;
@@ -21,19 +24,25 @@ use super::value::Value;
 pub enum AwaitState {
     /// `if_expr` cond is being evaluated; on delivery pick a branch and
     /// reduce it in this frame.
-    ChooseBranch { then_branch: TermId, else_branch: TermId },
+    ChooseBranch {
+        then_branch: Rc<NodeOccurrence>,
+        else_branch: Rc<NodeOccurrence>,
+    },
     /// `let_expr` rhs is being evaluated; on delivery match the pattern,
     /// extend locals, and reduce the body in this frame.
-    LetBind { pattern: TermId, body: TermId },
+    LetBind {
+        pattern: TermId,
+        body: Rc<NodeOccurrence>,
+    },
     /// `match_expr` scrutinee is being evaluated; on delivery try each
     /// branch against the value until one matches.
-    MatchDispatch { branches: Vec<TermId> },
+    MatchDispatch { branches: Vec<MatchBranch> },
     /// An apply node is collecting arg values one at a time. `remaining`
-    /// holds the ApplyArg terms still to evaluate (in order).
+    /// holds the argument occurrences still to evaluate (in order).
     ApplyArgs {
         target: Symbol,
         buffered: Vec<Value>,
-        remaining: Vec<TermId>,
+        remaining: Vec<Rc<NodeOccurrence>>,
     },
     /// WI-223: an `apply_within` node — like ApplyArgs but threads the
     /// callee's name-keyed `requirements` channel through to the callee
@@ -45,7 +54,7 @@ pub enum AwaitState {
     ApplyWithinArgs {
         target: Symbol,
         buffered: Vec<Value>,
-        remaining: Vec<TermId>,
+        remaining: Vec<Rc<NodeOccurrence>>,
         requirements: SmallVec<[(Symbol, crate::eval::value::RequirementHandle); 2]>,
     },
     /// A constructor node is collecting (possibly named) field values.
@@ -54,8 +63,11 @@ pub enum AwaitState {
         is_tuple_literal: bool,
         buffered_pos: Vec<Value>,
         buffered_named: Vec<(Symbol, Value)>,
-        /// Remaining `ApplyArg` terms paired with their decoded name hint.
-        remaining: Vec<(Option<Symbol>, TermId)>,
+        /// Remaining argument occurrences paired with their decoded
+        /// name hint. The first entry's expression is a placeholder —
+        /// only its name is read (it identifies the value about to
+        /// arrive on delivery).
+        remaining: Vec<(Option<Symbol>, Rc<NodeOccurrence>)>,
     },
     /// The frame has dispatched an apply to an anthill-defined operation
     /// body (child frame pushed). When the body produces a value, that
@@ -70,7 +82,7 @@ pub struct Frame {
     pub op: Symbol,
     /// Expression currently under reduction. Only meaningful when `awaiting`
     /// is `None`; unused while this frame is suspended above a child.
-    pub expr: TermId,
+    pub expr: Rc<NodeOccurrence>,
     /// Lexical bindings in this frame.
     pub locals: SmallVec<[(Symbol, Value); 4]>,
     /// WI-223 / WI-237: name-keyed requirement values available to this
@@ -133,12 +145,14 @@ impl Default for ActivationStack {
 mod tests {
     use super::*;
     use crate::intern::Symbol;
-    use crate::kb::term::TermId;
+    use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+    use crate::span::{SourceId, SourceSpan};
 
     fn dummy_frame() -> Frame {
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 0);
         Frame {
             op: Symbol::from_raw(0),
-            expr: TermId::from_raw(0),
+            expr: NodeOccurrence::new_expr(Expr::Bottom, span, None),
             locals: SmallVec::new(),
             requirements: SmallVec::new(),
             awaiting: None,
