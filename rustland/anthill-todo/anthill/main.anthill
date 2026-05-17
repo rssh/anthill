@@ -45,7 +45,8 @@ namespace anthill.todo
   import anthill.reflect.LogicalQuery.{sort_query, pattern_query}
   import anthill.reflect.{Substitution}
   import anthill.todo.store.{WorkItemStore}
-  import anthill.todo.store.WorkItemStore.{lookup, by_status_of, all}
+  import anthill.todo.store.WorkItemStore.{lookup, by_status_of, all,
+                                           next_id, commit, forget}
   import anthill.reflect.{term_as_entity}
   export Main, specs
 
@@ -206,7 +207,8 @@ namespace anthill.todo
     -- at call time via call_with_requirements (WI-236).
     operation main(args: List[String], store: FileStore,
                    wis_cell: Cell[State], agent: String) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error, Clock}
+      effects {ConsoleOutput, ConsoleError, Modify[store], Modify[wis_cell],
+               Error, Clock}
     =
       match parse_argv(specs(), args)
         case parse_err(no_subcommand()) ->
@@ -234,7 +236,8 @@ namespace anthill.todo
     operation dispatch(name: String, bindings: List[Binding],
                        store: FileStore, agent: String,
                        s: Cell[State]) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error, Clock}
+      effects {ConsoleOutput, ConsoleError, Modify[store], Modify[s],
+               Error, Clock}
     =
       if eq(name, "skill") then cmd_skill()
       else if eq(name, "status") then cmd_status(s)
@@ -1231,204 +1234,181 @@ namespace anthill.todo
     operation cmd_add(bindings: List[Binding],
                       store: FileStore,
                       s: Cell[State]) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
       match get_binding(bindings, "description")
         case none() ->
           let _ = eprintln(console(), "add: missing description")
           2
         case some(description) ->
-          do_add(store, description,
+          do_add(s, description,
                  collect_all_bindings(bindings, "depends"),
                  collect_all_bindings(bindings, "acceptance"))
 
-    operation do_add(store: FileStore, description: String,
+    operation do_add(s: Cell[State], description: String,
                      depends_on: List[String],
                      raw_acceptance: List[String]) -> Int
-      effects {ConsoleOutput, Modify[store], Error}
+      effects {ConsoleOutput, Modify[s], Error}
     =
-      let id = next_workitem_id()
-      let acceptance = match raw_acceptance
-        case nil() -> tools_to_acceptance(cons("cargo-test", nil()))
-        case cons(_, _) -> tools_to_acceptance(raw_acceptance)
-      let fact = WorkItem(
+      let id = WorkItemStore.next_id(s)
+      let _ = WorkItemStore.commit(s, WorkItem(
         id: id,
         description: description,
-        acceptance: acceptance,
+        acceptance: resolve_acceptance(raw_acceptance),
         depends_on: depends_on,
-        status: Open())
-      let _ = persist(store, fact, Meta(entries: nil()))
-      let _ = flush(store, nil())
+        status: Open()))
       let _ = println(console(),
                       concat("added: ",
                         concat(id, concat(" — ", description))))
       0
 
+    -- Default acceptance to a single `cargo-test` tool when no
+    -- --acceptance flag is supplied; otherwise lift each tool name.
+    operation resolve_acceptance(raw: List[String]) -> List[AcceptanceCriterion] =
+      match raw
+        case nil() -> tools_to_acceptance(cons("cargo-test", nil()))
+        case cons(_, _) -> tools_to_acceptance(raw)
+
+    -- Reconstruct a WorkItem with a new status field, preserving every
+    -- other field as the materialized entity carried them. Factored as
+    -- an op (not a let-bound expression) to dodge a typer env-loss bug
+    -- where a let-bound constructor's TypeResult.env drops the
+    -- enclosing-sort context and downstream spec-op dispatch fails to
+    -- find the requires-chain slot. Pattern-match on positional fields
+    -- in declared order (id, description, context, acceptance,
+    -- depends_on, generates, requires_capability, status).
+    operation with_status(wi: WorkItem, st: WorkStatus) -> WorkItem =
+      match wi
+        case WorkItem(id, desc, ctx, acc, deps, gen, reqs, _) ->
+          WorkItem(
+            id: id,
+            description: desc,
+            context: ctx,
+            acceptance: acc,
+            depends_on: deps,
+            generates: gen,
+            requires_capability: reqs,
+            status: st)
+
     -- ── cmd_claim ────────────────────────────────────────────────
-    --
-    -- `claim <id>` transitions a WorkItem from status Open to
-    -- Claimed(agent: <--agent>, since: now()). Retract+assert path:
-    -- find the head term, look up its FactId, retract on the
-    -- IndexedFileStore (which knows the source span), persist the
-    -- replacement, flush. Skips the legacy `claimable(?id, ?desc)`
-    -- gate for now — a future patch can wire the same gate cmd_next
-    -- uses.
+    -- `claim <id>` transitions Open → Claimed(agent, since). Routes
+    -- through WorkItemStore.lookup → forget + commit (the impl pair
+    -- handles the retract+persist dance internally).
 
     operation cmd_claim(bindings: List[Binding],
                          store: FileStore,
                          agent: String,
                          s: Cell[State]) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error, Clock}
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       match get_binding(bindings, "id")
         case none() ->
           let _ = eprintln(console(), "claim: missing id")
           2
         case some(id) ->
-          match find_by_id(facts_of(kb(), "WorkItem"), id)
+          match WorkItemStore.lookup(s, id)
             case none() ->
               let _ = eprintln(console(),
                 concat("error: work item '", concat(id, "' not found")))
               1
-            case some(old_term) -> do_claim(store, agent, id, old_term)
+            case some(wi) -> do_claim(s, agent, id, wi)
 
-    operation do_claim(store: FileStore, agent: String,
-                       id: String, old_term: Term) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error, Clock}
+    operation do_claim(s: Cell[State], agent: String,
+                       id: String, wi: WorkItem) -> Int
+      effects {ConsoleOutput, Modify[s], Error, Clock}
     =
-      match find_fact(old_term)
-        case none() ->
-          let _ = eprintln(console(),
-            "internal: WorkItem head missing from KB rule index")
-          1
-        case some(fid) ->
-          let new_status = Claimed(agent: agent, since: now())
-          let new_term = replace_named_arg(old_term, "status", new_status)
-          let _ = retract(store, fid)
-          let _ = persist(store, new_term, Meta(entries: nil()))
-          let _ = flush(store, nil())
-          let _ = println(console(),
-            concat("claimed: ", concat(id, concat(" by ", agent))))
-          0
+      let _ = WorkItemStore.forget(s, id)
+      let _ = WorkItemStore.commit(s,
+        with_status(wi, Claimed(agent: agent, since: now())))
+      let _ = println(console(),
+        concat("claimed: ", concat(id, concat(" by ", agent))))
+      0
 
     -- ── cmd_deliver ──────────────────────────────────────────────
-    --
-    -- `deliver <id>` transitions Claimed → Delivered(agent, at).
-    -- Same retract+assert shape as cmd_claim.
+    -- `deliver <id>`: Claimed → Delivered(agent, at).
 
     operation cmd_deliver(bindings: List[Binding],
                            store: FileStore,
                            agent: String,
                            s: Cell[State]) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error, Clock}
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       match get_binding(bindings, "id")
         case none() ->
           let _ = eprintln(console(), "deliver: missing id")
           2
         case some(id) ->
-          match find_by_id(facts_of(kb(), "WorkItem"), id)
+          match WorkItemStore.lookup(s, id)
             case none() ->
               let _ = eprintln(console(),
                 concat("error: work item '", concat(id, "' not found")))
               1
-            case some(old_term) -> do_deliver(store, agent, id, old_term)
+            case some(wi) -> do_deliver(s, agent, id, wi)
 
-    operation do_deliver(store: FileStore, agent: String,
-                         id: String, old_term: Term) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error, Clock}
+    operation do_deliver(s: Cell[State], agent: String,
+                         id: String, wi: WorkItem) -> Int
+      effects {ConsoleOutput, Modify[s], Error, Clock}
     =
-      match find_fact(old_term)
-        case none() ->
-          let _ = eprintln(console(),
-            "internal: WorkItem head missing from KB rule index")
-          1
-        case some(fid) ->
-          let new_term = replace_named_arg(old_term, "status",
-                          Delivered(agent: agent, at: now()))
-          let _ = retract(store, fid)
-          let _ = persist(store, new_term, Meta(entries: nil()))
-          let _ = flush(store, nil())
-          let _ = println(console(),
-            concat("delivered: ", concat(id, concat(" by ", agent))))
-          0
+      let _ = WorkItemStore.forget(s, id)
+      let _ = WorkItemStore.commit(s,
+        with_status(wi, Delivered(agent: agent, at: now())))
+      let _ = println(console(),
+        concat("delivered: ", concat(id, concat(" by ", agent))))
+      0
 
     -- ── cmd_verify ───────────────────────────────────────────────
-    --
-    -- `verify <id>` transitions Delivered → Verified(at). No --agent
-    -- — the verifier identity isn't recorded in the legacy fact shape.
+    -- `verify <id>`: Delivered → Verified(at). No agent — the verifier
+    -- identity isn't recorded in the legacy fact shape.
 
     operation cmd_verify(bindings: List[Binding],
                           store: FileStore,
                           s: Cell[State]) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error, Clock}
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       match get_binding(bindings, "id")
         case none() ->
           let _ = eprintln(console(), "verify: missing id")
           2
         case some(id) ->
-          match find_by_id(facts_of(kb(), "WorkItem"), id)
+          match WorkItemStore.lookup(s, id)
             case none() ->
               let _ = eprintln(console(),
                 concat("error: work item '", concat(id, "' not found")))
               1
-            case some(old_term) -> do_verify(store, id, old_term)
+            case some(wi) -> do_verify(s, id, wi)
 
-    operation do_verify(store: FileStore, id: String, old_term: Term) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error, Clock}
+    operation do_verify(s: Cell[State], id: String, wi: WorkItem) -> Int
+      effects {ConsoleOutput, Modify[s], Error, Clock}
     =
-      match find_fact(old_term)
-        case none() ->
-          let _ = eprintln(console(),
-            "internal: WorkItem head missing from KB rule index")
-          1
-        case some(fid) ->
-          let new_term = replace_named_arg(old_term, "status",
-                          Verified(at: now()))
-          let _ = retract(store, fid)
-          let _ = persist(store, new_term, Meta(entries: nil()))
-          let _ = flush(store, nil())
-          let _ = println(console(), concat("verified: ", id))
-          0
+      let _ = WorkItemStore.forget(s, id)
+      let _ = WorkItemStore.commit(s, with_status(wi, Verified(at: now())))
+      let _ = println(console(), concat("verified: ", id))
+      0
 
     -- ── cmd_delete ───────────────────────────────────────────────
-    --
-    -- `delete <id>` retracts the WorkItem fact entirely — no
-    -- replacement persisted. The IndexedFileStore's source-span
-    -- retract drops the fact block from disk; flush atomically
-    -- rewrites the affected file.
+    -- `delete <id>` retracts the WorkItem fact entirely (no
+    -- replacement). The impl's forget routes through find_fact +
+    -- retract so the IndexedFileStore drops the on-disk block.
 
     operation cmd_delete(bindings: List[Binding],
                           store: FileStore,
                           s: Cell[State]) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
       match get_binding(bindings, "id")
         case none() ->
           let _ = eprintln(console(), "delete: missing id")
           2
         case some(id) ->
-          match find_by_id(facts_of(kb(), "WorkItem"), id)
+          match WorkItemStore.lookup(s, id)
             case none() ->
               let _ = eprintln(console(),
                 concat("error: work item '", concat(id, "' not found")))
               1
-            case some(old_term) -> do_delete(store, id, old_term)
-
-    operation do_delete(store: FileStore, id: String, old_term: Term) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
-    =
-      match find_fact(old_term)
-        case none() ->
-          let _ = eprintln(console(),
-            "internal: WorkItem head missing from KB rule index")
-          1
-        case some(fid) ->
-          let _ = retract(store, fid)
-          let _ = flush(store, nil())
-          let _ = println(console(), concat("deleted: ", id))
-          0
+            case some(_) ->
+              let _ = WorkItemStore.forget(s, id)
+              let _ = println(console(), concat("deleted: ", id))
+              0
 
     -- ── cmd_feedback ─────────────────────────────────────────────
     --

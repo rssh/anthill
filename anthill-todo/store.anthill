@@ -12,7 +12,7 @@
 namespace anthill.todo.store
   import anthill.stage0.{WorkItem, WorkStatus}
   import anthill.persistence.filesystem.{IndexedFileStore}
-  import anthill.persistence.{persist, flush}
+  import anthill.persistence.{persist, retract, flush}
   import anthill.prelude.{Cell, Option, List, Int, String, Unit, Bool}
   import anthill.prelude.Int.{to_string}
   import anthill.prelude.String.{concat}
@@ -21,7 +21,8 @@ namespace anthill.todo.store
   import anthill.prelude.Meta.{Meta}
   import anthill.prelude.Option.{none, some}
   import anthill.prelude.List.{nil, cons}
-  import anthill.reflect.{Term, term_as_entity, term_field, term_as_string, term_functor_name}
+  import anthill.reflect.{Term, term_as_entity, term_field, term_as_string,
+                          term_functor_name, find_fact}
   import anthill.reflect.KB.{kb, facts_of}
   export WorkItemStore, FileBasedWorkitemStore, WIS
 
@@ -159,13 +160,37 @@ namespace anthill.todo.store
         case wis(_, _) ->
           terms_to_workitems(facts_of(kb(), "WorkItem"))
 
+    -- Persist + flush. Counter management lives entirely in `next_id`;
+    -- commit just writes the fact and syncs the backend, so an update
+    -- path (`forget` then `commit` with rebuilt status) doesn't bump
+    -- the id sequence.
     operation commit(s: Cell[V = WIS], w: WorkItem) -> Unit
       effects {Modify[s], Error}
     =
       match Cell.get(s)
-        case wis(b, c) ->
+        case wis(b, _) ->
           let _ = persist(b, w, Meta(entries: nil()))
           let _ = flush(b, nil())
-          Cell.set(s, wis(b, c + 1))
+          ()
+
+    -- Retract the WorkItem fact whose `id` field matches `target` then
+    -- flush. Looks the fact up via facts_of + find_term_by_id (same
+    -- short-circuit as `lookup`), resolves to a FactId via `find_fact`,
+    -- and routes through `retract` so the IndexedFileStore drops the
+    -- on-disk source block atomically with the in-memory rule.
+    operation forget(s: Cell[V = WIS], target: String) -> Unit
+      effects {Modify[s], Error}
+    =
+      match Cell.get(s)
+        case wis(b, _) ->
+          match find_term_by_id(facts_of(kb(), "WorkItem"), target)
+            case none() -> ()
+            case some(t) ->
+              match find_fact(t)
+                case none() -> ()
+                case some(fid) ->
+                  let _ = retract(b, fid)
+                  let _ = flush(b, nil())
+                  ()
   end
 end
