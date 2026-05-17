@@ -314,10 +314,19 @@ fn ensure_intermediate_namespaces(
     (segments.last().unwrap().to_string(), current_scope)
 }
 
-/// Create an operation scope and define its parameters.
+/// Create an operation scope and define its parameters plus the reserved
+/// `result` name (proposal 041).
 ///
-/// Operations get their own scope so that parameter names are resolvable
-/// in effects clauses (e.g., `effects (Modify[store])` where `store` is a parameter).
+/// Operations always get their own scope so that:
+/// - Parameter names are resolvable in effects clauses (e.g., `effects
+///   (Modify[store])` where `store` is a parameter).
+/// - The reserved name `result` is resolvable in effects and ensures
+///   positions to refer to the operation's return value (proposal 041).
+///   For named-tuple returns, components are accessed via the existing
+///   field-projection syntax (`result.a`, per kernel-language.md §6.7).
+///
+/// Param-name conflict with `result` is checked at load time
+/// (`load_operation`), not here — scan only defines symbols.
 fn scan_operation_params(
     kb: &mut KnowledgeBase,
     parse_sym: &crate::intern::SymbolTable,
@@ -326,26 +335,43 @@ fn scan_operation_params(
     enclosing_scope: TermId,
     prefix: &str,
 ) {
-    if op.params.is_empty() {
-        return;
-    }
-    // Allocate a scope term for the operation
-    let op_term = kb.alloc(Term::Fn {
-        functor: op_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::new(),
-    });
-    // Operation scope sees enclosing scope
+    // Allocate the scope term unconditionally so paramless ops still
+    // resolve `result`.
+    let op_term = kb.make_name_term_from_sym(op_sym);
     kb.symbols.add_parent(op_term.raw(), ScopeInclusion {
         parent_scope_raw: enclosing_scope.raw(),
         instantiation_term_raw: enclosing_scope.raw(),
         is_enclosing: true,
     });
-    // Define each parameter in the operation's scope
     for p in &op.params {
         let param_name = parse_sym.name(p.name);
-        let qualified = format!("{}.{}", prefix, param_name);
+        // Skip param-name `result` here; the load pass reports the
+        // collision with the reserved return-value name.
+        if param_name == "result" {
+            continue;
+        }
+        let qualified = make_qualified(prefix, param_name);
         kb.symbols.define(param_name, &qualified, SymbolKind::Param, op_term.raw());
+    }
+    let result_qualified = make_qualified(prefix, "result");
+    kb.symbols.define("result", &result_qualified, SymbolKind::Param, op_term.raw());
+
+    // Pre-register `result.<field>` for each named-tuple return component.
+    // Effects rows take *types*, not general term expressions, so the dot
+    // in `Modify[result.a]` is treated as part of a qualified name rather
+    // than as field-access (§6.7). Pre-registering these locals lets
+    // qualified-name lookup find them.
+    //
+    // Workaround pending WI-262 (type-level field projection). When that
+    // lands this block can be removed and projection handled uniformly by
+    // the resolver/typer for params of entity/tuple type as well.
+    if let crate::parse::ir::TypeExpr::Tuple(fields) = &op.return_type {
+        for (field_sym, _field_ty) in fields {
+            let field_name = parse_sym.name(*field_sym);
+            let dotted = format!("result.{}", field_name);
+            let qualified = make_qualified(prefix, &dotted);
+            kb.symbols.define(&dotted, &qualified, SymbolKind::Param, op_term.raw());
+        }
     }
 }
 
@@ -4782,16 +4808,25 @@ impl<'a> Loader<'a> {
         let prev_owner = self.current_owner;
         self.current_owner = Some(functor);
 
-        // Enter operation scope if params exist (scope created during scanning).
-        // Operations without params don't get their own scope.
+        // Always enter the operation scope (scope created during scanning).
+        // Even paramless operations have an op scope so that the reserved
+        // `result` name is resolvable in effects / ensures positions
+        // (proposal 041).
         let prev_scope = self.current_scope;
-        if !o.params.is_empty() {
-            let op_scope = self.kb.alloc(Term::Fn {
-                functor,
-                pos_args: SmallVec::new(),
-                named_args: SmallVec::new(),
+        let op_scope = self.kb.make_name_term_from_sym(functor);
+        self.current_scope = op_scope;
+
+        let op_qualified = self.kb.qualified_name_of(functor).to_owned();
+
+        // `result` as a parameter name collides with the reserved
+        // return-value name; one diagnostic per operation suffices.
+        if o.params.iter().any(|p| self.parsed.symbols.name(p.name) == "result") {
+            self.errors.push(LoadError::Other {
+                message: format!(
+                    "operation '{}': parameter name 'result' is reserved for the return value; rename the parameter",
+                    op_qualified
+                ),
             });
-            self.current_scope = op_scope;
         }
 
         let return_term = self.type_expr_to_term(&o.return_type);
@@ -4800,10 +4835,6 @@ impl<'a> Loader<'a> {
         let field_info_sym = self.kb.resolve_symbol("anthill.reflect.FieldInfo");
         let fi_name_sym = self.kb.intern("name");
         let fi_type_sym = self.kb.intern("type_name");
-        let op_qualified = match self.kb.symbols.get(functor) {
-            SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
-            SymbolDef::Unresolved { name } => name.clone(),
-        };
         let param_terms: Vec<TermId> = o.params
             .iter()
             .map(|p| {

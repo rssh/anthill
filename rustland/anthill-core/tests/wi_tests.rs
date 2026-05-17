@@ -79,3 +79,6 @@ mod wi237_diag_test;
 
 #[path = "include/wi260_term_as_entity_test.rs"]
 mod wi260_term_as_entity_test;
+
+#[path = "include/wi261_result_in_effects_test.rs"]
+mod wi261_result_in_effects_test;
