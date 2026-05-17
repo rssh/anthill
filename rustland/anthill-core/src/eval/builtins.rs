@@ -85,6 +85,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.reflect.term_functor_name", term_functor_name)?;
     register_if_present(interp, "anthill.reflect.term_field", term_field)?;
     register_if_present(interp, "anthill.reflect.term_as_string", term_as_string)?;
+    register_if_present(interp, "anthill.reflect.term_as_entity", term_as_entity)?;
     register_if_present(interp, "anthill.reflect.fresh_var", reflect_fresh_var)?;
     register_if_present(interp, "anthill.reflect.make_fn", reflect_make_fn)?;
     register_if_present(interp, "anthill.reflect.find_fact", reflect_find_fact)?;
@@ -714,6 +715,116 @@ fn term_as_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
             named: Vec::new(),
         },
     })
+}
+
+/// `anthill.reflect.term_as_entity(t: Term) -> Option[T = ?E]`.
+/// Decodes a `Term::Fn` whose functor is a registered constructor into a
+/// typed `Value::Entity`, using `KnowledgeBase::entity_field_types` to
+/// recover declared fields. Pairs with `term_as_string` / `term_as_sort`
+/// as the entity-decoder side of the family.
+///
+/// Returns `none()` when `t` is not a `Fn`, when its functor isn't a
+/// registered constructor, or when no field-types entry exists for the
+/// functor. A `Value::Entity` input is the identity case — both
+/// representations inhabit the abstract `reflect.Term` via `TermView`.
+fn term_as_entity(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [arg] = expect_args::<1>("term_as_entity", args)?;
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    let value_key = interp.kb.intern("value");
+
+    let materialized: Option<Value> = match arg {
+        Value::Term(tid) => materialize_entity(interp, tid),
+        Value::Entity { .. } => Some(arg),
+        other => return Err(type_mismatch("Term", &other, None)),
+    };
+
+    Ok(match materialized {
+        Some(value) => Value::Entity {
+            functor: some_sym,
+            pos: Vec::new(),
+            named: vec![(value_key, value)],
+        },
+        None => Value::Entity {
+            functor: none_sym,
+            pos: Vec::new(),
+            named: Vec::new(),
+        },
+    })
+}
+
+fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) -> Option<Value> {
+    use crate::intern::Symbol;
+    use crate::kb::term::{Term as CoreTerm, TermId};
+    use smallvec::SmallVec;
+    // Snapshot the (Copy) pieces we need so the kb borrow can be released
+    // before we recurse back into &mut interp.
+    let (functor, pos_args, named_args): (
+        Symbol,
+        SmallVec<[TermId; 4]>,
+        SmallVec<[(Symbol, TermId); 2]>,
+    ) = match interp.kb.get_term(tid) {
+        CoreTerm::Fn { functor, pos_args, named_args } =>
+            (*functor, pos_args.clone(), named_args.clone()),
+        _ => return None,
+    };
+    interp.kb.constructor_parent_sort(functor)?;
+    let field_types: Vec<(Symbol, TermId)> =
+        interp.kb.entity_field_types(functor)?.to_vec();
+
+    let mut named: Vec<(Symbol, Value)> = Vec::with_capacity(field_types.len());
+    for (idx, (fname, _ftype)) in field_types.iter().enumerate() {
+        let field_tid = named_args
+            .iter()
+            .find(|(s, _)| *s == *fname)
+            .map(|(_, t)| *t)
+            .or_else(|| pos_args.get(idx).copied())?;
+        named.push((*fname, term_to_value(interp, field_tid)));
+    }
+
+    Some(Value::Entity { functor, pos: Vec::new(), named })
+}
+
+fn term_to_value(interp: &mut Interpreter, tid: crate::kb::term::TermId) -> Value {
+    use crate::intern::Symbol;
+    use crate::kb::term::{Literal, Term as CoreTerm};
+    // Avoid cloning the whole `Term` when we'll return `Value::Term(tid)`
+    // unchanged anyway — the common case for vars and non-ctor refs.
+    enum Decision {
+        Literal(Literal),
+        TryFn(Symbol),
+        TryRef(Symbol),
+        AsIs,
+    }
+    let decision = match interp.kb.get_term(tid) {
+        CoreTerm::Const(lit) => Decision::Literal(lit.clone()),
+        CoreTerm::Fn { functor, .. } => Decision::TryFn(*functor),
+        CoreTerm::Ref(sym) => Decision::TryRef(*sym),
+        _ => Decision::AsIs,
+    };
+    match decision {
+        Decision::Literal(Literal::Int(n)) => Value::Int(n),
+        Decision::Literal(Literal::BigInt(b)) => Value::BigInt(b),
+        Decision::Literal(Literal::Float(f)) => Value::Float(f.into_inner()),
+        Decision::Literal(Literal::Bool(b)) => Value::Bool(b),
+        Decision::Literal(Literal::String(s)) => Value::Str(s),
+        Decision::Literal(Literal::Handle(_, _)) => Value::Term(tid),
+        Decision::TryFn(functor) => {
+            if interp.kb.constructor_parent_sort(functor).is_some() {
+                materialize_entity(interp, tid).unwrap_or(Value::Term(tid))
+            } else {
+                Value::Term(tid)
+            }
+        }
+        Decision::TryRef(sym) => {
+            if interp.kb.constructor_parent_sort(sym).is_some() {
+                Value::Entity { functor: sym, pos: Vec::new(), named: Vec::new() }
+            } else {
+                Value::Term(tid)
+            }
+        }
+        Decision::AsIs => Value::Term(tid),
+    }
 }
 
 /// `anthill.reflect.fresh_var(name: String) -> Term`.

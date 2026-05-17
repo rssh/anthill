@@ -34,7 +34,7 @@ namespace anthill.reflect
   export negation, guarded, projected, limited
   export nonvar, ground, not
   export field_access
-  export term_functor_name, term_field, term_as_string, fresh_var, make_fn
+  export term_functor_name, term_field, term_as_string, term_as_entity, fresh_var, make_fn
   export find_fact, replace_named_arg
   export resolve_sort_instantiation_param
   export ConstraintId
@@ -139,6 +139,24 @@ namespace anthill.reflect
   -- Extract a String literal value from a term. Returns none() unless the
   -- term is exactly `Const(StringLiteral(_))`.
   operation term_as_string(t: Term) -> Option[T = String]
+
+  -- Materialize a `Term::Fn` whose functor is a known constructor into a
+  -- typed `Value::Entity`, using the KB's `entity_field_types` index to
+  -- recover the declared fields. Literal field values become typed scalars
+  -- (`Value::Int`/`Str`/`Bool`/`Float`); nested constructor terms recurse;
+  -- unhandled shapes (variables, refs to non-constructors) stay as
+  -- `Value::Term` so the caller can drill in further.
+  --
+  -- Returns `none()` when `t` is not a `Fn`, when its functor isn't a
+  -- registered constructor, or when no field-types entry exists for that
+  -- functor.
+  --
+  -- The return parameter `E` is the caller-side expected entity sort; this
+  -- builtin doesn't type-check that the recovered entity matches `E`. The
+  -- caller's `match` against constructor patterns acts as the run-time
+  -- guard. Companion of `term_as_sort` (sort decoder) and
+  -- `term_as_string` (string-literal decoder).
+  operation term_as_entity(t: Term) -> Option[T = ?E]
 
   -- Allocate a fresh logical variable as a Term::Var. Used to construct
   -- pattern queries (`claimable(?id, ?desc)`) from anthill code: pass the

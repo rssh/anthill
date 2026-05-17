@@ -76,3 +76,6 @@ mod wi236_call_with_requirements_test;
 
 #[path = "include/wi237_diag_test.rs"]
 mod wi237_diag_test;
+
+#[path = "include/wi260_term_as_entity_test.rs"]
+mod wi260_term_as_entity_test;
