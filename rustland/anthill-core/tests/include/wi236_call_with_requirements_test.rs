@@ -19,14 +19,14 @@ use smallvec::SmallVec;
 const POLY_DRIVER: &str = r#"
 namespace test.wi236_poly
   import anthill.prelude.{Cell, Option, String}
-  import anthill.reflect.{Term}
+  import anthill.stage0.{WorkItem}
   import anthill.todo.store.{WorkItemStore, FileBasedWorkitemStore, WIS}
 
   sort Driver
     sort State = ?
     requires WorkItemStore[State]
 
-    operation drive(s: Cell[State], id: String) -> Option[T = Term]
+    operation drive(s: Cell[State], id: String) -> Option[T = WorkItem]
       effects Error
     =
       WorkItemStore.lookup(s, id)
@@ -185,4 +185,92 @@ fn plain_call_on_polymorphic_op_documents_the_gap() {
          should fail (self-referential placeholder can't reach the \
          real impl); WI-236's call_with_requirements is the fix"
     );
+}
+
+/// Multi-op Driver mirroring the bundle's main.anthill: an entry op
+/// (`main`) dispatches to a nested op (`cmd_inner`) which calls a spec
+/// op (`WorkItemStore.lookup`). Pins that the requires dictionary
+/// supplied to the entry op propagates through the sibling call to the
+/// nested op's spec-op dispatch site.
+const MULTI_OP_DRIVER: &str = r#"
+namespace test.wi236_multi
+  import anthill.prelude.{Cell, Option, String, Int}
+  import anthill.stage0.{WorkItem}
+  import anthill.todo.store.{WorkItemStore, FileBasedWorkitemStore, WIS}
+
+  sort Driver
+    sort State = ?
+    requires WorkItemStore[State]
+
+    operation main(s: Cell[State], id: String) -> Int
+      effects Error
+    =
+      cmd_inner(s, id)
+
+    operation cmd_inner(s: Cell[State], id: String) -> Int
+      effects Error
+    =
+      match WorkItemStore.lookup(s, id)
+        case none() -> 1
+        case some(_) -> 0
+  end
+end
+"#;
+
+#[test]
+fn nested_op_dispatches_spec_call_via_inherited_requires() {
+    // Reproduce the bundle's main → dispatch → cmd_X chain: the spec
+    // call sits in a sibling op, not the entry op itself. The typer's
+    // dispatch classification must still fire so the runtime reaches
+    // the impl body instead of erroring `unknown operation: lookup`.
+    let mut files = crate::common::collect_stdlib_and_rust_bindings();
+    files.push(crate::common::workspace_root().join("anthill-todo/domain.anthill"));
+    files.push(crate::common::workspace_root().join("anthill-todo/store.anthill"));
+
+    let mut parsed: Vec<_> = files.iter().map(|p| {
+        let src = std::fs::read_to_string(p)
+            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+    }).collect();
+    parsed.push(parse::parse(MULTI_OP_DRIVER).expect("parse multi-op driver"));
+    let refs: Vec<_> = parsed.iter().collect();
+
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    load::load_all(&mut kb, &refs, &NullResolver)
+        .unwrap_or_else(|errs| {
+            for e in &errs { eprintln!("{}", e); }
+            panic!("load failed with {} errors", errs.len());
+        });
+
+    let mut interp = Interpreter::new(kb);
+    eval::builtins::register_standard_builtins(&mut interp).expect("builtins");
+
+    let cell = build_cell_wis(&mut interp);
+    let id_arg = Value::Str("WI-001".to_string());
+
+    let filebased = interp.kb_mut()
+        .intern("anthill.todo.store.FileBasedWorkitemStore");
+    let dict = interp.alloc_requirement(filebased, SmallVec::new());
+    let mut requirements: SmallVec<[_; 2]> = SmallVec::new();
+    requirements.push(dict);
+
+    let result = interp.call_with_requirements(
+        "test.wi236_multi.Driver.main",
+        &[cell, id_arg],
+        requirements,
+    );
+    match result {
+        Ok(v) => eprintln!("[wi236-multi] OK: {v:?}"),
+        Err(e) => {
+            let msg = format!("{e:?}");
+            eprintln!("[wi236-multi] err: {msg}");
+            assert!(
+                !msg.contains("unknown operation"),
+                "nested-op dispatch should reach FileBasedWorkitemStore.lookup \
+                 via the inherited requires; got {msg}"
+            );
+        }
+    }
 }

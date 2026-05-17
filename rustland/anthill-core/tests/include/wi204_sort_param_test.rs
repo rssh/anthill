@@ -50,10 +50,11 @@ fn form_a_bare_workitemstore_param() {
 namespace test.wi204_form_a
   import anthill.prelude.{Option, String}
   import anthill.reflect.{Term}
+  import anthill.stage0.{WorkItem}
   import anthill.todo.store.{WorkItemStore}
 
   sort Driver
-    operation drive(s: WorkItemStore, id: String) -> Option[T = Term]
+    operation drive(s: WorkItemStore, id: String) -> Option[T = WorkItem]
       effects Error
     =
       WorkItemStore.lookup(s, id)
@@ -69,10 +70,11 @@ fn form_b_op_level_requires_logical_var() {
 namespace test.wi204_form_b
   import anthill.prelude.{Cell, Option, String}
   import anthill.reflect.{Term}
+  import anthill.stage0.{WorkItem}
   import anthill.todo.store.{WorkItemStore}
 
   sort Driver
-    operation drive(s: Cell[?S], id: String) -> Option[T = Term]
+    operation drive(s: Cell[?S], id: String) -> Option[T = WorkItem]
       effects Error
       requires WorkItemStore[?S]
     =
@@ -89,13 +91,14 @@ fn form_c_sort_level_typeparam_plus_requires() {
 namespace test.wi204_form_c
   import anthill.prelude.{Cell, Option, String}
   import anthill.reflect.{Term}
+  import anthill.stage0.{WorkItem}
   import anthill.todo.store.{WorkItemStore}
 
   sort Driver
     sort S = ?
     requires WorkItemStore[S]
 
-    operation drive(s: Cell[S], id: String) -> Option[T = Term]
+    operation drive(s: Cell[S], id: String) -> Option[T = WorkItem]
       effects Error
     =
       WorkItemStore.lookup(s, id)
@@ -116,13 +119,14 @@ fn form_c_runtime_dispatch_through_polymorphic_op() {
 namespace test.wi204_form_c_runtime
   import anthill.prelude.{Cell, Option, String}
   import anthill.reflect.{Term}
+  import anthill.stage0.{WorkItem}
   import anthill.todo.store.{WorkItemStore, FileBasedWorkitemStore, WIS}
 
   sort Driver
     sort S = ?
     requires WorkItemStore[S]
 
-    operation drive(s: Cell[S], id: String) -> Option[T = Term]
+    operation drive(s: Cell[S], id: String) -> Option[T = WorkItem]
       effects Error
     =
       WorkItemStore.lookup(s, id)
@@ -131,7 +135,7 @@ namespace test.wi204_form_c_runtime
   sort ConcreteCaller
     requires WorkItemStore[WIS]
 
-    operation call_drive(c: Cell[WIS], id: String) -> Option[T = Term]
+    operation call_drive(c: Cell[WIS], id: String) -> Option[T = WorkItem]
       effects Error
     =
       Driver.drive(c, id)
@@ -207,20 +211,21 @@ fn form_c_with_concrete_caller_dispatches() {
 namespace test.wi204_form_c_concrete
   import anthill.prelude.{Cell, Option, String}
   import anthill.reflect.{Term}
+  import anthill.stage0.{WorkItem}
   import anthill.todo.store.{WorkItemStore, FileBasedWorkitemStore, WIS}
 
   sort Driver
     sort S = ?
     requires WorkItemStore[S]
 
-    operation drive(s: Cell[S], id: String) -> Option[T = Term]
+    operation drive(s: Cell[S], id: String) -> Option[T = WorkItem]
       effects Error
     =
       WorkItemStore.lookup(s, id)
   end
 
   sort ConcreteCaller
-    operation call_drive(c: Cell[WIS], id: String) -> Option[T = Term]
+    operation call_drive(c: Cell[WIS], id: String) -> Option[T = WorkItem]
       effects Error
     =
       Driver.drive(c, id)

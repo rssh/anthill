@@ -45,6 +45,8 @@ namespace anthill.todo
   import anthill.reflect.LogicalQuery.{sort_query, pattern_query}
   import anthill.reflect.{Substitution}
   import anthill.todo.store.{WorkItemStore}
+  import anthill.todo.store.WorkItemStore.{lookup, by_status_of, all}
+  import anthill.reflect.{term_as_entity}
   export Main, specs
 
   -- The 16-subcommand registry, mirroring the legacy Rust binary's
@@ -355,21 +357,43 @@ namespace anthill.todo
                                 concat(k, concat(": ", to_string(n)))))
               print_counts(rest)
 
-    -- Phase 2 first byte-faithful read-only command. Mirrors the legacy
-    -- `run_status` shape: total count line, then per-status breakdown
-    -- ordered alphabetically by status name.
-    operation cmd_status(s: Cell[State]) -> Int
-      effects ConsoleOutput
+    -- Status field's functor short name, or "?" when the field isn't
+    -- a recognizable Entity/Ref.
+    operation status_name_w(w: WorkItem) -> String =
+      match w
+        case WorkItem(_, _, _, _, _, _, _, st) ->
+          match term_functor_name(st)
+            case some(name) -> name
+            case none() -> "?"
+
+    operation tally_w(items: List[T = WorkItem],
+                      acc: List[Pair[String, Int]])
+      -> List[Pair[String, Int]]
     =
-      let items = facts_of(kb(), "WorkItem")
-      let total = count_items(items)
+      match items
+        case nil() -> acc
+        case cons(w, rest) ->
+          tally_w(rest, bump(acc, status_name_w(w)))
+
+    operation count_items_w(items: List[T = WorkItem]) -> Int =
+      match items
+        case nil() -> 0
+        case cons(_, rest) -> 1 + count_items_w(rest)
+
+    -- Total count line, then per-status breakdown ordered alphabetically
+    -- by status name. Mirrors the legacy `run_status` output shape.
+    operation cmd_status(s: Cell[State]) -> Int
+      effects {ConsoleOutput, Error}
+    =
+      let items = WorkItemStore.all(s)
+      let total = count_items_w(items)
       if eq(total, 0) then
         let _ = println(console(), "No work items found.")
         0
       else
         let _ = println(console(),
                         concat(to_string(total), " work item(s):"))
-        let buckets = sort_buckets(tally(items, nil()))
+        let buckets = sort_buckets(tally_w(items, nil()))
         print_counts(buckets)
 
     -- Filter a list of WorkItem terms to the one whose id field equals
@@ -460,19 +484,32 @@ namespace anthill.todo
           println(console(),
                   concat("Depends on:  ", join_strings(deps, ", ")))
 
-    -- Find a single workitem by id, then print id / description / status /
-    -- depends_on. Acceptance criteria + Feedback rendering needs TermPrinter
-    -- and cross-fact iteration; deferred to follow-up.
+    -- Extract `depends_on` from a materialized WorkItem as a List[String].
+    -- The entity declares the field as `Option[List[String]]`, but the
+    -- on-disk fact form stores the value unwrapped (`depends_on: [...]`,
+    -- not `some([...])`) — so the materialized slot can be `none()`
+    -- (absent field), `some(list)`, or the bare cons/nil chain.
+    operation deps_of_w(w: WorkItem) -> List[T = String] =
+      match w
+        case WorkItem(_, _, _, _, deps, _, _, _) -> normalize_deps(deps)
+
+    operation normalize_deps(d: Option[T = List[T = String]]) -> List[T = String] =
+      match d
+        case none() -> nil()
+        case some(xs) -> xs
+        case nil() -> nil()
+        case cons(h, t) -> cons(h, normalize_deps(t))
+
+    -- Print id / description / status / depends_on for a single WorkItem.
     operation cmd_show(bindings: List[Binding], s: Cell[State]) -> Int
-      effects {ConsoleOutput, ConsoleError}
+      effects {ConsoleOutput, ConsoleError, Error}
     =
       match get_binding(bindings, "id")
         case none() ->
           let _ = eprintln(console(), "error: missing work item id")
           2
         case some(id) ->
-          let items = facts_of(kb(), "WorkItem")
-          match find_by_id(items, id)
+          match WorkItemStore.lookup(s, id)
             case none() ->
               let _ = eprintln(console(),
                                concat("error: work item '",
@@ -480,10 +517,38 @@ namespace anthill.todo
               1
             case some(wi) ->
               let _ = println(console(), concat("ID:          ", id))
-              let _ = print_description(wi)
-              let _ = print_status_line(wi)
-              let _ = print_deps(wi)
+              let _ = print_description_w(wi)
+              let _ = print_status_line_w(wi)
+              let _ = print_deps_w(wi)
               0
+
+    operation print_description_w(w: WorkItem) -> Unit
+      effects ConsoleOutput
+    =
+      match w
+        case WorkItem(_, description, _, _, _, _, _, _) ->
+          match term_as_string(description)
+            case some(s) -> println(console(), concat("Description: ", s))
+            case none() -> ()
+
+    operation print_status_line_w(w: WorkItem) -> Unit
+      effects ConsoleOutput
+    =
+      match w
+        case WorkItem(_, _, _, _, _, _, _, st) ->
+          match term_functor_name(st)
+            case some(name) -> println(console(), concat("Status:      ", name))
+            case none() -> ()
+
+    operation print_deps_w(w: WorkItem) -> Unit
+      effects ConsoleOutput
+    =
+      let deps = deps_of_w(w)
+      match deps
+        case nil() -> ()
+        case cons(_, _) ->
+          println(console(),
+                  concat("Depends on:  ", join_strings(deps, ", ")))
 
     -- ── cmd_list helpers ──────────────────────────────────────────
 

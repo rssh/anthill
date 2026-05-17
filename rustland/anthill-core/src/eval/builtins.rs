@@ -768,21 +768,75 @@ fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) ->
             (*functor, pos_args.clone(), named_args.clone()),
         _ => return None,
     };
-    interp.kb.constructor_parent_sort(functor)?;
+    // Resolve `functor` to the canonical Symbol that owns the
+    // `entity_field_types` entry. Free-standing entities (declared at
+    // namespace level rather than `sort … { entity X(...) }`) register
+    // fields but no `entity_parent` — `WorkItem` in
+    // `anthill-todo/domain.anthill` is the prototypical case — so the
+    // probe sequence keys off `entity_field_types`, not
+    // `constructor_parent_sort`. Path (3)'s last-resort scan covers
+    // facts whose parser-time Symbol is the unqualified short name
+    // (`fact WorkItem(...)` in a file that imports the qualified
+    // symbol).
+    let canonical = if interp.kb.entity_field_types(functor).is_some() {
+        functor
+    } else if let Some(q) = interp.kb.entity_qualified_for_short(functor)
+        .filter(|q| interp.kb.entity_field_types(*q).is_some())
+    {
+        q
+    } else {
+        let short_name = interp.kb.resolve_sym(functor).to_string();
+        interp.kb.symbols.by_qualified_name.iter()
+            .find(|(qname, &sym)| {
+                qname.rsplit('.').next() == Some(short_name.as_str())
+                    && interp.kb.entity_field_types(sym).is_some()
+            })
+            .map(|(_, &sym)| sym)?
+    };
     let field_types: Vec<(Symbol, TermId)> =
-        interp.kb.entity_field_types(functor)?.to_vec();
+        interp.kb.entity_field_types(canonical)?.to_vec();
+    // Default missing `Option[T = …]` fields to `none()` — on-disk facts
+    // omit optional named args (a `WorkItem` fact skips
+    // `context`/`generates`/`requires_capability`) but the field index
+    // still expects them. Required for callers to pattern-match a
+    // complete entity.
+    let none_sym = interp.kb.try_resolve_symbol("anthill.prelude.Option.none")?;
 
     let mut named: Vec<(Symbol, Value)> = Vec::with_capacity(field_types.len());
-    for (idx, (fname, _ftype)) in field_types.iter().enumerate() {
+    for (idx, (fname, ftype)) in field_types.iter().enumerate() {
         let field_tid = named_args
             .iter()
             .find(|(s, _)| *s == *fname)
             .map(|(_, t)| *t)
-            .or_else(|| pos_args.get(idx).copied())?;
-        named.push((*fname, term_to_value(interp, field_tid)));
+            .or_else(|| pos_args.get(idx).copied());
+        match field_tid {
+            Some(tid) => named.push((*fname, term_to_value(interp, tid))),
+            None if is_option_type(interp, *ftype) => {
+                named.push((*fname, Value::Entity {
+                    functor: none_sym,
+                    pos: Vec::new(),
+                    named: Vec::new(),
+                }));
+            }
+            None => return None,
+        }
     }
 
-    Some(Value::Entity { functor, pos: Vec::new(), named })
+    Some(Value::Entity { functor: canonical, pos: Vec::new(), named })
+}
+
+/// True when `ftype` is `Option` or `Option[T = …]` (qualified or short).
+/// Used by `materialize_entity` to decide whether a missing field should
+/// default to `none()` rather than aborting the materialization.
+fn is_option_type(interp: &Interpreter, ftype: crate::kb::term::TermId) -> bool {
+    use crate::kb::term::Term as CoreTerm;
+    let sym = match interp.kb.get_term(ftype) {
+        CoreTerm::Fn { functor, .. } => *functor,
+        CoreTerm::Ref(s) => *s,
+        _ => return false,
+    };
+    let name = interp.kb.resolve_sym(sym);
+    name == "Option" || name == "anthill.prelude.Option"
 }
 
 fn term_to_value(interp: &mut Interpreter, tid: crate::kb::term::TermId) -> Value {

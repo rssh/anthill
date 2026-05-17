@@ -156,14 +156,15 @@ fn constructor_sub_values(
     scrutinee: &Value,
 ) -> Option<Vec<Value>> {
     match scrutinee {
-        Value::Entity { functor, pos, named } if *functor == expected => {
+        Value::Entity { functor, pos, named } => {
+            if !functor_matches(kb, expected, *functor) { return None; }
             let mut all = pos.clone();
             all.extend(named.iter().map(|(_, v)| v.clone()));
             Some(all)
         }
         Value::Term(tid) => {
             if let Term::Fn { functor, pos_args, named_args } = kb.get_term(*tid) {
-                if *functor != expected { return None; }
+                if !functor_matches(kb, expected, *functor) { return None; }
                 let mut all: Vec<Value> = pos_args.iter().map(|t| Value::Term(*t)).collect();
                 all.extend(named_args.iter().map(|(_, t)| Value::Term(*t)));
                 Some(all)
@@ -173,6 +174,31 @@ fn constructor_sub_values(
         }
         _ => None,
     }
+}
+
+/// Pattern-side constructor name may be the short symbol (`wis`); the
+/// scrutinee carries the loader-registered qualified symbol
+/// (`…FileBasedWorkitemStore.wis`). The kb's short→qualified index makes
+/// these comparable. Shared with the eval-side MatchDispatch pre-filter.
+pub(crate) fn functor_matches(
+    kb: &crate::kb::KnowledgeBase,
+    pattern_sym: Symbol,
+    scrutinee_sym: Symbol,
+) -> bool {
+    if pattern_sym == scrutinee_sym { return true; }
+    if let Some(q) = kb.entity_qualified_for_short(pattern_sym) {
+        if q == scrutinee_sym { return true; }
+    }
+    if let Some(q) = kb.entity_qualified_for_short(scrutinee_sym) {
+        if q == pattern_sym { return true; }
+    }
+    // Fallback: compare by last-dotted-segment short names. Covers
+    // patterns whose Symbol came from a nested-sort scope where the
+    // short-name redirect was registered for a different qualified
+    // resolution than the host-built value carries.
+    let pattern_short = kb.resolve_sym(pattern_sym).rsplit('.').next().unwrap_or("");
+    let scrut_short = kb.resolve_sym(scrutinee_sym).rsplit('.').next().unwrap_or("");
+    !pattern_short.is_empty() && pattern_short == scrut_short
 }
 
 fn literal_matches(kb: &crate::kb::KnowledgeBase, lit_tid: TermId, scrutinee: &Value) -> bool {

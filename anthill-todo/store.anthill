@@ -1,24 +1,28 @@
 -- WorkItemStore: project-side spec + file-backed implementation.
 --
--- Per proposal 036 (Domain Store Sorts) / WI-203, Strategy A. The spec
--- lives over Cell[V = State] so the Cell protocol (Modify[s], Cell.get,
--- Cell.set) applies uniformly. State is the data-shape; each impl picks
--- its own value-shape and bodies via a `fact WorkItemStore[State = …]`.
+-- Per proposal 036 (Domain Store Sorts) / WI-203. The spec lives over
+-- Cell[V = State] so the Cell protocol (Modify[s], Cell.get, Cell.set)
+-- applies uniformly. State is the data-shape; each impl picks its own
+-- value-shape and bodies via a `fact WorkItemStore[State = …]`.
 --
--- Strategy A: retrieve results stay Term-typed (no WI-189 reflect-from-
--- Term yet); lookup returns Option[Term], by_status_of returns
--- List[Term]. cmd_X bodies coercing Term → WorkItem land in phase 3.
+-- Spec returns typed `WorkItem` (WI-204 phase B1): retrieve results
+-- materialize through reflect.term_as_entity (WI-260) so callers receive
+-- pattern-matchable `WorkItem` entities instead of opaque `Term`s.
 
 namespace anthill.todo.store
   import anthill.stage0.{WorkItem, WorkStatus}
   import anthill.persistence.filesystem.{IndexedFileStore}
-  import anthill.persistence.{persist, flush, retrieve}
-  import anthill.prelude.{Cell, Stream, Option, List, Int, String, Unit}
+  import anthill.persistence.{persist, flush}
+  import anthill.prelude.{Cell, Option, List, Int, String, Unit, Bool}
   import anthill.prelude.Int.{to_string}
   import anthill.prelude.String.{concat}
   import anthill.prelude.Ordered.{lt}
+  import anthill.prelude.Eq.{eq}
   import anthill.prelude.Meta.{Meta}
-  import anthill.reflect.{Term}
+  import anthill.prelude.Option.{none, some}
+  import anthill.prelude.List.{nil, cons}
+  import anthill.reflect.{Term, term_as_entity, term_field, term_as_string, term_functor_name}
+  import anthill.reflect.KB.{kb, facts_of}
   export WorkItemStore, FileBasedWorkitemStore, WIS
 
   -- ─── 1. Spec ────────────────────────────────────────────────────
@@ -36,10 +40,11 @@ namespace anthill.todo.store
     operation forget(s: Cell[V = State], id: String) -> Unit
       effects {Modify[s], Error}
 
-    -- Read-only ops. Stream-of-Term until WI-189 lands.
-    operation lookup(s: Cell[V = State], id: String) -> Option[T = Term]
+    -- Read-only ops: typed WorkItem returns (WI-204 phase B1).
+    operation lookup(s: Cell[V = State], id: String) -> Option[T = WorkItem]
     operation by_status_of(s: Cell[V = State], st: WorkStatus)
-      -> List[T = Term]
+      -> List[T = WorkItem]
+    operation all(s: Cell[V = State]) -> List[T = WorkItem]
   end
 
   -- ─── 2. File-backed impl ────────────────────────────────────────
@@ -74,19 +79,85 @@ namespace anthill.todo.store
           let _ = Cell.set(s, wis(b, c + 1))
           concat("WI-", pad3(c))
 
-    operation lookup(s: Cell[V = WIS], id: String) -> Option[T = Term]
-      effects Error
-    =
-      match Cell.get(s)
-        case wis(b, _) ->
-          Stream.head(retrieve(b, WorkItem(id: id)))
+    -- Materialize each in-KB WorkItem Term into a typed entity via
+    -- term_as_entity; drop rows that fail to materialize (e.g., the
+    -- synthetic entity-declaration fact with logical-var fields).
+    -- Read-only impl bodies route through `facts_of(kb(), "WorkItem")`
+    -- rather than `retrieve(backend, …)`: Stream.collect / Stream.head
+    -- have no operational bodies in the stdlib yet (only splitFirst is
+    -- wired through LogicalStream's Rust builtin), so a retrieve-based
+    -- impl can't materialize the result. Functionally equivalent for the
+    -- bundle scale (~hundreds of facts); WI-189 follow-up swaps in a
+    -- retrieve path once Stream.collect has a body.
+    operation terms_to_workitems(ts: List[T = Term]) -> List[T = WorkItem] =
+      match ts
+        case nil() -> nil()
+        case cons(t, rest) ->
+          match term_as_entity(t)
+            case some(w) -> cons(w, terms_to_workitems(rest))
+            case none() -> terms_to_workitems(rest)
 
-    operation by_status_of(s: Cell[V = WIS], st: WorkStatus) -> List[T = Term]
+    -- Identify a WorkItem term by its `id` field. Returns the term whose
+    -- id matches `target`, or none(). Used by lookup before materializing.
+    operation find_term_by_id(ts: List[T = Term], target: String) -> Option[T = Term] =
+      match ts
+        case nil() -> none()
+        case cons(t, rest) ->
+          match term_field(t, "id")
+            case some(id_term) ->
+              match term_as_string(id_term)
+                case some(id_str) ->
+                  if eq(id_str, target) then some(t)
+                  else find_term_by_id(rest, target)
+                case none() -> find_term_by_id(rest, target)
+            case none() -> find_term_by_id(rest, target)
+
+    -- Identify the status functor short name of a WorkItem term; "" when
+    -- the term lacks a recognizable status field.
+    operation status_short(t: Term) -> String =
+      match term_field(t, "status")
+        case some(st_term) ->
+          match term_functor_name(st_term)
+            case some(n) -> n
+            case none() -> ""
+        case none() -> ""
+
+    operation filter_by_status(ts: List[T = Term], target: String) -> List[T = Term] =
+      match ts
+        case nil() -> nil()
+        case cons(t, rest) ->
+          if eq(status_short(t), target) then
+            cons(t, filter_by_status(rest, target))
+          else
+            filter_by_status(rest, target)
+
+    operation lookup(s: Cell[V = WIS], id: String) -> Option[T = WorkItem]
       effects Error
     =
       match Cell.get(s)
-        case wis(b, _) ->
-          Stream.collect(retrieve(b, WorkItem(status: st)))
+        case wis(_, _) ->
+          match find_term_by_id(facts_of(kb(), "WorkItem"), id)
+            case none() -> none()
+            case some(t) -> term_as_entity(t)
+
+    operation by_status_of(s: Cell[V = WIS], st: WorkStatus)
+      -> List[T = WorkItem]
+      effects Error
+    =
+      match Cell.get(s)
+        case wis(_, _) ->
+          match term_functor_name(st)
+            case some(name) ->
+              terms_to_workitems(
+                filter_by_status(facts_of(kb(), "WorkItem"), name))
+            case none() -> nil()
+
+    operation all(s: Cell[V = WIS]) -> List[T = WorkItem]
+      effects Error
+    =
+      match Cell.get(s)
+        case wis(_, _) ->
+          terms_to_workitems(facts_of(kb(), "WorkItem"))
 
     operation commit(s: Cell[V = WIS], w: WorkItem) -> Unit
       effects {Modify[s], Error}

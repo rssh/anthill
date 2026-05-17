@@ -51,10 +51,11 @@ fn workitemstore_lookup_typechecks_from_bundle_sort_body() {
 namespace test.wi204_smoke_lookup
   import anthill.prelude.{Cell, Option, String}
   import anthill.reflect.{Term}
+  import anthill.stage0.{WorkItem}
   import anthill.todo.store.{WorkItemStore, FileBasedWorkitemStore, WIS}
 
   sort Driver
-    operation drive(s: Cell[WIS], id: String) -> Option[T = Term]
+    operation drive(s: Cell[WIS], id: String) -> Option[T = WorkItem]
       effects Error
     =
       WorkItemStore.lookup(s, id)

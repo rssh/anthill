@@ -100,8 +100,32 @@ impl Interpreter {
                 // form). Read the classification off the NodeOccurrence's
                 // RefCell — written by `kb/typing.rs::classify` during
                 // type-checking.
-                let target = classified_apply_target(occ).unwrap_or(*functor);
-                self.start_apply(target, pos_args, named_args)
+                // WI-204 phase B1: DeferToRequirement classifications
+                // resolve at runtime — pull the dispatching dict from
+                // the caller's frame via the synthesized `__req_<spec>`
+                // name, then dispatch the impl op with the dict's
+                // sub-instances threaded into the callee's frame.
+                let class = match &occ.kind {
+                    NodeKind::Expr { classification, .. } => classification.borrow().clone(),
+                    _ => None,
+                };
+                use crate::kb::typing::CallClass;
+                match class.as_deref() {
+                    Some(CallClass::DeferToRequirement {
+                        spec_op_sym, slot, enclosing_sort, ..
+                    }) => self.start_apply_deferred(
+                        *spec_op_sym, *slot, *enclosing_sort, pos_args, named_args,
+                    ),
+                    Some(CallClass::ConcreteApplyWithin {
+                        fn_target_sym, enclosing_sort, ..
+                    }) => self.start_apply_same_sort(
+                        *fn_target_sym, *enclosing_sort, pos_args, named_args,
+                    ),
+                    _ => {
+                        let target = classified_apply_target(occ).unwrap_or(*functor);
+                        self.start_apply(target, pos_args, named_args)
+                    }
+                }
             }
             Expr::ApplyWithin { functor, args, named_args, requirements } => {
                 self.start_apply_within(*functor, args, named_args, requirements)
@@ -404,47 +428,132 @@ impl Interpreter {
         };
 
         // Names model (WI-237): expand the dispatching dict into
-        // name-keyed frame requirements — `__req_self` → the dict, and
-        // `__req_<spec>` → each positional sub-instance, named by
-        // `synth_req_names` against the callee's impl parent sort. The
-        // same name synthesis runs in the typer's IR emitter, so a
-        // generic body's `var_ref(__req_*)` reads resolve against this.
-        let requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]> =
-            match dispatching_dict {
-                Some(dict) => {
-                    let names = match crate::kb::typing::impl_parent_of_op(&self.kb, target) {
-                        Some(p) => Some(crate::kb::typing::synth_req_names(&mut self.kb, p)),
-                        None => None,
-                    };
-                    let arity = dict.arity();
-                    let name_count = names.as_ref().map_or(0, |n| n.len());
-                    if arity != name_count {
-                        return Err(EvalError::Internal(format!(
-                            "apply_within frame-push: dispatching dict for {} has \
-                             arity {arity} but its requires chain has {name_count} entries",
-                            self.kb.qualified_name_of(target),
-                        )));
-                    }
-                    let mut reqs: SmallVec<[(Symbol, super::value::RequirementHandle); 2]> =
-                        SmallVec::with_capacity(arity + 1);
-                    reqs.push((self.fields.req_self, dict.clone()));
-                    if let Some(names) = names {
-                        for (k, name) in names.iter().enumerate() {
-                            reqs.push((*name, dict.project(k)));
-                        }
-                    }
-                    reqs
-                }
-                None => SmallVec::new(),
-            };
+        // name-keyed frame requirements (`__req_self` → the dict,
+        // `__req_<spec>` → each positional sub-instance). Same name
+        // synthesis as the typer's IR emitter, so the callee body's
+        // `var_ref(__req_*)` reads resolve against this frame.
+        let requirements = match dispatching_dict {
+            Some(dict) => self.expand_dispatching_dict(target, &dict)?,
+            None => SmallVec::new(),
+        };
+        self.dispatch_apply_with_requirements(target, requirements, args, named_args)
+    }
 
-        let total_args = args.len() + named_args.len();
+    /// Sibling-op call inside a sort with non-empty `requires`: the
+    /// callee inherits the caller's frame.requirements as-is (same chain
+    /// shape, same names). Fires for `CallClass::ConcreteApplyWithin`
+    /// whose callee's parent sort matches the caller's enclosing sort —
+    /// the common case for multi-op bundles like anthill-todo's `Main`.
+    /// Cross-sort ConcreteApplyWithin still falls through to plain
+    /// `start_apply`; the requirement-insertion pass owns the projection
+    /// path for those.
+    fn start_apply_same_sort(
+        &mut self,
+        target: Symbol,
+        enclosing_sort: Option<Symbol>,
+        pos_args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    ) -> Result<StepOutcome, EvalError> {
+        let callee_parent = crate::kb::typing::impl_parent_of_op(&self.kb, target);
+        let inherit = matches!(
+            (callee_parent, enclosing_sort),
+            (Some(c), Some(e)) if c == e,
+        );
+        if !inherit {
+            return self.start_apply(target, pos_args, named_args);
+        }
+        let caller_reqs = self.stack.top()
+            .ok_or_else(|| EvalError::Internal(
+                "start_apply_same_sort with no current frame".into()))?
+            .requirements.clone();
+        self.dispatch_apply_with_requirements(target, caller_reqs, pos_args, named_args)
+    }
+
+    /// Runtime path for `CallClass::DeferToRequirement`: resolve the
+    /// dispatching dict from the caller frame's `__req_<spec>` slot,
+    /// then dispatch the impl op with the dict's sub-instances expanded
+    /// into the callee's frame requirements. Equivalent to evaluating
+    /// `apply_within(fn = spec_op_sym, args = …, requirements =
+    /// [var_ref(__req_<spec>)])` directly against the original `Apply`
+    /// NodeOccurrence (no IR rewrite).
+    fn start_apply_deferred(
+        &mut self,
+        spec_op_sym: Symbol,
+        slot: usize,
+        enclosing_sort: Option<Symbol>,
+        pos_args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    ) -> Result<StepOutcome, EvalError> {
+        let encl = enclosing_sort.ok_or_else(|| EvalError::Internal(
+            "DeferToRequirement classification missing enclosing_sort".into()))?;
+        let caller_names = crate::kb::typing::synth_req_names(&mut self.kb, encl);
+        let name_sym = *caller_names.get(slot).ok_or_else(|| EvalError::Internal(format!(
+            "DeferToRequirement slot {slot} out of range for {} (chain len {})",
+            self.kb.resolve_sym(encl), caller_names.len())))?;
+        let dispatching_dict = {
+            let top = self.stack.top().ok_or_else(|| EvalError::Internal(
+                "start_apply_deferred without a current frame".into()))?;
+            find_requirement(&top.requirements, name_sym)
+                .ok_or_else(|| EvalError::Internal(format!(
+                    "DeferToRequirement: requirement param `{}` not bound in caller frame",
+                    self.kb.resolve_sym(name_sym))))?
+                .clone()
+        };
+        let target = self.dispatch_via_sort_ops_table(spec_op_sym, &dispatching_dict);
+        let requirements = self.expand_dispatching_dict(target, &dispatching_dict)?;
+        self.dispatch_apply_with_requirements(target, requirements, pos_args, named_args)
+    }
+
+    /// Build the callee's `frame.requirements` from a resolved dispatching
+    /// dict: `__req_self` plus one entry per sub-instance, keyed by the
+    /// impl parent sort's synthesized `__req_<spec>` chain names.
+    /// Mirrors `start_apply_within`'s names-model expansion.
+    fn expand_dispatching_dict(
+        &mut self,
+        target: Symbol,
+        dict: &super::value::RequirementHandle,
+    ) -> Result<SmallVec<[(Symbol, super::value::RequirementHandle); 2]>, EvalError> {
+        let names = match crate::kb::typing::impl_parent_of_op(&self.kb, target) {
+            Some(p) => Some(crate::kb::typing::synth_req_names(&mut self.kb, p)),
+            None => None,
+        };
+        let arity = dict.arity();
+        let name_count = names.as_ref().map_or(0, |n| n.len());
+        if arity != name_count {
+            return Err(EvalError::Internal(format!(
+                "deferred dispatch frame-push: dispatching dict for {} has \
+                 arity {arity} but its requires chain has {name_count} entries",
+                self.kb.qualified_name_of(target),
+            )));
+        }
+        let mut reqs: SmallVec<[(Symbol, super::value::RequirementHandle); 2]> =
+            SmallVec::with_capacity(arity + 1);
+        reqs.push((self.fields.req_self, dict.clone()));
+        if let Some(names) = names {
+            for (k, name) in names.iter().enumerate() {
+                reqs.push((*name, dict.project(k)));
+            }
+        }
+        Ok(reqs)
+    }
+
+    /// Suspend the current frame with `ApplyWithinArgs` (or dispatch
+    /// immediately when there are no args) given a pre-built requirements
+    /// channel. Shared tail of every code path that needs the
+    /// requirements-passing variant of `start_apply`.
+    fn dispatch_apply_with_requirements(
+        &mut self,
+        target: Symbol,
+        requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
+        pos_args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    ) -> Result<StepOutcome, EvalError> {
+        let total_args = pos_args.len() + named_args.len();
         if total_args == 0 {
             return self.dispatch_call_with_requirements(target, Vec::new(), requirements);
         }
-
         let mut remaining: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(total_args);
-        for a in args.iter() { remaining.push(a.clone()); }
+        for a in pos_args.iter() { remaining.push(a.clone()); }
         for (_, a) in named_args.iter() { remaining.push(a.clone()); }
         let first = remaining.remove(0);
         self.suspend_and_push(
@@ -719,10 +828,17 @@ impl Interpreter {
                         let pat_tid = branch.pattern;
                         // Cheap pre-filter: constructor-pattern functor
                         // mismatch can skip the full match attempt.
+                        // `functor_matches` collapses short vs. qualified
+                        // — `wis(_, _)` patterns compare equal to host-
+                        // built `…FileBasedWorkitemStore.wis` values.
                         if let (Some(pat_name), Some(scr_name)) =
                             (constructor_pattern_name(self, pat_tid), scrutinee_functor)
                         {
-                            if pat_name != scr_name { continue; }
+                            if !super::pattern::functor_matches(
+                                &self.kb, pat_name, scr_name,
+                            ) {
+                                continue;
+                            }
                         }
                         if let Some(bindings) = match_pattern(self, pat_tid, &v) {
                             picked = Some((branch.body.clone(), bindings));
