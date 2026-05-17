@@ -3455,14 +3455,21 @@ pub(crate) fn extract_type_param(kb: &KnowledgeBase, ty: TermId, param: &str) ->
 
 // ── Pattern env extension ──────────────────────────────────────
 
-/// Build a `Substitution` from a `parameterized(base, bindings)` type:
-/// each binding's param symbol resolves (via its `SortAlias`) to a
-/// logical `Var`, bound to the binding's value type. Used so a
-/// constructor pattern's declared field types resolve the scrutinee's
-/// concrete type args (`case some(name)` over `Option[T = String]` →
-/// `name: String`, not `name: T`). Returns `None` when the scrutinee
-/// isn't parameterized or carries no resolvable bindings.
-fn build_pattern_subst(kb: &KnowledgeBase, scrutinee_type: TermId) -> Option<Substitution> {
+/// Build a `Substitution` from a `parameterized(base, bindings)` type
+/// for a constructor pattern's field types: each scrutinee binding's
+/// param symbol maps to the type-param `Var(Global)` registered for
+/// `parent_sort`, bound to the binding's value type. So
+/// `case some(name)` over `Option[T = String]` resolves `some.value`'s
+/// declared type to `String`, binding `name: String`.
+///
+/// Lookup is scoped to `parent_sort` via [`type_param_vid_in_sort`];
+/// short-name resolution is ambiguous when many sorts declare
+/// `sort T = ?`.
+fn build_pattern_subst(
+    kb: &KnowledgeBase,
+    scrutinee_type: TermId,
+    parent_sort: Symbol,
+) -> Option<Substitution> {
     if type_functor_name(kb, scrutinee_type) != Some("parameterized") {
         return None;
     }
@@ -3471,19 +3478,41 @@ fn build_pattern_subst(kb: &KnowledgeBase, scrutinee_type: TermId) -> Option<Sub
         _ => return None,
     };
     let bindings_tid = get_named_arg(kb, &named_args, "bindings")?;
+
     let mut subst = Substitution::new();
     let mut any = false;
     for b in list_to_vec(kb, bindings_tid) {
         let (Some(param), Some(value)) = (binding_param_sym(kb, b), binding_value(kb, b))
         else { continue };
-        if let Some(alias) = resolve_sort_alias(kb, param) {
-            if let Term::Var(Var::Global(vid)) = kb.get_term(alias) {
-                subst.bind_term(*vid, value);
-                any = true;
-            }
+        if let Some(vid) = type_param_vid_in_sort(kb, parent_sort, param) {
+            subst.bind_term(vid, value);
+            any = true;
         }
     }
     if any { Some(subst) } else { None }
+}
+
+/// Look up the type-parameter `Var(Global)` registered for
+/// `<parent_sort>.<param_sym>`. Resolves the qualified short name to a
+/// `Symbol` and delegates to [`resolve_sort_alias`]'s exact-symbol
+/// match — unambiguous even when many sorts declare the same short
+/// param name (`sort T = ?` recurs in List, Option, Stream …).
+fn type_param_vid_in_sort(
+    kb: &KnowledgeBase,
+    parent_sort: Symbol,
+    param_sym: Symbol,
+) -> Option<crate::kb::term::VarId> {
+    let qualified = format!(
+        "{}.{}",
+        kb.qualified_name_of(parent_sort),
+        kb.resolve_sym(param_sym),
+    );
+    let qualified_sym = kb.try_resolve_symbol(&qualified)?;
+    let alias_target = resolve_sort_alias(kb, qualified_sym)?;
+    match kb.get_term(alias_target) {
+        Term::Var(Var::Global(v)) => Some(*v),
+        _ => None,
+    }
 }
 
 fn extend_env_from_pattern(
@@ -3524,8 +3553,15 @@ fn extend_env_from_pattern(
                         // `String` — without this `name` binds to the
                         // raw type-param term and surfaces as a bare
                         // `TermId` in later return-type checks.
+                        let parent_sort = kb.constructor_parent_sort(ctor_sym)
+                            .and_then(|t| match kb.get_term(t) {
+                                Term::Fn { functor, .. } => Some(*functor),
+                                Term::Ref(s) => Some(*s),
+                                _ => None,
+                            });
                         let subst = scrutinee_type
-                            .and_then(|st| build_pattern_subst(kb, st));
+                            .zip(parent_sort)
+                            .and_then(|(st, p)| build_pattern_subst(kb, st, p));
                         for (i, sub_pat) in sub_patterns.iter().enumerate() {
                             let field_type = fields.get(i).map(|(_, ty)| {
                                 match &subst {
@@ -4777,19 +4813,16 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
 
 /// Extract constructor and operation symbol lists from a SortInfo fact.
 ///
-/// WI-237 NOTE: still matches by SHORT name — the `same_symbol` audit
-/// fix is the last of the six sites and is deliberately HELD. Applying
-/// it makes the typer actually check the anthill-todo bundle's `sort
-/// Main` cmd_X bodies (its short name collides with `anthill.cli.Main`,
-/// which masked them). That exposes a chain of further issues, fixed
-/// incrementally under WI-237: (done) types_compatible name-binding
-/// normalization, pattern type-arg propagation, anthill-stl spec-fact
-/// embedding, bundle effect declarations, and `op_has_runnable_body`
-/// guarding WI-218 from rewriting spec ops to body-less impl symbols.
-/// (remaining) a req_insertion hoist-scope bug — `var_ref(__hoist_N)
-/// unbound in requirement position` — and `Ordered.lt` derived-op
-/// dispatch returning NoMatch. Diagnostic: `wi237_diag_test.rs`. The
-/// other five audit sites ARE on `same_symbol`.
+/// WI-237: matched on `same_symbol` (qualified-name identity) like the
+/// other five resolve_sym audit sites. The bundle's `sort Main` short
+/// name no longer collides with `anthill.cli.Main` here, so the typer
+/// actually checks the anthill-todo bundle's cmd_X bodies. The chain of
+/// follow-up issues this exposed is fixed under WI-237: types_compatible
+/// name-binding normalization, pattern type-arg propagation (now
+/// ctor-aware via `entity_field_types`, not SortAlias short-name lookup),
+/// anthill-stl spec-fact embedding, bundle effect declarations, and
+/// `op_has_runnable_body` guarding WI-218 from rewriting spec ops to
+/// body-less impl symbols. Diagnostic: `wi237_diag_test.rs`.
 fn find_sort_info(kb: &KnowledgeBase, sort_info_sym: Symbol, sort_functor: Symbol) -> Option<(Vec<Symbol>, Vec<Symbol>)> {
     for rid in kb.by_functor(sort_info_sym) {
         if !kb.rule_body(rid).is_empty() { continue; }
@@ -4975,7 +5008,12 @@ fn check_value_against_parameterized(
         }
     }
 
-    // Build substitution from type bindings (T → Int)
+    // Build substitution from type bindings (T → Int). Look up each
+    // param's `Var` scoped to `base_sym` — the SortAlias index has
+    // multiple entries for short names like "T" (List, Option, Stream,
+    // …), and an unscoped short-name lookup may return the wrong sort's
+    // `Var`, leaving `walk_type` on the entity's field types
+    // unsubstituted.
     let bindings_tid = get_named_arg(kb, &declared_args, "bindings")?;
     let bindings = list_to_vec(kb, bindings_tid);
     let mut subst = Substitution::new();
@@ -4983,11 +5021,8 @@ fn check_value_against_parameterized(
         let param_sym = binding_param_sym(kb, *b);
         let value_type = binding_value(kb, *b);
         if let (Some(psym), Some(vt)) = (param_sym, value_type) {
-            // Resolve the type param's SortAlias Var and bind it
-            if let Some(alias_target) = resolve_sort_alias(kb, psym) {
-                if let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) {
-                    subst.bind(*vid, vt);
-                }
+            if let Some(vid) = type_param_vid_in_sort(kb, base_sym, psym) {
+                subst.bind(vid, vt);
             }
         }
     }

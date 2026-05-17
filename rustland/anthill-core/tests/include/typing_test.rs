@@ -3074,6 +3074,68 @@ end
         errors);
 }
 
+#[test]
+fn wi237_pattern_subst_concrete_field_type() {
+    // Baseline: a ctor whose field type is a bare type-param Var.
+    // `case some(v)` over `Option[T = String]` must bind `v: String`,
+    // i.e. the inner String literal in the case body must satisfy the
+    // top-level String return type.
+    let source = r#"
+namespace test.wi237_concrete
+  import anthill.prelude.{Option}
+  operation pick(o: Option[T = String]) -> String =
+    match o
+      case some(v) -> v
+      case none() -> "default"
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(),
+        "bare-Var ctor field should propagate scrutinee type-arg, got: {:?}",
+        errors);
+}
+
+#[test]
+fn wi237_pattern_subst_parameterized_field_type() {
+    // A ctor whose field type embeds the parent's type-param inside
+    // another parameterized type (`items: List[T = T]`). Matching
+    // `case wrapped(items)` over `Container[T = String]` should propagate
+    // T = String into `items`'s type, yielding `items: List[T = String]`.
+    // The nested `case cons(head, _)` then binds `head: String`, which
+    // is then passed to `String.concat` — that call's per-call binding
+    // typer check forces the propagation to actually have happened. With
+    // T un-propagated, `head: Var(T)` doesn't satisfy `concat`'s
+    // `String` arg, producing a type error.
+    //
+    // Today `build_pattern_subst` only collects type-param Vars from
+    // ctor fields whose declared type is a bare Var(Global) — Vars
+    // nested inside parameterized field types aren't traversed, so
+    // this test is expected to FAIL until that gap is closed.
+    let source = r#"
+namespace test.wi237_buried
+  import anthill.prelude.{List}
+  import anthill.prelude.String.{concat}
+  enum Container
+    sort T = ?
+    entity wrapped(items: List[T = T])
+  end
+
+  operation first_or_default(c: Container[T = String]) -> String =
+    match c
+      case wrapped(items) ->
+        match items
+          case cons(head, tail) -> if eq(head, head) then concat("[", head) else "tied"
+          case nil() -> "default"
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(),
+        "parameterized field type should propagate scrutinee type-arg into inner pattern, got: {:?}",
+        errors);
+}
+
 // ══════════════════════════════════════════════════════════════════
 // WI-031 end-to-end acceptance:
 // load non-trivial source → type_check_sorts → verify typing facts

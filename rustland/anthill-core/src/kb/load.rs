@@ -3857,28 +3857,31 @@ impl<'a> Loader<'a> {
         })
     }
 
-    /// Convert a Name to a sort term (nullary Fn term) using scope-aware resolution.
-    /// Used for KB-internal sort references (entity_parent, by_sort), NOT for type terms.
-    /// Find the Var from SortAlias for a type parameter symbol.
+    /// Find the `Var` target of `SortAlias(<sym>, Var)`. Matches by
+    /// exact `Symbol` identity first (one pass), then by short name as
+    /// a fallback (second pass). The two-pass order matters: short-name
+    /// resolution is ambiguous when many sorts share a type-param name
+    /// (`sort T = ?` in List, Option, Stream …), and an exact match
+    /// elsewhere in the table must take precedence over an earlier
+    /// short-name hit.
     fn find_sort_alias_var(&self, sym: Symbol) -> Option<TermId> {
         let alias_sym = self.kb.try_resolve_symbol("SortAlias")?;
         let sort_name = self.kb.resolve_sym(sym);
-        for rid in self.kb.by_functor(alias_sym) {
-            if !self.kb.rule_body(rid).is_empty() { continue; }
-            let head = self.kb.rule_head(rid);
-            if let Term::Fn { pos_args, .. } = self.kb.get_term(head) {
-                if pos_args.len() >= 2 {
-                    if let Term::Fn { functor, .. } = self.kb.get_term(pos_args[0]) {
-                        if *functor == sym || self.kb.resolve_sym(*functor) == sort_name {
-                            if matches!(self.kb.get_term(pos_args[1]), Term::Var(_)) {
-                                return Some(pos_args[1]);
-                            }
-                        }
-                    }
+        let scan = |matches: &dyn Fn(Symbol, &str) -> bool| -> Option<TermId> {
+            for rid in self.kb.by_functor(alias_sym) {
+                if !self.kb.rule_body(rid).is_empty() { continue; }
+                let head = self.kb.rule_head(rid);
+                let Term::Fn { pos_args, .. } = self.kb.get_term(head) else { continue };
+                if pos_args.len() < 2 { continue; }
+                let Term::Fn { functor, .. } = self.kb.get_term(pos_args[0]) else { continue };
+                if !matches(*functor, self.kb.resolve_sym(*functor)) { continue; }
+                if matches!(self.kb.get_term(pos_args[1]), Term::Var(_)) {
+                    return Some(pos_args[1]);
                 }
             }
-        }
-        None
+            None
+        };
+        scan(&|f, _| f == sym).or_else(|| scan(&|_, n| n == sort_name))
     }
 
     fn name_to_sort_term(&mut self, name: &Name) -> TermId {
@@ -4099,6 +4102,25 @@ impl<'a> Loader<'a> {
         let sort_term = self.name_to_sort_term(&s.name);
         let sort_sort = self.kb.make_name_term("Sort");
 
+        // Skip re-registration if this AbstractSort has already been
+        // loaded — load_sort_with_body's pre-pass calls us early so
+        // SortAlias is in place before entity FieldInfo builds; the
+        // later load_items pass would otherwise allocate a *second*
+        // SortAlias with a fresh target Var, leaving each type-param
+        // backed by two distinct Vars (`find_sort_alias_var` then
+        // returns the first by `by_functor` order, which may differ
+        // from the Var the entity field already captured).
+        let alias_sym = self.kb.resolve_symbol("SortAlias");
+        for rid in self.kb.by_functor(alias_sym) {
+            if !self.kb.rule_body(rid).is_empty() { continue; }
+            let head = self.kb.rule_head(rid);
+            if let Term::Fn { pos_args, .. } = self.kb.get_term(head) {
+                if pos_args.len() >= 2 && pos_args[0] == sort_term {
+                    return;
+                }
+            }
+        }
+
         self.kb.register_sort(sort_term, SortKind::Sort);
 
         // Both variable (sort T = ?Element) and alias (sort T = Int) emit SortAlias.
@@ -4108,7 +4130,6 @@ impl<'a> Loader<'a> {
             TypeExpr::Variable { term_id, .. } => self.convert_term(*term_id),
             _ => self.type_expr_to_term(&s.definition),
         };
-        let alias_sym = self.kb.resolve_symbol("SortAlias");
         let alias_fact = self.kb.alloc(Term::Fn {
             functor: alias_sym,
             pos_args: SmallVec::from_slice(&[sort_term, target_term]),
@@ -4150,6 +4171,26 @@ impl<'a> Loader<'a> {
         let fi_type_sym = self.kb.intern("type_name");
         let fields_field_sym = self.kb.intern("fields");
         self.kb.register_entity_fields(entity_info_sym, vec![fi_name_sym, fields_field_sym]);
+
+        // Pre-load nested `sort X = ?` declarations so their SortAlias
+        // is in place before entity FieldInfo build calls
+        // `type_expr_to_term` on field types that reference them. Without
+        // this, `entity foo(x: T)` runs before `sort T = ?` in source
+        // order, hits `type_expr_to_term`'s fallback (no SortAlias yet),
+        // and allocates a fresh `Var(name="T")` — a different Var than
+        // the SortAlias's `Var(name="_")` registered later. The two Vars
+        // never unify, so pattern substitution misses and the typer
+        // sees `head: Var(...)` where it should see `head: String`.
+        // `load_abstract_sort` dedupes on already-asserted SortAlias,
+        // so `load_items` below safely re-encounters these and no-ops.
+        // Pass `sort_term` (the enclosing sort's own domain) so the
+        // SortAlias fact lives in the same domain the second pass
+        // would have used.
+        for item in &s.items {
+            if let Item::AbstractSort(abs) = item {
+                self.load_abstract_sort(abs, sort_term);
+            }
+        }
 
         // Register direct entity children (entity → parent sort)
         for item in &s.items {

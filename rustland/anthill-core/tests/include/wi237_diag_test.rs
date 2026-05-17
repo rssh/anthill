@@ -69,4 +69,28 @@ fn dump_eq_lt_rewrites() {
     // Also dump dispatch_rewrites count.
     let printer = TermPrinter::new(&kb);
     let _ = printer; // (printer kept for future per-term rendering)
+
+    // ── Ordered.lt resolution probe ─────────────────────────────────
+    let names = [
+        "anthill.prelude.Ordered",
+        "anthill.prelude.Ordered.lt",
+        "anthill.prelude.Ordered.compare",
+        "anthill.prelude.Int",
+        "anthill.prelude.Int.lt",
+        "anthill.prelude.Int.compare",
+        "anthill.prelude.Int.Ordered.lt",
+        "anthill.prelude.Int.Ordered.compare",
+    ];
+    for name in names {
+        let resolved = kb.try_resolve_symbol(name);
+        match resolved {
+            Some(sym) => {
+                let info = anthill_core::kb::op_info::lookup_operation_info(&kb, sym);
+                let has_body = info.as_ref().map(|i| i.body_node.is_some()).unwrap_or(false);
+                let has_info = info.is_some();
+                println!("[wi237] resolve {name} -> Some  has_info={has_info} has_body={has_body}");
+            }
+            None => println!("[wi237] resolve {name} -> None"),
+        }
+    }
 }
