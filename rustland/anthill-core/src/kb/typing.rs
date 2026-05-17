@@ -596,7 +596,9 @@ enum TypeBuildFrame {
         env: Rc<TypingEnv>,
     },
     /// Value finished; compute the body's ext_env and schedule the
-    /// body Visit, plus a `LetFinal` frame to combine results.
+    /// body Visit, plus a `LetFinal` frame to combine results. If the
+    /// value's TypeResult is `None`, the let propagates failure up
+    /// without visiting the body (see WI-204 feedback — no fallbacks).
     LetAfterValue {
         pattern: TermId,
         annotation: Option<TermId>,
@@ -905,12 +907,14 @@ fn build_type(
         }
         TypeBuildFrame::LetAfterValue { pattern, annotation, body_occ } => {
             let value_r = results.pop().expect("LetAfterValue: missing value result");
-            // Decompose value_r: move out env (becomes ext_env's base),
-            // keep effects for LetFinal, take ty for bound_ty.
-            let (value_ty, value_effects, mut ext_env) = match value_r {
-                Some(r) => (Some(r.ty), r.effects, r.env),
-                None => (None, Vec::new(), TypingEnv::empty()),
+            // Propagate failure up rather than typing the body under a
+            // synthesized env — see WI-204 feedback (no fallbacks).
+            let Some(r) = value_r else {
+                results.push(None);
+                return;
             };
+            let (value_ty, value_effects, mut ext_env) =
+                (Some(r.ty), r.effects, r.env);
             let bound_ty = annotation.or(value_ty);
             extend_env_from_pattern(kb, &mut ext_env, pattern, bound_ty);
             if let Some(var_name) = extract_pattern_var_name(kb, pattern) {
@@ -3166,6 +3170,42 @@ fn op_has_runnable_body(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
     }
 }
 
+/// Tuple-literal special case routed from `check_constructor_iter`:
+/// empty tuple → `Unit`; populated tuple → `named_tuple` whose fields
+/// are `_0, _1, …` for positional args and the source label for named
+/// args. Propagates `None` if any arg failed to type.
+fn check_tuple_literal_constructor(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    pos_results: &[Option<TypeResult>],
+    named_results: &[Option<TypeResult>],
+) -> Option<TypeResult> {
+    if pos_results.is_empty() && named_results.is_empty() {
+        let unit_ty = kb.make_sort_ref_by_name("anthill.prelude.Unit");
+        return Some(TypeResult::pure(unit_ty, env.clone()));
+    }
+
+    let pos_labeled = pos_results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (kb.intern(&format!("_{}", i)), r));
+    let named_labeled = named_args
+        .iter()
+        .zip(named_results.iter())
+        .map(|((name, _), r)| (*name, r));
+
+    let mut effects: Vec<TermId> = Vec::new();
+    let mut tuple_fields: Vec<(Symbol, TermId)> = Vec::new();
+    for (label, r_opt) in pos_labeled.chain(named_labeled) {
+        let r = r_opt.as_ref()?;
+        tuple_fields.push((label, r.ty));
+        effects = merge_effects(&effects, &r.effects);
+    }
+    let tuple_ty = kb.make_named_tuple_type(&tuple_fields);
+    Some(TypeResult { ty: tuple_ty, env: env.clone(), effects })
+}
+
 /// Non-recursive Constructor checker — peer of `check_apply_iter`.
 /// Reads per-arg `TypeResult`s from `pos_results` / `named_results`
 /// (pre-computed by the iterative typer) instead of calling
@@ -3183,8 +3223,30 @@ fn check_constructor_iter(
     named_results: &[Option<TypeResult>],
 ) -> Option<TypeResult> {
     let _ = pos_args; // arg-NodeOccurrence references kept for parity with check_apply_iter
-    let parent_tid = kb.constructor_parent_sort(ctor_sym)?;
-    let parent_type = sort_term_to_type(kb, parent_tid);
+
+    // `()` and `(a, b, …)` parse as a `TupleLiteral` entity and the loader
+    // wraps them as `constructor(name: Ref(TupleLiteral), args: …)`. They
+    // land here even though they are not user-declared constructors, and
+    // the declared `TupleLiteral` entity has no fields, so the field-driven
+    // path below would type them as `sort_ref(TupleLiteral)` — which
+    // doesn't unify with `Unit` or with a named-tuple type. Route to
+    // tuple semantics instead.
+    if kb.qualified_name_of(ctor_sym) == "anthill.reflect.TupleLiteral" {
+        return check_tuple_literal_constructor(
+            kb, env, named_args, pos_results, named_results,
+        );
+    }
+
+    // Free-standing entities (declared at namespace level, not nested in a
+    // sort block) have no parent sort, but their entity_field_types IS
+    // registered — the entity is its own type. Without this, a let-bound
+    // `WorkItem(...)` types as `None`, the body's env loses enclosing_sort,
+    // and downstream spec-op calls fail dispatch (WI-204 feedback).
+    let parent_sort = kb.constructor_parent_sort(ctor_sym);
+    let parent_type = match parent_sort {
+        Some(parent_tid) => sort_term_to_type(kb, parent_tid),
+        None => kb.make_sort_ref(ctor_sym),
+    };
 
     let field_types = kb.entity_field_types(ctor_sym)?.to_vec();
     if field_types.is_empty() {
@@ -3218,9 +3280,15 @@ fn check_constructor_iter(
 
     // Build parameterized type from the sort's type params + substitution bindings.
     // Look up SortAlias facts for the parent sort's scope to find param names → Var mappings.
-    let parent_sym = match kb.get_term(parent_tid) {
-        Term::Fn { functor, .. } => *functor,
-        _ => return Some(TypeResult { ty: parent_type, env: env.clone(), effects }),
+    // For free-standing entities there is no parent sort to walk; the entity's
+    // own symbol is the type — no type params to discover, so return the
+    // simple sort_ref directly.
+    let parent_sym = match parent_sort {
+        Some(parent_tid) => match kb.get_term(parent_tid) {
+            Term::Fn { functor, .. } => *functor,
+            _ => return Some(TypeResult { ty: parent_type, env: env.clone(), effects }),
+        },
+        None => return Some(TypeResult { ty: parent_type, env: env.clone(), effects }),
     };
 
     let alias_sym = kb.try_resolve_symbol("SortAlias");

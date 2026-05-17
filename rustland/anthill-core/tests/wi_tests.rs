@@ -20,6 +20,9 @@ mod wi202_retrieve_test;
 #[path = "include/wi204_smoke_test.rs"]
 mod wi204_smoke_test;
 
+#[path = "include/wi204_let_ctor_env_test.rs"]
+mod wi204_let_ctor_env_test;
+
 #[path = "include/wi204_sort_param_test.rs"]
 mod wi204_sort_param_test;
 

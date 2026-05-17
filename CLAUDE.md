@@ -102,3 +102,5 @@ Variables: `?name` (named, shared within scope), `?` (anonymous, each occurrence
 - before commit, check - if all test passed.  Remind if simplicity was not runned.
 - do not add attribution to commit.
 
+# Development principles
+ - avoid fallbacks, better know about errors early.

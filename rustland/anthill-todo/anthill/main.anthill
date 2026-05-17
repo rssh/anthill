@@ -1421,7 +1421,7 @@ namespace anthill.todo
                             store: FileStore,
                             agent: String,
                             s: Cell[State]) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[store], Error, Clock}
     =
       let id_opt = get_binding(bindings, "id")
       let text_opt = get_binding(bindings, "text")
@@ -1439,7 +1439,7 @@ namespace anthill.todo
 
     operation do_feedback(store: FileStore, agent: String,
                           id: String, text: String) -> Int
-      effects {ConsoleOutput, Modify[store], Error}
+      effects {ConsoleOutput, Modify[store], Error, Clock}
     =
       let fact = Feedback(
         workitem: id,
