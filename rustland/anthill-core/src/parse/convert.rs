@@ -1899,86 +1899,14 @@ impl<'a> Converter<'a> {
 
     fn convert_operation_block(&mut self, node: Node) -> Option<OperationBlock> {
         let span = self.span(node);
+        // operation_entry shares operation_declaration's field/child
+        // names (minus the literal `operation` keyword), so the same
+        // converter handles both node kinds.
         let entries = self.children_by_kind(node, "operation_entry")
             .into_iter()
-            .filter_map(|e| self.convert_operation_entry(e))
+            .filter_map(|e| self.convert_operation(e))
             .collect();
         Some(OperationBlock { entries, span })
-    }
-
-    fn convert_operation_entry(&mut self, node: Node) -> Option<Operation> {
-        // operation_entry has the same structure as operation_declaration
-        // but without the "operation" keyword
-        self.reset_var_scope();
-        let span = self.span(node);
-        let name = self.field(node, "name")
-            .map(|n| self.convert_name(n))?;
-        let visibility = self.convert_visibility(node);
-
-        let type_params = self.convert_operation_type_params(node);
-
-        let params = self.children_by_kind(node, "param")
-            .into_iter()
-            .map(|p| self.convert_param(p))
-            .collect();
-
-        let return_type = self.field(node, "return_type")
-            .map(|t| self.convert_type(t))
-            .unwrap_or_else(|| {
-                let sym = self.intern("Void");
-                TypeExpr::Simple(Name::simple(sym, span))
-            });
-
-        let mut requires = Vec::new();
-        let mut ensures = Vec::new();
-        let mut effects = Vec::new();
-
-        for clause in self.children_by_kind(node, "operation_clause") {
-            let mut cursor = clause.walk();
-            for child in clause.named_children(&mut cursor) {
-                match child.kind() {
-                    "requires_clause" => {
-                        if let Some(body) = self.child_by_kind(child, "rule_body") {
-                            requires.push(self.convert_rule_body(body));
-                        }
-                    }
-                    "ensures_clause" => {
-                        if let Some(body) = self.child_by_kind(child, "rule_body") {
-                            ensures.push(self.convert_rule_body(body));
-                        }
-                    }
-                    "effects_clause" => {
-                        let mut cursor2 = child.walk();
-                        for type_child in child.named_children(&mut cursor2) {
-                            match type_child.kind() {
-                                "simple_type" | "parameterized_type" | "variable_term" => {
-                                    effects.push(Effect { type_expr: self.convert_type(type_child) });
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        let body = self.field(node, "body").map(|b| self.convert_expr_body(b));
-        let meta = self.convert_meta_block(node);
-
-        Some(Operation {
-            visibility,
-            name,
-            type_params,
-            params,
-            return_type,
-            requires,
-            ensures,
-            effects,
-            body,
-            meta,
-            span,
-        })
     }
 
     fn convert_rule_block(&mut self, node: Node) -> Option<RuleBlock> {
