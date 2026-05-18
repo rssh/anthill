@@ -621,6 +621,36 @@ The outer `Result` is from `effects (Error)`. The `Error` type parameter on `Str
 
 **MonadStack for non-direct languages**: In languages with monadic effect encoding (Scala/cats, Haskell), `E` resolves to a monad that encapsulates all bound effects. The `LanguageMapping` profile defines the monad stack composition order. For Rust, this is unnecessary — each effect has a direct encoding (`Result`, `&mut`, `async`), and they compose structurally rather than via monad transformers.
 
+### 5.6 Modify[result] — fresh-target allocation (per proposal 027.1)
+
+When `effects (Modify[result])` appears on a return (proposal 027.1), the operation allocates a fresh value of its return type. The Rust shape depends on the active profile:
+
+| Anthill                                                        | Rust mapping by profile                                          |
+|---                                                             |---                                                               |
+| `op f() -> Cell[V] effects Modify[result]` (std)               | `fn f() -> Cell<V>` (owned return)                               |
+| `op f() -> Cell[V] effects Modify[result]` (no_std)            | `fn f() -> Box<Cell<V>>` (heap-allocated)                        |
+| `op f() -> Cell[V] effects Modify[result]` (arena)             | `fn f<'arena>(a: &'arena Arena) -> &'arena mut Cell<V>`          |
+
+Carrier and allocation strategy are profile-driven (§9), not hardcoded — the same mechanism as other effect mappings in this section.
+
+Other 027.1 allocator-shape rules apply uniformly:
+- `Map.empty() -> Map[K, V] effects Modify[result]` → `fn empty() -> HashMap<K, V>` (std) / `Box<HashMap<...>>` (no_std) / arena equivalent
+- `Substitution.empty() -> Substitution effects Modify[result]` → analogous
+
+### 5.7 Discharge analysis ↔ stack allocation
+
+027.1 defines a *discharge rule*: a value carrying `Modify[result]` bound to a local that doesn't escape the operation's body has its effect discharged at the function boundary and doesn't propagate to the inferred row. Rust codegen mirrors this directly:
+
+| Anthill body                                                                 | Rust translation                                                                  |
+|---                                                                           |---                                                                                |
+| `let c = Cell.new(0); ...; Cell.get(c)` (c discharged — local use only)      | `let mut c = Cell::new(0); ...; c.get()` (local; dropped at scope end)            |
+| `let c = Cell.new(0); ...; c` (c propagates as `Modify[result]`)             | `let mut c = Cell::new(0); ...; c` (returned by value)                            |
+| `let c = Cell.new(0); something(c)` (depends on `something`'s sig)           | `let mut c = Cell::new(0); something(&mut c)` (borrow) or `something(c)` (move)   |
+
+Conceptually, anthill's discharge analysis is structurally the same computation Rust's borrow checker performs for lifetimes — escape detection on effect targets rather than on references. Knowing this connection helps Rust users build accurate intuition for the effect system: a tight discharge analysis yields fewer heap allocations and more stack-resident values in idiomatic generated Rust. **027.1 Phase 1 is therefore load-bearing for Rust codegen quality, not only for effect-system correctness.**
+
+(Note: `Read[c]` cell-precise tracking discussed in 027.1's §"Standard effect catalog" is not yet a Rust mapping concern — §5.2 above keeps the current convention that read access on a parameter is implicit. If cell-precise `Read[c]` lands per a future driver, this section should be revisited: disjoint `&` borrows would license dedup/parallelization that the current "parameter implies read" convention cannot express.)
+
 ### 5.8 Receiver Rules (Ownership)
 
 Beyond effects, the Rust profile defines **receiver rules** — host-language-specific conventions for how `self` is passed. These are not semantic properties of the operation; they are Rust ownership optimizations.
