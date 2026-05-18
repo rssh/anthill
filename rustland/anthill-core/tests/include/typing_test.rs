@@ -1584,9 +1584,16 @@ end
 
 #[test]
 fn type_check_op_let_expr_correct() {
+    // Block-style let: `let ?y = x \n body` (no `in` keyword).
+    // Pre-WI-264 the typer silently swallowed errors when a body
+    // sub-expression failed to resolve, so an `in` token here would
+    // type-check vacuously. With Result propagation, sub-expression
+    // failures surface — use the actual grammar shape.
     let source = r#"
 sort Math
-  operation double(x: Int) -> Int = let ?y = x in add(?y, ?y)
+  operation double(x: Int) -> Int =
+    let ?y = x
+    add(?y, ?y)
 end
 "#;
     let (mut kb, result) = load_with_result(source);

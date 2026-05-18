@@ -91,6 +91,7 @@ fn stream_head_on_concrete_stream_yields_option_with_concrete_t() {
 
     let result = type_check_expr(&mut kb, &env, apply_term)
         .expect("Stream.head(s) for s:Stream[T=Term,E=Error] should type-check");
+    // .expect on Result yields T directly on Ok, panic-formats Err.
     let ty = result.ty;
     let ty_str = TermPrinter::new(&kb).print_term(ty);
 

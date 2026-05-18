@@ -43,6 +43,42 @@ pub enum TypeError {
         span: Option<Span>,
         name: Symbol,
     },
+    /// Constructor symbol has no declared entity-field-types entry.
+    /// Reported from `check_constructor_iter` when `entity_field_types`
+    /// returns None for what looked like a constructor invocation.
+    NoConstructor {
+        span: Option<Span>,
+        name: Symbol,
+    },
+    /// `check_apply_iter` was handed a functor symbol that is neither
+    /// a known operation, a constructor, nor a var-bound arrow type.
+    UnknownApplyFunctor {
+        span: Option<Span>,
+        name: Symbol,
+    },
+    /// Spec-op dispatch found no impl whose per-call bindings match the
+    /// inferred type arguments. `op` is the qualified spec-op symbol
+    /// (e.g. `anthill.prelude.Numeric.add`).
+    DispatchNoMatch {
+        span: Option<Span>,
+        op: Symbol,
+    },
+    /// Spec-op dispatch found multiple impls — the coherence rule (C)
+    /// rejects ambiguous resolution.
+    DispatchAmbiguous {
+        span: Option<Span>,
+        op: Symbol,
+    },
+    /// Bottom or other post-elaboration expression seen by the surface
+    /// typer — emitted only by `req_insertion`, never user-written.
+    BottomExpr {
+        span: Option<Span>,
+    },
+    /// Aggregation node — collects multiple sibling failures
+    /// (e.g. a list literal with two ill-typed elements).
+    Multiple {
+        errors: Vec<TypeError>,
+    },
     /// Catchall for auxiliary typing-pass checks (effect declarations,
     /// match exhaustiveness, HO pattern fragment, rule var consistency).
     /// Promote to a dedicated variant when a consumer discriminates on it.
@@ -120,6 +156,31 @@ impl TypeError {
             TypeError::UnresolvedName { name, .. } => {
                 format!("unresolved name: {}", kb.resolve_sym(*name))
             }
+            TypeError::NoConstructor { name, .. } => {
+                format!("no constructor: {}", kb.resolve_sym(*name))
+            }
+            TypeError::UnknownApplyFunctor { name, .. } => {
+                format!("unknown apply functor: {}", kb.resolve_sym(*name))
+            }
+            TypeError::DispatchNoMatch { op, .. } => {
+                format!(
+                    "dispatch failed: no impl of {} for the per-call bindings",
+                    kb.qualified_name_of(*op),
+                )
+            }
+            TypeError::DispatchAmbiguous { op, .. } => {
+                format!(
+                    "dispatch failed: multiple impls of {} match the per-call bindings (coherence rule)",
+                    kb.qualified_name_of(*op),
+                )
+            }
+            TypeError::BottomExpr { .. } => {
+                "bottom or post-elaboration expression in surface IR".to_string()
+            }
+            TypeError::Multiple { errors } => {
+                let parts: Vec<String> = errors.iter().map(|e| e.format(kb)).collect();
+                parts.join("; ")
+            }
             TypeError::Other { expected, actual, .. } => {
                 format!("expected {}, got {}", expected, actual)
             }
@@ -130,9 +191,31 @@ impl TypeError {
         match self {
             TypeError::TypeMismatch { span, .. }
             | TypeError::UnknownField { span, .. }
-            | TypeError::UnresolvedName { span, .. } => *span,
+            | TypeError::UnresolvedName { span, .. }
+            | TypeError::NoConstructor { span, .. }
+            | TypeError::UnknownApplyFunctor { span, .. }
+            | TypeError::DispatchNoMatch { span, .. }
+            | TypeError::DispatchAmbiguous { span, .. }
+            | TypeError::BottomExpr { span } => *span,
             TypeError::Other { span, .. } => *span,
             TypeError::NoParentSort { .. } => None,
+            TypeError::Multiple { errors } => errors.iter().find_map(|e| e.span(_kb)),
+        }
+    }
+
+    /// Flatten a `Multiple` into its leaf errors; non-`Multiple` becomes
+    /// a single-element vec. Lets the operation-body driver push each
+    /// sibling failure as its own load error.
+    pub fn flatten(self) -> Vec<TypeError> {
+        match self {
+            TypeError::Multiple { errors } => {
+                let mut out = Vec::with_capacity(errors.len());
+                for e in errors {
+                    out.extend(e.flatten());
+                }
+                out
+            }
+            other => vec![other],
         }
     }
 
@@ -172,6 +255,57 @@ impl TypeError {
                 actual_type: "unresolved".to_string(),
                 span: self.span(kb),
             },
+            TypeError::NoConstructor { name, .. } => LoadError::TypeMismatch {
+                entity_name: kb.resolve_sym(*name).to_string(),
+                field_name: "constructor".to_string(),
+                expected_type: "known constructor".to_string(),
+                actual_type: "unknown".to_string(),
+                span: self.span(kb),
+            },
+            TypeError::UnknownApplyFunctor { name, .. } => LoadError::TypeMismatch {
+                entity_name: kb.resolve_sym(*name).to_string(),
+                field_name: "apply".to_string(),
+                expected_type: "known operation or arrow-typed variable".to_string(),
+                actual_type: "unknown functor".to_string(),
+                span: self.span(kb),
+            },
+            TypeError::DispatchNoMatch { op, .. } => LoadError::TypeMismatch {
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "dispatch".to_string(),
+                expected_type: "matching impl for per-call bindings".to_string(),
+                actual_type: "no impl matches".to_string(),
+                span: self.span(kb),
+            },
+            TypeError::DispatchAmbiguous { op, .. } => LoadError::TypeMismatch {
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "dispatch".to_string(),
+                expected_type: "unique impl for per-call bindings".to_string(),
+                actual_type: "multiple impls match (coherence rule)".to_string(),
+                span: self.span(kb),
+            },
+            TypeError::BottomExpr { .. } => LoadError::TypeMismatch {
+                entity_name: "<bottom>".to_string(),
+                field_name: "expr".to_string(),
+                expected_type: "surface expression".to_string(),
+                actual_type: "bottom / post-elaboration form".to_string(),
+                span: self.span(kb),
+            },
+            TypeError::Multiple { errors } => {
+                // Lossy: keep the first error's structured form so legacy
+                // single-error consumers see something. Callers that care
+                // about all errors call `flatten()` and convert per-element.
+                if let Some(first) = errors.first() {
+                    first.to_load_error(kb)
+                } else {
+                    LoadError::TypeMismatch {
+                        entity_name: "<empty>".to_string(),
+                        field_name: "".to_string(),
+                        expected_type: String::new(),
+                        actual_type: String::new(),
+                        span: None,
+                    }
+                }
+            }
             TypeError::Other { context, expected, actual, .. } => LoadError::TypeMismatch {
                 entity_name: context.entity_name(kb),
                 field_name: context.field_name(kb),
@@ -594,6 +728,7 @@ enum TypeBuildFrame {
         pos_args: Vec<Rc<NodeOccurrence>>,
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
         env: Rc<TypingEnv>,
+        span: Option<Span>,
     },
     /// Value finished; compute the body's ext_env and schedule the
     /// body Visit, plus a `LetFinal` frame to combine results. If the
@@ -648,7 +783,7 @@ pub fn type_check_expr(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     expr: TermId,
-) -> Option<TypeResult> {
+) -> Result<TypeResult, TypeError> {
     let node = materialize_from_handle(kb, expr);
     type_check_node(kb, env, &node)
 }
@@ -672,9 +807,9 @@ pub fn type_check_node(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     occ: &Rc<NodeOccurrence>,
-) -> Option<TypeResult> {
+) -> Result<TypeResult, TypeError> {
     let mut work: Vec<TypeWorkOp> = Vec::with_capacity(32);
-    let mut results: Vec<Option<TypeResult>> = Vec::with_capacity(32);
+    let mut results: Vec<Result<TypeResult, TypeError>> = Vec::with_capacity(32);
     work.push(TypeWorkOp::Visit { occ: Rc::clone(occ), env: Rc::new(env.clone()) });
     while let Some(op) = work.pop() {
         match op {
@@ -683,7 +818,80 @@ pub fn type_check_node(
         }
     }
     debug_assert_eq!(results.len(), 1, "iterative typer: expected exactly one result");
-    results.pop().flatten()
+    results.pop().expect("iterative typer: missing final result")
+}
+
+/// Try to resolve `sym` to a constructor symbol. Handles both the
+/// already-qualified case (sym is itself the constructor) and the
+/// short-name case where the loader didn't link the body's reference
+/// to the qualified entity symbol. Returns `Some(qualified)` when the
+/// short symbol maps to exactly one entity short→qualified index entry.
+fn resolve_constructor_sym(kb: &KnowledgeBase, sym: Symbol) -> Option<Symbol> {
+    if kb.is_constructor_symbol(sym) {
+        return Some(sym);
+    }
+    if let Some(q) = kb.entity_qualified_for_short(sym) {
+        if kb.is_constructor_symbol(q) {
+            return Some(q);
+        }
+    }
+    None
+}
+
+/// Type-check a bare-identifier reference (Ref / Ident / VarRef) by
+/// dispatching across the resolution paths: env-bound var,
+/// constructor, zero-arg operation. Returns `Err(UnresolvedName)`
+/// when none match — the strict equivalent of the pre-WI-264 silent-
+/// None bail.
+fn check_bare_ref(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    sym: Symbol,
+    span: Option<Span>,
+) -> Result<TypeResult, TypeError> {
+    if let Some(ty) = env.lookup_var(sym) {
+        return Ok(TypeResult::pure(ty, env.clone()));
+    }
+    if let Some(ctor_sym) = resolve_constructor_sym(kb, sym) {
+        return check_constructor_iter(kb, env, ctor_sym, &[], &[], &[], &[], span);
+    }
+    if let Some(ret_ty) = lookup_operation_return_type(kb, sym) {
+        return Ok(TypeResult::pure(ret_ty, env.clone()));
+    }
+    Err(TypeError::UnresolvedName { span, name: sym })
+}
+
+/// Aggregate sibling errors into one `TypeError`. Flattens nested
+/// `Multiple` so the result has a single-level error vec. Single-
+/// error fast-path avoids the Vec allocation when one ill-typed
+/// sibling is the typical case.
+fn aggregate_errors(errors: Vec<TypeError>) -> TypeError {
+    if errors.len() == 1 && !matches!(errors[0], TypeError::Multiple { .. }) {
+        return errors.into_iter().next().unwrap();
+    }
+    let flat: Vec<TypeError> = errors.into_iter().flat_map(TypeError::flatten).collect();
+    if flat.len() == 1 {
+        flat.into_iter().next().unwrap()
+    } else {
+        TypeError::Multiple { errors: flat }
+    }
+}
+
+/// Aggregate any `Err` entries in `results` into a single `TypeError`.
+/// Returns `Ok(())` when every result is `Ok` — callers then proceed
+/// to use the sub-results with the invariant that they're all `Ok`.
+fn collect_arg_errors<'a>(
+    results: impl IntoIterator<Item = &'a Result<TypeResult, TypeError>>,
+) -> Result<(), TypeError> {
+    let errors: Vec<TypeError> = results
+        .into_iter()
+        .filter_map(|r| r.as_ref().err().cloned())
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(aggregate_errors(errors))
+    }
 }
 
 /// Dispatch a single Visit: produce a leaf TypeResult directly,
@@ -694,15 +902,16 @@ fn visit_type(
     occ: Rc<NodeOccurrence>,
     env: Rc<TypingEnv>,
     work: &mut Vec<TypeWorkOp>,
-    results: &mut Vec<Option<TypeResult>>,
+    results: &mut Vec<Result<TypeResult, TypeError>>,
 ) {
     // Expr / MatchBranch don't derive Clone (Expr's classification
     // RefCell + the implicit sharing through Rc), so we match by
     // reference and `Rc::clone` / hand-clone the slots we need.
+    let occ_span = Some(occ.span.span);
     let expr = match &occ.kind {
         NodeKind::Expr { expr, .. } => expr,
         NodeKind::RuleHead { .. } => {
-            results.push(None);
+            results.push(Err(TypeError::BottomExpr { span: occ_span }));
             return;
         }
     };
@@ -751,38 +960,32 @@ fn visit_type(
         }
 
         // ── Leaf cases ──────────────────────────────────────────
-        Expr::Const(Literal::Int(_)) => results.push(Some(
+        Expr::Const(Literal::Int(_)) | Expr::Const(Literal::BigInt(_)) => results.push(Ok(
             TypeResult::pure(kb.make_sort_ref_by_name("Int"), unwrap_env(env)),
         )),
-        Expr::Const(Literal::Float(_)) => results.push(Some(
+        Expr::Const(Literal::Float(_)) => results.push(Ok(
             TypeResult::pure(kb.make_sort_ref_by_name("Float"), unwrap_env(env)),
         )),
-        Expr::Const(Literal::String(_)) => results.push(Some(
+        Expr::Const(Literal::String(_)) => results.push(Ok(
             TypeResult::pure(kb.make_sort_ref_by_name("String"), unwrap_env(env)),
         )),
-        Expr::Const(Literal::Bool(_)) => results.push(Some(
+        Expr::Const(Literal::Bool(_)) => results.push(Ok(
             TypeResult::pure(kb.make_sort_ref_by_name("Bool"), unwrap_env(env)),
         )),
-        Expr::Const(_) => results.push(None),
+        // `Handle(_)` literals are reserved for materialized runtime
+        // values; they never appear in surface source. If one shows up,
+        // it's a post-elaboration form being re-typed.
+        Expr::Const(_) => results.push(Err(TypeError::BottomExpr { span: occ_span })),
         Expr::Ref(sym) => {
-            let sym = *sym;
-            let r = if let Some(ty) = env.lookup_var(sym) {
-                Some(TypeResult::pure(ty, unwrap_env(env)))
-            } else if kb.is_constructor_symbol(sym) {
-                check_constructor_iter(kb, &*env, sym, &[], &[], &[], &[])
-            } else {
-                None
-            };
+            let r = check_bare_ref(kb, &*env, *sym, occ_span);
             results.push(r);
         }
         Expr::Ident(sym) => {
-            let sym = *sym;
-            let r = env.lookup_var(sym).map(|ty| TypeResult::pure(ty, unwrap_env(env)));
+            let r = check_bare_ref(kb, &*env, *sym, occ_span);
             results.push(r);
         }
         Expr::VarRef { name } => {
-            let name = *name;
-            let r = env.lookup_var(name).map(|ty| TypeResult::pure(ty, unwrap_env(env)));
+            let r = check_bare_ref(kb, &*env, *name, occ_span);
             results.push(r);
         }
 
@@ -819,6 +1022,7 @@ fn visit_type(
                 pos_args: pos_args.clone(),
                 named_args: named_args.clone(),
                 env: Rc::clone(&env),
+                span: occ_span,
             }));
             for (_, arg) in named_args.iter().rev() {
                 work.push(TypeWorkOp::Visit { occ: Rc::clone(arg), env: Rc::clone(&env) });
@@ -858,6 +1062,18 @@ fn visit_type(
             results.push(r);
         }
 
+        // Unresolved logical-var slots in the surface IR are not a
+        // typer-level error — the surface programmer wrote `?y` and
+        // the loader couldn't pin it to a let/match binding by symbol.
+        // Synthesize a fresh type-var so the surrounding apply / let
+        // can still type-check; declared signatures resolve the
+        // expression's type on the consumer side.
+        Expr::Var(_) => {
+            let fresh = kb.intern("?logical_var");
+            let ty = kb.make_type_var(fresh);
+            results.push(Ok(TypeResult::pure(ty, unwrap_env(env))));
+        }
+
         // Post-elaboration forms — emitted by req_insertion, not the
         // surface typer.
         Expr::HoApply { .. }
@@ -868,8 +1084,7 @@ fn visit_type(
         | Expr::LambdaWithin { .. }
         | Expr::RequirementAtSort { .. }
         | Expr::ConstructRequirement { .. }
-        | Expr::Var(_)
-        | Expr::Bottom => results.push(None),
+        | Expr::Bottom => results.push(Err(TypeError::BottomExpr { span: occ_span })),
     }
 }
 
@@ -878,30 +1093,31 @@ fn build_type(
     kb: &mut KnowledgeBase,
     frame: TypeBuildFrame,
     work: &mut Vec<TypeWorkOp>,
-    results: &mut Vec<Option<TypeResult>>,
+    results: &mut Vec<Result<TypeResult, TypeError>>,
 ) {
     match frame {
         TypeBuildFrame::Apply { occ, fn_sym, pos_args, named_args, env } => {
             let total = pos_args.len() + named_args.len();
             let drain_start = results.len() - total;
-            let mut arg_results: Vec<Option<TypeResult>> =
+            let mut arg_results: Vec<Result<TypeResult, TypeError>> =
                 results.drain(drain_start..).collect();
             let named_results = arg_results.split_off(pos_args.len());
             let pos_results = arg_results;
+            let span = Some(occ.span.span);
             let r = check_apply_iter(
-                kb, &*env, &occ, fn_sym, &pos_args, &named_args, &pos_results, &named_results,
+                kb, &*env, &occ, fn_sym, &pos_args, &named_args, &pos_results, &named_results, span,
             );
             results.push(r);
         }
-        TypeBuildFrame::Constructor { ctor_sym, pos_args, named_args, env } => {
+        TypeBuildFrame::Constructor { ctor_sym, pos_args, named_args, env, span } => {
             let total = pos_args.len() + named_args.len();
             let drain_start = results.len() - total;
-            let mut arg_results: Vec<Option<TypeResult>> =
+            let mut arg_results: Vec<Result<TypeResult, TypeError>> =
                 results.drain(drain_start..).collect();
             let named_results = arg_results.split_off(pos_args.len());
             let pos_results = arg_results;
             let r = check_constructor_iter(
-                kb, &*env, ctor_sym, &pos_args, &named_args, &pos_results, &named_results,
+                kb, &*env, ctor_sym, &pos_args, &named_args, &pos_results, &named_results, span,
             );
             results.push(r);
         }
@@ -909,9 +1125,12 @@ fn build_type(
             let value_r = results.pop().expect("LetAfterValue: missing value result");
             // Propagate failure up rather than typing the body under a
             // synthesized env — see WI-204 feedback (no fallbacks).
-            let Some(r) = value_r else {
-                results.push(None);
-                return;
+            let r = match value_r {
+                Ok(r) => r,
+                Err(e) => {
+                    results.push(Err(e));
+                    return;
+                }
             };
             let (value_ty, value_effects, mut ext_env) =
                 (Some(r.ty), r.effects, r.env);
@@ -925,12 +1144,15 @@ fn build_type(
         }
         TypeBuildFrame::LetFinal { value_effects } => {
             let body_r = results.pop().expect("LetFinal: missing body result");
-            let Some(body_r) = body_r else {
-                results.push(None);
-                return;
+            let body_r = match body_r {
+                Ok(r) => r,
+                Err(e) => {
+                    results.push(Err(e));
+                    return;
+                }
             };
             let effects = merge_effects(&value_effects, &body_r.effects);
-            results.push(Some(TypeResult {
+            results.push(Ok(TypeResult {
                 ty: body_r.ty,
                 env: body_r.env,
                 effects,
@@ -938,8 +1160,8 @@ fn build_type(
         }
         TypeBuildFrame::MatchAfterScrutinee { branches, outer_env } => {
             let scr_r = results.pop().expect("MatchAfterScrutinee: missing scrutinee result");
-            let scr_ty = scr_r.as_ref().map(|r| r.ty);
-            let scr_effects = scr_r.as_ref().map(|r| r.effects.clone()).unwrap_or_default();
+            let scr_ty = scr_r.as_ref().ok().map(|r| r.ty);
+            let scr_effects = scr_r.as_ref().ok().map(|r| r.effects.clone()).unwrap_or_default();
 
             // Coverage / exhaustiveness inputs are derived purely from
             // pattern terms, independent of body type-checks — compute
@@ -990,19 +1212,24 @@ fn build_type(
             has_wildcard,
         } => {
             let drain_start = results.len() - branch_count;
+            let branch_results: Vec<Result<TypeResult, TypeError>> =
+                results.drain(drain_start..).collect();
+            if let Err(e) = collect_arg_errors(branch_results.iter()) {
+                results.push(Err(e));
+                return;
+            }
             let mut effects = scr_effects;
             let mut result_ty: Option<TermId> = None;
-            for (i, body_r_opt) in results.drain(drain_start..).enumerate() {
-                if let Some(body_r) = body_r_opt {
-                    if result_ty.is_none() {
-                        result_ty = Some(body_r.ty);
-                    }
-                    // Filter effects against this branch's locals so
-                    // pattern-bound resources don't leak past the case
-                    // arm (their bindings live only inside the branch).
-                    let branch_external = external_effects(kb, &*branch_envs[i], &body_r.effects);
-                    effects = merge_effects(&effects, &branch_external);
+            for (i, body_r) in branch_results.into_iter().enumerate() {
+                let body_r = body_r.expect("aggregator");
+                if result_ty.is_none() {
+                    result_ty = Some(body_r.ty);
                 }
+                // Filter effects against this branch's locals so
+                // pattern-bound resources don't leak past the case
+                // arm (their bindings live only inside the branch).
+                let branch_external = external_effects(kb, &*branch_envs[i], &body_r.effects);
+                effects = merge_effects(&effects, &branch_external);
             }
 
             let mut result_env = (*outer_env).clone();
@@ -1040,11 +1267,18 @@ fn build_type(
                     }
                 }
             }
-            results.push(result_ty.map(|ty| TypeResult {
-                ty,
-                env: result_env,
-                effects,
-            }));
+            results.push(match result_ty {
+                Some(ty) => Ok(TypeResult { ty, env: result_env, effects }),
+                None => Err(TypeError::Other {
+                    span: None,
+                    context: TypeErrorContext::Rule {
+                        name: kb.intern("match"),
+                        field: RuleField::Whole,
+                    },
+                    expected: "non-empty match expression".to_string(),
+                    actual: "match with no branches".to_string(),
+                }),
+            });
         }
         TypeBuildFrame::LambdaBody { param, outer_env } => {
             let body_r = results.pop().expect("LambdaBody: missing body result");
@@ -1054,17 +1288,23 @@ fn build_type(
                 let fresh = kb.intern("?param");
                 kb.make_type_var(fresh)
             });
-            let b_val = body_r.as_ref().map(|r| r.ty).unwrap_or_else(|| {
+            let b_val = body_r.as_ref().ok().map(|r| r.ty).unwrap_or_else(|| {
                 let fresh = kb.intern("?result");
                 kb.make_type_var(fresh)
             });
             let body_effects = body_r
                 .as_ref()
+                .ok()
                 .map(|r| r.effects.clone())
                 .unwrap_or_default();
             let fn_type = kb.make_arrow_type(a_val, b_val, &body_effects);
             // Creating a lambda is itself pure — body effects live in the type.
-            results.push(Some(TypeResult::pure(fn_type, unwrap_env(outer_env))));
+            // If the body itself errored, propagate that error rather than
+            // synthesizing a lambda over an ill-typed body.
+            match body_r {
+                Ok(_) => results.push(Ok(TypeResult::pure(fn_type, unwrap_env(outer_env)))),
+                Err(e) => results.push(Err(e)),
+            }
         }
     }
 }
@@ -1095,15 +1335,21 @@ fn check_apply_iter(
     fn_sym: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
-    pos_results: &[Option<TypeResult>],
-    named_results: &[Option<TypeResult>],
-) -> Option<TypeResult> {
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_results: &[Result<TypeResult, TypeError>],
+    span: Option<Span>,
+) -> Result<TypeResult, TypeError> {
+    // Surface any sub-expression failure before continuing. Aggregate
+    // sibling errors so a multi-arg call reports every ill-typed arg
+    // in a single diagnostic rather than the first.
+    collect_arg_errors(pos_results.iter().chain(named_results.iter()))?;
+
     // Materializer fallback: bare-functor constructor invocations land
     // in `Apply`; route them through the constructor checker so
     // type-param inference still fires.
     if kb.is_constructor_symbol(fn_sym) {
         return check_constructor_iter(
-            kb, env, fn_sym, pos_args, named_args, pos_results, named_results,
+            kb, env, fn_sym, pos_args, named_args, pos_results, named_results, span,
         );
     }
 
@@ -1119,7 +1365,7 @@ fn check_apply_iter(
                     param_to_arg_sym.insert(param_sym, arg_var_sym);
                 }
             }
-            if let Some(ref arg_result) = pos_results[i] {
+            if let Ok(ref arg_result) = pos_results[i] {
                 if let Some(&(_, param_type)) = op.params.get(i) {
                     unify_types(kb, &mut subst, arg_result.ty, param_type);
                 }
@@ -1131,7 +1377,7 @@ fn check_apply_iter(
             if let Some(arg_var_sym) = extract_var_ref_sym_node(arg_occ) {
                 param_to_arg_sym.insert(*arg_name, arg_var_sym);
             }
-            if let Some(ref arg_result) = named_results[i] {
+            if let Ok(ref arg_result) = named_results[i] {
                 if let Some(param_type) = op.params.iter()
                     .find(|(s, _)| *s == *arg_name)
                     .map(|(_, t)| *t)
@@ -1231,18 +1477,10 @@ fn check_apply_iter(
                     }
                 }
                 DispatchOutcome::NoMatch => {
-                    eprintln!(
-                        "WI-210 dispatch failed: no impl of {} for the per-call bindings",
-                        op_qn
-                    );
-                    return None;
+                    return Err(TypeError::DispatchNoMatch { span, op: fn_sym });
                 }
                 DispatchOutcome::Ambiguous => {
-                    eprintln!(
-                        "WI-210 dispatch failed: multiple impls of {} match the per-call bindings (coherence rule)",
-                        op_qn
-                    );
-                    return None;
+                    return Err(TypeError::DispatchAmbiguous { span, op: fn_sym });
                 }
                 DispatchOutcome::Deferred => {
                     if let Some(slot) =
@@ -1288,13 +1526,13 @@ fn check_apply_iter(
             }
         }
 
-        return Some(TypeResult { ty: resolved_ret, env: env.clone(), effects });
+        return Ok(TypeResult { ty: resolved_ret, env: env.clone(), effects });
     }
 
     // Path 2: variable with arrow type
     if let Some(fn_type_tid) = env.lookup_var(fn_sym) {
         if let Some((ret_type, effects)) = extract_function_type_parts(kb, fn_type_tid) {
-            return Some(TypeResult { ty: ret_type, env: env.clone(), effects });
+            return Ok(TypeResult { ty: ret_type, env: env.clone(), effects });
         }
     }
 
@@ -1302,7 +1540,7 @@ fn check_apply_iter(
     // results) and fall back to the declared return type if any.
     let mut effects: Vec<TermId> = Vec::new();
     for r in pos_results.iter().chain(named_results.iter()) {
-        if let Some(r) = r {
+        if let Ok(r) = r {
             effects = merge_effects(&effects, &r.effects);
         }
     }
@@ -1310,6 +1548,7 @@ fn check_apply_iter(
     let _ = named_args;
     lookup_operation_return_type(kb, fn_sym)
         .map(|ty| TypeResult { ty, env: env.clone(), effects })
+        .ok_or(TypeError::UnknownApplyFunctor { span, name: fn_sym })
 }
 
 /// WI-218: allocate a rewritten `apply` term with `fn = impl_op_sym`,
@@ -3173,37 +3412,38 @@ fn op_has_runnable_body(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
 /// Tuple-literal special case routed from `check_constructor_iter`:
 /// empty tuple → `Unit`; populated tuple → `named_tuple` whose fields
 /// are `_0, _1, …` for positional args and the source label for named
-/// args. Propagates `None` if any arg failed to type.
+/// args.
 fn check_tuple_literal_constructor(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
-    pos_results: &[Option<TypeResult>],
-    named_results: &[Option<TypeResult>],
-) -> Option<TypeResult> {
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_results: &[Result<TypeResult, TypeError>],
+) -> Result<TypeResult, TypeError> {
     if pos_results.is_empty() && named_results.is_empty() {
         let unit_ty = kb.make_sort_ref_by_name("anthill.prelude.Unit");
-        return Some(TypeResult::pure(unit_ty, env.clone()));
+        return Ok(TypeResult::pure(unit_ty, env.clone()));
     }
+
+    collect_arg_errors(pos_results.iter().chain(named_results.iter()))?;
 
     let pos_labeled = pos_results
         .iter()
         .enumerate()
-        .map(|(i, r)| (kb.intern(&format!("_{}", i)), r));
+        .map(|(i, r)| (kb.intern(&format!("_{}", i)), r.as_ref().expect("aggregator")));
     let named_labeled = named_args
         .iter()
         .zip(named_results.iter())
-        .map(|((name, _), r)| (*name, r));
+        .map(|((name, _), r)| (*name, r.as_ref().expect("aggregator")));
 
     let mut effects: Vec<TermId> = Vec::new();
     let mut tuple_fields: Vec<(Symbol, TermId)> = Vec::new();
-    for (label, r_opt) in pos_labeled.chain(named_labeled) {
-        let r = r_opt.as_ref()?;
+    for (label, r) in pos_labeled.chain(named_labeled) {
         tuple_fields.push((label, r.ty));
         effects = merge_effects(&effects, &r.effects);
     }
     let tuple_ty = kb.make_named_tuple_type(&tuple_fields);
-    Some(TypeResult { ty: tuple_ty, env: env.clone(), effects })
+    Ok(TypeResult { ty: tuple_ty, env: env.clone(), effects })
 }
 
 /// Non-recursive Constructor checker — peer of `check_apply_iter`.
@@ -3219,10 +3459,14 @@ fn check_constructor_iter(
     ctor_sym: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
-    pos_results: &[Option<TypeResult>],
-    named_results: &[Option<TypeResult>],
-) -> Option<TypeResult> {
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_results: &[Result<TypeResult, TypeError>],
+    span: Option<Span>,
+) -> Result<TypeResult, TypeError> {
     let _ = pos_args; // arg-NodeOccurrence references kept for parity with check_apply_iter
+
+    // Surface any sub-expression failure before continuing.
+    collect_arg_errors(pos_results.iter().chain(named_results.iter()))?;
 
     // `()` and `(a, b, …)` parse as a `TupleLiteral` entity and the loader
     // wraps them as `constructor(name: Ref(TupleLiteral), args: …)`. They
@@ -3248,9 +3492,12 @@ fn check_constructor_iter(
         None => kb.make_sort_ref(ctor_sym),
     };
 
-    let field_types = kb.entity_field_types(ctor_sym)?.to_vec();
+    let field_types = match kb.entity_field_types(ctor_sym) {
+        Some(ft) => ft.to_vec(),
+        None => return Err(TypeError::NoConstructor { span, name: ctor_sym }),
+    };
     if field_types.is_empty() {
-        return Some(TypeResult::pure(parent_type, env.clone()));
+        return Ok(TypeResult::pure(parent_type, env.clone()));
     }
 
     let mut subst = Substitution::new();
@@ -3258,7 +3505,7 @@ fn check_constructor_iter(
 
     for &(field_sym, declared_type) in &field_types {
         if let Some((idx, _)) = named_args.iter().enumerate().find(|(_, (s, _))| *s == field_sym) {
-            if let Some(ref r) = named_results[idx] {
+            if let Ok(ref r) = named_results[idx] {
                 unify_types(kb, &mut subst, r.ty, declared_type);
                 effects = merge_effects(&effects, &r.effects);
             }
@@ -3267,7 +3514,7 @@ fn check_constructor_iter(
 
     for (i, r_opt) in pos_results.iter().enumerate() {
         if let Some(&(_, declared_type)) = field_types.get(i) {
-            if let Some(r) = r_opt {
+            if let Ok(r) = r_opt {
                 unify_types(kb, &mut subst, r.ty, declared_type);
                 effects = merge_effects(&effects, &r.effects);
             }
@@ -3275,7 +3522,7 @@ fn check_constructor_iter(
     }
 
     if subst.bindings.is_empty() {
-        return Some(TypeResult { ty: parent_type, env: env.clone(), effects });
+        return Ok(TypeResult { ty: parent_type, env: env.clone(), effects });
     }
 
     // Build parameterized type from the sort's type params + substitution bindings.
@@ -3286,9 +3533,9 @@ fn check_constructor_iter(
     let parent_sym = match parent_sort {
         Some(parent_tid) => match kb.get_term(parent_tid) {
             Term::Fn { functor, .. } => *functor,
-            _ => return Some(TypeResult { ty: parent_type, env: env.clone(), effects }),
+            _ => return Ok(TypeResult { ty: parent_type, env: env.clone(), effects }),
         },
-        None => return Some(TypeResult { ty: parent_type, env: env.clone(), effects }),
+        None => return Ok(TypeResult { ty: parent_type, env: env.clone(), effects }),
     };
 
     let alias_sym = kb.try_resolve_symbol("SortAlias");
@@ -3326,11 +3573,11 @@ fn check_constructor_iter(
     }
 
     if param_bindings.is_empty() {
-        Some(TypeResult { ty: parent_type, env: env.clone(), effects })
+        Ok(TypeResult { ty: parent_type, env: env.clone(), effects })
     } else {
         let base = kb.make_sort_ref(parent_sym);
         let param_type = kb.make_parameterized_type(base, &param_bindings);
-        Some(TypeResult { ty: param_type, env: env.clone(), effects })
+        Ok(TypeResult { ty: param_type, env: env.clone(), effects })
     }
 }
 
@@ -3356,20 +3603,21 @@ fn check_if_expr(
     condition: &Rc<NodeOccurrence>,
     then_branch: &Rc<NodeOccurrence>,
     else_branch: &Rc<NodeOccurrence>,
-) -> Option<TypeResult> {
-    let cond_r = type_check_node(kb, env, condition);
-    let then_r = type_check_node(kb, env, then_branch);
-    let else_r = type_check_node(kb, env, else_branch);
-
-    let ty = then_r.as_ref().map(|r| r.ty)
-        .or_else(|| else_r.as_ref().map(|r| r.ty))?;
+) -> Result<TypeResult, TypeError> {
+    let results = [
+        type_check_node(kb, env, condition),
+        type_check_node(kb, env, then_branch),
+        type_check_node(kb, env, else_branch),
+    ];
+    collect_arg_errors(results.iter())?;
+    let [cond_r, then_r, else_r] = results.map(|r| r.expect("aggregator"));
 
     let mut effects = Vec::new();
-    if let Some(ref r) = cond_r { effects = merge_effects(&effects, &r.effects); }
-    if let Some(ref r) = then_r { effects = merge_effects(&effects, &r.effects); }
-    if let Some(ref r) = else_r { effects = merge_effects(&effects, &r.effects); }
+    effects = merge_effects(&effects, &cond_r.effects);
+    effects = merge_effects(&effects, &then_r.effects);
+    effects = merge_effects(&effects, &else_r.effects);
 
-    Some(TypeResult { ty, env: env.clone(), effects })
+    Ok(TypeResult { ty: then_r.ty, env: env.clone(), effects })
 }
 
 /// Extract the variable name symbol from a `var_pattern`.
@@ -3392,21 +3640,23 @@ fn check_list_literal(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     elems: &[Rc<NodeOccurrence>],
-) -> Option<TypeResult> {
+) -> Result<TypeResult, TypeError> {
+    let results: Vec<Result<TypeResult, TypeError>> = elems
+        .iter()
+        .map(|e| type_check_node(kb, env, e))
+        .collect();
+    collect_arg_errors(results.iter())?;
+
     let mut effects = Vec::new();
-    let mut element_type: Option<TermId> = None;
-
-    if let Some(expected) = env.expected_collection_type() {
-        element_type = extract_type_param(kb, expected, "T");
-    }
-
-    for elem in elems.iter() {
-        if let Some(r) = type_check_node(kb, env, elem) {
-            if element_type.is_none() {
-                element_type = Some(r.ty);
-            }
-            effects = merge_effects(&effects, &r.effects);
+    let mut element_type: Option<TermId> = env
+        .expected_collection_type()
+        .and_then(|expected| extract_type_param(kb, expected, "T"));
+    for r in results {
+        let r = r.expect("aggregator");
+        if element_type.is_none() {
+            element_type = Some(r.ty);
         }
+        effects = merge_effects(&effects, &r.effects);
     }
 
     let t_val = element_type.unwrap_or_else(|| {
@@ -3417,7 +3667,7 @@ fn check_list_literal(
     let t_sym = kb.intern("T");
     let list_type = kb.make_parameterized_type(list_base, &[(t_sym, t_val)]);
 
-    Some(TypeResult { ty: list_type, env: env.clone(), effects })
+    Ok(TypeResult { ty: list_type, env: env.clone(), effects })
 }
 
 /// SetLiteral: elems are positional.
@@ -3425,21 +3675,23 @@ fn check_set_literal(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     elems: &[Rc<NodeOccurrence>],
-) -> Option<TypeResult> {
+) -> Result<TypeResult, TypeError> {
+    let results: Vec<Result<TypeResult, TypeError>> = elems
+        .iter()
+        .map(|e| type_check_node(kb, env, e))
+        .collect();
+    collect_arg_errors(results.iter())?;
+
     let mut effects = Vec::new();
-    let mut element_type: Option<TermId> = None;
-
-    if let Some(expected) = env.expected_collection_type() {
-        element_type = extract_type_param(kb, expected, "T");
-    }
-
-    for elem in elems.iter() {
-        if let Some(r) = type_check_node(kb, env, elem) {
-            if element_type.is_none() {
-                element_type = Some(r.ty);
-            }
-            effects = merge_effects(&effects, &r.effects);
+    let mut element_type: Option<TermId> = env
+        .expected_collection_type()
+        .and_then(|expected| extract_type_param(kb, expected, "T"));
+    for r in results {
+        let r = r.expect("aggregator");
+        if element_type.is_none() {
+            element_type = Some(r.ty);
         }
+        effects = merge_effects(&effects, &r.effects);
     }
 
     let t_val = element_type.unwrap_or_else(|| {
@@ -3450,7 +3702,7 @@ fn check_set_literal(
     let t_sym = kb.intern("T");
     let set_type = kb.make_parameterized_type(set_base, &[(t_sym, t_val)]);
 
-    Some(TypeResult { ty: set_type, env: env.clone(), effects })
+    Ok(TypeResult { ty: set_type, env: env.clone(), effects })
 }
 
 /// TupleLiteral: positional fields produce a named-tuple type with
@@ -3460,34 +3712,34 @@ fn check_tuple_literal(
     env: &TypingEnv,
     positional: &[Rc<NodeOccurrence>],
     named: &[(Symbol, Rc<NodeOccurrence>)],
-) -> Option<TypeResult> {
+) -> Result<TypeResult, TypeError> {
+    let pos_results: Vec<Result<TypeResult, TypeError>> = positional
+        .iter()
+        .map(|e| type_check_node(kb, env, e))
+        .collect();
+    let named_results: Vec<Result<TypeResult, TypeError>> = named
+        .iter()
+        .map(|(_, e)| type_check_node(kb, env, e))
+        .collect();
+    collect_arg_errors(pos_results.iter().chain(named_results.iter()))?;
+
     let mut effects = Vec::new();
     let mut field_types: Vec<(Symbol, TermId)> = Vec::new();
-
-    for (i, elem) in positional.iter().enumerate() {
+    for (i, r) in pos_results.into_iter().enumerate() {
+        let r = r.expect("aggregator");
         let field_name = kb.intern(&format!("_{}", i));
-        if let Some(r) = type_check_node(kb, env, elem) {
-            field_types.push((field_name, r.ty));
-            effects = merge_effects(&effects, &r.effects);
-        } else {
-            let fresh = kb.intern(&format!("?field_{}", i));
-            field_types.push((field_name, kb.make_type_var(fresh)));
-        }
+        field_types.push((field_name, r.ty));
+        effects = merge_effects(&effects, &r.effects);
     }
-    for (name, elem) in named.iter() {
-        if let Some(r) = type_check_node(kb, env, elem) {
-            field_types.push((*name, r.ty));
-            effects = merge_effects(&effects, &r.effects);
-        } else {
-            let fresh_label = format!("?field_{}", kb.resolve_sym(*name).to_string());
-            let fresh = kb.intern(&fresh_label);
-            field_types.push((*name, kb.make_type_var(fresh)));
-        }
+    for ((name, _), r) in named.iter().zip(named_results.into_iter()) {
+        let r = r.expect("aggregator");
+        field_types.push((*name, r.ty));
+        effects = merge_effects(&effects, &r.effects);
     }
 
     let tuple_type = kb.make_named_tuple_type(&field_types);
 
-    Some(TypeResult { ty: tuple_type, env: env.clone(), effects })
+    Ok(TypeResult { ty: tuple_type, env: env.clone(), effects })
 }
 
 /// Extract a named type parameter from a parameterized type term.
@@ -5249,43 +5501,54 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             env.bind_var(*name, *ty);
         }
 
-        if let Some(result) = type_check_node(kb, &env, &op.body_node) {
-            if !types_compatible(kb, result.ty, op.return_type) {
-                errors.push(TypeError::TypeMismatch {
-                    span: None,
-                    context: TypeErrorContext::OperationReturn { op_name: op.op_sym },
-                    expected: op.return_type,
-                    actual: result.ty,
-                });
-            }
+        match type_check_node(kb, &env, &op.body_node) {
+            Ok(result) => {
+                if !types_compatible(kb, result.ty, op.return_type) {
+                    errors.push(TypeError::TypeMismatch {
+                        span: None,
+                        context: TypeErrorContext::OperationReturn { op_name: op.op_sym },
+                        expected: op.return_type,
+                        actual: result.ty,
+                    });
+                }
 
-            // Filter out local resource effects — only external effects must be declared
-            let ext_effects = external_effects(kb, &result.env, &result.effects);
-            for effect in &ext_effects {
-                if !op.declared_effects.contains(effect) {
-                    let effect_name = type_display_name(kb, *effect);
-                    let declared_names: Vec<String> = op.declared_effects.iter()
-                        .map(|e| type_display_name(kb, *e))
-                        .collect();
-                    if !declared_names.iter().any(|d| d == &effect_name) {
-                        errors.push(TypeError::Other {
-                            span: op.span,
-                            context: TypeErrorContext::OperationEffects { op_name: op.op_sym },
-                            expected: format!("declared: [{}]", declared_names.join(", ")),
-                            actual: format!("undeclared effect: {}", effect_name),
-                        });
+                // Filter out local resource effects — only external effects must be declared
+                let ext_effects = external_effects(kb, &result.env, &result.effects);
+                for effect in &ext_effects {
+                    if !op.declared_effects.contains(effect) {
+                        let effect_name = type_display_name(kb, *effect);
+                        let declared_names: Vec<String> = op.declared_effects.iter()
+                            .map(|e| type_display_name(kb, *e))
+                            .collect();
+                        if !declared_names.iter().any(|d| d == &effect_name) {
+                            errors.push(TypeError::Other {
+                                span: op.span,
+                                context: TypeErrorContext::OperationEffects { op_name: op.op_sym },
+                                expected: format!("declared: [{}]", declared_names.join(", ")),
+                                actual: format!("undeclared effect: {}", effect_name),
+                            });
+                        }
                     }
                 }
-            }
 
-            // Collect exhaustiveness diagnostics from the typing env
-            for diag in &result.env.diagnostics {
-                errors.push(TypeError::Other {
-                    span: op.span,
-                    context: TypeErrorContext::OperationMatch { op_name: op.op_sym },
-                    expected: "exhaustive".to_string(),
-                    actual: diag.clone(),
-                });
+                // Collect exhaustiveness diagnostics from the typing env
+                for diag in &result.env.diagnostics {
+                    errors.push(TypeError::Other {
+                        span: op.span,
+                        context: TypeErrorContext::OperationMatch { op_name: op.op_sym },
+                        expected: "exhaustive".to_string(),
+                        actual: diag.clone(),
+                        });
+                }
+            }
+            Err(err) => {
+                // Body failed to type — surface the structured error
+                // instead of silently dropping it. Flatten an aggregation
+                // node into its leaves so each sibling failure shows up
+                // as its own load error.
+                for e in err.flatten() {
+                    errors.push(e);
+                }
             }
         }
     }

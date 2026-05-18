@@ -2813,7 +2813,18 @@ fn resolve_name_in_kb_opt(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> Opt
 /// Search all qualified names for one whose short name matches.
 /// This is a workaround for incomplete scope resolution — names should
 /// be resolvable via the scope chain without this fallback.
+///
+/// `SymbolKind::Param` symbols are skipped: operation parameters and
+/// fields are encapsulated to their op body's scope and must NOT leak
+/// out via short-name fallback. Pre-WI-264 a body's bare `y` could
+/// accidentally resolve to (e.g.) `anthill.prelude.Float.atan2.y` —
+/// the stdlib operation's parameter — and the typer's silent-None bail
+/// masked the consequences. With the typer's Result propagation any
+/// such mis-qualification surfaces as `UnresolvedName`, so the fallback
+/// must not introduce it in the first place.
 fn resolve_by_short_name(kb: &KnowledgeBase, name: &str) -> Option<Symbol> {
+    use crate::intern::{SymbolDef, SymbolKind};
+
     // Check entity short-name index
     if let Some(&short) = kb.symbols.intern_map.get(name) {
         if let Some(qualified) = kb.entity_qualified_for_short(short) {
@@ -2825,21 +2836,30 @@ fn resolve_by_short_name(kb: &KnowledgeBase, name: &str) -> Option<Symbol> {
     let mut found_is_builtin = false;
     for (qname, &sym) in &kb.symbols.by_qualified_name {
         let short = qname.rsplit('.').next().unwrap_or(qname);
-        if short == name {
-            let is_builtin = kb.builtins.contains_key(&sym);
-            if found.is_some() {
-                if is_builtin && !found_is_builtin {
-                    found = Some(sym);
-                    found_is_builtin = true;
-                } else if !is_builtin && found_is_builtin {
-                    // Keep existing builtin
-                } else {
-                    return None; // ambiguous
-                }
-            } else {
-                found = Some(sym);
-                found_is_builtin = is_builtin;
+        if short != name {
+            continue;
+        }
+        // Encapsulated kinds: never reachable by short-name fallback.
+        // Op params and entity fields are local to their declaring
+        // scope; reaching them via global short-name lookup is a leak.
+        if let SymbolDef::Resolved { kind, .. } = kb.symbols.get(sym) {
+            if matches!(kind, SymbolKind::Param | SymbolKind::Field) {
+                continue;
             }
+        }
+        let is_builtin = kb.builtins.contains_key(&sym);
+        if found.is_some() {
+            if is_builtin && !found_is_builtin {
+                found = Some(sym);
+                found_is_builtin = true;
+            } else if !is_builtin && found_is_builtin {
+                // Keep existing builtin
+            } else {
+                return None; // ambiguous
+            }
+        } else {
+            found = Some(sym);
+            found_is_builtin = is_builtin;
         }
     }
     found
@@ -2878,6 +2898,16 @@ pub fn print_item_timings(label: &str) {
 enum LoadWorkOp {
     Visit(TermId),
     Build(LoadBuildFrame),
+    /// Open a let/lambda/match-branch local-name scope. The frame's
+    /// (name → symbol) entries shadow same-named rules / params /
+    /// constructors / etc. during the body's visit, so the body's
+    /// bare-name reference resolves to the let-bound symbol instead
+    /// of an unrelated qualified one found by `resolve_by_short_name`.
+    PushLocalScope(HashMap<String, Symbol>),
+    /// Close the topmost local-name scope. Paired with a preceding
+    /// `PushLocalScope` so push/pop nest correctly under iterative
+    /// dispatch.
+    PopLocalScope,
 }
 
 /// Post-order assembly frame for the iterative expression loader.
@@ -2962,6 +2992,16 @@ struct Loader<'a> {
     // of allocations amortizes across every operation body.
     expr_work: Vec<LoadWorkOp>,
     expr_results: Vec<TermId>,
+    // Stack of local-name scopes opened by `let`, `lambda`, and
+    // `match_branch` during expression conversion. Each entry maps a
+    // short name to its KB Symbol (the pattern's interned bare symbol).
+    // Name resolution in `remap_symbol` consults this stack before
+    // walking the `current_scope` chain so a body's reference to a
+    // let-bound name doesn't accidentally resolve to an unrelated
+    // rule / op / param of the same short name via
+    // `resolve_by_short_name`. Pushed by the let/match/lambda visit
+    // arms; popped by `LoadWorkOp::PopLocalScope`.
+    local_names_stack: Vec<HashMap<String, Symbol>>,
 }
 
 /// Pre-resolved symbols used by `build_load`. Populated once at
@@ -3057,6 +3097,82 @@ impl<'a> Loader<'a> {
             expr_syms,
             expr_work: Vec::with_capacity(64),
             expr_results: Vec::with_capacity(64),
+            local_names_stack: Vec::new(),
+        }
+    }
+
+    /// Look up a name in the let/lambda/match-branch scope stack.
+    /// Returns the bound KB symbol when the name is in scope.
+    fn lookup_local_name(&self, name: &str) -> Option<Symbol> {
+        for frame in self.local_names_stack.iter().rev() {
+            if let Some(&sym) = frame.get(name) {
+                return Some(sym);
+            }
+        }
+        None
+    }
+
+    /// Build a let/lambda/match-branch local-name scope frame from the
+    /// pattern's bound variable names. Returns the frame to push onto
+    /// `local_names_stack`. Empty patterns (wildcard, literal) produce
+    /// an empty frame; callers should skip the Push/Pop ops in that
+    /// case to avoid no-op stack churn.
+    fn build_pattern_scope_frame(&mut self, parse_id: TermId) -> HashMap<String, Symbol> {
+        let mut frame: HashMap<String, Symbol> = HashMap::new();
+        self.collect_pattern_names_into(parse_id, &mut frame);
+        frame
+    }
+
+    /// Walk a parse-time pattern term and add each bound variable's
+    /// (short_name → KB symbol) entry into `frame`. The KB symbol is
+    /// the bare intern of the short name, matching what
+    /// `load_pattern_var → reintern` produces for the pattern itself.
+    fn collect_pattern_names_into(
+        &mut self,
+        parse_id: TermId,
+        frame: &mut HashMap<String, Symbol>,
+    ) {
+        // Borrow `parsed.terms` immutably; `kb.intern` borrows kb mutably.
+        // Extract the structural data we need first, drop the borrow,
+        // then intern.
+        let (functor_name, pos_args, named_args) = {
+            let t = self.parsed.terms.get(parse_id);
+            match t {
+                Term::Fn { functor, pos_args, named_args } => {
+                    let n = self.parsed.symbols.name(*functor).to_owned();
+                    (n, pos_args.clone(), named_args.clone())
+                }
+                _ => return,
+            }
+        };
+        match functor_name.as_str() {
+            "pattern_var" => {
+                if let Some(&first) = pos_args.first() {
+                    if let Term::Ident(sym) = self.parsed.terms.get(first) {
+                        let name = self.parsed.symbols.name(*sym).to_owned();
+                        let kb_sym = self.kb.intern(&name);
+                        frame.insert(name, kb_sym);
+                    }
+                }
+            }
+            "pattern_tuple" => {
+                for sub in pos_args {
+                    self.collect_pattern_names_into(sub, frame);
+                }
+            }
+            "pattern_constructor" => {
+                // pos_args[0] is the constructor name; the rest are
+                // positional sub-patterns. `named_args` carries the
+                // `case Foo(field = pat)` form's sub-patterns under
+                // their field names — those bind too.
+                for sub in pos_args.into_iter().skip(1) {
+                    self.collect_pattern_names_into(sub, frame);
+                }
+                for (_, sub) in named_args {
+                    self.collect_pattern_names_into(sub, frame);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -3100,8 +3216,17 @@ impl<'a> Loader<'a> {
     /// If resolution finds a defined symbol, returns it; otherwise falls
     /// back to plain intern (term-level functors may be undefined data names).
     /// Ambiguous matches are still hard errors.
+    ///
+    /// Consults the let/lambda/match-branch local-name scope stack
+    /// first. A pattern-bound name in scope shadows any same-short-name
+    /// rule / op / param / etc., so a body's reference to a let-bound
+    /// `y` doesn't accidentally pull in `Float.atan2.y` via
+    /// `resolve_by_short_name`.
     fn remap_symbol(&mut self, sym: Symbol) -> Symbol {
         let name = self.parsed.symbols.name(sym);
+        if let Some(local) = self.lookup_local_name(name) {
+            return local;
+        }
         let scope = self.current_scope.raw();
         match self.kb.symbols.resolve_in_scope(name, scope) {
             ResolveResult::Found(resolved) => resolved,
@@ -3429,6 +3554,12 @@ impl<'a> Loader<'a> {
             match op {
                 LoadWorkOp::Visit(pid) => self.visit_load(pid, &mut work, &mut results),
                 LoadWorkOp::Build(frame) => self.build_load(frame, &mut results),
+                LoadWorkOp::PushLocalScope(scope) => {
+                    self.local_names_stack.push(scope);
+                }
+                LoadWorkOp::PopLocalScope => {
+                    self.local_names_stack.pop();
+                }
             }
         }
         debug_assert_eq!(results.len(), 1, "iterative loader: expected exactly one result");
@@ -3462,11 +3593,19 @@ impl<'a> Loader<'a> {
                         }
                     }
                     "match_branch" => {
+                        // Pattern names are bound for the branch body.
+                        let frame = self.build_pattern_scope_frame(pos_args[0]);
                         work.push(LoadWorkOp::Build(LoadBuildFrame::MatchBranch {
                             outer_parse_id: parse_id,
                         }));
-                        work.push(LoadWorkOp::Visit(pos_args[1]));
-                        work.push(LoadWorkOp::Visit(pos_args[0]));
+                        if !frame.is_empty() {
+                            work.push(LoadWorkOp::PopLocalScope);
+                        }
+                        work.push(LoadWorkOp::Visit(pos_args[1])); // body
+                        if !frame.is_empty() {
+                            work.push(LoadWorkOp::PushLocalScope(frame));
+                        }
+                        work.push(LoadWorkOp::Visit(pos_args[0])); // pattern
                     }
                     "if_expr" => {
                         work.push(LoadWorkOp::Build(LoadBuildFrame::IfExpr {
@@ -3477,19 +3616,41 @@ impl<'a> Loader<'a> {
                         work.push(LoadWorkOp::Visit(pos_args[0]));
                     }
                     "let_expr" => {
+                        // The let-pattern's bound names are in scope for
+                        // the body but not for the value, so push the
+                        // scope frame between value and body. Pop order
+                        // on the stack: build_let → pop_scope → body →
+                        // push_scope → value → pattern, so push them in
+                        // reverse. Skip the scope ops entirely when the
+                        // pattern binds no names (wildcard / literal).
+                        let frame = self.build_pattern_scope_frame(pos_args[0]);
                         work.push(LoadWorkOp::Build(LoadBuildFrame::LetExpr {
                             outer_parse_id: parse_id,
                         }));
-                        work.push(LoadWorkOp::Visit(pos_args[2]));
-                        work.push(LoadWorkOp::Visit(pos_args[1]));
-                        work.push(LoadWorkOp::Visit(pos_args[0]));
+                        if !frame.is_empty() {
+                            work.push(LoadWorkOp::PopLocalScope);
+                        }
+                        work.push(LoadWorkOp::Visit(pos_args[2])); // body
+                        if !frame.is_empty() {
+                            work.push(LoadWorkOp::PushLocalScope(frame));
+                        }
+                        work.push(LoadWorkOp::Visit(pos_args[1])); // value
+                        work.push(LoadWorkOp::Visit(pos_args[0])); // pattern
                     }
                     "lambda" => {
+                        // Lambda param is in scope for the body.
+                        let frame = self.build_pattern_scope_frame(pos_args[0]);
                         work.push(LoadWorkOp::Build(LoadBuildFrame::Lambda {
                             outer_parse_id: parse_id,
                         }));
-                        work.push(LoadWorkOp::Visit(pos_args[1]));
-                        work.push(LoadWorkOp::Visit(pos_args[0]));
+                        if !frame.is_empty() {
+                            work.push(LoadWorkOp::PopLocalScope);
+                        }
+                        work.push(LoadWorkOp::Visit(pos_args[1])); // body
+                        if !frame.is_empty() {
+                            work.push(LoadWorkOp::PushLocalScope(frame));
+                        }
+                        work.push(LoadWorkOp::Visit(pos_args[0])); // param
                     }
                     "pattern_var" => {
                         let kb_id = self.load_pattern_var(&pos_args);

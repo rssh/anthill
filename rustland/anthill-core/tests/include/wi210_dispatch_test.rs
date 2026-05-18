@@ -547,9 +547,10 @@ fn dispatch_commit_s_w_type_checks_via_workitemstore_satisfaction() {
     env.bind_var(w_sym, workitem_ty);
 
     let result = type_check_expr(&mut kb, &env, apply_term);
-    assert!(result.is_some(),
+    assert!(result.is_ok(),
         "expected commit(s, w) for s:Cell[V=WIS] / w:WorkItem to type-check \
-         (dispatch should resolve to FileBasedWorkitemStore.commit)");
+         (dispatch should resolve to FileBasedWorkitemStore.commit); got {:?}",
+         result.as_ref().err());
 }
 
 #[test]
@@ -613,6 +614,7 @@ fn dispatch_int_add_x_x_type_checks_via_spec_satisfaction() {
     env.bind_var(x_sym, int_type);
 
     let result = type_check_expr(&mut kb, &env, apply_term);
-    assert!(result.is_some(),
-        "expected add(x, x) for x:Int to type-check; got None (dispatch likely failed)");
+    assert!(result.is_ok(),
+        "expected add(x, x) for x:Int to type-check; got {:?} (dispatch likely failed)",
+        result.as_ref().err());
 }
