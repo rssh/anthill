@@ -10,7 +10,6 @@ namespace anthill.todo
   import anthill.cli.Main
   import anthill.persistence.filesystem.{FileStore}
   import anthill.persistence.{Store}
-  import anthill.persistence.Store.{persist, flush}
   import anthill.prelude.{Cell}
   import anthill.prelude.Meta.{Meta}
   import anthill.prelude.Time.{now, Clock}
@@ -36,18 +35,16 @@ namespace anthill.todo
   import anthill.prelude.Int.{to_string}
   import anthill.prelude.String.{concat}
   import anthill.prelude.List.{cons, nil}
-  import anthill.reflect.{KB, Term, Substitution, LogicalQuery, FactId,
-                          term_functor_name, term_field, term_as_string,
-                          fresh_var, make_fn, find_fact, replace_named_arg}
-  import anthill.persistence.Store.{retract}
+  import anthill.reflect.{Term, Substitution, term_functor_name,
+                          term_field, term_as_string, term_as_entity,
+                          fresh_var, make_fn}
   import anthill.stage0.WorkStatus.{Claimed, Delivered, Verified}
   import anthill.reflect.KB.{kb, execute, facts_of}
-  import anthill.reflect.LogicalQuery.{sort_query, pattern_query}
-  import anthill.reflect.{Substitution}
+  import anthill.reflect.LogicalQuery.{pattern_query}
   import anthill.todo.store.{WorkItemStore}
   import anthill.todo.store.WorkItemStore.{lookup, by_status_of, all,
-                                           next_id, commit, forget}
-  import anthill.reflect.{term_as_entity}
+                                           next_id, commit, forget,
+                                           commit_feedback}
   export Main, specs
 
   -- The 16-subcommand registry, mirroring the legacy Rust binary's
@@ -270,32 +267,8 @@ namespace anthill.todo
       let _ = eprintln(console(), name)
       2
 
-    -- Walk a List[Term] of WorkItem facts and tally per-status counts.
-    -- We don't have Map yet; use a List[Pair[String, Int]] as the bucket
-    -- store (linear scan, fine for ~5 distinct statuses).
-
-    -- True for facts that look like real WorkItem rows. The synthetic
-    -- entity declaration the loader emits for `entity WorkItem(...)` has
-    -- no `id: "WI-NNN"` string literal, so legacy collect_workitems
-    -- skipped it; mirror that filter here.
-    operation has_id(t: Term) -> Bool =
-      match term_field(t, "id")
-        case some(id_term) ->
-          match term_as_string(id_term)
-            case some(_) -> true
-            case none() -> false
-        case none() -> false
-
-    operation status_of(t: Term) -> String =
-      match term_field(t, "status")
-        case some(field_term) ->
-          match term_functor_name(field_term)
-            case some(name) -> name
-            case none() -> "?"
-        case none() -> "?"
-
-    -- Bump the count for `status` in `acc`, appending a new entry if
-    -- absent. Returns the rebuilt list (immutable).
+    -- Bump the count for `status` in `acc`, appending a new entry
+    -- if absent. Returns the rebuilt list (immutable).
     operation bump(acc: List[Pair[String, Int]], status: String)
       -> List[Pair[String, Int]]
     =
@@ -306,23 +279,6 @@ namespace anthill.todo
             case pair(k, n) ->
               if eq(k, status) then cons(pair(k, n + 1), rest)
               else cons(p, bump(rest, status))
-
-    operation tally(items: List[Term],
-                    acc: List[Pair[String, Int]])
-      -> List[Pair[String, Int]]
-    =
-      match items
-        case nil() -> acc
-        case cons(t, rest) ->
-          if has_id(t) then tally(rest, bump(acc, status_of(t)))
-          else tally(rest, acc)
-
-    operation count_items(items: List[Term]) -> Int =
-      match items
-        case nil() -> 0
-        case cons(t, rest) ->
-          if has_id(t) then 1 + count_items(rest)
-          else count_items(rest)
 
     -- Insertion sort by string key (ascending). Acceptable for ~5 buckets;
     -- swap for List.sort once that lands in stdlib.
@@ -399,21 +355,6 @@ namespace anthill.todo
         let buckets = sort_buckets(tally_w(items, nil()))
         print_counts(buckets)
 
-    -- Filter a list of WorkItem terms to the one whose id field equals
-    -- the target string. Returns none() if missing.
-    operation find_by_id(items: List[Term], id: String) -> Option[T = Term] =
-      match items
-        case nil() -> none()
-        case cons(t, rest) ->
-          match term_field(t, "id")
-            case some(id_term) ->
-              match term_as_string(id_term)
-                case some(id_str) ->
-                  if eq(id_str, id) then some(t)
-                  else find_by_id(rest, id)
-                case none() -> find_by_id(rest, id)
-            case none() -> find_by_id(rest, id)
-
     -- Walk a `cons(string, ...)`-encoded list and build "a, b, c".
     -- Used for the `Depends on:` line.
     operation join_strings_inner(items: List[String], sep: String) -> String =
@@ -425,67 +366,6 @@ namespace anthill.todo
       match items
         case nil() -> ""
         case cons(s, rest) -> concat(s, join_strings_inner(rest, sep))
-
-    -- Drill `t.depends_on` into a List[String]; treat absence as empty.
-    -- The on-disk representation is `depends_on: ["WI-N", "WI-M"]` —
-    -- a List[String] literal that materializes as `cons(string, ...)`
-    -- in the KB.
-    operation deps_strings(t: Term) -> List[String] =
-      match term_field(t, "depends_on")
-        case some(_) -> deps_walk(t)
-        case none() -> nil()
-
-    -- Walk the depends_on cons-chain, extracting each head as a String.
-    operation deps_walk(t: Term) -> List[String] =
-      match term_field(t, "depends_on")
-        case some(list_term) -> deps_walk_list(list_term)
-        case none() -> nil()
-
-    operation deps_walk_list(list_term: Term) -> List[String] =
-      match term_functor_name(list_term)
-        case some(fname) ->
-          if eq(fname, "cons") then
-            match term_field(list_term, "head")
-              case some(h) ->
-                match term_as_string(h)
-                  case some(s) ->
-                    match term_field(list_term, "tail")
-                      case some(rest) -> cons(s, deps_walk_list(rest))
-                      case none() -> cons(s, nil())
-                  case none() -> nil()
-              case none() -> nil()
-          else nil()
-        case none() -> nil()
-
-    operation print_description(wi: Term) -> Unit
-      effects ConsoleOutput
-    =
-      match term_field(wi, "description")
-        case some(d) ->
-          match term_as_string(d)
-            case some(s) -> println(console(), concat("Description: ", s))
-            case none() -> ()
-        case none() -> ()
-
-    operation print_status_line(wi: Term) -> Unit
-      effects ConsoleOutput
-    =
-      match term_field(wi, "status")
-        case some(s) ->
-          match term_functor_name(s)
-            case some(name) -> println(console(), concat("Status:      ", name))
-            case none() -> ()
-        case none() -> ()
-
-    operation print_deps(wi: Term) -> Unit
-      effects ConsoleOutput
-    =
-      let deps = deps_walk(wi)
-      match deps
-        case nil() -> ()
-        case cons(_, _) ->
-          println(console(),
-                  concat("Depends on:  ", join_strings(deps, ", ")))
 
     -- Extract `depends_on` from a materialized WorkItem as a List[String].
     -- The entity declares the field as `Option[List[String]]`, but the
@@ -555,40 +435,27 @@ namespace anthill.todo
 
     -- ── cmd_list helpers ──────────────────────────────────────────
 
-    -- Lift a WorkItem term into the precomputed Row shape. Skips items
-    -- whose `id` field isn't a string (the synthetic entity-declaration
-    -- fact). `unblocks` and `has_feedback` are filled in a second pass
-    -- once the full row list is available — initialize to 0 and false.
-    operation row_of(t: Term) -> Option[T = Row] =
-      match term_field(t, "id")
-        case some(id_term) ->
-          match term_as_string(id_term)
-            case some(id_str) ->
-              let st = status_of(t)
-              let desc = match term_field(t, "description")
-                case some(d) ->
-                  match term_as_string(d)
-                    case some(s) -> s
-                    case none() -> ""
-                case none() -> ""
-              let deps = deps_walk(t)
-              some(Row(
-                id: id_str,
-                status: st,
-                description: desc,
-                depends: deps,
-                unblocks: 0,
-                has_feedback: false))
-            case none() -> none()
-        case none() -> none()
+    -- Lift a typed WorkItem into the precomputed Row shape. The
+    -- `unblocks` and `has_feedback` fields are filled in a second
+    -- pass (annotate_rows / fill_unblocks).
+    operation row_of_w(w: WorkItem) -> Row =
+      match w
+        case WorkItem(id, desc, _, _, _, _, _, _) ->
+          let desc_str = match term_as_string(desc)
+            case some(s) -> s
+            case none() -> ""
+          Row(
+            id: id,
+            status: status_name_w(w),
+            description: desc_str,
+            depends: deps_of_w(w),
+            unblocks: 0,
+            has_feedback: false)
 
-    operation rows_of(items: List[Term]) -> List[Row] =
+    operation rows_of_w(items: List[T = WorkItem]) -> List[Row] =
       match items
         case nil() -> nil()
-        case cons(t, rest) ->
-          match row_of(t)
-            case some(r) -> cons(r, rows_of(rest))
-            case none() -> rows_of(rest)
+        case cons(w, rest) -> cons(row_of_w(w), rows_of_w(rest))
 
     -- Default visibility: hide Delivered/Verified.
     operation is_closed(status: String) -> Bool =
@@ -997,13 +864,13 @@ namespace anthill.todo
     -- ── cmd_list itself ───────────────────────────────────────────
 
     operation cmd_list(bindings: List[Binding], s: Cell[State]) -> Int
-      effects ConsoleOutput
+      effects {ConsoleOutput, Error}
     =
       let status_filter = get_binding(bindings, "status")
       let show_all = match get_binding(bindings, "all")
         case some(_) -> true
         case none() -> false
-      let raw_rows = rows_of(facts_of(kb(), "WorkItem"))
+      let raw_rows = rows_of_w(WorkItemStore.all(s))
       let dep_map = build_dep_map(raw_rows)
       let fb_set = feedback_set()
       let annotated = annotate_rows(raw_rows, fb_set)
@@ -1110,9 +977,9 @@ namespace anthill.todo
               print_roots(rest, row_map, dep_map)
 
     operation cmd_graph(s: Cell[State]) -> Int
-      effects ConsoleOutput
+      effects {ConsoleOutput, Error}
     =
-      let raw_rows = rows_of(facts_of(kb(), "WorkItem"))
+      let raw_rows = rows_of_w(WorkItemStore.all(s))
       if eq(count_rows(raw_rows), 0) then
         let _ = println(console(), "No work items found.")
         0
@@ -1166,70 +1033,6 @@ namespace anthill.todo
         case nil() -> nil()
         case cons(h, rest) ->
           cons(tool_to_acceptance(h), tools_to_acceptance(rest))
-
-    -- Find the largest WI-NNN suffix across the WorkItem fact set.
-    -- Returns 0 for an empty project, so the first added id is WI-001.
-    operation max_id_in(items: List[Term], best: Int) -> Int =
-      match items
-        case nil() -> best
-        case cons(t, rest) ->
-          let candidate = id_suffix_of(t)
-          let new_best = if candidate > best then candidate else best
-          max_id_in(rest, new_best)
-
-    operation id_suffix_of(t: Term) -> Int =
-      match term_field(t, "id")
-        case none() -> 0
-        case some(id_term) ->
-          match term_as_string(id_term)
-            case none() -> 0
-            case some(s) -> parse_wi_suffix(s)
-
-    -- Parse the numeric suffix of an id like "WI-186". Returns 0 on
-    -- any malformed input — those WorkItems can't shift the max.
-    operation parse_wi_suffix(s: String) -> Int =
-      if lt(length(s), 4) then 0
-      else
-        if eq(substring(s, 0, 3), "WI-") then
-          parse_int_or_zero(substring(s, 3, length(s)))
-        else 0
-
-    operation parse_int_or_zero(s: String) -> Int =
-      parse_int_acc(s, 0, 0)
-
-    operation parse_int_acc(s: String, idx: Int, acc: Int) -> Int =
-      if eq(idx, length(s)) then acc
-      else
-        let d = digit_value(substring(s, idx, idx + 1))
-        if lt(d, 0) then 0
-        else parse_int_acc(s, idx + 1, acc * 10 + d)
-
-    -- Map a single-char string to its decimal digit, or -1 for
-    -- non-digits. Used by parse_int_acc to bail out on malformed
-    -- WI-NNN suffixes.
-    operation digit_value(c: String) -> Int =
-      if eq(c, "0") then 0
-      else if eq(c, "1") then 1
-      else if eq(c, "2") then 2
-      else if eq(c, "3") then 3
-      else if eq(c, "4") then 4
-      else if eq(c, "5") then 5
-      else if eq(c, "6") then 6
-      else if eq(c, "7") then 7
-      else if eq(c, "8") then 8
-      else if eq(c, "9") then 9
-      else 0 - 1
-
-    -- Format a non-negative Int as a 3-zero-padded decimal string.
-    -- Larger numbers expand naturally (`WI-1000` is fine).
-    operation pad3(n: Int) -> String =
-      if lt(n, 10) then concat("00", to_string(n))
-      else if lt(n, 100) then concat("0", to_string(n))
-      else to_string(n)
-
-    operation next_workitem_id() -> String =
-      let items = facts_of(kb(), "WorkItem")
-      concat("WI-", pad3(max_id_in(items, 0) + 1))
 
     operation cmd_add(bindings: List[Binding],
                       store: FileStore,
@@ -1412,16 +1215,14 @@ namespace anthill.todo
 
     -- ── cmd_feedback ─────────────────────────────────────────────
     --
-    -- `feedback <id> <text>` asserts a Feedback fact against the
-    -- target work item, persists it, and flushes the store. Output
-    -- mirrors legacy run_feedback's `feedback on <id>: <text>` line.
-    -- Mutating commands receive `store` (the FileStore handle) and
-    -- `agent` (the global --agent flag, default "user") via dispatch.
+    -- `feedback <id> <text>` asserts a Feedback fact through
+    -- WorkItemStore.commit_feedback. Output mirrors legacy
+    -- run_feedback's `feedback on <id>: <text>` line.
     operation cmd_feedback(bindings: List[Binding],
                             store: FileStore,
                             agent: String,
                             s: Cell[State]) -> Int
-      effects {ConsoleOutput, ConsoleError, Modify[store], Error, Clock}
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       let id_opt = get_binding(bindings, "id")
       let text_opt = get_binding(bindings, "text")
@@ -1435,19 +1236,17 @@ namespace anthill.todo
               let _ = eprintln(console(), "feedback: missing text")
               2
             case some(text) ->
-              do_feedback(store, agent, id, text)
+              do_feedback(s, agent, id, text)
 
-    operation do_feedback(store: FileStore, agent: String,
+    operation do_feedback(s: Cell[State], agent: String,
                           id: String, text: String) -> Int
-      effects {ConsoleOutput, Modify[store], Error, Clock}
+      effects {ConsoleOutput, Modify[s], Error, Clock}
     =
-      let fact = Feedback(
+      let _ = WorkItemStore.commit_feedback(s, Feedback(
         workitem: id,
         author: agent,
         content: text,
-        at: now())
-      let _ = persist(store, fact, Meta(entries: nil()))
-      let _ = flush(store, nil())
+        at: now()))
       let _ = println(console(),
                       concat("feedback on ",
                         concat(id, concat(": ", text))))

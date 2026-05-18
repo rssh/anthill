@@ -10,7 +10,7 @@
 -- pattern-matchable `WorkItem` entities instead of opaque `Term`s.
 
 namespace anthill.todo.store
-  import anthill.stage0.{WorkItem, WorkStatus}
+  import anthill.stage0.{WorkItem, WorkStatus, Feedback}
   import anthill.persistence.filesystem.{IndexedFileStore}
   import anthill.persistence.{persist, retract, flush}
   import anthill.prelude.{Cell, Option, List, Int, String, Unit, Bool}
@@ -39,6 +39,11 @@ namespace anthill.todo.store
     operation commit(s: Cell[V = State], w: WorkItem) -> Unit
       effects {Modify[s], Error}
     operation forget(s: Cell[V = State], id: String) -> Unit
+      effects {Modify[s], Error}
+    -- Feedback persistence routes through the same backend as
+    -- commit so cmd_X bodies have a single point of mutation
+    -- (no separate FileStore handle threaded through dispatch).
+    operation commit_feedback(s: Cell[V = State], fb: Feedback) -> Unit
       effects {Modify[s], Error}
 
     -- Read-only ops: typed WorkItem returns (WI-204 phase B1).
@@ -80,23 +85,37 @@ namespace anthill.todo.store
           let _ = Cell.set(s, wis(b, c + 1))
           concat("WI-", pad3(c))
 
-    -- Materialize each in-KB WorkItem Term into a typed entity via
-    -- term_as_entity; drop rows that fail to materialize (e.g., the
-    -- synthetic entity-declaration fact with logical-var fields).
+    -- Materialize each in-KB WorkItem Term into a typed entity.
+    -- The synthetic entity-declaration fact materializes too (its
+    -- field slots hold type expressions, not literal values), so
+    -- pre-filter on a string `id` to keep only real rows.
+    --
     -- Read-only impl bodies route through `facts_of(kb(), "WorkItem")`
     -- rather than `retrieve(backend, …)`: Stream.collect / Stream.head
     -- have no operational bodies in the stdlib yet (only splitFirst is
     -- wired through LogicalStream's Rust builtin), so a retrieve-based
-    -- impl can't materialize the result. Functionally equivalent for the
-    -- bundle scale (~hundreds of facts); WI-189 follow-up swaps in a
+    -- impl can't materialize the result. WI-189 follow-up swaps in a
     -- retrieve path once Stream.collect has a body.
     operation terms_to_workitems(ts: List[T = Term]) -> List[T = WorkItem] =
       match ts
         case nil() -> nil()
         case cons(t, rest) ->
-          match term_as_entity(t)
-            case some(w) -> cons(w, terms_to_workitems(rest))
-            case none() -> terms_to_workitems(rest)
+          if has_string_id(t) then
+            match term_as_entity(t)
+              case some(w) -> cons(w, terms_to_workitems(rest))
+              case none() -> terms_to_workitems(rest)
+          else terms_to_workitems(rest)
+
+    -- True when `t` carries a string-literal `id` field. Distinguishes
+    -- real fact rows from the synthetic entity-declaration emitted by
+    -- the loader (whose `id` slot holds a type-expression value).
+    operation has_string_id(t: Term) -> Bool =
+      match term_field(t, "id")
+        case none() -> false
+        case some(id_term) ->
+          match term_as_string(id_term)
+            case none() -> false
+            case some(_) -> true
 
     -- Identify a WorkItem term by its `id` field. Returns the term whose
     -- id matches `target`, or none(). Used by lookup before materializing.
@@ -160,18 +179,30 @@ namespace anthill.todo.store
         case wis(_, _) ->
           terms_to_workitems(facts_of(kb(), "WorkItem"))
 
-    -- Persist + flush. Counter management lives entirely in `next_id`;
-    -- commit just writes the fact and syncs the backend, so an update
-    -- path (`forget` then `commit` with rebuilt status) doesn't bump
-    -- the id sequence.
-    operation commit(s: Cell[V = WIS], w: WorkItem) -> Unit
+    -- Persist `fact` through the wis backend and flush. The
+    -- typed-surface entry points (commit / commit_feedback) split
+    -- only to preserve the WorkItem-vs-Feedback type distinction
+    -- at the spec; the impl body is one shape. Counter management
+    -- lives entirely in `next_id`, so commit doesn't bump it (the
+    -- update path `forget` then `commit` reuses the existing id).
+    operation persist_through(s: Cell[V = WIS], fact: Term) -> Unit
       effects {Modify[s], Error}
     =
       match Cell.get(s)
         case wis(b, _) ->
-          let _ = persist(b, w, Meta(entries: nil()))
+          let _ = persist(b, fact, Meta(entries: nil()))
           let _ = flush(b, nil())
           ()
+
+    operation commit(s: Cell[V = WIS], w: WorkItem) -> Unit
+      effects {Modify[s], Error}
+    =
+      persist_through(s, w)
+
+    operation commit_feedback(s: Cell[V = WIS], fb: Feedback) -> Unit
+      effects {Modify[s], Error}
+    =
+      persist_through(s, fb)
 
     -- Retract the WorkItem fact whose `id` field matches `target` then
     -- flush. Looks the fact up via facts_of + find_term_by_id (same

@@ -748,7 +748,7 @@ impl Interpreter {
             (c.param_pattern, c.body.clone())
         });
         let bindings = match_pattern(self, param_pattern, &arg).ok_or_else(|| {
-            EvalError::MatchFailed { scrutinee: arg.type_name().to_string() }
+            EvalError::MatchFailed { scrutinee: scrutinee_diag(&self.kb, &arg) }
         })?;
         let mut locals: SmallVec<[(Symbol, Value); 4]> = self.closures.clone_env(&handle);
         for (sym, v) in bindings {
@@ -812,7 +812,7 @@ impl Interpreter {
                     // Hoist the pattern-match result out of the borrow so we
                     // don't hold a `&self` while we mutate `top.locals`.
                     let bindings = match_pattern(self, pattern, &v).ok_or_else(|| {
-                        EvalError::MatchFailed { scrutinee: v.type_name().to_string() }
+                        EvalError::MatchFailed { scrutinee: scrutinee_diag(&self.kb, &v) }
                     })?;
                     let top = self.stack.top_mut().unwrap();
                     for (sym, val) in bindings {
@@ -846,7 +846,7 @@ impl Interpreter {
                         }
                     }
                     let (body, bindings) = picked.ok_or_else(|| {
-                        EvalError::MatchFailed { scrutinee: v.type_name().to_string() }
+                        EvalError::MatchFailed { scrutinee: scrutinee_diag(&self.kb, &v) }
                     })?;
                     let top = self.stack.top_mut().unwrap();
                     for (sym, val) in bindings {
@@ -1105,6 +1105,18 @@ fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// Diagnostic label for a value used in a failed pattern match. Augments
+/// the bare `type_name()` (e.g. "Entity") with the functor name when one
+/// is recoverable, so the error reads `pattern match failed on
+/// Entity(WorkItem)` instead of just `Entity`. Critical for debugging
+/// bundle code where every materialized record shows up as "Entity".
+fn scrutinee_diag(kb: &KnowledgeBase, value: &Value) -> String {
+    match value_functor(kb, value) {
+        Some(sym) => format!("{}({})", value.type_name(), kb.resolve_sym(sym)),
+        None => value.type_name().to_string(),
     }
 }
 
