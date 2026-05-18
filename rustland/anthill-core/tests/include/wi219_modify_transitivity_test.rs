@@ -48,10 +48,10 @@ fn load_with_stdlib(source: &str) -> (KnowledgeBase, LoadResult) {
 
 #[test]
 fn store_anthill_typechecks() {
-    // Load anthill-todo/store.anthill alongside the project domain.
+    // Load rustland/anthill-todo/anthill/store.anthill alongside the project domain.
     // This is the actual code WI-219's description claims fails.
     let mut kb = load_stdlib_and_project_kb();
-    let store_path = crate::common::workspace_root().join("anthill-todo/store.anthill");
+    let store_path = crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill");
     let store_src = std::fs::read_to_string(&store_path).expect("read store.anthill");
     let parsed = parse::parse(&store_src).expect("parse store.anthill");
     let result = load::load(&mut kb, &parsed, &NullResolver).expect("load store.anthill");
@@ -71,7 +71,7 @@ fn store_anthill_typechecks() {
 
 #[test]
 fn commit_pattern_calling_stdlib_persist() {
-    // Mirrors anthill-todo/store.anthill::FileBasedWorkitemStore::commit:
+    // Mirrors rustland/anthill-todo/anthill/store.anthill::FileBasedWorkitemStore::commit:
     // - Cell[V = State] s, pattern-matches on Cell.get(s) into st(b, c)
     // - Calls anthill.persistence.persist(b, term, meta), which has
     //   effects {Modify[store], Error}. After WI-209 substitution, this

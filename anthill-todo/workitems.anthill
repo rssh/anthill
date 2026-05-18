@@ -1922,3 +1922,4 @@ fact WorkItem(
   depends_on: ["WI-204"],
   status: Open)
 
+fact Feedback(content: "Update: store.anthill no longer lives at project root — moved to rustland/anthill-todo/anthill/store.anthill and embedded in the bundle (commit pending). cmd_init's template only needs to seed domain.anthill / rules.anthill / workitems.anthill in <project>/anthill-todo/; store.anthill is provided by the bundle binary.", at: "2026-05-18T08:30:43Z", workitem: "WI-267", author: "user")

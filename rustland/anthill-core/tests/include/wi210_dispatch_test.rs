@@ -317,10 +317,10 @@ fn subst_with_t(kb: &mut KnowledgeBase, spec_qn: &str, carrier_qn: &str) -> Subs
     subst_with_param(kb, spec_qn, "T", carrier_qn)
 }
 
-/// Read `anthill-todo/store.anthill` and load it on top of stdlib + rustland
+/// Read `rustland/anthill-todo/anthill/store.anthill` and load it on top of stdlib + rustland
 /// bindings. Used by the WorkItemStore dispatch tests below.
 fn load_with_store() -> KnowledgeBase {
-    let path = crate::common::workspace_root().join("anthill-todo/store.anthill");
+    let path = crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill");
     let src = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     load_with(&src)
@@ -475,7 +475,7 @@ fn dispatch_commit_s_w_type_checks_via_workitemstore_satisfaction() {
         crate::common::workspace_root().join("anthill-todo/domain.anthill")
     ).expect("read domain.anthill");
     let store_src = std::fs::read_to_string(
-        crate::common::workspace_root().join("anthill-todo/store.anthill")
+        crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill")
     ).expect("read store.anthill");
     let combined = format!("{domain_src}\n{store_src}");
 

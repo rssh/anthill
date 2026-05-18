@@ -11,12 +11,12 @@ use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::parse;
 
 /// Load stdlib + Rust stl bindings + anthill-todo/domain.anthill +
-/// anthill-todo/store.anthill + the given driver source. Returns the
+/// rustland/anthill-todo/anthill/store.anthill + the given driver source. Returns the
 /// loaded KB if all phases succeed; panics with diagnostics otherwise.
 fn load_bundle_context(driver_src: &str) -> KnowledgeBase {
     let mut files = crate::common::collect_stdlib_and_rust_bindings();
     files.push(crate::common::workspace_root().join("anthill-todo/domain.anthill"));
-    files.push(crate::common::workspace_root().join("anthill-todo/store.anthill"));
+    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"));
 
     let mut parsed: Vec<_> = files.iter().map(|p| {
         let src = std::fs::read_to_string(p)

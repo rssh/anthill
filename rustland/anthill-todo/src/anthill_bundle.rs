@@ -4,6 +4,7 @@ use anthill_core::parse;
 use anthill_core::parse::ir::ParsedFile;
 
 const BUNDLE_SOURCES: &[(&str, &str)] = &[
+    ("anthill-todo/store", include_str!("../anthill/store.anthill")),
     ("anthill-todo/main", include_str!("../anthill/main.anthill")),
 ];
 

@@ -20,7 +20,7 @@ pub fn setup_project(tmp: &tempfile::TempDir, workitems: &str) -> PathBuf {
     fs::create_dir(&inner).expect("mkdir anthill-todo");
 
     let src_root = workspace_root().join("anthill-todo");
-    for f in ["domain.anthill", "rules.anthill", "store.anthill"] {
+    for f in ["domain.anthill", "rules.anthill"] {
         fs::copy(src_root.join(f), inner.join(f)).expect("copy project file");
     }
     fs::write(inner.join("workitems.anthill"), workitems).expect("write workitems");

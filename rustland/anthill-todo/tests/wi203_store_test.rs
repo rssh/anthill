@@ -1,42 +1,30 @@
 //! WI-203 — WorkItemStore spec + FileBasedWorkitemStore impl.
 //!
-//! Phase 2 (per proposal 036): the project-side `store.anthill` declares
-//! the spec (over `Cell[V = State]`) and the file-backed impl
+//! Phase 2 (per proposal 036): `store.anthill` declares the spec
+//! (over `Cell[V = State]`) and the file-backed impl
 //! (`enum WIS { entity wis(...) }` + `fact WorkItemStore[State = WIS]`)
-//! plus the operation bodies (next_id / lookup / by_status_of / commit).
-//! Bundle commands aren't yet rewritten to call them (phase 3). This
-//! test verifies the whole file loads + type-checks under the bundle
-//! path: parse, resolution, and typing all succeed.
+//! plus the operation bodies (next_id / lookup / by_status_of / commit /
+//! commit_feedback / forget). This file is embedded in the bundle binary
+//! alongside main.anthill — no per-project copy needed. This test
+//! verifies the whole file loads + type-checks under the bundle path:
+//! parse, resolution, and typing all succeed.
 
 mod common;
 
-use std::fs;
 use std::process::Command;
 
-use common::{setup_project, workspace_root};
+use common::setup_project;
 
 const ANTHILL_TODO_BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 
-/// Variant of setup_project that also copies store.anthill into the
-/// project's anthill-todo/ — verifying the bundle's BulkStore::pull
-/// path picks it up alongside the existing domain/rules.
-fn setup_project_with_store(tmp: &tempfile::TempDir, workitems: &str) -> std::path::PathBuf {
-    let proj = setup_project(tmp, workitems);
-    let inner = proj.join("anthill-todo");
-    let src_root = workspace_root().join("anthill-todo");
-    fs::copy(src_root.join("store.anthill"), inner.join("store.anthill"))
-        .expect("copy store.anthill");
-    proj
-}
-
 #[test]
 fn store_anthill_loads_alongside_domain() {
-    // Smoke test: just running `list` against a project that has
-    // store.anthill in its anthill-todo/ directory exercises the load
-    // path. If the spec / impl had a parse or resolution error, the
-    // bundle would print warnings to stderr.
+    // Smoke test: just running `list` against a fresh project exercises
+    // the bundle's embedded store.anthill load path. If the spec / impl
+    // had a parse or resolution error, the bundle would print warnings
+    // to stderr.
     let tmp = tempfile::tempdir().expect("tempdir");
-    let proj = setup_project_with_store(&tmp, "\
+    let proj = setup_project(&tmp, "\
 fact WorkItem(
   id: \"WI-001\",
   description: \"first\",

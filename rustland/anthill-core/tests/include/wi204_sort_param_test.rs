@@ -15,7 +15,7 @@ use anthill_core::parse;
 fn load_bundle_context(driver_src: &str) -> Result<KnowledgeBase, Vec<load::LoadError>> {
     let mut files = crate::common::collect_stdlib_and_rust_bindings();
     files.push(crate::common::workspace_root().join("anthill-todo/domain.anthill"));
-    files.push(crate::common::workspace_root().join("anthill-todo/store.anthill"));
+    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"));
 
     let mut parsed: Vec<_> = files.iter().map(|p| {
         let src = std::fs::read_to_string(p)
