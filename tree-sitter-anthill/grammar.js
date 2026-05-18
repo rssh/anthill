@@ -305,6 +305,7 @@ module.exports = grammar({
       optional($.visibility),
       'operation',
       field('name', $.name),
+      optional($.operation_type_param_list),
       '(',
       optional(commaSep1($.param)),
       ')',
@@ -316,6 +317,20 @@ module.exports = grammar({
         field('body', $._expr_body),
       ))),
       optional($.meta_block),
+    ),
+
+    // Distinct CST node from `sort_binding` even though tokens coincide —
+    // this declares operation-local logical variables, not bindings of
+    // sort parameters at an instantiation site.
+    operation_type_param_list: $ => seq(
+      '[',
+      commaSep1($.operation_type_param),
+      ']',
+    ),
+
+    operation_type_param: $ => seq(
+      field('name', $.identifier),
+      optional(seq('=', field('default', $._type))),
     ),
 
     param: $ => seq(
@@ -624,6 +639,7 @@ module.exports = grammar({
     operation_entry: $ => seq(
       optional($.visibility),
       field('name', $.name),
+      optional($.operation_type_param_list),
       '(',
       optional(commaSep1($.param)),
       ')',
@@ -779,8 +795,16 @@ module.exports = grammar({
     // bare `p.x` in argument position reduces to field_access
     // instead of being eaten as a nested fn_term name. The `(`
     // after field_access is the disambiguator with $._atom_term.
+    // For `Name[bindings]` callees, the same trailing-token rule
+    // splits: `(` → typed call, `.` → sort companion, neither → bare
+    // instantiation term.
     fn_term: $ => seq(
-      field('name', choice($.identifier, $.field_access, $.variable)),
+      field('name', choice(
+        $.identifier,
+        $.field_access,
+        $.variable,
+        $.instantiation_term,
+      )),
       '(',
       commaSep($._fn_arg),
       ')',
