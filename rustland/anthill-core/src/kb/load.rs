@@ -343,6 +343,18 @@ fn scan_operation_params(
         instantiation_term_raw: enclosing_scope.raw(),
         is_enclosing: true,
     });
+
+    // Register each op type param as a Sort symbol AND flag it as a
+    // type-param so bare uses (`x: T`) route through the type-param
+    // branch in `type_expr_to_term` — same mechanism as `sort T = ?`
+    // inside a sort body.
+    for tp in &op.type_params {
+        let tp_name = parse_sym.name(tp.name);
+        let qualified = make_qualified(prefix, tp_name);
+        kb.symbols.define(tp_name, &qualified, SymbolKind::Sort, op_term.raw());
+        kb.symbols.add_type_param(op_term.raw(), tp_name);
+    }
+
     for p in &op.params {
         let param_name = parse_sym.name(p.name);
         // Skip param-name `result` here; the load pass reports the

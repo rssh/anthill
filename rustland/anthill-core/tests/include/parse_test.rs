@@ -7,33 +7,6 @@ use anthill_core::kb::{KnowledgeBase, SortKind};
 use anthill_core::kb::term::{Term, TermId, Literal, Var};
 use anthill_core::kb::load::{self, NullResolver};
 
-/// Count elements in a cons-list (cons/nil encoding).
-fn count_list_elements(kb: &KnowledgeBase, list_tid: TermId) -> usize {
-    let mut count = 0;
-    let mut current = list_tid;
-    loop {
-        match kb.get_term(current) {
-            Term::Fn { functor, named_args, .. } => {
-                let name = kb.resolve_sym(*functor);
-                if name == "nil" {
-                    break;
-                }
-                if name == "cons" {
-                    count += 1;
-                    match named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "tail") {
-                        Some(&(_, t)) => current = t,
-                        None => break,
-                    }
-                } else {
-                    break;
-                }
-            }
-            _ => break,
-        }
-    }
-    count
-}
-
 use crate::common::{collect_anthill_files, stdlib_dir};
 
 fn first_operation(parsed: &ParsedFile) -> &Operation {
@@ -479,7 +452,7 @@ sort Store {
 
                 // Count elements in cons-list
                 let (_, effects_list_tid) = effects_entry.unwrap();
-                let count = count_list_elements(&kb, *effects_list_tid);
+                let count = cons_list_to_vec(&kb, *effects_list_tid).len();
                 let expected = match name.as_str() {
                     "persist" => 1,
                     "retrieve" => 1,
@@ -523,7 +496,7 @@ fn load_operation_with_abstract_effect() {
                 "OperationInfo should have 'effects' even for abstract effects");
             // Should have 1 effect element (abstract E)
             let (_, effects_list_tid) = effects_entry.unwrap();
-            assert_eq!(count_list_elements(&kb, *effects_list_tid), 1,
+            assert_eq!(cons_list_to_vec(&kb, *effects_list_tid).len(), 1,
                 "should have 1 abstract effect");
         }
         other => panic!("expected Fn term, got {:?}", other),
@@ -2601,91 +2574,34 @@ sort Host {
     load::register_prelude(&mut kb);
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    // Locate OperationInfo for `run`, drill into its `params` cons-list
-    // to find parameter `f`, then read `f`'s `type` arg — that's the
-    // arrow term that should carry the effect set.
-    let op_sort = kb.make_name_term("Operation");
-    let ops = kb.by_sort(op_sort);
-    let run_op = ops.iter().find(|&&fid| {
-        match kb.get_term(kb.fact_term(fid)) {
-            Term::Fn { named_args, .. } => named_args.iter().any(|(s, t)| {
-                kb.resolve_sym(*s) == "name"
-                    && matches!(kb.get_term(*t), Term::Ref(sym) if kb.resolve_sym(*sym) == "run")
-            }),
-            _ => false,
-        }
-    }).copied().expect("OperationInfo for `run` should exist");
+    // Drill OperationInfo for `run` to find parameter `f`'s arrow type
+    // — that's where the effect set lands.
+    let run_op = find_operation_info(&mut kb, "run");
+    let params_list = named_arg(&kb, run_op, "params");
+    let params = cons_list_to_vec(&kb, params_list);
+    let arrow_term = named_arg(&kb, params[0], "type_name");
 
-    let params_list = match kb.get_term(kb.fact_term(run_op)) {
-        Term::Fn { named_args, .. } => named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "params")
-            .map(|(_, t)| *t)
-            .expect("OperationInfo should have `params`"),
-        _ => panic!("expected Fn for OperationInfo"),
-    };
-
-    // First (and only) parameter — head of the cons-list.
-    let param_f = match kb.get_term(params_list) {
-        Term::Fn { named_args, .. } => named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "head")
-            .map(|(_, t)| *t)
-            .expect("params list should have a head"),
-        other => panic!("expected cons cell, got {:?}", other),
-    };
-
-    let arrow_term = match kb.get_term(param_f) {
-        Term::Fn { named_args, .. } => named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "type_name")
-            .map(|(_, t)| *t)
-            .expect("param entry should have `type_name`"),
-        other => panic!("expected param entry Fn, got {:?}", other),
-    };
-
-    let (functor_name, effects_list) = match kb.get_term(arrow_term) {
-        Term::Fn { functor, named_args, .. } => {
-            let effects = named_args.iter()
-                .find(|(s, _)| kb.resolve_sym(*s) == "effects")
-                .map(|(_, t)| *t)
-                .expect("arrow term should have `effects`");
-            (kb.resolve_sym(*functor).to_owned(), effects)
-        }
+    let functor_name = match kb.get_term(arrow_term) {
+        Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_owned(),
         other => panic!("expected arrow Fn, got {:?}", other),
     };
+    let effects_list = named_arg(&kb, arrow_term, "effects");
 
     assert_eq!(functor_name, "arrow",
         "arrow-effect term should be built via prelude Type.arrow");
-    assert_eq!(count_list_elements(&kb, effects_list), 2,
-        "effects list should have exactly 2 elements");
+    let effects = cons_list_to_vec(&kb, effects_list);
+    assert_eq!(effects.len(), 2);
 
-    // Walk the cons-list and read each effect's underlying sort name.
     // Each `Modifies[host]` lowers to `parameterized(base: sort_ref(name:
-    // Ref(Modifies)), bindings: cons(...))`, so we drill base → name.
-    let mut current = effects_list;
-    let mut names = Vec::new();
-    while let Term::Fn { functor, named_args, .. } = kb.get_term(current) {
-        if kb.resolve_sym(*functor) != "cons" { break; }
-        let head = named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "head")
-            .map(|(_, t)| *t).expect("cons head");
-        // head is `parameterized(base: …, bindings: …)`
-        if let Term::Fn { named_args: head_args, .. } = kb.get_term(head) {
-            let base_tid = head_args.iter()
-                .find(|(s, _)| kb.resolve_sym(*s) == "base")
-                .map(|(_, t)| *t).expect("parameterized.base");
-            // base is `sort_ref(name: Ref(<sym>))`
-            if let Term::Fn { named_args: base_args, .. } = kb.get_term(base_tid) {
-                let name_tid = base_args.iter()
-                    .find(|(s, _)| kb.resolve_sym(*s) == "name")
-                    .map(|(_, t)| *t).expect("sort_ref.name");
-                if let Term::Ref(sym) = kb.get_term(name_tid) {
-                    names.push(kb.resolve_sym(*sym).to_owned());
-                }
-            }
+    // Ref(Modifies)), bindings: cons(...))`, so drill base → name.
+    let names: Vec<String> = effects.iter().map(|&effect| {
+        let base = named_arg(&kb, effect, "base");
+        let name_tid = named_arg(&kb, base, "name");
+        match kb.get_term(name_tid) {
+            Term::Ref(sym) => kb.resolve_sym(*sym).to_owned(),
+            other => panic!("expected Ref for sort_ref.name, got {:?}", other),
         }
-        current = named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "tail")
-            .map(|(_, t)| *t).expect("cons tail");
-    }
+    }).collect();
     assert_eq!(names, vec!["Modifies".to_owned(), "Reads".to_owned()],
         "effect bases should be Modifies, Reads in order");
 
@@ -3410,7 +3326,7 @@ end
 
     // branches should be a 2-element list
     let branches = get_named_arg(&kb, body, "branches").expect("branches missing");
-    assert_eq!(count_list_elements(&kb, branches), 2);
+    assert_eq!(cons_list_to_vec(&kb, branches).len(), 2);
 
     // First branch: pattern = constructor_pattern(zero), body = bool_lit(true)
     let branch1 = list_head(&kb, branches).expect("first branch missing");
@@ -3477,7 +3393,7 @@ end
 
     // add should have 2 args
     let args = get_named_arg(&kb, lambda_body, "args").expect("args missing");
-    assert_eq!(count_list_elements(&kb, args), 2);
+    assert_eq!(cons_list_to_vec(&kb, args).len(), 2);
 }
 
 #[test]
@@ -3518,7 +3434,7 @@ end
                     assert_eq!(functor_name(&kb, body), "apply");
                     // params should be a 1-element list [x]
                     let params = get_named_arg(&kb, tid, "params").expect("params missing");
-                    assert_eq!(count_list_elements(&kb, params), 1);
+                    assert_eq!(cons_list_to_vec(&kb, params).len(), 1);
                 }
             }
         }
@@ -3793,4 +3709,155 @@ fn parse_sort_companion_call_no_op_type_args() {
         parsed.terms.call_type_args.is_empty(),
         "sort companion call must not register operation-level call type args"
     );
+}
+
+// ── Loading: operation type parameters bind to logical variables ────
+
+/// Find the loaded OperationInfo fact whose `name` field references the
+/// given short name. Returns the OperationInfo's term id.
+fn find_operation_info(kb: &mut KnowledgeBase, short_name: &str) -> TermId {
+    let op_sort = kb.make_name_term("Operation");
+    let fid = kb.by_sort(op_sort).into_iter().find(|&fid| {
+        match kb.get_term(kb.fact_term(fid)) {
+            Term::Fn { named_args, .. } => named_args.iter().any(|(s, t)| {
+                kb.resolve_sym(*s) == "name"
+                    && matches!(kb.get_term(*t), Term::Ref(sym) if kb.resolve_sym(*sym) == short_name)
+            }),
+            _ => false,
+        }
+    }).unwrap_or_else(|| panic!("no OperationInfo for `{}`", short_name));
+    kb.fact_term(fid)
+}
+
+fn named_arg(kb: &KnowledgeBase, term: TermId, key: &str) -> TermId {
+    match kb.get_term(term) {
+        Term::Fn { named_args, .. } => named_args.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == key)
+            .map(|(_, t)| *t)
+            .unwrap_or_else(|| panic!("missing named arg `{}`", key)),
+        other => panic!("named_arg on non-Fn: {:?}", other),
+    }
+}
+
+fn cons_list_to_vec(kb: &KnowledgeBase, mut list: TermId) -> Vec<TermId> {
+    let mut out = Vec::new();
+    loop {
+        match kb.get_term(list) {
+            Term::Fn { functor, named_args, .. } if kb.resolve_sym(*functor) == "cons" => {
+                let h = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "head")
+                    .map(|(_, t)| *t).expect("cons head");
+                let t = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "tail")
+                    .map(|(_, t)| *t).expect("cons tail");
+                out.push(h);
+                list = t;
+            }
+            _ => break,
+        }
+    }
+    out
+}
+
+/// Panic unless `term` is a `Term::Var(Global(_))`; returns its raw VarId.
+fn assert_var_id(kb: &KnowledgeBase, term: TermId) -> u32 {
+    match kb.get_term(term) {
+        Term::Var(Var::Global(vid)) => vid.raw(),
+        other => panic!("expected Term::Var(Global), got {:?}", other),
+    }
+}
+
+#[test]
+fn load_op_type_param_resolves_bare_name_to_var() {
+    let parsed = parse::parse("operation identity[T](x: T) -> T\n").expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let op_info = find_operation_info(&mut kb, "identity");
+    let return_type = named_arg(&kb, op_info, "return_type");
+    assert_var_id(&kb, return_type);
+}
+
+#[test]
+fn load_op_type_param_shares_var_across_param_and_return() {
+    // Bare-name references to a declared type param share a VarId
+    // throughout the operation.
+    let parsed = parse::parse(
+        "operation identity[A](x: A) -> A\n"
+    ).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let op_info = find_operation_info(&mut kb, "identity");
+    let params_list = named_arg(&kb, op_info, "params");
+    let params = cons_list_to_vec(&kb, params_list);
+    assert_eq!(params.len(), 1);
+
+    let param_x_type = named_arg(&kb, params[0], "type_name");
+    let return_type = named_arg(&kb, op_info, "return_type");
+
+    let vid_param = assert_var_id(&kb, param_x_type);
+    let vid_return = assert_var_id(&kb, return_type);
+    assert_eq!(vid_param, vid_return,
+        "two bare-name references to `A` must share a VarId");
+}
+
+#[test]
+fn load_op_distinct_type_params_get_distinct_vars() {
+    let parsed = parse::parse(
+        "operation pair[A, B](a: A, b: B) -> A\n"
+    ).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let op_info = find_operation_info(&mut kb, "pair");
+    let params_list = named_arg(&kb, op_info, "params");
+    let params = cons_list_to_vec(&kb, params_list);
+    let vid_a = assert_var_id(&kb, named_arg(&kb, params[0], "type_name"));
+    let vid_b = assert_var_id(&kb, named_arg(&kb, params[1], "type_name"));
+    assert_ne!(vid_a, vid_b);
+}
+
+#[test]
+fn load_op_type_param_shares_var_into_parameterized_return() {
+    // Use a locally-defined parameterized sort `Box` so the test is
+    // self-contained — no stdlib import dependency.
+    let source = "\
+sort Box
+  sort T = ?
+end
+operation just[A](x: A) -> Box[A]
+";
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let op_info = find_operation_info(&mut kb, "just");
+    let params_list = named_arg(&kb, op_info, "params");
+    let params = cons_list_to_vec(&kb, params_list);
+    let vid_param = assert_var_id(&kb, named_arg(&kb, params[0], "type_name"));
+
+    let return_type = named_arg(&kb, op_info, "return_type");
+    let bindings_list = named_arg(&kb, return_type, "bindings");
+    let bindings = cons_list_to_vec(&kb, bindings_list);
+    assert_eq!(bindings.len(), 1);
+    let bound_value = named_arg(&kb, bindings[0], "value");
+    let vid_return = assert_var_id(&kb, bound_value);
+
+    assert_eq!(vid_param, vid_return,
+        "`A` in param and `A` inside Box[A] must share a VarId");
+}
+
+#[test]
+fn load_op_without_type_params_unaffected() {
+    let parsed = parse::parse("operation length(x: Int) -> Int\n").expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let op_info = find_operation_info(&mut kb, "length");
+    let return_type = named_arg(&kb, op_info, "return_type");
+    assert!(!matches!(kb.get_term(return_type), Term::Var(_)));
 }
