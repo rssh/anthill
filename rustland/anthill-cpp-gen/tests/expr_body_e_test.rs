@@ -20,7 +20,7 @@ use super::common;
 use std::process::Command;
 
 use anthill_cpp_gen::emit_traits_struct;
-use common::{find_cxx, load_kb_with, load_kb_with_lenient, scratch_dir};
+use common::{find_cxx, load_kb_with, scratch_dir};
 
 #[test]
 fn numeric_add_emits_plus() {
@@ -86,13 +86,6 @@ fn ordered_comparators_emit_relational_ops() {
 
 #[test]
 fn eq_neq_emit_double_equals() {
-    // cpp-gen lowers `eq` / `neq` to `==` / `!=` via builtin recognition;
-    // dispatch resolution is not on the critical path for this output.
-    // The stdlib here lacks an `Eq[T=Int]` impl fact (those live in the
-    // per-language binding files like `anthill-stl/anthill/int.anthill`,
-    // which the cpp-gen test environment doesn't load), so the typer's
-    // WI-264 strict dispatch surfaces a `DispatchNoMatch` for `Eq[Int]`.
-    // Use the lenient loader so the cpp-gen pipeline still emits.
     let source = r#"
         namespace test.expr_e_eq
           import anthill.prelude.{Int, Bool}
@@ -104,7 +97,7 @@ fn eq_neq_emit_double_equals() {
           end
         end
     "#;
-    let kb = load_kb_with_lenient(source);
+    let kb = load_kb_with(source);
     let cpp = emit_traits_struct(&kb, "test.expr_e_eq.Calc")
         .expect("emit Calc");
     assert!(cpp.contains("return (a == b);"), "eq:\n{cpp}");

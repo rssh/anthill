@@ -2448,7 +2448,7 @@ fn resolve_inner(
     }
     stack.push(goal.clone());
 
-    let (candidates, _saw_any) = collect_provides_candidates(kb, goal);
+    let candidates = collect_provides_candidates(kb, goal);
 
     if candidates.is_empty() {
         stack.pop();
@@ -2537,18 +2537,19 @@ struct Candidate {
 }
 
 /// Walk `SortProvidesInfo` facts, return those whose head pattern
-/// unifies with `goal.bindings`. Also reports whether *any* record
-/// existed for `goal.spec_sort` (regardless of binding match) — the
-/// caller uses this to distinguish "no impls registered for this spec
-/// at all" from "candidates exist but none match" without re-walking
-/// the index.
+/// unifies with `goal.bindings`. A candidate whose binding values do
+/// not match the goal's is dropped silently and does NOT count as
+/// "spec is in use" — `Eq[T = Type]` (meta-equality on Type values)
+/// and `Eq[T = Int]` (equality on Int values) are independent specs
+/// that happen to share the same spec sort; the presence of one in
+/// the KB must not gate dispatch of the other.
 fn collect_provides_candidates(
     kb: &KnowledgeBase,
     goal: &SortGoal,
-) -> (Vec<Candidate>, bool) {
+) -> Vec<Candidate> {
     let provides_sym = match kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") {
         Some(s) => s,
-        None => return (Vec::new(), false),
+        None => return Vec::new(),
     };
     // Spec's type-param short names — hoisted out of the candidate
     // loop so the inner binding-walk just does a string membership
@@ -2556,7 +2557,6 @@ fn collect_provides_candidates(
     let type_param_names: Vec<String> = kb.type_params_of_sort(goal.spec_sort);
 
     let mut out: Vec<Candidate> = Vec::new();
-    let mut saw_any_for_spec = false;
     for rid in kb.by_functor(provides_sym) {
         if !kb.rule_body(rid).is_empty() {
             continue;
@@ -2584,7 +2584,6 @@ fn collect_provides_candidates(
         if view_base_sym != goal.spec_sort {
             continue;
         }
-        saw_any_for_spec = true;
 
         let impl_param_set = impl_param_symbols(kb, impl_sort);
         let mut impl_subst: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
@@ -2631,7 +2630,7 @@ fn collect_provides_candidates(
             head_specificity,
         });
     }
-    (out, saw_any_for_spec)
+    out
 }
 
 
@@ -3258,26 +3257,21 @@ fn resolve_at_goal(
 ) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
     let scope = ResolutionScope { available_requires: enclosing_requires };
 
-    // Peek the candidate set so we can preserve the WI-210 legacy
-    // semantics: a spec with no `SortProvidesInfo` records at all
-    // type-checks without dispatch (`NoCandidates`); a spec with
-    // records but no binding match is an error (`NoMatch`). `resolve`
-    // collapses both into its NoMatch variant.
-    let (candidates, saw_any) = collect_provides_candidates(kb, &goal);
+    // No matching candidate ⇒ NoCandidates (permissive fall-through).
+    // An unrelated `SortProvidesInfo` record for the same spec — e.g.
+    // `Eq[T = Type]` when the goal is `Eq[T = Int]` — must not gate
+    // dispatch: those are distinct specifications about distinct
+    // sorts. Per-binding matching in `collect_provides_candidates` is
+    // the only mechanism that decides relevance.
+    let candidates = collect_provides_candidates(kb, &goal);
     if candidates.is_empty() {
         for ar in scope.available_requires {
             if ar.required_sort == goal.spec_sort && requires_entry_covers_goal(kb, ar, &goal) {
                 return (DispatchOutcome::Deferred, None);
             }
         }
-        let outcome = if saw_any {
-            DispatchOutcome::NoMatch
-        } else {
-            DispatchOutcome::NoCandidates
-        };
-        return (outcome, None);
+        return (DispatchOutcome::NoCandidates, None);
     }
-    drop(candidates);
 
     let mut stack: Vec<SortGoal> = Vec::new();
     match resolve_inner(kb, &goal, &scope, &mut stack) {

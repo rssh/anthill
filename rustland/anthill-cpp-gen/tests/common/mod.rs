@@ -36,16 +36,21 @@ pub fn stdlib_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill")
 }
 
+/// Path to this crate's `anthill/` directory of C++ host bindings —
+/// sibling of `anthill-stl/anthill/`. Registers prelude spec impls
+/// (Eq/Ordered/Numeric for Int) so the typer can dispatch primitive
+/// typeclass ops in cpp-gen tests.
+pub fn cpp_bindings_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("anthill")
+}
+
 /// Path to the workspace root (parent of `rustland/`).
 #[allow(dead_code)]
 pub fn rustland_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// Parsed stdlib, computed once per test binary.
-static STDLIB_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
-    let files = collect_anthill_files(&stdlib_dir());
-    assert!(!files.is_empty(), "stdlib must be loadable from {}", stdlib_dir().display());
+fn parse_files(files: &[PathBuf]) -> Vec<ParsedFile> {
     files.iter()
         .map(|p| {
             let src = std::fs::read_to_string(p)
@@ -54,6 +59,20 @@ static STDLIB_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
                 .unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect()
+}
+
+/// Parsed stdlib, computed once per test binary.
+static STDLIB_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
+    let files = collect_anthill_files(&stdlib_dir());
+    assert!(!files.is_empty(), "stdlib must be loadable from {}", stdlib_dir().display());
+    parse_files(&files)
+});
+
+/// Parsed cpp host bindings, computed once per test binary.
+static CPP_BINDINGS_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
+    let files = collect_anthill_files(&cpp_bindings_dir());
+    assert!(!files.is_empty(), "cpp bindings must be loadable from {}", cpp_bindings_dir().display());
+    parse_files(&files)
 });
 
 /// Build a KB with the cached stdlib + a user source string.
@@ -109,16 +128,10 @@ pub fn scratch_dir(test_name: &str) -> PathBuf {
 #[allow(dead_code)]
 pub fn load_kb_with_extras(source: &str, extra_paths: &[PathBuf]) -> KnowledgeBase {
     let user = parse::parse(source).expect("parse user source");
-    let extras: Vec<ParsedFile> = extra_paths.iter()
-        .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src)
-                .unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
+    let extras = parse_files(extra_paths);
 
     let mut refs: Vec<&ParsedFile> = STDLIB_PARSED.iter().collect();
+    refs.extend(CPP_BINDINGS_PARSED.iter());
     refs.extend(extras.iter());
     refs.push(&user);
 
@@ -143,6 +156,7 @@ pub fn load_kb_with_extras(source: &str, extra_paths: &[PathBuf]) -> KnowledgeBa
 pub fn load_kb_with_lenient(source: &str) -> KnowledgeBase {
     let user = parse::parse(source).expect("parse user source");
     let mut refs: Vec<&ParsedFile> = STDLIB_PARSED.iter().collect();
+    refs.extend(CPP_BINDINGS_PARSED.iter());
     refs.push(&user);
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);

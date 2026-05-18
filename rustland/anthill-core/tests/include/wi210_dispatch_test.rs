@@ -367,10 +367,12 @@ fn dispatch_unique_finds_int_impl_for_numeric_add() {
 }
 
 #[test]
-fn dispatch_no_match_when_carrier_lacks_impl() {
+fn dispatch_no_candidates_when_carrier_lacks_impl() {
     // Numeric has impls for Int / Float / BigInt but not Bool. A
-    // per-call subst at T=Bool must yield NoMatch (impls exist but
-    // none cover Bool).
+    // per-call subst at T=Bool must yield NoCandidates: the existing
+    // Numeric[Int]/Float/BigInt impls are independent specifications
+    // about different sorts and must not gate Bool dispatch (same
+    // rationale as `Eq[T=Type]` not gating `Eq[T=Int]`).
     let mut kb = load_with("");
     let add_sym = kb.try_resolve_symbol("anthill.prelude.Numeric.add")
         .expect("Numeric.add registered");
@@ -379,8 +381,8 @@ fn dispatch_no_match_when_carrier_lacks_impl() {
     let subst = subst_with_t(&mut kb, "anthill.prelude.Numeric", "anthill.prelude.Bool");
     let op_short = kb.intern("add");
     let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
-    assert_eq!(outcome, DispatchOutcome::NoMatch,
-        "expected NoMatch for Numeric.add at T=Bool (no Bool/Numeric binding); got {outcome:?}");
+    assert_eq!(outcome, DispatchOutcome::NoCandidates,
+        "expected NoCandidates for Numeric.add at T=Bool (no Bool/Numeric binding); got {outcome:?}");
 }
 
 #[test]
