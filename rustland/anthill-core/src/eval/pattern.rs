@@ -162,16 +162,25 @@ fn constructor_sub_values(
             all.extend(named.iter().map(|(_, v)| v.clone()));
             Some(all)
         }
-        Value::Term(tid) => {
-            if let Term::Fn { functor, pos_args, named_args } = kb.get_term(*tid) {
+        Value::Term(tid) => match kb.get_term(*tid) {
+            Term::Fn { functor, pos_args, named_args } => {
                 if !functor_matches(kb, expected, *functor) { return None; }
                 let mut all: Vec<Value> = pos_args.iter().map(|t| Value::Term(*t)).collect();
                 all.extend(named_args.iter().map(|(_, t)| Value::Term(*t)));
                 Some(all)
-            } else {
-                None
             }
-        }
+            // Term::Fn with no args round-trips through the printer as a
+            // bare identifier (the printer omits parens for 0-arg shapes),
+            // and the parser then loads it back as Term::Ref / Term::Ident.
+            // Accept those as a 0-arg constructor so a `case nil()` arm
+            // matches both `cons("x", nil)` (after reload) and the
+            // original Fn(nil, []) shape.
+            Term::Ref(sym) | Term::Ident(sym) => {
+                if !functor_matches(kb, expected, *sym) { return None; }
+                Some(Vec::new())
+            }
+            _ => None,
+        },
         _ => None,
     }
 }

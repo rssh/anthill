@@ -1,7 +1,37 @@
 //! Shared test fixtures for `anthill-todo` integration tests.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Concatenate every `.anthill` file in `inner` into one string —
+/// integration tests assert on persisted-fact substrings without
+/// caring which file (workitems.anthill vs facts.anthill) the
+/// FileStore routed the write to.
+pub fn read_combined(inner: &Path) -> String {
+    let mut combined = String::new();
+    for entry in fs::read_dir(inner).expect("read_dir") {
+        let path = entry.expect("entry").path();
+        if path.extension().and_then(|s| s.to_str()) == Some("anthill") {
+            combined.push_str(&fs::read_to_string(&path).expect("read"));
+        }
+    }
+    combined
+}
+
+/// Inside a flat WorkItem-fact dump, find the fact block whose
+/// `id: "<id>"` matches, then check whether `dep` appears anywhere
+/// in that block. Used to assert depends_on contents without parsing
+/// the term. Crude but adequate for tests with a handful of facts.
+pub fn workitem_block_contains(haystack: &str, id: &str, dep: &str) -> bool {
+    let id_marker = format!("id: \"{id}\"");
+    let Some(start) = haystack.find(&id_marker) else { return false };
+    let after = &haystack[start..];
+    let block_end = after[1..]
+        .find("fact WorkItem")
+        .map(|i| i + 1)
+        .unwrap_or(after.len());
+    after[..block_end].contains(&format!("\"{dep}\""))
+}
 
 pub fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

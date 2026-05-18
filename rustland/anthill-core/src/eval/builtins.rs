@@ -809,9 +809,26 @@ fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) ->
             .find(|(s, _)| *s == *fname)
             .map(|(_, t)| *t)
             .or_else(|| pos_args.get(idx).copied());
+        let is_opt = is_option_type(interp, *ftype);
         match field_tid {
+            // The loader's partial-named-arg expansion (kb/load.rs:2752)
+            // fills absent slots with a fresh Var so the discrim tree
+            // can index the fact uniformly. For materialization those
+            // Var-valued Option slots are semantically absent — promote
+            // them to none() so reconstruction + re-persistence doesn't
+            // bake the synthetic var name into the persisted fact.
+            Some(tid)
+                if is_opt
+                    && matches!(interp.kb.get_term(tid), CoreTerm::Var(_)) =>
+            {
+                named.push((*fname, Value::Entity {
+                    functor: none_sym,
+                    pos: Vec::new(),
+                    named: Vec::new(),
+                }));
+            }
             Some(tid) => named.push((*fname, term_to_value(interp, tid))),
-            None if is_option_type(interp, *ftype) => {
+            None if is_opt => {
                 named.push((*fname, Value::Entity {
                     functor: none_sym,
                     pos: Vec::new(),
@@ -830,8 +847,48 @@ fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) ->
 /// default to `none()` rather than aborting the materialization.
 fn is_option_type(interp: &Interpreter, ftype: crate::kb::term::TermId) -> bool {
     use crate::kb::term::Term as CoreTerm;
+    // Field types from `load_entity` are stored via the Type entity
+    // family — `parameterized(base: sort_ref(name: Option), bindings: …)`
+    // for `Option[T = X]`, `sort_ref(name: Option)` for bare `Option`.
+    // Peel the wrapper to recover the underlying sort symbol so we
+    // recognize both forms.
     let sym = match interp.kb.get_term(ftype) {
-        CoreTerm::Fn { functor, .. } => *functor,
+        CoreTerm::Fn { functor, named_args, .. } => {
+            let name = interp.kb.resolve_sym(*functor);
+            if name == "parameterized" || name == "anthill.prelude.Type.parameterized" {
+                let base = named_args
+                    .iter()
+                    .find(|(s, _)| interp.kb.resolve_sym(*s) == "base")
+                    .map(|(_, t)| *t);
+                match base.and_then(|tid| match interp.kb.get_term(tid) {
+                    CoreTerm::Fn { named_args: inner, .. } => inner
+                        .iter()
+                        .find(|(s, _)| interp.kb.resolve_sym(*s) == "name")
+                        .map(|(_, t)| *t),
+                    _ => None,
+                }) {
+                    Some(name_tid) => match interp.kb.get_term(name_tid) {
+                        CoreTerm::Ref(s) | CoreTerm::Ident(s) => *s,
+                        _ => return false,
+                    },
+                    None => return false,
+                }
+            } else if name == "sort_ref" || name == "anthill.prelude.Type.sort_ref" {
+                match named_args
+                    .iter()
+                    .find(|(s, _)| interp.kb.resolve_sym(*s) == "name")
+                    .map(|(_, t)| *t)
+                {
+                    Some(tid) => match interp.kb.get_term(tid) {
+                        CoreTerm::Ref(s) | CoreTerm::Ident(s) => *s,
+                        _ => return false,
+                    },
+                    None => return false,
+                }
+            } else {
+                *functor
+            }
+        }
         CoreTerm::Ref(s) => *s,
         _ => return false,
     };

@@ -2752,11 +2752,21 @@ pub fn convert_query_term(
             // Expand partial named args: fill missing entity fields with fresh vars
             // Always sort named args to match entity field order (required for
             // discrimination tree matching — both facts and patterns must have
-            // named args in the same order).
+            // named args in the same order). Positional args also count as
+            // "provided" — `ToolPasses("cargo-test")` covers `tool` via
+            // pos_args[0], so the field shouldn't be re-stuffed with a fresh
+            // var in named (which would shadow the positional value at
+            // materialization time).
             if let Some(all_fields) = kb.entity_field_names(kb_functor) {
                 let all_fields = all_fields.to_vec();
-                if new_named.len() < all_fields.len() {
-                    let provided: HashSet<Symbol> = new_named.iter().map(|(s, _)| *s).collect();
+                if new_named.len() + new_pos.len() < all_fields.len() {
+                    let mut provided: HashSet<Symbol> = new_named
+                        .iter().map(|(s, _)| *s).collect();
+                    for (i, &field_sym) in all_fields.iter().enumerate() {
+                        if i < new_pos.len() {
+                            provided.insert(field_sym);
+                        }
+                    }
                     for &field_sym in &all_fields {
                         if !provided.contains(&field_sym) {
                             let fresh = kb.fresh_var(field_sym);
@@ -3481,10 +3491,20 @@ impl<'a> Loader<'a> {
 
                 // Expand partial named args: fill missing entity fields with fresh vars
                 // Always sort named args to match entity field order.
+                // Positional args also count as "provided" — `ToolPasses("x")`
+                // covers `tool` via pos_args[0], so it shouldn't be re-stuffed
+                // with a fresh var in named (which would shadow the positional
+                // at materialization time).
                 if let Some(all_fields) = self.kb.entity_field_names(new_functor) {
                     let all_fields = all_fields.to_vec(); // borrow-safe copy
-                    if new_named.len() < all_fields.len() {
-                        let provided: HashSet<Symbol> = new_named.iter().map(|(s, _)| *s).collect();
+                    if new_named.len() + new_pos.len() < all_fields.len() {
+                        let mut provided: HashSet<Symbol> = new_named
+                            .iter().map(|(s, _)| *s).collect();
+                        for (i, &field_sym) in all_fields.iter().enumerate() {
+                            if i < new_pos.len() {
+                                provided.insert(field_sym);
+                            }
+                        }
                         for &field_sym in &all_fields {
                             if !provided.contains(&field_sym) {
                                 let fresh = self.kb.fresh_var(field_sym);

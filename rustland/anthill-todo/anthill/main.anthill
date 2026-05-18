@@ -63,9 +63,9 @@ namespace anthill.todo
     , spec_with_id("verify",          "Mark a delivered work item as verified")
     , spec_feedback()
     , spec_with_id("delete",          "Delete a work item")
-    , spec_named("update",            "Update fields of a work item")
-    , spec_named("add-dependency",    "Add a dependency to a work item")
-    , spec_named("remove-dependency", "Remove a dependency from a work item")
+    , spec_update()
+    , spec_dep_change("add-dependency",    "Add a dependency to a work item")
+    , spec_dep_change("remove-dependency", "Remove a dependency from a work item")
     , spec_named("graph",             "Show dependency graph")
     , spec_named("skill",             "Print Claude Code skill definition")
     ]
@@ -90,6 +90,57 @@ namespace anthill.todo
           required: true,
           description: "Work item id (e.g. WI-009)"),
         nil()),
+      parent: none())
+
+  -- `add-dependency / remove-dependency <id> <dep>` take two
+  -- positionals: the work item id and the dependency target id.
+  operation spec_dep_change(name: String, description: String) -> OperationSpec =
+    OperationSpec(
+      name: name,
+      description: description,
+      params: cons(
+        ParamSpec(
+          name: "id",
+          kind: positional(),
+          required: true,
+          description: "Work item id (e.g. WI-009)"),
+        cons(
+          ParamSpec(
+            name: "dep",
+            kind: positional(),
+            required: true,
+            description: "Dependency work item id"),
+          nil())),
+      parent: none())
+
+  -- `update <id> [--description X] [--acceptance Y]` updates a work
+  -- item's description and/or acceptance criteria. --acceptance is
+  -- repeatable; passing the flag at least once replaces the entire
+  -- acceptance list (cannot append a single tool — that's by design,
+  -- matching the legacy run_update).
+  operation spec_update() -> OperationSpec =
+    OperationSpec(
+      name: "update",
+      description: "Update fields of a work item",
+      params: cons(
+        ParamSpec(
+          name: "id",
+          kind: positional(),
+          required: true,
+          description: "Work item id (e.g. WI-009)"),
+        cons(
+          ParamSpec(
+            name: "description",
+            kind: flag(),
+            required: false,
+            description: "New description"),
+          cons(
+            ParamSpec(
+              name: "acceptance",
+              kind: flag(),
+              required: false,
+              description: "Acceptance tool name (repeatable, replaces all)"),
+            nil()))),
       parent: none())
 
   -- `add <description>` creates a new Open WorkItem. --depends and
@@ -183,7 +234,7 @@ namespace anthill.todo
     id: String,
     status: String,
     description: String,
-    depends: List[T = String],
+    depends: List[String],
     unblocks: Int,
     has_feedback: Bool)
 
@@ -218,10 +269,10 @@ namespace anthill.todo
         case parse_err(_) ->
           let _ = eprintln(console(), "anthill-todo: argument error")
           2
-        case parse_ok(ParsedArgs(name, bindings)) ->
-          dispatch(name, bindings, store, agent, wis_cell)
+        case parse_ok(ParsedArgs(name, args)) ->
+          dispatch(name, args, store, agent, wis_cell)
 
-    -- Each subcommand reads its own positional/flag bindings; the
+    -- Each subcommand reads its own positional/flag args; the
     -- OperationSpec for each subcommand declares the params it expects
     -- (see `spec_with_id` for the canonical "needs an id" shape).
     -- `s: Cell[State]` is the WorkItemStore state cell threaded through
@@ -230,7 +281,7 @@ namespace anthill.todo
     -- WorkItemStore.{lookup, by_status_of, next_id, commit, forget}
     -- on it. The host picks the impl (e.g. FileBasedWorkitemStore) by
     -- calling Main.main via call_with_requirements (WI-236).
-    operation dispatch(name: String, bindings: List[Binding],
+    operation dispatch(name: String, args: List[Binding],
                        store: FileStore, agent: String,
                        s: Cell[State]) -> Int
       effects {ConsoleOutput, ConsoleError, Modify[store], Modify[s],
@@ -238,27 +289,32 @@ namespace anthill.todo
     =
       if eq(name, "skill") then cmd_skill()
       else if eq(name, "status") then cmd_status(s)
-      else if eq(name, "show") then cmd_show(bindings, s)
-      else if eq(name, "list") then cmd_list(bindings, s)
+      else if eq(name, "show") then cmd_show(args, s)
+      else if eq(name, "list") then cmd_list(args, s)
       else if eq(name, "graph") then cmd_graph(s)
-      else if eq(name, "next") then cmd_next(bindings, s)
-      else if eq(name, "feedback") then cmd_feedback(bindings, store, agent, s)
-      else if eq(name, "add") then cmd_add(bindings, store, s)
-      else if eq(name, "claim") then cmd_claim(bindings, store, agent, s)
-      else if eq(name, "deliver") then cmd_deliver(bindings, store, agent, s)
-      else if eq(name, "verify") then cmd_verify(bindings, store, s)
-      else if eq(name, "delete") then cmd_delete(bindings, store, s)
+      else if eq(name, "next") then cmd_next(args, s)
+      else if eq(name, "feedback") then cmd_feedback(args, store, agent, s)
+      else if eq(name, "add") then cmd_add(args, store, s)
+      else if eq(name, "claim") then cmd_claim(args, store, agent, s)
+      else if eq(name, "deliver") then cmd_deliver(args, store, agent, s)
+      else if eq(name, "verify") then cmd_verify(args, store, s)
+      else if eq(name, "delete") then cmd_delete(args, store, s)
+      else if eq(name, "update") then cmd_update(args, store, s)
+      else if eq(name, "add-dependency") then
+        cmd_add_dependency(args, store, s)
+      else if eq(name, "remove-dependency") then
+        cmd_remove_dependency(args, store, s)
       else not_yet(name)
 
     -- Find the first Binding with the given name; none() otherwise.
-    operation get_binding(bindings: List[Binding], name: String) -> Option[T = String] =
-      match bindings
+    operation get_arg(args: List[Binding], name: String) -> Option[String] =
+      match args
         case nil() -> none()
         case cons(b, rest) ->
           match b
             case Binding(bname, bvalue) ->
               if eq(bname, name) then some(bvalue)
-              else get_binding(rest, name)
+              else get_arg(rest, name)
 
     operation not_yet(name: String) -> Int
       effects ConsoleError
@@ -325,7 +381,7 @@ namespace anthill.todo
             case some(name) -> name
             case none() -> "?"
 
-    operation tally_w(items: List[T = WorkItem],
+    operation tally_w(items: List[WorkItem],
                       acc: List[Pair[String, Int]])
       -> List[Pair[String, Int]]
     =
@@ -334,7 +390,7 @@ namespace anthill.todo
         case cons(w, rest) ->
           tally_w(rest, bump(acc, status_name_w(w)))
 
-    operation count_items_w(items: List[T = WorkItem]) -> Int =
+    operation count_items_w(items: List[WorkItem]) -> Int =
       match items
         case nil() -> 0
         case cons(_, rest) -> 1 + count_items_w(rest)
@@ -372,11 +428,11 @@ namespace anthill.todo
     -- on-disk fact form stores the value unwrapped (`depends_on: [...]`,
     -- not `some([...])`) — so the materialized slot can be `none()`
     -- (absent field), `some(list)`, or the bare cons/nil chain.
-    operation deps_of_w(w: WorkItem) -> List[T = String] =
+    operation deps_of_w(w: WorkItem) -> List[String] =
       match w
         case WorkItem(_, _, _, _, deps, _, _, _) -> normalize_deps(deps)
 
-    operation normalize_deps(d: Option[T = List[T = String]]) -> List[T = String] =
+    operation normalize_deps(d: Option[List[String]]) -> List[String] =
       match d
         case none() -> nil()
         case some(xs) -> xs
@@ -384,10 +440,10 @@ namespace anthill.todo
         case cons(h, t) -> cons(h, normalize_deps(t))
 
     -- Print id / description / status / depends_on for a single WorkItem.
-    operation cmd_show(bindings: List[Binding], s: Cell[State]) -> Int
+    operation cmd_show(args: List[Binding], s: Cell[State]) -> Int
       effects {ConsoleOutput, ConsoleError, Error}
     =
-      match get_binding(bindings, "id")
+      match get_arg(args, "id")
         case none() ->
           let _ = eprintln(console(), "error: missing work item id")
           2
@@ -452,7 +508,7 @@ namespace anthill.todo
             unblocks: 0,
             has_feedback: false)
 
-    operation rows_of_w(items: List[T = WorkItem]) -> List[Row] =
+    operation rows_of_w(items: List[WorkItem]) -> List[Row] =
       match items
         case nil() -> nil()
         case cons(w, rest) -> cons(row_of_w(w), rows_of_w(rest))
@@ -479,7 +535,7 @@ namespace anthill.todo
                   substring(s, 1, length(s)))
 
     operation filter_rows(rows: List[Row],
-                          status_filter: Option[T = String],
+                          status_filter: Option[String],
                           show_all: Bool)
       -> List[Row]
     =
@@ -493,7 +549,7 @@ namespace anthill.todo
               else filter_rows(rest, status_filter, show_all)
 
     operation keep(status: String,
-                   status_filter: Option[T = String],
+                   status_filter: Option[String],
                    show_all: Bool)
       -> Bool
     =
@@ -509,11 +565,11 @@ namespace anthill.todo
     -- but every downstream lookup pays O(1), so over a partition pass
     -- (N rows × D deps) this drops the total from O(N²·D) to O(N²+N·D).
     -- WI-183.
-    operation build_row_map(rows: List[Row]) -> Map[K = String, V = Row] =
+    operation build_row_map(rows: List[Row]) -> Map[String, Row] =
       build_row_map_acc(rows, empty())
 
-    operation build_row_map_acc(rows: List[Row], acc: Map[K = String, V = Row])
-      -> Map[K = String, V = Row]
+    operation build_row_map_acc(rows: List[Row], acc: Map[String, Row])
+      -> Map[String, Row]
     =
       match rows
         case nil() -> acc
@@ -527,8 +583,8 @@ namespace anthill.todo
               else build_row_map_acc(rest, put(acc, rid, r))
 
     -- Status lookup via the prebuilt row map.
-    operation status_for_m(row_map: Map[K = String, V = Row], id: String)
-      -> Option[T = String]
+    operation status_for_m(row_map: Map[String, Row], id: String)
+      -> Option[String]
     =
       match get(row_map, id)
         case none() -> none()
@@ -541,7 +597,7 @@ namespace anthill.todo
       else if eq(status, "Verified") then true
       else false
 
-    operation any_unmet(deps: List[String], row_map: Map[K = String, V = Row]) -> Bool =
+    operation any_unmet(deps: List[String], row_map: Map[String, Row]) -> Bool =
       match deps
         case nil() -> false
         case cons(dep, rest) ->
@@ -559,13 +615,13 @@ namespace anthill.todo
     -- representation: dependents lookup goes from O(E) per call to
     -- O(1). WI-183.
     operation build_dep_map(rows: List[Row])
-      -> Map[K = String, V = List[T = String]]
+      -> Map[String, List[String]]
     =
       build_dep_map_acc(rows, empty())
 
     operation build_dep_map_acc(rows: List[Row],
-                                acc: Map[K = String, V = List[T = String]])
-      -> Map[K = String, V = List[T = String]]
+                                acc: Map[String, List[String]])
+      -> Map[String, List[String]]
     =
       match rows
         case nil() -> acc
@@ -578,10 +634,10 @@ namespace anthill.todo
     -- dependents list. Append (vs prepend) preserves the same
     -- caller-order legacy `direct_dependents` produced — important
     -- so cmd_graph's tree walk emits siblings in source order.
-    operation register_dependents(m: Map[K = String, V = List[T = String]],
+    operation register_dependents(m: Map[String, List[String]],
                                    deps: List[String],
                                    rid: String)
-      -> Map[K = String, V = List[T = String]]
+      -> Map[String, List[String]]
     =
       match deps
         case nil() -> m
@@ -597,7 +653,7 @@ namespace anthill.todo
         case cons(h, rest) -> cons(h, append_string(rest, x))
 
     -- Direct dependents of `id` via the prebuilt map.
-    operation direct_dependents_m(dep_map: Map[K = String, V = List[T = String]],
+    operation direct_dependents_m(dep_map: Map[String, List[String]],
                                    id: String)
       -> List[String]
     =
@@ -628,7 +684,7 @@ namespace anthill.todo
     -- comes first.
 
     operation count_transitive(id: String,
-                               dep_map: Map[K = String, V = List[T = String]],
+                               dep_map: Map[String, List[String]],
                                visited: List[String])
       -> Pair[Int, List[String]]
     =
@@ -639,7 +695,7 @@ namespace anthill.todo
         count_transitive_walk(direct, dep_map, visited2)
 
     operation count_transitive_walk(deps: List[String],
-                                    dep_map: Map[K = String, V = List[T = String]],
+                                    dep_map: Map[String, List[String]],
                                     visited: List[String])
       -> Pair[Int, List[String]]
     =
@@ -657,13 +713,13 @@ namespace anthill.todo
     -- fact, used for the [has feedback] annotation. Map[id → true]
     -- gives O(1) `Map.contains` instead of an O(F) linear scan per row
     -- on a List[String]. WI-183.
-    operation feedback_set() -> Map[K = String, V = Bool] =
+    operation feedback_set() -> Map[String, Bool] =
       let fb_facts = facts_of(kb(), "Feedback")
       collect_feedback_set(fb_facts, empty())
 
     operation collect_feedback_set(facts: List[Term],
-                                    acc: Map[K = String, V = Bool])
-      -> Map[K = String, V = Bool]
+                                    acc: Map[String, Bool])
+      -> Map[String, Bool]
     =
       match facts
         case nil() -> acc
@@ -683,7 +739,7 @@ namespace anthill.todo
     -- annotate_rows fires N times).
 
     operation annotate_rows(rows: List[Row],
-                            fb_set: Map[K = String, V = Bool])
+                            fb_set: Map[String, Bool])
       -> List[Row]
     =
       match rows
@@ -705,7 +761,7 @@ namespace anthill.todo
     -- fresh visited set (correctness for diamond patterns); we call
     -- this only on the `ready` partition to keep the cost bounded.
     operation fill_unblocks(rows: List[Row],
-                            dep_map: Map[K = String, V = List[T = String]])
+                            dep_map: Map[String, List[String]])
       -> List[Row]
     =
       match rows
@@ -784,7 +840,7 @@ namespace anthill.todo
     -- ── Partition into ready / blocked ────────────────────────────
 
     operation partition_ready(rows: List[Row],
-                               row_map: Map[K = String, V = Row])
+                               row_map: Map[String, Row])
       -> List[Row]
     =
       match rows
@@ -796,7 +852,7 @@ namespace anthill.todo
               else cons(r, partition_ready(rest, row_map))
 
     operation partition_blocked(rows: List[Row],
-                                 row_map: Map[K = String, V = Row])
+                                 row_map: Map[String, Row])
       -> List[Row]
     =
       match rows
@@ -863,11 +919,11 @@ namespace anthill.todo
 
     -- ── cmd_list itself ───────────────────────────────────────────
 
-    operation cmd_list(bindings: List[Binding], s: Cell[State]) -> Int
+    operation cmd_list(args: List[Binding], s: Cell[State]) -> Int
       effects {ConsoleOutput, Error}
     =
-      let status_filter = get_binding(bindings, "status")
-      let show_all = match get_binding(bindings, "all")
+      let status_filter = get_arg(args, "status")
+      let show_all = match get_arg(args, "all")
         case some(_) -> true
         case none() -> false
       let raw_rows = rows_of_w(WorkItemStore.all(s))
@@ -912,7 +968,7 @@ namespace anthill.todo
                 case nil() -> cons(r, find_roots(rest))
                 case cons(_, _) -> find_roots(rest)
 
-    operation status_or_unknown(row_map: Map[K = String, V = Row], id: String) -> String =
+    operation status_or_unknown(row_map: Map[String, Row], id: String) -> String =
       match status_for_m(row_map, id)
         case some(s) -> s
         case none() -> "?"
@@ -925,8 +981,8 @@ namespace anthill.todo
                          is_root: Bool,
                          is_last: Bool,
                          prefix: String,
-                         row_map: Map[K = String, V = Row],
-                         dep_map: Map[K = String, V = List[T = String]])
+                         row_map: Map[String, Row],
+                         dep_map: Map[String, List[String]])
       -> Unit
       effects ConsoleOutput
     =
@@ -948,8 +1004,8 @@ namespace anthill.todo
 
     operation print_children(children: List[String],
                              prefix: String,
-                             row_map: Map[K = String, V = Row],
-                             dep_map: Map[K = String, V = List[T = String]])
+                             row_map: Map[String, Row],
+                             dep_map: Map[String, List[String]])
       -> Unit
       effects ConsoleOutput
     =
@@ -963,8 +1019,8 @@ namespace anthill.todo
           print_children(rest, prefix, row_map, dep_map)
 
     operation print_roots(roots: List[Row],
-                          row_map: Map[K = String, V = Row],
-                          dep_map: Map[K = String, V = List[T = String]])
+                          row_map: Map[String, Row],
+                          dep_map: Map[String, List[String]])
       -> Unit
       effects ConsoleOutput
     =
@@ -999,26 +1055,26 @@ namespace anthill.todo
     -- when no --acceptance flag is supplied.
 
     -- Collect every Binding whose name matches `name`, in caller order.
-    -- parse_argv conses bindings front-most-recent, so the last flag the
+    -- parse_argv conses args front-most-recent, so the last flag the
     -- user typed appears first in the input list. Walking that list and
     -- consing into `acc` flips each time, leaving acc in caller order on
     -- exit. Used by cmd_add for repeatable flags (--depends, --acceptance).
-    operation collect_all_bindings_acc(bindings: List[Binding],
+    operation collect_all_args_acc(args: List[Binding],
                                         name: String,
                                         acc: List[String]) -> List[String] =
-      match bindings
+      match args
         case nil() -> acc
         case cons(b, rest) ->
           match b
             case Binding(bname, bvalue) ->
               if eq(bname, name) then
-                collect_all_bindings_acc(rest, name, cons(bvalue, acc))
+                collect_all_args_acc(rest, name, cons(bvalue, acc))
               else
-                collect_all_bindings_acc(rest, name, acc)
+                collect_all_args_acc(rest, name, acc)
 
-    operation collect_all_bindings(bindings: List[Binding],
+    operation collect_all_args(args: List[Binding],
                                     name: String) -> List[String] =
-      collect_all_bindings_acc(bindings, name, nil())
+      collect_all_args_acc(args, name, nil())
 
     -- Wrap each tool name as ToolPasses(tool: <name>) for the WorkItem
     -- acceptance field. Default fallback when the user supplies no
@@ -1034,19 +1090,19 @@ namespace anthill.todo
         case cons(h, rest) ->
           cons(tool_to_acceptance(h), tools_to_acceptance(rest))
 
-    operation cmd_add(bindings: List[Binding],
+    operation cmd_add(args: List[Binding],
                       store: FileStore,
                       s: Cell[State]) -> Int
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
-      match get_binding(bindings, "description")
+      match get_arg(args, "description")
         case none() ->
           let _ = eprintln(console(), "add: missing description")
           2
         case some(description) ->
           do_add(s, description,
-                 collect_all_bindings(bindings, "depends"),
-                 collect_all_bindings(bindings, "acceptance"))
+                 collect_all_args(args, "depends"),
+                 collect_all_args(args, "acceptance"))
 
     operation do_add(s: Cell[State], description: String,
                      depends_on: List[String],
@@ -1093,18 +1149,60 @@ namespace anthill.todo
             requires_capability: reqs,
             status: st)
 
+    operation with_description(wi: WorkItem, new_desc: String) -> WorkItem =
+      match wi
+        case WorkItem(id, _, ctx, acc, deps, gen, reqs, st) ->
+          WorkItem(
+            id: id,
+            description: new_desc,
+            context: ctx,
+            acceptance: acc,
+            depends_on: deps,
+            generates: gen,
+            requires_capability: reqs,
+            status: st)
+
+    operation with_acceptance(wi: WorkItem,
+                              new_acc: List[AcceptanceCriterion])
+      -> WorkItem
+    =
+      match wi
+        case WorkItem(id, desc, ctx, _, deps, gen, reqs, st) ->
+          WorkItem(
+            id: id,
+            description: desc,
+            context: ctx,
+            acceptance: new_acc,
+            depends_on: deps,
+            generates: gen,
+            requires_capability: reqs,
+            status: st)
+
+    operation with_deps(wi: WorkItem, new_deps: List[String]) -> WorkItem =
+      match wi
+        case WorkItem(id, desc, ctx, acc, _, gen, reqs, st) ->
+          WorkItem(
+            id: id,
+            description: desc,
+            context: ctx,
+            acceptance: acc,
+            depends_on: new_deps,
+            generates: gen,
+            requires_capability: reqs,
+            status: st)
+
     -- ── cmd_claim ────────────────────────────────────────────────
     -- `claim <id>` transitions Open → Claimed(agent, since). Routes
     -- through WorkItemStore.lookup → forget + commit (the impl pair
     -- handles the retract+persist dance internally).
 
-    operation cmd_claim(bindings: List[Binding],
+    operation cmd_claim(args: List[Binding],
                          store: FileStore,
                          agent: String,
                          s: Cell[State]) -> Int
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
-      match get_binding(bindings, "id")
+      match get_arg(args, "id")
         case none() ->
           let _ = eprintln(console(), "claim: missing id")
           2
@@ -1130,13 +1228,13 @@ namespace anthill.todo
     -- ── cmd_deliver ──────────────────────────────────────────────
     -- `deliver <id>`: Claimed → Delivered(agent, at).
 
-    operation cmd_deliver(bindings: List[Binding],
+    operation cmd_deliver(args: List[Binding],
                            store: FileStore,
                            agent: String,
                            s: Cell[State]) -> Int
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
-      match get_binding(bindings, "id")
+      match get_arg(args, "id")
         case none() ->
           let _ = eprintln(console(), "deliver: missing id")
           2
@@ -1163,12 +1261,12 @@ namespace anthill.todo
     -- `verify <id>`: Delivered → Verified(at). No agent — the verifier
     -- identity isn't recorded in the legacy fact shape.
 
-    operation cmd_verify(bindings: List[Binding],
+    operation cmd_verify(args: List[Binding],
                           store: FileStore,
                           s: Cell[State]) -> Int
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
-      match get_binding(bindings, "id")
+      match get_arg(args, "id")
         case none() ->
           let _ = eprintln(console(), "verify: missing id")
           2
@@ -1193,12 +1291,12 @@ namespace anthill.todo
     -- replacement). The impl's forget routes through find_fact +
     -- retract so the IndexedFileStore drops the on-disk block.
 
-    operation cmd_delete(bindings: List[Binding],
+    operation cmd_delete(args: List[Binding],
                           store: FileStore,
                           s: Cell[State]) -> Int
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
-      match get_binding(bindings, "id")
+      match get_arg(args, "id")
         case none() ->
           let _ = eprintln(console(), "delete: missing id")
           2
@@ -1213,19 +1311,207 @@ namespace anthill.todo
               let _ = println(console(), concat("deleted: ", id))
               0
 
+    -- ── cmd_update ───────────────────────────────────────────────
+    -- `update <id> [--description X] [--acceptance Y]+` rewrites a
+    -- work item's description and/or acceptance criteria. Passing
+    -- --acceptance at least once replaces the entire acceptance list
+    -- (no append mode — matches legacy run_update).
+    operation cmd_update(args: List[Binding],
+                          store: FileStore,
+                          s: Cell[State]) -> Int
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    =
+      match get_arg(args, "id")
+        case none() ->
+          let _ = eprintln(console(), "update: missing id")
+          2
+        case some(id) ->
+          match WorkItemStore.lookup(s, id)
+            case none() ->
+              let _ = eprintln(console(),
+                concat("error: work item '", concat(id, "' not found")))
+              1
+            case some(wi) ->
+              let new_desc = get_arg(args, "description")
+              let raw_acc = collect_all_args(args, "acceptance")
+              do_update(s, id, wi, new_desc, raw_acc)
+
+    operation do_update(s: Cell[State], id: String, wi: WorkItem,
+                        new_desc: Option[String],
+                        raw_acc: List[String]) -> Int
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    =
+      let has_desc = opt_string_present(new_desc)
+      let has_acc = match raw_acc
+        case nil() -> false
+        case cons(_, _) -> true
+      if not(has_desc) then
+        if not(has_acc) then
+          let _ = eprintln(console(),
+            "update: nothing to change — pass --description and/or --acceptance")
+          2
+        else
+          let _ = WorkItemStore.forget(s, id)
+          let _ = WorkItemStore.commit(s,
+            with_acceptance(wi, tools_to_acceptance(raw_acc)))
+          let _ = println(console(),
+            concat("updated ", concat(id, ": acceptance")))
+          0
+      else
+        let new_wi = update_fields(wi, new_desc, has_acc, raw_acc)
+        let _ = WorkItemStore.forget(s, id)
+        let _ = WorkItemStore.commit(s, new_wi)
+        let summary = if has_acc then "description, acceptance" else "description"
+        let _ = println(console(), concat("updated ",
+          concat(id, concat(": ", summary))))
+        0
+
+    operation opt_string_present(o: Option[String]) -> Bool =
+      match o
+        case none() -> false
+        case some(_) -> true
+
+    operation unwrap_string(o: Option[String]) -> String =
+      match o
+        case some(s) -> s
+        case none() -> ""
+
+    operation update_fields(wi: WorkItem,
+                             new_desc: Option[String],
+                             has_acc: Bool,
+                             raw_acc: List[String]) -> WorkItem =
+      let wi_d = with_description(wi, unwrap_string(new_desc))
+      if has_acc then with_acceptance(wi_d, tools_to_acceptance(raw_acc))
+      else wi_d
+
+    -- ── cmd_add_dependency ───────────────────────────────────────
+    -- `add-dependency <id> <dep>` appends dep to id's depends_on
+    -- list. Validates self-loop and target-exists; rejects already-a-dep.
+    -- Cycle detection deferred (filed as follow-up).
+    operation cmd_add_dependency(args: List[Binding],
+                                  store: FileStore,
+                                  s: Cell[State]) -> Int
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    =
+      match get_arg(args, "id")
+        case none() ->
+          let _ = eprintln(console(), "add-dependency: missing id")
+          2
+        case some(id) ->
+          match get_arg(args, "dep")
+            case none() ->
+              let _ = eprintln(console(),
+                "add-dependency: missing dep id")
+              2
+            case some(dep) ->
+              if eq(id, dep) then
+                let _ = eprintln(console(),
+                  "error: work item cannot depend on itself")
+                1
+              else
+                match WorkItemStore.lookup(s, id)
+                  case none() ->
+                    let _ = eprintln(console(),
+                      concat("error: work item '",
+                        concat(id, "' not found")))
+                    1
+                  case some(wi) ->
+                    match WorkItemStore.lookup(s, dep)
+                      case none() ->
+                        let _ = eprintln(console(),
+                          concat("error: dependency target '",
+                            concat(dep, "' not found")))
+                        1
+                      case some(_) -> do_add_dep(s, id, dep, wi)
+
+    operation do_add_dep(s: Cell[State], id: String, dep: String,
+                          wi: WorkItem) -> Int
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    =
+      let current = deps_of_w(wi)
+      if list_contains_string(current, dep) then
+        let _ = eprintln(console(),
+          concat("error: '", concat(id,
+            concat("' already depends on '", concat(dep, "'")))))
+        1
+      else
+        let _ = WorkItemStore.forget(s, id)
+        let _ = WorkItemStore.commit(s,
+          with_deps(wi, append_string(current, dep)))
+        let _ = println(console(),
+          concat("added dependency: ",
+            concat(id, concat(" -> ", dep))))
+        0
+
+    -- ── cmd_remove_dependency ────────────────────────────────────
+    -- `remove-dependency <id> <dep>` filters dep out of id's
+    -- depends_on. Errors if dep isn't currently a dependency.
+    operation cmd_remove_dependency(args: List[Binding],
+                                     store: FileStore,
+                                     s: Cell[State]) -> Int
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    =
+      match get_arg(args, "id")
+        case none() ->
+          let _ = eprintln(console(), "remove-dependency: missing id")
+          2
+        case some(id) ->
+          match get_arg(args, "dep")
+            case none() ->
+              let _ = eprintln(console(),
+                "remove-dependency: missing dep id")
+              2
+            case some(dep) ->
+              match WorkItemStore.lookup(s, id)
+                case none() ->
+                  let _ = eprintln(console(),
+                    concat("error: work item '",
+                      concat(id, "' not found")))
+                  1
+                case some(wi) -> do_remove_dep(s, id, dep, wi)
+
+    operation do_remove_dep(s: Cell[State], id: String, dep: String,
+                             wi: WorkItem) -> Int
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    =
+      let current = deps_of_w(wi)
+      if list_contains_string(current, dep) then
+        let _ = WorkItemStore.forget(s, id)
+        let _ = WorkItemStore.commit(s,
+          with_deps(wi, remove_string(current, dep)))
+        let _ = println(console(),
+          concat("removed dependency: ",
+            concat(id, concat(" -> ", dep))))
+        0
+      else
+        let _ = eprintln(console(),
+          concat("error: '", concat(id,
+            concat("' does not depend on '", concat(dep, "'")))))
+        1
+
+    -- Filter `target` out of a String list (preserves remaining order).
+    operation remove_string(xs: List[String], target: String)
+      -> List[String]
+    =
+      match xs
+        case nil() -> nil()
+        case cons(h, rest) ->
+          if eq(h, target) then remove_string(rest, target)
+          else cons(h, remove_string(rest, target))
+
     -- ── cmd_feedback ─────────────────────────────────────────────
     --
     -- `feedback <id> <text>` asserts a Feedback fact through
     -- WorkItemStore.commit_feedback. Output mirrors legacy
     -- run_feedback's `feedback on <id>: <text>` line.
-    operation cmd_feedback(bindings: List[Binding],
+    operation cmd_feedback(args: List[Binding],
                             store: FileStore,
                             agent: String,
                             s: Cell[State]) -> Int
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
-      let id_opt = get_binding(bindings, "id")
-      let text_opt = get_binding(bindings, "text")
+      let id_opt = get_arg(args, "id")
+      let text_opt = get_arg(args, "text")
       match id_opt
         case none() ->
           let _ = eprintln(console(), "feedback: missing id")
@@ -1330,10 +1616,10 @@ namespace anthill.todo
           else list_contains_string(rest, needle)
 
 
-    operation cmd_next(bindings: List[Binding], s: Cell[State]) -> Int
+    operation cmd_next(args: List[Binding], s: Cell[State]) -> Int
       effects {ConsoleOutput, ConsoleError, Error}
     =
-      let show_all = match get_binding(bindings, "all")
+      let show_all = match get_arg(args, "all")
         case some(_) -> true
         case none() -> false
       let id_var = fresh_var("id")

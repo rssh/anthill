@@ -4,10 +4,9 @@
 
 mod common;
 
-use std::fs;
 use std::process::Command;
 
-use common::setup_project;
+use common::{read_combined, setup_project};
 
 const ANTHILL_TODO_BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 
@@ -37,17 +36,6 @@ fact WorkItem(
   depends_on: [],
   status: Open)
 ";
-
-fn read_combined(inner: &std::path::Path) -> String {
-    let mut combined = String::new();
-    for entry in fs::read_dir(inner).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().and_then(|s| s.to_str()) == Some("anthill") {
-            combined.push_str(&fs::read_to_string(&path).unwrap());
-        }
-    }
-    combined
-}
 
 #[test]
 fn deliver_replaces_claimed_with_delivered() {
