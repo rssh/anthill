@@ -994,7 +994,7 @@ fn visit_type(
         // forward order, then a Build frame that drains the
         // pre-computed arg results and runs the subst / dispatch /
         // classify logic without recursing through `type_check_node`.
-        Expr::Apply { functor, pos_args, named_args } => {
+        Expr::Apply { functor, pos_args, named_args, .. } => {
             let functor = *functor;
             let pos_args = pos_args.clone();
             let named_args = named_args.clone();
@@ -1356,6 +1356,9 @@ fn check_apply_iter(
     // Path 1: known operation — unify args with params to instantiate type params
     if let Some(op) = lookup_operation_info_full(kb, fn_sym) {
         let mut subst = Substitution::new();
+        // Seed substitution from call-site `op[bindings]` before arg
+        // unification so explicit bindings drive subsequent inference.
+        seed_op_type_args(kb, &mut subst, &op, occ);
         let mut arg_effects: Vec<TermId> = Vec::new();
         let mut param_to_arg_sym: HashMap<Symbol, Symbol> = HashMap::new();
 
@@ -2080,6 +2083,9 @@ struct OperationInfoFull {
     params: Vec<(Symbol, TermId)>,  // (param_name, param_type)
     return_type: TermId,
     effects: Vec<TermId>,
+    /// Operation-level type parameters in declaration order, as
+    /// `(name, Var(VarId) term)` pairs.
+    type_params: Vec<(Symbol, TermId)>,
 }
 
 /// Look up complete OperationInfo for a functor.
@@ -2091,7 +2097,43 @@ fn lookup_operation_info_full(kb: &KnowledgeBase, functor: Symbol) -> Option<Ope
         params: rec.params,
         return_type: rec.return_type,
         effects: rec.effects,
+        type_params: rec.type_params,
     })
+}
+
+/// Seed `subst` from `op[bindings](args)` call sites: named bindings
+/// match by name, positional by declaration order. Bindings whose name
+/// doesn't match any declared type-param are silently dropped.
+fn seed_op_type_args(
+    kb: &KnowledgeBase,
+    subst: &mut Substitution,
+    op: &OperationInfoFull,
+    occ: &Rc<NodeOccurrence>,
+) {
+    let type_args = match &occ.kind {
+        NodeKind::Expr { expr: Expr::Apply { type_args, .. }, .. } => type_args,
+        _ => return,
+    };
+    if type_args.is_empty() || op.type_params.is_empty() {
+        return;
+    }
+    let mut positional_idx = 0;
+    for (name_opt, value) in type_args {
+        let target = match name_opt {
+            // TODO(diag): name a "no such type-param" diagnostic here.
+            Some(name_sym) => op.type_params.iter()
+                .find(|(n, _)| n == name_sym)
+                .map(|(_, v)| *v),
+            None => {
+                let v = op.type_params.get(positional_idx).map(|(_, v)| *v);
+                positional_idx += 1;
+                v
+            }
+        };
+        if let Some(var_term) = target {
+            unify_types(kb, subst, var_term, *value);
+        }
+    }
 }
 
 /// WI-210 — `op_sym` is a "spec operation" if it is declared in a sort

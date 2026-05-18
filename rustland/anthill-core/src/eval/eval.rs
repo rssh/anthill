@@ -92,7 +92,7 @@ impl Interpreter {
                 self.start_match(scrutinee, branches)
             }
             Expr::Lambda { param, body } => self.reduce_lambda(*param, body.clone()),
-            Expr::Apply { functor, pos_args, named_args } => {
+            Expr::Apply { functor, pos_args, named_args, type_args: _ } => {
                 // WI-218: the typer may have classified this apply for
                 // spec-op rewrite. PinNow redirects the call to the
                 // impl op; ConcreteApplyWithin similarly redirects (the

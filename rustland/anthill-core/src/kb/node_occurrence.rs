@@ -273,6 +273,10 @@ pub enum Expr {
         functor: Symbol,
         pos_args: Vec<Rc<NodeOccurrence>>,
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+        /// Call-site operation type arguments (`op[T = Int](args)`).
+        /// Each entry: `(Some(name), type)` for `T = Int`, or
+        /// `(None, type)` for positional `Int`. Empty for untyped calls.
+        type_args: Vec<(Option<Symbol>, TermId)>,
     },
     /// Higher-order application — `predicate(args...)` where predicate is
     /// an expression rather than a known operation symbol.
@@ -544,7 +548,13 @@ enum BuildFrame {
     Let { span: SourceSpan, pattern: TermId, type_annotation: Option<TermId> },
     Lambda { span: SourceSpan, param: TermId },
     Match { span: SourceSpan, branches: Vec<BranchMeta> },
-    Apply { span: SourceSpan, functor: Symbol, pos_count: usize, named_keys: Vec<Symbol> },
+    Apply {
+        span: SourceSpan,
+        functor: Symbol,
+        pos_count: usize,
+        named_keys: Vec<Symbol>,
+        type_args: Vec<(Option<Symbol>, TermId)>,
+    },
     Constructor { span: SourceSpan, name: Symbol, pos_count: usize, named_keys: Vec<Symbol> },
     ApplyWithin {
         span: SourceSpan, functor: Symbol,
@@ -684,10 +694,14 @@ fn visit_fn(
         "apply" => {
             let fn_sym = named_ref(kb, named_args, "fn").unwrap_or(functor);
             let args_tid = get_named_arg(kb, named_args, "args");
+            let type_args = collect_type_args(kb, get_named_arg(kb, named_args, "type_args"));
             push_apply_like_args(
                 kb, args_tid,
                 |span_, pos_count, named_keys| {
-                    BuildFrame::Apply { span: span_, functor: fn_sym, pos_count, named_keys }
+                    BuildFrame::Apply {
+                        span: span_, functor: fn_sym, pos_count, named_keys,
+                        type_args: type_args.clone(),
+                    }
                 },
                 span, work,
             );
@@ -801,6 +815,29 @@ fn collect_apply_arg_visits(
 
 /// Walk a plain `cons(head, tail) | nil` element list and produce
 /// `(count, visits)`. Each entry becomes one Visit op.
+/// Walk a cons-list of `type_arg(name: Option[Ref], value: Type)`
+/// entries and return `(name, value)` pairs in declaration order;
+/// `None` for the name means positional.
+fn collect_type_args(
+    kb: &KnowledgeBase,
+    list_tid: Option<TermId>,
+) -> Vec<(Option<Symbol>, TermId)> {
+    let Some(tid) = list_tid else { return Vec::new(); };
+    list_to_vec(kb, tid)
+        .into_iter()
+        .filter_map(|entry| {
+            let entry_args = match kb.get_term(entry) {
+                Term::Fn { named_args, .. } => named_args.clone(),
+                _ => return None,
+            };
+            let name_opt = get_named_arg(kb, &entry_args, "name")
+                .and_then(|t| some_name(kb, t));
+            let value = get_named_arg(kb, &entry_args, "value")?;
+            Some((name_opt, value))
+        })
+        .collect()
+}
+
 fn collect_list_visits(
     kb: &KnowledgeBase,
     list_tid: Option<TermId>,
@@ -885,9 +922,9 @@ fn build_frame(frame: BuildFrame, results: &mut Vec<Rc<NodeOccurrence>>) {
             let expr = Expr::Match { scrutinee, branches: built_branches };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
-        BuildFrame::Apply { span, functor, pos_count, named_keys } => {
+        BuildFrame::Apply { span, functor, pos_count, named_keys, type_args } => {
             let (pos_args, named_args) = pop_apply_like(results, pos_count, named_keys);
-            let expr = Expr::Apply { functor, pos_args, named_args };
+            let expr = Expr::Apply { functor, pos_args, named_args, type_args };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
         BuildFrame::Constructor { span, name, pos_count, named_keys } => {
@@ -938,7 +975,7 @@ fn build_frame(frame: BuildFrame, results: &mut Vec<Rc<NodeOccurrence>>) {
         }
         BuildFrame::UnknownFn { span, functor, pos_count, named_keys } => {
             let (pos_args, named_args) = pop_apply_like(results, pos_count, named_keys);
-            let expr = Expr::Apply { functor, pos_args, named_args };
+            let expr = Expr::Apply { functor, pos_args, named_args, type_args: Vec::new() };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
     }
@@ -1038,6 +1075,7 @@ mod tests {
                 functor: f,
                 pos_args: vec![const42],
                 named_args: vec![],
+                type_args: vec![],
             },
             span,
             None,

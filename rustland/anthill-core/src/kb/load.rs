@@ -3056,6 +3056,8 @@ struct ExprBuilderSyms {
     k_args: Symbol,
     k_elements: Symbol,
     k_fn: Symbol,
+    k_type_args: Symbol,
+    type_arg: Symbol,
 }
 
 impl ExprBuilderSyms {
@@ -3086,6 +3088,8 @@ impl ExprBuilderSyms {
             k_args: kb.intern("args"),
             k_elements: kb.intern("elements"),
             k_fn: kb.intern("fn"),
+            k_type_args: kb.intern("type_args"),
+            type_arg: kb.intern("type_arg"),
         }
     }
 }
@@ -3936,6 +3940,8 @@ impl<'a> Loader<'a> {
                 let args_list = build_list(self.kb, &arg_terms);
                 let name_ref = self.kb.alloc(Term::Ref(kb_functor));
 
+                let type_args_tid = self.build_call_type_args(outer_parse_id);
+
                 let s = &self.expr_syms;
                 let kb_id = if is_entity {
                     self.kb.alloc(Term::Fn {
@@ -3947,19 +3953,59 @@ impl<'a> Loader<'a> {
                         ]),
                     })
                 } else {
+                    let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::from_slice(&[
+                        (s.k_fn, name_ref),
+                        (s.k_args, args_list),
+                    ]);
+                    if let Some(tid) = type_args_tid {
+                        named.push((s.k_type_args, tid));
+                    }
                     self.kb.alloc(Term::Fn {
                         functor: s.apply,
                         pos_args: SmallVec::new(),
-                        named_args: SmallVec::from_slice(&[
-                            (s.k_fn, name_ref),
-                            (s.k_args, args_list),
-                        ]),
+                        named_args: named,
                     })
                 };
                 self.create_occurrence(outer_parse_id, kb_id);
                 results.push(kb_id);
             }
         }
+    }
+
+    /// Lower the parse-side `call_type_args` side-channel into a
+    /// cons-list of `type_arg(name: Option[Ref], value: Type)` entries
+    /// the typer reads to seed its substitution. Returns `None` when
+    /// the call has no explicit bindings.
+    fn build_call_type_args(&mut self, parse_id: TermId) -> Option<TermId> {
+        let bindings = self.parsed.terms.call_type_args.get(&parse_id).cloned()?;
+        if bindings.is_empty() {
+            return None;
+        }
+        let entries: Vec<TermId> = bindings.iter().map(|b| {
+            // The binding's `param` (e.g. "A" in `[A = Int]`) is a label
+            // referring to the callee's type-param, NOT a value to look
+            // up in the caller's scope. Intern as a bare symbol.
+            let name_opt = match &b.param {
+                Some(name) => {
+                    let raw = join_segments(&self.parsed.symbols, &name.segments);
+                    let sym = self.kb.intern(&raw);
+                    let name_ref = self.kb.alloc(Term::Ref(sym));
+                    build_some(self.kb, name_ref)
+                }
+                None => build_none(self.kb),
+            };
+            let value = self.type_expr_to_term(&b.bound);
+            let s = &self.expr_syms;
+            self.kb.alloc(Term::Fn {
+                functor: s.type_arg,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[
+                    (s.k_name, name_opt),
+                    (s.k_value, value),
+                ]),
+            })
+        }).collect();
+        Some(build_list(self.kb, &entries))
     }
 
     /// Build an `ApplyArg(name: …, value: …)` term using cached syms.
@@ -5022,6 +5068,27 @@ impl<'a> Loader<'a> {
             });
         }
 
+        // Pre-allocate type-param Vars and seed the per-scope cache so
+        // later `type_expr_to_term` calls reuse them, and we can publish
+        // the list on OperationInfo. Skipping the `find_sort_alias_var`
+        // branch is intentional: an op type-param is its own logical
+        // variable, distinct from any same-named outer SortAlias.
+        let mut type_param_var_terms: Vec<TermId> = Vec::with_capacity(o.type_params.len());
+        for tp in &o.type_params {
+            let tp_name = self.parsed.symbols.name(tp.name).to_owned();
+            let tp_sym = self.kb.intern(&tp_name);
+            let cache_key = (op_scope.raw(), tp_name.clone());
+            let var_tid = if let Some(&cached) = self.type_param_vars.get(&cache_key) {
+                cached
+            } else {
+                let vid = self.kb.fresh_var(tp_sym);
+                let tid = self.kb.alloc(Term::Var(Var::Global(vid)));
+                self.type_param_vars.insert(cache_key, tid);
+                tid
+            };
+            type_param_var_terms.push(var_tid);
+        }
+
         let return_term = self.type_expr_to_term(&o.return_type);
 
         // Build FieldInfo list for params
@@ -5091,9 +5158,11 @@ impl<'a> Loader<'a> {
         let requires_sym = self.kb.intern("requires");
         let ensures_sym = self.kb.intern("ensures");
         let body_sym = self.kb.intern("body");
+        let type_params_sym = self.kb.intern("type_params");
 
         // name: Ref to operation symbol
         let name_ref = self.kb.alloc(Term::Ref(functor));
+        let type_params_list = build_list(self.kb, &type_param_var_terms);
 
         let op_info = self.kb.alloc(Term::Fn {
             functor: op_info_sym,
@@ -5106,6 +5175,7 @@ impl<'a> Loader<'a> {
                 (requires_sym, requires_list),
                 (ensures_sym, ensures_list),
                 (body_sym, body_opt_term),
+                (type_params_sym, type_params_list),
             ]),
         });
         self.kb.assert_fact(op_info, op_sort, domain, None);

@@ -33,6 +33,10 @@ pub struct OpInfoRecord {
     pub params: Vec<(Symbol, TermId)>,
     pub return_type: TermId,
     pub effects: Vec<TermId>,
+    /// Operation-level type parameters from `operation foo[A, B](...)`.
+    /// Each entry: `(name_symbol, Var(VarId) term)`. The typer matches
+    /// call-site bindings against this table to seed its substitution.
+    pub type_params: Vec<(Symbol, TermId)>,
     /// Body NodeOccurrence read from `kb.op_bodies`. `None` when the
     /// operation is body-less (a spec op declaration).
     pub body_node: Option<Rc<NodeOccurrence>>,
@@ -62,12 +66,14 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
             .map(|t| list_to_vec(kb, t))
             .unwrap_or_default();
         let params = extract_params(kb, &named_args);
+        let type_params = extract_type_params(kb, &named_args);
         let body_node = kb.op_body_node(op_sym).cloned();
         return Some(OpInfoRecord {
             op_sym,
             params,
             return_type,
             effects,
+            type_params,
             body_node,
         });
     }
@@ -82,6 +88,25 @@ fn find_named(
     named_args.iter()
         .find(|(s, _)| kb.resolve_sym(*s) == key)
         .map(|(_, v)| *v)
+}
+
+/// Walk the `type_params` list off OperationInfo. Each list entry is
+/// a `Term::Var(Global(vid))`; the surface name comes from `vid.name()`.
+fn extract_type_params(
+    kb: &KnowledgeBase,
+    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+) -> Vec<(Symbol, TermId)> {
+    let tp_tid = match find_named(kb, named_args, "type_params") {
+        Some(t) => t,
+        None => return Vec::new(),
+    };
+    list_to_vec(kb, tp_tid)
+        .into_iter()
+        .filter_map(|var_tid| match kb.get_term(var_tid) {
+            Term::Var(crate::kb::term::Var::Global(vid)) => Some((vid.name(), var_tid)),
+            _ => None,
+        })
+        .collect()
 }
 
 fn extract_params(

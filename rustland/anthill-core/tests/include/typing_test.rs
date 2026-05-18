@@ -3202,3 +3202,101 @@ fn wi031_stdlib_load_then_typecheck_then_verify_typing_facts() {
             "no SortRequiresInfo fact found for `{requirer} requires {spec}`");
     }
 }
+
+// ══════════════════════════════════════════════════════════════════
+// Operation type parameters at call sites (proposal 042 Phase D)
+// ══════════════════════════════════════════════════════════════════
+
+/// All-explicit: arg list alone can't pin A. The explicit `[Int]` is
+/// the only constraint, so without seeding the return type stays
+/// `Box[T = Var(A)]` and won't unify with the annotated `Box[T = Int]`.
+#[test]
+fn op_type_param_explicit_positional_binding_pins_return() {
+    let source = r#"
+sort Box
+  sort T = ?
+end
+sort Demo
+  operation make_box[A]() -> Box[A]
+  operation tester() -> Box[T = Int] = make_box[Int]()
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(),
+        "explicit positional binding should pin return type, got: {:?}", errors);
+}
+
+#[test]
+fn op_type_param_explicit_named_binding_pins_return() {
+    let source = r#"
+sort Box
+  sort T = ?
+end
+sort Demo
+  operation make_box[A]() -> Box[A]
+  operation tester() -> Box[T = Int] = make_box[A = Int]()
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(),
+        "explicit named binding should pin return type, got: {:?}", errors);
+}
+
+/// Partial-explicit: one binding given, one inferred from argument.
+#[test]
+fn op_type_param_partial_explicit_mixes_with_arg_inference() {
+    let source = r#"
+sort Pair
+  sort A = ?
+  sort B = ?
+end
+sort Demo
+  operation make_pair[A, B](a: A, b: B) -> Pair[A = A, B = B]
+  operation tester() -> Pair[A = Int, B = String] = make_pair[A = Int](7, "hi")
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(),
+        "partial explicit + arg inference should typecheck, got: {:?}", errors);
+}
+
+/// Sanity: existing all-inferred behavior still works after Phase D.
+#[test]
+fn op_type_param_all_inferred_from_args() {
+    let source = r#"
+sort Box
+  sort T = ?
+end
+sort Demo
+  operation make_box[A](x: A) -> Box[A]
+  operation tester() -> Box[T = Int] = make_box(42)
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(),
+        "arg-driven inference should pin A to Int, got: {:?}", errors);
+}
+
+/// Explicit binding inconsistent with expected return type — the seed
+/// pins A = Int, but the caller expects Box[T = String]; downstream
+/// unification surfaces the mismatch.
+#[test]
+fn op_type_param_explicit_binding_conflicts_with_expected_return() {
+    let source = r#"
+sort Box
+  sort T = ?
+end
+sort Demo
+  operation make_box[A]() -> Box[A]
+  operation tester() -> Box[T = String] = make_box[Int]()
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(!errors.is_empty(),
+        "Box[T = Int] from call should not unify with Box[T = String] expected return");
+}
