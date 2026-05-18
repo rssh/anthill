@@ -39,6 +39,10 @@ pub struct SimpleTermStore {
     /// desugaring and Map.empty inference fire correctly) and the body's
     /// typing environment.
     pub let_type_annotations: HashMap<TermId, TypeExpr>,
+    /// Call-site operation type arguments from `op[bindings](args)`.
+    /// Keyed by the fn_term's TermId. Absent means the caller wrote
+    /// `op(args)` — typer runs pure inference.
+    pub call_type_args: HashMap<TermId, Vec<SortBinding>>,
 }
 
 impl SimpleTermStore {
@@ -292,6 +296,10 @@ pub enum RuleHead {
 pub struct Operation {
     pub visibility: Option<Visibility>,
     pub name: Name,
+    /// Operation-level type parameters from `operation foo[A, B](...)`.
+    /// Each declares a fresh logical variable scoped to the operation,
+    /// addressable by name at call sites via `foo[A = Int, B = String](args)`.
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub return_type: TypeExpr,
     pub requires: Vec<Vec<TermId>>,
@@ -299,6 +307,15 @@ pub struct Operation {
     pub effects: Vec<Effect>,
     pub body: Option<TermId>,
     pub meta: Option<MetaBlock>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypeParam {
+    pub name: Symbol,
+    /// Default value from `[T = Int]`; `None` for bare `[T]` (which the
+    /// loader treats as `T = ?` — a fresh anonymous logical variable).
+    pub default: Option<TypeExpr>,
     pub span: Span,
 }
 

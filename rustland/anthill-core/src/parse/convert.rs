@@ -78,6 +78,9 @@ enum BuildFrame<'t> {
         is_ho: bool,
         functor: Symbol,
         slots: SmallVec<[ArgSlot; 4]>,
+        /// Bindings collected off an `instantiation_term` callee
+        /// (`op[bindings](args)`); empty for the untyped form.
+        type_args: Vec<SortBinding>,
     },
     Infix {
         node: Node<'t>,
@@ -585,6 +588,16 @@ impl<'a> Converter<'a> {
             self.intern_name(&name)
         };
 
+        // Side-channel for the typer at `Name[bindings](args)` callees.
+        let type_args: Vec<SortBinding> = if name_node.kind() == "instantiation_term" {
+            self.children_by_kind(name_node, "sort_binding")
+                .into_iter()
+                .map(|b| self.convert_sort_binding(b))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         // Collect child layout (positional vs named with key) and the
         // ordered list of child nodes whose TermIds the Build phase
         // will consume. For HO predicates the variable head slot is
@@ -622,7 +635,7 @@ impl<'a> Converter<'a> {
             }
         }
 
-        work.push(WorkOp::Build(BuildFrame::FnTerm { node, is_ho, functor, slots }));
+        work.push(WorkOp::Build(BuildFrame::FnTerm { node, is_ho, functor, slots, type_args }));
         for child in child_nodes.iter().rev() {
             work.push(WorkOp::Visit(WorkKind::Term, *child));
         }
@@ -921,7 +934,7 @@ impl<'a> Converter<'a> {
     /// Assemble a parent TermId from its already-converted children.
     fn build_parse<'t>(&mut self, frame: BuildFrame<'t>, results: &mut Vec<TermId>) {
         match frame {
-            BuildFrame::FnTerm { node, is_ho, functor, slots } => {
+            BuildFrame::FnTerm { node, is_ho, functor, slots, type_args } => {
                 let span = self.span(node);
                 let drain_start = results.len() - slots.len();
                 let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
@@ -935,10 +948,14 @@ impl<'a> Converter<'a> {
                 }
                 results.truncate(drain_start);
                 let _ = is_ho;
-                results.push(self.terms.alloc(
+                let tid = self.terms.alloc(
                     Term::Fn { functor, pos_args, named_args },
                     span,
-                ));
+                );
+                if !type_args.is_empty() {
+                    self.terms.call_type_args.insert(tid, type_args);
+                }
+                results.push(tid);
             }
             BuildFrame::Infix { node, slots } => {
                 use super::pratt::{InfixElement, desugar_infix_chain};
@@ -1729,6 +1746,8 @@ impl<'a> Converter<'a> {
             .map(|n| self.convert_name(n))?;
         let visibility = self.convert_visibility(node);
 
+        let type_params = self.convert_operation_type_params(node);
+
         let params = self.children_by_kind(node, "param")
             .into_iter()
             .map(|p| self.convert_param(p))
@@ -1781,6 +1800,7 @@ impl<'a> Converter<'a> {
         Some(Operation {
             visibility,
             name,
+            type_params,
             params,
             return_type,
             requires,
@@ -1790,6 +1810,25 @@ impl<'a> Converter<'a> {
             meta,
             span,
         })
+    }
+
+    fn convert_operation_type_params(&mut self, node: Node) -> Vec<TypeParam> {
+        let Some(list) = self.child_by_kind(node, "operation_type_param_list") else {
+            return Vec::new();
+        };
+        self.children_by_kind(list, "operation_type_param")
+            .into_iter()
+            .map(|p| self.convert_operation_type_param(p))
+            .collect()
+    }
+
+    fn convert_operation_type_param(&mut self, node: Node) -> TypeParam {
+        let span = self.span(node);
+        let name = self.field(node, "name")
+            .map(|n| self.intern(self.text(n)))
+            .unwrap_or_else(|| self.intern("?"));
+        let default = self.field(node, "default").map(|t| self.convert_type(t));
+        TypeParam { name, default, span }
     }
 
     fn convert_param(&mut self, node: Node) -> Param {
@@ -1876,6 +1915,8 @@ impl<'a> Converter<'a> {
             .map(|n| self.convert_name(n))?;
         let visibility = self.convert_visibility(node);
 
+        let type_params = self.convert_operation_type_params(node);
+
         let params = self.children_by_kind(node, "param")
             .into_iter()
             .map(|p| self.convert_param(p))
@@ -1928,6 +1969,7 @@ impl<'a> Converter<'a> {
         Some(Operation {
             visibility,
             name,
+            type_params,
             params,
             return_type,
             requires,

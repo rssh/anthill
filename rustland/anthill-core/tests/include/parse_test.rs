@@ -36,6 +36,13 @@ fn count_list_elements(kb: &KnowledgeBase, list_tid: TermId) -> usize {
 
 use crate::common::{collect_anthill_files, stdlib_dir};
 
+fn first_operation(parsed: &ParsedFile) -> &Operation {
+    match &parsed.items[0] {
+        Item::Operation(o) => o,
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
 // ── Parsing tests ───────────────────────────────────────────────
 
 #[test]
@@ -3674,4 +3681,116 @@ fact WorkItem(\n  id: \"WI-B\",\n  description: \"Greek α and × multiplication
 fact WorkItem(\n  id: \"WI-C\",\n  description: \"plain ASCII, no surprises\",\n  acceptance: [ToolPasses(\"cargo-test\")],\n  depends_on: [],\n  status: Open)\n";
     let parsed = parse::parse(source).expect("three-fact unicode source must parse");
     assert_eq!(parsed.items.len(), 3);
+}
+
+// ── Operation type parameters ────────────────────────────────────
+
+#[test]
+fn parse_operation_with_single_type_param() {
+    let parsed = parse::parse("operation identity[T](x: T) -> T\n").expect("parse failed");
+    let op = first_operation(&parsed);
+    assert_eq!(op.type_params.len(), 1);
+    assert_eq!(parsed.symbols.name(op.type_params[0].name), "T");
+    assert!(op.type_params[0].default.is_none());
+}
+
+#[test]
+fn parse_operation_with_multiple_type_params() {
+    let parsed = parse::parse("operation pair[A, B](a: A, b: B) -> Pair\n").expect("parse failed");
+    let op = first_operation(&parsed);
+    let names: Vec<_> = op.type_params.iter().map(|p| parsed.symbols.name(p.name)).collect();
+    assert_eq!(names, vec!["A", "B"]);
+    assert!(op.type_params.iter().all(|p| p.default.is_none()));
+}
+
+#[test]
+fn parse_operation_type_param_with_default() {
+    let parsed = parse::parse("operation defaulted[T = Int](x: T) -> T\n").expect("parse failed");
+    let op = first_operation(&parsed);
+    assert_eq!(op.type_params.len(), 1);
+    assert_eq!(parsed.symbols.name(op.type_params[0].name), "T");
+    match &op.type_params[0].default {
+        Some(TypeExpr::Simple(name)) => {
+            assert_eq!(parsed.symbols.name(name.last()), "Int");
+        }
+        other => panic!("expected Simple(Int) default, got {:?}", other),
+    }
+}
+
+#[test]
+fn parse_operation_without_type_params_unchanged() {
+    let parsed = parse::parse("operation length(l: List) -> Int\n").expect("parse failed");
+    let op = first_operation(&parsed);
+    assert!(op.type_params.is_empty());
+}
+
+#[test]
+fn parse_operation_entry_carries_type_params() {
+    let source = "sort S\n  operation map[A, B](xs: List, f: F) -> List\nend\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    let sort = match &parsed.items[0] {
+        Item::SortWithBody(s) => s,
+        other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
+    };
+    let op = match &sort.items[0] {
+        Item::Operation(o) => o,
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    };
+    let names: Vec<_> = op.type_params.iter().map(|p| parsed.symbols.name(p.name)).collect();
+    assert_eq!(names, vec!["A", "B"]);
+}
+
+#[test]
+fn parse_typed_call_site_records_type_args() {
+    let source = "sort S\n  rule r(?t) :- term_as_entity[WorkItem](?t)\nend\n";
+    let parsed = parse::parse(source).expect("parse failed");
+
+    let typed_calls: Vec<_> = parsed.terms.call_type_args.iter().collect();
+    assert_eq!(typed_calls.len(), 1, "expected exactly one typed call site");
+
+    let (_tid, bindings) = typed_calls[0];
+    assert_eq!(bindings.len(), 1, "expected one type binding");
+    // Positional binding `[WorkItem]` — param=None, bound is the Simple type.
+    assert!(bindings[0].param.is_none());
+    match &bindings[0].bound {
+        TypeExpr::Simple(name) => assert_eq!(parsed.symbols.name(name.last()), "WorkItem"),
+        other => panic!("expected Simple(WorkItem) binding, got {:?}", other),
+    }
+}
+
+#[test]
+fn parse_named_typed_call_site_records_binding_param() {
+    let source = "sort S\n  rule r(?t) :- term_as_entity[E = WorkItem](?t)\nend\n";
+    let parsed = parse::parse(source).expect("parse failed");
+
+    let (_tid, bindings) = parsed.terms.call_type_args.iter().next()
+        .expect("expected one typed call site");
+    assert_eq!(bindings.len(), 1);
+    let p = bindings[0].param.as_ref().expect("expected named binding");
+    assert_eq!(parsed.symbols.name(p.last()), "E");
+}
+
+#[test]
+fn parse_untyped_call_site_records_no_type_args() {
+    let source = "sort S\n  rule r(?t) :- term_as_entity(?t)\nend\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    assert!(
+        parsed.terms.call_type_args.is_empty(),
+        "untyped call sites must not populate call_type_args"
+    );
+}
+
+#[test]
+fn parse_sort_companion_call_no_op_type_args() {
+    // Map[K = String, V = Int].empty() is a sort companion (proposal 035),
+    // NOT an operation-level typed call. The bindings live on the inner
+    // instantiation_term that is the *object* of the field_access; the
+    // outer fn_term's name is the field_access (`empty`), so no entry in
+    // call_type_args should be created for the fn_term TermId.
+    let source = "sort S\n  rule r() :- Map[K = String, V = Int].empty()\nend\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    assert!(
+        parsed.terms.call_type_args.is_empty(),
+        "sort companion call must not register operation-level call type args"
+    );
 }
