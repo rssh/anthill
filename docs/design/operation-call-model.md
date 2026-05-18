@@ -141,6 +141,60 @@ For complete worked-out scenarios — Self-bound default bodies, conditional imp
 
 > **Future extension**: per-operation `requires` clauses would let the channel hold more than one entry (the dispatching dict for the call's spec, plus one per per-op require). The separate-slot encoding scales naturally; see §"Why separate slots and not collapse-into-args" for the trade-off vs. folding into `args`.
 
+### Operation type arguments (proposal 042)
+
+[Proposal 042](../proposals/042-explicit-type-parameters-on-operations.md) introduces operation-level type parameter declarations (`operation foo[T1, T2](...)`) and call-site type argument bindings (`foo[T1 = Int](args)`). These are interpreted as additional entries in the frame, sequenced **after** the sort-specific requirements:
+
+```
+frame.requirements = [
+  // ---- Sort-specific requirements (existing) ----
+  (__req_self_<spec>,        Self_dict),                          // dispatching dictionary
+  (<sort-requires[0] name>,  Self_dict.sub_requires[0]),          // expanded sub-instances
+  (<sort-requires[1] name>,  Self_dict.sub_requires[1]),
+  ...,
+
+  // ---- Operation type arguments (proposal 042) ----
+  (T1, type_arg_1),            // op[T1 = X] binds the declared T1 to X for this call
+  (T2, type_arg_2),
+  ...
+]
+```
+
+Two channels, deterministic ordering: every sort-level entry from §"How bodies refer to requirements" comes first, then one entry per declared `[T_i]` parameter in declaration order. Mixing produces no name collisions in practice because sort-level entries are synthesized names (`__req_self_<spec>`, etc.) and operation-level type-argument entries use the surface names from the operation's `[T1, T2, ...]` head.
+
+**IR form.** `apply_within` gains an additional positional channel for type arguments:
+
+```
+apply_within(fn, args, requirements, type_args)
+```
+
+`type_args` is a positional vector of type expressions, one per declared type parameter, in declaration order. Named-form call-site bindings (`foo[T2 = X]`) are reordered to positional during elaboration. Positions the caller leaves unbound (the call relies on inference) carry a typer-supplied entry — either the type the typer inferred, or a fresh logical variable for the resolver to fill at runtime via unification.
+
+**Construction site sources.** `type_args` entries are type-valued expressions, so the source grammar is simpler than `req_source`:
+
+```
+type_arg_source ::= type_literal(sort_ref)            -- concrete type bound by the call site (foo[Int](...))
+                  | var_ref(name)                     -- forward a caller-scope type parameter
+                  | type_at_sort(req_source, name)    -- type-arg projection from a dictionary
+```
+
+The `type_at_sort` form lets an op forward a sort-level type parameter into a callee's operation-level slot — necessary when the callee's `[T]` aligns with the caller's enclosing `sort T = ?`.
+
+**Body interpretation.** A body of `operation foo[T](x: T) -> T` references `T` in type position; the typer normalizes those references to `var_ref(T)` against the frame's type-argument entries — the same lookup path as sort-level requirement params, just hitting a different entry by name. The body never distinguishes the two channels; the elaborator separates them only because the population sources differ.
+
+**Closures.** A `lambda_within(...)` constructed inside an operation captures the enclosing `frame.requirements` map whole — both the sort-level entries and the operation type arguments. No new closure machinery for type args; same captured-scope mechanism as requirements.
+
+**Erasure.** Whether `type_args` entries are stripped at codegen depends on the host target. For Rust (proposal 029 forward mapping), most operation-level type parameters erase to nothing — the host's monomorphizer takes over. For SMT-LIB and any backend doing type-driven dispatch at runtime (e.g., `term_as_entity[E]`'s entity-shape selection), the entries must persist. The frame layout is uniform — the design above carries the entries; backends decide what to elide.
+
+**Test fixture** (acceptance for proposal 042 + this design): a synthesized op `operation foo[T](x: T) -> T` with body `x` is called as `foo[Int](42)`. After frame push, the test inspects `frame.requirements` and asserts:
+
+- The sort-level Self entry, if any, occupies the leading positions.
+- An entry keyed `T` exists with the type-value for `Int`.
+- The order in the frame is sort-level entries first, then `T`.
+- A second call `foo[String]("hi")` produces a fresh frame whose `T` entry holds `String` — the two calls do not share `T` (per-call binding, contra sort instantiation).
+
+A negative case: `foo(42)` (no type-arg list, type inferred) produces a `T` entry the typer filled to `Int` via inference; the frame contents are identical to the explicit call.
+
 ### Construction site
 
 Building a dictionary value:
