@@ -193,10 +193,12 @@ fn form_1_let_with_type_annotation() {
     // Form (1) of proposal 035: type annotation on the LHS supplies K, V.
     // Runtime is type-erased — the call dispatches identically to forms
     // (2) and (3). The annotation is parsed via the let_chain grammar
-    // extension (WI-185), recorded in let_type_annotations, then threaded
-    // onto the kb-side `let_expr` as a `type_name: <type>` named arg so the
-    // typer can later use it as the expected type for the value and as the
-    // bound variable's type in the body.
+    // extension (WI-185), embedded inline as a `Term::ParseAux(TypeExpr)`
+    // child of the parse let_expr (WI-271; previously a side-channel
+    // HashMap), then threaded onto the kb-side `let_expr` as a
+    // `type_name: <type>` named arg so the typer can later use it as
+    // the expected type for the value and as the bound variable's type
+    // in the body.
     let src = r#"
 namespace test.map_form1
   import anthill.prelude.{Map}

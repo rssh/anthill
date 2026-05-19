@@ -669,6 +669,9 @@ fn term_to_value(kb: &KnowledgeBase, term: TermId) -> Result<serde_json::Value, 
             Ok(serde_json::Value::String(name.to_string()))
         }
         Term::Bottom => Ok(serde_json::Value::Null),
+        Term::ParseAux(_) => Err(SerError::InvalidValue(
+            "parse-only Term::ParseAux variant reached term_to_value (should never happen post-load)".into(),
+        )),
     }
 }
 

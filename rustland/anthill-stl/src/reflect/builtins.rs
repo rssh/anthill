@@ -237,6 +237,7 @@ fn term_display_name(kb: &KnowledgeBase, id: TermId) -> String {
         CoreTerm::Var(Var::DeBruijn(n)) => format!("?_{n}"),
         CoreTerm::Var(Var::Rigid(vid)) => format!("!{}", kb.resolve_sym(vid.name())),
         CoreTerm::Bottom => "⊥".into(),
+        CoreTerm::ParseAux(_) => "<parse-aux>".into(),
     }
 }
 
@@ -626,6 +627,10 @@ fn reify_term_to_value(kb: &mut KnowledgeBase, syms: &ReflectSyms, id: TermId) -
                 named: vec![(syms.f_name, Value::Term(name_term))],
             }
         }
+        CoreTerm::ParseAux(_) => unreachable!(
+            "parse-only Term::ParseAux variant reached reify_term_to_value \
+             (should never reach the KB reflection layer)",
+        ),
     }
 }
 

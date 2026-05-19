@@ -142,6 +142,9 @@ impl<L> SubstTree<L> {
                     .or_insert_with(DiscrimNode::new)
             }
             Term::Var(_) => node,
+            Term::ParseAux(_) => unreachable!(
+                "parse-only Term::ParseAux variant reached the KB discrim tree",
+            ),
         }
     }
 
@@ -214,6 +217,9 @@ impl<L> SubstTree<L> {
                 node.concrete.entry(DiscrimKey::Bottom)
                     .or_insert_with(DiscrimNode::new)
             }
+            Term::ParseAux(_) => unreachable!(
+                "parse-only Term::ParseAux variant reached the KB discrim tree",
+            ),
         }
     }
 
@@ -284,6 +290,9 @@ impl<L> SubstTree<L> {
             Term::Ref(sym) => Self::remove_at_leaf_key(node, DiscrimKey::Ref(*sym), leaf),
             Term::Bottom => Self::remove_at_leaf_key(node, DiscrimKey::Bottom, leaf),
             Term::Var(_) => node.is_empty(),
+            Term::ParseAux(_) => unreachable!(
+                "parse-only Term::ParseAux variant reached the KB discrim tree",
+            ),
         }
     }
 
@@ -382,6 +391,9 @@ impl<L> SubstTree<L> {
                 Self::remove_value_then_continue(node, DiscrimKey::Bottom, terms, arg_seq, idx, leaf)
             }
             Term::Var(_) => node.is_empty(),
+            Term::ParseAux(_) => unreachable!(
+                "parse-only Term::ParseAux variant reached the KB discrim tree",
+            ),
         }
     }
 

@@ -2809,6 +2809,9 @@ pub fn convert_query_term(
             kb.alloc(Term::Ref(kb_sym))
         }
         Term::Bottom => kb.alloc(Term::Bottom),
+        Term::ParseAux(_) => unreachable!(
+            "parse-only Term::ParseAux variant reached convert_query_term (loader should strip it)",
+        ),
     }
 }
 
@@ -3495,9 +3498,25 @@ impl<'a> Loader<'a> {
                         self.convert_term_with_expected(id, exp)
                     })
                     .collect();
-                let mut new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
+                // WI-271: skip parse-only ParseAux children (let_expr's
+                // `type_name`, apply's `type_args`) — they are read
+                // directly at the LoadBuildFrame::LetExpr /
+                // ApplyOrConstructor build sites via
+                // `read_parse_type_annotation` /
+                // `read_parse_call_type_args`. Routing them through
+                // convert_term_with_expected would hit the unreachable
+                // ParseAux arm below.
+                // Pre-collect the non-ParseAux args so the closure
+                // body's `self`-mut calls don't re-borrow during
+                // iteration.
+                let visible_named: SmallVec<[(Symbol, TermId); 2]> = named_args
                     .iter()
-                    .map(|&(sym, id)| {
+                    .filter(|&&(_, id)| !self.is_parse_aux(id))
+                    .copied()
+                    .collect();
+                let mut new_named: SmallVec<[(Symbol, TermId); 2]> = visible_named
+                    .into_iter()
+                    .map(|(sym, id)| {
                         let new_sym = self.reintern(sym);
                         let exp = self.kb.entity_field_types(new_functor)
                             .and_then(|ft| ft.iter().find(|(s, _)| *s == new_sym).map(|(_, t)| *t));
@@ -3549,6 +3568,22 @@ impl<'a> Loader<'a> {
                 } else {
                     Term::Ident(new_sym)
                 }
+            }
+            Term::ParseAux(_) => {
+                // WI-271: parse-only payload (TypeExpr / SortBindings).
+                // Reaches `convert_term_with_expected` when the loader
+                // recurses into a let_expr / apply's `type_name` /
+                // `type_args` child without first stripping the
+                // ParseAux. Specialized handlers at the LetExpr /
+                // ApplyOrConstructor build sites read these children
+                // directly and call `type_expr_to_term` /
+                // `build_call_type_args` — they should NOT route
+                // through generic `convert_term`.
+                unreachable!(
+                    "Term::ParseAux reached convert_term_with_expected — \
+                     the LetExpr/ApplyOrConstructor build site must read \
+                     and lower it directly before recursing",
+                );
             }
         };
 
@@ -3734,8 +3769,20 @@ impl<'a> Loader<'a> {
                         }
                     }
                     _ => {
+                        // WI-271: filter out parse-only auxiliary
+                        // children (Term::ParseAux). These hold the
+                        // let_expr annotation / apply type-args and
+                        // are consumed directly at the
+                        // LoadBuildFrame::ApplyOrConstructor build by
+                        // `read_parse_call_type_args` and
+                        // `read_parse_type_annotation`; the work-stack
+                        // walker must not recurse into them.
+                        let visible_named: Vec<(Symbol, TermId)> = named_args.iter()
+                            .filter(|&&(_, tid)| !self.is_parse_aux(tid))
+                            .copied()
+                            .collect();
                         let named_keys: SmallVec<[Symbol; 2]> =
-                            named_args.iter().map(|&(sym, _)| sym).collect();
+                            visible_named.iter().map(|&(sym, _)| sym).collect();
                         let pos_count = pos_args.len();
                         work.push(LoadWorkOp::Build(LoadBuildFrame::ApplyOrConstructor {
                             outer_parse_id: parse_id,
@@ -3743,7 +3790,7 @@ impl<'a> Loader<'a> {
                             pos_count,
                             named_keys,
                         }));
-                        for &(_, tid) in named_args.iter().rev() {
+                        for &(_, tid) in visible_named.iter().rev() {
                             work.push(LoadWorkOp::Visit(tid));
                         }
                         for &tid in pos_args.iter().rev() {
@@ -3840,13 +3887,16 @@ impl<'a> Loader<'a> {
                     (self.expr_syms.k_value, value),
                     (self.expr_syms.k_body, body),
                 ]);
-                // Proposal 035 form (1): `let x : T = e1; e2` — annotation
-                // threaded onto `type_name` so the typer uses it as the
-                // expected type for the value and binds the variable's
-                // type for the body's env.
-                if let Some(ty_expr) =
-                    self.parsed.terms.let_type_annotations.get(&outer_parse_id).cloned()
-                {
+                // WI-271: `let x : T = e1; e2` annotation is now inline
+                // on the parse let_expr Term::Fn as a `type_name`
+                // named arg pointing at a `Term::ParseAux(TypeExpr(T))`
+                // node — replaces the prior
+                // `SimpleTermStore::let_type_annotations` HashMap.
+                // Unwrap the ParseAux and lower the TypeExpr to a KB
+                // Term via the existing `type_expr_to_term` so the
+                // typer (proposal 035 form 1 + WI-270) sees the same
+                // `k_type_name` slot on the KB Term::Fn as before.
+                if let Some(ty_expr) = self.read_parse_type_annotation(outer_parse_id) {
                     let ty_term = self.type_expr_to_term(&ty_expr);
                     named.push((self.expr_syms.k_type_name, ty_term));
                 }
@@ -3972,12 +4022,15 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// Lower the parse-side `call_type_args` side-channel into a
-    /// cons-list of `type_arg(name: Option[Ref], value: Type)` entries
-    /// the typer reads to seed its substitution. Returns `None` when
-    /// the call has no explicit bindings.
+    /// WI-271: lower the parse-side `[A = Int, B = String]` call
+    /// bindings — read from the apply parse Term's `type_args`
+    /// named arg pointing at a `Term::ParseAux(SortBindings(...))`
+    /// node — into a cons-list of `type_arg(name: Option[Ref],
+    /// value: Type)` entries the typer reads to seed its
+    /// substitution. Returns `None` when the call has no explicit
+    /// bindings.
     fn build_call_type_args(&mut self, parse_id: TermId) -> Option<TermId> {
-        let bindings = self.parsed.terms.call_type_args.get(&parse_id).cloned()?;
+        let bindings = self.read_parse_call_type_args(parse_id)?;
         if bindings.is_empty() {
             return None;
         }
@@ -4006,6 +4059,57 @@ impl<'a> Loader<'a> {
             })
         }).collect();
         Some(build_list(self.kb, &entries))
+    }
+
+    /// WI-271: is the term at `id` a parse-only `Term::ParseAux`?
+    /// Used by the loader's child-walkers to filter parse-aux children
+    /// out of the generic visit/recurse paths — those children are
+    /// consumed directly at the LetExpr / ApplyOrConstructor build
+    /// sites via `read_parse_*` helpers.
+    fn is_parse_aux(&self, id: TermId) -> bool {
+        matches!(self.parsed.terms.get(id), Term::ParseAux(_))
+    }
+
+    /// WI-271: extract a parse-only `ParseAux` payload from a parent
+    /// parse `Term::Fn`'s named arg. `key` is the unresolved parse-side
+    /// name (e.g. `"type_name"`, `"type_args"`); `extract` projects the
+    /// `ParseAux` enum to the expected inner shape. Returns `None`
+    /// when the named arg is absent, points at a non-ParseAux, or its
+    /// ParseAux variant doesn't match what `extract` accepts.
+    fn read_parse_aux<T>(
+        &self,
+        parent_id: TermId,
+        key: &str,
+        extract: impl FnOnce(&crate::parse::ir::ParseAux) -> Option<T>,
+    ) -> Option<T> {
+        let named_args = match self.parsed.terms.get(parent_id) {
+            Term::Fn { named_args, .. } => named_args,
+            _ => return None,
+        };
+        let key_sym = self.parsed.symbols.lookup(key)?;
+        let aux_tid = named_args.iter()
+            .find(|(s, _)| *s == key_sym)
+            .map(|(_, t)| *t)?;
+        match self.parsed.terms.get(aux_tid) {
+            Term::ParseAux(aux) => extract(aux.as_ref()),
+            _ => None,
+        }
+    }
+
+    /// WI-271: the `let pat : T = …` annotation child of a let_expr.
+    fn read_parse_type_annotation(&self, let_parse_id: TermId) -> Option<crate::parse::ir::TypeExpr> {
+        self.read_parse_aux(let_parse_id, "type_name", |aux| match aux {
+            crate::parse::ir::ParseAux::TypeExpr(ty) => Some(ty.clone()),
+            _ => None,
+        })
+    }
+
+    /// WI-271: the `op[A = Int, B = String](…)` bindings child of an apply.
+    fn read_parse_call_type_args(&self, apply_parse_id: TermId) -> Option<Vec<crate::parse::ir::SortBinding>> {
+        self.read_parse_aux(apply_parse_id, "type_args", |aux| match aux {
+            crate::parse::ir::ParseAux::SortBindings(bindings) => Some(bindings.clone()),
+            _ => None,
+        })
     }
 
     /// Build an `ApplyArg(name: …, value: …)` term using cached syms.

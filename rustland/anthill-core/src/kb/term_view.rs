@@ -97,6 +97,9 @@ impl TermView for TermIdView {
             Term::Ref(s) => ViewHead::Ref(*s),
             Term::Ident(s) => ViewHead::Ident(*s),
             Term::Bottom => ViewHead::Bottom,
+            Term::ParseAux(_) => unreachable!(
+                "parse-only Term::ParseAux variant reached the KB-side TermIdView",
+            ),
         }
     }
 

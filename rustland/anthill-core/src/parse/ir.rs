@@ -32,17 +32,6 @@ pub struct SimpleTermStore {
     entries: Vec<ParseTermEntry>,
     /// Inline description blocks attached to variables: TermId → description texts.
     pub descriptions: HashMap<TermId, Vec<String>>,
-    /// Type annotations on `let pattern : type = value` (proposal 035 form
-    /// (1)). Keyed by the let_expr TermId allocated in convert_let_expr.
-    /// The loader reads this when expanding a let_expr to thread the
-    /// expected-type hint into both the value position (so list-literal
-    /// desugaring and Map.empty inference fire correctly) and the body's
-    /// typing environment.
-    pub let_type_annotations: HashMap<TermId, TypeExpr>,
-    /// Call-site operation type arguments from `op[bindings](args)`.
-    /// Keyed by the fn_term's TermId. Absent means the caller wrote
-    /// `op(args)` — typer runs pure inference.
-    pub call_type_args: HashMap<TermId, Vec<SortBinding>>,
 }
 
 impl SimpleTermStore {
@@ -70,6 +59,15 @@ impl SimpleTermStore {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Iterate every allocated `(TermId, &Term)` in allocation order.
+    /// Used by tests that need to find specific Term shapes (e.g.
+    /// `Term::ParseAux`) without navigating from an Item field.
+    pub fn iter(&self) -> impl Iterator<Item = (TermId, &Term)> + '_ {
+        self.entries.iter().enumerate().map(|(i, entry)| {
+            (TermId::from_raw(i as u32), &entry.term)
+        })
     }
 }
 
@@ -135,7 +133,7 @@ impl Name {
 
 // ── Type expressions ────────────────────────────────────────────
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TypeExpr {
     /// Simple type: `Account`, `Int`
     Simple(Name),
@@ -162,11 +160,29 @@ pub enum TypeExpr {
     },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SortBinding {
     /// Named binding: `Some(name)` for `T = Int`, `None` for positional `Int`.
     pub param: Option<Name>,
     pub bound: TypeExpr,
+}
+
+// ── Parse-only payloads embedded in Term::ParseAux ──────────────
+//
+// WI-271: parse-only data that needs to be addressable by `TermId`
+// (so the let_expr / apply parse `Term::Fn` can reference it as a
+// child) but doesn't fit the structural Fn/Ref/Var/Const shapes.
+// Lives in `SimpleTermStore` like every other parse `Term`; never
+// enters the KB-side hash-consed store (the loader strips it before
+// then). Designed as a single Term variant carrying a tagged enum so
+// future parse-only payloads can be added without growing the `Term`
+// enum further (e.g. the `descriptions` HashMap could collapse here).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ParseAux {
+    /// A `let pat : T = …` annotation `T`.
+    TypeExpr(TypeExpr),
+    /// A call-site `op[A = Int, B = String](…)` bindings list.
+    SortBindings(Vec<SortBinding>),
 }
 
 // ── Literal (parse-time, with plain f64) ────────────────────────

@@ -3656,15 +3656,30 @@ fn parse_operation_entry_carries_type_params() {
     assert_eq!(names, vec!["A", "B"]);
 }
 
+/// WI-271: walk the SimpleTermStore for `Term::ParseAux(SortBindings)`
+/// nodes — these encode call-site `[A = Int, ...]` type-args. Returns
+/// every bindings list found, in allocation order.
+fn collect_parse_type_args(parsed: &ParsedFile) -> Vec<Vec<SortBinding>> {
+    parsed.terms.iter()
+        .filter_map(|(_, t)| match t {
+            Term::ParseAux(aux) => match aux.as_ref() {
+                ParseAux::SortBindings(bindings) => Some(bindings.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
 fn parse_typed_call_site_records_type_args() {
     let source = "sort S\n  rule r(?t) :- term_as_entity[WorkItem](?t)\nend\n";
     let parsed = parse::parse(source).expect("parse failed");
 
-    let typed_calls: Vec<_> = parsed.terms.call_type_args.iter().collect();
+    let typed_calls = collect_parse_type_args(&parsed);
     assert_eq!(typed_calls.len(), 1, "expected exactly one typed call site");
 
-    let (_tid, bindings) = typed_calls[0];
+    let bindings = &typed_calls[0];
     assert_eq!(bindings.len(), 1, "expected one type binding");
     // Positional binding `[WorkItem]` — param=None, bound is the Simple type.
     assert!(bindings[0].param.is_none());
@@ -3679,8 +3694,8 @@ fn parse_named_typed_call_site_records_binding_param() {
     let source = "sort S\n  rule r(?t) :- term_as_entity[E = WorkItem](?t)\nend\n";
     let parsed = parse::parse(source).expect("parse failed");
 
-    let (_tid, bindings) = parsed.terms.call_type_args.iter().next()
-        .expect("expected one typed call site");
+    let typed_calls = collect_parse_type_args(&parsed);
+    let bindings = typed_calls.first().expect("expected one typed call site");
     assert_eq!(bindings.len(), 1);
     let p = bindings[0].param.as_ref().expect("expected named binding");
     assert_eq!(parsed.symbols.name(p.last()), "E");
@@ -3691,8 +3706,8 @@ fn parse_untyped_call_site_records_no_type_args() {
     let source = "sort S\n  rule r(?t) :- term_as_entity(?t)\nend\n";
     let parsed = parse::parse(source).expect("parse failed");
     assert!(
-        parsed.terms.call_type_args.is_empty(),
-        "untyped call sites must not populate call_type_args"
+        collect_parse_type_args(&parsed).is_empty(),
+        "untyped call sites must not record ParseAux(SortBindings) nodes"
     );
 }
 
@@ -3701,13 +3716,13 @@ fn parse_sort_companion_call_no_op_type_args() {
     // Map[K = String, V = Int].empty() is a sort companion (proposal 035),
     // NOT an operation-level typed call. The bindings live on the inner
     // instantiation_term that is the *object* of the field_access; the
-    // outer fn_term's name is the field_access (`empty`), so no entry in
-    // call_type_args should be created for the fn_term TermId.
+    // outer fn_term's name is the field_access (`empty`), so no ParseAux
+    // SortBindings should be allocated for the fn_term TermId.
     let source = "sort S\n  rule r() :- Map[K = String, V = Int].empty()\nend\n";
     let parsed = parse::parse(source).expect("parse failed");
     assert!(
-        parsed.terms.call_type_args.is_empty(),
-        "sort companion call must not register operation-level call type args"
+        collect_parse_type_args(&parsed).is_empty(),
+        "sort companion call must not register operation-level type-args"
     );
 }
 

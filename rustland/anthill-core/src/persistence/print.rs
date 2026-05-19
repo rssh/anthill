@@ -135,6 +135,20 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
             Term::Bottom => {
                 buf.push_str("bottom");
             }
+            Term::ParseAux(aux) => {
+                // Parse-only variant; reaches the printer only when
+                // it's invoked on a parse-side Term (e.g. for an error
+                // message). KB-side it never appears — the loader
+                // strips it before any KB allocation. Print the inner
+                // payload Debug-format so diagnostics carry the
+                // annotation/type-args text even though it's not in
+                // surface syntax.
+                use crate::parse::ir::ParseAux;
+                match aux.as_ref() {
+                    ParseAux::TypeExpr(te) => buf.push_str(&format!("<type-anno {:?}>", te)),
+                    ParseAux::SortBindings(b) => buf.push_str(&format!("<type-args {:?}>", b)),
+                }
+            }
         }
     }
 

@@ -74,6 +74,9 @@ impl KbBridge {
                 let name_term = kb.alloc(CoreTerm::Ref(sym));
                 TermRepr::RefRepr { name: name_term }
             }
+            CoreTerm::ParseAux(_) => unreachable!(
+                "parse-only Term::ParseAux variant reached KbBridge::reify_term",
+            ),
         }
     }
 
@@ -139,6 +142,7 @@ impl KbBridge {
             CoreTerm::Var(Var::DeBruijn(n)) => format!("?_{n}"),
             CoreTerm::Var(Var::Rigid(vid)) => format!("!{}", kb.resolve_sym(vid.name())),
             CoreTerm::Bottom => "⊥".into(),
+            CoreTerm::ParseAux(_) => "<parse-aux>".into(),
         }
     }
 

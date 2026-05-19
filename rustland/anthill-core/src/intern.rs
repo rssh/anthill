@@ -126,6 +126,15 @@ impl SymbolTable {
         sym
     }
 
+    /// Look up an existing symbol by name without allocating one if it
+    /// isn't present. Returns `None` when no one has interned the name.
+    /// Used by read-only paths (e.g. the loader looking for parse-side
+    /// `"type_name"` / `"type_args"` named args without forcing them
+    /// into existence).
+    pub fn lookup(&self, s: &str) -> Option<Symbol> {
+        self.intern_map.get(s).copied()
+    }
+
     /// Define a new resolved symbol in a scope. If the same short_name
     /// already exists in the scope, returns the existing symbol (merge
     /// behavior — e.g. `namespace X` extends an existing `sort X`).

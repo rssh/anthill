@@ -599,6 +599,9 @@ fn visit_term(
             let key = expr_form_key(qn, short);
             visit_fn(kb, t, span, functor, &pos_args, &named_args, key, work, results);
         }
+        Term::ParseAux(_) => unreachable!(
+            "parse-only Term::ParseAux variant reached node_occurrence materialization",
+        ),
     }
 }
 

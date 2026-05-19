@@ -1400,6 +1400,9 @@ impl KnowledgeBase {
         match self.terms.get(walked) {
             Term::Var(_) => GroundCheck::HasVar,
             Term::Const(_) | Term::Ref(_) | Term::Bottom | Term::Ident(_) => GroundCheck::Ground,
+            Term::ParseAux(_) => unreachable!(
+                "parse-only Term::ParseAux variant reached the KB resolver",
+            ),
             Term::Fn { pos_args, named_args, .. } => {
                 let pos_args = pos_args.clone();
                 let named_args = named_args.clone();

@@ -210,6 +210,14 @@ pub enum Term {
     Bottom,
     /// Bare identifier — resolves to Ref or Var later
     Ident(Symbol),
+    /// WI-271 — parse-only: carries a tagged parse-IR payload
+    /// (`ParseAux`) so the let_expr / apply Term::Fn can hold the
+    /// annotation / type-args as a child `TermId` rather than via a
+    /// side HashMap. Allocated only by the parse pass; the loader
+    /// reads and lowers it before any KB-side allocation, so this
+    /// variant **never** appears in the KB's hash-consed `TermStore`.
+    /// KB-side consumers can `unreachable!()` on encounter.
+    ParseAux(Box<crate::parse::ir::ParseAux>),
 }
 
 impl Term {
@@ -223,6 +231,9 @@ impl Term {
             }
             Term::Const(_) | Term::Var(_) | Term::Ref(_)
             | Term::Bottom | Term::Ident(_) => SmallVec::new(),
+            // Parse-only; never reachable in the KB-side hash-consed
+            // store (the loader strips ParseAux before allocation).
+            Term::ParseAux(_) => SmallVec::new(),
         }
     }
 

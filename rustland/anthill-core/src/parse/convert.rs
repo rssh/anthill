@@ -948,13 +948,24 @@ impl<'a> Converter<'a> {
                 }
                 results.truncate(drain_start);
                 let _ = is_ho;
+                // WI-271: embed `op[A = Int, B = String]` call-site
+                // bindings inline as a `type_args` named-arg child
+                // pointing at a `Term::ParseAux(SortBindings(...))`
+                // node — replaces the prior
+                // `SimpleTermStore::call_type_args` HashMap. The loader
+                // unwraps and lowers it via the existing build path.
+                if !type_args.is_empty() {
+                    let aux = Term::ParseAux(Box::new(
+                        super::ir::ParseAux::SortBindings(type_args),
+                    ));
+                    let aux_tid = self.terms.alloc(aux, span);
+                    let type_args_key = self.intern("type_args");
+                    named_args.push((type_args_key, aux_tid));
+                }
                 let tid = self.terms.alloc(
                     Term::Fn { functor, pos_args, named_args },
                     span,
                 );
-                if !type_args.is_empty() {
-                    self.terms.call_type_args.insert(tid, type_args);
-                }
                 results.push(tid);
             }
             BuildFrame::Infix { node, slots } => {
@@ -1130,14 +1141,27 @@ impl<'a> Converter<'a> {
                 let value = results[drain_start + 1];
                 let body = results[drain_start + 2];
                 results.truncate(drain_start);
-                let let_id = self.alloc_fn_term(
-                    "let_expr",
-                    SmallVec::from_slice(&[pattern, value, body]),
+                // WI-271: embed `let pat : T = …` annotation inline as
+                // a `type_name` named-arg child pointing at a
+                // `Term::ParseAux(TypeExpr(T))` node — replaces the
+                // prior `SimpleTermStore::let_type_annotations` HashMap.
+                // The loader unwraps and calls `type_expr_to_term`.
+                let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                if let Some(ty) = type_anno {
+                    let aux = Term::ParseAux(Box::new(super::ir::ParseAux::TypeExpr(ty)));
+                    let aux_tid = self.terms.alloc(aux, span);
+                    let type_name_key = self.intern("type_name");
+                    named.push((type_name_key, aux_tid));
+                }
+                let functor = self.intern("let_expr");
+                let let_id = self.terms.alloc(
+                    Term::Fn {
+                        functor,
+                        pos_args: SmallVec::from_slice(&[pattern, value, body]),
+                        named_args: named,
+                    },
                     span,
                 );
-                if let Some(ty) = type_anno {
-                    self.terms.let_type_annotations.insert(let_id, ty);
-                }
                 results.push(let_id);
             }
             BuildFrame::LambdaExpr { node } => {
