@@ -1615,7 +1615,7 @@ fn lower_node(
             }
             Ok(short.to_string())
         }
-        Expr::Apply { functor, pos_args, named_args } => {
+        Expr::Apply { functor, pos_args, named_args, .. } => {
             let fn_qn = kb.qualified_name_of(*functor).to_string();
             let fn_short = short_name_of(&fn_qn).to_string();
 
@@ -1941,7 +1941,7 @@ fn node_references_name(
     let matches_sym = |s: Symbol| short_name_of(kb.qualified_name_of(s)) == target;
     match expr {
         Expr::Ref(s) | Expr::Ident(s) | Expr::VarRef { name: s } => matches_sym(*s),
-        Expr::Apply { functor, pos_args, named_args } => {
+        Expr::Apply { functor, pos_args, named_args, .. } => {
             matches_sym(*functor)
                 || pos_args.iter().any(|a| node_references_name(kb, a, target))
                 || named_args.iter().any(|(_, a)| node_references_name(kb, a, target))

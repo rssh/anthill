@@ -69,6 +69,23 @@ pub enum TypeError {
         span: Option<Span>,
         op: Symbol,
     },
+    /// `op[bindings](args)` named a binding key that doesn't correspond
+    /// to any of the op's declared type-parameters. Replaces the
+    /// WI-269 Phase D silent-drop site in `seed_op_type_args`.
+    NoSuchTypeParam {
+        span: Option<Span>,
+        op: Symbol,
+        name: Symbol,
+    },
+    /// A call's type-param could not be pinned from explicit bindings,
+    /// from caller-side expected type, or from argument inference. Names
+    /// the unconstrained parameter so the user can fix the call by
+    /// writing `op[T = …](args)`.
+    UnconstrainedTypeParam {
+        span: Option<Span>,
+        op: Symbol,
+        type_param: Symbol,
+    },
     /// Bottom or other post-elaboration expression seen by the surface
     /// typer — emitted only by `req_insertion`, never user-written.
     BottomExpr {
@@ -174,6 +191,22 @@ impl TypeError {
                     kb.qualified_name_of(*op),
                 )
             }
+            TypeError::NoSuchTypeParam { op, name, .. } => {
+                format!(
+                    "{} has no type parameter named '{}'",
+                    kb.qualified_name_of(*op),
+                    kb.resolve_sym(*name),
+                )
+            }
+            TypeError::UnconstrainedTypeParam { op, type_param, .. } => {
+                let op_name = kb.qualified_name_of(*op);
+                format!(
+                    "type parameter '{0}' of {1} is unconstrained — use `{2}[{0} = …](…)`",
+                    kb.resolve_sym(*type_param),
+                    op_name,
+                    short_name_of(op_name),
+                )
+            }
             TypeError::BottomExpr { .. } => {
                 "bottom or post-elaboration expression in surface IR".to_string()
             }
@@ -196,6 +229,8 @@ impl TypeError {
             | TypeError::UnknownApplyFunctor { span, .. }
             | TypeError::DispatchNoMatch { span, .. }
             | TypeError::DispatchAmbiguous { span, .. }
+            | TypeError::NoSuchTypeParam { span, .. }
+            | TypeError::UnconstrainedTypeParam { span, .. }
             | TypeError::BottomExpr { span } => *span,
             TypeError::Other { span, .. } => *span,
             TypeError::NoParentSort { .. } => None,
@@ -283,6 +318,28 @@ impl TypeError {
                 actual_type: "multiple impls match (coherence rule)".to_string(),
                 span: self.span(kb),
             },
+            TypeError::NoSuchTypeParam { op, name, .. } => LoadError::TypeMismatch {
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "type_arg".to_string(),
+                expected_type: "declared type-param name".to_string(),
+                actual_type: format!("unknown type-param '{}'", kb.resolve_sym(*name)),
+                span: self.span(kb),
+            },
+            TypeError::UnconstrainedTypeParam { op, type_param, .. } => {
+                let op_qn = kb.qualified_name_of(*op);
+                let suggestion = format!(
+                    "unconstrained — use `{}[{} = …](…)`",
+                    short_name_of(op_qn),
+                    kb.resolve_sym(*type_param),
+                );
+                LoadError::TypeMismatch {
+                    entity_name: op_qn.to_string(),
+                    field_name: "type_arg".to_string(),
+                    expected_type: format!("a type for '{}'", kb.resolve_sym(*type_param)),
+                    actual_type: suggestion,
+                    span: self.span(kb),
+                }
+            }
             TypeError::BottomExpr { .. } => LoadError::TypeMismatch {
                 entity_name: "<bottom>".to_string(),
                 field_name: "expr".to_string(),
@@ -328,7 +385,6 @@ pub struct TypingEnv {
     // on every Visit push of the iterative typer.
     var_bindings: HashMap<Symbol, TermId>,
     type_bindings: HashMap<Symbol, TermId>,
-    expected_collection_type: Option<TermId>,
     local_resources: Vec<Symbol>,
     /// Enclosing sort for defer-to-requirement detection plus a
     /// cached `requires_chain` snapshot. The chain is consulted for every
@@ -349,7 +405,6 @@ impl TypingEnv {
         Self {
             var_bindings: HashMap::new(),
             type_bindings: HashMap::new(),
-            expected_collection_type: None,
             local_resources: Vec::new(),
             enclosing: None,
             diagnostics: Vec::new(),
@@ -389,16 +444,6 @@ impl TypingEnv {
 
     pub fn lookup_type(&self, param: Symbol) -> Option<TermId> {
         self.type_bindings.get(&param).copied()
-    }
-
-    pub fn with_expected_collection_type(&self, ty: Option<TermId>) -> Self {
-        let mut env = self.clone();
-        env.expected_collection_type = ty;
-        env
-    }
-
-    pub fn expected_collection_type(&self) -> Option<TermId> {
-        self.expected_collection_type
     }
 
     pub fn declare_local_resource(&mut self, name: Symbol) {
@@ -701,8 +746,27 @@ pub fn list_to_vec(kb: &KnowledgeBase, mut term: TermId) -> Vec<TermId> {
 // source nesting depth.
 
 enum TypeWorkOp {
-    Visit { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv> },
+    /// `expected` is the WI-270 top-down type hint — the caller's
+    /// expected type for the value at this position. It seeds Apply /
+    /// Constructor return-type unification, threads through Let /
+    /// Match / If branches, and decomposes through Lambda arrows.
+    /// `None` at the root Visit and at positions where no hint is
+    /// available (leaf args, scrutinees, conditions).
+    Visit {
+        occ: Rc<NodeOccurrence>,
+        env: Rc<TypingEnv>,
+        expected: Option<TermId>,
+    },
     Build(TypeBuildFrame),
+}
+
+/// Push a Visit with no top-down hint. Used at positions where the
+/// caller's expected doesn't bound the child's type — Apply / Ctor
+/// args (constrained by op.params / entity_field_types), the
+/// scrutinee of a Match (drives the branch envs but takes no hint
+/// from outside), and the condition of an If (always `Bool`).
+fn push_visit_no_hint(work: &mut Vec<TypeWorkOp>, occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>) {
+    work.push(TypeWorkOp::Visit { occ, env, expected: None });
 }
 
 // WI-258: env-carrying frames hold `Rc<TypingEnv>`. Sibling Visits
@@ -713,31 +777,40 @@ enum TypeWorkOp {
 enum TypeBuildFrame {
     /// All Apply args finished; drain N = `pos_count + named_keys.len()`
     /// results, hand them to `check_apply_iter` which runs the
-    /// non-recursive subst / dispatch / classify logic.
+    /// non-recursive subst / dispatch / classify logic. `expected`
+    /// (WI-270) is unified with the op's return type before the
+    /// unconstrained-param check so caller context flows into the seed.
     Apply {
         occ: Rc<NodeOccurrence>,
         fn_sym: Symbol,
         pos_args: Vec<Rc<NodeOccurrence>>,
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
         env: Rc<TypingEnv>,
+        expected: Option<TermId>,
     },
     /// All Constructor args finished; drain results and call
-    /// `check_constructor_iter`.
+    /// `check_constructor_iter`. WI-270: `expected` flows into the
+    /// parent-type unification so a caller-side `Option[Int]`
+    /// constrains `some(?)`'s inferred T.
     Constructor {
         ctor_sym: Symbol,
         pos_args: Vec<Rc<NodeOccurrence>>,
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
         env: Rc<TypingEnv>,
         span: Option<Span>,
+        expected: Option<TermId>,
     },
     /// Value finished; compute the body's ext_env and schedule the
     /// body Visit, plus a `LetFinal` frame to combine results. If the
     /// value's TypeResult is `None`, the let propagates failure up
     /// without visiting the body (see WI-204 feedback — no fallbacks).
+    /// `body_expected` is the let's own `expected` (the outer hint),
+    /// passed forward to the body Visit per WI-270.
     LetAfterValue {
         pattern: TermId,
         annotation: Option<TermId>,
         body_occ: Rc<NodeOccurrence>,
+        body_expected: Option<TermId>,
     },
     /// Body finished; merge `value_effects` (captured at
     /// `LetAfterValue` time so we didn't need to keep `value_r`
@@ -747,10 +820,11 @@ enum TypeBuildFrame {
     LetFinal { value_effects: Vec<TermId> },
     /// Scrutinee finished; walk the branch patterns for coverage,
     /// compute each branch's env, schedule body Visits + a
-    /// `MatchFinal` frame.
+    /// `MatchFinal` frame. `body_expected` flows to every branch body.
     MatchAfterScrutinee {
         branches: Vec<MatchBranch>,
         outer_env: Rc<TypingEnv>,
+        body_expected: Option<TermId>,
     },
     /// All branch bodies finished; pop `branch_count` results, filter
     /// per-branch effects against each branch's local resources,
@@ -784,8 +858,21 @@ pub fn type_check_expr(
     env: &TypingEnv,
     expr: TermId,
 ) -> Result<TypeResult, TypeError> {
+    type_check_expr_expected(kb, env, expr, None)
+}
+
+/// WI-270: variant of [`type_check_expr`] that threads a top-down
+/// `expected` hint from the caller. Use this from the operation-body
+/// driver (passing `op.return_type`) and from any other site with a
+/// declared expected type.
+pub fn type_check_expr_expected(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    expr: TermId,
+    expected: Option<TermId>,
+) -> Result<TypeResult, TypeError> {
     let node = materialize_from_handle(kb, expr);
-    type_check_node(kb, env, &node)
+    type_check_node(kb, env, &node, expected)
 }
 
 /// Move out of `Rc<TypingEnv>` without cloning when sole owner; else
@@ -807,13 +894,20 @@ pub fn type_check_node(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     occ: &Rc<NodeOccurrence>,
+    expected: Option<TermId>,
 ) -> Result<TypeResult, TypeError> {
     let mut work: Vec<TypeWorkOp> = Vec::with_capacity(32);
     let mut results: Vec<Result<TypeResult, TypeError>> = Vec::with_capacity(32);
-    work.push(TypeWorkOp::Visit { occ: Rc::clone(occ), env: Rc::new(env.clone()) });
+    work.push(TypeWorkOp::Visit {
+        occ: Rc::clone(occ),
+        env: Rc::new(env.clone()),
+        expected,
+    });
     while let Some(op) = work.pop() {
         match op {
-            TypeWorkOp::Visit { occ, env } => visit_type(kb, occ, env, &mut work, &mut results),
+            TypeWorkOp::Visit { occ, env, expected } => {
+                visit_type(kb, occ, env, expected, &mut work, &mut results)
+            }
             TypeWorkOp::Build(frame) => build_type(kb, frame, &mut work, &mut results),
         }
     }
@@ -853,7 +947,7 @@ fn check_bare_ref(
         return Ok(TypeResult::pure(ty, env.clone()));
     }
     if let Some(ctor_sym) = resolve_constructor_sym(kb, sym) {
-        return check_constructor_iter(kb, env, ctor_sym, &[], &[], &[], &[], span);
+        return check_constructor_iter(kb, env, ctor_sym, &[], &[], &[], &[], span, None);
     }
     if let Some(ret_ty) = lookup_operation_return_type(kb, sym) {
         return Ok(TypeResult::pure(ret_ty, env.clone()));
@@ -901,6 +995,7 @@ fn visit_type(
     kb: &mut KnowledgeBase,
     occ: Rc<NodeOccurrence>,
     env: Rc<TypingEnv>,
+    expected: Option<TermId>,
     work: &mut Vec<TypeWorkOp>,
     results: &mut Vec<Result<TypeResult, TypeError>>,
 ) {
@@ -922,12 +1017,22 @@ fn visit_type(
             let annotation = *type_annotation;
             let value_occ = Rc::clone(value);
             let body_occ = Rc::clone(body);
+            // WI-270: value's expected is the let's annotation only —
+            // the outer `expected` doesn't constrain `let x = e` since
+            // `e`'s type isn't required to match the let-expression's
+            // result type. The let's own `expected` instead flows
+            // through to the body.
             work.push(TypeWorkOp::Build(TypeBuildFrame::LetAfterValue {
                 pattern,
                 annotation,
                 body_occ,
+                body_expected: expected,
             }));
-            work.push(TypeWorkOp::Visit { occ: value_occ, env });
+            work.push(TypeWorkOp::Visit {
+                occ: value_occ,
+                env,
+                expected: annotation,
+            });
         }
         Expr::Match { scrutinee, branches } => {
             let scrutinee_occ = Rc::clone(scrutinee);
@@ -943,8 +1048,9 @@ fn visit_type(
             work.push(TypeWorkOp::Build(TypeBuildFrame::MatchAfterScrutinee {
                 branches: branches_cloned,
                 outer_env: Rc::clone(&env),
+                body_expected: expected,
             }));
-            work.push(TypeWorkOp::Visit { occ: scrutinee_occ, env });
+            push_visit_no_hint(work, scrutinee_occ, env);
         }
         Expr::Lambda { param, body } => {
             let param = *param;
@@ -952,11 +1058,21 @@ fn visit_type(
             let param_type = extract_pattern_type_ann(kb, param);
             let mut lambda_env = (*env).clone();
             extend_env_from_pattern(kb, &mut lambda_env, param, param_type);
+            // WI-270: if expected is `arrow(param, result, effects)`,
+            // decompose and pass `result` to the body. Mismatching
+            // shapes (or `None`) leave the body without a hint.
+            let body_expected = expected
+                .and_then(|exp| extract_function_type_parts(kb, exp))
+                .map(|(ret, _)| ret);
             work.push(TypeWorkOp::Build(TypeBuildFrame::LambdaBody {
                 param,
                 outer_env: env,
             }));
-            work.push(TypeWorkOp::Visit { occ: body_occ, env: Rc::new(lambda_env) });
+            work.push(TypeWorkOp::Visit {
+                occ: body_occ,
+                env: Rc::new(lambda_env),
+                expected: body_expected,
+            });
         }
 
         // ── Leaf cases ──────────────────────────────────────────
@@ -1005,12 +1121,13 @@ fn visit_type(
                 pos_args: pos_args.clone(),
                 named_args: named_args.clone(),
                 env: Rc::clone(&env),
+                expected,
             }));
             for (_, arg) in named_args.iter().rev() {
-                work.push(TypeWorkOp::Visit { occ: Rc::clone(arg), env: Rc::clone(&env) });
+                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env));
             }
             for arg in pos_args.iter().rev() {
-                work.push(TypeWorkOp::Visit { occ: Rc::clone(arg), env: Rc::clone(&env) });
+                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env));
             }
         }
         Expr::Constructor { name, pos_args, named_args } => {
@@ -1023,12 +1140,13 @@ fn visit_type(
                 named_args: named_args.clone(),
                 env: Rc::clone(&env),
                 span: occ_span,
+                expected,
             }));
             for (_, arg) in named_args.iter().rev() {
-                work.push(TypeWorkOp::Visit { occ: Rc::clone(arg), env: Rc::clone(&env) });
+                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env));
             }
             for arg in pos_args.iter().rev() {
-                work.push(TypeWorkOp::Visit { occ: Rc::clone(arg), env: Rc::clone(&env) });
+                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env));
             }
         }
 
@@ -1042,17 +1160,17 @@ fn visit_type(
             let condition = Rc::clone(condition);
             let then_branch = Rc::clone(then_branch);
             let else_branch = Rc::clone(else_branch);
-            let r = check_if_expr(kb, &*env, &condition, &then_branch, &else_branch);
+            let r = check_if_expr(kb, &*env, &condition, &then_branch, &else_branch, expected);
             results.push(r);
         }
         Expr::ListLit(elems) => {
             let elems = elems.clone();
-            let r = check_list_literal(kb, &*env, &elems);
+            let r = check_list_literal(kb, &*env, &elems, expected);
             results.push(r);
         }
         Expr::SetLit(elems) => {
             let elems = elems.clone();
-            let r = check_set_literal(kb, &*env, &elems);
+            let r = check_set_literal(kb, &*env, &elems, expected);
             results.push(r);
         }
         Expr::TupleLit { positional, named } => {
@@ -1096,7 +1214,7 @@ fn build_type(
     results: &mut Vec<Result<TypeResult, TypeError>>,
 ) {
     match frame {
-        TypeBuildFrame::Apply { occ, fn_sym, pos_args, named_args, env } => {
+        TypeBuildFrame::Apply { occ, fn_sym, pos_args, named_args, env, expected } => {
             let total = pos_args.len() + named_args.len();
             let drain_start = results.len() - total;
             let mut arg_results: Vec<Result<TypeResult, TypeError>> =
@@ -1105,11 +1223,12 @@ fn build_type(
             let pos_results = arg_results;
             let span = Some(occ.span.span);
             let r = check_apply_iter(
-                kb, &*env, &occ, fn_sym, &pos_args, &named_args, &pos_results, &named_results, span,
+                kb, &*env, &occ, fn_sym, &pos_args, &named_args,
+                &pos_results, &named_results, span, expected,
             );
             results.push(r);
         }
-        TypeBuildFrame::Constructor { ctor_sym, pos_args, named_args, env, span } => {
+        TypeBuildFrame::Constructor { ctor_sym, pos_args, named_args, env, span, expected } => {
             let total = pos_args.len() + named_args.len();
             let drain_start = results.len() - total;
             let mut arg_results: Vec<Result<TypeResult, TypeError>> =
@@ -1117,11 +1236,12 @@ fn build_type(
             let named_results = arg_results.split_off(pos_args.len());
             let pos_results = arg_results;
             let r = check_constructor_iter(
-                kb, &*env, ctor_sym, &pos_args, &named_args, &pos_results, &named_results, span,
+                kb, &*env, ctor_sym, &pos_args, &named_args,
+                &pos_results, &named_results, span, expected,
             );
             results.push(r);
         }
-        TypeBuildFrame::LetAfterValue { pattern, annotation, body_occ } => {
+        TypeBuildFrame::LetAfterValue { pattern, annotation, body_occ, body_expected } => {
             let value_r = results.pop().expect("LetAfterValue: missing value result");
             // Propagate failure up rather than typing the body under a
             // synthesized env — see WI-204 feedback (no fallbacks).
@@ -1140,7 +1260,11 @@ fn build_type(
                 ext_env.declare_local_resource(var_name);
             }
             work.push(TypeWorkOp::Build(TypeBuildFrame::LetFinal { value_effects }));
-            work.push(TypeWorkOp::Visit { occ: body_occ, env: Rc::new(ext_env) });
+            work.push(TypeWorkOp::Visit {
+                occ: body_occ,
+                env: Rc::new(ext_env),
+                expected: body_expected,
+            });
         }
         TypeBuildFrame::LetFinal { value_effects } => {
             let body_r = results.pop().expect("LetFinal: missing body result");
@@ -1158,7 +1282,7 @@ fn build_type(
                 effects,
             }));
         }
-        TypeBuildFrame::MatchAfterScrutinee { branches, outer_env } => {
+        TypeBuildFrame::MatchAfterScrutinee { branches, outer_env, body_expected } => {
             let scr_r = results.pop().expect("MatchAfterScrutinee: missing scrutinee result");
             let scr_ty = scr_r.as_ref().ok().map(|r| r.ty);
             let scr_effects = scr_r.as_ref().ok().map(|r| r.effects.clone()).unwrap_or_default();
@@ -1199,6 +1323,7 @@ fn build_type(
                 work.push(TypeWorkOp::Visit {
                     occ: Rc::clone(&branch.body),
                     env,
+                    expected: body_expected,
                 });
             }
         }
@@ -1338,6 +1463,7 @@ fn check_apply_iter(
     pos_results: &[Result<TypeResult, TypeError>],
     named_results: &[Result<TypeResult, TypeError>],
     span: Option<Span>,
+    expected: Option<TermId>,
 ) -> Result<TypeResult, TypeError> {
     // Surface any sub-expression failure before continuing. Aggregate
     // sibling errors so a multi-arg call reports every ill-typed arg
@@ -1349,16 +1475,25 @@ fn check_apply_iter(
     // type-param inference still fires.
     if kb.is_constructor_symbol(fn_sym) {
         return check_constructor_iter(
-            kb, env, fn_sym, pos_args, named_args, pos_results, named_results, span,
+            kb, env, fn_sym, pos_args, named_args, pos_results, named_results, span, expected,
         );
     }
 
     // Path 1: known operation — unify args with params to instantiate type params
     if let Some(op) = lookup_operation_info_full(kb, fn_sym) {
         let mut subst = Substitution::new();
-        // Seed substitution from call-site `op[bindings]` before arg
-        // unification so explicit bindings drive subsequent inference.
-        seed_op_type_args(kb, &mut subst, &op, occ);
+        // WI-269 Phase D: explicit call-site `op[bindings]` bindings
+        // seed the substitution first. Returns `NoSuchTypeParam` on
+        // an unknown binding name.
+        seed_op_type_args(kb, &mut subst, &op, occ, fn_sym, span)?;
+        // WI-270: caller-side expected type seeds the substitution via
+        // `op.return_type` before argument inference. With caller
+        // context (`let v: Option[WorkItem] = term_as_entity(t)`) the
+        // op's `?E` Var binds to WorkItem here, and the post-arg
+        // unconstrained-param check sees it as pinned.
+        if let Some(exp) = expected {
+            unify_types(kb, &mut subst, op.return_type, exp);
+        }
         let mut arg_effects: Vec<TermId> = Vec::new();
         let mut param_to_arg_sym: HashMap<Symbol, Symbol> = HashMap::new();
 
@@ -1415,6 +1550,16 @@ fn check_apply_iter(
         // collapses to `Option[T = Term]` once `vid_T` is bound.
         let resolved_ret = walk_type_deep(kb, &subst, op.return_type);
 
+        // WI-270: every declared op type-parameter must be pinned by
+        // some combination of: explicit `[bindings]`, caller-side
+        // `expected`, or argument unification. If a type-param's Var
+        // is still unbound after all that, the call would silently
+        // produce a `Var(?T)`-bearing return type; surface this as a
+        // named diagnostic so the user can fix it by writing
+        // `op[T = …](…)`. Replaces the WI-269 Phase D silent-drop
+        // marker.
+        check_unconstrained_type_params(kb, &subst, &op, fn_sym, span)?;
+
         // WI-210 phase 3 dispatch (proposal 038): if `fn_sym` is a spec
         // op (declared without body on a parametric sort), look up the
         // unique impl op based on the per-call substitution. The proposal-
@@ -1427,8 +1572,7 @@ fn check_apply_iter(
             // The op's short name (e.g. "add" for "anthill.prelude.Numeric.add")
             // joins with the impl sort to find the impl operation symbol.
             let op_qn = kb.qualified_name_of(fn_sym).to_string();
-            let op_short = op_qn.rsplit_once('.').map(|(_, s)| s).unwrap_or(&op_qn);
-            let op_short_sym = kb.intern(op_short);
+            let op_short_sym = kb.intern(short_name_of(&op_qn));
             let enclosing_requires = env.enclosing_requires().unwrap_or(&[]);
             let (outcome, resolved_tree) = dispatch_spec_op_cached(
                 kb, &subst, spec_sort, op_short_sym, enclosing_requires,
@@ -1593,6 +1737,12 @@ pub(crate) fn record_apply_rewrite(
         named_args: new_named,
     });
     kb.record_dispatch_rewrite(original_apply, rewritten_apply, spec_op_sym);
+}
+
+/// Last segment of a dotted qualified name (`foo.bar.baz` → `baz`).
+/// Returns the input unchanged when it has no dot.
+fn short_name_of(qn: &str) -> &str {
+    qn.rsplit_once('.').map(|(_, s)| s).unwrap_or(qn)
 }
 
 /// Resolve `op_sym`'s parent sort by stripping the last qualified-name
@@ -2102,38 +2252,76 @@ fn lookup_operation_info_full(kb: &KnowledgeBase, functor: Symbol) -> Option<Ope
 }
 
 /// Seed `subst` from `op[bindings](args)` call sites: named bindings
-/// match by name, positional by declaration order. Bindings whose name
-/// doesn't match any declared type-param are silently dropped.
+/// match by name, positional by declaration order. Names that don't
+/// match any declared type-param produce a `NoSuchTypeParam` error so
+/// the user sees the typo rather than a silent return-type Var leaking
+/// to the caller.
 fn seed_op_type_args(
     kb: &KnowledgeBase,
     subst: &mut Substitution,
     op: &OperationInfoFull,
     occ: &Rc<NodeOccurrence>,
-) {
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> Result<(), TypeError> {
     let type_args = match &occ.kind {
         NodeKind::Expr { expr: Expr::Apply { type_args, .. }, .. } => type_args,
-        _ => return,
+        _ => return Ok(()),
     };
     if type_args.is_empty() || op.type_params.is_empty() {
-        return;
+        return Ok(());
     }
     let mut positional_idx = 0;
     for (name_opt, value) in type_args {
         let target = match name_opt {
-            // TODO(diag): name a "no such type-param" diagnostic here.
             Some(name_sym) => op.type_params.iter()
                 .find(|(n, _)| n == name_sym)
-                .map(|(_, v)| *v),
+                .map(|(_, v)| *v)
+                .ok_or(TypeError::NoSuchTypeParam {
+                    span,
+                    op: fn_sym,
+                    name: *name_sym,
+                })?,
             None => {
                 let v = op.type_params.get(positional_idx).map(|(_, v)| *v);
                 positional_idx += 1;
-                v
+                match v {
+                    Some(v) => v,
+                    None => continue,
+                }
             }
         };
-        if let Some(var_term) = target {
-            unify_types(kb, subst, var_term, *value);
+        unify_types(kb, subst, target, *value);
+    }
+    Ok(())
+}
+
+/// WI-270 — after seeding from `[bindings]`, expected, and arg
+/// unification, every declared type-param must resolve to a non-Var
+/// term. An unresolved Var means the caller can't recover the return
+/// type's concrete shape; surface `UnconstrainedTypeParam` with the
+/// param's name so the user can pin it via `op[T = …](…)`.
+fn check_unconstrained_type_params(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    op: &OperationInfoFull,
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    if op.type_params.is_empty() {
+        return Ok(());
+    }
+    for (name, var_term) in &op.type_params {
+        let resolved = walk_type_deep(kb, subst, *var_term);
+        if let Term::Var(Var::Global(_)) = kb.get_term(resolved) {
+            return Err(TypeError::UnconstrainedTypeParam {
+                span,
+                op: fn_sym,
+                type_param: *name,
+            });
         }
     }
+    Ok(())
 }
 
 /// WI-210 — `op_sym` is a "spec operation" if it is declared in a sort
@@ -3498,6 +3686,7 @@ fn check_constructor_iter(
     pos_results: &[Result<TypeResult, TypeError>],
     named_results: &[Result<TypeResult, TypeError>],
     span: Option<Span>,
+    expected: Option<TermId>,
 ) -> Result<TypeResult, TypeError> {
     let _ = pos_args; // arg-NodeOccurrence references kept for parity with check_apply_iter
 
@@ -3532,12 +3721,18 @@ fn check_constructor_iter(
         Some(ft) => ft.to_vec(),
         None => return Err(TypeError::NoConstructor { span, name: ctor_sym }),
     };
-    if field_types.is_empty() {
-        return Ok(TypeResult::pure(parent_type, env.clone()));
-    }
 
     let mut subst = Substitution::new();
     let mut effects = Vec::new();
+
+    // WI-270: caller context unifies with the parent type first so a
+    // hint like `Option[Int]` constrains `some(?)` to T=Int even
+    // when the value-side carries a fresh type-var. Runs before the
+    // empty-field-types early return below so 0-arg constructors
+    // (`nil()`, `Map.empty()`) also see the hint.
+    if let Some(exp) = expected {
+        unify_types(kb, &mut subst, parent_type, exp);
+    }
 
     for &(field_sym, declared_type) in &field_types {
         if let Some((idx, _)) = named_args.iter().enumerate().find(|(_, (s, _))| *s == field_sym) {
@@ -3639,11 +3834,14 @@ fn check_if_expr(
     condition: &Rc<NodeOccurrence>,
     then_branch: &Rc<NodeOccurrence>,
     else_branch: &Rc<NodeOccurrence>,
+    expected: Option<TermId>,
 ) -> Result<TypeResult, TypeError> {
+    // WI-270: both branches share the caller's expected hint; the
+    // condition is always `Bool` so it carries no hint.
     let results = [
-        type_check_node(kb, env, condition),
-        type_check_node(kb, env, then_branch),
-        type_check_node(kb, env, else_branch),
+        type_check_node(kb, env, condition, None),
+        type_check_node(kb, env, then_branch, expected),
+        type_check_node(kb, env, else_branch, expected),
     ];
     collect_arg_errors(results.iter())?;
     let [cond_r, then_r, else_r] = results.map(|r| r.expect("aggregator"));
@@ -3676,17 +3874,20 @@ fn check_list_literal(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     elems: &[Rc<NodeOccurrence>],
+    expected: Option<TermId>,
 ) -> Result<TypeResult, TypeError> {
+    // WI-270: if `expected` is `List[T = X]`, propagate X as each
+    // element's expected so e.g. `[1, 2]: List[BigInt]` types
+    // elements as BigInt rather than Int.
+    let element_hint = expected.and_then(|exp| extract_type_param(kb, exp, "T"));
     let results: Vec<Result<TypeResult, TypeError>> = elems
         .iter()
-        .map(|e| type_check_node(kb, env, e))
+        .map(|e| type_check_node(kb, env, e, element_hint))
         .collect();
     collect_arg_errors(results.iter())?;
 
     let mut effects = Vec::new();
-    let mut element_type: Option<TermId> = env
-        .expected_collection_type()
-        .and_then(|expected| extract_type_param(kb, expected, "T"));
+    let mut element_type: Option<TermId> = element_hint;
     for r in results {
         let r = r.expect("aggregator");
         if element_type.is_none() {
@@ -3711,17 +3912,17 @@ fn check_set_literal(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     elems: &[Rc<NodeOccurrence>],
+    expected: Option<TermId>,
 ) -> Result<TypeResult, TypeError> {
+    let element_hint = expected.and_then(|exp| extract_type_param(kb, exp, "T"));
     let results: Vec<Result<TypeResult, TypeError>> = elems
         .iter()
-        .map(|e| type_check_node(kb, env, e))
+        .map(|e| type_check_node(kb, env, e, element_hint))
         .collect();
     collect_arg_errors(results.iter())?;
 
     let mut effects = Vec::new();
-    let mut element_type: Option<TermId> = env
-        .expected_collection_type()
-        .and_then(|expected| extract_type_param(kb, expected, "T"));
+    let mut element_type: Option<TermId> = element_hint;
     for r in results {
         let r = r.expect("aggregator");
         if element_type.is_none() {
@@ -3751,11 +3952,11 @@ fn check_tuple_literal(
 ) -> Result<TypeResult, TypeError> {
     let pos_results: Vec<Result<TypeResult, TypeError>> = positional
         .iter()
-        .map(|e| type_check_node(kb, env, e))
+        .map(|e| type_check_node(kb, env, e, None))
         .collect();
     let named_results: Vec<Result<TypeResult, TypeError>> = named
         .iter()
-        .map(|(_, e)| type_check_node(kb, env, e))
+        .map(|(_, e)| type_check_node(kb, env, e, None))
         .collect();
     collect_arg_errors(pos_results.iter().chain(named_results.iter()))?;
 
@@ -5537,7 +5738,11 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             env.bind_var(*name, *ty);
         }
 
-        match type_check_node(kb, &env, &op.body_node) {
+        // WI-270: thread the declared return type as the body's
+        // top-down `expected`. The body's `let v: T = …`-style
+        // annotations and inner Apply/Constructor calls then see a
+        // caller-side hint that pins otherwise-free type-params.
+        match type_check_node(kb, &env, &op.body_node, Some(op.return_type)) {
             Ok(result) => {
                 if !types_compatible(kb, result.ty, op.return_type) {
                     errors.push(TypeError::TypeMismatch {

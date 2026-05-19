@@ -85,3 +85,6 @@ mod wi260_term_as_entity_test;
 
 #[path = "include/wi261_result_in_effects_test.rs"]
 mod wi261_result_in_effects_test;
+
+#[path = "include/wi270_expected_type_test.rs"]
+mod wi270_expected_type_test;

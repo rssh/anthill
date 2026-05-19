@@ -156,7 +156,7 @@ namespace anthill.reflect
   -- caller's `match` against constructor patterns acts as the run-time
   -- guard. Companion of `term_as_sort` (sort decoder) and
   -- `term_as_string` (string-literal decoder).
-  operation term_as_entity(t: Term) -> Option[T = ?E]
+  operation term_as_entity[E](t: Term) -> Option[T = E]
 
   -- Allocate a fresh logical variable as a Term::Var. Used to construct
   -- pattern queries (`claimable(?id, ?desc)`) from anthill code: pass the
