@@ -737,7 +737,7 @@ Operation     ::= DescriptionBlock*
                     ['meta' ':' Meta]
 
 TypeParamList ::= '[' TypeParam (',' TypeParam)* ']'
-TypeParam     ::= Name ['=' Type]               -- optional default (proposal 042)
+TypeParam     ::= Name                          -- per proposal 042
 ParamList     ::= Param (',' Param)*
 Param         ::= Name ':' Type
 ```

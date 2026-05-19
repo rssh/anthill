@@ -243,7 +243,7 @@ end
 }
 
 #[test]
-fn map_three_type_params_explicit_call_typechecks() {
+fn map_two_type_params_explicit_call_typechecks() {
     // map[A, B](xs: List[A], f: (A) -> B) -> List[B] with explicit
     // [A = Int, B = String] at the call site. Tests that explicit
     // bindings unify through nested parameterized types and through
@@ -251,7 +251,6 @@ fn map_three_type_params_explicit_call_typechecks() {
     let src = r#"
 namespace test.wi269.map_explicit
   import anthill.prelude.{List, Int, String}
-  import anthill.prelude.List.{nil, cons}
 
   sort Driver
     operation map[A, B](xs: List[T = A], f: (A) -> B) -> List[T = B]
@@ -269,7 +268,7 @@ end
 }
 
 #[test]
-fn map_three_type_params_inferred_from_args_typechecks() {
+fn map_two_type_params_inferred_from_args_typechecks() {
     // Same map signature, but the caller leaves the [A, B] off and
     // lets the typer infer them from the arg types. WI-270 added the
     // caller-side `expected` flow plus arg-driven unification — this
@@ -277,7 +276,6 @@ fn map_three_type_params_inferred_from_args_typechecks() {
     let src = r#"
 namespace test.wi269.map_inferred
   import anthill.prelude.{List, Int, String}
-  import anthill.prelude.List.{nil, cons}
 
   sort Driver
     operation map[A, B](xs: List[T = A], f: (A) -> B) -> List[T = B]
