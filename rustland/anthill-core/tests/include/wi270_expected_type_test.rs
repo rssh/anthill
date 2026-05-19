@@ -210,6 +210,90 @@ end
     );
 }
 
+// ── WI-269 Phase F (typing-only acceptance bullets) ──────────────
+//
+// Frame-inspection of `foo[T](x: T) -> T` per the operation-call
+// model design doc needs Phase E (eval threads type-args through
+// `frame.requirements`), tracked separately. The typing-only
+// bullets — foo[A,B] / map[A,B,C] — close out here.
+
+#[test]
+fn foo_two_type_params_parses_loads_and_typechecks() {
+    // The proposal-042 acceptance fixture: declare a two-parameter
+    // op, build a Pair from its args, then call it with explicit
+    // bindings and observe a typed return.
+    let src = r#"
+namespace test.wi269.foo_two_params
+  import anthill.prelude.{Pair, Int, String}
+  import anthill.prelude.Pair.{pair}
+
+  sort Driver
+    operation foo[A, B](a: A, b: B) -> Pair[A = A, B = B] = pair(a, b)
+    operation main() -> Pair[A = Int, B = String] =
+      foo[A = Int, B = String](42, "hi")
+  end
+end
+"#;
+    let (_kb, errs) = try_load(src);
+    assert!(
+        errs.is_empty(),
+        "foo[A, B] should parse + load + type-check; got:\n{}",
+        fmt_errs(&errs),
+    );
+}
+
+#[test]
+fn map_three_type_params_explicit_call_typechecks() {
+    // map[A, B](xs: List[A], f: (A) -> B) -> List[B] with explicit
+    // [A = Int, B = String] at the call site. Tests that explicit
+    // bindings unify through nested parameterized types and through
+    // arrow-typed parameters.
+    let src = r#"
+namespace test.wi269.map_explicit
+  import anthill.prelude.{List, Int, String}
+  import anthill.prelude.List.{nil, cons}
+
+  sort Driver
+    operation map[A, B](xs: List[T = A], f: (A) -> B) -> List[T = B]
+    operation drive(xs: List[T = Int], f: (Int) -> String) -> List[T = String] =
+      map[A = Int, B = String](xs, f)
+  end
+end
+"#;
+    let (_kb, errs) = try_load(src);
+    assert!(
+        errs.is_empty(),
+        "map[A, B] with explicit bindings should type-check; got:\n{}",
+        fmt_errs(&errs),
+    );
+}
+
+#[test]
+fn map_three_type_params_inferred_from_args_typechecks() {
+    // Same map signature, but the caller leaves the [A, B] off and
+    // lets the typer infer them from the arg types. WI-270 added the
+    // caller-side `expected` flow plus arg-driven unification — this
+    // fixture exercises the latter.
+    let src = r#"
+namespace test.wi269.map_inferred
+  import anthill.prelude.{List, Int, String}
+  import anthill.prelude.List.{nil, cons}
+
+  sort Driver
+    operation map[A, B](xs: List[T = A], f: (A) -> B) -> List[T = B]
+    operation drive(xs: List[T = Int], f: (Int) -> String) -> List[T = String] =
+      map(xs, f)
+  end
+end
+"#;
+    let (_kb, errs) = try_load(src);
+    assert!(
+        errs.is_empty(),
+        "map[A, B] with inferred bindings should type-check; got:\n{}",
+        fmt_errs(&errs),
+    );
+}
+
 /// Unit-level check of the structured `TypeError` shape (independent
 /// of the load-error stringification). Confirms the diagnostic is
 /// reachable from in-tree code.

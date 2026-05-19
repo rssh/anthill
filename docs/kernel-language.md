@@ -729,18 +729,22 @@ Rules can optionally be **named** (e.g., `non_negative:`) for reference in error
 A typed behavioral specification with contracts. Kernel-level because sorts + operations + laws = **algebra** — the foundation of the verification system. The kernel type-checks signatures and generates proof obligations from contracts.
 
 ```
-Operation ::= DescriptionBlock*
-                [Visibility] 'operation' Name '(' [ParamList] ')' '->' Type
-                ['requires' RuleBody]            -- precondition
-                ['ensures' RuleBody]             -- postcondition
-                ['effects' '(' Effect (',' Effect)* ')']
-                ['meta' ':' Meta]
+Operation     ::= DescriptionBlock*
+                    [Visibility] 'operation' Name [TypeParamList] '(' [ParamList] ')' '->' Type
+                    ['requires' RuleBody]            -- precondition
+                    ['ensures' RuleBody]             -- postcondition
+                    ['effects' '(' Effect (',' Effect)* ')']
+                    ['meta' ':' Meta]
 
-ParamList ::= Param (',' Param)*
-Param     ::= Name ':' Type
+TypeParamList ::= '[' TypeParam (',' TypeParam)* ']'
+TypeParam     ::= Name ['=' Type]               -- optional default (proposal 042)
+ParamList     ::= Param (',' Param)*
+Param         ::= Name ':' Type
 ```
 
 Parameters are **named bindings** — referenced by name (without `?`) in `requires`/`ensures` clauses. This distinguishes them from rule variables (`?x`), which are pattern-matching unification variables. `requires` clauses may reference parameter names only (precondition: checked before execution). `ensures` clauses may additionally reference `result`, which binds to the return value (postcondition: checked after execution). Using `result` in `requires` is a semantic error.
+
+**Operation type parameters** (`[T1, T2, ...]`) declare per-call polymorphic slots scoped to a single operation invocation. They may appear in the parameter list, return type, requires/ensures, and effects positions. At a call site the bindings can be written positionally (`foo[Int, String](args)`) or named (`foo[T1 = Int, T2 = String](args)`), with the positional-first rule borrowed from `SortBinding` (see §5.2). Operation type parameters are **per-call** — each invocation binds them afresh — in contrast to sort-level type parameters which are pinned at sort instantiation. See `docs/proposals/042-explicit-type-parameters-on-operations.md` for the full design and `docs/design/operation-call-model.md` §"Operation type arguments" for the runtime threading through `frame.requirements`.
 
 **Contracts** (`requires`/`ensures`) are scoped constraints — they generate denials over the operation's input/output bindings when an implementation is asserted:
 
