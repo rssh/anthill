@@ -24,7 +24,7 @@ namespace anthill.reflect
   export qualified_name, short_name, lookup_symbol, scope, kind
   export LiteralRepr, TermRepr, SetLiteral, TupleLiteral, ListLiteral, SortInfo, EntityInfo, OperationInfo, FieldInfo, DescriptionInfo
   export SortRequiresInfo, SortProvidesInfo, SortView
-  export Expr, Pattern, MatchBranch, ApplyArg, NamedPattern
+  export Expr, Pattern, MatchBranch, ApplyArg, NamedPattern, type_arg
   export match_expr, if_expr, let_expr, lambda, constructor, var_ref
   export int_lit, bigint_lit, float_lit, string_lit, bool_lit
   export var_pattern, tuple_pattern, named_tuple_pattern, constructor_pattern, literal_pattern, wildcard
@@ -337,10 +337,13 @@ namespace anthill.reflect
   enum Expr
     entity match_expr(scrutinee: ExprOccurrence, branches: List[MatchBranch])
     entity if_expr(cond: ExprOccurrence, then_branch: ExprOccurrence, else_branch: ExprOccurrence)
-    entity let_expr(pattern: Pattern, value: ExprOccurrence, body: ExprOccurrence)
+    entity let_expr(pattern: Pattern, value: ExprOccurrence, body: ExprOccurrence,
+                    type_name: Option[T = Term])
     entity lambda(param: Pattern, body: ExprOccurrence)
-    entity apply(fn: Symbol, args: List[ApplyArg])
-    entity ho_apply(predicate: Term, args: List[Term])  -- higher-order: ?P(a, b)
+    entity apply(fn: Symbol, args: List[ApplyArg],
+                 type_args: Option[T = List[type_arg]])
+    entity ho_apply(predicate: Term, args: List[Term],
+                    type_args: Option[T = List[type_arg]])  -- higher-order: ?P(a, b)
     entity constructor(name: Symbol, args: List[ApplyArg])
     entity var_ref(name: Symbol)
     entity int_lit(value: Int)
@@ -385,6 +388,16 @@ namespace anthill.reflect
   entity ApplyArg(
     name: Option[Symbol],
     value: ExprOccurrence
+  )
+
+  -- Call-site type-argument binding emitted by the loader for
+  -- `op[A = Int](args)` and similar parameterized calls (proposal 042 /
+  -- WI-269). One entry per binding; `name = none()` for positional, e.g.
+  -- `op[Int](args)`. The cons-list of these lives in the parent call's
+  -- `type_args` slot (`Expr.apply` / `Expr.ho_apply`).
+  entity type_arg(
+    name: Option[T = Symbol],
+    value: Term
   )
 
   enum Pattern
