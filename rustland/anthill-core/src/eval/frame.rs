@@ -17,6 +17,14 @@ use crate::kb::term::TermId;
 
 use super::value::Value;
 
+/// Operation type-argument channel — one entry per declared `[T_i]`
+/// in the callee's declaration order, paired with the typer-resolved
+/// type term. Inline capacity 2 matches the requirements channel
+/// (proposal 042 §"Two channels, deterministic ordering"). Used on
+/// `Frame.type_args`, both `ApplyArgs` variants, and threaded through
+/// every apply/dispatch path in `eval::eval`.
+pub type FrameTypeArgs = SmallVec<[(Symbol, TermId); 2]>;
+
 /// State a frame is in while waiting for a child frame to produce a value.
 /// When the child delivers, the matching variant says how to consume the
 /// value and what the frame should do next.
@@ -39,10 +47,15 @@ pub enum AwaitState {
     MatchDispatch { branches: Vec<MatchBranch> },
     /// An apply node is collecting arg values one at a time. `remaining`
     /// holds the argument occurrences still to evaluate (in order).
+    /// `type_args` carries the typer-resolved operation type
+    /// arguments forward to dispatch, paralleling the requirements
+    /// channel on `ApplyWithinArgs` (WI-272). Empty when the callee
+    /// has no declared type params.
     ApplyArgs {
         target: Symbol,
         buffered: Vec<Value>,
         remaining: Vec<Rc<NodeOccurrence>>,
+        type_args: FrameTypeArgs,
     },
     /// WI-223: an `apply_within` node — like ApplyArgs but threads the
     /// callee's name-keyed `requirements` channel through to the callee
@@ -51,11 +64,16 @@ pub enum AwaitState {
     /// are evaluated before args; this variant carries them forward.
     /// `start_apply_within` builds it as the expanded named frame
     /// requirements (WI-237 names model).
+    /// `type_args` rides alongside the requirements channel —
+    /// positional in the callee's `[T1, T2, ...]` declaration order,
+    /// each entry `(declared-name, resolved-type-term)`. Installed on
+    /// the callee's `Frame.type_args` at dispatch (WI-272).
     ApplyWithinArgs {
         target: Symbol,
         buffered: Vec<Value>,
         remaining: Vec<Rc<NodeOccurrence>>,
         requirements: SmallVec<[(Symbol, crate::eval::value::RequirementHandle); 2]>,
+        type_args: FrameTypeArgs,
     },
     /// A constructor node is collecting (possibly named) field values.
     ConstructorArgs {
@@ -93,9 +111,43 @@ pub struct Frame {
     /// against it. Per `docs/design/operation-call-model.md` §"Runtime:
     /// frame, requirement value, closure".
     pub requirements: SmallVec<[(Symbol, crate::eval::value::RequirementHandle); 2]>,
+    /// Operation-level type arguments for the call that pushed this
+    /// frame (WI-272). Per `docs/design/operation-call-model.md`
+    /// §"Operation type arguments", sequenced *after* sort-level
+    /// requirements; held as a separate channel rather than collapsing
+    /// into `requirements` (the "polymorphic value" alternative). Each
+    /// entry is `(declared-param-name, resolved-type-term)`, in the
+    /// callee's `[T1, T2, ...]` declaration order. Body-side
+    /// `var_ref(T)` reads consult this list alongside `requirements`.
+    pub type_args: FrameTypeArgs,
     /// None = fresh (ready to reduce `expr`); Some = suspended, waiting for
     /// the child frame above to deliver a value.
     pub awaiting: Option<AwaitState>,
+}
+
+/// Captured context for pushing a child frame: everything the eval
+/// inherits from the parent's locals/requirements/type-args scope.
+/// `expr` is supplied separately by each caller (it's the child
+/// sub-expression about to be reduced).
+pub struct ChildFrameContext {
+    pub op: Symbol,
+    pub locals: SmallVec<[(Symbol, Value); 4]>,
+    pub requirements: SmallVec<[(Symbol, crate::eval::value::RequirementHandle); 2]>,
+    pub type_args: FrameTypeArgs,
+}
+
+impl Frame {
+    /// Snapshot this frame's context for a child push. Centralises the
+    /// otherwise-fivefold `(op, locals.clone(), requirements.clone(),
+    /// type_args.clone())` destructure in `eval::eval`.
+    pub fn child_context(&self) -> ChildFrameContext {
+        ChildFrameContext {
+            op: self.op,
+            locals: self.locals.clone(),
+            requirements: self.requirements.clone(),
+            type_args: self.type_args.clone(),
+        }
+    }
 }
 
 pub struct ActivationStack {
@@ -155,6 +207,7 @@ mod tests {
             expr: NodeOccurrence::new_expr(Expr::Bottom, span, None),
             locals: SmallVec::new(),
             requirements: SmallVec::new(),
+            type_args: SmallVec::new(),
             awaiting: None,
         }
     }

@@ -172,6 +172,7 @@ impl NodeOccurrence {
                 expr,
                 origin: OccurrenceOrigin::Source,
                 classification: RefCell::new(None),
+                resolved_type_args: RefCell::new(Vec::new()),
             },
             span,
             owner,
@@ -192,6 +193,7 @@ impl NodeOccurrence {
                 expr,
                 origin: OccurrenceOrigin::Synthesized { from, by },
                 classification: RefCell::new(None),
+                resolved_type_args: RefCell::new(Vec::new()),
             },
             span,
             owner,
@@ -232,6 +234,32 @@ impl NodeOccurrence {
             *classification.borrow_mut() = Some(Box::new(class));
         }
     }
+
+    /// Record the typer-resolved operation type arguments for an
+    /// apply call site (WI-272). `args` is positional in the callee's
+    /// `[T1, T2, ...]` declaration order; each entry is the
+    /// `(declared-name, resolved-type-term)`. No-op on non-Expr kinds.
+    pub fn set_resolved_type_args(&self, args: Vec<(Symbol, TermId)>) {
+        if let NodeKind::Expr { resolved_type_args, .. } = &self.kind {
+            *resolved_type_args.borrow_mut() = args;
+        }
+    }
+
+    /// Run `f` with a borrowed slice of the typer-resolved op type
+    /// arguments populated by `set_resolved_type_args` (WI-272). The
+    /// slice is empty when the callee has no type params, or when the
+    /// typer hasn't run yet for this occurrence (e.g. a hand-built
+    /// test fixture). RefCell-borrowed callback avoids cloning the
+    /// underlying Vec on the hot apply path.
+    pub fn with_resolved_type_args<R>(
+        &self,
+        f: impl FnOnce(&[(Symbol, TermId)]) -> R,
+    ) -> R {
+        match &self.kind {
+            NodeKind::Expr { resolved_type_args, .. } => f(&resolved_type_args.borrow()),
+            _ => f(&[]),
+        }
+    }
 }
 
 // ── NodeKind ────────────────────────────────────────────────────
@@ -249,6 +277,18 @@ pub enum NodeKind {
         /// typer writes after construction while other walkers may hold
         /// shared `Rc` references to this occurrence.
         classification: RefCell<Option<Box<super::typing::CallClass>>>,
+        /// Typer-resolved operation type arguments for an
+        /// `Expr::Apply` / `Expr::ApplyWithin` call site (WI-272),
+        /// positionally in declaration order against the callee's
+        /// declared `[T1, T2, ...]` parameters. Each entry is
+        /// `(declared-param-name, resolved-type-term)`. Empty when the
+        /// callee has no type params or this isn't an apply
+        /// occurrence. Populated after the typer has unified the call's
+        /// type-arg bindings with arg / expected types; the eval reads
+        /// it on call entry and installs the values on
+        /// `Frame.type_args`. See `docs/design/operation-call-model.md`
+        /// §"Operation type arguments".
+        resolved_type_args: RefCell<Vec<(Symbol, TermId)>>,
     },
     /// Rule head — positional wrapper around a Term-shaped head pattern.
     /// Args are `TermId` (KB-position content); the wrap exists for span
@@ -337,6 +377,13 @@ pub enum Expr {
         args: Vec<Rc<NodeOccurrence>>,
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
         requirements: Vec<Rc<NodeOccurrence>>,
+        /// Call-site operation type arguments (`op[T = Int](args)`),
+        /// mirroring `Expr::Apply.type_args` (WI-272). Each entry is
+        /// `(Some(name), type)` for `T = Int`, or `(None, type)` for
+        /// positional `Int`. Empty when the call site doesn't bind any
+        /// (the typer-resolved values for inferred slots live in
+        /// `NodeKind::Expr.resolved_type_args`).
+        type_args: Vec<(Option<Symbol>, TermId)>,
     },
     /// Higher-order `apply_within`.
     HoApplyWithin {
@@ -560,6 +607,7 @@ enum BuildFrame {
         span: SourceSpan, functor: Symbol,
         pos_count: usize, named_keys: Vec<Symbol>,
         requirements_count: usize,
+        type_args: Vec<(Option<Symbol>, TermId)>,
     },
     RequirementAtSort { span: SourceSpan, slot: i64 },
     ConstructRequirement { span: SourceSpan, impl_functor: Symbol, requirements_count: usize },
@@ -724,6 +772,7 @@ fn visit_fn(
             let fn_sym = named_ref(kb, named_args, "fn").unwrap_or(functor);
             let args_tid = get_named_arg(kb, named_args, "args");
             let reqs_tid = get_named_arg(kb, named_args, "requirements");
+            let type_args = collect_type_args(kb, get_named_arg(kb, named_args, "type_args"));
             // First collect args + requirements into reversed visit
             // slots, then push Build with the right counts.
             let (pos_count, named_keys, arg_visits) = collect_apply_arg_visits(kb, args_tid);
@@ -731,6 +780,7 @@ fn visit_fn(
             work.push(WorkOp::Build(BuildFrame::ApplyWithin {
                 span, functor: fn_sym, pos_count, named_keys,
                 requirements_count: req_count,
+                type_args,
             }));
             // Push requirements first (pop last), then args.
             for v in req_visits.into_iter().rev() { work.push(v); }
@@ -936,7 +986,7 @@ fn build_frame(frame: BuildFrame, results: &mut Vec<Rc<NodeOccurrence>>) {
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
         BuildFrame::ApplyWithin {
-            span, functor, pos_count, named_keys, requirements_count,
+            span, functor, pos_count, named_keys, requirements_count, type_args,
         } => {
             // results stack (top → bottom):
             //   req_{R-1}, ..., req_0, named_{N-1}, ..., named_0, pos_{P-1}, ..., pos_0
@@ -946,7 +996,9 @@ fn build_frame(frame: BuildFrame, results: &mut Vec<Rc<NodeOccurrence>>) {
             }
             requirements.reverse();
             let (pos_args, named_args) = pop_apply_like(results, pos_count, named_keys);
-            let expr = Expr::ApplyWithin { functor, args: pos_args, named_args, requirements };
+            let expr = Expr::ApplyWithin {
+                functor, args: pos_args, named_args, requirements, type_args,
+            };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
         BuildFrame::RequirementAtSort { span, slot } => {

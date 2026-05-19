@@ -1560,6 +1560,22 @@ fn check_apply_iter(
         // marker.
         check_unconstrained_type_params(kb, &subst, &op, fn_sym, span)?;
 
+        // Write resolved op type-arg values back to the apply
+        // occurrence so the eval can install them on the callee's
+        // `Frame.type_args` (WI-272). Positional, in the callee's
+        // `[T1, T2, ...]` declaration order; each entry pairs the
+        // declared name symbol with the term the substitution walked
+        // its Var to. Skipped for ops without `[...]` (the common
+        // case) — `resolved_type_args` defaults to empty.
+        if !op.type_params.is_empty() {
+            let mut resolved: Vec<(Symbol, TermId)> = Vec::with_capacity(op.type_params.len());
+            for (name, var_term) in &op.type_params {
+                let walked = walk_type_deep(kb, &subst, *var_term);
+                resolved.push((*name, walked));
+            }
+            occ.set_resolved_type_args(resolved);
+        }
+
         // WI-210 phase 3 dispatch (proposal 038): if `fn_sym` is a spec
         // op (declared without body on a parametric sort), look up the
         // unique impl op based on the per-call substitution. The proposal-

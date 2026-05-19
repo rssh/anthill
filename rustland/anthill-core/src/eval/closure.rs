@@ -21,6 +21,12 @@ use crate::kb::term::TermId;
 
 use super::value::Value;
 
+/// Closure-side operation type-argument snapshot — inline capacity 1
+/// since most lambdas need 0–1 type args. Frame-side uses
+/// `super::frame::FrameTypeArgs` (capacity 2); collecting between the
+/// two requires an explicit copy across the size boundary.
+pub type ClosureTypeArgs = SmallVec<[(Symbol, crate::kb::term::TermId); 1]>;
+
 pub struct Closure {
     /// The full param pattern (var / tuple / constructor / literal / wildcard).
     /// Matched against the arg at call time via `pattern::match_pattern`, so
@@ -37,6 +43,13 @@ pub struct Closure {
     /// `docs/design/operation-call-model.md`. Name-keyed (WI-237 names
     /// model): each entry is `(synthesized __req_* name, handle)`.
     pub requirements: SmallVec<[(Symbol, crate::eval::value::RequirementHandle); 1]>,
+    /// Operation type-argument scope, snapshotted at lambda
+    /// construction time alongside `requirements` (WI-272). Same
+    /// lexical-scope preservation rationale: a lambda created inside
+    /// `operation foo[T](...)` restores the enclosing frame's `T`
+    /// binding on each invocation, regardless of the call site. Per
+    /// `docs/design/operation-call-model.md` §"Closures".
+    pub type_args: ClosureTypeArgs,
 }
 
 struct Slot {
@@ -228,6 +241,7 @@ mod tests {
             body: NodeOccurrence::new_expr(Expr::Bottom, span, None),
             env: SmallVec::new(),
             requirements: SmallVec::new(),
+            type_args: SmallVec::new(),
         }
     }
 
@@ -272,6 +286,7 @@ mod tests {
             body: NodeOccurrence::new_expr(Expr::Bottom, span, None),
             env: SmallVec::new(),
             requirements: SmallVec::new(),
+            type_args: SmallVec::new(),
         });
         let pat = arena.with(&h, |c| c.param_pattern);
         assert_eq!(pat, TermId::from_raw(7));

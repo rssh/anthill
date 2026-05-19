@@ -16,9 +16,9 @@ use crate::kb::node_occurrence::{Expr, MatchBranch, NodeKind, NodeOccurrence};
 use crate::kb::term::{Literal, Term, TermId};
 use crate::kb::KnowledgeBase;
 
-use super::closure::Closure;
+use super::closure::{Closure, ClosureTypeArgs};
 use super::error::EvalError;
-use super::frame::{AwaitState, Frame};
+use super::frame::{AwaitState, ChildFrameContext, Frame, FrameTypeArgs};
 use super::pattern::{constructor_pattern_name, match_pattern};
 use super::value::Value;
 use super::Interpreter;
@@ -92,7 +92,7 @@ impl Interpreter {
                 self.start_match(scrutinee, branches)
             }
             Expr::Lambda { param, body } => self.reduce_lambda(*param, body.clone()),
-            Expr::Apply { functor, pos_args, named_args, type_args: _ } => {
+            Expr::Apply { functor, pos_args, named_args, .. } => {
                 // WI-218: the typer may have classified this apply for
                 // spec-op rewrite. PinNow redirects the call to the
                 // impl op; ConcreteApplyWithin similarly redirects (the
@@ -109,26 +109,39 @@ impl Interpreter {
                     NodeKind::Expr { classification, .. } => classification.borrow().clone(),
                     _ => None,
                 };
+                // The typer writes the resolved operation type-arg
+                // values (positional, declaration order) into the
+                // apply occurrence's `resolved_type_args` RefCell
+                // after seeding + unification + unconstrained checks.
+                // Eval reads them here so every dispatch path (plain,
+                // deferred, same-sort, pin-now) installs the same
+                // type-arg channel on the callee's frame (WI-272).
+                let type_args = collect_resolved_type_args(occ);
                 use crate::kb::typing::CallClass;
                 match class.as_deref() {
                     Some(CallClass::DeferToRequirement {
                         spec_op_sym, slot, enclosing_sort, ..
                     }) => self.start_apply_deferred(
-                        *spec_op_sym, *slot, *enclosing_sort, pos_args, named_args,
+                        *spec_op_sym, *slot, *enclosing_sort,
+                        pos_args, named_args, type_args,
                     ),
                     Some(CallClass::ConcreteApplyWithin {
                         fn_target_sym, enclosing_sort, ..
                     }) => self.start_apply_same_sort(
-                        *fn_target_sym, *enclosing_sort, pos_args, named_args,
+                        *fn_target_sym, *enclosing_sort,
+                        pos_args, named_args, type_args,
                     ),
                     _ => {
                         let target = classified_apply_target(occ).unwrap_or(*functor);
-                        self.start_apply(target, pos_args, named_args)
+                        self.start_apply(target, pos_args, named_args, type_args)
                     }
                 }
             }
-            Expr::ApplyWithin { functor, args, named_args, requirements } => {
-                self.start_apply_within(*functor, args, named_args, requirements)
+            Expr::ApplyWithin { functor, args, named_args, requirements, .. } => {
+                let type_args = collect_resolved_type_args(occ);
+                self.start_apply_within(
+                    *functor, args, named_args, requirements, type_args,
+                )
             }
             Expr::Constructor { name, pos_args, named_args } => {
                 self.start_constructor(*name, pos_args, named_args)
@@ -162,7 +175,9 @@ impl Interpreter {
     fn reduce_var(&mut self, sym: Symbol) -> Result<StepOutcome, EvalError> {
         let target_name = self.kb.resolve_sym(sym).to_string();
         // Local binding first, then a frame requirement (a body reading
-        // a `__req_*` param by name — WI-237 names model), then dispatch.
+        // a `__req_*` param by name — WI-237 names model), then a
+        // frame type-arg (a body reading a declared `T` from
+        // `operation foo[T](...)` per WI-272), then dispatch.
         let bound = {
             let top = self.stack.top()
                 .ok_or_else(|| EvalError::Internal("reduce_var on empty stack".into()))?;
@@ -172,11 +187,14 @@ impl Interpreter {
                     find_requirement(&top.requirements, sym)
                         .map(|h| Value::Requirement(h.clone()))
                 })
+                .or_else(|| {
+                    find_type_arg(&top.type_args, sym).map(Value::Term)
+                })
         };
         if let Some(v) = bound {
             return self.deliver(v);
         }
-        self.dispatch_call(sym, Vec::new())
+        self.dispatch_call(sym, Vec::new(), SmallVec::new())
     }
 
     fn reduce_lambda(
@@ -199,11 +217,19 @@ impl Interpreter {
         let requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 1]> = self.stack.top()
             .map(|f| f.requirements.iter().cloned().collect())
             .unwrap_or_default();
+        // Snapshot the enclosing frame's type_args alongside (WI-272)
+        // — same lexical-capture rule. Both channels share the
+        // "lambda inherits its creation scope" convention from
+        // §"Closures" of operation-call-model.md.
+        let type_args: ClosureTypeArgs = self.stack.top()
+            .map(|f| f.type_args.iter().cloned().collect())
+            .unwrap_or_default();
         let handle = self.closures.alloc(Closure {
             param_pattern: param,
             body,
             env,
             requirements,
+            type_args,
         });
         self.deliver(Value::Closure(handle))
     }
@@ -362,6 +388,7 @@ impl Interpreter {
         functor: Symbol,
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
+        type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         // WI-218: if this apply's functor has a typer-recorded dispatch
         // rewrite via the legacy term-keyed map, redirect to the impl op.
@@ -372,7 +399,7 @@ impl Interpreter {
         let target = functor;
 
         if pos_args.is_empty() && named_args.is_empty() {
-            return self.dispatch_call(target, Vec::new());
+            return self.dispatch_call(target, Vec::new(), type_args);
         }
 
         // Build the per-arg occurrence stream. Positional args come
@@ -391,6 +418,7 @@ impl Interpreter {
                 target,
                 buffered: Vec::new(),
                 remaining,
+                type_args,
             },
             first,
         )
@@ -407,6 +435,7 @@ impl Interpreter {
         args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
         requirements_occ: &[Rc<NodeOccurrence>],
+        type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         if requirements_occ.len() > 1 {
             return Err(EvalError::Internal(format!(
@@ -436,7 +465,9 @@ impl Interpreter {
             Some(dict) => self.expand_dispatching_dict(target, &dict)?,
             None => SmallVec::new(),
         };
-        self.dispatch_apply_with_requirements(target, requirements, args, named_args)
+        self.dispatch_apply_with_requirements(
+            target, requirements, type_args, args, named_args,
+        )
     }
 
     /// Sibling-op call inside a sort with non-empty `requires`: the
@@ -453,6 +484,7 @@ impl Interpreter {
         enclosing_sort: Option<Symbol>,
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
+        type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         let callee_parent = crate::kb::typing::impl_parent_of_op(&self.kb, target);
         let inherit = matches!(
@@ -460,13 +492,15 @@ impl Interpreter {
             (Some(c), Some(e)) if c == e,
         );
         if !inherit {
-            return self.start_apply(target, pos_args, named_args);
+            return self.start_apply(target, pos_args, named_args, type_args);
         }
         let caller_reqs = self.stack.top()
             .ok_or_else(|| EvalError::Internal(
                 "start_apply_same_sort with no current frame".into()))?
             .requirements.clone();
-        self.dispatch_apply_with_requirements(target, caller_reqs, pos_args, named_args)
+        self.dispatch_apply_with_requirements(
+            target, caller_reqs, type_args, pos_args, named_args,
+        )
     }
 
     /// Runtime path for `CallClass::DeferToRequirement`: resolve the
@@ -483,6 +517,7 @@ impl Interpreter {
         enclosing_sort: Option<Symbol>,
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
+        type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         let encl = enclosing_sort.ok_or_else(|| EvalError::Internal(
             "DeferToRequirement classification missing enclosing_sort".into()))?;
@@ -501,7 +536,9 @@ impl Interpreter {
         };
         let target = self.dispatch_via_sort_ops_table(spec_op_sym, &dispatching_dict);
         let requirements = self.expand_dispatching_dict(target, &dispatching_dict)?;
-        self.dispatch_apply_with_requirements(target, requirements, pos_args, named_args)
+        self.dispatch_apply_with_requirements(
+            target, requirements, type_args, pos_args, named_args,
+        )
     }
 
     /// Build the callee's `frame.requirements` from a resolved dispatching
@@ -545,12 +582,15 @@ impl Interpreter {
         &mut self,
         target: Symbol,
         requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
+        type_args: FrameTypeArgs,
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
     ) -> Result<StepOutcome, EvalError> {
         let total_args = pos_args.len() + named_args.len();
         if total_args == 0 {
-            return self.dispatch_call_with_requirements(target, Vec::new(), requirements);
+            return self.dispatch_call_with_requirements(
+                target, Vec::new(), requirements, type_args,
+            );
         }
         let mut remaining: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(total_args);
         for a in pos_args.iter() { remaining.push(a.clone()); }
@@ -562,6 +602,7 @@ impl Interpreter {
                 buffered: Vec::new(),
                 remaining,
                 requirements,
+                type_args,
             },
             first,
         )
@@ -603,17 +644,8 @@ impl Interpreter {
                 .chain(remaining.into_iter())
                 .collect(),
         });
-        let (op, locals, requirements) = {
-            let top = self.stack.top().unwrap();
-            (top.op, top.locals.clone(), top.requirements.clone())
-        };
-        self.stack.push(Frame {
-            op,
-            expr: first_expr,
-            locals,
-            requirements,
-            awaiting: None,
-        })?;
+        let ctx = self.stack.top().unwrap().child_context();
+        self.stack.push(child_frame(ctx, first_expr))?;
         Ok(StepOutcome::Continue)
     }
 
@@ -627,17 +659,8 @@ impl Interpreter {
         let top = self.stack.top_mut()
             .ok_or_else(|| EvalError::Internal("suspend_and_push with no parent".into()))?;
         top.awaiting = Some(state);
-        let (op, locals, requirements) = {
-            let top = self.stack.top().unwrap();
-            (top.op, top.locals.clone(), top.requirements.clone())
-        };
-        self.stack.push(Frame {
-            op,
-            expr: child_expr,
-            locals,
-            requirements,
-            awaiting: None,
-        })?;
+        let ctx = self.stack.top().unwrap().child_context();
+        self.stack.push(child_frame(ctx, child_expr))?;
         Ok(StepOutcome::Continue)
     }
 
@@ -647,8 +670,11 @@ impl Interpreter {
         &mut self,
         target: Symbol,
         arg_values: Vec<Value>,
+        type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
-        self.dispatch_call_with_requirements(target, arg_values, SmallVec::new())
+        self.dispatch_call_with_requirements(
+            target, arg_values, SmallVec::new(), type_args,
+        )
     }
 
     fn dispatch_call_with_requirements(
@@ -656,6 +682,7 @@ impl Interpreter {
         target: Symbol,
         arg_values: Vec<Value>,
         requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
+        type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         // 1. Local closure bound to target?
         let target_name = self.kb.resolve_sym(target).to_string();
@@ -672,7 +699,12 @@ impl Interpreter {
             // Closures override apply.requirements with their own
             // (the HO-call exception). The caller's `requirements`
             // here are discarded — see closure invocation in the design.
+            // Type-args from the apply site are likewise dropped:
+            // closure invocation restores the lambda's captured
+            // type_args, not the caller's. See
+            // `docs/design/operation-call-model.md` §"Closures".
             drop(requirements);
+            drop(type_args);
             return self.enter_closure(handle, arg_values);
         }
 
@@ -685,7 +717,7 @@ impl Interpreter {
         // 3. Anthill-defined operation body.
         let (body_node, params) = lookup_operation_body(&self.kb, target)
             .ok_or_else(|| EvalError::UnknownOperation { name: target_name })?;
-        self.enter_operation(target, body_node, &params, arg_values, requirements)
+        self.enter_operation(target, body_node, &params, arg_values, requirements, type_args)
     }
 
     fn enter_operation(
@@ -695,6 +727,7 @@ impl Interpreter {
         params: &[(Symbol, TermId)],
         arg_values: Vec<Value>,
         requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]>,
+        type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         if arg_values.len() != params.len() {
             return Err(EvalError::ArityMismatch {
@@ -721,11 +754,15 @@ impl Interpreter {
         // calls install an empty channel — a generic body's
         // `var_ref(__req_*)` read then surfaces a clear "unbound in
         // requirement position" error rather than being silently wrong.
+        // type_args sequence after the sort-level requirements per
+        // `operation-call-model.md` §"Operation type arguments"
+        // (WI-272).
         *top = Frame {
             op: target,
             expr: body_node,
             locals,
             requirements,
+            type_args,
             awaiting: None,
         };
         Ok(StepOutcome::Continue)
@@ -744,8 +781,21 @@ impl Interpreter {
             });
         }
         let arg = args.into_iter().next().unwrap();
-        let (param_pattern, body) = self.closures.with(&handle, |c| {
-            (c.param_pattern, c.body.clone())
+        // WI-223: closure invocation overrides the uniform
+        // `frame.requirements = apply_within.requirements` rule with the
+        // requirements snapshotted at lambda construction. Preserves
+        // lexical scope of the lambda's creation site. See
+        // `docs/design/operation-call-model.md` §"Closure invocation:
+        // the one runtime exception". The closure-side SmallVecs have
+        // inline size 1 (most lambdas need 0–1 reqs/type-args), the
+        // frame-side has 2; collect across the size boundary. Single
+        // arena borrow grabs param/body/both channels at once.
+        let (param_pattern, body, requirements, type_args) = self.closures.with(&handle, |c| {
+            let reqs: SmallVec<[(Symbol, super::value::RequirementHandle); 2]> =
+                c.requirements.iter().cloned().collect();
+            let ta: FrameTypeArgs =
+                c.type_args.iter().cloned().collect();
+            (c.param_pattern, c.body.clone(), reqs, ta)
         });
         let bindings = match_pattern(self, param_pattern, &arg).ok_or_else(|| {
             EvalError::MatchFailed { scrutinee: scrutinee_diag(&self.kb, &arg) }
@@ -754,16 +804,6 @@ impl Interpreter {
         for (sym, v) in bindings {
             locals.push((sym, v));
         }
-        // WI-223: closure invocation overrides the uniform
-        // `frame.requirements = apply_within.requirements` rule with the
-        // requirements snapshotted at lambda construction. Preserves
-        // lexical scope of the lambda's creation site. See
-        // `docs/design/operation-call-model.md` §"Closure invocation:
-        // the one runtime exception". The closure-side SmallVec has inline
-        // size 1 (most lambdas need 0–1 reqs), the frame-side has 2;
-        // collect across the size boundary.
-        let requirements: SmallVec<[(Symbol, super::value::RequirementHandle); 2]> =
-            self.closures.with(&handle, |c| c.requirements.iter().cloned().collect());
         // TCO: same rationale as enter_operation. A closure call in any
         // position is a tail call relative to its own apply frame. The
         // closure inherits its caller's `op` for error-reporting purposes.
@@ -775,6 +815,7 @@ impl Interpreter {
             expr: body,
             locals,
             requirements,
+            type_args,
             awaiting: None,
         };
         Ok(StepOutcome::Continue)
@@ -855,25 +896,18 @@ impl Interpreter {
                     top.expr = body;
                     return Ok(StepOutcome::Continue);
                 }
-                AwaitState::ApplyArgs { target, mut buffered, mut remaining } => {
+                AwaitState::ApplyArgs { target, mut buffered, mut remaining, type_args } => {
                     buffered.push(v);
                     if remaining.is_empty() {
-                        return self.dispatch_call(target, buffered);
+                        return self.dispatch_call(target, buffered, type_args);
                     }
                     let next_expr = remaining.remove(0);
                     let top = self.stack.top_mut().unwrap();
                     top.awaiting = Some(AwaitState::ApplyArgs {
-                        target, buffered, remaining,
+                        target, buffered, remaining, type_args,
                     });
-                    let (op, locals, requirements) =
-                        (top.op, top.locals.clone(), top.requirements.clone());
-                    self.stack.push(Frame {
-                        op,
-                        expr: next_expr,
-                        locals,
-                        requirements,
-                        awaiting: None,
-                    })?;
+                    let ctx = self.stack.top().unwrap().child_context();
+                    self.stack.push(child_frame(ctx, next_expr))?;
                     return Ok(StepOutcome::Continue);
                 }
                 AwaitState::ApplyWithinArgs {
@@ -881,6 +915,7 @@ impl Interpreter {
                     mut buffered,
                     mut remaining,
                     requirements,
+                    type_args,
                 } => {
                     buffered.push(v);
                     if remaining.is_empty() {
@@ -888,6 +923,7 @@ impl Interpreter {
                             target,
                             buffered,
                             requirements,
+                            type_args,
                         );
                     }
                     let next_expr = remaining.remove(0);
@@ -897,16 +933,10 @@ impl Interpreter {
                         buffered,
                         remaining,
                         requirements,
+                        type_args,
                     });
-                    let (op, locals, frame_requirements) =
-                        (top.op, top.locals.clone(), top.requirements.clone());
-                    self.stack.push(Frame {
-                        op,
-                        expr: next_expr,
-                        locals,
-                        requirements: frame_requirements,
-                        awaiting: None,
-                    })?;
+                    let ctx = self.stack.top().unwrap().child_context();
+                    self.stack.push(child_frame(ctx, next_expr))?;
                     return Ok(StepOutcome::Continue);
                 }
                 AwaitState::ConstructorArgs {
@@ -950,15 +980,8 @@ impl Interpreter {
                         buffered_named,
                         remaining,
                     });
-                    let (op, locals, requirements) =
-                        (top.op, top.locals.clone(), top.requirements.clone());
-                    self.stack.push(Frame {
-                        op,
-                        expr: pushed_expr,
-                        locals,
-                        requirements,
-                        awaiting: None,
-                    })?;
+                    let ctx = self.stack.top().unwrap().child_context();
+                    self.stack.push(child_frame(ctx, pushed_expr))?;
                     return Ok(StepOutcome::Continue);
                 }
                 AwaitState::OperationResult => {
@@ -1094,6 +1117,48 @@ fn find_requirement<'a>(
     name: Symbol,
 ) -> Option<&'a super::value::RequirementHandle> {
     reqs.iter().rev().find(|(s, _)| *s == name).map(|(_, h)| h)
+}
+
+/// Find a frame-level operation type-argument value by its declared
+/// param name (e.g. `T` from `operation foo[T](...)`). Same lookup
+/// contract as `find_requirement` but on the type-arg channel
+/// (WI-272). Reverse order so an inner scope's `T` shadows an outer
+/// one if closure capture ever bridges nested definitions with
+/// same-named type params.
+fn find_type_arg(
+    type_args: &FrameTypeArgs,
+    name: Symbol,
+) -> Option<crate::kb::term::TermId> {
+    type_args.iter().rev().find(|(s, _)| *s == name).map(|(_, t)| *t)
+}
+
+/// Assemble a fresh child frame from a snapshotted parent context
+/// plus the sub-expression to reduce. Centralises the otherwise-
+/// fivefold expansion in `start_constructor` / `suspend_and_push` /
+/// the `AwaitState::*Args` delivery branches.
+fn child_frame(ctx: ChildFrameContext, expr: Rc<NodeOccurrence>) -> Frame {
+    Frame {
+        op: ctx.op,
+        expr,
+        locals: ctx.locals,
+        requirements: ctx.requirements,
+        type_args: ctx.type_args,
+        awaiting: None,
+    }
+}
+
+/// Read the typer-resolved operation type arguments off an
+/// apply/apply_within occurrence's RefCell into the eval's frame-channel
+/// shape (WI-272). Skips the SmallVec allocation when the occurrence
+/// has no entries — the common case (ops without `[T, ...]`).
+fn collect_resolved_type_args(occ: &Rc<NodeOccurrence>) -> FrameTypeArgs {
+    occ.with_resolved_type_args(|entries| {
+        if entries.is_empty() {
+            FrameTypeArgs::new()
+        } else {
+            entries.iter().copied().collect()
+        }
+    })
 }
 
 /// Head functor of a value, when one is recoverable.

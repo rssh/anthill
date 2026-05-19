@@ -25,7 +25,7 @@ use crate::kb::KnowledgeBase;
 use crate::persistence::Store;
 
 pub use error::EvalError;
-pub use frame::{ActivationStack, Frame};
+pub use frame::{ActivationStack, Frame, FrameTypeArgs};
 pub use value::Value;
 
 use cell_arena::CellArenaRef;
@@ -514,6 +514,7 @@ impl Interpreter {
             expr: body_term,
             locals,
             requirements,
+            type_args: smallvec::SmallVec::new(),
             awaiting: None,
         })?;
         self.run()
@@ -614,6 +615,17 @@ impl Interpreter {
         self.closures.with(h, |c| c.requirements.clone())
     }
 
+    /// Test-only: snapshot the top frame's operation type-arg
+    /// channel. Acceptance fixtures observe what the eval installed
+    /// on `Frame.type_args` after a call entry (WI-272). Empty when
+    /// the stack is empty or the top frame has no type params.
+    #[doc(hidden)]
+    pub fn top_frame_type_args_for_test(&self) -> FrameTypeArgs {
+        self.stack.top()
+            .map(|f| f.type_args.clone())
+            .unwrap_or_default()
+    }
+
     /// Test-only entry point: drive a single expression as the body of an
     /// ad-hoc operation, with `frame.requirements` pre-seeded. Used to
     /// verify the WI-223 requirement IR reductions
@@ -638,6 +650,7 @@ impl Interpreter {
             expr: expr_node,
             locals: smallvec::SmallVec::new(),
             requirements,
+            type_args: smallvec::SmallVec::new(),
             awaiting: None,
         })?;
         self.run()
