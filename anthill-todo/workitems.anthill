@@ -237,7 +237,7 @@ fact WorkItem(
   description: "Spec-sort field validation: when a field type is an abstract/spec sort (Eq, Ordered, etc.), verify the value type satisfies the spec via refines/requires chains",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-031"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-20T11:32:50Z"))
 
 fact WorkItem(
   id: "WI-037",
