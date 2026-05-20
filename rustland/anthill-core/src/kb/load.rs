@@ -2496,58 +2496,52 @@ fn resolve_provides_spec(
     kb: &KnowledgeBase,
     spec: TermId,
 ) -> Option<(String, String, Vec<(String, String)>)> {
+    // Peel `SortView(Spec, …)` (or a bare spec ref) down to the base
+    // spec symbol — same logic as `provides_spec_base_sym`.
+    let base_sym = provides_spec_base_sym(kb, spec)?;
+    let qn = kb.qualified_name_of(base_sym).to_owned();
+    let short = last_segment(&qn).to_owned();
+    // The type-parameter substitution lives in the outer `SortView`'s
+    // named args; a plain `provides Foo` (non-SortView Fn or bare ref)
+    // carries none.
+    let sub = match kb.get_term(spec) {
+        Term::Fn { functor, named_args, .. }
+            if last_segment(kb.qualified_name_of(*functor)) == "SortView" =>
+        {
+            sort_view_substitution(kb, named_args)
+        }
+        _ => Vec::new(),
+    };
+    Some((short, qn, sub))
+}
+
+/// Parse a `SortView`'s named args into the type-parameter substitution
+/// `Vec<(abstract_param_short, concrete_sort_short)>`, sorted by param.
+/// Operation-valued args are skipped (they bind ops, not type params).
+fn sort_view_substitution(
+    kb: &KnowledgeBase,
+    named_args: &[(Symbol, TermId)],
+) -> Vec<(String, String)> {
     use crate::intern::SymbolKind;
-    let term = kb.get_term(spec);
-    match term {
-        Term::Fn { functor, pos_args, named_args } => {
-            let f_name = kb.qualified_name_of(*functor);
-            let f_short = f_name.rsplit('.').next().unwrap_or(f_name);
-            if f_short == "SortView" {
-                let base = pos_args.first().copied()?;
-                let base_sym = match kb.get_term(base) {
-                    Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
-                    _ => return None,
-                };
-                let a_qn = kb.qualified_name_of(base_sym).to_owned();
-                let a_short = a_qn.rsplit('.').next().unwrap_or(&a_qn).to_owned();
-                let mut sub: Vec<(String, String)> = named_args.iter().filter_map(|(k_sym, v_tid)| {
-                    let value_sym = match kb.get_term(*v_tid) {
-                        Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => Some(*functor),
-                        _ => None,
-                    };
-                    if let Some(vs) = value_sym {
-                        if matches!(kb.kind_of(vs), Some(SymbolKind::Operation)) {
-                            return None;
-                        }
-                    }
-                    let k_name = kb.resolve_sym(*k_sym);
-                    let k_short = k_name.rsplit('.').next().unwrap_or(k_name).to_owned();
-                    let v_short = match value_sym {
-                        Some(s) => {
-                            let n = kb.resolve_sym(s);
-                            n.rsplit('.').next().unwrap_or(n).to_owned()
-                        }
-                        None => "_".to_string(),
-                    };
-                    Some((k_short, v_short))
-                }).collect();
-                sub.sort_by(|a, b| a.0.cmp(&b.0));
-                Some((a_short, a_qn, sub))
-            } else {
-                // Plain nullary sort term — `provides Foo` with no
-                // bindings.
-                let qn = kb.qualified_name_of(*functor).to_owned();
-                let short = qn.rsplit('.').next().unwrap_or(&qn).to_owned();
-                Some((short, qn, Vec::new()))
+    let mut sub: Vec<(String, String)> = named_args.iter().filter_map(|(k_sym, v_tid)| {
+        let value_sym = match kb.get_term(*v_tid) {
+            Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => Some(*functor),
+            _ => None,
+        };
+        if let Some(vs) = value_sym {
+            if matches!(kb.kind_of(vs), Some(SymbolKind::Operation)) {
+                return None;
             }
         }
-        Term::Ref(s) | Term::Ident(s) => {
-            let qn = kb.qualified_name_of(*s).to_owned();
-            let short = qn.rsplit('.').next().unwrap_or(&qn).to_owned();
-            Some((short, qn, Vec::new()))
-        }
-        _ => None,
-    }
+        let k_short = last_segment(kb.resolve_sym(*k_sym)).to_owned();
+        let v_short = match value_sym {
+            Some(s) => last_segment(kb.resolve_sym(s)).to_owned(),
+            None => "_".to_string(),
+        };
+        Some((k_short, v_short))
+    }).collect();
+    sub.sort_by(|a, b| a.0.cmp(&b.0));
+    sub
 }
 
 /// Build a cons/nil list using explicit functor symbols. Mirrors
