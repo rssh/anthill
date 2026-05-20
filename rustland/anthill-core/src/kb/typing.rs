@@ -5595,9 +5595,15 @@ fn check_value_against_parameterized(
         _ => return None,
     };
 
-    // Check entity belongs to base sort
+    // Check entity belongs to base sort. WI-036: when the base is a spec
+    // sort (e.g. `Comparable[T = Int]`), a value whose own sort provides that
+    // spec is accepted — and since its constructor is not a base constructor,
+    // the per-field substitution walk below is skipped.
     if let Some(parent) = kb.constructor_parent_sort(val_functor) {
         if !constructor_matches_declared(kb, parent, base_sym) {
+            if sort_sym_of_term(kb, parent).is_some_and(|p| sort_provides(kb, p, base_sym)) {
+                return None;
+            }
             return Some(TypeError::Other {
                 span,
                 context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
