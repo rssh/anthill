@@ -322,13 +322,14 @@ fn assign_default_namespace(pf: &mut ParsedFile) {
 /// sources appear as project files too, and loading them again defines every
 /// bundle symbol twice. Skip them — a project supplies data, not bundle logic.
 fn is_bundle_logic_file(pf: &ParsedFile) -> bool {
+    // Bundle logic lives under `anthill.todo[.*]`; match the first two name
+    // segments so a child namespace (e.g. `anthill.todo.store`) counts too.
     pf.items.iter().any(|item| match item {
         anthill_core::parse::ir::Item::Namespace(ns) => {
-            let name = ns.name.segments.iter()
-                .map(|s| pf.symbols.name(*s))
-                .collect::<Vec<_>>()
-                .join(".");
-            name == "anthill.todo" || name.starts_with("anthill.todo.")
+            let segs = &ns.name.segments;
+            segs.len() >= 2
+                && pf.symbols.name(segs[0]) == "anthill"
+                && pf.symbols.name(segs[1]) == "todo"
         }
         _ => false,
     })
