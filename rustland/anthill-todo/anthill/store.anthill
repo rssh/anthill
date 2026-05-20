@@ -90,7 +90,7 @@ namespace anthill.todo.store
     -- field slots hold type expressions, not literal values), so
     -- pre-filter on a string `id` to keep only real rows.
     --
-    -- Read-only impl bodies route through `facts_of(kb(), "WorkItem")`
+    -- Read-only impl bodies route through `facts_of(kb(), WorkItem)`
     -- rather than `retrieve(backend, …)`: Stream.collect / Stream.head
     -- have no operational bodies in the stdlib yet (only splitFirst is
     -- wired through LogicalStream's Rust builtin), so a retrieve-based
@@ -156,7 +156,7 @@ namespace anthill.todo.store
     =
       match Cell.get(s)
         case wis(_, _) ->
-          match find_term_by_id(facts_of(kb(), "WorkItem"), id)
+          match find_term_by_id(facts_of(kb(), WorkItem), id)
             case none() -> none()
             case some(t) -> term_as_entity(t)
 
@@ -169,7 +169,7 @@ namespace anthill.todo.store
           match term_functor_name(st)
             case some(name) ->
               terms_to_workitems(
-                filter_by_status(facts_of(kb(), "WorkItem"), name))
+                filter_by_status(facts_of(kb(), WorkItem), name))
             case none() -> nil()
 
     operation all(s: Cell[V = WIS]) -> List[T = WorkItem]
@@ -177,7 +177,7 @@ namespace anthill.todo.store
     =
       match Cell.get(s)
         case wis(_, _) ->
-          terms_to_workitems(facts_of(kb(), "WorkItem"))
+          terms_to_workitems(facts_of(kb(), WorkItem))
 
     -- Persist `fact` through the wis backend and flush. The
     -- typed-surface entry points (commit / commit_feedback) split
@@ -214,7 +214,7 @@ namespace anthill.todo.store
     =
       match Cell.get(s)
         case wis(b, _) ->
-          match find_term_by_id(facts_of(kb(), "WorkItem"), target)
+          match find_term_by_id(facts_of(kb(), WorkItem), target)
             case none() -> ()
             case some(t) ->
               match find_fact(t)

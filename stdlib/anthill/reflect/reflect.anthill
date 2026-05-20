@@ -260,13 +260,15 @@ namespace anthill.reflect
       -> Stream[T = Substitution, E = Error]
       effects Error
 
-    -- Direct enumeration of asserted facts whose head functor matches the
-    -- given short name. Bypasses LogicalQuery / Substitution lowering for
-    -- the common "iterate every WorkItem" case where the caller has no
+    -- Direct enumeration of asserted facts whose head functor is the given
+    -- entity. The entity is passed by reference (e.g. `facts_of(kb(),
+    -- WorkItem)`), resolved to its qualified symbol via the caller's import —
+    -- no name-string resolution. Bypasses LogicalQuery / Substitution lowering
+    -- for the common "iterate every WorkItem" case where the caller has no
     -- per-field constraint and just wants the fact terms. Returns opaque
     -- `Term` values; use `term_field` / `term_as_string` / `term_functor_name`
     -- to inspect them.
-    operation facts_of(kb: KB, functor: String) -> List[T = Term]
+    operation facts_of(kb: KB, sort: Type) -> List[T = Term]
 
     -- Extract a sort's fact template as a query
     operation sort_template(kb: KB, sort_name: String) -> LogicalQuery

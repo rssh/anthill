@@ -81,15 +81,26 @@ pub struct ParsedFile {
 }
 
 impl ParsedFile {
-    /// Source spans of every top-level `Item::Fact` in this file, in
-    /// source order. Persistence backends zip this with the loader's
-    /// `LoadResult.fact_rule_ids` to record per-fact source locations
-    /// for span-based retract.
+    /// Source spans of every `Item::Fact` in this file, in source order.
+    /// Persistence backends zip this with the loader's
+    /// `LoadResult.fact_rule_ids` to record per-fact source locations for
+    /// span-based retract. Recurses into namespace blocks so facts wrapped in
+    /// a `namespace …` (e.g. a headerless fact file the file store loads into
+    /// `anthill.stage0`) are matched in the same DFS order the loader asserts
+    /// them.
     pub fn fact_spans(&self) -> Vec<Span> {
-        self.items.iter().filter_map(|i| match i {
-            Item::Fact(f) => Some(f.span),
-            _ => None,
-        }).collect()
+        fn collect(items: &[Item], out: &mut Vec<Span>) {
+            for item in items {
+                match item {
+                    Item::Fact(f) => out.push(f.span),
+                    Item::Namespace(ns) => collect(&ns.items, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut spans = Vec::new();
+        collect(&self.items, &mut spans);
+        spans
     }
 }
 

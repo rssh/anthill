@@ -1,7 +1,9 @@
 -- Example: Custom tool definitions
 
-fact ToolDef(
-  name: "lint-all",
-  command: "make",
-  args: ["lint"],
-  success: ExitZero)
+namespace anthill.stage0
+  fact ToolDef(
+    name: "lint-all",
+    command: "make",
+    args: ["lint"],
+    success: ExitZero)
+end

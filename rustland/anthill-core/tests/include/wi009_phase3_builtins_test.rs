@@ -25,10 +25,13 @@ namespace test.find_fact
 end
 "#;
     let mut interp = interp_for(src);
-    // facts_of ignores its KB arg — pass a placeholder.
+    // facts_of ignores its KB arg — pass a placeholder. The entity is passed
+    // by reference (a nullary Fn term for the qualified functor), matching the
+    // `facts_of(kb(), WorkItem)` source form.
+    let box_ref = Value::Term(interp.kb_mut().resolve_qualified_name_term("test.find_fact.Item.Box"));
     let facts = interp.call(
         "anthill.reflect.KB.facts_of",
-        &[Value::Unit, Value::Str("Box".into())],
+        &[Value::Unit, box_ref],
     ).expect("facts_of");
 
     // Drill down to the first cons head.
@@ -71,9 +74,10 @@ namespace test.replace_arg
 end
 "#;
     let mut interp = interp_for(src);
+    let pair_ref = Value::Term(interp.kb_mut().resolve_qualified_name_term("anthill.prelude.Pair.pair"));
     let facts = interp.call(
         "anthill.reflect.KB.facts_of",
-        &[Value::Unit, Value::Str("pair".into())],
+        &[Value::Unit, pair_ref],
     ).expect("facts_of");
     // facts_of returns both the user fact AND the synthetic entity
     // declaration (whose field values are unbound logical vars). Walk

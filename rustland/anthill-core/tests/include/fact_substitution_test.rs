@@ -127,7 +127,7 @@ fn extract_short_name(kb: &KnowledgeBase, tid: TermId) -> String {
 #[test]
 fn base_subst_computed_for_monoid() {
     let kb = load_monoid_kb();
-    let monoid_sym = kb.resolve_symbol("Monoid");
+    let monoid_sym = kb.resolve_symbol("test.monoid.Monoid");
     let base = kb.sort_base_subst(monoid_sym)
         .expect("Monoid should have a base_subst");
 
@@ -158,7 +158,7 @@ fn base_subst_computed_for_monoid() {
 fn requires_spec_inst_completed_for_int_add() {
     let mut kb = load_monoid_kb();
 
-    let int_add_term = kb.resolve_qualified_name_term("IntAdd");
+    let int_add_term = kb.resolve_qualified_name_term("test.monoid.IntAdd");
     let var_inst = make_var(&mut kb, "inst");
     let goal = make_requires_query(&mut kb, int_add_term, var_inst);
 
@@ -206,7 +206,7 @@ fn requires_spec_inst_completed_for_int_add() {
 fn requires_spec_inst_completed_for_int_mul() {
     let mut kb = load_monoid_kb();
 
-    let int_mul_term = kb.resolve_qualified_name_term("IntMul");
+    let int_mul_term = kb.resolve_qualified_name_term("test.monoid.IntMul");
     let var_inst = make_var(&mut kb, "inst");
     let goal = make_requires_query(&mut kb, int_mul_term, var_inst);
 
@@ -244,7 +244,7 @@ fn resolve_sort_inst_param_extracts_type_binding() {
     let mut kb = load_monoid_kb();
 
     // First get the spec for IntAdd
-    let int_add_term = kb.resolve_qualified_name_term("IntAdd");
+    let int_add_term = kb.resolve_qualified_name_term("test.monoid.IntAdd");
     let var_inst = make_var(&mut kb, "inst");
     let req_goal = make_requires_query(&mut kb, int_add_term, var_inst);
 
@@ -283,7 +283,7 @@ fn resolve_sort_inst_param_extracts_operation_binding() {
     let mut kb = load_monoid_kb();
 
     // Get the spec for IntAdd
-    let int_add_term = kb.resolve_qualified_name_term("IntAdd");
+    let int_add_term = kb.resolve_qualified_name_term("test.monoid.IntAdd");
     let var_inst = make_var(&mut kb, "inst");
     let req_goal = make_requires_query(&mut kb, int_add_term, var_inst);
 
@@ -320,7 +320,7 @@ fn auto_bind_same_named_operations() {
 
     // AutoBindTest has `requires Monoid[T = Int]` with no explicit combine/identity.
     // Since AutoBindTest has same-named ops (combine, identity), they should auto-bind.
-    let auto_term = kb.resolve_qualified_name_term("AutoBindTest");
+    let auto_term = kb.resolve_qualified_name_term("test.monoid.AutoBindTest");
     let var_inst = make_var(&mut kb, "inst");
     let goal = make_requires_query(&mut kb, auto_term, var_inst);
 

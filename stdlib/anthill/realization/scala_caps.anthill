@@ -15,6 +15,7 @@ namespace anthill.realization.scala_caps
   import anthill.realization.{LanguageMapping, EffectMapping, ReceiverRule,
                               TypeMapping, ReceiverForm, TraitReturnForm}
   import anthill.prelude.Option.{some, none}
+  import anthill.realization.platform.{execution_platform}
 
   fact LanguageMapping(
     language: "scala",

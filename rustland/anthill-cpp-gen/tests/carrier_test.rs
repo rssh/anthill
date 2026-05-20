@@ -79,7 +79,7 @@ fn entity_field_uses_carrier_type() {
     "#;
 
     let kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&kb, "Account").expect("emit Account");
+    let cpp = emit_entity_struct(&kb, "test.carriers.Account").expect("emit Account");
     let expected = "\
 struct Account {
     std::string name;
@@ -165,7 +165,7 @@ fn carrier_overrides_primitive_default() {
     "#;
 
     let kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&kb, "Counter").expect("emit Counter");
+    let cpp = emit_entity_struct(&kb, "test.carriers.Counter").expect("emit Counter");
     // `value: SmallInt` → carrier int32_t; `total: Int` → primitive int64_t.
     assert!(cpp.contains("int32_t value"), "expected int32_t for SmallInt:\n{cpp}");
     assert!(cpp.contains("int64_t total"), "expected int64_t for Int:\n{cpp}");

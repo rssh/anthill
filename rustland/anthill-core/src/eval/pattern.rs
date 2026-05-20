@@ -185,26 +185,18 @@ fn constructor_sub_values(
     }
 }
 
-/// Pattern-side constructor name may be the short symbol (`wis`); the
-/// scrutinee carries the loader-registered qualified symbol
-/// (`…FileBasedWorkitemStore.wis`). The kb's short→qualified index makes
-/// these comparable. Shared with the eval-side MatchDispatch pre-filter.
+/// Compare a pattern-side constructor functor against a scrutinee functor.
+/// Scope-aware loading normally resolves both to the same qualified symbol,
+/// so symbol equality is the fast path. The short-name comparison remains as
+/// a fallback for values built host-side whose Symbol carries a different
+/// qualified path than the pattern's. Shared with the eval-side MatchDispatch
+/// pre-filter.
 pub(crate) fn functor_matches(
     kb: &crate::kb::KnowledgeBase,
     pattern_sym: Symbol,
     scrutinee_sym: Symbol,
 ) -> bool {
     if pattern_sym == scrutinee_sym { return true; }
-    if let Some(q) = kb.entity_qualified_for_short(pattern_sym) {
-        if q == scrutinee_sym { return true; }
-    }
-    if let Some(q) = kb.entity_qualified_for_short(scrutinee_sym) {
-        if q == pattern_sym { return true; }
-    }
-    // Fallback: compare by last-dotted-segment short names. Covers
-    // patterns whose Symbol came from a nested-sort scope where the
-    // short-name redirect was registered for a different qualified
-    // resolution than the host-built value carries.
     let pattern_short = kb.resolve_sym(pattern_sym).rsplit('.').next().unwrap_or("");
     let scrut_short = kb.resolve_sym(scrutinee_sym).rsplit('.').next().unwrap_or("");
     !pattern_short.is_empty() && pattern_short == scrut_short

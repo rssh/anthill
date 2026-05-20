@@ -1,7 +1,9 @@
 -- Example: GitHub-style project configuration
 
-fact Project(
-  name: "my-github-app",
-  language: "rust",
-  build: "cargo",
-  tools: ["cargo-build", "cargo-test", "cargo-clippy", "lint-all"])
+namespace anthill.stage0
+  fact Project(
+    name: "my-github-app",
+    language: "rust",
+    build: "cargo",
+    tools: ["cargo-build", "cargo-test", "cargo-clippy", "lint-all"])
+end

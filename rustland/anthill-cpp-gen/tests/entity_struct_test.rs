@@ -20,7 +20,7 @@ fn vec3_entity_emits_cpp_struct() {
     "#;
 
     let kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&kb, "Vec3").expect("emit Vec3 struct");
+    let cpp = emit_entity_struct(&kb, "test.geom.Vec3").expect("emit Vec3 struct");
 
     let expected = "\
 struct Vec3 {
@@ -45,7 +45,7 @@ fn entity_with_int_and_string_fields() {
     "#;
 
     let kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&kb, "Account").expect("emit Account struct");
+    let cpp = emit_entity_struct(&kb, "test.account.Account").expect("emit Account struct");
 
     let expected = "\
 struct Account {

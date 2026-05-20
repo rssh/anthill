@@ -714,7 +714,7 @@ namespace anthill.todo
     -- gives O(1) `Map.contains` instead of an O(F) linear scan per row
     -- on a List[String]. WI-183.
     operation feedback_set() -> Map[String, Bool] =
-      let fb_facts = facts_of(kb(), "Feedback")
+      let fb_facts = facts_of(kb(), Feedback)
       collect_feedback_set(fb_facts, empty())
 
     operation collect_feedback_set(facts: List[Term],

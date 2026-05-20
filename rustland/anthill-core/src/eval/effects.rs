@@ -191,21 +191,10 @@ fn resource_key(interp: &Interpreter, arg: Option<&Value>) -> Result<Symbol, Eva
     let v = arg.ok_or_else(|| EvalError::ArityMismatch {
         op: "Modify", expected: 1, got: 0,
     })?;
-    match v {
-        Value::Entity { functor, .. } => Ok(*functor),
-        Value::Term(tid) => match interp.kb().get_term(*tid) {
-            crate::kb::term::Term::Fn { functor, .. } => Ok(*functor),
-            crate::kb::term::Term::Ref(sym) => Ok(*sym),
-            other => Err(EvalError::TypeMismatch {
-                expected: "Entity or nullary Term",
-                got: format!("Term::{:?}", other),
-            }),
-        },
-        other => Err(EvalError::TypeMismatch {
-            expected: "Entity, Cell, or nullary Term (resource identifier)",
-            got: other.type_name().to_string(),
-        }),
-    }
+    crate::eval::eval::value_functor(interp.kb(), v).ok_or_else(|| EvalError::TypeMismatch {
+        expected: "Entity, Cell, or nullary Term (resource identifier)",
+        got: v.type_name().to_string(),
+    })
 }
 
 /// Bounded structural walk checking whether `value` transitively

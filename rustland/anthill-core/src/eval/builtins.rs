@@ -773,17 +773,11 @@ fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) ->
     // namespace level rather than `sort … { entity X(...) }`) register
     // fields but no `entity_parent` — `WorkItem` in
     // `anthill-todo/domain.anthill` is the prototypical case — so the
-    // probe sequence keys off `entity_field_types`, not
-    // `constructor_parent_sort`. Path (3)'s last-resort scan covers
-    // facts whose parser-time Symbol is the unqualified short name
-    // (`fact WorkItem(...)` in a file that imports the qualified
-    // symbol).
+    // probe keys off `entity_field_types`, not `constructor_parent_sort`.
+    // The last-resort scan covers a functor that is still an unqualified
+    // short name.
     let canonical = if interp.kb.entity_field_types(functor).is_some() {
         functor
-    } else if let Some(q) = interp.kb.entity_qualified_for_short(functor)
-        .filter(|q| interp.kb.entity_field_types(*q).is_some())
-    {
-        q
     } else {
         let short_name = interp.kb.resolve_sym(functor).to_string();
         interp.kb.symbols.by_qualified_name.iter()
@@ -1164,17 +1158,11 @@ fn int_to_string(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
 /// streaming — facts are eagerly collected — which is fine for the
 /// anthill-todo workitem set (~hundreds of facts).
 fn kb_facts_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [_kb_arg, name_arg] = expect_args::<2>("KB.facts_of", args)?;
-    let name = match &name_arg {
-        Value::Str(s) => s.clone(),
-        other => return Err(type_mismatch("String", other, None)),
-    };
-
-    // Resolve the functor symbol — try the qualified path first (so users
-    // can pass "anthill.stage0.WorkItem"), then fall back to a plain intern
-    // for short names like "WorkItem" that match the loader's reintern path.
-    let functor_sym = interp.kb.try_resolve_symbol(&name)
-        .unwrap_or_else(|| interp.kb.intern(&name));
+    let [_kb_arg, sort_arg] = expect_args::<2>("KB.facts_of", args)?;
+    // The entity is passed by reference (e.g. `facts_of(kb(), WorkItem)`),
+    // resolved to its qualified functor symbol via the caller's import.
+    let functor_sym = crate::eval::eval::value_functor(&interp.kb, &sort_arg)
+        .ok_or_else(|| type_mismatch("Type (entity reference)", &sort_arg, None))?;
 
     let rule_ids = interp.kb.by_functor(functor_sym);
     let elements: Vec<Value> = rule_ids.into_iter()

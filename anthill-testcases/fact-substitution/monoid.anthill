@@ -1,3 +1,5 @@
+namespace test.monoid {
+
 sort Monoid {
   sort T = ?
   operation combine(a: T, b: T) -> T
@@ -28,4 +30,6 @@ sort AutoBindTest {
   requires Monoid[T = Int]
   operation combine(a: Int, b: Int) -> Int
   operation identity() -> Int
+}
+
 }

@@ -194,6 +194,12 @@ impl Interpreter {
         if let Some(v) = bound {
             return self.deliver(v);
         }
+        // A bare reference to a free-standing entity (e.g. `WorkItem` in
+        // `facts_of(kb(), WorkItem)`) is the entity as a type value, not a call.
+        if self.kb.is_free_standing_entity(sym) {
+            let tid = self.kb.alloc(crate::kb::term::Term::Ref(sym));
+            return self.deliver(Value::Term(tid));
+        }
         self.dispatch_call(sym, Vec::new(), SmallVec::new())
     }
 
@@ -1167,12 +1173,15 @@ fn collect_resolved_type_args(occ: &Rc<NodeOccurrence>) -> FrameTypeArgs {
     })
 }
 
-/// Head functor of a value, when one is recoverable.
-fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
+/// Head functor of a value, when one is recoverable: an entity, a `Fn` term,
+/// or a bare `Ref` (a nullary reference, e.g. a free-standing entity used as a
+/// type value).
+pub(crate) fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
     match value {
         Value::Entity { functor, .. } => Some(*functor),
         Value::Term(tid) => match kb.get_term(*tid) {
             Term::Fn { functor, .. } => Some(*functor),
+            Term::Ref(sym) => Some(*sym),
             _ => None,
         },
         _ => None,

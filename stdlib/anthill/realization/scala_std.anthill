@@ -10,7 +10,7 @@
 namespace anthill.realization.scala_std
   import anthill.realization.{LanguageMapping, EffectMapping, ReceiverRule,
                               TypeMapping, ReceiverForm, TraitReturnForm}
-  import anthill.realization.platform.{ExecutionPlatform}
+  import anthill.realization.platform.{ExecutionPlatform, execution_platform}
   import anthill.prelude.Option.{some, none}
 
   -- ================================================================

@@ -480,6 +480,36 @@ fn scan_items_pass1(
                     let n = join_segments(parse_sym, &export_name.segments);
                     kb.symbols.add_export(sort_term.raw(), &n);
                 }
+                // Expose the sort's constructor variants to the enclosing
+                // scope: add each `entity` child short-name to the sort's
+                // exports and link the sort scope as a non-enclosing parent of
+                // `actual_scope`. The export-filtered parent walk in
+                // `resolve_in_scope` then resolves bare `Open` to
+                // `WorkStatus.Open` from the namespace (and its child scopes),
+                // and two sorts sharing a variant name resolve to `Ambiguous`
+                // rather than one silently winning.
+                //
+                // The parent link is added only when the sort has variants: an
+                // empty `exports` set disables the export filter, which would
+                // leak the sort's operations (e.g. `Collection.insert`). This
+                // applies at `_global` too — a headerless file's top-level
+                // `enum` exposes its variants there — so colliding fixtures
+                // must namespace their sorts to disambiguate.
+                let mut has_variant = false;
+                for item in &s.items {
+                    if let Item::Entity(e) = item {
+                        let vshort = parse_sym.name(*e.name.segments.last().unwrap());
+                        kb.symbols.add_export(sort_term.raw(), vshort);
+                        has_variant = true;
+                    }
+                }
+                if is_new && has_variant {
+                    kb.symbols.add_parent(actual_scope.raw(), ScopeInclusion {
+                        parent_scope_raw: sort_term.raw(),
+                        instantiation_term_raw: sort_term.raw(),
+                        is_enclosing: false,
+                    });
+                }
                 // Recurse into sort body with the sort's qualified name as prefix
                 scan_items_pass1(kb, &s.items, parse_sym, parse_terms, sort_term, &qualified);
             }
@@ -3034,12 +3064,6 @@ fn resolve_name_in_kb_opt(kb: &KnowledgeBase, name: &str, scope_raw: u32) -> Opt
 fn resolve_by_short_name(kb: &KnowledgeBase, name: &str) -> Option<Symbol> {
     use crate::intern::{SymbolDef, SymbolKind};
 
-    // Check entity short-name index
-    if let Some(&short) = kb.symbols.intern_map.get(name) {
-        if let Some(qualified) = kb.entity_qualified_for_short(short) {
-            return Some(qualified);
-        }
-    }
     // Scan by_qualified_name for matching short name
     let mut found: Option<Symbol> = None;
     let mut found_is_builtin = false;
@@ -3474,11 +3498,9 @@ impl<'a> Loader<'a> {
                         }
                     }
                 }
-                // Fallback: check entity short-name index, then global short-name search
+                // Fallback: global short-name search by qualified-name suffix.
                 let interned = self.kb.symbols.intern(name);
-                if let Some(qualified) = self.kb.entity_qualified_for_short(interned) {
-                    qualified
-                } else if let Some(sym) = resolve_by_short_name(self.kb, name) {
+                if let Some(sym) = resolve_by_short_name(self.kb, name) {
                     sym
                 } else {
                     interned
@@ -5095,8 +5117,6 @@ impl<'a> Loader<'a> {
         let short_sym = self.kb.intern(&short_name);
         if short_sym != functor {
             self.kb.register_entity_fields(short_sym, field_names);
-            // Map short name → qualified symbol so remap_symbol can redirect
-            self.kb.register_entity_short_name(short_sym, functor);
         }
 
         let entity_term = self.kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args });

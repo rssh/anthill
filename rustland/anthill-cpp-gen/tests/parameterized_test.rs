@@ -20,7 +20,7 @@ fn entity_with_list_field() {
         end
     "#;
     let kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&kb, "Polyline").expect("emit Polyline");
+    let cpp = emit_entity_struct(&kb, "test.params.Polyline").expect("emit Polyline");
     let expected = "\
 struct Polyline {
     std::vector<double> points;
@@ -39,7 +39,7 @@ fn entity_with_option_field() {
         end
     "#;
     let kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&kb, "User").expect("emit User");
+    let cpp = emit_entity_struct(&kb, "test.params.User").expect("emit User");
     let expected = "\
 struct User {
     std::string name;
@@ -60,7 +60,7 @@ fn nested_parameterization() {
         end
     "#;
     let kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&kb, "OptionalSamples")
+    let cpp = emit_entity_struct(&kb, "test.params.OptionalSamples")
         .expect("emit OptionalSamples");
     assert!(
         cpp.contains("std::optional<std::vector<double>> samples"),
@@ -161,7 +161,7 @@ fn carrier_overrides_parameterized_default() {
         end
     "#;
     let kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&kb, "Polyline").expect("emit Polyline");
+    let cpp = emit_entity_struct(&kb, "test.params.Polyline").expect("emit Polyline");
     assert!(
         cpp.contains("::small::Vec<double> points"),
         "carrier override should produce ::small::Vec<double>:\n{cpp}"

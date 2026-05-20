@@ -286,6 +286,36 @@ fn scan_dir(project_dir: &Path) -> PathBuf {
 
 // ── KB loading ──────────────────────────────────────────────────
 
+/// Headerless project files — bare `fact …(…)` lists such as
+/// `workitems.anthill` — parse with their items at the top level, which the
+/// loader places in the `_global` scope where stage0 entity names like
+/// `WorkItem` are not visible. The file store owns the knowledge that these
+/// facts belong to the `anthill.stage0` domain, so it wraps such files in a
+/// synthetic `namespace anthill.stage0` block. That reuses the scope the
+/// project's `domain.anthill` set up (entity definitions + prelude imports),
+/// so the bare functor and its constructor variants resolve lexically. Files
+/// that already declare a namespace are left untouched.
+fn assign_default_namespace(pf: &mut ParsedFile) {
+    use anthill_core::parse::ir::{Item, Name, Namespace};
+    use anthill_core::span::Span;
+
+    if pf.items.is_empty() || pf.items.iter().any(|i| matches!(i, Item::Namespace(_))) {
+        return;
+    }
+    let mut segments: SmallVec<[anthill_core::intern::Symbol; 2]> = SmallVec::new();
+    segments.push(pf.symbols.intern("anthill"));
+    segments.push(pf.symbols.intern("stage0"));
+    let name = Name { segments, span: Span::default() };
+    let items = std::mem::take(&mut pf.items);
+    pf.items.push(Item::Namespace(Namespace {
+        name,
+        imports: Vec::new(),
+        exports: Vec::new(),
+        items,
+        span: Span::default(),
+    }));
+}
+
 fn load_kb(project_dir: &Path, stdlib_path: Option<&Path>) -> Result<KnowledgeBase, String> {
     // WI-233: phase timings, gated by ANTHILL_TODO_TIMING=1. Lets a
     // user see which phase of `load_kb` dominates the wall time.
@@ -334,7 +364,10 @@ fn load_kb(project_dir: &Path, stdlib_path: Option<&Path>) -> Result<KnowledgeBa
         let source = fs::read_to_string(file)
             .map_err(|e| format!("{}: {e}", file.display()))?;
         match parse::parse(&source) {
-            Ok(p) => domain_parsed.push(p),
+            Ok(mut p) => {
+                assign_default_namespace(&mut p);
+                domain_parsed.push(p);
+            }
             Err(errs) => {
                 for e in &errs {
                     eprintln!("warning: {}:{}", file.display(), e.format_with_source(&source));
@@ -1634,7 +1667,10 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
             Err(e) => { eprintln!("warning: {}: {e}", file.display()); continue; }
         };
         match parse::parse(&source) {
-            Ok(parsed) => project_items.push(ProjectFile { path: file.clone(), parsed }),
+            Ok(mut parsed) => {
+                assign_default_namespace(&mut parsed);
+                project_items.push(ProjectFile { path: file.clone(), parsed });
+            }
             Err(errs) => {
                 for err in &errs {
                     eprintln!("warning: {}:{}", file.display(), err.format_with_source(&source));

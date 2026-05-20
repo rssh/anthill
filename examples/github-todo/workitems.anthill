@@ -1,33 +1,35 @@
 -- Example: Work items for adding authentication to a web app
 
-fact WorkItem(
-  id: "WI-AUTH-001",
-  description: "Define User entity and authentication traits",
-  context: [FileRef("src/models/user.rs"), FileRef("src/auth/mod.rs")],
-  acceptance: [Compiles(SourceRoot(path: "src", scope: Main))],
-  depends_on: [],
-  status: Open)
+namespace anthill.stage0
+  fact WorkItem(
+    id: "WI-AUTH-001",
+    description: "Define User entity and authentication traits",
+    context: [FileRef("src/models/user.rs"), FileRef("src/auth/mod.rs")],
+    acceptance: [Compiles(SourceRoot(path: "src", scope: Main))],
+    depends_on: [],
+    status: Open)
 
-fact WorkItem(
-  id: "WI-AUTH-002",
-  description: "Implement JWT token generation and validation",
-  context: [WorkItemRef("WI-AUTH-001"), FileRef("src/auth/jwt.rs")],
-  acceptance: [Compiles(SourceRoot(path: "src", scope: Main)), ToolPasses("cargo-test")],
-  depends_on: ["WI-AUTH-001"],
-  status: Open)
+  fact WorkItem(
+    id: "WI-AUTH-002",
+    description: "Implement JWT token generation and validation",
+    context: [WorkItemRef("WI-AUTH-001"), FileRef("src/auth/jwt.rs")],
+    acceptance: [Compiles(SourceRoot(path: "src", scope: Main)), ToolPasses("cargo-test")],
+    depends_on: ["WI-AUTH-001"],
+    status: Open)
 
-fact WorkItem(
-  id: "WI-AUTH-003",
-  description: "Add authentication middleware to HTTP router",
-  context: [WorkItemRef("WI-AUTH-002"), FileRef("src/middleware/auth.rs"), FileRef("src/routes/mod.rs")],
-  acceptance: [Compiles(SourceRoot(path: "src", scope: Main)), ToolPasses("cargo-test")],
-  depends_on: ["WI-AUTH-002"],
-  status: Open)
+  fact WorkItem(
+    id: "WI-AUTH-003",
+    description: "Add authentication middleware to HTTP router",
+    context: [WorkItemRef("WI-AUTH-002"), FileRef("src/middleware/auth.rs"), FileRef("src/routes/mod.rs")],
+    acceptance: [Compiles(SourceRoot(path: "src", scope: Main)), ToolPasses("cargo-test")],
+    depends_on: ["WI-AUTH-002"],
+    status: Open)
 
-fact WorkItem(
-  id: "WI-AUTH-004",
-  description: "Add integration tests for auth flow",
-  context: [WorkItemRef("WI-AUTH-003"), FileRef("tests/auth_integration.rs")],
-  acceptance: [ToolPasses("cargo-test")],
-  depends_on: ["WI-AUTH-003"],
-  status: Open)
+  fact WorkItem(
+    id: "WI-AUTH-004",
+    description: "Add integration tests for auth flow",
+    context: [WorkItemRef("WI-AUTH-003"), FileRef("tests/auth_integration.rs")],
+    acceptance: [ToolPasses("cargo-test")],
+    depends_on: ["WI-AUTH-003"],
+    status: Open)
+end

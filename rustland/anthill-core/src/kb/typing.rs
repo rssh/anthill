@@ -660,6 +660,17 @@ fn extract_ref_field(kb: &KnowledgeBase, named_args: &SmallVec<[(Symbol, TermId)
         })
 }
 
+/// Functor symbols of a sort's constructor children.
+fn sort_constructor_syms(kb: &KnowledgeBase, sort_term: TermId) -> Vec<Symbol> {
+    kb.sort_children(sort_term)
+        .iter()
+        .filter_map(|&et| match kb.get_term(et) {
+            Term::Fn { functor, .. } => Some(*functor),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Convert a raw sort term (Fn { functor: sym }) to a sort_ref type term.
 fn sort_term_to_type(kb: &mut KnowledgeBase, sort_term: TermId) -> TermId {
     let sym = match kb.get_term(sort_term) {
@@ -915,23 +926,6 @@ pub fn type_check_node(
     results.pop().expect("iterative typer: missing final result")
 }
 
-/// Try to resolve `sym` to a constructor symbol. Handles both the
-/// already-qualified case (sym is itself the constructor) and the
-/// short-name case where the loader didn't link the body's reference
-/// to the qualified entity symbol. Returns `Some(qualified)` when the
-/// short symbol maps to exactly one entity short→qualified index entry.
-fn resolve_constructor_sym(kb: &KnowledgeBase, sym: Symbol) -> Option<Symbol> {
-    if kb.is_constructor_symbol(sym) {
-        return Some(sym);
-    }
-    if let Some(q) = kb.entity_qualified_for_short(sym) {
-        if kb.is_constructor_symbol(q) {
-            return Some(q);
-        }
-    }
-    None
-}
-
 /// Type-check a bare-identifier reference (Ref / Ident / VarRef) by
 /// dispatching across the resolution paths: env-bound var,
 /// constructor, zero-arg operation. Returns `Err(UnresolvedName)`
@@ -946,11 +940,18 @@ fn check_bare_ref(
     if let Some(ty) = env.lookup_var(sym) {
         return Ok(TypeResult::pure(ty, env.clone()));
     }
-    if let Some(ctor_sym) = resolve_constructor_sym(kb, sym) {
-        return check_constructor_iter(kb, env, ctor_sym, &[], &[], &[], &[], span, None);
+    if kb.is_constructor_symbol(sym) {
+        return check_constructor_iter(kb, env, sym, &[], &[], &[], &[], span, None);
     }
     if let Some(ret_ty) = lookup_operation_return_type(kb, sym) {
         return Ok(TypeResult::pure(ret_ty, env.clone()));
+    }
+    // A bare reference to a free-standing entity denotes the entity as a type,
+    // not a construction — its type is the reflect `Type` sort, so it can be
+    // passed to operations taking a `Type` (e.g. `facts_of(kb(), WorkItem)`).
+    if kb.is_free_standing_entity(sym) {
+        let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
+        return Ok(TypeResult::pure(type_ty, env.clone()));
     }
     Err(TypeError::UnresolvedName { span, name: sym })
 }
@@ -1292,11 +1293,25 @@ fn build_type(
             // here so MatchFinal can run the check without re-walking.
             let mut covered_entities: Vec<Symbol> = Vec::new();
             let mut has_wildcard = false;
+            // Constructors of the scrutinee sort. A bare `case red` parses as a
+            // var_pattern (the name could be a binding or a nullary
+            // constructor); recognizing it as a constructor needs the
+            // candidate set. The scrutinee sort's own constructors are that
+            // set — resolving against them replaces the removed global
+            // short→qualified fallback the late lookup relied on.
+            let scrutinee_ctors: Vec<Symbol> = scr_ty
+                .and_then(|sty| extract_sort_ref_sym(kb, sty))
+                .map(|s| {
+                    let sort_term = kb.make_name_term_from_sym(s);
+                    sort_constructor_syms(kb, sort_term)
+                })
+                .unwrap_or_default();
             let mut branch_envs: Vec<Rc<TypingEnv>> = Vec::with_capacity(branches.len());
             for branch in &branches {
                 collect_covered_entities(
                     kb,
                     branch.pattern,
+                    &scrutinee_ctors,
                     &mut covered_entities,
                     &mut has_wildcard,
                 );
@@ -1363,14 +1378,7 @@ fn build_type(
                     if let Some(sort_sym) = extract_sort_ref_sym(kb, sty) {
                         let sort_term = kb.make_name_term_from_sym(sort_sym);
                         if kb.sort_kind(sort_term) == Some(SortKind::Enum) {
-                            let entity_terms = kb.sort_children(sort_term);
-                            let all_entities: Vec<Symbol> = entity_terms
-                                .iter()
-                                .filter_map(|&et| match kb.get_term(et) {
-                                    Term::Fn { functor, .. } => Some(*functor),
-                                    _ => None,
-                                })
-                                .collect();
+                            let all_entities = sort_constructor_syms(kb, sort_term);
                             let missing: Vec<String> = all_entities
                                 .iter()
                                 .filter(|e| {
@@ -5813,6 +5821,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
 fn collect_covered_entities(
     kb: &KnowledgeBase,
     pattern: TermId,
+    scrutinee_ctors: &[Symbol],
     covered: &mut Vec<Symbol>,
     has_wildcard: &mut bool,
 ) {
@@ -5821,13 +5830,17 @@ fn collect_covered_entities(
         match fname.as_str() {
             "wildcard" => { *has_wildcard = true; }
             "var_pattern" => {
-                // A var_pattern might actually be a nullary constructor (e.g., `case red`)
+                // A var_pattern might actually be a nullary constructor (e.g.
+                // `case red`). The pattern name is stored bare (it could be a
+                // binding), so recognize it by matching against the scrutinee
+                // sort's constructors — `red` against `Color.red` modulo
+                // short/qualified — rather than a global name lookup. A name
+                // that matches no constructor is a binding (catch-all).
                 if let Some(sym) = extract_sym_arg(kb, named_args, pos_args, "name") {
-                    let qname = kb.qualified_name_of(sym);
-                    let resolved = kb.try_resolve_symbol(qname);
-                    let ctor_sym = resolved.unwrap_or(sym);
-                    if kb.is_constructor_symbol(ctor_sym) || kb.constructor_parent_sort(ctor_sym).is_some() {
-                        covered.push(ctor_sym);
+                    if let Some(&ctor) = scrutinee_ctors.iter().find(|&&c| same_symbol(kb, c, sym)) {
+                        covered.push(ctor);
+                    } else if kb.is_constructor_symbol(sym) || kb.constructor_parent_sort(sym).is_some() {
+                        covered.push(sym);
                     } else {
                         *has_wildcard = true;
                     }

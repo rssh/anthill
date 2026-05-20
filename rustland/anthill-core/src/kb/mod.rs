@@ -207,12 +207,6 @@ pub struct KnowledgeBase {
     // Populated during load_entity, used by convert_term for partial named-arg expansion.
     pub(crate) entity_fields: HashMap<Symbol, Vec<Symbol>>,
 
-    // Entity short-name → qualified functor symbol.
-    // Allows remap_symbol to resolve unqualified entity names (e.g. "WorkItem")
-    // to their qualified symbols (e.g. anthill.stage0.WorkItem) when scope
-    // resolution fails. Populated during load_entity.
-    entity_short_to_qualified: HashMap<Symbol, Symbol>,
-
     // Set of functor symbols that are constructors (entities with a parent sort).
     // Populated by register_entity_of, used by is_constructor_symbol for O(1) lookup.
     constructor_symbols: HashSet<Symbol>,
@@ -346,7 +340,6 @@ impl KnowledgeBase {
             fact_dedup: HashMap::new(),
             builtins: HashMap::new(),
             entity_fields: HashMap::new(),
-            entity_short_to_qualified: HashMap::new(),
             constructor_symbols: HashSet::new(),
             next_var: 0,
             sort_base_subst: HashMap::new(),
@@ -2009,19 +2002,9 @@ impl KnowledgeBase {
         self.symbols.lookup(name)
     }
 
-    /// Try to look up a resolved symbol by qualified name.
-    /// Also checks entity short-name → qualified mappings.
+    /// Look up a resolved symbol by qualified name.
     pub fn try_resolve_symbol(&self, name: &str) -> Option<Symbol> {
-        if let Some(&sym) = self.symbols.by_qualified_name.get(name) {
-            return Some(sym);
-        }
-        // Fallback: check entity short-name index
-        if let Some(&short) = self.symbols.intern_map.get(name) {
-            if let Some(&qualified) = self.entity_short_to_qualified.get(&short) {
-                return Some(qualified);
-            }
-        }
-        None
+        self.symbols.by_qualified_name.get(name).copied()
     }
 
     /// Resolve a name using scope-aware resolution from _global scope.
@@ -2264,20 +2247,17 @@ impl KnowledgeBase {
         self.entity_field_types.keys()
     }
 
-    /// Register a short-name → qualified-symbol mapping for an entity.
-    pub fn register_entity_short_name(&mut self, short_sym: Symbol, qualified_sym: Symbol) {
-        self.entity_short_to_qualified.insert(short_sym, qualified_sym);
-    }
-
-    /// Look up the qualified entity symbol for an unqualified short name.
-    pub fn entity_qualified_for_short(&self, short_sym: Symbol) -> Option<Symbol> {
-        self.entity_short_to_qualified.get(&short_sym).copied()
-    }
-
     /// Check if a functor symbol is a constructor (entity with a parent sort).
     /// O(1) lookup via pre-built index populated by register_entity_of.
     pub fn is_constructor_symbol(&self, functor: Symbol) -> bool {
         self.constructor_symbols.contains(&functor)
+    }
+
+    /// A free-standing entity: declared at namespace level (registered fields)
+    /// with no parent sort, so it is not a constructor. A bare reference to one
+    /// denotes the entity as a type rather than a construction.
+    pub fn is_free_standing_entity(&self, functor: Symbol) -> bool {
+        self.entity_field_types(functor).is_some() && !self.is_constructor_symbol(functor)
     }
 
     // ── Builtin dispatch ────────────────────────────────────────
