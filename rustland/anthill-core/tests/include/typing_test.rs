@@ -2883,6 +2883,61 @@ end
     assert!(!match_errors.is_empty(), "should detect missing 'green' case, got: {:?}", errors);
 }
 
+// WI-036: a fact field whose declared type is a spec sort accepts a value
+// whose own sort provides that spec.
+#[test]
+fn spec_field_accepts_value_whose_sort_provides_spec() {
+    let source = r#"
+namespace test.wi036_ok
+  sort Comparable
+    sort T = ?
+    operation cmp(a: T, b: T) -> Bool
+  end
+  sort Widget
+    entity widget(id: Int)
+  end
+  fact Comparable[T = Widget]
+  sort Box
+    entity Holder(item: Comparable)
+  end
+  fact Holder(item: widget(7))
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let field_errors: Vec<_> = errors.iter()
+        .filter(|e| format!("{}", e).contains("Holder"))
+        .collect();
+    assert!(field_errors.is_empty(),
+        "Widget provides Comparable, so the field should type-check, got: {:?}", errors);
+}
+
+#[test]
+fn spec_field_rejects_value_whose_sort_lacks_provides() {
+    let source = r#"
+namespace test.wi036_bad
+  sort Comparable
+    sort T = ?
+    operation cmp(a: T, b: T) -> Bool
+  end
+  sort Gadget
+    entity gadget(id: Int)
+  end
+  sort Box
+    entity Holder(item: Comparable)
+  end
+  fact Holder(item: gadget(3))
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let field_errors: Vec<_> = errors.iter()
+        .filter(|e| format!("{}", e).contains("Holder"))
+        .collect();
+    assert!(!field_errors.is_empty(),
+        "Gadget does not provide Comparable, so the field should be rejected, got: {:?}", errors);
+}
+
 #[test]
 fn exhaustiveness_wildcard_covers_all() {
     let source = r#"

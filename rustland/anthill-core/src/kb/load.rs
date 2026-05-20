@@ -2476,7 +2476,7 @@ fn sorts_and_own_ops(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<Symbol>)> {
 /// Extract the carrier sort symbol from a `SortProvidesInfo.sort_ref`
 /// term — a `sort_ref(name: Ref(S))`, a bare `Ref(S)`/`Ident(S)`, or a
 /// nullary `Fn` whose functor is `S`.
-fn sort_ref_functor(kb: &KnowledgeBase, term: TermId) -> Option<Symbol> {
+pub(crate) fn sort_ref_functor(kb: &KnowledgeBase, term: TermId) -> Option<Symbol> {
     match kb.get_term(term) {
         Term::Fn { functor, named_args, .. } => {
             // `sort_ref(name: Ref(S))` wrapping — prefer the inner name.
@@ -2497,7 +2497,7 @@ fn sort_ref_functor(kb: &KnowledgeBase, term: TermId) -> Option<Symbol> {
 
 /// Extract the spec sort symbol from a `SortProvidesInfo.spec` term:
 /// the base of a `SortView(Spec, …)` wrapper, or a bare spec ref.
-fn provides_spec_base_sym(kb: &KnowledgeBase, spec: TermId) -> Option<Symbol> {
+pub(crate) fn provides_spec_base_sym(kb: &KnowledgeBase, spec: TermId) -> Option<Symbol> {
     match kb.get_term(spec) {
         Term::Fn { functor, pos_args, .. } => {
             let f_short = last_segment(kb.qualified_name_of(*functor));

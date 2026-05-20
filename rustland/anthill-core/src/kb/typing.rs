@@ -5499,54 +5499,75 @@ fn check_value_against_sort_ref(
                 Literal::Bool(_) => is_prim(declared_sym, "Bool"),
                 _ => true,
             };
-            if !ok {
-                let actual = match lit {
-                    Literal::String(_) => "String",
-                    Literal::Int(_) => "Int",
-                    Literal::Float(_) => "Float",
-                    Literal::Bool(_) => "Bool",
-                    _ => "?",
-                };
+            let actual = match lit {
+                Literal::String(_) => "String",
+                Literal::Int(_) => "Int",
+                Literal::Float(_) => "Float",
+                Literal::Bool(_) => "Bool",
+                _ => "?",
+            };
+            // WI-036: a primitive value also satisfies a spec-sort field when
+            // its primitive sort provides the spec (e.g. `5` for a field typed
+            // `Eq`, since `Int provides Eq`).
+            if ok || lit_sort_provides(kb, actual, declared_sym) {
+                None
+            } else {
                 Some(TypeError::Other {
                     span,
                     context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
                     expected: type_display_name(kb, declared_type),
                     actual: actual.to_string(),
                 })
-            } else {
-                None
             }
         }
         Term::Fn { functor: val_functor, .. } => {
-            if let Some(parent) = kb.constructor_parent_sort(*val_functor) {
-                if !constructor_matches_declared(kb, parent, declared_sym) {
-                    return Some(TypeError::Other {
-                        span,
-                        context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
-                        expected: type_display_name(kb, declared_type),
-                        actual: extract_parent_name(kb, parent),
-                    });
-                }
-            }
-            None
+            check_value_sort_membership(
+                kb, kb.constructor_parent_sort(*val_functor),
+                declared_sym, declared_type, entity_sym, field_sym, span,
+            )
         }
-        Term::Ref(val_sym) => {
-            if kb.is_constructor_symbol(*val_sym) {
-                if let Some(parent) = kb.constructor_parent_sort(*val_sym) {
-                    if !constructor_matches_declared(kb, parent, declared_sym) {
-                        return Some(TypeError::Other {
-                            span,
-                            context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
-                            expected: type_display_name(kb, declared_type),
-                            actual: extract_parent_name(kb, parent),
-                        });
-                    }
-                }
-            }
-            None
+        Term::Ref(val_sym) if kb.is_constructor_symbol(*val_sym) => {
+            check_value_sort_membership(
+                kb, kb.constructor_parent_sort(*val_sym),
+                declared_sym, declared_type, entity_sym, field_sym, span,
+            )
         }
         _ => None,
     }
+}
+
+/// True if the primitive sort of a literal (`"Int"`, `"String"`, …) provides
+/// the spec sort `declared_sym` (WI-036 — a primitive value in a spec field).
+fn lit_sort_provides(kb: &KnowledgeBase, prim: &str, declared_sym: Symbol) -> bool {
+    kb.try_resolve_symbol(&format!("anthill.prelude.{prim}"))
+        .is_some_and(|prim_sym| sort_provides(kb, prim_sym, declared_sym))
+}
+
+/// Shared check for a constructor value against a declared sort: accept direct
+/// membership (the value's parent sort is the declared sort) or, per WI-036,
+/// when the parent sort provides the declared spec sort.
+fn check_value_sort_membership(
+    kb: &KnowledgeBase,
+    parent: Option<TermId>,
+    declared_sym: Symbol,
+    declared_type: TermId,
+    entity_sym: Symbol,
+    field_sym: Symbol,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    let parent = parent?;
+    if constructor_matches_declared(kb, parent, declared_sym) {
+        return None;
+    }
+    if sort_sym_of_term(kb, parent).is_some_and(|p| sort_provides(kb, p, declared_sym)) {
+        return None;
+    }
+    Some(TypeError::Other {
+        span,
+        context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
+        expected: type_display_name(kb, declared_type),
+        actual: extract_parent_name(kb, parent),
+    })
 }
 
 /// Check value against a parameterized type like List[T=Int].
@@ -5685,6 +5706,35 @@ fn check_entity_facts(kb: &KnowledgeBase, ctor_syms: &[Symbol], errors: &mut Vec
             }
         }
     }
+}
+
+/// True if sort `carrier` provides spec `spec` — i.e. a `SortProvidesInfo`
+/// fact records `carrier` as its `sort_ref` and `spec` as the spec base.
+/// `maybe_emit_fact_provides_info` normalizes both explicit `provides`
+/// clauses and bare `fact Spec[T=X]` facts into `SortProvidesInfo`, so this
+/// one query covers both. Used so a fact field declared with a spec sort
+/// accepts a value whose own sort satisfies that spec (WI-036).
+fn sort_provides(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> bool {
+    let provides_sym = match kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") {
+        Some(s) => s,
+        None => return false,
+    };
+    for rid in kb.by_functor(provides_sym) {
+        let named = match kb.get_term(kb.rule_head(rid)) {
+            Term::Fn { named_args, .. } => named_args.clone(),
+            _ => continue,
+        };
+        let carrier_ok = get_named_arg(kb, &named, "sort_ref")
+            .and_then(|t| super::load::sort_ref_functor(kb, t))
+            .is_some_and(|c| same_symbol(kb, c, carrier));
+        let spec_ok = get_named_arg(kb, &named, "spec")
+            .and_then(|t| super::load::provides_spec_base_sym(kb, t))
+            .is_some_and(|s| same_symbol(kb, s, spec));
+        if carrier_ok && spec_ok {
+            return true;
+        }
+    }
+    false
 }
 
 /// Check if a constructor's parent sort matches the declared type symbol.
