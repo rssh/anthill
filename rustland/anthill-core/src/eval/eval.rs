@@ -311,12 +311,14 @@ impl Interpreter {
         }
     }
 
-    /// Spec-op dispatch via the dispatching dictionary's functor.
-    /// Conceptually a vtable / sort-ops-table lookup; materialized as a
-    /// qualified-name resolution `<dict.functor_qn>.<op_short>`. Falls
-    /// back to `fn_sym` when the impl has no override — supports
-    /// spec-op default-body invocation (e.g., `Eq.neq`'s default when
-    /// the impl doesn't override `neq`).
+    /// Spec-op dispatch via the dispatching dictionary's sort. Reads
+    /// the load-time `sort_ops_table[dict.sort][op_short]` (WI-240) — a
+    /// direct table lookup, not a qualified-name string concatenation.
+    /// The entry is `S.<op>` when the impl overrides with a runnable
+    /// body, or the spec op itself for a spec rewrite-rule / builtin
+    /// default. Falls back to `fn_sym` when no entry exists — Pin-now /
+    /// Direct callers pass an already-concrete `fn_sym`, and the dict's
+    /// sort carries no table row for it.
     fn dispatch_via_sort_ops_table(
         &self,
         fn_sym: Symbol,
@@ -326,9 +328,13 @@ impl Interpreter {
         let Some((_, op_short)) = fn_qn.rsplit_once('.') else {
             return fn_sym;
         };
-        let impl_qn = self.kb.qualified_name_of(dispatching_dict.functor());
-        let target_qn = format!("{impl_qn}.{op_short}");
-        self.kb.try_resolve_symbol(&target_qn).unwrap_or(fn_sym)
+        let impl_sym = dispatching_dict.functor();
+        match self.kb.lookup_symbol(op_short) {
+            Some(op_short_sym) => {
+                self.kb.sort_ops_lookup(impl_sym, op_short_sym).unwrap_or(fn_sym)
+            }
+            None => fn_sym,
+        }
     }
 
     // ── Binder starts: update top.awaiting, push child frame. ──────

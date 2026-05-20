@@ -145,6 +145,29 @@ pub enum SortKind {
     Enum,
 }
 
+// ── Sort operations table ───────────────────────────────────────
+
+/// WI-240 — per-impl-sort operations table. For each impl sort `S`
+/// with a `fact Spec[bindings]`, maps each of `Spec`'s declared op
+/// short names to the symbol the runtime should invoke: `S.<op>` when
+/// the impl overrides with a runnable body, otherwise the spec op
+/// itself (`Spec.<op>` — resolved via the spec's rewrite rule or a
+/// registered builtin at runtime).
+///
+/// Built once at load time by `load::build_sort_ops_table`, after all
+/// `SortProvidesInfo` / `OperationInfo` facts are asserted. Dispatch
+/// consumers (the typer's `resolve_at_goal`, the eval's
+/// `apply_within`) read it via [`KnowledgeBase::sort_ops_lookup`] — a
+/// direct table lookup, replacing the prior
+/// `format!("{impl_qn}.{op}").or_else(spec_qn)` string-concatenation
+/// fallback. See `docs/design/operation-call-model.md` §"Putting it
+/// together: dispatch end-to-end".
+#[derive(Default, Debug)]
+pub(crate) struct SortOpsTable {
+    /// impl sort symbol → (op short-name symbol → target op symbol).
+    by_impl: HashMap<Symbol, HashMap<Symbol, Symbol>>,
+}
+
 // ── KnowledgeBase ───────────────────────────────────────────────
 
 pub struct KnowledgeBase {
@@ -299,6 +322,11 @@ pub struct KnowledgeBase {
             (crate::kb::typing::DispatchOutcome, Option<crate::kb::typing::ResolvedRequiresNode>),
         >,
     >,
+
+    // WI-240 — per-impl-sort operations table; see `SortOpsTable`.
+    // Built at load time, read by dispatch consumers via
+    // `sort_ops_lookup`.
+    pub(crate) sort_ops: SortOpsTable,
 }
 
 impl KnowledgeBase {
@@ -339,6 +367,7 @@ impl KnowledgeBase {
             requires_tree_cache: RefCell::new(HashMap::new()),
             synth_req_names_cache: RefCell::new(HashMap::new()),
             resolve_cache: RefCell::new(HashMap::new()),
+            sort_ops: SortOpsTable::default(),
         }
     }
 
@@ -1254,6 +1283,37 @@ impl KnowledgeBase {
 
     // ── Sort management queries ──────────────────────────────────
 
+    /// WI-240 — look up the runtime target op for a spec op dispatched
+    /// onto impl sort `impl_sort`. `op_short` is the spec op's short
+    /// name symbol (e.g. `lt`). Returns `S.<op>` when the impl
+    /// overrides with a runnable body, the spec op itself when it
+    /// relies on the spec's rewrite-rule default, or `None` when the
+    /// impl carries no entry for `op_short` (the impl doesn't claim to
+    /// provide this spec — the typer rejects such dispatches before
+    /// this lookup). Direct table read, no string concatenation.
+    pub fn sort_ops_lookup(&self, impl_sort: Symbol, op_short: Symbol) -> Option<Symbol> {
+        let key = self.canonical_sort_sym(impl_sort);
+        self.sort_ops.by_impl.get(&key)?.get(&op_short).copied()
+    }
+
+    /// WI-240 — record a `(impl_sort, op_short) → target` entry. Called
+    /// only by `load::build_sort_ops_table`.
+    pub(crate) fn insert_sort_op(&mut self, impl_sort: Symbol, op_short: Symbol, target: Symbol) {
+        let key = self.canonical_sort_sym(impl_sort);
+        self.sort_ops.by_impl.entry(key).or_default().insert(op_short, target);
+    }
+
+    /// Canonicalize a sort symbol to the single resolved `Symbol` for
+    /// its qualified name. The same logical sort can be interned under
+    /// several `Symbol`s (e.g. an unresolved scan-time copy and the
+    /// resolved load-time copy); `by_qualified_name` maps the QN to one
+    /// canonical resolved symbol. Used as the `sort_ops` outer key so a
+    /// table populated under one copy is found via another at dispatch.
+    fn canonical_sort_sym(&self, sym: Symbol) -> Symbol {
+        let qn = self.qualified_name_of(sym);
+        self.symbols.by_qualified_name.get(qn).copied().unwrap_or(sym)
+    }
+
     /// Get sort kind info.
     pub fn sort_kind(&self, sort_term: TermId) -> Option<SortKind> {
         self.sort_info.get(&sort_term).copied()
@@ -1937,6 +1997,16 @@ impl KnowledgeBase {
              Define it in register_prelude() or ensure it is scanned.",
             name
         );
+    }
+
+    /// Look up an already-interned symbol by its exact name without
+    /// allocating a new one. Unlike `try_resolve_symbol`, this matches
+    /// the raw intern key (e.g. a bare op short name like `lt`), not a
+    /// qualified name. Returns `None` when the name was never interned.
+    /// WI-240 — used by the eval's dispatch table lookup to recover the
+    /// short-name symbol `build_sort_ops_table` keyed its entries by.
+    pub fn lookup_symbol(&self, name: &str) -> Option<Symbol> {
+        self.symbols.lookup(name)
     }
 
     /// Try to look up a resolved symbol by qualified name.

@@ -1447,6 +1447,11 @@ fn load_phase_inner(
     mark!("register_induction_axiom_witnesses");
     register_specialization_witnesses(kb);
     mark!("register_specialization_witnesses");
+    // WI-240 — precompute the per-impl-sort operations table before
+    // typing, so the typer's spec-op dispatch reads it via
+    // `kb.sort_ops_lookup` instead of the string-concat fallback.
+    build_sort_ops_table(kb);
+    mark!("build_sort_ops_table");
     all_errors.extend(super::typing::type_check_sorts(kb, &all_sorts));
     mark!(&format!("type_check_sorts ({} sorts)", all_sorts.len()));
     // WI-231: the typer tagged each spec-op call site's occurrence
@@ -2295,6 +2300,191 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
     let global_term = kb.make_name_term("_global");
     for rec in new_records {
         kb.assert_fact(rec, record_sort_term, global_term, None);
+    }
+}
+
+/// WI-240 — build the per-sort operations table: each sort symbol
+/// carries a `op_short → impl_op_symbol` map of the operations it can
+/// dispatch (docs/design/operation-call-model.md §"Sort symbols carry
+/// their own operations table").
+///
+/// Two passes:
+///   1. **Own ops.** For every sort `S`, record `S.<op> → S.<op>` for
+///      each op `S` itself declares. A direct/concrete impl thus
+///      resolves its own ops without any spec involvement.
+///   2. **Inherited spec ops.** For every impl sort `S` with a
+///      `fact Spec[bindings]`, walk `Spec`'s declared operations. For
+///      each op `S` does *not* declare itself (pass 1 already recorded
+///      the ones it does), record the spec op `Spec.<op>` — its body
+///      comes from the spec's rewrite rule or a registered builtin,
+///      resolved at runtime. This mirrors the old dispatch fallback
+///      (`impl.<op>` if the impl declares it, else `spec.<op>`); the
+///      separate decision of whether to *rewrite* a spec-op call to a
+///      runnable impl op stays in the typer (`op_has_runnable_body`).
+///
+/// This precomputes (once, at load time) the decision the dispatch
+/// fallback used to make per-call via
+/// `try_resolve_symbol("{impl_qn}.{op}").or_else(spec_qn)`. Consumers
+/// read it via `kb.sort_ops_lookup(impl_sort, op_short)` — a direct
+/// table lookup. Idempotent: re-running overwrites with equal values.
+pub fn build_sort_ops_table(kb: &mut KnowledgeBase) {
+    // One `SortInfo` scan shared by both passes: pass 1 records each
+    // sort's own ops, pass 2 reads the spec sort's ops from the same
+    // map. Scanning per sort via `operations_of_sort` would be
+    // O(sorts²). Snapshot before inserting: interning short names
+    // mutates `kb`, which can't overlap the `by_functor` walk.
+    let sort_ops: HashMap<Symbol, Vec<Symbol>> = sorts_and_own_ops(kb).into_iter().collect();
+
+    // ── Pass 1: every sort's own declared operations. ──────────────
+    for (sort_sym, ops) in &sort_ops {
+        for &op_sym in ops {
+            let short_sym = intern_op_short(kb, op_sym);
+            kb.insert_sort_op(*sort_sym, short_sym, op_sym);
+        }
+    }
+
+    // ── Pass 2: inherited spec ops for `fact Spec[bindings]` impls. ─
+    let provides_sym = match kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") {
+        Some(s) => s,
+        None => return,
+    };
+    // Snapshot (impl_sort, spec_sort) pairs first — populating the
+    // table interns short names (mutating `kb`), which can't overlap
+    // the `by_functor` borrow walk.
+    let mut pairs: Vec<(Symbol, Symbol)> = Vec::new();
+    for rid in kb.by_functor(provides_sym) {
+        if !kb.rule_body(rid).is_empty() { continue; }
+        let head = kb.rule_head(rid);
+        let named = match kb.get_term(head) {
+            Term::Fn { named_args, .. } => named_args.clone(),
+            _ => continue,
+        };
+        let sort_ref_tid = match super::typing::get_named_arg(kb, &named, "sort_ref") {
+            Some(t) => t,
+            None => continue,
+        };
+        let spec_tid = match super::typing::get_named_arg(kb, &named, "spec") {
+            Some(t) => t,
+            None => continue,
+        };
+        let impl_sym = match sort_ref_functor(kb, sort_ref_tid) {
+            Some(s) => s,
+            None => continue,
+        };
+        let spec_sym = match provides_spec_base_sym(kb, spec_tid) {
+            Some(s) => s,
+            None => continue,
+        };
+        pairs.push((impl_sym, spec_sym));
+    }
+
+    for (impl_sym, spec_sym) in pairs {
+        let Some(spec_ops) = sort_ops.get(&spec_sym) else { continue };
+        for &spec_op_sym in spec_ops {
+            let short_sym = intern_op_short(kb, spec_op_sym);
+            // Pass 1 already recorded the impl's own override (if it
+            // declares this op). Only fill the inherited spec default
+            // when the impl doesn't declare the op itself.
+            if kb.sort_ops_lookup(impl_sym, short_sym).is_none() {
+                kb.insert_sort_op(impl_sym, short_sym, spec_op_sym);
+            }
+        }
+    }
+}
+
+/// Intern the short name of an operation symbol (`Spec.lt` → `lt`) —
+/// the `sort_ops` inner key. Borrows the QN, slices, then interns the
+/// slice (no intermediate `String`).
+fn intern_op_short(kb: &mut KnowledgeBase, op_sym: Symbol) -> Symbol {
+    let short = last_segment(kb.qualified_name_of(op_sym)).to_string();
+    kb.intern(&short)
+}
+
+/// Walk `SortInfo` facts once, returning each sort symbol paired with
+/// the operation symbols it declares. `build_sort_ops_table` collects
+/// this into a map both passes share — a single scan instead of one
+/// `SortInfo` walk per sort.
+fn sorts_and_own_ops(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<Symbol>)> {
+    let sort_info_sym = match kb.try_resolve_symbol("anthill.reflect.SortInfo") {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let mut out: Vec<(Symbol, Vec<Symbol>)> = Vec::new();
+    for rid in kb.by_functor(sort_info_sym) {
+        if !kb.rule_body(rid).is_empty() { continue; }
+        let head = kb.rule_head(rid);
+        let named = match kb.get_term(head) {
+            Term::Fn { named_args, .. } => named_args,
+            _ => continue,
+        };
+        let sort_sym = match named.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "name")
+            .map(|(_, v)| *v)
+            .map(|t| kb.get_term(t))
+        {
+            Some(Term::Ref(s) | Term::Ident(s) | Term::Fn { functor: s, .. }) => *s,
+            _ => continue,
+        };
+        let ops = match named.iter()
+            .find(|(s, _)| kb.resolve_sym(*s) == "operations")
+            .map(|(_, v)| *v)
+        {
+            Some(ops_tid) => super::typing::list_to_vec(kb, ops_tid)
+                .into_iter()
+                .filter_map(|t| match kb.get_term(t) {
+                    Term::Ref(s) => Some(*s),
+                    _ => None,
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        out.push((sort_sym, ops));
+    }
+    out
+}
+
+/// Extract the carrier sort symbol from a `SortProvidesInfo.sort_ref`
+/// term — a `sort_ref(name: Ref(S))`, a bare `Ref(S)`/`Ident(S)`, or a
+/// nullary `Fn` whose functor is `S`.
+fn sort_ref_functor(kb: &KnowledgeBase, term: TermId) -> Option<Symbol> {
+    match kb.get_term(term) {
+        Term::Fn { functor, named_args, .. } => {
+            // `sort_ref(name: Ref(S))` wrapping — prefer the inner name.
+            if let Some(name_tid) = named_args.iter()
+                .find(|(k, _)| kb.resolve_sym(*k) == "name")
+                .map(|(_, v)| *v)
+            {
+                if let Term::Ref(s) | Term::Ident(s) = kb.get_term(name_tid) {
+                    return Some(*s);
+                }
+            }
+            Some(*functor)
+        }
+        Term::Ref(s) | Term::Ident(s) => Some(*s),
+        _ => None,
+    }
+}
+
+/// Extract the spec sort symbol from a `SortProvidesInfo.spec` term:
+/// the base of a `SortView(Spec, …)` wrapper, or a bare spec ref.
+fn provides_spec_base_sym(kb: &KnowledgeBase, spec: TermId) -> Option<Symbol> {
+    match kb.get_term(spec) {
+        Term::Fn { functor, pos_args, .. } => {
+            let f_short = last_segment(kb.qualified_name_of(*functor));
+            if f_short == "SortView" {
+                let base = pos_args.first().copied()?;
+                match kb.get_term(base) {
+                    Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
+                        Some(*functor)
+                    }
+                    _ => None,
+                }
+            } else {
+                Some(*functor)
+            }
+        }
+        Term::Ref(s) | Term::Ident(s) => Some(*s),
+        _ => None,
     }
 }
 

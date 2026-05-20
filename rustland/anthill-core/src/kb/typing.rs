@@ -3486,7 +3486,7 @@ pub fn dispatch_spec_op_cached(
     if let Some(cached) = kb.resolve_cache.borrow().get(&key) {
         return cached.clone();
     }
-    let result = resolve_at_goal(kb, &goal, spec_sort, op_short_sym, enclosing_requires);
+    let result = resolve_at_goal(kb, &goal, op_short_sym, enclosing_requires);
     kb.resolve_cache.borrow_mut().insert(key, result.clone());
     result
 }
@@ -3497,7 +3497,6 @@ pub fn dispatch_spec_op_cached(
 fn resolve_at_goal(
     kb: &mut KnowledgeBase,
     goal: &SortGoal,
-    spec_sort: Symbol,
     op_short_sym: Symbol,
     enclosing_requires: &[RequiresEntry],
 ) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
@@ -3524,13 +3523,11 @@ fn resolve_at_goal(
         ResolutionResult::Resolved(tree) => match &tree {
             ResolvedRequiresNode::Leaf { impl_sort, .. }
             | ResolvedRequiresNode::Conditional { impl_sort, .. } => {
-                let op_short = kb.resolve_sym(op_short_sym).to_string();
-                let impl_qn = kb.qualified_name_of(*impl_sort).to_string();
-                let spec_qn = kb.qualified_name_of(spec_sort).to_string();
-                let resolved = kb
-                    .try_resolve_symbol(&format!("{impl_qn}.{op_short}"))
-                    .or_else(|| kb.try_resolve_symbol(&format!("{spec_qn}.{op_short}")));
-                match resolved {
+                // WI-240 — direct table lookup. The load-time
+                // `build_sort_ops_table` already resolved impl-override
+                // vs spec-default for `(impl_sort, op_short)`; no
+                // string concatenation, no try/catch fallback here.
+                match kb.sort_ops_lookup(*impl_sort, op_short_sym) {
                     Some(s) => (DispatchOutcome::Unique(s), Some(tree)),
                     None => (DispatchOutcome::NoMatch, None),
                 }
