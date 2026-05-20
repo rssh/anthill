@@ -31,12 +31,34 @@ pub enum StepOutcome {
     Continue,
 }
 
+// Interpreter profiler, enabled by the `ANTHILL_PROFILE` env var. Exact
+// (not sampled — a deterministic reducer can attribute every reduction
+// precisely):
+//  - OP_PROF:      op Symbol -> (calls, self-reductions). A reduction is
+//    attributed to the op whose body the top frame is executing.
+//  - BUILTIN_PROF: builtin Symbol -> (calls, wall nanos).
+// Counters are dumped (top operations + builtins) and reset by
+// `invoke_op_with_requirements` after each top-level call. When the env
+// var is unset the only cost is one `var_os` check per `run()` plus a
+// branch-predicted `if prof` per step — no measurable overhead.
+thread_local! {
+    pub(crate) static OP_PROF: std::cell::RefCell<std::collections::HashMap<Symbol, (u64, u64)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    pub(crate) static BUILTIN_PROF: std::cell::RefCell<std::collections::HashMap<Symbol, (u64, u128)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+#[inline]
+pub(crate) fn profiling() -> bool {
+    std::env::var_os("ANTHILL_PROFILE").is_some()
+}
+
 impl Interpreter {
     /// Drive the activation stack until it empties. Single loop, no native
     /// recursion. Enforces `EvalConfig::step_cap` per iteration so
     /// TCO'd infinite tail loops surface as `StepsExhausted` rather than
     /// hanging the host.
     pub fn run(&mut self) -> Result<Value, EvalError> {
+        let prof = profiling();
         loop {
             if let Some(cap) = self.config.step_cap {
                 if self.step_count >= cap {
@@ -44,6 +66,11 @@ impl Interpreter {
                 }
             }
             self.step_count = self.step_count.saturating_add(1);
+            if prof {
+                if let Some(op) = self.stack.top().map(|f| f.op) {
+                    OP_PROF.with(|p| p.borrow_mut().entry(op).or_insert((0, 0)).1 += 1);
+                }
+            }
             match self.step()? {
                 StepOutcome::Done(v) => return Ok(v),
                 StepOutcome::Continue => {}
@@ -722,14 +749,44 @@ impl Interpreter {
 
         // 2. Registered Rust builtin?
         if let Some(builtin) = self.builtins.get(&target).cloned() {
+            if profiling() {
+                let t0 = std::time::Instant::now();
+                let result = (builtin)(self, &arg_values)?;
+                let dt = t0.elapsed().as_nanos();
+                BUILTIN_PROF.with(|p| {
+                    let mut m = p.borrow_mut();
+                    let e = m.entry(target).or_insert((0, 0));
+                    e.0 += 1;
+                    e.1 += dt;
+                });
+                return self.deliver(result);
+            }
             let result = (builtin)(self, &arg_values)?;
             return self.deliver(result);
         }
 
         // 3. Anthill-defined operation body.
-        let (body_node, params) = lookup_operation_body(&self.kb, target)
+        let (body_node, params) = self.cached_operation_body(target)
             .ok_or_else(|| EvalError::UnknownOperation { name: target_name })?;
         self.enter_operation(target, body_node, &params, arg_values, requirements, type_args)
+    }
+
+    /// Operation-body lookup, memoized. `lookup_operation_body` linear-scans
+    /// every `OperationInfo` fact, so calling it per dispatch makes every
+    /// operation call O(num_operations) — the dominant cost in interpreted
+    /// programs that make many calls. `OperationInfo` facts are static across
+    /// a run (only data facts get persisted/retracted), so caching by op
+    /// `Symbol` is sound. See `Interpreter::op_body_cache`.
+    pub(crate) fn cached_operation_body(
+        &mut self,
+        target: Symbol,
+    ) -> Option<(Rc<NodeOccurrence>, Vec<(Symbol, TermId)>)> {
+        if let Some(cached) = self.op_body_cache.get(&target) {
+            return Some(cached.clone());
+        }
+        let looked = lookup_operation_body(&self.kb, target)?;
+        self.op_body_cache.insert(target, looked.clone());
+        Some(looked)
     }
 
     fn enter_operation(
@@ -747,6 +804,9 @@ impl Interpreter {
                 expected: params.len(),
                 got: arg_values.len(),
             });
+        }
+        if profiling() {
+            OP_PROF.with(|p| p.borrow_mut().entry(target).or_insert((0, 0)).0 += 1);
         }
         let mut locals: SmallVec<[(Symbol, Value); 4]> = SmallVec::new();
         for (i, (pname, _ptype)) in params.iter().enumerate() {

@@ -251,6 +251,16 @@ pub struct Interpreter {
     /// The shim populates this before invoking `main` (see
     /// `Self::register_store`); persistence builtins look entries up.
     pub(crate) store_registry: HashMap<String, Box<dyn Store>>,
+    /// Memoized operation-body lookups. `lookup_operation_body` linear-scans
+    /// every `OperationInfo` fact to find the one matching the op symbol, so
+    /// without this cache every operation call is O(num_operations) — which
+    /// dominates interpreted runtime once a program makes many calls. The
+    /// `OperationInfo` facts are static across a run (only data facts get
+    /// persisted/retracted), so memoizing by op `Symbol` is sound.
+    pub(crate) op_body_cache: HashMap<
+        Symbol,
+        (std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>, Vec<(Symbol, crate::kb::term::TermId)>),
+    >,
     pub(crate) config: EvalConfig,
     /// Monotonically increasing step counter, reset on each `call()`.
     /// `run()` increments it once per `step()` and compares against
@@ -285,6 +295,7 @@ impl Interpreter {
             requirements: RequirementArenaRef::new(),
             effect_handlers: EffectRegistry::new(),
             store_registry: HashMap::new(),
+            op_body_cache: HashMap::new(),
             config,
             step_count: 0,
         }
@@ -493,7 +504,7 @@ impl Interpreter {
         args: &[Value],
         requirements: smallvec::SmallVec<[(Symbol, value::RequirementHandle); 2]>,
     ) -> Result<Value, EvalError> {
-        let (body_term, params) = eval::lookup_operation_body(&self.kb, sym)
+        let (body_term, params) = self.cached_operation_body(sym)
             .ok_or_else(|| EvalError::OperationBodyMissing {
                 name: self.kb.qualified_name_of(sym).to_string(),
             })?;
@@ -517,7 +528,49 @@ impl Interpreter {
             type_args: smallvec::SmallVec::new(),
             awaiting: None,
         })?;
-        self.run()
+        let result = self.run();
+        if eval::profiling() {
+            self.dump_profile(sym);
+        }
+        result
+    }
+
+    /// Dump the exact operation/builtin profile collected during the last
+    /// top-level run (env `ANTHILL_PROFILE`). Clears the counters so a
+    /// subsequent top-level call starts fresh.
+    fn dump_profile(&self, entry: Symbol) {
+        eprintln!(
+            "[profile] entry={} total-reductions={}",
+            self.kb.qualified_name_of(entry),
+            self.step_count,
+        );
+        eval::OP_PROF.with(|p| {
+            let mut rows: Vec<(Symbol, (u64, u64))> =
+                p.borrow().iter().map(|(k, v)| (*k, *v)).collect();
+            rows.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+            eprintln!("[profile] top operations (by self-reductions):");
+            for (sym, (calls, steps)) in rows.into_iter().take(20) {
+                eprintln!(
+                    "[profile]   {:<46} self-reductions={:<9} calls={}",
+                    self.kb.qualified_name_of(sym), steps, calls,
+                );
+            }
+            p.borrow_mut().clear();
+        });
+        eval::BUILTIN_PROF.with(|p| {
+            let mut rows: Vec<(Symbol, (u64, u128))> =
+                p.borrow().iter().map(|(k, v)| (*k, *v)).collect();
+            rows.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+            eprintln!("[profile] top builtins (by wall time):");
+            for (sym, (calls, nanos)) in rows.into_iter().take(15) {
+                eprintln!(
+                    "[profile]   {:<46} {:>8.3}ms  calls={}",
+                    self.kb.qualified_name_of(sym),
+                    nanos as f64 / 1.0e6, calls,
+                );
+            }
+            p.borrow_mut().clear();
+        });
     }
 
     /// Build the initial `frame.requirements` for an entry-point call.

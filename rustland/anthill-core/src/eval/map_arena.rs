@@ -2,10 +2,11 @@
 //! (proposal 035 §Mechanics).
 //!
 //! Mirrors the `SubstArena` / `StreamArena` shape: an arena slot owns the
-//! whole `IndexMap<MapKey, Value>`; `MapHandle` is an arena slot index with
-//! refcount-on-clone semantics. Mutating ops (`put`, `remove`) produce a new
-//! arena entry — Map values are immutable from anthill's point of view, so
-//! we never share entries across slots.
+//! whole `MapBody`; `MapHandle` is an arena slot index with refcount-on-clone
+//! semantics. Mutating ops (`put`, `remove`) produce a new arena entry — Map
+//! values are immutable from anthill's point of view. `MapBody` is itself a
+//! persistent (structurally-shared) map, so deriving a new entry is O(1) +
+//! the single-key edit rather than an O(N) full copy.
 //!
 //! Type erasure: at runtime K and V are gone — the entry's key is one of
 //! `MapKey` (Int / Bool / Str / Term hash). The type checker is responsible
@@ -15,7 +16,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use indexmap::IndexMap;
+use imbl::{HashMap as ImHashMap, Vector as ImVector};
 
 use crate::kb::term::TermId;
 
@@ -57,11 +58,75 @@ impl MapKey {
     }
 }
 
-/// Owned map content. `IndexMap` preserves insertion order — keys / values /
-/// entries iterate in the order keys were first added. Stable order matters
-/// for byte-identical test fixtures and for diagnostics that reflect program
-/// order rather than hash-table order.
-pub type MapBody = IndexMap<MapKey, Value>;
+/// Owned map content: a structurally-shared persistent map preserving
+/// insertion order. `lookup` answers get / contains / insert in O(log N);
+/// `order` records each key's first-insertion position so keys / values /
+/// entries iterate in insertion order — the documented `Map` contract,
+/// exercised by `map_keys_values_entries_preserve_insertion_order`. Stable
+/// order matters for byte-identical test fixtures and for diagnostics that
+/// reflect program order rather than hash-table order.
+///
+/// Both halves are persistent (`imbl`), so `Clone` is O(1) structural
+/// sharing. That makes the arena's copy-on-write `put` / `remove` cheap:
+/// `clone_body` no longer copies the whole map, so building an N-entry map
+/// by folding `put` drops from O(N²) to O(N log N).
+#[derive(Clone, Default)]
+pub struct MapBody {
+    lookup: ImHashMap<MapKey, Value>,
+    order: ImVector<MapKey>,
+}
+
+impl MapBody {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Insert or update. A new key is appended to `order`; re-inserting an
+    /// existing key keeps its original position and only updates the value
+    /// (matching `IndexMap::insert` semantics the builtins relied on).
+    pub fn insert(&mut self, key: MapKey, value: Value) {
+        if self.lookup.insert(key.clone(), value).is_none() {
+            self.order.push_back(key);
+        }
+    }
+
+    pub fn get(&self, key: &MapKey) -> Option<&Value> {
+        self.lookup.get(key)
+    }
+
+    pub fn contains_key(&self, key: &MapKey) -> bool {
+        self.lookup.contains_key(key)
+    }
+
+    /// Remove a key, preserving the order of the remaining entries.
+    pub fn shift_remove(&mut self, key: &MapKey) {
+        if self.lookup.remove(key).is_some() {
+            if let Some(pos) = self.order.iter().position(|k| k == key) {
+                self.order.remove(pos);
+            }
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &MapKey> {
+        self.order.iter()
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &Value> {
+        self.order
+            .iter()
+            .map(move |k| self.lookup.get(k).expect("order/lookup invariant"))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&MapKey, &Value)> {
+        self.order
+            .iter()
+            .map(move |k| (k, self.lookup.get(k).expect("order/lookup invariant")))
+    }
+}
 
 struct Slot {
     body: Option<MapBody>,
@@ -132,9 +197,9 @@ impl MapArenaRef {
     }
 
     /// Clone the underlying `MapBody` — used by `put`/`remove` to derive a
-    /// fresh, independent map without touching the original. The cost is
-    /// O(N) per mutation; the immutable interface keeps anthill's semantics
-    /// pure but rules out structural sharing.
+    /// fresh, independent map without touching the original. `MapBody` is
+    /// persistent, so this clone is O(1) structural sharing; the subsequent
+    /// single-key edit copies only the touched path (O(log N)).
     pub fn clone_body(&self, h: &MapHandle) -> MapBody {
         self.with_body(h, |b| b.clone())
     }
@@ -200,7 +265,7 @@ mod tests {
     #[test]
     fn alloc_and_drop_reclaims() {
         let arena = MapArenaRef::new();
-        let h = arena.alloc(IndexMap::new());
+        let h = arena.alloc(MapBody::new());
         assert_eq!(arena.live(), 1);
         drop(h);
         assert_eq!(arena.live(), 0);
@@ -209,7 +274,7 @@ mod tests {
     #[test]
     fn clone_bumps_refcount() {
         let arena = MapArenaRef::new();
-        let h = arena.alloc(IndexMap::new());
+        let h = arena.alloc(MapBody::new());
         let h2 = h.clone();
         drop(h);
         assert_eq!(arena.live(), 1);

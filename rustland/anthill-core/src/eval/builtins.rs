@@ -1236,9 +1236,9 @@ fn subst_lookup(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
 // incompatibly-typed value into a Map gets a silent miss on lookup; the
 // runtime won't double-check.
 //
-// Mutating ops (`put`, `remove`) clone the underlying `IndexMap` to
-// preserve immutability semantics. The cost is O(N) per write; persistent-
-// map data structures are a follow-up if it ever matters.
+// Mutating ops (`put`, `remove`) derive a fresh map from the old one to
+// preserve immutability semantics. `MapBody` is a persistent structure
+// (see map_arena.rs), so this is O(log N) per write, not a full O(N) copy.
 
 /// Build an `Option[Term=V]` value with the given functor symbols. Helper for
 /// `get` to avoid repeating the some/none branch.
