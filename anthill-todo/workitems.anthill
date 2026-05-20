@@ -230,7 +230,7 @@ fact WorkItem(
   description: "Parameterized type checking: validate Option[T=...], List[T=...] and other parameterized types in fact fields",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-031"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-20T10:20:04Z"))
 
 fact WorkItem(
   id: "WI-036",
