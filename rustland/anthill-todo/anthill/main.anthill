@@ -661,14 +661,6 @@ namespace anthill.todo
         case some(deps) -> deps
         case none() -> nil()
 
-    -- Visited set as a sorted-list of ids. `visited_contains` does a
-    -- linear scan; for the depth we expect, that's fine.
-    operation visited_contains(visited: List[String], id: String) -> Bool =
-      match visited
-        case nil() -> false
-        case cons(h, rest) ->
-          if eq(h, id) then true else visited_contains(rest, id)
-
     -- Recursive transitive-dependents count. Tracks a per-call visited
     -- set to enforce *unique* reachable counting — a diamond dep
     -- pattern (X → A → D and X → B → D) must count D once, not twice.
@@ -676,28 +668,29 @@ namespace anthill.todo
     -- not a sum-able quantity in shared-path graphs, so per-call
     -- visited is the right shape.)
     --
-    -- For the per-row pass (`fill_unblocks`) this is O(N) per row × N
-    -- rows = O(N^2). The user's "topo-sort" idea would amortize
-    -- further, but the correct topo recurrence isn't sum-of-children
-    -- counts — it's union-of-children's-reachable-sets, which needs
-    -- set arithmetic. Leaving that as a perf follow-up; correctness
-    -- comes first.
+    -- The visited set is a Map[id → true]: `contains` / `put` are
+    -- O(log N) on the persistent map, so one walk over M reachable
+    -- nodes costs O(M log N) instead of the O(M^2) a linear-scanned
+    -- List[String] visited set paid. (A topo-sort with
+    -- union-of-children's-reachable-sets would amortize the per-row
+    -- repetition further, but needs set-union arithmetic; left as a
+    -- follow-up.)
 
     operation count_transitive(id: String,
                                dep_map: Map[String, List[String]],
-                               visited: List[String])
-      -> Pair[Int, List[String]]
+                               visited: Map[String, Bool])
+      -> Pair[Int, Map[String, Bool]]
     =
-      if visited_contains(visited, id) then pair(0, visited)
+      if contains(visited, id) then pair(0, visited)
       else
-        let visited2 = cons(id, visited)
+        let visited2 = put(visited, id, true)
         let direct = direct_dependents_m(dep_map, id)
         count_transitive_walk(direct, dep_map, visited2)
 
     operation count_transitive_walk(deps: List[String],
                                     dep_map: Map[String, List[String]],
-                                    visited: List[String])
-      -> Pair[Int, List[String]]
+                                    visited: Map[String, Bool])
+      -> Pair[Int, Map[String, Bool]]
     =
       match deps
         case nil() -> pair(0, visited)
@@ -769,7 +762,7 @@ namespace anthill.todo
         case cons(r, rest) ->
           match r
             case Row(rid, status, desc, deps, _, fb) ->
-              match count_transitive(rid, dep_map, nil())
+              match count_transitive(rid, dep_map, empty())
                 case pair(n, _) ->
                   cons(
                     Row(
@@ -781,10 +774,33 @@ namespace anthill.todo
                       has_feedback: fb),
                     fill_unblocks(rest, dep_map))
 
-    -- ── Sorting ───────────────────────────────────────────────────
+    -- ── Sorting (stable merge sort, O(N log N)) ───────────────────
+
+    -- Split a Row list into (first half, second half) preserving order,
+    -- via tortoise/hare. The left half holds the strictly-earlier input
+    -- positions, which — combined with a left-biased merge — makes the
+    -- sort stable. Stability is required: the data has duplicate ids
+    -- (WI-169) and the bundle must match the legacy stable sort.
+    operation split_half(rs: List[Row]) -> Pair[List[Row], List[Row]] =
+      split_half_go(rs, rs)
+
+    operation split_half_go(slow: List[Row], fast: List[Row])
+      -> Pair[List[Row], List[Row]]
+    =
+      match fast
+        case nil() -> pair(nil(), slow)
+        case cons(_, fast1) ->
+          match fast1
+            case nil() -> pair(nil(), slow)
+            case cons(_, fast2) ->
+              match slow
+                case nil() -> pair(nil(), slow)  -- unreachable: fast outpaces slow
+                case cons(s, slow1) ->
+                  match split_half_go(slow1, fast2)
+                    case pair(l, r) -> pair(cons(s, l), r)
 
     -- Order key for "ready": (unblocks desc, id asc). Returns true when
-    -- `a` should come before `b`.
+    -- `a` should come strictly before `b`.
     operation ready_lt(a: Row, b: Row) -> Bool =
       match a
         case Row(aid, _, _, _, ac, _) ->
@@ -794,48 +810,55 @@ namespace anthill.todo
               else if lt(ac, bc) then false  -- larger count first
               else true
 
-    operation insert_ready(rs: List[Row], r: Row) -> List[Row] =
-      match rs
-        case nil() -> cons(r, nil())
-        case cons(h, rest) ->
-          if ready_lt(r, h) then cons(r, cons(h, rest))
-          else cons(h, insert_ready(rest, r))
+    -- Left-biased merge: take from `ys` only when it is strictly before
+    -- the `xs` head, so equal keys keep `xs` (the earlier half) first.
+    operation merge_ready(xs: List[Row], ys: List[Row]) -> List[Row] =
+      match xs
+        case nil() -> ys
+        case cons(x, xrest) ->
+          match ys
+            case nil() -> xs
+            case cons(y, yrest) ->
+              if ready_lt(y, x) then cons(y, merge_ready(xs, yrest))
+              else cons(x, merge_ready(xrest, ys))
 
     operation sort_ready(rs: List[Row]) -> List[Row] =
-      sort_ready_loop(rs, nil())
-
-    operation sort_ready_loop(rs: List[Row], acc: List[Row]) -> List[Row] =
       match rs
-        case nil() -> acc
-        case cons(h, rest) -> sort_ready_loop(rest, insert_ready(acc, h))
+        case nil() -> nil()
+        case cons(_, rest) ->
+          match rest
+            case nil() -> rs
+            case cons(_, _) ->
+              match split_half(rs)
+                case pair(left, right) ->
+                  merge_ready(sort_ready(left), sort_ready(right))
 
-    -- Stable insertion sort by id. We process the input list with an
-    -- accumulator that already holds the prefix in sorted order; new
-    -- elements get appended after any equal-key entries, preserving
-    -- original encounter order for duplicates (legacy Rust slice::sort_by
-    -- is stable, so ties retain input order — the data has duplicate
-    -- WI-169 ids and the bundle must match that ordering).
-    operation insert_by_id(rs: List[Row], r: Row) -> List[Row] =
-      match rs
-        case nil() -> cons(r, nil())
-        case cons(h, rest) ->
-          match r
-            case Row(rid, _, _, _, _, _) ->
-              match h
-                case Row(hid, _, _, _, _, _) ->
-                  if lt(rid, hid) then cons(r, cons(h, rest))
-                  else cons(h, insert_by_id(rest, r))
+    -- Stable merge sort by id. Ties retain input order (legacy
+    -- slice::sort_by is stable; the data has duplicate WI-169 ids).
+    operation merge_by_id(xs: List[Row], ys: List[Row]) -> List[Row] =
+      match xs
+        case nil() -> ys
+        case cons(x, xrest) ->
+          match ys
+            case nil() -> xs
+            case cons(y, yrest) ->
+              match x
+                case Row(xid, _, _, _, _, _) ->
+                  match y
+                    case Row(yid, _, _, _, _, _) ->
+                      if lt(yid, xid) then cons(y, merge_by_id(xs, yrest))
+                      else cons(x, merge_by_id(xrest, ys))
 
-    -- Left-fold variant — preserves original order on ties because we
-    -- iterate input left-to-right and `insert_by_id` only places
-    -- strictly-less-than items before the head.
     operation sort_by_id(rs: List[Row]) -> List[Row] =
-      sort_by_id_loop(rs, nil())
-
-    operation sort_by_id_loop(rs: List[Row], acc: List[Row]) -> List[Row] =
       match rs
-        case nil() -> acc
-        case cons(h, rest) -> sort_by_id_loop(rest, insert_by_id(acc, h))
+        case nil() -> nil()
+        case cons(_, rest) ->
+          match rest
+            case nil() -> rs
+            case cons(_, _) ->
+              match split_half(rs)
+                case pair(left, right) ->
+                  merge_by_id(sort_by_id(left), sort_by_id(right))
 
     -- ── Partition into ready / blocked ────────────────────────────
 
