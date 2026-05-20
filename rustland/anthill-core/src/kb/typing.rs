@@ -5453,8 +5453,12 @@ fn extract_sym_list(kb: &KnowledgeBase, list_tid: TermId) -> Vec<Symbol> {
 }
 
 /// Check a value against a declared type. Returns Some(TypeError) on mismatch.
+///
+/// Takes `&mut KnowledgeBase` because the parameterized-spec path runs
+/// the canonical instance resolver (WI-274), which allocates
+/// substituted subgoal terms during conditional resolution.
 fn check_value_against_type(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     value: TermId,
     declared_type: TermId,
     entity_sym: Symbol,
@@ -5571,8 +5575,11 @@ fn check_value_sort_membership(
 }
 
 /// Check value against a parameterized type like List[T=Int].
+///
+/// Takes `&mut KnowledgeBase` for the binding-precise spec check
+/// (WI-274) — see [`spec_resolves_at_bindings`].
 fn check_value_against_parameterized(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     value: TermId,
     declared_type: TermId,
     entity_sym: Symbol,
@@ -5599,9 +5606,26 @@ fn check_value_against_parameterized(
     // sort (e.g. `Comparable[T = Int]`), a value whose own sort provides that
     // spec is accepted — and since its constructor is not a base constructor,
     // the per-field substitution walk below is skipped.
+    //
+    // WI-274: precise about the *bindings*. Rather than the base-only
+    // `sort_provides` (does the value's sort provide the spec at all),
+    // run the canonical instance resolver at the declared bindings —
+    // the same resolver operation-requires uses. This rejects a
+    // binding mismatch (`Comparable[T = Gadget]` holding a Widget,
+    // where Widget provides Comparable only at `T = Widget`) and
+    // checks conditional providers at the actual element type (List
+    // provides Eq requires elementEq: `Eq[T = List[Int]]` resolves,
+    // `Eq[T = List[NonEq]]` does not). The base-only `sort_provides`
+    // is kept for the binding-free case, where it is already precise.
     if let Some(parent) = kb.constructor_parent_sort(val_functor) {
         if !constructor_matches_declared(kb, parent, base_sym) {
-            if sort_sym_of_term(kb, parent).is_some_and(|p| sort_provides(kb, p, base_sym)) {
+            let goal_bindings = declared_type_goal_bindings(kb, &declared_args);
+            let accepted = if goal_bindings.is_empty() {
+                sort_sym_of_term(kb, parent).is_some_and(|p| sort_provides(kb, p, base_sym))
+            } else {
+                spec_resolves_at_bindings(kb, base_sym, goal_bindings)
+            };
+            if accepted {
                 return None;
             }
             return Some(TypeError::Other {
@@ -5661,8 +5685,64 @@ fn check_value_against_parameterized(
     None
 }
 
+/// WI-274: collect a parameterized type's bindings as `SortGoal`
+/// bindings — `(spec short-param symbol, value type term)` pairs. The
+/// value terms are [canonicalized](canonicalize_goal_value) into the
+/// bare-sort-ref shape the instance resolver matches against.
+fn declared_type_goal_bindings(
+    kb: &mut KnowledgeBase,
+    declared_args: &SmallVec<[(Symbol, TermId); 2]>,
+) -> SmallVec<[(Symbol, TermId); 2]> {
+    let raw: Vec<(Symbol, TermId)> = match get_named_arg(kb, declared_args, "bindings") {
+        Some(bindings_tid) => list_to_vec(kb, bindings_tid)
+            .into_iter()
+            .filter_map(|b| match (binding_param_sym(kb, b), binding_value(kb, b)) {
+                (Some(p), Some(v)) => Some((p, v)),
+                _ => None,
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    raw.into_iter()
+        .map(|(p, v)| (p, canonicalize_goal_value(kb, v)))
+        .collect()
+}
+
+/// WI-274: rewrite a field-type type term into the canonical shape the
+/// instance resolver matches against. Field types encode sort
+/// references as `sort_ref(name: Ref(S))`, whereas the resolver's
+/// candidate side (from `SortProvidesInfo` / `requires` clauses) uses
+/// bare sort refs. Unwrap every `sort_ref` to its bare `Ref(S)` —
+/// recursing through `parameterized(base, bindings)` so nested element
+/// types (`List[T = Int]`) expose their real base and value sorts to
+/// `parametric_value_parts`.
+fn canonicalize_goal_value(kb: &mut KnowledgeBase, value: TermId) -> TermId {
+    if let Some(s) = extract_sort_ref_sym(kb, value) {
+        return kb.alloc(Term::Ref(s));
+    }
+    kb.map_fn_children(value, |kb, child| canonicalize_goal_value(kb, child))
+}
+
+/// WI-274: binding-precise spec satisfaction. A field declared with a
+/// parameterized spec is accepted iff the spec resolves at the
+/// *declared bindings* through the canonical instance resolver
+/// ([`resolve`], typing.rs) — the same resolver operation-requires
+/// uses, accepting iff `Resolved`. Empty scope: field validation has
+/// no enclosing `requires` to draw on. Conditional providers descend
+/// recursively (List provides Eq requires elementEq), so the goal
+/// resolves only when the element type also provides the spec.
+fn spec_resolves_at_bindings(
+    kb: &mut KnowledgeBase,
+    spec_sort: Symbol,
+    bindings: SmallVec<[(Symbol, TermId); 2]>,
+) -> bool {
+    let goal = SortGoal { spec_sort, bindings };
+    let scope = ResolutionScope { available_requires: &[] };
+    matches!(resolve(kb, &goal, &scope), ResolutionResult::Resolved(_))
+}
+
 /// Check all facts for the given entity constructors against their declared field types.
-fn check_entity_facts(kb: &KnowledgeBase, ctor_syms: &[Symbol], errors: &mut Vec<TypeError>) {
+fn check_entity_facts(kb: &mut KnowledgeBase, ctor_syms: &[Symbol], errors: &mut Vec<TypeError>) {
     for &ctor_sym in ctor_syms {
         let field_types = match kb.entity_field_types(ctor_sym) {
             Some(ft) => ft.to_vec(),

@@ -3029,6 +3029,108 @@ end
         "Widget provides Comparable, so the parameterized-spec field should type-check, got: {:?}", errors);
 }
 
+// WI-274: binding-precise spec-field validation. The base-only WI-036
+// check looked only at whether the value's sort provides the spec
+// *base*, ignoring the declared bindings. A field `Comparable[T =
+// Gadget]` holding a Widget value (Widget provides Comparable only at
+// `T = Widget`) was therefore silently accepted. With binding-precise
+// validation the canonical instance resolver runs at `T = Gadget`,
+// finds no provider, and the field is rejected at load. This is the
+// case that behaved incorrectly before the fix.
+#[test]
+fn parameterized_spec_base_field_rejects_binding_mismatch() {
+    let source = r#"
+namespace test.wi274_mismatch
+  sort Comparable
+    sort T = ?
+    operation cmp(a: T, b: T) -> Bool
+  end
+  sort Widget
+    entity widget(id: Int)
+  end
+  sort Gadget
+    entity gadget(id: Int)
+  end
+  fact Comparable[T = Widget]
+  sort Box
+    entity Holder(item: Comparable[T = Gadget])
+  end
+  fact Holder(item: widget(7))
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let field_errors: Vec<_> = errors.iter()
+        .filter(|e| format!("{}", e).contains("Holder"))
+        .collect();
+    assert!(!field_errors.is_empty(),
+        "Widget provides Comparable only at T = Widget, so a Comparable[T = Gadget] field must reject a Widget value, got: {:?}", errors);
+}
+
+// WI-274: conditional provider. `EqList` provides Eq for a list whose
+// elements provide Eq (`fact Eq[T = List[T = A]]` guarded by `requires
+// Eq[T = A]`). A field `Eq[T = List[T = Int]]` is accepted because the
+// resolver descends the requires chain and finds Int provides Eq.
+#[test]
+fn conditional_spec_field_accepts_eq_list_of_eq_elements() {
+    let source = r#"
+namespace test.wi274_list_ok
+  import anthill.prelude.{Eq, List, Int}
+  fact Eq[T = Int]
+  sort EqList
+    sort A = ?
+    requires Eq[T = A]
+    fact Eq[T = List[T = A]]
+  end
+  sort Box
+    entity Holder(item: Eq[T = List[T = Int]])
+  end
+  fact Holder(item: [1, 2, 3])
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let field_errors: Vec<_> = errors.iter()
+        .filter(|e| format!("{}", e).contains("Holder"))
+        .collect();
+    assert!(field_errors.is_empty(),
+        "Int provides Eq, so Eq[T = List[T = Int]] should type-check via the conditional EqList provider, got: {:?}", errors);
+}
+
+// WI-274: the binding precision discriminates the element type. The
+// same `EqList` conditional provider does *not* satisfy `Eq[T = List[T
+// = NonEq]]`, because NonEq provides no Eq instance — the requires
+// subgoal `Eq[T = NonEq]` fails. Base-only validation could not tell
+// these apart (both are "List provides Eq").
+#[test]
+fn conditional_spec_field_rejects_eq_list_of_non_eq_elements() {
+    let source = r#"
+namespace test.wi274_list_bad
+  import anthill.prelude.{Eq, List, Int}
+  fact Eq[T = Int]
+  sort NonEq
+    entity ne(id: Int)
+  end
+  sort EqList
+    sort A = ?
+    requires Eq[T = A]
+    fact Eq[T = List[T = A]]
+  end
+  sort Box
+    entity Holder(item: Eq[T = List[T = NonEq]])
+  end
+  fact Holder(item: [ne(1)])
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let field_errors: Vec<_> = errors.iter()
+        .filter(|e| format!("{}", e).contains("Holder"))
+        .collect();
+    assert!(!field_errors.is_empty(),
+        "NonEq provides no Eq, so Eq[T = List[T = NonEq]] must be rejected, got: {:?}", errors);
+}
+
 #[test]
 fn exhaustiveness_wildcard_covers_all() {
     let source = r#"
