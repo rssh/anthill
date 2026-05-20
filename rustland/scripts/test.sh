@@ -38,6 +38,13 @@ echo "tail: tail -f rustland/target/test-run-latest.log"
 echo "---"
 
 case "$(uname)" in
+  # BSD `script`: command trails the logfile.
   Darwin) script -F -q /dev/null cargo test --no-fail-fast "$@" 2>&1 ;;
-  *)      script -fq /dev/null    cargo test --no-fail-fast "$@" 2>&1 ;;
+  # util-linux `script`: command must be passed via -c "...". Build a
+  # safely-quoted command string so args with spaces survive.
+  *)
+    cmd="cargo test --no-fail-fast"
+    for a in "$@"; do cmd+=" $(printf '%q' "$a")"; done
+    script -fq -c "${cmd}" /dev/null 2>&1
+    ;;
 esac | prefix_elapsed | tee "${log}"
