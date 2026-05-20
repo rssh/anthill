@@ -216,7 +216,7 @@ fact WorkItem(
   description: "Operation body type-checking: verify operation bodies against declared return types, build typing env from params",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-031", "WI-032"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-20T10:06:24Z"))
 
 fact WorkItem(
   id: "WI-034",
