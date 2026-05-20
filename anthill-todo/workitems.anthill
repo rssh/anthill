@@ -1977,3 +1977,4 @@ fact WorkItem(
   depends_on: ["WI-064", "WI-036"],
   status: Open)
 
+fact Feedback(content: "Test pointers (anthill-core/tests/include/typing_test.rs): the five WI-036 tests (spec_field_accepts/rejects_*, parameterized_spec_field_accepts/rejects_*, parameterized_spec_base_field_accepts_providing_value) all use matching-or-absent bindings, so they pass under BOTH base-only and binding-precise and do not exercise the gap. The known-incorrect case is currently UNTESTED: a field declared Comparable[T = Gadget] holding a Widget value (where Widget provides Comparable only at T = Widget) is silently accepted today by the base-only check. WI-274 must add that binding-mismatch test and assert it now produces an EntityField load error, and add a conditional-provider fixture (List provides Eq requires elementEq: Eq[T=List[Int]] accepts a nested-list value, Eq[T=List[NonEq]] rejects).", at: "2026-05-20T15:11:22Z", workitem: "WI-274", author: "user")
