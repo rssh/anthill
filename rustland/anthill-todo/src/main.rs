@@ -316,6 +316,24 @@ fn assign_default_namespace(pf: &mut ParsedFile) {
     }));
 }
 
+/// True if a parsed file declares a bundle-owned namespace (`anthill.todo` or
+/// a child). The `--anthill` bundle embeds its own logic (`main.anthill` /
+/// `store.anthill`); when the scanned directory is the crate dir itself those
+/// sources appear as project files too, and loading them again defines every
+/// bundle symbol twice. Skip them — a project supplies data, not bundle logic.
+fn is_bundle_logic_file(pf: &ParsedFile) -> bool {
+    pf.items.iter().any(|item| match item {
+        anthill_core::parse::ir::Item::Namespace(ns) => {
+            let name = ns.name.segments.iter()
+                .map(|s| pf.symbols.name(*s))
+                .collect::<Vec<_>>()
+                .join(".");
+            name == "anthill.todo" || name.starts_with("anthill.todo.")
+        }
+        _ => false,
+    })
+}
+
 fn load_kb(project_dir: &Path, stdlib_path: Option<&Path>) -> Result<KnowledgeBase, String> {
     // WI-233: phase timings, gated by ANTHILL_TODO_TIMING=1. Lets a
     // user see which phase of `load_kb` dominates the wall time.
@@ -365,6 +383,7 @@ fn load_kb(project_dir: &Path, stdlib_path: Option<&Path>) -> Result<KnowledgeBa
             .map_err(|e| format!("{}: {e}", file.display()))?;
         match parse::parse(&source) {
             Ok(mut p) => {
+                if is_bundle_logic_file(&p) { continue; }
                 assign_default_namespace(&mut p);
                 domain_parsed.push(p);
             }
@@ -1668,6 +1687,7 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
         };
         match parse::parse(&source) {
             Ok(mut parsed) => {
+                if is_bundle_logic_file(&parsed) { continue; }
                 assign_default_namespace(&mut parsed);
                 project_items.push(ProjectFile { path: file.clone(), parsed });
             }
