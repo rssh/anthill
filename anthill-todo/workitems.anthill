@@ -223,7 +223,7 @@ fact WorkItem(
   description: "Rule body type-checking: verify rule body goals have compatible argument types",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-031", "WI-032"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-20T10:21:01Z"))
 
 fact WorkItem(
   id: "WI-035",
