@@ -14,9 +14,11 @@ use crate::intern::Symbol;
 use crate::span::SourceSpan;
 
 pub use super::occurrence::PassId;
+use super::subst::Substitution;
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::typing::{get_named_arg, list_to_vec, unwrap_option};
 use super::KnowledgeBase;
+use crate::eval::value::Value;
 
 // ── Origin ──────────────────────────────────────────────────────
 
@@ -657,6 +659,184 @@ fn open_named(
             (*s, r)
         })
         .collect();
+    (out, changed)
+}
+
+// ── Substitution over a rule-body-atom occurrence ───────────────
+
+/// WI-246: apply a resolution substitution σ to a rule-body-atom occurrence
+/// — the occurrence analog of `KnowledgeBase::apply_subst` over a
+/// `Value::Node` goal. Walks the occurrence *template* (preserving its
+/// structure, including any typer dot-rewrites) and replaces each **bound**
+/// `Expr::Var(Var::Global)` leaf with its σ value; **unbound** var leaves are
+/// kept verbatim, since the resolver binds them later (the opposite of the
+/// `[simp]` RHS builder `substitute_to_occurrence`, which collapses unbound
+/// vars to `⊥` under its all-vars-bound invariant). Unchanged subtrees keep
+/// their `Rc` (only the ancestor chain to a substituted leaf is rebuilt).
+///
+/// A var bound to a matched child occurrence (`Value::Node`) is spliced in
+/// place (identity preserved); a var bound to a compound term is materialized
+/// via the var-preserving pair `apply_subst` + `materialize_from_handle` (so
+/// nested unbound vars inside the bound value survive as `Expr::Var` too); a
+/// scalar binding becomes a `Const`.
+///
+/// Like `open_debruijn_node`, the recursion depth is bounded by the atom's
+/// (shallow) template structure — bound *values* are expanded by the
+/// iterative `apply_subst`/`materialize_from_handle`, not by this recursion —
+/// so the host stack stays flat. Forms that can't occur at a rule-body atom
+/// position pass through unchanged.
+pub fn substitute_occurrence(
+    kb: &mut KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    subst: &Substitution,
+) -> Rc<NodeOccurrence> {
+    let Some(expr) = occ.as_expr() else { return Rc::clone(occ) };
+    let rebuilt: Option<Rc<NodeOccurrence>> = match expr {
+        Expr::Var(Var::Global(vid)) => return subst_var_leaf(kb, *vid, subst, occ),
+        Expr::Apply { functor, pos_args, named_args, type_args } => {
+            let (pos, c1) = subst_vec(kb, pos_args, subst);
+            let (named, c2) = subst_named(kb, named_args, subst);
+            (c1 || c2).then(|| {
+                NodeOccurrence::new_expr(
+                    Expr::Apply {
+                        functor: *functor,
+                        pos_args: pos,
+                        named_args: named,
+                        type_args: type_args.clone(),
+                    },
+                    occ.span,
+                    occ.owner,
+                )
+            })
+        }
+        Expr::Constructor { name, pos_args, named_args } => {
+            let (pos, c1) = subst_vec(kb, pos_args, subst);
+            let (named, c2) = subst_named(kb, named_args, subst);
+            (c1 || c2).then(|| {
+                NodeOccurrence::new_expr(
+                    Expr::Constructor { name: *name, pos_args: pos, named_args: named },
+                    occ.span,
+                    occ.owner,
+                )
+            })
+        }
+        Expr::Instantiation { name, pos_args, named_args } => {
+            let (pos, c1) = subst_vec(kb, pos_args, subst);
+            let (named, c2) = subst_named(kb, named_args, subst);
+            (c1 || c2).then(|| {
+                NodeOccurrence::new_expr(
+                    Expr::Instantiation { name: *name, pos_args: pos, named_args: named },
+                    occ.span,
+                    occ.owner,
+                )
+            })
+        }
+        Expr::HoApply { predicate, args } => {
+            let p = substitute_occurrence(kb, predicate, subst);
+            let (a, c2) = subst_vec(kb, args, subst);
+            let c1 = !Rc::ptr_eq(&p, predicate);
+            (c1 || c2).then(|| {
+                NodeOccurrence::new_expr(Expr::HoApply { predicate: p, args: a }, occ.span, occ.owner)
+            })
+        }
+        // Leaves (Const/Ref/Ident/Bottom, and `Var` that isn't a Global) reach
+        // here legitimately and pass through. A *child-bearing* variant here
+        // would be a control-flow / post-elaboration form at a rule-body atom
+        // position — which can't occur; assert so a future violation fails a
+        // test rather than silently leaving an un-substituted subtree.
+        _ => {
+            debug_assert!(
+                { let mut n = 0usize; for_each_child(expr, |_| n += 1); n == 0 },
+                "substitute_occurrence: unexpected child-bearing Expr at a rule-body \
+                 atom position: {:?}",
+                std::mem::discriminant(expr),
+            );
+            None
+        }
+    };
+    rebuilt.unwrap_or_else(|| Rc::clone(occ))
+}
+
+/// Resolve a `Expr::Var(Global)` leaf against σ. `None` ⇒ unbound, keep the
+/// leaf (returned as a clone of the original `occ`). See
+/// [`substitute_occurrence`] for the binding-case semantics.
+fn subst_var_leaf(
+    kb: &mut KnowledgeBase,
+    vid: VarId,
+    subst: &Substitution,
+    occ: &Rc<NodeOccurrence>,
+) -> Rc<NodeOccurrence> {
+    // `TermId` is `Copy`, so binding `*t` ends the immutable borrow of `subst`
+    // at the match, freeing the `&mut kb` call below.
+    let t = match subst.resolve_as_value(vid) {
+        None => return Rc::clone(occ), // unbound: keep the variable leaf
+        Some(Value::Node(o)) => return Rc::clone(o), // matched child: splice in place
+        Some(Value::Term(t)) => *t,
+        Some(scalar) => match scalar_value_expr(scalar) {
+            Some(expr) => return NodeOccurrence::new_expr(expr, occ.span, occ.owner),
+            // Structured non-`Term` values (`Value::Entity`/`Tuple` from
+            // external rows) aren't materialized to occurrences yet — that
+            // path lands when the resolver's external-row binding is wired.
+            // Fail loud rather than silently produce ⊥ (which would discard a
+            // genuine binding); the gate's relational rules bind only
+            // term-shaped values, so this is unreachable today.
+            None => panic!(
+                "substitute_occurrence: goal var bound to non-scalar Value ({}) — \
+                 occurrence materialization for external-row bindings is not yet \
+                 implemented (WI-246)",
+                scalar.type_name(),
+            ),
+        },
+    };
+    // Bound to a (possibly compound) term: deep-apply σ in term-land (keeps
+    // nested unbound vars as `Term::Var`), then materialize to an occurrence
+    // (keeps them as `Expr::Var`).
+    let applied = kb.apply_subst(t, subst);
+    materialize_from_handle(kb, applied)
+}
+
+/// Map a *scalar* `Value` to its `Expr::Const` leaf — shared with
+/// `simp_rewrite::subst_visit`. Returns `None` for non-scalar values
+/// (`Node`/`Term` are handled by callers; structured/opaque values have no
+/// `Const` form), letting each caller choose its own non-scalar policy.
+pub(super) fn scalar_value_expr(v: &Value) -> Option<Expr> {
+    Some(match v {
+        Value::Int(n) => Expr::Const(Literal::Int(*n)),
+        Value::BigInt(n) => Expr::Const(Literal::BigInt(n.clone())),
+        Value::Float(f) => Expr::Const(Literal::Float(ordered_float::OrderedFloat(*f))),
+        Value::Bool(b) => Expr::Const(Literal::Bool(*b)),
+        Value::Str(s) => Expr::Const(Literal::String(s.clone())),
+        _ => return None,
+    })
+}
+
+fn subst_vec(
+    kb: &mut KnowledgeBase,
+    items: &[Rc<NodeOccurrence>],
+    subst: &Substitution,
+) -> (Vec<Rc<NodeOccurrence>>, bool) {
+    let mut changed = false;
+    let mut out = Vec::with_capacity(items.len());
+    for c in items {
+        let r = substitute_occurrence(kb, c, subst);
+        changed |= !Rc::ptr_eq(&r, c);
+        out.push(r);
+    }
+    (out, changed)
+}
+
+fn subst_named(
+    kb: &mut KnowledgeBase,
+    items: &[(Symbol, Rc<NodeOccurrence>)],
+    subst: &Substitution,
+) -> (Vec<(Symbol, Rc<NodeOccurrence>)>, bool) {
+    let mut changed = false;
+    let mut out = Vec::with_capacity(items.len());
+    for (s, c) in items {
+        let r = substitute_occurrence(kb, c, subst);
+        changed |= !Rc::ptr_eq(&r, c);
+        out.push((*s, r));
+    }
     (out, changed)
 }
 
@@ -1421,6 +1601,198 @@ mod tests {
                     pos_args[0].as_expr()
                 );
                 assert!(Rc::ptr_eq(&pos_args[1], &three), "unchanged const child keeps identity");
+            }
+            other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
+    /// Build the rule-body atom `gt(Global(v0), 3)` and return `(atom, v0,
+    /// gt, three_child)` for the substitution tests below.
+    fn gt_atom(kb: &mut KnowledgeBase) -> (Rc<NodeOccurrence>, VarId, Symbol, Rc<NodeOccurrence>) {
+        let gt = kb.intern("gt");
+        let xname = kb.intern("x");
+        let span = make_span();
+        let v0 = VarId::new(7, xname);
+        let var0 = NodeOccurrence::new_expr(Expr::Var(Var::Global(v0)), span, None);
+        let three = NodeOccurrence::new_expr(Expr::Const(Literal::Int(3)), span, None);
+        let atom = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: gt,
+                pos_args: vec![var0, Rc::clone(&three)],
+                named_args: vec![],
+                type_args: vec![],
+            },
+            span,
+            None,
+        );
+        (atom, v0, gt, three)
+    }
+
+    #[test]
+    fn substitute_occurrence_keeps_unbound_var() {
+        // WI-246: an unbound `Expr::Var(Global)` survives substitution as the
+        // same variable leaf (not ⊥); with no bound leaf the whole atom keeps
+        // its Rc identity.
+        let mut kb = KnowledgeBase::new();
+        let (atom, v0, _gt, _three) = gt_atom(&mut kb);
+        let out = substitute_occurrence(&mut kb, &atom, &Substitution::new());
+        assert!(Rc::ptr_eq(&out, &atom), "no bound leaf → atom unchanged (identity)");
+        match out.as_expr() {
+            Some(Expr::Apply { pos_args, .. }) => assert!(
+                matches!(pos_args[0].as_expr(), Some(Expr::Var(Var::Global(v))) if *v == v0),
+                "unbound var leaf preserved",
+            ),
+            other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn substitute_occurrence_binds_scalar() {
+        // A var bound to a scalar becomes a `Const`; the unchanged sibling
+        // keeps its Rc identity.
+        let mut kb = KnowledgeBase::new();
+        let (atom, v0, _gt, three) = gt_atom(&mut kb);
+        let mut subst = Substitution::new();
+        subst.bind_value(v0, Value::Int(42));
+        let out = substitute_occurrence(&mut kb, &atom, &subst);
+        match out.as_expr() {
+            Some(Expr::Apply { pos_args, .. }) => {
+                assert!(
+                    matches!(pos_args[0].as_expr(), Some(Expr::Const(Literal::Int(42)))),
+                    "bound var → Const(42), got {:?}",
+                    pos_args[0].as_expr()
+                );
+                assert!(Rc::ptr_eq(&pos_args[1], &three), "unchanged sibling keeps identity");
+            }
+            other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn substitute_occurrence_splices_node_in_place() {
+        // A var bound to a matched child occurrence (`Value::Node`) is spliced
+        // in place, preserving the occurrence's Rc identity (and provenance).
+        let mut kb = KnowledgeBase::new();
+        let (atom, v0, _gt, _three) = gt_atom(&mut kb);
+        let payload = NodeOccurrence::new_expr(Expr::Bottom, make_span(), None);
+        let mut subst = Substitution::new();
+        subst.bind_value(v0, Value::Node(Rc::clone(&payload)));
+        let out = substitute_occurrence(&mut kb, &atom, &subst);
+        match out.as_expr() {
+            Some(Expr::Apply { pos_args, .. }) => assert!(
+                Rc::ptr_eq(&pos_args[0], &payload),
+                "Value::Node binding spliced in place (identity preserved)",
+            ),
+            other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn substitute_occurrence_materializes_bound_term_preserving_nested_var() {
+        // A var bound to a compound term materializes to an occurrence, and a
+        // nested *unbound* var inside that term survives as `Expr::Var` — the
+        // var-preservation invariant the `[simp]` RHS builder lacks.
+        use smallvec::SmallVec;
+        let mut kb = KnowledgeBase::new();
+        let (atom, v0, _gt, _three) = gt_atom(&mut kb);
+        let s = kb.intern("s");
+        let yname = kb.intern("y");
+        let v1 = VarId::new(8, yname);
+        // bind v0 → s(Global(v1)), with v1 left unbound
+        let inner_var = kb.alloc(Term::Var(Var::Global(v1)));
+        let compound = kb.alloc(Term::Fn {
+            functor: s,
+            pos_args: SmallVec::from_elem(inner_var, 1),
+            named_args: SmallVec::new(),
+        });
+        let mut subst = Substitution::new();
+        subst.bind_value(v0, Value::Term(compound));
+        let out = substitute_occurrence(&mut kb, &atom, &subst);
+        match out.as_expr() {
+            Some(Expr::Apply { pos_args, .. }) => match pos_args[0].as_expr() {
+                Some(Expr::Apply { functor, pos_args: inner, .. }) => {
+                    assert_eq!(*functor, s);
+                    assert!(
+                        matches!(inner[0].as_expr(), Some(Expr::Var(Var::Global(v))) if *v == v1),
+                        "nested unbound var preserved as Expr::Var, got {:?}",
+                        inner[0].as_expr()
+                    );
+                }
+                other => panic!("expected materialized s(...), got {other:?}"),
+            },
+            other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn substitute_occurrence_substitutes_named_arg() {
+        // Exercises `subst_named`: a named arg whose value is a bound var gets
+        // substituted, the field symbol survives, and an unbound positional
+        // sibling is preserved.
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("f");
+        let key = kb.intern("k");
+        let xname = kb.intern("x");
+        let yname = kb.intern("y");
+        let span = make_span();
+        let vx = VarId::new(7, xname);
+        let vy = VarId::new(8, yname);
+        let pos_var = NodeOccurrence::new_expr(Expr::Var(Var::Global(vx)), span, None);
+        let named_var = NodeOccurrence::new_expr(Expr::Var(Var::Global(vy)), span, None);
+        let atom = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: f,
+                pos_args: vec![pos_var],
+                named_args: vec![(key, named_var)],
+                type_args: vec![],
+            },
+            span,
+            None,
+        );
+        let mut subst = Substitution::new();
+        subst.bind_value(vy, Value::Int(99)); // bind only the named arg
+        let out = substitute_occurrence(&mut kb, &atom, &subst);
+        match out.as_expr() {
+            Some(Expr::Apply { pos_args, named_args, .. }) => {
+                assert!(
+                    matches!(pos_args[0].as_expr(), Some(Expr::Var(Var::Global(v))) if *v == vx),
+                    "unbound positional preserved",
+                );
+                assert_eq!(named_args[0].0, key, "field symbol survives");
+                assert!(
+                    matches!(named_args[0].1.as_expr(), Some(Expr::Const(Literal::Int(99)))),
+                    "named-arg var substituted, got {:?}",
+                    named_args[0].1.as_expr()
+                );
+            }
+            other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn substitute_occurrence_passes_through_non_var_leaves() {
+        // A `Ref` child (and any non-`Var` leaf) passes through untouched,
+        // keeping Rc identity — exercising the leaf/`_` passthrough arm.
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("f");
+        let r = kb.intern("WorkItem");
+        let span = make_span();
+        let ref_child = NodeOccurrence::new_expr(Expr::Ref(r), span, None);
+        let atom = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: f,
+                pos_args: vec![Rc::clone(&ref_child)],
+                named_args: vec![],
+                type_args: vec![],
+            },
+            span,
+            None,
+        );
+        let out = substitute_occurrence(&mut kb, &atom, &Substitution::new());
+        assert!(Rc::ptr_eq(&out, &atom), "no substitutable leaf → whole atom keeps identity");
+        match out.as_expr() {
+            Some(Expr::Apply { pos_args, .. }) => {
+                assert!(Rc::ptr_eq(&pos_args[0], &ref_child), "Ref leaf preserved by identity");
             }
             other => panic!("expected Apply, got {other:?}"),
         }

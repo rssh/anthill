@@ -40,7 +40,7 @@ use super::node_occurrence::{
 };
 use super::occurrence::PassId;
 use super::subst::Substitution;
-use super::term::{Literal, Term, TermId, VarId};
+use super::term::{Term, TermId, VarId};
 use super::{KnowledgeBase, RuleId};
 
 /// Per-node fixpoint bound — mirrors `apply_eq_rules`'s fuel (`resolve.rs`),
@@ -374,16 +374,12 @@ fn subst_visit(
             // surfaces any genuinely unbound case as an error.
             _ => results.push(synth(Expr::Bottom)),
         },
-        Value::Int(n) => results.push(synth(Expr::Const(Literal::Int(n)))),
-        Value::BigInt(n) => results.push(synth(Expr::Const(Literal::BigInt(n)))),
-        Value::Float(f) => {
-            results.push(synth(Expr::Const(Literal::Float(ordered_float::OrderedFloat(f)))))
-        }
-        Value::Bool(b) => results.push(synth(Expr::Const(Literal::Bool(b)))),
-        Value::Str(s) => results.push(synth(Expr::Const(Literal::String(s.to_string())))),
-        // Tuple/Entity/closures/etc. are not expected as a structural RHS
-        // binding in WI-277; leave a `⊥` for the type-check to flag.
-        _ => results.push(synth(Expr::Bottom)),
+        // Scalars → `Const` (shared with the resolver's occurrence walker).
+        // Tuple/Entity/closures/etc. aren't expected as a structural RHS
+        // binding in WI-277; `None` leaves a `⊥` for the type-check to flag.
+        other => results.push(synth(
+            node_occurrence::scalar_value_expr(&other).unwrap_or(Expr::Bottom),
+        )),
     }
 }
 
@@ -518,7 +514,7 @@ fn reassemble(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kb::term::Var;
+    use crate::kb::term::{Literal, Var};
     use crate::span::{SourceId, SourceSpan};
     use smallvec::SmallVec;
 
