@@ -98,7 +98,9 @@ impl MapBody {
         self.lookup.contains_key(key)
     }
 
-    /// Remove a key, preserving the order of the remaining entries.
+    /// Remove a key, preserving the order of the remaining entries. The
+    /// `order` scan makes this O(N) (unlike the O(log N) `insert`/`get`);
+    /// acceptable because map removal is rare on the interpreter's paths.
     pub fn shift_remove(&mut self, key: &MapKey) {
         if self.lookup.remove(key).is_some() {
             if let Some(pos) = self.order.iter().position(|k| k == key) {

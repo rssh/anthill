@@ -670,8 +670,7 @@ namespace anthill.todo
     --
     -- The visited set is a Map[id → true]: `contains` / `put` are
     -- O(log N) on the persistent map, so one walk over M reachable
-    -- nodes costs O(M log N) instead of the O(M^2) a linear-scanned
-    -- List[String] visited set paid. (A topo-sort with
+    -- nodes costs O(M log N). (A topo-sort with
     -- union-of-children's-reachable-sets would amortize the per-row
     -- repetition further, but needs set-union arithmetic; left as a
     -- follow-up.)

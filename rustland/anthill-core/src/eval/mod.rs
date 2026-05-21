@@ -257,16 +257,36 @@ pub struct Interpreter {
     /// dominates interpreted runtime once a program makes many calls. The
     /// `OperationInfo` facts are static across a run (only data facts get
     /// persisted/retracted), so memoizing by op `Symbol` is sound.
-    pub(crate) op_body_cache: HashMap<
-        Symbol,
-        (std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>, Vec<(Symbol, crate::kb::term::TermId)>),
-    >,
+    pub(crate) op_body_cache: HashMap<Symbol, eval::OpBody>,
+    /// Whether the `ANTHILL_PROFILE` profiler is active. Read once from the
+    /// environment at construction (it can't change mid-run) so the per-step
+    /// and per-dispatch profiling gates are a plain field test, not an env
+    /// lookup. See `eval::OP_PROF` / `Self::dump_profile`.
+    pub(crate) profiling: bool,
     pub(crate) config: EvalConfig,
     /// Monotonically increasing step counter, reset on each `call()`.
     /// `run()` increments it once per `step()` and compares against
     /// `config.step_cap`. Not a permanent counter — after a call returns
     /// the host can inspect and reset via `config_mut()`.
     pub(crate) step_count: u64,
+}
+
+/// Collect the top-`n` profiler entries from a thread-local counter map,
+/// sorted descending by the second field (reductions or wall nanos), and
+/// clear the map for the next run. Shared by `dump_profile`'s op + builtin
+/// tables. See `eval::OP_PROF` / `eval::BUILTIN_PROF`.
+fn drain_top<V: Copy + Ord>(
+    prof: &'static std::thread::LocalKey<std::cell::RefCell<HashMap<Symbol, (u64, V)>>>,
+    n: usize,
+) -> Vec<(Symbol, (u64, V))> {
+    prof.with(|p| {
+        let mut rows: Vec<(Symbol, (u64, V))> =
+            p.borrow().iter().map(|(k, v)| (*k, *v)).collect();
+        rows.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
+        rows.truncate(n);
+        p.borrow_mut().clear();
+        rows
+    })
 }
 
 impl Interpreter {
@@ -296,6 +316,7 @@ impl Interpreter {
             effect_handlers: EffectRegistry::new(),
             store_registry: HashMap::new(),
             op_body_cache: HashMap::new(),
+            profiling: std::env::var_os("ANTHILL_PROFILE").is_some(),
             config,
             step_count: 0,
         }
@@ -529,7 +550,7 @@ impl Interpreter {
             awaiting: None,
         })?;
         let result = self.run();
-        if eval::profiling() {
+        if self.profiling {
             self.dump_profile(sym);
         }
         result
@@ -544,33 +565,21 @@ impl Interpreter {
             self.kb.qualified_name_of(entry),
             self.step_count,
         );
-        eval::OP_PROF.with(|p| {
-            let mut rows: Vec<(Symbol, (u64, u64))> =
-                p.borrow().iter().map(|(k, v)| (*k, *v)).collect();
-            rows.sort_by(|a, b| b.1.1.cmp(&a.1.1));
-            eprintln!("[profile] top operations (by self-reductions):");
-            for (sym, (calls, steps)) in rows.into_iter().take(20) {
-                eprintln!(
-                    "[profile]   {:<46} self-reductions={:<9} calls={}",
-                    self.kb.qualified_name_of(sym), steps, calls,
-                );
-            }
-            p.borrow_mut().clear();
-        });
-        eval::BUILTIN_PROF.with(|p| {
-            let mut rows: Vec<(Symbol, (u64, u128))> =
-                p.borrow().iter().map(|(k, v)| (*k, *v)).collect();
-            rows.sort_by(|a, b| b.1.1.cmp(&a.1.1));
-            eprintln!("[profile] top builtins (by wall time):");
-            for (sym, (calls, nanos)) in rows.into_iter().take(15) {
-                eprintln!(
-                    "[profile]   {:<46} {:>8.3}ms  calls={}",
-                    self.kb.qualified_name_of(sym),
-                    nanos as f64 / 1.0e6, calls,
-                );
-            }
-            p.borrow_mut().clear();
-        });
+        eprintln!("[profile] top operations (by self-reductions):");
+        for (sym, (calls, steps)) in drain_top(&eval::OP_PROF, 20) {
+            eprintln!(
+                "[profile]   {:<46} self-reductions={:<9} calls={}",
+                self.kb.qualified_name_of(sym), steps, calls,
+            );
+        }
+        eprintln!("[profile] top builtins (by wall time):");
+        for (sym, (calls, nanos)) in drain_top(&eval::BUILTIN_PROF, 15) {
+            eprintln!(
+                "[profile]   {:<46} {:>8.3}ms  calls={}",
+                self.kb.qualified_name_of(sym),
+                nanos as f64 / 1.0e6, calls,
+            );
+        }
     }
 
     /// Build the initial `frame.requirements` for an entry-point call.

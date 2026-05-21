@@ -47,10 +47,11 @@ thread_local! {
     pub(crate) static BUILTIN_PROF: std::cell::RefCell<std::collections::HashMap<Symbol, (u64, u128)>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
-#[inline]
-pub(crate) fn profiling() -> bool {
-    std::env::var_os("ANTHILL_PROFILE").is_some()
-}
+
+/// A resolved operation body: its body node plus its params. Params are
+/// `Rc<[…]>` (not `Vec`) so a `op_body_cache` hit is a pair of refcount
+/// bumps rather than a per-call heap allocation.
+pub(crate) type OpBody = (Rc<NodeOccurrence>, Rc<[(Symbol, TermId)]>);
 
 impl Interpreter {
     /// Drive the activation stack until it empties. Single loop, no native
@@ -58,7 +59,7 @@ impl Interpreter {
     /// TCO'd infinite tail loops surface as `StepsExhausted` rather than
     /// hanging the host.
     pub fn run(&mut self) -> Result<Value, EvalError> {
-        let prof = profiling();
+        let prof = self.profiling;
         loop {
             if let Some(cap) = self.config.step_cap {
                 if self.step_count >= cap {
@@ -749,9 +750,9 @@ impl Interpreter {
 
         // 2. Registered Rust builtin?
         if let Some(builtin) = self.builtins.get(&target).cloned() {
-            if profiling() {
+            let result = if self.profiling {
                 let t0 = std::time::Instant::now();
-                let result = (builtin)(self, &arg_values)?;
+                let r = (builtin)(self, &arg_values)?;
                 let dt = t0.elapsed().as_nanos();
                 BUILTIN_PROF.with(|p| {
                     let mut m = p.borrow_mut();
@@ -759,9 +760,10 @@ impl Interpreter {
                     e.0 += 1;
                     e.1 += dt;
                 });
-                return self.deliver(result);
-            }
-            let result = (builtin)(self, &arg_values)?;
+                r
+            } else {
+                (builtin)(self, &arg_values)?
+            };
             return self.deliver(result);
         }
 
@@ -777,16 +779,14 @@ impl Interpreter {
     /// programs that make many calls. `OperationInfo` facts are static across
     /// a run (only data facts get persisted/retracted), so caching by op
     /// `Symbol` is sound. See `Interpreter::op_body_cache`.
-    pub(crate) fn cached_operation_body(
-        &mut self,
-        target: Symbol,
-    ) -> Option<(Rc<NodeOccurrence>, Vec<(Symbol, TermId)>)> {
+    pub(crate) fn cached_operation_body(&mut self, target: Symbol) -> Option<OpBody> {
         if let Some(cached) = self.op_body_cache.get(&target) {
             return Some(cached.clone());
         }
-        let looked = lookup_operation_body(&self.kb, target)?;
-        self.op_body_cache.insert(target, looked.clone());
-        Some(looked)
+        let (node, params) = lookup_operation_body(&self.kb, target)?;
+        let entry: OpBody = (node, params.into());
+        self.op_body_cache.insert(target, entry.clone());
+        Some(entry)
     }
 
     fn enter_operation(
@@ -805,7 +805,7 @@ impl Interpreter {
                 got: arg_values.len(),
             });
         }
-        if profiling() {
+        if self.profiling {
             OP_PROF.with(|p| p.borrow_mut().entry(target).or_insert((0, 0)).0 += 1);
         }
         let mut locals: SmallVec<[(Symbol, Value); 4]> = SmallVec::new();
