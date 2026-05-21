@@ -296,6 +296,35 @@ impl TermView for Value {
     }
 }
 
+/// WI-277: an occurrence is itself a first-class match target. Implementing
+/// `TermView` directly on `Rc<NodeOccurrence>` keeps the typer-phase rewrite
+/// loop `Rc<NodeOccurrence> → Rc<NodeOccurrence>` — `match_view(lhs, &occ)`
+/// reads the occurrence in place, the rebuilt result is the next `Rc` — with
+/// no `Value::Node` wrap/unwrap between match and rebuild on each iteration.
+/// (`Value::Node` still appears *inside* the substitution as a bound child,
+/// which is intrinsic and a single `Rc` bump.) Reuses the `occ_*` helpers.
+impl TermView for Rc<NodeOccurrence> {
+    fn head(&self, _kb: &KnowledgeBase) -> ViewHead {
+        occ_head(self)
+    }
+
+    fn pos_arg<'a>(&'a self, _kb: &'a KnowledgeBase, i: usize) -> Option<ViewItem<'a>> {
+        occ_pos_child(self, i).map(ViewItem::Node)
+    }
+
+    fn named_arg<'a>(&'a self, _kb: &'a KnowledgeBase, sym: Symbol) -> Option<ViewItem<'a>> {
+        occ_named_child(self, sym).map(ViewItem::Node)
+    }
+
+    fn named_keys(&self, _kb: &KnowledgeBase) -> Vec<Symbol> {
+        occ_named_keys(self)
+    }
+
+    fn as_bind_value(&self) -> BindValue {
+        BindValue::Value(Value::Node(Rc::clone(self)))
+    }
+}
+
 impl TermView for ViewItem<'_> {
     fn head(&self, kb: &KnowledgeBase) -> ViewHead {
         match self {

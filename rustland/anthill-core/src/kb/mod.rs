@@ -15,6 +15,7 @@ pub mod typing;
 pub mod op_info;
 pub mod op_requirements;
 pub mod req_insertion;
+pub mod simp_rewrite;
 pub mod term_view;
 pub mod execute;
 pub mod route;
@@ -1525,6 +1526,32 @@ impl KnowledgeBase {
                     }
                 }
                 _ => return current,
+            }
+        }
+    }
+
+    /// `TermView`-aware [`walk`] (WI-277): chase Var→binding chains through
+    /// the substitution following **both** term and non-term `Value`
+    /// bindings, returning the resolved `Value`. `Value::Term(t)` for a
+    /// term-shaped result (a `Fn`, a leaf, or an unbound var — to recurse
+    /// into / inspect), or a non-term `Value` (`Value::Node`, a literal, …)
+    /// when a variable is bound to one. The view-level counterpart of
+    /// `walk`, used by the typer-phase rewriter's occurrence build side.
+    pub fn walk_view(
+        &self,
+        term: TermId,
+        subst: &subst::Substitution,
+    ) -> crate::eval::value::Value {
+        use crate::eval::value::Value;
+        let mut current = term;
+        loop {
+            match self.terms.get(current) {
+                Term::Var(Var::Global(vid)) => match subst.resolve_as_value(*vid) {
+                    Some(Value::Term(next)) if *next != current => current = *next,
+                    Some(Value::Term(_)) | None => return Value::Term(current),
+                    Some(other) => return other.clone(),
+                },
+                _ => return Value::Term(current),
             }
         }
     }
