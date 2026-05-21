@@ -149,7 +149,7 @@ These belong to the **shared core** (so both phases agree, §4.4), and they are 
 
 - **Reduction strategy: leftmost-innermost / bottom-up.** Forced by type-directed dispatch (outer rule needs `typeof` of the reduced inner term) and matches both the typer's walk and `apply_eq_rules`'s innermost order. Consequence: strict, no lazy discard (brainstorm Q20).
 - **Termination.** Dot client: structural (no machinery). General/value/AD clients: fuel (port `apply_eq_rules`'s bound) + a `Synthesized.from` ancestor-loop check. Commutative/AC laws (`min_comm`) must stay **bare** (non-`[simp]`) or the phase loops (brainstorm Q3/Q18). Open: should the loader *reject* a `[simp]` tag on a detectably-non-terminating rule (LHS≡RHS permuted)?
-- **Firing specificity** when several rules match one redex (`diff_scale` vs `diff_mul`): most-specific-LHS-first / textual / general-then-cleanup (brainstorm Q16). Must be one documented policy in the core.
+- **Firing specificity** when several rules match one redex (`diff_scale` vs `diff_mul`): **most-specific-first, in discrimination-tree order** (concrete edges before variable edges, `discrim.rs` `query_node`) — *decided* (proposal §4.6). This is already how `apply_eq_rules` fires (`query(eq(redex, ?r))`); the typer phase's `try_fire` is moved off its `by_functor(eq)` scan onto the same `query()` lookup, which also makes §4.7 phase-agreement structural. Corollary: a global all-variable LHS (`default_dot`) is the total fallback on the variable edges; `dot_field` and sort-specific rules are more-specific concrete-edge entries that outrank it — sort-specific dispatch needs no separate mechanism.
 
 Because these are observable semantics shared across compile-time and runtime, a sibling proposal (not just this impl doc) may be the right home for ratifying them. Flag for decision.
 
@@ -197,7 +197,7 @@ Because the typer phase writes the rewritten, redex-free tree back **before** th
 
 - **D1 — engine vs one-off.** Build the typer phase by reusing the shared matcher (extend `TermView` to `Node` + add the occurrence build side), *not* as a dot-special-cased pass. (This doc's recommendation; the user's steer.)
 - **D2 — guard evaluation** §5.4: (i) engine-evaluated for Part 1, defer (ii) `type_of` facts.
-- **D3 — strategy/termination/specificity** §6: ratify in a sibling proposal or here?
+- **D3 — strategy/termination/specificity** §6: strategy = leftmost-innermost; **specificity = discrimination-tree most-specific-first (decided, §4.6) — `try_fire` moves onto `query()`**; termination policy still open for value/AD clients (loader rejection of non-terminating `[simp]`). Ratify the remainder in a sibling proposal or here?
 - **D4 — `ViewItem::Node` representation** §2.2(1): new `ViewItem` variant vs alternative occurrence-matcher.
 - **D5 — tier-2 import semantics/timing** (043 open-Q10a).
 - **D6 — requirement-aware dispatch?** §7.1: should `find_operation_on_sort` consider `requires` satisfiability (early/precise errors, overload disambiguation), or resolve by name+sort and let the produced apply's `requires` check report downstream (lean)?

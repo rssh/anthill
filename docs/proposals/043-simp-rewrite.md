@@ -55,7 +55,16 @@ For `p(p(?x, ?y), ?z)` a type-directed outer rule can't fire until `typeof(p(?x,
 
 ### 4.6 Firing specificity
 
-When several rules match one redex (`diff_scale` vs `diff_mul` on `mul(3, x)`): one documented policy — most-specific-LHS-first, or textual order, or general-then-cleanup (let later rules normalize). Fixed for the engine, not per client.
+When several rules match one redex (`diff_scale` vs `diff_mul` on `mul(3, x)`), the engine fires the **most specific** matching rule first, in the order the **discrimination tree** already yields: concrete-edge matches before variable-edge matches (`discrim.rs` `query_node`). Fixed for the engine, not per client.
+
+This is not new machinery — it is exactly how the resolver phase already fires equations: `apply_eq_rules` (`resolve.rs`) builds `eq(redex, ?result)` and calls `query()`, which walks the discrimination tree most-specific-first and takes the first match. The typer phase's `try_fire` (`kb/simp_rewrite.rs`) currently does a `by_functor(eq)` linear scan with accidental first-match; it is brought onto the same `query()`-ordered lookup, which both fixes specificity and makes §4.7 phase-agreement structural (one lookup, both phases).
+
+**Consequence for sort-specific vs global rules.** A rule's specificity *is* its placement in the tree, so "global" and "sort-specific" are not a dichotomy and need no separate mechanism:
+
+- A **global** rule with an all-variable LHS (`default_dot: dot_apply(?x, ?n, ?args)`) sits on the variable edges — the **total fallback**, tried last.
+- A more **specific** rule — `dot_field: dot_apply(?x, ?n, [])` (concrete `nil` args), or a **sort-specific** rule with a concrete name and/or a sort-discriminating guard — sits on concrete edges and is tried first.
+
+So a sort customizes its own dot behavior simply by declaring a more-specific `[simp]` rule (or a sort-guarded one); it always outranks the total global rule, and "global rules are total" is precisely what makes them the safe catch-all.
 
 ### 4.7 Phase-agreement invariant
 
