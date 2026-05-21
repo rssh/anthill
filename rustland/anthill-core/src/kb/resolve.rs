@@ -16,8 +16,8 @@ use smallvec::SmallVec;
 
 use super::subst::Substitution;
 use super::node_occurrence::{self, Expr};
-use super::term::{Term, TermId, Var, VarId};
-use super::term_view::{self, TermView, ViewItem};
+use super::term::{Literal, Term, TermId, Var, VarId};
+use super::term_view::{self, TermView, ViewHead, ViewItem};
 use crate::intern::Symbol;
 use crate::eval::value::Value;
 use super::RuleId;
@@ -267,6 +267,15 @@ enum Num {
     Int(i64),
     Big(num_bigint::BigInt),
     Float(ordered_float::OrderedFloat<f64>),
+}
+
+/// Where a result-binding builtin should put its computed value (WI-246):
+/// bind the unbound result var, or check equality against an already-bound
+/// result. Resolved from the result arg through `TermView` *before* the
+/// `&mut self` alloc, so no `ViewItem` borrow is held across it.
+enum ResultTarget {
+    Bind(VarId),
+    Compare(Option<TermId>),
 }
 
 /// Result of a single step in the search loop.
@@ -1399,11 +1408,11 @@ impl KnowledgeBase {
             BuiltinTag::Lt => self.builtin_cmp(&term_view::TermIdView(goal), answer_subst, |ord| ord == std::cmp::Ordering::Less),
             BuiltinTag::Gte => self.builtin_cmp(&term_view::TermIdView(goal), answer_subst, |ord| ord != std::cmp::Ordering::Less),
             BuiltinTag::Lte => self.builtin_cmp(&term_view::TermIdView(goal), answer_subst, |ord| ord != std::cmp::Ordering::Greater),
-            BuiltinTag::Add => self.builtin_arith(goal, answer_subst, |a, b| a + b, |a, b| a + b, |a, b| a + b),
-            BuiltinTag::Sub => self.builtin_arith(goal, answer_subst, |a, b| a - b, |a, b| a - b, |a, b| a - b),
-            BuiltinTag::Mul => self.builtin_arith(goal, answer_subst, |a, b| a * b, |a, b| a * b, |a, b| a * b),
-            BuiltinTag::ToBigInt => self.builtin_to_bigint(goal, answer_subst),
-            BuiltinTag::ToInt => self.builtin_to_int(goal, answer_subst),
+            BuiltinTag::Add => self.builtin_arith(&term_view::TermIdView(goal), answer_subst, |a, b| a + b, |a, b| a + b, |a, b| a + b),
+            BuiltinTag::Sub => self.builtin_arith(&term_view::TermIdView(goal), answer_subst, |a, b| a - b, |a, b| a - b, |a, b| a - b),
+            BuiltinTag::Mul => self.builtin_arith(&term_view::TermIdView(goal), answer_subst, |a, b| a * b, |a, b| a * b, |a, b| a * b),
+            BuiltinTag::ToBigInt => self.builtin_to_bigint(&term_view::TermIdView(goal), answer_subst),
+            BuiltinTag::ToInt => self.builtin_to_int(&term_view::TermIdView(goal), answer_subst),
             // Occurrence builtins — stubs returning Delay until Phase 2
             BuiltinTag::OccurrenceTerm
             | BuiltinTag::OccurrenceSpan
@@ -1887,7 +1896,6 @@ impl KnowledgeBase {
     /// scalar, or a numeric `Const` inside a `Value::Term`. `None` for
     /// non-numeric values (cmp then fails, matching the original).
     fn value_num(&self, v: &Value) -> Option<Num> {
-        use super::term::Literal;
         match v {
             Value::Int(n) => Some(Num::Int(*n)),
             Value::BigInt(n) => Some(Num::Big(n.clone())),
@@ -1902,63 +1910,101 @@ impl KnowledgeBase {
         }
     }
 
+    /// The `Var::Global` id of a σ-walked `Value`, if it is one — `Term::Var`
+    /// or `Expr::Var` occurrence leaf. Used to decide whether a result arg is
+    /// an unbound var to bind.
+    fn value_global_var(&self, v: &Value) -> Option<VarId> {
+        match v {
+            Value::Term(t) => match self.terms.get(*t) {
+                Term::Var(Var::Global(vid)) => Some(*vid),
+                _ => None,
+            },
+            Value::Node(occ) => match occ.as_expr() {
+                Some(Expr::Var(Var::Global(vid))) => Some(*vid),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Resolve a builtin's *result* arg (read through `TermView`) under σ to a
+    /// [`ResultTarget`] — the view-based front half of the old
+    /// `try_bind_result`. Consumes the `ViewItem` so no borrow is held across
+    /// the caller's subsequent `&mut self` value computation.
+    fn resolve_result_target(&self, result: Option<ViewItem>, subst: &Substitution) -> ResultTarget {
+        match self.walk_arg(result, subst) {
+            None => ResultTarget::Compare(None),
+            Some(v) => match self.value_global_var(&v) {
+                Some(vid) => ResultTarget::Bind(vid),
+                None => ResultTarget::Compare(v.as_term()),
+            },
+        }
+    }
+
+    /// Back half of result binding: bind the computed `value` to the result
+    /// var, or check equality against an already-bound result.
+    fn finish_result(&self, target: ResultTarget, value: TermId) -> BuiltinResult {
+        match target {
+            ResultTarget::Bind(vid) => {
+                let mut extra = Substitution::new();
+                extra.bind(vid, value);
+                BuiltinResult::SuccessWithBindings(extra)
+            }
+            ResultTarget::Compare(Some(t)) if t == value => BuiltinResult::Success,
+            ResultTarget::Compare(_) => BuiltinResult::Failure,
+        }
+    }
+
     // ── Arithmetic builtins ──────────────────────────────────
 
     /// Generic arithmetic builtin for add/sub/mul.
     /// If 2 positional args: used as an equation builtin (reduces term to result).
     /// If 3 positional args: binds the 3rd arg to the computed result.
     /// Operates on Int, BigInt, or Float constants.
-    fn builtin_arith(
+    fn builtin_arith<V: TermView>(
         &mut self,
-        goal: TermId,
+        goal: &V,
         subst: &Substitution,
         int_op: impl Fn(i64, i64) -> i64,
         bigint_op: impl Fn(&num_bigint::BigInt, &num_bigint::BigInt) -> num_bigint::BigInt,
         float_op: impl Fn(f64, f64) -> f64,
     ) -> BuiltinResult {
-        let (arg_a, arg_b, result_arg) = match self.terms.get(goal) {
-            Term::Fn { pos_args, .. } if pos_args.len() >= 3 => {
-                (pos_args[0], pos_args[1], Some(pos_args[2]))
+        let pos_arity = match goal.head(self) {
+            ViewHead::Functor { pos_arity, .. } if pos_arity >= 2 => pos_arity,
+            _ => return BuiltinResult::Failure,
+        };
+        // Resolve operands (and, for the 3-arg form, the result target) to
+        // owned values up front — `ViewItem` borrows the KB, so this must
+        // finish before the `&mut self` alloc below.
+        let a = match self.walk_arg(goal.pos_arg(self, 0), subst) {
+            Some(a) => a,
+            None => return BuiltinResult::Failure,
+        };
+        let b = match self.walk_arg(goal.pos_arg(self, 1), subst) {
+            Some(b) => b,
+            None => return BuiltinResult::Failure,
+        };
+        if self.value_is_unbound_var(&a) || self.value_is_unbound_var(&b) {
+            return BuiltinResult::Delay;
+        }
+        let target = (pos_arity >= 3).then(|| self.resolve_result_target(goal.pos_arg(self, 2), subst));
+
+        let result_term = match (self.value_num(&a), self.value_num(&b)) {
+            (Some(Num::Int(x)), Some(Num::Int(y))) => {
+                self.alloc(Term::Const(Literal::Int(int_op(x, y))))
             }
-            Term::Fn { pos_args, .. } if pos_args.len() >= 2 => {
-                (pos_args[0], pos_args[1], None)
+            (Some(Num::Big(x)), Some(Num::Big(y))) => {
+                self.alloc(Term::Const(Literal::BigInt(bigint_op(&x, &y))))
             }
+            (Some(Num::Float(x)), Some(Num::Float(y))) => {
+                self.alloc(Term::Const(Literal::Float(ordered_float::OrderedFloat(float_op(x.0, y.0)))))
+            }
+            // unbound handled above; cross-type / non-numeric → fail
             _ => return BuiltinResult::Failure,
         };
 
-        let a = self.walk(arg_a, subst);
-        let b = self.walk(arg_b, subst);
-
-        // Extract numeric values first (immutable borrow), then alloc (mutable).
-        enum NumPair { Ints(i64, i64), BigInts(num_bigint::BigInt, num_bigint::BigInt), Floats(f64, f64) }
-        let pair = match (self.terms.get(a), self.terms.get(b)) {
-            (Term::Var(_), _) | (_, Term::Var(_)) => return BuiltinResult::Delay,
-            (Term::Const(super::term::Literal::Int(x)),
-             Term::Const(super::term::Literal::Int(y))) => NumPair::Ints(*x, *y),
-            (Term::Const(super::term::Literal::BigInt(x)),
-             Term::Const(super::term::Literal::BigInt(y))) => NumPair::BigInts(x.clone(), y.clone()),
-            (Term::Const(super::term::Literal::Float(x)),
-             Term::Const(super::term::Literal::Float(y))) => NumPair::Floats(x.0, y.0),
-            _ => return BuiltinResult::Failure,
-        };
-
-        let result_term = match pair {
-            NumPair::Ints(x, y) => {
-                self.alloc(Term::Const(super::term::Literal::Int(int_op(x, y))))
-            }
-            NumPair::BigInts(x, y) => {
-                self.alloc(Term::Const(super::term::Literal::BigInt(bigint_op(&x, &y))))
-            }
-            NumPair::Floats(x, y) => {
-                use ordered_float::OrderedFloat;
-                self.alloc(Term::Const(super::term::Literal::Float(
-                    OrderedFloat(float_op(x, y)),
-                )))
-            }
-        };
-
-        match result_arg {
-            Some(r) => self.try_bind_result(r, result_term, subst),
+        match target {
+            Some(t) => self.finish_result(t, result_term),
             // 2-arg form: succeeds as a ground test (both args are concrete constants)
             None => BuiltinResult::Success,
         }
@@ -1967,49 +2013,54 @@ impl KnowledgeBase {
     // ── Conversion builtins ────────────────────────────────────
 
     /// `to_bigint(?n, ?result)` — convert Int to BigInt.
-    fn builtin_to_bigint(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
-        let arg = self.walk(self.builtin_first_arg(goal), subst);
-        let result_arg = self.builtin_second_arg(goal);
-        match self.terms.get(arg) {
-            Term::Var(_) => BuiltinResult::Delay,
-            Term::Const(super::term::Literal::Int(n)) => {
-                let n = *n;
-                let big = self.alloc(Term::Const(super::term::Literal::BigInt(
-                    num_bigint::BigInt::from(n),
-                )));
-                self.try_bind_result(result_arg, big, subst)
-            }
-            Term::Const(super::term::Literal::BigInt(_)) => {
-                // Already BigInt — pass through
-                self.try_bind_result(result_arg, arg, subst)
-            }
-            _ => BuiltinResult::Failure,
+    fn builtin_to_bigint<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        let arg = match self.walk_arg(goal.pos_arg(self, 0), subst) {
+            Some(a) => a,
+            None => return BuiltinResult::Failure,
+        };
+        if self.value_is_unbound_var(&arg) {
+            return BuiltinResult::Delay;
         }
+        let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
+        let value = match self.value_num(&arg) {
+            Some(Num::Int(n)) => self.alloc(Term::Const(Literal::BigInt(num_bigint::BigInt::from(n)))),
+            // Already a BigInt — pass the term through, or promote a scalar.
+            Some(Num::Big(n)) => arg
+                .as_term()
+                .unwrap_or_else(|| self.alloc(Term::Const(Literal::BigInt(n)))),
+            _ => return BuiltinResult::Failure,
+        };
+        self.finish_result(target, value)
     }
 
     /// `to_int(?n, ?result)` — convert BigInt to Int. Wraps in some/none.
-    fn builtin_to_int(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
-        let arg = self.walk(self.builtin_first_arg(goal), subst);
-        let result_arg = self.builtin_second_arg(goal);
-        match self.terms.get(arg).clone() {
-            Term::Var(_) => BuiltinResult::Delay,
-            Term::Const(super::term::Literal::BigInt(n)) => {
+    fn builtin_to_int<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        let arg = match self.walk_arg(goal.pos_arg(self, 0), subst) {
+            Some(a) => a,
+            None => return BuiltinResult::Failure,
+        };
+        if self.value_is_unbound_var(&arg) {
+            return BuiltinResult::Delay;
+        }
+        let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
+        let result = match self.value_num(&arg) {
+            Some(Num::Big(n)) => {
                 use std::convert::TryFrom;
-                let result = if let Ok(small) = i64::try_from(&n) {
-                    let int_term = self.alloc(Term::Const(super::term::Literal::Int(small)));
+                if let Ok(small) = i64::try_from(&n) {
+                    let int_term = self.alloc(Term::Const(Literal::Int(small)));
                     super::load::build_some(self, int_term)
                 } else {
                     super::load::build_none(self)
-                };
-                self.try_bind_result(result_arg, result, subst)
+                }
             }
-            Term::Const(super::term::Literal::Int(_)) => {
-                // Already Int — wrap in some
-                let result = super::load::build_some(self, arg);
-                self.try_bind_result(result_arg, result, subst)
+            // Already an Int — wrap in some.
+            Some(Num::Int(n)) => {
+                let int_term = self.alloc(Term::Const(Literal::Int(n)));
+                super::load::build_some(self, int_term)
             }
-            _ => BuiltinResult::Failure,
-        }
+            _ => return BuiltinResult::Failure,
+        };
+        self.finish_result(target, result)
     }
 
     /// `scope(?sym, ?result)` — if `?sym` is bound to a Ref or Fn, bind `?result`
