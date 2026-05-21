@@ -1418,11 +1418,23 @@ impl KnowledgeBase {
     /// Uses the discrimination tree for multi-level structural dispatch.
     /// Variable bindings are resolved via path extraction from head terms.
     pub fn query(&self, pattern: TermId) -> Vec<(RuleId, subst::Substitution)> {
+        self.query_view(&term_view::TermIdView(pattern))
+    }
+
+    /// `query` generic over the goal representation: `pattern` is anything
+    /// viewable as a term — `TermIdView(TermId)` for the term-goal path, or a
+    /// `Value` / `Value::Node` occurrence goal (WI-246), since the matcher
+    /// reads the goal only through [`TermView`] and the discrim tree indexes
+    /// rule heads structurally. Avoids lowering an occurrence goal to a
+    /// hash-consed term just to look up candidates.
+    pub fn query_view<V: term_view::TermView>(
+        &self,
+        pattern: &V,
+    ) -> Vec<(RuleId, subst::Substitution)> {
         let rules = &self.rules;
-        let pattern_view = term_view::TermIdView(pattern);
         let candidates = self.discrim.query_resolved(
             self,
-            &pattern_view,
+            pattern,
             |rid: &RuleId| rules[rid.index()].head,
         );
 
@@ -2879,6 +2891,59 @@ mod tests {
         assert_eq!(results.len(), 1);
         let (_, ref s) = results[0];
         assert_eq!(s.resolve_with_term(vid), Some(alice));
+    }
+
+    #[test]
+    fn query_view_matches_via_value_node_goal() {
+        // WI-246: a `Value::Node` occurrence goal finds the same candidate(s)
+        // as the equivalent `TermId` goal — the matcher reads the goal only
+        // through `TermView`, so an occurrence goal needs no lowering to a
+        // hash-consed term to be looked up in the discrim tree.
+        use crate::eval::value::Value;
+        let mut kb = KnowledgeBase::new();
+        let fact_sort = kb.make_name_term("Fact");
+        let domain = kb.make_name_term("test");
+        let parent_sym = kb.intern("parent");
+        let alice = kb.alloc(Term::Const(Literal::String("alice".into())));
+        let bob = kb.alloc(Term::Const(Literal::String("bob".into())));
+        let charlie = kb.alloc(Term::Const(Literal::String("charlie".into())));
+        let fact1 = kb.alloc(Term::Fn {
+            functor: parent_sym,
+            pos_args: SmallVec::from_slice(&[alice, bob]),
+            named_args: SmallVec::new(),
+        });
+        let fact2 = kb.alloc(Term::Fn {
+            functor: parent_sym,
+            pos_args: SmallVec::from_slice(&[bob, charlie]),
+            named_args: SmallVec::new(),
+        });
+        kb.assert_fact(fact1, fact_sort, domain, None);
+        kb.assert_fact(fact2, fact_sort, domain, None);
+
+        // Goal `parent(?x, "bob")` built as a term, then materialized to an
+        // occurrence and queried as a `Value::Node` — must match fact1 only,
+        // binding ?x → "alice", identically to the `TermId` query.
+        let x_sym = kb.intern("x");
+        let vid = kb.fresh_var(x_sym);
+        let var_x = kb.alloc(Term::Var(Var::Global(vid)));
+        let pattern = kb.alloc(Term::Fn {
+            functor: parent_sym,
+            pos_args: SmallVec::from_slice(&[var_x, bob]),
+            named_args: SmallVec::new(),
+        });
+        let term_hits = kb.query(pattern);
+
+        let occ = node_occurrence::materialize_from_handle(&kb, pattern);
+        let node_hits = kb.query_view(&Value::Node(occ));
+
+        assert_eq!(node_hits.len(), 1, "Value::Node goal matches one fact");
+        assert_eq!(node_hits.len(), term_hits.len(), "same candidate count as TermId goal");
+        assert_eq!(node_hits[0].0, term_hits[0].0, "same matched rule/fact");
+        assert_eq!(
+            node_hits[0].1.resolve_with_term(vid),
+            Some(alice),
+            "?x bound to \"alice\" via the occurrence goal",
+        );
     }
 
     #[test]
