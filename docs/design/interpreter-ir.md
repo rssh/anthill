@@ -187,6 +187,21 @@ same artifact.
 - **Reflection.** Some builtins (`body_of`, `args_of`, WI-242 `Value::Node`)
   walk `NodeOccurrence` directly. Decide whether they keep reading the AST
   (kept alongside the IR) or move to the IR.
+- **Equation-defined operations (no body).** Some operations have no
+  `NodeOccurrence` body — they are defined entirely by equational rules
+  (`add_zero`, `first` today; `min`, AD's `diff`, etc. under the dot-syntax
+  proposal in `docs/design/dot-macro-brainstorm.md`). The lowering pass has
+  nothing to lower for them, yet eval-v2 hits `CallStatic(op_id, …)` for such
+  a call. Two options, and **codegen forces the answer**: (a) compile the
+  equation set into a `CompiledOp` (e.g. `min`'s rules → `if compare(a,b)<=0
+  then a else b`, an `If` over a `CallViaReq`) — feasible for deterministic +
+  complete sets, *required* for codegen since the resolver's equational
+  fallback can't be emitted into native code; (b) keep an equational-fallback
+  execution path for body-less ops — smaller interpreter step, insufficient
+  for codegen. Likely both: compile where the set is deterministic +
+  complete, fall back otherwise. The dot-syntax design depends on this path
+  (its value-conditional rewrites residualize to runtime calls on such ops),
+  but the question pre-dates it.
 
 ## Non-goals
 
