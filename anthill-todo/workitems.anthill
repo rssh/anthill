@@ -1742,7 +1742,7 @@ fact WorkItem(
   description: "Extend NodeOccurrence/Expr migration to rule body atoms. Currently (WI-242) only operation bodies, lambda bodies, and if/match/let branches become Expr/NodeOccurrence; rule body atoms (e.g. add(?x, 1) inside rule r(?y) :- Foo(?x), ?y = add(?x, 1)) stay as hash-consed Term. This WI extends the migration: rule body atoms become Rc<NodeOccurrence> with NodeKind::Expr, so the typer/eval/codegen see uniform Expr structure regardless of whether content lives in an operation body or a rule body. Affects: kb/load.rs (rule body atom conversion), kb/resolve.rs (SLD resolution walks NodeOccurrence atoms), kb/discrim.rs (discrimination tree keys), kb/subst.rs (substitution applied through NodeOccurrence). Acceptance: cargo-test green; rule body atoms are structurally Rc<NodeOccurrence>; no Term::Fn at rule-body positions in loaded KB; resolver indexes occurrences by functor for discrimination tree matching. Out of scope: type terms, fact bodies, query patterns (those stay as Term — they are structural KB facts, not positional expressions).",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-242"],
-  status: Open)
+  status: Claimed(agent: "claude", since: "2026-05-21T15:40:59Z"))
 
 fact WorkItem(
   id: "WI-247",

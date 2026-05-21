@@ -108,6 +108,12 @@ struct Guard {
 struct RuleEntry {
     head: TermId,
     body: Vec<TermId>,
+    /// WI-246: rule body atoms as `NodeOccurrence` (one per `body` entry,
+    /// same order, De Bruijn-encoded `Expr::Var` leaves). The occurrence
+    /// form is what the typer / `simp_rewrite` walk and rewrite (uniform
+    /// with op bodies); `body` (TermId) remains the resolver's opener input
+    /// until resolution itself flows occurrences. Empty for ground facts.
+    body_nodes: Vec<Rc<NodeOccurrence>>,
     sort: TermId,
     domain: TermId,
     meta: Option<TermId>,
@@ -625,9 +631,19 @@ impl KnowledgeBase {
             self.terms.incref(b);
         }
 
+        // WI-246: materialize each body atom to a `NodeOccurrence` (read-only
+        // walk of the already-built body term, De Bruijn leaves preserved as
+        // `Expr::Var`). Empty for facts. The occurrence form is the
+        // typer/`simp` view; `body` (TermId) stays the resolver opener input.
+        let body_nodes: Vec<Rc<NodeOccurrence>> = body
+            .iter()
+            .map(|&b| node_occurrence::materialize_from_handle(self, b))
+            .collect();
+
         self.rules.push(RuleEntry {
             head,
             body,
+            body_nodes,
             sort,
             domain,
             meta,
@@ -1236,6 +1252,13 @@ impl KnowledgeBase {
     /// Get the body literals of a rule (empty for ground facts).
     pub fn rule_body(&self, id: RuleId) -> &[TermId] {
         &self.rules[id.index()].body
+    }
+
+    /// WI-246: the rule body atoms as `NodeOccurrence`s (same order/length as
+    /// [`rule_body`], empty for facts). The occurrence form the typer and
+    /// `simp_rewrite` walk; resolution still opens the [`rule_body`] terms.
+    pub fn rule_body_nodes(&self, id: RuleId) -> &[Rc<NodeOccurrence>] {
+        &self.rules[id.index()].body_nodes
     }
 
     /// Get the sort of a rule.

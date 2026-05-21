@@ -14,7 +14,7 @@ use crate::intern::Symbol;
 use crate::span::SourceSpan;
 
 pub use super::occurrence::PassId;
-use super::term::{Literal, Term, TermId, Var};
+use super::term::{Literal, Term, TermId, Var, VarId};
 use super::typing::{get_named_arg, list_to_vec, unwrap_option};
 use super::KnowledgeBase;
 
@@ -562,6 +562,102 @@ pub(super) fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)
         Expr::Const(_) | Expr::Ref(_) | Expr::Ident(_)
         | Expr::Var(_) | Expr::Bottom | Expr::VarRef { .. } => {}
     }
+}
+
+// ── De Bruijn opening (rule-body atoms) ─────────────────────────
+
+/// WI-246: open a De Bruijn-encoded rule-body-atom occurrence into a
+/// fresh-Global one — the occurrence analog of `term_from_debruijn`
+/// (`mod.rs`), and faithful to it (that opener is itself recursive via
+/// `map_fn_children`). Replaces each `Expr::Var(Var::DeBruijn(i))` leaf
+/// with `Expr::Var(Var::Global(fresh[i]))`; unchanged subtrees keep their
+/// `Rc` (only the ancestor chain to a remapped var is rebuilt).
+///
+/// Rule body atoms are predicate applications — `Apply`/`Constructor`/
+/// `Instantiation`/`HoApply` over leaves, never control-flow forms (those
+/// occur only in op/expression bodies) — so the recursion depth is bounded
+/// by atom structure (shallow), like `term_from_debruijn`. Forms that
+/// can't appear at a rule-body atom position pass through unchanged.
+pub fn open_debruijn_node(occ: &Rc<NodeOccurrence>, fresh: &[VarId]) -> Rc<NodeOccurrence> {
+    let Some(expr) = occ.as_expr() else { return Rc::clone(occ) };
+    let rebuilt: Option<Expr> = match expr {
+        Expr::Var(Var::DeBruijn(idx)) => fresh
+            .get(*idx as usize)
+            .map(|&vid| Expr::Var(Var::Global(vid))),
+        Expr::Apply { functor, pos_args, named_args, type_args } => {
+            let (pos, c1) = open_vec(pos_args, fresh);
+            let (named, c2) = open_named(named_args, fresh);
+            (c1 || c2).then(|| Expr::Apply {
+                functor: *functor,
+                pos_args: pos,
+                named_args: named,
+                type_args: type_args.clone(),
+            })
+        }
+        Expr::Constructor { name, pos_args, named_args } => {
+            let (pos, c1) = open_vec(pos_args, fresh);
+            let (named, c2) = open_named(named_args, fresh);
+            (c1 || c2).then(|| Expr::Constructor { name: *name, pos_args: pos, named_args: named })
+        }
+        Expr::Instantiation { name, pos_args, named_args } => {
+            let (pos, c1) = open_vec(pos_args, fresh);
+            let (named, c2) = open_named(named_args, fresh);
+            (c1 || c2).then(|| Expr::Instantiation { name: *name, pos_args: pos, named_args: named })
+        }
+        Expr::HoApply { predicate, args } => {
+            let p = open_debruijn_node(predicate, fresh);
+            let (a, c2) = open_vec(args, fresh);
+            let c1 = !Rc::ptr_eq(&p, predicate);
+            (c1 || c2).then(|| Expr::HoApply { predicate: p, args: a })
+        }
+        // Leaves (no children → nothing to remap) reach here legitimately.
+        // A *child-bearing* variant here would be a control-flow /
+        // post-elaboration form at a rule-body atom position — which can't
+        // occur; assert so a future violation fails a test rather than
+        // silently leaving an un-remapped `DeBruijn` leaf in the tree.
+        _ => {
+            debug_assert!(
+                { let mut n = 0usize; for_each_child(expr, |_| n += 1); n == 0 },
+                "open_debruijn_node: unexpected child-bearing Expr at a rule-body \
+                 atom position: {:?}",
+                std::mem::discriminant(expr),
+            );
+            None
+        }
+    };
+    match rebuilt {
+        Some(e) => NodeOccurrence::new_expr(e, occ.span, occ.owner),
+        None => Rc::clone(occ),
+    }
+}
+
+fn open_vec(items: &[Rc<NodeOccurrence>], fresh: &[VarId]) -> (Vec<Rc<NodeOccurrence>>, bool) {
+    let mut changed = false;
+    let out = items
+        .iter()
+        .map(|c| {
+            let r = open_debruijn_node(c, fresh);
+            changed |= !Rc::ptr_eq(&r, c);
+            r
+        })
+        .collect();
+    (out, changed)
+}
+
+fn open_named(
+    items: &[(Symbol, Rc<NodeOccurrence>)],
+    fresh: &[VarId],
+) -> (Vec<(Symbol, Rc<NodeOccurrence>)>, bool) {
+    let mut changed = false;
+    let out = items
+        .iter()
+        .map(|(s, c)| {
+            let r = open_debruijn_node(c, fresh);
+            changed |= !Rc::ptr_eq(&r, c);
+            (*s, r)
+        })
+        .collect();
+    (out, changed)
 }
 
 // ── Materialization from KB-encoded handle tree ─────────────────
@@ -1290,6 +1386,43 @@ mod tests {
                 );
             }
             other => panic!("expected DotApply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_debruijn_remaps_var_leaves() {
+        // WI-246: a De Bruijn rule-body atom `gt(DeBruijn(0), 3)` opens to
+        // `gt(Global(v0), 3)`; the unchanged `3` leaf keeps its Rc identity.
+        use crate::kb::term::Var;
+        let mut symbols = SymbolTable::new();
+        let gt = symbols.intern("gt");
+        let xname = symbols.intern("x");
+        let span = make_span();
+        let db0 = NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(0)), span, None);
+        let three = NodeOccurrence::new_expr(Expr::Const(Literal::Int(3)), span, None);
+        let atom = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: gt,
+                pos_args: vec![db0, Rc::clone(&three)],
+                named_args: vec![],
+                type_args: vec![],
+            },
+            span,
+            None,
+        );
+        let v0 = VarId::new(7, xname);
+        let opened = open_debruijn_node(&atom, &[v0]);
+        match opened.as_expr() {
+            Some(Expr::Apply { functor, pos_args, .. }) => {
+                assert_eq!(*functor, gt);
+                assert!(
+                    matches!(pos_args[0].as_expr(), Some(Expr::Var(Var::Global(v))) if *v == v0),
+                    "DeBruijn(0) should open to Global(v0), got {:?}",
+                    pos_args[0].as_expr()
+                );
+                assert!(Rc::ptr_eq(&pos_args[1], &three), "unchanged const child keeps identity");
+            }
+            other => panic!("expected Apply, got {other:?}"),
         }
     }
 
