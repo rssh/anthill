@@ -32,8 +32,8 @@ fn unwrap_some(interp: &Interpreter, v: Value) -> Value {
                 name == "some" || name == "anthill.prelude.Option.some",
                 "expected some, got {name}",
             );
-            named.into_iter().find_map(|(s, v)| {
-                if interp.kb().resolve_sym(s) == "value" { Some(v) } else { None }
+            named.iter().find_map(|(s, v)| {
+                if interp.kb().resolve_sym(*s) == "value" { Some(v.clone()) } else { None }
             }).expect("some has value field")
         }
         other => panic!("expected some(...), got {:?}", other),

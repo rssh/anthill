@@ -1750,15 +1750,15 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
         let conv_field = interp.kb_mut().intern("convention");
         let v = Value::Entity {
             functor: fs_sym,
-            pos: vec![],
+            pos: vec![].into(),
             named: vec![
                 (root_field, Value::Str(store_root_str.clone())),
                 (conv_field, Value::Entity {
                     functor: flat_sym,
-                    pos: vec![],
-                    named: vec![],
+                    pos: vec![].into(),
+                    named: vec![].into(),
                 }),
-            ],
+            ].into(),
         };
         let key = match interp.store_canonical_key(&v) {
             Ok(k) => k,
@@ -1821,11 +1821,11 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
         let counter_field = interp.kb_mut().intern("id_counter");
         let wis_value = Value::Entity {
             functor: wis_sym,
-            pos: vec![],
+            pos: vec![].into(),
             named: vec![
                 (backend_field, store_value.clone()),
                 (counter_field, Value::Int(id_counter)),
-            ],
+            ].into(),
         };
         let handle = interp.alloc_cell(wis_value);
         Value::Cell(handle)

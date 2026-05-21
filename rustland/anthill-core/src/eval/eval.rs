@@ -675,8 +675,8 @@ impl Interpreter {
         top.awaiting = Some(AwaitState::ConstructorArgs {
             ctor_sym: name,
             is_tuple_literal,
-            buffered_pos: Vec::new(),
-            buffered_named: Vec::new(),
+            buffered_pos: Vec::new().into(),
+            buffered_named: Vec::new().into(),
             // Prepend the currently-in-flight name so the delivery logic
             // knows which slot to place the next value into.
             remaining: std::iter::once((first_name, placeholder))
@@ -1077,7 +1077,7 @@ impl Interpreter {
         let value = if Some(ctor_sym) == self.reflect.list_literal {
             self.build_list_value(pos, &named)?
         } else if is_tuple_literal {
-            Value::Tuple { pos, named }
+            Value::Tuple { pos: pos.into(), named: named.into() }
         } else if Some(ctor_sym) == self.reflect.set_literal {
             // SetLiteral has set semantics: dedup via `structural_eq` so
             // nested tuples/entities compare by shape, not identity. Opaque
@@ -1088,9 +1088,9 @@ impl Interpreter {
                     deduped.push(v);
                 }
             }
-            Value::Entity { functor: ctor_sym, pos: deduped, named }
+            Value::Entity { functor: ctor_sym, pos: deduped.into(), named: named.into() }
         } else {
-            Value::Entity { functor: ctor_sym, pos, named }
+            Value::Entity { functor: ctor_sym, pos: pos.into(), named: named.into() }
         };
         self.deliver(value)
     }
@@ -1111,14 +1111,14 @@ impl Interpreter {
         let tail_seed = named.iter()
             .find(|(s, _)| *s == self.fields.tail)
             .map(|(_, v)| v.clone())
-            .unwrap_or(Value::Entity { functor: nil_sym, pos: Vec::new(), named: Vec::new() });
+            .unwrap_or(Value::Entity { functor: nil_sym, pos: Vec::new().into(), named: Vec::new().into() });
 
         let mut acc = tail_seed;
         for elem in elements.into_iter().rev() {
             acc = Value::Entity {
                 functor: cons_sym,
-                pos: Vec::new(),
-                named: vec![(self.fields.head, elem), (self.fields.tail, acc)],
+                pos: Vec::new().into(),
+                named: vec![(self.fields.head, elem), (self.fields.tail, acc)].into(),
             };
         }
         Ok(acc)

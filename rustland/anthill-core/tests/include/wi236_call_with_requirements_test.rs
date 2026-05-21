@@ -70,15 +70,15 @@ fn build_cell_wis(interp: &mut Interpreter) -> Value {
     let fake_backend_sym = interp.kb_mut().intern("FakeBackend");
     let wis_value = Value::Entity {
         functor: wis_sym,
-        pos: vec![],
+        pos: vec![].into(),
         named: vec![
             (backend_field, Value::Entity {
                 functor: fake_backend_sym,
-                pos: vec![],
-                named: vec![],
+                pos: vec![].into(),
+                named: vec![].into(),
             }),
             (counter_field, Value::Int(1)),
-        ],
+        ].into(),
     };
     let handle = interp.alloc_cell(wis_value);
     Value::Cell(handle)

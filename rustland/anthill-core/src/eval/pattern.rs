@@ -158,7 +158,7 @@ fn constructor_sub_values(
     match scrutinee {
         Value::Entity { functor, pos, named } => {
             if !functor_matches(kb, expected, *functor) { return None; }
-            let mut all = pos.clone();
+            let mut all: Vec<Value> = pos.to_vec();
             all.extend(named.iter().map(|(_, v)| v.clone()));
             Some(all)
         }

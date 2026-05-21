@@ -26,15 +26,15 @@ fn filestore_value(interp: &mut Interpreter, root: &str) -> Value {
     let convention_sym = interp.kb_mut().intern("convention");
     Value::Entity {
         functor: fs,
-        pos: vec![],
+        pos: vec![].into(),
         named: vec![
             (root_sym, Value::Str(root.to_string())),
             (convention_sym, Value::Entity {
                 functor: flat,
-                pos: vec![],
-                named: vec![],
+                pos: vec![].into(),
+                named: vec![].into(),
             }),
-        ],
+        ].into(),
     }
 }
 
@@ -62,8 +62,8 @@ fn persist_then_flush_writes_fact_to_disk() {
     let value_sym = interp.kb_mut().intern("value");
     let foo_val = Value::Entity {
         functor: foo_sym,
-        pos: vec![],
-        named: vec![(value_sym, Value::Int(7))],
+        pos: vec![].into(),
+        named: vec![(value_sym, Value::Int(7))].into(),
     };
 
     let none_val = Value::Unit;
@@ -121,8 +121,8 @@ fn retract_via_builtin_removes_fact_from_disk() {
 
     let foo_sym = interp.kb_mut().intern("Foo");
     let bar_sym = interp.kb_mut().intern("Bar");
-    let foo_val = Value::Entity { functor: foo_sym, pos: vec![], named: vec![] };
-    let bar_val = Value::Entity { functor: bar_sym, pos: vec![], named: vec![] };
+    let foo_val = Value::Entity { functor: foo_sym, pos: vec![].into(), named: vec![].into() };
+    let bar_val = Value::Entity { functor: bar_sym, pos: vec![].into(), named: vec![].into() };
 
     let none_val = Value::Unit;
     let _foo_id = interp.call("anthill.persistence.Store.persist", &[store_val.clone(), foo_val, none_val.clone()]).unwrap();
@@ -157,20 +157,20 @@ fn store_canonical_key_is_stable() {
 
     let v1 = Value::Entity {
         functor: fs,
-        pos: vec![],
+        pos: vec![].into(),
         named: vec![
             (root, Value::Str("/tmp/x".into())),
-            (conv, Value::Entity { functor: flat, pos: vec![], named: vec![] }),
-        ],
+            (conv, Value::Entity { functor: flat, pos: vec![].into(), named: vec![].into() }),
+        ].into(),
     };
     let v2 = Value::Entity {
         functor: fs,
-        pos: vec![],
+        pos: vec![].into(),
         named: vec![
             // reversed order
-            (conv, Value::Entity { functor: flat, pos: vec![], named: vec![] }),
+            (conv, Value::Entity { functor: flat, pos: vec![].into(), named: vec![].into() }),
             (root, Value::Str("/tmp/x".into())),
-        ],
+        ].into(),
     };
     let k1 = interp.store_canonical_key(&v1).unwrap();
     let k2 = interp.store_canonical_key(&v2).unwrap();

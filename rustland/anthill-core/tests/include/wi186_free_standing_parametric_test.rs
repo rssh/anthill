@@ -110,8 +110,8 @@ end
             );
             // The two arguments live somewhere in the entity. Take
             // them from whichever bag is populated.
-            let mut values: Vec<Value> = pos.clone();
-            for (_, v) in &named {
+            let mut values: Vec<Value> = pos.to_vec();
+            for (_, v) in named.iter() {
                 values.push(v.clone());
             }
             let saw_str = values.iter().any(|v| matches!(v, Value::Str(s) if s == "wi"));

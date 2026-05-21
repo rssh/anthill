@@ -32,11 +32,12 @@ pub enum Value {
     Str(String),
     Unit,
 
-    // Anonymous tuple (no functor). `Vec` rather than `SmallVec<[Value; N]>`
-    // to avoid a self-referential layout cycle.
+    // Anonymous tuple (no functor). Payloads are `Rc<[…]>` for the same
+    // O(1)-clone reason as `Entity` below (and to avoid a self-referential
+    // layout cycle).
     Tuple {
-        pos: Vec<Value>,
-        named: Vec<(Symbol, Value)>,
+        pos: Rc<[Value]>,
+        named: Rc<[(Symbol, Value)]>,
     },
 
     // Constructed entity (has a functor), transient until persisted. Zero
@@ -47,10 +48,18 @@ pub enum Value {
     // the KB-side `Term::Fn { named_args }` invariant. Enforced at
     // construction in `finish_constructor`; `structural_eq` relies on it
     // for positional compare.
+    // Payloads are `Rc<[…]>` rather than `Vec<…>` so `Value::clone` is an
+    // O(1) refcount bump instead of a deep copy. This matters because an
+    // anthill list is a chain of `cons(head, tail)` entities: with `Vec`
+    // payloads, cloning a list `Value` (on every arg-bind and variable
+    // read) deep-copies the whole spine — O(N) per clone, O(N²) for a
+    // recursive op threading a list. With `Rc<[…]>` the tail is shared, so
+    // the clone is O(1). Read access is transparent via `Deref` to `[…]`;
+    // build the `Vec` first (sorting `named` canonically) then `.into()`.
     Entity {
         functor: Symbol,
-        pos: Vec<Value>,
-        named: Vec<(Symbol, Value)>,
+        pos: Rc<[Value]>,
+        named: Rc<[(Symbol, Value)]>,
     },
 
     // Interpreter-owned handles. Each is an arena-refcounted smart
@@ -200,8 +209,8 @@ mod tests {
     #[test]
     fn tuple_builds() {
         let t = Value::Tuple {
-            pos: vec![Value::Int(1), Value::Int(2)],
-            named: Vec::new(),
+            pos: vec![Value::Int(1), Value::Int(2)].into(),
+            named: Vec::new().into(),
         };
         match t {
             Value::Tuple { pos, .. } => assert_eq!(pos.len(), 2),

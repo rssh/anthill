@@ -304,7 +304,7 @@ fn option_string_arg(v: Value) -> Result<Option<String>, EvalError> {
     match v {
         Value::Entity { named, .. } => {
             if let Some((_, inner)) = named.into_iter().next() {
-                Ok(Some(str_arg(inner)?))
+                Ok(Some(str_arg(inner.clone())?))
             } else {
                 Ok(None)
             }
@@ -315,12 +315,12 @@ fn option_string_arg(v: Value) -> Result<Option<String>, EvalError> {
 
 /// Build a `cons(head:_, tail:_)` chain terminated by `nil()` as a `Value`.
 fn build_list_value(syms: &ReflectSyms, elements: Vec<Value>) -> Value {
-    let mut acc = Value::Entity { functor: syms.nil, pos: Vec::new(), named: Vec::new() };
+    let mut acc = Value::Entity { functor: syms.nil, pos: Vec::new().into(), named: Vec::new().into() };
     for elem in elements.into_iter().rev() {
         acc = Value::Entity {
             functor: syms.cons,
-            pos: Vec::new(),
-            named: vec![(syms.head, elem), (syms.tail, acc)],
+            pos: Vec::new().into(),
+            named: vec![(syms.head, elem), (syms.tail, acc)].into(),
         };
     }
     acc
@@ -336,7 +336,7 @@ fn make_entity(kb: &KnowledgeBase, functor: Symbol, mut named: Vec<(Symbol, Valu
             None => named.sort_by_key(|(s, _)| s.index()),
         }
     }
-    Value::Entity { functor, pos: Vec::new(), named }
+    Value::Entity { functor, pos: Vec::new().into(), named: named.into() }
 }
 
 // ── Builtin handlers ───────────────────────────────────────────
@@ -350,8 +350,8 @@ fn kb_sort_template(
     let name_str = str_arg(name)?;
     Ok(Value::Entity {
         functor: syms.sort_query,
-        pos: Vec::new(),
-        named: vec![(syms.f_sort_name, Value::Str(name_str))],
+        pos: Vec::new().into(),
+        named: vec![(syms.f_sort_name, Value::Str(name_str))].into(),
     })
 }
 
@@ -560,12 +560,12 @@ fn reify_term_to_value(kb: &mut KnowledgeBase, syms: &ReflectSyms, id: TermId) -
     let wrap_literal = |ctor: Symbol, inner: Value| -> Value {
         Value::Entity {
             functor: syms.const_repr,
-            pos: Vec::new(),
+            pos: Vec::new().into(),
             named: vec![(syms.f_value, Value::Entity {
                 functor: ctor,
-                pos: Vec::new(),
-                named: vec![(syms.f_value, inner)],
-            })],
+                pos: Vec::new().into(),
+                named: vec![(syms.f_value, inner)].into(),
+            })].into(),
         }
     };
 
@@ -581,26 +581,26 @@ fn reify_term_to_value(kb: &mut KnowledgeBase, syms: &ReflectSyms, id: TermId) -
             let name = kb.resolve_sym(vid.name()).to_string();
             Value::Entity {
                 functor: syms.var_repr,
-                pos: Vec::new(),
-                named: vec![(syms.f_name, Value::Str(name))],
+                pos: Vec::new().into(),
+                named: vec![(syms.f_name, Value::Str(name))].into(),
             }
         }
         CoreTerm::Var(Var::DeBruijn(n)) => Value::Entity {
             functor: syms.var_repr,
-            pos: Vec::new(),
-            named: vec![(syms.f_name, Value::Str(format!("_{n}")))],
+            pos: Vec::new().into(),
+            named: vec![(syms.f_name, Value::Str(format!("_{n}")))].into(),
         },
         CoreTerm::Var(Var::Rigid(vid)) => Value::Entity {
             functor: syms.var_repr,
-            pos: Vec::new(),
-            named: vec![(syms.f_name, Value::Str(format!("!{}", kb.resolve_sym(vid.name()))))],
+            pos: Vec::new().into(),
+            named: vec![(syms.f_name, Value::Str(format!("!{}", kb.resolve_sym(vid.name()))))].into(),
         },
         CoreTerm::Ref(sym) | CoreTerm::Ident(sym) => {
             let name_term = kb.alloc(CoreTerm::Ref(sym));
             Value::Entity {
                 functor: syms.ref_repr,
-                pos: Vec::new(),
-                named: vec![(syms.f_name, Value::Term(name_term))],
+                pos: Vec::new().into(),
+                named: vec![(syms.f_name, Value::Term(name_term))].into(),
             }
         }
         CoreTerm::Fn { functor, pos_args, named_args } => {
@@ -614,8 +614,8 @@ fn reify_term_to_value(kb: &mut KnowledgeBase, syms: &ReflectSyms, id: TermId) -
             let args_list = build_list_value(syms, children);
             Value::Entity {
                 functor: syms.fn_repr,
-                pos: Vec::new(),
-                named: vec![(syms.f_name, Value::Term(name_term)), (syms.f_args, args_list)],
+                pos: Vec::new().into(),
+                named: vec![(syms.f_name, Value::Term(name_term)), (syms.f_args, args_list)].into(),
             }
         }
         CoreTerm::Bottom => {
@@ -623,8 +623,8 @@ fn reify_term_to_value(kb: &mut KnowledgeBase, syms: &ReflectSyms, id: TermId) -
             let name_term = kb.alloc(CoreTerm::Ref(bottom_sym));
             Value::Entity {
                 functor: syms.ref_repr,
-                pos: Vec::new(),
-                named: vec![(syms.f_name, Value::Term(name_term))],
+                pos: Vec::new().into(),
+                named: vec![(syms.f_name, Value::Term(name_term))].into(),
             }
         }
         CoreTerm::ParseAux(_) => unreachable!(
@@ -668,8 +668,8 @@ fn reflect_value_to_term(
             .ok_or_else(|| EvalError::Internal("ConstRepr: missing `value`".into()))?;
         let (lit_ctor, lit_val) = match inner {
             Value::Entity { functor, named, .. } => {
-                let v = named.into_iter().find(|(s, _)| *s == syms.f_value)
-                    .map(|(_, v)| v)
+                let v = named.iter().find(|(s, _)| *s == syms.f_value)
+                    .map(|(_, v)| v.clone())
                     .ok_or_else(|| EvalError::Internal("LiteralRepr: missing `value`".into()))?;
                 (functor, v)
             }
@@ -766,7 +766,7 @@ fn reflect_value_to_term(
                         .map(|(_, v)| v)
                         .ok_or_else(|| EvalError::Internal("cons: missing tail".into()))?;
                     child_ids.push(reflect_value_to_term(kb, syms, head)?);
-                    cur = tail;
+                    cur = tail.clone();
                 }
                 other => return Err(EvalError::TypeMismatch {
                     expected: "cons-list", got: other.type_name().to_string(),
@@ -837,11 +837,11 @@ fn scope_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
             let ref_tid = interp.kb_mut().alloc(CoreTerm::Ref(sym));
             Value::Entity {
                 functor: some_sym,
-                pos: Vec::new(),
-                named: vec![(value_field, Value::Term(ref_tid))],
+                pos: Vec::new().into(),
+                named: vec![(value_field, Value::Term(ref_tid))].into(),
             }
         }
-        None => Value::Entity { functor: none_sym, pos: Vec::new(), named: Vec::new() },
+        None => Value::Entity { functor: none_sym, pos: Vec::new().into(), named: Vec::new().into() },
     })
 }
 
@@ -936,11 +936,11 @@ fn term_as_sort(
     if ok {
         Ok(Value::Entity {
             functor: some_sym,
-            pos: Vec::new(),
-            named: vec![(syms.f_value, Value::Term(tid))],
+            pos: Vec::new().into(),
+            named: vec![(syms.f_value, Value::Term(tid))].into(),
         })
     } else {
-        Ok(Value::Entity { functor: none_sym, pos: Vec::new(), named: Vec::new() })
+        Ok(Value::Entity { functor: none_sym, pos: Vec::new().into(), named: Vec::new().into() })
     }
 }
 
@@ -1188,7 +1188,7 @@ end
 "#);
         let none_sym = interp.kb_mut().try_resolve_symbol("anthill.prelude.Option.none")
             .expect("Option.none");
-        let none_val = Value::Entity { functor: none_sym, pos: Vec::new(), named: Vec::new() };
+        let none_val = Value::Entity { functor: none_sym, pos: Vec::new().into(), named: Vec::new().into() };
         let result = interp.call("anthill.reflect.KB.sorts", &[Value::Unit, none_val])
             .expect("sorts call");
         let mut count = 0;
@@ -1461,13 +1461,13 @@ end
         let var_f = interp.kb_mut().alloc(CoreTerm::Var(Var::Global(vf)));
         let inner = Value::Entity {
             functor: ei_sym,
-            pos: Vec::new(),
-            named: vec![(name_field, Value::Term(var_n)), (fields_field, Value::Term(var_f))],
+            pos: Vec::new().into(),
+            named: vec![(name_field, Value::Term(var_n)), (fields_field, Value::Term(var_f))].into(),
         };
         let query = Value::Entity {
             functor: pq_sym,
-            pos: Vec::new(),
-            named: vec![(term_field, inner)],
+            pos: Vec::new().into(),
+            named: vec![(term_field, inner)].into(),
         };
 
         let stream = interp.call("anthill.reflect.KB.execute", &[Value::Unit, query])

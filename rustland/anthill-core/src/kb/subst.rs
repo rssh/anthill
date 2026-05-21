@@ -284,15 +284,15 @@ mod tests {
         let key = Symbol::from_raw(8);
         let entity = Value::Entity {
             functor,
-            pos: vec![Value::Int(10), Value::Str("hi".into())],
-            named: vec![(key, Value::Bool(true))],
+            pos: vec![Value::Int(10), Value::Str("hi".into())].into(),
+            named: vec![(key, Value::Bool(true))].into(),
         };
         s.bind_value(v, entity);
         assert_eq!(s.resolve_with_term(v), None);
         match s.resolve_as_value(v) {
             Some(Value::Entity { functor: f, pos, named }) => {
                 assert_eq!(*f, functor);
-                assert!(matches!(pos.as_slice(), [Value::Int(10), Value::Str(_)]));
+                assert!(matches!(&pos[..], [Value::Int(10), Value::Str(_)]));
                 assert_eq!(named.len(), 1);
                 assert_eq!(named[0].0, key);
                 assert!(matches!(named[0].1, Value::Bool(true)));
@@ -306,8 +306,8 @@ mod tests {
         let mut s = Substitution::new();
         let v = vid(1);
         let tuple = Value::Tuple {
-            pos: vec![Value::Int(1), Value::Int(2), Value::Int(3)],
-            named: vec![],
+            pos: vec![Value::Int(1), Value::Int(2), Value::Int(3)].into(),
+            named: vec![].into(),
         };
         s.bind_value(v, tuple);
         assert_eq!(s.resolve_with_term(v), None);
@@ -326,8 +326,8 @@ mod tests {
         let v = vid(1);
         let make_entity = || Value::Entity {
             functor: Symbol::from_raw(7),
-            pos: vec![Value::Int(10), Value::Str("hi".into())],
-            named: vec![(Symbol::from_raw(8), Value::Bool(true))],
+            pos: vec![Value::Int(10), Value::Str("hi".into())].into(),
+            named: vec![(Symbol::from_raw(8), Value::Bool(true))].into(),
         };
         s.bind_value(v, make_entity());
         s.bind_value(v, make_entity());
@@ -342,16 +342,16 @@ mod tests {
             v,
             Value::Entity {
                 functor: Symbol::from_raw(7),
-                pos: vec![Value::Int(10)],
-                named: vec![],
+                pos: vec![Value::Int(10)].into(),
+                named: vec![].into(),
             },
         );
         s.bind_value(
             v,
             Value::Entity {
                 functor: Symbol::from_raw(7),
-                pos: vec![Value::Int(11)],
-                named: vec![],
+                pos: vec![Value::Int(11)].into(),
+                named: vec![].into(),
             },
         );
         assert!(s.is_contradiction());
@@ -364,10 +364,10 @@ mod tests {
         let make = || Value::Entity {
             functor: Symbol::from_raw(7),
             pos: vec![Value::Tuple {
-                pos: vec![Value::Int(1), Value::Str("x".into())],
-                named: vec![],
-            }],
-            named: vec![],
+                pos: vec![Value::Int(1), Value::Str("x".into())].into(),
+                named: vec![].into(),
+            }].into(),
+            named: vec![].into(),
         };
         s.bind_value(v, make());
         s.bind_value(v, make());

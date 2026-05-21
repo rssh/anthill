@@ -365,7 +365,7 @@ impl Interpreter {
                 }
                 buf.push('(');
                 let mut first = true;
-                for p in pos {
+                for p in pos.iter() {
                     if !first { buf.push_str(", "); }
                     first = false;
                     self.write_value_canonical(p, buf)?;

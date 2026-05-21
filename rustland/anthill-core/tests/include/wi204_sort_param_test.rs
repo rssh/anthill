@@ -162,16 +162,16 @@ end
     // thing exercised.
     let dummy_backend = Value::Entity {
         functor: interp.kb_mut().intern("FakeBackend"),
-        pos: vec![],
-        named: vec![],
+        pos: vec![].into(),
+        named: vec![].into(),
     };
     let wis_value = Value::Entity {
         functor: wis_sym,
-        pos: vec![],
+        pos: vec![].into(),
         named: vec![
             (backend_field, dummy_backend),
             (counter_field, Value::Int(1)),
-        ],
+        ].into(),
     };
     let handle = interp.alloc_cell(wis_value);
     let cell_value = Value::Cell(handle);

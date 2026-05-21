@@ -2541,8 +2541,8 @@ mod tests {
 
         let value_target = Value::Entity {
             functor: f,
-            pos: vec![Value::Str("A001".into())],
-            named: Vec::new(),
+            pos: vec![Value::Str("A001".into())].into(),
+            named: Vec::new().into(),
         };
 
         let subst = kb.match_view(pattern, &value_target)
@@ -2586,18 +2586,18 @@ mod tests {
 
         let inner_val = Value::Entity {
             functor: inner,
-            pos: Vec::new(),
-            named: vec![(a_field, Value::Int(1)), (b_field, Value::Str("hi".into()))],
+            pos: Vec::new().into(),
+            named: vec![(a_field, Value::Int(1)), (b_field, Value::Str("hi".into()))].into(),
         };
-        let leaf_val = Value::Entity { functor: leaf, pos: Vec::new(), named: Vec::new() };
+        let leaf_val = Value::Entity { functor: leaf, pos: Vec::new().into(), named: Vec::new().into() };
         let nested_tuple = Value::Tuple {
-            pos: vec![Value::Int(2), leaf_val.clone()],
-            named: Vec::new(),
+            pos: vec![Value::Int(2), leaf_val.clone()].into(),
+            named: Vec::new().into(),
         };
         let target = Value::Entity {
             functor: pair,
-            pos: vec![inner_val.clone(), nested_tuple.clone()],
-            named: Vec::new(),
+            pos: vec![inner_val.clone(), nested_tuple.clone()].into(),
+            named: Vec::new().into(),
         };
 
         let subst = kb.match_view(pattern, &target).expect("match should succeed");

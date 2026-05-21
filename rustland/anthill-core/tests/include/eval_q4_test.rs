@@ -37,11 +37,11 @@ impl ExternalStream for WorkItemRowStream {
         let row = self.rows.next()?;
         Some(Value::Entity {
             functor: self.functor,
-            pos: Vec::new(),
+            pos: Vec::new().into(),
             named: vec![
                 (self.id_field, Value::Str(row.id)),
                 (self.description_field, Value::Str(row.description)),
-            ],
+            ].into(),
         })
     }
     fn description(&self) -> &str { "WorkItemRowStream[in-memory]" }

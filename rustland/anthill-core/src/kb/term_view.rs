@@ -174,9 +174,8 @@ impl TermView for Value {
                 Term::Fn { pos_args, .. } => pos_args.get(i).copied().map(ViewItem::Term),
                 _ => None,
             },
-            Value::Tuple { pos, .. } | Value::Entity { pos, .. } => {
-                pos.get(i).map(ViewItem::Value)
-            }
+            Value::Tuple { pos, .. } => pos.get(i).map(ViewItem::Value),
+            Value::Entity { pos, .. } => pos.get(i).map(ViewItem::Value),
             _ => None,
         }
     }
@@ -189,7 +188,10 @@ impl TermView for Value {
                     .map(|(_, t)| ViewItem::Term(*t)),
                 _ => None,
             },
-            Value::Tuple { named, .. } | Value::Entity { named, .. } => {
+            Value::Tuple { named, .. } => {
+                named.iter().find(|(s, _)| *s == sym).map(|(_, v)| ViewItem::Value(v))
+            }
+            Value::Entity { named, .. } => {
                 named.iter().find(|(s, _)| *s == sym).map(|(_, v)| ViewItem::Value(v))
             }
             _ => None,
@@ -202,9 +204,8 @@ impl TermView for Value {
                 Term::Fn { named_args, .. } => named_args.iter().map(|(s, _)| *s).collect(),
                 _ => Vec::new(),
             },
-            Value::Tuple { named, .. } | Value::Entity { named, .. } => {
-                named.iter().map(|(s, _)| *s).collect()
-            }
+            Value::Tuple { named, .. } => named.iter().map(|(s, _)| *s).collect(),
+            Value::Entity { named, .. } => named.iter().map(|(s, _)| *s).collect(),
             _ => Vec::new(),
         }
     }

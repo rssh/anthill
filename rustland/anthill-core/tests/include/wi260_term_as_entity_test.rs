@@ -54,7 +54,7 @@ end
             assert_eq!(functor, some_sym,
                 "expected some(...), got {}(...)", interp.kb().resolve_sym(functor));
             assert_eq!(named.len(), 1, "some(value: …) has one field");
-            named.into_iter().next().unwrap().1
+            named.iter().next().unwrap().1.clone()
         }
         other => panic!("expected some(...) Entity, got {other:?}"),
     };
@@ -214,7 +214,7 @@ end
                 .expect("some(value: …) has one field");
             match outer_v {
                 Value::Entity { functor, named: outer_named, .. } => {
-                    assert_eq!(interp.kb().resolve_sym(functor), "Outer");
+                    assert_eq!(interp.kb().resolve_sym(*functor), "Outer");
                     let child = outer_named.iter()
                         .find(|(s, _)| interp.kb().resolve_sym(*s) == "child")
                         .map(|(_, v)| v.clone())

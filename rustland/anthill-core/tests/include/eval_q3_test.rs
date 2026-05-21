@@ -17,7 +17,7 @@ use crate::common::load_kb_with;
 /// Build a `Value::Entity` wrapping a single named argument. Convenience for
 /// writing LogicalQuery literals on the Rust side of the boundary.
 fn entity_named(functor: anthill_core::intern::Symbol, named: Vec<(anthill_core::intern::Symbol, Value)>) -> Value {
-    Value::Entity { functor, pos: Vec::new(), named }
+    Value::Entity { functor, pos: Vec::new().into(), named: named.into() }
 }
 
 #[test]
@@ -36,8 +36,8 @@ end
 
     let v1 = Value::Entity {
         functor: red_sym,
-        pos: vec![Value::Int(1), Value::Str("hi".into())],
-        named: vec![(int_field, Value::Bool(true))],
+        pos: vec![Value::Int(1), Value::Str("hi".into())].into(),
+        named: vec![(int_field, Value::Bool(true))].into(),
     };
     let v2 = v1.clone();
 
@@ -74,7 +74,7 @@ fn q3_alloc_from_value_rejects_closures_streams_lazies() {
     // Unit has no KB-term representation either — covers the whole
     // "interpreter-only Value" class in one check.
     for v in [Value::Unit,
-              Value::Tuple { pos: Vec::new(), named: Vec::new() }] {
+              Value::Tuple { pos: Vec::new().into(), named: Vec::new().into() }] {
         let err = kb.alloc_from_value(&v).unwrap_err();
         assert!(matches!(err, LowerError::UnsupportedVariant(_)),
                 "expected UnsupportedVariant for {v:?}, got {err:?}");
@@ -86,7 +86,7 @@ fn q3_lower_empty_query_yields_zero_goals() {
     let mut kb = load_kb_with("namespace test.q3_empty end\n");
     let empty_q_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.empty_query")
         .expect("empty_query in reflect stdlib");
-    let q = Value::Entity { functor: empty_q_sym, pos: Vec::new(), named: Vec::new() };
+    let q = Value::Entity { functor: empty_q_sym, pos: Vec::new().into(), named: Vec::new().into() };
 
     let goals = kb.lower_query(&q).expect("lower empty_query");
     assert_eq!(goals.len(), 0);
@@ -137,8 +137,8 @@ end
     // the way into alloc_from_value, so any order we hand in here works.
     let inner_pattern = Value::Entity {
         functor: entity_info_sym,
-        pos: Vec::new(),
-        named: vec![(name_field, Value::Term(var_n)), (fields_field, Value::Term(var_f))],
+        pos: Vec::new().into(),
+        named: vec![(name_field, Value::Term(var_n)), (fields_field, Value::Term(var_f))].into(),
     };
 
     let query = entity_named(pattern_query_sym, vec![(term_field, inner_pattern)]);
@@ -232,13 +232,13 @@ end
     let var_y2 = kb.alloc(Term::Var(Var::Global(vy2)));
     let pat_x = Value::Entity {
         functor: pair_sym,
-        pos: Vec::new(),
-        named: vec![(x_field, Value::Term(var_v)), (y_field, Value::Term(var_y1))],
+        pos: Vec::new().into(),
+        named: vec![(x_field, Value::Term(var_v)), (y_field, Value::Term(var_y1))].into(),
     };
     let pat_y = Value::Entity {
         functor: pair_sym,
-        pos: Vec::new(),
-        named: vec![(x_field, Value::Term(var_v)), (y_field, Value::Term(var_y2))],
+        pos: Vec::new().into(),
+        named: vec![(x_field, Value::Term(var_v)), (y_field, Value::Term(var_y2))].into(),
     };
     let left = entity_named(pattern_query_sym, vec![(term_field, pat_x)]);
     let right = entity_named(pattern_query_sym, vec![(term_field, pat_y)]);
@@ -280,18 +280,18 @@ fn q3_quantifier_lowering_is_not_yet_implemented() {
     let cond_field = kb.intern("condition");
     let body_field = kb.intern("body");
     let empty_q_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.empty_query").unwrap();
-    let empty_q = Value::Entity { functor: empty_q_sym, pos: Vec::new(), named: Vec::new() };
+    let empty_q = Value::Entity { functor: empty_q_sym, pos: Vec::new().into(), named: Vec::new().into() };
 
     let sym_v = kb.intern("v");
     let any_sym = Value::Term(kb.alloc(Term::Ref(sym_v)));
     let q = Value::Entity {
         functor: forall_sym,
-        pos: Vec::new(),
+        pos: Vec::new().into(),
         named: vec![
             (var_field, any_sym),
             (cond_field, empty_q.clone()),
             (body_field, empty_q),
-        ],
+        ].into(),
     };
 
     let err = kb.lower_query(&q).unwrap_err();
@@ -333,16 +333,16 @@ end
     // pattern_query(left_tag(name: ?v))
     let left_pattern = Value::Entity {
         functor: left_tag_sym,
-        pos: Vec::new(),
-        named: vec![(name_field, Value::Term(var_v))],
+        pos: Vec::new().into(),
+        named: vec![(name_field, Value::Term(var_v))].into(),
     };
     let left_q = entity_named(pattern_query_sym, vec![(term_field, left_pattern)]);
 
     // pattern_query(right_tag(name: ?v))
     let right_pattern = Value::Entity {
         functor: right_tag_sym,
-        pos: Vec::new(),
-        named: vec![(name_field, Value::Term(var_v))],
+        pos: Vec::new().into(),
+        named: vec![(name_field, Value::Term(var_v))].into(),
     };
     let right_q = entity_named(pattern_query_sym, vec![(term_field, right_pattern)]);
 
@@ -414,20 +414,20 @@ end
     let var_m = kb.alloc(Term::Var(Var::Global(mid)));
 
     let left_q = entity_named(pattern_query_sym, vec![(term_field, Value::Entity {
-        functor: left_tag_sym, pos: Vec::new(),
-        named: vec![(name_field, Value::Term(var_v))],
+        functor: left_tag_sym, pos: Vec::new().into(),
+        named: vec![(name_field, Value::Term(var_v))].into(),
     })]);
     let right_q = entity_named(pattern_query_sym, vec![(term_field, Value::Entity {
-        functor: right_tag_sym, pos: Vec::new(),
-        named: vec![(name_field, Value::Term(var_v))],
+        functor: right_tag_sym, pos: Vec::new().into(),
+        named: vec![(name_field, Value::Term(var_v))].into(),
     })]);
     let disj_q = entity_named(disj_sym, vec![
         (left_field, left_q),
         (right_field, right_q),
     ]);
     let marker_q = entity_named(pattern_query_sym, vec![(term_field, Value::Entity {
-        functor: has_marker_sym, pos: Vec::new(),
-        named: vec![(label_field, Value::Term(var_m))],
+        functor: has_marker_sym, pos: Vec::new().into(),
+        named: vec![(label_field, Value::Term(var_m))].into(),
     })]);
     let query = entity_named(conj_sym, vec![
         (left_field, disj_q),
@@ -498,11 +498,11 @@ end
 
     let pq = |functor| Value::Entity {
         functor: pattern_query_sym,
-        pos: Vec::new(),
+        pos: Vec::new().into(),
         named: vec![(term_field, Value::Entity {
-            functor, pos: Vec::new(),
-            named: vec![(name_field, Value::Term(var_v))],
-        })],
+            functor, pos: Vec::new().into(),
+            named: vec![(name_field, Value::Term(var_v))].into(),
+        })].into(),
     };
     let q_a = pq(a_sym);
     let q_b = pq(b_sym);
@@ -563,11 +563,11 @@ end
 
     let pq = |functor| Value::Entity {
         functor: pattern_query_sym,
-        pos: Vec::new(),
+        pos: Vec::new().into(),
         named: vec![(term_field, Value::Entity {
-            functor, pos: Vec::new(),
-            named: vec![(name_field, Value::Term(var_v))],
-        })],
+            functor, pos: Vec::new().into(),
+            named: vec![(name_field, Value::Term(var_v))].into(),
+        })].into(),
     };
     let multi_left = entity_named(conj_sym, vec![
         (left_field, pq(left_sym)),
@@ -612,10 +612,10 @@ fn q3_disjunction_empty_branch_is_not_yet_implemented() {
     let vn = kb.fresh_var(n_sym);
     let var_n = kb.alloc(Term::Var(Var::Global(vn)));
     let some_pattern = entity_named(pattern_query_sym, vec![(term_field, Value::Entity {
-        functor: entity_info_sym, pos: Vec::new(),
-        named: vec![(name_field, Value::Term(var_n))],
+        functor: entity_info_sym, pos: Vec::new().into(),
+        named: vec![(name_field, Value::Term(var_n))].into(),
     })]);
-    let empty_q = Value::Entity { functor: empty_q_sym, pos: Vec::new(), named: Vec::new() };
+    let empty_q = Value::Entity { functor: empty_q_sym, pos: Vec::new().into(), named: Vec::new().into() };
     let query = entity_named(disj_sym, vec![
         (left_field, empty_q),
         (right_field, some_pattern),
@@ -669,11 +669,11 @@ end
     let var_p = kb.alloc(Term::Var(Var::Global(pid)));
 
     let pq = |functor, var| Value::Entity {
-        functor: pattern_query_sym, pos: Vec::new(),
+        functor: pattern_query_sym, pos: Vec::new().into(),
         named: vec![(term_field, Value::Entity {
-            functor, pos: Vec::new(),
-            named: vec![(name_field, Value::Term(var))],
-        })],
+            functor, pos: Vec::new().into(),
+            named: vec![(name_field, Value::Term(var))].into(),
+        })].into(),
     };
     // negation(conjunction(left_tag(?v), right_tag(?v))) — multi-goal inner
     let inner_conj = entity_named(conj_sym, vec![

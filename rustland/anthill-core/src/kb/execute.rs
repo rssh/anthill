@@ -191,11 +191,11 @@ impl KnowledgeBase {
             Value::Term(tid) => Ok(*tid),
             Value::Entity { functor, pos, named } => {
                 let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
-                for p in pos {
+                for p in pos.iter() {
                     pos_args.push(self.alloc_from_value(p)?);
                 }
                 let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-                for (sym, nv) in named {
+                for (sym, nv) in named.iter() {
                     named_args.push((*sym, self.alloc_from_value(nv)?));
                 }
                 // Sort named_args to match the loader's canonical form
@@ -319,7 +319,7 @@ impl KnowledgeBase {
         syms: &LogicalQuerySymbols,
     ) -> Result<Vec<TermId>, LowerError> {
         let (functor, named) = match q {
-            Value::Entity { functor, named, .. } => (*functor, named.as_slice()),
+            Value::Entity { functor, named, .. } => (*functor, &named[..]),
             Value::Term(_) => {
                 // Bare Term values are not LogicalQuery constructors.
                 return Err(LowerError::NotALogicalQuery { got: "Term".into() });

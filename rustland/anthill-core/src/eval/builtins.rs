@@ -415,13 +415,13 @@ fn bigint_to_int(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
     Ok(match tmp {
         Ok(i) => Value::Entity {
             functor: some_sym,
-            pos: Vec::new(),
-            named: vec![(value_key, Value::Int(i))],
+            pos: Vec::new().into(),
+            named: vec![(value_key, Value::Int(i))].into(),
         },
         Err(_) => Value::Entity {
             functor: none_sym,
-            pos: Vec::new(),
-            named: Vec::new(),
+            pos: Vec::new().into(),
+            named: Vec::new().into(),
         },
     })
 }
@@ -566,8 +566,8 @@ fn logical_stream_split_first(
     match pumped {
         None => Ok(Value::Entity {
             functor: none_sym,
-            pos: Vec::new(),
-            named: Vec::new(),
+            pos: Vec::new().into(),
+            named: Vec::new().into(),
         }),
         Some((value, rest)) => {
             let pair_sym = require_symbol(interp, "anthill.prelude.Pair.pair", "pair")?;
@@ -576,13 +576,13 @@ fn logical_stream_split_first(
             let value_key = interp.kb.intern("value");
             let pair_value = Value::Entity {
                 functor: pair_sym,
-                pos: Vec::new(),
-                named: vec![(fst_key, value), (snd_key, Value::Stream(rest))],
+                pos: Vec::new().into(),
+                named: vec![(fst_key, value), (snd_key, Value::Stream(rest))].into(),
             };
             Ok(Value::Entity {
                 functor: some_sym,
-                pos: Vec::new(),
-                named: vec![(value_key, pair_value)],
+                pos: Vec::new().into(),
+                named: vec![(value_key, pair_value)].into(),
             })
         }
     }
@@ -628,13 +628,13 @@ fn term_functor_name(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     Ok(match name {
         Some(s) => Value::Entity {
             functor: some_sym,
-            pos: Vec::new(),
-            named: vec![(value_key, Value::Str(s))],
+            pos: Vec::new().into(),
+            named: vec![(value_key, Value::Str(s))].into(),
         },
         None => Value::Entity {
             functor: none_sym,
-            pos: Vec::new(),
-            named: Vec::new(),
+            pos: Vec::new().into(),
+            named: Vec::new().into(),
         },
     })
 }
@@ -671,13 +671,13 @@ fn term_field(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
     Ok(match found {
         Some(field_tid) => Value::Entity {
             functor: some_sym,
-            pos: Vec::new(),
-            named: vec![(value_key, Value::Term(field_tid))],
+            pos: Vec::new().into(),
+            named: vec![(value_key, Value::Term(field_tid))].into(),
         },
         None => Value::Entity {
             functor: none_sym,
-            pos: Vec::new(),
-            named: Vec::new(),
+            pos: Vec::new().into(),
+            named: Vec::new().into(),
         },
     })
 }
@@ -706,13 +706,13 @@ fn term_as_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
     Ok(match s {
         Some(v) => Value::Entity {
             functor: some_sym,
-            pos: Vec::new(),
-            named: vec![(value_key, Value::Str(v))],
+            pos: Vec::new().into(),
+            named: vec![(value_key, Value::Str(v))].into(),
         },
         None => Value::Entity {
             functor: none_sym,
-            pos: Vec::new(),
-            named: Vec::new(),
+            pos: Vec::new().into(),
+            named: Vec::new().into(),
         },
     })
 }
@@ -742,13 +742,13 @@ fn term_as_entity(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
     Ok(match materialized {
         Some(value) => Value::Entity {
             functor: some_sym,
-            pos: Vec::new(),
-            named: vec![(value_key, value)],
+            pos: Vec::new().into(),
+            named: vec![(value_key, value)].into(),
         },
         None => Value::Entity {
             functor: none_sym,
-            pos: Vec::new(),
-            named: Vec::new(),
+            pos: Vec::new().into(),
+            named: Vec::new().into(),
         },
     })
 }
@@ -817,23 +817,23 @@ fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) ->
             {
                 named.push((*fname, Value::Entity {
                     functor: none_sym,
-                    pos: Vec::new(),
-                    named: Vec::new(),
+                    pos: Vec::new().into(),
+                    named: Vec::new().into(),
                 }));
             }
             Some(tid) => named.push((*fname, term_to_value(interp, tid))),
             None if is_opt => {
                 named.push((*fname, Value::Entity {
                     functor: none_sym,
-                    pos: Vec::new(),
-                    named: Vec::new(),
+                    pos: Vec::new().into(),
+                    named: Vec::new().into(),
                 }));
             }
             None => return None,
         }
     }
 
-    Some(Value::Entity { functor: canonical, pos: Vec::new(), named })
+    Some(Value::Entity { functor: canonical, pos: Vec::new().into(), named: named.into() })
 }
 
 /// True when `ftype` is `Option` or `Option[T = …]` (qualified or short).
@@ -923,7 +923,7 @@ fn term_to_value(interp: &mut Interpreter, tid: crate::kb::term::TermId) -> Valu
         }
         Decision::TryRef(sym) => {
             if interp.kb.constructor_parent_sort(sym).is_some() {
-                Value::Entity { functor: sym, pos: Vec::new(), named: Vec::new() }
+                Value::Entity { functor: sym, pos: Vec::new().into(), named: Vec::new().into() }
             } else {
                 Value::Term(tid)
             }
@@ -1077,14 +1077,14 @@ fn reflect_find_fact(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
             )));
             Ok(Value::Entity {
                 functor: some_sym,
-                pos: Vec::new(),
-                named: vec![(value_key, Value::Term(handle))],
+                pos: Vec::new().into(),
+                named: vec![(value_key, Value::Term(handle))].into(),
             })
         }
         None => Ok(Value::Entity {
             functor: none_sym,
-            pos: Vec::new(),
-            named: Vec::new(),
+            pos: Vec::new().into(),
+            named: Vec::new().into(),
         }),
     }
 }
@@ -1217,13 +1217,13 @@ fn subst_lookup(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
     match bound {
         Some(value) => Ok(Value::Entity {
             functor: some_sym,
-            pos: Vec::new(),
-            named: vec![(value_key, value)],
+            pos: Vec::new().into(),
+            named: vec![(value_key, value)].into(),
         }),
         None => Ok(Value::Entity {
             functor: none_sym,
-            pos: Vec::new(),
-            named: Vec::new(),
+            pos: Vec::new().into(),
+            named: Vec::new().into(),
         }),
     }
 }
@@ -1243,10 +1243,10 @@ fn subst_lookup(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
 /// Build an `Option[Term=V]` value with the given functor symbols. Helper for
 /// `get` to avoid repeating the some/none branch.
 fn option_some(some_sym: crate::intern::Symbol, value_key: crate::intern::Symbol, v: Value) -> Value {
-    Value::Entity { functor: some_sym, pos: Vec::new(), named: vec![(value_key, v)] }
+    Value::Entity { functor: some_sym, pos: Vec::new().into(), named: vec![(value_key, v)].into() }
 }
 fn option_none(none_sym: crate::intern::Symbol) -> Value {
-    Value::Entity { functor: none_sym, pos: Vec::new(), named: Vec::new() }
+    Value::Entity { functor: none_sym, pos: Vec::new().into(), named: Vec::new().into() }
 }
 
 fn unsupported_key(v: &Value) -> EvalError {
@@ -1365,8 +1365,8 @@ fn map_entries(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
     let elements: Vec<Value> = interp.maps.with_body(&handle, |b| {
         b.iter().map(|(k, v)| Value::Entity {
             functor: pair_sym,
-            pos: Vec::new(),
-            named: vec![(fst_key, k.to_value()), (snd_key, v.clone())],
+            pos: Vec::new().into(),
+            named: vec![(fst_key, k.to_value()), (snd_key, v.clone())].into(),
         }).collect()
     });
     interp.build_list_value(elements, &[])
@@ -1616,16 +1616,16 @@ mod tests {
 
     #[test]
     fn eq_on_equal_tuples_is_true() {
-        let a = Value::Tuple { pos: vec![Value::Int(1)], named: Vec::new() };
-        let b = Value::Tuple { pos: vec![Value::Int(1)], named: Vec::new() };
+        let a = Value::Tuple { pos: vec![Value::Int(1)].into(), named: Vec::new().into() };
+        let b = Value::Tuple { pos: vec![Value::Int(1)].into(), named: Vec::new().into() };
         let r = builtin_eq(&mut dummy(), &[a, b]).unwrap();
         assert_eq!(r.as_bool(), Some(true));
     }
 
     #[test]
     fn eq_on_different_tuples_is_false() {
-        let a = Value::Tuple { pos: vec![Value::Int(1)], named: Vec::new() };
-        let b = Value::Tuple { pos: vec![Value::Int(2)], named: Vec::new() };
+        let a = Value::Tuple { pos: vec![Value::Int(1)].into(), named: Vec::new().into() };
+        let b = Value::Tuple { pos: vec![Value::Int(2)].into(), named: Vec::new().into() };
         let r = builtin_eq(&mut dummy(), &[a, b]).unwrap();
         assert_eq!(r.as_bool(), Some(false));
     }
@@ -1634,8 +1634,8 @@ mod tests {
     fn eq_on_equal_entities_is_true() {
         let mk = || Value::Entity {
             functor: Symbol::from_raw(7),
-            pos: vec![Value::Int(10), Value::Str("x".into())],
-            named: vec![(Symbol::from_raw(8), Value::Bool(true))],
+            pos: vec![Value::Int(10), Value::Str("x".into())].into(),
+            named: vec![(Symbol::from_raw(8), Value::Bool(true))].into(),
         };
         let r = builtin_eq(&mut dummy(), &[mk(), mk()]).unwrap();
         assert_eq!(r.as_bool(), Some(true));
@@ -1645,13 +1645,13 @@ mod tests {
     fn eq_on_entities_differing_functor_is_false() {
         let a = Value::Entity {
             functor: Symbol::from_raw(7),
-            pos: vec![Value::Int(1)],
-            named: vec![],
+            pos: vec![Value::Int(1)].into(),
+            named: vec![].into(),
         };
         let b = Value::Entity {
             functor: Symbol::from_raw(8),
-            pos: vec![Value::Int(1)],
-            named: vec![],
+            pos: vec![Value::Int(1)].into(),
+            named: vec![].into(),
         };
         let r = builtin_eq(&mut dummy(), &[a, b]).unwrap();
         assert_eq!(r.as_bool(), Some(false));

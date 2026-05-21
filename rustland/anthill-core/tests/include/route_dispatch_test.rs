@@ -43,8 +43,8 @@ impl ExternalStream for WorkItemBackend {
         named.sort_by_key(|(s, _)| s.index());
         Some(Value::Entity {
             functor: self.functor,
-            pos: Vec::new(),
-            named,
+            pos: Vec::new().into(),
+            named: named.into(),
         })
     }
     fn description(&self) -> &str { "WorkItemBackend[in-memory]" }
