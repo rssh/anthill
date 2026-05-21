@@ -189,8 +189,8 @@ same artifact.
   (kept alongside the IR) or move to the IR.
 - **Equation-defined operations (no body).** Some operations have no
   `NodeOccurrence` body — they are defined entirely by equational rules
-  (`add_zero`, `first` today; `min`, AD's `diff`, etc. under the dot-syntax
-  proposal in `docs/design/dot-macro-brainstorm.md`). The lowering pass has
+  (`add_zero`, `first` today; `min`, AD's `diff`, etc. under the simp
+  rewriting engine in `docs/design/simp-rewrite-brainstorm.md`). The lowering pass has
   nothing to lower for them, yet eval-v2 hits `CallStatic(op_id, …)` for such
   a call. Two options, and **codegen forces the answer**: (a) compile the
   equation set into a `CompiledOp` (e.g. `min`'s rules → `if compare(a,b)<=0
