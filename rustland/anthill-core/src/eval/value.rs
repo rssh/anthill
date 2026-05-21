@@ -152,6 +152,14 @@ impl Value {
         if let Value::Int(n) = self { Some(*n) } else { None }
     }
 
+    /// Unwrap the hash-consed `Value::Term` variant. The occurrence-native
+    /// resolver (WI-246) carries goals as `Value`; this is the unwrap at the
+    /// shrinking term-only boundary where a builtin still needs a `TermId`.
+    /// `Value::Node` goals (rule-body occurrences) return `None`.
+    pub fn as_term(&self) -> Option<TermId> {
+        if let Value::Term(t) = self { Some(*t) } else { None }
+    }
+
     pub fn as_bool(&self) -> Option<bool> {
         if let Value::Bool(b) = self { Some(*b) } else { None }
     }

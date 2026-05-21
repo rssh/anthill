@@ -229,7 +229,10 @@ enum FrameState {
 /// A choice point on the explicit stack.
 #[derive(Clone)]
 struct Frame {
-    goals: Vec<TermId>,
+    // WI-246: goals carry `Value` so rule-body occurrences flow into SLD as
+    // `Value::Node` without lowering to hash-consed Term. During the
+    // behavior-preserving carrier swap every goal is still `Value::Term`.
+    goals: Vec<Value>,
     subst: Substitution,
     depth: usize,
     state: FrameState,
@@ -237,6 +240,16 @@ struct Frame {
     /// this frame's goal stream. Consulted as zero-body facts during the
     /// proof of the consequent goals; popped when the frame pops. WI-108.
     assumed_facts: Vec<TermId>,
+}
+
+/// WI-246 transitional: unwrap a goal `Value` to its hash-consed `TermId`.
+/// During the behavior-preserving carrier swap every goal is `Value::Term`,
+/// so this always succeeds. Once `Value::Node` rule-body occurrences flow
+/// into the goal stream (task #2), the term-only call sites grow an
+/// occurrence path and stop routing through here.
+fn goal_term(g: &Value) -> TermId {
+    g.as_term()
+        .expect("WI-246: goal is not a Value::Term yet (occurrence goal path is task #2)")
 }
 
 /// Result of a single step in the search loop.
@@ -329,7 +342,7 @@ impl SearchStream {
             if *consecutive_delays >= frame.goals.len() {
                 let sol = Solution {
                     subst: frame.subst.clone(),
-                    residual: frame.goals.clone(),
+                    residual: frame.goals.iter().map(goal_term).collect(),
                 };
                 self.stack.pop();
                 self.record_solution_in_ancestors();
@@ -365,11 +378,11 @@ impl SearchStream {
         // could change anything anyway).
         self.stats.lazy_walk_calls += 1;
         let goal = if frame.subst.is_empty() {
-            frame.goals[0]
+            goal_term(&frame.goals[0])
         } else {
             let f = self.stack.last_mut().unwrap();
-            let walked = kb.apply_subst(f.goals[0], &f.subst);
-            f.goals[0] = walked;
+            let walked = kb.apply_subst(goal_term(&f.goals[0]), &f.subst);
+            f.goals[0] = Value::Term(walked);
             walked
         };
         let frame = self.stack.last().unwrap();
@@ -404,7 +417,7 @@ impl SearchStream {
             if tag == BuiltinTag::HoApply {
                 if let Some(applied) = self.resolve_ho_apply(kb, goal, &frame.subst) {
                     let f = self.stack.last_mut().unwrap();
-                    f.goals[0] = applied;
+                    f.goals[0] = Value::Term(applied);
                     f.state = FrameState::Init { delay_mode };
                     return Some(StepResult::Continue);
                 } else {
@@ -491,8 +504,8 @@ impl SearchStream {
                                 return Some(StepResult::YieldSolution(sol));
                             } else {
                                 // Rotate to end, enter Delayed mode
-                                let mut rotated: Vec<TermId> = frame.goals[1..].to_vec();
-                                rotated.push(goal);
+                                let mut rotated: Vec<Value> = frame.goals[1..].to_vec();
+                                rotated.push(Value::Term(goal));
                                 let new_depth = depth + 1;
                                 let f = self.stack.last_mut().unwrap();
                                 f.goals = rotated;
@@ -505,8 +518,8 @@ impl SearchStream {
                         }
                         DelayMode::Delayed { consecutive_delays } => {
                             // Rotate to end, increment consecutive_delays
-                            let mut rotated: Vec<TermId> = frame.goals[1..].to_vec();
-                            rotated.push(goal);
+                            let mut rotated: Vec<Value> = frame.goals[1..].to_vec();
+                            rotated.push(Value::Term(goal));
                             let new_depth = depth + 1;
                             let f = self.stack.last_mut().unwrap();
                             f.goals = rotated;
@@ -699,12 +712,13 @@ impl SearchStream {
         // rule's remaining goals run (WI-108 scoping invariant).
         let frame = self.stack.last().unwrap();
         let n_assumed = skolemized_antecedents.len();
-        let mut new_goals: Vec<TermId> = skolemized_consequents;
+        let mut new_goals: Vec<Value> =
+            skolemized_consequents.into_iter().map(Value::Term).collect();
         if n_assumed > 0 {
             let marker = Self::make_pop_assumption_marker(kb, n_assumed);
-            new_goals.push(marker);
+            new_goals.push(Value::Term(marker));
         }
-        new_goals.extend(frame.goals[1..].iter().copied());
+        new_goals.extend(frame.goals[1..].iter().cloned());
         let mut new_assumed = frame.assumed_facts.clone();
         new_assumed.extend(skolemized_antecedents);
         let new_subst = frame.subst.clone();
@@ -896,8 +910,8 @@ impl SearchStream {
                             self.record_solution_in_ancestors();
                             return Some(StepResult::YieldSolution(sol));
                         } else {
-                            let mut rotated: Vec<TermId> = goals[1..].to_vec();
-                            rotated.push(goal);
+                            let mut rotated: Vec<Value> = goals[1..].to_vec();
+                            rotated.push(Value::Term(goal));
                             let f = self.stack.last_mut().unwrap();
                             f.goals = rotated;
                             f.depth = depth + 1;
@@ -908,8 +922,8 @@ impl SearchStream {
                         }
                     }
                     DelayMode::Delayed { consecutive_delays } => {
-                        let mut rotated: Vec<TermId> = goals[1..].to_vec();
-                        rotated.push(goal);
+                        let mut rotated: Vec<Value> = goals[1..].to_vec();
+                        rotated.push(Value::Term(goal));
                         let f = self.stack.last_mut().unwrap();
                         f.goals = rotated;
                         f.depth = depth + 1;
@@ -981,8 +995,8 @@ impl SearchStream {
             if child_solutions == 0 && any_delayed {
                 // Delay fallback: rotate goal to end, push new Init frame
                 let goals = &frame.goals;
-                let mut rotated: Vec<TermId> = goals[1..].to_vec();
-                rotated.push(original_goal);
+                let mut rotated: Vec<Value> = goals[1..].to_vec();
+                rotated.push(Value::Term(original_goal));
                 let new_depth = frame.depth + 1;
                 let new_subst = frame.subst.clone();
                 let new_consecutive = match &delay_mode {
@@ -1035,8 +1049,10 @@ impl SearchStream {
         // from the variant.
         if let Candidate::Continuation(body) = candidate {
             let frame = self.stack.last().unwrap();
-            let mut new_goals = body;
-            new_goals.extend_from_slice(&frame.goals[1..]);
+            let tail = &frame.goals[1..];
+            let mut new_goals: Vec<Value> = Vec::with_capacity(body.len() + tail.len());
+            new_goals.extend(body.into_iter().map(Value::Term));
+            new_goals.extend(tail.iter().cloned());
             self.stack.push(Frame {
                 goals: new_goals,
                 subst: frame.subst.clone(),
@@ -1130,7 +1146,11 @@ impl SearchStream {
                 return Some(StepResult::Continue);
             }
 
-            let mut new_goals = fresh_body;
+            // WI-246 task #2: this is where opened rule-body atoms enter the
+            // goal stream — the site that will push `Value::Node` occurrences
+            // (via open_debruijn_node) instead of lowering to `Value::Term`.
+            let mut new_goals: Vec<Value> = Vec::with_capacity(fresh_body.len() + remaining.len());
+            new_goals.extend(fresh_body.into_iter().map(Value::Term));
             new_goals.extend(remaining);
             let new_delay = delay_mode.reset();
             let inherited = frame.assumed_facts.clone();
@@ -1191,7 +1211,7 @@ impl KnowledgeBase {
     /// Create a lazy search stream for the given goals.
     pub fn resolve_lazy(&self, goals: &[TermId], config: &ResolveConfig) -> SearchStream {
         let initial_frame = Frame {
-            goals: goals.to_vec(),
+            goals: goals.iter().copied().map(Value::Term).collect(),
             subst: Substitution::new(),
             depth: 0,
             state: FrameState::Init { delay_mode: DelayMode::Normal },
