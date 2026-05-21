@@ -99,7 +99,7 @@ Variables: `?name` (named, shared within scope), `?` (anonymous, each occurrence
 
 # Repository rules
 
-- before commit, check - if all test passed.  Remind if simplicity was not runned.
+- before commit, check - if all test passed. Also run the `/code-review` skill (formerly called "simplicity"); remind if it was not run.
 - do not add attribution to commit.
 
 # Development principles

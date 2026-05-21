@@ -138,6 +138,11 @@ fn drain_expr_children(expr: &mut Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
             stack.push(std::mem::replace(predicate, mk_placeholder()));
             for a in std::mem::take(args) { stack.push(a); }
         }
+        Expr::DotApply { receiver, pos_args, named_args, .. } => {
+            stack.push(std::mem::replace(receiver, mk_placeholder()));
+            for c in std::mem::take(pos_args) { stack.push(c); }
+            for (_, c) in std::mem::take(named_args) { stack.push(c); }
+        }
         Expr::ApplyWithin { args, named_args, requirements, .. } => {
             for a in std::mem::take(args) { stack.push(a); }
             for (_, a) in std::mem::take(named_args) { stack.push(a); }
@@ -359,6 +364,21 @@ pub enum Expr {
         pos_args: Vec<Rc<NodeOccurrence>>,
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
     },
+    /// Method-call (dot) syntax — `receiver.name(args)` or `receiver.name`
+    /// (WI-278). A pre-dispatch form emitted by the converter for
+    /// value-receiver dot forms: the operation isn't resolved yet, only the
+    /// textual member `name` and the receiver expression are known. The
+    /// `[simp]` dot rules (`default_dot` / `dot_field`, proposal 043 §6)
+    /// rewrite it — once the receiver's type is known — into an `Apply`
+    /// (method) or a field access (field). A `DotApply` reaching the typer
+    /// is a no-match error at its source span. `name`-less field access has
+    /// empty arg lists; a method call carries its positional / named args.
+    DotApply {
+        receiver: Rc<NodeOccurrence>,
+        name: Symbol,
+        pos_args: Vec<Rc<NodeOccurrence>>,
+        named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+    },
     /// List literal `[a, b, c]`.
     ListLit(Vec<Rc<NodeOccurrence>>),
     /// Set literal `{a, b, c}`.
@@ -468,9 +488,12 @@ pub fn visit_classifications(
 
 /// Canonical non-destructive walker over the direct
 /// `Rc<NodeOccurrence>` children of an `Expr`. Invokes `f` once per
-/// child slot. The visit order within a node is unspecified —
-/// callers that need pre/post-order semantics should drive their own
-/// work-stack and decide ordering there.
+/// child slot, in a fixed per-variant order (field order: positional
+/// then named; for `Match`, scrutinee then each branch's body then
+/// guard). That order is load-bearing: `simp_rewrite::reassemble`
+/// consumes children positionally and relies on it matching this
+/// enumeration. Pre/post-order *across the tree* is still the caller's
+/// concern — drive your own work-stack for that.
 #[inline]
 pub(super) fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
     match expr {
@@ -507,6 +530,11 @@ pub(super) fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)
         Expr::HoApply { predicate, args } => {
             f(predicate);
             for a in args.iter() { f(a); }
+        }
+        Expr::DotApply { receiver, pos_args, named_args, .. } => {
+            f(receiver);
+            for c in pos_args.iter() { f(c); }
+            for (_, c) in named_args.iter() { f(c); }
         }
         Expr::ApplyWithin { args, named_args, requirements, .. } => {
             for a in args.iter() { f(a); }
@@ -603,6 +631,9 @@ enum BuildFrame {
         type_args: Vec<(Option<Symbol>, TermId)>,
     },
     Constructor { span: SourceSpan, name: Symbol, pos_count: usize, named_keys: Vec<Symbol> },
+    /// `dot_apply(receiver, name, args)` — the receiver is the single child
+    /// visited after the args, so it pops last (see `build_frame`).
+    DotApply { span: SourceSpan, name: Symbol, pos_count: usize, named_keys: Vec<Symbol> },
     ApplyWithin {
         span: SourceSpan, functor: Symbol,
         pos_count: usize, named_keys: Vec<Symbol>,
@@ -767,6 +798,17 @@ fn visit_fn(
                 },
                 span, work,
             );
+        }
+        "dot_apply" => {
+            let name = named_ref(kb, named_args, "name").unwrap_or(functor);
+            let receiver = get_named_arg(kb, named_args, "receiver");
+            let args_tid = get_named_arg(kb, named_args, "args");
+            let (pos_count, named_keys, arg_visits) = collect_apply_arg_visits(kb, args_tid);
+            work.push(WorkOp::Build(BuildFrame::DotApply { span, name, pos_count, named_keys }));
+            // Args first (reversed → pop in source order), receiver last so
+            // it pops after the args in `build_frame`.
+            for v in arg_visits.into_iter().rev() { work.push(v); }
+            push_visit_or_bottom(work, receiver);
         }
         "apply_within" => {
             let fn_sym = named_ref(kb, named_args, "fn").unwrap_or(functor);
@@ -985,6 +1027,14 @@ fn build_frame(frame: BuildFrame, results: &mut Vec<Rc<NodeOccurrence>>) {
             let expr = Expr::Constructor { name, pos_args, named_args };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
+        BuildFrame::DotApply { span, name, pos_count, named_keys } => {
+            // Args are on top (pushed after the receiver Visit); pop them
+            // first, then the receiver underneath.
+            let (pos_args, named_args) = pop_apply_like(results, pos_count, named_keys);
+            let receiver = results.pop().expect("dot_apply: missing receiver");
+            let expr = Expr::DotApply { receiver, name, pos_args, named_args };
+            results.push(NodeOccurrence::new_expr(expr, span, None));
+        }
         BuildFrame::ApplyWithin {
             span, functor, pos_count, named_keys, requirements_count, type_args,
         } => {
@@ -1141,6 +1191,105 @@ mod tests {
                 assert_eq!(pos_args.len(), 1);
             }
             _ => panic!("expected Apply"),
+        }
+    }
+
+    #[test]
+    fn materialize_dot_apply_field_form() {
+        // WI-278: a `dot_apply(receiver, name)` reflect term with no args
+        // (field access `recv.name`) round-trips to `Expr::DotApply` with an
+        // empty arg list and the receiver materialized as a child.
+        use smallvec::SmallVec;
+        let mut kb = KnowledgeBase::new();
+        let dot = kb.intern("dot_apply");
+        let name = kb.intern("size");
+        let receiver_key = kb.intern("receiver");
+        let name_key = kb.intern("name");
+        let recv = kb.alloc(Term::Const(Literal::Int(5)));
+        let name_ref = kb.alloc(Term::Ref(name));
+        let term = kb.alloc(Term::Fn {
+            functor: dot,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(name_key, name_ref), (receiver_key, recv)]),
+        });
+
+        let occ = materialize_from_handle(&kb, term);
+        match occ.as_expr() {
+            Some(Expr::DotApply { receiver, name: n, pos_args, named_args }) => {
+                assert_eq!(*n, name);
+                assert!(pos_args.is_empty() && named_args.is_empty(), "field form has no args");
+                assert!(
+                    matches!(receiver.as_expr(), Some(Expr::Const(Literal::Int(5)))),
+                    "receiver should materialize as Const(5)"
+                );
+            }
+            other => panic!("expected DotApply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn materialize_dot_apply_method_form() {
+        // WI-278: `dot_apply(receiver, name, args = [ApplyArg(value)])` —
+        // method call `recv.name(arg)` — round-trips with its positional arg.
+        use smallvec::SmallVec;
+        let mut kb = KnowledgeBase::new();
+        let dot = kb.intern("dot_apply");
+        let name = kb.intern("map");
+        let receiver_key = kb.intern("receiver");
+        let name_key = kb.intern("name");
+        let args_key = kb.intern("args");
+        let value_key = kb.intern("value");
+
+        let apply_arg_sym = kb.intern("ApplyArg");
+        let nil_sym = kb.intern("nil");
+        let cons_sym = kb.intern("cons");
+        let head_key = kb.intern("head");
+        let tail_key = kb.intern("tail");
+
+        let recv = kb.alloc(Term::Const(Literal::Int(1)));
+        let name_ref = kb.alloc(Term::Ref(name));
+        let arg_val = kb.alloc(Term::Const(Literal::Int(9)));
+        let apply_arg = kb.alloc(Term::Fn {
+            functor: apply_arg_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(value_key, arg_val)]),
+        });
+        let nil = kb.alloc(Term::Fn {
+            functor: nil_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let cons = kb.alloc(Term::Fn {
+            functor: cons_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(head_key, apply_arg), (tail_key, nil)]),
+        });
+        let term = kb.alloc(Term::Fn {
+            functor: dot,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (name_key, name_ref),
+                (receiver_key, recv),
+                (args_key, cons),
+            ]),
+        });
+
+        let occ = materialize_from_handle(&kb, term);
+        match occ.as_expr() {
+            Some(Expr::DotApply { receiver, name: n, pos_args, named_args }) => {
+                assert_eq!(*n, name);
+                assert!(named_args.is_empty());
+                assert_eq!(pos_args.len(), 1, "one positional arg");
+                assert!(
+                    matches!(pos_args[0].as_expr(), Some(Expr::Const(Literal::Int(9)))),
+                    "arg should materialize as Const(9)"
+                );
+                assert!(
+                    matches!(receiver.as_expr(), Some(Expr::Const(Literal::Int(1)))),
+                    "receiver should materialize as Const(1)"
+                );
+            }
+            other => panic!("expected DotApply, got {other:?}"),
         }
     }
 

@@ -1193,9 +1193,15 @@ fn visit_type(
             results.push(Ok(TypeResult::pure(ty, unwrap_env(env))));
         }
 
+        // `DotApply` is a pre-dispatch form (WI-278): the `[simp]` dot rules
+        // should have rewritten it to an `Apply` / field access before the
+        // typer runs. One surviving here is an unresolved member access — the
+        // no-match error at its source span. A dedicated diagnostic is part of
+        // the dot-dispatch deliverable; for now it falls into `BottomExpr`.
+        Expr::DotApply { .. }
         // Post-elaboration forms — emitted by req_insertion, not the
         // surface typer.
-        Expr::HoApply { .. }
+        | Expr::HoApply { .. }
         | Expr::Instantiation { .. }
         | Expr::ApplyWithin { .. }
         | Expr::HoApplyWithin { .. }

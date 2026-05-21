@@ -19,13 +19,15 @@
 //! body) — e.g. `add(?x, 0) = ?x`. Type-directed/guarded dispatch (`dot`,
 //! proposal 043 §6) is WI-278.
 //!
-//! v1 limitation — recursion depth: `rewrite`/`map_children`/
-//! `substitute_to_occurrence` recurse over occurrence-tree depth, whereas the
-//! sibling `NodeOccurrence::Drop` and the typing pass use explicit work-stacks
-//! to survive deeply-nested bodies (the 624-line typing_pass_spec.anthill).
-//! The `run` fast-path makes this pass inert until a `[simp]` rule exists, so
-//! it cannot overflow today; converting the walk to a work-stack is a
-//! prerequisite for WI-278 (which ships rules that fire on real bodies).
+//! Recursion depth (WI-278): the walk is iterative. [`rewrite`] descends the
+//! occurrence tree on an explicit `Visit`/`Build` work-stack, and
+//! [`substitute_to_occurrence`] builds the RHS on a second work-stack — both
+//! mirroring the sibling `NodeOccurrence::Drop`, `materialize_from_handle`,
+//! and the typing pass, which were made iterative to survive deeply-nested
+//! bodies (the 624-line typing_pass_spec.anthill). This was a prerequisite for
+//! shipping `[simp]`/dot rules that fire on real (possibly deeply-nested)
+//! operation bodies: the engine can no longer overflow the host stack on
+//! source nesting depth.
 
 use std::rc::Rc;
 
@@ -33,10 +35,12 @@ use crate::eval::value::Value;
 use crate::intern::Symbol;
 
 use super::load::meta_has_flag;
-use super::node_occurrence::{Expr, MatchBranch, NodeKind, NodeOccurrence, OccurrenceOrigin};
+use super::node_occurrence::{
+    self, Expr, MatchBranch, NodeKind, NodeOccurrence, OccurrenceOrigin,
+};
 use super::occurrence::PassId;
 use super::subst::Substitution;
-use super::term::{Literal, Term, TermId, Var, VarId};
+use super::term::{Literal, Term, TermId, VarId};
 use super::{KnowledgeBase, RuleId};
 
 /// Per-node fixpoint bound — mirrors `apply_eq_rules`'s fuel (`resolve.rs`),
@@ -77,19 +81,134 @@ pub fn run(kb: &mut KnowledgeBase) {
 /// equation at this node; on a firing, re-rewrite the result to fixpoint
 /// (fuel-bounded). Leftmost-innermost, matching the typer's walk order and
 /// `apply_eq_rules`.
+///
+/// Iterative (WI-278): an explicit `Visit`/`Build` work-stack flattens the
+/// occurrence-tree descent onto the heap — mirroring
+/// [`node_occurrence::materialize_from_handle`] and
+/// [`node_occurrence::visit_classifications`], which were made iterative to
+/// survive deeply-nested bodies (the 624-line `typing_pass_spec.anthill`).
+/// `Visit` examines a node and either passes it through (leaf / fuel
+/// exhausted / non-rewritable form) or pushes a `Build` frame followed by a
+/// `Visit` per child (reversed, so children pop in source order). `Build`
+/// pops the rewritten children, reassembles the node (preserving identity +
+/// provenance when nothing changed), then fires a `[simp]` equation at it;
+/// a firing re-enters the loop via `Visit { fuel - 1 }` so the fixpoint is
+/// driven on the stack rather than the host call stack. `fuel` bounds a
+/// single fire→refire chain (it descends to children unchanged), exactly as
+/// the former recursion did.
 fn rewrite(
     kb: &mut KnowledgeBase,
-    occ: &Rc<NodeOccurrence>,
+    root: &Rc<NodeOccurrence>,
     pass: PassId,
     fuel: usize,
 ) -> Rc<NodeOccurrence> {
-    if fuel == 0 {
-        return Rc::clone(occ);
+    let mut work: Vec<RewriteOp> = vec![RewriteOp::Visit { occ: Rc::clone(root), fuel }];
+    let mut results: Vec<Rc<NodeOccurrence>> = Vec::new();
+
+    while let Some(op) = work.pop() {
+        match op {
+            RewriteOp::Visit { occ, fuel } => visit_node(occ, fuel, &mut work, &mut results),
+            RewriteOp::Build { occ, fuel, child_count } => {
+                build_node(kb, occ, fuel, child_count, pass, &mut work, &mut results)
+            }
+        }
     }
-    let with_children = map_children(kb, occ, pass, fuel);
-    match try_fire(kb, &with_children, pass) {
-        Some(fired) => rewrite(kb, &fired, pass, fuel - 1),
-        None => with_children,
+
+    debug_assert_eq!(
+        results.len(),
+        1,
+        "rewrite: expected exactly one result on the stack, got {}",
+        results.len(),
+    );
+    results.pop().expect("root produced no NodeOccurrence")
+}
+
+/// Work-stack item for the iterative [`rewrite`]. `fuel` rides on the op so
+/// the fire→refire chain is bounded per-chain (descending to children
+/// unchanged), as in the former recursion.
+enum RewriteOp {
+    Visit { occ: Rc<NodeOccurrence>, fuel: usize },
+    /// `child_count` is the number of child `Visit`s scheduled alongside this
+    /// frame — captured at `visit_node` time so `build_node` knows how many
+    /// results to claim without re-walking the node.
+    Build { occ: Rc<NodeOccurrence>, fuel: usize, child_count: usize },
+}
+
+/// Examine a node: pass it through unchanged when there is nothing to do
+/// (fuel exhausted, a leaf, or a non-rewritable post-elaboration form), else
+/// schedule a `Build` and a `Visit` per child. Children are pushed in
+/// reverse source order so they pop — and thus complete — in source order,
+/// each leaving exactly one entry on `results`.
+fn visit_node(
+    occ: Rc<NodeOccurrence>,
+    fuel: usize,
+    work: &mut Vec<RewriteOp>,
+    results: &mut Vec<Rc<NodeOccurrence>>,
+) {
+    // Fuel exhausted: stop the chain here (no children rewritten, no firing),
+    // exactly as the recursive `rewrite`'s `fuel == 0` early return did.
+    if fuel == 0 || !is_rewritable(occ.as_expr()) {
+        results.push(occ);
+        return;
+    }
+    // Collect children in source order, then push their Visits reversed.
+    let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
+    if let Some(expr) = occ.as_expr() {
+        node_occurrence::for_each_child(expr, |c| children.push(Rc::clone(c)));
+    }
+    work.push(RewriteOp::Build { occ, fuel, child_count: children.len() });
+    for child in children.into_iter().rev() {
+        work.push(RewriteOp::Visit { occ: child, fuel });
+    }
+}
+
+/// Whether [`rewrite`] descends into / fires at this expression form. Mirrors
+/// the variants `map_children` rebuilds (`Apply`/`Constructor`/… have
+/// children) together with the firing forms (`Apply`/`Constructor`): leaves
+/// and post-elaboration `*Within` / requirement projections — which don't
+/// occur before `type_check_sorts` — pass through unchanged.
+fn is_rewritable(expr: Option<&Expr>) -> bool {
+    matches!(
+        expr,
+        Some(
+            Expr::Apply { .. }
+                | Expr::Constructor { .. }
+                | Expr::Instantiation { .. }
+                | Expr::DotApply { .. }
+                | Expr::HoApply { .. }
+                | Expr::If { .. }
+                | Expr::Let { .. }
+                | Expr::Lambda { .. }
+                | Expr::Match { .. }
+                | Expr::ListLit(_)
+                | Expr::SetLit(_)
+                | Expr::TupleLit { .. }
+        )
+    )
+}
+
+/// Reassemble a node from its rewritten children (popped off `results`), then
+/// fire a `[simp]` equation at it. A firing re-enters the loop via
+/// `Visit { fuel - 1 }` so the fixpoint runs on the work-stack; otherwise the
+/// reassembled node is pushed to `results`.
+fn build_node(
+    kb: &mut KnowledgeBase,
+    occ: Rc<NodeOccurrence>,
+    fuel: usize,
+    child_count: usize,
+    pass: PassId,
+    work: &mut Vec<RewriteOp>,
+    results: &mut Vec<Rc<NodeOccurrence>>,
+) {
+    // The last `child_count` results are this node's children, pushed in
+    // source order by `visit_node`.
+    let start = results.len() - child_count;
+    let new_children: Vec<Rc<NodeOccurrence>> = results.split_off(start);
+    let reassembled = reassemble(&occ, &new_children);
+    match try_fire(kb, &reassembled, pass) {
+        // Re-normalize the firing result to fixpoint on the stack (fuel - 1).
+        Some(fired) => work.push(RewriteOp::Visit { occ: fired, fuel: fuel - 1 }),
+        None => results.push(reassembled),
     }
 }
 
@@ -179,191 +298,212 @@ fn substitute_to_occurrence(
     from: &Rc<NodeOccurrence>,
     pass: PassId,
 ) -> Rc<NodeOccurrence> {
+    let mut work: Vec<SubstOp> = vec![SubstOp::Visit(term)];
+    let mut results: Vec<Rc<NodeOccurrence>> = Vec::new();
+    while let Some(op) = work.pop() {
+        match op {
+            SubstOp::Visit(t) => subst_visit(kb, t, subst, from, pass, &mut work, &mut results),
+            SubstOp::BuildApply { functor, pos_count, named_keys } => {
+                // Children are on top of `results` in source order
+                // (pos then named); peel them back off.
+                let total = pos_count + named_keys.len();
+                let start = results.len() - total;
+                let mut children = results.split_off(start).into_iter();
+                let pos_args: Vec<_> = (&mut children).take(pos_count).collect();
+                let named_args: Vec<_> =
+                    named_keys.into_iter().zip(children).collect();
+                let expr = Expr::Apply { functor, pos_args, named_args, type_args: Vec::new() };
+                results.push(NodeOccurrence::synthesized_expr(
+                    expr,
+                    Rc::clone(from),
+                    pass,
+                    from.owner,
+                ));
+            }
+        }
+    }
+    debug_assert_eq!(results.len(), 1, "substitute_to_occurrence: expected one result");
+    results.pop().expect("RHS produced no NodeOccurrence")
+}
+
+/// Work-stack item for the iterative [`substitute_to_occurrence`]. `Visit`
+/// resolves a RHS term via `walk_view`; an `Apply` defers reconstruction to a
+/// `BuildApply` once its children land on `results`.
+enum SubstOp {
+    Visit(TermId),
+    BuildApply { functor: Symbol, pos_count: usize, named_keys: Vec<Symbol> },
+}
+
+/// Resolve one RHS term to a synthesized occurrence (leaf), or schedule a
+/// `BuildApply` + child `Visit`s for a `Term::Fn`. Children push in reverse
+/// source order so they pop — and complete — in source order.
+fn subst_visit(
+    kb: &KnowledgeBase,
+    term: TermId,
+    subst: &Substitution,
+    from: &Rc<NodeOccurrence>,
+    pass: PassId,
+    work: &mut Vec<SubstOp>,
+    results: &mut Vec<Rc<NodeOccurrence>>,
+) {
     let synth = |expr: Expr| NodeOccurrence::synthesized_expr(expr, Rc::clone(from), pass, from.owner);
     match kb.walk_view(term, subst) {
         // Reused matched child — keep its identity (and provenance).
-        Value::Node(occ) => occ,
+        Value::Node(occ) => results.push(occ),
         Value::Term(t) => match kb.get_term(t) {
             Term::Fn { functor, pos_args, named_args } => {
-                let functor = *functor;
-                let pos: Vec<_> = pos_args
-                    .iter()
-                    .map(|&c| substitute_to_occurrence(kb, c, subst, from, pass))
-                    .collect();
-                let named: Vec<_> = named_args
-                    .iter()
-                    .map(|&(s, c)| (s, substitute_to_occurrence(kb, c, subst, from, pass)))
-                    .collect();
-                synth(Expr::Apply { functor, pos_args: pos, named_args: named, type_args: Vec::new() })
+                let named_keys: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
+                work.push(SubstOp::BuildApply {
+                    functor: *functor,
+                    pos_count: pos_args.len(),
+                    named_keys,
+                });
+                // Push named (reversed) then pos (reversed) so pos pop first.
+                for &(_, c) in named_args.iter().rev() {
+                    work.push(SubstOp::Visit(c));
+                }
+                for &c in pos_args.iter().rev() {
+                    work.push(SubstOp::Visit(c));
+                }
             }
-            Term::Const(lit) => synth(Expr::Const(lit.clone())),
-            Term::Ref(s) => synth(Expr::Ref(*s)),
-            Term::Ident(s) => synth(Expr::Ident(*s)),
+            Term::Const(lit) => results.push(synth(Expr::Const(lit.clone()))),
+            Term::Ref(s) => results.push(synth(Expr::Ref(*s))),
+            Term::Ident(s) => results.push(synth(Expr::Ident(*s))),
             // An unbound RHS var or `⊥` yields `⊥`; a well-formed `[simp]`
             // rule binds every RHS var, so the post-rewrite type-check
             // surfaces any genuinely unbound case as an error.
-            _ => synth(Expr::Bottom),
+            _ => results.push(synth(Expr::Bottom)),
         },
-        Value::Int(n) => synth(Expr::Const(Literal::Int(n))),
-        Value::BigInt(n) => synth(Expr::Const(Literal::BigInt(n))),
-        Value::Float(f) => synth(Expr::Const(Literal::Float(ordered_float::OrderedFloat(f)))),
-        Value::Bool(b) => synth(Expr::Const(Literal::Bool(b))),
-        Value::Str(s) => synth(Expr::Const(Literal::String(s.to_string()))),
+        Value::Int(n) => results.push(synth(Expr::Const(Literal::Int(n)))),
+        Value::BigInt(n) => results.push(synth(Expr::Const(Literal::BigInt(n)))),
+        Value::Float(f) => {
+            results.push(synth(Expr::Const(Literal::Float(ordered_float::OrderedFloat(f)))))
+        }
+        Value::Bool(b) => results.push(synth(Expr::Const(Literal::Bool(b)))),
+        Value::Str(s) => results.push(synth(Expr::Const(Literal::String(s.to_string())))),
         // Tuple/Entity/closures/etc. are not expected as a structural RHS
         // binding in WI-277; leave a `⊥` for the type-check to flag.
-        _ => synth(Expr::Bottom),
+        _ => results.push(synth(Expr::Bottom)),
     }
 }
 
-// ── child rewriting (bottom-up reconstruction) ─────────────────────
+// ── child reassembly (bottom-up reconstruction) ────────────────────
 //
-// Non-destructive analog of `node_occurrence::drain_expr_children`: rewrite
-// each direct child, and rebuild the node only if some child changed
-// (`Rc::ptr_eq`), preserving span/owner. Post-elaboration forms (`*Within`,
-// requirement projections, `var_ref`) don't occur before `type_check_sorts`,
-// so they (and the leaves) pass through unchanged.
+// Non-destructive analog of `node_occurrence::drain_expr_children`: given the
+// already-rewritten children (in `for_each_child` source order), rebuild the
+// node only if some child changed (`Rc::ptr_eq`), preserving span/owner.
+// Post-elaboration forms (`*Within`, requirement projections, `var_ref`)
+// don't occur before `type_check_sorts`, so they (and the leaves) are never
+// routed here — `is_rewritable` filters them out — and pass through unchanged.
 
-fn rewrite_one(
-    kb: &mut KnowledgeBase,
-    child: &Rc<NodeOccurrence>,
-    pass: PassId,
-    fuel: usize,
-) -> (Rc<NodeOccurrence>, bool) {
-    let r = rewrite(kb, child, pass, fuel);
-    let changed = !Rc::ptr_eq(&r, child);
-    (r, changed)
+/// Cursor over the rewritten children supplied to [`reassemble`], pairing each
+/// with the corresponding original child so the caller can detect whether any
+/// slot changed (`Rc::ptr_eq`) — the same change test the recursive
+/// `map_children` made per child.
+struct ChildCursor<'a> {
+    new: &'a [Rc<NodeOccurrence>],
+    idx: usize,
+    changed: bool,
 }
 
-fn rewrite_vec(
-    kb: &mut KnowledgeBase,
-    items: &[Rc<NodeOccurrence>],
-    pass: PassId,
-    fuel: usize,
-) -> (Vec<Rc<NodeOccurrence>>, bool) {
-    let mut changed = false;
-    let out = items
-        .iter()
-        .map(|c| {
-            let (r, c1) = rewrite_one(kb, c, pass, fuel);
-            changed |= c1;
-            r
-        })
-        .collect();
-    (out, changed)
+impl<'a> ChildCursor<'a> {
+    fn new(new: &'a [Rc<NodeOccurrence>]) -> Self {
+        ChildCursor { new, idx: 0, changed: false }
+    }
+    /// Take the next rewritten child, recording whether it differs from
+    /// `original` (the slot it replaces).
+    fn take(&mut self, original: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
+        let r = Rc::clone(&self.new[self.idx]);
+        self.idx += 1;
+        self.changed |= !Rc::ptr_eq(&r, original);
+        r
+    }
+    fn take_vec(&mut self, originals: &[Rc<NodeOccurrence>]) -> Vec<Rc<NodeOccurrence>> {
+        originals.iter().map(|o| self.take(o)).collect()
+    }
+    fn take_named(
+        &mut self,
+        originals: &[(Symbol, Rc<NodeOccurrence>)],
+    ) -> Vec<(Symbol, Rc<NodeOccurrence>)> {
+        originals.iter().map(|(s, o)| (*s, self.take(o))).collect()
+    }
 }
 
-fn rewrite_named(
-    kb: &mut KnowledgeBase,
-    items: &[(Symbol, Rc<NodeOccurrence>)],
-    pass: PassId,
-    fuel: usize,
-) -> (Vec<(Symbol, Rc<NodeOccurrence>)>, bool) {
-    let mut changed = false;
-    let out = items
-        .iter()
-        .map(|(s, c)| {
-            let (r, c1) = rewrite_one(kb, c, pass, fuel);
-            changed |= c1;
-            (*s, r)
-        })
-        .collect();
-    (out, changed)
-}
-
-fn map_children(
-    kb: &mut KnowledgeBase,
+fn reassemble(
     occ: &Rc<NodeOccurrence>,
-    pass: PassId,
-    fuel: usize,
+    new_children: &[Rc<NodeOccurrence>],
 ) -> Rc<NodeOccurrence> {
     let expr = match occ.as_expr() {
         Some(e) => e,
         None => return Rc::clone(occ),
     };
-    let rebuilt: Option<Expr> = match expr {
-        Expr::Apply { functor, pos_args, named_args, type_args } => {
-            let (pos, c1) = rewrite_vec(kb, pos_args, pass, fuel);
-            let (named, c2) = rewrite_named(kb, named_args, pass, fuel);
-            (c1 || c2).then(|| Expr::Apply {
-                functor: *functor,
-                pos_args: pos,
-                named_args: named,
-                type_args: type_args.clone(),
-            })
-        }
-        Expr::Constructor { name, pos_args, named_args } => {
-            let (pos, c1) = rewrite_vec(kb, pos_args, pass, fuel);
-            let (named, c2) = rewrite_named(kb, named_args, pass, fuel);
-            (c1 || c2).then(|| Expr::Constructor { name: *name, pos_args: pos, named_args: named })
-        }
-        Expr::Instantiation { name, pos_args, named_args } => {
-            let (pos, c1) = rewrite_vec(kb, pos_args, pass, fuel);
-            let (named, c2) = rewrite_named(kb, named_args, pass, fuel);
-            (c1 || c2).then(|| Expr::Instantiation { name: *name, pos_args: pos, named_args: named })
-        }
-        Expr::HoApply { predicate, args } => {
-            let (pred, c1) = rewrite_one(kb, predicate, pass, fuel);
-            let (a, c2) = rewrite_vec(kb, args, pass, fuel);
-            (c1 || c2).then(|| Expr::HoApply { predicate: pred, args: a })
-        }
-        Expr::If { condition, then_branch, else_branch } => {
-            let (c, c1) = rewrite_one(kb, condition, pass, fuel);
-            let (t, c2) = rewrite_one(kb, then_branch, pass, fuel);
-            let (e, c3) = rewrite_one(kb, else_branch, pass, fuel);
-            (c1 || c2 || c3).then(|| Expr::If { condition: c, then_branch: t, else_branch: e })
-        }
-        Expr::Let { pattern, type_annotation, value, body } => {
-            let (v, c1) = rewrite_one(kb, value, pass, fuel);
-            let (b, c2) = rewrite_one(kb, body, pass, fuel);
-            (c1 || c2).then(|| Expr::Let {
-                pattern: *pattern,
-                type_annotation: *type_annotation,
-                value: v,
-                body: b,
-            })
-        }
-        Expr::Lambda { param, body } => {
-            let (b, c1) = rewrite_one(kb, body, pass, fuel);
-            c1.then(|| Expr::Lambda { param: *param, body: b })
-        }
+    let mut cur = ChildCursor::new(new_children);
+    let new_expr: Expr = match expr {
+        Expr::Apply { functor, pos_args, named_args, type_args } => Expr::Apply {
+            functor: *functor,
+            pos_args: cur.take_vec(pos_args),
+            named_args: cur.take_named(named_args),
+            type_args: type_args.clone(),
+        },
+        Expr::Constructor { name, pos_args, named_args } => Expr::Constructor {
+            name: *name,
+            pos_args: cur.take_vec(pos_args),
+            named_args: cur.take_named(named_args),
+        },
+        Expr::Instantiation { name, pos_args, named_args } => Expr::Instantiation {
+            name: *name,
+            pos_args: cur.take_vec(pos_args),
+            named_args: cur.take_named(named_args),
+        },
+        Expr::HoApply { predicate, args } => Expr::HoApply {
+            predicate: cur.take(predicate),
+            args: cur.take_vec(args),
+        },
+        Expr::DotApply { receiver, name, pos_args, named_args } => Expr::DotApply {
+            receiver: cur.take(receiver),
+            name: *name,
+            pos_args: cur.take_vec(pos_args),
+            named_args: cur.take_named(named_args),
+        },
+        Expr::If { condition, then_branch, else_branch } => Expr::If {
+            condition: cur.take(condition),
+            then_branch: cur.take(then_branch),
+            else_branch: cur.take(else_branch),
+        },
+        Expr::Let { pattern, type_annotation, value, body } => Expr::Let {
+            pattern: *pattern,
+            type_annotation: *type_annotation,
+            value: cur.take(value),
+            body: cur.take(body),
+        },
+        Expr::Lambda { param, body } => Expr::Lambda { param: *param, body: cur.take(body) },
         Expr::Match { scrutinee, branches } => {
-            let (scr, c1) = rewrite_one(kb, scrutinee, pass, fuel);
-            let mut c2 = false;
+            let scr = cur.take(scrutinee);
+            // `for_each_child` visits each branch as body then guard?, so
+            // consume in that order to keep the cursor aligned.
             let new_branches: Vec<MatchBranch> = branches
                 .iter()
                 .map(|br| {
-                    let (body, cb) = rewrite_one(kb, &br.body, pass, fuel);
-                    let guard = br.guard.as_ref().map(|g| {
-                        let (gr, cg) = rewrite_one(kb, g, pass, fuel);
-                        c2 |= cg;
-                        gr
-                    });
-                    c2 |= cb;
+                    let body = cur.take(&br.body);
+                    let guard = br.guard.as_ref().map(|g| cur.take(g));
                     MatchBranch { pattern: br.pattern, guard, body, span: br.span }
                 })
                 .collect();
-            (c1 || c2).then(|| Expr::Match { scrutinee: scr, branches: new_branches })
+            Expr::Match { scrutinee: scr, branches: new_branches }
         }
-        Expr::ListLit(es) => {
-            let (e, c1) = rewrite_vec(kb, es, pass, fuel);
-            c1.then(|| Expr::ListLit(e))
-        }
-        Expr::SetLit(es) => {
-            let (e, c1) = rewrite_vec(kb, es, pass, fuel);
-            c1.then(|| Expr::SetLit(e))
-        }
-        Expr::TupleLit { positional, named } => {
-            let (pos, c1) = rewrite_vec(kb, positional, pass, fuel);
-            let (nm, c2) = rewrite_named(kb, named, pass, fuel);
-            (c1 || c2).then(|| Expr::TupleLit { positional: pos, named: nm })
-        }
-        // Leaves and post-elaboration forms: nothing to rewrite into.
-        _ => None,
+        Expr::ListLit(es) => Expr::ListLit(cur.take_vec(es)),
+        Expr::SetLit(es) => Expr::SetLit(cur.take_vec(es)),
+        Expr::TupleLit { positional, named } => Expr::TupleLit {
+            positional: cur.take_vec(positional),
+            named: cur.take_named(named),
+        },
+        // `is_rewritable` keeps non-child forms out of `Build`, so this is
+        // unreachable; pass through to stay total.
+        _ => return Rc::clone(occ),
     };
-    let new_expr = match rebuilt {
-        Some(e) => e,
-        None => return Rc::clone(occ),
-    };
+    if !cur.changed {
+        return Rc::clone(occ);
+    }
     // Preserve provenance: if this node was itself synthesized by an earlier
     // firing in this run, keep its `Synthesized { from, by }` when a child is
     // rewritten under it (rather than reverting to `Source`).
@@ -378,6 +518,7 @@ fn map_children(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kb::term::Var;
     use crate::span::{SourceId, SourceSpan};
     use smallvec::SmallVec;
 
@@ -634,5 +775,55 @@ mod tests {
             matches!(&rewritten.kind, NodeKind::Expr { origin: OccurrenceOrigin::Synthesized { .. }, .. }),
             "the rebuilt g node should keep its Synthesized origin"
         );
+    }
+
+    #[test]
+    fn deeply_nested_body_does_not_overflow_host_stack() {
+        // WI-278: the walk is iterative, so a body nested far deeper than the
+        // recursive version's host-stack budget (which overflowed on the
+        // 624-line typing_pass_spec.anthill) rewrites without crashing. Build
+        // wrap(wrap(…wrap(add(7, 0))…)) at a depth that the old recursive
+        // `rewrite`/`map_children` could not survive, and confirm the
+        // innermost redex still fires.
+        let mut kb = KnowledgeBase::new();
+        let add = assert_add_zero(&mut kb);
+        let wrap = kb.intern("wrap");
+
+        const DEPTH: usize = 200_000;
+        let seven = NodeOccurrence::new_expr(Expr::Const(Literal::Int(7)), span(), None);
+        let zero_occ = NodeOccurrence::new_expr(Expr::Const(Literal::Int(0)), span(), None);
+        let mut node = NodeOccurrence::new_expr(
+            Expr::Apply { functor: add, pos_args: vec![Rc::clone(&seven), zero_occ], named_args: vec![], type_args: vec![] },
+            span(),
+            None,
+        );
+        for _ in 0..DEPTH {
+            node = NodeOccurrence::new_expr(
+                Expr::Apply { functor: wrap, pos_args: vec![node], named_args: vec![], type_args: vec![] },
+                span(),
+                None,
+            );
+        }
+        let foo = kb.intern("foo");
+        kb.set_op_body_node(foo, node);
+
+        run(&mut kb);
+
+        // Walk down the wrap chain and confirm the innermost add(7, 0) → 7.
+        let mut cur = Rc::clone(kb.op_body_node(foo).expect("op body present"));
+        for _ in 0..DEPTH {
+            cur = match cur.as_expr() {
+                Some(Expr::Apply { functor, pos_args, .. }) if *functor == wrap => {
+                    Rc::clone(&pos_args[0])
+                }
+                other => panic!("expected wrap(...), got {other:?}"),
+            };
+        }
+        assert!(
+            matches!(cur.as_expr(), Some(Expr::Const(Literal::Int(7)))),
+            "innermost add(7, 0) should have rewritten to 7, got {:?}",
+            cur.as_expr()
+        );
+        assert!(Rc::ptr_eq(&cur, &seven), "innermost redex should reuse the matched `7`");
     }
 }

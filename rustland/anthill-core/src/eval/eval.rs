@@ -180,11 +180,15 @@ impl Interpreter {
             Expr::ConstructRequirement { impl_functor, requirements } => {
                 self.reduce_construct_requirement_node(*impl_functor, requirements)
             }
+            // `DotApply` is a pre-dispatch form: the `[simp]` dot rules must
+            // have rewritten it to `Apply`/field-access before eval (WI-278).
+            // Reaching here means it survived unresolved.
             Expr::HoApply { .. }
             | Expr::HoApplyWithin { .. }
             | Expr::ConstructorWithin { .. }
             | Expr::LambdaWithin { .. }
             | Expr::Instantiation { .. }
+            | Expr::DotApply { .. }
             | Expr::ListLit(_)
             | Expr::SetLit(_)
             | Expr::TupleLit { .. } => Err(EvalError::Internal(format!(

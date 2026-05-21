@@ -347,6 +347,14 @@ namespace anthill.reflect
     entity ho_apply(predicate: Term, args: List[Term],
                     type_args: Option[T = List[type_arg]])  -- higher-order: ?P(a, b)
     entity constructor(name: Symbol, args: List[ApplyArg])
+    -- WI-278: method-call (dot) syntax — `receiver.name(args)` or
+    -- `receiver.name`. A pre-dispatch form emitted by the converter for
+    -- value-receiver dot forms; the callee operation is not resolved yet,
+    -- only the member `name` and the `receiver` expression. The `[simp]`
+    -- dot rules (proposal 043 §6) rewrite it to `apply` (method) or a field
+    -- access (field) once the receiver's type is known. Field access has an
+    -- empty `args` list; a method call carries its arguments.
+    entity dot_apply(receiver: ExprOccurrence, name: Symbol, args: List[ApplyArg])
     entity var_ref(name: Symbol)
     entity int_lit(value: Int)
     entity bigint_lit(value: BigInt)
