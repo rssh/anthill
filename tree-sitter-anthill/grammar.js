@@ -929,6 +929,13 @@ module.exports = grammar({
       field('body', $._expr_body),
     )),
 
+    // A lambda binds exactly ONE parameter, which is a full `_pattern`.
+    // Multiple parameters are expressed by destructuring a (named) tuple:
+    // `lambda (a, b) -> add(a, b)`. This is deliberate, not a limitation —
+    // a single pattern binder avoids comma ambiguity when a lambda is passed
+    // as a function argument (`map(lambda x -> x + 1, xs)`): the tuple parens
+    // delimit the parameter, so the top-level commas unambiguously separate
+    // the enclosing call's arguments. See proposal 018 §Lambda.
     lambda_expr: $ => prec.right(seq(
       'lambda', field('param', $._pattern),
       '->', field('body', $._expr_body),
