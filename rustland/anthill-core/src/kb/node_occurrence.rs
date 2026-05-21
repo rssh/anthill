@@ -662,6 +662,23 @@ fn open_named(
     (out, changed)
 }
 
+/// WI-246: does the occurrence contain any `Expr::Var(Var::Global)` leaf?
+/// In a σ-substituted goal occurrence every remaining Global-var leaf is
+/// unbound (bound ones were spliced by [`substitute_occurrence`]), so this is
+/// the occurrence analog of `KnowledgeBase::is_ground`'s "has unbound var"
+/// test. Iterative pre-order — flat host stack regardless of nesting.
+pub fn occurrence_has_unbound_var(root: &Rc<NodeOccurrence>) -> bool {
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(root)];
+    while let Some(occ) = stack.pop() {
+        match occ.as_expr() {
+            Some(Expr::Var(Var::Global(_))) => return true,
+            Some(expr) => for_each_child(expr, |c| stack.push(Rc::clone(c))),
+            None => {}
+        }
+    }
+    false
+}
+
 // ── Substitution over a rule-body-atom occurrence ───────────────
 
 /// WI-246: apply a resolution substitution σ to a rule-body-atom occurrence

@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use smallvec::SmallVec;
 
 use super::subst::Substitution;
-use super::node_occurrence::Expr;
+use super::node_occurrence::{self, Expr};
 use super::term::{Term, TermId, Var, VarId};
 use super::term_view::{self, TermView, ViewItem};
 use crate::intern::Symbol;
@@ -1380,11 +1380,11 @@ impl KnowledgeBase {
     ) -> BuiltinResult {
         match tag {
             BuiltinTag::NonVar => self.builtin_nonvar(&term_view::TermIdView(goal), answer_subst),
-            BuiltinTag::Ground => self.builtin_ground(goal, answer_subst),
+            BuiltinTag::Ground => self.builtin_ground(&term_view::TermIdView(goal), answer_subst),
             BuiltinTag::QualifiedName => self.builtin_qualified_name(goal, answer_subst),
             BuiltinTag::ShortName => self.builtin_short_name(goal, answer_subst),
             BuiltinTag::LookupSymbol => self.builtin_lookup_symbol(goal, answer_subst),
-            BuiltinTag::IsEntityOf => self.builtin_is_entity_of(goal, answer_subst),
+            BuiltinTag::IsEntityOf => self.builtin_is_entity_of(&term_view::TermIdView(goal), answer_subst),
             BuiltinTag::ExtractSort => self.builtin_extract_sort(goal, answer_subst),
             BuiltinTag::Not => unreachable!("Not is handled in step_init, not execute_builtin"),
             BuiltinTag::HoApply => unreachable!("HoApply is handled in step_init, not execute_builtin"),
@@ -1463,12 +1463,17 @@ impl KnowledgeBase {
     }
 
     /// `ground(?x)`: succeeds if `?x` is fully ground (no unbound variables anywhere).
-    fn builtin_ground(&self, goal: TermId, subst: &Substitution) -> BuiltinResult {
-        let arg = self.builtin_first_arg(goal);
-        match self.is_ground(arg, subst) {
-            GroundCheck::Ground => BuiltinResult::Success,
-            GroundCheck::HasVar => BuiltinResult::Delay,
-        }
+    fn builtin_ground<V: TermView>(&self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        let ground = match self.walk_arg(goal.pos_arg(self, 0), subst) {
+            None => return BuiltinResult::Failure,
+            // A term value re-uses the recursive term groundness check; an
+            // occurrence value (post-flip) is ground iff it has no remaining
+            // unbound `Expr::Var(Global)` leaf; any other scalar is ground.
+            Some(Value::Term(t)) => matches!(self.is_ground(t, subst), GroundCheck::Ground),
+            Some(Value::Node(occ)) => !node_occurrence::occurrence_has_unbound_var(&occ),
+            Some(_) => true,
+        };
+        if ground { BuiltinResult::Success } else { BuiltinResult::Delay }
     }
 
     /// Recursive groundness check: walk the term, then check all subterms.
@@ -1635,20 +1640,24 @@ impl KnowledgeBase {
 
     /// `is_entity_of(?sub, ?sup)`: succeeds if sub is an entity of sup (via KB indexes).
     /// Both args must be non-var (delay otherwise).
-    fn builtin_is_entity_of(&self, goal: TermId, subst: &Substitution) -> BuiltinResult {
-        let sub_arg = self.builtin_first_arg(goal);
-        let sup_arg = self.builtin_second_arg(goal);
-        let walked_sub = self.walk(sub_arg, subst);
-        let walked_sup = self.walk(sup_arg, subst);
-        match (self.terms.get(walked_sub), self.terms.get(walked_sup)) {
-            (Term::Var(_), _) | (_, Term::Var(_)) => BuiltinResult::Delay,
-            _ => {
-                if self.is_entity_of(walked_sub, walked_sup) {
-                    BuiltinResult::Success
-                } else {
-                    BuiltinResult::Failure
-                }
-            }
+    fn builtin_is_entity_of<V: TermView>(&self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        let (sub, sup) = match (
+            self.walk_arg(goal.pos_arg(self, 0), subst),
+            self.walk_arg(goal.pos_arg(self, 1), subst),
+        ) {
+            (Some(sub), Some(sup)) => (sub, sup),
+            _ => return BuiltinResult::Failure,
+        };
+        if self.value_is_unbound_var(&sub) || self.value_is_unbound_var(&sup) {
+            return BuiltinResult::Delay;
+        }
+        // The subtype check is a KB lookup over hash-consed terms. Bound data
+        // values come from term-facts, so they resolve to `Value::Term` even
+        // for occurrence goals (only the goal *structure* is a Node); a
+        // non-term value can't stand in an entity-subtype relation.
+        match (sub.as_term(), sup.as_term()) {
+            (Some(sub_t), Some(sup_t)) if self.is_entity_of(sub_t, sup_t) => BuiltinResult::Success,
+            _ => BuiltinResult::Failure,
         }
     }
 
