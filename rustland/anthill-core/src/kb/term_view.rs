@@ -5,12 +5,21 @@
 //! (`TermId`) or an external-sourced runtime `Value`. `TermView` is the
 //! read-only shape used on the target side of unification.
 //!
+//! WI-276: `Value::Node` (a reflect `Expr` occurrence) is now *structural*
+//! here — its `head`/`pos_arg`/`named_arg` expose the underlying `Expr` so a
+//! `[simp]` rule LHS can match against expression occurrences (the substrate
+//! for the typer-phase rewriting engine, proposal 043). Previously it was
+//! `Opaque`.
+//!
 //! This module defines the trait and implementations. Direct structural
 //! unification via `match_view` lives in `kb::mod`.
+
+use std::rc::Rc;
 
 use crate::eval::value::Value;
 use crate::intern::Symbol;
 
+use super::node_occurrence::{Expr, NodeOccurrence};
 use super::persist_subst::BindValue;
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::KnowledgeBase;
@@ -39,13 +48,77 @@ pub enum ViewHead {
     Opaque,
 }
 
-/// A child of a [`TermView`] — either a `TermId` (borrowed from the KB's
-/// hash-consed store) or a `Value` (borrowed from the owning
-/// [`TermView`]). `'a` is the lifetime of the borrowed view.
-#[derive(Clone, Copy, Debug)]
+/// A child of a [`TermView`] — a `TermId` (borrowed from the KB's
+/// hash-consed store), a `Value` (borrowed from the owning [`TermView`]),
+/// or a reflect `Expr` occurrence child (`Node`). The `Node` variant *owns*
+/// an `Rc<NodeOccurrence>` (a cheap clone) rather than borrowing, so that
+/// [`TermView::as_bind_value`] can bind a matched child as `Value::Node`
+/// (WI-276). `'a` is the lifetime of the borrowed `Value`.
+///
+/// `Clone` but **not** `Copy`: the `Node` variant carries an `Rc`.
+#[derive(Clone, Debug)]
 pub enum ViewItem<'a> {
     Term(TermId),
     Value(&'a Value),
+    Node(Rc<NodeOccurrence>),
+}
+
+// ── Occurrence views (WI-276) ──────────────────────────────────
+//
+// `Value::Node` / `ViewItem::Node` expose a reflect `Expr` occurrence to the
+// matcher. Only the Apply / Constructor / leaf forms are made structural —
+// those a `[simp]` rule LHS matches; control-flow forms (Match / If / Let /
+// Lambda / collection literals / *Within / …) stay `Opaque`. `Expr::DotApply`
+// (added by WI-278) will get an arm here mapping to a `dot_apply` functor.
+
+fn occ_head(occ: &NodeOccurrence) -> ViewHead {
+    match occ.as_expr() {
+        Some(Expr::Apply { functor, pos_args, named_args, .. }) => ViewHead::Functor {
+            functor: Some(*functor),
+            pos_arity: pos_args.len(),
+            named_arity: named_args.len(),
+        },
+        Some(Expr::Constructor { name, pos_args, named_args }) => ViewHead::Functor {
+            functor: Some(*name),
+            pos_arity: pos_args.len(),
+            named_arity: named_args.len(),
+        },
+        Some(Expr::Const(lit)) => ViewHead::Const(lit.clone()),
+        Some(Expr::Ref(s)) => ViewHead::Ref(*s),
+        Some(Expr::Ident(s)) => ViewHead::Ident(*s),
+        Some(Expr::Var(Var::Global(vid))) => ViewHead::Var(*vid),
+        // Rigid / DeBruijn vars, control-flow and post-elaboration forms,
+        // and rule-head occurrences are opaque to rule-LHS matching.
+        _ => ViewHead::Opaque,
+    }
+}
+
+/// The i-th positional child occurrence of an Apply/Constructor occurrence.
+fn occ_pos_child(occ: &NodeOccurrence, i: usize) -> Option<Rc<NodeOccurrence>> {
+    match occ.as_expr()? {
+        Expr::Apply { pos_args, .. } | Expr::Constructor { pos_args, .. } => {
+            pos_args.get(i).map(Rc::clone)
+        }
+        _ => None,
+    }
+}
+
+/// The named child occurrence keyed by `sym` of an Apply/Constructor occurrence.
+fn occ_named_child(occ: &NodeOccurrence, sym: Symbol) -> Option<Rc<NodeOccurrence>> {
+    let named = match occ.as_expr()? {
+        Expr::Apply { named_args, .. } | Expr::Constructor { named_args, .. } => named_args,
+        _ => return None,
+    };
+    named.iter().find(|(s, _)| *s == sym).map(|(_, c)| Rc::clone(c))
+}
+
+fn occ_named_keys(occ: &NodeOccurrence) -> Vec<Symbol> {
+    match occ.as_expr() {
+        Some(Expr::Apply { named_args, .. }) | Some(Expr::Constructor { named_args, .. }) => {
+            named_args.iter().map(|(s, _)| *s).collect()
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Read-only view over a term or value, used on the target side of
@@ -155,14 +228,15 @@ impl TermView for Value {
                 pos_arity: pos.len(),
                 named_arity: named.len(),
             },
+            // WI-276: a reflect Expr occurrence is structural — expose its Expr.
+            Value::Node(occ) => occ_head(occ),
             Value::Closure(_)
             | Value::Stream(_)
             | Value::Lazy(_)
             | Value::Substitution(_)
             | Value::Map(_)
             | Value::Cell(_)
-            | Value::Requirement(_)
-            | Value::Node(_) => ViewHead::Opaque,
+            | Value::Requirement(_) => ViewHead::Opaque,
         }
     }
 
@@ -176,6 +250,7 @@ impl TermView for Value {
             },
             Value::Tuple { pos, .. } => pos.get(i).map(ViewItem::Value),
             Value::Entity { pos, .. } => pos.get(i).map(ViewItem::Value),
+            Value::Node(occ) => occ_pos_child(occ, i).map(ViewItem::Node),
             _ => None,
         }
     }
@@ -194,6 +269,7 @@ impl TermView for Value {
             Value::Entity { named, .. } => {
                 named.iter().find(|(s, _)| *s == sym).map(|(_, v)| ViewItem::Value(v))
             }
+            Value::Node(occ) => occ_named_child(occ, sym).map(ViewItem::Node),
             _ => None,
         }
     }
@@ -206,6 +282,7 @@ impl TermView for Value {
             },
             Value::Tuple { named, .. } => named.iter().map(|(s, _)| *s).collect(),
             Value::Entity { named, .. } => named.iter().map(|(s, _)| *s).collect(),
+            Value::Node(occ) => occ_named_keys(occ),
             _ => Vec::new(),
         }
     }
@@ -213,6 +290,7 @@ impl TermView for Value {
     fn as_bind_value(&self) -> BindValue {
         match self {
             Value::Term(tid) => BindValue::Term(*tid),
+            // Value::Node clones cheaply (Rc), preserving occurrence identity.
             other => BindValue::Value(other.clone()),
         }
     }
@@ -223,6 +301,7 @@ impl TermView for ViewItem<'_> {
         match self {
             ViewItem::Term(t) => TermIdView(*t).head(kb),
             ViewItem::Value(v) => (**v).head(kb),
+            ViewItem::Node(occ) => occ_head(occ),
         }
     }
 
@@ -233,6 +312,7 @@ impl TermView for ViewItem<'_> {
                 _ => None,
             },
             ViewItem::Value(v) => (*v).pos_arg(kb, i),
+            ViewItem::Node(occ) => occ_pos_child(occ, i).map(ViewItem::Node),
         }
     }
 
@@ -245,6 +325,7 @@ impl TermView for ViewItem<'_> {
                 _ => None,
             },
             ViewItem::Value(v) => (*v).named_arg(kb, sym),
+            ViewItem::Node(occ) => occ_named_child(occ, sym).map(ViewItem::Node),
         }
     }
 
@@ -255,6 +336,7 @@ impl TermView for ViewItem<'_> {
                 _ => Vec::new(),
             },
             ViewItem::Value(v) => (*v).named_keys(kb),
+            ViewItem::Node(occ) => occ_named_keys(occ),
         }
     }
 
@@ -262,6 +344,7 @@ impl TermView for ViewItem<'_> {
         match self {
             ViewItem::Term(t) => BindValue::Term(*t),
             ViewItem::Value(v) => BindValue::Value((*v).clone()),
+            ViewItem::Node(occ) => BindValue::Value(Value::Node(Rc::clone(occ))),
         }
     }
 }

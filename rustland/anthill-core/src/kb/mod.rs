@@ -2632,6 +2632,69 @@ mod tests {
     }
 
     #[test]
+    fn match_view_binds_vars_to_node_occurrence_children() {
+        // WI-276: a `[simp]` rule LHS `add(?a, ?b)` (TermId pattern) matches a
+        // reflect Expr occurrence `Value::Node(add(1, 2))` and binds ?a/?b to
+        // the child occurrences (identity preserved, not promoted to TermId).
+        // This is the substrate that lets the typer-phase rewriting engine
+        // (proposal 043) fire simp rules over expression occurrences.
+        use crate::eval::value::Value;
+        use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+        use crate::kb::term::Literal;
+        use crate::span::{SourceId, SourceSpan};
+        use std::rc::Rc;
+
+        let mut kb = KnowledgeBase::new();
+        let add = kb.intern("add");
+        let a_sym = kb.intern("a");
+        let b_sym = kb.intern("b");
+        let av = kb.fresh_var(a_sym);
+        let bv = kb.fresh_var(b_sym);
+        let var_a = kb.alloc(Term::Var(Var::Global(av)));
+        let var_b = kb.alloc(Term::Var(Var::Global(bv)));
+        let pattern = kb.alloc(Term::Fn {
+            functor: add,
+            pos_args: SmallVec::from_slice(&[var_a, var_b]),
+            named_args: SmallVec::new(),
+        });
+
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 10);
+        let child_a = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
+        let child_b = NodeOccurrence::new_expr(Expr::Const(Literal::Int(2)), span, None);
+        let add_occ = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: add,
+                pos_args: vec![Rc::clone(&child_a), Rc::clone(&child_b)],
+                named_args: vec![],
+                type_args: vec![],
+            },
+            span,
+            None,
+        );
+        let target = Value::Node(add_occ);
+
+        let subst = kb.match_view(pattern, &target).expect("match should succeed");
+
+        match subst.resolve_as_value(av) {
+            Some(Value::Node(occ)) => {
+                assert!(matches!(occ.as_expr(), Some(Expr::Const(Literal::Int(1)))));
+                assert!(Rc::ptr_eq(&occ, &child_a), "?a should bind the same Rc child");
+            }
+            other => panic!("expected Value::Node for ?a, got {other:?}"),
+        }
+        match subst.resolve_as_value(bv) {
+            Some(Value::Node(occ)) => {
+                assert!(matches!(occ.as_expr(), Some(Expr::Const(Literal::Int(2)))));
+                assert!(Rc::ptr_eq(&occ, &child_b), "?b should bind the same Rc child");
+            }
+            other => panic!("expected Value::Node for ?b, got {other:?}"),
+        }
+        // Non-Term bindings → resolve_with_term returns None (lineage preserved).
+        assert!(subst.resolve_with_term(av).is_none());
+        assert!(subst.resolve_with_term(bv).is_none());
+    }
+
+    #[test]
     fn match_term_equals_match_view_of_termidview() {
         // For TermId-backed targets, match_term and match_view produce
         // structurally-equivalent substitutions. Proves the wrapper is
