@@ -2411,8 +2411,17 @@ impl KnowledgeBase {
     /// Check if a goal term's functor is a registered builtin.
     /// Returns `Some(tag)` if so, `None` otherwise.
     pub fn get_builtin(&self, goal: TermId) -> Option<BuiltinTag> {
-        match self.terms.get(goal) {
-            Term::Fn { functor, .. } => self.builtins.get(functor).copied(),
+        self.get_builtin_view(&term_view::TermIdView(goal))
+    }
+
+    /// `get_builtin` generic over the goal representation — classifies a goal
+    /// by the builtin table from the functor read through [`TermView`], so a
+    /// `Value::Node` occurrence goal (WI-246) is dispatched without lowering.
+    pub fn get_builtin_view<V: term_view::TermView>(&self, goal: &V) -> Option<BuiltinTag> {
+        match goal.head(self) {
+            term_view::ViewHead::Functor { functor: Some(sym), .. } => {
+                self.builtins.get(&sym).copied()
+            }
             _ => None,
         }
     }

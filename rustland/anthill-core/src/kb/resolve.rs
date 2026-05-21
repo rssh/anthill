@@ -15,7 +15,9 @@ use std::collections::{HashMap, HashSet};
 use smallvec::SmallVec;
 
 use super::subst::Substitution;
+use super::node_occurrence::Expr;
 use super::term::{Term, TermId, Var, VarId};
+use super::term_view::{self, TermView, ViewItem};
 use crate::intern::Symbol;
 use crate::eval::value::Value;
 use super::RuleId;
@@ -250,6 +252,21 @@ struct Frame {
 fn goal_term(g: &Value) -> TermId {
     g.as_term()
         .expect("WI-246: goal is not a Value::Term yet (occurrence goal path is task #2)")
+}
+
+/// Outcome of walking an `eq`/`neq` goal's two operands (WI-246): both
+/// resolved, a flex operand forcing `Delay`, or a missing arg slot.
+enum EqOperands {
+    Ready(Value, Value),
+    Delay,
+    Absent,
+}
+
+/// A comparable number extracted from a goal-arg `Value` for `cmp` (WI-246).
+enum Num {
+    Int(i64),
+    Big(num_bigint::BigInt),
+    Float(ordered_float::OrderedFloat<f64>),
 }
 
 /// Result of a single step in the search loop.
@@ -1362,7 +1379,7 @@ impl KnowledgeBase {
         answer_subst: &Substitution,
     ) -> BuiltinResult {
         match tag {
-            BuiltinTag::NonVar => self.builtin_nonvar(goal, answer_subst),
+            BuiltinTag::NonVar => self.builtin_nonvar(&term_view::TermIdView(goal), answer_subst),
             BuiltinTag::Ground => self.builtin_ground(goal, answer_subst),
             BuiltinTag::QualifiedName => self.builtin_qualified_name(goal, answer_subst),
             BuiltinTag::ShortName => self.builtin_short_name(goal, answer_subst),
@@ -1376,12 +1393,12 @@ impl KnowledgeBase {
             BuiltinTag::Scope => self.builtin_scope(goal, answer_subst),
             BuiltinTag::Kind => self.builtin_kind(goal, answer_subst),
             BuiltinTag::FieldAccess => self.builtin_field_access(goal, answer_subst),
-            BuiltinTag::Eq => self.builtin_eq(goal, answer_subst),
-            BuiltinTag::Neq => self.builtin_neq(goal, answer_subst),
-            BuiltinTag::Gt => self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Greater),
-            BuiltinTag::Lt => self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Less),
-            BuiltinTag::Gte => self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Less),
-            BuiltinTag::Lte => self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Greater),
+            BuiltinTag::Eq => self.builtin_eq(&term_view::TermIdView(goal), answer_subst),
+            BuiltinTag::Neq => self.builtin_neq(&term_view::TermIdView(goal), answer_subst),
+            BuiltinTag::Gt => self.builtin_cmp(&term_view::TermIdView(goal), answer_subst, |ord| ord == std::cmp::Ordering::Greater),
+            BuiltinTag::Lt => self.builtin_cmp(&term_view::TermIdView(goal), answer_subst, |ord| ord == std::cmp::Ordering::Less),
+            BuiltinTag::Gte => self.builtin_cmp(&term_view::TermIdView(goal), answer_subst, |ord| ord != std::cmp::Ordering::Less),
+            BuiltinTag::Lte => self.builtin_cmp(&term_view::TermIdView(goal), answer_subst, |ord| ord != std::cmp::Ordering::Greater),
             BuiltinTag::Add => self.builtin_arith(goal, answer_subst, |a, b| a + b, |a, b| a + b, |a, b| a + b),
             BuiltinTag::Sub => self.builtin_arith(goal, answer_subst, |a, b| a - b, |a, b| a - b, |a, b| a - b),
             BuiltinTag::Mul => self.builtin_arith(goal, answer_subst, |a, b| a * b, |a, b| a * b, |a, b| a * b),
@@ -1395,13 +1412,53 @@ impl KnowledgeBase {
         }
     }
 
+    /// Resolve a builtin goal argument (read through [`TermView`]) to a
+    /// `Value` under σ — the representation-agnostic analog of
+    /// `walk(builtin_first_arg(goal), σ)`. A term child is `walk_view`d; an
+    /// occurrence child that is a bound `Global` var leaf is resolved via σ,
+    /// otherwise kept as-is (WI-246). `None` ⇒ the arg slot is absent.
+    fn walk_arg(&self, item: Option<ViewItem>, subst: &Substitution) -> Option<Value> {
+        Some(match item? {
+            ViewItem::Term(t) => self.walk_view(t, subst),
+            ViewItem::Value(Value::Term(t)) => self.walk_view(*t, subst),
+            ViewItem::Value(v) => v.clone(),
+            ViewItem::Node(occ) => match occ.as_expr() {
+                Some(Expr::Var(Var::Global(vid))) => {
+                    subst.resolve_as_value(*vid).cloned().unwrap_or(Value::Node(occ))
+                }
+                _ => Value::Node(occ),
+            },
+        })
+    }
+
+    /// Whether a σ-walked `Value` is still *any* unbound logic variable —
+    /// `Term::Var(_)` (flex/rigid/DeBruijn) or an `Expr::Var(_)` occurrence
+    /// leaf. The delay test for `nonvar`/`cmp`/`arith`.
+    fn value_is_unbound_var(&self, v: &Value) -> bool {
+        match v {
+            Value::Term(t) => matches!(self.terms.get(*t), Term::Var(_)),
+            Value::Node(occ) => matches!(occ.as_expr(), Some(Expr::Var(_))),
+            _ => false,
+        }
+    }
+
+    /// Whether a σ-walked `Value` is a *flex* variable (`Var::Global` only) —
+    /// the narrower delay test for `eq`/`neq`, which compare rigid vars by
+    /// identity rather than delaying on them.
+    fn value_is_flex(&self, v: &Value) -> bool {
+        match v {
+            Value::Term(t) => matches!(self.terms.get(*t), Term::Var(Var::Global(_))),
+            Value::Node(occ) => matches!(occ.as_expr(), Some(Expr::Var(Var::Global(_)))),
+            _ => false,
+        }
+    }
+
     /// `nonvar(?x)`: succeeds if `?x` is bound to a non-variable after walking.
-    fn builtin_nonvar(&self, goal: TermId, subst: &Substitution) -> BuiltinResult {
-        let arg = self.builtin_first_arg(goal);
-        let walked = self.walk(arg, subst);
-        match self.terms.get(walked) {
-            Term::Var(_) => BuiltinResult::Delay,
-            _ => BuiltinResult::Success,
+    fn builtin_nonvar<V: TermView>(&self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        match self.walk_arg(goal.pos_arg(self, 0), subst) {
+            None => BuiltinResult::Failure,
+            Some(v) if self.value_is_unbound_var(&v) => BuiltinResult::Delay,
+            Some(_) => BuiltinResult::Success,
         }
     }
 
@@ -1750,54 +1807,89 @@ impl KnowledgeBase {
     /// args resolve to the same TermId (hash-consed identity = structural equality).
     /// Delays only on flex (`Var::Global`); rigid vars compare by TermId
     /// identity (hash-consing ensures `Rigid(a) == Rigid(a)`).
-    fn builtin_eq(&self, goal: TermId, subst: &Substitution) -> BuiltinResult {
-        let a = self.walk(self.builtin_first_arg(goal), subst);
-        let b = self.walk(self.builtin_second_arg(goal), subst);
-        if Self::is_flex(self.terms.get(a)) || Self::is_flex(self.terms.get(b)) {
-            return BuiltinResult::Delay;
+    fn builtin_eq<V: TermView>(&self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        match self.eq_operands(goal, subst) {
+            EqOperands::Delay => BuiltinResult::Delay,
+            EqOperands::Ready(a, b) => {
+                if a.structural_eq(&b) { BuiltinResult::Success } else { BuiltinResult::Failure }
+            }
+            EqOperands::Absent => BuiltinResult::Failure,
         }
-        if a == b { BuiltinResult::Success } else { BuiltinResult::Failure }
     }
 
     /// `neq(?a, ?b)` — structural inequality after walking.
-    fn builtin_neq(&self, goal: TermId, subst: &Substitution) -> BuiltinResult {
-        let a = self.walk(self.builtin_first_arg(goal), subst);
-        let b = self.walk(self.builtin_second_arg(goal), subst);
-        if Self::is_flex(self.terms.get(a)) || Self::is_flex(self.terms.get(b)) {
-            return BuiltinResult::Delay;
+    fn builtin_neq<V: TermView>(&self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        match self.eq_operands(goal, subst) {
+            EqOperands::Delay => BuiltinResult::Delay,
+            EqOperands::Ready(a, b) => {
+                if a.structural_eq(&b) { BuiltinResult::Failure } else { BuiltinResult::Success }
+            }
+            EqOperands::Absent => BuiltinResult::Failure,
         }
-        if a != b { BuiltinResult::Success } else { BuiltinResult::Failure }
     }
 
-    fn is_flex(t: &Term) -> bool {
-        matches!(t, Term::Var(Var::Global(_)))
+    /// Walk the two operands of an `eq`/`neq` goal: `Delay` if either is flex
+    /// (`Var::Global`), else the two `Value`s. For two term values
+    /// `structural_eq` falls to hash-consed-`TermId` identity (= the original
+    /// `a == b` test); occurrence values compare structurally (WI-246).
+    fn eq_operands<V: TermView>(&self, goal: &V, subst: &Substitution) -> EqOperands {
+        let (a, b) = match (
+            self.walk_arg(goal.pos_arg(self, 0), subst),
+            self.walk_arg(goal.pos_arg(self, 1), subst),
+        ) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return EqOperands::Absent,
+        };
+        if self.value_is_flex(&a) || self.value_is_flex(&b) {
+            return EqOperands::Delay;
+        }
+        EqOperands::Ready(a, b)
     }
 
     /// Generic comparison builtin for gt/lt/gte/lte.
-    /// Compares Int or Float constants; delays if unbound, fails on type mismatch.
-    fn builtin_cmp(
+    /// Compares Int/BigInt/Float values; delays if unbound, fails on type mismatch.
+    fn builtin_cmp<V: TermView>(
         &self,
-        goal: TermId,
+        goal: &V,
         subst: &Substitution,
         pred: impl Fn(std::cmp::Ordering) -> bool,
     ) -> BuiltinResult {
-        let a = self.walk(self.builtin_first_arg(goal), subst);
-        let b = self.walk(self.builtin_second_arg(goal), subst);
-        match (self.terms.get(a), self.terms.get(b)) {
-            (Term::Var(_), _) | (_, Term::Var(_)) => BuiltinResult::Delay,
-            (Term::Const(super::term::Literal::Int(x)),
-             Term::Const(super::term::Literal::Int(y))) => {
-                if pred(x.cmp(y)) { BuiltinResult::Success } else { BuiltinResult::Failure }
-            }
-            (Term::Const(super::term::Literal::BigInt(x)),
-             Term::Const(super::term::Literal::BigInt(y))) => {
-                if pred(x.cmp(y)) { BuiltinResult::Success } else { BuiltinResult::Failure }
-            }
-            (Term::Const(super::term::Literal::Float(x)),
-             Term::Const(super::term::Literal::Float(y))) => {
-                if pred(x.cmp(y)) { BuiltinResult::Success } else { BuiltinResult::Failure }
-            }
-            _ => BuiltinResult::Failure,
+        let (a, b) = match (
+            self.walk_arg(goal.pos_arg(self, 0), subst),
+            self.walk_arg(goal.pos_arg(self, 1), subst),
+        ) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return BuiltinResult::Failure,
+        };
+        if self.value_is_unbound_var(&a) || self.value_is_unbound_var(&b) {
+            return BuiltinResult::Delay;
+        }
+        let ord = match (self.value_num(&a), self.value_num(&b)) {
+            (Some(Num::Int(x)), Some(Num::Int(y))) => x.cmp(&y),
+            (Some(Num::Big(x)), Some(Num::Big(y))) => x.cmp(&y),
+            (Some(Num::Float(x)), Some(Num::Float(y))) => x.cmp(&y),
+            // unbound handled above; cross-type / non-numeric → fail
+            _ => return BuiltinResult::Failure,
+        };
+        if pred(ord) { BuiltinResult::Success } else { BuiltinResult::Failure }
+    }
+
+    /// Extract a comparable number from a σ-walked `Value` — an unboxed
+    /// scalar, or a numeric `Const` inside a `Value::Term`. `None` for
+    /// non-numeric values (cmp then fails, matching the original).
+    fn value_num(&self, v: &Value) -> Option<Num> {
+        use super::term::Literal;
+        match v {
+            Value::Int(n) => Some(Num::Int(*n)),
+            Value::BigInt(n) => Some(Num::Big(n.clone())),
+            Value::Float(f) => Some(Num::Float(ordered_float::OrderedFloat(*f))),
+            Value::Term(t) => match self.terms.get(*t) {
+                Term::Const(Literal::Int(n)) => Some(Num::Int(*n)),
+                Term::Const(Literal::BigInt(n)) => Some(Num::Big(n.clone())),
+                Term::Const(Literal::Float(f)) => Some(Num::Float(*f)),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
