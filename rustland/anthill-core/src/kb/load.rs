@@ -3687,6 +3687,73 @@ impl<'a> Loader<'a> {
                 unreachable!("Var::Rigid in stored parse term")
             }
             Term::Fn { functor, pos_args, named_args } => {
+                // WI-278: re-encode a *converter-emitted* parse
+                // `dot_apply(receiver, Ident(name), ...positional)` + named
+                // call-args into the canonical reflect form
+                // `dot_apply(receiver, name: Ref, args: List[ApplyArg])`. The
+                // top-level wrapper matches the occurrence path (convert_expr's
+                // LoadBuildFrame::DotApply); the children differ on purpose —
+                // here they stay bare terms (convert_term-recursed: Const / Var
+                // / Fn), since term consumers (smt-gen, the [simp] engine) read
+                // raw terms, whereas convert_expr wraps them as reflect Expr
+                // nodes. Do NOT "unify" the two paths. Without this, the generic
+                // Fn conversion below leaves receiver/name *positional* and
+                // stuffs a fresh var into the dot_apply entity's `args` field —
+                // a malformed dot_apply no consumer can read (rule bodies reach
+                // dot_apply here via load_rule → convert_term, not convert_expr).
+                //
+                // `dot_apply` is NOT a reserved name, and convert_term also
+                // sees rule/fact/query terms the user typed. The arity +
+                // `Ident`-name guard matches only the converter form: a
+                // user-written `dot_apply(?x)` / `dot_apply()` / a user
+                // `entity dot_apply` (named-arg construction) falls through to
+                // generic conversion — and MUST, else `pos_args[1]` would panic
+                // on < 2 positional args.
+                if self.parsed.symbols.name(functor) == "dot_apply"
+                    && pos_args.len() >= 2
+                    && matches!(self.parsed.terms.get(pos_args[1]), Term::Ident(_))
+                {
+                    let receiver = self.convert_term(pos_args[0]);
+                    // The name is metadata at pos_args[1] (an Ident) — resolve
+                    // to a Ref, don't recurse it as a child.
+                    let name_term = self.parsed.terms.get(pos_args[1]).clone();
+                    let name_ref = if let Term::Ident(sym) = name_term {
+                        let kb_sym = self.remap_symbol(sym);
+                        self.kb.alloc(Term::Ref(kb_sym))
+                    } else {
+                        self.convert_term(pos_args[1])
+                    };
+                    let mut arg_terms: SmallVec<[TermId; 4]> = SmallVec::new();
+                    for &pid in &pos_args[2..] {
+                        let value = self.convert_term(pid);
+                        let none = build_none(self.kb);
+                        arg_terms.push(self.mk_apply_arg(none, value));
+                    }
+                    for &(sym, pid) in named_args.iter() {
+                        let value = self.convert_term(pid);
+                        let reinterned = self.reintern(sym);
+                        let arg_name = self.kb.alloc(Term::Ref(reinterned));
+                        let some_name = build_some(self.kb, arg_name);
+                        arg_terms.push(self.mk_apply_arg(some_name, value));
+                    }
+                    let args_list = build_list(self.kb, &arg_terms);
+                    let (dot, k_receiver, k_name, k_args) = {
+                        let s = &self.expr_syms;
+                        (s.dot_apply, s.k_receiver, s.k_name, s.k_args)
+                    };
+                    let kb_id = self.kb.alloc(Term::Fn {
+                        functor: dot,
+                        pos_args: SmallVec::new(),
+                        named_args: SmallVec::from_slice(&[
+                            (k_receiver, receiver),
+                            (k_name, name_ref),
+                            (k_args, args_list),
+                        ]),
+                    });
+                    self.term_map.insert(parse_id.raw(), kb_id);
+                    return kb_id;
+                }
+
                 let new_functor = self.remap_symbol(functor);
 
                 // WI-007 context-aware ListLiteral desugaring: only rewrite

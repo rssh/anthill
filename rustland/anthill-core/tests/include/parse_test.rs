@@ -3933,3 +3933,26 @@ fn load_op_without_type_params_unaffected() {
     let return_type = named_arg(&kb, op_info, "return_type");
     assert!(!matches!(kb.get_term(return_type), Term::Var(_)));
 }
+
+#[test]
+fn user_written_dot_apply_token_does_not_panic() {
+    // `dot_apply` is not a reserved name, and `convert_term` (the
+    // rule/fact/query term path, distinct from the converter's op-body
+    // path) sees user-typed tokens. The WI-278 dot_apply re-encode must
+    // match ONLY the converter form `dot_apply(receiver, Ident(name), …)`
+    // (>= 2 positional args, Ident name); a user-written `dot_apply(?x)`
+    // with < 2 positional args must fall through to generic conversion,
+    // not index `pos_args[1]` and panic the loader. Regression for the
+    // arity/Ident guard in convert_term.
+    let src = r#"
+namespace test.dot_apply_guard
+  rule r(?x) :- dot_apply(?x)
+end
+"#;
+    let parsed = parse::parse(src).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    // Pre-fix this panicked with index-out-of-bounds in convert_term.
+    load::load(&mut kb, &parsed, &NullResolver)
+        .expect("load should succeed (1-arg dot_apply falls through, no panic)");
+}

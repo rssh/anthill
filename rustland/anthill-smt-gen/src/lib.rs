@@ -24,6 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::KnowledgeBase;
+use anthill_core::kb::typing::{get_named_arg, list_to_vec};
 
 #[derive(Debug)]
 pub struct SmtGenError {
@@ -904,12 +905,13 @@ impl<'kb> Emitter<'kb> {
             }
             Term::Fn { functor, pos_args, .. } => {
                 let op = self.kb.qualified_name_of(*functor);
-                // Entity field projection: `?p.field` desugars to
-                // `field_access(?p, Ident(field))`. Resolve through
-                // the entity_bindings populated by fact match / rule
-                // inline to a concrete literal (or recurse on a
-                // nested entity field).
-                if op == "anthill.reflect.field_access" || op == "field_access" {
+                // Entity field projection: `?p.field` reaches us as
+                // `field_access(?p, Ident(field))` or, post-WI-278, as a
+                // value-receiver `dot_apply(receiver, name, args: [])`.
+                // Resolve through the entity_bindings populated by fact
+                // match / rule inline to a concrete literal (or recurse
+                // on a nested entity field).
+                if self.as_field_access(term).is_some() {
                     let resolved = self.resolve_field_access(term)?;
                     return self.translate_expr(resolved, bindings);
                 }
@@ -955,21 +957,11 @@ impl<'kb> Emitter<'kb> {
     /// - root `field_access(...)` → recurse on the nested chain.
     /// - root entity Term::Fn → use directly.
     fn resolve_field_access(&self, term: TermId) -> Result<TermId, SmtGenError> {
-        let Term::Fn { functor, pos_args, .. } = self.kb.get_term(term) else {
-            return Err(SmtGenError::new(format!(
-                "field_access: expected Fn, got {:?}", self.kb.get_term(term))));
-        };
-        let op = self.kb.qualified_name_of(*functor);
-        if !(op == "anthill.reflect.field_access" || op == "field_access") {
-            return Err(SmtGenError::new(format!(
-                "resolve_field_access called on non-field_access functor '{op}'")));
-        }
-        if pos_args.len() != 2 {
-            return Err(SmtGenError::new(format!(
-                "field_access: expected 2 pos_args, got {}", pos_args.len())));
-        }
-        let object_tid = pos_args[0];
-        let field_tid = pos_args[1];
+        let (object_tid, field_tid) = self.as_field_access(term).ok_or_else(|| {
+            SmtGenError::new(format!(
+                "resolve_field_access: not a field projection: {:?}",
+                self.kb.get_term(term)))
+        })?;
 
         // Step 1: resolve the object to an entity Term::Fn.
         let entity_tid = match self.kb.get_term(object_tid) {
@@ -980,9 +972,10 @@ impl<'kb> Emitter<'kb> {
                         "field_access on '?{synth}': no entity binding\
                          (caller did not supply a concrete entity)")))?
             }
-            Term::Fn { functor: f2, .. } => {
-                let q2 = self.kb.qualified_name_of(*f2);
-                if q2 == "anthill.reflect.field_access" || q2 == "field_access" {
+            Term::Fn { .. } => {
+                // A nested projection (`?p.position.x`) — the object is
+                // itself a `field_access` / value-receiver `dot_apply`.
+                if self.as_field_access(object_tid).is_some() {
                     self.resolve_field_access(object_tid)?
                 } else {
                     object_tid
@@ -1013,6 +1006,38 @@ impl<'kb> Emitter<'kb> {
         }
         Err(SmtGenError::new(format!(
             "field_access: field '{field_name}' not found in entity")))
+    }
+
+    /// Recognize a field projection in either representation and return
+    /// `(object, field)`:
+    ///   - `field_access(obj, Ident(field))` — the desugared reflect form.
+    ///   - `dot_apply(receiver: obj, name: Ref(field), args: [])` — the
+    ///     WI-278 value-receiver dot form. Only an EMPTY `args` is a field
+    ///     access; a non-empty `args` is a method call (returns `None`).
+    fn as_field_access(&self, term: TermId) -> Option<(TermId, TermId)> {
+        let Term::Fn { functor, pos_args, named_args } = self.kb.get_term(term) else {
+            return None;
+        };
+        let op = self.kb.qualified_name_of(*functor);
+        if op == "anthill.reflect.field_access" || op == "field_access" {
+            return match pos_args.as_slice() {
+                [obj, field] => Some((*obj, *field)),
+                _ => None,
+            };
+        }
+        if op == "anthill.reflect.Expr.dot_apply" || op == "dot_apply" {
+            // A value-receiver dot is a field access only with no method
+            // args (`?x.field`); a non-empty `args` is a method call.
+            if let Some(args) = get_named_arg(self.kb, named_args, "args") {
+                if !list_to_vec(self.kb, args).is_empty() {
+                    return None;
+                }
+            }
+            let recv = get_named_arg(self.kb, named_args, "receiver")?;
+            let name = get_named_arg(self.kb, named_args, "name")?;
+            return Some((recv, name));
+        }
+        None
     }
 
     /// True if the symbol resolves to an entity declaration.
