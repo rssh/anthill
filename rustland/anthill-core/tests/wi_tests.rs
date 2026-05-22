@@ -94,3 +94,6 @@ mod wi272_op_type_args_frame_test;
 
 #[path = "include/wi284_min_sort_test.rs"]
 mod wi284_min_sort_test;
+
+#[path = "include/match_branch_join_test.rs"]
+mod match_branch_join_test;
