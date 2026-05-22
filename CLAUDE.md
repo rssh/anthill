@@ -101,6 +101,7 @@ Variables: `?name` (named, shared within scope), `?` (anonymous, each occurrence
 
 - before commit, check - if all test passed. Also run the `/code-review` skill (formerly called "simplicity"); remind if it was not run.
 - do not add attribution to commit.
+- when running rust test, use script which allows monitoring:  rustland/scripts/test.sh 
 
 # Development principles
  - avoid fallbacks, better know about errors early.
