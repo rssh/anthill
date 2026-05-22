@@ -776,10 +776,10 @@ enum TypeWorkOp {
 /// stack, so it pops only after the Visit and all of its sub-work have
 /// produced this node's `TypeResult` — at which point it records the
 /// inferred type onto `occ`. Routing every node visit through here
-/// stamps each typed occurrence exactly once, uniformly across the
-/// iterative arms (Apply / Constructor / Let / Match / Lambda) and the
-/// recursive-helper arms (If / collection literals re-enter
-/// `type_check_node`, whose own root visit stamps their subtrees).
+/// stamps each typed occurrence exactly once, uniformly across all
+/// iterative arms (Apply / Constructor / Let / Match / Lambda / If /
+/// collection literals — every form is a work-stack Build frame after
+/// WI-285, so there is no recursive `type_check_node` re-entry).
 fn push_visit(
     work: &mut Vec<TypeWorkOp>,
     occ: Rc<NodeOccurrence>,
@@ -873,6 +873,24 @@ enum TypeBuildFrame {
     /// body_effects)` type and return a pure result (creating a
     /// lambda is itself effect-free).
     LambdaBody { param: TermId, outer_env: Rc<TypingEnv> },
+    /// WI-285: all three If sub-expressions finished (drained in
+    /// `[condition, then, else]` order); merge their effects and
+    /// return the if's `TypeResult` — type is the then-branch's type
+    /// (mirrors the former `check_if_expr`). Replaces the
+    /// recursive-helper arm so a deep else-if chain stays on the heap.
+    IfExpr { env: Rc<TypingEnv> },
+    /// WI-285: all list elements finished; drain `count`, infer the
+    /// element type (`element_hint` when bound by an outer
+    /// `List[T = X]`, else the first element's type), build
+    /// `List[T = elem]` (former `check_list_literal`).
+    ListLit { env: Rc<TypingEnv>, element_hint: Option<TermId>, count: usize },
+    /// WI-285: as [`TypeBuildFrame::ListLit`], for `Set[T = elem]`.
+    SetLit { env: Rc<TypingEnv>, element_hint: Option<TermId>, count: usize },
+    /// WI-285: all tuple fields finished (positional then named);
+    /// drain `pos_count + named_names.len()`, building the named-tuple
+    /// type (`_0`, `_1`, … for positional fields, declared names for
+    /// named ones; former `check_tuple_literal`).
+    TupleLit { env: Rc<TypingEnv>, pos_count: usize, named_names: Vec<Symbol> },
     /// WI-284: record a node's inferred type. Pushed by [`push_visit`]
     /// just under the node's Visit, so when it pops the node's
     /// `TypeResult` is on top of `results`. Peeks that result — never
@@ -1165,34 +1183,66 @@ fn visit_type(
             }
         }
 
-        // ── Recursive-helper cases (depth bounded by source breadth,
-        //    not nesting): if has fixed arity, collection literals
-        //    iterate over flat element lists. Their `check_*` helpers
-        //    re-enter `type_check_node`, adding ≤ 1 host frame per
-        //    level; the iterative dispatch keeps the inner recursion
-        //    flat.
+        // ── If / collection literals (WI-285) ───────────────────
+        //    Native Build frames, like Apply / Constructor: push child
+        //    Visits + a Build frame that drains their results. No
+        //    re-entry into `type_check_node`, so a deep else-if chain
+        //    (which nests in the else branch) stays on the heap.
         Expr::If { condition, then_branch, else_branch } => {
             let condition = Rc::clone(condition);
             let then_branch = Rc::clone(then_branch);
             let else_branch = Rc::clone(else_branch);
-            let r = check_if_expr(kb, &*env, &condition, &then_branch, &else_branch, expected);
-            results.push(r);
+            // Drain order [cond, then, else]: push reversed. The
+            // condition is always `Bool` (no hint); both branches share
+            // the if's `expected` (WI-270).
+            work.push(TypeWorkOp::Build(TypeBuildFrame::IfExpr { env: Rc::clone(&env) }));
+            push_visit(work, else_branch, Rc::clone(&env), expected);
+            push_visit(work, then_branch, Rc::clone(&env), expected);
+            push_visit_no_hint(work, condition, env);
         }
         Expr::ListLit(elems) => {
             let elems = elems.clone();
-            let r = check_list_literal(kb, &*env, &elems, expected);
-            results.push(r);
+            // WI-270: an outer `List[T = X]` makes X each element's
+            // expected, and the empty-list fallback.
+            let element_hint = expected.and_then(|exp| extract_type_param(kb, exp, "T"));
+            work.push(TypeWorkOp::Build(TypeBuildFrame::ListLit {
+                env: Rc::clone(&env),
+                element_hint,
+                count: elems.len(),
+            }));
+            for e in elems.iter().rev() {
+                push_visit(work, Rc::clone(e), Rc::clone(&env), element_hint);
+            }
         }
         Expr::SetLit(elems) => {
             let elems = elems.clone();
-            let r = check_set_literal(kb, &*env, &elems, expected);
-            results.push(r);
+            let element_hint = expected.and_then(|exp| extract_type_param(kb, exp, "T"));
+            work.push(TypeWorkOp::Build(TypeBuildFrame::SetLit {
+                env: Rc::clone(&env),
+                element_hint,
+                count: elems.len(),
+            }));
+            for e in elems.iter().rev() {
+                push_visit(work, Rc::clone(e), Rc::clone(&env), element_hint);
+            }
         }
         Expr::TupleLit { positional, named } => {
             let positional = positional.clone();
             let named = named.clone();
-            let r = check_tuple_literal(kb, &*env, &positional, &named);
-            results.push(r);
+            let named_names: Vec<Symbol> = named.iter().map(|(s, _)| *s).collect();
+            // Drain order [pos…, named…]: push named reversed, then
+            // positional reversed. Tuple fields take no hint.
+            work.push(TypeWorkOp::Build(TypeBuildFrame::TupleLit {
+                env: Rc::clone(&env),
+                pos_count: positional.len(),
+                named_names,
+            }));
+            for (_, e) in named.iter().rev() {
+                push_visit_no_hint(work, Rc::clone(e), Rc::clone(&env));
+            }
+            for e in positional.iter().rev() {
+                push_visit_no_hint(work, Rc::clone(e), Rc::clone(&env));
+            }
         }
 
         // Unresolved logical-var slots in the surface IR are not a
@@ -1459,6 +1509,99 @@ fn build_type(
                 Ok(_) => results.push(Ok(TypeResult::pure(fn_type, unwrap_env(outer_env)))),
                 Err(e) => results.push(Err(e)),
             }
+        }
+        TypeBuildFrame::IfExpr { env } => {
+            // Children drained in [condition, then, else] order.
+            let drain_start = results.len() - 3;
+            let group: Vec<Result<TypeResult, TypeError>> = results.drain(drain_start..).collect();
+            if let Err(e) = collect_arg_errors(group.iter()) {
+                results.push(Err(e));
+                return;
+            }
+            let mut it = group.into_iter().map(|r| r.expect("aggregator"));
+            let cond_r = it.next().unwrap();
+            let then_r = it.next().unwrap();
+            let else_r = it.next().unwrap();
+            let mut effects = Vec::new();
+            effects = merge_effects(&effects, &cond_r.effects);
+            effects = merge_effects(&effects, &then_r.effects);
+            effects = merge_effects(&effects, &else_r.effects);
+            results.push(Ok(TypeResult { ty: then_r.ty, env: unwrap_env(env), effects }));
+        }
+        TypeBuildFrame::ListLit { env, element_hint, count } => {
+            let drain_start = results.len() - count;
+            let group: Vec<Result<TypeResult, TypeError>> = results.drain(drain_start..).collect();
+            if let Err(e) = collect_arg_errors(group.iter()) {
+                results.push(Err(e));
+                return;
+            }
+            let mut effects = Vec::new();
+            let mut element_type: Option<TermId> = element_hint;
+            for r in group {
+                let r = r.expect("aggregator");
+                if element_type.is_none() {
+                    element_type = Some(r.ty);
+                }
+                effects = merge_effects(&effects, &r.effects);
+            }
+            let t_val = element_type.unwrap_or_else(|| {
+                let fresh = kb.intern("?T");
+                kb.make_type_var(fresh)
+            });
+            let list_base = kb.make_sort_ref_by_name("List");
+            let t_sym = kb.intern("T");
+            let list_type = kb.make_parameterized_type(list_base, &[(t_sym, t_val)]);
+            results.push(Ok(TypeResult { ty: list_type, env: unwrap_env(env), effects }));
+        }
+        TypeBuildFrame::SetLit { env, element_hint, count } => {
+            let drain_start = results.len() - count;
+            let group: Vec<Result<TypeResult, TypeError>> = results.drain(drain_start..).collect();
+            if let Err(e) = collect_arg_errors(group.iter()) {
+                results.push(Err(e));
+                return;
+            }
+            let mut effects = Vec::new();
+            let mut element_type: Option<TermId> = element_hint;
+            for r in group {
+                let r = r.expect("aggregator");
+                if element_type.is_none() {
+                    element_type = Some(r.ty);
+                }
+                effects = merge_effects(&effects, &r.effects);
+            }
+            let t_val = element_type.unwrap_or_else(|| {
+                let fresh = kb.intern("?T");
+                kb.make_type_var(fresh)
+            });
+            let set_base = kb.make_sort_ref_by_name("Set");
+            let t_sym = kb.intern("T");
+            let set_type = kb.make_parameterized_type(set_base, &[(t_sym, t_val)]);
+            results.push(Ok(TypeResult { ty: set_type, env: unwrap_env(env), effects }));
+        }
+        TypeBuildFrame::TupleLit { env, pos_count, named_names } => {
+            let total = pos_count + named_names.len();
+            let drain_start = results.len() - total;
+            let group: Vec<Result<TypeResult, TypeError>> = results.drain(drain_start..).collect();
+            if let Err(e) = collect_arg_errors(group.iter()) {
+                results.push(Err(e));
+                return;
+            }
+            let mut effects = Vec::new();
+            let mut field_types: Vec<(Symbol, TermId)> = Vec::new();
+            let mut it = group.into_iter();
+            for i in 0..pos_count {
+                let r = it.next().unwrap().expect("aggregator");
+                let field_name = kb.intern(&format!("_{}", i));
+                field_types.push((field_name, r.ty));
+                effects = merge_effects(&effects, &r.effects);
+            }
+            for name in named_names {
+                let r = it.next().unwrap().expect("aggregator");
+                field_types.push((name, r.ty));
+                effects = merge_effects(&effects, &r.effects);
+            }
+            let tuple_type = kb.make_named_tuple_type(&field_types);
+            results.push(Ok(TypeResult { ty: tuple_type, env: unwrap_env(env), effects }));
         }
     }
 }
@@ -3869,33 +4012,6 @@ fn extract_function_type_parts(kb: &KnowledgeBase, fn_type: TermId) -> Option<(T
     None
 }
 
-/// if_expr: effects = cond ∪ then ∪ else
-fn check_if_expr(
-    kb: &mut KnowledgeBase,
-    env: &TypingEnv,
-    condition: &Rc<NodeOccurrence>,
-    then_branch: &Rc<NodeOccurrence>,
-    else_branch: &Rc<NodeOccurrence>,
-    expected: Option<TermId>,
-) -> Result<TypeResult, TypeError> {
-    // WI-270: both branches share the caller's expected hint; the
-    // condition is always `Bool` so it carries no hint.
-    let results = [
-        type_check_node(kb, env, condition, None),
-        type_check_node(kb, env, then_branch, expected),
-        type_check_node(kb, env, else_branch, expected),
-    ];
-    collect_arg_errors(results.iter())?;
-    let [cond_r, then_r, else_r] = results.map(|r| r.expect("aggregator"));
-
-    let mut effects = Vec::new();
-    effects = merge_effects(&effects, &cond_r.effects);
-    effects = merge_effects(&effects, &then_r.effects);
-    effects = merge_effects(&effects, &else_r.effects);
-
-    Ok(TypeResult { ty: then_r.ty, env: env.clone(), effects })
-}
-
 /// Extract the variable name symbol from a `var_pattern`.
 fn extract_pattern_var_name(kb: &KnowledgeBase, pattern: TermId) -> Option<Symbol> {
     if let Term::Fn { functor, named_args, pos_args, .. } = kb.get_term(pattern) {
@@ -3907,119 +4023,6 @@ fn extract_pattern_var_name(kb: &KnowledgeBase, pattern: TermId) -> Option<Symbo
     None
 }
 
-// ── Collection literals ────────────────────────────────────────
-
-/// ListLiteral: elems are positional, no source-form tail in the
-/// NodeOccurrence model — the materializer expands cons-list sugar into
-/// the elements vector.
-fn check_list_literal(
-    kb: &mut KnowledgeBase,
-    env: &TypingEnv,
-    elems: &[Rc<NodeOccurrence>],
-    expected: Option<TermId>,
-) -> Result<TypeResult, TypeError> {
-    // WI-270: if `expected` is `List[T = X]`, propagate X as each
-    // element's expected so e.g. `[1, 2]: List[BigInt]` types
-    // elements as BigInt rather than Int.
-    let element_hint = expected.and_then(|exp| extract_type_param(kb, exp, "T"));
-    let results: Vec<Result<TypeResult, TypeError>> = elems
-        .iter()
-        .map(|e| type_check_node(kb, env, e, element_hint))
-        .collect();
-    collect_arg_errors(results.iter())?;
-
-    let mut effects = Vec::new();
-    let mut element_type: Option<TermId> = element_hint;
-    for r in results {
-        let r = r.expect("aggregator");
-        if element_type.is_none() {
-            element_type = Some(r.ty);
-        }
-        effects = merge_effects(&effects, &r.effects);
-    }
-
-    let t_val = element_type.unwrap_or_else(|| {
-        let fresh = kb.intern("?T");
-        kb.make_type_var(fresh)
-    });
-    let list_base = kb.make_sort_ref_by_name("List");
-    let t_sym = kb.intern("T");
-    let list_type = kb.make_parameterized_type(list_base, &[(t_sym, t_val)]);
-
-    Ok(TypeResult { ty: list_type, env: env.clone(), effects })
-}
-
-/// SetLiteral: elems are positional.
-fn check_set_literal(
-    kb: &mut KnowledgeBase,
-    env: &TypingEnv,
-    elems: &[Rc<NodeOccurrence>],
-    expected: Option<TermId>,
-) -> Result<TypeResult, TypeError> {
-    let element_hint = expected.and_then(|exp| extract_type_param(kb, exp, "T"));
-    let results: Vec<Result<TypeResult, TypeError>> = elems
-        .iter()
-        .map(|e| type_check_node(kb, env, e, element_hint))
-        .collect();
-    collect_arg_errors(results.iter())?;
-
-    let mut effects = Vec::new();
-    let mut element_type: Option<TermId> = element_hint;
-    for r in results {
-        let r = r.expect("aggregator");
-        if element_type.is_none() {
-            element_type = Some(r.ty);
-        }
-        effects = merge_effects(&effects, &r.effects);
-    }
-
-    let t_val = element_type.unwrap_or_else(|| {
-        let fresh = kb.intern("?T");
-        kb.make_type_var(fresh)
-    });
-    let set_base = kb.make_sort_ref_by_name("Set");
-    let t_sym = kb.intern("T");
-    let set_type = kb.make_parameterized_type(set_base, &[(t_sym, t_val)]);
-
-    Ok(TypeResult { ty: set_type, env: env.clone(), effects })
-}
-
-/// TupleLiteral: positional fields produce a named-tuple type with
-/// `_0`, `_1`, … field names; explicitly named fields keep their name.
-fn check_tuple_literal(
-    kb: &mut KnowledgeBase,
-    env: &TypingEnv,
-    positional: &[Rc<NodeOccurrence>],
-    named: &[(Symbol, Rc<NodeOccurrence>)],
-) -> Result<TypeResult, TypeError> {
-    let pos_results: Vec<Result<TypeResult, TypeError>> = positional
-        .iter()
-        .map(|e| type_check_node(kb, env, e, None))
-        .collect();
-    let named_results: Vec<Result<TypeResult, TypeError>> = named
-        .iter()
-        .map(|(_, e)| type_check_node(kb, env, e, None))
-        .collect();
-    collect_arg_errors(pos_results.iter().chain(named_results.iter()))?;
-
-    let mut effects = Vec::new();
-    let mut field_types: Vec<(Symbol, TermId)> = Vec::new();
-    for (i, r) in pos_results.into_iter().enumerate() {
-        let r = r.expect("aggregator");
-        let field_name = kb.intern(&format!("_{}", i));
-        field_types.push((field_name, r.ty));
-        effects = merge_effects(&effects, &r.effects);
-    }
-    for ((name, _), r) in named.iter().zip(named_results.into_iter()) {
-        let r = r.expect("aggregator");
-        field_types.push((*name, r.ty));
-        effects = merge_effects(&effects, &r.effects);
-    }
-
-    let tuple_type = kb.make_named_tuple_type(&field_types);
-
-    Ok(TypeResult { ty: tuple_type, env: env.clone(), effects })
-}
 
 /// Extract a named type parameter from a parameterized type term.
 /// e.g. extract_type_param(kb, List[T = Int], "T") → Some(Int)
