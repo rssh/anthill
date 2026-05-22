@@ -2398,30 +2398,58 @@ fn parse_collection_multi_head_tail() {
 
 #[test]
 fn parse_field_access_variable() {
-    // ?x.y → field_access(?x, y)
+    // WI-278: a value (variable) receiver routes to dot_apply, not the
+    // field_access builtin. ?x.y → dot_apply(?x, y)
     let (terms, symbols, head) = parse_rule_head_ir("?x.y");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "field_access(?x, y)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "dot_apply(?x, y)");
 }
 
 #[test]
 fn parse_field_access_chained() {
-    // ?x.y.z → field_access(field_access(?x, y), z)
+    // ?x.y.z → dot_apply(dot_apply(?x, y), z)
     let (terms, symbols, head) = parse_rule_head_ir("?x.y.z");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "field_access(field_access(?x, y), z)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "dot_apply(dot_apply(?x, y), z)");
 }
 
 #[test]
 fn parse_field_access_in_fn_arg() {
-    // f(?a.b, ?c) → f(field_access(?a, b), ?c)
+    // f(?a.b, ?c) → f(dot_apply(?a, b), ?c)
     let (terms, symbols, head) = parse_rule_head_ir("f(?a.b, ?c)");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "f(field_access(?a, b), ?c)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "f(dot_apply(?a, b), ?c)");
 }
 
 #[test]
 fn parse_field_access_in_infix() {
-    // ?x.y = ?z → eq(field_access(?x, y), ?z)
+    // ?x.y = ?z → eq(dot_apply(?x, y), ?z)
     let (terms, symbols, head) = parse_rule_head_ir("?x.y = ?z");
-    assert_eq!(fmt_ir_term(&terms, &symbols, head), "eq(field_access(?x, y), ?z)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "eq(dot_apply(?x, y), ?z)");
+}
+
+#[test]
+fn parse_dot_method_call_preserves_receiver() {
+    // WI-278: `?x.m(?a)` parses as a method call; the receiver (formerly
+    // dropped by collect_field_access_segments) is the first arg of
+    // dot_apply, then the name, then the call args.
+    let (terms, symbols, head) = parse_rule_head_ir("?x.m(?a)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "dot_apply(?x, m, ?a)");
+}
+
+#[test]
+fn parse_dot_method_call_chained() {
+    // ?xs.map(?f).filter(?p) → nested dot_apply, receivers intact.
+    let (terms, symbols, head) = parse_rule_head_ir("?xs.map(?f).filter(?p)");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, head),
+        "dot_apply(dot_apply(?xs, map, ?f), filter, ?p)",
+    );
+}
+
+#[test]
+fn parse_dot_static_call_still_flattens() {
+    // `Foo.bar(?a)` — name (non-value) receiver keeps qualified-name
+    // flattening: a normal call `Foo.bar(?a)`, not a dot_apply.
+    let (terms, symbols, head) = parse_rule_head_ir("Foo.bar(?a)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, head), "Foo.bar(?a)");
 }
 
 #[test]
@@ -3484,6 +3512,35 @@ sort Math {
         kb.op_body_node(double_sym).is_some(),
         "kb.op_body_node should be populated for `double`"
     );
+}
+
+#[test]
+fn load_dot_method_call_materializes_dot_apply() {
+    // WI-278 end-to-end: a value-receiver method call in an op body loads
+    // (converter `dot_apply` parse term → loader reflect re-encode →
+    // materialize) into `Expr::DotApply` with the receiver + args preserved.
+    use anthill_core::kb::node_occurrence::Expr;
+    let source = r#"
+sort Math {
+  operation f(x: Int) -> Int = ?xs.g(?a)
+}
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    let f_sym = kb.try_resolve_symbol("Math.f")
+        .or_else(|| kb.try_resolve_symbol("f"))
+        .expect("f operation should be resolved");
+    let body = kb.op_body_node(f_sym).expect("op body present");
+    match body.as_expr() {
+        Some(Expr::DotApply { name, pos_args, named_args, .. }) => {
+            assert_eq!(kb.resolve_sym(*name), "g", "method name");
+            assert_eq!(pos_args.len(), 1, "one positional arg (?a)");
+            assert!(named_args.is_empty());
+        }
+        other => panic!("expected DotApply, got {other:?}"),
+    }
 }
 
 #[test]

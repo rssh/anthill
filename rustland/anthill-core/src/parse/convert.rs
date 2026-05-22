@@ -95,6 +95,19 @@ enum BuildFrame<'t> {
         field_sym: Symbol,
         field_span: Span,
     },
+    /// Value-receiver dot form (WI-278): `?x.field` (no args, `slots`
+    /// empty) or `?x.method(args)`. Emitted as `dot_apply(receiver,
+    /// Ident(name), ...args)` so the receiver is preserved (the old
+    /// `collect_field_access_segments` flatten dropped it) and the
+    /// `[simp]` dot rules can dispatch on the receiver's sort. Only
+    /// `variable` receivers route here; `Foo.bar` keeps qualified-name
+    /// flattening.
+    DotApply {
+        node: Node<'t>,
+        name_sym: Symbol,
+        name_span: Span,
+        slots: SmallVec<[ArgSlot; 4]>,
+    },
     SetLiteral {
         node: Node<'t>,
         count: usize,
@@ -580,6 +593,18 @@ impl<'a> Converter<'a> {
 
     fn push_fn_term<'t>(&mut self, node: Node<'t>, work: &mut Vec<WorkOp<'t>>) {
         let name_node = self.field(node, "name").unwrap_or(node);
+        // WI-278: a method call `?x.method(args)` parses as an fn_term whose
+        // callee is a `field_access` over a value receiver. Route it to
+        // `dot_apply` (preserving the receiver the old flatten dropped).
+        // `Foo.bar(...)` (name receiver) falls through to the normal call.
+        if name_node.kind() == "field_access" {
+            if let Some(receiver) = self.field(name_node, "object") {
+                if self.is_value_receiver(receiver) {
+                    self.push_dot_method_call(node, name_node, receiver, work);
+                    return;
+                }
+            }
+        }
         let is_ho = name_node.kind() == "variable";
         let functor = if is_ho {
             self.intern("ho_apply")
@@ -641,6 +666,53 @@ impl<'a> Converter<'a> {
         }
     }
 
+    /// WI-278: a value-receiver method call `receiver.name(args)` —
+    /// `node` is the fn_term, `name_node` its `field_access` callee,
+    /// `receiver` the callee's value object. Collect the call's args
+    /// (positional + named, excluding the callee) and emit `dot_apply`.
+    fn push_dot_method_call<'t>(
+        &mut self,
+        node: Node<'t>,
+        name_node: Node<'t>,
+        receiver: Node<'t>,
+        work: &mut Vec<WorkOp<'t>>,
+    ) {
+        let field_node = self.field(name_node, "field").unwrap_or(name_node);
+        let name_span = self.span(field_node);
+        let name_sym = self.intern(self.text(field_node));
+        let mut slots: SmallVec<[ArgSlot; 4]> = SmallVec::new();
+        let mut child_nodes: SmallVec<[Node<'t>; 4]> = SmallVec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child == name_node {
+                continue;
+            }
+            match child.kind() {
+                "named_arg" => {
+                    let key_node = self.field(child, "name");
+                    let val_node = self.field(child, "value");
+                    if let (Some(k), Some(v)) = (key_node, val_node) {
+                        let sym = self.intern(self.text(k));
+                        slots.push(ArgSlot::Named(sym));
+                        child_nodes.push(v);
+                    }
+                }
+                k if is_term_kind(k) => {
+                    slots.push(ArgSlot::Positional);
+                    child_nodes.push(child);
+                }
+                _ => {}
+            }
+        }
+        work.push(WorkOp::Build(BuildFrame::DotApply { node, name_sym, name_span, slots }));
+        // Args pushed reversed, then the receiver last so it pops (and lands
+        // on the result stack) first — matching the DotApply build's drain.
+        for child in child_nodes.iter().rev() {
+            work.push(WorkOp::Visit(WorkKind::Term, *child));
+        }
+        work.push(WorkOp::Visit(WorkKind::Term, receiver));
+    }
+
     fn push_infix<'t>(&mut self, node: Node<'t>, work: &mut Vec<WorkOp<'t>>) {
         let mut slots: SmallVec<[InfixSlot; 8]> = SmallVec::new();
         let mut operand_nodes: SmallVec<[Node<'t>; 4]> = SmallVec::new();
@@ -695,12 +767,49 @@ impl<'a> Converter<'a> {
         }
     }
 
+    /// Whether a dot receiver denotes a runtime *value* (→ `dot_apply`) vs a
+    /// sort/namespace *name* (→ qualified-name flattening / field_access).
+    /// Walks the receiver down its `field_access` / `paren_expr` chain to the
+    /// root atom: a name iff that root is an `identifier` or `instantiation_term`
+    /// (`Foo.bar`, `Map[K=…].empty`, the deferred `p.x` identifier case); a
+    /// value otherwise (`?x`, a call result like `xs.map(f)`, a literal, …).
+    /// WI-278; the chain walk is what lets `?x.y.z` and `?xs.map(?f).filter(?p)`
+    /// route every level to `dot_apply` rather than dropping the receiver.
+    fn is_value_receiver(&self, node: Node) -> bool {
+        let mut cur = node;
+        loop {
+            match cur.kind() {
+                "field_access" => match self.field(cur, "object") {
+                    Some(o) => cur = o,
+                    None => return false,
+                },
+                "paren_expr" => match cur.named_child(0) {
+                    Some(inner) => cur = inner,
+                    None => return true,
+                },
+                "identifier" | "instantiation_term" => return false,
+                _ => return true,
+            }
+        }
+    }
+
     fn push_field_access<'t>(&mut self, node: Node<'t>, work: &mut Vec<WorkOp<'t>>) {
         let object_node = self.field(node, "object").unwrap_or(node);
         let field_node = self.field(node, "field").unwrap_or(node);
         let field_span = self.span(field_node);
         let field_sym = self.intern(self.text(field_node));
-        work.push(WorkOp::Build(BuildFrame::FieldAccess { node, field_sym, field_span }));
+        // WI-278: `?x.field` (value receiver) becomes `dot_apply(?x, field)`
+        // with no args; non-value receivers keep the field_access builtin.
+        if self.is_value_receiver(object_node) {
+            work.push(WorkOp::Build(BuildFrame::DotApply {
+                node,
+                name_sym: field_sym,
+                name_span: field_span,
+                slots: SmallVec::new(),
+            }));
+        } else {
+            work.push(WorkOp::Build(BuildFrame::FieldAccess { node, field_sym, field_span }));
+        }
         work.push(WorkOp::Visit(WorkKind::Term, object_node));
     }
 
@@ -1030,6 +1139,29 @@ impl<'a> Converter<'a> {
                     },
                     span,
                 ));
+            }
+            BuildFrame::DotApply { node, name_sym, name_span, slots } => {
+                // Result layout (drain_start..): receiver, then one entry per
+                // slot in source order. Parse shape:
+                // `dot_apply(receiver, Ident(name), ...positional, named...)`.
+                let span = self.span(node);
+                let drain_start = results.len() - (1 + slots.len());
+                let receiver = results[drain_start];
+                let name_tid = self.terms.alloc(Term::Ident(name_sym), name_span);
+                let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
+                pos_args.push(receiver);
+                pos_args.push(name_tid);
+                let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                for (i, slot) in slots.iter().enumerate() {
+                    let value = results[drain_start + 1 + i];
+                    match slot {
+                        ArgSlot::Positional => pos_args.push(value),
+                        ArgSlot::Named(sym) => named_args.push((*sym, value)),
+                    }
+                }
+                results.truncate(drain_start);
+                let functor = self.intern("dot_apply");
+                results.push(self.terms.alloc(Term::Fn { functor, pos_args, named_args }, span));
             }
             BuildFrame::SetLiteral { node, count } => {
                 let span = self.span(node);

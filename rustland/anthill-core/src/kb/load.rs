@@ -1205,6 +1205,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.define("apply", "anthill.reflect.Expr.apply", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("ho_apply", "anthill.reflect.Expr.ho_apply", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("constructor", "anthill.reflect.Expr.constructor", SymbolKind::Entity, expr_term.raw());
+    kb.symbols.define("dot_apply", "anthill.reflect.Expr.dot_apply", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("var_ref", "anthill.reflect.Expr.var_ref", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("int_lit", "anthill.reflect.Expr.int_lit", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("bigint_lit", "anthill.reflect.Expr.bigint_lit", SymbolKind::Entity, expr_term.raw());
@@ -3186,6 +3187,17 @@ enum LoadBuildFrame {
         pos_count: usize,
         named_keys: SmallVec<[Symbol; 2]>,
     },
+    /// WI-278: re-encode a parse `dot_apply(receiver, Ident(name),
+    /// ...args)` into the reflect `dot_apply(receiver, name: Ref,
+    /// args: List[ApplyArg])`. `name_ref` is pre-resolved (the name is
+    /// metadata, not a child); the receiver and args are drained from
+    /// `results`.
+    DotApply {
+        outer_parse_id: TermId,
+        name_ref: TermId,
+        pos_count: usize,
+        named_keys: SmallVec<[Symbol; 2]>,
+    },
 }
 
 struct Loader<'a> {
@@ -3257,6 +3269,7 @@ struct ExprBuilderSyms {
     tuple_pattern: Symbol,
     constructor: Symbol,
     apply: Symbol,
+    dot_apply: Symbol,
     apply_arg: Symbol,
     k_scrutinee: Symbol,
     k_branches: Symbol,
@@ -3270,6 +3283,7 @@ struct ExprBuilderSyms {
     k_type_name: Symbol,
     k_param: Symbol,
     k_name: Symbol,
+    k_receiver: Symbol,
     k_args: Symbol,
     k_elements: Symbol,
     k_fn: Symbol,
@@ -3289,6 +3303,7 @@ impl ExprBuilderSyms {
             tuple_pattern: kb.resolve_symbol("anthill.reflect.Pattern.tuple_pattern"),
             constructor: kb.resolve_symbol("anthill.reflect.Expr.constructor"),
             apply: kb.resolve_symbol("anthill.reflect.Expr.apply"),
+            dot_apply: kb.resolve_symbol("anthill.reflect.Expr.dot_apply"),
             apply_arg: kb.resolve_symbol("anthill.reflect.ApplyArg"),
             k_scrutinee: kb.intern("scrutinee"),
             k_branches: kb.intern("branches"),
@@ -3302,6 +3317,7 @@ impl ExprBuilderSyms {
             k_type_name: kb.intern("type_name"),
             k_param: kb.intern("param"),
             k_name: kb.intern("name"),
+            k_receiver: kb.intern("receiver"),
             k_args: kb.intern("args"),
             k_elements: kb.intern("elements"),
             k_fn: kb.intern("fn"),
@@ -3970,6 +3986,37 @@ impl<'a> Loader<'a> {
                             work.push(LoadWorkOp::Visit(child));
                         }
                     }
+                    "dot_apply" => {
+                        // Parse shape: pos_args = [receiver, Ident(name),
+                        // ...positional]; named_args = named call args. The
+                        // name is metadata (pre-resolve, don't Visit); the
+                        // receiver + args are children.
+                        let name_term = self.parsed.terms.get(pos_args[1]).clone();
+                        let name_ref = if let Term::Ident(sym) = name_term {
+                            let kb_sym = self.remap_symbol(sym);
+                            self.kb.alloc(Term::Ref(kb_sym))
+                        } else {
+                            self.convert_term(pos_args[1])
+                        };
+                        let positional = &pos_args[2..];
+                        let named_keys: SmallVec<[Symbol; 2]> =
+                            named_args.iter().map(|&(sym, _)| sym).collect();
+                        work.push(LoadWorkOp::Build(LoadBuildFrame::DotApply {
+                            outer_parse_id: parse_id,
+                            name_ref,
+                            pos_count: positional.len(),
+                            named_keys,
+                        }));
+                        // Push named (reversed), positional (reversed), then
+                        // receiver last so it pops/lands first.
+                        for &(_, tid) in named_args.iter().rev() {
+                            work.push(LoadWorkOp::Visit(tid));
+                        }
+                        for &tid in positional.iter().rev() {
+                            work.push(LoadWorkOp::Visit(tid));
+                        }
+                        work.push(LoadWorkOp::Visit(pos_args[0]));
+                    }
                     "pattern_tuple" => {
                         let element_count = pos_args.len();
                         work.push(LoadWorkOp::Build(LoadBuildFrame::PatternTuple {
@@ -4228,6 +4275,42 @@ impl<'a> Loader<'a> {
                         named_args: named,
                     })
                 };
+                self.create_occurrence(outer_parse_id, kb_id);
+                results.push(kb_id);
+            }
+            LoadBuildFrame::DotApply { outer_parse_id, name_ref, pos_count, named_keys } => {
+                // Result layout (drain_start..): receiver, positional args,
+                // named args. Build the reflect `dot_apply(receiver, name,
+                // args: List[ApplyArg])` — the same ApplyArg encoding the
+                // apply path uses, so `materialize_from_handle` round-trips it.
+                let total = 1 + pos_count + named_keys.len();
+                let drain_start = results.len() - total;
+                let receiver = results[drain_start];
+                let mut arg_terms: SmallVec<[TermId; 4]> = SmallVec::with_capacity(pos_count + named_keys.len());
+                for i in 0..pos_count {
+                    let value = results[drain_start + 1 + i];
+                    let none = build_none(self.kb);
+                    arg_terms.push(self.mk_apply_arg(none, value));
+                }
+                for (i, &sym) in named_keys.iter().enumerate() {
+                    let value = results[drain_start + 1 + pos_count + i];
+                    let reinterned = self.reintern(sym);
+                    let arg_name = self.kb.alloc(Term::Ref(reinterned));
+                    let some_name = build_some(self.kb, arg_name);
+                    arg_terms.push(self.mk_apply_arg(some_name, value));
+                }
+                results.truncate(drain_start);
+                let args_list = build_list(self.kb, &arg_terms);
+                let s = &self.expr_syms;
+                let kb_id = self.kb.alloc(Term::Fn {
+                    functor: s.dot_apply,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::from_slice(&[
+                        (s.k_receiver, receiver),
+                        (s.k_name, name_ref),
+                        (s.k_args, args_list),
+                    ]),
+                });
                 self.create_occurrence(outer_parse_id, kb_id);
                 results.push(kb_id);
             }
