@@ -91,3 +91,6 @@ mod wi270_expected_type_test;
 
 #[path = "include/wi272_op_type_args_frame_test.rs"]
 mod wi272_op_type_args_frame_test;
+
+#[path = "include/wi284_min_sort_test.rs"]
+mod wi284_min_sort_test;

@@ -180,6 +180,7 @@ impl NodeOccurrence {
                 origin: OccurrenceOrigin::Source,
                 classification: RefCell::new(None),
                 resolved_type_args: RefCell::new(Vec::new()),
+                inferred_type: RefCell::new(None),
             },
             span,
             owner,
@@ -201,6 +202,7 @@ impl NodeOccurrence {
                 origin: OccurrenceOrigin::Synthesized { from, by },
                 classification: RefCell::new(None),
                 resolved_type_args: RefCell::new(Vec::new()),
+                inferred_type: RefCell::new(None),
             },
             span,
             owner,
@@ -267,6 +269,26 @@ impl NodeOccurrence {
             _ => f(&[]),
         }
     }
+
+    /// Record the typer's inferred type for this occurrence (WI-284).
+    /// Only `Expr`-kind occurrences carry typer metadata; rule heads
+    /// ignore the call. Idempotent under re-typing — the last (most
+    /// refined, e.g. expected-hint-constrained) type wins.
+    pub fn set_inferred_type(&self, ty: TermId) {
+        if let NodeKind::Expr { inferred_type, .. } = &self.kind {
+            *inferred_type.borrow_mut() = Some(ty);
+        }
+    }
+
+    /// The typer's inferred type for this occurrence, if typed (WI-284).
+    /// `None` for rule heads, not-yet-typed occurrences, or ill-typed
+    /// nodes. The basis for `min_sort` (`typing::min_sort`).
+    pub fn inferred_type(&self) -> Option<TermId> {
+        match &self.kind {
+            NodeKind::Expr { inferred_type, .. } => *inferred_type.borrow(),
+            _ => None,
+        }
+    }
 }
 
 // ── NodeKind ────────────────────────────────────────────────────
@@ -296,6 +318,15 @@ pub enum NodeKind {
         /// `Frame.type_args`. See `docs/design/operation-call-model.md`
         /// §"Operation type arguments".
         resolved_type_args: RefCell<Vec<(Symbol, TermId)>>,
+        /// Typer-attached inferred type for this occurrence (WI-284):
+        /// the `TypeResult.ty` the typer computes but historically
+        /// discarded. Kept here — a third per-node annotation alongside
+        /// `classification` / `resolved_type_args` — so the type-directed
+        /// `[simp]` engine can read each occurrence's least declared sort
+        /// (`min_sort`, `typing::min_sort`) without recomputing. Written
+        /// by the typer's `Stamp` work-frame once a node's `TypeResult`
+        /// is finalized; `None` until typed, or when the node is ill-typed.
+        inferred_type: RefCell<Option<TermId>>,
     },
     /// Rule head — positional wrapper around a Term-shaped head pattern.
     /// Args are `TermId` (KB-position content); the wrap exists for span

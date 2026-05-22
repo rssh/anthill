@@ -771,13 +771,32 @@ enum TypeWorkOp {
     Build(TypeBuildFrame),
 }
 
+/// Push a node Visit preceded *underneath* by a [`TypeBuildFrame::Stamp`]
+/// frame (WI-284). The Stamp sits just below the Visit on the work
+/// stack, so it pops only after the Visit and all of its sub-work have
+/// produced this node's `TypeResult` — at which point it records the
+/// inferred type onto `occ`. Routing every node visit through here
+/// stamps each typed occurrence exactly once, uniformly across the
+/// iterative arms (Apply / Constructor / Let / Match / Lambda) and the
+/// recursive-helper arms (If / collection literals re-enter
+/// `type_check_node`, whose own root visit stamps their subtrees).
+fn push_visit(
+    work: &mut Vec<TypeWorkOp>,
+    occ: Rc<NodeOccurrence>,
+    env: Rc<TypingEnv>,
+    expected: Option<TermId>,
+) {
+    work.push(TypeWorkOp::Build(TypeBuildFrame::Stamp { occ: Rc::clone(&occ) }));
+    work.push(TypeWorkOp::Visit { occ, env, expected });
+}
+
 /// Push a Visit with no top-down hint. Used at positions where the
 /// caller's expected doesn't bound the child's type — Apply / Ctor
 /// args (constrained by op.params / entity_field_types), the
 /// scrutinee of a Match (drives the branch envs but takes no hint
 /// from outside), and the condition of an If (always `Bool`).
 fn push_visit_no_hint(work: &mut Vec<TypeWorkOp>, occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>) {
-    work.push(TypeWorkOp::Visit { occ, env, expected: None });
+    push_visit(work, occ, env, None);
 }
 
 // WI-258: env-carrying frames hold `Rc<TypingEnv>`. Sibling Visits
@@ -854,6 +873,13 @@ enum TypeBuildFrame {
     /// body_effects)` type and return a pure result (creating a
     /// lambda is itself effect-free).
     LambdaBody { param: TermId, outer_env: Rc<TypingEnv> },
+    /// WI-284: record a node's inferred type. Pushed by [`push_visit`]
+    /// just under the node's Visit, so when it pops the node's
+    /// `TypeResult` is on top of `results`. Peeks that result — never
+    /// pops or pushes, so it is results-neutral and doesn't perturb the
+    /// Apply / Constructor / MatchFinal drains or the final
+    /// single-result invariant — and writes the type onto `occ`.
+    Stamp { occ: Rc<NodeOccurrence> },
 }
 
 // ── type_check_expr ────────────────────────────────────────────
@@ -909,11 +935,7 @@ pub fn type_check_node(
 ) -> Result<TypeResult, TypeError> {
     let mut work: Vec<TypeWorkOp> = Vec::with_capacity(32);
     let mut results: Vec<Result<TypeResult, TypeError>> = Vec::with_capacity(32);
-    work.push(TypeWorkOp::Visit {
-        occ: Rc::clone(occ),
-        env: Rc::new(env.clone()),
-        expected,
-    });
+    push_visit(&mut work, Rc::clone(occ), Rc::new(env.clone()), expected);
     while let Some(op) = work.pop() {
         match op {
             TypeWorkOp::Visit { occ, env, expected } => {
@@ -1029,11 +1051,7 @@ fn visit_type(
                 body_occ,
                 body_expected: expected,
             }));
-            work.push(TypeWorkOp::Visit {
-                occ: value_occ,
-                env,
-                expected: annotation,
-            });
+            push_visit(work, value_occ, env, annotation);
         }
         Expr::Match { scrutinee, branches } => {
             let scrutinee_occ = Rc::clone(scrutinee);
@@ -1069,11 +1087,7 @@ fn visit_type(
                 param,
                 outer_env: env,
             }));
-            work.push(TypeWorkOp::Visit {
-                occ: body_occ,
-                env: Rc::new(lambda_env),
-                expected: body_expected,
-            });
+            push_visit(work, body_occ, Rc::new(lambda_env), body_expected);
         }
 
         // ── Leaf cases ──────────────────────────────────────────
@@ -1221,6 +1235,15 @@ fn build_type(
     results: &mut Vec<Result<TypeResult, TypeError>>,
 ) {
     match frame {
+        TypeBuildFrame::Stamp { occ } => {
+            // The node's freshly-produced result is on top of `results`
+            // (this frame sits just under its Visit). Peek — don't
+            // consume — and record the inferred type. Ill-typed nodes
+            // (`Err`) are left unstamped (`inferred_type` stays `None`).
+            if let Some(Ok(r)) = results.last() {
+                occ.set_inferred_type(r.ty);
+            }
+        }
         TypeBuildFrame::Apply { occ, fn_sym, pos_args, named_args, env, expected } => {
             let total = pos_args.len() + named_args.len();
             let drain_start = results.len() - total;
@@ -1267,11 +1290,7 @@ fn build_type(
                 ext_env.declare_local_resource(var_name);
             }
             work.push(TypeWorkOp::Build(TypeBuildFrame::LetFinal { value_effects }));
-            work.push(TypeWorkOp::Visit {
-                occ: body_occ,
-                env: Rc::new(ext_env),
-                expected: body_expected,
-            });
+            push_visit(work, body_occ, Rc::new(ext_env), body_expected);
         }
         TypeBuildFrame::LetFinal { value_effects } => {
             let body_r = results.pop().expect("LetFinal: missing body result");
@@ -1341,11 +1360,7 @@ fn build_type(
                 has_wildcard,
             }));
             for (branch, env) in branches.iter().zip(visit_envs.into_iter()).rev() {
-                work.push(TypeWorkOp::Visit {
-                    occ: Rc::clone(&branch.body),
-                    env,
-                    expected: body_expected,
-                });
+                push_visit(work, Rc::clone(&branch.body), env, body_expected);
             }
         }
         TypeBuildFrame::MatchFinal {
@@ -5163,6 +5178,50 @@ pub fn extract_sort_ref_sym(kb: &KnowledgeBase, ty: TermId) -> Option<Symbol> {
         }
     }
     None
+}
+
+/// The "sort head" of an inferred type — the least declared sort it
+/// widens to, as a `Symbol` (WI-284). It reads the typer-reflect Type
+/// shapes (the form the typer stores in `inferred_type`, which is what
+/// `min_sort` feeds it) and unwraps them to the underlying sort symbol:
+///   - `sort_ref(name: S)`              → `S`
+///   - `parameterized(base: B, …)`      → sort head of `B` (params dropped)
+///   - bare `Ref(S)`                    → `S`
+///   - everything else                  → `None`
+/// `None` is the unresolved-type-variable case (dispatch-undecidable for
+/// the type-directed `[simp]` engine) — but it ALSO covers the
+/// SLD-`canonicalize_type_value` shape `Fn(S, [], […])` and
+/// qualified-/`Ident`-functor types. Those are not the reflect shapes
+/// the typer records as an expression's type, so they're out of scope
+/// here; a caller that passes them must extend this reader (e.g. with a
+/// `SymbolKind::Sort` check on the functor).
+pub fn sort_functor_of(kb: &KnowledgeBase, ty: TermId) -> Option<Symbol> {
+    match type_functor_name(kb, ty) {
+        Some("sort_ref") => extract_sort_ref_sym(kb, ty),
+        Some("parameterized") => {
+            let base = match kb.get_term(ty) {
+                Term::Fn { named_args, .. } => get_named_arg(kb, named_args, "base"),
+                _ => None,
+            }?;
+            sort_functor_of(kb, base)
+        }
+        _ => match kb.get_term(ty) {
+            Term::Ref(s) => Some(*s),
+            _ => None,
+        },
+    }
+}
+
+/// `min_sort` (WI-284): the least declared sort an occurrence inhabits
+/// — the type-directed `[simp]` engine's dispatch key. Reads the
+/// occurrence's typer-kept inferred type (set by the typer's `Stamp`
+/// frame, [`NodeOccurrence::set_inferred_type`]) and widens it via
+/// [`sort_functor_of`]. `None` when the occurrence is untyped /
+/// ill-typed, or its type is still an unresolved variable. A
+/// compile-time reader over an *expression* — never a runtime goal or
+/// a callable `typeof`.
+pub fn min_sort(kb: &KnowledgeBase, occ: &NodeOccurrence) -> Option<Symbol> {
+    sort_functor_of(kb, occ.inferred_type()?)
 }
 
 /// parameterized(base: A, bindings: [...]) <: parameterized(base: B, bindings: [...])
