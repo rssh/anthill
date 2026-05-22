@@ -17,7 +17,7 @@ use smallvec::SmallVec;
 use super::subst::Substitution;
 use super::node_occurrence::{self, Expr};
 use super::term::{Literal, Term, TermId, Var, VarId};
-use super::term_view::{self, TermView, ViewHead, ViewItem};
+use super::term_view::{TermView, ViewHead, ViewItem};
 use crate::intern::Symbol;
 use crate::eval::value::Value;
 use super::RuleId;
@@ -217,7 +217,9 @@ enum FrameState {
     /// Iterating over candidate rules/facts for a non-builtin goal.
     ChoicePoint {
         delay_mode: DelayMode,
-        original_goal: TermId,
+        // WI-246: a `Value` so an occurrence goal can be re-pushed on the
+        // delay-fallback path and reified for dedup.
+        original_goal: Value,
         candidates: Vec<Candidate>,
         next: usize,
         any_delayed: bool,
@@ -244,14 +246,18 @@ struct Frame {
     assumed_facts: Vec<TermId>,
 }
 
-/// WI-246 transitional: unwrap a goal `Value` to its hash-consed `TermId`.
-/// During the behavior-preserving carrier swap every goal is `Value::Term`,
-/// so this always succeeds. Once `Value::Node` rule-body occurrences flow
-/// into the goal stream (task #2), the term-only call sites grow an
-/// occurrence path and stop routing through here.
-fn goal_term(g: &Value) -> TermId {
-    g.as_term()
-        .expect("WI-246: goal is not a Value::Term yet (occurrence goal path is task #2)")
+/// WI-246: reify a goal `Value` to a hash-consed `TermId` — a `Value::Term`
+/// unwraps for free; a `Value::Node` occurrence goal is reified via
+/// `occurrence_to_term`. Used only at genuine term/identity boundaries
+/// (residual, dedup key, external-row handlers, assumed-fact matching), never
+/// for the candidate match itself (which goes through `query_view`).
+fn reify_goal_value(kb: &mut KnowledgeBase, g: &Value) -> TermId {
+    match g {
+        Value::Term(t) => *t,
+        Value::Node(occ) => node_occurrence::occurrence_to_term(kb, occ),
+        // Goals are always term- or occurrence-shaped structures.
+        other => panic!("reify_goal_value: non-goal Value {}", other.type_name()),
+    }
 }
 
 /// Outcome of walking an `eq`/`neq` goal's two operands (WI-246): both
@@ -275,7 +281,10 @@ enum Num {
 /// `&mut self` alloc, so no `ViewItem` borrow is held across it.
 enum ResultTarget {
     Bind(VarId),
-    Compare(Option<TermId>),
+    /// An already-bound result to check the computed value against — held as a
+    /// `Value` (a literal occurrence arg reads as `Value::Node`), reified in
+    /// `finish_result`. `None` ⇒ the result arg slot is absent.
+    Compare(Option<Value>),
 }
 
 /// Result of a single step in the search loop.
@@ -366,10 +375,11 @@ impl SearchStream {
         // 2. In delayed mode and consecutive_delays >= goals.len() → residualize
         if let DelayMode::Delayed { consecutive_delays } = &delay_mode {
             if *consecutive_delays >= frame.goals.len() {
-                let sol = Solution {
-                    subst: frame.subst.clone(),
-                    residual: frame.goals.iter().map(goal_term).collect(),
-                };
+                let subst = frame.subst.clone();
+                let goals = frame.goals.clone();
+                let residual: Vec<TermId> =
+                    goals.iter().map(|g| reify_goal_value(kb, g)).collect();
+                let sol = Solution { subst, residual };
                 self.stack.pop();
                 self.record_solution_in_ancestors();
                 return Some(StepResult::YieldSolution(sol));
@@ -403,45 +413,75 @@ impl SearchStream {
         // re-walk. Skip the structural walk when σ is empty (no bindings
         // could change anything anyway).
         self.stats.lazy_walk_calls += 1;
-        let goal = if frame.subst.is_empty() {
-            goal_term(&frame.goals[0])
-        } else {
-            let f = self.stack.last_mut().unwrap();
-            let walked = kb.apply_subst(goal_term(&f.goals[0]), &f.subst);
-            f.goals[0] = Value::Term(walked);
-            walked
+        // Walk goals[0] under σ to a `Value` goal (memoized back). A `Value::Node`
+        // occurrence goal walks via `substitute_occurrence` (occurrence-native,
+        // no lowering); a `Value::Term` goal via `apply_subst`. `goal_t` is the
+        // term form when the goal has one — used by the synthetic term-only
+        // markers (pop_assumption / forall_impl) that are never occurrences.
+        let goal_val: Value = {
+            let f = self.stack.last().unwrap();
+            if f.subst.is_empty() {
+                f.goals[0].clone()
+            } else {
+                let subst = f.subst.clone();
+                let g0 = f.goals[0].clone();
+                let walked = match g0 {
+                    Value::Term(t) => Value::Term(kb.apply_subst(t, &subst)),
+                    Value::Node(occ) => {
+                        Value::Node(node_occurrence::substitute_occurrence(kb, &occ, &subst))
+                    }
+                    other => other,
+                };
+                self.stack.last_mut().unwrap().goals[0] = walked.clone();
+                walked
+            }
         };
+        let goal_t = goal_val.as_term();
         let frame = self.stack.last().unwrap();
 
-        // 3.4 __pop_assumption(N) — scoping marker emitted by
-        // step_forall_impl. Pops N entries off the frame's
-        // assumed_facts and consumes the marker. WI-108.
-        if let Some(n) = Self::pop_assumption_arg(kb, goal) {
-            let f = self.stack.last_mut().unwrap();
-            let drop_from = f.assumed_facts.len().saturating_sub(n);
-            f.assumed_facts.truncate(drop_from);
-            f.goals.remove(0);
-            f.depth += 1;
-            f.state = FrameState::Init { delay_mode: delay_mode.reset() };
-            return Some(StepResult::Continue);
+        // Scoping / hereditary-Harrop markers (`__pop_assumption`,
+        // `forall_impl`, WI-108). Detected by functor so they work for
+        // occurrence goals too (a rule-body `forall …` is a `Value::Node`);
+        // these handlers are term-structured, so reify only when matched.
+        let is_marker = match goal_val.head(kb) {
+            ViewHead::Functor { functor: Some(f), .. } => {
+                let n = kb.resolve_sym(f);
+                n == "__pop_assumption" || n == "forall_impl"
+            }
+            _ => false,
+        };
+        if is_marker {
+            let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
+            // 3.4 __pop_assumption(N) — pops N entries off assumed_facts.
+            if let Some(n) = Self::pop_assumption_arg(kb, goal) {
+                let f = self.stack.last_mut().unwrap();
+                let drop_from = f.assumed_facts.len().saturating_sub(n);
+                f.assumed_facts.truncate(drop_from);
+                f.goals.remove(0);
+                f.depth += 1;
+                f.state = FrameState::Init { delay_mode: delay_mode.reset() };
+                return Some(StepResult::Continue);
+            }
+            // 3.5 forall_impl(binders, antecedents, consequent) — skolemise,
+            // push antecedents as scoped assumptions, prepend consequents.
+            if Self::is_forall_impl(kb, goal, &frame.subst) {
+                return self.step_forall_impl(kb, goal, depth, delay_mode);
+            }
         }
 
-        // 3.5 forall_impl(binders, antecedents, consequent) — hereditary
-        // Harrop discharge. Skolemise binders, push antecedents as scoped
-        // assumptions, prepend consequents to the goal stream. WI-108.
-        if Self::is_forall_impl(kb, goal, &frame.subst) {
-            return self.step_forall_impl(kb, goal, depth, delay_mode);
-        }
-
-        // 4. Builtin goal
-        if let Some(tag) = kb.get_builtin(goal) {
+        // 4. Builtin goal — classify by functor read through TermView.
+        if let Some(tag) = kb.get_builtin_view(&goal_val) {
             // NAF needs sub-resolution context — handle it specially
             if tag == BuiltinTag::Not {
-                return self.step_naf(kb, goal, depth, delay_mode);
+                return self.step_naf(kb, &goal_val, depth, delay_mode);
             }
-            // HO predicate application: replace goal with the applied term
+            // HO predicate application: replace goal with the applied term.
+            // `resolve_ho_apply` is term-structured; reify a Node goal (rare at
+            // a rule-body HoApply position) to a term for it.
             if tag == BuiltinTag::HoApply {
-                if let Some(applied) = self.resolve_ho_apply(kb, goal, &frame.subst) {
+                let subst = frame.subst.clone();
+                let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
+                if let Some(applied) = self.resolve_ho_apply(kb, goal, &subst) {
                     let f = self.stack.last_mut().unwrap();
                     f.goals[0] = Value::Term(applied);
                     f.state = FrameState::Init { delay_mode };
@@ -453,10 +493,13 @@ impl SearchStream {
                 }
             }
             // Bypasses execute_builtin: push_choice's effect is on the
-            // choice-point stack, not on σ — like Not/HoApply.
+            // choice-point stack, not on σ — like Not/HoApply. Term-structured;
+            // reify a Node goal for arg extraction.
             if tag == BuiltinTag::PushChoice {
+                let subst = frame.subst.clone();
+                let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
                 if let Some((goal_a, goal_b)) =
-                    Self::resolve_push_choice_args(kb, goal, &frame.subst)
+                    Self::resolve_push_choice_args(kb, goal, &subst)
                 {
                     let candidates = vec![
                         Candidate::Continuation(vec![goal_a]),
@@ -465,7 +508,7 @@ impl SearchStream {
                     let f = self.stack.last_mut().unwrap();
                     f.state = FrameState::ChoicePoint {
                         delay_mode,
-                        original_goal: goal,
+                        original_goal: goal_val.clone(),
                         candidates,
                         next: 0,
                         any_delayed: false,
@@ -478,7 +521,7 @@ impl SearchStream {
                     return Some(StepResult::Continue);
                 }
             }
-            match kb.execute_builtin(tag, goal, &frame.subst) {
+            match kb.execute_builtin(tag, &goal_val, &frame.subst) {
                 BuiltinResult::Success => {
                     // Remove goals[0], bump depth, reset delay counter if delayed
                     let new_goals = frame.goals[1..].to_vec();
@@ -521,17 +564,15 @@ impl SearchStream {
                         DelayMode::Normal => {
                             if frame.goals.len() == 1 {
                                 // Only goal — residualize
-                                let sol = Solution {
-                                    subst: frame.subst.clone(),
-                                    residual: vec![goal],
-                                };
+                                let subst = frame.subst.clone();
+                                let residual = vec![reify_goal_value(kb, &goal_val)];
                                 self.stack.pop();
                                 self.record_solution_in_ancestors();
-                                return Some(StepResult::YieldSolution(sol));
+                                return Some(StepResult::YieldSolution(Solution { subst, residual }));
                             } else {
                                 // Rotate to end, enter Delayed mode
                                 let mut rotated: Vec<Value> = frame.goals[1..].to_vec();
-                                rotated.push(Value::Term(goal));
+                                rotated.push(goal_val.clone());
                                 let new_depth = depth + 1;
                                 let f = self.stack.last_mut().unwrap();
                                 f.goals = rotated;
@@ -545,7 +586,7 @@ impl SearchStream {
                         DelayMode::Delayed { consecutive_delays } => {
                             // Rotate to end, increment consecutive_delays
                             let mut rotated: Vec<Value> = frame.goals[1..].to_vec();
-                            rotated.push(Value::Term(goal));
+                            rotated.push(goal_val.clone());
                             let new_depth = depth + 1;
                             let f = self.stack.last_mut().unwrap();
                             f.goals = rotated;
@@ -569,80 +610,73 @@ impl SearchStream {
         // layer, not via Resolve's candidate selection.
         let mut candidates: Vec<Candidate> = Vec::new();
 
-        // 6. Non-builtin goal → query discrimination tree.
-        // Cache ground goals (no variables) — their TermId is stable and
-        // may recur. Goals with variables get unique fresh VarIds so
-        // caching them wastes memory without hits.
-        let is_ground = kb.collect_vars(goal).is_empty();
-        let rule_candidates = if is_ground {
-            if let Some(cached) = self.query_cache.get(&goal) {
-                cached.clone()
-            } else {
-                let mut rc = kb.query(goal);
+        // 6. Non-builtin goal → query discrimination tree via `TermView`
+        // (no lowering — a `Value::Node` goal matches Term-indexed heads).
+        // Cache only ground *term* goals: the cache is keyed on hash-consed
+        // `TermId`, so occurrence goals and goals with variables aren't cached.
+        let cache_key = goal_t.filter(|&t| kb.collect_vars(t).is_empty());
+        let rule_candidates = match cache_key.and_then(|t| self.query_cache.get(&t).cloned()) {
+            Some(cached) => cached,
+            None => {
+                let mut rc = kb.query_view(&goal_val);
+                // [simp] resolution-phase rewrite — term goals only.
                 if self.config.simplify {
-                    let has_non_eq = rc.iter().any(|(rid, _)| !kb.is_equation(*rid));
-                    if !has_non_eq {
-                        let (rewritten, changes) = kb.apply_eq_rules(goal, 100);
-                        if !changes.is_empty() {
-                            rc = kb.query(rewritten);
+                    if let Some(goal) = goal_t {
+                        let has_non_eq = rc.iter().any(|(rid, _)| !kb.is_equation(*rid));
+                        if !has_non_eq {
+                            let (rewritten, changes) = kb.apply_eq_rules(goal, 100);
+                            if !changes.is_empty() {
+                                rc = kb.query(rewritten);
+                            }
                         }
                     }
                 }
                 rc.retain(|(rid, _)| !kb.is_equation(*rid));
-                self.query_cache.insert(goal, rc.clone());
+                if let Some(t) = cache_key {
+                    self.query_cache.insert(t, rc.clone());
+                }
                 rc
             }
-        } else {
-            let mut rc = kb.query(goal);
-            if self.config.simplify {
-                let has_non_eq = rc.iter().any(|(rid, _)| !kb.is_equation(*rid));
-                if !has_non_eq {
-                    let (rewritten, changes) = kb.apply_eq_rules(goal, 100);
-                    if !changes.is_empty() {
-                        rc = kb.query(rewritten);
-                    }
-                }
-            }
-            rc.retain(|(rid, _)| !kb.is_equation(*rid));
-            rc
         };
 
         candidates.extend(rule_candidates.into_iter().map(|(rid, s)| Candidate::Rule(rid, s)));
 
-        // External-source rows (proposal 007 §11 + 026.1 Q4 Stage B).
-        // If the goal head functor has a registered route handler, drain
-        // its stream and add each matching row as an ExternalRow candidate.
-        // Eager drain: lazy per-iteration pumping is a follow-up. Rows
-        // that don't match the pattern are dropped immediately — they
-        // never enter σ or the TermStore.
-        if let Term::Fn { functor, .. } = kb.terms.get(goal) {
-            let functor = *functor;
-            // Take the stream out of the registry briefly so we can hand
-            // `&KnowledgeBase` to the handler without aliasing.
-            let stream_opt = kb.route_handler_for(functor)
-                .map(|h| h.retrieve(kb, goal));
-            if let Some(mut stream) = stream_opt {
-                while let Some(row) = stream.next() {
-                    if let Some(subst) = kb.match_view(goal, &row) {
-                        if !subst.is_contradiction() {
-                            candidates.push(Candidate::ExternalRow(subst));
+        // External-source rows (proposal 007 §11 + 026.1 Q4 Stage B). If the
+        // goal head functor has a registered route handler, drain its stream
+        // and add each matching row as an ExternalRow candidate. Term-
+        // structured; reify a Node goal for the handler + row match.
+        let functor = match goal_val.head(kb) {
+            ViewHead::Functor { functor: Some(f), .. } => Some(f),
+            _ => None,
+        };
+        if let Some(functor) = functor {
+            if kb.route_handler_for(functor).is_some() {
+                let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
+                let stream_opt = kb.route_handler_for(functor).map(|h| h.retrieve(kb, goal));
+                if let Some(mut stream) = stream_opt {
+                    while let Some(row) = stream.next() {
+                        if let Some(subst) = kb.match_view(goal, &row) {
+                            if !subst.is_contradiction() {
+                                candidates.push(Candidate::ExternalRow(subst));
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Frame-scoped assumed facts (WI-108). Reify the goal through
-        // the current substitution first so that goal-side flex vars
-        // bound to rigids appear in their concrete form. Then try
-        // unifying each assumed fact against the reified goal.
+        // Frame-scoped assumed facts (WI-108). Reify the goal through the
+        // current substitution, then unify each assumed fact against it.
         let assumed = self.stack.last().unwrap().assumed_facts.clone();
-        let frame_subst = self.stack.last().unwrap().subst.clone();
-        let reified_goal = kb.reify(goal, &frame_subst);
-        for assumed_fact in assumed {
-            if let Some(subst) = kb.match_term(assumed_fact, reified_goal) {
-                if !subst.is_contradiction() {
-                    candidates.push(Candidate::Assumption(subst));
+        if !assumed.is_empty() {
+            let frame_subst = self.stack.last().unwrap().subst.clone();
+            let goal = goal_t.unwrap_or_else(|| reify_goal_value(kb, &goal_val));
+            let reified_goal = kb.reify(goal, &frame_subst);
+            for assumed_fact in assumed {
+                if let Some(subst) = kb.match_term(assumed_fact, reified_goal) {
+                    if !subst.is_contradiction() {
+                        candidates.push(Candidate::Assumption(subst));
+                    }
                 }
             }
         }
@@ -651,7 +685,7 @@ impl SearchStream {
         let f = self.stack.last_mut().unwrap();
         f.state = FrameState::ChoicePoint {
             delay_mode,
-            original_goal: goal,
+            original_goal: goal_val,
             candidates,
             next: 0,
             any_delayed: false,
@@ -910,16 +944,26 @@ impl SearchStream {
     fn step_naf(
         &mut self,
         kb: &mut KnowledgeBase,
-        goal: TermId,
+        goal: &Value,
         depth: usize,
         delay_mode: DelayMode,
     ) -> Option<StepResult> {
-        let frame = self.stack.last().unwrap();
-        let goals = frame.goals.clone();
-        let subst = frame.subst.clone();
+        let subst = self.stack.last().unwrap().subst.clone();
+        let goals_len = self.stack.last().unwrap().goals.len();
 
-        let inner_goal = kb.builtin_first_arg(goal);
-        let reified = kb.reify(inner_goal, &subst);
+        // Inner goal P of `not(P)` (read through TermView), reified to a term
+        // for the groundness check and sub-resolution.
+        let inner_val = goal.pos_arg(kb, 0).and_then(|item| kb.walk_arg(Some(item), &subst));
+        let reified = match inner_val {
+            Some(v) => {
+                let t = reify_goal_value(kb, &v);
+                kb.reify(t, &subst)
+            }
+            None => {
+                self.stack.pop();
+                return Some(StepResult::Continue);
+            }
+        };
 
         // Groundness check: NAF on non-ground goals would be unsound
         match kb.is_ground(reified, &Substitution::new()) {
@@ -927,18 +971,15 @@ impl SearchStream {
                 // Delay — same mechanism as other builtins
                 match delay_mode {
                     DelayMode::Normal => {
-                        if goals.len() == 1 {
-                            let sol = Solution {
-                                subst,
-                                residual: vec![goal],
-                            };
+                        if goals_len == 1 {
+                            let residual = vec![reify_goal_value(kb, goal)];
                             self.stack.pop();
                             self.record_solution_in_ancestors();
-                            return Some(StepResult::YieldSolution(sol));
+                            return Some(StepResult::YieldSolution(Solution { subst, residual }));
                         } else {
-                            let mut rotated: Vec<Value> = goals[1..].to_vec();
-                            rotated.push(Value::Term(goal));
                             let f = self.stack.last_mut().unwrap();
+                            let mut rotated: Vec<Value> = f.goals[1..].to_vec();
+                            rotated.push(goal.clone());
                             f.goals = rotated;
                             f.depth = depth + 1;
                             f.state = FrameState::Init {
@@ -948,9 +989,9 @@ impl SearchStream {
                         }
                     }
                     DelayMode::Delayed { consecutive_delays } => {
-                        let mut rotated: Vec<Value> = goals[1..].to_vec();
-                        rotated.push(Value::Term(goal));
                         let f = self.stack.last_mut().unwrap();
+                        let mut rotated: Vec<Value> = f.goals[1..].to_vec();
+                        rotated.push(goal.clone());
                         f.goals = rotated;
                         f.depth = depth + 1;
                         f.state = FrameState::Init {
@@ -979,9 +1020,9 @@ impl SearchStream {
                     return Some(StepResult::Continue);
                 } else {
                     // Inner goal has no solutions → not() SUCCEEDS
-                    let new_goals = goals[1..].to_vec();
                     let new_delay = delay_mode.reset();
                     let f = self.stack.last_mut().unwrap();
+                    let new_goals = f.goals[1..].to_vec();
                     f.goals = new_goals;
                     f.subst = subst;
                     f.depth = depth + 1;
@@ -1007,7 +1048,7 @@ impl SearchStream {
                     ..
                 } => (
                     delay_mode.clone(),
-                    *original_goal,
+                    original_goal.clone(),
                     *next,
                     candidates.len(),
                     *any_delayed,
@@ -1022,7 +1063,7 @@ impl SearchStream {
                 // Delay fallback: rotate goal to end, push new Init frame
                 let goals = &frame.goals;
                 let mut rotated: Vec<Value> = goals[1..].to_vec();
-                rotated.push(Value::Term(original_goal));
+                rotated.push(original_goal.clone());
                 let new_depth = frame.depth + 1;
                 let new_subst = frame.subst.clone();
                 let new_consecutive = match &delay_mode {
@@ -1136,7 +1177,10 @@ impl SearchStream {
         } else {
             // Rule with body
             let rid = opt_rid.unwrap();
-            let (fresh_body, answer_links) = kb.with_fresh_vars(rid, &tree_subst);
+            // `fresh_nodes` is the occurrence body pushed as `Value::Node`
+            // goals; `fresh_body` (term body) feeds the caller-var delay
+            // pre-check below.
+            let (fresh_body, fresh_nodes, answer_links) = kb.with_fresh_vars(rid, &tree_subst);
             // [WI-030] No eager apply_subst_each here. The body itself is
             // already concretised through `body_rename` inside
             // `with_fresh_vars`, and caller-side bindings flow into
@@ -1172,11 +1216,11 @@ impl SearchStream {
                 return Some(StepResult::Continue);
             }
 
-            // WI-246 task #2: this is where opened rule-body atoms enter the
-            // goal stream — the site that will push `Value::Node` occurrences
-            // (via open_debruijn_node) instead of lowering to `Value::Term`.
-            let mut new_goals: Vec<Value> = Vec::with_capacity(fresh_body.len() + remaining.len());
-            new_goals.extend(fresh_body.into_iter().map(Value::Term));
+            // WI-246: opened rule-body atoms enter the goal stream as
+            // `Value::Node` occurrences (carrying any typer dot-rewrites),
+            // matched/resolved through `TermView` — no lowering to terms.
+            let mut new_goals: Vec<Value> = Vec::with_capacity(fresh_nodes.len() + remaining.len());
+            new_goals.extend(fresh_nodes.into_iter().map(Value::Node));
             new_goals.extend(remaining);
             let new_delay = delay_mode.reset();
             let inherited = frame.assumed_facts.clone();
@@ -1205,14 +1249,22 @@ impl SearchStream {
     /// distinct rows. Hash-consing a Value-tree to make reify Value-aware
     /// would also defeat Q4's no-`TermStore`-growth guarantee.
     fn is_duplicate_projection(&mut self, kb: &mut KnowledgeBase, sol: &Solution) -> bool {
+        // `Value::Node` bindings (from matching occurrence goals, WI-246) are
+        // structural and reify to a stable key via `occurrence_to_term`, so
+        // they don't disable dedup. Only genuinely unreifiable external-row
+        // values (`Value::Entity`/`Str`/…) do — those would collapse distinct
+        // rows to one key.
         let has_value_binding = sol.subst.iter()
-            .any(|(_, v)| !matches!(v, Value::Term(_)));
+            .any(|(_, v)| !matches!(v, Value::Term(_) | Value::Node(_)));
         if has_value_binding {
             return false;
         }
         for frame in self.stack.iter_mut().rev() {
             if let FrameState::ChoicePoint { original_goal, seen_goals, .. } = &mut frame.state {
-                let reified = kb.reify(*original_goal, &sol.subst);
+                // Reify the goal to a hash-consed term key (a Node goal is
+                // reified via occurrence_to_term), then through the solution σ.
+                let t = reify_goal_value(kb, original_goal);
+                let reified = kb.reify(t, &sol.subst);
                 return !seen_goals.insert(reified);
             }
         }
@@ -1384,35 +1436,47 @@ impl KnowledgeBase {
     fn execute_builtin(
         &mut self,
         tag: BuiltinTag,
-        goal: TermId,
+        goal: &Value,
         answer_subst: &Substitution,
     ) -> BuiltinResult {
+        // Builtins not yet migrated to `TermView` still need a hash-consed
+        // term goal. The remaining `as_term` builtins (qualified_name,
+        // short_name, lookup_symbol, resolve_sort_inst_param, field_access) are
+        // op-body/eval-only — no rule body reaches them (the full suite is
+        // green). A `Value::Node` goal hitting one means a new rule uses it;
+        // fail loud naming the tag so it gets migrated.
+        // TODO(WI-246 follow-up): migrate these to TermView and drop `as_term`.
+        let as_term = |g: &Value| {
+            g.as_term().unwrap_or_else(|| {
+                panic!("WI-246: builtin {tag:?} got a Value::Node goal — not yet migrated to TermView")
+            })
+        };
         match tag {
-            BuiltinTag::NonVar => self.builtin_nonvar(&term_view::TermIdView(goal), answer_subst),
-            BuiltinTag::Ground => self.builtin_ground(&term_view::TermIdView(goal), answer_subst),
-            BuiltinTag::QualifiedName => self.builtin_qualified_name(goal, answer_subst),
-            BuiltinTag::ShortName => self.builtin_short_name(goal, answer_subst),
-            BuiltinTag::LookupSymbol => self.builtin_lookup_symbol(goal, answer_subst),
-            BuiltinTag::IsEntityOf => self.builtin_is_entity_of(&term_view::TermIdView(goal), answer_subst),
+            BuiltinTag::NonVar => self.builtin_nonvar(goal, answer_subst),
+            BuiltinTag::Ground => self.builtin_ground(goal, answer_subst),
+            BuiltinTag::QualifiedName => self.builtin_qualified_name(as_term(goal), answer_subst),
+            BuiltinTag::ShortName => self.builtin_short_name(as_term(goal), answer_subst),
+            BuiltinTag::LookupSymbol => self.builtin_lookup_symbol(as_term(goal), answer_subst),
+            BuiltinTag::IsEntityOf => self.builtin_is_entity_of(goal, answer_subst),
             BuiltinTag::ExtractSort => self.builtin_extract_sort(goal, answer_subst),
             BuiltinTag::Not => unreachable!("Not is handled in step_init, not execute_builtin"),
             BuiltinTag::HoApply => unreachable!("HoApply is handled in step_init, not execute_builtin"),
             BuiltinTag::PushChoice => unreachable!("PushChoice is handled in step_init, not execute_builtin"),
-            BuiltinTag::ResolveSortInstParam => self.builtin_resolve_sort_inst_param(goal, answer_subst),
+            BuiltinTag::ResolveSortInstParam => self.builtin_resolve_sort_inst_param(as_term(goal), answer_subst),
             BuiltinTag::Scope => self.builtin_scope(goal, answer_subst),
             BuiltinTag::Kind => self.builtin_kind(goal, answer_subst),
-            BuiltinTag::FieldAccess => self.builtin_field_access(goal, answer_subst),
-            BuiltinTag::Eq => self.builtin_eq(&term_view::TermIdView(goal), answer_subst),
-            BuiltinTag::Neq => self.builtin_neq(&term_view::TermIdView(goal), answer_subst),
-            BuiltinTag::Gt => self.builtin_cmp(&term_view::TermIdView(goal), answer_subst, |ord| ord == std::cmp::Ordering::Greater),
-            BuiltinTag::Lt => self.builtin_cmp(&term_view::TermIdView(goal), answer_subst, |ord| ord == std::cmp::Ordering::Less),
-            BuiltinTag::Gte => self.builtin_cmp(&term_view::TermIdView(goal), answer_subst, |ord| ord != std::cmp::Ordering::Less),
-            BuiltinTag::Lte => self.builtin_cmp(&term_view::TermIdView(goal), answer_subst, |ord| ord != std::cmp::Ordering::Greater),
-            BuiltinTag::Add => self.builtin_arith(&term_view::TermIdView(goal), answer_subst, |a, b| a + b, |a, b| a + b, |a, b| a + b),
-            BuiltinTag::Sub => self.builtin_arith(&term_view::TermIdView(goal), answer_subst, |a, b| a - b, |a, b| a - b, |a, b| a - b),
-            BuiltinTag::Mul => self.builtin_arith(&term_view::TermIdView(goal), answer_subst, |a, b| a * b, |a, b| a * b, |a, b| a * b),
-            BuiltinTag::ToBigInt => self.builtin_to_bigint(&term_view::TermIdView(goal), answer_subst),
-            BuiltinTag::ToInt => self.builtin_to_int(&term_view::TermIdView(goal), answer_subst),
+            BuiltinTag::FieldAccess => self.builtin_field_access(as_term(goal), answer_subst),
+            BuiltinTag::Eq => self.builtin_eq(goal, answer_subst),
+            BuiltinTag::Neq => self.builtin_neq(goal, answer_subst),
+            BuiltinTag::Gt => self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Greater),
+            BuiltinTag::Lt => self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Less),
+            BuiltinTag::Gte => self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Less),
+            BuiltinTag::Lte => self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Greater),
+            BuiltinTag::Add => self.builtin_arith(goal, answer_subst, |a, b| a + b, |a, b| a + b, |a, b| a + b),
+            BuiltinTag::Sub => self.builtin_arith(goal, answer_subst, |a, b| a - b, |a, b| a - b, |a, b| a - b),
+            BuiltinTag::Mul => self.builtin_arith(goal, answer_subst, |a, b| a * b, |a, b| a * b, |a, b| a * b),
+            BuiltinTag::ToBigInt => self.builtin_to_bigint(goal, answer_subst),
+            BuiltinTag::ToInt => self.builtin_to_int(goal, answer_subst),
             // Occurrence builtins — stubs returning Delay until Phase 2
             BuiltinTag::OccurrenceTerm
             | BuiltinTag::OccurrenceSpan
@@ -1455,11 +1519,7 @@ impl KnowledgeBase {
     /// the narrower delay test for `eq`/`neq`, which compare rigid vars by
     /// identity rather than delaying on them.
     fn value_is_flex(&self, v: &Value) -> bool {
-        match v {
-            Value::Term(t) => matches!(self.terms.get(*t), Term::Var(Var::Global(_))),
-            Value::Node(occ) => matches!(occ.as_expr(), Some(Expr::Var(Var::Global(_)))),
-            _ => false,
-        }
+        self.value_global_var(v).is_some()
     }
 
     /// `nonvar(?x)`: succeeds if `?x` is bound to a non-variable after walking.
@@ -1649,7 +1709,7 @@ impl KnowledgeBase {
 
     /// `is_entity_of(?sub, ?sup)`: succeeds if sub is an entity of sup (via KB indexes).
     /// Both args must be non-var (delay otherwise).
-    fn builtin_is_entity_of<V: TermView>(&self, goal: &V, subst: &Substitution) -> BuiltinResult {
+    fn builtin_is_entity_of<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
         let (sub, sup) = match (
             self.walk_arg(goal.pos_arg(self, 0), subst),
             self.walk_arg(goal.pos_arg(self, 1), subst),
@@ -1660,27 +1720,47 @@ impl KnowledgeBase {
         if self.value_is_unbound_var(&sub) || self.value_is_unbound_var(&sup) {
             return BuiltinResult::Delay;
         }
-        // The subtype check is a KB lookup over hash-consed terms. Bound data
-        // values come from term-facts, so they resolve to `Value::Term` even
-        // for occurrence goals (only the goal *structure* is a Node); a
-        // non-term value can't stand in an entity-subtype relation.
-        match (sub.as_term(), sup.as_term()) {
-            (Some(sub_t), Some(sup_t)) if self.is_entity_of(sub_t, sup_t) => BuiltinResult::Success,
-            _ => BuiltinResult::Failure,
+        // The subtype check is a KB lookup over hash-consed terms; reify each
+        // operand (a literal goal arg reads as `Value::Node`, a σ-bound one as
+        // `Value::Term`) to a term first.
+        let sub_t = reify_goal_value(self, &sub);
+        let sup_t = reify_goal_value(self, &sup);
+        if self.is_entity_of(sub_t, sup_t) {
+            BuiltinResult::Success
+        } else {
+            BuiltinResult::Failure
+        }
+    }
+
+    /// WI-246: collapse a `Value::Node` arg to `Value::Term` (via
+    /// `occurrence_to_term`); scalars and terms pass through. Lets the
+    /// scalar/term-comparison builtins (`eq`/`neq`/`cmp`) treat a literal
+    /// occurrence arg uniformly.
+    fn normalize_value(&mut self, v: Value) -> Value {
+        match v {
+            // Reuse the single Node→term path; cf. `reify_goal_value` (the
+            // bare-`TermId` variant for goal-identity boundaries).
+            Value::Node(_) => Value::Term(reify_goal_value(self, &v)),
+            other => other,
         }
     }
 
     /// `extract_sort_ref(?inst, ?result)`: given a term like `Eq[T = Int]` (represented as
     /// `ParameterizedType(Eq(), T=Int())`) or a simple `Ref(Eq)`, extract the sort symbol
     /// and bind `?result` to `Ref(sort_sym)`. Delays if `?inst` is unbound.
-    fn builtin_extract_sort(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
-        let inst_arg = self.builtin_first_arg(goal);
-        let result_arg = self.builtin_second_arg(goal);
-        let walked_inst = self.walk(inst_arg, subst);
+    fn builtin_extract_sort<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        let inst = match self.walk_arg(goal.pos_arg(self, 0), subst) {
+            Some(v) => v,
+            None => return BuiltinResult::Failure,
+        };
+        if self.value_is_unbound_var(&inst) {
+            return BuiltinResult::Delay;
+        }
+        let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
+        let walked_inst = reify_goal_value(self, &inst);
 
         // Extract the sort symbol from various term shapes
         let sort_sym = match self.terms.get(walked_inst).clone() {
-            Term::Var(_) => return BuiltinResult::Delay,
             // Simple Ref: the sort itself
             Term::Ref(sym) => Some(sym),
             // SortView(sort_name_term, bindings...) — first pos arg is the sort name
@@ -1705,26 +1785,9 @@ impl KnowledgeBase {
         match sort_sym {
             Some(sym) => {
                 // Canonical nullary-Fn shape — matches the form used by
-                // load.rs for sort references (e.g. SortRequiresInfo facts
-                // hold `sort_ref: Fn(B, [], [])`). Anything else lands in a
-                // discrim-tree slot the rest of the codebase doesn't index.
+                // load.rs for sort references.
                 let ref_term = self.make_name_term_from_sym(sym);
-                let walked_result = self.walk(result_arg, subst);
-                match self.terms.get(walked_result) {
-                    Term::Var(Var::Global(vid)) => {
-                        let vid = *vid;
-                        let mut extra = Substitution::new();
-                        extra.bind(vid, ref_term);
-                        BuiltinResult::SuccessWithBindings(extra)
-                    }
-                    _ => {
-                        if walked_result == ref_term {
-                            BuiltinResult::Success
-                        } else {
-                            BuiltinResult::Failure
-                        }
-                    }
-                }
+                self.finish_result(target, ref_term)
             }
             None => BuiltinResult::Failure,
         }
@@ -1825,7 +1888,7 @@ impl KnowledgeBase {
     /// args resolve to the same TermId (hash-consed identity = structural equality).
     /// Delays only on flex (`Var::Global`); rigid vars compare by TermId
     /// identity (hash-consing ensures `Rigid(a) == Rigid(a)`).
-    fn builtin_eq<V: TermView>(&self, goal: &V, subst: &Substitution) -> BuiltinResult {
+    fn builtin_eq<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
         match self.eq_operands(goal, subst) {
             EqOperands::Delay => BuiltinResult::Delay,
             EqOperands::Ready(a, b) => {
@@ -1836,7 +1899,7 @@ impl KnowledgeBase {
     }
 
     /// `neq(?a, ?b)` — structural inequality after walking.
-    fn builtin_neq<V: TermView>(&self, goal: &V, subst: &Substitution) -> BuiltinResult {
+    fn builtin_neq<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
         match self.eq_operands(goal, subst) {
             EqOperands::Delay => BuiltinResult::Delay,
             EqOperands::Ready(a, b) => {
@@ -1850,7 +1913,7 @@ impl KnowledgeBase {
     /// (`Var::Global`), else the two `Value`s. For two term values
     /// `structural_eq` falls to hash-consed-`TermId` identity (= the original
     /// `a == b` test); occurrence values compare structurally (WI-246).
-    fn eq_operands<V: TermView>(&self, goal: &V, subst: &Substitution) -> EqOperands {
+    fn eq_operands<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> EqOperands {
         let (a, b) = match (
             self.walk_arg(goal.pos_arg(self, 0), subst),
             self.walk_arg(goal.pos_arg(self, 1), subst),
@@ -1858,6 +1921,11 @@ impl KnowledgeBase {
             (Some(a), Some(b)) => (a, b),
             _ => return EqOperands::Absent,
         };
+        // Reify literal occurrence args to terms so structural_eq compares
+        // them by hash-consed identity (a Node-vs-Node compare is otherwise
+        // conservatively false).
+        let a = self.normalize_value(a);
+        let b = self.normalize_value(b);
         if self.value_is_flex(&a) || self.value_is_flex(&b) {
             return EqOperands::Delay;
         }
@@ -1867,7 +1935,7 @@ impl KnowledgeBase {
     /// Generic comparison builtin for gt/lt/gte/lte.
     /// Compares Int/BigInt/Float values; delays if unbound, fails on type mismatch.
     fn builtin_cmp<V: TermView>(
-        &self,
+        &mut self,
         goal: &V,
         subst: &Substitution,
         pred: impl Fn(std::cmp::Ordering) -> bool,
@@ -1882,6 +1950,10 @@ impl KnowledgeBase {
         if self.value_is_unbound_var(&a) || self.value_is_unbound_var(&b) {
             return BuiltinResult::Delay;
         }
+        // Reify literal occurrence args (a numeric literal in the goal reads
+        // as `Value::Node`) so `value_num` can extract from `Value::Term`.
+        let a = self.normalize_value(a);
+        let b = self.normalize_value(b);
         let ord = match (self.value_num(&a), self.value_num(&b)) {
             (Some(Num::Int(x)), Some(Num::Int(y))) => x.cmp(&y),
             (Some(Num::Big(x)), Some(Num::Big(y))) => x.cmp(&y),
@@ -1936,22 +2008,30 @@ impl KnowledgeBase {
             None => ResultTarget::Compare(None),
             Some(v) => match self.value_global_var(&v) {
                 Some(vid) => ResultTarget::Bind(vid),
-                None => ResultTarget::Compare(v.as_term()),
+                None => ResultTarget::Compare(Some(v)),
             },
         }
     }
 
     /// Back half of result binding: bind the computed `value` to the result
-    /// var, or check equality against an already-bound result.
-    fn finish_result(&self, target: ResultTarget, value: TermId) -> BuiltinResult {
+    /// var, or check equality against an already-bound result (reifying a
+    /// `Value::Node` literal result arg to a term first).
+    fn finish_result(&mut self, target: ResultTarget, value: TermId) -> BuiltinResult {
         match target {
             ResultTarget::Bind(vid) => {
                 let mut extra = Substitution::new();
                 extra.bind(vid, value);
                 BuiltinResult::SuccessWithBindings(extra)
             }
-            ResultTarget::Compare(Some(t)) if t == value => BuiltinResult::Success,
-            ResultTarget::Compare(_) => BuiltinResult::Failure,
+            ResultTarget::Compare(Some(v)) => {
+                let bound = self.normalize_value(v);
+                if bound.as_term() == Some(value) {
+                    BuiltinResult::Success
+                } else {
+                    BuiltinResult::Failure
+                }
+            }
+            ResultTarget::Compare(None) => BuiltinResult::Failure,
         }
     }
 
@@ -2065,14 +2145,18 @@ impl KnowledgeBase {
 
     /// `scope(?sym, ?result)` — if `?sym` is bound to a Ref or Fn, bind `?result`
     /// to the enclosing scope term (Fn). Fails if scope is _global (top-level).
-    fn builtin_scope(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
-        let sym_arg = self.builtin_first_arg(goal);
-        let result_arg = self.builtin_second_arg(goal);
-
-        let walked_sym = self.walk(sym_arg, subst);
+    fn builtin_scope<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        let sym_val = match self.walk_arg(goal.pos_arg(self, 0), subst) {
+            Some(v) => v,
+            None => return BuiltinResult::Failure,
+        };
+        if self.value_is_unbound_var(&sym_val) {
+            return BuiltinResult::Delay;
+        }
+        let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
+        let walked_sym = reify_goal_value(self, &sym_val);
         // Extract the symbol from Ref or Fn term
         let sym = match self.terms.get(walked_sym) {
-            Term::Var(_) => return BuiltinResult::Delay,
             Term::Ref(s) => *s,
             Term::Fn { functor, .. } => *functor,
             _ => return BuiltinResult::Failure,
@@ -2092,7 +2176,7 @@ impl KnowledgeBase {
                 if self.symbols.name(f) == "_global" {
                     return BuiltinResult::Failure;
                 }
-                self.try_bind_result(result_arg, scope_tid, subst)
+                self.finish_result(target, scope_tid)
             }
             _ => BuiltinResult::Failure,
         }
@@ -2100,13 +2184,17 @@ impl KnowledgeBase {
 
     /// `kind(?sym, ?result)` — if `?sym` is bound to a Ref, bind `?result`
     /// to a string describing the symbol's kind ("Sort", "Entity", etc.).
-    fn builtin_kind(&mut self, goal: TermId, subst: &Substitution) -> BuiltinResult {
-        let sym_arg = self.builtin_first_arg(goal);
-        let result_arg = self.builtin_second_arg(goal);
-
-        let walked_sym = self.walk(sym_arg, subst);
+    fn builtin_kind<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        let sym_val = match self.walk_arg(goal.pos_arg(self, 0), subst) {
+            Some(v) => v,
+            None => return BuiltinResult::Failure,
+        };
+        if self.value_is_unbound_var(&sym_val) {
+            return BuiltinResult::Delay;
+        }
+        let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
+        let walked_sym = reify_goal_value(self, &sym_val);
         let sym = match self.terms.get(walked_sym) {
-            Term::Var(_) => return BuiltinResult::Delay,
             Term::Ref(s) => *s,
             Term::Fn { functor, .. } => *functor,
             _ => return BuiltinResult::Failure,
@@ -2131,7 +2219,7 @@ impl KnowledgeBase {
         };
 
         let kind_term = self.alloc(Term::Const(super::term::Literal::String(kind_str.to_owned())));
-        self.try_bind_result(result_arg, kind_term, subst)
+        self.finish_result(target, kind_term)
     }
 
     /// `field_access(?object, ?field, ?result)` — dot projection builtin.

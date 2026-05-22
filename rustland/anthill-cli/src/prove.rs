@@ -948,7 +948,7 @@ fn dispatch_derivation(
             };
         }
         let empty_subst = anthill_core::kb::subst::Substitution::new();
-        let (fresh_body, _links) = kb.with_fresh_vars(rule_id, &empty_subst);
+        let (fresh_body, _nodes, _links) = kb.with_fresh_vars(rule_id, &empty_subst);
         if !kb.resolve(&fresh_body, &config).is_empty() {
             return DispatchOutcome {
                 verdict: Verdict::Proved,

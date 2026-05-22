@@ -679,6 +679,100 @@ pub fn occurrence_has_unbound_var(root: &Rc<NodeOccurrence>) -> bool {
     false
 }
 
+/// WI-246: structural equality of two occurrences — used by
+/// `Value::structural_eq` so the resolver's non-linear-pattern consistency
+/// check (a head var bound at two goal positions) treats two structurally-
+/// equal-but-distinct occurrence sub-parts as equal (e.g. the two `green`s in
+/// `list_contains(green, cons(head: green, …))`). Compares the goal-relevant
+/// forms (Apply / Constructor / Instantiation / leaves) recursively; other
+/// forms compare unequal (conservative).
+pub fn occurrence_structural_eq(a: &Rc<NodeOccurrence>, b: &Rc<NodeOccurrence>) -> bool {
+    if Rc::ptr_eq(a, b) {
+        return true;
+    }
+    match (a.as_expr(), b.as_expr()) {
+        (Some(Expr::Var(x)), Some(Expr::Var(y))) => x == y,
+        (Some(Expr::Const(x)), Some(Expr::Const(y))) => x == y,
+        (Some(Expr::Ref(x)), Some(Expr::Ref(y))) => x == y,
+        (Some(Expr::Ident(x)), Some(Expr::Ident(y))) => x == y,
+        (Some(Expr::Bottom), Some(Expr::Bottom)) => true,
+        (
+            Some(Expr::Apply { functor: fa, pos_args: pa, named_args: na, .. }),
+            Some(Expr::Apply { functor: fb, pos_args: pb, named_args: nb, .. }),
+        ) => fa == fb && occ_children_eq(pa, na, pb, nb),
+        (
+            Some(Expr::Constructor { name: fa, pos_args: pa, named_args: na })
+            | Some(Expr::Instantiation { name: fa, pos_args: pa, named_args: na }),
+            Some(Expr::Constructor { name: fb, pos_args: pb, named_args: nb })
+            | Some(Expr::Instantiation { name: fb, pos_args: pb, named_args: nb }),
+        ) => fa == fb && occ_children_eq(pa, na, pb, nb),
+        _ => false,
+    }
+}
+
+fn occ_children_eq(
+    pa: &[Rc<NodeOccurrence>],
+    na: &[(Symbol, Rc<NodeOccurrence>)],
+    pb: &[Rc<NodeOccurrence>],
+    nb: &[(Symbol, Rc<NodeOccurrence>)],
+) -> bool {
+    pa.len() == pb.len()
+        && na.len() == nb.len()
+        && pa.iter().zip(pb).all(|(x, y)| occurrence_structural_eq(x, y))
+        && na.iter().zip(nb).all(|((ka, va), (kb, vb))| ka == kb && occurrence_structural_eq(va, vb))
+}
+
+/// WI-246: reify a rule-body-atom occurrence to a hash-consed `TermId` — the
+/// reverse of [`materialize_from_handle`]. Used ONLY at genuine term/identity
+/// boundaries (the resolver's dedup `seen_goals` key and `Solution.residual`),
+/// never for goal dispatch (goals match via `TermView`). Recursion is bounded
+/// by the goal-atom structure (predicate applications over leaves); control-
+/// flow forms can't appear at a goal position and fall to `⊥`.
+pub fn occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> TermId {
+    match occ.as_expr() {
+        Some(Expr::Var(v)) => kb.alloc(Term::Var(*v)),
+        Some(Expr::Const(lit)) => kb.alloc(Term::Const(lit.clone())),
+        Some(Expr::Ref(s)) => kb.alloc(Term::Ref(*s)),
+        Some(Expr::Ident(s)) => kb.alloc(Term::Ident(*s)),
+        Some(Expr::Apply { functor, pos_args, named_args, .. }) => {
+            occ_build_fn(kb, *functor, pos_args, named_args)
+        }
+        Some(Expr::Constructor { name, pos_args, named_args })
+        | Some(Expr::Instantiation { name, pos_args, named_args }) => {
+            occ_build_fn(kb, *name, pos_args, named_args)
+        }
+        // `Bottom` is valid; a *child-bearing* control-flow / post-elaboration
+        // form can't occur at a goal position — assert (debug) so a future
+        // violation fails a test rather than silently reifying to ⊥, matching
+        // `substitute_occurrence`'s guard.
+        other => {
+            debug_assert!(
+                matches!(other, Some(Expr::Bottom) | None),
+                "occurrence_to_term: unexpected non-goal Expr: {:?}",
+                other.map(std::mem::discriminant),
+            );
+            kb.alloc(Term::Bottom)
+        }
+    }
+}
+
+fn occ_build_fn(
+    kb: &mut KnowledgeBase,
+    functor: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> TermId {
+    let mut pos: smallvec::SmallVec<[TermId; 4]> = smallvec::SmallVec::new();
+    for c in pos_args {
+        pos.push(occurrence_to_term(kb, c));
+    }
+    let mut named: smallvec::SmallVec<[(Symbol, TermId); 2]> = smallvec::SmallVec::new();
+    for (s, c) in named_args {
+        named.push((*s, occurrence_to_term(kb, c)));
+    }
+    kb.alloc(Term::Fn { functor, pos_args: pos, named_args: named })
+}
+
 // ── Substitution over a rule-body-atom occurrence ───────────────
 
 /// WI-246: apply a resolution substitution σ to a rule-body-atom occurrence

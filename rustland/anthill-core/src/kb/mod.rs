@@ -1894,10 +1894,51 @@ impl KnowledgeBase {
         &mut self,
         id: RuleId,
         tree_subst: &subst::Substitution,
-    ) -> (Vec<TermId>, subst::Substitution) {
+    ) -> (Vec<TermId>, Vec<Rc<NodeOccurrence>>, subst::Substitution) {
         let arity = self.rules[id.index()].arity;
         let head = self.rules[id.index()].head;
         let body = self.rules[id.index()].body.clone();
+        // WI-246: the parallel occurrence body — opened + head-match-renamed
+        // the same way as the term body. The resolver pushes these as
+        // `Value::Node` goals; today they mirror the term body structurally,
+        // and are the substrate that will carry typer dot-rewrites once the
+        // typer produces them. NOTE: the caller's delay pre-check still runs on
+        // the term body (`final_body`), which assumes term/occurrence parity —
+        // revisit when the occurrence body starts to diverge.
+        let body_nodes = self.rules[id.index()].body_nodes.clone();
+
+        // WI-246: matching a `Value::Node` goal binds head/rule vars to
+        // `Value::Node` subparts of the goal. The De Bruijn / rename / answer-
+        // link logic below reads `tree_subst` term-only (`iter_terms` /
+        // `resolve_with_term`), which would silently DROP those bindings —
+        // losing the head-match constraint and letting the rule body run
+        // unconstrained (exponential over-exploration). Reify each
+        // `Value::Node` binding to a hash-consed term first. Fast-path: term
+        // goals produce no `Value::Node` binding, so pass `tree_subst` through
+        // untouched (no rebuild, and preserves any parent chain).
+        let normalized;
+        let tree_subst = if tree_subst
+            .iter()
+            .any(|(_, v)| matches!(v, crate::eval::value::Value::Node(_)))
+        {
+            let entries: Vec<(VarId, crate::eval::value::Value)> =
+                tree_subst.iter().map(|(v, val)| (*v, val.clone())).collect();
+            let mut norm = subst::Substitution::new();
+            for (vid, val) in entries {
+                match val {
+                    crate::eval::value::Value::Node(occ) => {
+                        let t = node_occurrence::occurrence_to_term(self, &occ);
+                        norm.bind(vid, t);
+                    }
+                    crate::eval::value::Value::Term(t) => norm.bind(vid, t),
+                    other => norm.bind_value(vid, other),
+                }
+            }
+            normalized = norm;
+            &normalized
+        } else {
+            tree_subst
+        };
 
         if arity > 0 {
             // De Bruijn path: allocate N fresh vars, open DeBruijn to Global
@@ -1953,7 +1994,24 @@ impl KnowledgeBase {
                     .collect()
             };
 
-            (final_body, answer_links)
+            // Occurrence body: De Bruijn-open with the same fresh vars, then
+            // apply the head-match rename via `substitute_occurrence` (the
+            // occurrence analog of `apply_subst` used for `final_body`).
+            let opened_nodes: Vec<Rc<NodeOccurrence>> = body_nodes
+                .iter()
+                .map(|n| node_occurrence::open_debruijn_node(n, &fresh_vars))
+                .collect();
+            let final_nodes = if body_rename.bindings.is_empty() {
+                opened_nodes
+            } else {
+                let mut out = Vec::with_capacity(opened_nodes.len());
+                for n in &opened_nodes {
+                    out.push(node_occurrence::substitute_occurrence(self, n, &body_rename));
+                }
+                out
+            };
+
+            (final_body, final_nodes, answer_links)
         } else {
             // Legacy path: Global vars (ground facts or rules not yet converted)
             let all_vars = self.collect_rule_vars(head, &body);
@@ -1976,6 +2034,13 @@ impl KnowledgeBase {
                 .map(|&b| self.apply_subst(b, &rename))
                 .collect();
 
+            // Occurrence body: legacy bodies already use Global vars, so just
+            // apply the same `rename` via `substitute_occurrence`.
+            let mut final_nodes = Vec::with_capacity(body_nodes.len());
+            for n in &body_nodes {
+                final_nodes.push(node_occurrence::substitute_occurrence(self, n, &rename));
+            }
+
             let mut answer_links = subst::Substitution::new();
             for (ts_vid, bound_term) in tree_subst.iter_terms() {
                 if all_vars.contains(&ts_vid) {
@@ -1995,7 +2060,7 @@ impl KnowledgeBase {
                 }
             }
 
-            (fresh_body, answer_links)
+            (fresh_body, final_nodes, answer_links)
         }
     }
 

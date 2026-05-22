@@ -144,6 +144,13 @@ impl Value {
                 Value::Entity { functor: f1, pos: p1, named: n1 },
                 Value::Entity { functor: f2, pos: p2, named: n2 },
             ) => f1 == f2 && children_eq(p1, n1, p2, n2),
+            // WI-246: two occurrence sub-parts compare structurally (the
+            // resolver's non-linear-pattern consistency check binds a head var
+            // to occurrence goals at two positions; distinct `Rc`s of the same
+            // structure must be equal).
+            (Value::Node(a), Value::Node(b)) => {
+                crate::kb::node_occurrence::occurrence_structural_eq(a, b)
+            }
             _ => self.scalar_eq(other),
         }
     }
