@@ -3,11 +3,18 @@ package anthill.intern
 import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet}
 
 
-/** Per-scope data: locals, imports, exports, parent inclusions, type params. */
+/** Per-scope data: locals, imports, exposed variants, parent inclusions,
+  * type params.
+  *
+  * `exposed` holds the names this scope leaks to its enclosing scope through a
+  * (non-enclosing) variant-exposure parent link — a sort's entity-variant
+  * short names ONLY (proposal 044 job 2). An empty set disables the filter
+  * (the scope is reachable only via `requires`/wildcard, which see all of it).
+  * Names are visible by default; user `export` statements have no effect. */
 class Scope:
   val locals: HashMap[String, TermSymbol] = HashMap.empty
   val imports: HashMap[String, TermSymbol] = HashMap.empty
-  val exports: HashSet[String] = HashSet.empty
+  val exposed: HashSet[String] = HashSet.empty
   val parents: ArrayBuffer[ScopeInclusion] = ArrayBuffer.empty
   val typeParams: HashSet[String] = HashSet.empty
 
@@ -44,8 +51,10 @@ class SymbolTable:
         byQualifiedName(qualifiedName) = sym
         sym
 
-  def addExport(scopeRaw: Int, name: String): Unit =
-    scopes.getOrElseUpdate(scopeRaw, Scope()).exports += name
+  /** Mark a name as exposed from a scope to its enclosing scope via the
+    * variant-exposure parent link (populated from entity variants only). */
+  def addExposed(scopeRaw: Int, name: String): Unit =
+    scopes.getOrElseUpdate(scopeRaw, Scope()).exposed += name
 
   def addTypeParam(scopeRaw: Int, name: String): Unit =
     scopes.getOrElseUpdate(scopeRaw, Scope()).typeParams += name
@@ -84,7 +93,7 @@ class SymbolTable:
             case None => true
             case Some(parent) =>
               !parent.typeParams.contains(name) &&
-              (parent.exports.isEmpty || parent.exports.contains(name))
+              (parent.exposed.isEmpty || parent.exposed.contains(name))
         }.map(_.parentScopeRaw)
 
         val matches = ArrayBuffer.empty[TermSymbol]

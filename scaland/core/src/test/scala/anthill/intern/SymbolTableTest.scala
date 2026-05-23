@@ -39,7 +39,6 @@ class SymbolTableTest extends munit.FunSuite:
   test("resolve in scope - parent") {
     val st = SymbolTable()
     val eqSym = st.define("eq", "Eq.eq", SymbolKind.Operation, 100)
-    st.addExport(100, "eq")
     st.addParent(200, ScopeInclusion(parentScopeRaw = 100, instantiationTermRaw = 0, isEnclosing = false))
 
     st.resolveInScope("eq", 200) match
@@ -50,11 +49,9 @@ class SymbolTableTest extends munit.FunSuite:
   test("resolve excludes type params") {
     val st = SymbolTable()
     st.define("T", "Eq.T", SymbolKind.Sort, 100)
-    st.addExport(100, "T")
     st.addTypeParam(100, "T")
 
     val eqSym = st.define("eq", "Eq.eq", SymbolKind.Operation, 100)
-    st.addExport(100, "eq")
 
     st.addParent(200, ScopeInclusion(parentScopeRaw = 100, instantiationTermRaw = 0, isEnclosing = false))
 
@@ -70,9 +67,7 @@ class SymbolTableTest extends munit.FunSuite:
   test("resolve ambiguous") {
     val st = SymbolTable()
     st.define("foo", "A.foo", SymbolKind.Operation, 100)
-    st.addExport(100, "foo")
     st.define("foo", "B.foo", SymbolKind.Operation, 200)
-    st.addExport(200, "foo")
 
     st.addParent(300, ScopeInclusion(parentScopeRaw = 100, instantiationTermRaw = 0, isEnclosing = false))
     st.addParent(300, ScopeInclusion(parentScopeRaw = 200, instantiationTermRaw = 0, isEnclosing = false))
@@ -85,7 +80,6 @@ class SymbolTableTest extends munit.FunSuite:
   test("local shadows parent") {
     val st = SymbolTable()
     st.define("foo", "A.foo", SymbolKind.Operation, 100)
-    st.addExport(100, "foo")
 
     val localFoo = st.define("foo", "B.foo", SymbolKind.Operation, 200)
     st.addParent(200, ScopeInclusion(parentScopeRaw = 100, instantiationTermRaw = 0, isEnclosing = false))

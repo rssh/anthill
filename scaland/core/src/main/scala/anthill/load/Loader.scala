@@ -71,12 +71,9 @@ object Loader:
           val qualName = makeQualified(prefix, shortName)
           val sym = kb.symbols.define(shortName, qualName, SymbolKind.Namespace, scopeTerm.raw)
           val nsTerm = kb.makeNameTermFromSym(sym)
-          kb.symbols.addExport(scopeTerm.raw, shortName)
-          // Enclosing scope
+          // Enclosing scope. (Model C: names visible by default; user `export`
+          // statements have no effect, so ns.exports is ignored.)
           kb.symbols.addParent(nsTerm.raw, ScopeInclusion(scopeTerm.raw, 0, isEnclosing = true))
-          // Exports
-          for exp <- ns.exports do
-            kb.symbols.addExport(nsTerm.raw, joinSegments(fileSym, exp.segments))
           scanItemsPass1(kb, ns.items, fileSym, fileTerms, nsTerm, qualName)
 
         case Item.SortWithBodyItem(sort) =>
@@ -85,10 +82,18 @@ object Loader:
           val sym = kb.symbols.define(shortName, qualName, SymbolKind.Sort, scopeTerm.raw)
           val sortTerm = kb.makeNameTermFromSym(sym)
           kb.registerSort(sortTerm, SortKind.Defined)
-          kb.symbols.addExport(scopeTerm.raw, shortName)
           kb.symbols.addParent(sortTerm.raw, ScopeInclusion(scopeTerm.raw, 0, isEnclosing = true))
-          for exp <- sort.exports do
-            kb.symbols.addExport(sortTerm.raw, joinSegments(fileSym, exp.segments))
+          // Variant exposure (proposal 044 job 2): a sort exposes ONLY its
+          // entity-variant names to the enclosing scope, linked as a
+          // non-enclosing parent — so bare `Open` resolves to `WorkStatus.Open`
+          // while operations never leak as bare names. User `export` statements
+          // have no effect (sort.exports ignored).
+          val variants = sort.items.collect {
+            case Item.EntityItem(e) => joinSegments(fileSym, e.name.segments)
+          }
+          for v <- variants do kb.symbols.addExposed(sortTerm.raw, v)
+          if variants.nonEmpty then
+            kb.symbols.addParent(scopeTerm.raw, ScopeInclusion(sortTerm.raw, 0, isEnclosing = false))
           scanItemsPass1(kb, sort.items, fileSym, fileTerms, sortTerm, qualName)
 
         case Item.AbstractSortItem(sort) =>
@@ -97,7 +102,6 @@ object Loader:
           val sym = kb.symbols.define(shortName, qualName, SymbolKind.Sort, scopeTerm.raw)
           val sortTerm = kb.makeNameTermFromSym(sym)
           kb.registerSort(sortTerm, SortKind.Abstract)
-          kb.symbols.addExport(scopeTerm.raw, shortName)
           // `sort T = ?` inside a SortWithBody (or enum) declares a type
           // parameter local to the enclosing sort. The resolver uses this
           // marker to keep T from leaking into ambient name-resolution from
@@ -114,7 +118,6 @@ object Loader:
           val entityTerm = kb.makeNameTermFromSym(sym)
           kb.registerSort(entityTerm, SortKind.Constructor)
           kb.registerEntityOf(entityTerm, scopeTerm)
-          kb.symbols.addExport(scopeTerm.raw, shortName)
           // Register entity fields
           val fields = entity.fields.map(f => fileSym.name(f.name)).map(kb.intern)
           kb.registerEntityFields(sym, fields)
@@ -123,14 +126,12 @@ object Loader:
           val shortName = joinSegments(fileSym, op.name.segments)
           val qualName = makeQualified(prefix, shortName)
           kb.symbols.define(shortName, qualName, SymbolKind.Operation, scopeTerm.raw)
-          kb.symbols.addExport(scopeTerm.raw, shortName)
 
         case Item.OperationBlockItem(block) =>
           for op <- block.entries do
             val shortName = joinSegments(fileSym, op.name.segments)
             val qualName = makeQualified(prefix, shortName)
             kb.symbols.define(shortName, qualName, SymbolKind.Operation, scopeTerm.raw)
-            kb.symbols.addExport(scopeTerm.raw, shortName)
 
         case Item.RuleItem(rule) =>
           rule.label.foreach { label =>

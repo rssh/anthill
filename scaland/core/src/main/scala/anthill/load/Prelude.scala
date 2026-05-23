@@ -25,19 +25,15 @@ object Prelude:
 
     val anthillSym = kb.symbols.define("anthill", "anthill", SymbolKind.Namespace, globalScope.raw)
     val anthillScope = kb.makeNameTermFromSym(anthillSym)
-    kb.symbols.addExport(globalScope.raw, "anthill")
 
     val preludeSym = kb.symbols.define("prelude", "anthill.prelude", SymbolKind.Namespace, anthillScope.raw)
     kb.makeNameTermFromSym(preludeSym)
-    kb.symbols.addExport(anthillScope.raw, "prelude")
 
     val reflectSym = kb.symbols.define("reflect", "anthill.reflect", SymbolKind.Namespace, anthillScope.raw)
     kb.makeNameTermFromSym(reflectSym)
-    kb.symbols.addExport(anthillScope.raw, "reflect")
 
     val typingSym = kb.symbols.define("typing", "anthill.reflect.typing", SymbolKind.Namespace,
       kb.resolveQualifiedNameTerm("anthill.reflect").raw)
-    kb.symbols.addExport(kb.resolveQualifiedNameTerm("anthill.reflect").raw, "typing")
 
   private def registerPrimitiveSorts(kb: KnowledgeBase): Unit =
     val preludeScope = kb.resolveQualifiedNameTerm("anthill.prelude")
@@ -46,7 +42,6 @@ object Prelude:
       val sym = kb.symbols.define(name, qualName, SymbolKind.Sort, preludeScope.raw)
       val sortTerm = kb.makeNameTermFromSym(sym)
       kb.registerSort(sortTerm, SortKind.Defined)
-      kb.symbols.addExport(preludeScope.raw, name)
 
   private def registerKernelMetaSorts(kb: KnowledgeBase): Unit =
     val reflectScope = kb.resolveQualifiedNameTerm("anthill.reflect")
@@ -55,31 +50,35 @@ object Prelude:
       val sym = kb.symbols.define(name, qualName, SymbolKind.Sort, reflectScope.raw)
       val sortTerm = kb.makeNameTermFromSym(sym)
       kb.registerSort(sortTerm, SortKind.Defined)
-      kb.symbols.addExport(reflectScope.raw, name)
 
   /** Register Expr, Pattern, TypedExpr sorts and their entities. */
   private def registerExprSorts(kb: KnowledgeBase): Unit =
     val reflectScope = kb.resolveQualifiedNameTerm("anthill.reflect")
 
-    // Helper to define a sort with enclosing scope
+    // Helper to define a sort with enclosing scope. The sort is also linked
+    // as a non-enclosing parent of its parent scope so its entity variants
+    // (added via defineEntity → addExposed) resolve bare from the enclosing
+    // scope — the variant-exposure mechanism (proposal 044 job 2).
     def defineSort(shortName: String, qualName: String, parentScope: TermId): TermId =
       val sym = kb.symbols.define(shortName, qualName, SymbolKind.Sort, parentScope.raw)
       val sortTerm = kb.makeNameTermFromSym(sym)
       kb.registerSort(sortTerm, SortKind.Defined)
-      kb.symbols.addExport(parentScope.raw, shortName)
       kb.symbols.addParent(sortTerm.raw,
         ScopeInclusion(parentScope.raw, parentScope.raw, isEnclosing = true))
+      kb.symbols.addParent(parentScope.raw,
+        ScopeInclusion(sortTerm.raw, 0, isEnclosing = false))
       sortTerm
 
-    // Helper to define an entity in a sort scope
+    // Helper to define an entity (variant) in a sort scope — exposed to the
+    // enclosing scope via the sort's variant-exposure link.
     def defineEntity(shortName: String, qualName: String, scopeTerm: TermId): Unit =
       kb.symbols.define(shortName, qualName, SymbolKind.Entity, scopeTerm.raw)
-      kb.symbols.addExport(scopeTerm.raw, shortName)
+      kb.symbols.addExposed(scopeTerm.raw, shortName)
 
-    // Helper to define a standalone entity in reflect scope
+    // Helper to define a standalone entity directly in the reflect scope.
+    // Visible by default (reflect is a parent of _global with empty `exposed`).
     def defineReflectEntity(shortName: String): Unit =
       kb.symbols.define(shortName, s"anthill.reflect.$shortName", SymbolKind.Entity, reflectScope.raw)
-      kb.symbols.addExport(reflectScope.raw, shortName)
 
     // anthill.reflect.Expr sort + entities
     val exprTerm = defineSort("Expr", "anthill.reflect.Expr", reflectScope)
@@ -146,7 +145,6 @@ object Prelude:
         case Some(nsSym) =>
           val nsScope = kb.makeNameTermFromSym(nsSym)
           val sym = kb.symbols.define(short, qualName, SymbolKind.Operation, nsScope.raw)
-          kb.symbols.addExport(nsScope.raw, short)
           kb.registerBuiltin(sym, tag)
         case None =>
           val sym = kb.intern(qualName)
