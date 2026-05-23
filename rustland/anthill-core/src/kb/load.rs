@@ -233,6 +233,12 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
     for file in files {
         scan_items_pass2(kb, &file.items, &file.symbols, global, "", &mut errors);
     }
+
+    // Sub-pass 3: register unlabeled rule head-functor Goals, binding to an
+    // inherited/existing origin where one resolves (proposal 044 / B2).
+    for file in files {
+        scan_items_pass3(kb, &file.items, &file.symbols, &file.terms, global, "");
+    }
     errors
 }
 
@@ -391,12 +397,13 @@ fn scan_operation_params(
 ///
 /// `prefix` is the fully-qualified path of the enclosing scope (empty at top level).
 /// Nested items get `qualified_name = prefix + "." + name`.
-/// Define a rule's label and head functor as scoped symbols.
+/// Define a rule's label as a scoped symbol (pass 1). The head-functor Goal
+/// identity is registered later, in `scan_rule_goal` (pass 3), once `requires`
+/// parents are wired — see proposal 044.
 fn scan_rule(
     kb: &mut KnowledgeBase,
     r: &Rule,
     parse_sym: &crate::intern::SymbolTable,
-    parse_terms: &SimpleTermStore,
     scope: TermId,
     prefix: &str,
 ) {
@@ -405,18 +412,38 @@ fn scan_rule(
         let qualified = make_qualified(prefix, &name);
         kb.symbols.define(&name, &qualified, SymbolKind::Rule, scope.raw());
     }
-    // Register the rule's head-functor identity as a scoped Goal
-    // symbol. The transitional load strategy (proposal 032) is:
-    //
-    //   * labeled rule: the label IS the rule's identity. Already
-    //     registered above as `SymbolKind::Rule` — no separate Goal
-    //     entry is needed (the synthesized KB head is a 0-arg
-    //     functor matching the label, looked up by name).
-    //   * unlabeled single-head rule: the head functor IS the rule's
-    //     identity. Register it as a Goal so SLD can dispatch against
-    //     it. Multi-head unlabeled rules are rejected at load time.
-    if r.label.is_none() {
-        if let Some(functor_name) = unlabeled_head_functor_name(r, parse_sym, parse_terms) {
+}
+
+/// Register an unlabeled rule's head functor as a scoped Goal symbol — UNLESS
+/// the name already resolves in scope (proposal 044 / B2). The transitional
+/// load strategy (proposal 032) is:
+///
+///   * labeled rule: the label IS the rule's identity (registered in pass 1);
+///     no separate Goal entry is needed.
+///   * unlabeled single-head rule: the head functor IS the rule's identity.
+///
+/// B2: when the head functor already resolves — an operation inherited via
+/// `requires` (e.g. `Ordered`'s `eq` law resolving to `Eq.eq`), or a locally
+/// declared operation — the rule binds to that ORIGIN symbol instead of
+/// minting a shadowing sort-local `Goal`. Only a genuinely-new head predicate
+/// (NotFound) gets a fresh Goal. Runs in pass 3 so the `requires` parent chain
+/// is already wired.
+fn scan_rule_goal(
+    kb: &mut KnowledgeBase,
+    r: &Rule,
+    parse_sym: &crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+    scope: TermId,
+    prefix: &str,
+) {
+    if r.label.is_some() {
+        return;
+    }
+    if let Some(functor_name) = unlabeled_head_functor_name(r, parse_sym, parse_terms) {
+        if matches!(
+            kb.symbols.resolve_in_scope(functor_name, scope.raw()),
+            crate::intern::ResolveResult::NotFound
+        ) {
             let qualified = make_qualified(prefix, functor_name);
             kb.symbols.define(functor_name, &qualified, SymbolKind::Goal, scope.raw());
         }
@@ -591,11 +618,11 @@ fn scan_items_pass1(
                 }
             }
             Item::Rule(r) => {
-                scan_rule(kb, r, parse_sym, parse_terms, scope, prefix);
+                scan_rule(kb, r, parse_sym, scope, prefix);
             }
             Item::RuleBlock(rb) => {
                 for rule in &rb.entries {
-                    scan_rule(kb, rule, parse_sym, parse_terms, scope, prefix);
+                    scan_rule(kb, rule, parse_sym, scope, prefix);
                 }
             }
             Item::Constraint(_) => {
@@ -652,6 +679,45 @@ fn scan_items_pass2(
                         instantiation_term_raw: inst_term.raw(),
                         is_enclosing: false,
                     });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Sub-pass 3: register unlabeled rule head functors as Goal symbols, now that
+/// `requires`/import parents are wired (pass 2). A head functor that already
+/// resolves — an inherited operation or a locally declared one — binds to that
+/// origin rather than minting a shadowing sort-local symbol (proposal 044 / B2).
+fn scan_items_pass3(
+    kb: &mut KnowledgeBase,
+    items: &[Item],
+    parse_sym: &crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+    scope: TermId,
+    prefix: &str,
+) {
+    for item in items {
+        match item {
+            Item::SortWithBody(s) => {
+                let name = join_segments(parse_sym, &s.name.segments);
+                let qualified = make_qualified(prefix, &name);
+                if let Some(sort_term) = find_scope_by_name(kb, &qualified) {
+                    scan_items_pass3(kb, &s.items, parse_sym, parse_terms, sort_term, &qualified);
+                }
+            }
+            Item::Namespace(n) => {
+                let name = join_segments(parse_sym, &n.name.segments);
+                let qualified = make_qualified(prefix, &name);
+                if let Some(ns_term) = find_scope_by_name(kb, &qualified) {
+                    scan_items_pass3(kb, &n.items, parse_sym, parse_terms, ns_term, &qualified);
+                }
+            }
+            Item::Rule(r) => scan_rule_goal(kb, r, parse_sym, parse_terms, scope, prefix),
+            Item::RuleBlock(rb) => {
+                for rule in &rb.entries {
+                    scan_rule_goal(kb, rule, parse_sym, parse_terms, scope, prefix);
                 }
             }
             _ => {}

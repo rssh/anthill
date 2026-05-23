@@ -65,6 +65,24 @@ A prototype that makes resolution ignore the `export` whitelist:
 
 **Conclusion:** `export` is *not* decorative in Rust — it is the current mechanism for **disambiguating inherited operations**. "Drop `export`, shorter programs" cannot be done without first replacing that disambiguation mechanism.
 
+### Root cause of the `eq` ambiguity (instrumented)
+
+`anthill.prelude.Ordered.eq` is minted in `scan_rule` (`kb/load.rs`) as a `SymbolKind::Goal` for the head functor of `Ordered`'s consistency law `eq(?a,?b) = eq(compare(?a,?b),0)`. So an **override** — a derived rule for an operation inherited via `requires` — currently creates a *distinct* sort-local symbol that shadows the inherited `Eq.eq`. The `export` list (omitting `eq`) is what hides it. This is a latent modeling defect independent of Model C: a derived rule for an inherited op should attach to that op.
+
+### Prototype result — B2 validated via "R2"
+
+Implemented the **R2** variant of Part B: move rule-head-functor `Goal` registration out of pass 1 into a new **pass 3** (after `requires` parents are wired), and mint the Goal **only when the name does not already resolve in scope**. An inherited/locally-declared op resolves → the rule binds to that origin; only a genuinely-new head predicate gets a fresh Goal.
+
+Measured (rustland):
+- **R2 alone, export whitelist still ON:** full `anthill-core` suite green — R2 is a correct, non-regressing fix on its own.
+- **R2 + export whitelist OFF:** `wi_tests` 129/0 (was 42/87); whole suite green **except 4** `ring-polynom` fixture tests. The 87 inherited-op ambiguities are gone — no `Ordered.eq` is ever minted.
+
+So **B2 is adopted, implemented as R2.** (R2 is the concrete spelling of B2; the "alias the origin" framing is realized by simply *not minting* the shadow symbol so resolution finds the origin.)
+
+### Residual: operation leakage to enclosing scope (job 2)
+
+The 4 remaining `ring-polynom` failures are **not** the inherited-op problem. The testcase defines a top-level `sort Ring` whose member `one` is a rule-derived **operation**; with the whitelist off, `one` leaks to `_global` and collides with stdlib's `anthill.prelude.algebra.Ring.one` when `VectorSpace` resolves `one`. This is **job 2**: a sort must expose only its **entity variants** to the enclosing scope, never its operations. The fix is the dedicated `exposed` set (variants only); the `ring-polynom` testcase is its **acceptance test** — it should go green with the whitelist off and *no change to the fixture*. Only if a genuine two-`Ring`-at-`_global` clash remains do we namespace the fixture's sort (per the existing loader convention "colliding fixtures must namespace their sorts").
+
 ## Proposed model
 
 Two parts. Part A is uncontroversial; Part B is the open design question.
@@ -96,20 +114,22 @@ After A+B, both implementations implement the identical `resolve_in_scope` (loca
 
 ## Migration plan
 
-1. **Decide B** (this proposal's review).
-2. Implement B (origin tracking or aliasing) in **rustland** first (ground truth); confirm the 87 `wi_tests` pass with `export` whitelisting disabled.
-3. Mirror the identical algorithm in **scaland**.
-4. Flip visibility to Part A on both; make `export` a no-op; add `exposed` variant mechanism to scaland.
-5. Strip `export` statements from stdlib (one mechanical pass; both engines stay green).
-6. Document the unified algorithm in `kernel-language.md` (§8.6 rewrite + new Name Resolution section); fix the false "internal by default" claim.
-7. Remove `export` from the grammar (WI-289).
+1. ~~**Decide B**~~ — done: **B2**, implemented as **R2** (pass-3 head-functor registration that binds to an existing origin).
+2. ~~Implement B in **rustland**~~ — done (R2): standalone-green with export ON; with export OFF the 87 `wi_tests` ambiguities are cleared.
+3. **Job 2 (next):** dedicated `exposed` set (entity variants only) so a sort never leaks operations to the enclosing scope. Acceptance test: `ring-polynom` green with the whitelist off, fixture unchanged.
+4. Mirror the identical algorithm (R2 + `exposed`) in **scaland**.
+5. Flip visibility to Part A on both; make `export` a no-op.
+6. Strip `export` statements from stdlib (one mechanical pass; both engines stay green).
+7. Document the unified algorithm in `kernel-language.md` (§8.6 rewrite + new Name Resolution section); fix the false "internal by default" claim.
+8. Remove `export` from the grammar (WI-289).
 
 ## Acceptance criteria
 
 - `rustland` and `scaland` implement the same documented resolution algorithm; a shared cross-impl fixture resolves identically.
 - stdlib carries no `export` statements; both engines load it green.
 - `internal` hides a name from import/wildcard/parent resolution (tested on both sides).
-- The `Eq`/`Ordered`/`Numeric` `eq` case resolves unambiguously with no `export` whitelist.
+- The `Eq`/`Ordered`/`Numeric` `eq` case resolves unambiguously with no `export` whitelist. **(met by R2)**
+- The `ring-polynom` testcase loads green alongside stdlib with the `export` whitelist off and **no change to the fixture** (job-2 acceptance test).
 - `kernel-language.md` has a Name Resolution section matching the implementation.
 
 ## Open questions
