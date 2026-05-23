@@ -2077,3 +2077,22 @@ fact WorkItem(
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
   status: Open)
+fact WorkItem(
+  id: "WI-288",
+  description: "Scala loader/typer: consume WI-185/WI-269 parser hints (type_name, type_args, type_params)
+
+Follow-up to the parser-only Phase A port (effectSet tightening WI-092, let type annotation WI-185, operation type params WI-269). The Scala parser now emits IR the loader/typer ignores:
+
+1. loadLetExpr (Loader.scala ~633) reads only posArgs and drops the 'type_name' named-arg, so the WI-185 let type annotation never reaches the typer. Read fn.namedArgs and thread the hint through.
+
+2. loadApplyOrConstructor (Loader.scala ~705) treats the injected 'type_args' named-arg as an ordinary call argument, so Name[bindings](args) loads with a spurious value argument instead of as type arguments. Recognize/strip 'type_args' and route it as call-site type bindings.
+
+3. typeExprToRef (AnthillParser.scala ~352) has no case for TypeExpr.Arrow / TupleType and falls through to a Ref(\"_\") sentinel; arrow/tuple annotations and positional bindings silently degrade. Extend coverage.
+
+4. Operation.typeParams is parsed and stored but not consumed by the Scala loader/typer (rust consumes it in kb/load.rs + kb/typing.rs). Wire it in to close the dual-typer gap.
+
+Rust is ground truth here; these are the Scala-side catch-up items.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
