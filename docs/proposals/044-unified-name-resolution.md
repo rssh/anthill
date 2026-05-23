@@ -39,12 +39,15 @@ The name-resolution algorithm and visibility model are as written in
    R2); scaland does not register them at all. This dispatch mechanism is
    separable from name resolution and is deferred.
 
-**Status of behavior conformance:** rustland fully conforms (R2 + variants-only
-exposure + visible-by-default; full suite green, `ring-polynom` acceptance test
-green unchanged). scaland conforms on the resolution core and visible-by-default;
-its remaining gap is variant exposure (no sort→enclosing variant link; still
-auto-exposes every member) — tracked in WI-290 with the requires-interaction
-risk to validate.
+**Status of behavior conformance:** **both engines conform.** rustland: R2 +
+variants-only exposure + visible-by-default (full suite green; `ring-polynom`
+acceptance test green unchanged). scaland: the same `exposed`=variants-only set,
+variant-exposure parent links, and visible-by-default (full suite green, 166/0).
+The `requires`-of-a-sort-with-variants interaction was validated against
+scaland's stdlib and does not bite. Remaining (consistent across both, latent):
+the `internal` hide gate is documented but not yet enforced by either engine —
+no stdlib uses `internal`. Unifying unlabeled-rule head-functor dispatch stays
+future work.
 
 The sections below record the investigation that led here.
 
