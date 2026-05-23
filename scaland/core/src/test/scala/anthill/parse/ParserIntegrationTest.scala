@@ -204,7 +204,11 @@ class ParserIntegrationTest extends munit.FunSuite:
     assert(result.isRight, s"Parse failed: ${result.left.getOrElse(IndexedSeq.empty).map(_.message).mkString(", ")}")
     val pf = result.toOption.get
 
-    val sorts = pf.items.collect { case Item.SortWithBodyItem(s) => s }
+    // The sorts are nested inside `namespace test.monoid { … }`, so descend
+    // into the namespace's items (the parser nests, matching rustland).
+    val ns = pf.items.collectFirst { case Item.NamespaceItem(n) => n }
+      .getOrElse(fail("expected namespace test.monoid"))
+    val sorts = ns.items.collect { case Item.SortWithBodyItem(s) => s }
     val sortNames = sorts.map(s => pf.symbols.name(s.name.last)).toSet
     assertEquals(sortNames, Set("Monoid", "IntAdd", "IntMul", "AutoBindTest"))
 
@@ -659,14 +663,17 @@ class ParserIntegrationTest extends munit.FunSuite:
     val algebraPf = parseStdlibFile("anthill.prelude.algebra")
     val floatPf = parseStdlibFile("anthill.prelude.float")
 
-    val ns = floatPf.items.collectFirst { case Item.NamespaceItem(n) => n }
-      .getOrElse(fail("expected namespace"))
+    // proposal 038: Float is now a top-level `sort anthill.prelude.Float`
+    // (was `namespace`), and its typeclass-satisfaction facts moved to the
+    // per-language binding files — stdlib holds the pure spec.
+    val ns = floatPf.items.collectFirst { case Item.SortWithBodyItem(s) => s }
+      .getOrElse(fail("expected sort"))
     assertEquals(ns.name.segments.map(floatPf.symbols.name).mkString("."), "anthill.prelude.Float")
 
-    // 4 typeclass facts (Eq / Ordered / Numeric / Ring), 28 operations,
-    // 4 rules, 6 constraints — a namespace with no inner sorts.
-    assertEquals(countItems(ns.items) { case Item.FactItem(_) => }, 4,
-      "Float should declare 4 typeclass-membership facts")
+    // No satisfaction facts in stdlib (moved to bindings); 28 operations,
+    // 4 rules, 6 constraints — a sort with no inner sorts.
+    assertEquals(countItems(ns.items) { case Item.FactItem(_) => }, 0,
+      "Float spec should declare no satisfaction facts (moved to bindings)")
     val opCount = sumItems(ns.items) {
       case Item.OperationBlockItem(b) => b.entries.length
       case Item.OperationItem(_)      => 1
