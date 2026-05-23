@@ -159,6 +159,7 @@ enum RuleHead:
 case class Operation(
   visibility: Option[Visibility],
   name: Name,
+  typeParams: IndexedSeq[TypeParam],
   params: IndexedSeq[Param],
   returnType: TypeExpr,
   requires: IndexedSeq[IndexedSeq[TermId]],
@@ -170,6 +171,12 @@ case class Operation(
 )
 
 case class Param(name: TermSymbol, ty: TypeExpr)
+
+/** Operation-local type parameter (WI-269): `[T]` or `[T = Default]`.
+  * Mirrors rustland's `TypeParam`. These declare operation-local logical
+  * variables, distinct from sort-parameter bindings at an instantiation
+  * site. `default` carries the optional `= Type` right-hand side. */
+case class TypeParam(name: TermSymbol, default: Option[TypeExpr], span: Span)
 
 // ── Requires declaration ────────────────────────────────────────
 

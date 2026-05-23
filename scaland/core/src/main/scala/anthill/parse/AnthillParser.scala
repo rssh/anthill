@@ -222,9 +222,20 @@ private class AnthillParserImpl(
     * prevents the bare branch from rescuing `{}` via `setType`. */
   private def effectSet[$: P]: P[IndexedSeq[TypeExpr]] =
     P(
-      ("{" ~/ typeExpr.rep(1, sep = ",") ~ "}").map(_.toIndexedSeq) |
-      nonArrowType.map(IndexedSeq(_))
+      ("{" ~/ effectType.rep(1, sep = ",") ~ "}").map(_.toIndexedSeq) |
+      effectType.map(IndexedSeq(_))
     )
+
+  /** Single effect type. Mirrors rustland's `_effect_type` (WI-092):
+    * `simple_type | parameterized_type | variable_term` only. Tuple and
+    * arrow types are deliberately rejected — neither is meaningful as an
+    * effect, and accepting a leading `(` would let a typo like
+    * `effects (Modify self)` consume the `(` as an arrow/tuple type and
+    * cascade error recovery across the enclosing body. With `(` rejected
+    * up front the parser fails at the bad token and resyncs at the next
+    * clause keyword. */
+  private def effectType[$: P]: P[TypeExpr] =
+    P(parameterizedType | variableType | simpleType)
 
   private def arrowParams[$: P]: P[IndexedSeq[TypeExpr]] =
     P("(" ~ typeExpr.rep(sep = ",") ~ ")").map(_.toIndexedSeq)
@@ -282,6 +293,13 @@ private class AnthillParserImpl(
   private enum NameSuffix:
     case FnArgs(args: IndexedSeq[Either[TermId, (TermSymbol, TermId)]])
     case InstArgs(bindings: IndexedSeq[SortBinding])
+    // WI-269: `Name[bindings](args)` — an instantiation term used as a
+    // call callee. The bindings are call-site type arguments, the args
+    // the actual call arguments.
+    case InstThenFn(
+      bindings: IndexedSeq[SortBinding],
+      args: IndexedSeq[Either[TermId, (TermSymbol, TermId)]]
+    )
     case Bare
 
   private def fnOrInstOrIdent[$: P]: P[TermId] =
@@ -309,6 +327,31 @@ private class AnthillParserImpl(
           }
           terms.alloc(Term.Fn(intern(funcStr), IArray.from(posArgs), IArray.from(namedArgs)))
 
+        case NameSuffix.InstThenFn(bindings, args) =>
+          val funcStr = n.segments.map(symbols.name).mkString(".")
+          val posArgs = ArrayBuffer.empty[TermId]
+          val namedArgs = ArrayBuffer.empty[(TermSymbol, TermId)]
+          args.foreach {
+            case Left(tid) => posArgs += tid
+            case Right((k, v)) => namedArgs += ((k, v))
+          }
+          // Carry the `[A = Int, …]` call-site bindings as a `type_args`
+          // named-arg child, mirroring rustland's ParseAux(SortBindings).
+          // Positional bindings stay positional, `p = T` stays named,
+          // matching the InstArgs lowering above.
+          if bindings.nonEmpty then
+            val bPos = ArrayBuffer.empty[TermId]
+            val bNamed = ArrayBuffer.empty[(TermSymbol, TermId)]
+            bindings.foreach { sb =>
+              val bt = typeExprToRef(sb.bound)
+              sb.param match
+                case Some(p) => bNamed += ((p.last, bt))
+                case None => bPos += bt
+            }
+            val aux = terms.alloc(Term.Fn(intern("type_args"), IArray.from(bPos), IArray.from(bNamed)))
+            namedArgs += ((intern("type_args"), aux))
+          terms.alloc(Term.Fn(intern(funcStr), IArray.from(posArgs), IArray.from(namedArgs)))
+
         case NameSuffix.Bare =>
           if n.isSimple then terms.alloc(Term.Ident(n.last))
           else
@@ -322,7 +365,13 @@ private class AnthillParserImpl(
   private def nameSuffix[$: P]: P[NameSuffix] =
     P(
       fnArgsList.map(NameSuffix.FnArgs(_)) |
-      instArgsList.map(NameSuffix.InstArgs(_)) |
+      // WI-269: an instantiation `[bindings]` may be followed by a call
+      // `(args)`. The trailing-token after `]` disambiguates: `(` → typed
+      // call (InstThenFn), otherwise a bare instantiation term (InstArgs).
+      (instArgsList ~ fnArgsList.?).map {
+        case (bindings, Some(args)) => NameSuffix.InstThenFn(bindings, args)
+        case (bindings, None)       => NameSuffix.InstArgs(bindings)
+      } |
       Pass(NameSuffix.Bare)
     )
 
@@ -462,10 +511,19 @@ private class AnthillParserImpl(
         terms.alloc(Term.Fn(intern("if_expr"), IArray(cond, thenB, elseB), IArray.empty))
     }
 
+  /** `let pat [: T] = value in body`. The optional `: T` annotation
+    * (proposal 035 form (1), WI-185) supplies an expected-type hint to the
+    * typer for the value position. Mirrors rustland: encoded as a
+    * `type_name` named-arg child holding the type lowered to a term; the
+    * positional args stay `(pattern, value, body)` so the bare form is
+    * unchanged. */
   private def letExpr[$: P]: P[TermId] =
-    P(keyword("let") ~/ pattern ~ "=" ~ exprBody ~ keyword("in") ~ exprBody).map {
-      case (pat, value, body) =>
-        terms.alloc(Term.Fn(intern("let_expr"), IArray(pat, value, body), IArray.empty))
+    P(keyword("let") ~/ pattern ~ (":" ~ typeExpr).? ~ "=" ~ exprBody ~ keyword("in") ~ exprBody).map {
+      case (pat, tyAnno, value, body) =>
+        val named = tyAnno match
+          case Some(ty) => IArray((intern("type_name"), typeExprToRef(ty)))
+          case None     => IArray.empty[(TermSymbol, TermId)]
+        terms.alloc(Term.Fn(intern("let_expr"), IArray(pat, value, body), named))
     }
 
   private def lambdaExpr[$: P]: P[TermId] =
@@ -709,18 +767,32 @@ private class AnthillParserImpl(
     }
 
   private def singleOperation[$: P]: P[Item] =
-    P(visibility.? ~ simpleName ~ "(" ~ param.rep(sep = ",") ~ ")" ~ "->" ~ typeExpr ~
+    P(visibility.? ~ simpleName ~ operationTypeParamList.? ~ "(" ~ param.rep(sep = ",") ~ ")" ~ "->" ~ typeExpr ~
       operationClauses ~ ("=" ~/ exprBody).? ~ metaBlock.?
-    ).map { case (vis, n, params, retType, (reqs, enss, effs), opBody, meta) =>
-      Item.OperationItem(Operation(vis, n, params.toIndexedSeq, retType,
+    ).map { case (vis, n, tps, params, retType, (reqs, enss, effs), opBody, meta) =>
+      Item.OperationItem(Operation(vis, n, tps.getOrElse(IndexedSeq.empty), params.toIndexedSeq, retType,
         reqs, enss, effs, opBody, meta, mkSpan(0, 0)))
     }
 
   private def operationEntry[$: P]: P[Operation] =
-    P(visibility.? ~ simpleName ~ "(" ~ param.rep(sep = ",") ~ ")" ~ "->" ~ typeExpr ~
+    P(visibility.? ~ simpleName ~ operationTypeParamList.? ~ "(" ~ param.rep(sep = ",") ~ ")" ~ "->" ~ typeExpr ~
       operationClauses ~ ("=" ~/ exprBody).? ~ metaBlock.?
-    ).map { case (vis, n, params, retType, (reqs, enss, effs), opBody, meta) =>
-      Operation(vis, n, params.toIndexedSeq, retType, reqs, enss, effs, opBody, meta, mkSpan(0, 0))
+    ).map { case (vis, n, tps, params, retType, (reqs, enss, effs), opBody, meta) =>
+      Operation(vis, n, tps.getOrElse(IndexedSeq.empty), params.toIndexedSeq, retType,
+        reqs, enss, effs, opBody, meta, mkSpan(0, 0))
+    }
+
+  /** Operation type-parameter list `[T, U = Int]` (WI-269). A distinct
+    * production from `sortBinding`/instantiation even though the tokens
+    * coincide: this declares operation-local logical variables, not
+    * bindings of sort parameters at an instantiation site. Mirrors
+    * rustland's `operation_type_param_list`. */
+  private def operationTypeParamList[$: P]: P[IndexedSeq[TypeParam]] =
+    P("[" ~ operationTypeParam.rep(1, sep = ",") ~ "]").map(_.toIndexedSeq)
+
+  private def operationTypeParam[$: P]: P[TypeParam] =
+    P(ident ~ ("=" ~/ typeExpr).?).map { case (n, default) =>
+      TypeParam(n, default, mkSpan(0, 0))
     }
 
   private def operationClauses[$: P]: P[(IndexedSeq[IndexedSeq[TermId]], IndexedSeq[IndexedSeq[TermId]], IndexedSeq[Effect])] =

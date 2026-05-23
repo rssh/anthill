@@ -336,6 +336,122 @@ class ParseTest extends munit.FunSuite:
     parseRejected("(A) -> B @ {Modifies,}", "trailing comma in effect set")
   }
 
+  // ── WI-092: effect-set tightened to `_effect_type` ─────────────
+
+  /** Wrap an `effects <clause>` operation in a `Demo` sort body. */
+  private def parseEffects(clause: String): Boolean =
+    val full =
+      s"""sort Demo
+         |  sort A = ?
+         |  sort B = ?
+         |  sort Modifies = ?
+         |  sort Reads = ?
+         |  operation foo() -> Int
+         |    effects $clause
+         |end""".stripMargin
+    Parser.parse(full, "<effects>").isRight
+
+  test("WI-092: single effect type `Modifies` parses") {
+    assert(parseEffects("Modifies"))
+  }
+
+  test("WI-092: variable effect `?E` parses") {
+    assert(parseEffects("?E"))
+  }
+
+  test("WI-092: braced effect set `{Modifies, Reads}` parses") {
+    assert(parseEffects("{Modifies, Reads}"))
+  }
+
+  test("WI-092: tuple effect `(A, B)` is rejected (not an `_effect_type`)") {
+    assert(!parseEffects("(A, B)"))
+  }
+
+  test("WI-092: arrow type inside a braced effect set is rejected") {
+    assert(!parseEffects("{(A) -> B}"))
+  }
+
+  // ── WI-185: let-binding type annotation ────────────────────────
+
+  /** Extract the single operation declared in a `Demo` sort body. */
+  private def parseDemoOp(opSrc: String): (ParsedFile, Operation) =
+    val full =
+      s"""sort Demo
+         |  sort T = ?
+         |  sort Int = ?
+         |  sort Term = ?
+         |  sort Map = ?
+         |  sort String = ?
+         |$opSrc
+         |end""".stripMargin
+    val pf = Parser.parse(full, "<op>").toOption
+      .getOrElse(fail(s"parse failed: $opSrc"))
+    val op = pf.items.collect { case Item.SortWithBodyItem(s) => s }
+      .head.items.collect { case Item.OperationItem(o) => o }.head
+    (pf, op)
+
+  /** Named-arg keys of a `Fn` term, by interned name. */
+  private def namedKeys(pf: ParsedFile, tid: TermId): Set[String] =
+    pf.terms.get(tid) match
+      case fn: Term.Fn => fn.namedArgs.map((k, _) => pf.symbols.name(k)).toSet
+      case other => fail(s"expected Fn, got $other")
+
+  test("WI-185: `let x : T = …` carries a `type_name` named arg") {
+    val (pf, op) = parseDemoOp(
+      "  operation f() -> Int =\n    let x : T = 1 in x")
+    val body = op.body.getOrElse(fail("operation has no body"))
+    pf.terms.get(body) match
+      case fn: Term.Fn =>
+        assertEquals(pf.symbols.name(fn.functor), "let_expr")
+        assertEquals(fn.posArgs.length, 3)
+        assert(namedKeys(pf, body).contains("type_name"),
+          s"expected type_name named arg, got ${namedKeys(pf, body)}")
+      case other => fail(s"expected let_expr Fn, got $other")
+  }
+
+  test("WI-185: bare `let x = …` has no `type_name` named arg") {
+    val (pf, op) = parseDemoOp(
+      "  operation f() -> Int =\n    let x = 1 in x")
+    val body = op.body.getOrElse(fail("operation has no body"))
+    assert(!namedKeys(pf, body).contains("type_name"))
+  }
+
+  // ── WI-269 Phase A: operation type parameters ──────────────────
+
+  test("WI-269: operation type param `[E]` is captured, no default") {
+    val (pf, op) = parseDemoOp("  operation g[E](t: Term) -> Int")
+    assertEquals(op.typeParams.length, 1)
+    assertEquals(pf.symbols.name(op.typeParams.head.name), "E")
+    assertEquals(op.typeParams.head.default, None)
+  }
+
+  test("WI-269: type params with default `[A, B = Int]`") {
+    val (pf, op) = parseDemoOp("  operation g[A, B = Int](t: Term) -> Int")
+    assertEquals(op.typeParams.map(tp => pf.symbols.name(tp.name)),
+      IndexedSeq("A", "B"))
+    assertEquals(op.typeParams(0).default, None)
+    op.typeParams(1).default match
+      case Some(TypeExpr.Simple(n)) => assertEquals(pf.symbols.name(n.last), "Int")
+      case other => fail(s"expected default Simple(Int), got $other")
+  }
+
+  test("WI-269: no type-param list ⇒ empty typeParams") {
+    val (_, op) = parseDemoOp("  operation g(t: Term) -> Int")
+    assertEquals(op.typeParams.length, 0)
+  }
+
+  test("WI-269: instantiation callee `Map[K = String](x)` carries `type_args`") {
+    val (pf, op) = parseDemoOp(
+      "  operation f() -> Int =\n    Map[K = String](x)")
+    val body = op.body.getOrElse(fail("operation has no body"))
+    pf.terms.get(body) match
+      case fn: Term.Fn =>
+        assertEquals(pf.symbols.name(fn.functor), "Map")
+        assert(namedKeys(pf, body).contains("type_args"),
+          s"expected type_args named arg, got ${namedKeys(pf, body)}")
+      case other => fail(s"expected call Fn, got $other")
+  }
+
   /** Walks the entire stdlib tree and asserts every .anthill file parses.
     * Locks in the WI-162/166/167 parser-coverage achievement: as new
     * stdlib modules are added, this test catches a parser regression
