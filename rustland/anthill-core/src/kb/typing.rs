@@ -5688,7 +5688,7 @@ pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<Lo
 /// eval/interpreter supports but the typer (only ever run on sort ops)
 /// does not — higher-order calls of `Function[A,B]`-typed values
 /// (`f(f(x))`), effect-declaration checks, and some name resolution. Flip
-/// to `true` and fix those under **WI-287**.
+/// to `true` and fix those under **WI-289**.
 const TYPECHECK_FREE_OPS: bool = false;
 
 pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<TypeError> {
@@ -5720,7 +5720,7 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
         }
     }
 
-    // WI-287 (gated OFF — see [`TYPECHECK_FREE_OPS`]): type-check +
+    // WI-289 (gated OFF — see [`TYPECHECK_FREE_OPS`]): type-check +
     // simp-rewrite every operation body not owned by a sort. Snapshot first
     // — typing mutates `op_bodies` via the simp write-back; `check_operation_
     // bodies` skips body-less / OperationInfo-less symbols and derives each

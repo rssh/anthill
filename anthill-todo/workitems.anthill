@@ -2096,3 +2096,10 @@ Rust is ground truth here; these are the Scala-side catch-up items.",
   depends_on: [],
   status: Open)
 
+fact WorkItem(
+  id: "WI-289",
+  description: "Enable + fix type-checking of namespace-level (free) operations. Operations declared directly in a namespace (not inside a sort) — e.g. the anthill.cli.parse / anthill.cli.help CLI parser, and the eval-test m2/m5 fixtures — are NOT type-checked or simp-rewritten today: the typer's op-body driver (typing::type_check_sorts_typed) reaches operations only via each sort's reflect SortInfo, and namespaces produce no SortInfo. Pre-existing latent gap (independent of WI-283): such op bodies load with NO type validation. WI-283 added a gated sweep (const TYPECHECK_FREE_OPS in typing.rs, currently false) that type-checks + fires [simp] in EVERY op body incl. free ones. Flipping it to true surfaced ~25 eval-fixture failures from constructs eval supports but the typer (only ever run on sort ops) does not: (1) higher-order calls of Function[A,B]-typed values, e.g. f(f(x)) with f: Function[Int,Int] -> 'expected known operation or arrow-typed variable, got unknown functor' (typer must treat application of a Function-sorted value as a higher-order call / extract its arrow type, matching eval); (2) effect-declaration checks — free ops using eprintln/println/modify don't declare the effects (e.g. 'undeclared effect ConsoleError') — fix the fixtures; (3) some name resolution ('expected resolved name, got unresolved') in free-op bodies. Fix the typer for these, fix fixtures where a declaration is genuinely missing, then flip TYPECHECK_FREE_OPS=true. Acceptance: TYPECHECK_FREE_OPS=true; free-op bodies (cli/parse, cli/help, eval m2/m5 fixtures) type-check correctly; [simp] fires in free-op bodies; full cargo-test green.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: ["WI-283"],
+  status: Open)
+
