@@ -2103,3 +2103,28 @@ fact WorkItem(
   depends_on: ["WI-283"],
   status: Open)
 
+fact WorkItem(
+  id: "WI-290",
+  description: "Implement proposal 044 — unified name resolution (visible-by-default + import-side disambiguation)
+
+See docs/proposals/044-unified-name-resolution.md. Unify the divergent rustland/scaland resolution algorithms into one, replace export-whitelisting with import-side disambiguation of inherited operations (decide option B1/B2/B3/B4 — recommended B2: inheritance aliases not copies), make visibility 'visible-by-default + internal hides', then strip export statements from stdlib and document the algorithm in kernel-language.md.
+
+GATING DECISION: pick disambiguation rule B in the proposal before implementing. Validated already: scaland Model C is clean (167 green); rustland breaks 87 wi_tests on the Eq/Ordered 'eq' ambiguity because export currently disambiguates inherited ops.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-291",
+  description: "Grammar cleanup: remove the now-redundant 'export' statement + 'export' visibility prefix
+
+Follow-up to the Model C visibility migration (visible-by-default; 'internal' is the only hide gate). After that lands, the standalone 'export' statement (grammar.js:139) and the 'export' choice in the visibility prefix (grammar.js:720) are no-ops kept only for back-compat. This WI removes them:
+- tree-sitter grammar: drop 'export' statement rule + 'export' from visibility choice; regenerate parser.
+- scaland + rustland parsers/IR: drop Export from Visibility enum and the export-list fields on Namespace/SortWithBody.
+- Verify stdlib (already export-statement-free post Model C cleanup) and all tests still pass on both impls.
+Low priority / mechanical; do only once Model C is stable.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact Feedback(content: "Superseded/subsumed by proposal 044 (docs/proposals/044-unified-name-resolution.md) — this grammar removal is step 7 of that proposal, do it last.", at: "2026-05-23T07:00:10Z", workitem: "WI-291", author: "user")
