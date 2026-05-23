@@ -2,12 +2,51 @@
 
 ## Status
 
-Draft. Drivers:
-- The two implementations (`rustland/`, `scaland/`) have **divergent name-resolution algorithms** that have drifted apart; we want one algorithm implemented identically on both sides.
-- `docs/kernel-language.md` has **no consolidated name-resolution section** — resolution is described only in scattered prose (§5.1 qualified/short names, §5.1 import forms, §8.6 visibility). The precise scope-walk, the import fallback chain, and the nested-scope lookup (`find_in_nested_scope`) are undocumented.
-- The `export` statement is verbose boilerplate in stdlib (41 of 55 files carry one), and the spec's stated "internal by default" (§8.6) does **not** match either implementation.
+**Accepted; implementation in progress.** The model below (§"Accepted solution")
+is settled and is the canonical algorithm documented in `kernel-language.md`
+§8.6. Drivers:
+- The two implementations (`rustland/`, `scaland/`) had **divergent name-resolution algorithms**; the goal is one algorithm — one **uniform description** and **uniform behavior** — across both.
+- `docs/kernel-language.md` had **no consolidated name-resolution section**; it now does (§8.6, per this proposal).
+- The `export` statement is verbose boilerplate in stdlib (41 of 55 files carry one), and the spec's old "internal by default" (§8.6) matched neither implementation.
 
-This proposal records the current behavior, the empirical findings from an attempted "visible-by-default" migration, and a target model. It does **not** change code yet — implementation is gated on resolving the open question in §5.
+The remaining open issues in §"Background"…§"Proposed model" are kept as the
+record of how the decision was reached; the binding outcome is in
+§"Accepted solution".
+
+## Accepted solution
+
+The name-resolution algorithm and visibility model are as written in
+`kernel-language.md` §8.6 (canonical). In summary:
+
+1. **Visible by default.** A declared name is visible across namespace/sort
+   boundaries to importers and requirers. `internal` is the only hide gate;
+   `public` is visible everywhere; the `export` statement and `export` prefix
+   are **no-ops** (deprecated, to be removed — WI-289).
+2. **`resolve_in_scope`**: locals → imports → parents; a non-enclosing parent is
+   filtered only by (a) its type parameters, (b) `internal`, (c) its **exposed**
+   set (variant exposure).
+3. **Variant exposure (job 2):** a sort exposes **only its entity-variant
+   names** to the enclosing scope; operations never leak as bare names. The
+   per-scope set is named `exposed` and is populated from variants only — never
+   from user `export` statements.
+4. **Inherited-operation overrides (Part B = "R2"):** a derived rule for an
+   operation inherited via `requires` binds to the **inherited origin symbol**,
+   not a new shadowing symbol. Realized by registering an unlabeled rule's
+   head-functor Goal *after* `requires` wiring and skipping the mint when the
+   name already resolves.
+5. **Out of scope (future work):** unifying how unlabeled-rule **head functors**
+   become dispatchable symbols. rustland registers them as `Goal`s (and needed
+   R2); scaland does not register them at all. This dispatch mechanism is
+   separable from name resolution and is deferred.
+
+**Status of behavior conformance:** rustland fully conforms (R2 + variants-only
+exposure + visible-by-default; full suite green, `ring-polynom` acceptance test
+green unchanged). scaland conforms on the resolution core and visible-by-default;
+its remaining gap is variant exposure (no sort→enclosing variant link; still
+auto-exposes every member) — tracked in WI-290 with the requires-interaction
+risk to validate.
+
+The sections below record the investigation that led here.
 
 ## Background — resolution as actually implemented (ground truth: Rust)
 
@@ -136,14 +175,24 @@ work** and is not required for uniform name resolution.
 - `internal` hides a name from import/wildcard/parent resolution (tested on both sides).
 - The `Eq`/`Ordered`/`Numeric` `eq` case resolves unambiguously with no `export` whitelist. **(met by R2)**
 - The `ring-polynom` testcase loads green alongside stdlib with the `export` whitelist off and **no change to the fixture** (job-2 acceptance test). **(met: `algebra_tests` 19/0 in rustland)**
-- `kernel-language.md` has a Name Resolution section matching the implementation.
+- `kernel-language.md` has a Name Resolution section matching the implementation. **(met)**
 
-## Open questions
+## Resolved decisions
 
-- **B selection** (origin-dedup vs aliasing vs nearest-wins vs explicit) — the gating decision.
-- Does `public` (visible without import) interact with B? Probably orthogonal.
-- `find_in_nested_scope` depth: keep it at exactly one intermediate segment, or generalize? (Today: one level, unique match.)
-- Should `requires`-inherited operations be walked by resolution at all, or only surfaced through explicit `Sort.op` / dispatch?
+- **B selection — DECIDED: B2, realized as "R2"** (don't mint a shadowing
+  symbol; bind the override to the inherited origin). Validated in rustland.
+- **Head-functor dispatch unification — DEFERRED** to future work; not part of
+  name resolution.
+
+## Open questions (non-blocking)
+
+- Does `public` (visible without import) need explicit modelling beyond "not
+  filtered"? Treated as orthogonal for now.
+- `find_in_nested_scope` depth: keep it at exactly one intermediate segment, or
+  generalize? (Today: one level, unique match.)
+- Should `requires`-inherited operations be reachable as bare names at all, or
+  only via explicit `Sort.op` / dispatch? (Current model: reachable, subject to
+  the variant-exposure filter.)
 
 ## Related
 
