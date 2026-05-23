@@ -538,8 +538,50 @@ pub(super) fn reassemble(
             positional: cur.take_vec(positional),
             named: cur.take_named(named),
         },
-        // `is_rewritable` keeps non-child forms out of `Build`, so this is
-        // unreachable; pass through to stay total.
+        // Post-elaboration forms. `is_rewritable` keeps these out of the
+        // simp/typer `Build` path, but `open_debruijn_node` / `substitute_
+        // occurrence` (WI-296) reassemble rule-body atoms that bypass
+        // `is_rewritable` — a reflection rule matching `apply_within(...)`,
+        // `requirement_at_sort(...)`, etc. as data reaches here. Rebuild them,
+        // consuming children in `for_each_child` order (else their opened/
+        // substituted children would be silently dropped).
+        Expr::ApplyWithin { functor, args, named_args, requirements, type_args } => {
+            Expr::ApplyWithin {
+                functor: *functor,
+                args: cur.take_vec(args),
+                named_args: cur.take_named(named_args),
+                requirements: cur.take_vec(requirements),
+                type_args: type_args.clone(),
+            }
+        }
+        Expr::HoApplyWithin { predicate, args, requirements } => Expr::HoApplyWithin {
+            predicate: cur.take(predicate),
+            args: cur.take_vec(args),
+            requirements: cur.take_vec(requirements),
+        },
+        Expr::ConstructorWithin { name, pos_args, named_args, requirements } => {
+            Expr::ConstructorWithin {
+                name: *name,
+                pos_args: cur.take_vec(pos_args),
+                named_args: cur.take_named(named_args),
+                requirements: cur.take_vec(requirements),
+            }
+        }
+        Expr::LambdaWithin { param, body, requirements } => Expr::LambdaWithin {
+            param: *param,
+            body: cur.take(body),
+            requirements: cur.take_vec(requirements),
+        },
+        Expr::RequirementAtSort { chain, slot } => Expr::RequirementAtSort {
+            chain: cur.take(chain),
+            slot: *slot,
+        },
+        Expr::ConstructRequirement { impl_functor, requirements } => Expr::ConstructRequirement {
+            impl_functor: *impl_functor,
+            requirements: cur.take_vec(requirements),
+        },
+        // Genuine leaves (`Var`/`Const`/`Ref`/`Ident`/`Bottom`/`VarRef`) — no
+        // children to reassemble.
         _ => return Rc::clone(occ),
     };
     if !cur.changed {

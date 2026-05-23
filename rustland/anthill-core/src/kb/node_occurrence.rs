@@ -606,11 +606,13 @@ pub(super) fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)
 /// with `Expr::Var(Var::Global(fresh[i]))`; unchanged subtrees keep their
 /// `Rc` (only the ancestor chain to a remapped var is rebuilt).
 ///
-/// Rule body atoms are predicate applications — `Apply`/`Constructor`/
-/// `Instantiation`/`HoApply` over leaves, never control-flow forms (those
-/// occur only in op/expression bodies) — so the recursion depth is bounded
-/// by atom structure (shallow), like `term_from_debruijn`. Forms that
-/// can't appear at a rule-body atom position pass through unchanged.
+/// Rule body atoms are usually predicate applications — `Apply`/`Constructor`/
+/// `Instantiation`/`HoApply` over leaves — but reflection / typing rules match
+/// expression structure as data, so a body atom can also carry control-flow /
+/// post-elaboration forms (`Match`/`If`/`Let`/`Lambda`/… materialized as
+/// reflect-`Expr` data — WI-296). Those are opened generically via
+/// `for_each_child` + `simp_rewrite::reassemble`. Recursion depth is bounded by
+/// the atom's structure.
 pub fn open_debruijn_node(occ: &Rc<NodeOccurrence>, fresh: &[VarId]) -> Rc<NodeOccurrence> {
     let Some(expr) = occ.as_expr() else { return Rc::clone(occ) };
     let rebuilt: Option<Expr> = match expr {
@@ -643,19 +645,19 @@ pub fn open_debruijn_node(occ: &Rc<NodeOccurrence>, fresh: &[VarId]) -> Rc<NodeO
             let c1 = !Rc::ptr_eq(&p, predicate);
             (c1 || c2).then(|| Expr::HoApply { predicate: p, args: a })
         }
-        // Leaves (no children → nothing to remap) reach here legitimately.
-        // A *child-bearing* variant here would be a control-flow /
-        // post-elaboration form at a rule-body atom position — which can't
-        // occur; assert so a future violation fails a test rather than
-        // silently leaving an un-remapped `DeBruijn` leaf in the tree.
+        // WI-296: a *child-bearing* form CAN occur at a rule-body atom
+        // position — reflection / typing rules match expression structure as
+        // data (e.g. `occurrence_term(?e, lambda(param: …, body: ?b))`,
+        // `…match_expr(scrutinee: ?s, …)`). The materializer (`visit_fn`)
+        // builds these as `Expr::Match`/`If`/`Let`/`Lambda`/… so we must open
+        // their children rather than assert they can't appear. Open each
+        // child (in `for_each_child` source order) and `reassemble`; genuine
+        // leaves enumerate no children, so `reassemble` returns `occ`
+        // unchanged.
         _ => {
-            debug_assert!(
-                { let mut n = 0usize; for_each_child(expr, |_| n += 1); n == 0 },
-                "open_debruijn_node: unexpected child-bearing Expr at a rule-body \
-                 atom position: {:?}",
-                std::mem::discriminant(expr),
-            );
-            None
+            let mut opened: Vec<Rc<NodeOccurrence>> = Vec::new();
+            for_each_child(expr, |c| opened.push(open_debruijn_node(c, fresh)));
+            return super::simp_rewrite::reassemble(occ, &opened);
         }
     };
     match rebuilt {
@@ -881,19 +883,16 @@ pub fn substitute_occurrence(
                 NodeOccurrence::new_expr(Expr::HoApply { predicate: p, args: a }, occ.span, occ.owner)
             })
         }
-        // Leaves (Const/Ref/Ident/Bottom, and `Var` that isn't a Global) reach
-        // here legitimately and pass through. A *child-bearing* variant here
-        // would be a control-flow / post-elaboration form at a rule-body atom
-        // position — which can't occur; assert so a future violation fails a
-        // test rather than silently leaving an un-substituted subtree.
+        // WI-296: a *child-bearing* control-flow / post-elaboration form CAN
+        // occur at a rule-body atom position — reflection / typing rules match
+        // expression structure as data (e.g. `occurrence_term(?e, lambda(...))`).
+        // Substitute into each child (in `for_each_child` source order) and
+        // reassemble, mirroring `open_debruijn_node`. Genuine leaves enumerate
+        // no children, so `reassemble` returns `occ` unchanged.
         _ => {
-            debug_assert!(
-                { let mut n = 0usize; for_each_child(expr, |_| n += 1); n == 0 },
-                "substitute_occurrence: unexpected child-bearing Expr at a rule-body \
-                 atom position: {:?}",
-                std::mem::discriminant(expr),
-            );
-            None
+            let mut subst_children: Vec<Rc<NodeOccurrence>> = Vec::new();
+            for_each_child(expr, |c| subst_children.push(substitute_occurrence(kb, c, subst)));
+            return super::simp_rewrite::reassemble(occ, &subst_children);
         }
     };
     rebuilt.unwrap_or_else(|| Rc::clone(occ))
@@ -1609,6 +1608,53 @@ mod tests {
                 assert_eq!(pos_args.len(), 1);
             }
             _ => panic!("expected Apply"),
+        }
+    }
+
+    #[test]
+    fn open_debruijn_node_opens_control_flow_forms() {
+        // WI-296: a rule-body atom can carry a child-bearing control-flow form
+        // (reflection / typing rules match expression structure as data, e.g.
+        // `occurrence_term(?e, if_expr(cond: ?c, ...))`). The opener must
+        // descend into it and remap DeBruijn -> Global rather than assert it
+        // can't occur (the old `_`-arm panic).
+        let mut symbols = SymbolTable::new();
+        let v = symbols.intern("v");
+        let span = make_span();
+        let cond = NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(0)), span, None);
+        let then_b = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
+        let else_b = NodeOccurrence::new_expr(Expr::Const(Literal::Int(2)), span, None);
+        let if_occ = NodeOccurrence::new_expr(
+            Expr::If { condition: cond, then_branch: then_b, else_branch: else_b },
+            span,
+            None,
+        );
+        let fresh = [VarId::new(7, v)];
+        // Must not panic, and the nested DeBruijn(0) must remap to Global(7).
+        let opened = open_debruijn_node(&if_occ, &fresh);
+        match opened.as_expr().unwrap() {
+            Expr::If { condition, .. } => match condition.as_expr().unwrap() {
+                Expr::Var(Var::Global(vid)) => assert_eq!(vid.raw(), 7),
+                other => panic!("condition should be a Global var, got {other:?}"),
+            },
+            other => panic!("expected If, got {other:?}"),
+        }
+
+        // A post-elaboration form `reassemble` formerly dropped (its `_` arm
+        // returned the original, discarding opened children — WI-296 review):
+        // RequirementAtSort. Its child must still open DeBruijn -> Global.
+        let chain = NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(0)), span, None);
+        let req = NodeOccurrence::new_expr(
+            Expr::RequirementAtSort { chain, slot: 0 },
+            span,
+            None,
+        );
+        match open_debruijn_node(&req, &fresh).as_expr().unwrap() {
+            Expr::RequirementAtSort { chain, .. } => match chain.as_expr().unwrap() {
+                Expr::Var(Var::Global(vid)) => assert_eq!(vid.raw(), 7),
+                other => panic!("chain should be a Global var, got {other:?}"),
+            },
+            other => panic!("expected RequirementAtSort, got {other:?}"),
         }
     }
 
