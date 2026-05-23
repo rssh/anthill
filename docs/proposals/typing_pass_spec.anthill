@@ -1,19 +1,30 @@
--- Typing pass: reference specification for bidirectional type checking.
+-- Typing: the declarative specification, plus a reference algorithm.
 --
--- This file defines the typing function as anthill operations.
--- It serves as the reference specification — Rust and Scala implementations
--- will be created from this.
+-- PART I — the typing RELATION (primary; this IS the specification).
+--   A bidirectional, declarative type system over an immutable signature
+--   Σ (the loaded declarations: OperationInfo / EntityInfo / SortInfo /
+--   FieldInfo / scope, read ambiently, never asserted) and a local
+--   context Γ (threaded explicitly):
+--       synth(Γ, e) ⇒ τ ! E      -- synthesize type τ and effects E
+--       check(Γ, e, τ) ! E        -- check e against an expected τ
+--       wf_type(Γ, τ)             -- τ is well-formed (variant a)
+--   Synthesis is exact (no subsumption); subtyping enters only at the
+--   single SUB rule (synth → check). This is what Rust and Scala must
+--   COMPLY with, and what is meant to translate to Isabelle/Lean/Coq for
+--   progress/preservation. It is pure, so it can also be run as a
+--   conformance ORACLE via SLD (no bootstrap: needs the resolver, not a
+--   typer).
 --
--- type_check returns TypeResult(type, env) — both the expression's type and
--- the updated env with any discovered type parameter bindings.
--- Local variable bindings (let/lambda) stay in the returned env but are
--- harmless — subsequent code never references them.
+-- PART II — the reference ALGORITHM (type_check, below).
+--   The executable bidirectional pass: threads Γ as TypingEnv, mints
+--   fresh type vars, computes the PRINCIPAL type, and MEMOIZES it as a
+--   type_of fact (KB.assert — an optimization, NOT the definition of
+--   typing). It must be sound & complete w.r.t. PART I. Rust and Scala
+--   reimplement this part; PART I is the oracle they are checked against.
 --
--- Unification model:
---   unify_types(kb, env, a, b) -> TypeResult  computes LUB of a and b.
---   If a or b is a type_var, it binds it in env.
---   If LUB is Nothing, types are incompatible.
---   assert_compatible wraps unify_types and errors on Nothing.
+-- Variant (a): types and expressions stay separate worlds — wf_type
+-- validates type expressions structurally; there is no singleton(value)
+-- bridge (that is variant (b), introduced separately if ever needed).
 --
 -- See: docs/proposals/022-typing-as-facts.md
 --      docs/proposals/011-type-resolution.md
@@ -24,15 +35,216 @@ namespace anthill.reflect.typing_pass
   import anthill.reflect.{OperationInfo, EntityInfo, SortInfo, SourceUnit}
   import anthill.reflect.{Symbol, Term, FactId, ConstraintId}
   import anthill.reflect.typing.{is_entity_of, type_compatible}
-  import anthill.reflect.{occurrence_term, occurrence_owner, occurrences_of}
+  import anthill.reflect.{occurrence_term, occurrence_owner, occurrences_of, scope}
+  import anthill.prelude.Type.{sort_ref, parameterized, arrow, type_var, named_tuple, nothing, TypeBinding, TypeField}
   import anthill.prelude.{Int, Float, String, Bool, List, Option, Type, Nothing}
 
-  import anthill.prelude.{Error}
+  import anthill.prelude.{Error, Modify}
 
   export TypingEnv, TypeResult, type_check, type_check_operation
   export type_check_unit
   export unify_types, assert_compatible, fresh_type_var, is_ground
   export TypeError, error_span, error_message
+
+  -- Part I (declarative specification) exports
+  export Context, synth, check, wf_type
+  export lookup_var, lookup_type, lub
+
+  -- ################################################################
+  -- PART I — THE TYPING RELATION  (declarative specification)
+  -- ################################################################
+  -- Bidirectional. Σ (the signature) is the loaded declarations, read
+  -- via OperationInfo / EntityInfo / SortInfo / FieldInfo / scope —
+  -- always READ, never asserted (that is the cache in PART II). Γ (the
+  -- local context) is the explicit first argument. occurrence_term is
+  -- read here as the 2-place Σ relation occ ↦ term (the kb-ambient
+  -- reading of the imported builtin). Subtyping reuses the already-
+  -- relational anthill.reflect.typing.{type_compatible, is_entity_of}.
+
+  -- ----------------------------------------------------------------
+  -- Local context Γ
+  -- ----------------------------------------------------------------
+  sort Context
+    entity empty_ctx
+    entity var_bind(name: Symbol, type: Type, rest: Context)
+    entity type_bind(param: Symbol, type: Type, rest: Context)
+  end
+
+  -- Most-recent binding wins; lookups skip the other kind of binding.
+  rule lookup_var(var_bind(name: ?n, type: ?T, rest: ?), ?n, ?T)
+  rule lookup_var(var_bind(name: ?m, type: ?, rest: ?G), ?n, ?T)
+    :- neq(?n, ?m), lookup_var(?G, ?n, ?T)
+  rule lookup_var(type_bind(param: ?, type: ?, rest: ?G), ?n, ?T)
+    :- lookup_var(?G, ?n, ?T)
+
+  rule lookup_type(type_bind(param: ?p, type: ?T, rest: ?), ?p, ?T)
+  rule lookup_type(type_bind(param: ?q, type: ?, rest: ?G), ?p, ?T)
+    :- neq(?p, ?q), lookup_type(?G, ?p, ?T)
+  rule lookup_type(var_bind(name: ?, type: ?, rest: ?G), ?p, ?T)
+    :- lookup_type(?G, ?p, ?T)
+
+  -- ----------------------------------------------------------------
+  -- Type well-formedness   Γ ⊢ τ wf      wf_type(Γ, τ)   (variant a)
+  -- ----------------------------------------------------------------
+  -- A sort_ref is well-formed when it names a declared sort or an
+  -- in-scope type parameter.
+  rule wf_type(?, sort_ref(name: ?S))  :- SortInfo(name: ?S)
+  rule wf_type(?G, sort_ref(name: ?S)) :- lookup_type(?G, ?S, ?)
+
+  rule wf_type(?G, parameterized(base: ?B, bindings: ?Bs))
+    :- wf_type(?G, ?B), wf_bindings(?G, ?Bs)
+  rule wf_type(?G, arrow(param: ?P, result: ?R, effects: ?Es))
+    :- wf_type(?G, ?P), wf_type(?G, ?R), wf_type_list(?G, ?Es)
+  rule wf_type(?G, named_tuple(fields: ?Fs)) :- wf_type_fields(?G, ?Fs)
+  rule wf_type(?, type_var(name: ?))    -- inference variable
+  rule wf_type(?, nothing)              -- bottom type
+
+  -- NB (variant a): there is deliberately NO wf_type rule for
+  -- singleton(value: ...). A singleton in a type position is therefore
+  -- not well-formed here — this is the seam where variant (b) would add
+  -- one rule (and a synth obligation on the carried occurrence).
+
+  rule wf_bindings(?, nil)
+  rule wf_bindings(?G, cons(head: TypeBinding(param: ?, value: ?V), tail: ?rest))
+    :- wf_type(?G, ?V), wf_bindings(?G, ?rest)
+  rule wf_type_list(?, nil)
+  rule wf_type_list(?G, cons(head: ?T, tail: ?rest))
+    :- wf_type(?G, ?T), wf_type_list(?G, ?rest)
+  rule wf_type_fields(?, nil)
+  rule wf_type_fields(?G, cons(head: TypeField(name: ?, type: ?T), tail: ?rest))
+    :- wf_type(?G, ?T), wf_type_fields(?G, ?rest)
+
+  -- ----------------------------------------------------------------
+  -- Synthesis   Γ ⊢ e ⇒ τ ! E       synth(Γ, e, τ, E)
+  -- ----------------------------------------------------------------
+  -- EXACT: synthesis never applies subsumption. Subtyping is confined
+  -- to the SUB rule under Checking.
+
+  -- LIT
+  rule synth(?, ?e, sort_ref(name: Int),    nil) :- occurrence_term(?e, int_lit(value: ?))
+  rule synth(?, ?e, sort_ref(name: Float),  nil) :- occurrence_term(?e, float_lit(value: ?))
+  rule synth(?, ?e, sort_ref(name: String), nil) :- occurrence_term(?e, string_lit(value: ?))
+  rule synth(?, ?e, sort_ref(name: Bool),   nil) :- occurrence_term(?e, bool_lit(value: ?))
+
+  -- VAR
+  rule synth(?G, ?e, ?T, nil)
+    :- occurrence_term(?e, var_ref(name: ?n)), lookup_var(?G, ?n, ?T)
+
+  -- CON: a constructor synthesizes its parent sort; its args are checked
+  -- against the entity's declared field types.
+  rule synth(?G, ?e, sort_ref(name: ?S), ?E)
+    :- occurrence_term(?e, constructor(name: ?C, args: ?Args)),
+       scope(?C, ?S),
+       EntityInfo(name: ?C, fields: ?Fields),
+       check_named_args(?G, ?Args, ?Fields, ?E)
+
+  -- APP: an operation call synthesizes the callee's declared return
+  -- type; args are checked against declared param types; effects are the
+  -- arguments' effects ∪ the callee's declared effects.
+  --
+  -- MONOMORPHIC shape. For a generic op, the declared type-params in
+  -- ?Params/?Ret must first be refreshed to fresh logic variables so
+  -- cross-argument unification can bind them — the one piece that needs
+  -- care, and exactly what PART II's fresh_type_var/unify_types does.
+  rule synth(?G, ?e, ?Ret, ?E)
+    :- occurrence_term(?e, apply(fn: ?f, args: ?Args)),
+       OperationInfo(name: ?f, params: ?Params, return_type: ?Ret, effects: ?Ef),
+       check_args(?G, ?Args, ?Params, ?Ea),
+       union_effects(?Ea, ?Ef, ?E)
+
+  -- LET
+  rule synth(?G, ?e, ?T, ?E)
+    :- occurrence_term(?e, let_expr(pattern: var_pattern(name: ?x, type_ann: ?), value: ?v, body: ?b)),
+       synth(?G, ?v, ?Tv, ?Ev),
+       synth(var_bind(name: ?x, type: ?Tv, rest: ?G), ?b, ?T, ?Eb),
+       union_effects(?Ev, ?Eb, ?E)
+
+  -- LAM-SYNTH: annotated parameter only (unannotated ⇒ use LAM-CHECK).
+  -- Building a lambda is pure; the body's effects sit in the arrow row.
+  rule synth(?G, ?e, arrow(param: ?A, result: ?B, effects: ?Eb), nil)
+    :- occurrence_term(?e, lambda(param: var_pattern(name: ?x, type_ann: some(value: ?A)), body: ?body)),
+       synth(var_bind(name: ?x, type: ?A, rest: ?G), ?body, ?B, ?Eb)
+
+  -- IF-SYNTH: with no expected type the result is the LEAST UPPER BOUND
+  -- of the branches. (Contrast IF-CHECK below: in check mode there is no
+  -- join. This is the WI-287 soundness point made explicit — synthesis
+  -- must lub; the first-branch shortcut is wrong.)
+  rule synth(?G, ?e, ?T, ?E)
+    :- occurrence_term(?e, if_expr(cond: ?c, then_branch: ?t, else_branch: ?el)),
+       check(?G, ?c, sort_ref(name: Bool), ?Ec),
+       synth(?G, ?t,  ?Tt,  ?Et),
+       synth(?G, ?el, ?Tel, ?Eel),
+       lub(?Tt, ?Tel, ?T),
+       union_effects(?Ec, ?Et, ?E1), union_effects(?E1, ?Eel, ?E)
+
+  -- MATCH-SYNTH: result is the lub over branch bodies, each synthesized
+  -- under its pattern-extended context. (synth_branches deferred.)
+  rule synth(?G, ?e, ?T, ?E)
+    :- occurrence_term(?e, match_expr(scrutinee: ?s, branches: ?Bs)),
+       synth(?G, ?s, ?Ts, ?Es),
+       synth_branches(?G, ?Ts, ?Bs, ?T, ?Eb),
+       union_effects(?Es, ?Eb, ?E)
+
+  -- ----------------------------------------------------------------
+  -- Checking   Γ ⊢ e ⇐ τ ! E        check(Γ, e, τ, E)
+  -- ----------------------------------------------------------------
+
+  -- SUB: the single mode switch, and the ONLY place subtyping is used.
+  -- type_compatible(?T2, ?T) reads "?T2 is usable where ?T is expected".
+  rule check(?G, ?e, ?T, ?E)
+    :- synth(?G, ?e, ?T2, ?E), type_compatible(?T2, ?T)
+
+  -- LAM-CHECK: check a lambda against an arrow type; ?A comes from the
+  -- expected type, so an unannotated parameter is fine.
+  rule check(?G, ?e, arrow(param: ?A, result: ?B, effects: ?Eb), nil)
+    :- occurrence_term(?e, lambda(param: var_pattern(name: ?x, type_ann: ?), body: ?body)),
+       check(var_bind(name: ?x, type: ?A, rest: ?G), ?body, ?B, ?Eb)
+
+  -- IF-CHECK: both branches checked against the SAME expected type — no
+  -- lub, and an incompatible branch is rejected directly.
+  rule check(?G, ?e, ?T, ?E)
+    :- occurrence_term(?e, if_expr(cond: ?c, then_branch: ?t, else_branch: ?el)),
+       check(?G, ?c, sort_ref(name: Bool), ?Ec),
+       check(?G, ?t,  ?T, ?Et),
+       check(?G, ?el, ?T, ?Eel),
+       union_effects(?Ec, ?Et, ?E1), union_effects(?E1, ?Eel, ?E)
+
+  -- MATCH-CHECK: each branch body checked against the expected type under
+  -- its pattern-extended context. No lub. (check_branches deferred.)
+  rule check(?G, ?e, ?T, ?E)
+    :- occurrence_term(?e, match_expr(scrutinee: ?s, branches: ?Bs)),
+       synth(?G, ?s, ?Ts, ?Es),
+       check_branches(?G, ?Ts, ?T, ?Bs, ?Eb),
+       union_effects(?Es, ?Eb, ?E)
+
+  -- ----------------------------------------------------------------
+  -- Helper relations
+  -- ----------------------------------------------------------------
+  -- check_args: positional args ⇐ declared param types (FieldInfo).
+  rule check_args(?, nil, nil, nil)
+  rule check_args(?G, cons(head: ApplyArg(name: ?, value: ?a), tail: ?as),
+                      cons(head: FieldInfo(name: ?, type_name: ?Pt), tail: ?ps), ?E)
+    :- check(?G, ?a, ?Pt, ?Ea), check_args(?G, ?as, ?ps, ?Es),
+       union_effects(?Ea, ?Es, ?E)
+
+  -- Deferred (same shapes as PART II's check_branches /
+  -- extend_env_from_pattern / merge_effects, and lub over the
+  -- Lattice[Type] grounded in is_entity_of/refines):
+  --   check_named_args(Γ, args, fields, E)        -- constructor fields ⇐
+  --   synth_branches(Γ, scrut_ty, branches, T, E) -- match, synth mode (lub)
+  --   check_branches(Γ, scrut_ty, T, branches, E) -- match, check mode
+  --   extend_ctx_from_pattern(Γ, pat, scrut_ty, Γ')
+  --   lub(A, B, T)                                -- join in the Type lattice
+  --   union_effects(A, B, C)                      -- effect-row set union
+
+  -- ################################################################
+  -- PART II — THE REFERENCE ALGORITHM
+  -- ################################################################
+  -- The executable bidirectional pass. It computes the PRINCIPAL type
+  -- (fresh_type_var + unify_types), threads Γ as TypingEnv, and memoizes
+  -- results as type_of facts (an optimization, not the definition). It
+  -- must be sound & complete w.r.t. PART I; Rust and Scala reimplement
+  -- it and are checked against PART I as the oracle.
 
   -- ================================================================
   -- TypeError: typed error for the typing pass
@@ -96,7 +308,7 @@ namespace anthill.reflect.typing_pass
   -- Fresh type variable: creates a new unbound type_var with a unique name
   -- derived from the hint (e.g. hint "x" → type_var(name: ?T_x_0)).
   operation fresh_type_var(kb: KB, hint: Symbol) -> Type
-    effects Modifies[kb]
+    effects Modify[kb]
 
   -- Check whether a type is fully resolved (no unbound type_vars remain
   -- after applying the current substitution). Unresolved types are
@@ -230,7 +442,7 @@ namespace anthill.reflect.typing_pass
     merge_effects(result_effects(a), result_effects(b))
 
   operation type_check(kb: KB, env: TypingEnv, expr: ExprOccurrence) -> TypeResult
-    effects {Modifies[kb], Error[TypeError]} =
+    effects {Modify[kb], Error[TypeError]} =
     let r = match occurrence_term(kb, expr)
       -- Literals: pure, no effects
       case int_lit(value: _)    -> pure_result(Int, env)
@@ -324,7 +536,7 @@ namespace anthill.reflect.typing_pass
   -- The expected type determines the target collection kind.
   -- Falls back to List if no expected type.
   operation type_check_collection(kb: KB, env: TypingEnv, occ: ExprOccurrence, expected: Option[Type], elements: List[ExprOccurrence], tail: Option[ExprOccurrence]) -> TypeResult
-    effects {Modifies[kb], Error[TypeError]} =
+    effects {Modify[kb], Error[TypeError]} =
     -- Extract element type from expected type, or use fresh var
     let elem_type = match expected
       case some(value: coll_type) -> extract_element_type(kb, coll_type)
@@ -347,7 +559,7 @@ namespace anthill.reflect.typing_pass
 
   -- Type-check each element of a collection against the expected element type.
   operation type_check_elements(kb: KB, env: TypingEnv, occ: ExprOccurrence, elem_type: Type, elements: List[ExprOccurrence]) -> TypeResult
-    effects {Modifies[kb], Error[TypeError]} =
+    effects {Modify[kb], Error[TypeError]} =
     match elements
       case nil -> TypeResult(type: elem_type, env: env)
       case cons(head: elem_occ, tail: rest) ->
@@ -361,12 +573,12 @@ namespace anthill.reflect.typing_pass
 
   -- Type-check a tuple literal (a, b). Each position has its own type.
   operation type_check_tuple(kb: KB, env: TypingEnv, occ: ExprOccurrence, expected: Option[Type], fields: List[ExprOccurrence]) -> TypeResult
-    effects {Modifies[kb], Error[TypeError]} =
+    effects {Modify[kb], Error[TypeError]} =
     let tr = type_check_tuple_fields(kb, env, occ, fields, 0)
     TypeResult(type: result_type(tr), env: result_env(tr))
 
   operation type_check_tuple_fields(kb: KB, env: TypingEnv, occ: ExprOccurrence, fields: List[ExprOccurrence], index: Int) -> TypeResult
-    effects {Modifies[kb], Error[TypeError]} =
+    effects {Modify[kb], Error[TypeError]} =
     match fields
       case nil -> TypeResult(type: TupleLiteral, env: env)
       case cons(head: field_occ, tail: rest) ->
@@ -378,7 +590,7 @@ namespace anthill.reflect.typing_pass
   -- ================================================================
 
   operation check_branches(kb: KB, env: TypingEnv, scrutinee_occ: ExprOccurrence, scrutinee_type: Type, branches: List[MatchBranch]) -> TypeResult
-    effects {Modifies[kb], Error[TypeError]} =
+    effects {Modify[kb], Error[TypeError]} =
     match branches
       case cons(head: MatchBranch(pattern: p, guard: _, body: b), tail: nil) ->
         let branch_env = extend_env_from_pattern(kb, env, scrutinee_occ, p, scrutinee_type)
@@ -431,7 +643,7 @@ namespace anthill.reflect.typing_pass
   entity ArgsResult(types: List[Type], env: TypingEnv)
 
   operation check_args(kb: KB, env: TypingEnv, args: List[ApplyArg]) -> ArgsResult
-    effects Modifies[kb] =
+    effects Modify[kb] =
     match args
       case nil -> ArgsResult(types: nil, env: env)
       case cons(head: ApplyArg(name: _, value: arg_occ), tail: rest) ->
@@ -466,7 +678,7 @@ namespace anthill.reflect.typing_pass
   -- ================================================================
 
   operation type_check_fact(kb: KB, env: TypingEnv, fact_occ: ExprOccurrence) -> TypingEnv
-    effects Modifies[kb] =
+    effects Modify[kb] =
     let fact_term = occurrence_term(kb, fact_occ)
     let entity_name = functor_of(kb, fact_term)
     let entity_info = lookup_entity(kb, entity_name)
@@ -474,7 +686,7 @@ namespace anthill.reflect.typing_pass
     type_check_fields(kb, env, fact_occ, fields)
 
   operation type_check_fields(kb: KB, env: TypingEnv, fact_occ: ExprOccurrence, fields: List[FieldInfo]) -> TypingEnv
-    effects {Modifies[kb], Error[TypeError]} =
+    effects {Modify[kb], Error[TypeError]} =
     match fields
       case nil -> env
       case cons(head: FieldInfo(name: field_name, type_name: declared_type), tail: rest) ->
@@ -489,7 +701,7 @@ namespace anthill.reflect.typing_pass
   -- ================================================================
 
   operation type_check_rule(kb: KB, env: TypingEnv, head_occ: ExprOccurrence, body: List[ExprOccurrence], equation_rhs: Option[ExprOccurrence]) -> TypingEnv
-    effects {Modifies[kb], Error[TypeError]} =
+    effects {Modify[kb], Error[TypeError]} =
     let env_after_body = type_check_goals(kb, env, body)
     let hr = type_check(kb, env_after_body, head_occ, none)
     match equation_rhs
@@ -500,7 +712,7 @@ namespace anthill.reflect.typing_pass
       case none -> result_env(hr)
 
   operation type_check_goals(kb: KB, env: TypingEnv, goals: List[ExprOccurrence]) -> TypingEnv
-    effects Modifies[kb] =
+    effects Modify[kb] =
     match goals
       case nil -> env
       case cons(head: goal_occ, tail: rest) ->
@@ -516,7 +728,7 @@ namespace anthill.reflect.typing_pass
   -- Expressed as denial clause; KB recognizes functional dependency
   -- pattern and installs unique index for O(1) check on assert.
   operation init_typing(kb: KB) -> ConstraintId
-    effects Modifies[kb] =
+    effects Modify[kb] =
     KB.add_guard(kb, negation(
       conjunction(
         pattern_query(TypeOf(occ: ?o, type: ?t1)),
@@ -538,7 +750,7 @@ namespace anthill.reflect.typing_pass
     effects Error[TypeError]
 
   operation type_check_operation(kb: KB, op: OperationInfo) -> TypeOf
-    effects {Modifies[kb], Error[TypeError]} =
+    effects {Modify[kb], Error[TypeError]} =
     match op
       case OperationInfo(name: op_name, params: params, return_type: ret,
                          effects: declared_effects, body: some(value: body_occ)) ->
@@ -563,7 +775,7 @@ namespace anthill.reflect.typing_pass
   entity TypeCheckResult(judgments: List[TypeOf], errors: List[TypeError])
 
   operation type_check_unit(kb: KB, unit: SourceUnit) -> TypeCheckResult
-    effects Modifies[kb] =
+    effects Modify[kb] =
     let _ = init_typing(kb)
     match unit
       case SourceUnit(source: _, path: _, operations: ops, facts: fcts, rules: rls) ->
@@ -575,7 +787,7 @@ namespace anthill.reflect.typing_pass
 
   -- Walk operation symbols, look up OperationInfo, type-check each.
   operation type_check_operations(kb: KB, ops: List[Symbol]) -> List[TypeOf]
-    effects Modifies[kb] =
+    effects Modify[kb] =
     match ops
       case nil -> nil
       case cons(head: op_sym, tail: rest) ->
@@ -588,7 +800,7 @@ namespace anthill.reflect.typing_pass
 
   -- Walk fact symbols, get occurrences, type-check each.
   operation type_check_facts(kb: KB, env: TypingEnv, facts: List[Symbol]) -> TypingEnv
-    effects Modifies[kb] =
+    effects Modify[kb] =
     match facts
       case nil -> env
       case cons(head: fact_sym, tail: rest) ->
@@ -597,7 +809,7 @@ namespace anthill.reflect.typing_pass
         type_check_facts(kb, env2, rest)
 
   operation type_check_fact_occs(kb: KB, env: TypingEnv, occs: List[ExprOccurrence]) -> TypingEnv
-    effects Modifies[kb] =
+    effects Modify[kb] =
     match occs
       case nil -> env
       case cons(head: occ, tail: rest) ->
@@ -606,7 +818,7 @@ namespace anthill.reflect.typing_pass
 
   -- Walk rule symbols, get occurrences, type-check each.
   operation type_check_rules(kb: KB, env: TypingEnv, rules: List[Symbol]) -> TypingEnv
-    effects Modifies[kb] =
+    effects Modify[kb] =
     match rules
       case nil -> env
       case cons(head: rule_sym, tail: rest) ->
@@ -615,7 +827,7 @@ namespace anthill.reflect.typing_pass
         type_check_rules(kb, env2, rest)
 
   operation type_check_rule_occs(kb: KB, env: TypingEnv, occs: List[ExprOccurrence]) -> TypingEnv
-    effects Modifies[kb] =
+    effects Modify[kb] =
     match occs
       case nil -> env
       case cons(head: occ, tail: rest) ->
