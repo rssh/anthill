@@ -44,24 +44,41 @@ use super::term::{Term, TermId, VarId};
 use super::{KnowledgeBase, RuleId};
 
 /// Per-node fixpoint bound — mirrors `apply_eq_rules`'s fuel (`resolve.rs`),
-/// keeping the two firing sites' termination policy aligned.
-const SIMP_FUEL: usize = 100;
+/// keeping the firing sites' termination policy aligned. `pub(super)` so the
+/// typer's firing site (`typing::type_check_node`) bounds its fire→re-type
+/// recursion by the same constant (WI-283).
+pub(super) const SIMP_FUEL: usize = 100;
 
 const PASS_NAME: &str = "anthill.kb.passes.simp_rewrite";
 
+/// Whether any indexed `[simp]` equation exists — the gate both firing
+/// sites use to skip all firing work in the common no-rule case.
+/// `by_functor(eq)` holds only indexed (`[simp]`/`[unfold]`) equations
+/// post-WI-139, so an empty index (e.g. a stdlib-only load) returns fast.
+/// Read once per typer walk (WI-283) and once per [`run`].
+pub(super) fn has_simp_equations(kb: &mut KnowledgeBase) -> bool {
+    let eq_sym = kb.intern("eq");
+    kb.by_functor(eq_sym)
+        .into_iter()
+        .any(|rid| kb.is_equation(rid) && meta_has_flag(kb, kb.rule_meta(rid), "simp"))
+}
+
+/// The `PassId` tagging `[simp]`-synthesized occurrences. Idempotent
+/// (`register_pass` interns the name), so the typer firing site can fetch
+/// it per fire without threading it through the work-stack.
+pub(super) fn simp_pass(kb: &mut KnowledgeBase) -> PassId {
+    kb.register_pass(PASS_NAME)
+}
+
 /// Entry point: rewrite every operation body by firing `[simp]` equations,
 /// writing each rewritten (redex-free) tree back into `kb.op_bodies`.
+///
+/// Retired from the load pipeline in WI-283 — firing now runs *in the
+/// typer* (`typing::build_type`), where it is type-directed. Kept as the
+/// helper-level test harness exercising [`try_fire`] / [`reassemble`] /
+/// [`substitute_to_occurrence`] over the bare occurrence representation.
 pub fn run(kb: &mut KnowledgeBase) {
-    // Fast path: with no `[simp]` equations in the index there is nothing to
-    // fire, so skip the whole walk. `by_functor(eq)` holds only indexed
-    // (`[simp]`/`[unfold]`) equations post-WI-139, so this is the common case
-    // (e.g. every stdlib-only load).
-    let eq_sym = kb.intern("eq");
-    let has_simp = kb
-        .by_functor(eq_sym)
-        .into_iter()
-        .any(|rid| kb.is_equation(rid) && meta_has_flag(kb, kb.rule_meta(rid), "simp"));
-    if !has_simp {
+    if !has_simp_equations(kb) {
         return;
     }
     let pass = kb.register_pass(PASS_NAME);
@@ -214,7 +231,12 @@ fn build_node(
 
 /// Try to fire a `[simp]` equation at this node. Returns the rewritten
 /// occurrence, or `None` if no equation matches.
-fn try_fire(
+///
+/// WI-283: guard-free — matches the rule LHS structurally via `match_view`
+/// and substitutes the RHS. The typer firing site (`typing::build_type`)
+/// reuses this; type-directed guard evaluation (`min_sort`/`requires`) is
+/// layered on next, between the LHS match and the substitution.
+pub(super) fn try_fire(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     pass: PassId,
@@ -425,7 +447,11 @@ impl<'a> ChildCursor<'a> {
     }
 }
 
-fn reassemble(
+/// Rebuild `occ` from its already-rewritten children (in `for_each_child`
+/// source order), returning `occ` unchanged (same `Rc`) when no child
+/// moved. `pub(super)` so the typer's `build_type` reassembles each node
+/// from its children's `TypeResult.node` (WI-283).
+pub(super) fn reassemble(
     occ: &Rc<NodeOccurrence>,
     new_children: &[Rc<NodeOccurrence>],
 ) -> Rc<NodeOccurrence> {

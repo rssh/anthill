@@ -1483,12 +1483,14 @@ fn load_phase_inner(
     // `kb.sort_ops_lookup` instead of the string-concat fallback.
     build_sort_ops_table(kb);
     mark!("build_sort_ops_table");
-    // WI-277: fire [simp] equational rules over operation bodies (typer-phase
-    // rewriting engine), writing the rewritten redex-free trees back into
-    // `op_bodies` before type-checking — so the type-checker, req_insertion,
-    // eval, and codegen all see the rewritten form.
-    super::simp_rewrite::run(kb);
-    mark!("simp_rewrite::run");
+    // WI-283: `[simp]` firing over operation bodies now runs *inside* the
+    // typer (`typing::build_type`), where it is type-directed — children
+    // are typed first, so `min_sort`/`requires` guards have the operand's
+    // type in hand. The typer is tree-producing: it writes each rewritten
+    // (redex-free) body back via `set_op_body_node` before returning, so
+    // req_insertion, eval, and codegen see the rewritten form. The former
+    // pre-typer `simp_rewrite::run` pass (WI-277, guard-free, type-blind)
+    // is retired from the pipeline; its machinery is reused by the typer.
     all_errors.extend(super::typing::type_check_sorts(kb, &all_sorts));
     mark!(&format!("type_check_sorts ({} sorts)", all_sorts.len()));
     // WI-231: the typer tagged each spec-op call site's occurrence

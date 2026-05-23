@@ -463,12 +463,21 @@ pub struct TypeResult {
     pub ty: TermId,
     pub env: TypingEnv,
     pub effects: Vec<TermId>,
+    /// WI-283: the (possibly-rewritten) occurrence this result describes.
+    /// The typer is *tree-producing*: every result carries the node it
+    /// is the type of, so a parent build-frame can reassemble itself
+    /// from rewritten children and the [`TypeBuildFrame::Stamp`] frame
+    /// can record the inferred type onto the *resulting* node. For a
+    /// node that no `[simp]` rule rewrites this is the input occurrence
+    /// (identity); a firing frame replaces it with the synthesized RHS
+    /// (`synthesized_expr`, with the input occ as its `from`).
+    pub node: Rc<NodeOccurrence>,
 }
 
 impl TypeResult {
     /// Pure result — no effects.
-    pub fn pure(ty: TermId, env: TypingEnv) -> Self {
-        Self { ty, env, effects: Vec::new() }
+    pub fn pure(ty: TermId, env: TypingEnv, node: Rc<NodeOccurrence>) -> Self {
+        Self { ty, env, effects: Vec::new(), node }
     }
 }
 
@@ -767,6 +776,11 @@ enum TypeWorkOp {
         occ: Rc<NodeOccurrence>,
         env: Rc<TypingEnv>,
         expected: Option<TermId>,
+        /// WI-283: remaining `[simp]` fire-fuel for this node. Inherited
+        /// unchanged by child Visits; spent (`fuel - 1`) only when an
+        /// Apply/Constructor fires and re-`Visit`s its synthesized RHS.
+        /// Bounds the fire chain (→ termination) without host recursion.
+        fuel: usize,
     },
     Build(TypeBuildFrame),
 }
@@ -775,19 +789,22 @@ enum TypeWorkOp {
 /// frame (WI-284). The Stamp sits just below the Visit on the work
 /// stack, so it pops only after the Visit and all of its sub-work have
 /// produced this node's `TypeResult` — at which point it records the
-/// inferred type onto `occ`. Routing every node visit through here
-/// stamps each typed occurrence exactly once, uniformly across all
-/// iterative arms (Apply / Constructor / Let / Match / Lambda / If /
-/// collection literals — every form is a work-stack Build frame after
-/// WI-285, so there is no recursive `type_check_node` re-entry).
+/// inferred type onto that result's `node` (WI-283: the *resulting*,
+/// possibly-rewritten occurrence, not the input — identical until a
+/// `[simp]` rule fires). Routing every node visit through here stamps
+/// each typed occurrence exactly once, uniformly across all iterative
+/// arms (Apply / Constructor / Let / Match / Lambda / If / collection
+/// literals — every form is a work-stack Build frame after WI-285, so
+/// there is no recursive `type_check_node` re-entry).
 fn push_visit(
     work: &mut Vec<TypeWorkOp>,
     occ: Rc<NodeOccurrence>,
     env: Rc<TypingEnv>,
     expected: Option<TermId>,
+    fuel: usize,
 ) {
-    work.push(TypeWorkOp::Build(TypeBuildFrame::Stamp { occ: Rc::clone(&occ) }));
-    work.push(TypeWorkOp::Visit { occ, env, expected });
+    work.push(TypeWorkOp::Build(TypeBuildFrame::Stamp));
+    work.push(TypeWorkOp::Visit { occ, env, expected, fuel });
 }
 
 /// Push a Visit with no top-down hint. Used at positions where the
@@ -795,8 +812,8 @@ fn push_visit(
 /// args (constrained by op.params / entity_field_types), the
 /// scrutinee of a Match (drives the branch envs but takes no hint
 /// from outside), and the condition of an If (always `Bool`).
-fn push_visit_no_hint(work: &mut Vec<TypeWorkOp>, occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>) {
-    push_visit(work, occ, env, None);
+fn push_visit_no_hint(work: &mut Vec<TypeWorkOp>, occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, fuel: usize) {
+    push_visit(work, occ, env, None, fuel);
 }
 
 // WI-258: env-carrying frames hold `Rc<TypingEnv>`. Sibling Visits
@@ -817,18 +834,24 @@ enum TypeBuildFrame {
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
         env: Rc<TypingEnv>,
         expected: Option<TermId>,
+        /// WI-283: fire-fuel inherited from this node's `Visit`; on a fire
+        /// the RHS is re-`Visit`ed with `fuel - 1` (bounds the chain).
+        fuel: usize,
     },
     /// All Constructor args finished; drain results and call
     /// `check_constructor_iter`. WI-270: `expected` flows into the
     /// parent-type unification so a caller-side `Option[Int]`
     /// constrains `some(?)`'s inferred T.
     Constructor {
+        occ: Rc<NodeOccurrence>,
         ctor_sym: Symbol,
         pos_args: Vec<Rc<NodeOccurrence>>,
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
         env: Rc<TypingEnv>,
         span: Option<Span>,
         expected: Option<TermId>,
+        /// WI-283: fire-fuel — see [`TypeBuildFrame::Apply::fuel`].
+        fuel: usize,
     },
     /// Value finished; compute the body's ext_env and schedule the
     /// body Visit, plus a `LetFinal` frame to combine results. If the
@@ -837,30 +860,49 @@ enum TypeBuildFrame {
     /// `body_expected` is the let's own `expected` (the outer hint),
     /// passed forward to the body Visit per WI-270.
     LetAfterValue {
+        occ: Rc<NodeOccurrence>,
         pattern: TermId,
         annotation: Option<TermId>,
         body_occ: Rc<NodeOccurrence>,
         body_expected: Option<TermId>,
+        /// WI-283: fire-fuel to propagate onto the body `Visit`.
+        fuel: usize,
     },
     /// Body finished; merge `value_effects` (captured at
     /// `LetAfterValue` time so we didn't need to keep `value_r`
     /// alive — its `env` was moved into the body's ext_env, which is
     /// the whole point of WI-258's COW) with `body_r.effects` and
     /// return the let's TypeResult.
-    LetFinal { value_effects: Vec<TermId> },
+    LetFinal {
+        occ: Rc<NodeOccurrence>,
+        /// The let value's (possibly-rewritten) node, captured at
+        /// `LetAfterValue` (its `TypeResult` is consumed there); paired
+        /// with the body's node to reassemble the `Let` (WI-283).
+        value_node: Rc<NodeOccurrence>,
+        value_effects: Vec<TermId>,
+    },
     /// Scrutinee finished; walk the branch patterns for coverage,
     /// compute each branch's env, schedule body Visits + a
     /// `MatchFinal` frame. `body_expected` flows to every branch body.
     MatchAfterScrutinee {
+        occ: Rc<NodeOccurrence>,
         branches: Vec<MatchBranch>,
         outer_env: Rc<TypingEnv>,
         body_expected: Option<TermId>,
+        /// WI-283: fire-fuel to propagate onto each branch-body `Visit`.
+        fuel: usize,
     },
     /// All branch bodies finished; pop `branch_count` results, filter
     /// per-branch effects against each branch's local resources,
     /// emit non-exhaustiveness diagnostics, return the match's
     /// TypeResult.
     MatchFinal {
+        occ: Rc<NodeOccurrence>,
+        /// The scrutinee's (possibly-rewritten) node, captured at
+        /// `MatchAfterScrutinee`; paired with the branch bodies to
+        /// reassemble the `Match` (WI-283). Guards aren't typed/visited,
+        /// so they're re-read from `occ` unchanged.
+        scr_node: Rc<NodeOccurrence>,
         scr_effects: Vec<TermId>,
         branch_envs: Vec<Rc<TypingEnv>>,
         branch_count: usize,
@@ -872,32 +914,34 @@ enum TypeBuildFrame {
     /// Lambda body finished; build the `arrow(param, body_ty,
     /// body_effects)` type and return a pure result (creating a
     /// lambda is itself effect-free).
-    LambdaBody { param: TermId, outer_env: Rc<TypingEnv> },
+    LambdaBody { occ: Rc<NodeOccurrence>, param: TermId, outer_env: Rc<TypingEnv> },
     /// WI-285: all three If sub-expressions finished (drained in
     /// `[condition, then, else]` order); merge their effects and
     /// return the if's `TypeResult` — type is the then-branch's type
     /// (mirrors the former `check_if_expr`). Replaces the
     /// recursive-helper arm so a deep else-if chain stays on the heap.
-    IfExpr { env: Rc<TypingEnv> },
+    IfExpr { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv> },
     /// WI-285: all list elements finished; drain `count`, infer the
     /// element type (`element_hint` when bound by an outer
     /// `List[T = X]`, else the first element's type), build
     /// `List[T = elem]` (former `check_list_literal`).
-    ListLit { env: Rc<TypingEnv>, element_hint: Option<TermId>, count: usize },
+    ListLit { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, element_hint: Option<TermId>, count: usize },
     /// WI-285: as [`TypeBuildFrame::ListLit`], for `Set[T = elem]`.
-    SetLit { env: Rc<TypingEnv>, element_hint: Option<TermId>, count: usize },
+    SetLit { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, element_hint: Option<TermId>, count: usize },
     /// WI-285: all tuple fields finished (positional then named);
     /// drain `pos_count + named_names.len()`, building the named-tuple
     /// type (`_0`, `_1`, … for positional fields, declared names for
     /// named ones; former `check_tuple_literal`).
-    TupleLit { env: Rc<TypingEnv>, pos_count: usize, named_names: Vec<Symbol> },
+    TupleLit { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, pos_count: usize, named_names: Vec<Symbol> },
     /// WI-284: record a node's inferred type. Pushed by [`push_visit`]
     /// just under the node's Visit, so when it pops the node's
     /// `TypeResult` is on top of `results`. Peeks that result — never
     /// pops or pushes, so it is results-neutral and doesn't perturb the
     /// Apply / Constructor / MatchFinal drains or the final
-    /// single-result invariant — and writes the type onto `occ`.
-    Stamp { occ: Rc<NodeOccurrence> },
+    /// single-result invariant — and writes the type onto the result's
+    /// `node` (WI-283: the resulting occurrence, which the result itself
+    /// carries — so the frame needs no stored `occ`).
+    Stamp,
 }
 
 // ── type_check_expr ────────────────────────────────────────────
@@ -953,13 +997,25 @@ pub fn type_check_node(
 ) -> Result<TypeResult, TypeError> {
     let mut work: Vec<TypeWorkOp> = Vec::with_capacity(32);
     let mut results: Vec<Result<TypeResult, TypeError>> = Vec::with_capacity(32);
-    push_visit(&mut work, Rc::clone(occ), Rc::new(env.clone()), expected);
+    // WI-283: gate the in-typer `[simp]` firing on whether any `[simp]`
+    // equation is indexed at all — read once per walk, so the common
+    // no-rule case pays nothing per node.
+    let simp_enabled = super::simp_rewrite::has_simp_equations(kb);
+    // WI-283: `[simp]` fire-fuel rides on each `Visit` (not the host stack).
+    // When an Apply/Constructor fires, the synthesized RHS is re-`Visit`ed
+    // with `fuel - 1` on this same work-stack — so a non-terminating /
+    // non-confluent `[simp]` rule (e.g. a commutative law mistagged
+    // `[simp]`) bottoms out at `fuel == 0` leaving a partial redex (exactly
+    // as the fuel-bounded `simp_rewrite::run` did) instead of recursing the
+    // host stack to overflow. Children inherit the fuel unchanged; only a
+    // fire spends it. Matches the WI-285 iterative discipline.
+    push_visit(&mut work, Rc::clone(occ), Rc::new(env.clone()), expected, super::simp_rewrite::SIMP_FUEL);
     while let Some(op) = work.pop() {
         match op {
-            TypeWorkOp::Visit { occ, env, expected } => {
-                visit_type(kb, occ, env, expected, &mut work, &mut results)
+            TypeWorkOp::Visit { occ, env, expected, fuel } => {
+                visit_type(kb, occ, env, expected, fuel, &mut work, &mut results)
             }
-            TypeWorkOp::Build(frame) => build_type(kb, frame, &mut work, &mut results),
+            TypeWorkOp::Build(frame) => build_type(kb, frame, simp_enabled, &mut work, &mut results),
         }
     }
     debug_assert_eq!(results.len(), 1, "iterative typer: expected exactly one result");
@@ -976,22 +1032,23 @@ fn check_bare_ref(
     env: &TypingEnv,
     sym: Symbol,
     span: Option<Span>,
+    occ: &Rc<NodeOccurrence>,
 ) -> Result<TypeResult, TypeError> {
     if let Some(ty) = env.lookup_var(sym) {
-        return Ok(TypeResult::pure(ty, env.clone()));
+        return Ok(TypeResult::pure(ty, env.clone(), Rc::clone(occ)));
     }
     if kb.is_constructor_symbol(sym) {
-        return check_constructor_iter(kb, env, sym, &[], &[], &[], &[], span, None);
+        return check_constructor_iter(kb, env, sym, &[], &[], &[], &[], span, None, occ);
     }
     if let Some(ret_ty) = lookup_operation_return_type(kb, sym) {
-        return Ok(TypeResult::pure(ret_ty, env.clone()));
+        return Ok(TypeResult::pure(ret_ty, env.clone(), Rc::clone(occ)));
     }
     // A bare reference to a free-standing entity denotes the entity as a type,
     // not a construction — its type is the reflect `Type` sort, so it can be
     // passed to operations taking a `Type` (e.g. `facts_of(kb(), WorkItem)`).
     if kb.is_free_standing_entity(sym) {
         let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
-        return Ok(TypeResult::pure(type_ty, env.clone()));
+        return Ok(TypeResult::pure(type_ty, env.clone(), Rc::clone(occ)));
     }
     Err(TypeError::UnresolvedName { span, name: sym })
 }
@@ -1037,6 +1094,10 @@ fn visit_type(
     occ: Rc<NodeOccurrence>,
     env: Rc<TypingEnv>,
     expected: Option<TermId>,
+    // WI-283: the `[simp]` fire-fuel for this node; passed unchanged to
+    // child Visits and to the Apply/Constructor/Let/Match build frames so
+    // a fire can spend it (`fuel - 1`) when it re-`Visit`s the RHS.
+    fuel: usize,
     work: &mut Vec<TypeWorkOp>,
     results: &mut Vec<Result<TypeResult, TypeError>>,
 ) {
@@ -1064,12 +1125,14 @@ fn visit_type(
             // result type. The let's own `expected` instead flows
             // through to the body.
             work.push(TypeWorkOp::Build(TypeBuildFrame::LetAfterValue {
+                occ: Rc::clone(&occ),
                 pattern,
                 annotation,
                 body_occ,
                 body_expected: expected,
+                fuel,
             }));
-            push_visit(work, value_occ, env, annotation);
+            push_visit(work, value_occ, env, annotation, fuel);
         }
         Expr::Match { scrutinee, branches } => {
             let scrutinee_occ = Rc::clone(scrutinee);
@@ -1083,11 +1146,13 @@ fn visit_type(
                 })
                 .collect();
             work.push(TypeWorkOp::Build(TypeBuildFrame::MatchAfterScrutinee {
+                occ: Rc::clone(&occ),
                 branches: branches_cloned,
                 outer_env: Rc::clone(&env),
                 body_expected: expected,
+                fuel,
             }));
-            push_visit_no_hint(work, scrutinee_occ, env);
+            push_visit_no_hint(work, scrutinee_occ, env, fuel);
         }
         Expr::Lambda { param, body } => {
             let param = *param;
@@ -1102,39 +1167,40 @@ fn visit_type(
                 .and_then(|exp| extract_function_type_parts(kb, exp))
                 .map(|(ret, _)| ret);
             work.push(TypeWorkOp::Build(TypeBuildFrame::LambdaBody {
+                occ: Rc::clone(&occ),
                 param,
                 outer_env: env,
             }));
-            push_visit(work, body_occ, Rc::new(lambda_env), body_expected);
+            push_visit(work, body_occ, Rc::new(lambda_env), body_expected, fuel);
         }
 
         // ── Leaf cases ──────────────────────────────────────────
         Expr::Const(Literal::Int(_)) | Expr::Const(Literal::BigInt(_)) => results.push(Ok(
-            TypeResult::pure(kb.make_sort_ref_by_name("Int"), unwrap_env(env)),
+            TypeResult::pure(kb.make_sort_ref_by_name("Int"), unwrap_env(env), Rc::clone(&occ)),
         )),
         Expr::Const(Literal::Float(_)) => results.push(Ok(
-            TypeResult::pure(kb.make_sort_ref_by_name("Float"), unwrap_env(env)),
+            TypeResult::pure(kb.make_sort_ref_by_name("Float"), unwrap_env(env), Rc::clone(&occ)),
         )),
         Expr::Const(Literal::String(_)) => results.push(Ok(
-            TypeResult::pure(kb.make_sort_ref_by_name("String"), unwrap_env(env)),
+            TypeResult::pure(kb.make_sort_ref_by_name("String"), unwrap_env(env), Rc::clone(&occ)),
         )),
         Expr::Const(Literal::Bool(_)) => results.push(Ok(
-            TypeResult::pure(kb.make_sort_ref_by_name("Bool"), unwrap_env(env)),
+            TypeResult::pure(kb.make_sort_ref_by_name("Bool"), unwrap_env(env), Rc::clone(&occ)),
         )),
         // `Handle(_)` literals are reserved for materialized runtime
         // values; they never appear in surface source. If one shows up,
         // it's a post-elaboration form being re-typed.
         Expr::Const(_) => results.push(Err(TypeError::BottomExpr { span: occ_span })),
         Expr::Ref(sym) => {
-            let r = check_bare_ref(kb, &*env, *sym, occ_span);
+            let r = check_bare_ref(kb, &*env, *sym, occ_span, &occ);
             results.push(r);
         }
         Expr::Ident(sym) => {
-            let r = check_bare_ref(kb, &*env, *sym, occ_span);
+            let r = check_bare_ref(kb, &*env, *sym, occ_span, &occ);
             results.push(r);
         }
         Expr::VarRef { name } => {
-            let r = check_bare_ref(kb, &*env, *name, occ_span);
+            let r = check_bare_ref(kb, &*env, *name, occ_span, &occ);
             results.push(r);
         }
 
@@ -1155,12 +1221,13 @@ fn visit_type(
                 named_args: named_args.clone(),
                 env: Rc::clone(&env),
                 expected,
+                fuel,
             }));
             for (_, arg) in named_args.iter().rev() {
-                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env));
+                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env), fuel);
             }
             for arg in pos_args.iter().rev() {
-                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env));
+                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env), fuel);
             }
         }
         Expr::Constructor { name, pos_args, named_args } => {
@@ -1168,18 +1235,20 @@ fn visit_type(
             let pos_args = pos_args.clone();
             let named_args = named_args.clone();
             work.push(TypeWorkOp::Build(TypeBuildFrame::Constructor {
+                occ: Rc::clone(&occ),
                 ctor_sym: name,
                 pos_args: pos_args.clone(),
                 named_args: named_args.clone(),
                 env: Rc::clone(&env),
                 span: occ_span,
                 expected,
+                fuel,
             }));
             for (_, arg) in named_args.iter().rev() {
-                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env));
+                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env), fuel);
             }
             for arg in pos_args.iter().rev() {
-                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env));
+                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env), fuel);
             }
         }
 
@@ -1195,10 +1264,10 @@ fn visit_type(
             // Drain order [cond, then, else]: push reversed. The
             // condition is always `Bool` (no hint); both branches share
             // the if's `expected` (WI-270).
-            work.push(TypeWorkOp::Build(TypeBuildFrame::IfExpr { env: Rc::clone(&env) }));
-            push_visit(work, else_branch, Rc::clone(&env), expected);
-            push_visit(work, then_branch, Rc::clone(&env), expected);
-            push_visit_no_hint(work, condition, env);
+            work.push(TypeWorkOp::Build(TypeBuildFrame::IfExpr { occ: Rc::clone(&occ), env: Rc::clone(&env) }));
+            push_visit(work, else_branch, Rc::clone(&env), expected, fuel);
+            push_visit(work, then_branch, Rc::clone(&env), expected, fuel);
+            push_visit_no_hint(work, condition, env, fuel);
         }
         Expr::ListLit(elems) => {
             let elems = elems.clone();
@@ -1206,24 +1275,26 @@ fn visit_type(
             // expected, and the empty-list fallback.
             let element_hint = expected.and_then(|exp| extract_type_param(kb, exp, "T"));
             work.push(TypeWorkOp::Build(TypeBuildFrame::ListLit {
+                occ: Rc::clone(&occ),
                 env: Rc::clone(&env),
                 element_hint,
                 count: elems.len(),
             }));
             for e in elems.iter().rev() {
-                push_visit(work, Rc::clone(e), Rc::clone(&env), element_hint);
+                push_visit(work, Rc::clone(e), Rc::clone(&env), element_hint, fuel);
             }
         }
         Expr::SetLit(elems) => {
             let elems = elems.clone();
             let element_hint = expected.and_then(|exp| extract_type_param(kb, exp, "T"));
             work.push(TypeWorkOp::Build(TypeBuildFrame::SetLit {
+                occ: Rc::clone(&occ),
                 env: Rc::clone(&env),
                 element_hint,
                 count: elems.len(),
             }));
             for e in elems.iter().rev() {
-                push_visit(work, Rc::clone(e), Rc::clone(&env), element_hint);
+                push_visit(work, Rc::clone(e), Rc::clone(&env), element_hint, fuel);
             }
         }
         Expr::TupleLit { positional, named } => {
@@ -1233,15 +1304,16 @@ fn visit_type(
             // Drain order [pos…, named…]: push named reversed, then
             // positional reversed. Tuple fields take no hint.
             work.push(TypeWorkOp::Build(TypeBuildFrame::TupleLit {
+                occ: Rc::clone(&occ),
                 env: Rc::clone(&env),
                 pos_count: positional.len(),
                 named_names,
             }));
             for (_, e) in named.iter().rev() {
-                push_visit_no_hint(work, Rc::clone(e), Rc::clone(&env));
+                push_visit_no_hint(work, Rc::clone(e), Rc::clone(&env), fuel);
             }
             for e in positional.iter().rev() {
-                push_visit_no_hint(work, Rc::clone(e), Rc::clone(&env));
+                push_visit_no_hint(work, Rc::clone(e), Rc::clone(&env), fuel);
             }
         }
 
@@ -1254,7 +1326,7 @@ fn visit_type(
         Expr::Var(_) => {
             let fresh = kb.intern("?logical_var");
             let ty = kb.make_type_var(fresh);
-            results.push(Ok(TypeResult::pure(ty, unwrap_env(env))));
+            results.push(Ok(TypeResult::pure(ty, unwrap_env(env), Rc::clone(&occ))));
         }
 
         // `DotApply` is a pre-dispatch form (WI-278): the `[simp]` dot rules
@@ -1277,51 +1349,174 @@ fn visit_type(
     }
 }
 
+/// WI-283: reassemble `occ` from the children's (possibly-rewritten)
+/// `TypeResult.node`s — supplied as the node's child results in
+/// `for_each_child` source order, all `Ok` — returning `occ` unchanged
+/// (same `Rc`) when no child moved. The mechanism that makes the typer
+/// *tree-producing*: a `[simp]` rewrite below a node propagates up as the
+/// ancestor chain is rebuilt.
+fn reassemble_children(
+    occ: &Rc<NodeOccurrence>,
+    child_results: &[&Result<TypeResult, TypeError>],
+) -> Rc<NodeOccurrence> {
+    let nodes: Vec<Rc<NodeOccurrence>> = child_results
+        .iter()
+        .map(|r| Rc::clone(&r.as_ref().expect("reassemble_children: Ok child").node))
+        .collect();
+    super::simp_rewrite::reassemble(occ, &nodes)
+}
+
+/// [`reassemble_children`] for a contiguous slice of child results (the
+/// `for_each_child`-ordered `group` the wrapper frames drain), gated on
+/// `simp_enabled`: with no `[simp]` rules nothing was rewritten, so the
+/// node is the unchanged `occ` and the per-node collect+walk is skipped.
+fn reassemble_if_enabled(
+    simp_enabled: bool,
+    occ: &Rc<NodeOccurrence>,
+    child_results: &[Result<TypeResult, TypeError>],
+) -> Rc<NodeOccurrence> {
+    if !simp_enabled {
+        return Rc::clone(occ);
+    }
+    let refs: Vec<&Result<TypeResult, TypeError>> = child_results.iter().collect();
+    reassemble_children(occ, &refs)
+}
+
+/// WI-283: reassemble a `Match` from its (rewritten) scrutinee + branch
+/// bodies. Match needs its own path because its **guards are not
+/// typed/visited** (so they have no result `node`); they're re-read from
+/// `occ` unchanged and interleaved after each body, reproducing
+/// `for_each_child(Match)` order ([scrutinee, body, guard?, …]) for the
+/// shared `reassemble`. `branch_results` are the branch-body `TypeResult`s
+/// (all `Ok`), in branch order. Returns `occ` unchanged when nothing moved.
+fn reassemble_match(
+    occ: &Rc<NodeOccurrence>,
+    scr_node: &Rc<NodeOccurrence>,
+    branch_results: &[Result<TypeResult, TypeError>],
+) -> Rc<NodeOccurrence> {
+    let branches = match occ.as_expr() {
+        Some(Expr::Match { branches, .. }) => branches,
+        _ => return Rc::clone(occ),
+    };
+    let mut children: Vec<Rc<NodeOccurrence>> =
+        Vec::with_capacity(1 + branch_results.len() * 2);
+    children.push(Rc::clone(scr_node));
+    for (branch, r) in branches.iter().zip(branch_results.iter()) {
+        children.push(Rc::clone(&r.as_ref().expect("reassemble_match: Ok body").node));
+        if let Some(g) = &branch.guard {
+            children.push(Rc::clone(g));
+        }
+    }
+    super::simp_rewrite::reassemble(occ, &children)
+}
+
+/// WI-283: try firing a `[simp]` rule at `node` (guard-free for now),
+/// fetching the simp pass for synthesized-RHS provenance. The typer's
+/// firing site; reuses `simp_rewrite`'s matcher + RHS builder.
+fn fire_simp(kb: &mut KnowledgeBase, node: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
+    let pass = super::simp_rewrite::simp_pass(kb);
+    super::simp_rewrite::try_fire(kb, node, pass)
+}
+
 /// Assemble a Let / Match / Lambda result from its child results.
 fn build_type(
     kb: &mut KnowledgeBase,
     frame: TypeBuildFrame,
+    simp_enabled: bool,
     work: &mut Vec<TypeWorkOp>,
     results: &mut Vec<Result<TypeResult, TypeError>>,
 ) {
     match frame {
-        TypeBuildFrame::Stamp { occ } => {
+        TypeBuildFrame::Stamp => {
             // The node's freshly-produced result is on top of `results`
             // (this frame sits just under its Visit). Peek — don't
-            // consume — and record the inferred type. Ill-typed nodes
-            // (`Err`) are left unstamped (`inferred_type` stays `None`).
+            // consume — and record the inferred type onto the result's
+            // (possibly-rewritten) node. Ill-typed nodes (`Err`) are
+            // left unstamped (`inferred_type` stays `None`).
             if let Some(Ok(r)) = results.last() {
-                occ.set_inferred_type(r.ty);
+                r.node.set_inferred_type(r.ty);
             }
         }
-        TypeBuildFrame::Apply { occ, fn_sym, pos_args, named_args, env, expected } => {
+        TypeBuildFrame::Apply { occ, fn_sym, pos_args, named_args, env, expected, fuel } => {
             let total = pos_args.len() + named_args.len();
             let drain_start = results.len() - total;
             let mut arg_results: Vec<Result<TypeResult, TypeError>> =
                 results.drain(drain_start..).collect();
             let named_results = arg_results.split_off(pos_args.len());
             let pos_results = arg_results;
-            let span = Some(occ.span.span);
+            // WI-283: when `[simp]` rules exist, reassemble this Apply from
+            // its children's (possibly-rewritten) `.node`s and fire a rule
+            // at it *before* classifying (a fired node is discarded, so
+            // classifying it would be wasted); on a fire, re-type the RHS so
+            // chains/cascades reach fixpoint and the produced apply gets
+            // classified for req_insertion. With no `[simp]` rules the node
+            // is the unchanged input occ — no reassembly, no per-node cost.
+            let node = if simp_enabled {
+                // Surface an ill-typed child first — we need `Ok` children to
+                // read their `.node` (check_apply_iter aggregates the same).
+                if let Err(e) = collect_arg_errors(pos_results.iter().chain(named_results.iter())) {
+                    results.push(Err(e));
+                    return;
+                }
+                let child_refs: Vec<&Result<TypeResult, TypeError>> =
+                    pos_results.iter().chain(named_results.iter()).collect();
+                let node = reassemble_children(&occ, &child_refs);
+                // Fire only while fuel remains; on a fire, re-`Visit` the RHS
+                // with `fuel - 1` on this same work-stack (no host recursion)
+                // so the chain is bounded — a non-terminating rule bottoms
+                // out at fuel 0 leaving a partial redex, not a stack overflow.
+                if fuel > 0 {
+                    if let Some(rhs) = fire_simp(kb, &node) {
+                        push_visit(work, rhs, env, expected, fuel - 1);
+                        return;
+                    }
+                }
+                node
+            } else {
+                occ
+            };
+            let span = Some(node.span.span);
             let r = check_apply_iter(
-                kb, &*env, &occ, fn_sym, &pos_args, &named_args,
+                kb, &*env, &node, fn_sym, &pos_args, &named_args,
                 &pos_results, &named_results, span, expected,
             );
             results.push(r);
         }
-        TypeBuildFrame::Constructor { ctor_sym, pos_args, named_args, env, span, expected } => {
+        TypeBuildFrame::Constructor { occ, ctor_sym, pos_args, named_args, env, span, expected, fuel } => {
             let total = pos_args.len() + named_args.len();
             let drain_start = results.len() - total;
             let mut arg_results: Vec<Result<TypeResult, TypeError>> =
                 results.drain(drain_start..).collect();
             let named_results = arg_results.split_off(pos_args.len());
             let pos_results = arg_results;
+            // WI-283: reassemble + fire (gated on `[simp]` rules existing) —
+            // mirrors the Apply arm (a `[simp]` rule may target a domain
+            // constructor too, e.g. `transpose(transpose(?m)) = ?m`).
+            let node = if simp_enabled {
+                if let Err(e) = collect_arg_errors(pos_results.iter().chain(named_results.iter())) {
+                    results.push(Err(e));
+                    return;
+                }
+                let child_refs: Vec<&Result<TypeResult, TypeError>> =
+                    pos_results.iter().chain(named_results.iter()).collect();
+                let node = reassemble_children(&occ, &child_refs);
+                if fuel > 0 {
+                    if let Some(rhs) = fire_simp(kb, &node) {
+                        push_visit(work, rhs, env, expected, fuel - 1);
+                        return;
+                    }
+                }
+                node
+            } else {
+                occ
+            };
             let r = check_constructor_iter(
                 kb, &*env, ctor_sym, &pos_args, &named_args,
-                &pos_results, &named_results, span, expected,
+                &pos_results, &named_results, span, expected, &node,
             );
             results.push(r);
         }
-        TypeBuildFrame::LetAfterValue { pattern, annotation, body_occ, body_expected } => {
+        TypeBuildFrame::LetAfterValue { occ, pattern, annotation, body_occ, body_expected, fuel } => {
             let value_r = results.pop().expect("LetAfterValue: missing value result");
             // Propagate failure up rather than typing the body under a
             // synthesized env — see WI-204 feedback (no fallbacks).
@@ -1332,6 +1527,9 @@ fn build_type(
                     return;
                 }
             };
+            // WI-283: keep the value's (possibly-rewritten) node to
+            // reassemble the `Let` at `LetFinal` (its result is consumed here).
+            let value_node = Rc::clone(&r.node);
             let (value_ty, value_effects, mut ext_env) =
                 (Some(r.ty), r.effects, r.env);
             let bound_ty = annotation.or(value_ty);
@@ -1339,10 +1537,10 @@ fn build_type(
             if let Some(var_name) = extract_pattern_var_name(kb, pattern) {
                 ext_env.declare_local_resource(var_name);
             }
-            work.push(TypeWorkOp::Build(TypeBuildFrame::LetFinal { value_effects }));
-            push_visit(work, body_occ, Rc::new(ext_env), body_expected);
+            work.push(TypeWorkOp::Build(TypeBuildFrame::LetFinal { occ, value_node, value_effects }));
+            push_visit(work, body_occ, Rc::new(ext_env), body_expected, fuel);
         }
-        TypeBuildFrame::LetFinal { value_effects } => {
+        TypeBuildFrame::LetFinal { occ, value_node, value_effects } => {
             let body_r = results.pop().expect("LetFinal: missing body result");
             let body_r = match body_r {
                 Ok(r) => r,
@@ -1352,16 +1550,34 @@ fn build_type(
                 }
             };
             let effects = merge_effects(&value_effects, &body_r.effects);
+            // WI-283: reassemble the `Let` from [value, body]
+            // (`for_each_child(Let)` order) so a rewrite in either propagates.
+            let node = if simp_enabled {
+                super::simp_rewrite::reassemble(&occ, &[value_node, Rc::clone(&body_r.node)])
+            } else {
+                Rc::clone(&occ)
+            };
             results.push(Ok(TypeResult {
                 ty: body_r.ty,
                 env: body_r.env,
                 effects,
+                node,
             }));
         }
-        TypeBuildFrame::MatchAfterScrutinee { branches, outer_env, body_expected } => {
+        TypeBuildFrame::MatchAfterScrutinee { occ, branches, outer_env, body_expected, fuel } => {
             let scr_r = results.pop().expect("MatchAfterScrutinee: missing scrutinee result");
             let scr_ty = scr_r.as_ref().ok().map(|r| r.ty);
             let scr_effects = scr_r.as_ref().ok().map(|r| r.effects.clone()).unwrap_or_default();
+            // WI-283: the scrutinee's (possibly-rewritten) node for
+            // reassembly — falling back to the original when it didn't type.
+            let scr_node = scr_r
+                .as_ref()
+                .ok()
+                .map(|r| Rc::clone(&r.node))
+                .unwrap_or_else(|| match occ.as_expr() {
+                    Some(Expr::Match { scrutinee, .. }) => Rc::clone(scrutinee),
+                    _ => Rc::clone(&occ),
+                });
 
             // Coverage / exhaustiveness inputs are derived purely from
             // pattern terms, independent of body type-checks — compute
@@ -1401,6 +1617,8 @@ fn build_type(
             let visit_envs: Vec<Rc<TypingEnv>> =
                 branch_envs.iter().map(Rc::clone).collect();
             work.push(TypeWorkOp::Build(TypeBuildFrame::MatchFinal {
+                occ,
+                scr_node,
                 scr_effects,
                 branch_envs,
                 branch_count,
@@ -1410,10 +1628,12 @@ fn build_type(
                 has_wildcard,
             }));
             for (branch, env) in branches.iter().zip(visit_envs.into_iter()).rev() {
-                push_visit(work, Rc::clone(&branch.body), env, body_expected);
+                push_visit(work, Rc::clone(&branch.body), env, body_expected, fuel);
             }
         }
         TypeBuildFrame::MatchFinal {
+            occ,
+            scr_node,
             scr_effects,
             branch_envs,
             branch_count,
@@ -1429,6 +1649,14 @@ fn build_type(
                 results.push(Err(e));
                 return;
             }
+            // WI-283: reassemble the `Match` from the (rewritten) scrutinee
+            // and branch bodies (guards re-read from `occ`, unchanged) before
+            // `branch_results` is consumed below.
+            let node = if simp_enabled {
+                reassemble_match(&occ, &scr_node, &branch_results)
+            } else {
+                Rc::clone(&occ)
+            };
             let mut effects = scr_effects;
             let mut result_ty: Option<TermId> = None;
             for (i, body_r) in branch_results.into_iter().enumerate() {
@@ -1472,7 +1700,7 @@ fn build_type(
                 }
             }
             results.push(match result_ty {
-                Some(ty) => Ok(TypeResult { ty, env: result_env, effects }),
+                Some(ty) => Ok(TypeResult { ty, env: result_env, effects, node }),
                 None => Err(TypeError::Other {
                     span: None,
                     context: TypeErrorContext::Rule {
@@ -1484,7 +1712,7 @@ fn build_type(
                 }),
             });
         }
-        TypeBuildFrame::LambdaBody { param, outer_env } => {
+        TypeBuildFrame::LambdaBody { occ, param, outer_env } => {
             let body_r = results.pop().expect("LambdaBody: missing body result");
             let param_type = extract_pattern_type_ann(kb, param);
             // Build arrow(param, result, effects) type term
@@ -1506,11 +1734,20 @@ fn build_type(
             // If the body itself errored, propagate that error rather than
             // synthesizing a lambda over an ill-typed body.
             match body_r {
-                Ok(_) => results.push(Ok(TypeResult::pure(fn_type, unwrap_env(outer_env)))),
+                // WI-283: reassemble the lambda from its (possibly-rewritten)
+                // body so a `[simp]` rewrite inside the body propagates up.
+                Ok(ref r) => {
+                    let node = if simp_enabled {
+                        super::simp_rewrite::reassemble(&occ, &[Rc::clone(&r.node)])
+                    } else {
+                        Rc::clone(&occ)
+                    };
+                    results.push(Ok(TypeResult::pure(fn_type, unwrap_env(outer_env), node)))
+                }
                 Err(e) => results.push(Err(e)),
             }
         }
-        TypeBuildFrame::IfExpr { env } => {
+        TypeBuildFrame::IfExpr { occ, env } => {
             // Children drained in [condition, then, else] order.
             let drain_start = results.len() - 3;
             let group: Vec<Result<TypeResult, TypeError>> = results.drain(drain_start..).collect();
@@ -1518,6 +1755,9 @@ fn build_type(
                 results.push(Err(e));
                 return;
             }
+            // WI-283: reassemble from [cond, then, else] (before consuming
+            // `group`) so a `[simp]` rewrite inside a branch propagates up.
+            let node = reassemble_if_enabled(simp_enabled, &occ, &group);
             let mut it = group.into_iter().map(|r| r.expect("aggregator"));
             let cond_r = it.next().unwrap();
             let then_r = it.next().unwrap();
@@ -1526,15 +1766,17 @@ fn build_type(
             effects = merge_effects(&effects, &cond_r.effects);
             effects = merge_effects(&effects, &then_r.effects);
             effects = merge_effects(&effects, &else_r.effects);
-            results.push(Ok(TypeResult { ty: then_r.ty, env: unwrap_env(env), effects }));
+            results.push(Ok(TypeResult { ty: then_r.ty, env: unwrap_env(env), effects, node }));
         }
-        TypeBuildFrame::ListLit { env, element_hint, count } => {
+        TypeBuildFrame::ListLit { occ, env, element_hint, count } => {
             let drain_start = results.len() - count;
             let group: Vec<Result<TypeResult, TypeError>> = results.drain(drain_start..).collect();
             if let Err(e) = collect_arg_errors(group.iter()) {
                 results.push(Err(e));
                 return;
             }
+            // WI-283: reassemble from the (possibly-rewritten) elements.
+            let node = reassemble_if_enabled(simp_enabled, &occ, &group);
             let mut effects = Vec::new();
             let mut element_type: Option<TermId> = element_hint;
             for r in group {
@@ -1551,15 +1793,17 @@ fn build_type(
             let list_base = kb.make_sort_ref_by_name("List");
             let t_sym = kb.intern("T");
             let list_type = kb.make_parameterized_type(list_base, &[(t_sym, t_val)]);
-            results.push(Ok(TypeResult { ty: list_type, env: unwrap_env(env), effects }));
+            results.push(Ok(TypeResult { ty: list_type, env: unwrap_env(env), effects, node }));
         }
-        TypeBuildFrame::SetLit { env, element_hint, count } => {
+        TypeBuildFrame::SetLit { occ, env, element_hint, count } => {
             let drain_start = results.len() - count;
             let group: Vec<Result<TypeResult, TypeError>> = results.drain(drain_start..).collect();
             if let Err(e) = collect_arg_errors(group.iter()) {
                 results.push(Err(e));
                 return;
             }
+            // WI-283: reassemble from the (possibly-rewritten) elements.
+            let node = reassemble_if_enabled(simp_enabled, &occ, &group);
             let mut effects = Vec::new();
             let mut element_type: Option<TermId> = element_hint;
             for r in group {
@@ -1576,9 +1820,9 @@ fn build_type(
             let set_base = kb.make_sort_ref_by_name("Set");
             let t_sym = kb.intern("T");
             let set_type = kb.make_parameterized_type(set_base, &[(t_sym, t_val)]);
-            results.push(Ok(TypeResult { ty: set_type, env: unwrap_env(env), effects }));
+            results.push(Ok(TypeResult { ty: set_type, env: unwrap_env(env), effects, node }));
         }
-        TypeBuildFrame::TupleLit { env, pos_count, named_names } => {
+        TypeBuildFrame::TupleLit { occ, env, pos_count, named_names } => {
             let total = pos_count + named_names.len();
             let drain_start = results.len() - total;
             let group: Vec<Result<TypeResult, TypeError>> = results.drain(drain_start..).collect();
@@ -1586,6 +1830,8 @@ fn build_type(
                 results.push(Err(e));
                 return;
             }
+            // WI-283: reassemble from [positional…, named…] elements.
+            let node = reassemble_if_enabled(simp_enabled, &occ, &group);
             let mut effects = Vec::new();
             let mut field_types: Vec<(Symbol, TermId)> = Vec::new();
             let mut it = group.into_iter();
@@ -1601,7 +1847,7 @@ fn build_type(
                 effects = merge_effects(&effects, &r.effects);
             }
             let tuple_type = kb.make_named_tuple_type(&field_types);
-            results.push(Ok(TypeResult { ty: tuple_type, env: unwrap_env(env), effects }));
+            results.push(Ok(TypeResult { ty: tuple_type, env: unwrap_env(env), effects, node }));
         }
     }
 }
@@ -1647,7 +1893,7 @@ fn check_apply_iter(
     // type-param inference still fires.
     if kb.is_constructor_symbol(fn_sym) {
         return check_constructor_iter(
-            kb, env, fn_sym, pos_args, named_args, pos_results, named_results, span, expected,
+            kb, env, fn_sym, pos_args, named_args, pos_results, named_results, span, expected, occ,
         );
     }
 
@@ -1861,13 +2107,13 @@ fn check_apply_iter(
             }
         }
 
-        return Ok(TypeResult { ty: resolved_ret, env: env.clone(), effects });
+        return Ok(TypeResult { ty: resolved_ret, env: env.clone(), effects, node: Rc::clone(occ) });
     }
 
     // Path 2: variable with arrow type
     if let Some(fn_type_tid) = env.lookup_var(fn_sym) {
         if let Some((ret_type, effects)) = extract_function_type_parts(kb, fn_type_tid) {
-            return Ok(TypeResult { ty: ret_type, env: env.clone(), effects });
+            return Ok(TypeResult { ty: ret_type, env: env.clone(), effects, node: Rc::clone(occ) });
         }
     }
 
@@ -1882,7 +2128,7 @@ fn check_apply_iter(
     let _ = pos_args;
     let _ = named_args;
     lookup_operation_return_type(kb, fn_sym)
-        .map(|ty| TypeResult { ty, env: env.clone(), effects })
+        .map(|ty| TypeResult { ty, env: env.clone(), effects, node: Rc::clone(occ) })
         .ok_or(TypeError::UnknownApplyFunctor { span, name: fn_sym })
 }
 
@@ -3828,10 +4074,11 @@ fn check_tuple_literal_constructor(
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     pos_results: &[Result<TypeResult, TypeError>],
     named_results: &[Result<TypeResult, TypeError>],
+    occ: &Rc<NodeOccurrence>,
 ) -> Result<TypeResult, TypeError> {
     if pos_results.is_empty() && named_results.is_empty() {
         let unit_ty = kb.make_sort_ref_by_name("anthill.prelude.Unit");
-        return Ok(TypeResult::pure(unit_ty, env.clone()));
+        return Ok(TypeResult::pure(unit_ty, env.clone(), Rc::clone(occ)));
     }
 
     collect_arg_errors(pos_results.iter().chain(named_results.iter()))?;
@@ -3852,7 +4099,7 @@ fn check_tuple_literal_constructor(
         effects = merge_effects(&effects, &r.effects);
     }
     let tuple_ty = kb.make_named_tuple_type(&tuple_fields);
-    Ok(TypeResult { ty: tuple_ty, env: env.clone(), effects })
+    Ok(TypeResult { ty: tuple_ty, env: env.clone(), effects, node: Rc::clone(occ) })
 }
 
 /// Non-recursive Constructor checker — peer of `check_apply_iter`.
@@ -3872,6 +4119,7 @@ fn check_constructor_iter(
     named_results: &[Result<TypeResult, TypeError>],
     span: Option<Span>,
     expected: Option<TermId>,
+    occ: &Rc<NodeOccurrence>,
 ) -> Result<TypeResult, TypeError> {
     let _ = pos_args; // arg-NodeOccurrence references kept for parity with check_apply_iter
 
@@ -3887,7 +4135,7 @@ fn check_constructor_iter(
     // tuple semantics instead.
     if kb.qualified_name_of(ctor_sym) == "anthill.reflect.TupleLiteral" {
         return check_tuple_literal_constructor(
-            kb, env, named_args, pos_results, named_results,
+            kb, env, named_args, pos_results, named_results, occ,
         );
     }
 
@@ -3938,7 +4186,7 @@ fn check_constructor_iter(
     }
 
     if subst.bindings.is_empty() {
-        return Ok(TypeResult { ty: parent_type, env: env.clone(), effects });
+        return Ok(TypeResult { ty: parent_type, env: env.clone(), effects, node: Rc::clone(occ) });
     }
 
     // Build parameterized type from the sort's type params + substitution bindings.
@@ -3949,9 +4197,9 @@ fn check_constructor_iter(
     let parent_sym = match parent_sort {
         Some(parent_tid) => match kb.get_term(parent_tid) {
             Term::Fn { functor, .. } => *functor,
-            _ => return Ok(TypeResult { ty: parent_type, env: env.clone(), effects }),
+            _ => return Ok(TypeResult { ty: parent_type, env: env.clone(), effects, node: Rc::clone(occ) }),
         },
-        None => return Ok(TypeResult { ty: parent_type, env: env.clone(), effects }),
+        None => return Ok(TypeResult { ty: parent_type, env: env.clone(), effects, node: Rc::clone(occ) }),
     };
 
     let alias_sym = kb.try_resolve_symbol("SortAlias");
@@ -3989,11 +4237,11 @@ fn check_constructor_iter(
     }
 
     if param_bindings.is_empty() {
-        Ok(TypeResult { ty: parent_type, env: env.clone(), effects })
+        Ok(TypeResult { ty: parent_type, env: env.clone(), effects, node: Rc::clone(occ) })
     } else {
         let base = kb.make_sort_ref(parent_sym);
         let param_type = kb.make_parameterized_type(base, &param_bindings);
-        Ok(TypeResult { ty: param_type, env: env.clone(), effects })
+        Ok(TypeResult { ty: param_type, env: env.clone(), effects, node: Rc::clone(occ) })
     }
 }
 
@@ -5428,30 +5676,64 @@ pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<Lo
 /// Structured form of [`type_check_sorts`]: returns `Vec<TypeError>`,
 /// preserving occurrence ids and term ids so consumers can format on
 /// demand or filter by variant.
+/// Feature flag — type-check + simp-rewrite operations declared at
+/// *namespace* level (free functions, e.g. the `anthill.cli.parse` parser).
+/// They have bodies in `op_bodies` but no `SortInfo`, so the sort loop in
+/// [`type_check_sorts_typed`] never reaches them — meaning they are
+/// currently **not type-checked at all** (a pre-existing gap, independent
+/// of WI-283).
+///
+/// **OFF** until the typer can actually handle free-op bodies: a trial
+/// sweep surfaced ~25 eval-fixture failures from constructs the
+/// eval/interpreter supports but the typer (only ever run on sort ops)
+/// does not — higher-order calls of `Function[A,B]`-typed values
+/// (`f(f(x))`), effect-declaration checks, and some name resolution. Flip
+/// to `true` and fix those under **WI-287**.
+const TYPECHECK_FREE_OPS: bool = false;
+
 pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<TypeError> {
     let mut errors: Vec<TypeError> = Vec::new();
+    // Ops reached via a sort's `SortInfo` — so the gated free-op sweep
+    // doesn't re-check them (collected only when the sweep is enabled).
+    let mut sort_owned_ops: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
 
-    let sort_info_sym = match kb.try_resolve_symbol("anthill.reflect.SortInfo") {
-        Some(s) => s,
-        None => return errors,
-    };
+    if let Some(sort_info_sym) = kb.try_resolve_symbol("anthill.reflect.SortInfo") {
+        for &sort_term in sort_terms {
+            let sort_functor = match kb.get_term(sort_term) {
+                Term::Fn { functor, .. } => *functor,
+                _ => continue,
+            };
 
-    for &sort_term in sort_terms {
-        let sort_functor = match kb.get_term(sort_term) {
-            Term::Fn { functor, .. } => *functor,
-            _ => continue,
-        };
+            let sort_info = find_sort_info(kb, sort_info_sym, sort_functor);
+            let (ctor_syms, op_syms) = match sort_info {
+                Some((ctors, ops)) => (ctors, ops),
+                None => continue,
+            };
 
-        let sort_info = find_sort_info(kb, sort_info_sym, sort_functor);
-        let (ctor_syms, op_syms) = match sort_info {
-            Some((ctors, ops)) => (ctors, ops),
-            None => continue,
-        };
+            check_entity_facts(kb, &ctor_syms, &mut errors);
+            check_operation_bodies(kb, &op_syms, &mut errors);
+            if TYPECHECK_FREE_OPS {
+                sort_owned_ops.extend(op_syms.iter().copied());
+            }
+            check_pattern_fragment(kb, sort_term, &mut errors);
+            check_rule_typing(kb, sort_term, &mut errors);
+        }
+    }
 
-        check_entity_facts(kb, &ctor_syms, &mut errors);
-        check_operation_bodies(kb, &op_syms, &mut errors);
-        check_pattern_fragment(kb, sort_term, &mut errors);
-        check_rule_typing(kb, sort_term, &mut errors);
+    // WI-287 (gated OFF — see [`TYPECHECK_FREE_OPS`]): type-check +
+    // simp-rewrite every operation body not owned by a sort. Snapshot first
+    // — typing mutates `op_bodies` via the simp write-back; `check_operation_
+    // bodies` skips body-less / OperationInfo-less symbols and derives each
+    // op's enclosing sort from its QN parent (a namespace ⇒ no requires).
+    if TYPECHECK_FREE_OPS {
+        let free_ops: Vec<Symbol> = kb
+            .op_bodies_iter()
+            .map(|(s, _)| s)
+            .filter(|s| !sort_owned_ops.contains(s))
+            .collect();
+        if !free_ops.is_empty() {
+            check_operation_bodies(kb, &free_ops, &mut errors);
+        }
     }
 
     errors
@@ -5969,6 +6251,15 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
         // caller-side hint that pins otherwise-free type-params.
         match type_check_node(kb, &env, &op.body_node, Some(op.return_type)) {
             Ok(result) => {
+                // WI-283: the typer is tree-producing — `result.node` is
+                // the (possibly `[simp]`-rewritten) body. Write the
+                // redex-free tree back so the return-type check below and
+                // every downstream consumer (req_insertion, eval, codegen)
+                // see the rewritten form. Only when a rule actually fired
+                // (`ptr_eq` unchanged ⇒ no allocation, no write).
+                if !Rc::ptr_eq(&result.node, &op.body_node) {
+                    kb.set_op_body_node(op.op_sym, Rc::clone(&result.node));
+                }
                 if !types_compatible(kb, result.ty, op.return_type) {
                     errors.push(TypeError::TypeMismatch {
                         span: None,

@@ -97,3 +97,9 @@ mod wi284_min_sort_test;
 
 #[path = "include/wi285_unrec_test.rs"]
 mod wi285_unrec_test;
+
+#[path = "include/wi283_typeresult_node_test.rs"]
+mod wi283_typeresult_node_test;
+
+#[path = "include/wi283_typer_firing_test.rs"]
+mod wi283_typer_firing_test;
