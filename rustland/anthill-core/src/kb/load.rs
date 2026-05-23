@@ -502,26 +502,24 @@ fn scan_items_pass1(
                         is_enclosing: true,
                     });
                 }
-                // Record exports (additive — safe to re-apply)
-                for export_name in &s.exports {
-                    let n = join_segments(parse_sym, &export_name.segments);
-                    kb.symbols.add_export(sort_term.raw(), &n);
-                }
+                // Model C / job 2: user `export` statements (s.exports) have
+                // NO effect — names are visible by default. The `exports` set
+                // now holds ONLY entity-variant names (populated below), so the
+                // export-filter on the variant-exposure parent link leaks just
+                // the constructor variants, never the sort's operations.
+                //
                 // Expose the sort's constructor variants to the enclosing
                 // scope: add each `entity` child short-name to the sort's
                 // exports and link the sort scope as a non-enclosing parent of
                 // `actual_scope`. The export-filtered parent walk in
                 // `resolve_in_scope` then resolves bare `Open` to
-                // `WorkStatus.Open` from the namespace (and its child scopes),
-                // and two sorts sharing a variant name resolve to `Ambiguous`
-                // rather than one silently winning.
+                // `WorkStatus.Open` from the namespace, and two sorts sharing a
+                // variant name resolve to `Ambiguous` rather than one winning.
                 //
                 // The parent link is added only when the sort has variants: an
-                // empty `exports` set disables the export filter, which would
-                // leak the sort's operations (e.g. `Collection.insert`). This
-                // applies at `_global` too — a headerless file's top-level
-                // `enum` exposes its variants there — so colliding fixtures
-                // must namespace their sorts to disambiguate.
+                // empty `exports` set disables the filter (a no-entity sort, e.g.
+                // a spec, is reachable only via `requires`/wildcard, which should
+                // see all its operations).
                 let mut has_variant = false;
                 for item in &s.items {
                     if let Item::Entity(e) = item {
@@ -585,11 +583,8 @@ fn scan_items_pass1(
                     });
                     (sym, ns_term)
                 };
-                // Record exports (merge for existing namespaces)
-                for export_name in &n.exports {
-                    let en = join_segments(parse_sym, &export_name.segments);
-                    kb.symbols.add_export(ns_term.raw(), &en);
-                }
+                // Model C / job 2: user `export` statements (n.exports) have no
+                // effect — namespace members are visible by default.
                 // Recurse into namespace body with the namespace's qualified name as prefix
                 scan_items_pass1(kb, &n.items, parse_sym, parse_terms, ns_term, &qualified);
             }

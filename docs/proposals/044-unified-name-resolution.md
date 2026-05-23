@@ -116,8 +116,8 @@ After A+B, both implementations implement the identical `resolve_in_scope` (loca
 
 1. ~~**Decide B**~~ — done: **B2**, implemented as **R2** (pass-3 head-functor registration that binds to an existing origin).
 2. ~~Implement B in **rustland**~~ — done (R2): standalone-green with export ON; with export OFF the 87 `wi_tests` ambiguities are cleared.
-3. **Job 2 (next):** dedicated `exposed` set (entity variants only) so a sort never leaks operations to the enclosing scope. Acceptance test: `ring-polynom` green with the whitelist off, fixture unchanged.
-4. Mirror the identical algorithm (R2 + `exposed`) in **scaland**.
+3. ~~**Job 2:** `exposed` set (entity variants only) so a sort never leaks operations to the enclosing scope.~~ — done in rustland by populating `exports` from **entity variants only** (user `export` statements no longer contribute). The existing variant-exposure filter then leaks just variants; spec sorts (no entities) have empty `exports` and stay fully visible via `requires`/wildcard. Full `anthill-core` suite green, and the `ring-polynom` acceptance test passes **unchanged** (`algebra_tests` 19/0). Visible-by-default (Part A) is thereby achieved on the rust side.
+4. **Mirror the identical algorithm (R2 + variants-only exposure) in scaland (next).**
 5. Flip visibility to Part A on both; make `export` a no-op.
 6. Strip `export` statements from stdlib (one mechanical pass; both engines stay green).
 7. Document the unified algorithm in `kernel-language.md` (§8.6 rewrite + new Name Resolution section); fix the false "internal by default" claim.
@@ -129,7 +129,7 @@ After A+B, both implementations implement the identical `resolve_in_scope` (loca
 - stdlib carries no `export` statements; both engines load it green.
 - `internal` hides a name from import/wildcard/parent resolution (tested on both sides).
 - The `Eq`/`Ordered`/`Numeric` `eq` case resolves unambiguously with no `export` whitelist. **(met by R2)**
-- The `ring-polynom` testcase loads green alongside stdlib with the `export` whitelist off and **no change to the fixture** (job-2 acceptance test).
+- The `ring-polynom` testcase loads green alongside stdlib with the `export` whitelist off and **no change to the fixture** (job-2 acceptance test). **(met: `algebra_tests` 19/0 in rustland)**
 - `kernel-language.md` has a Name Resolution section matching the implementation.
 
 ## Open questions
