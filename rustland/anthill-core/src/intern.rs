@@ -79,8 +79,13 @@ pub struct Scope {
     pub locals: HashMap<String, Symbol>,
     /// Imported aliases: short_name → original Symbol
     pub imports: HashMap<String, Symbol>,
-    /// Exported short names
-    pub exports: HashSet<String>,
+    /// Names this scope exposes to the enclosing scope through a
+    /// (non-enclosing) variant-exposure parent link — populated from a sort's
+    /// entity-variant short names ONLY. An empty set disables the filter (the
+    /// scope is reachable only via `requires`/wildcard, which see everything).
+    /// User `export` statements do NOT populate this — names are visible by
+    /// default (proposal 044).
+    pub exposed: HashSet<String>,
     /// Parent scope inclusions (enclosing + requires + imports)
     pub parents: Vec<ScopeInclusion>,
     /// Type parameter names (excluded from parent lookups)
@@ -163,12 +168,13 @@ impl SymbolTable {
         sym
     }
 
-    /// Record an exported name for a scope.
-    pub fn add_export(&mut self, scope_raw: u32, name: &str) {
+    /// Mark a name as exposed from a scope to its enclosing scope via the
+    /// variant-exposure parent link (populated from entity variants only).
+    pub fn add_exposed(&mut self, scope_raw: u32, name: &str) {
         self.scopes
             .entry(scope_raw)
             .or_default()
-            .exports
+            .exposed
             .insert(name.to_owned());
     }
 
@@ -218,7 +224,8 @@ impl SymbolTable {
     /// Resolve a name within a scope. Resolution order:
     /// 1. Local: find symbol defined directly in this scope
     /// 1b. Imports: check imported name aliases
-    /// 2. Parent scopes: check parent inclusions (exports only, excluding type params)
+    /// 2. Parent scopes: check parent inclusions (exposed variants only across
+    ///    a variant-exposure link, excluding type params)
     /// 3. NotFound if nothing matches
     pub fn resolve_in_scope(&self, name: &str, scope_raw: u32) -> ResolveResult {
         let mut visited = std::collections::HashSet::new();
@@ -248,14 +255,17 @@ impl SymbolTable {
                 return ResolveResult::Found(sym);
             }
 
-            // 2. Filter parent scopes by type_params and exports
+            // 2. Filter parent scopes by type_params and the `exposed` set.
+            // `exposed` holds a sort's entity variants (proposal 044 job 2): a
+            // non-empty set leaks only those variants to the enclosing scope; an
+            // empty set (specs, namespaces) is fully visible via requires/wildcard.
             scope.parents.iter().filter_map(|p| {
                 if !p.is_enclosing {
                     if let Some(parent) = self.scopes.get(&p.parent_scope_raw) {
                         if parent.type_params.contains(name) {
                             return None;
                         }
-                        if !parent.exports.is_empty() && !parent.exports.contains(name) {
+                        if !parent.exposed.is_empty() && !parent.exposed.contains(name) {
                             return None;
                         }
                     }
@@ -385,7 +395,7 @@ mod tests {
         let mut st = SymbolTable::new();
         // Define "eq" in scope 100 (Eq)
         let eq_sym = st.define("eq", "Eq.eq", SymbolKind::Operation, 100);
-        st.add_export(100, "eq");
+        st.add_exposed(100, "eq");
 
         // Scope 200 (Ordered) includes scope 100 (Eq)
         st.add_parent(200, ScopeInclusion {
@@ -406,12 +416,12 @@ mod tests {
         let mut st = SymbolTable::new();
         // Define "T" as a sort in scope 100
         st.define("T", "Eq.T", SymbolKind::Sort, 100);
-        st.add_export(100, "T");
+        st.add_exposed(100, "T");
         st.add_type_param(100, "T");
 
         // Define "eq" in scope 100
         let eq_sym = st.define("eq", "Eq.eq", SymbolKind::Operation, 100);
-        st.add_export(100, "eq");
+        st.add_exposed(100, "eq");
 
         // Scope 200 includes scope 100
         st.add_parent(200, ScopeInclusion {
@@ -438,9 +448,9 @@ mod tests {
         let mut st = SymbolTable::new();
         // Define "foo" in two different parent scopes
         st.define("foo", "A.foo", SymbolKind::Operation, 100);
-        st.add_export(100, "foo");
+        st.add_exposed(100, "foo");
         st.define("foo", "B.foo", SymbolKind::Operation, 200);
-        st.add_export(200, "foo");
+        st.add_exposed(200, "foo");
 
         // Scope 300 includes both
         st.add_parent(300, ScopeInclusion {
@@ -465,7 +475,7 @@ mod tests {
         let mut st = SymbolTable::new();
         // Define "foo" in parent scope 100
         st.define("foo", "A.foo", SymbolKind::Operation, 100);
-        st.add_export(100, "foo");
+        st.add_exposed(100, "foo");
 
         // Define "foo" locally in scope 200
         let local_foo = st.define("foo", "B.foo", SymbolKind::Operation, 200);

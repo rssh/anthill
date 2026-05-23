@@ -524,7 +524,7 @@ fn scan_items_pass1(
                 for item in &s.items {
                     if let Item::Entity(e) = item {
                         let vshort = parse_sym.name(*e.name.segments.last().unwrap());
-                        kb.symbols.add_export(sort_term.raw(), vshort);
+                        kb.symbols.add_exposed(sort_term.raw(), vshort);
                         has_variant = true;
                     }
                 }
