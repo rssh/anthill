@@ -117,11 +117,17 @@ After A+B, both implementations implement the identical `resolve_in_scope` (loca
 1. ~~**Decide B**~~ — done: **B2**, implemented as **R2** (pass-3 head-functor registration that binds to an existing origin).
 2. ~~Implement B in **rustland**~~ — done (R2): standalone-green with export ON; with export OFF the 87 `wi_tests` ambiguities are cleared.
 3. ~~**Job 2:** `exposed` set (entity variants only) so a sort never leaks operations to the enclosing scope.~~ — done in rustland by populating `exports` from **entity variants only** (user `export` statements no longer contribute). The existing variant-exposure filter then leaks just variants; spec sorts (no entities) have empty `exports` and stay fully visible via `requires`/wildcard. Full `anthill-core` suite green, and the `ring-polynom` acceptance test passes **unchanged** (`algebra_tests` 19/0). Visible-by-default (Part A) is thereby achieved on the rust side.
-4. **Mirror the identical algorithm (R2 + variants-only exposure) in scaland (next).**
-5. Flip visibility to Part A on both; make `export` a no-op.
-6. Strip `export` statements from stdlib (one mechanical pass; both engines stay green).
-7. Document the unified algorithm in `kernel-language.md` (§8.6 rewrite + new Name Resolution section); fix the false "internal by default" claim.
-8. Remove `export` from the grammar (WI-289).
+4. ~~Document the unified algorithm in `kernel-language.md`~~ — done: §8.6 rewritten as the canonical **Name Resolution and Visibility** section (scope model, `resolve_in_scope` order, parent filters incl. variant exposure, import forms + nested lookup, visible-by-default with `internal`/`public`/`export`-no-op); §5.1 visibility table corrected. This is the **uniform description** both engines target. (Unlabeled-rule head-functor registration is explicitly out of scope here — future work.)
+5. **Behavior conformance (in progress).** rustland conforms (R2 + variants-only exposure + visible-by-default). scaland conforms on the resolution core — scope model, `resolve_in_scope`, parent filter, import forms incl. `findInNestedScope`, and visible-by-default (it already auto-permits) — but **does not yet implement variant exposure** (bare `Open` → `WorkStatus.Open`) and still auto-exposes every member rather than variants-only. Closing that is the remaining behavior gap; note the requires-interaction risk (a non-enclosing parent that is a sort-with-variants exposes only its variants, so `requires S` would surface only S's variants — must be validated against scaland's stdlib).
+6. Strip `export` statements from stdlib (one mechanical pass; both engines treat them as no-ops).
+7. Remove `export` from the grammar (WI-289).
+
+**Note on "one algorithm" vs dispatch.** Uniform *name resolution of declared
+symbols* (this proposal) is separable from how *unlabeled-rule head functors*
+become dispatchable: rustland registers them as `Goal` symbols (and needed R2
+to avoid shadowing inherited ops); scaland does not register them at all, so it
+never had the shadowing problem. Unifying that dispatch mechanism is **future
+work** and is not required for uniform name resolution.
 
 ## Acceptance criteria
 

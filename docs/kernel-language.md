@@ -526,18 +526,21 @@ import anthill.prelude.List                   -- imports "List" from anthill.pre
 import anthill.prelude.{List, Option}         -- imports "List" and "Option" from anthill.prelude
 
 -- Import everything from a namespace:
-import anthill.prelude.*                      -- imports all exported names from anthill.prelude
+import anthill.prelude.*                      -- imports all visible names from anthill.prelude
 ```
 
-**Visibility** controls what crosses namespace boundaries, expressed as a prefix modifier on declarations:
+**Visibility** is a prefix modifier on declarations. Names are **visible by
+default**; the modifiers adjust that (full algorithm in §8.6):
 
 ```
-Visibility ::= 'internal'    -- visible only within this namespace (default, can be omitted)
-             | 'export'      -- visible to namespaces that import this one
-             | 'public'      -- visible everywhere (use sparingly)
+Visibility ::= 'internal'    -- hidden from outside the declaring scope
+             | 'public'      -- visible everywhere, even without import
+             | 'export'      -- DEPRECATED: no effect (visible by default)
 ```
 
-Default visibility is `internal`. Standalone `export` statements inside the namespace body list exported names; individual `export`/`public` prefixes on declarations must be consistent with them.
+A name is visible to importers and requirers unless marked `internal`. The
+standalone `export` statement is likewise a no-op, retained only for backward
+compatibility. See §8.6 for the complete name-resolution algorithm.
 
 **Namespace content** — what can appear inside a namespace:
 
@@ -1356,17 +1359,72 @@ When an operation has `requires`/`ensures` clauses and an `Implementation` fact 
 
 The kernel recognizes `Implementation` as a **well-known entity type** and triggers obligation generation automatically.
 
-### 8.6 Namespace Visibility
+### 8.6 Name Resolution and Visibility
 
-The kernel enforces namespace boundaries:
+This section is the canonical description of how a name resolves to a symbol.
+Both implementations (`rustland`, `scaland`) follow this single algorithm. (See
+[proposal 044](proposals/044-unified-name-resolution.md) for rationale and
+migration. The registration of unlabeled-rule *head functors* as dispatchable
+symbols is a separate, implementation-specific concern and is **not** part of
+name resolution.)
 
-- Declarations without a visibility prefix are **internal** — visible only within the declaring namespace.
-- **`export`**-prefixed declarations are visible to namespaces that explicitly `import` them.
-- **`public`**-prefixed declarations are visible everywhere (discouraged).
-- A query or rule body can only reference facts visible from the querying namespace's scope.
-- `import Name.{names}` makes specific names from another namespace visible.
+**Symbols and scopes.** Every defined symbol has a `short_name` (last segment)
+and a `qualified_name` (full path); the global `by_qualified_name` index maps
+the latter to the unique symbol. Each scope holds:
 
-Visibility is enforced at query time and assertion time.
+- **locals** — names defined directly in the scope;
+- **imports** — local aliases introduced by `import`;
+- **exposed** — the scope's entity-variant names (see *variant exposure*);
+- **parents** — included scopes, each flagged *enclosing* (the lexical
+  sort/namespace body it sits in) or *non-enclosing* (`requires`, wildcard
+  `import`, variant exposure);
+- **type parameters** — `sort T = ?` names, which do not leak to parents.
+
+**Visibility model.** A name is **visible by default**, across namespace and
+sort boundaries, to importers and requirers. The modifiers adjust this:
+
+- **`internal`** — hides the name from cross-scope resolution (it remains
+  resolvable within its own scope). This is the only hide gate.
+- **`public`** — visible everywhere, including without an `import`.
+- **`export`** — accepted for backward compatibility but has **no effect**
+  (a name is already visible by default). It is being removed.
+
+**`resolve_in_scope(name, scope)`** — the resolution order:
+
+1. a **local** of `scope` → resolved (a local shadows everything below);
+2. an **imported alias** in `scope` → resolved;
+3. otherwise recurse into the **parent** scopes. A *non-enclosing* parent is
+   skipped when the name is (a) a type parameter of that parent, (b) marked
+   `internal` there, or (c) absent from a non-empty **exposed** set of that
+   parent (variant exposure, below). *Enclosing* parents are never filtered;
+4. collect and de-duplicate by symbol: zero matches → unresolved, one →
+   resolved, two or more distinct symbols → **ambiguous** (a load/query error).
+
+**Import forms.** `import` introduces visibility into the current scope; it does
+not by itself add a sort's contents (use `requires` or wildcard for that):
+
+- `import a.b.C` — alias `C`, and include `a.b` as a non-enclosing parent.
+- `import a.b.{C, D}` — alias each name, resolved by: direct `a.b.C`
+  qualified lookup, then `resolve_in_scope(C, a.b)`, then a one-level nested
+  lookup (`a.b.<segment>.C`, taken only if unique) so an entity declared inside
+  a sort/enum of `a.b` is importable by its short name.
+- `import a.b.*` — include `a.b` as a non-enclosing parent (every visible name).
+
+**Variant exposure.** A sort that declares entity constructors exposes **only
+those constructor (variant) names** to its enclosing scope, by linking its
+scope as a non-enclosing parent whose `exposed` set is exactly the variant
+names. So bare `Open` resolves to `WorkStatus.Open`, while the sort's
+*operations* never leak as bare names (they are reached via `Sort.op`,
+`requires`, or wildcard). Two sorts exposing the same variant name make that
+bare name **ambiguous** rather than letting one silently win.
+
+**Inherited operations.** When a sort gains an operation through `requires`
+(spec auto-binding, §8.7), a derived rule it supplies for that operation binds
+to the **inherited** operation symbol — it does not mint a new shadowing symbol.
+So `Ordered`'s `eq` law contributes to `Eq.eq`, and a scope that reaches both
+resolves `eq` to a single symbol, not an ambiguity.
+
+Visibility is enforced during resolution (load/assert) and at query time.
 
 ### 8.7 Algebras
 
