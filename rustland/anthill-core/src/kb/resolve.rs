@@ -1397,7 +1397,12 @@ impl KnowledgeBase {
         let r_vid = self.fresh_var(r_sym);
         let result_var = self.alloc(Term::Var(Var::Global(r_vid)));
 
-        let eq_sym = self.intern("eq");
+        // The canonical equality functor — the symbol loaded equations
+        // carry (`anthill.prelude.Eq.eq`), not a freshly-interned bare
+        // `eq`. Querying under it lets the resolver's equational fallback
+        // find loaded `[simp]` rules, matching the typer firing site
+        // (`simp_rewrite`) — "one rewriter, two phases" (WI-283).
+        let eq_sym = self.eq_functor();
         let pattern = self.alloc(Term::Fn {
             functor: eq_sym,
             pos_args: SmallVec::from_slice(&[current, result_var]),
@@ -1408,6 +1413,19 @@ impl KnowledgeBase {
 
         for (rid, tree_subst) in candidates {
             if !self.is_equation(rid) {
+                continue;
+            }
+            // WI-283: a rule scoped to a sort that declares `requires`
+            // carries an implicit type-directed guard (the sort's
+            // `requires`, proposal 043 §4.1). Honoring it needs the
+            // receiver's `min_sort`, which only the typer has — the
+            // resolver holds type-erased terms. So the resolver fires only
+            // *type-independent* identities and leaves requires-guarded
+            // rules to the typer (`simp_rewrite`); firing one here would
+            // rewrite where the requirement may be unmet (unsound). When a
+            // reflect bridge later exposes `min_sort` over resolved
+            // expressions, the guard can move here too.
+            if self.equation_is_requires_guarded(rid) {
                 continue;
             }
 
@@ -1427,6 +1445,26 @@ impl KnowledgeBase {
         }
 
         (current, changes)
+    }
+
+    /// WI-283: whether `rid`'s enclosing sort (its `rule_domain`) declares
+    /// `requires` — i.e. the equation carries an implicit type-directed
+    /// guard. Top-level rules (domain = a namespace, not a sort) and rules
+    /// on requires-free sorts return `false`: they are type-independent
+    /// identities the resolver can fire soundly. A requires-bearing sort's
+    /// rule returns `true`, so [`apply_eq_rules`] skips it (the typer fires
+    /// it, where `min_sort` is available to check the guard).
+    fn equation_is_requires_guarded(&mut self, rid: RuleId) -> bool {
+        let domain = self.rule_domain(rid);
+        let sort_sym = match self.get_term(domain) {
+            Term::Fn { functor, .. } => Some(*functor),
+            Term::Ref(s) | Term::Ident(s) => Some(*s),
+            _ => None,
+        };
+        match sort_sym {
+            Some(s) => !super::typing::requires_chain(self, s).is_empty(),
+            None => false,
+        }
     }
 
     // ── Builtin execution ──────────────────────────────────────

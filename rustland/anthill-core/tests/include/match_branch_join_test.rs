@@ -1,29 +1,22 @@
-//! Soundness tests for the typer's `match` branch-type handling.
+//! Soundness tests for the typer's `match` branch-type handling (WI-287).
 //!
-//! `MatchFinal` (kb/typing.rs) sets the match-expression's result type
-//! to the FIRST branch's type and ignores the rest:
+//! `MatchFinal` (kb/typing.rs) used to set the match-expression's result
+//! type to the FIRST branch's type and ignore the rest — there was no
+//! join across branches anywhere in the typer. In *synthesis* mode
+//! (no expected type — e.g. the value of an unannotated `let`) the
+//! non-first branches were type-checked against `expected = None`, i.e.
+//! against nothing, so a branch whose body type was incompatible with
+//! the others was never caught.
 //!
-//! ```ignore
-//! let mut result_ty: Option<TermId> = None;
-//! for (i, body_r) in branch_results.into_iter().enumerate() {
-//!     if result_ty.is_none() {
-//!         result_ty = Some(body_r.ty);   // first branch wins
-//!     }
-//!     ...
-//! }
-//! ```
-//!
-//! There is no join (lub) across branches anywhere in the typer. When a
-//! `match` is in *synthesis* mode (no expected type — e.g. the value of
-//! an unannotated `let`), the non-first branches are type-checked
-//! against `expected = None`, i.e. against nothing. So a branch whose
-//! body has a type incompatible with the others is never caught.
-//!
-//! The two branch-clash tests assert the SOUND behavior (the clash must
-//! be rejected) and therefore FAIL today — they demonstrate the bug.
-//! They are `#[ignore]`d so the default suite stays green; run with
-//! `--ignored` to watch them fail, and remove the `#[ignore]` once
-//! join/per-branch checking lands. The anchor test passes today.
+//! WI-287 made `compute_branch_join_type` account for every branch: in
+//! synthesis mode the result is the join (a common supertype — not
+//! strictly the lub) of the branch types and a clash with no common
+//! supertype is rejected; in checked mode (an expected type flowed in)
+//! every branch must conform to it. The two
+//! branch-clash tests below assert that sound behavior and now act as
+//! regression guards; the anchor test pins down that return-type
+//! checking works in general, so the leak was specifically the old
+//! first-branch-wins shortcut.
 
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
@@ -48,15 +41,10 @@ fn try_load(extra: &str) -> Vec<load::LoadError> {
 /// A `match` in synthesis position (value of an unannotated `let`)
 /// whose branches return incompatible types — `Int` vs `String`, which
 /// have no common supertype in the (top-less) Type lattice. A sound
-/// typer MUST reject this. The current typer takes the first branch's
-/// type (`Int`) for the whole expression and never checks the `String`
-/// branch, so it loads clean — unsound.
-///
-/// ASSERTS THE SOUND BEHAVIOR — fails today (demonstrates the bug),
-/// goes green when join/per-branch checking lands. `#[ignore]` keeps
-/// the default suite green; run `--ignored` to see it fail.
+/// typer MUST reject this. WI-287 makes synthesis-mode `match` compute
+/// the join of its branch types, so the `Int`/`String` clash is now a
+/// type error instead of being silently typed as branch 0 (`Int`).
 #[test]
-#[ignore = "known soundness gap: match takes branch-0 type, ignores other branches (no lub)"]
 fn match_synthesis_rejects_incompatible_branches() {
     let src = r#"
 namespace test.match_cheat.synth
@@ -88,17 +76,14 @@ end
     );
 }
 
-/// Broader than synthesis mode: even a `match` placed directly as an
-/// operation body — where the declared return type `Int` flows into
-/// every branch as `body_expected` — does NOT catch the `String`
-/// branch. The op-body return-type check only inspects the *synthesized*
-/// match type (branch 0, `Int`); `body_expected` reaches the branches
-/// as an inference hint, not an enforced check. So the clash leaks here
-/// too.
-///
-/// ASSERTS THE SOUND BEHAVIOR — fails today. `#[ignore]` as above.
+/// Broader than synthesis mode: a `match` placed directly as an
+/// operation body, where the declared return type `Int` flows in as the
+/// match's expected type. Before WI-287 the op-body return-type check
+/// only inspected the *synthesized* match type (branch 0, `Int`) and
+/// `body_expected` reached the branches as a mere inference hint, so the
+/// `String` branch leaked. Now `compute_branch_join_type` runs in checked
+/// mode and rejects any branch that doesn't conform to the expected `Int`.
 #[test]
-#[ignore = "known soundness gap: declared return type does not enforce per-branch checks"]
 fn match_as_op_body_rejects_incompatible_branches() {
     let src = r#"
 namespace test.match_cheat.checked
