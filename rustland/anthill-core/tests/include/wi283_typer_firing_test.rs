@@ -44,7 +44,7 @@ fn occ(e: Expr) -> Rc<NodeOccurrence> {
 /// vars — the minimal shape; mirrors `simp_rewrite`'s test helper).
 /// Returns the `add` symbol.
 fn assert_add_zero(kb: &mut KnowledgeBase) -> Symbol {
-    let eq_sym = kb.intern("eq");
+    let eq_sym = kb.eq_functor();
     let add = kb.intern("add");
     let x_sym = kb.intern("x");
     let vx = kb.fresh_var(x_sym);
@@ -78,7 +78,7 @@ fn assert_add_zero(kb: &mut KnowledgeBase) -> Symbol {
 /// (a commutative law — the design's canonical "must stay bare or it loops"
 /// example). Returns the `add` symbol.
 fn assert_add_comm(kb: &mut KnowledgeBase) -> Symbol {
-    let eq_sym = kb.intern("eq");
+    let eq_sym = kb.eq_functor();
     let add = kb.intern("add");
     let a_sym = kb.intern("a");
     let b_sym = kb.intern("b");

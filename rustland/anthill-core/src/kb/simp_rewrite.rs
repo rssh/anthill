@@ -15,9 +15,17 @@
 //! `NodeOccurrence` (carrying span + `Synthesized` provenance) on top of the
 //! shared `walk_view`.
 //!
-//! Scope (WI-277): guard-free equations (`is_equation` + `[simp]`, empty
-//! body) — e.g. `add(?x, 0) = ?x`. Type-directed/guarded dispatch (`dot`,
-//! proposal 043 §6) is WI-278.
+//! Firing (WI-283) matches an `is_equation` + `[simp]` rule's LHS via
+//! `match_view`, then applies the type-directed guard
+//! ([`super::typing::simp_fire_guard_holds`]): a rule scoped to a
+//! parametric sort (its functor is a *spec op*, e.g. `Numeric.add`) fires
+//! only where its carrier arguments' `min_sort` provides that sort; a
+//! concrete functor (`add(?x, 0) = ?x` at top level) is guard-free. Loaded
+//! equations are headed by the canonical `anthill.prelude.Eq.eq`
+//! ([`KnowledgeBase::eq_functor`]), the symbol the firing index keys on.
+//! Explicit value-level guards (`:- compare(?x, ?y) <= 0`) give the rule a
+//! non-empty body, so it is not `is_equation` and not yet indexed for
+//! firing — proposal 043 §4.1 / a follow-up.
 //!
 //! Recursion depth (WI-278): the walk is iterative. [`rewrite`] descends the
 //! occurrence tree on an explicit `Visit`/`Build` work-stack, and
@@ -57,7 +65,7 @@ const PASS_NAME: &str = "anthill.kb.passes.simp_rewrite";
 /// post-WI-139, so an empty index (e.g. a stdlib-only load) returns fast.
 /// Read once per typer walk (WI-283) and once per [`run`].
 pub(super) fn has_simp_equations(kb: &mut KnowledgeBase) -> bool {
-    let eq_sym = kb.intern("eq");
+    let eq_sym = kb.eq_functor();
     kb.by_functor(eq_sym)
         .into_iter()
         .any(|rid| kb.is_equation(rid) && meta_has_flag(kb, kb.rule_meta(rid), "simp"))
@@ -230,12 +238,16 @@ fn build_node(
 }
 
 /// Try to fire a `[simp]` equation at this node. Returns the rewritten
-/// occurrence, or `None` if no equation matches.
+/// occurrence, or `None` if no equation matches (or its type-directed
+/// guard fails).
 ///
-/// WI-283: guard-free — matches the rule LHS structurally via `match_view`
-/// and substitutes the RHS. The typer firing site (`typing::build_type`)
-/// reuses this; type-directed guard evaluation (`min_sort`/`requires`) is
-/// layered on next, between the LHS match and the substitution.
+/// WI-283: matches the rule LHS structurally via `match_view`, then — for
+/// a redex whose functor is a *spec op* (a rule scoped to a parametric
+/// sort, e.g. `Numeric.add`) — fires only where the receiver's type
+/// satisfies that sort ([`super::typing::simp_fire_guard_holds`]). A
+/// concrete-functor redex (a top-level monomorphic identity like
+/// `transpose(transpose(?m)) = ?m`) is guard-free: the functor symbol
+/// already pins the sort, so structural match alone is sound.
 pub(super) fn try_fire(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
@@ -246,7 +258,14 @@ pub(super) fn try_fire(
         Expr::Constructor { name, .. } => *name,
         _ => return None,
     };
-    let eq_sym = kb.intern("eq");
+    // Type-directed guard: a spec/sort rule's law holds only for carriers
+    // that satisfy its sort. Keyed on the redex functor (shared by every
+    // candidate rule under it), so it's checked once, before the match
+    // loop. Guard-free for concrete functors.
+    if !super::typing::simp_fire_guard_holds(kb, occ) {
+        return None;
+    }
+    let eq_sym = kb.eq_functor();
     // All equational rule heads are indexed under `eq`; WI-139 keeps only
     // `[simp]`/`[unfold]`-tagged equations in the index. Reuse that index.
     for rid in kb.by_functor(eq_sym) {

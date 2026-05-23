@@ -1835,6 +1835,21 @@ impl KnowledgeBase {
 
     // ── Rule classification ─────────────────────────────────────
 
+    /// The canonical equality functor — the head symbol every loaded
+    /// equation (`lhs = rhs`) carries. Resolves to `anthill.prelude.Eq.eq`
+    /// when the prelude is loaded (the symbol the loader builds equation
+    /// heads with — `load.rs`), falling back to a bare `eq` only for
+    /// prelude-less KBs (e.g. `simp_rewrite`'s bare-`new()` unit tests).
+    ///
+    /// `[simp]` firing (`simp_rewrite`) must look up `by_functor` under
+    /// *this* symbol, not a freshly-interned bare `eq`: the two differ once
+    /// the prelude is loaded, so a bare `intern("eq")` finds none of the
+    /// loaded `[simp]` equations (WI-283).
+    pub fn eq_functor(&mut self) -> Symbol {
+        self.try_resolve_symbol("anthill.prelude.Eq.eq")
+            .unwrap_or_else(|| self.intern("eq"))
+    }
+
     /// Check if a rule is an equation: head functor is "eq" with 2 positional
     /// args and body is empty.
     pub fn is_equation(&self, id: RuleId) -> bool {

@@ -1410,9 +1410,11 @@ fn reassemble_match(
     super::simp_rewrite::reassemble(occ, &children)
 }
 
-/// WI-283: try firing a `[simp]` rule at `node` (guard-free for now),
-/// fetching the simp pass for synthesized-RHS provenance. The typer's
-/// firing site; reuses `simp_rewrite`'s matcher + RHS builder.
+/// WI-283: try firing a `[simp]` rule at `node`, fetching the simp pass
+/// for synthesized-RHS provenance. The typer's firing site; reuses
+/// `simp_rewrite`'s matcher + RHS builder, including its type-directed
+/// guard ([`simp_fire_guard_holds`]) — `node`'s children are already typed
+/// (bottom-up), so their `min_sort` is available for the guard here.
 fn fire_simp(kb: &mut KnowledgeBase, node: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
     let pass = super::simp_rewrite::simp_pass(kb);
     super::simp_rewrite::try_fire(kb, node, pass)
@@ -5473,6 +5475,69 @@ pub fn sort_functor_of(kb: &KnowledgeBase, ty: TermId) -> Option<Symbol> {
 /// a callable `typeof`.
 pub fn min_sort(kb: &KnowledgeBase, occ: &NodeOccurrence) -> Option<Symbol> {
     sort_functor_of(kb, occ.inferred_type()?)
+}
+
+/// WI-283 — the type-directed firing guard for `[simp]` rewriting.
+///
+/// A `[simp]` rule's guard is its explicit `:- …` *plus* the `requires` of
+/// its enclosing sort (proposal 043 §4.1). When the rule is scoped to a
+/// **parametric (spec) sort** — its redex functor is a *spec op*, e.g.
+/// `Numeric.add` — that law holds only for carriers that *satisfy* the
+/// sort. So the rule fires only where the **carrier** arguments' least
+/// sorts ([`min_sort`]) provide the spec; otherwise firing would rewrite
+/// where the requirement is unmet (unsound — it would erase an ill-typed
+/// call, or apply a law that doesn't hold for that carrier).
+///
+/// The carrier arguments are the parameters declared with the spec sort's
+/// own type-parameter — `add(a: T, b: T)` → both `a` and `b`;
+/// `scale(v: T, k: Int)` → just `v`; `bar(k: Int, x: T)` → just `x`. Using
+/// a positional shortcut (`pos_args[0]`) instead would test the wrong
+/// argument whenever the carrier is not the leading parameter — wrongly
+/// firing where a *non-carrier* arg's type happens to provide the spec.
+///
+/// Returns `true` (fire) when the redex functor is **not** a spec op — a
+/// concrete top-level identity (`transpose(transpose(?m)) = ?m`); the
+/// functor symbol already pins the sort, so structural match is sound —
+/// **or** it is a spec op with ≥1 carrier argument and every carrier's
+/// least sort provides the spec. Returns `false` (don't fire) when the
+/// signature is unavailable, a carrier argument is missing, its type is
+/// unresolved (a free type var — satisfaction undecidable), or it does not
+/// provide the spec.
+pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool {
+    let (functor, pos_args) = match redex.as_expr() {
+        Some(Expr::Apply { functor, pos_args, .. }) => (*functor, pos_args),
+        Some(Expr::Constructor { name, pos_args, .. }) => (*name, pos_args),
+        _ => return true,
+    };
+    // Concrete (non-spec) functor: guard-free monomorphic identity.
+    let Some(spec_sort) = lookup_spec_op_dispatch(kb, functor) else {
+        return true;
+    };
+    // Without the signature we can't tell which arguments carry the spec,
+    // so we can't verify the law applies — don't fire.
+    let Some(rec) = super::op_info::lookup_operation_info(kb, functor) else {
+        return false;
+    };
+    let type_params = kb.type_params_of_sort(spec_sort);
+    let mut checked_carrier = false;
+    for (i, (_param_name, param_type)) in rec.params.iter().enumerate() {
+        // Is this parameter declared with the spec sort's type-parameter?
+        let is_carrier = sort_functor_of(kb, *param_type)
+            .is_some_and(|s| type_params.iter().any(|tp| tp.as_str() == kb.resolve_sym(s)));
+        if !is_carrier {
+            continue;
+        }
+        // Carrier read from its positional slot. A carrier supplied by name
+        // (no positional slot) is conservatively not fired — the `[simp]`
+        // matcher does not match a positional rule LHS against a named-arg
+        // redex either, so such a redex never reaches a fire regardless.
+        let Some(arg) = pos_args.get(i) else { return false };
+        match min_sort(kb, arg) {
+            Some(carrier) if sort_provides(kb, carrier, spec_sort) => checked_carrier = true,
+            _ => return false,
+        }
+    }
+    checked_carrier
 }
 
 /// parameterized(base: A, bindings: [...]) <: parameterized(base: B, bindings: [...])
