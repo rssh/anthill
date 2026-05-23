@@ -910,17 +910,23 @@ enum TypeBuildFrame {
         scr_ty: Option<TermId>,
         covered_entities: Vec<Symbol>,
         has_wildcard: bool,
+        /// WI-287: the match's own expected type (the parent's hint).
+        /// `Some` ⇒ checked mode (every branch must conform); `None` ⇒
+        /// synthesis mode (result is the join — a common supertype — of
+        /// the branch types).
+        body_expected: Option<TermId>,
     },
     /// Lambda body finished; build the `arrow(param, body_ty,
     /// body_effects)` type and return a pure result (creating a
     /// lambda is itself effect-free).
     LambdaBody { occ: Rc<NodeOccurrence>, param: TermId, outer_env: Rc<TypingEnv> },
     /// WI-285: all three If sub-expressions finished (drained in
-    /// `[condition, then, else]` order); merge their effects and
-    /// return the if's `TypeResult` — type is the then-branch's type
-    /// (mirrors the former `check_if_expr`). Replaces the
-    /// recursive-helper arm so a deep else-if chain stays on the heap.
-    IfExpr { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv> },
+    /// `[condition, then, else]` order); merge their effects and return
+    /// the if's `TypeResult`. WI-287: the type is the join of the then /
+    /// else branch types (checked against `expected` when present), not
+    /// just the then-branch type. Replaces the recursive-helper arm so a
+    /// deep else-if chain stays on the heap.
+    IfExpr { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, expected: Option<TermId> },
     /// WI-285: all list elements finished; drain `count`, infer the
     /// element type (`element_hint` when bound by an outer
     /// `List[T = X]`, else the first element's type), build
@@ -1264,7 +1270,7 @@ fn visit_type(
             // Drain order [cond, then, else]: push reversed. The
             // condition is always `Bool` (no hint); both branches share
             // the if's `expected` (WI-270).
-            work.push(TypeWorkOp::Build(TypeBuildFrame::IfExpr { occ: Rc::clone(&occ), env: Rc::clone(&env) }));
+            work.push(TypeWorkOp::Build(TypeBuildFrame::IfExpr { occ: Rc::clone(&occ), env: Rc::clone(&env), expected }));
             push_visit(work, else_branch, Rc::clone(&env), expected, fuel);
             push_visit(work, then_branch, Rc::clone(&env), expected, fuel);
             push_visit_no_hint(work, condition, env, fuel);
@@ -1628,6 +1634,7 @@ fn build_type(
                 scr_ty,
                 covered_entities,
                 has_wildcard,
+                body_expected,
             }));
             for (branch, env) in branches.iter().zip(visit_envs.into_iter()).rev() {
                 push_visit(work, Rc::clone(&branch.body), env, body_expected, fuel);
@@ -1643,6 +1650,7 @@ fn build_type(
             scr_ty,
             covered_entities,
             has_wildcard,
+            body_expected,
         } => {
             let drain_start = results.len() - branch_count;
             let branch_results: Vec<Result<TypeResult, TypeError>> =
@@ -1660,18 +1668,31 @@ fn build_type(
                 Rc::clone(&occ)
             };
             let mut effects = scr_effects;
-            let mut result_ty: Option<TermId> = None;
+            let mut branch_tys: Vec<(TermId, Option<Span>)> =
+                Vec::with_capacity(branch_count);
             for (i, body_r) in branch_results.into_iter().enumerate() {
                 let body_r = body_r.expect("aggregator");
-                if result_ty.is_none() {
-                    result_ty = Some(body_r.ty);
-                }
+                branch_tys.push((body_r.ty, Some(body_r.node.span.span)));
                 // Filter effects against this branch's locals so
                 // pattern-bound resources don't leak past the case
                 // arm (their bindings live only inside the branch).
                 let branch_external = external_effects(kb, &*branch_envs[i], &body_r.effects);
                 effects = merge_effects(&effects, &branch_external);
             }
+
+            // WI-287: the match's result type accounts for *every* branch,
+            // not just branch 0. In checked mode (an expected type flowed
+            // in) each branch must conform to it; in synthesis mode the
+            // result is the join (a common supertype) of the branch types,
+            // and branches with no common supertype are a type error rather
+            // than being silently typed as branch 0.
+            let result_ty = match compute_branch_join_type(kb, &branch_tys, body_expected, "match") {
+                Ok(ty) => ty,
+                Err(e) => {
+                    results.push(Err(e));
+                    return;
+                }
+            };
 
             let mut result_env = (*outer_env).clone();
             if !has_wildcard {
@@ -1701,18 +1722,7 @@ fn build_type(
                     }
                 }
             }
-            results.push(match result_ty {
-                Some(ty) => Ok(TypeResult { ty, env: result_env, effects, node }),
-                None => Err(TypeError::Other {
-                    span: None,
-                    context: TypeErrorContext::Rule {
-                        name: kb.intern("match"),
-                        field: RuleField::Whole,
-                    },
-                    expected: "non-empty match expression".to_string(),
-                    actual: "match with no branches".to_string(),
-                }),
-            });
+            results.push(Ok(TypeResult { ty: result_ty, env: result_env, effects, node }));
         }
         TypeBuildFrame::LambdaBody { occ, param, outer_env } => {
             let body_r = results.pop().expect("LambdaBody: missing body result");
@@ -1749,7 +1759,7 @@ fn build_type(
                 Err(e) => results.push(Err(e)),
             }
         }
-        TypeBuildFrame::IfExpr { occ, env } => {
+        TypeBuildFrame::IfExpr { occ, env, expected } => {
             // Children drained in [condition, then, else] order.
             let drain_start = results.len() - 3;
             let group: Vec<Result<TypeResult, TypeError>> = results.drain(drain_start..).collect();
@@ -1768,7 +1778,22 @@ fn build_type(
             effects = merge_effects(&effects, &cond_r.effects);
             effects = merge_effects(&effects, &then_r.effects);
             effects = merge_effects(&effects, &else_r.effects);
-            results.push(Ok(TypeResult { ty: then_r.ty, env: unwrap_env(env), effects, node }));
+            // WI-287: the if's type is the join of both branches (checked
+            // against `expected` when present), not just the then-branch
+            // type — an `if` with incompatible arms is otherwise silently
+            // typed as its then-branch.
+            let branch_tys = [
+                (then_r.ty, Some(then_r.node.span.span)),
+                (else_r.ty, Some(else_r.node.span.span)),
+            ];
+            let ty = match compute_branch_join_type(kb, &branch_tys, expected, "if") {
+                Ok(ty) => ty,
+                Err(e) => {
+                    results.push(Err(e));
+                    return;
+                }
+            };
+            results.push(Ok(TypeResult { ty, env: unwrap_env(env), effects, node }));
         }
         TypeBuildFrame::ListLit { occ, env, element_hint, count } => {
             let drain_start = results.len() - count;
@@ -4916,6 +4941,220 @@ fn type_functor_name<'a>(kb: &'a KnowledgeBase, ty: TermId) -> Option<&'a str> {
 /// `is_subtype(A, A)` is false. `is_subtype(red, Color)` is true.
 pub fn is_subtype(kb: &KnowledgeBase, sub: TermId, sup: TermId) -> bool {
     sub != sup && types_compatible(kb, sub, sup)
+}
+
+/// WI-287: one step up the entity→enclosing-sort chain. `Some(parent
+/// sort as a type)` when `t` is a `sort_ref` to an entity nested in a
+/// sort; `None` for a top-level sort (no enclosing parent) or a
+/// non-`sort_ref` type. Lets [`join_types`] find a common supertype of
+/// two distinct entity-typed branches even when leaves weren't already
+/// widened to their sort.
+fn widen_to_parent_sort(kb: &mut KnowledgeBase, t: TermId) -> Option<TermId> {
+    let sym = extract_sort_ref_sym(kb, t)?;
+    let parent = kb.constructor_parent_sort(sym)?;
+    Some(sort_term_to_type(kb, parent))
+}
+
+/// WI-287: a common supertype (an upper bound) of two branch types in the
+/// (top-less) Type lattice, or `None` when they have none. NOT necessarily
+/// the strict least upper bound: a polymorphic `none()`/`nil()` typed bare
+/// `Option`/`List` could in principle specialize to the sibling branch's
+/// `Option[T=Int]` (making the strict lub `Option[T=Int]`), but the typer
+/// neither tracks that a bare type is the polymorphic kind nor unifies it
+/// here, so for the bare-vs-parameterized case this returns the more-
+/// general type instead (see [`more_general_type`]) — a sound upper bound,
+/// not the lub. Commutative: `join_types(a, b) == join_types(b, a)`, so
+/// folding branches is order-independent. A wildcard (`type_var`) branch
+/// imposes no constraint, so the other branch's type is the result. When
+/// exactly one type conforms to the other (`types_compatible`, covering
+/// entity→sort and `requires`-refine) the supertype wins; when both
+/// directions hold (identical, or bare-vs-parameterized) [`more_general_type`]
+/// decides; failing both, the sides are widened one level up the
+/// entity→enclosing-sort chain and retried. The climb is bounded — each
+/// step strictly ascends or a side stops widening — so it terminates.
+fn join_types(kb: &mut KnowledgeBase, a: TermId, b: TermId) -> Option<TermId> {
+    if type_functor_name(kb, a) == Some("type_var") {
+        return Some(b);
+    }
+    if type_functor_name(kb, b) == Some("type_var") {
+        return Some(a);
+    }
+    let (mut a, mut b) = (a, b);
+    // Bound defensively against any pathological parent cycle; real
+    // entity→sort chains are a single level.
+    for _ in 0..64 {
+        match (types_compatible(kb, a, b), types_compatible(kb, b, a)) {
+            // `a <: b` only: `b` is the supertype.
+            (true, false) => return Some(b),
+            // `b <: a` only: `a` is the supertype.
+            (false, true) => return Some(a),
+            // Mutually compatible: identical types, or the bare-vs-
+            // parameterized normalization where both directions hold
+            // (`Option` vs `Option[T=Int]`). We return the less-
+            // constrained side — a sound upper bound, deliberately more
+            // general than the strict lub (which would keep the bindings)
+            // — picked deterministically so the result is order-
+            // independent. (Different parameterizations like
+            // `List[Int]`/`List[String]` are NOT mutually compatible — the
+            // parameterized arm checks bindings — so they fall through to
+            // the widen step.)
+            (true, true) => return Some(more_general_type(kb, a, b)),
+            // Incomparable: widen the entity side(s) one level and retry.
+            (false, false) => {
+                let wa = widen_to_parent_sort(kb, a);
+                let wb = widen_to_parent_sort(kb, b);
+                match (wa, wb) {
+                    (None, None) => return None,
+                    _ => {
+                        if let Some(x) = wa {
+                            a = x;
+                        }
+                        if let Some(y) = wb {
+                            b = y;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// WI-287: between two *mutually*-`types_compatible` types, the upper
+/// bound to keep. This arm is reached only when `types_compatible` holds
+/// in BOTH directions, which (apart from identical types) means the
+/// bare-vs-parameterized normalization: `Option` and `Option[T=Int]` each
+/// conform to the other (a bare sort is "compatible with any instantiation
+/// and vice versa"). The *strict* lub here is the parameterized side
+/// (`Option[T=Int]`): a polymorphic `none()` specializes to it. But the
+/// typer can't tell a polymorphic bare (`none()`/`nil()`, safe to
+/// specialize) from a declared `-> Option` carrying some other unknown `T`
+/// (where claiming `Int` would be wrong), so we deliberately return the
+/// bare (more-general) side — a sound upper bound that never over-claims a
+/// binding, at the cost of dropping the strict lub's precision. A
+/// return/annotation pins the bindings via checked mode regardless; this
+/// only affects annotation-free synthesis. Returns `a` when neither side
+/// is parameterized (identical types). Keeps [`join_types`] commutative.
+fn more_general_type(kb: &KnowledgeBase, a: TermId, b: TermId) -> TermId {
+    match (type_functor_name(kb, a), type_functor_name(kb, b)) {
+        (Some("sort_ref"), Some("parameterized")) => a,
+        (Some("parameterized"), Some("sort_ref")) => b,
+        _ => a,
+    }
+}
+
+/// WI-287: the result type of a branching expression (`match` / `if`),
+/// computed from *every* branch body instead of taking branch 0 (the old
+/// soundness gap). `construct` names the form for diagnostics ("match",
+/// "if"); `branch_tys` are the branch-body types in source order.
+///
+/// When an expected type is present every branch must conform to it
+/// (`types_compatible`, covering entity→sort and `requires`-refine) —
+/// the enforcement the old code skipped, since it only type-checked the
+/// synthesized type, which was branch 0. The result is the join of the
+/// branch types ([`join_types`] — a sound common supertype, not strictly
+/// the lub), preferred for precision but never widened past the expected
+/// type and never collapsed to a `type_var` hint (which would lose the
+/// concrete branch type when the expression is passed as a generic
+/// argument). The Type lattice is top-less: branches with no common
+/// supertype and no expected type to bound them (e.g. `Int` vs
+/// `String`) are a type error, reported against the branch that breaks
+/// the join.
+fn compute_branch_join_type(
+    kb: &mut KnowledgeBase,
+    branch_tys: &[(TermId, Option<Span>)],
+    expected: Option<TermId>,
+    construct: &str,
+) -> Result<TermId, TypeError> {
+    // Intern once up front so the type-lattice borrows below can take
+    // `kb` immutably without colliding with a deferred `kb.intern`.
+    let branch_ctx = TypeErrorContext::Rule {
+        name: kb.intern(construct),
+        field: RuleField::Whole,
+    };
+    let (first_ty, _) = match branch_tys.first() {
+        Some(&b) => b,
+        None => {
+            return Err(TypeError::Other {
+                span: None,
+                context: branch_ctx,
+                expected: format!("non-empty {construct} expression"),
+                actual: format!("{construct} with no branches"),
+            })
+        }
+    };
+
+    // Checked mode: every branch must conform to the expected type
+    // (`types_compatible` covers entity→sort and `requires`-refine).
+    // This is the enforcement the old code skipped — it only ever
+    // type-checked the synthesized type, which was branch 0.
+    if let Some(exp) = expected {
+        for &(bt, span) in branch_tys {
+            if !types_compatible(kb, bt, exp) {
+                return Err(TypeError::TypeMismatch {
+                    span,
+                    context: branch_ctx,
+                    expected: exp,
+                    actual: bt,
+                });
+            }
+        }
+    }
+
+    // Synthesized type: the join (common supertype) of the branch types. Track the
+    // branch that breaks the join (no common supertype) for diagnostics.
+    let mut acc = first_ty;
+    let mut clash: Option<(TermId, Option<Span>)> = None;
+    for &(bt, span) in &branch_tys[1..] {
+        match join_types(kb, acc, bt) {
+            Some(j) => acc = j,
+            None => {
+                clash = Some((bt, span));
+                break;
+            }
+        }
+    }
+
+    match (clash, expected) {
+        // The join exists: prefer this precise synthesized type, but
+        // never widen past an expected type the branches already satisfy
+        // (and never collapse a precise join to a `type_var` hint).
+        (None, None) => Ok(acc),
+        (None, Some(exp)) => {
+            if acc == exp || types_compatible(kb, acc, exp) {
+                Ok(acc)
+            } else {
+                Ok(exp)
+            }
+        }
+        // No climb-computed join, but every branch conforms to `expected`
+        // (checked above) — `expected` is their common upper bound. This
+        // is the `requires`-refine case the entity-parent climb can't see.
+        // A `type_var` `exp`, though, is no real bound (it's compatible
+        // with anything), so accepting it would collapse a genuine clash
+        // to a wildcard — report the clash instead, mirroring the
+        // type_var guard in the `(None, Some)` arm above.
+        (Some((bt, span)), Some(exp)) => {
+            if type_functor_name(kb, exp) == Some("type_var") {
+                Err(TypeError::TypeMismatch {
+                    span,
+                    context: branch_ctx,
+                    expected: acc,
+                    actual: bt,
+                })
+            } else {
+                Ok(exp)
+            }
+        }
+        // No expected type and no common supertype — the top-less lattice
+        // has no join, so the branch types genuinely clash.
+        (Some((bt, span)), None) => Err(TypeError::TypeMismatch {
+            span,
+            context: branch_ctx,
+            expected: acc,
+            actual: bt,
+        }),
+    }
 }
 
 /// sort_ref(name: A) compatible with sort_ref(name: B)

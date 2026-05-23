@@ -109,3 +109,6 @@ mod wi283_type_directed_guard_test;
 
 #[path = "include/match_branch_join_test.rs"]
 mod match_branch_join_test;
+
+#[path = "include/if_branch_join_test.rs"]
+mod if_branch_join_test;
