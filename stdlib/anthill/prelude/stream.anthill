@@ -5,7 +5,6 @@
 -- Concrete sorts bind E to their specific effect.
 sort anthill.prelude.Stream
   import anthill.prelude.{Option, Pair, List, Bool, Int}
-  export Stream, head, tail, splitFirst, takeN, collect, isEmpty
 
   sort T = ?              -- element type
   sort E = ?              -- effect required to observe

@@ -1,6 +1,5 @@
 -- Eq: equality
 sort anthill.prelude.Eq
-  export eq, neq
 
   sort T = ?
   operation {

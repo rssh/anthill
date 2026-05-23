@@ -2,7 +2,6 @@
 namespace anthill.prelude.Meta
   import anthill.reflect.{Term}
   import anthill.prelude.{Option}
-  export Meta, Trust, ProofResult
 
   -- Meta is an open-keyed entity: it has well-known fields,
   -- but any Name : Term pair is allowed as an entry.

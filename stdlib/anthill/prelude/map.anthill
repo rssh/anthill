@@ -1,8 +1,6 @@
 -- Map: abstract key-value association (requires Eq on keys)
 sort anthill.prelude.Map
   import anthill.prelude.{Option, List, Pair, Bool, Int, Eq}
-  export Map, empty, get, put, contains, remove
-  export keys, values, entries, size
 
   sort K = ?
   sort V = ?

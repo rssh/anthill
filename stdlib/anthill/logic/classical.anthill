@@ -8,7 +8,6 @@
 -- transitive `requires` chain.
 namespace anthill.logic.Classical
   import anthill.logic.Constructive.{Constructive}
-  export Classical
 
   sort Classical
     requires anthill.logic.Constructive.Constructive

@@ -16,32 +16,6 @@ namespace anthill.reflect
   import anthill.prelude.{Bool}
   import anthill.prelude.{Stream}
   import anthill.prelude.{Type}
-  export Term, FactId, Symbol
-  export SourceId, SourceSpan, Occurrence, ExprOccurrence
-  export occurrence_term, occurrence_span, occurrence_owner, sub_occurrences, occurrences_of
-  export SourceUnit
-  export KB, kb
-  export qualified_name, short_name, lookup_symbol, scope, kind
-  export LiteralRepr, TermRepr, SetLiteral, TupleLiteral, ListLiteral, SortInfo, EntityInfo, OperationInfo, FieldInfo, DescriptionInfo
-  export SortRequiresInfo, SortProvidesInfo, SortView
-  export Expr, Pattern, MatchBranch, ApplyArg, NamedPattern, type_arg
-  export match_expr, if_expr, let_expr, lambda, constructor, var_ref
-  export int_lit, bigint_lit, float_lit, string_lit, bool_lit
-  export var_pattern, tuple_pattern, named_tuple_pattern, constructor_pattern, literal_pattern, wildcard
-  export Substitution, apply, compose, lookup
-  export LogicalQuery, empty_query
-  export pattern_query, sort_query, conjunction, disjunction
-  export negation, guarded, projected, limited
-  export nonvar, ground, not
-  export field_access
-  export term_functor_name, term_field, term_as_string, term_as_entity, fresh_var, make_fn
-  export find_fact, replace_named_arg
-  export resolve_sort_instantiation_param
-  export ConstraintId
-  export reify, reflect
-  export sorts, operations, constructors, fields, rules, descriptions
-  export execute, facts_of, sort_template, instantiation_query
-  export sort_as_term, term_as_sort, can_be_sort
 
   -- ================================================================
   -- Opaque kernel handles (abstract — implementation-defined)

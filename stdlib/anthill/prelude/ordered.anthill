@@ -2,7 +2,6 @@
 sort anthill.prelude.Ordered
   import anthill.prelude.Bool.{ite}
   import anthill.prelude.Int.{neg}
-  export compare, gt, gte, lt, lte, max, min
 
   sort T = ?
   requires Eq[T]

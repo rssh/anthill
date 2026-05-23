@@ -2,7 +2,6 @@
 -- Empty by design; sorts that `requires Logic.Minimal` declare they
 -- assume nothing beyond the resolver's native semantics.
 namespace anthill.logic.Minimal
-  export Minimal
   sort Minimal
   end
 end

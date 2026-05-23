@@ -4,7 +4,6 @@ sort anthill.prelude.Set
   sort S = ?         -- the set type
   sort T = ?         -- element type
   requires Eq[T]
-  export empty, insert, member, subset, union, intersection, difference
 
   operation empty() -> S
   operation insert(s: S, x: T) -> S

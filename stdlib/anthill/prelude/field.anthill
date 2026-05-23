@@ -8,7 +8,6 @@
 -- `Field` instance (Float approximately, Rational exactly).
 sort anthill.prelude.Field
   import anthill.prelude.{Numeric}
-  export div, recip
 
   sort T = ?
   requires Numeric[T]

@@ -7,8 +7,6 @@
 -- by ignoring `kind` and addressing params by name only.
 namespace anthill.cli.spec
   import anthill.prelude.{List, Option, String, Bool}
-  export OperationSpec, ParamSpec, ParamKind,
-         positional, flag, repeated, bool_flag
 
   -- How a CLI surface should source the value for a param.
   --   positional  — argv[i], in declaration order across positional params

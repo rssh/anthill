@@ -10,8 +10,6 @@
 -- §δ.2).
 namespace anthill.realization.policy
   import anthill.prelude.{Option}
-  export TranslationPolicy, PredicatePolicy,
-         Inline, DefineFun, DeclareFun, LiftedAxiom
 
   -- A single policy entry. `predicate` is the qualified name of
   -- the rule whose translation is being controlled; `backend`

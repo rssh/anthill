@@ -15,7 +15,6 @@ namespace anthill.cli.help
   import anthill.prelude.String.{concat}
   import anthill.cli.spec.{OperationSpec, ParamSpec, ParamKind}
   import anthill.cli.spec.ParamKind.{positional, flag, repeated, bool_flag}
-  export format_help
 
   -- Top-level renderer.
   operation format_help(s: OperationSpec) -> String =

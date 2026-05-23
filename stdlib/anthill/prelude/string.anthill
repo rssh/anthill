@@ -3,7 +3,6 @@
 -- binding files (e.g. rustland/anthill-stl/anthill/string.anthill) — see proposal 038.
 sort anthill.prelude.String
   import anthill.prelude.{Eq, Ordered}
-  export concat, length, isEmpty, contains, startsWith, endsWith, substring, indexOf, replace, trim, toUpper, toLower, split
 
   operation {
     concat(a: String, b: String) -> String

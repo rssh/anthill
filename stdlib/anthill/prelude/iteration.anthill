@@ -2,7 +2,6 @@
 -- Iterator is the carrier — the type being iterated.
 sort anthill.prelude.Iteration
   import anthill.prelude.{Option}
-  export Iteration, split
 
   sort Iterator = ?
   sort Element = ?

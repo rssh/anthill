@@ -13,7 +13,6 @@
 -- which operation.
 namespace anthill.realization.cpp_std
   import anthill.prelude.{String}
-  export ReturnTypeConversion
 
   -- A C++ function name that wraps an operation's call to its
   -- carrier method. Codegen emits:

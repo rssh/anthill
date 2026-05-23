@@ -5,7 +5,6 @@
 -- so a `proof ... :- modus_ponens, …` hint block can reference them.
 namespace anthill.logic.Constructive
   import anthill.logic.Minimal.{Minimal}
-  export Constructive
 
   sort Constructive
     requires anthill.logic.Minimal.Minimal

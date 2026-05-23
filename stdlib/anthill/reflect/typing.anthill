@@ -2,9 +2,6 @@ namespace anthill.reflect.typing
   import anthill.prelude.{List, Bool}
 
   import anthill.reflect.{Term, Symbol, KB, SortInfo, OperationInfo, EntityInfo, SortRequiresInfo, scope}
-  export entity_of, is_entity_of, refines, type_compatible, is_subtype
-  export list_contains
-  export extract_sort_ref
 
   -- ================================================================
   -- Helper: cons-list membership

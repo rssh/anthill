@@ -1,6 +1,5 @@
 -- Numeric: basic arithmetic (requires Ordered)
 sort anthill.prelude.Numeric
-  export add, sub, mul, zero-val
 
   sort T = ?
   requires Ordered[T]

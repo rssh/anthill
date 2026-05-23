@@ -9,11 +9,6 @@ namespace anthill.cli.parse
   import anthill.prelude.String.{startsWith, substring, length}
   import anthill.cli.spec.{OperationSpec, ParamSpec, ParamKind}
   import anthill.cli.spec.ParamKind.{positional, flag, repeated, bool_flag}
-  export Binding, ParsedArgs, ParseError, ParseResult,
-         no_subcommand, unknown_subcommand, unknown_flag,
-         flag_expects_value, unexpected_argument, missing_required,
-         parse_ok, parse_err,
-         parse_argv
 
   -- One name=value pair from the parsed argv.
   -- Repeated flags produce multiple bindings with the same name.

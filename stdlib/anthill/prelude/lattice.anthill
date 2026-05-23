@@ -1,6 +1,5 @@
 -- Lattice: partial order with least upper bound and greatest lower bound
 sort anthill.prelude.Lattice
-  export lub, glb, less
 
   sort T = ?
   requires Eq[T]
@@ -26,7 +25,6 @@ end
 
 -- BoundedLattice: lattice with top and bottom elements
 sort anthill.prelude.BoundedLattice
-  export top, bottom
 
   sort T = ?
   requires Lattice[T]

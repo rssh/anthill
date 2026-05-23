@@ -11,12 +11,6 @@ namespace anthill.realization.witness
   import anthill.prelude.{List, Option, Float, Int, Bool}
   import anthill.reflect.{Term}
 
-  export ProofWitness,
-         SmtDischarge, SldDerivation, MetaCompose,
-         ScopeAxiom, Specialization, TrustedAxiom,
-         SmtVerdict, Unsat, Sat, Unknown,
-         SortBinding,
-         MetaTacticContract
 
   -- ================================================================
   -- ProofWitness — the certificate

@@ -1,6 +1,5 @@
 -- Pair: product type (two-element tuple)
 enum anthill.prelude.Pair
-  export Pair, pair, fst, snd
 
   sort A = ?
   sort B = ?

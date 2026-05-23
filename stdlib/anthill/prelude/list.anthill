@@ -6,7 +6,6 @@ enum anthill.prelude.List
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Numeric.{add, sub}
   import anthill.prelude.Ordered.{gt}
-  export List, nil, cons, length, member, append, insert, empty, split, nth
 
   sort T = ?                                           -- type parameter (abstract)
   entity nil                                         -- empty list

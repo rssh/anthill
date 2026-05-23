@@ -8,8 +8,6 @@ namespace anthill.persistence
   import anthill.reflect.{Term, FactId}
   import anthill.prelude.{List, Stream}
   import anthill.prelude.Meta.{Meta}
-  export Store, QueryableStore, BulkStore
-  export route, persist, retract, flush, retrieve, pull
 
   -- ================================================================
   -- Store: base storage backend

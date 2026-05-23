@@ -7,14 +7,6 @@ namespace anthill.realization
   import anthill.prelude.{List, Option}
   import anthill.prelude.Meta.{ProofResult}
   import anthill.reflect.{Term, Symbol}
-  export Implementation, Generated, Obligation, CarrierBinding, NamespaceMapping,
-         LanguageMapping, EffectMapping, ReceiverRule, TypeMapping,
-         ReceiverForm, TraitReturnForm, OperationImpl,
-         ProofRecord, ProofStrategyOpen, ProofStrategyKind,
-         ProofBodyNone, ProofBodyHints, ProofBodyQuery, ProofBodyStructured,
-         ProofStep, ProofConcludeClause, MappingEntry,
-         Pending, Discharged, Failed,
-         ParametricBinding
 
   -- Links host-language code to an anthill algebra spec.
   --

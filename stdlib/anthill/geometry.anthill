@@ -13,11 +13,6 @@
 namespace anthill.geometry
   import anthill.prelude.{Float}
   import anthill.prelude.algebra.{VectorSpace}
-  export Vec3, EulerAngles
-  export vec_add, vec_sub, vec_scale, vec_zero
-  export vec_add_comm, vec_add_assoc, vec_add_identity
-  export vec_scale_distrib_v, vec_scale_distrib_s, vec_scale_assoc
-  export vec_scale_identity, vec_sub_def
 
   -- Vec3 over Float satisfies the VectorSpace spec — the abstract
   -- vec_add / vec_sub / vec_scale / vec_zero operations resolve to

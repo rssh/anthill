@@ -4,7 +4,6 @@
 -- See proposal 033 (docs/proposals/033-resolver-primitives-and-disjunction.md).
 namespace anthill.kernel
   import anthill.reflect.{Term}
-  export push_choice, or
 
   -- Binary choice point. Splits the current goal queue into two branches
   -- that share the frame's tail: [?a, ...tail] tried first, [?b, ...tail]

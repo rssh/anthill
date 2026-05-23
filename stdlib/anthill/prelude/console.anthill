@@ -18,9 +18,6 @@
 -- When another I/O resource with a matching shape appears, generalize.
 sort anthill.prelude.Console
   import anthill.prelude.{String, Unit, Effect}
-  export Console, console
-  export ConsoleOutput, ConsoleError, ConsoleInput
-  export print, println, eprint, eprintln, read_line
 
   entity console
 

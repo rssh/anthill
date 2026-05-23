@@ -8,7 +8,6 @@ sort anthill.prelude.BigInt
   import anthill.prelude.{Eq, Ordered, Numeric}
   import anthill.prelude.Ordered.{gt}
   import anthill.prelude.Numeric.{sub}
-  export to_bigint, to_int, to_float
 
   -- Conversion operations
   operation to_bigint(n: Int) -> BigInt

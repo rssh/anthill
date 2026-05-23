@@ -1,6 +1,5 @@
 -- Option: a parametric sort
 enum anthill.prelude.Option
-  export Option, none, some
 
   sort T = ?                                           -- type parameter (abstract)
   entity none                                        -- absent

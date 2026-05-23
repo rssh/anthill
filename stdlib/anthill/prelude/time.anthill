@@ -8,7 +8,6 @@
 -- system time; tests can substitute a frozen-clock handler.
 sort anthill.prelude.Time
   import anthill.prelude.{String, Effect}
-  export Time, Clock, now
 
   -- Effect kind. Resource-less — the wall clock is a global shared
   -- resource, no per-instance handle to thread.

@@ -13,7 +13,6 @@
 sort anthill.prelude.LogicalStream
   import anthill.prelude.{Stream, Option, Pair, Unit, Bool, Int}
   import anthill.prelude.Pair.{pair}
-  export LogicalStream, empty, pure, mplus, guard, interleave
 
   sort T = ?
 

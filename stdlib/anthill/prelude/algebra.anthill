@@ -14,7 +14,6 @@
 -- (complex numbers, finite fields) can satisfy it later if needed.
 
 namespace anthill.prelude.algebra
-  export Ring, VectorSpace
 
   -- =================================================================
   -- Ring — commutative ring with multiplicative identity

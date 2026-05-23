@@ -21,15 +21,6 @@ namespace anthill.realization.platform
   import anthill.prelude.{Timestamp}
   import anthill.reflect.{Term, KB}
   import anthill.realization.{LanguageMapping}
-  export ExecutionPlatform, execution_platform, has_property
-  export ExecutionEnvironment, execution_environment, exec, env_var
-  export Toolchain, toolchain, build
-  export ProcessResult
-  export Builtin, Runtime, runtime, evaluate, trace
-  export Path, FileStatus, Filesystem, exists, status
-  export basename, dirname, extension, components, join
-  export file_extension, needs_rebuild
-  export Tool, ExternalProject, AnthillProject, anthill_project
 
   -- ================================================================
   -- ExecutionPlatform
@@ -187,7 +178,6 @@ namespace anthill.realization.platform
 
   -- An anthill project with source dirs, language mapping, and subprojects.
   sort AnthillProject
-    export anthill_project
 
     entity anthill_project(
       name        : String,

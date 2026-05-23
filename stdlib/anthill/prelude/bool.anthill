@@ -3,7 +3,6 @@
 -- (e.g. rustland/anthill-stl/anthill/bool.anthill) — see proposal 038.
 sort anthill.prelude.Bool
   import anthill.prelude.{Eq}
-  export and, or, not, ite
 
   operation {
     and(a: Bool, b: Bool) -> Bool

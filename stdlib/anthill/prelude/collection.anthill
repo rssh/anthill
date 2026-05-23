@@ -3,7 +3,6 @@
 -- Requires Iteration — if you can build it, you can decompose it.
 sort anthill.prelude.Collection
   import anthill.prelude.Iteration
-  export Collection, insert, empty
 
   sort Collection = ?
   sort Element = ?

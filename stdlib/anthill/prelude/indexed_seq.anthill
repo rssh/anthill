@@ -7,7 +7,6 @@ sort anthill.prelude.IndexedSeq
   import anthill.prelude.{Int, Option}
   import anthill.prelude.Option.{none}
   import anthill.prelude.Ordered.{lt, gte}
-  export IndexedSeq, length, nth
 
   sort C = ?
   sort T = ?

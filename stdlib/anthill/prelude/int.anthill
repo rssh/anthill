@@ -7,7 +7,6 @@ sort anthill.prelude.Int
   import anthill.prelude.Bool.{ite}
   import anthill.prelude.Ordered.{max, gte, lt, gt}
   import anthill.prelude.Numeric.{add, sub}
-  export minValue, maxValue, abs, neg, mod, rem, sign, div, divExact, to_float, to_string
 
   -- Bounds: Int is finite (platform-dependent, e.g. i64)
   operation minValue() -> Int
