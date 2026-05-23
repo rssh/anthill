@@ -213,6 +213,13 @@ object Loader:
                   // global with the dotted name and never gets attached to
                   // the `anthill.prelude` namespace's exports.
                   case _ => kb.symbols.byQualifiedName.get(s"$pathStr.$name")
+                    // Last resort: an entity exported by the namespace but
+                    // defined one scope deeper, e.g. `execution_platform`
+                    // declared inside `sort ExecutionPlatform` of namespace
+                    // `anthill.realization.platform` (qualified name
+                    // `…platform.ExecutionPlatform.execution_platform`).
+                    // Mirrors rustland's `find_in_nested_scope`.
+                    .orElse(findInNestedScope(kb, pathStr, name))
                 found match
                   case Some(s) => kb.symbols.addImport(scopeTerm.raw, name, s)
                   case None => errors += LoadError.UnresolvedName(name, n.span, pathStr)
@@ -222,6 +229,34 @@ object Loader:
                 ScopeInclusion(parentTerm.raw, 0, isEnclosing = false))
         case None =>
           errors += LoadError.UnresolvedImport(pathStr, imp.path.span)
+
+  /** Resolve a selectively-imported name that lives one scope level below
+    * the imported namespace — e.g. an entity declared inside a `sort`/`enum`
+    * within the namespace. Without this, `import anthill.realization.platform.{
+    * execution_platform}` fails because the entity's qualified name is
+    * `…platform.ExecutionPlatform.execution_platform` (one intermediate
+    * segment), not `…platform.execution_platform`. Mirrors rustland's
+    * `find_in_nested_scope`: requires exactly one intermediate segment and a
+    * unique match (ambiguity → None). */
+  private def findInNestedScope(
+    kb: KnowledgeBase, basePath: String, short: String
+  ): Option[TermSymbol] =
+    val prefix = s"$basePath."
+    val suffix = s".$short"
+    val matches = kb.symbols.byQualifiedName.iterator.collect {
+      case (qname, sym)
+        // The length guard rules out an overlapping prefix/suffix (e.g.
+        // base="a", short="b", qname="a.b"), which would make the substring
+        // bounds invalid; such a qname is the exact `base.short` already
+        // handled by the direct lookup, so it has no intermediate segment.
+        if qname.startsWith(prefix) && qname.endsWith(suffix) &&
+           qname.length >= prefix.length + suffix.length &&
+           {
+             val middle = qname.substring(prefix.length, qname.length - suffix.length)
+             middle.nonEmpty && !middle.contains('.')
+           } => sym
+    }.toSet
+    if matches.size == 1 then Some(matches.head) else None
 
   private def processRequires(
     kb: KnowledgeBase,

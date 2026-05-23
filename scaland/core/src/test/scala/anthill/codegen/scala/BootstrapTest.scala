@@ -72,8 +72,11 @@ class BootstrapTest extends munit.FunSuite:
     // verify they convert to camelCase per docs/scala-forward-mapping.md §5.
     val pf = parseStdlib("anthill/prelude/bigint.anthill")
     val files = Bootstrap.generate(pf)
-    val bigIntFile = files.find(_.relPath.endsWith("/BigIntOps.scala"))
-      .getOrElse(fail(s"expected BigIntOps.scala in: ${files.map(_.relPath)}"))
+    // proposal 038: BigInt is now a top-level `sort` (was `namespace`), so its
+    // operations land in `BigInt.scala` (a trait with an inner BigIntOps), not
+    // a standalone `BigIntOps.scala`.
+    val bigIntFile = files.find(_.relPath.endsWith("/BigInt.scala"))
+      .getOrElse(fail(s"expected BigInt.scala in: ${files.map(_.relPath)}"))
     val src = bigIntFile.contents
     assert(src.contains("def toBigint"), s"expected `def toBigint` (from to_bigint) in:\n$src")
     assert(src.contains("def toInt"), s"expected `def toInt` (from to_int) in:\n$src")
