@@ -21,7 +21,7 @@ The name-resolution algorithm and visibility model are as written in
 1. **Visible by default.** A declared name is visible across namespace/sort
    boundaries to importers and requirers. `internal` is the only hide gate;
    `public` is visible everywhere; the `export` statement and `export` prefix
-   are **no-ops** (deprecated, to be removed — WI-289).
+   are **no-ops** (deprecated, to be removed — WI-291).
 2. **`resolve_in_scope`**: locals → imports → parents; a non-enclosing parent is
    filtered only by (a) its type parameters, (b) `internal`, (c) its **exposed**
    set (variant exposure).
@@ -134,7 +134,7 @@ Two parts. Part A is uncontroversial; Part B is the open design question.
 - A declaration is visible to importers and across `requires`/wildcard boundaries **by default**.
 - `internal`-prefixed declarations are hidden from cross-scope resolution (still resolvable within their own scope).
 - `public` keeps its meaning (visible everywhere, even without import).
-- The `export` statement and `export` visibility prefix become **no-ops**, then are removed from the grammar (tracked: WI-289). stdlib loses ~41 `export` blocks.
+- The `export` statement and `export` visibility prefix become **no-ops**, then are removed from the grammar (tracked: WI-291). stdlib loses ~41 `export` blocks.
 - The loader's **variant-exposure** stays, but moves to a dedicated `exposed` set (auto-populated from entity variants only) so it is no longer tangled with user `export`. Both implementations adopt the same `exposed` mechanism.
 
 This is mechanical *once* Part B removes export's disambiguation duty.
@@ -162,7 +162,7 @@ After A+B, both implementations implement the identical `resolve_in_scope` (loca
 4. ~~Document the unified algorithm in `kernel-language.md`~~ — done: §8.6 rewritten as the canonical **Name Resolution and Visibility** section (scope model, `resolve_in_scope` order, parent filters incl. variant exposure, import forms + nested lookup, visible-by-default with `internal`/`public`/`export`-no-op); §5.1 visibility table corrected. This is the **uniform description** both engines target. (Unlabeled-rule head-functor registration is explicitly out of scope here — future work.)
 5. **Behavior conformance (in progress).** rustland conforms (R2 + variants-only exposure + visible-by-default). scaland conforms on the resolution core — scope model, `resolve_in_scope`, parent filter, import forms incl. `findInNestedScope`, and visible-by-default (it already auto-permits) — but **does not yet implement variant exposure** (bare `Open` → `WorkStatus.Open`) and still auto-exposes every member rather than variants-only. Closing that is the remaining behavior gap; note the requires-interaction risk (a non-enclosing parent that is a sort-with-variants exposes only its variants, so `requires S` would surface only S's variants — must be validated against scaland's stdlib).
 6. Strip `export` statements from stdlib (one mechanical pass; both engines treat them as no-ops).
-7. Remove `export` from the grammar (WI-289).
+7. Remove `export` from the grammar (WI-291).
 
 **Note on "one algorithm" vs dispatch.** Uniform *name resolution of declared
 symbols* (this proposal) is separable from how *unlabeled-rule head functors*
@@ -199,6 +199,6 @@ work** and is not required for uniform name resolution.
 
 ## Related
 
-- WI-289 — remove the `export` statement/prefix from the grammar (downstream of step 7).
+- WI-291 — remove the `export` statement/prefix from the grammar (downstream of step 7).
 - Proposal 038 — builtin-sort spec/binding split (introduced the `sort anthill.prelude.X` forms whose inherited operations trigger the `eq` ambiguity).
 - §8.7 Algebras (operation auto-binding) — the source of inherited-operation symbols.
