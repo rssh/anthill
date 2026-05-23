@@ -1255,6 +1255,229 @@ fn typing_pass_spec_parses_and_loads() {
     );
 }
 
+// ── WI-297: occurrence_term shows a literal occurrence reflected ─────
+
+#[test]
+fn wi297_occurrence_term_literal_synth_resolves() {
+    // Acceptance: a synth-LIT rule whose body destructures an expression
+    // occurrence via `occurrence_term` resolves to the literal's sort.
+    // `probe` puts an int literal at a rule-body-atom position, so it enters
+    // resolution as an `Expr::Const` occurrence; `synth`'s body shows it
+    // through the reflect lens and matches `int_lit(value: ?)`.
+    let source = concat!(
+        "namespace wi297.t\n",
+        "  import anthill.reflect.{Expr}\n",
+        "  import anthill.prelude.Type.{sort_ref}\n",
+        "  import anthill.prelude.{Int}\n",
+        "  rule synth(?e, sort_ref(name: Int)) :- occurrence_term(?e, int_lit(value: ?))\n",
+        "  rule probe(?T) :- synth(42, ?T)\n",
+        "end\n",
+    );
+    let mut kb = load_with_source(source);
+
+    let var_t = make_var(&mut kb, "T");
+    let goal = make_goal(&mut kb, "wi297.t.probe", &[var_t]);
+    let results = kb.resolve(&[goal], &default_config());
+    assert_eq!(
+        results.len(), 1,
+        "probe should resolve once via synth/occurrence_term on a literal occurrence"
+    );
+
+    let bound = kb.reify(var_t, &results[0].subst);
+    match kb.get_term(bound) {
+        Term::Fn { functor, named_args, .. } => {
+            assert_eq!(kb.resolve_sym(*functor), "sort_ref", "synth should yield sort_ref(...)");
+            let name = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "name")
+                .map(|(_, t)| *t)
+                .expect("sort_ref should carry a name arg");
+            let name_sym = match kb.get_term(name) {
+                Term::Ref(s) | Term::Ident(s) => *s,
+                Term::Fn { functor, .. } => *functor,
+                other => panic!("unexpected sort_ref name term: {other:?}"),
+            };
+            assert_eq!(kb.resolve_sym(name_sym), "Int", "literal 42 should synth to Int");
+        }
+        other => panic!("expected sort_ref(name: Int), got {other:?}"),
+    }
+}
+
+#[test]
+fn wi297_occurrence_term_discriminates_literal_kind() {
+    // `occurrence_term` reads the *actual* term of the shown occurrence: a
+    // distinct synth rule per literal kind, and each literal selects exactly
+    // the matching rule (42 ⇒ Int, "hi" ⇒ String) — proving the builtin binds
+    // the occurrence's term, not a vacuous match.
+    let source = concat!(
+        "namespace wi297.b\n",
+        "  import anthill.reflect.{Expr}\n",
+        "  import anthill.prelude.Type.{sort_ref}\n",
+        "  import anthill.prelude.{Int, String}\n",
+        "  rule synth(?e, sort_ref(name: Int))    :- occurrence_term(?e, int_lit(value: ?))\n",
+        "  rule synth(?e, sort_ref(name: String)) :- occurrence_term(?e, string_lit(value: ?))\n",
+        "  rule probe_int(?T) :- synth(42, ?T)\n",
+        "  rule probe_str(?T) :- synth(\"hi\", ?T)\n",
+        "end\n",
+    );
+    let mut kb = load_with_source(source);
+
+    let sort_ref_name = |kb: &KnowledgeBase, t: TermId| -> String {
+        match kb.get_term(t) {
+            Term::Fn { functor, named_args, .. } => {
+                assert_eq!(kb.resolve_sym(*functor), "sort_ref");
+                let n = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "name")
+                    .map(|(_, t)| *t).expect("sort_ref name");
+                match kb.get_term(n) {
+                    Term::Ref(s) | Term::Ident(s) => kb.resolve_sym(*s).to_string(),
+                    Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_string(),
+                    other => panic!("unexpected name term {other:?}"),
+                }
+            }
+            other => panic!("expected sort_ref, got {other:?}"),
+        }
+    };
+
+    let var_i = make_var(&mut kb, "Ti");
+    let g_int = make_goal(&mut kb, "wi297.b.probe_int", &[var_i]);
+    let r_int = kb.resolve(&[g_int], &default_config());
+    assert_eq!(r_int.len(), 1, "an int literal should select exactly the int_lit synth rule");
+    let t_int = kb.reify(var_i, &r_int[0].subst);
+    assert_eq!(sort_ref_name(&kb, t_int), "Int");
+
+    let var_s = make_var(&mut kb, "Ts");
+    let g_str = make_goal(&mut kb, "wi297.b.probe_str", &[var_s]);
+    let r_str = kb.resolve(&[g_str], &default_config());
+    assert_eq!(r_str.len(), 1, "a string literal should select exactly the string_lit synth rule");
+    let t_str = kb.reify(var_s, &r_str[0].subst);
+    assert_eq!(sort_ref_name(&kb, t_str), "String");
+}
+
+#[test]
+fn wi297_occurrence_span_builds_source_span() {
+    // `occurrence_span` constructs the anthill `source_span(...)` entity from
+    // the occurrence's Rust span. The result is a term, so it propagates up.
+    let source = concat!(
+        "namespace wi297.sp\n",
+        "  rule span_of(?e, ?s) :- occurrence_span(?e, ?s)\n",
+        "  rule probe(?s) :- span_of(42, ?s)\n",
+        "end\n",
+    );
+    let mut kb = load_with_source(source);
+    let var_s = make_var(&mut kb, "s");
+    let goal = make_goal(&mut kb, "wi297.sp.probe", &[var_s]);
+    let results = kb.resolve(&[goal], &default_config());
+    assert_eq!(results.len(), 1, "occurrence_span should produce a span term");
+    let bound = kb.reify(var_s, &results[0].subst);
+    match kb.get_term(bound) {
+        Term::Fn { functor, named_args, .. } => {
+            assert_eq!(kb.resolve_sym(*functor), "source_span");
+            let keys: Vec<String> = named_args.iter().map(|(s, _)| kb.resolve_sym(*s).to_string()).collect();
+            assert!(keys.contains(&"file".to_string()), "fields: {keys:?}");
+            assert!(keys.contains(&"start_byte".to_string()), "fields: {keys:?}");
+            assert!(keys.contains(&"end_byte".to_string()), "fields: {keys:?}");
+        }
+        other => panic!("expected source_span(...), got {other:?}"),
+    }
+}
+
+#[test]
+fn wi297_sub_occurrences_empty_vs_nonempty() {
+    // `sub_occurrences` lists the direct child occurrences: a literal has none
+    // (matches `nil`), a constructor has its args (matches `cons(...)`). The
+    // list is matched intra-frame; an int marker propagates the outcome.
+    let source = concat!(
+        "namespace wi297.su\n",
+        "  import anthill.prelude.{List}\n",
+        "  rule kind(?e, 0) :- sub_occurrences(?e, nil)\n",
+        "  rule kind(?e, 1) :- sub_occurrences(?e, cons(head: ?, tail: ?))\n",
+        "  rule probe_lit(?k) :- kind(42, ?k)\n",
+        "  rule probe_compound(?k) :- kind(cons(head: 1, tail: nil), ?k)\n",
+        "end\n",
+    );
+    let mut kb = load_with_source(source);
+
+    let var_k = make_var(&mut kb, "k");
+    let g_lit = make_goal(&mut kb, "wi297.su.probe_lit", &[var_k]);
+    let r_lit = kb.resolve(&[g_lit], &default_config());
+    assert_eq!(r_lit.len(), 1, "a literal occurrence has no sub-occurrences (nil)");
+    let t_lit = kb.reify(var_k, &r_lit[0].subst);
+    assert_eq!(kb.get_term(t_lit), &Term::Const(Literal::Int(0)));
+
+    let var_k2 = make_var(&mut kb, "k2");
+    let g_cmp = make_goal(&mut kb, "wi297.su.probe_compound", &[var_k2]);
+    let r_cmp = kb.resolve(&[g_cmp], &default_config());
+    assert_eq!(r_cmp.len(), 1, "a constructor occurrence has sub-occurrences (cons)");
+    let t_cmp = kb.reify(var_k2, &r_cmp[0].subst);
+    assert_eq!(kb.get_term(t_cmp), &Term::Const(Literal::Int(1)));
+}
+
+#[test]
+fn wi297_occurrence_owner_none_for_body_atom_child() {
+    // A rule-body-atom child carries no owner, so `occurrence_owner` fails
+    // (no top-level owner to report). Positive-owner cases need op-body
+    // occurrences, reachable once `occurrences_of` is implemented.
+    let source = concat!(
+        "namespace wi297.ow\n",
+        "  rule owner_of(?e, ?o) :- occurrence_owner(?e, ?o)\n",
+        "  rule probe(?o) :- owner_of(42, ?o)\n",
+        "end\n",
+    );
+    let mut kb = load_with_source(source);
+    let var_o = make_var(&mut kb, "o");
+    let goal = make_goal(&mut kb, "wi297.ow.probe", &[var_o]);
+    assert_eq!(
+        kb.resolve(&[goal], &default_config()).len(), 0,
+        "occurrence_owner has no owner for a body-atom child"
+    );
+}
+
+#[test]
+fn wi297_occurrence_span_structured_pattern_matches() {
+    // A *structured* `source_span(file:, start_byte:, end_byte:)` pattern must
+    // match the built span term — guards that the builder canonicalizes named
+    // args in declared field order (the order-sensitive discrim matcher would
+    // silently miss otherwise).
+    let source = concat!(
+        "namespace wi297.sps\n",
+        "  import anthill.reflect.{SourceSpan}\n",
+        "  rule field(?e, ?s) :- occurrence_span(?e, source_span(file: ?, start_byte: ?s, end_byte: ?))\n",
+        "  rule probe(?s) :- field(42, ?s)\n",
+        "end\n",
+    );
+    let mut kb = load_with_source(source);
+    let var_s = make_var(&mut kb, "s");
+    let goal = make_goal(&mut kb, "wi297.sps.probe", &[var_s]);
+    let results = kb.resolve(&[goal], &default_config());
+    assert_eq!(results.len(), 1, "structured source_span pattern should match (field order aligned)");
+    let bound = kb.reify(var_s, &results[0].subst);
+    assert!(
+        matches!(kb.get_term(bound), Term::Const(Literal::Int(_))),
+        "start_byte should bind to an Int, got {:?}", kb.get_term(bound)
+    );
+}
+
+#[test]
+fn wi297_occurrence_term_compound_pattern_fails_not_panics() {
+    // A child-bearing reflect pattern (`if_expr`) is not yet handled by the
+    // lens; `occurrence_term` must fail (no match), NOT trip the goal-form
+    // assertion in `occurrence_to_term`. The test passing without a panic is
+    // the guard.
+    let source = concat!(
+        "namespace wi297.if\n",
+        "  import anthill.reflect.{Expr}\n",
+        "  rule synth_if(?e, 1) :- occurrence_term(?e, if_expr(cond: ?c, then_branch: ?t, else_branch: ?el))\n",
+        "  rule probe(?k) :- synth_if(42, ?k)\n",
+        "end\n",
+    );
+    let mut kb = load_with_source(source);
+    let var_k = make_var(&mut kb, "k");
+    let goal = make_goal(&mut kb, "wi297.if.probe", &[var_k]);
+    assert_eq!(
+        kb.resolve(&[goal], &default_config()).len(), 0,
+        "a literal does not match an if_expr pattern (and must not panic)"
+    );
+}
+
+
 // ══════════════════════════════════════════════════════════════════
 // type_check_sorts tests (facts)
 // ══════════════════════════════════════════════════════════════════

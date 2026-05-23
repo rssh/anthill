@@ -11,13 +11,14 @@
 /// substitution is always flat (path-compressed on merge) — no `walk` needed.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use smallvec::SmallVec;
 
 use super::subst::Substitution;
-use super::node_occurrence::{self, Expr};
+use super::node_occurrence::{self, Expr, NodeOccurrence};
 use super::term::{Literal, Term, TermId, Var, VarId};
-use super::term_view::{TermView, ViewHead, ViewItem};
+use super::term_view::{ReflectedExpr, ReflectSyms, TermIdView, TermView, ViewHead, ViewItem};
 use crate::intern::Symbol;
 use crate::eval::value::Value;
 use super::RuleId;
@@ -1515,11 +1516,11 @@ impl KnowledgeBase {
             BuiltinTag::Mul => self.builtin_arith(goal, answer_subst, |a, b| a * b, |a, b| a * b, |a, b| a * b),
             BuiltinTag::ToBigInt => self.builtin_to_bigint(goal, answer_subst),
             BuiltinTag::ToInt => self.builtin_to_int(goal, answer_subst),
-            // Occurrence builtins — stubs returning Delay until Phase 2
-            BuiltinTag::OccurrenceTerm
-            | BuiltinTag::OccurrenceSpan
-            | BuiltinTag::OccurrenceOwner
-            | BuiltinTag::SubOccurrences => BuiltinResult::Delay,
+            // Occurrence reflection builtins (WI-297).
+            BuiltinTag::OccurrenceTerm => self.builtin_occurrence_term(goal, answer_subst),
+            BuiltinTag::OccurrenceSpan => self.builtin_occurrence_span(goal, answer_subst),
+            BuiltinTag::OccurrenceOwner => self.builtin_occurrence_owner(goal, answer_subst),
+            BuiltinTag::SubOccurrences => self.builtin_sub_occurrences(goal, answer_subst),
         }
     }
 
@@ -1828,6 +1829,171 @@ impl KnowledgeBase {
                 self.finish_result(target, ref_term)
             }
             None => BuiltinResult::Failure,
+        }
+    }
+
+    /// Shared front-half for the occurrence builtins (WI-297): walk arg0 to the
+    /// subject occurrence and reify arg1 to a result/pattern term under σ.
+    /// `Err(_)` carries the early `BuiltinResult` (Delay on an unbound subject,
+    /// Failure on a missing/non-occurrence subject or a missing arg1). On `Ok`,
+    /// the caller produces its target term/view and unifies the returned
+    /// pattern against it via [`KnowledgeBase::match_view`].
+    fn occurrence_arg_and_pattern<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+    ) -> Result<(Rc<NodeOccurrence>, TermId), BuiltinResult> {
+        // arg0 — the subject occurrence.
+        let occ = match self.walk_arg(goal.pos_arg(self, 0), subst) {
+            None => return Err(BuiltinResult::Failure),
+            Some(v) if self.value_is_unbound_var(&v) => return Err(BuiltinResult::Delay),
+            Some(Value::Node(rc)) => rc,
+            // Not an occurrence — nothing to reflect.
+            Some(_) => return Err(BuiltinResult::Failure),
+        };
+        // arg1 — extract an owned pattern source so the immutable borrow from
+        // `pos_arg` ends before the `&mut self` reify below.
+        let mut pat_term: Option<TermId> = None;
+        let mut pat_node = None;
+        match goal.pos_arg(self, 1) {
+            Some(ViewItem::Term(t)) => pat_term = Some(t),
+            Some(ViewItem::Value(Value::Term(t))) => pat_term = Some(*t),
+            Some(ViewItem::Node(o)) => pat_node = Some(o),
+            Some(ViewItem::Value(_)) | None => return Err(BuiltinResult::Failure),
+        }
+        // Reify the pattern to a term (keeping its unbound vars), then resolve
+        // any vars already bound earlier in the body. A child-bearing reflect
+        // pattern (`if_expr`/`let_expr`/`lambda`/`match_expr`) has no goal-term
+        // shape and isn't yet handled by the lens — fail (no match) rather than
+        // trip `occurrence_to_term`'s goal-form assertion (WI-297).
+        let pattern = match (pat_term, pat_node) {
+            (Some(t), _) => t,
+            (None, Some(o)) => match node_occurrence::try_occurrence_to_term(self, &o) {
+                Some(t) => t,
+                None => return Err(BuiltinResult::Failure),
+            },
+            (None, None) => return Err(BuiltinResult::Failure),
+        };
+        Ok((occ, self.apply_subst(pattern, subst)))
+    }
+
+    /// `occurrence_term(occ, term)` — WI-297. "Show" the occurrence: unify the
+    /// second argument against `occ` read through the reflect lens
+    /// ([`ReflectedExpr`]). No hash-consed term is built and `occ` keeps its
+    /// identity — an unbound result var binds to the `Value::Node` itself, a
+    /// reflect pattern (`int_lit(value: ?)`, …) matches structurally against
+    /// the lens.
+    fn builtin_occurrence_term<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        let (occ, pattern) = match self.occurrence_arg_and_pattern(goal, subst) {
+            Ok(pair) => pair,
+            Err(r) => return r,
+        };
+        let syms = ReflectSyms::resolve(self);
+        match self.match_view(pattern, &ReflectedExpr::new(occ, syms)) {
+            Some(extra) => BuiltinResult::SuccessWithBindings(extra),
+            None => BuiltinResult::Failure,
+        }
+    }
+
+    /// `occurrence_span(occ, span)` — WI-297. The span lives on the occurrence
+    /// as a Rust struct, with no occurrence/term form to *show*, so this
+    /// constructs the anthill `source_span(file:, start_byte:, end_byte:)`
+    /// entity (plain `Int` fields, the raw `SourceId` for `file`) and unifies
+    /// the second arg against it.
+    fn builtin_occurrence_span<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        let (occ, pattern) = match self.occurrence_arg_and_pattern(goal, subst) {
+            Ok(pair) => pair,
+            Err(r) => return r,
+        };
+        let span_term = match self.make_source_span_term(occ.span) {
+            Some(t) => t,
+            None => return BuiltinResult::Failure,
+        };
+        match self.match_view(pattern, &TermIdView(span_term)) {
+            Some(extra) => BuiltinResult::SuccessWithBindings(extra),
+            None => BuiltinResult::Failure,
+        }
+    }
+
+    /// `occurrence_owner(occ, sym)` — WI-297. The owner is a `Symbol` (interned
+    /// name), whose term form is `Term::Ref` (per `anthill.reflect.Symbol`).
+    /// Fails when the occurrence has no owner (top-level / unknown context).
+    fn builtin_occurrence_owner<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        let (occ, pattern) = match self.occurrence_arg_and_pattern(goal, subst) {
+            Ok(pair) => pair,
+            Err(r) => return r,
+        };
+        let owner = match occ.owner {
+            Some(sym) => self.alloc(Term::Ref(sym)),
+            None => return BuiltinResult::Failure,
+        };
+        match self.match_view(pattern, &TermIdView(owner)) {
+            Some(extra) => BuiltinResult::SuccessWithBindings(extra),
+            None => BuiltinResult::Failure,
+        }
+    }
+
+    /// `sub_occurrences(occ, list)` — WI-297. Shows the occurrence's direct
+    /// child occurrences as a `List[Occurrence]`: the children keep their
+    /// identity (the existing `Rc`s), only the cons-list spine is built.
+    fn builtin_sub_occurrences<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        let (occ, pattern) = match self.occurrence_arg_and_pattern(goal, subst) {
+            Ok(pair) => pair,
+            Err(r) => return r,
+        };
+        let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
+        if let Some(expr) = occ.as_expr() {
+            node_occurrence::for_each_child(expr, |c| children.push(Rc::clone(c)));
+        }
+        let nil_sym = self.resolve_symbol("anthill.prelude.List.nil");
+        let cons_sym = self.resolve_symbol("anthill.prelude.List.cons");
+        let head_sym = self.intern("head");
+        let tail_sym = self.intern("tail");
+        let list = node_occurrence::build_occurrence_cons_list(
+            self, children, occ.span, nil_sym, cons_sym, head_sym, tail_sym,
+        );
+        match self.match_view(pattern, &Value::Node(list)) {
+            Some(extra) => BuiltinResult::SuccessWithBindings(extra),
+            None => BuiltinResult::Failure,
+        }
+    }
+
+    /// Build the anthill `source_span(file:, start_byte:, end_byte:)` entity
+    /// term from a Rust [`SourceSpan`](crate::span::SourceSpan) — `Int` fields,
+    /// raw `SourceId` for `file`. `None` when reflect isn't loaded.
+    fn make_source_span_term(&mut self, span: crate::span::SourceSpan) -> Option<TermId> {
+        let functor = self.try_resolve_symbol("anthill.reflect.SourceSpan.source_span")?;
+        let file_k = self.intern("file");
+        let start_k = self.intern("start_byte");
+        let end_k = self.intern("end_byte");
+        let file_v = self.alloc(Term::Const(Literal::Int(span.source.raw() as i64)));
+        let start_v = self.alloc(Term::Const(Literal::Int(span.start() as i64)));
+        let end_v = self.alloc(Term::Const(Literal::Int(span.end() as i64)));
+        let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named.push((file_k, file_v));
+        named.push((start_k, start_v));
+        named.push((end_k, end_v));
+        self.sort_named_canonical(functor, &mut named);
+        Some(self.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args: named }))
+    }
+
+    /// Sort named args into the functor's canonical (declared field) order —
+    /// the order the loader canonicalizes patterns to (`load.rs` via
+    /// `entity_field_names`). The discrim tree matches named args positionally
+    /// (`discrim.rs`: it descends `NamedKey(query_keys[i])` against the tree's
+    /// i-th pattern key), so a built term must use the same order as the loaded
+    /// pattern or it silently fails to match. Falls back to interning order
+    /// when the functor has no registered field list. Generic over the value
+    /// type so it serves both `Term::Fn` (`TermId`) and occurrence
+    /// (`Rc<NodeOccurrence>`) builders.
+    pub(crate) fn sort_named_canonical<T>(&self, functor: Symbol, named: &mut [(Symbol, T)]) {
+        match self.entity_field_names(functor) {
+            Some(fields) => {
+                let order: HashMap<Symbol, usize> =
+                    fields.iter().enumerate().map(|(i, &s)| (s, i)).collect();
+                named.sort_by_key(|(s, _)| order.get(s).copied().unwrap_or(usize::MAX));
+            }
+            None => named.sort_by_key(|(s, _)| s.index()),
         }
     }
 

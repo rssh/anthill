@@ -377,3 +377,117 @@ impl TermView for ViewItem<'_> {
         }
     }
 }
+
+// ── Reflect lens over an occurrence (WI-297) ────────────────────
+//
+// The plain `Rc<NodeOccurrence>` view (above) reads an occurrence in its
+// *goal* shape — `Expr::Const(42)` → the literal `42`, `Expr::Apply{foo}` →
+// `foo(...)`. The typing relation, however, matches expression structure as
+// *reflect data*: `int_lit(value: ?)`, `apply(fn: ?f, args: ?Args)`, … . The
+// `occurrence_term` builtin bridges the two by *showing* the same occurrence
+// through this reflect lens — no hash-consed term is built and no subtree is
+// copied: a leaf's payload child is the occurrence itself (read in its plain
+// shape), compound children are the existing child occurrences, and only the
+// head label is supplied by the lens.
+
+/// Reflect-`Expr` constructor symbols the [`ReflectedExpr`] lens reports as
+/// functors, resolved once from the KB. `None` when reflect isn't loaded (the
+/// lens then reads `Opaque`, so nothing matches — fail-soft, not a panic).
+#[derive(Clone, Copy, Default, Debug)]
+pub struct ReflectSyms {
+    pub int_lit: Option<Symbol>,
+    pub bigint_lit: Option<Symbol>,
+    pub float_lit: Option<Symbol>,
+    pub string_lit: Option<Symbol>,
+    pub bool_lit: Option<Symbol>,
+    /// Field key `value` (the single named arg of every `*_lit` entity).
+    pub value: Option<Symbol>,
+}
+
+impl ReflectSyms {
+    /// Resolve the reflect symbols the lens needs. Qualified entity names go
+    /// through `try_resolve_symbol` (already interned by the stdlib load);
+    /// the bare field key `value` is interned so it matches the key the
+    /// loader stored on the rule pattern.
+    pub fn resolve(kb: &mut KnowledgeBase) -> Self {
+        Self {
+            int_lit: kb.try_resolve_symbol("anthill.reflect.Expr.int_lit"),
+            bigint_lit: kb.try_resolve_symbol("anthill.reflect.Expr.bigint_lit"),
+            float_lit: kb.try_resolve_symbol("anthill.reflect.Expr.float_lit"),
+            string_lit: kb.try_resolve_symbol("anthill.reflect.Expr.string_lit"),
+            bool_lit: kb.try_resolve_symbol("anthill.reflect.Expr.bool_lit"),
+            value: Some(kb.intern("value")),
+        }
+    }
+}
+
+/// Reflect-shape `TermView` over a `NodeOccurrence` (WI-297). See the module
+/// note above. Currently covers literal leaves (`Expr::Const` →
+/// `int_lit`/`float_lit`/`string_lit`/`bool_lit`/`bigint_lit(value: …)`);
+/// other `Expr` forms read `Opaque` until their reflected reading is added.
+pub struct ReflectedExpr {
+    occ: Rc<NodeOccurrence>,
+    syms: ReflectSyms,
+}
+
+impl ReflectedExpr {
+    pub fn new(occ: Rc<NodeOccurrence>, syms: ReflectSyms) -> Self {
+        Self { occ, syms }
+    }
+
+    /// The reflect functor for a literal payload (e.g. `Int` → `int_lit`).
+    fn lit_functor(&self, lit: &Literal) -> Option<Symbol> {
+        match lit {
+            Literal::Int(_) => self.syms.int_lit,
+            Literal::BigInt(_) => self.syms.bigint_lit,
+            Literal::Float(_) => self.syms.float_lit,
+            Literal::String(_) => self.syms.string_lit,
+            Literal::Bool(_) => self.syms.bool_lit,
+            // Opaque handle literals have no reflect `*_lit` form.
+            Literal::Handle(_, _) => None,
+        }
+    }
+}
+
+impl TermView for ReflectedExpr {
+    fn head(&self, _kb: &KnowledgeBase) -> ViewHead {
+        match self.occ.as_expr() {
+            // A literal reflects as `*_lit(value: <the literal>)` — one named
+            // arg, no positionals.
+            Some(Expr::Const(lit)) => match self.lit_functor(lit) {
+                Some(f) => ViewHead::Functor { functor: Some(f), pos_arity: 0, named_arity: 1 },
+                None => ViewHead::Opaque,
+            },
+            _ => ViewHead::Opaque,
+        }
+    }
+
+    fn pos_arg<'a>(&'a self, _kb: &'a KnowledgeBase, _i: usize) -> Option<ViewItem<'a>> {
+        // Reflect `Expr` entities use named fields only.
+        None
+    }
+
+    fn named_arg<'a>(&'a self, _kb: &'a KnowledgeBase, sym: Symbol) -> Option<ViewItem<'a>> {
+        match self.occ.as_expr() {
+            // `value` is the occurrence itself, read in its plain `Const`
+            // shape — no new term, no copy.
+            Some(Expr::Const(_)) if Some(sym) == self.syms.value => {
+                Some(ViewItem::Node(Rc::clone(&self.occ)))
+            }
+            _ => None,
+        }
+    }
+
+    fn named_keys(&self, _kb: &KnowledgeBase) -> Vec<Symbol> {
+        match self.occ.as_expr() {
+            Some(Expr::Const(_)) => self.syms.value.into_iter().collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn as_bind_value(&self) -> BindValue {
+        // If the whole reflected term binds a var (`occurrence_term(?e, ?t)`),
+        // bind the occurrence itself — identity preserved.
+        BindValue::Value(Value::Node(Rc::clone(&self.occ)))
+    }
+}

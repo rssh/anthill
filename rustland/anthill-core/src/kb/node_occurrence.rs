@@ -762,7 +762,31 @@ fn occ_children_eq(
 /// by the goal-atom structure (predicate applications over leaves); control-
 /// flow forms can't appear at a goal position and fall to `⊥`.
 pub fn occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> TermId {
-    match occ.as_expr() {
+    match try_occurrence_to_term(kb, occ) {
+        Some(t) => t,
+        // A *child-bearing* control-flow / post-elaboration form can't occur at
+        // a goal position — assert (debug) so a future violation fails a test
+        // rather than silently reifying to ⊥, matching `substitute_occurrence`'s
+        // guard. Callers that legitimately may see such forms (reflection-pattern
+        // reification, WI-297) use `try_occurrence_to_term` instead.
+        None => {
+            debug_assert!(
+                false,
+                "occurrence_to_term: unexpected non-goal Expr: {:?}",
+                occ.as_expr().map(std::mem::discriminant),
+            );
+            kb.alloc(Term::Bottom)
+        }
+    }
+}
+
+/// WI-297: total variant of [`occurrence_to_term`] — returns `None` for a
+/// child-bearing control-flow form (`If`/`Let`/`Match`/`Lambda`/`HoApply`/…)
+/// instead of asserting. `Bottom`/absent reify to `⊥` (`Some`). Used by
+/// `occurrence_term`'s arg reification, where a reflection pattern of such a
+/// form is simply not yet supported (no match) rather than a bug.
+pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<TermId> {
+    Some(match occ.as_expr() {
         Some(Expr::Var(v)) => kb.alloc(Term::Var(*v)),
         Some(Expr::Const(lit)) => kb.alloc(Term::Const(lit.clone())),
         Some(Expr::Ref(s)) => kb.alloc(Term::Ref(*s)),
@@ -774,19 +798,44 @@ pub fn occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> T
         | Some(Expr::Instantiation { name, pos_args, named_args }) => {
             occ_build_fn(kb, *name, pos_args, named_args)
         }
-        // `Bottom` is valid; a *child-bearing* control-flow / post-elaboration
-        // form can't occur at a goal position — assert (debug) so a future
-        // violation fails a test rather than silently reifying to ⊥, matching
-        // `substitute_occurrence`'s guard.
-        other => {
-            debug_assert!(
-                matches!(other, Some(Expr::Bottom) | None),
-                "occurrence_to_term: unexpected non-goal Expr: {:?}",
-                other.map(std::mem::discriminant),
-            );
-            kb.alloc(Term::Bottom)
-        }
+        Some(Expr::Bottom) | None => kb.alloc(Term::Bottom),
+        // Child-bearing / non-goal form: no goal-term shape.
+        _ => return None,
+    })
+}
+
+/// WI-297: build a `cons(head:, tail:) | nil` list whose elements are the
+/// given child occurrences — used by `sub_occurrences`. Only the spine is
+/// constructed (as `Expr::Constructor` cons cells); the elements keep their
+/// identity (the passed `Rc`s). Named args are stored canonically (sorted by
+/// symbol index) to match the `Value`/discrim-tree invariant. `span` (the
+/// parent's) is reused for the synthesized cells.
+pub fn build_occurrence_cons_list(
+    kb: &KnowledgeBase,
+    items: Vec<Rc<NodeOccurrence>>,
+    span: SourceSpan,
+    nil_sym: Symbol,
+    cons_sym: Symbol,
+    head_sym: Symbol,
+    tail_sym: Symbol,
+) -> Rc<NodeOccurrence> {
+    // Nullary `nil` follows the Ref convention (bare `nil` loads as
+    // `Term::Ref`), so build it as an `Expr::Ref` leaf — not a 0-ary
+    // `Constructor` (which would read as a `Functor` and miss a `nil` pattern).
+    let mut list = NodeOccurrence::new_expr(Expr::Ref(nil_sym), span, None);
+    for item in items.into_iter().rev() {
+        // Canonical (declared `cons(head, tail)`) field order — the
+        // order-sensitive discrim matcher requires it to align with the loaded
+        // pattern (not interning order). See `KnowledgeBase::sort_named_canonical`.
+        let mut named = vec![(head_sym, item), (tail_sym, list)];
+        kb.sort_named_canonical(cons_sym, &mut named);
+        list = NodeOccurrence::new_expr(
+            Expr::Constructor { name: cons_sym, pos_args: Vec::new(), named_args: named },
+            span,
+            None,
+        );
     }
+    list
 }
 
 fn occ_build_fn(
@@ -1118,19 +1167,26 @@ fn visit_fn(
 ) {
     match key {
         "int_lit" | "float_lit" | "bigint_lit" | "string_lit" | "bool_lit" => {
-            let lit_term = get_named_arg(kb, named_args, "value").map(|v| kb.get_term(v));
-            let expr = match lit_term {
-                Some(Term::Const(lit)) => Expr::Const(lit.clone()),
-                _ => Expr::Bottom,
-            };
-            results.push(NodeOccurrence::new_expr(expr, span, None));
+            match get_named_arg(kb, named_args, "value").map(|v| kb.get_term(v)) {
+                // Concrete op-body literal → the internal literal leaf.
+                Some(Term::Const(lit)) => {
+                    results.push(NodeOccurrence::new_expr(Expr::Const(lit.clone()), span, None));
+                }
+                // Non-literal `value` ⇒ reflection data (a pattern such as
+                // `int_lit(value: ?)`); keep it structural (WI-297) so
+                // `occurrence_term` can match it.
+                _ => push_unknown_fn(span, functor, pos_args, named_args, work),
+            }
         }
         "var_ref" => {
-            let expr = match named_ref(kb, named_args, "name") {
-                Some(sym) => Expr::VarRef { name: sym },
-                None => Expr::Bottom,
-            };
-            results.push(NodeOccurrence::new_expr(expr, span, None));
+            match named_ref(kb, named_args, "name") {
+                Some(sym) => {
+                    results.push(NodeOccurrence::new_expr(Expr::VarRef { name: sym }, span, None));
+                }
+                // Non-name `name` (e.g. `var_ref(name: ?n)`) ⇒ reflection data;
+                // keep structural (WI-297).
+                None => push_unknown_fn(span, functor, pos_args, named_args, work),
+            }
         }
         "if_expr" => {
             let cond = get_named_arg(kb, named_args, "cond");
@@ -1280,25 +1336,35 @@ fn visit_fn(
             work.push(WorkOp::Build(BuildFrame::TupleLit { span, count }));
             for v in visits.into_iter().rev() { work.push(v); }
         }
-        _ => {
-            // Fallback for unknown Fn — walk pos_args + named_args
-            // as a generic Apply with the functor as-is. Children get
-            // visited (rather than collapsed into Const/Ref leaves),
-            // so non-Const inner terms still produce NodeOccurrences.
-            let pos_count = pos_args.len();
-            let named_keys: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
-            work.push(WorkOp::Build(BuildFrame::UnknownFn {
-                span, functor, pos_count, named_keys,
-            }));
-            for &(_, v) in named_args.iter().rev() {
-                work.push(WorkOp::Visit(v));
-            }
-            for &v in pos_args.iter().rev() {
-                work.push(WorkOp::Visit(v));
-            }
-        }
+        _ => push_unknown_fn(span, functor, pos_args, named_args, work),
     }
     let _ = results; // kept in case future variants want direct push
+}
+
+/// Materialize an unrecognized `Term::Fn` as a generic *structural* occurrence
+/// (`Expr::Apply`-shaped: functor + visited children, no Const/Ref leaf
+/// collapse). Used for genuinely-unknown functors and — critically (WI-297) —
+/// for reflect leaf-entity calls whose fields are non-literal: a reflection
+/// *pattern* like `int_lit(value: ?)` or `var_ref(name: ?n)` must stay
+/// structural so a rule body atom (`occurrence_term(?e, int_lit(value: ?))`)
+/// survives loading. Collapsing those to `Const`/`VarRef`/`⊥` is only correct
+/// for concrete op-body expressions, where the field is a literal/known name.
+fn push_unknown_fn(
+    span: SourceSpan,
+    functor: Symbol,
+    pos_args: &smallvec::SmallVec<[TermId; 4]>,
+    named_args: &smallvec::SmallVec<[(Symbol, TermId); 2]>,
+    work: &mut Vec<WorkOp>,
+) {
+    let pos_count = pos_args.len();
+    let named_keys: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
+    work.push(WorkOp::Build(BuildFrame::UnknownFn { span, functor, pos_count, named_keys }));
+    for &(_, v) in named_args.iter().rev() {
+        work.push(WorkOp::Visit(v));
+    }
+    for &v in pos_args.iter().rev() {
+        work.push(WorkOp::Visit(v));
+    }
 }
 
 /// Walk a cons-list of `ApplyArg(name, value)` entities and produce
