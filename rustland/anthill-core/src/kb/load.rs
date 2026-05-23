@@ -228,16 +228,31 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
         scan_items_pass1(kb, &file.items, &file.symbols, &file.terms, global, "");
     }
 
-    // Sub-pass 2: process requires and imports (all sorts exist now)
+    // Sub-pass 2: process requires and imports (all sorts exist now). A
+    // Selective import of a rule-defined predicate can't resolve here — its
+    // head-functor Goal isn't registered until sub-pass 3 — so such names are
+    // deferred into `pending` and retried below (WI-295).
     let mut errors = Vec::new();
+    let mut pending: Vec<PendingImport> = Vec::new();
     for file in files {
-        scan_items_pass2(kb, &file.items, &file.symbols, global, "", &mut errors);
+        scan_items_pass2(kb, &file.items, &file.symbols, global, "", &mut errors, &mut pending);
     }
 
     // Sub-pass 3: register unlabeled rule head-functor Goals, binding to an
     // inherited/existing origin where one resolves (proposal 044 / B2).
     for file in files {
         scan_items_pass3(kb, &file.items, &file.symbols, &file.terms, global, "");
+    }
+
+    // Sub-pass 4 (WI-295): retry deferred predicate imports. Head-functor Goals
+    // from sub-pass 3 are now in `by_qualified_name`, so a cross-namespace
+    // rule-predicate import resolves like any declared name. (Resolve by
+    // symbol, not `by_functor` — rules aren't asserted until the load phase.)
+    for p in pending {
+        match kb.symbols.by_qualified_name.get(&p.qualified).copied() {
+            Some(sym) => kb.symbols.add_import(p.scope_raw, &p.short, sym),
+            None => errors.push(LoadError::UnresolvedImport { path: p.qualified, span: p.span }),
+        }
     }
     errors
 }
@@ -639,6 +654,7 @@ fn scan_items_pass2(
     scope: TermId,
     prefix: &str,
     errors: &mut Vec<LoadError>,
+    pending: &mut Vec<PendingImport>,
 ) {
     for item in items {
         match item {
@@ -646,8 +662,8 @@ fn scan_items_pass2(
                 let name = join_segments(parse_sym, &s.name.segments);
                 let qualified = make_qualified(prefix, &name);
                 if let Some(sort_term) = find_scope_by_name(kb, &qualified) {
-                    process_imports(kb, parse_sym, &s.imports, sort_term, errors);
-                    scan_items_pass2(kb, &s.items, parse_sym, sort_term, &qualified, errors);
+                    process_imports(kb, parse_sym, &s.imports, sort_term, errors, pending);
+                    scan_items_pass2(kb, &s.items, parse_sym, sort_term, &qualified, errors, pending);
                 }
             }
             Item::Namespace(n) => {
@@ -655,9 +671,9 @@ fn scan_items_pass2(
                 let qualified = make_qualified(prefix, &name);
                 if let Some(ns_term) = find_scope_by_name(kb, &qualified) {
                     // Process namespace-level imports
-                    process_imports(kb, parse_sym, &n.imports, ns_term, errors);
+                    process_imports(kb, parse_sym, &n.imports, ns_term, errors, pending);
                     // Recurse
-                    scan_items_pass2(kb, &n.items, parse_sym, ns_term, &qualified, errors);
+                    scan_items_pass2(kb, &n.items, parse_sym, ns_term, &qualified, errors, pending);
                 }
             }
             Item::RequiresDecl(r) => {
@@ -875,14 +891,27 @@ fn build_instantiation_term(
     }
 }
 
+/// WI-295: a `Selective` import name that didn't resolve in sub-pass 2. A
+/// rule-defined predicate's head-functor symbol isn't registered until
+/// sub-pass 3 (`scan_rule_goal`), so cross-namespace predicate imports are
+/// deferred and re-resolved by `scan_definitions`'s post-pass-3 retry.
+struct PendingImport {
+    scope_raw: u32,
+    short: String,
+    qualified: String,
+    span: Span,
+}
+
 /// Process `import` declarations → register imported names and parent scopes.
-/// Unresolvable import paths produce errors.
+/// Unresolvable import paths produce errors (deferred predicate imports go to
+/// `pending` for the post-pass-3 retry — see `PendingImport`).
 fn process_imports(
     kb: &mut KnowledgeBase,
     parse_sym: &crate::intern::SymbolTable,
     imports: &[Import],
     scope: TermId,
     errors: &mut Vec<LoadError>,
+    pending: &mut Vec<PendingImport>,
 ) {
     for imp in imports {
         let raw_path = join_segments(parse_sym, &imp.path.segments);
@@ -968,8 +997,15 @@ fn process_imports(
                     if let Some(sym) = original_sym {
                         kb.symbols.add_import(scope.raw(), &short, sym);
                     } else {
-                        errors.push(LoadError::UnresolvedImport {
-                            path: qualified,
+                        // WI-295: a rule-defined predicate's head-functor symbol
+                        // isn't registered until sub-pass 3 (scan_rule_goal),
+                        // which runs after imports — so don't error yet. Defer
+                        // to scan_definitions's post-pass-3 retry, which
+                        // re-resolves it (erroring only if still unbound).
+                        pending.push(PendingImport {
+                            scope_raw: scope.raw(),
+                            short,
+                            qualified,
                             span: name.span,
                         });
                     }

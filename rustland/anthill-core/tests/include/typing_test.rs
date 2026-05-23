@@ -1179,6 +1179,37 @@ fn field_access_sort_component() {
     }
 }
 
+// ── WI-295: cross-namespace rule-predicate import ────────────────
+
+#[test]
+fn wi295_cross_namespace_rule_predicate_import_resolves() {
+    // A rule-defined predicate (`my_pred`) is imported across namespaces. Its
+    // head-functor Goal is registered in scan sub-pass 3 — *after* imports
+    // (sub-pass 2) — so the import is deferred and resolved by the post-pass-3
+    // retry rather than erroring (WI-295). Both namespaces load together so the
+    // predicate isn't already interned (which would resolve it in sub-pass 2
+    // and bypass the retry).
+    let mut kb = load_stdlib_kb();
+    let source = concat!(
+        "namespace wi295.a\n",
+        "  rule my_pred(?x, ?x)\n",
+        "end\n",
+        "namespace wi295.b\n",
+        "  import wi295.a.{my_pred}\n",
+        "  rule uses_pred(?y) :- my_pred(?y, ?y)\n",
+        "end\n",
+    );
+    let parsed = parse::parse(source).expect("parse wi295 source");
+    let errs = load::load(&mut kb, &parsed, &NullResolver).err().unwrap_or_default();
+    let has_unresolved = errs.iter().any(|e|
+        matches!(e, anthill_core::kb::load::LoadError::UnresolvedImport { .. }));
+    assert!(
+        !has_unresolved,
+        "cross-namespace rule-predicate import should resolve via the post-pass-3 \
+         retry; load errors: {errs:?}"
+    );
+}
+
 // ── Typing pass spec loading ─────────────────────────────────────
 
 #[test]
