@@ -400,7 +400,44 @@ private class AnthillParserImpl(
       }
       terms.alloc(Term.Fn(n.last, IArray.from(posArgs), IArray.from(namedArgs)))
     case TypeExpr.Variable(tid, _) => tid
-    case _ => terms.alloc(Term.Ref(intern("_")))
+    // WI-288: arrow and tuple types lower to the reflect `Type` entities
+    // (`anthill.prelude.Type.arrow` / `named_tuple`), mirroring rustland's
+    // `type_expr_to_term`. Previously both fell through to a `Ref("_")`
+    // sentinel, silently discarding the structure.
+    case TypeExpr.Arrow(params, ret, effects) =>
+      // Single param stays bare; a multi-param list collapses to a
+      // positional named-tuple `_0, _1, …`, exactly as rustland does.
+      val paramTerm =
+        if params.length == 1 then typeExprToRef(params.head)
+        else namedTupleTypeTerm(params.zipWithIndex.map((p, i) => (intern(s"_$i"), p)))
+      val resultTerm = typeExprToRef(ret)
+      val effectsList = typeListTerm(effects.map(typeExprToRef))
+      // Named args in canonical (alphabetical) order: effects, param, result.
+      terms.alloc(Term.Fn(intern("anthill.prelude.Type.arrow"), IArray.empty,
+        IArray((intern("effects"), effectsList), (intern("param"), paramTerm),
+               (intern("result"), resultTerm))))
+    case TypeExpr.TupleType(fields) =>
+      namedTupleTypeTerm(fields)
+
+  /** Build `anthill.prelude.Type.named_tuple(fields: List[TypeField])` from
+    * `(name, type)` field pairs. Shared by tuple types and multi-parameter
+    * arrow parameter lists. Mirrors rustland's `make_named_tuple_type`. */
+  private def namedTupleTypeTerm(fields: IndexedSeq[(TermSymbol, TypeExpr)]): TermId =
+    val fieldTerms = fields.map { (nameSym, ty) =>
+      val nameRef = terms.alloc(Term.Ref(nameSym))
+      val typeTerm = typeExprToRef(ty)
+      terms.alloc(Term.Fn(intern("anthill.prelude.Type.TypeField"), IArray.empty,
+        IArray((intern("name"), nameRef), (intern("type"), typeTerm))))
+    }
+    terms.alloc(Term.Fn(intern("anthill.prelude.Type.named_tuple"), IArray.empty,
+      IArray((intern("fields"), typeListTerm(fieldTerms)))))
+
+  /** Build a prelude cons-list term (`anthill.prelude.List.cons`/`nil`) from
+    * element TermIds, in order. */
+  private def typeListTerm(elems: IndexedSeq[TermId]): TermId =
+    val nilTerm = terms.alloc(Term.Fn(intern("anthill.prelude.List.nil"), IArray.empty, IArray.empty))
+    elems.foldRight(nilTerm)((h, t) =>
+      terms.alloc(Term.Fn(intern("anthill.prelude.List.cons"), IArray(h, t), IArray.empty)))
 
   private def refTerm[$: P]: P[TermId] =
     P(keyword("Ref") ~ "(" ~/ name ~ ")").map(n => terms.alloc(Term.Ref(n.last)))

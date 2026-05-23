@@ -452,6 +452,43 @@ class ParseTest extends munit.FunSuite:
       case other => fail(s"expected call Fn, got $other")
   }
 
+  // ── WI-288: typeExprToRef lowers arrow / tuple types ───────────
+
+  /** Value term of a `Fn`'s named arg, by interned name. */
+  private def namedArg(pf: ParsedFile, tid: TermId, key: String): TermId =
+    pf.terms.get(tid) match
+      case fn: Term.Fn =>
+        fn.namedArgs.collectFirst { case (k, v) if pf.symbols.name(k) == key => v }
+          .getOrElse(fail(s"no named arg `$key` on $tid"))
+      case other => fail(s"expected Fn, got $other")
+
+  /** Functor name of a `Fn` term. */
+  private def functorName(pf: ParsedFile, tid: TermId): String =
+    pf.terms.get(tid) match
+      case fn: Term.Fn => pf.symbols.name(fn.functor)
+      case other => fail(s"expected Fn, got $other")
+
+  test("WI-288: arrow type `(T) -> Int` lowers to `Type.arrow`") {
+    val (pf, op) = parseDemoOp(
+      "  operation f() -> Int =\n    let x : (T) -> Int = 1 in x")
+    val tn = namedArg(pf, op.body.getOrElse(fail("no body")), "type_name")
+    assertEquals(functorName(pf, tn), "anthill.prelude.Type.arrow")
+  }
+
+  test("WI-288: named tuple `(a: T, b: Int)` lowers to `Type.named_tuple`") {
+    val (pf, op) = parseDemoOp(
+      "  operation f() -> Int =\n    let x : (a: T, b: Int) = 1 in x")
+    val tn = namedArg(pf, op.body.getOrElse(fail("no body")), "type_name")
+    assertEquals(functorName(pf, tn), "anthill.prelude.Type.named_tuple")
+  }
+
+  test("WI-288: positional tuple `(T, Int)` lowers to `Type.named_tuple`") {
+    val (pf, op) = parseDemoOp(
+      "  operation f() -> Int =\n    let x : (T, Int) = 1 in x")
+    val tn = namedArg(pf, op.body.getOrElse(fail("no body")), "type_name")
+    assertEquals(functorName(pf, tn), "anthill.prelude.Type.named_tuple")
+  }
+
   /** Walks the entire stdlib tree and asserts every .anthill file parses.
     * Locks in the WI-162/166/167 parser-coverage achievement: as new
     * stdlib modules are added, this test catches a parser regression
