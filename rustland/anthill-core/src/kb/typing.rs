@@ -919,7 +919,14 @@ enum TypeBuildFrame {
     /// Lambda body finished; build the `arrow(param, body_ty,
     /// body_effects)` type and return a pure result (creating a
     /// lambda is itself effect-free).
-    LambdaBody { occ: Rc<NodeOccurrence>, param: TermId, outer_env: Rc<TypingEnv> },
+    ///
+    /// `param_type` is the type the param was bound to in the body env
+    /// (annotation, the expected arrow's param slot, or a fresh type
+    /// var). Threading it here keeps the arrow's param slot identical
+    /// to what the body referenced — without it, `build` would re-derive
+    /// a *different* fresh var and the arrow would claim `?a -> T` while
+    /// the body was typed under a distinct `?b`.
+    LambdaBody { occ: Rc<NodeOccurrence>, param_type: TermId, outer_env: Rc<TypingEnv> },
     /// WI-285: all three If sub-expressions finished (drained in
     /// `[condition, then, else]` order); merge their effects and return
     /// the if's `TypeResult`. WI-287: the type is the join of the then /
@@ -1163,9 +1170,24 @@ fn visit_type(
         Expr::Lambda { param, body } => {
             let param = *param;
             let body_occ = Rc::clone(body);
-            let param_type = extract_pattern_type_ann(kb, param);
+            // Lambda param type, in priority order:
+            //   1. explicit annotation on the pattern,
+            //   2. the expected arrow's param slot (checking direction —
+            //      e.g. `let f: Function[A, B] = lambda q -> ...` already
+            //      threads `Function[A, B]` here as `expected`),
+            //   3. a fresh type var (synthesis — left for body usage and
+            //      the eventual call site to pin via unification).
+            // Previously this used only (1), so an unannotated lambda left
+            // its param unbound in the body env and every reference to it
+            // failed resolution as `UnresolvedName`.
+            let param_type = extract_pattern_type_ann(kb, param)
+                .or_else(|| expected.and_then(|exp| extract_function_param_type(kb, exp)))
+                .unwrap_or_else(|| {
+                    let fresh = kb.intern("?param");
+                    kb.make_type_var(fresh)
+                });
             let mut lambda_env = (*env).clone();
-            extend_env_from_pattern(kb, &mut lambda_env, param, param_type);
+            extend_env_from_pattern(kb, &mut lambda_env, param, Some(param_type));
             // WI-270: if expected is `arrow(param, result, effects)`,
             // decompose and pass `result` to the body. Mismatching
             // shapes (or `None`) leave the body without a hint.
@@ -1174,7 +1196,7 @@ fn visit_type(
                 .map(|(ret, _)| ret);
             work.push(TypeWorkOp::Build(TypeBuildFrame::LambdaBody {
                 occ: Rc::clone(&occ),
-                param,
+                param_type,
                 outer_env: env,
             }));
             push_visit(work, body_occ, Rc::new(lambda_env), body_expected, fuel);
@@ -1724,14 +1746,13 @@ fn build_type(
             }
             results.push(Ok(TypeResult { ty: result_ty, env: result_env, effects, node }));
         }
-        TypeBuildFrame::LambdaBody { occ, param, outer_env } => {
+        TypeBuildFrame::LambdaBody { occ, param_type, outer_env } => {
             let body_r = results.pop().expect("LambdaBody: missing body result");
-            let param_type = extract_pattern_type_ann(kb, param);
-            // Build arrow(param, result, effects) type term
-            let a_val = param_type.unwrap_or_else(|| {
-                let fresh = kb.intern("?param");
-                kb.make_type_var(fresh)
-            });
+            // Build arrow(param, result, effects) type term. `param_type`
+            // is the exact type the param was bound to in the body env
+            // (see the `Expr::Lambda` visit case), so the arrow's param
+            // slot and the body's view of the param agree.
+            let a_val = param_type;
             let b_val = body_r.as_ref().ok().map(|r| r.ty).unwrap_or_else(|| {
                 let fresh = kb.intern("?result");
                 kb.make_type_var(fresh)
@@ -4273,18 +4294,67 @@ fn check_constructor_iter(
 }
 
 /// Extract return type and effects from an arrow(param, result, effects) type term.
-fn extract_function_type_parts(kb: &KnowledgeBase, fn_type: TermId) -> Option<(TermId, Vec<TermId>)> {
-    if let Term::Fn { functor, named_args, .. } = kb.get_term(fn_type) {
-        let name = kb.resolve_sym(*functor);
-        if name == "arrow" {
-            let ret_type = get_named_arg(kb, named_args, "result")?;
-            let effects = get_named_arg(kb, named_args, "effects")
+/// True when `ty` is `parameterized(base = Function, …)` — the stdlib
+/// `Function[A, B, E]` surface type. `arrow` is the typer's shorthand for
+/// it, so the two are the same callable type (see [`arrow_parts`]).
+fn is_function_type(kb: &KnowledgeBase, ty: TermId) -> bool {
+    if type_functor_name(kb, ty) != Some("parameterized") {
+        return false;
+    }
+    let base = match kb.get_term(ty) {
+        Term::Fn { named_args, .. } => get_named_arg(kb, named_args, "base"),
+        _ => None,
+    };
+    base.and_then(|b| extract_sort_ref_sym(kb, b))
+        .is_some_and(|s| kb.qualified_name_of(s) == "anthill.prelude.Function")
+}
+
+/// Decompose a callable type into `(param, result, effects)`.
+///
+/// The typer's canonical function type is `arrow(param, result, effects)`;
+/// the stdlib surface type `Function[A, B, E]` is the *same* type — `arrow`
+/// is its shorthand (`A` = param, `B` = result, `E` = effects). Both
+/// decompose here so a `Function`-typed operation parameter is callable
+/// (`operation map(l, f: Function[A, B]) = ... f(h) ...`) just like a
+/// lambda-bound arrow. `param` is `None` only when the source omits it.
+/// Returns `None` for non-callable types. (WI-289)
+fn arrow_parts(kb: &KnowledgeBase, ty: TermId) -> Option<(Option<TermId>, TermId, Vec<TermId>)> {
+    match type_functor_name(kb, ty) {
+        Some("arrow") => {
+            let named_args = match kb.get_term(ty) {
+                Term::Fn { named_args, .. } => named_args.clone(),
+                _ => return None,
+            };
+            let result = get_named_arg(kb, &named_args, "result")?;
+            let param = get_named_arg(kb, &named_args, "param");
+            let effects = get_named_arg(kb, &named_args, "effects")
                 .map(|e| list_to_vec(kb, e))
                 .unwrap_or_default();
-            return Some((ret_type, effects));
+            Some((param, result, effects))
         }
+        Some("parameterized") if is_function_type(kb, ty) => {
+            let result = extract_type_param(kb, ty, "B")?;
+            let param = extract_type_param(kb, ty, "A");
+            let effects = extract_type_param(kb, ty, "E")
+                .map(|e| list_to_vec(kb, e))
+                .unwrap_or_default();
+            Some((param, result, effects))
+        }
+        _ => None,
     }
-    None
+}
+
+/// Result + effects of a callable type (`arrow` or `Function[A, B, E]`).
+/// Used when applying a function value — `f(x)` yields the result type.
+fn extract_function_type_parts(kb: &KnowledgeBase, fn_type: TermId) -> Option<(TermId, Vec<TermId>)> {
+    arrow_parts(kb, fn_type).map(|(_, result, effects)| (result, effects))
+}
+
+/// The param type of a callable (`arrow` or `Function[A, B, E]`), used to
+/// type a lambda's parameter from the checking direction (an expected
+/// `Function[A, B]` tells us the param is `A`).
+fn extract_function_param_type(kb: &KnowledgeBase, fn_type: TermId) -> Option<TermId> {
+    arrow_parts(kb, fn_type).and_then(|(param, _, _)| param)
 }
 
 /// Extract the variable name symbol from a `var_pattern`.

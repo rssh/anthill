@@ -662,7 +662,7 @@ impl<'a> Converter<'a> {
 
         work.push(WorkOp::Build(BuildFrame::FnTerm { node, is_ho, functor, slots, type_args }));
         for child in child_nodes.iter().rev() {
-            work.push(WorkOp::Visit(WorkKind::Term, *child));
+            work.push(WorkOp::Visit(fn_arg_work_kind(child.kind()), *child));
         }
     }
 
@@ -707,8 +707,10 @@ impl<'a> Converter<'a> {
         work.push(WorkOp::Build(BuildFrame::DotApply { node, name_sym, name_span, slots }));
         // Args pushed reversed, then the receiver last so it pops (and lands
         // on the result stack) first — matching the DotApply build's drain.
+        // A lambda arg (`xs.fold(0, lambda (a, x) -> a + x)`) visits as an
+        // `ExprBody`; see `fn_arg_work_kind`.
         for child in child_nodes.iter().rev() {
-            work.push(WorkOp::Visit(WorkKind::Term, *child));
+            work.push(WorkOp::Visit(fn_arg_work_kind(child.kind()), *child));
         }
         work.push(WorkOp::Visit(WorkKind::Term, receiver));
     }
@@ -871,8 +873,11 @@ impl<'a> Converter<'a> {
             }
         }
         work.push(WorkOp::Build(BuildFrame::TupleLiteral { node, slots }));
+        // `tuple_literal` shares the `_fn_arg` rule, which admits a lambda
+        // element (`(lambda x -> x, 5)`); dispatch it as `ExprBody` like
+        // the other `_fn_arg` sites. See `fn_arg_work_kind`.
         for child in child_nodes.iter().rev() {
-            work.push(WorkOp::Visit(WorkKind::Term, *child));
+            work.push(WorkOp::Visit(fn_arg_work_kind(child.kind()), *child));
         }
     }
 
@@ -2502,7 +2507,27 @@ fn is_term_kind(kind: &str) -> bool {
             | "tuple_literal"
             | "paren_expr"
             | "identifier"
+            // A lambda is a value expression collectible as a positional
+            // argument: `map(xs, lambda x -> f(x))`. The grammar only
+            // admits `lambda_expr` in `_fn_arg` / `_expr_body` positions,
+            // so the other `is_term_kind` call sites (infix operands, dot
+            // receivers, pattern contexts) never receive one.
+            | "lambda_expr"
     )
+}
+
+/// `WorkKind` for visiting a collected call-argument child. A
+/// `lambda_expr` argument must be visited as an `ExprBody` (only that
+/// dispatch builds the lambda); every other argument kind is a plain
+/// `Term`. `visit_expr_body` falls back to `visit_term` for non-lambda
+/// nodes, so this stays correct if the grammar later admits more
+/// `_expr_body` forms as arguments.
+fn fn_arg_work_kind(kind: &str) -> WorkKind {
+    if kind == "lambda_expr" {
+        WorkKind::ExprBody
+    } else {
+        WorkKind::Term
+    }
 }
 
 /// Check if a node kind is a pattern.

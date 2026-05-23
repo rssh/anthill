@@ -263,6 +263,42 @@ operation make_adder(x: Int) -> Fun = lambda y -> x + y
         (identifier)))))
 
 =====================================
+Lambda as a call argument
+=====================================
+
+sort S
+  operation g(xs: List) -> List =
+    map(xs, lambda x -> f(x))
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name
+      (identifier))
+    (operation_declaration
+      name: (name
+        (identifier))
+      (param
+        name: (identifier)
+        type: (simple_type
+          (name
+            (identifier))))
+      return_type: (simple_type
+        (name
+          (identifier)))
+      body: (fn_term
+        name: (identifier)
+        (identifier)
+        (lambda_expr
+          param: (pattern_var
+            (identifier))
+          body: (fn_term
+            name: (identifier)
+            (identifier)))))))
+
+=====================================
 Pattern: wildcard
 =====================================
 

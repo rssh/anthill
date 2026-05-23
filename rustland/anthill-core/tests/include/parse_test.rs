@@ -3425,6 +3425,37 @@ end
 }
 
 #[test]
+fn parse_tuple_literal_with_lambda_element() {
+    // Regression: a lambda may be a tuple element — `(lambda x -> x, 5)` —
+    // since `tuple_literal` shares the `_fn_arg` grammar rule. The
+    // converter must visit the element as an ExprBody (like fn_term /
+    // dot_apply args); otherwise it records "unexpected term node:
+    // lambda_expr" and `parse` returns Err. Tested at the parse layer
+    // because the loader rewrites the parse-IR `TupleLiteral` into a
+    // reflect `constructor` expr.
+    let source = "operation pair() -> T = (lambda x -> x, 5)\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    let op = match &parsed.items[0] {
+        Item::Operation(op) => op,
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    };
+    let body = op.body.expect("body missing");
+    let named = match parsed.terms.get(body) {
+        Term::Fn { functor, named_args, .. } => {
+            assert_eq!(parsed.symbols.name(*functor), "TupleLiteral");
+            named_args.clone()
+        }
+        other => panic!("expected TupleLiteral, got {:?}", other),
+    };
+    // The lambda element survived conversion (not dropped, not errored).
+    let has_lambda = named.iter().any(|(_, v)| matches!(
+        parsed.terms.get(*v),
+        Term::Fn { functor, .. } if parsed.symbols.name(*functor) == "lambda"
+    ));
+    assert!(has_lambda, "lambda element should be preserved in the tuple, got {named:?}");
+}
+
+#[test]
 fn load_operation_without_body() {
     let mut kb = load_with_stdlib(r#"
 namespace test.expr

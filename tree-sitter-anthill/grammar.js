@@ -810,9 +810,15 @@ module.exports = grammar({
       ')',
     ),
 
+    // A lambda may appear directly as a call argument:
+    // `map(xs, lambda x -> f(x))`. The lambda body is an `_expr_body`
+    // (infix_term / fn_term / etc.), none of which can consume the
+    // argument-separating comma, so `commaSep($._fn_arg)` still delimits
+    // arguments cleanly even though `lambda_expr` is `prec.right`.
     _fn_arg: $ => choice(
       $._term,
       $.named_arg,
+      $.lambda_expr,
     ),
 
     named_arg: $ => seq(

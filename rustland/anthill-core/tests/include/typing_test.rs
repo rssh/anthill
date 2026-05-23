@@ -1671,6 +1671,73 @@ end
 }
 
 // ══════════════════════════════════════════════════════════════════
+// Lambda parameter typing (WI-275): the typer binds a lambda's
+// parameter into the body env from (1) a pattern annotation, (2) the
+// expected arrow's param slot, or (3) a fresh type var pinned by body
+// usage / the call site. Before this, an unannotated lambda left its
+// param unbound and every reference failed as `UnresolvedName`. The
+// eval_test HOF tests (m2_higher_order_lambda) bypass the typer, so
+// these are the typed-path proofs.
+// ══════════════════════════════════════════════════════════════════
+
+#[test]
+fn type_check_op_apply_function_value() {
+    // WI-289: applying a `Function`-typed parameter directly — `f(x)`.
+    // `arrow` is the typer's shorthand for `Function[A, B, E]`, so a
+    // `Function[String, String]`-typed value is callable and `f(x)`
+    // yields `String`. Before this, the apply path only recognized
+    // `arrow(...)` and rejected `f` as "unknown functor".
+    let source = r#"
+sort S
+  import anthill.prelude.{Function, String}
+
+  operation apply1(f: Function[String, String], x: String) -> String = f(x)
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "applying a Function-typed param should typecheck, got: {:?}", errors);
+}
+
+#[test]
+fn type_check_op_lambda_arg_inferred() {
+    // Inline lambda as a `Function`-typed argument, in a sort-owned (so
+    // type-checked) body that also applies it. Exercises the full path:
+    // parse lambda-as-arg, convert, bind the lambda param, and apply the
+    // Function value (WI-289).
+    let source = r#"
+sort S
+  import anthill.prelude.{Function, String}
+
+  operation apply1(f: Function[String, String], x: String) -> String = f(x)
+  operation greet(x: String) -> String = apply1(lambda q -> q, x)
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "inline lambda arg should typecheck, got: {:?}", errors);
+}
+
+#[test]
+fn type_check_op_lambda_let_inferred() {
+    // Let-bound lambda with no annotation and no expected type: the
+    // param binds to a fresh type var, and the call site `g(x)` pins it
+    // to String. Previously failed with `q unresolved`.
+    let source = r#"
+sort S
+  import anthill.prelude.{Function, String}
+
+  operation make(x: String) -> String =
+    let g = lambda q -> q
+    g(x)
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    assert!(errors.is_empty(), "let-bound lambda should typecheck, got: {:?}", errors);
+}
+
+// ══════════════════════════════════════════════════════════════════
 // types_compatible tests
 // ══════════════════════════════════════════════════════════════════
 
