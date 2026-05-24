@@ -3249,6 +3249,14 @@ enum LoadWorkOp {
     /// `PushLocalScope` so push/pop nest correctly under iterative
     /// dispatch.
     PopLocalScope,
+    /// WI-304: enter occurrence-suppression for a let/lambda/match pattern
+    /// subtree. The term walk visits the pattern as a child, but in the
+    /// occurrence the pattern lives in a `TermId` field (not a child
+    /// occurrence), so the pattern subtree must push NOTHING to
+    /// `expr_occ_results`. Nests via a counter.
+    PushOccSuppress,
+    /// WI-304: leave occurrence-suppression (pairs with `PushOccSuppress`).
+    PopOccSuppress,
 }
 
 /// Post-order assembly frame for the iterative expression loader.
@@ -3344,6 +3352,19 @@ struct Loader<'a> {
     // of allocations amortizes across every operation body.
     expr_work: Vec<LoadWorkOp>,
     expr_results: Vec<TermId>,
+    // WI-304: parallel occurrence-result stack for `convert_expr_term`. As
+    // the term walk builds each KB Term, the matching `NodeOccurrence` is
+    // built natively here, so an op body's occurrence tree is produced
+    // directly rather than re-inferred from the term via
+    // `materialize_from_handle`.
+    expr_occ_results: Vec<Rc<NodeOccurrence>>,
+    // WI-304: match-branch metadata captured at each MatchBranch build, drained
+    // by the enclosing MatchExpr build into a `BuildFrame::Match`.
+    expr_match_metas: Vec<node_occurrence::BranchMeta>,
+    // WI-304: occurrence-suppression depth. While > 0 (inside a let/lambda/
+    // match pattern subtree) the leaf/build arms push nothing to
+    // `expr_occ_results` — the pattern is a `TermId` field, not a child.
+    occ_suppress: usize,
     // Stack of local-name scopes opened by `let`, `lambda`, and
     // `match_branch` during expression conversion. Each entry maps a
     // short name to its KB Symbol (the pattern's interned bare symbol).
@@ -3457,6 +3478,9 @@ impl<'a> Loader<'a> {
             expr_syms,
             expr_work: Vec::with_capacity(64),
             expr_results: Vec::with_capacity(64),
+            expr_occ_results: Vec::new(),
+            expr_match_metas: Vec::new(),
+            occ_suppress: 0,
             local_names_stack: Vec::new(),
         }
     }
@@ -4011,11 +4035,17 @@ impl<'a> Loader<'a> {
     /// child Visits; when the frame fires it consumes its children's
     /// kb_ids from the result stack and assembles the parent. Runs in
     /// O(1) host stack regardless of source nesting depth.
-    fn convert_expr_term(&mut self, parse_id: TermId) -> TermId {
+    fn convert_expr_term(&mut self, parse_id: TermId) -> (TermId, Rc<NodeOccurrence>) {
         let mut work = std::mem::take(&mut self.expr_work);
         let mut results = std::mem::take(&mut self.expr_results);
         work.clear();
         results.clear();
+        // WI-304: occurrence stacks operate directly on `self` (the visit/build
+        // arms take `&mut self`). Clear them at entry; they end empty after the
+        // root is popped below. `convert_expr_term` is never re-entrant.
+        self.expr_occ_results.clear();
+        self.expr_match_metas.clear();
+        debug_assert_eq!(self.occ_suppress, 0, "convert_expr_term: stale occ_suppress on entry");
         work.push(LoadWorkOp::Visit(parse_id));
         while let Some(op) = work.pop() {
             match op {
@@ -4027,13 +4057,32 @@ impl<'a> Loader<'a> {
                 LoadWorkOp::PopLocalScope => {
                     self.local_names_stack.pop();
                 }
+                LoadWorkOp::PushOccSuppress => {
+                    self.occ_suppress += 1;
+                }
+                LoadWorkOp::PopOccSuppress => {
+                    self.occ_suppress -= 1;
+                }
             }
         }
         debug_assert_eq!(results.len(), 1, "iterative loader: expected exactly one result");
         let kb_id = results.pop().expect("iterative loader: empty result stack");
         self.expr_work = work;
         self.expr_results = results;
-        kb_id
+
+        // WI-304: pop the single root occurrence built in parallel with the
+        // term. `expr_occ_results` was cleared at entry (below) and operated
+        // on directly through the walk via `&mut self`.
+        debug_assert_eq!(
+            self.expr_occ_results.len(),
+            1,
+            "convert_expr_term: expected exactly one occurrence, got {}",
+            self.expr_occ_results.len(),
+        );
+        let occ = self.expr_occ_results.pop()
+            .expect("convert_expr_term: empty occurrence stack");
+        debug_assert!(self.expr_match_metas.is_empty(), "convert_expr_term: leftover branch metas");
+        (kb_id, occ)
     }
 
     /// Dispatch a single parse-time expression term: produce a leaf
@@ -4072,7 +4121,11 @@ impl<'a> Loader<'a> {
                         if !frame.is_empty() {
                             work.push(LoadWorkOp::PushLocalScope(frame));
                         }
+                        // WI-304: the pattern is a TermId field on the branch,
+                        // not a child occurrence — suppress its subtree.
+                        work.push(LoadWorkOp::PopOccSuppress);
                         work.push(LoadWorkOp::Visit(pos_args[0])); // pattern
+                        work.push(LoadWorkOp::PushOccSuppress);
                     }
                     "if_expr" => {
                         work.push(LoadWorkOp::Build(LoadBuildFrame::IfExpr {
@@ -4102,7 +4155,11 @@ impl<'a> Loader<'a> {
                             work.push(LoadWorkOp::PushLocalScope(frame));
                         }
                         work.push(LoadWorkOp::Visit(pos_args[1])); // value
+                        // WI-304: pattern is a TermId field on the let, not a
+                        // child occurrence — suppress its subtree.
+                        work.push(LoadWorkOp::PopOccSuppress);
                         work.push(LoadWorkOp::Visit(pos_args[0])); // pattern
+                        work.push(LoadWorkOp::PushOccSuppress);
                     }
                     "lambda" => {
                         // Lambda param is in scope for the body.
@@ -4117,22 +4174,29 @@ impl<'a> Loader<'a> {
                         if !frame.is_empty() {
                             work.push(LoadWorkOp::PushLocalScope(frame));
                         }
+                        // WI-304: param is a TermId field on the lambda, not a
+                        // child occurrence — suppress its subtree.
+                        work.push(LoadWorkOp::PopOccSuppress);
                         work.push(LoadWorkOp::Visit(pos_args[0])); // param
+                        work.push(LoadWorkOp::PushOccSuppress);
                     }
                     "pattern_var" => {
                         let kb_id = self.load_pattern_var(&pos_args);
                         self.create_occurrence(parse_id, kb_id);
                         results.push(kb_id);
+                        self.push_leaf_occ(kb_id);
                     }
                     "pattern_wildcard" => {
                         let kb_id = self.load_pattern_wildcard();
                         self.create_occurrence(parse_id, kb_id);
                         results.push(kb_id);
+                        self.push_leaf_occ(kb_id);
                     }
                     "pattern_literal" => {
                         let kb_id = self.load_pattern_literal(&pos_args);
                         self.create_occurrence(parse_id, kb_id);
                         results.push(kb_id);
+                        self.push_leaf_occ(kb_id);
                     }
                     "pattern_constructor" => {
                         // The constructor name (pos_args[0]) is a leaf Ident — pre-resolve
@@ -4230,17 +4294,31 @@ impl<'a> Loader<'a> {
                 let kb_id = self.load_literal_expr(parse_id);
                 self.create_occurrence(parse_id, kb_id);
                 results.push(kb_id);
+                self.push_leaf_occ(kb_id);
             }
             Term::Ident(_) => {
                 let kb_id = self.load_var_ref(parse_id);
                 self.create_occurrence(parse_id, kb_id);
                 results.push(kb_id);
+                self.push_leaf_occ(kb_id);
             }
             _ => {
                 let kb_id = self.convert_term(parse_id);
                 self.create_occurrence(parse_id, kb_id);
                 results.push(kb_id);
+                self.push_leaf_occ(kb_id);
             }
+        }
+    }
+
+    /// WI-304: push the native leaf `NodeOccurrence` for a just-built leaf
+    /// kb_id, unless we're inside a suppressed pattern subtree (where the
+    /// pattern is a `TermId` field, not a child occurrence). Mirrors the leaf
+    /// arms of `node_occurrence::visit_term`.
+    fn push_leaf_occ(&mut self, kb_id: TermId) {
+        if self.occ_suppress == 0 {
+            let occ = node_occurrence::build_expr_leaf(self.kb, kb_id);
+            self.expr_occ_results.push(occ);
         }
     }
 
@@ -4264,6 +4342,16 @@ impl<'a> Loader<'a> {
                 });
                 self.create_occurrence(outer_parse_id, kb_id);
                 results.push(kb_id);
+                if self.occ_suppress == 0 {
+                    let span = SourceSpan::from_span(
+                        self.source_id, self.parsed.terms.span(outer_parse_id));
+                    let n = self.expr_match_metas.len();
+                    let branches = self.expr_match_metas.split_off(n - branch_count);
+                    node_occurrence::build_frame(
+                        node_occurrence::BuildFrame::Match { span, branches },
+                        &mut self.expr_occ_results,
+                    );
+                }
             }
             LoadBuildFrame::MatchBranch { outer_parse_id } => {
                 let drain_start = results.len() - 2;
@@ -4283,6 +4371,19 @@ impl<'a> Loader<'a> {
                 });
                 self.create_occurrence(outer_parse_id, kb_id);
                 results.push(kb_id);
+                if self.occ_suppress == 0 {
+                    // WI-304: the body occurrence is already on
+                    // `expr_occ_results` (pattern was suppressed; guard is
+                    // always none here). Record branch metadata for the
+                    // enclosing MatchExpr build to drain.
+                    let span = SourceSpan::from_span(
+                        self.source_id, self.parsed.terms.span(outer_parse_id));
+                    self.expr_match_metas.push(node_occurrence::BranchMeta {
+                        pattern,
+                        has_guard: false,
+                        span,
+                    });
+                }
             }
             LoadBuildFrame::IfExpr { outer_parse_id } => {
                 let drain_start = results.len() - 3;
@@ -4302,6 +4403,14 @@ impl<'a> Loader<'a> {
                 });
                 self.create_occurrence(outer_parse_id, kb_id);
                 results.push(kb_id);
+                if self.occ_suppress == 0 {
+                    let span = SourceSpan::from_span(
+                        self.source_id, self.parsed.terms.span(outer_parse_id));
+                    node_occurrence::build_frame(
+                        node_occurrence::BuildFrame::If { span },
+                        &mut self.expr_occ_results,
+                    );
+                }
             }
             LoadBuildFrame::LetExpr { outer_parse_id } => {
                 let drain_start = results.len() - 3;
@@ -4334,6 +4443,24 @@ impl<'a> Loader<'a> {
                 });
                 self.create_occurrence(outer_parse_id, kb_id);
                 results.push(kb_id);
+                if self.occ_suppress == 0 {
+                    let span = SourceSpan::from_span(
+                        self.source_id, self.parsed.terms.span(outer_parse_id));
+                    // Read the `type_name` slot back off the just-built term;
+                    // pattern is the captured `pattern` TermId field (suppressed
+                    // on the occ stack, so the occ stack holds only [value, body]).
+                    let type_annotation = if let Term::Fn { named_args, .. } = self.kb.get_term(kb_id) {
+                        named_args.iter()
+                            .find(|(k, _)| *k == self.expr_syms.k_type_name)
+                            .map(|(_, v)| *v)
+                    } else {
+                        None
+                    };
+                    node_occurrence::build_frame(
+                        node_occurrence::BuildFrame::Let { span, pattern, type_annotation },
+                        &mut self.expr_occ_results,
+                    );
+                }
             }
             LoadBuildFrame::Lambda { outer_parse_id } => {
                 let drain_start = results.len() - 2;
@@ -4351,6 +4478,14 @@ impl<'a> Loader<'a> {
                 });
                 self.create_occurrence(outer_parse_id, kb_id);
                 results.push(kb_id);
+                if self.occ_suppress == 0 {
+                    let span = SourceSpan::from_span(
+                        self.source_id, self.parsed.terms.span(outer_parse_id));
+                    node_occurrence::build_frame(
+                        node_occurrence::BuildFrame::Lambda { span, param },
+                        &mut self.expr_occ_results,
+                    );
+                }
             }
             LoadBuildFrame::PatternConstructor {
                 outer_parse_id,
@@ -4371,6 +4506,10 @@ impl<'a> Loader<'a> {
                 });
                 self.create_occurrence(outer_parse_id, kb_id);
                 results.push(kb_id);
+                // WI-304: a constructor pattern is only reached inside a
+                // suppressed pattern subtree (let/lambda/match pattern), so it
+                // never contributes a child occurrence.
+                debug_assert!(self.occ_suppress > 0, "pattern_constructor outside suppression");
             }
             LoadBuildFrame::PatternTuple { outer_parse_id, element_count } => {
                 let drain_start = results.len() - element_count;
@@ -4384,6 +4523,7 @@ impl<'a> Loader<'a> {
                 });
                 self.create_occurrence(outer_parse_id, kb_id);
                 results.push(kb_id);
+                debug_assert!(self.occ_suppress > 0, "pattern_tuple outside suppression");
             }
             LoadBuildFrame::ApplyOrConstructor {
                 outer_parse_id,
@@ -4445,6 +4585,27 @@ impl<'a> Loader<'a> {
                 };
                 self.create_occurrence(outer_parse_id, kb_id);
                 results.push(kb_id);
+                if self.occ_suppress == 0 {
+                    let span = SourceSpan::from_span(
+                        self.source_id, self.parsed.terms.span(outer_parse_id));
+                    // Reintern the parse named keys to the SAME KB symbols the
+                    // term's ApplyArg names use (see the named loop above), so
+                    // the occurrence's named args line up with the term.
+                    let occ_named_keys: Vec<Symbol> =
+                        named_keys.iter().map(|s| self.reintern(*s)).collect();
+                    let frame = if is_entity {
+                        node_occurrence::BuildFrame::Constructor {
+                            span, name: kb_functor, pos_count, named_keys: occ_named_keys,
+                        }
+                    } else {
+                        let type_args = node_occurrence::collect_type_args(self.kb, type_args_tid);
+                        node_occurrence::BuildFrame::Apply {
+                            span, functor: kb_functor, pos_count,
+                            named_keys: occ_named_keys, type_args,
+                        }
+                    };
+                    node_occurrence::build_frame(frame, &mut self.expr_occ_results);
+                }
             }
             LoadBuildFrame::DotApply { outer_parse_id, name_ref, pos_count, named_keys } => {
                 // Result layout (drain_start..): receiver, positional args,
@@ -4481,6 +4642,23 @@ impl<'a> Loader<'a> {
                 });
                 self.create_occurrence(outer_parse_id, kb_id);
                 results.push(kb_id);
+                if self.occ_suppress == 0 {
+                    let span = SourceSpan::from_span(
+                        self.source_id, self.parsed.terms.span(outer_parse_id));
+                    let name = if let Term::Ref(s) = self.kb.get_term(name_ref) {
+                        *s
+                    } else {
+                        panic!("dot_apply name_ref is not a Term::Ref");
+                    };
+                    let occ_named_keys: Vec<Symbol> =
+                        named_keys.iter().map(|s| self.reintern(*s)).collect();
+                    node_occurrence::build_frame(
+                        node_occurrence::BuildFrame::DotApply {
+                            span, name, pos_count, named_keys: occ_named_keys,
+                        },
+                        &mut self.expr_occ_results,
+                    );
+                }
             }
         }
     }
@@ -5825,8 +6003,10 @@ impl<'a> Loader<'a> {
         // and codegen walk.
         let (body_opt_term, body_expr_opt) = match o.body {
             Some(body_tid) => {
-                let handle = self.convert_expr_term(body_tid);
-                let node = super::node_occurrence::materialize_from_handle(self.kb, handle);
+                // WI-304: `convert_expr_term` builds the op-body occurrence
+                // natively alongside the term — no lossy `materialize_from_handle`
+                // re-walk. The term `handle` still fills `OperationInfo.body`.
+                let (handle, node) = self.convert_expr_term(body_tid);
                 self.kb.set_op_body_node(functor, node);
                 (build_some(self.kb, handle), Some(handle))
             }

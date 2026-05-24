@@ -8,6 +8,9 @@ mod wi009_phase3_builtins_test;
 #[path = "include/wi246_rule_body_desc_test.rs"]
 mod wi246_rule_body_desc_test;
 
+#[path = "include/wi304_native_op_body_occ_test.rs"]
+mod wi304_native_op_body_occ_test;
+
 #[path = "include/wi071_positional_sort_binding_test.rs"]
 mod wi071_positional_sort_binding_test;
 

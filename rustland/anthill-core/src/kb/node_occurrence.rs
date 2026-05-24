@@ -1374,6 +1374,51 @@ pub fn materialize_from_handle(
     results.pop().expect("root produced no NodeOccurrence")
 }
 
+/// WI-304: build the LEAF `NodeOccurrence` for a single op-body Term — the
+/// native counterpart to the leaf arms of `visit_term` / `visit_fn`. The
+/// op-body loader calls this directly as it converts each parse-IR leaf into
+/// its KB Term, so the op body no longer round-trips through the lossy
+/// term→occurrence re-walk in `materialize_from_handle`.
+///
+/// Only genuine leaves reach here: `Const`/`Var`/`Ref`/`Ident`/`Bottom`, and
+/// the *concrete* reflect literal/var-ref forms (`int_lit(value: <Const>)`,
+/// `var_ref(name: <Ref>)`) the loader emits for op-body literals. Any other
+/// `Term::Fn` — or a literal/var-ref with a non-leaf payload — is a bug (an
+/// op body never produces a reflection *pattern*); we panic.
+pub(crate) fn build_expr_leaf(kb: &KnowledgeBase, t: TermId) -> Rc<NodeOccurrence> {
+    let span = kb.term_span(t).unwrap_or_else(empty_span);
+    let expr = match kb.get_term(t).clone() {
+        Term::Const(lit) => Expr::Const(lit),
+        Term::Var(v) => Expr::Var(v),
+        Term::Ref(s) => Expr::Ref(s),
+        Term::Ident(s) => Expr::Ident(s),
+        Term::Bottom => Expr::Bottom,
+        Term::Fn { functor, named_args, .. } => {
+            let qn = kb.qualified_name_of(functor);
+            let short = kb.resolve_sym(functor);
+            match expr_form_key(qn, short) {
+                "int_lit" | "float_lit" | "bigint_lit" | "string_lit" | "bool_lit" => {
+                    match get_named_arg(kb, &named_args, "value").map(|v| kb.get_term(v)) {
+                        Some(Term::Const(lit)) => Expr::Const(lit.clone()),
+                        other => panic!(
+                            "build_expr_leaf: literal form with non-Const value: {other:?}",
+                        ),
+                    }
+                }
+                "var_ref" => match named_ref(kb, &named_args, "name") {
+                    Some(name) => Expr::VarRef { name },
+                    None => panic!("build_expr_leaf: var_ref with non-Ref name"),
+                },
+                key => panic!(
+                    "build_expr_leaf: non-leaf Term::Fn reached the leaf builder (key={key})",
+                ),
+            }
+        }
+        Term::ParseAux(_) => panic!("build_expr_leaf: Term::ParseAux reached leaf builder"),
+    };
+    NodeOccurrence::new_expr(expr, span, None)
+}
+
 /// A work-stack item. `Visit` examines a TermId and either pushes a
 /// completed leaf NodeOccurrence onto `results`, or pushes a `Build`
 /// frame followed by `Visit`s for each child (in reverse order so
@@ -1387,7 +1432,7 @@ enum WorkOp {
 /// Parent-assembly metadata captured at Visit time so the matching
 /// `Build` step can re-shape the popped child NodeOccurrences into
 /// the right `Expr` variant.
-enum BuildFrame {
+pub(crate) enum BuildFrame {
     /// Empty / missing slot — push a synthesized Bottom occurrence.
     Bottom,
     If { span: SourceSpan },
@@ -1423,10 +1468,10 @@ enum BuildFrame {
     UnknownFn { span: SourceSpan, functor: Symbol, pos_count: usize, named_keys: Vec<Symbol> },
 }
 
-struct BranchMeta {
-    pattern: TermId,
-    has_guard: bool,
-    span: SourceSpan,
+pub(crate) struct BranchMeta {
+    pub(crate) pattern: TermId,
+    pub(crate) has_guard: bool,
+    pub(crate) span: SourceSpan,
 }
 
 fn visit_term(
@@ -1701,7 +1746,7 @@ fn collect_apply_arg_visits(
 /// Walk a cons-list of `type_arg(name: Option[Ref], value: Type)`
 /// entries and return `(name, value)` pairs in declaration order;
 /// `None` for the name means positional.
-fn collect_type_args(
+pub(crate) fn collect_type_args(
     kb: &KnowledgeBase,
     list_tid: Option<TermId>,
 ) -> Vec<(Option<Symbol>, TermId)> {
@@ -1758,7 +1803,7 @@ fn visit_or_bottom_op(slot: Option<TermId>) -> WorkOp {
     }
 }
 
-fn build_frame(frame: BuildFrame, results: &mut Vec<Rc<NodeOccurrence>>) {
+pub(crate) fn build_frame(frame: BuildFrame, results: &mut Vec<Rc<NodeOccurrence>>) {
     match frame {
         BuildFrame::Bottom => results.push(bottom_node()),
         BuildFrame::If { span } => {
