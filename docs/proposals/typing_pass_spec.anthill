@@ -23,7 +23,7 @@
 --   reimplement this part; PART I is the oracle they are checked against.
 --
 -- Variant (a): types and expressions stay separate worlds — wf_type
--- validates type expressions structurally; there is no singleton(value)
+-- validates type expressions structurally; there is no denoted(value)
 -- bridge (that is variant (b), introduced separately if ever needed).
 --
 -- See: docs/proposals/022-typing-as-facts.md
@@ -100,9 +100,9 @@ namespace anthill.reflect.typing_pass
   rule wf_type(?, nothing)              -- bottom type
 
   -- NB (variant a): there is deliberately NO wf_type rule for
-  -- singleton(value: ...). A singleton in a type position is therefore
-  -- not well-formed here — this is the seam where variant (b) would add
-  -- one rule (and a synth obligation on the carried occurrence).
+  -- denoted(value: ...). An expression-denoted type in a type position is
+  -- therefore not well-formed here — this is the seam where variant (b) would
+  -- add one rule (and a synth obligation on the carried occurrence).
 
   rule wf_bindings(?, nil)
   rule wf_bindings(?G, cons(head: TypeBinding(param: ?, value: ?V), tail: ?rest))

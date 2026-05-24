@@ -13,7 +13,12 @@ enum anthill.prelude.Type
   entity named_tuple(fields: List[TypeField])
   entity arrow(param: Type, result: Type, effects: List[Type])
   entity type_var(name: Symbol)
-  entity singleton(value: NodeOccurrence)
+  -- The one seam from the type sublanguage into the expression language:
+  -- a Type *denoted* by a carried expression occurrence (which elaborates to
+  -- `Type`). Lets a type argument be a computed expression, e.g.
+  -- `Function[B = result_type(br)]` (WI-302). First-class / dependent (Idris-
+  -- style), not a DOT singleton — hence `denoted`, not `singleton`.
+  entity denoted(value: NodeOccurrence)
   entity nothing
 
   {< Type field: a named component in a named tuple type. >}
