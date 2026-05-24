@@ -186,8 +186,16 @@ output is what it performs. Checking relates the output to the declaration.
 - Reconcile the orphaned pieces: `Set` (complete the recursive `member`/`subset`/
   `union`/`difference` laws), `EffectSet` (= `Set` of `Effect[?]`), `Function`
   (`sort E = ?` → `effects E = ?`), `arrow` (effects field → `EffectExpression`).
-- **ACI matching must fire** during effect checking (via `[simp]` / proposal 043
-  or ACI operator attributes) — *the* core semantic commitment.
+- **Matching modulo ACI is the gap to close** — *the* core semantic commitment.
+  The `[simp]` rewrite engine (proposal 043) already fires equations over
+  occurrences during typing, but it has **no AC/ACI *matching***: commutativity/
+  idempotence written as plain `[simp]` equations loop and are non-confluent
+  (see `typing.rs` "commutative law mistagged `[simp]`", `load.rs` "would loop on
+  `add_comm`-style laws"). So `Set` semantics — `insert(a, insert(b, S)) ≡
+  insert(b, insert(a, S))`, `insert(a, insert(a, S)) ≡ insert(a, S)` — cannot be
+  rules; it needs **matching modulo ACI** (operator attributes, or a canonical
+  set normal form the matcher respects) layered on `simp`. That layer, not the
+  rewrite engine, is what phase (1) must build.
 
 ## 7. Open questions / hard points
 
@@ -285,11 +293,14 @@ output is what it performs. Checking relates the output to the declaration.
 
 ## Next steps
 
-1. Land the `Set`/`EffectSet` laws + `*` (top) + ACI matching (the substrate).
+1. Land **matching modulo ACI** on top of the existing `[simp]` engine (operator
+   attributes or a canonical set normal form), then the `Set`/`EffectSet` laws.
+   (`*`/top is deferred — §7.5.) This is the substrate; `simp` itself already
+   exists.
 2. `EffectExpression` reflect sort + the `+`/`-`/`merge` grammar.
 3. `effects E = ?` declaration; `arrow.effects` / `Function.E` →
    `EffectExpression`.
-4. Effect checking (satisfaction; propagation; handler discharge), with presence
-   variables for open-row absence.
+4. Effect checking (satisfaction; propagation; handler discharge). Negation on
+   open rows is lazy/symbolic in v1 — no presence variables (§7.1).
 5. Migrate `typing_pass_spec` effect handling onto this; only then is its
    effect-checking honest.

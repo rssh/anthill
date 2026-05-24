@@ -2249,3 +2249,4 @@ fact WorkItem(
   depends_on: [],
   status: Open)
 
+fact Feedback(content: "Scope correction: the [simp] rewrite engine (proposal 043) already exists and fires equations over occurrences during typing. The phase-(1) substrate gap is NOT the rewrite engine but matching modulo ACI: simp has no AC/ACI matching, so commutativity/idempotence as plain [simp] equations loop / are non-confluent (see typing.rs 'commutative law mistagged [simp]', load.rs 'would loop on add_comm-style laws'). Set semantics (insert(a,insert(b,S)) == insert(b,insert(a,S)); insert(a,insert(a,S)) == insert(a,S)) must therefore be matching-modulo-ACI (operator attributes or a canonical set normal form layered on simp), not rules. Phase (1) builds that ACI-matching layer + the Set/EffectSet laws; * (top) stays deferred.", at: "2026-05-24T21:41:06Z", workitem: "WI-307", author: "user")
