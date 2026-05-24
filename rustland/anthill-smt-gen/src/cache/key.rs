@@ -10,11 +10,15 @@ use std::collections::BTreeSet;
 
 use anthill_core::intern::Symbol;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::term::{Term, TermId};
+use anthill_core::kb::node_occurrence::{for_each_child, Expr, NodeOccurrence};
+use anthill_core::kb::term::Var;
 use anthill_core::persistence::print::TermPrinter;
 use sha2::{Digest, Sha256};
 
-pub const CACHE_FORMAT_VERSION: u32 = 1;
+// v2 (WI-246): rule bodies are hashed from their occurrence form
+// (`rule_body_nodes`) rather than the term body — a different byte stream, so
+// pre-WI-246 cached keys must not false-hit.
+pub const CACHE_FORMAT_VERSION: u32 = 2;
 
 // ASCII control codes used as framing separators in the hash input
 // stream. Naming makes the structure of `build_key` explicit.
@@ -65,7 +69,7 @@ pub fn build_key(kb: &KnowledgeBase, inputs: &KeyInputs<'_>) -> String {
 /// Format version for `state_hash`. Bumping this invalidates every
 /// recorded `ProofRecord.state_hash` — do so on changes to the input
 /// envelope (label strings, framing bytes, included fields).
-pub const STATE_HASH_FORMAT_VERSION: u32 = 1;
+pub const STATE_HASH_FORMAT_VERSION: u32 = 2;
 
 /// Per-`ProofRecord` state hash (proposal 030 phase α.4): canonical
 /// hash of the kb-state slice a discharge depended on. Composed of
@@ -94,9 +98,9 @@ fn field(h: &mut Sha256, label: &[u8], value: &[u8]) {
 }
 
 /// Walk every transitively-visited rule. Per visited QN: append the
-/// rule's head + body terms to the rule-content hasher AND collect every
-/// functor referenced by any body term. Returns the rolled-up rule hash
-/// and the referenced-functor set (consumed by `fact_dep_hash_from`).
+/// rule's head term + body-atom occurrences to the rule-content hasher AND
+/// collect every functor referenced by any body atom. Returns the rolled-up
+/// rule hash and the referenced-functor set (consumed by `fact_dep_hash_from`).
 ///
 /// One pass over `visited` does both the rule_dep_hash content walk and
 /// the fact_dep_hash functor collection. Functor set is keyed by
@@ -118,13 +122,15 @@ fn walk_visited(
             continue;
         };
         for rid in kb.by_functor(sym) {
+            // Head stays a hash-consed term (searched in the discrim tree).
             let head = kb.rule_head(rid);
             h.update(printer.print_term(head).as_bytes());
             h.update([ITEM_SEP]);
-            for &body_t in kb.rule_body(rid) {
-                h.update(printer.print_term(body_t).as_bytes());
+            // Body atoms are occurrences (WI-246). Hash their structure and
+            // collect referenced functors in one walk.
+            for atom in kb.rule_body_nodes(rid) {
+                hash_occurrence(kb, atom, &mut h, &mut referenced);
                 h.update([ITEM_SEP]);
-                collect_functors(kb, body_t, &mut referenced);
             }
             h.update([FIELD_SEP]);
         }
@@ -151,14 +157,66 @@ fn fact_dep_hash_from(kb: &KnowledgeBase, referenced: &BTreeSet<u32>) -> String 
     hex::encode(h.finalize())
 }
 
-fn collect_functors(kb: &KnowledgeBase, term: TermId, out: &mut BTreeSet<u32>) {
-    if let Term::Fn { functor, pos_args, named_args } = kb.get_term(term) {
-        out.insert(functor.index());
-        for &arg in pos_args.iter() {
-            collect_functors(kb, arg, out);
-        }
-        for &(_, arg) in named_args.iter() {
-            collect_functors(kb, arg, out);
-        }
+/// Feed a rule-body-atom occurrence's structure into the rule-content hasher
+/// and collect every functor it references — the occurrence twin of the former
+/// term-based `collect_functors` (WI-246). Total over `Expr` (a conditional
+/// rule's body element may be an `If` / `Let` / `Match` / requirement form, not
+/// just an `Apply`): every node contributes a discriminant tag plus its
+/// identifying content, and Fn-shaped nodes also contribute their functor to
+/// the referenced set (which drives `fact_dep_hash_from`). The byte stream is
+/// for cache invalidation only — stable + sensitive, not a human rendering.
+fn hash_occurrence(
+    kb: &KnowledgeBase,
+    occ: &NodeOccurrence,
+    h: &mut Sha256,
+    out: &mut BTreeSet<u32>,
+) {
+    let Some(expr) = occ.as_expr() else {
+        // Bodies are always `Expr`-kind; be total regardless.
+        h.update(b"#");
+        return;
+    };
+    match expr {
+        // Fn-shaped: tag + functor QN, and contribute the functor.
+        Expr::Apply { functor, .. } => fn_node(kb, b"A", *functor, h, out),
+        Expr::ApplyWithin { functor, .. } => fn_node(kb, b"AW", *functor, h, out),
+        Expr::Constructor { name, .. } => fn_node(kb, b"C", *name, h, out),
+        Expr::ConstructorWithin { name, .. } => fn_node(kb, b"CW", *name, h, out),
+        Expr::Instantiation { name, .. } => fn_node(kb, b"I", *name, h, out),
+        Expr::ConstructRequirement { impl_functor, .. } => fn_node(kb, b"CR", *impl_functor, h, out),
+        // Member/leaf symbols (not functors — don't feed `out`).
+        Expr::DotApply { name, .. } => leaf_sym(kb, b"D", *name, h),
+        Expr::VarRef { name } => leaf_sym(kb, b"VR", *name, h),
+        Expr::Ref(s) => leaf_sym(kb, b"r", *s, h),
+        Expr::Ident(s) => leaf_sym(kb, b"i", *s, h),
+        Expr::Var(Var::DeBruijn(idx)) => { h.update(b"v"); h.update(idx.to_le_bytes()); }
+        Expr::Var(other) => { h.update(b"v?"); h.update(format!("{other:?}").as_bytes()); }
+        Expr::Const(lit) => { h.update(b"k"); h.update(format!("{lit:?}").as_bytes()); }
+        Expr::RequirementAtSort { slot, .. } => { h.update(b"R"); h.update(slot.to_le_bytes()); }
+        // Child-bearing control-flow / collection forms: a discriminant tag is
+        // enough — the children are hashed by the recursion below.
+        Expr::HoApply { .. } => h.update(b"H"),
+        Expr::HoApplyWithin { .. } => h.update(b"HW"),
+        Expr::Match { .. } => h.update(b"M"),
+        Expr::If { .. } => h.update(b"F"),
+        Expr::Let { .. } => h.update(b"L"),
+        Expr::Lambda { .. } | Expr::LambdaWithin { .. } => h.update(b"Lam"),
+        Expr::ListLit(_) => h.update(b"["),
+        Expr::SetLit(_) => h.update(b"{"),
+        Expr::TupleLit { .. } => h.update(b"("),
+        Expr::Bottom => h.update(b"_"),
     }
+    h.update([ITEM_SEP]);
+    for_each_child(expr, |child| hash_occurrence(kb, child, h, out));
+}
+
+fn fn_node(kb: &KnowledgeBase, tag: &[u8], functor: Symbol, h: &mut Sha256, out: &mut BTreeSet<u32>) {
+    h.update(tag);
+    h.update(kb.qualified_name_of(functor).as_bytes());
+    out.insert(functor.index());
+}
+
+fn leaf_sym(kb: &KnowledgeBase, tag: &[u8], sym: Symbol, h: &mut Sha256) {
+    h.update(tag);
+    h.update(kb.resolve_sym(sym).as_bytes());
 }

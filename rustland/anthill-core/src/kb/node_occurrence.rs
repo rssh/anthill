@@ -528,7 +528,7 @@ pub fn visit_classifications(
 /// enumeration. Pre/post-order *across the tree* is still the caller's
 /// concern — drive your own work-stack for that.
 #[inline]
-pub(super) fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
+pub fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
     match expr {
         Expr::Apply { pos_args, named_args, .. }
         | Expr::Constructor { pos_args, named_args, .. }
