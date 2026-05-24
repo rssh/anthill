@@ -21,10 +21,12 @@ pub mod policy;
 pub mod tactic_emit;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
-use anthill_core::kb::term::{Literal, Term, TermId, Var};
+use anthill_core::intern::Symbol;
+use anthill_core::kb::term::{Literal, Term, Var};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::typing::{get_named_arg, list_to_vec};
+use anthill_core::kb::node_occurrence::{materialize_from_handle, Expr, NodeOccurrence};
 
 #[derive(Debug)]
 pub struct SmtGenError {
@@ -339,9 +341,12 @@ struct Emitter<'kb> {
     /// (e.g. `var_2` → `Pose(position: Vec3(...), ...)`). Populated
     /// when a rule-call is fact-matched (or inlined) and a positional
     /// arg of the call is a DeBruijn var while the corresponding
-    /// fact arg is a constructor `Term::Fn`. Consumed by
-    /// `translate_expr` when it encounters `field_access(?var, ...)`.
-    entity_bindings: BTreeMap<String, TermId>,
+    /// fact arg is a constructor (`Expr::Constructor` / entity `Apply`).
+    /// Consumed by `translate_expr` when it encounters `field_access(?var, ...)`.
+    /// WI-246: the bound entity is a `NodeOccurrence` (the rule-body
+    /// substrate), materialized from a fact head where it originates as a
+    /// term and used directly where it originates as a call-arg occurrence.
+    entity_bindings: BTreeMap<String, Rc<NodeOccurrence>>,
     /// Set when an emitted SMT expression uses `anthill_abs`. Triggers
     /// emission of the `(define-fun anthill_abs ...)` prelude in the
     /// rendered script. SMT-LIB has no built-in `abs` for Real; we
@@ -423,10 +428,10 @@ impl<'kb> Emitter<'kb> {
         //   <Ordered.op>(a, b)         — inequality assertion
         //                                  (lte/lt/gte/gt)
         // Plus rule calls (`<rule_qn>(?var)`) — chase the dependency.
-        let body = self.kb.rule_body(rid);
+        let body = self.kb.rule_body_nodes(rid);
         let mut local_bindings: BTreeMap<String, String> = BTreeMap::new();
         for goal in body {
-            self.process_body_goal(*goal, &mut local_bindings)?;
+            self.process_body_goal(goal, &mut local_bindings)?;
         }
 
         // Conclusion goals: under the unified encoding the rule head
@@ -437,16 +442,20 @@ impl<'kb> Emitter<'kb> {
         // `assertions`. Discharge and lift consume the two buckets
         // differently — see render_satisfiability_with /
         // lift_rule_to_implication_clause.
-        let conclusion_goals: Vec<TermId> = match head_shape {
+        // The head is still a hash-consed term (heads stay terms — they are
+        // SEARCHED in the discrimination tree). Materialize it to the
+        // occurrence substrate so it flows through the same occurrence-based
+        // `process_body_goal` as the body goals (WI-246).
+        let conclusion_goals: Vec<Rc<NodeOccurrence>> = match head_shape {
             HeadShape::Bottom => Vec::new(),
             HeadShape::FunctionLike { .. } => Vec::new(),
-            HeadShape::Predicate => vec![head],
+            HeadShape::Predicate => vec![materialize_from_handle(self.kb, head)],
             HeadShape::Unsupported(_) => unreachable!("returned above"),
         };
         if !conclusion_goals.is_empty() {
             let body_count = self.assertions.len();
             for goal in &conclusion_goals {
-                self.process_body_goal(*goal, &mut local_bindings)?;
+                self.process_body_goal(goal, &mut local_bindings)?;
             }
             self.conclusion_assertions = self.assertions.split_off(body_count);
         }
@@ -485,36 +494,35 @@ impl<'kb> Emitter<'kb> {
     /// Process one rule-body goal.
     fn process_body_goal(
         &mut self,
-        goal: TermId,
+        goal: &Rc<NodeOccurrence>,
         bindings: &mut BTreeMap<String, String>,
     ) -> Result<(), SmtGenError> {
-        let term = self.kb.get_term(goal);
-        let Term::Fn { functor, named_args, pos_args } = term else {
-            return Err(SmtGenError::new(format!("non-Fn body goal: {term:?}")));
+        let Some((functor, pos_args, named_args)) = occ_as_fn(goal) else {
+            return Err(SmtGenError::new(format!(
+                "non-Fn body goal: {:?}", goal.as_expr().map(std::mem::discriminant))));
         };
-        let qn = self.kb.qualified_name_of(*functor);
+        let qn = self.kb.qualified_name_of(functor);
 
         // Equation goal: `?var = <expr>` binds the DeBruijn index of
         // ?var to the SMT translation of <expr>. Variable references
         // elsewhere in the body get substituted inline at translate
         // time.
-        if is_eq_functor(self.kb, *functor) {
+        if is_eq_functor(self.kb, functor) {
             if pos_args.len() != 2 {
                 return Err(SmtGenError::new(format!(
                     "= goal: expected 2 pos_args, got {}", pos_args.len())));
             }
-            let lhs_term = self.kb.get_term(pos_args[0]);
-            let rhs_smt = self.translate_expr(pos_args[1], bindings)?;
+            let rhs_smt = self.translate_expr(&pos_args[1], bindings)?;
             // Bare-DeBruijn LHS → string binding (cheap inline substitution
             // for downstream uses). Anything else (e.g. `?d * ?d = ?d_sq`)
             // → emit as a free assertion `(= <lhs> <rhs>)`. This keeps the
             // bindings map small and lets nonlinear equalities flow into
             // QF_NRA naturally.
-            if let Term::Var(Var::DeBruijn(i)) = lhs_term {
+            if let Some(Expr::Var(Var::DeBruijn(i))) = pos_args[0].as_expr() {
                 bindings.insert(synthetic_var_name(*i), rhs_smt);
                 return Ok(());
             }
-            let lhs_smt = self.translate_expr(pos_args[0], bindings)?;
+            let lhs_smt = self.translate_expr(&pos_args[0], bindings)?;
             self.assertions.push(format!("(= {lhs_smt} {rhs_smt})"));
             return Ok(());
         }
@@ -528,8 +536,8 @@ impl<'kb> Emitter<'kb> {
                 return Err(SmtGenError::new(format!(
                     "{qn}: expected 2 pos_args, got {}", pos_args.len())));
             }
-            let a = self.translate_expr(pos_args[0], bindings)?;
-            let b = self.translate_expr(pos_args[1], bindings)?;
+            let a = self.translate_expr(&pos_args[0], bindings)?;
+            let b = self.translate_expr(&pos_args[1], bindings)?;
             self.assertions.push(format!("({smt_op} {a} {b})"));
             return Ok(());
         }
@@ -538,15 +546,15 @@ impl<'kb> Emitter<'kb> {
         // For v0 we only handle named-arg destructures. Each
         // ?bind_var becomes an SMT const bound to the corresponding
         // field's value from the matching ground fact.
-        if self.is_known_entity(*functor) {
+        if self.is_known_entity(functor) {
             let entity_qn = qn.to_string();
             self.referenced_entities.insert(entity_qn.clone());
-            for (field_sym, val_term) in named_args {
-                let field_name = self.kb.resolve_sym(*field_sym).to_string();
-                let bind_idx = match self.kb.get_term(*val_term) {
-                    Term::Var(Var::DeBruijn(i)) => *i,
+            for (field_sym, val_occ) in named_args {
+                let bind_idx = match val_occ.as_expr() {
+                    Some(Expr::Var(Var::DeBruijn(i))) => *i,
                     _ => continue, // non-var slots (`field: ?` wildcards / literals)
                 };
+                let field_name = self.kb.resolve_sym(*field_sym).to_string();
                 let const_name = sanitize_smt_id(&field_name);
                 bindings.insert(synthetic_var_name(bind_idx), const_name.clone());
                 self.field_consts.entry(const_name).or_insert(0.0); // resolved later
@@ -568,14 +576,14 @@ impl<'kb> Emitter<'kb> {
         // that yields one inline SMT expression. Used by call sites
         // like `step_distance_bound(?delta)`.
         if pos_args.len() == 1 && named_args.is_empty()
-            && self.kb.by_functor(*functor).iter()
+            && self.kb.by_functor(functor).iter()
                 .any(|rid| !self.kb.is_fact(*rid))
         {
-            let bind_idx = match self.kb.get_term(pos_args[0]) {
-                Term::Var(Var::DeBruijn(i)) => *i,
-                _ => return Err(SmtGenError::new(format!(
+            let bind_idx = match pos_args[0].as_expr() {
+                Some(Expr::Var(Var::DeBruijn(i))) => *i,
+                other => return Err(SmtGenError::new(format!(
                     "v0: rule call's pos arg must be a DeBruijn var, got {:?}",
-                    self.kb.get_term(pos_args[0])))),
+                    other.map(std::mem::discriminant)))),
             };
             let inlined = self.translate_called_rule(qn)?;
             bindings.insert(synthetic_var_name(bind_idx), inlined);
@@ -588,15 +596,15 @@ impl<'kb> Emitter<'kb> {
         //       (rule with empty body) whose pos_args structurally
         //       agree with the call. Each call-side DeBruijn var
         //       gets bound to the matched fact slot (literal → string
-        //       binding, entity Fn → entity_bindings).
+        //       binding, entity occurrence → entity_bindings).
         //   (2) Inline — the rule has a defining body. Open it with
         //       caller→callee parameter substitution; process its
         //       goals as if inlined here.
         // No named_args path yet — multi-pos-arg with named_args is
         // a v1 concern.
         if !pos_args.is_empty() && named_args.is_empty() {
-            let call_args: Vec<TermId> = pos_args.iter().copied().collect();
-            if self.try_match_fact_call(*functor, &call_args, bindings)? {
+            let call_args: Vec<Rc<NodeOccurrence>> = pos_args.to_vec();
+            if self.try_match_fact_call(functor, &call_args, bindings)? {
                 return Ok(());
             }
             if self.try_inline_rule_call(qn, &call_args, bindings)? {
@@ -611,14 +619,18 @@ impl<'kb> Emitter<'kb> {
     /// Try to match a multi-pos-arg call against any ground fact
     /// (rule with empty body) of the same functor. On match, bind
     /// each call-side DeBruijn var to the corresponding fact slot —
-    /// literal → string binding, entity-shaped Term::Fn →
+    /// literal → string binding, entity-shaped occurrence →
     /// entity_bindings (consumed by `field_access` lowering).
     /// Returns Ok(true) if a fact matched (and bindings were applied);
     /// Ok(false) if no fact matched (caller falls through to inline).
+    ///
+    /// The fact head is still a hash-consed term (heads stay terms); it is
+    /// materialized to the occurrence substrate so the call args (occurrences)
+    /// and fact slots compare occ-vs-occ (WI-246).
     fn try_match_fact_call(
         &mut self,
-        functor: anthill_core::intern::Symbol,
-        call_args: &[TermId],
+        functor: Symbol,
+        call_args: &[Rc<NodeOccurrence>],
         bindings: &mut BTreeMap<String, String>,
     ) -> Result<bool, SmtGenError> {
         let candidates = self.kb.by_functor(functor);
@@ -629,22 +641,21 @@ impl<'kb> Emitter<'kb> {
         for rid in candidates {
             if !self.kb.is_fact(rid) { continue; }
             self.visited_rules.insert(functor_qn.clone());
-            let head = self.kb.rule_head(rid);
-            let Term::Fn { pos_args: fpos, named_args: fnamed, .. } = self.kb.get_term(head)
-                else { continue };
+            let head_occ = materialize_from_handle(self.kb, self.kb.rule_head(rid));
+            let Some((_, fpos, fnamed)) = occ_as_fn(&head_occ) else { continue };
             if !fnamed.is_empty() { continue; }
             if fpos.len() != call_args.len() { continue; }
 
             // Probe — does every concrete call slot equal the
             // corresponding fact slot? Variable slots match anything.
-            let mut bind_pairs: Vec<(u32, TermId)> = Vec::new();
+            let mut bind_pairs: Vec<(u32, Rc<NodeOccurrence>)> = Vec::new();
             let mut matched = true;
-            for (call_t, fact_t) in call_args.iter().zip(fpos.iter()) {
-                if let Term::Var(Var::DeBruijn(i)) = self.kb.get_term(*call_t) {
-                    bind_pairs.push((*i, *fact_t));
+            for (call_occ, fact_occ) in call_args.iter().zip(fpos.iter()) {
+                if let Some(Expr::Var(Var::DeBruijn(i))) = call_occ.as_expr() {
+                    bind_pairs.push((*i, Rc::clone(fact_occ)));
                     continue;
                 }
-                if !self.terms_match(*call_t, *fact_t) {
+                if !self.occs_match(call_occ, fact_occ) {
                     matched = false;
                     break;
                 }
@@ -652,21 +663,21 @@ impl<'kb> Emitter<'kb> {
             if !matched { continue; }
 
             // Apply bindings.
-            for (idx, fact_term_id) in bind_pairs {
+            for (idx, fact_occ) in bind_pairs {
                 let synth = synthetic_var_name(idx);
-                match self.kb.get_term(fact_term_id) {
-                    Term::Const(Literal::Float(f)) => {
+                match fact_occ.as_expr() {
+                    Some(Expr::Const(Literal::Float(f))) => {
                         bindings.insert(synth, format_real(f.into_inner()));
                     }
-                    Term::Const(Literal::Int(i)) => {
+                    Some(Expr::Const(Literal::Int(i))) => {
                         bindings.insert(synth, format_real(*i as f64));
                     }
-                    Term::Fn { .. } => {
+                    _ if occ_as_fn(&fact_occ).is_some() => {
                         // Entity (Pose, Vec3, …) — defer until
                         // field_access reads it.
-                        self.entity_bindings.insert(synth, fact_term_id);
+                        self.entity_bindings.insert(synth, fact_occ);
                     }
-                    Term::Ref(_) | Term::Ident(_) => {
+                    Some(Expr::Ref(_)) | Some(Expr::Ident(_)) => {
                         // Nullary symbol like `Leader`. Skip — it
                         // can't appear in arithmetic expressions
                         // and there's no field projection over it.
@@ -680,7 +691,7 @@ impl<'kb> Emitter<'kb> {
     }
 
     /// Inline a rule call's body at the call site. `call_args` are
-    /// the caller-side TermIds bound positionally to the callee's
+    /// the caller-side occurrences bound positionally to the callee's
     /// head DeBruijn vars. The callee's local DeBruijn indices are
     /// renamed into a per-call namespace so they don't collide with
     /// the caller's; entity-typed arguments propagate into the
@@ -688,7 +699,7 @@ impl<'kb> Emitter<'kb> {
     fn try_inline_rule_call(
         &mut self,
         callee_qn: &str,
-        call_args: &[TermId],
+        call_args: &[Rc<NodeOccurrence>],
         caller_bindings: &mut BTreeMap<String, String>,
     ) -> Result<bool, SmtGenError> {
         let sym = match self.kb.try_resolve_symbol(callee_qn) {
@@ -703,11 +714,11 @@ impl<'kb> Emitter<'kb> {
         };
         self.visited_rules.insert(callee_qn.to_string());
 
-        let head = self.kb.rule_head(rid);
-        let head_pos: Vec<TermId> = match self.kb.get_term(head) {
-            Term::Fn { pos_args, named_args, .. } if named_args.is_empty() => {
-                pos_args.iter().copied().collect()
-            }
+        // Head stays a term (searched in the discrim tree); materialize it to
+        // the occurrence substrate to read its De Bruijn param vars (WI-246).
+        let head_occ = materialize_from_handle(self.kb, self.kb.rule_head(rid));
+        let head_pos: Vec<Rc<NodeOccurrence>> = match occ_as_fn(&head_occ) {
+            Some((_, pos, named)) if named.is_empty() => pos.to_vec(),
             _ => return Err(SmtGenError::new(format!(
                 "v0: inlined rule '{callee_qn}' must have only pos args in head"))),
         };
@@ -732,17 +743,17 @@ impl<'kb> Emitter<'kb> {
         // makes inlining behave like substitution in the caller's
         // joint constraint set.
         let mut callee_str: BTreeMap<String, String> = BTreeMap::new();
-        let mut callee_ent: BTreeMap<String, TermId> = BTreeMap::new();
+        let mut callee_ent: BTreeMap<String, Rc<NodeOccurrence>> = BTreeMap::new();
         let mut head_caller: Vec<(u32, String)> = Vec::new();
         for (head_arg, call_arg) in head_pos.iter().zip(call_args.iter()) {
-            let head_idx = match self.kb.get_term(*head_arg) {
-                Term::Var(Var::DeBruijn(i)) => *i,
+            let head_idx = match head_arg.as_expr() {
+                Some(Expr::Var(Var::DeBruijn(i))) => *i,
                 _ => return Err(SmtGenError::new(format!(
                     "v0: inlined rule '{callee_qn}' head args must be DeBruijn vars"))),
             };
             let head_synth = synthetic_var_name(head_idx);
-            match self.kb.get_term(*call_arg) {
-                Term::Var(Var::DeBruijn(j)) => {
+            match call_arg.as_expr() {
+                Some(Expr::Var(Var::DeBruijn(j))) => {
                     let caller_synth = synthetic_var_name(*j);
                     head_caller.push((head_idx, caller_synth.clone()));
                     if let Some(s) = caller_bindings.get(&caller_synth) {
@@ -753,22 +764,22 @@ impl<'kb> Emitter<'kb> {
                         callee_str.insert(head_synth.clone(), caller_synth.clone());
                     }
                     if let Some(t) = self.entity_bindings.get(&caller_synth) {
-                        callee_ent.insert(head_synth, *t);
+                        callee_ent.insert(head_synth, Rc::clone(t));
                     }
                 }
-                Term::Const(Literal::Float(f)) => {
+                Some(Expr::Const(Literal::Float(f))) => {
                     callee_str.insert(head_synth, format_real(f.into_inner()));
                 }
-                Term::Const(Literal::Int(i)) => {
+                Some(Expr::Const(Literal::Int(i))) => {
                     callee_str.insert(head_synth, format_real(*i as f64));
                 }
-                Term::Fn { .. } => {
+                Some(Expr::Ref(_)) | Some(Expr::Ident(_)) => {
+                    // Nullary symbol — not arithmetic; ignore.
+                }
+                _ if occ_as_fn(call_arg).is_some() => {
                     // Concrete entity literal at the call site —
                     // expose it for field_access on the callee side.
-                    callee_ent.insert(head_synth, *call_arg);
-                }
-                Term::Ref(_) | Term::Ident(_) => {
-                    // Nullary symbol — not arithmetic; ignore.
+                    callee_ent.insert(head_synth, Rc::clone(call_arg));
                 }
                 _ => {}
             }
@@ -781,12 +792,12 @@ impl<'kb> Emitter<'kb> {
         // give the callee its own bindings + entity_bindings so its
         // local DeBruijn indices stay isolated. After processing we
         // restore the caller's entity_bindings.
-        let body_goals: Vec<TermId> = self.kb.rule_body(rid).iter().copied().collect();
+        let body_goals: Vec<Rc<NodeOccurrence>> = self.kb.rule_body_nodes(rid).to_vec();
         let saved_ent = std::mem::take(&mut self.entity_bindings);
         self.entity_bindings = callee_ent;
         let mut local = callee_str;
         let mut err: Option<SmtGenError> = None;
-        for goal in body_goals {
+        for goal in &body_goals {
             if let Err(e) = self.process_body_goal(goal, &mut local) {
                 err = Some(e);
                 break;
@@ -811,37 +822,40 @@ impl<'kb> Emitter<'kb> {
                     caller_bindings.insert(caller_synth.clone(), value.clone());
                 }
             }
-            if let Some(entity_tid) = final_ent.get(&head_synth) {
-                self.entity_bindings.insert(caller_synth, *entity_tid);
+            if let Some(entity_occ) = final_ent.get(&head_synth) {
+                self.entity_bindings.insert(caller_synth, Rc::clone(entity_occ));
             }
         }
         Ok(true)
     }
 
-    /// Structural equality of two TermIds for fact-match probing.
-    /// Hash-consing makes this an id-equality fast path; the helper
-    /// exists so future changes (e.g. literal-as-Real coercions) have
-    /// one place to gate.
-    fn terms_match(&self, a: TermId, b: TermId) -> bool {
-        if a == b { return true; }
-        match (self.kb.get_term(a), self.kb.get_term(b)) {
-            (Term::Const(Literal::Float(x)), Term::Const(Literal::Float(y))) => x == y,
-            (Term::Const(Literal::Int(x)),   Term::Const(Literal::Int(y)))   => x == y,
-            (Term::Const(Literal::Int(i)),   Term::Const(Literal::Float(f)))
-            | (Term::Const(Literal::Float(f)), Term::Const(Literal::Int(i))) => {
+    /// Structural equality of two occurrences for fact-match probing.
+    /// `Rc::ptr_eq` is the fast path (a shared subtree); otherwise compare
+    /// leaves and `Fn`-shaped forms structurally. Int/Float are compared by
+    /// numeric value (literal-as-Real coercion). The occurrence twin of the
+    /// former `terms_match` (WI-246).
+    fn occs_match(&self, a: &Rc<NodeOccurrence>, b: &Rc<NodeOccurrence>) -> bool {
+        if Rc::ptr_eq(a, b) { return true; }
+        match (a.as_expr(), b.as_expr()) {
+            (Some(Expr::Const(Literal::Float(x))), Some(Expr::Const(Literal::Float(y)))) => x == y,
+            (Some(Expr::Const(Literal::Int(x))),   Some(Expr::Const(Literal::Int(y))))   => x == y,
+            (Some(Expr::Const(Literal::Int(i))),   Some(Expr::Const(Literal::Float(f))))
+            | (Some(Expr::Const(Literal::Float(f))), Some(Expr::Const(Literal::Int(i)))) => {
                 (*i as f64) == f.into_inner()
             }
-            (Term::Ref(x) | Term::Ident(x), Term::Ref(y) | Term::Ident(y)) => x == y,
-            (Term::Fn { functor: fx, pos_args: px, named_args: nx },
-             Term::Fn { functor: fy, pos_args: py, named_args: ny }) => {
-                fx == fy
-                    && px.len() == py.len()
-                    && nx.len() == ny.len()
-                    && px.iter().zip(py.iter()).all(|(a, b)| self.terms_match(*a, *b))
-                    && nx.iter().zip(ny.iter()).all(|((sa, ta), (sb, tb))|
-                        sa == sb && self.terms_match(*ta, *tb))
-            }
-            _ => false,
+            (Some(Expr::Var(Var::DeBruijn(x))), Some(Expr::Var(Var::DeBruijn(y)))) => x == y,
+            (Some(Expr::Ref(x) | Expr::Ident(x)), Some(Expr::Ref(y) | Expr::Ident(y))) => x == y,
+            _ => match (occ_as_fn(a), occ_as_fn(b)) {
+                (Some((fx, px, nx)), Some((fy, py, ny))) => {
+                    fx == fy
+                        && px.len() == py.len()
+                        && nx.len() == ny.len()
+                        && px.iter().zip(py.iter()).all(|(a, b)| self.occs_match(a, b))
+                        && nx.iter().zip(ny.iter()).all(|((sa, ta), (sb, tb))|
+                            sa == sb && self.occs_match(ta, tb))
+                }
+                _ => false,
+            },
         }
     }
 
@@ -860,11 +874,11 @@ impl<'kb> Emitter<'kb> {
             .ok_or_else(|| SmtGenError::new(format!(
                 "rule call '{callee_qn}' has no defining clauses")))?;
 
-        let head = self.kb.rule_head(rid);
-        let result_idx = match self.kb.get_term(head) {
-            Term::Fn { pos_args, .. } if pos_args.len() == 1 => {
-                match self.kb.get_term(pos_args[0]) {
-                    Term::Var(Var::DeBruijn(i)) => *i,
+        let head_occ = materialize_from_handle(self.kb, self.kb.rule_head(rid));
+        let result_idx = match occ_as_fn(&head_occ) {
+            Some((_, pos_args, _)) if pos_args.len() == 1 => {
+                match pos_args[0].as_expr() {
+                    Some(Expr::Var(Var::DeBruijn(i))) => *i,
                     _ => return Err(SmtGenError::new(format!(
                         "v0: called rule '{callee_qn}' head must be ?DeBruijn"))),
                 }
@@ -873,8 +887,8 @@ impl<'kb> Emitter<'kb> {
                 "v0: called rule '{callee_qn}' must have exactly one pos arg in head"))),
         };
         let mut local_bindings: BTreeMap<String, String> = BTreeMap::new();
-        for goal in self.kb.rule_body(rid) {
-            self.process_body_goal(*goal, &mut local_bindings)?;
+        for goal in self.kb.rule_body_nodes(rid) {
+            self.process_body_goal(goal, &mut local_bindings)?;
         }
         local_bindings.get(&synthetic_var_name(result_idx))
             .cloned()
@@ -888,39 +902,44 @@ impl<'kb> Emitter<'kb> {
     /// record `uses_abs` when an `abs` call is rendered.
     fn translate_expr(
         &mut self,
-        term: TermId,
+        occ: &Rc<NodeOccurrence>,
         bindings: &BTreeMap<String, String>,
     ) -> Result<String, SmtGenError> {
-        match self.kb.get_term(term) {
-            Term::Const(Literal::Float(f)) => Ok(format_real(f.into_inner())),
-            Term::Const(Literal::Int(i)) => Ok(format_real(*i as f64)),
-            Term::Var(Var::DeBruijn(i)) => {
+        match occ.as_expr() {
+            Some(Expr::Const(Literal::Float(f))) => Ok(format_real(f.into_inner())),
+            Some(Expr::Const(Literal::Int(i))) => Ok(format_real(*i as f64)),
+            Some(Expr::Var(Var::DeBruijn(i))) => {
                 let synth = synthetic_var_name(*i);
                 Ok(bindings.get(&synth).cloned().unwrap_or(synth))
             }
-            Term::Var(other) => Err(SmtGenError::new(format!(
+            Some(Expr::Var(other)) => Err(SmtGenError::new(format!(
                 "v0: expected DeBruijn var in expression, got {other:?}"))),
-            Term::Ref(s) | Term::Ident(s) => {
+            Some(Expr::Ref(s)) | Some(Expr::Ident(s)) => {
                 Ok(sanitize_smt_id(self.kb.resolve_sym(*s)))
             }
-            Term::Fn { functor, pos_args, .. } => {
-                let op = self.kb.qualified_name_of(*functor);
+            _ => {
                 // Entity field projection: `?p.field` reaches us as
-                // `field_access(?p, Ident(field))` or, post-WI-278, as a
-                // value-receiver `dot_apply(receiver, name, args: [])`.
-                // Resolve through the entity_bindings populated by fact
-                // match / rule inline to a concrete literal (or recurse
-                // on a nested entity field).
-                if self.as_field_access(term).is_some() {
-                    let resolved = self.resolve_field_access(term)?;
-                    return self.translate_expr(resolved, bindings);
+                // `field_access(?p, Ident(field))` (an `Expr::Apply`) or,
+                // post-WI-278, as a value-receiver `Expr::DotApply` with no
+                // method args. Resolve through the entity_bindings populated by
+                // fact match / rule inline to a concrete value occurrence (or
+                // recurse on a nested entity field).
+                if self.as_field_access(occ).is_some() {
+                    let resolved = self.resolve_field_access(occ)?;
+                    return self.translate_expr(&resolved, bindings);
                 }
+                let Some((functor, pos_args, _named)) = occ_as_fn(occ) else {
+                    return Err(SmtGenError::new(format!(
+                        "v0: unhandled expression: {:?}",
+                        occ.as_expr().map(std::mem::discriminant))));
+                };
+                let op = self.kb.qualified_name_of(functor);
                 if let Some(smt_op) = map_unary_op(op) {
                     if pos_args.len() != 1 {
                         return Err(SmtGenError::new(format!(
                             "{op}: expected 1 pos_arg, got {}", pos_args.len())));
                     }
-                    let a = self.translate_expr(pos_args[0], bindings)?;
+                    let a = self.translate_expr(&pos_args[0], bindings)?;
                     if smt_op == "anthill_abs" {
                         self.uses_abs = true;
                     }
@@ -935,109 +954,108 @@ impl<'kb> Emitter<'kb> {
                     return Err(SmtGenError::new(format!(
                         "{op}: expected 2 pos_args, got {}", pos_args.len())));
                 }
-                let a = self.translate_expr(pos_args[0], bindings)?;
-                let b = self.translate_expr(pos_args[1], bindings)?;
+                let a = self.translate_expr(&pos_args[0], bindings)?;
+                let b = self.translate_expr(&pos_args[1], bindings)?;
                 Ok(format!("({smt_op} {a} {b})"))
             }
-            other => Err(SmtGenError::new(format!(
-                "v0: unhandled term in expression: {other:?}"))),
         }
     }
 
     /// Resolve `field_access(?obj, Ident(field))` (possibly nested)
-    /// to the projected value's TermId. The chain bottoms out either
-    /// at a literal (Const) or a value that itself goes back through
-    /// translate_expr — typically a leaf Float in an entity's named
-    /// args.
+    /// to the projected value's occurrence. The chain bottoms out either
+    /// at a literal (`Expr::Const`) or a value that itself goes back through
+    /// translate_expr — typically a leaf Float in an entity's named args.
     ///
     /// Resolution rules:
     /// - root `?var` → look up `entity_bindings[var_<i>]`. The bound
-    ///   term is expected to be a Term::Fn with named_args (an
+    ///   occurrence is expected to be a constructor with named args (an
     ///   entity instance).
     /// - root `field_access(...)` → recurse on the nested chain.
-    /// - root entity Term::Fn → use directly.
-    fn resolve_field_access(&self, term: TermId) -> Result<TermId, SmtGenError> {
-        let (object_tid, field_tid) = self.as_field_access(term).ok_or_else(|| {
+    /// - root entity constructor occurrence → use directly.
+    fn resolve_field_access(
+        &self,
+        occ: &Rc<NodeOccurrence>,
+    ) -> Result<Rc<NodeOccurrence>, SmtGenError> {
+        let (object_occ, field_sym) = self.as_field_access(occ).ok_or_else(|| {
             SmtGenError::new(format!(
                 "resolve_field_access: not a field projection: {:?}",
-                self.kb.get_term(term)))
+                occ.as_expr().map(std::mem::discriminant)))
         })?;
 
-        // Step 1: resolve the object to an entity Term::Fn.
-        let entity_tid = match self.kb.get_term(object_tid) {
-            Term::Var(Var::DeBruijn(i)) => {
+        // Step 1: resolve the object to an entity constructor occurrence.
+        let entity_occ: Rc<NodeOccurrence> = match object_occ.as_expr() {
+            Some(Expr::Var(Var::DeBruijn(i))) => {
                 let synth = synthetic_var_name(*i);
-                *self.entity_bindings.get(&synth).ok_or_else(||
+                self.entity_bindings.get(&synth).cloned().ok_or_else(||
                     SmtGenError::new(format!(
                         "field_access on '?{synth}': no entity binding\
                          (caller did not supply a concrete entity)")))?
             }
-            Term::Fn { .. } => {
+            _ => {
                 // A nested projection (`?p.position.x`) — the object is
-                // itself a `field_access` / value-receiver `dot_apply`.
-                if self.as_field_access(object_tid).is_some() {
-                    self.resolve_field_access(object_tid)?
+                // itself a `field_access` / value-receiver `dot_apply`; else
+                // it is a directly-supplied entity constructor.
+                if self.as_field_access(&object_occ).is_some() {
+                    self.resolve_field_access(&object_occ)?
+                } else if occ_as_fn(&object_occ).is_some() {
+                    object_occ
                 } else {
-                    object_tid
+                    return Err(SmtGenError::new(format!(
+                        "field_access: cannot resolve object: {:?}",
+                        object_occ.as_expr().map(std::mem::discriminant))));
                 }
             }
-            other => return Err(SmtGenError::new(format!(
-                "field_access: cannot resolve object: {other:?}"))),
         };
 
-        // Step 2: extract the field name.
-        let field_sym = match self.kb.get_term(field_tid) {
-            Term::Ref(s) | Term::Ident(s) => *s,
-            other => return Err(SmtGenError::new(format!(
-                "field_access: field must be Ident/Ref, got {other:?}"))),
-        };
+        // Step 2: the field name.
         let field_name = self.kb.resolve_sym(field_sym).to_string();
 
         // Step 3: project into the entity's named_args by short-name match.
-        let Term::Fn { named_args, .. } = self.kb.get_term(entity_tid) else {
+        let Some((_, _, named_args)) = occ_as_fn(&entity_occ) else {
             return Err(SmtGenError::new(format!(
-                "field_access: object resolved to non-Fn term: {:?}",
-                self.kb.get_term(entity_tid))));
+                "field_access: object resolved to non-Fn occurrence: {:?}",
+                entity_occ.as_expr().map(std::mem::discriminant))));
         };
-        for (sym, val_tid) in named_args.iter() {
+        for (sym, val_occ) in named_args.iter() {
             if self.kb.resolve_sym(*sym) == field_name {
-                return Ok(*val_tid);
+                return Ok(Rc::clone(val_occ));
             }
         }
         Err(SmtGenError::new(format!(
             "field_access: field '{field_name}' not found in entity")))
     }
 
-    /// Recognize a field projection in either representation and return
-    /// `(object, field)`:
-    ///   - `field_access(obj, Ident(field))` — the desugared reflect form.
-    ///   - `dot_apply(receiver: obj, name: Ref(field), args: [])` — the
-    ///     WI-278 value-receiver dot form. Only an EMPTY `args` is a field
-    ///     access; a non-empty `args` is a method call (returns `None`).
-    fn as_field_access(&self, term: TermId) -> Option<(TermId, TermId)> {
-        let Term::Fn { functor, pos_args, named_args } = self.kb.get_term(term) else {
-            return None;
-        };
-        let op = self.kb.qualified_name_of(*functor);
-        if op == "anthill.reflect.field_access" || op == "field_access" {
-            return match pos_args.as_slice() {
-                [obj, field] => Some((*obj, *field)),
-                _ => None,
-            };
-        }
-        if op == "anthill.reflect.Expr.dot_apply" || op == "dot_apply" {
-            // A value-receiver dot is a field access only with no method
-            // args (`?x.field`); a non-empty `args` is a method call.
-            if let Some(args) = get_named_arg(self.kb, named_args, "args") {
-                if !list_to_vec(self.kb, args).is_empty() {
+    /// Recognize a field projection in either occurrence representation and
+    /// return `(object_occurrence, field_name_symbol)`:
+    ///   - `Expr::Apply { functor: field_access, pos_args: [obj, Ident(field)] }`
+    ///     — the desugared reflect form (`field_access` is not a materialize
+    ///     key, so it round-trips to an `Apply`).
+    ///   - `Expr::DotApply { receiver, name, .. }` — the WI-278 value-receiver
+    ///     dot form. Only an EMPTY arg list is a field access; a non-empty
+    ///     `pos_args`/`named_args` is a method call (returns `None`).
+    fn as_field_access(&self, occ: &Rc<NodeOccurrence>) -> Option<(Rc<NodeOccurrence>, Symbol)> {
+        match occ.as_expr()? {
+            Expr::DotApply { receiver, name, pos_args, named_args } => {
+                if !pos_args.is_empty() || !named_args.is_empty() {
                     return None;
                 }
+                Some((Rc::clone(receiver), *name))
             }
-            let recv = get_named_arg(self.kb, named_args, "receiver")?;
-            let name = get_named_arg(self.kb, named_args, "name")?;
-            return Some((recv, name));
+            _ => {
+                let (functor, pos_args, _named) = occ_as_fn(occ)?;
+                let op = self.kb.qualified_name_of(functor);
+                if op == "anthill.reflect.field_access" || op == "field_access" {
+                    if let [obj, field] = pos_args {
+                        let field_sym = match field.as_expr()? {
+                            Expr::Ref(s) | Expr::Ident(s) => *s,
+                            _ => return None,
+                        };
+                        return Some((Rc::clone(obj), field_sym));
+                    }
+                }
+                None
+            }
         }
-        None
     }
 
     /// True if the symbol resolves to an entity declaration.
@@ -1297,6 +1315,33 @@ fn emit_outcome_getters(out: &mut String, config: &ProofConfig) {
     // `(get-interpolants)` is intentionally not emitted: Z3's
     // interpolant API takes named (assert! ... :named ...) annotations
     // that the current emitter doesn't produce. Phase 5 follow-up.
+}
+
+/// View an occurrence as a function-application-shaped goal/expression —
+/// `(functor, pos_args, named_args)`. Covers the occurrence analogues of
+/// `Term::Fn` that a rule-body atom or arithmetic expression takes: the
+/// native body shape `Expr::Apply`, entity `Expr::Constructor`,
+/// `Expr::Instantiation`, and their requirements-carrying `*Within`
+/// variants. Returns `None` for leaves, control-flow forms, and
+/// `Expr::DotApply` (the dot field/method form — handled by
+/// `Emitter::as_field_access`).
+fn occ_as_fn(
+    occ: &NodeOccurrence,
+) -> Option<(Symbol, &[Rc<NodeOccurrence>], &[(Symbol, Rc<NodeOccurrence>)])> {
+    match occ.as_expr()? {
+        Expr::Apply { functor, pos_args, named_args, .. } => {
+            Some((*functor, pos_args, named_args))
+        }
+        Expr::Constructor { name, pos_args, named_args }
+        | Expr::Instantiation { name, pos_args, named_args }
+        | Expr::ConstructorWithin { name, pos_args, named_args, .. } => {
+            Some((*name, pos_args, named_args))
+        }
+        Expr::ApplyWithin { functor, args, named_args, .. } => {
+            Some((*functor, args, named_args))
+        }
+        _ => None,
+    }
 }
 
 /// Synthetic SMT identifier for a de Bruijn-indexed variable. The
