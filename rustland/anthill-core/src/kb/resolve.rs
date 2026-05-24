@@ -94,6 +94,8 @@ pub enum BuiltinTag {
     OccurrenceOwner,
     /// `anthill.reflect.sub_occurrences(occ)` → List[Occurrence]
     SubOccurrences,
+    /// anthill.reflect.operation_body(op) -> Option[NodeOccurrence]
+    OperationBody,
 }
 
 /// Result of executing a builtin.
@@ -1553,6 +1555,7 @@ impl KnowledgeBase {
             BuiltinTag::OccurrenceSpan => self.builtin_occurrence_span(goal, answer_subst),
             BuiltinTag::OccurrenceOwner => self.builtin_occurrence_owner(goal, answer_subst),
             BuiltinTag::SubOccurrences => self.builtin_sub_occurrences(goal, answer_subst),
+            BuiltinTag::OperationBody => self.builtin_operation_body(goal, answer_subst),
         }
     }
 
@@ -1989,6 +1992,74 @@ impl KnowledgeBase {
             self, children, occ.span, nil_sym, cons_sym, head_sym, tail_sym,
         );
         match self.match_view(pattern, &Value::Node(list)) {
+            Some(extra) => BuiltinResult::SuccessWithBindings(extra),
+            None => BuiltinResult::Failure,
+        }
+    }
+
+    /// `operation_body(op, result)` — WI-305. Bind `result` to the operation's
+    /// body occurrence wrapped in `some(value: <NodeOccurrence>)`, or `none()` when
+    /// the op has no body (declaration-only). The body lives in the `op_body_node`
+    /// side-table (not a fact field), so this builtin is how anthill code reaches
+    /// it. arg0 is the operation Symbol (Ref/Ident/Fn-functor).
+    fn builtin_operation_body<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        let op_val = match self.walk_arg(goal.pos_arg(self, 0), subst) {
+            None => return BuiltinResult::Failure,
+            Some(v) if self.value_is_unbound_var(&v) => return BuiltinResult::Delay,
+            Some(v) => v,
+        };
+        // arg0 must be a term-shaped Symbol (Ref/Ident/Fn-functor). A non-term
+        // Value (Node / scalar / tuple) is simply not an operation symbol — fail
+        // cleanly rather than panic (don't route through `reify_goal_value`).
+        let op_sym = match op_val.as_term().map(|t| self.terms.get(t)) {
+            Some(Term::Ref(s) | Term::Ident(s)) => *s,
+            Some(Term::Fn { functor, .. }) => *functor,
+            _ => return BuiltinResult::Failure,
+        };
+        // arg1 — the result pattern (mirror occurrence_arg_and_pattern's arg1 block).
+        let mut pat_term: Option<TermId> = None;
+        let mut pat_node = None;
+        match goal.pos_arg(self, 1) {
+            Some(ViewItem::Term(t)) => pat_term = Some(t),
+            Some(ViewItem::Value(Value::Term(t))) => pat_term = Some(*t),
+            Some(ViewItem::Node(o)) => pat_node = Some(o),
+            Some(ViewItem::Value(_)) | None => return BuiltinResult::Failure,
+        }
+        let pattern = match (pat_term, pat_node) {
+            (Some(t), _) => t,
+            (None, Some(o)) => match node_occurrence::try_occurrence_to_term(self, &o) {
+                Some(t) => t,
+                None => return BuiltinResult::Failure,
+            },
+            (None, None) => return BuiltinResult::Failure,
+        };
+        let pattern = self.apply_subst(pattern, subst);
+        // Build the Option result as a Value::Node occurrence (like sub_occurrences
+        // builds its list-node): some(value: <body>) or none().
+        let result_node = match self.op_body_node(op_sym).cloned() {
+            Some(node) => {
+                let some_sym = self.resolve_symbol("anthill.prelude.Option.some");
+                let value_sym = self.intern("value");
+                let mut named = vec![(value_sym, node.clone())];
+                self.sort_named_canonical(some_sym, &mut named);
+                NodeOccurrence::new_expr(
+                    Expr::Constructor { name: some_sym, pos_args: Vec::new(), named_args: named },
+                    node.span,
+                    None,
+                )
+            }
+            None => {
+                let none_sym = self.resolve_symbol("anthill.prelude.Option.none");
+                // nullary none follows the Ref convention (see build_occurrence_cons_list);
+                // synthetic span (0,0) matches node_occurrence::empty_span.
+                NodeOccurrence::new_expr(
+                    Expr::Ref(none_sym),
+                    crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0),
+                    None,
+                )
+            }
+        };
+        match self.match_view(pattern, &Value::Node(result_node)) {
             Some(extra) => BuiltinResult::SuccessWithBindings(extra),
             None => BuiltinResult::Failure,
         }

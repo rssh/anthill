@@ -4062,40 +4062,18 @@ fn sort_sym_of_term(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> {
     }
 }
 
-/// True iff the OperationInfo for `op_sym` records body = none.
-/// (Operations declared without a body ⇒ specs / abstract decls.)
+/// True iff an `OperationInfo` exists for `op_sym` and it has no body.
+/// (Operations declared without a body ⇒ specs / abstract decls.) WI-305: the
+/// body is no longer a fact field; it lives in the `op_body_node` side-table,
+/// so the body presence is read from there. The OperationInfo-existence gate is
+/// preserved — a symbol with no `OperationInfo` (which the old field-walk would
+/// report as "has body" via the loop falling through to `false`) must keep that
+/// answer so non-operation symbols are not misclassified as body-less spec ops.
 fn operation_has_no_body(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
-    let op_info_sym = match kb.try_resolve_symbol("anthill.reflect.OperationInfo") {
-        Some(s) => s,
-        None => return false,
-    };
-    for rid in kb.by_functor(op_info_sym) {
-        if !kb.is_fact(rid) { continue; }
-        let head = kb.rule_head(rid);
-        let named_args = match kb.get_term(head) {
-            Term::Fn { named_args, .. } => named_args,
-            _ => continue,
-        };
-
-        let name_sym = match named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "name")
-            .and_then(|(_, v)| match kb.get_term(*v) { Term::Ref(s) => Some(*s), _ => None })
-        {
-            Some(s) => s,
-            None => continue,
-        };
-        if name_sym != op_sym { continue; }
-
-        let body_opt = match named_args.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "body")
-            .map(|(_, v)| *v)
-        {
-            Some(t) => t,
-            None => return true,  // no body field at all
-        };
-        return unwrap_option(kb, body_opt).is_none();
+    if super::op_info::lookup_operation_info(kb, op_sym).is_none() {
+        return false; // no OperationInfo ⇒ not a body-less operation
     }
-    false
+    kb.op_body_node(op_sym).is_none()
 }
 
 /// True iff `op_sym` resolves to an operation the runtime can actually

@@ -30,7 +30,7 @@
 --      docs/proposals/011-type-resolution.md
 
 namespace anthill.reflect.typing_pass
-  import anthill.reflect.{KB, NodeOccurrence, TypeOf, type_of}
+  import anthill.reflect.{KB, NodeOccurrence, TypeOf, type_of, operation_body}
   import anthill.reflect.{Expr, Pattern, MatchBranch, ApplyArg, FieldInfo}
   import anthill.reflect.{OperationInfo, EntityInfo, SortInfo, SourceUnit}
   import anthill.reflect.{Symbol, Term, FactId, ConstraintId}
@@ -407,7 +407,7 @@ namespace anthill.reflect.typing_pass
   -- Get return type from OperationInfo.
   operation return_type(info: OperationInfo) -> Type =
     match info
-      case OperationInfo(name: _, params: _, return_type: ret, effects: _, requires: _, ensures: _, body: _) -> ret
+      case OperationInfo(name: _, params: _, return_type: ret, effects: _, requires: _, ensures: _) -> ret
 
   -- Get the functor symbol from a term (the outermost constructor name).
   operation functor_of(kb: KB, t: Term) -> Symbol
@@ -741,7 +741,7 @@ namespace anthill.reflect.typing_pass
   operation operation_effects(info: OperationInfo) -> List[Type] =
     match info
       case OperationInfo(name: _, params: _, return_type: _, effects: e,
-                         requires: _, ensures: _, body: _) -> e
+                         requires: _, ensures: _) -> e
 
   -- Check that actual effects ⊆ declared effects.
   -- Reports TypeError for each undeclared effect.
@@ -753,15 +753,18 @@ namespace anthill.reflect.typing_pass
     effects {Modify[kb], Error[TypeError]} =
     match op
       case OperationInfo(name: op_name, params: params, return_type: ret,
-                         effects: declared_effects, body: some(value: body_occ)) ->
-        let sort_env = env_from_sort_scope(kb, op_name)
-        let env = env_from_params(sort_env, params)
-        let br = type_check(kb, env, body_occ)
-        let ur = assert_compatible(kb, result_env(br), body_occ, result_type(br), ret)
-        -- Verify body effects ⊆ declared effects (only external effects)
-        let ext_effects = external_effects(result_env(br), result_effects(br))
-        let _ = check_effects(kb, body_occ, ext_effects, declared_effects)
-        type_of(occ: body_occ, type: result_type(ur))
+                         effects: declared_effects) ->
+        match operation_body(op_name)
+          case some(value: body_occ) ->
+            let sort_env = env_from_sort_scope(kb, op_name)
+            let env = env_from_params(sort_env, params)
+            let br = type_check(kb, env, body_occ)
+            let ur = assert_compatible(kb, result_env(br), body_occ, result_type(br), ret)
+            -- Verify body effects ⊆ declared effects (only external effects)
+            let ext_effects = external_effects(result_env(br), result_effects(br))
+            let _ = check_effects(kb, body_occ, ext_effects, declared_effects)
+            type_of(occ: body_occ, type: result_type(ur))
+          case none -> ?
       case _ -> ?
 
   -- ================================================================
@@ -792,11 +795,11 @@ namespace anthill.reflect.typing_pass
       case nil -> nil
       case cons(head: op_sym, tail: rest) ->
         let info = lookup_operation(kb, op_sym)
-        match info
-          case OperationInfo(body: some(_)) ->
+        match operation_body(op_sym)
+          case some(_) ->
             let result = type_check_operation(kb, info)
             cons(head: result, tail: type_check_operations(kb, rest))
-          case _ -> type_check_operations(kb, rest)
+          case none -> type_check_operations(kb, rest)
 
   -- Walk fact symbols, get occurrences, type-check each.
   operation type_check_facts(kb: KB, env: TypingEnv, facts: List[Symbol]) -> TypingEnv

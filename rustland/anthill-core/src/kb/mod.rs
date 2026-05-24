@@ -249,9 +249,10 @@ pub struct KnowledgeBase {
     pub(crate) functor_spans: HashMap<Symbol, crate::span::SourceSpan>,
 
     /// WI-242 — value-typed operation bodies keyed by operation symbol.
-    /// Populated by the loader alongside the existing Handle-wrapped
-    /// `OperationInfo.body` fact field; consumer migration to read this
-    /// rather than the Handle path is filed as WI-247.
+    /// WI-305: this side-table is now the SOLE store of operation bodies — the
+    /// `OperationInfo.body` / `OperationImpl.body` fact fields were dropped, and
+    /// the term handle is no longer built/stored. anthill code reaches a body via
+    /// the `anthill.reflect.operation_body` builtin (which reads this table).
     /// See `docs/design/occurrence-as-value-type.md`.
     pub(crate) op_bodies: HashMap<Symbol, Rc<NodeOccurrence>>,
 
@@ -2540,6 +2541,7 @@ impl KnowledgeBase {
         self.register_builtin("anthill.reflect.occurrence_span", BuiltinTag::OccurrenceSpan);
         self.register_builtin("anthill.reflect.occurrence_owner", BuiltinTag::OccurrenceOwner);
         self.register_builtin("anthill.reflect.sub_occurrences", BuiltinTag::SubOccurrences);
+        self.register_builtin("anthill.reflect.operation_body", BuiltinTag::OperationBody);
     }
 
     /// Re-resolve builtins after scan_definitions().

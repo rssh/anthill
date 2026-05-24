@@ -3213,12 +3213,23 @@ fn load_with_stdlib(extra_source: &str) -> KnowledgeBase {
     kb
 }
 
-/// Helper: post-WI-251 child slots no longer hold a `Handle(Occurrence)`
-/// wrapper — they hold the inner term directly. This helper used to
-/// dereference the Handle; now it's an identity function kept for
-/// callers that still go through it textually.
-fn deref_occ(_kb: &KnowledgeBase, term_id: TermId) -> TermId {
-    term_id
+
+/// Helper (WI-305): the operation body is no longer a fact field — it lives in
+/// the `op_body_node` side-table. Given an OperationInfo / OperationImpl term,
+/// read its `name`/`operation` symbol and fetch the body occurrence. `None` for
+/// body-less ops. Inspect the body via its `Expr` variant — control-flow forms
+/// (If/Let/Match/Lambda) and `VarRef` leaves have no goal-term shape.
+fn op_body_occ(
+    kb: &KnowledgeBase,
+    info_term: TermId,
+    name_field: &str,
+) -> Option<std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>> {
+    let name_tid = get_named_arg(kb, info_term, name_field)?;
+    let op_sym = match kb.get_term(name_tid) {
+        Term::Ref(s) | Term::Ident(s) => *s,
+        _ => return None,
+    };
+    kb.op_body_node(op_sym).cloned()
 }
 
 fn get_named_arg<'a>(kb: &'a KnowledgeBase, term_id: TermId, field: &str) -> Option<TermId> {
@@ -3237,44 +3248,6 @@ fn functor_name(kb: &KnowledgeBase, term_id: TermId) -> String {
     match kb.get_term(term_id) {
         Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_owned(),
         _ => format!("{:?}", kb.get_term(term_id)),
-    }
-}
-
-/// Helper: unwrap some(value) → value, panicking if not some.
-fn unwrap_some(kb: &KnowledgeBase, term_id: TermId) -> TermId {
-    match kb.get_term(term_id) {
-        Term::Fn { functor, named_args, .. } => {
-            assert_eq!(kb.resolve_sym(*functor), "some",
-                "expected some(...), got {}", functor_name(kb, term_id));
-            named_args.iter()
-                .find(|(sym, _)| kb.resolve_sym(*sym) == "value")
-                .map(|&(_, tid)| tid)
-                .expect("some() should have a value field")
-        }
-        other => panic!("expected some(Fn), got {:?}", other),
-    }
-}
-
-/// Helper: assert a term is none().
-fn assert_none(kb: &KnowledgeBase, term_id: TermId) {
-    match kb.get_term(term_id) {
-        Term::Fn { functor, .. } => {
-            assert_eq!(kb.resolve_sym(*functor), "none",
-                "expected none(), got {}", functor_name(kb, term_id));
-        }
-        other => panic!("expected none(), got {:?}", other),
-    }
-}
-
-/// Helper: get the first element of a cons-list.
-fn list_head(kb: &KnowledgeBase, list_tid: TermId) -> Option<TermId> {
-    match kb.get_term(list_tid) {
-        Term::Fn { functor, named_args, .. } if kb.resolve_sym(*functor) == "cons" => {
-            named_args.iter()
-                .find(|(sym, _)| kb.resolve_sym(*sym) == "head")
-                .map(|&(_, tid)| tid)
-        }
-        _ => None,
     }
 }
 
@@ -3306,24 +3279,24 @@ namespace test.expr
 end
 "#);
 
+    use anthill_core::kb::node_occurrence::Expr;
     let op_info = find_op_info(&mut kb, "test.expr.max");
 
-    // body should be some(ExprOccurrence handle → if_expr(...))
-    let body_opt = get_named_arg(&kb, op_info, "body").expect("body field missing");
-    let body_handle = unwrap_some(&kb, body_opt);
-    let body = deref_occ(&kb, body_handle);
-    assert_eq!(functor_name(&kb, body), "if_expr");
-
-    // cond should be ExprOccurrence handle → apply(fn: gt, args: [a, b])
-    let cond_handle = get_named_arg(&kb, body, "cond").expect("cond missing");
-    let cond = deref_occ(&kb, cond_handle);
-    assert_eq!(functor_name(&kb, cond), "apply");
-
-    // then_branch and else_branch should be ExprOccurrence handles → var_ref
-    let then_handle = get_named_arg(&kb, body, "then_branch").expect("then_branch missing");
-    assert_eq!(functor_name(&kb, deref_occ(&kb, then_handle)), "var_ref");
-    let else_handle = get_named_arg(&kb, body, "else_branch").expect("else_branch missing");
-    assert_eq!(functor_name(&kb, deref_occ(&kb, else_handle)), "var_ref");
+    // body now lives in the op_body_node side-table (WI-305) → Expr::If
+    let body = op_body_occ(&kb, op_info, "name").expect("op body missing");
+    match body.as_expr() {
+        Some(Expr::If { condition, then_branch, else_branch }) => {
+            // condition is an Apply (gt(a, b))
+            assert!(matches!(condition.as_expr(), Some(Expr::Apply { .. })),
+                "condition should be an apply, got {:?}", condition.as_expr());
+            // both branches are var references (Expr::VarRef / Expr::Var)
+            assert!(matches!(then_branch.as_expr(), Some(Expr::VarRef { .. } | Expr::Var(_))),
+                "then_branch should be a var ref, got {:?}", then_branch.as_expr());
+            assert!(matches!(else_branch.as_expr(), Some(Expr::VarRef { .. } | Expr::Var(_))),
+                "else_branch should be a var ref, got {:?}", else_branch.as_expr());
+        }
+        other => panic!("expected If, got {other:?}"),
+    }
 }
 
 #[test]
@@ -3341,32 +3314,28 @@ namespace test.expr
 end
 "#);
 
+    use anthill_core::kb::node_occurrence::Expr;
     let op_info = find_op_info(&mut kb, "test.expr.Nat.is_zero");
 
-    // body should be some(ExprOccurrence handle → match_expr(...))
-    let body_opt = get_named_arg(&kb, op_info, "body").expect("body field missing");
-    let body = deref_occ(&kb, unwrap_some(&kb, body_opt));
-    assert_eq!(functor_name(&kb, body), "match_expr");
+    // body now lives in the op_body_node side-table (WI-305) → Expr::Match
+    let body = op_body_occ(&kb, op_info, "name").expect("op body missing");
+    match body.as_expr() {
+        Some(Expr::Match { scrutinee, branches }) => {
+            // scrutinee is a var ref (n)
+            assert!(matches!(scrutinee.as_expr(), Some(Expr::VarRef { .. } | Expr::Var(_))),
+                "scrutinee should be a var ref, got {:?}", scrutinee.as_expr());
+            assert_eq!(branches.len(), 2, "two branches");
 
-    // scrutinee should be ExprOccurrence handle → var_ref(name: n)
-    let scrutinee = deref_occ(&kb, get_named_arg(&kb, body, "scrutinee").expect("scrutinee missing"));
-    assert_eq!(functor_name(&kb, scrutinee), "var_ref");
-
-    // branches should be a 2-element list
-    let branches = get_named_arg(&kb, body, "branches").expect("branches missing");
-    assert_eq!(cons_list_to_vec(&kb, branches).len(), 2);
-
-    // First branch: pattern = constructor_pattern(zero), body = bool_lit(true)
-    let branch1 = list_head(&kb, branches).expect("first branch missing");
-    assert_eq!(functor_name(&kb, branch1), "MatchBranch");
-    let pat1 = get_named_arg(&kb, branch1, "pattern").expect("pattern missing");
-    assert_eq!(functor_name(&kb, pat1), "constructor_pattern");
-    let body1 = deref_occ(&kb, get_named_arg(&kb, branch1, "body").expect("body missing"));
-    assert_eq!(functor_name(&kb, body1), "bool_lit");
-
-    // Guard should be none
-    let guard1 = get_named_arg(&kb, branch1, "guard").expect("guard missing");
-    assert_none(&kb, guard1);
+            // First branch: pattern = constructor_pattern(zero), body = bool literal
+            let branch1 = &branches[0];
+            assert_eq!(functor_name(&kb, branch1.pattern), "constructor_pattern");
+            assert!(matches!(branch1.body.as_expr(), Some(Expr::Const(_))),
+                "branch body should be a bool literal, got {:?}", branch1.body.as_expr());
+            // Guard should be none
+            assert!(branch1.guard.is_none(), "branch guard should be none");
+        }
+        other => panic!("expected Match, got {other:?}"),
+    }
 }
 
 #[test]
@@ -3379,22 +3348,22 @@ namespace test.expr
 end
 "#);
 
+    use anthill_core::kb::node_occurrence::Expr;
     let op_info = find_op_info(&mut kb, "test.expr.double");
-    let body_opt = get_named_arg(&kb, op_info, "body").expect("body field missing");
-    let body = deref_occ(&kb, unwrap_some(&kb, body_opt));
-    assert_eq!(functor_name(&kb, body), "let_expr");
-
-    // pattern should be var_pattern (not ExprOccurrence — it's a Pattern)
-    let pattern = get_named_arg(&kb, body, "pattern").expect("pattern missing");
-    assert_eq!(functor_name(&kb, pattern), "var_pattern");
-
-    // value should be ExprOccurrence handle → var_ref (x)
-    let value = deref_occ(&kb, get_named_arg(&kb, body, "value").expect("value missing"));
-    assert_eq!(functor_name(&kb, value), "var_ref");
-
-    // body should be ExprOccurrence handle → apply (add)
-    let inner_body = deref_occ(&kb, get_named_arg(&kb, body, "body").expect("inner body missing"));
-    assert_eq!(functor_name(&kb, inner_body), "apply");
+    let body = op_body_occ(&kb, op_info, "name").expect("op body missing");
+    match body.as_expr() {
+        Some(Expr::Let { pattern, value, body: inner_body, .. }) => {
+            // pattern is a var_pattern (a Pattern TermId, not an occurrence)
+            assert_eq!(functor_name(&kb, *pattern), "var_pattern");
+            // value is a var ref (x)
+            assert!(matches!(value.as_expr(), Some(Expr::VarRef { .. } | Expr::Var(_))),
+                "value should be a var ref, got {:?}", value.as_expr());
+            // inner body is an Apply (add(y, y))
+            assert!(matches!(inner_body.as_expr(), Some(Expr::Apply { .. })),
+                "inner body should be an apply, got {:?}", inner_body.as_expr());
+        }
+        other => panic!("expected Let, got {other:?}"),
+    }
 }
 
 #[test]
@@ -3407,22 +3376,23 @@ namespace test.expr
 end
 "#);
 
+    use anthill_core::kb::node_occurrence::Expr;
     let op_info = find_op_info(&mut kb, "test.expr.make_inc");
-    let body_opt = get_named_arg(&kb, op_info, "body").expect("body field missing");
-    let body = deref_occ(&kb, unwrap_some(&kb, body_opt));
-    assert_eq!(functor_name(&kb, body), "lambda");
-
-    // param should be var_pattern (Pattern, not ExprOccurrence)
-    let param = get_named_arg(&kb, body, "param").expect("param missing");
-    assert_eq!(functor_name(&kb, param), "var_pattern");
-
-    // body should be ExprOccurrence handle → apply (add)
-    let lambda_body = deref_occ(&kb, get_named_arg(&kb, body, "body").expect("lambda body missing"));
-    assert_eq!(functor_name(&kb, lambda_body), "apply");
-
-    // add should have 2 args
-    let args = get_named_arg(&kb, lambda_body, "args").expect("args missing");
-    assert_eq!(cons_list_to_vec(&kb, args).len(), 2);
+    let body = op_body_occ(&kb, op_info, "name").expect("op body missing");
+    match body.as_expr() {
+        Some(Expr::Lambda { param, body: lambda_body }) => {
+            // param is a var_pattern (Pattern TermId)
+            assert_eq!(functor_name(&kb, *param), "var_pattern");
+            // lambda body is an Apply (add(x, 1)) with 2 positional args
+            match lambda_body.as_expr() {
+                Some(Expr::Apply { pos_args, .. }) => {
+                    assert_eq!(pos_args.len(), 2, "add should have 2 args");
+                }
+                other => panic!("lambda body should be an apply, got {other:?}"),
+            }
+        }
+        other => panic!("expected Lambda, got {other:?}"),
+    }
 }
 
 #[test]
@@ -3465,8 +3435,9 @@ end
 "#);
 
     let op_info = find_op_info(&mut kb, "test.expr.abstract_op");
-    let body_opt = get_named_arg(&kb, op_info, "body").expect("body field missing");
-    assert_none(&kb, body_opt);
+    // No body field anymore (WI-305); a body-less op has no op_body_node entry.
+    assert!(op_body_occ(&kb, op_info, "name").is_none(),
+        "declaration-only op should have no body occurrence");
 }
 
 #[test]
@@ -3485,16 +3456,24 @@ end
     let mut found = false;
     for &fid in &impls {
         let tid = kb.fact_term(fid);
-        if let Some(op_tid) = get_named_arg(&kb, tid, "operation") {
-            if let Term::Ref(sym) = kb.get_term(op_tid) {
-                if kb.qualified_name_of(*sym).contains("test.expr.incr") {
+        let op_sym = get_named_arg(&kb, tid, "operation")
+            .and_then(|op_tid| match kb.get_term(op_tid) {
+                Term::Ref(sym) | Term::Ident(sym) => Some(*sym),
+                _ => None,
+            });
+        if let Some(op_sym) = op_sym {
+            {
+                if kb.qualified_name_of(op_sym).contains("test.expr.incr") {
                     found = true;
-                    // body should be ExprOccurrence handle → apply(fn: add, args: [x, 1])
-                    let body = deref_occ(&kb, get_named_arg(&kb, tid, "body").expect("body missing"));
-                    assert_eq!(functor_name(&kb, body), "apply");
                     // params should be a 1-element list [x]
                     let params = get_named_arg(&kb, tid, "params").expect("params missing");
                     assert_eq!(cons_list_to_vec(&kb, params).len(), 1);
+                    // body is no longer a fact field (WI-305) — read it from the
+                    // op_body_node side-table via the OperationImpl `operation`.
+                    use anthill_core::kb::node_occurrence::Expr;
+                    let body = op_body_occ(&kb, tid, "operation").expect("op body missing");
+                    assert!(matches!(body.as_expr(), Some(Expr::Apply { .. })),
+                        "op body should be an apply, got {:?}", body.as_expr());
                 }
             }
         }

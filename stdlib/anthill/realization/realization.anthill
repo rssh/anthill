@@ -122,12 +122,12 @@ namespace anthill.realization
     host_type    : String                           -- e.g. "i64"
   )
 
-  -- Operation implementation: captures expression body for codegen.
-  -- body: Term (not Expr) since Expr is a sub-sort of Term in the KB.
+  -- Operation implementation: marks an operation that has an expression body.
+  -- The body occurrence lives in the loader's op_body_node side-table and is
+  -- reached via anthill.reflect.operation_body (WI-305), not a fact field.
   entity OperationImpl(
     operation   : Symbol,                           -- operation name (symbol reference)
-    params      : List[T = Symbol],                 -- parameter names
-    body        : Term                              -- expression body (Expr-shaped term)
+    params      : List[T = Symbol]                  -- parameter names
   )
 
   -- Proof obligation generated from operation contracts

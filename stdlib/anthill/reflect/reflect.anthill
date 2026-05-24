@@ -61,6 +61,9 @@ namespace anthill.reflect
   -- Returns all NodeOccurrences registered under this owner during loading.
   operation occurrences_of(owner: Symbol) -> List[NodeOccurrence]
 
+  -- Operation body occurrence (None if declaration only); lives in the loader side-table, not a fact field.
+  operation operation_body(op: Symbol) -> Option[T = NodeOccurrence]
+
   -- ================================================================
   -- Source unit: a loaded file and the definitions it contributed.
   -- Emitted by the loader after processing each file.
@@ -424,8 +427,7 @@ namespace anthill.reflect
     return_type  : Term,                            -- return type expression
     effects      : List[Term],                      -- effect type expressions
     requires     : List[NodeOccurrence],            -- precondition expressions (positioned)
-    ensures      : List[NodeOccurrence],            -- postcondition expressions (positioned)
-    body         : Option[NodeOccurrence]           -- expression body (None if declaration only)
+    ensures      : List[NodeOccurrence]             -- postcondition expressions (positioned)
   )
 
   entity FieldInfo(

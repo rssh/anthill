@@ -1501,6 +1501,59 @@ fn load_with_source(source: &str) -> KnowledgeBase {
     kb
 }
 
+// ── WI-305: operation_body builtin (op body via the op_body_node side-table) ──
+
+#[test]
+fn wi305_operation_body_discriminates_some_vs_none() {
+    // `operation_body(op)` returns `some(value: <body occurrence>)` for an
+    // operation with an expression body and `none()` for a declaration-only op
+    // — the node lives in the `op_body_node` side-table, not a fact field.
+    let mut kb = load_with_source(concat!(
+        "namespace wi305.t\n",
+        "  import anthill.prelude.{Int}\n",
+        "  operation f(x: Int) -> Int = x\n",   // has a body
+        "  operation g(x: Int) -> Int\n",        // declaration only
+        "end\n",
+    ));
+    let some_sym = kb.resolve_symbol("anthill.prelude.Option.some");
+    let value_sym = kb.intern("value");
+
+    let some_pattern = |kb: &mut KnowledgeBase| {
+        let v = make_var(kb, "v");
+        kb.alloc(Term::Fn {
+            functor: some_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(value_sym, v)]),
+        })
+    };
+
+    // op f HAS a body → operation_body(f, some(value: ?)) succeeds, binding the
+    // body occurrence into the some-wrapper.
+    let f_ref = {
+        let f = kb.try_resolve_symbol("wi305.t.f").expect("op f");
+        kb.alloc(Term::Ref(f))
+    };
+    let some_pat = some_pattern(&mut kb);
+    let goal_f = make_goal(&mut kb, "anthill.reflect.operation_body", &[f_ref, some_pat]);
+    assert_eq!(
+        kb.resolve(&[goal_f], &default_config()).len(), 1,
+        "operation with a body should yield some(value: <node>)",
+    );
+
+    // op g is declaration-only → its result is none(), so a some(...) pattern
+    // must NOT match.
+    let g_ref = {
+        let g = kb.try_resolve_symbol("wi305.t.g").expect("op g");
+        kb.alloc(Term::Ref(g))
+    };
+    let some_pat_g = some_pattern(&mut kb);
+    let goal_g = make_goal(&mut kb, "anthill.reflect.operation_body", &[g_ref, some_pat_g]);
+    assert_eq!(
+        kb.resolve(&[goal_g], &default_config()).len(), 0,
+        "declaration-only operation should yield none(), not some(...)",
+    );
+}
+
 /// Helper: load only stdlib, returning both KB and LoadResult (all stdlib sorts).
 fn load_stdlib_kb_with_result() -> (KnowledgeBase, LoadResult) {
     let dir = crate::common::stdlib_dir();

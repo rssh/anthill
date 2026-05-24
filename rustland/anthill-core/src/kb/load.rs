@@ -5996,21 +5996,18 @@ impl<'a> Loader<'a> {
         let requires_list = self.convert_clause_list(&o.requires);
         let ensures_list = self.convert_clause_list(&o.ensures);
 
-        // Convert expression body if present. The kb-side representation
-        // is a TermId in `body` (wrapped as `Option[NodeOccurrence]` in
-        // the OperationInfo entity) and a parallel `Rc<NodeOccurrence>`
-        // tree stored in `kb.op_bodies` — the latter is what the typer
-        // and codegen walk.
-        let (body_opt_term, body_expr_opt) = match o.body {
+        // Convert expression body if present. WI-305: discard the term handle;
+        // the occurrence is the sole stored body (op_body_node side-table). The
+        // handle is no longer kept in any fact field (OperationInfo/OperationImpl
+        // body fields dropped). The term is still built transiently inside
+        // `convert_expr_term` because the native node-build reads it.
+        let has_body = match o.body {
             Some(body_tid) => {
-                // WI-304: `convert_expr_term` builds the op-body occurrence
-                // natively alongside the term — no lossy `materialize_from_handle`
-                // re-walk. The term `handle` still fills `OperationInfo.body`.
-                let (handle, node) = self.convert_expr_term(body_tid);
+                let (_handle, node) = self.convert_expr_term(body_tid);
                 self.kb.set_op_body_node(functor, node);
-                (build_some(self.kb, handle), Some(handle))
+                true
             }
-            None => (build_none(self.kb), None),
+            None => false,
         };
 
         self.current_scope = prev_scope;
@@ -6024,7 +6021,6 @@ impl<'a> Loader<'a> {
         let effects_sym = self.kb.intern("effects");
         let requires_sym = self.kb.intern("requires");
         let ensures_sym = self.kb.intern("ensures");
-        let body_sym = self.kb.intern("body");
         let type_params_sym = self.kb.intern("type_params");
 
         // name: Ref to operation symbol
@@ -6041,19 +6037,19 @@ impl<'a> Loader<'a> {
                 (effects_sym, effects_list),
                 (requires_sym, requires_list),
                 (ensures_sym, ensures_list),
-                (body_sym, body_opt_term),
                 (type_params_sym, type_params_list),
             ]),
         });
         self.kb.assert_fact(op_info, op_sort, domain, None);
 
-        // Emit OperationImpl fact for operations with expression bodies
-        if let Some(body_expr) = body_expr_opt {
+        // Emit OperationImpl fact for operations with expression bodies. WI-305:
+        // the body field is dropped — the occurrence lives in op_body_node and is
+        // reached via anthill.reflect.operation_body.
+        if has_body {
             if let Some(op_impl_sym) = self.kb.try_resolve_symbol("anthill.realization.OperationImpl") {
                 let impl_sort = self.kb.make_name_term("OperationImpl");
                 let operation_key = self.kb.intern("operation");
                 let params_key = self.kb.intern("params");
-                let body_key = self.kb.intern("body");
 
                 let op_name_ref = self.kb.alloc(Term::Ref(functor));
                 let param_syms: Vec<TermId> = o.params.iter().map(|p| {
@@ -6069,7 +6065,6 @@ impl<'a> Loader<'a> {
                     named_args: SmallVec::from_slice(&[
                         (operation_key, op_name_ref),
                         (params_key, params_list_impl),
-                        (body_key, body_expr),
                     ]),
                 });
                 self.kb.assert_fact(op_impl, impl_sort, domain, None);

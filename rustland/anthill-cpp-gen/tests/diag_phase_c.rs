@@ -30,36 +30,18 @@ fn dump_phase_c_shapes() {
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
             let op = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "operation")
                 .map(|(_, v)| *v).unwrap();
-            let body = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == "body")
-                .map(|(_, v)| *v).unwrap();
-            let op_name = match kb.get_term(op) {
-                Term::Ref(s) => kb.qualified_name_of(*s).to_string(),
+            let op_sym = match kb.get_term(op) {
+                Term::Ref(s) => *s,
                 _ => continue,
             };
+            let op_name = kb.qualified_name_of(op_sym).to_string();
             if !op_name.contains("test.dumpc") { continue; }
             println!("\n== {op_name} ==");
-            dump_term(&kb, body, 2);
-        }
-    }
-}
-
-fn dump_term(kb: &anthill_core::kb::KnowledgeBase, term: anthill_core::kb::term::TermId, indent: usize) {
-    let pad = " ".repeat(indent);
-    match kb.get_term(term) {
-        Term::Fn { functor, named_args, pos_args } => {
-            let qn = kb.qualified_name_of(*functor);
-            println!("{pad}Fn {qn:?} pos={} named:", pos_args.len());
-            for p in pos_args {
-                dump_term(kb, *p, indent + 4);
-            }
-            for (n, v) in named_args {
-                println!("{pad}  {} =", kb.resolve_sym(*n));
-                dump_term(kb, *v, indent + 4);
+            // WI-305: the body occurrence lives in the op_body_node side-table.
+            match kb.op_body_node(op_sym) {
+                Some(node) => println!("{node:#?}"),
+                None => println!("  (no body)"),
             }
         }
-        Term::Ref(s) => println!("{pad}Ref({})", kb.qualified_name_of(*s)),
-        Term::Ident(s) => println!("{pad}Ident({})", kb.qualified_name_of(*s)),
-        Term::Const(lit) => println!("{pad}Const({lit:?})"),
-        other => println!("{pad}{other:?}"),
     }
 }
