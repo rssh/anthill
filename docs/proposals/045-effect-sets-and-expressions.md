@@ -87,13 +87,13 @@ effect label: present / absent / unspecified). Atoms and operators:
 | form | meaning |
 |---|---|
 | `{}` | empty (pure) — nothing present |
-| `*` | universal — everything present (top) |
+| `*` | universal — everything present (top) — *deferred, see §7.5; first cut says "allow all" by omitting the annotation* |
 | `e` | a single effect, e.g. `Modify[c]` |
 | `E` | an effect-set variable (`effects E = ?`) |
 | `+ e` | **presence** — add `e` |
 | `- e` | **absence** — remove / forbid `e` |
-| `+ *` | allow all (→ `*`) |
-| `- *` | disallow all (→ `{}`) |
+| `+ *` | allow all (→ `*`) — *deferred, see §7.5* |
+| `- *` | disallow all (→ `{}`) — *deferred, see §7.5* |
 | `merge(x, y)` | combine two expressions; **conflict** (a label `+` in one, `-` in the other) ⇒ **incompatible** (error) |
 | `{ E1, …, EN }` | set literal — **sugar** for iterated `merge` (see below) |
 
@@ -104,7 +104,7 @@ the brainstorm). Examples:
 ```
 effects {}                     -- pure
 effects (+ Modify[c])          -- may modify c
-effects (* - Modify[kb])       -- "does not touch kb" — anything except Modify[kb]
+effects (* - Modify[kb])       -- "does not touch kb" — anything except Modify[kb]  (needs `*`; deferred, §7.5)
 effects E                      -- polymorphic (propagates the callback's row)
 effects merge(E, + Reads[d])   -- the callback's effects, plus Reads[d]
 ```
@@ -208,25 +208,51 @@ output is what it performs. Checking relates the output to the declaration.
    never-grounded polymorphic effect declarations** (which is where presence
    variables — Rémy/Links; Lindley & Cheney 2012 — would buy something), or is
    lazy per-instantiation checking sufficient?
-2. **`merge` conflict semantics.** A present/absent clash (`+e` in one operand,
-   `-e` in the other) is ill-formed. **Question: is that a hard error at the
-   `merge`, or a value `⊥`/`incompatible` that propagates** — and if a value,
-   what makes a row containing it unsatisfiable, and where does the diagnostic
-   point (the `merge` site, or the operation whose declaration it violates)?
-3. **Decidability of effect-checking.** When `op_effects` is itself computed by
-   rules, checking joins SLD resolution. **Question: does effect-checking
-   terminate** — and what restricts the effect rules (no recursive effect
-   growth? stratification?) so that the `union`/discharge fixpoint is reached?
-4. **Grammar surface** — *resolved for `{…}`*: the set literal `{ E1, …, EN }`
-   is sugar for iterated `merge` (§3), so both surfaces coexist with one
-   semantics. Still open: whether to also surface `∪`/`\` operators (vs only
-   `merge` / `-`).
-5. **`*` (top).** Adding a universal element to `Set` raises consistency
-   questions. **Question: how does `*` coexist with the closed-world (`{}`)
-   default** — i.e. when is an unstated row `{}` (pure) vs `*` (unknown/anything)
-   — and what is `merge(*, -e)` (the co-finite `* - e`) vs `merge(*, +e)`
-   (still `*`)? Does `*` stay inside the finite/co-finite normal form, or does it
-   need a distinct representation in `Set`?
+2. **`merge` conflict semantics — *resolved*: hard error.** A present/absent
+   clash (`+e` in one operand, `-e` in the other) is a **hard error**, not a
+   propagating `⊥`/`incompatible` value. Since `merge(E, …)` only normalizes
+   once `E` is ground (per (1)), the error fires at normalization — at the site
+   that produced the conflicting row (a call site binding a callback whose
+   effects violate a declared `- e`, or a directly-written `merge(+e, -e)`),
+   pointing there. No unsatisfiable-row value to track. Open only: the exact
+   diagnostic wording / which operand the message blames.
+3. **Decidability of effect-checking — induction on the body, fixpoint for
+   recursion.** For a **non-recursive** operation, `op_effects` is a `union`/
+   discharge fold over the *finite* body term, so it terminates by structural
+   induction on the body — a well-founded measure (the same shape as the typer's
+   `synth`/`check` walk). For **(mutual) recursion**, `op_effects(f)` depends on
+   itself; this is a **monotone fixpoint** over the row lattice. It terminates by
+   the ascending-chain condition: only finitely many effect labels occur in the
+   program, so the lattice of reachable rows is finite and the `union` ascent
+   stabilizes. Open only: confirming the fixpoint is taken over that finite
+   label set (not over open/co-finite rows that could grow without bound), and
+   how it is scheduled within SLD resolution.
+4. **Grammar surface — *resolved for `{…}`*; one operator still open.** The set
+   literal `{ E1, …, EN }` is sugar for iterated `merge` (§3), so it adds no new
+   semantics. We have `merge(x, y)` for **union** and `- e` for **removing one
+   named effect**. The only open question: do we also need an operator that
+   subtracts a *whole* effect-set, `difference(E1, E2)` (remove everything in
+   `E2` from `E1`)? It matters only for **handler discharge of a variable
+   set** — when a handler removes a set of effects that isn't statically known.
+   If discharge always names the handled effects, repeated `- e` is enough and
+   no new operator is needed.
+5. **`*` (top) — *deferred*: start without a writable top.** The first cut uses
+   **finite rows only**, with "allow all" handled by the **default** rather than
+   a `*` atom:
+   - **No effects annotation ⇒ allow-all** (open / unchecked) — including a bare
+     arrow `A -> B` with no `@`. This is how you say "may do anything."
+   - **An explicit `effects (…)` clause ⇒ closed world**: only the listed
+     effects are permitted, unstated ⇒ absent (NAF). Pure is the explicit
+     `effects {}`; specific rows are `+ e` / `{ … }`; absence is `- e` checked
+     against ground rows.
+
+   This is **open by default, closed once you annotate** (note: this *reverses*
+   a "`{}` default" — the default is allow-all, not pure). It drops `*`, `+ *`,
+   `- *`, and the co-finite `* - e` ("anything but `e`") for now: a writable top
+   is only needed for allow-all *inside* a composed expression, and it raises
+   consistency questions (what is `merge(*, - e)` vs `merge(*, + e)`? does `*`
+   fit the normal form or need its own representation in `Set`?). Revisit once
+   finite rows work; `* - Modify[kb]` is the motivating use to come back for.
 
 ## Prior art
 
