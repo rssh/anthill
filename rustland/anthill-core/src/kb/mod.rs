@@ -670,7 +670,7 @@ impl KnowledgeBase {
         // discrim tree, not exact-equality. We do not overwrite an
         // existing entry; the dedup check in `assert_fact` upstream
         // routes duplicates to the existing RuleId before we get here.
-        if self.rules[rule_id.index()].body.is_empty() {
+        if self.rules[rule_id.index()].body_nodes.is_empty() {
             self.fact_dedup.entry((head, sort, domain)).or_insert(rule_id);
         }
 
@@ -1254,6 +1254,14 @@ impl KnowledgeBase {
         &self.rules[id.index()].body
     }
 
+    /// Whether a rule is a fact — i.e. has an empty body. The
+    /// substrate-agnostic replacement for `is_fact(id)`: backed by
+    /// the occurrence body (`body_nodes`, parallel to `body`), so it survives
+    /// dropping the term `body: Vec<TermId>` (WI-246).
+    pub fn is_fact(&self, id: RuleId) -> bool {
+        self.rules[id.index()].body_nodes.is_empty()
+    }
+
     /// WI-246: the rule body atoms as `NodeOccurrence`s (same order/length as
     /// [`rule_body`], empty for facts). The occurrence form the typer and
     /// `simp_rewrite` walk; resolution still opens the [`rule_body`] terms.
@@ -1452,7 +1460,7 @@ impl KnowledgeBase {
         // The discrimination tree uses HashMap internally, so candidate order
         // is non-deterministic. DFS resolution depends on trying ground facts
         // before recursive rules to find base-case solutions first.
-        results.sort_by_key(|(rid, _)| if rules[rid.index()].body.is_empty() { 0 } else { 1 });
+        results.sort_by_key(|(rid, _)| if rules[rid.index()].body_nodes.is_empty() { 0 } else { 1 });
         results
     }
 
@@ -1460,7 +1468,7 @@ impl KnowledgeBase {
     pub fn query_rules(&self, pattern: TermId) -> Vec<(RuleId, subst::Substitution)> {
         self.query(pattern)
             .into_iter()
-            .filter(|(rid, _)| !self.rules[rid.index()].body.is_empty())
+            .filter(|(rid, _)| !self.rules[rid.index()].body_nodes.is_empty())
             .collect()
     }
 
@@ -1854,7 +1862,7 @@ impl KnowledgeBase {
     /// args and body is empty.
     pub fn is_equation(&self, id: RuleId) -> bool {
         let entry = &self.rules[id.index()];
-        if !entry.body.is_empty() || entry.retracted {
+        if !entry.body_nodes.is_empty() || entry.retracted {
             return false;
         }
         match self.terms.get(entry.head) {
@@ -1863,30 +1871,6 @@ impl KnowledgeBase {
             }
             _ => false,
         }
-    }
-
-    /// Create a fresh copy of a rule's head and body with all variables renamed
-    /// to fresh VarIds. Returns `(new_head, new_body)`.
-    pub fn standardize_apart(&mut self, id: RuleId) -> (TermId, Vec<TermId>) {
-        let head = self.rules[id.index()].head;
-        let body = self.rules[id.index()].body.clone();
-        let all_vars = self.collect_rule_vars(head, &body);
-
-        // Build a renaming substitution
-        let mut rename = subst::Substitution::new();
-        for vid in all_vars {
-            let fresh = self.fresh_var(vid.name());
-            let fresh_term = self.alloc(Term::Var(Var::Global(fresh)));
-            rename.bind(vid, fresh_term);
-        }
-
-        let new_head = self.apply_subst(head, &rename);
-        let new_body: Vec<TermId> = body
-            .iter()
-            .map(|&b| self.apply_subst(b, &rename))
-            .collect();
-
-        (new_head, new_body)
     }
 
     /// Instantiate a rule's body with fresh variables, incorporating bindings
@@ -1903,23 +1887,21 @@ impl KnowledgeBase {
     /// 3. Builds `answer_links` mapping query vars to fresh vars (or concrete
     ///    values) based on tree_subst entries
     ///
-    /// Returns `(fresh_body, answer_links)` where `answer_links` maps
-    /// query variables to their fresh counterparts (or concrete values).
+    /// Returns `(fresh_nodes, answer_links)`: the opened, head-match-renamed
+    /// occurrence body (pushed by the resolver as `Value::Node` goals) and
+    /// `answer_links` mapping query variables to their fresh counterparts (or
+    /// concrete values).
     pub fn with_fresh_vars(
         &mut self,
         id: RuleId,
         tree_subst: &subst::Substitution,
-    ) -> (Vec<TermId>, Vec<Rc<NodeOccurrence>>, subst::Substitution) {
+    ) -> (Vec<Rc<NodeOccurrence>>, subst::Substitution) {
         let arity = self.rules[id.index()].arity;
         let head = self.rules[id.index()].head;
-        let body = self.rules[id.index()].body.clone();
-        // WI-246: the parallel occurrence body — opened + head-match-renamed
-        // the same way as the term body. The resolver pushes these as
-        // `Value::Node` goals; today they mirror the term body structurally,
-        // and are the substrate that will carry typer dot-rewrites once the
-        // typer produces them. NOTE: the caller's delay pre-check still runs on
-        // the term body (`final_body`), which assumes term/occurrence parity —
-        // revisit when the occurrence body starts to diverge.
+        // WI-246: the rule's occurrence body — opened + head-match-renamed, then
+        // pushed by the resolver as `Value::Node` goals (and driving the
+        // caller-var delay pre-check). The term body (`RuleEntry.body`) is no
+        // longer opened/renamed here — it is on no resolution path.
         let body_nodes = self.rules[id.index()].body_nodes.clone();
 
         // WI-246: matching a `Value::Node` goal binds head/rule vars to
@@ -1962,12 +1944,6 @@ impl KnowledgeBase {
                 .map(|_| self.fresh_var(name_sym))
                 .collect();
 
-            // Open head and body
-            let _fresh_head = self.term_from_debruijn(head, &fresh_vars);
-            let fresh_body: Vec<TermId> = body.iter()
-                .map(|&b| self.term_from_debruijn(b, &fresh_vars))
-                .collect();
-
             // Build answer_links (query var → fresh var) and body_rename
             // (fresh var → concrete value from head match).
             //
@@ -1998,20 +1974,10 @@ impl KnowledgeBase {
                 }
             }
 
-            // Apply rename to body: replace fresh vars with concrete values
-            // from the head match. Unmatched fresh vars stay as variables
-            // (will be bound during body resolution).
-            let final_body = if body_rename.bindings.is_empty() {
-                fresh_body
-            } else {
-                fresh_body.iter()
-                    .map(|&b| self.apply_subst(b, &body_rename))
-                    .collect()
-            };
-
             // Occurrence body: De Bruijn-open with the same fresh vars, then
-            // apply the head-match rename via `substitute_occurrence` (the
-            // occurrence analog of `apply_subst` used for `final_body`).
+            // apply the head-match rename via `substitute_occurrence` (replace
+            // fresh vars with the concrete head-match values; unmatched fresh
+            // vars stay as variables, bound during body resolution).
             let opened_nodes: Vec<Rc<NodeOccurrence>> = body_nodes
                 .iter()
                 .map(|n| node_occurrence::open_debruijn_node(n, &fresh_vars))
@@ -2026,10 +1992,18 @@ impl KnowledgeBase {
                 out
             };
 
-            (final_body, final_nodes, answer_links)
+            (final_nodes, answer_links)
         } else {
-            // Legacy path: Global vars (ground facts or rules not yet converted)
-            let all_vars = self.collect_rule_vars(head, &body);
+            // Legacy path: Global vars (ground facts or rules not yet converted).
+            // WI-246: collect rule vars from the head (still a hash-consed term)
+            // + the OCCURRENCE body — legacy bodies use Global vars, parallel to
+            // `body_nodes`, so no term body is read here.
+            let mut all_vars = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            self.collect_vars_rec(head, &mut all_vars, &mut seen);
+            for n in &body_nodes {
+                node_occurrence::collect_occurrence_global_vars(n, &mut all_vars, &mut seen);
+            }
 
             let mut rename = subst::Substitution::new();
             for vid in &all_vars {
@@ -2043,11 +2017,6 @@ impl KnowledgeBase {
                 let fresh_term = self.alloc(Term::Var(Var::Global(fresh)));
                 rename.bind(*vid, fresh_term);
             }
-
-            let fresh_body: Vec<TermId> = body
-                .iter()
-                .map(|&b| self.apply_subst(b, &rename))
-                .collect();
 
             // Occurrence body: legacy bodies already use Global vars, so just
             // apply the same `rename` via `substitute_occurrence`.
@@ -2075,20 +2044,8 @@ impl KnowledgeBase {
                 }
             }
 
-            (fresh_body, final_nodes, answer_links)
+            (final_nodes, answer_links)
         }
-    }
-
-    /// Apply a substitution to each goal in a list, returning new goal terms.
-    ///
-    /// Used to propagate concrete bindings from a ground fact match to
-    /// remaining goals.
-    pub fn apply_subst_each(
-        &mut self,
-        goals: &[TermId],
-        subst: &subst::Substitution,
-    ) -> Vec<TermId> {
-        goals.iter().map(|&g| self.apply_subst(g, subst)).collect()
     }
 
     // ── Helpers ─────────────────────────────────────────────────
@@ -3154,45 +3111,6 @@ mod tests {
             }
             other => panic!("expected Fn, got {:?}", other),
         }
-    }
-
-    #[test]
-    fn standardize_apart_produces_fresh_vars() {
-        let mut kb = KnowledgeBase::new();
-        let sort = kb.make_name_term("Rule");
-        let domain = kb.make_name_term("test");
-        let f_sym = kb.intern("f");
-        let g_sym = kb.intern("g");
-
-        let x_sym = kb.intern("x");
-        let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
-
-        let head = kb.alloc(Term::Fn {
-            functor: f_sym,
-            pos_args: SmallVec::from_elem(var_x, 1),
-            named_args: SmallVec::new(),
-        });
-        let body_lit = kb.alloc(Term::Fn {
-            functor: g_sym,
-            pos_args: SmallVec::from_elem(var_x, 1),
-            named_args: SmallVec::new(),
-        });
-
-        let rid = kb.assert_rule(head, vec![body_lit], sort, domain, None);
-        let (new_head, new_body) = kb.standardize_apart(rid);
-
-        // Head and body should have a different variable
-        assert_ne!(new_head, head);
-        let head_vars = kb.collect_vars(new_head);
-        assert_eq!(head_vars.len(), 1);
-        assert_ne!(head_vars[0], vx);
-
-        // Body should share the same fresh variable as head
-        assert_eq!(new_body.len(), 1);
-        let body_vars = kb.collect_vars(new_body[0]);
-        assert_eq!(body_vars.len(), 1);
-        assert_eq!(head_vars[0], body_vars[0]);
     }
 
     #[test]

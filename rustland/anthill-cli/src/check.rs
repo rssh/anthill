@@ -87,7 +87,7 @@ pub fn run_check_with(
 
     let mut out = Vec::new();
     for rid in kb.by_functor(record_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let outcome = match check_one_record_with(
             kb, head, &blob_dir, &witness_dir, solver, opts
@@ -476,7 +476,7 @@ fn proof_record_exists(kb: &KnowledgeBase, qn: &str) -> bool {
         None => return false,
     };
     for rid in kb.by_functor(record_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
             if let Some(tid) = get_named_arg(kb, named_args, "rule") {
@@ -565,7 +565,7 @@ fn check_scope_axiom_witness(
             ),
         };
         for rid in kb.by_functor(sort_info_sym) {
-            if !kb.rule_body(rid).is_empty() { continue; }
+            if !kb.is_fact(rid) { continue; }
             let head = kb.rule_head(rid);
             let head_named = match kb.get_term(head) {
                 Term::Fn { named_args, .. } => named_args.clone(),
@@ -598,7 +598,7 @@ fn check_scope_axiom_witness(
         };
         let mut scope_seen = false;
         for rid in kb.by_functor(requires_sym) {
-            if !kb.rule_body(rid).is_empty() { continue; }
+            if !kb.is_fact(rid) { continue; }
             let head = kb.rule_head(rid);
             let head_named = match kb.get_term(head) {
                 Term::Fn { named_args, .. } => named_args.clone(),

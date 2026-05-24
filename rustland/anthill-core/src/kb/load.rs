@@ -1660,7 +1660,7 @@ fn build_base_substitutions(kb: &mut KnowledgeBase) {
     let mut sort_entries: Vec<(Symbol, Vec<(Symbol, TermId)>)> = Vec::new();
 
     for rid in rule_ids {
-        if !kb.rule_body(rid).is_empty() {
+        if !kb.is_fact(rid) {
             continue; // skip rules, only process facts
         }
         let head = kb.rule_head(rid);
@@ -1774,7 +1774,7 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
         if kb.is_requires_resolved(*rid) {
             continue;
         }
-        if !kb.rule_body(*rid).is_empty() {
+        if !kb.is_fact(*rid) {
             continue;
         }
         let head = kb.rule_head(*rid);
@@ -1991,7 +1991,7 @@ fn register_requires_axiom_witnesses(kb: &mut KnowledgeBase) {
     let mut new_records: Vec<TermId> = Vec::new();
 
     for rid in requires_rids {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let head_term = kb.get_term(head).clone();
         let named = match head_term {
@@ -2151,7 +2151,7 @@ fn register_induction_axiom_witnesses(kb: &mut KnowledgeBase) {
     let mut new_records: Vec<TermId> = Vec::new();
 
     for rid in sort_info_rids {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let head_term = kb.get_term(head).clone();
         let named = match head_term {
@@ -2309,7 +2309,7 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
     let provides_rids = kb.by_functor(provides_info_sym);
     let mut targets: Vec<(String, TermId)> = Vec::new();
     for rid in provides_rids {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let head_term = kb.get_term(head).clone();
         let named = match head_term {
@@ -2489,7 +2489,7 @@ pub fn build_sort_ops_table(kb: &mut KnowledgeBase) {
     // the `by_functor` borrow walk.
     let mut pairs: Vec<(Symbol, Symbol)> = Vec::new();
     for rid in kb.by_functor(provides_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args.clone(),
@@ -2547,7 +2547,7 @@ fn sorts_and_own_ops(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<Symbol>)> {
     };
     let mut out: Vec<(Symbol, Vec<Symbol>)> = Vec::new();
     for rid in kb.by_functor(sort_info_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args,
@@ -2751,7 +2751,7 @@ pub fn sort_info_qn(
 fn collect_existing_proof_record_qns(kb: &KnowledgeBase, record_sym: Symbol) -> HashSet<String> {
     let mut out = HashSet::new();
     for rid in kb.by_functor(record_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
             if let Some(tid) = super::typing::get_named_arg(kb, named_args, "rule") {
@@ -2883,7 +2883,7 @@ fn collect_sort_operations(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Symb
 
     let rule_ids = kb.by_functor(sort_info_sym);
     for rid in rule_ids {
-        if !kb.rule_body(rid).is_empty() {
+        if !kb.is_fact(rid) {
             continue;
         }
         let head = kb.rule_head(rid);
@@ -2933,7 +2933,7 @@ fn find_operation_in_scope(kb: &mut KnowledgeBase, sort_ref_tid: TermId, short_n
 
     let rule_ids = kb.by_functor(op_info_sym);
     for rid in rule_ids {
-        if !kb.rule_body(rid).is_empty() {
+        if !kb.is_fact(rid) {
             continue;
         }
         let head = kb.rule_head(rid);
@@ -4699,7 +4699,7 @@ impl<'a> Loader<'a> {
         let sort_name = self.kb.resolve_sym(sym);
         let scan = |matches: &dyn Fn(Symbol, &str) -> bool| -> Option<TermId> {
             for rid in self.kb.by_functor(alias_sym) {
-                if !self.kb.rule_body(rid).is_empty() { continue; }
+                if !self.kb.is_fact(rid) { continue; }
                 let head = self.kb.rule_head(rid);
                 let Term::Fn { pos_args, .. } = self.kb.get_term(head) else { continue };
                 if pos_args.len() < 2 { continue; }
@@ -4942,7 +4942,7 @@ impl<'a> Loader<'a> {
         // from the Var the entity field already captured).
         let alias_sym = self.kb.resolve_symbol("SortAlias");
         for rid in self.kb.by_functor(alias_sym) {
-            if !self.kb.rule_body(rid).is_empty() { continue; }
+            if !self.kb.is_fact(rid) { continue; }
             let head = self.kb.rule_head(rid);
             if let Term::Fn { pos_args, .. } = self.kb.get_term(head) {
                 if pos_args.len() >= 2 && pos_args[0] == sort_term {

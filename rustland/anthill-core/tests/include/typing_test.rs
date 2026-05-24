@@ -1748,7 +1748,7 @@ end
     let mut body_var_sym: Option<Symbol> = None;
 
     for rid in kb.by_functor(op_info_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
             // Check if this is the "id" operation
@@ -2435,7 +2435,7 @@ end
     // Check that SortInfo for Color has kind = "enum"
     let si_sym = kb.resolve_symbol("anthill.reflect.SortInfo");
     for rid in kb.by_functor(si_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
             let name = named_args.iter()

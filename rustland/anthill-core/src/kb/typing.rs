@@ -11,7 +11,7 @@ use smallvec::SmallVec;
 
 use super::term::{Term, TermId, Literal, Var, VarId};
 use super::node_occurrence::{
-    materialize_from_handle,
+    for_each_child, materialize_from_handle,
     Expr, MatchBranch, NodeKind, NodeOccurrence,
 };
 use super::{KnowledgeBase, SortKind};
@@ -3270,7 +3270,7 @@ fn collect_provides_candidates(
 
     let mut out: Vec<Candidate> = Vec::new();
     for rid in kb.by_functor(provides_sym) {
-        if !kb.rule_body(rid).is_empty() {
+        if !kb.is_fact(rid) {
             continue;
         }
         let head = kb.rule_head(rid);
@@ -4070,7 +4070,7 @@ fn operation_has_no_body(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
         None => return false,
     };
     for rid in kb.by_functor(op_info_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named_args = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args,
@@ -4308,7 +4308,7 @@ fn check_constructor_iter(
         // Collect alias info: (param_short_name, VarId, bound_type)
         let mut alias_info: Vec<(String, TermId)> = Vec::new();
         for rid in kb.by_functor(a_sym) {
-            if !kb.rule_body(rid).is_empty() { continue; }
+            if !kb.is_fact(rid) { continue; }
             let head = kb.rule_head(rid);
             if let Term::Fn { pos_args, .. } = kb.get_term(head) {
                 if pos_args.len() >= 2 {
@@ -4652,7 +4652,7 @@ fn lookup_operation_return_type(kb: &KnowledgeBase, functor: Symbol) -> Option<T
 fn lookup_operation_field(kb: &KnowledgeBase, functor: Symbol, field: &str) -> Option<TermId> {
     let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo")?;
     for rid in kb.by_functor(op_info_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
             let name_val = named_args.iter()
@@ -4891,7 +4891,7 @@ fn resolve_sort_alias(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
     let sort_name = kb.resolve_sym(sym);
     let find = |matches: fn(&KnowledgeBase, Symbol, Symbol, &str) -> bool| {
         for rid in kb.by_functor(alias_sym) {
-            if !kb.rule_body(rid).is_empty() { continue; }
+            if !kb.is_fact(rid) { continue; }
             let head = kb.rule_head(rid);
             if let Term::Fn { pos_args, .. } = kb.get_term(head) {
                 if pos_args.len() >= 2 {
@@ -5643,7 +5643,7 @@ fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
     };
 
     for rid in kb.by_functor(requires_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named_args = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args,
@@ -5808,7 +5808,7 @@ fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
     };
 
     for rid in kb.by_functor(sort_info_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named_args = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args,
@@ -6249,7 +6249,7 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> 
 /// body-less impl symbols. Diagnostic: `wi237_diag_test.rs`.
 fn find_sort_info(kb: &KnowledgeBase, sort_info_sym: Symbol, sort_functor: Symbol) -> Option<(Vec<Symbol>, Vec<Symbol>)> {
     for rid in kb.by_functor(sort_info_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named_args = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args,
@@ -6597,7 +6597,7 @@ fn check_entity_facts(kb: &mut KnowledgeBase, ctor_syms: &[Symbol], errors: &mut
         if field_types.is_empty() { continue; }
 
         for rid in kb.by_functor(ctor_sym) {
-            if !kb.rule_body(rid).is_empty() { continue; }
+            if !kb.is_fact(rid) { continue; }
 
             // Skip entity definitions and metadata
             let fact_sort = kb.rule_sort(rid);
@@ -6867,9 +6867,10 @@ fn check_pattern_fragment(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Ve
     };
 
     for rid in kb.by_domain(sort_term) {
-        let body = kb.rule_body(rid);
-        if body.is_empty() { continue; } // skip facts — only check rules
+        if kb.is_fact(rid) { continue; } // skip facts — only check rules
 
+        // Head stays a hash-consed term (it is searched in the discrim tree),
+        // so the head checks remain term-based.
         let head = kb.rule_head(rid);
 
         let head_sym = match kb.get_term(head) {
@@ -6888,92 +6889,118 @@ fn check_pattern_fragment(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Ve
             });
         }
 
-        // Check body goals for pattern fragment violations
-        for &goal_tid in body {
-            check_ho_apply_pattern(kb, goal_tid, ho_apply_sym, head_sym, span, errors);
+        // Check body goals for pattern fragment violations — WI-246: walk the
+        // OCCURRENCE body (`rule_body_nodes`), not the term body. `ho_apply` is
+        // not a recognized reflect materialize key, so it stays faithful
+        // (`Expr::Apply { functor: ho_apply, … }`) in the occurrence form.
+        for goal in kb.rule_body_nodes(rid) {
+            check_ho_apply_pattern_occ(kb, goal, ho_apply_sym, head_sym, span, errors);
         }
     }
 }
 
-/// Check a term for ho_apply pattern fragment violations.
-fn check_ho_apply_pattern(
+/// Check an occurrence (rule-body goal) for ho_apply pattern fragment
+/// violations — WI-246: the occurrence-walking twin of the former
+/// `check_ho_apply_pattern` term-walker. `ho_apply` materializes faithfully to
+/// `Expr::Apply { functor: ho_apply, … }` (not a recognized reflect key), so
+/// the structural checks carry over: the functor-bearing forms
+/// (`Apply`/`Constructor`/`Instantiation`) mirror the term-walker's `Term::Fn`,
+/// and `Expr::Var(DeBruijn)` mirrors `Term::Var(DeBruijn)` in the stored body.
+fn check_ho_apply_pattern_occ(
     kb: &KnowledgeBase,
-    term: TermId,
+    occ: &Rc<NodeOccurrence>,
     ho_apply_sym: Symbol,
     rule_sym: Symbol,
     span: Option<Span>,
     errors: &mut Vec<TypeError>,
 ) {
-    match kb.get_term(term) {
-        Term::Fn { functor, pos_args, named_args, .. } => {
-            let functor = *functor;
-            let pos_args = pos_args.clone();
-            let named_args = named_args.clone();
+    let Some(expr) = occ.as_expr() else { return };
+    let (functor, pos_args, named_args) = match expr {
+        Expr::Apply { functor, pos_args, named_args, .. } => (*functor, pos_args, named_args),
+        Expr::Constructor { name, pos_args, named_args } => (*name, pos_args, named_args),
+        Expr::Instantiation { name, pos_args, named_args } => (*name, pos_args, named_args),
+        _ => return,
+    };
 
-            if functor == ho_apply_sym && !pos_args.is_empty() {
-                // This is an ho_apply — check pattern fragment rules
+    if functor == ho_apply_sym && !pos_args.is_empty() {
+        // This is an ho_apply — check pattern fragment rules.
 
-                // Rule 2: first arg (predicate) must be a variable
-                let pred = pos_args[0];
-                if !matches!(kb.get_term(pred), Term::Var(_)) {
-                    // After body_rename, the var may be substituted with a concrete term.
-                    // In stored rules (DeBruijn), it should be a Var. In opened rules, it may not be.
-                    // Only check stored (DeBruijn) rules.
-                    if matches!(kb.get_term(pred), Term::Fn { .. }) {
-                        // Check if it's another ho_apply — predicate applied to predicate
-                        if let Term::Fn { functor: inner_f, .. } = kb.get_term(pred) {
-                            if *inner_f == ho_apply_sym {
-                                errors.push(TypeError::Other {
-                                    span,
-                                    context: TypeErrorContext::Rule { name: rule_sym, field: RuleField::Body },
-                                    expected: "variable as predicate in ho_apply".to_string(),
-                                    actual: "nested ho_apply (predicate applied to predicate)".to_string(),
-                                });
-                            }
-                        }
-                    }
+        // Rule 2: first arg (predicate) must be a variable. If it's instead a
+        // nested ho_apply (predicate applied to predicate), flag it.
+        let pred = &pos_args[0];
+        if !matches!(pred.as_expr(), Some(Expr::Var(_))) {
+            if let Some(Expr::Apply { functor: inner_f, .. }) = pred.as_expr() {
+                if *inner_f == ho_apply_sym {
+                    errors.push(TypeError::Other {
+                        span,
+                        context: TypeErrorContext::Rule { name: rule_sym, field: RuleField::Body },
+                        expected: "variable as predicate in ho_apply".to_string(),
+                        actual: "nested ho_apply (predicate applied to predicate)".to_string(),
+                    });
                 }
-
-                // Rule 3: remaining args must be distinct (no duplicate variables)
-                let mut seen_vars: Vec<u32> = Vec::new();
-                for &arg in &pos_args[1..] {
-                    if let Term::Var(Var::DeBruijn(idx)) = kb.get_term(arg) {
-                        if seen_vars.contains(idx) {
-                            errors.push(TypeError::Other {
-                                span,
-                                context: TypeErrorContext::Rule { name: rule_sym, field: RuleField::Body },
-                                expected: "distinct variables in ho_apply args".to_string(),
-                                actual: format!("duplicate variable ?{} in predicate application", idx),
-                            });
-                        }
-                        seen_vars.push(*idx);
-                    }
-
-                    // Rule 3b: args must not contain ho_apply (no predicate variable as argument)
-                    if term_contains_functor(kb, arg, ho_apply_sym) {
-                        errors.push(TypeError::Other {
-                            span,
-                            context: TypeErrorContext::Rule { name: rule_sym, field: RuleField::Body },
-                            expected: "first-order args in ho_apply".to_string(),
-                            actual: "predicate variable as argument to predicate".to_string(),
-                        });
-                    }
-                }
-            }
-
-            // Recurse into subterms
-            for &arg in pos_args.iter() {
-                check_ho_apply_pattern(kb, arg, ho_apply_sym, rule_sym, span, errors);
-            }
-            for &(_, arg) in named_args.iter() {
-                check_ho_apply_pattern(kb, arg, ho_apply_sym, rule_sym, span, errors);
             }
         }
-        _ => {}
+
+        // Rule 3: remaining args must be distinct (no duplicate variables).
+        let mut seen_vars: Vec<u32> = Vec::new();
+        for arg in &pos_args[1..] {
+            if let Some(Expr::Var(Var::DeBruijn(idx))) = arg.as_expr() {
+                if seen_vars.contains(idx) {
+                    errors.push(TypeError::Other {
+                        span,
+                        context: TypeErrorContext::Rule { name: rule_sym, field: RuleField::Body },
+                        expected: "distinct variables in ho_apply args".to_string(),
+                        actual: format!("duplicate variable ?{} in predicate application", idx),
+                    });
+                }
+                seen_vars.push(*idx);
+            }
+
+            // Rule 3b: args must not contain ho_apply (no predicate variable as argument).
+            if occurrence_contains_functor(arg, ho_apply_sym) {
+                errors.push(TypeError::Other {
+                    span,
+                    context: TypeErrorContext::Rule { name: rule_sym, field: RuleField::Body },
+                    expected: "first-order args in ho_apply".to_string(),
+                    actual: "predicate variable as argument to predicate".to_string(),
+                });
+            }
+        }
+    }
+
+    // Recurse into subterms.
+    for arg in pos_args.iter() {
+        check_ho_apply_pattern_occ(kb, arg, ho_apply_sym, rule_sym, span, errors);
+    }
+    for (_, arg) in named_args.iter() {
+        check_ho_apply_pattern_occ(kb, arg, ho_apply_sym, rule_sym, span, errors);
     }
 }
 
-/// Check if a term (or any subterm) contains the given functor.
+/// Check if an occurrence (or any sub-occurrence) contains the given functor.
+/// Occurrence-walking twin of [`term_contains_functor`] for the rule-body
+/// pattern-fragment check; `Apply`/`Constructor`/`Instantiation` carry the
+/// functor (mirroring `Term::Fn`).
+fn occurrence_contains_functor(occ: &Rc<NodeOccurrence>, target: Symbol) -> bool {
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
+    while let Some(o) = stack.pop() {
+        if let Some(expr) = o.as_expr() {
+            let functor = match expr {
+                Expr::Apply { functor, .. } => Some(*functor),
+                Expr::Constructor { name, .. } | Expr::Instantiation { name, .. } => Some(*name),
+                _ => None,
+            };
+            if functor == Some(target) {
+                return true;
+            }
+            for_each_child(expr, |c| stack.push(Rc::clone(c)));
+        }
+    }
+    false
+}
+
+/// Check if a term (or any subterm) contains the given functor. Still used for
+/// the rule HEAD (a hash-consed term); the body uses [`occurrence_contains_functor`].
 fn term_contains_functor(kb: &KnowledgeBase, term: TermId, target_functor: Symbol) -> bool {
     match kb.get_term(term) {
         Term::Fn { functor, pos_args, named_args, .. } => {

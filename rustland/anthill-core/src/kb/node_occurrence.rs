@@ -712,6 +712,30 @@ pub fn occurrence_has_unbound_var(root: &Rc<NodeOccurrence>) -> bool {
     false
 }
 
+/// Collect the distinct `Var::Global` ids occurring in an occurrence (deduped
+/// via `seen`), recursing into children. The occurrence twin of the term-side
+/// `collect_vars_rec` — which likewise collects only `Var::Global` (Rigid /
+/// DeBruijn ignored). Used by `with_fresh_vars`'s legacy path to gather a
+/// rule's body vars without reading the term body (WI-246).
+pub(super) fn collect_occurrence_global_vars(
+    root: &Rc<NodeOccurrence>,
+    vars: &mut Vec<VarId>,
+    seen: &mut std::collections::HashSet<u32>,
+) {
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(root)];
+    while let Some(occ) = stack.pop() {
+        match occ.as_expr() {
+            Some(Expr::Var(Var::Global(vid))) => {
+                if seen.insert(vid.raw()) {
+                    vars.push(*vid);
+                }
+            }
+            Some(expr) => for_each_child(expr, |c| stack.push(Rc::clone(c))),
+            None => {}
+        }
+    }
+}
+
 /// WI-246: structural equality of two occurrences — used by
 /// `Value::structural_eq` so the resolver's non-linear-pattern consistency
 /// check (a head var bound at two goal positions) treats two structurally-
@@ -996,6 +1020,10 @@ pub(super) fn scalar_value_expr(v: &Value) -> Option<Expr> {
         Value::Float(f) => Expr::Const(Literal::Float(ordered_float::OrderedFloat(*f))),
         Value::Bool(b) => Expr::Const(Literal::Bool(*b)),
         Value::Str(s) => Expr::Const(Literal::String(s.clone())),
+        // WI-109: a value-level logic variable has a direct `Expr::Var` leaf
+        // — so an occurrence var bound to a `Value::Var` reconstructs as a
+        // variable rather than tripping the caller's non-scalar policy.
+        Value::Var(var) => Expr::Var(*var),
         _ => return None,
     })
 }

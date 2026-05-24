@@ -940,16 +940,23 @@ fn dispatch_derivation(
     let visited: BTreeSet<String> =
         std::iter::once(rule_qn.to_string()).collect();
     for rule_id in rules {
-        if kb.rule_body(rule_id).is_empty() {
+        if kb.is_fact(rule_id) {
             return DispatchOutcome {
                 verdict: Verdict::Proved,
                 witness: Some(derivation_witness.clone()),
                 visited_rules: visited.clone(),
             };
         }
+        // Resolve the rule's body as a goal list. Use the occurrence body
+        // (`Value::Node` goals) directly — the resolver is Value-internal, so
+        // no term lowering is needed (WI-246).
         let empty_subst = anthill_core::kb::subst::Substitution::new();
-        let (fresh_body, _nodes, _links) = kb.with_fresh_vars(rule_id, &empty_subst);
-        if !kb.resolve(&fresh_body, &config).is_empty() {
+        let (fresh_nodes, _links) = kb.with_fresh_vars(rule_id, &empty_subst);
+        let goals: Vec<anthill_core::eval::value::Value> = fresh_nodes
+            .into_iter()
+            .map(anthill_core::eval::value::Value::Node)
+            .collect();
+        if !kb.resolve_goals(goals, &config).is_empty() {
             return DispatchOutcome {
                 verdict: Verdict::Proved,
                 witness: Some(derivation_witness),
@@ -1187,7 +1194,7 @@ fn cite_status(
     };
     let mut found_record = false;
     for rid in kb.by_functor(record_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args,
@@ -1323,7 +1330,7 @@ fn implicit_cites_for(rule_qn: &str, kb: &KnowledgeBase) -> Vec<String> {
     // Snapshot all ProofRecord QNs once so the inner loop is cheap.
     let mut all_record_qns: Vec<String> = Vec::new();
     for rid in kb.by_functor(record_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args,

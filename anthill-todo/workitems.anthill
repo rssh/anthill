@@ -752,7 +752,7 @@ fact WorkItem(
   description: "Add Value::Var(Var) variant — a typed value-level representation of logic variables (flex / DeBruijn / rigid). Driver: makes the Term ↔ Value round-trip lossless for variable-bearing terms, and unblocks future stdlib tactics or proof primitives that manipulate partially-discharged proof states in eval-land. Today logic variables only exist as Term::Var via Value::Term(TermId); reflect encodes them lossily as Value::Entity{var_repr, name: '?name'|'_n'|'!name'} (string-prefix kind discrimination, no structural reconstruction). After this work item, the encoding becomes Value::Var(Var) — kind-typed, structurally roundtrippable. Surface area: ~83 Value::* match sites across 14 files (anthill-core/src/{eval,kb,persistence,reflect}, anthill-stl/src/reflect). Each site needs a Value::Var(_) arm with case-by-case semantics: structural_eq compares by Var equality; arithmetic / comparison ops error with clear 'cannot evaluate over a variable' message; term-conversion (alloc_from_value) routes to Term::Var; pattern matching may want to bind. NOT NEEDED for WI-108 alone (skolem-leakage invariant prevents Rigid reaching Value round-trips); no current driver. Open until a future tactic or stdlib op forces the issue. See docs/status/wi-108.md §'Var::Rigid at the Value level' for the constraint this work item lifts.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-24T00:25:03Z"))
 
 fact WorkItem(
   id: "WI-108",

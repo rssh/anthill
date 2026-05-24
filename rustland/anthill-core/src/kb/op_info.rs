@@ -47,7 +47,7 @@ pub struct OpInfoRecord {
 pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInfoRecord> {
     let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo")?;
     for rid in kb.by_functor(op_info_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named_args = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args.clone(),

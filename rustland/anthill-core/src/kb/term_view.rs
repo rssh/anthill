@@ -230,6 +230,12 @@ impl TermView for Value {
             },
             // WI-276: a reflect Expr occurrence is structural — expose its Expr.
             Value::Node(occ) => occ_head(occ),
+            // WI-109: a value-level logic variable views the same as the
+            // matching `Term::Var` (TermIdView): flex `Global` is a unifiable
+            // var head; `Rigid` / `DeBruijn` are opaque (match stored
+            // wildcard patterns only, never concrete-key patterns).
+            Value::Var(Var::Global(vid)) => ViewHead::Var(*vid),
+            Value::Var(Var::Rigid(_)) | Value::Var(Var::DeBruijn(_)) => ViewHead::Opaque,
             Value::Closure(_)
             | Value::Stream(_)
             | Value::Lazy(_)

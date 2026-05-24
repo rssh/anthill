@@ -189,6 +189,9 @@ impl KnowledgeBase {
             Value::Bool(b) => Ok(self.terms.alloc(Term::Const(Literal::Bool(*b)))),
             Value::Str(s) => Ok(self.terms.alloc(Term::Const(Literal::String(s.clone())))),
             Value::Term(tid) => Ok(*tid),
+            // WI-109: a value-level logic variable lowers back to `Term::Var`,
+            // making the round-trip lossless.
+            Value::Var(var) => Ok(self.terms.alloc(Term::Var(*var))),
             Value::Entity { functor, pos, named } => {
                 let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
                 for p in pos.iter() {
@@ -492,4 +495,26 @@ impl KnowledgeBase {
 
 fn find_named<'a>(named: &'a [(Symbol, Value)], key: Symbol) -> Option<&'a Value> {
     named.iter().find(|(s, _)| *s == key).map(|(_, v)| v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kb::term::{Var, VarId};
+
+    /// WI-109: `Value::Var` lowers back to `Term::Var` losslessly — the
+    /// kind and id survive (`VarId` ignores the display name on compare).
+    #[test]
+    fn value_var_lowers_to_term_var() {
+        let mut kb = KnowledgeBase::new();
+        let name = kb.intern("x");
+        for var in [
+            Var::Global(VarId::new(3, name)),
+            Var::DeBruijn(5),
+            Var::Rigid(VarId::new(7, name)),
+        ] {
+            let tid = kb.alloc_from_value(&Value::Var(var)).expect("lowers");
+            assert_eq!(*kb.get_term(tid), Term::Var(var), "round-trips to the same Var");
+        }
+    }
 }

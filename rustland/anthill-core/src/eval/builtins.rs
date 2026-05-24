@@ -899,12 +899,16 @@ fn term_to_value(interp: &mut Interpreter, tid: crate::kb::term::TermId) -> Valu
         Literal(Literal),
         TryFn(Symbol),
         TryRef(Symbol),
+        // WI-109: a logic variable lifts to the kind-typed `Value::Var`,
+        // not `Value::Term(tid)` — lossless and structurally reconstructible.
+        Var(crate::kb::term::Var),
         AsIs,
     }
     let decision = match interp.kb.get_term(tid) {
         CoreTerm::Const(lit) => Decision::Literal(lit.clone()),
         CoreTerm::Fn { functor, .. } => Decision::TryFn(*functor),
         CoreTerm::Ref(sym) => Decision::TryRef(*sym),
+        CoreTerm::Var(v) => Decision::Var(*v),
         _ => Decision::AsIs,
     };
     match decision {
@@ -928,6 +932,7 @@ fn term_to_value(interp: &mut Interpreter, tid: crate::kb::term::TermId) -> Valu
                 Value::Term(tid)
             }
         }
+        Decision::Var(v) => Value::Var(v),
         Decision::AsIs => Value::Term(tid),
     }
 }

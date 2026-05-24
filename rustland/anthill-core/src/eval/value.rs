@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use crate::intern::Symbol;
 use crate::kb::node_occurrence::NodeOccurrence;
-use crate::kb::term::TermId;
+use crate::kb::term::{TermId, Var};
 
 pub use super::cell_arena::CellHandle;
 pub use super::closure::ClosureHandle;
@@ -99,6 +99,17 @@ pub enum Value {
     // KB-sourced or already-committed data (hash-consed).
     Term(TermId),
 
+    /// WI-109 — a logic variable at the value level (flex `Global`,
+    /// `DeBruijn`, or `Rigid`). Makes the `Term` ↔ `Value` round-trip
+    /// lossless for variable-bearing terms: a `Term::Var` lifts to
+    /// `Value::Var(var)` (kind-typed, structurally reconstructible) rather
+    /// than surviving only as `Value::Term(tid)` or the lossy
+    /// `Value::Entity { var_repr, name: "?x" }` reflect encoding. Arithmetic
+    /// and comparison over a `Value::Var` is an error ("cannot evaluate over
+    /// a variable"); `structural_eq` compares by `Var` equality;
+    /// `alloc_from_value` routes it back to `Term::Var`.
+    Var(Var),
+
     /// WI-242 — positional content binding (operation body, rule head,
     /// or other NodeOccurrence). Reflection ops like `body_of`, `head_of`,
     /// `args_of` produce this; consumers walk the `Rc<NodeOccurrence>`
@@ -124,6 +135,9 @@ impl Value {
             (Value::Str(x), Value::Str(y)) => x == y,
             (Value::Unit, Value::Unit) => true,
             (Value::Term(x), Value::Term(y)) => x == y,
+            // WI-109: two value-level logic variables are equal iff they are
+            // the same variable (kind + id; `VarId` compares by id only).
+            (Value::Var(x), Value::Var(y)) => x == y,
             _ => false,
         }
     }
@@ -194,6 +208,7 @@ impl Value {
             Value::Requirement(_) => "Requirement",
             Value::Term(_) => "Term",
             Value::Node(_) => "Node",
+            Value::Var(_) => "Var",
         }
     }
 }
@@ -230,6 +245,44 @@ mod tests {
         match t {
             Value::Tuple { pos, .. } => assert_eq!(pos.len(), 2),
             _ => panic!(),
+        }
+    }
+
+    // WI-109: value-level logic variables.
+    mod var {
+        use super::*;
+        use crate::intern::Symbol;
+        use crate::kb::term::VarId;
+
+        fn global(id: u32, name: u32) -> Value {
+            Value::Var(Var::Global(VarId::new(id, Symbol::from_raw(name))))
+        }
+
+        #[test]
+        fn type_name_is_var() {
+            assert_eq!(global(0, 0).type_name(), "Var");
+            assert_eq!(Value::Var(Var::DeBruijn(0)).type_name(), "Var");
+        }
+
+        #[test]
+        fn same_var_is_equal_name_irrelevant() {
+            // VarId compares by id only — display name is irrelevant.
+            assert!(global(7, 1).structural_eq(&global(7, 2)));
+            assert!(global(7, 1).scalar_eq(&global(7, 1)));
+        }
+
+        #[test]
+        fn distinct_vars_and_kinds_differ() {
+            assert!(!global(1, 0).structural_eq(&global(2, 0)));
+            // Same numeric payload, different kind ⇒ not equal.
+            assert!(!global(0, 0).structural_eq(&Value::Var(Var::DeBruijn(0))));
+            assert!(Value::Var(Var::DeBruijn(3)).structural_eq(&Value::Var(Var::DeBruijn(3))));
+        }
+
+        #[test]
+        fn var_not_equal_to_non_var() {
+            assert!(!global(0, 0).structural_eq(&Value::Int(0)));
+            assert!(!Value::Int(0).structural_eq(&global(0, 0)));
         }
     }
 }

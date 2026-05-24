@@ -73,7 +73,7 @@ fn find_main_providers(kb: &mut KnowledgeBase) -> Vec<Symbol> {
 
     let mut providers: Vec<Symbol> = Vec::new();
     for rid in kb.by_functor(requires_sym) {
-        if !kb.rule_body(rid).is_empty() {
+        if !kb.is_fact(rid) {
             continue;
         }
         let head = kb.rule_head(rid);

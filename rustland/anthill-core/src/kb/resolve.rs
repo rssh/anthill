@@ -1139,11 +1139,12 @@ impl SearchStream {
             Candidate::Continuation(_) => unreachable!("handled above"),
         };
 
-        let body = opt_rid.map_or(Vec::new(), |rid| kb.rule_body(rid).to_vec());
+        // A fact (empty body) or a non-rule candidate (external row / no rid).
+        let is_fact = opt_rid.map_or(true, |rid| kb.is_fact(rid));
 
         let frame = self.stack.last().unwrap();
 
-        if body.is_empty() {
+        if is_fact {
             // Ground fact (occurrence or rule with empty body, or
             // ExternalRow from a routed-store backend).
             //
@@ -1179,9 +1180,9 @@ impl SearchStream {
             // Rule with body
             let rid = opt_rid.unwrap();
             // `fresh_nodes` is the occurrence body pushed as `Value::Node`
-            // goals; `fresh_body` (term body) feeds the caller-var delay
-            // pre-check below.
-            let (fresh_body, fresh_nodes, answer_links) = kb.with_fresh_vars(rid, &tree_subst);
+            // goals; it also drives the caller-var delay pre-check below
+            // (WI-246 — the term body is no longer built or consulted here).
+            let (fresh_nodes, answer_links) = kb.with_fresh_vars(rid, &tree_subst);
             // [WI-030] No eager apply_subst_each here. The body itself is
             // already concretised through `body_rename` inside
             // `with_fresh_vars`, and caller-side bindings flow into
@@ -1205,9 +1206,9 @@ impl SearchStream {
             let link_pairs: Vec<(VarId, TermId)> = answer_links.iter_terms().collect();
             merged.bind_compressed(link_pairs.into_iter(), &kb.terms);
 
-            // Pre-check: delay propagation on caller vars
+            // Pre-check: delay propagation on caller vars (over the occurrence body)
             if !caller_fresh_vars.is_empty()
-                && kb.body_builtins_delay_on_caller_vars(&fresh_body, &caller_fresh_vars, &merged)
+                && kb.body_builtins_delay_on_caller_vars_nodes(&fresh_nodes, &caller_fresh_vars, &merged)
             {
                 let f = self.stack.last_mut().unwrap();
                 match &mut f.state {
@@ -1289,8 +1290,16 @@ impl SearchStream {
 impl KnowledgeBase {
     /// Create a lazy search stream for the given goals.
     pub fn resolve_lazy(&self, goals: &[TermId], config: &ResolveConfig) -> SearchStream {
+        self.resolve_lazy_goals(goals.iter().copied().map(Value::Term).collect(), config)
+    }
+
+    /// Like [`Self::resolve_lazy`] but takes pre-built `Value` goals — e.g. the
+    /// `Value::Node` occurrence goals from [`Self::with_fresh_vars`], so a
+    /// caller resolving an occurrence body need not lower it to terms first.
+    /// `resolve_lazy` is the thin `&[TermId]` → `Value::Term` wrapper over this.
+    pub fn resolve_lazy_goals(&self, goals: Vec<Value>, config: &ResolveConfig) -> SearchStream {
         let initial_frame = Frame {
-            goals: goals.iter().copied().map(Value::Term).collect(),
+            goals,
             subst: Substitution::new(),
             depth: 0,
             state: FrameState::Init { delay_mode: DelayMode::Normal },
@@ -1315,6 +1324,29 @@ impl KnowledgeBase {
     /// the original query variables to ground terms.
     pub fn resolve(&mut self, goals: &[TermId], config: &ResolveConfig) -> Vec<Solution> {
         self.resolve_with_stats(goals, config).0
+    }
+
+    /// Resolve a list of pre-built `Value` goals (e.g. `Value::Node` occurrence
+    /// goals from [`Self::with_fresh_vars`]). The `Value`-goal counterpart of
+    /// [`Self::resolve`] — and the entry goals migrate toward as queries/bodies
+    /// go occurrence-native; `resolve(&[TermId])` is the term-front-end shim.
+    /// Named `_goals` (not `_value`) to avoid colliding with the subst-layer
+    /// `resolve_as_value` (a variable→binding lookup, an unrelated operation).
+    pub fn resolve_goals(&mut self, goals: Vec<Value>, config: &ResolveConfig) -> Vec<Solution> {
+        let mut stream = self.resolve_lazy_goals(goals, config);
+        let mut solutions = Vec::new();
+        loop {
+            match stream.split_first(self) {
+                Some((sol, rest)) => {
+                    solutions.push(sol);
+                    if config.max_solutions > 0 && solutions.len() >= config.max_solutions {
+                        return solutions;
+                    }
+                    stream = rest;
+                }
+                None => return solutions,
+            }
+        }
     }
 
     /// Like `resolve`, but also returns telemetry from the underlying
@@ -2533,60 +2565,112 @@ impl KnowledgeBase {
         }
     }
 
-    /// Check if a builtin would delay given the current substitution (read-only).
-    fn builtin_would_delay(&self, tag: BuiltinTag, goal: TermId, subst: &Substitution) -> bool {
-        match tag {
-            BuiltinTag::Not => {
-                let inner = self.builtin_first_arg(goal);
-                // NAF delays if inner goal is not ground after applying subst
-                matches!(self.is_ground(inner, subst), GroundCheck::HasVar)
-            }
-            _ => {
-                let arg = self.builtin_first_arg(goal);
-                let walked = self.walk(arg, subst);
-                matches!(self.terms.get(walked), Term::Var(_))
-            }
-        }
-    }
-
-    /// Check if any builtin in a rule body would delay on a caller-originated
-    /// variable (one that came from the query via answer_links).
+    /// WI-246: the caller-var delay pre-check, run over a rule's opened
+    /// occurrence body (`fresh_nodes`) rather than the term body — a step
+    /// toward dropping `body: Vec<TermId>`.
     ///
-    /// If a builtin delays on an internal variable (created fresh for this rule),
-    /// other body goals may bind it — that's fine, no propagation needed.
-    /// But if it delays on a caller variable, the whole rule should delay.
-    fn body_builtins_delay_on_caller_vars(
+    /// If a builtin delays on an internal variable (created fresh for this
+    /// rule), other body goals may bind it — fine, no propagation needed. But
+    /// if it delays on a caller variable (one that came from the query via
+    /// `answer_links`), the whole rule should delay. `Not` is skipped (NAF
+    /// delays via goal rotation at resolution time) and `PushChoice` is skipped
+    /// (a control primitive that fires immediately), so the only delay
+    /// condition checked is "the builtin's first arg resolves to a var". Uses
+    /// the same `resolve_with_term` chasing as the former term-body version, so
+    /// the result is identical for the structurally-parallel bodies.
+    fn body_builtins_delay_on_caller_vars_nodes(
         &self,
-        body: &[TermId],
+        nodes: &[Rc<NodeOccurrence>],
         caller_fresh_vars: &[VarId],
         subst: &Substitution,
     ) -> bool {
-        for &goal in body {
-            if let Some(tag) = self.get_builtin(goal) {
-                // NAF handles delay via goal rotation at resolution time;
-                // other body goals may bind vars before not() is retried.
-                if tag == BuiltinTag::Not {
-                    continue;
-                }
-                // PushChoice is a control primitive — it always fires
-                // immediately at step_init, never delays. Variable args
-                // become goals that delay in their own step if unbound.
-                if tag == BuiltinTag::PushChoice {
-                    continue;
-                }
-                if self.builtin_would_delay(tag, goal, subst) {
-                    let arg = self.builtin_first_arg(goal);
-                    let mut unbound = Vec::new();
-                    self.collect_unbound_vars(arg, subst, &mut unbound);
-                    if unbound.iter().any(|v| caller_fresh_vars.contains(v)) {
-                        return true;
-                    }
+        for node in nodes {
+            let Some(tag) = self.get_builtin_view(node) else { continue };
+            if tag == BuiltinTag::Not || tag == BuiltinTag::PushChoice {
+                continue;
+            }
+            let Some(arg) = node_first_pos_arg(node) else { continue };
+            if self.occ_top_resolves_to_var(&arg, subst) {
+                let mut unbound = Vec::new();
+                self.collect_unbound_vars_node(&arg, subst, &mut unbound);
+                if unbound.iter().any(|v| caller_fresh_vars.contains(v)) {
+                    return true;
                 }
             }
         }
         false
     }
 
+    /// Mirror of `walk`'s var-detection without needing a `TermId`: chase a
+    /// `Global` var through `Value::Term` bindings and report whether the chain
+    /// ends at a variable (unbound, rigid, or DeBruijn) rather than a concrete
+    /// term. Self-referential bindings terminate the chase.
+    fn vid_resolves_to_var(&self, vid: VarId, subst: &Substitution) -> bool {
+        let mut cur = vid;
+        loop {
+            match subst.resolve_with_term(cur) {
+                None => return true,
+                Some(t) => match self.terms.get(t) {
+                    Term::Var(Var::Global(w)) => {
+                        if *w == cur {
+                            return true; // self-referential var binding
+                        }
+                        cur = *w;
+                    }
+                    Term::Var(_) => return true,
+                    _ => return false,
+                },
+            }
+        }
+    }
+
+    /// Occurrence twin of the non-`Not` `builtin_would_delay` arm: the first
+    /// arg is a variable that stays a variable after substitution.
+    fn occ_top_resolves_to_var(&self, arg: &Rc<NodeOccurrence>, subst: &Substitution) -> bool {
+        match arg.as_expr() {
+            Some(Expr::Var(Var::Global(vid))) => self.vid_resolves_to_var(*vid, subst),
+            _ => false,
+        }
+    }
+
+    /// Occurrence twin of [`Self::collect_unbound_vars`]: collect the `Global`
+    /// vars in an occurrence arg that remain unbound under `subst`, chasing
+    /// `Value::Term` bindings back into term-land (where the existing
+    /// term-walker takes over).
+    fn collect_unbound_vars_node(
+        &self,
+        arg: &Rc<NodeOccurrence>,
+        subst: &Substitution,
+        out: &mut Vec<VarId>,
+    ) {
+        match arg.as_expr() {
+            Some(Expr::Var(Var::Global(vid))) => match subst.resolve_with_term(*vid) {
+                Some(t) => self.collect_unbound_vars(t, subst, out),
+                None => {
+                    if !out.contains(vid) {
+                        out.push(*vid);
+                    }
+                }
+            },
+            Some(expr) => {
+                node_occurrence::for_each_child(expr, |c| {
+                    self.collect_unbound_vars_node(c, subst, out)
+                });
+            }
+            None => {}
+        }
+    }
+
+}
+
+/// First positional child of a builtin occurrence goal (`eq(a, b)` → `a`).
+fn node_first_pos_arg(node: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
+    match node.as_expr()? {
+        Expr::Apply { pos_args, .. } | Expr::Constructor { pos_args, .. } => {
+            pos_args.first().map(Rc::clone)
+        }
+        _ => None,
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────
