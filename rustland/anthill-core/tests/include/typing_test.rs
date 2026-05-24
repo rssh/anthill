@@ -2753,17 +2753,17 @@ rule test_induction(?P) :- ?P(nil)
 
     let facts = kb.by_functor(test_sym.unwrap());
     assert!(!facts.is_empty(), "should have rule for test_induction");
-    let body = kb.rule_body(facts[0]);
+    let body = kb.rule_body_nodes(facts[0]);
     assert!(!body.is_empty(), "rule should have a body");
     // Body goal should be ho_apply(?P, nil)
-    match kb.get_term(body[0]) {
-        Term::Fn { functor, pos_args, .. } => {
+    match body[0].as_expr() {
+        Some(anthill_core::kb::node_occurrence::Expr::Apply { functor, pos_args, .. }) => {
             let fname = kb.resolve_sym(*functor);
             assert!(fname == "ho_apply" || fname.ends_with(".ho_apply"),
                 "body should be ho_apply, got: {}", fname);
             assert_eq!(pos_args.len(), 2, "ho_apply should have 2 pos args: ?P and nil");
         }
-        other => panic!("expected Fn term, got {:?}", other),
+        other => panic!("expected ho_apply Apply, got {:?}", other),
     }
 }
 
@@ -2777,15 +2777,15 @@ rule test(?P) :- ?P(foo, bar)
     let test_sym = kb.try_resolve_symbol("test");
     assert!(test_sym.is_some());
     let facts = kb.by_functor(test_sym.unwrap());
-    let body = kb.rule_body(facts[0]);
-    match kb.get_term(body[0]) {
-        Term::Fn { functor, pos_args, .. } => {
+    let body = kb.rule_body_nodes(facts[0]);
+    match body[0].as_expr() {
+        Some(anthill_core::kb::node_occurrence::Expr::Apply { functor, pos_args, .. }) => {
             let fname = kb.resolve_sym(*functor);
             assert!(fname == "ho_apply" || fname.ends_with(".ho_apply"),
                 "body should be ho_apply, got: {}", fname);
             assert_eq!(pos_args.len(), 3, "ho_apply(?P, foo, bar) = 3 pos args");
         }
-        other => panic!("expected Fn, got {:?}", other),
+        other => panic!("expected ho_apply Apply, got {:?}", other),
     }
 }
 
@@ -2828,12 +2828,12 @@ rule bigint_induction(?P)
     }
 
     // Rule body should have 2 goals: ?P(0) and forall(...)
-    let body = kb.rule_body(rules[0]);
+    let body = kb.rule_body_nodes(rules[0]);
     assert_eq!(body.len(), 2, "body should have 2 goals: ?P(0) and forall(...)");
 
     // First goal: ho_apply(?P, 0)
-    match kb.get_term(body[0]) {
-        Term::Fn { functor, pos_args, .. } => {
+    match body[0].as_expr() {
+        Some(anthill_core::kb::node_occurrence::Expr::Apply { functor, pos_args, .. }) => {
             let fname = kb.resolve_sym(*functor);
             assert!(fname == "ho_apply" || fname.ends_with(".ho_apply"),
                 "first goal should be ho_apply, got: {}", fname);
@@ -2848,8 +2848,8 @@ rule bigint_induction(?P)
     // recursive-constructor induction principles. Accept either the
     // plain `forall` functor (for the unparenthesized form) or
     // `forall_impl` (for the nested-implication form).
-    match kb.get_term(body[1]) {
-        Term::Fn { functor, pos_args, .. } => {
+    match body[1].as_expr() {
+        Some(anthill_core::kb::node_occurrence::Expr::Apply { functor, pos_args, .. }) => {
             let fname = kb.resolve_sym(*functor);
             let ok = fname == "forall" || fname.ends_with(".forall")
                   || fname == "forall_impl" || fname.ends_with(".forall_impl");
@@ -2858,7 +2858,7 @@ rule bigint_induction(?P)
                 fname, pos_args.len());
         }
         other => {
-            eprintln!("second goal term: {:?}", other);
+            eprintln!("second goal occurrence: {:?}", other.map(std::mem::discriminant));
         }
     }
 }

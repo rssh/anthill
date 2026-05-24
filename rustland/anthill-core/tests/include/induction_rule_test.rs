@@ -5,6 +5,7 @@
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term::{Term, TermId};
+use anthill_core::kb::node_occurrence::Expr;
 use anthill_core::parse;
 #[allow(unused_imports)]
 use anthill_core::persistence::print::TermPrinter;
@@ -63,8 +64,8 @@ fn finite_enum_induction_rule_is_emitted() {
     // (via ho_apply). We can grep the body text.
     let sym = kb.try_resolve_symbol("test.induction.color.Color.induction").unwrap();
     let rid = kb.by_functor(sym)[0];
-    let body_terms: Vec<String> = kb.rule_body(rid).iter()
-        .map(|&t| printer.print_term(t))
+    let body_terms: Vec<String> = kb.rule_body_nodes(rid).iter()
+        .map(|atom| printer.print_occurrence(atom))
         .collect();
     let body_blob = body_terms.join(" || ");
     for ctor in ["red", "blue", "green"] {
@@ -91,11 +92,11 @@ fn recursive_enum_induction_rule_has_one_case_per_constructor() {
         .expect("IntList.induction symbol missing");
     let rid = kb.by_functor(sym).first().copied()
         .expect("no rule for MyList.induction");
-    assert_eq!(kb.rule_body(rid).len(), 2,
-        "expected 2 body goals (one per ctor), got {}", kb.rule_body(rid).len());
+    assert_eq!(kb.rule_body_nodes(rid).len(), 2,
+        "expected 2 body goals (one per ctor), got {}", kb.rule_body_nodes(rid).len());
     let printer = TermPrinter::new(&kb);
-    let body_blob: String = kb.rule_body(rid).iter()
-        .map(|&t| printer.print_term(t))
+    let body_blob: String = kb.rule_body_nodes(rid).iter()
+        .map(|atom| printer.print_occurrence(atom))
         .collect::<Vec<_>>()
         .join(" || ");
     assert!(body_blob.contains("nil"), "body should mention `nil`: {body_blob}");
@@ -136,29 +137,32 @@ fn recursive_field_emits_inductive_hypothesis() {
     let kb = load_with(src);
     let sym = kb.try_resolve_symbol("test.induction.ih.IntList.induction").unwrap();
     let rid = kb.by_functor(sym)[0];
-    let body = kb.rule_body(rid);
+    let body = kb.rule_body_nodes(rid);
     assert_eq!(body.len(), 2, "expected 2 body goals (nil + cons)");
 
-    // Find the cons goal — must be a forall_impl term.
+    // Find the cons goal — must be a forall_impl occurrence.
     let printer = TermPrinter::new(&kb);
-    let cons_goal = body.iter().copied().find(|&g| {
-        matches!(kb.get_term(g),
-            Term::Fn { functor, .. } if kb.resolve_sym(*functor) == "forall_impl")
+    let cons_goal = body.iter().find(|g| {
+        matches!(g.as_expr(),
+            Some(Expr::Apply { functor, .. }) if kb.resolve_sym(*functor) == "forall_impl")
     }).unwrap_or_else(|| {
-        let dump: Vec<_> = body.iter().map(|&t| printer.print_term(t)).collect();
+        let dump: Vec<_> = body.iter().map(|t| printer.print_occurrence(t)).collect();
         panic!("no forall_impl in body: {dump:?}")
     });
 
-    let printed = printer.print_term(cons_goal);
+    let printed = printer.print_occurrence(cons_goal);
     assert!(printed.contains("(forall("), "missing forall: {printed}");
     assert!(printed.contains(" -: "), "missing -: separator: {printed}");
     assert!(printed.contains("ho_apply"), "missing ho_apply: {printed}");
     assert!(printed.contains("cons"), "consequent should reference cons: {printed}");
 
     // The other goal (nil base case) must be a flat ho_apply, not forall_impl.
-    let nil_goal = body.iter().copied().find(|&g| g != cons_goal).unwrap();
-    match kb.get_term(nil_goal) {
-        Term::Fn { functor, .. } => {
+    let nil_goal = body.iter().find(|g| {
+        !matches!(g.as_expr(),
+            Some(Expr::Apply { functor, .. }) if kb.resolve_sym(*functor) == "forall_impl")
+    }).unwrap();
+    match nil_goal.as_expr() {
+        Some(Expr::Apply { functor, .. }) => {
             assert_eq!(kb.resolve_sym(*functor), "ho_apply",
                 "nil case should be flat ho_apply");
         }
@@ -180,14 +184,13 @@ fn nullary_constructor_uses_ref_term() {
     let kb = load_with(src);
     let sym = kb.try_resolve_symbol("test.induction.nullary.Bit.induction").unwrap();
     let rid = kb.by_functor(sym)[0];
-    for &goal in kb.rule_body(rid) {
-        let t = kb.get_term(goal);
-        match t {
-            Term::Fn { pos_args, .. } if pos_args.len() == 2 => {
-                let ctor_term = kb.get_term(pos_args[1]);
+    for goal in kb.rule_body_nodes(rid) {
+        match goal.as_expr() {
+            Some(Expr::Apply { pos_args, .. }) if pos_args.len() == 2 => {
+                let ctor = pos_args[1].as_expr();
                 assert!(
-                    matches!(ctor_term, Term::Ref(_)),
-                    "nullary ctor should be Term::Ref, got {ctor_term:?}"
+                    matches!(ctor, Some(Expr::Ref(_))),
+                    "nullary ctor should be Expr::Ref, got {ctor:?}"
                 );
             }
             other => panic!("expected ho_apply(?P, ctor) goal, got {other:?}"),

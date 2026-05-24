@@ -79,7 +79,7 @@ fn equation_rule_has_correct_shape() {
         })
         .expect("no eq() rule referencing double()");
 
-    assert_eq!(kb.rule_body(rule_id).len(), 0);
+    assert_eq!(kb.rule_body_nodes(rule_id).len(), 0);
 
     let head = kb.rule_head(rule_id);
     let (lhs, rhs) = match kb.get_term(head) {

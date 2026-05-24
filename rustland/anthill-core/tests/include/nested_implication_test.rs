@@ -5,9 +5,11 @@
 //! principles for the inductive-step case (WI-106 follow-up).
 
 
+use std::rc::Rc;
+
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::term::{Term, TermId};
+use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
 use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 
@@ -27,11 +29,11 @@ fn load_with(extra: &str) -> KnowledgeBase {
     kb
 }
 
-fn rule_body_for(kb: &KnowledgeBase, qn: &str) -> Vec<TermId> {
+fn rule_body_for(kb: &KnowledgeBase, qn: &str) -> Vec<Rc<NodeOccurrence>> {
     let sym = kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("symbol {qn} not found"));
     let rid = kb.by_functor(sym).first().copied()
         .unwrap_or_else(|| panic!("no rule for {qn}"));
-    kb.rule_body(rid).to_vec()
+    kb.rule_body_nodes(rid).to_vec()
 }
 
 #[test]
@@ -52,16 +54,16 @@ fn nested_impl_in_rule_body_parses_and_loads() {
     let body = rule_body_for(&kb, "test.nested.parse.step_witness");
     assert_eq!(body.len(), 2, "expected 2 body goals");
 
-    // Second goal should be a forall_impl term
-    let goal = body[1];
-    match kb.get_term(goal) {
-        Term::Fn { functor, pos_args, named_args } => {
+    // Second goal should be a forall_impl occurrence
+    let goal = &body[1];
+    match goal.as_expr() {
+        Some(Expr::Apply { functor, pos_args, named_args, .. }) => {
             assert_eq!(kb.resolve_sym(*functor), "forall_impl",
                 "second goal should be forall_impl");
             assert_eq!(pos_args.len(), 3, "forall_impl takes (binders, ants, cons)");
             assert!(named_args.is_empty());
         }
-        other => panic!("expected forall_impl, got {other:?}"),
+        other => panic!("expected forall_impl Apply, got {other:?}"),
     }
 }
 
@@ -81,7 +83,7 @@ fn nested_impl_round_trips_through_printer() {
     let kb = load_with(src);
     let body = rule_body_for(&kb, "test.nested.print.s_r");
     let printer = TermPrinter::new(&kb);
-    let printed = printer.print_term(body[0]);
+    let printed = printer.print_occurrence(&body[0]);
     assert!(printed.contains("(forall("), "missing forall opener: {printed}");
     assert!(printed.contains(" -: "), "missing -: separator: {printed}");
     assert!(printed.contains("ho_apply"), "missing ho_apply: {printed}");
@@ -104,30 +106,30 @@ fn nested_impl_multi_binder_multi_antecedent() {
     "#;
     let kb = load_with(src);
     let body = rule_body_for(&kb, "test.nested.multi.m_complex");
-    let goal = body[0];
+    let goal = &body[0];
 
-    let pos = match kb.get_term(goal) {
-        Term::Fn { pos_args, .. } => pos_args.clone(),
-        other => panic!("expected forall_impl, got {other:?}"),
+    let pos: Vec<Rc<NodeOccurrence>> = match goal.as_expr() {
+        Some(Expr::Apply { pos_args, .. }) => pos_args.clone(),
+        other => panic!("expected forall_impl Apply, got {other:?}"),
     };
 
     // binders tuple should have 3 elements
-    let binders = match kb.get_term(pos[0]) {
-        Term::Fn { pos_args, .. } => pos_args.len(),
+    let binders = match pos[0].as_expr() {
+        Some(Expr::Apply { pos_args, .. }) => pos_args.len(),
         _ => 0,
     };
     assert_eq!(binders, 3, "expected 3 binders");
 
     // antecedents tuple should have 2 elements
-    let ants = match kb.get_term(pos[1]) {
-        Term::Fn { pos_args, .. } => pos_args.len(),
+    let ants = match pos[1].as_expr() {
+        Some(Expr::Apply { pos_args, .. }) => pos_args.len(),
         _ => 0,
     };
     assert_eq!(ants, 2, "expected 2 antecedents");
 
     // consequent tuple should have 1 element
-    let cons = match kb.get_term(pos[2]) {
-        Term::Fn { pos_args, .. } => pos_args.len(),
+    let cons = match pos[2].as_expr() {
+        Some(Expr::Apply { pos_args, .. }) => pos_args.len(),
         _ => 0,
     };
     assert_eq!(cons, 1, "expected 1 consequent");

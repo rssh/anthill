@@ -71,7 +71,26 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             }
             Expr::Bottom => buf.push_str("bottom"),
             Expr::Apply { functor, pos_args, named_args, .. } => {
-                self.write_occ_fn(self.view.sym_name(*functor), pos_args, named_args, buf);
+                let fname = self.view.sym_name(*functor);
+                // Round-trip the forall_impl encoding to surface syntax — the
+                // occurrence twin of `write_term`'s special case.
+                if fname == "forall_impl" && pos_args.len() == 3 && named_args.is_empty() {
+                    if let (Some(binders), Some(ants), Some(cons)) = (
+                        self.occ_unwrap_tuple(&pos_args[0]),
+                        self.occ_unwrap_tuple(&pos_args[1]),
+                        self.occ_unwrap_tuple(&pos_args[2]),
+                    ) {
+                        buf.push_str("(forall(");
+                        self.write_occ_inner(binders, &[], buf);
+                        buf.push_str("), ");
+                        self.write_occ_inner(ants, &[], buf);
+                        buf.push_str(" -: ");
+                        self.write_occ_inner(cons, &[], buf);
+                        buf.push(')');
+                        return;
+                    }
+                }
+                self.write_occ_fn(fname, pos_args, named_args, buf);
             }
             Expr::ApplyWithin { functor, args, named_args, .. } => {
                 self.write_occ_fn(self.view.sym_name(*functor), args, named_args, buf);
@@ -209,6 +228,20 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             self.write_occurrence(e, buf);
         }
         buf.push(close);
+    }
+
+    /// If `occ` is a `tuple(...)` apply occurrence with no named args, return a
+    /// borrowed slice over its positional children — the occurrence twin of
+    /// `unwrap_tuple`, used by the `forall_impl` surface-syntax rendering.
+    fn occ_unwrap_tuple<'o>(&self, occ: &'o NodeOccurrence) -> Option<&'o [Rc<NodeOccurrence>]> {
+        match occ.as_expr()? {
+            Expr::Apply { functor, pos_args, named_args, .. }
+                if self.view.sym_name(*functor) == "tuple" && named_args.is_empty() =>
+            {
+                Some(pos_args)
+            }
+            _ => None,
+        }
     }
 }
 

@@ -107,12 +107,11 @@ struct Guard {
 
 struct RuleEntry {
     head: TermId,
-    body: Vec<TermId>,
-    /// WI-246: rule body atoms as `NodeOccurrence` (one per `body` entry,
-    /// same order, De Bruijn-encoded `Expr::Var` leaves). The occurrence
-    /// form is what the typer / `simp_rewrite` walk and rewrite (uniform
-    /// with op bodies); `body` (TermId) remains the resolver's opener input
-    /// until resolution itself flows occurrences. Empty for ground facts.
+    /// WI-246: the rule body — body atoms as `NodeOccurrence` (De Bruijn-encoded
+    /// `Expr::Var` leaves), the SOLE body representation now that the term
+    /// `body: Vec<TermId>` field is dropped. What the resolver opens as goals
+    /// (`with_fresh_vars`) and the typer / `simp_rewrite` walk and rewrite
+    /// (uniform with op bodies). Empty for ground facts.
     body_nodes: Vec<Rc<NodeOccurrence>>,
     sort: TermId,
     domain: TermId,
@@ -647,14 +646,15 @@ impl KnowledgeBase {
         if let Some(m) = meta {
             self.terms.incref(m);
         }
-        for &b in &body {
-            self.terms.incref(b);
-        }
+        // The term `body` is NOT stored or incref'd (WI-246: the term body field
+        // is dropped). It is used transiently below only to materialize the
+        // occurrence body for the non-native callers (facts / synthesized / test
+        // rules); the body terms keep their convert/alloc-time refcount floor.
 
-        // WI-246: the occurrence body — the typer/`simp` view, and (post-WI-246)
-        // the resolver's goal source. Either supplied natively by the loader, or
-        // materialized from the already-built body term as a read-only walk (De
-        // Bruijn leaves preserved as `Expr::Var`). Empty for facts.
+        // WI-246: the occurrence body — the resolver's goal source and the
+        // typer/`simp` view. Either supplied natively by the loader, or
+        // materialized from the body term as a read-only walk (De Bruijn leaves
+        // preserved as `Expr::Var`). Empty for facts.
         let body_nodes: Vec<Rc<NodeOccurrence>> = match body_nodes {
             Some(nodes) => {
                 debug_assert_eq!(
@@ -674,7 +674,6 @@ impl KnowledgeBase {
 
         self.rules.push(RuleEntry {
             head,
-            body,
             body_nodes,
             sort,
             domain,
@@ -1089,7 +1088,9 @@ impl KnowledgeBase {
         let sort = entry.sort;
         let domain = entry.domain;
         let meta = entry.meta;
-        let body: Vec<TermId> = entry.body.clone();
+        // WI-246: body atoms are occurrences with no separate refcount to
+        // release; emptiness (fact-ness) reads the occurrence body.
+        let is_fact = entry.body_nodes.is_empty();
         let label = entry.label;
 
         // Remove from indexes
@@ -1114,7 +1115,7 @@ impl KnowledgeBase {
         // is the one currently keyed at (head, sort, domain) — a
         // previously-retracted-then-re-asserted fact may have a
         // different RuleId at that key.
-        if body.is_empty() {
+        if is_fact {
             if let std::collections::hash_map::Entry::Occupied(e) =
                 self.fact_dedup.entry((head, sort, domain))
             {
@@ -1127,15 +1128,13 @@ impl KnowledgeBase {
         // Remove from discrimination tree (before releasing terms)
         self.discrim.remove_ground(&self.terms, head, &id);
 
-        // Release refcounts
+        // Release refcounts (head/sort/domain/meta; the body atoms are
+        // occurrences with no term-store refcount of their own — WI-246).
         self.terms.release(head);
         self.terms.release(sort);
         self.terms.release(domain);
         if let Some(m) = meta {
             self.terms.release(m);
-        }
-        for b in body {
-            self.terms.release(b);
         }
     }
 
@@ -1281,22 +1280,15 @@ impl KnowledgeBase {
             .unwrap_or(false)
     }
 
-    /// Get the body literals of a rule (empty for ground facts).
-    pub fn rule_body(&self, id: RuleId) -> &[TermId] {
-        &self.rules[id.index()].body
-    }
-
-    /// Whether a rule is a fact — i.e. has an empty body. The
-    /// substrate-agnostic replacement for `is_fact(id)`: backed by
-    /// the occurrence body (`body_nodes`, parallel to `body`), so it survives
-    /// dropping the term `body: Vec<TermId>` (WI-246).
+    /// Whether a rule is a fact — i.e. has an empty body. Backed by the
+    /// occurrence body (`body_nodes`), the sole body representation (WI-246).
     pub fn is_fact(&self, id: RuleId) -> bool {
         self.rules[id.index()].body_nodes.is_empty()
     }
 
-    /// WI-246: the rule body atoms as `NodeOccurrence`s (same order/length as
-    /// [`rule_body`], empty for facts). The occurrence form the typer and
-    /// `simp_rewrite` walk; resolution still opens the [`rule_body`] terms.
+    /// WI-246: the rule body atoms as `NodeOccurrence`s (empty for facts) — the
+    /// sole body representation. The form the resolver opens as goals and the
+    /// typer / `simp_rewrite` walk.
     pub fn rule_body_nodes(&self, id: RuleId) -> &[Rc<NodeOccurrence>] {
         &self.rules[id.index()].body_nodes
     }
@@ -3101,8 +3093,8 @@ mod tests {
 
         let rid = kb.assert_rule(head, vec![b1, b2], rule_sort, domain, None);
 
-        // rule_body should return the body
-        assert_eq!(kb.rule_body(rid).len(), 2);
+        // body should have two atoms
+        assert_eq!(kb.rule_body_nodes(rid).len(), 2);
         assert_eq!(kb.rule_head(rid), head);
 
         // fact_count should be 0, rule_count should be 1

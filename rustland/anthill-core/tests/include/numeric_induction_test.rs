@@ -8,9 +8,11 @@
 //! as plain anthill in stdlib/anthill/prelude/{int,bigint}.anthill.
 
 
+use std::rc::Rc;
+
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::term::{Term, TermId};
+use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
 use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 
@@ -29,12 +31,12 @@ fn load_stdlib() -> KnowledgeBase {
     kb
 }
 
-fn rule_body_for(kb: &KnowledgeBase, qn: &str) -> Vec<TermId> {
+fn rule_body_for(kb: &KnowledgeBase, qn: &str) -> Vec<Rc<NodeOccurrence>> {
     let sym = kb.try_resolve_symbol(qn)
         .unwrap_or_else(|| panic!("symbol {qn} not in KB"));
     let rid = kb.by_functor(sym).first().copied()
         .unwrap_or_else(|| panic!("no rule for {qn}"));
-    kb.rule_body(rid).to_vec()
+    kb.rule_body_nodes(rid).to_vec()
 }
 
 #[test]
@@ -46,15 +48,15 @@ fn int_induction_loads_with_base_and_step() {
 
     // The step goal must be forall_impl carrying the IH.
     let printer = TermPrinter::new(&kb);
-    let step = body.iter().copied().find(|&g| {
-        matches!(kb.get_term(g),
-            Term::Fn { functor, .. } if kb.resolve_sym(*functor) == "forall_impl")
+    let step = body.iter().find(|g| {
+        matches!(g.as_expr(),
+            Some(Expr::Apply { functor, .. }) if kb.resolve_sym(*functor) == "forall_impl")
     }).unwrap_or_else(|| {
-        let dump: Vec<_> = body.iter().map(|&t| printer.print_term(t)).collect();
+        let dump: Vec<_> = body.iter().map(|t| printer.print_occurrence(t)).collect();
         panic!("no forall_impl in Int.induction body: {dump:?}")
     });
 
-    let printed = printer.print_term(step);
+    let printed = printer.print_occurrence(step);
     assert!(printed.contains("(forall("), "missing forall: {printed}");
     assert!(printed.contains(" -: "), "missing -: : {printed}");
     assert!(printed.contains("ho_apply"), "step must apply ?P: {printed}");
@@ -69,15 +71,15 @@ fn bigint_induction_loads_with_base_and_step() {
         "BigInt.induction should have 2 body goals, got {}", body.len());
 
     let printer = TermPrinter::new(&kb);
-    let step = body.iter().copied().find(|&g| {
-        matches!(kb.get_term(g),
-            Term::Fn { functor, .. } if kb.resolve_sym(*functor) == "forall_impl")
+    let step = body.iter().find(|g| {
+        matches!(g.as_expr(),
+            Some(Expr::Apply { functor, .. }) if kb.resolve_sym(*functor) == "forall_impl")
     }).unwrap_or_else(|| {
-        let dump: Vec<_> = body.iter().map(|&t| printer.print_term(t)).collect();
+        let dump: Vec<_> = body.iter().map(|t| printer.print_occurrence(t)).collect();
         panic!("no forall_impl in BigInt.induction body: {dump:?}")
     });
 
-    let printed = printer.print_term(step);
+    let printed = printer.print_occurrence(step);
     assert!(printed.contains("(forall("), "missing forall: {printed}");
     assert!(printed.contains(" -: "), "missing -: : {printed}");
     // Strong induction: predecessor (sub n 1) appears in the antecedent IH.
