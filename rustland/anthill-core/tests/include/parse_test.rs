@@ -1062,7 +1062,7 @@ fn parse_describe_declaration() {
 
 #[test]
 fn parse_abstract_sort_with_description() {
-    let source = "sort Money = ? {< Monetary amount >}\n";
+    let source = "sort Money = ? {< Monetary amount >}?\n";
     let parsed = parse::parse(source).expect("parse failed");
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
@@ -1118,7 +1118,7 @@ fn load_describe_emits_desc_fact() {
 
 #[test]
 fn load_abstract_sort_description_emits_desc_fact() {
-    let source = "sort Money = ? {< Monetary amount >}\n";
+    let source = "sort Money = ? {< Monetary amount >}?\n";
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
@@ -1148,7 +1148,7 @@ fn load_abstract_sort_description_emits_desc_fact() {
 
 #[test]
 fn parse_variable_with_description() {
-    let source = "rule test: foo(?x {< the x value >})\n";
+    let source = "rule test: foo(?x {< the x value >}?)\n";
     let parsed = parse::parse(source).expect("parse failed");
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
@@ -1178,7 +1178,7 @@ fn parse_variable_with_description() {
 
 #[test]
 fn load_variable_description_emits_fact() {
-    let source = "rule test: foo(?x {< the x value >})\n";
+    let source = "rule test: foo(?x {< the x value >}?)\n";
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
@@ -1222,7 +1222,7 @@ fn parse_describe_multiple_blocks() {
 
 #[test]
 fn parse_abstract_sort_multiple_descriptions() {
-    let source = "sort Money = ? {< Monetary amount >} {< Used in banking >}\n";
+    let source = "sort Money = ? {< Monetary amount >} {< Used in banking >}?\n";
     let parsed = parse::parse(source).expect("parse failed");
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
@@ -1288,7 +1288,7 @@ fn load_describe_multiple_blocks_emits_facts() {
 
 #[test]
 fn load_abstract_sort_multiple_descriptions_emits_facts() {
-    let source = "sort Money = ? {< Monetary amount >} {< Used in banking >}\n";
+    let source = "sort Money = ? {< Monetary amount >} {< Used in banking >}?\n";
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
@@ -1331,7 +1331,7 @@ sort WorkStatus {
 
 #[test]
 fn parse_variable_multiple_descriptions() {
-    let source = "rule test: foo(?x {< first >} {< second >})\n";
+    let source = "rule test: foo(?x {< first >} {< second >}?)\n";
     let parsed = parse::parse(source).expect("parse failed");
     match &parsed.items[0] {
         Item::Rule(r) => {
@@ -1760,7 +1760,7 @@ fn dotted_name_creates_intermediate_namespaces() {
 fn dotted_siblings_share_scope() {
     // Two dotted names with the same prefix should share the implicit
     // intermediate namespace, making sibling sorts visible to each other.
-    let file1 = r#"sort ns.A"#;
+    let file1 = r#"sort ns.A end"#;
     let file2 = r#"sort ns.B {
   operation use_a(x: A) -> A
 }
@@ -1810,7 +1810,7 @@ fn dotted_namespace_creates_hierarchy() {
 fn implicit_and_explicit_namespace_merge() {
     // An implicit namespace from a dotted name and an explicit namespace
     // declaration should merge into the same scope.
-    let file1 = r#"sort ns.A"#;
+    let file1 = r#"sort ns.A end"#;
     let file2 = r#"namespace ns {
   sort B {
     operation use_a(x: A) -> A

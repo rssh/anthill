@@ -147,7 +147,12 @@ impl CarrierTable {
                     // Sub-sort carriers will get their own keys when needed.
                     if sn == target_short {
                         by_qualified.insert(target.clone(), ht);
-                        if let Some(a) = artifact.clone() {
+                        // The loader defaults an absent `artifact` clause to
+                        // "" (load.rs `unwrap_or_default`), so guard against
+                        // empty here — otherwise a carrier with no artifact
+                        // (e.g. `int64_t`, whose `<cstdint>` include comes
+                        // from the std-include table) would emit `#include <>`.
+                        if let Some(a) = artifact.clone().filter(|s| !s.is_empty()) {
                             artifacts.insert(target.clone(), a);
                         }
                     }

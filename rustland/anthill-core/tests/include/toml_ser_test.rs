@@ -37,6 +37,7 @@ sort Task {
 sort Project {
     entity Project(name: String, language: String)
 }
+end
 "#;
 
     let parsed = parse::parse(source).expect("test source should parse");
@@ -104,6 +105,7 @@ fn load_toml_int_float_bool() {
     let src = r#"
 namespace test
 sort Nums { entity Nums(x: Int, y: Float, flag: Bool) }
+end
 "#;
     let parsed = parse::parse(src).expect("parse");
     let resolver = load::NullResolver;

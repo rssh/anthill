@@ -3,8 +3,7 @@
 -- in stdlib/anthill/prelude/int.anthill.
 namespace anthill.prelude
   provides Int language cpp
-    artifact "rustland/anthill-cpp-gen/src/lib.rs"
-    carrier Int = "int64_t"
+    carrier { Int: "int64_t" }
     fact Eq[T = Int]
     fact Ordered[T = Int]
     fact Numeric[T = Int]

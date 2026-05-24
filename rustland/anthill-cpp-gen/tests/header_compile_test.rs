@@ -100,7 +100,6 @@ fn missing_namespace_returns_error() {
     let kb = load_kb_with(r#"
         namespace test.empty
           import anthill.prelude.{Float}
-          export
         end
     "#);
     let result = emit_namespace_header(&kb, "test.empty");

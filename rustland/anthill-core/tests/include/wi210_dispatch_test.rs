@@ -138,15 +138,15 @@ fn fact_for_non_spec_sort_does_not_emit_provides_info() {
             entity wi210_green
           end
           sort Wi210Holder
-            fact Wi210Color[count = 0]
+            fact Wi210Color[count = ?]
           end
         end
     "#;
     // Wi210Color has no `sort X = ?` decl, so the gate must skip
     // SortProvidesInfo emission regardless of whether the binding
-    // shape is parametric-looking. Using a literal (`0`) for the
-    // value keeps the fixture independent of cross-sort name
-    // resolution.
+    // shape is parametric-looking. Using an anonymous type variable
+    // (`?`) for the value keeps the fixture independent of cross-sort
+    // name resolution.
     // Wi210Color has no `sort X = ?` decl, so even with bracket
     // notation this should not be treated as spec satisfaction.
     let mut kb = load_with(src);

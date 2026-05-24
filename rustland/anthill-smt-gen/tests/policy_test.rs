@@ -27,7 +27,7 @@ fn no_explicit_policy_with_cite_lifts_axiom() {
     let kb = common::load_kb_with(r#"
         namespace test.policy.lifted
           export foo
-          rule foo(?x) :- gte(?x, 0) -: gte(?x, 0)
+          rule foo(?x) :- gte(?x, 0)
         end
     "#);
     let cited: BTreeSet<String> = std::iter::once(

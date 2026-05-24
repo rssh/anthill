@@ -20,7 +20,7 @@ fn option_some_binding_lowers_to_value_iife() {
           sort Calc
             operation unwrap(o: Option[T = Int]) -> Int =
               match o
-                case some(?w) -> ?w
+                case some(w) -> w
                 case none     -> 0
           end
         end
@@ -61,8 +61,8 @@ fn variant_constructor_pattern_binds_fields() {
           sort Calc
             operation perimeter(s: Shape) -> Int =
               match s
-                case Circle(?r) -> ?r
-                case Square(?w) -> ?w
+                case Circle(r) -> r
+                case Square(w) -> w
           end
         end
     "#;
@@ -95,8 +95,8 @@ fn nested_let_inside_branch_body_works() {
           sort Calc
             operation double_or_zero(o: Option[T = Int]) -> Int =
               match o
-                case some(?w) ->
-                  let twice = add(?w, ?w)
+                case some(w) ->
+                  let twice = add(w, w)
                   twice
                 case none -> 0
           end
@@ -130,7 +130,7 @@ fn wildcard_branch_after_constructor_works() {
           sort Calc
             operation safe(o: Option[T = Int]) -> Int =
               match o
-                case some(?w) -> ?w
+                case some(w) -> w
                 case _        -> 0
           end
         end

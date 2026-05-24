@@ -53,7 +53,8 @@ fn let_op_body_builds_native_let_occurrence() {
         r#"
 namespace wi304.lt
   operation f(x: Int) -> Int
-    = let y = x; y
+    = let y = x
+      y
 end
 "#,
     );

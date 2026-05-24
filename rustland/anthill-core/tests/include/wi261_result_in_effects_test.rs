@@ -72,7 +72,7 @@ namespace anthill.test.wi261.tuple
   import anthill.prelude.{Cell, Int}
 
   operation make_pair() -> (a: Cell[V = Int], b: Cell[V = Int])
-    effects Modify[result.a], Modify[result.b]
+    effects {Modify[result.a], Modify[result.b]}
 end
 "#;
     let mut kb = load_stdlib_kb();
