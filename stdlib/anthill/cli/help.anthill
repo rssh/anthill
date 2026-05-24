@@ -26,7 +26,7 @@ namespace anthill.cli.help
                        concat("\nFLAGS:\n", render_flags(params)))))
 
   -- " <pos1> <pos2> [--flag VALUE] [--repeated VALUE]..."
-  operation usage_summary(params: List[T = ParamSpec]) -> String =
+  operation usage_summary(params: List[ParamSpec]) -> String =
     match params
       case nil() -> ""
       case cons(p, rest) ->
