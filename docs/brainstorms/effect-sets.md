@@ -51,7 +51,7 @@ set is `Set.empty()`. **Effect *checking* is unimplemented (013).**
 3. **Compile-time / staged.** `Type` and effect rows are compile-time/meta
    entities. This is the *two-level* (object vs meta) split — **not** full
    dependent typing (Idris), where one language unifies terms/types and types may
-   depend on *runtime* values. The split is what keeps the type system tractable.
+   depend on *runtime* values.
 4. **`Modify[c]` precedent.** A value/path already sits in effect position and is
    well-formed (proposal 037), so "expression in effect position" must be too.
 
@@ -77,7 +77,8 @@ row-var / membership-constraint / inference).
   a type-param; reuse `[E = …]` instantiation. *Minimal new code; the quick path
   to making the spec check.* Cost: type-lattice **impurity** (an effect-set in
   the lattice, with `subset` rather than `refines` subsumption) — contradicts
-  principle 2. *(Prior art: rare.)*
+  principle 2. *(Refs: no standard analog — effect systems keep the row a
+  distinct kind, not a type-of-values.)*
 
 - **B — effects as *relations* (surface: `allow` / `disallow`).** Track
   membership rather than reifying the set. The natural surface carries the
@@ -90,8 +91,14 @@ row-var / membership-constraint / inference).
   disallowed by NAF; explicit `disallow` forbids an effect despite polymorphism
   (a handled effect, or a callback constrained IO-free). Polymorphism via
   **presence variables**; propagation via rules
-  (`op_effects(map(f),E) :- op_effects(f,E)`). *(Links / Rémy presence
-  polymorphism; Haskell mtl `Member`.)*
+  (`op_effects(map(f),E) :- op_effects(f,E)`). *(Refs — **effects**: Wadler &
+  Blott, “How to make ad-hoc polymorphism less ad hoc”, POPL 1989, and Jones,
+  “Qualified Types”, 1994 — effects-as-constraints, the mtl `Member`/`MonadState`
+  form; Lindley & Cheney, “Row-based effect types for database integration”, 2012
+  — presence/row polymorphism applied to effects in Links. The underlying
+  row/presence *technique* originates in **record** typing, not effects — Rémy,
+  “Type inference for records in a natural extension of ML”, 1989; Leijen,
+  “Extensible records with scoped labels”, 2005.)*
 
   **Declaration-home sub-axis:** a dedicated clause, *or* **homed in `ensures`**
   (the "postcondition" form) — no new clause, just a membership predicate over a
@@ -115,11 +122,16 @@ row-var / membership-constraint / inference).
   `not member`, subsumption = `subset`. So B is the relational/permission
   *surface*; E is the value *representation* under it.
 
-- **D — effect-set as its own *kind*; rewrite `Function`.** `EffectSet` kind,
-  `?E in effects` row-var binders, kinded quantifiers; `arrow.effects` carries an
-  `EffectSet`; reconcile `Set`/`EffectSet`/`Function`/`arrow`. *Principled; clean
-  kinds; most machinery (new kind + binder syntax).* *(Koka, Haskell
-  extensible-effects.)*
+- **D — effect-set as its own *kind*; rewrite `Function`.** `EffectExpression`/
+  `EffectSet` kind, `?E in effects` row-var binders, kinded quantifiers;
+  `arrow.effects` carries an `EffectExpression` (denoting an `EffectSet`);
+  reconcile `Set`/`EffectSet`/`Function`/`arrow`. *Principled; clean kinds; most
+  machinery (new kind + binder syntax).* *(Refs: Leijen, “Koka: Programming with
+  Row-Polymorphic Effect Types”, MSFP 2014, and “Type-Directed Compilation of
+  Row-Typed Algebraic Effects”, POPL 2017; Kiselyov, Sabry & Swords, “Extensible
+  Effects”, Haskell 2013, and Kiselyov & Ishii, “Freer Monads, More Extensible
+  Effects”, 2015; Hillerström & Lindley, “Liberating Effects with Rows and
+  Handlers”, 2016.)*
 
 - **E — effect-set as an ordinary *sort* + ACI operators (minimal-rewrite middle).**
   `EffectSet` is just a normal sort (already so, via `requires Set[…]`);
@@ -128,12 +140,17 @@ row-var / membership-constraint / inference).
   constrained to `EffectSet`; polymorphism is **ordinary logic-var unification
   modulo ACI**; checking is `Set`'s `subset`/`union`/`member`. *No new kind, no
   `?E in effects` syntax, no `Type` pollution* — basically *complete what
-  `effect-set.anthill` already gestures at*. *(Maude ACI sets.)*
+  `effect-set.anthill` already gestures at*. *(Refs: Clavel et al., “All About
+  Maude”, 2007, and Meseguer, “Conditional Rewriting Logic as a Unified Model of
+  Concurrency”, 1992 — ACI operator attributes + equational matching; Stickel,
+  “A Unification Algorithm for Associative-Commutative Functions”, JACM 1981.)*
 
 - **F — fully inferred, no declared effects.** Signatures don't carry effects;
   the typer derives every expression's effect-set by rules on demand. Maximally
   logic-native, but loses declared/checked signatures (we want `effects ?E`), so
-  probably too far. *(Talpin–Jouvelot / region inference.)*
+  probably too far. *(Refs: Lucassen & Gifford, “Polymorphic Effect Systems”,
+  POPL 1988; Talpin & Jouvelot, “The Type and Effect Discipline”, 1992; Nielson
+  & Nielson, “Type and Effect Systems”, 1999.)*
 
 (The earlier "**G** — effects as `ensures` postcondition statements" is **not a
 separate variant** — it's B's *declaration-home* sub-axis (`ensures (E in
@@ -141,6 +158,24 @@ effects)` homed in the contract), folded into B above.)
 
 Non-starters: **monomorphic-only** (breaks the HOF/stream correctness above);
 **SMT-discharged subsumption** (overkill — equational `Set` rules decide subset).
+
+## Effects are *expressions*, not sets — denoting effect-sets
+
+What `effects` / `@` / `arrow.effects` / `Function.E` carry is an
+**`EffectExpression`**, *not* an `EffectSet` directly. The expression language is
+the effect algebra: atoms (`{E1, E2}`, `*`, `{}`, a row variable `?E`, *or a
+computed call* such as `result_effects(br)`) combined by `∪` / `\` / `-` / `∩`.
+It **denotes** an `EffectSet` — its normal form under the `Set` + ACI laws
+(possibly still symbolic if it contains a row variable). Checking is *normalize,
+then subsume*.
+
+This is the **effect-level analog of `denoted`** (WI-302): a *type* can be denoted
+by a compile-time expression; an *effect-set* is denoted by a compile-time effect
+expression. Same staged/two-level shape — the expression is meta-level,
+normalized to the `Set` value (E). It also fits the spec directly:
+`result_effects(br)` is exactly a computed effect-expression. So the
+representation is two layers: **`EffectExpression`** (carried / surface — ops +
+variables + computed calls) → **`EffectSet`** (its `Set`-value denotation, E).
 
 ## Key insight: `Set` + ACI equational laws is the substrate
 
@@ -179,6 +214,38 @@ binds to it; `arrow.effects` stores one) *and* relational (`union_effects` is a
   `Set[Type]`, not `List[Type]`** — effects are unordered & idempotent, which
   `List` misrepresents; `Set` matches the ACI semantics (whether to give it a
   delimiter distinct from value `set_literal` is open).
+- **Effect-set operations — the lattice** (effects ordered by `subset` ⊆;
+  `sort.anthill` already declares `Lattice[T = Type]`):
+  - `{}` — **bottom** (pure); the closed-world default.
+  - `*` — **top** ("any/all effects"; `S ⊆ *` always). The gradual / FFI /
+    untyped escape hatch, and the *opposite pole* from the `{}` default.
+    Distinct from a row variable `?E` (which is bounded — binds to *some*
+    concrete row — whereas `*` is the universal set). Not in `Set` yet → add as
+    the universal element.
+  - `∪` (`union`) — **join**: composition (sequential effects), HOF propagation
+    (= the spec's `union_effects`). The workhorse.
+  - `∩` (`intersection`) — **meet**: `Set` has it, but its effect meaning is the
+    unusual *must / common-to-all-paths* (lower bound); branch typing uses `∪`,
+    not `∩`. Keep for lattice completeness, but it's **not** part of core
+    checking (which is `⊆` + `∪`) and offering it invites misuse.
+  - `\` (`difference`) — **bounded negation = handler discharge**: handling `E`
+    turns row `S` into `S \ {E}`, so `\` is exactly the *type of a handler*
+    (proposal 027). The useful negation operation.
+  - `⊆` (`subset`) — **the order**: subsumption (`actual ⊆ declared`).
+- **Negation = `* \ S`, representable as a *symbolic co-finite set*.** The effect
+  universe is **open** (new effect kinds declarable), so you never *enumerate* a
+  complement — but `* \ S` is a fine symbolic value. Example:
+  `effects (* - Modify[kb])` = *"may do anything except touch kb"* — the
+  co-finite surface for `disallow Modify[kb]` ("does not write to kb").
+  **Checking reduces to membership negation:** `subset(X, * \ S) ⟺ X ∩ S = {}`
+  (none of `S` in `X`), decidable even over the open universe. So the
+  representable effect-sets are **finite or co-finite** (`* \ finite`) — a Boolean
+  subalgebra: `{}`/`*` bounds, `∪` join, `\` difference/complement, `⊆` order.
+  - The genuinely *hard* negation is **not** these co-finite *constants*
+    (decidable) but `not in` over a **row variable** `?E` — asserting absence on
+    an *unknown* tail needs a presence variable (hard-problem #1).
+  - `\` over a *finite* `S` doubles as **handler discharge** (`S \ {E}`,
+    proposal 027).
 - **Binders.** `?E in effects` as a kind-annotated binder (vs the mis-kinded
   `sort E = ?`), optionally generalized to `?v in <domain>` (`?T in Type`,
   `?E in effects`, …) to unify the three things anthill spells three ways. (Only
@@ -218,9 +285,10 @@ membership, checked by `subset`) over the E representation — with `@ E` /
 
 ## Reconciliation plan (mostly wiring, given E)
 
-1. Make `arrow.effects` carry an `EffectSet` (not `List[Type]`); same for the
-   `@` annotation.
-2. Decide the concrete value form: ACI-normalized `empty`/`insert` term.
+1. Make `arrow.effects` carry an `EffectExpression` (not `List[Type]`) — denoting
+   an `EffectSet`; same for the `@` annotation.
+2. Decide the concrete value form: ACI-normalized `empty`/`insert` term (the
+   `EffectSet` denotation of the `EffectExpression`).
 3. Ensure **ACI matching actually fires** during effect checking (via `[simp]`
    or ACI operator attributes) — *the* real semantic commitment.
 4. Complete the `Set` laws: recursive `member(x, insert(s,y))`,
@@ -228,8 +296,8 @@ membership, checked by `subset`) over the E representation — with `@ E` /
 5. Coherent element typing: `Effect[?]` (which `Type`s are effects) vs `Modify[c]`
    being itself a `Type` ("effect = type").
 6. `empty()` / `PureFunction = Function[…, E = empty()]`.
-7. Kind `Function.E` / the `effects`/`@` variable as `EffectSet` (constrained
-   `sort E = ?` for E; explicit `?E in effects` for D).
+7. Kind `Function.E` / the `effects`/`@` value as an `EffectExpression` over
+   `EffectSet` (constrained `sort E = ?` for E; explicit `?E in effects` for D).
 
 ## Hard problems (intrinsic to any effect system, just relocated)
 
@@ -247,7 +315,7 @@ membership, checked by `subset`) over the E representation — with `@ E` /
 | anthill option | closest prior art |
 |---|---|
 | **D / E** — effect-set value, rows + unification | **Koka** (row-polymorphic effects, scoped labels, HM row unification); Haskell **extensible-effects** (`polysemy`/`fused-effects`/`effectful`, `Eff '[…]` open-row tail var); PureScript `Run`; **Frank**; **Maude** ACI sets (the equational route) |
-| **B** — `(E in effects)` / `(E not in effects)` | **Links / Rémy** row types with *presence polymorphism* (Present/Absent/poly + presence variables); Haskell **mtl** `Member` / `MonadState` (qualified types) |
+| **B** — `(E in effects)` / `(E not in effects)` | *effects*: **Links** row-based effects (Lindley & Cheney 2012); Haskell **mtl** `Member`/`MonadState` (Wadler & Blott 1989, Jones 1994 — qualified types). The *presence/row technique* it uses is from **record** typing (Rémy 1989; Leijen 2005), not effects. |
 | **A** — effect-set as a type-of-values | rare; most languages keep the row its own thing |
 
 **Handlers ⟹ effects.** Any language with effect handlers is an *effect* system,
@@ -269,13 +337,19 @@ inference, late ’80s–’90s). **OCaml 5** has effect *handlers* but **untype
 the typing is the open part (≈ us). Lessons: D/E's "row unification" is a known,
 shipped technique (Koka) — and via `Set`+ACI it's *equational matching* you
 already have machinery for; B's `not in`-on-open-rows is exactly the
-presence-variable problem (Links/Rémy).
+presence-variable problem — presence variables from records (Rémy 1989), applied
+to effects in Links (Lindley & Cheney 2012).
 
 ## Driving examples to keep honest
 
 - `List.map`, `List.fold`, `Stream.map` (propagation, eager and lazy);
   `Function.apply … effects E`.
 - `Modify[c]` / `Modify[self]` (value-path in effect position; proposal 037).
+- **"this function does not write"** — `disallow Modify` / `ensures (Modify not
+  in effects)`: a *guaranteed* absence (not just NAF-default "unmentioned"). On a
+  polymorphic op it must constrain the callback's row to exclude `Modify` *and*
+  propagate to callers — i.e. it forces real **negative / presence-variable**
+  support (hard-problem #1), not just positive membership. A hard requirement.
 - The spec's `type_check_operation` (`result_effects(br)`, `union_effects`,
   `check_effects`, `external_effects`) — the consumer that must check under
   whatever we pick (and which is already value+relational).
@@ -299,7 +373,8 @@ presence-variable problem (Links/Rémy).
    reading.
 3. Resolve the hard points: ACI matching fires; `not in` / open-row soundness;
    `op_effects` rules vs resolution.
-4. Complete the `Set`/`EffectSet` laws; wire `arrow.effects` → `EffectSet`;
+4. Complete the `Set`/`EffectSet` laws; wire `arrow.effects` → `EffectExpression`
+   (denoting `EffectSet`);
    reconcile `Function` ↔ `arrow`.
 5. Promote to a numbered proposal; *only then* touch `typing_pass_spec` and
    013's effect-checking.
