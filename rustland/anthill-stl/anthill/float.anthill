@@ -4,7 +4,7 @@ namespace anthill.prelude
 
   provides Float language rust
     artifact "rustland/anthill-stl/src/prelude/float.rs"
-    carrier Float = "f64"
+    carrier { Float: "f64" }
     fact Eq[T = Float]
     fact Ordered[T = Float]
     fact Numeric[T = Float]

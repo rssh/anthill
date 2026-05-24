@@ -746,7 +746,7 @@ namespace anthill.reflect.typing_pass
   -- Check that actual effects ⊆ declared effects.
   -- Reports TypeError for each undeclared effect.
   operation check_effects(kb: KB, occ: ExprOccurrence,
-                          actual: List[Type], declared: List[Type])
+                          actual: List[Type], declared: List[Type]) -> Bool
     effects Error[TypeError]
 
   operation type_check_operation(kb: KB, op: OperationInfo) -> TypeOf

@@ -4,7 +4,7 @@
 namespace anthill.prelude
   provides Int language rust
     artifact "rustland/anthill-stl/src/prelude/int.rs"
-    carrier Int = "i64"
+    carrier { Int: "i64" }
     fact Eq[T = Int]
     fact Ordered[T = Int]
     fact Numeric[T = Int]

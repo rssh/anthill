@@ -26,14 +26,15 @@ enum anthill.prelude.List
   rule append(nil, ?ys) = ?ys
   rule append(cons(head: ?x, tail: ?xs), ?ys) = cons(head: ?x, tail: append(?xs, ?ys))
 
-  -- List satisfies Collection (pure, no effects)
-  fact Collection[Collection = List[T], Element = T, Effect = {}]
+  -- List satisfies Collection (pure). Effect left unbound: `Effect = {}`
+  -- is not yet expressible as a type argument — restore it under WI-301.
+  fact Collection[Collection = List[T], Element = T]
 
   -- List satisfies IndexedSeq (no effects). Cost is O(N) per `nth` —
   -- callers that need O(1) should depend on a future RandomAccess
   -- subspec that excludes List. `length` is already defined above
   -- with the standard recursive rules; only `nth` needs new clauses.
-  fact IndexedSeq[C = List[T], T = T, Effect = {}]
+  fact IndexedSeq[C = List[T], T = T]
   rule nth(nil, ?_) = none
   rule nth(cons(?h, ?_), 0) = some(?h)
   rule nth(cons(?_, ?t), ?i) = nth(?t, sub(?i, 1)) :- gt(?i, 0)
@@ -44,8 +45,8 @@ enum anthill.prelude.List
   -- Collection.empty for List
   rule empty() = nil
 
-  -- List satisfies Iteration (pure, no effects)
-  fact Iteration[Iterator = List[T], Element = T, Effect = {}]
+  -- List satisfies Iteration (pure). Effect unbound pending WI-301.
+  fact Iteration[Iterator = List[T], Element = T]
 
   -- Iteration.split for List
   rule split(cons(head: ?h, tail: ?t)) = some((?h, ?t))

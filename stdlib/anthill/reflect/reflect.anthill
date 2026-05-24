@@ -16,6 +16,7 @@ namespace anthill.reflect
   import anthill.prelude.{Bool}
   import anthill.prelude.{Stream}
   import anthill.prelude.{Type}
+  import anthill.prelude.{Modifiable}
 
   -- ================================================================
   -- Opaque kernel handles (abstract — implementation-defined)
@@ -202,7 +203,7 @@ namespace anthill.reflect
 
     -- KB admits Modify[kb]: assert / retract / add_guard mutate the
     -- KB's internal indexes. Required by proposal 037 Rule 8.
-    fact anthill.prelude.Modifiable[T = KB]
+    fact Modifiable[T = KB]
 
     -- Bridge: opaque Term ↔ structural TermRepr
     operation reify(kb: KB, t: Term) -> TermRepr
