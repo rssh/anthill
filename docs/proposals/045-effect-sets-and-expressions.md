@@ -35,9 +35,10 @@ Checking is presence subsumption (`subset` + `not member`).
 - **Negative guarantees are required.** "this function does not write" —
   `-Modify` / `(Modify not in effects)` — a *guaranteed* absence, not just
   "unmentioned."
-- The reference typer (`docs/proposals/typing_pass_spec.anthill`) already needs
-  computed effect expressions (`result_effects(br)`, `union_effects`,
-  `check_effects`); this proposal is the layer it type-checks against.
+- The reference typer (`docs/proposals/typing_pass_spec.anthill`) already
+  *computes* effect rows (`union_effects` to combine, `check_effects` to verify;
+  `result_effects` merely projects the row out of a `TypeResult`); this proposal
+  is the effect-expression layer those computations build and check against.
 
 Mis-encoding effects as a `sort E = ?` type parameter is the root problem (it
 forces an effect-set into type position). This proposal gives effect-sets their
@@ -89,12 +90,12 @@ effect label: present / absent / unspecified). Atoms and operators:
 | `*` | universal — everything present (top) |
 | `e` | a single effect, e.g. `Modify[c]` |
 | `E` | an effect-set variable (`effects E = ?`) |
-| `result_effects(br)` | a *computed* effect expression (call returning an effect-set) |
 | `+ e` | **presence** — add `e` |
 | `- e` | **absence** — remove / forbid `e` |
 | `+ *` | allow all (→ `*`) |
 | `- *` | disallow all (→ `{}`) |
 | `merge(x, y)` | combine two expressions; **conflict** (a label `+` in one, `-` in the other) ⇒ **incompatible** (error) |
+| `{ E1, …, EN }` | set literal — **sugar** for iterated `merge` (see below) |
 
 The normal form is a **base** (`{}` / `*` / a variable `E`) plus finitely many
 `+`/`-` overrides — i.e. a **finite or co-finite** set (the Boolean subalgebra of
@@ -113,6 +114,33 @@ poly); `* - e` is the co-finite "anything but `e`"; a variable base is an open
 row. This is the surface form of the `Set` algebra (`∪`/`\`); it **evaluates /
 normalizes** (via the ACI laws) to an `EffectSet`. (`merge` is `union` on
 presences but *fails* on a present/absent clash — that's the incompatibility.)
+
+**The set literal is `merge` sugar.** `{ E1, …, EN }` desugars to iterated
+`merge` over the empty base, so it is not a separate primitive:
+
+```
+{ E1, …, EN }  ≡  merge(E1, merge(E2, … merge(EN-1, EN)))
+{ }            ≡  {}            -- empty base (pure)
+{ e }          ≡  + e          -- a bare effect denotes its singleton presence
+```
+
+Because the elements are effect *expressions* (and a bare effect `e` is its
+singleton presence `+e`), the literal inherits `merge`'s conflict semantics:
+`{ +Modify[c], -Modify[c] }` is **incompatible** for free — no special-casing.
+This lets us offer the familiar `{…}` set surface *and* the `+`/`-`/`merge`
+algebra without two semantics: the braces are pure sugar.
+
+**Inferring effects is not one of these forms.** The table lists everything you
+can *write* — there are no other building blocks. Working out which effects a
+function actually has is a *different* thing: it reads the function's code and
+*returns* an effect expression (built from the forms above). The typer does
+this — it takes the `union` of the effects of the operations the body calls,
+minus the effects its handlers discharge. You could also expose it as a reflect
+builtin, e.g. `infer_effects(occ: NodeOccurrence) -> EffectExpression`.
+
+The point: that operation **consumes code and produces an expression**. It is
+not itself a form you write, so it does not belong in the table — which is why
+the earlier `result_effects(br)` row was wrong.
 
 ## 4. Where declared (interchangeable sugars)
 
@@ -163,19 +191,42 @@ output is what it performs. Checking relates the output to the declaration.
 
 ## 7. Open questions / hard points
 
-1. **Negation on open rows.** `- e` is sound on a *closed* row (decidable
-   `e ∉ S`) and on a co-finite constant (`* - e`); on a *variable* base it needs
-   a **presence variable** carrying the absence (it can't be discharged
-   locally). This is the one genuinely hard part (Rémy/Links presence
-   polymorphism, applied to effects in Links — Lindley & Cheney 2012).
-2. **`merge` conflict semantics** — when does a present/absent clash error vs
-   produce ⊥/incompatible, and how it surfaces.
-3. **Decidability** of effect-checking when `op_effects` is computed by rules
-   (it joins SLD resolution; termination).
-4. **Grammar surface** — the `+e`/`-e`/`merge` algebra vs a `{…}`/`∪`/`\`
-   set-literal surface (offer one, or both as sugar).
-5. **`*` (top)** — add the universal element to `Set`; its interaction with the
-   closed-world (`{}`) default and with `merge`.
+1. **Negation on open rows — mostly handled by laziness.** Because an
+   `EffectExpression` is *symbolic* and only normalizes to an `EffectSet` when
+   its variables are ground (§6's two-layer split), `merge(E, - e)` over a free
+   `E` simply stays an unevaluated term. It is normalized — and the conflict
+   checked — only when `E` is bound, which happens at every concrete use (the
+   call site supplying the callback). At that point the check is local and
+   decidable: if the bound row contains `e`, the `merge` conflicts → the call
+   site is rejected; otherwise fine. So `effects merge(E, - Modify[kb])` ("this
+   function forbids its callback from modifying kb") needs **no presence
+   variables and no substrate change** — just deferred evaluation.
+   The residual (optional, not a soundness issue): checking a polymorphic
+   declaration *in isolation*, never instantiated — under laziness we defer
+   judgment, so we cannot tell at definition-time whether `merge(E, - e)` is even
+   satisfiable. **Question: do we want abstract definition-time checking of
+   never-grounded polymorphic effect declarations** (which is where presence
+   variables — Rémy/Links; Lindley & Cheney 2012 — would buy something), or is
+   lazy per-instantiation checking sufficient?
+2. **`merge` conflict semantics.** A present/absent clash (`+e` in one operand,
+   `-e` in the other) is ill-formed. **Question: is that a hard error at the
+   `merge`, or a value `⊥`/`incompatible` that propagates** — and if a value,
+   what makes a row containing it unsatisfiable, and where does the diagnostic
+   point (the `merge` site, or the operation whose declaration it violates)?
+3. **Decidability of effect-checking.** When `op_effects` is itself computed by
+   rules, checking joins SLD resolution. **Question: does effect-checking
+   terminate** — and what restricts the effect rules (no recursive effect
+   growth? stratification?) so that the `union`/discharge fixpoint is reached?
+4. **Grammar surface** — *resolved for `{…}`*: the set literal `{ E1, …, EN }`
+   is sugar for iterated `merge` (§3), so both surfaces coexist with one
+   semantics. Still open: whether to also surface `∪`/`\` operators (vs only
+   `merge` / `-`).
+5. **`*` (top).** Adding a universal element to `Set` raises consistency
+   questions. **Question: how does `*` coexist with the closed-world (`{}`)
+   default** — i.e. when is an unstated row `{}` (pure) vs `*` (unknown/anything)
+   — and what is `merge(*, -e)` (the co-finite `* - e`) vs `merge(*, +e)`
+   (still `*`)? Does `*` stay inside the finite/co-finite normal form, or does it
+   need a distinct representation in `Set`?
 
 ## Prior art
 
