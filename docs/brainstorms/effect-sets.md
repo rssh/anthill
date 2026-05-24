@@ -1,10 +1,11 @@
 # Effect sets
 
-## Status: Brainstorming draft
+## Status: Brainstorming draft — **promoted to Proposal 045** (`docs/proposals/045-effect-sets-and-expressions.md`)
 
 How effect *sets* (rows) should work in anthill — representation, kinds, syntax,
-and checking. No final decision; this records the exploration, the variant space,
-and the leading candidate so it isn't lost in chat.
+and checking. This records the exploration, the variant space (A/B/D/E/F), and
+the leading candidate; the committed design (B-presence over E, the `+`/`-`
+effect-expression algebra, `effects E = ?`) lives in **Proposal 045**.
 
 ## Relates to
 
