@@ -30,7 +30,7 @@
 --      docs/proposals/011-type-resolution.md
 
 namespace anthill.reflect.typing_pass
-  import anthill.reflect.{KB, ExprOccurrence, Occurrence, TypeOf, type_of}
+  import anthill.reflect.{KB, NodeOccurrence, TypeOf, type_of}
   import anthill.reflect.{Expr, Pattern, MatchBranch, ApplyArg, FieldInfo}
   import anthill.reflect.{OperationInfo, EntityInfo, SortInfo, SourceUnit}
   import anthill.reflect.{Symbol, Term, FactId, ConstraintId}
@@ -251,10 +251,10 @@ namespace anthill.reflect.typing_pass
   -- ================================================================
 
   sort TypeError
-    entity type_mismatch(occ: ExprOccurrence, expected: Type, actual: Type)
-    entity unknown_field(occ: ExprOccurrence, entity_name: Symbol, field: Symbol)
+    entity type_mismatch(occ: NodeOccurrence, expected: Type, actual: Type)
+    entity unknown_field(occ: NodeOccurrence, entity_name: Symbol, field: Symbol)
     entity no_parent_sort(name: Symbol)
-    entity unresolved_name(occ: ExprOccurrence, name: Symbol)
+    entity unresolved_name(occ: NodeOccurrence, name: Symbol)
   end
 
   -- Extract source position from any TypeError variant.
@@ -352,7 +352,7 @@ namespace anthill.reflect.typing_pass
           else TypeResult(type: Nothing, env: env)
 
   -- Assert that two types unify. Raises TypeError if LUB is Nothing.
-  operation assert_compatible(kb: KB, env: TypingEnv, occ: ExprOccurrence, actual: Type, expected: Type) -> TypeResult
+  operation assert_compatible(kb: KB, env: TypingEnv, occ: NodeOccurrence, actual: Type, expected: Type) -> TypeResult
     effects Error[TypeError] =
     let r = unify_types(kb, env, actual, expected)
     if result_type(r) = Nothing
@@ -414,7 +414,7 @@ namespace anthill.reflect.typing_pass
 
   -- Extract the value of a named field from an occurrence.
   -- Used for type-checking entity fact fields.
-  operation field_value(kb: KB, occ: ExprOccurrence, field: Symbol) -> ExprOccurrence
+  operation field_value(kb: KB, occ: NodeOccurrence, field: Symbol) -> NodeOccurrence
 
   -- Extract a sub-pattern by field name from a constructor pattern.
   -- The constructor pattern has named args mapping field names to sub-patterns.
@@ -441,7 +441,7 @@ namespace anthill.reflect.typing_pass
   operation merge_result_effects(a: TypeResult, b: TypeResult) -> List[Type] =
     merge_effects(result_effects(a), result_effects(b))
 
-  operation type_check(kb: KB, env: TypingEnv, expr: ExprOccurrence) -> TypeResult
+  operation type_check(kb: KB, env: TypingEnv, expr: NodeOccurrence) -> TypeResult
     effects {Modify[kb], Error[TypeError]} =
     let r = match occurrence_term(kb, expr)
       -- Literals: pure, no effects
@@ -535,7 +535,7 @@ namespace anthill.reflect.typing_pass
   -- Resolve a collection literal [a, b, c] or [a, b | t].
   -- The expected type determines the target collection kind.
   -- Falls back to List if no expected type.
-  operation type_check_collection(kb: KB, env: TypingEnv, occ: ExprOccurrence, expected: Option[Type], elements: List[ExprOccurrence], tail: Option[ExprOccurrence]) -> TypeResult
+  operation type_check_collection(kb: KB, env: TypingEnv, occ: NodeOccurrence, expected: Option[Type], elements: List[NodeOccurrence], tail: Option[NodeOccurrence]) -> TypeResult
     effects {Modify[kb], Error[TypeError]} =
     -- Extract element type from expected type, or use fresh var
     let elem_type = match expected
@@ -558,7 +558,7 @@ namespace anthill.reflect.typing_pass
     TypeResult(type: result, env: env3)
 
   -- Type-check each element of a collection against the expected element type.
-  operation type_check_elements(kb: KB, env: TypingEnv, occ: ExprOccurrence, elem_type: Type, elements: List[ExprOccurrence]) -> TypeResult
+  operation type_check_elements(kb: KB, env: TypingEnv, occ: NodeOccurrence, elem_type: Type, elements: List[NodeOccurrence]) -> TypeResult
     effects {Modify[kb], Error[TypeError]} =
     match elements
       case nil -> TypeResult(type: elem_type, env: env)
@@ -572,12 +572,12 @@ namespace anthill.reflect.typing_pass
   operation extract_element_type(kb: KB, coll_type: Type) -> Type
 
   -- Type-check a tuple literal (a, b). Each position has its own type.
-  operation type_check_tuple(kb: KB, env: TypingEnv, occ: ExprOccurrence, expected: Option[Type], fields: List[ExprOccurrence]) -> TypeResult
+  operation type_check_tuple(kb: KB, env: TypingEnv, occ: NodeOccurrence, expected: Option[Type], fields: List[NodeOccurrence]) -> TypeResult
     effects {Modify[kb], Error[TypeError]} =
     let tr = type_check_tuple_fields(kb, env, occ, fields, 0)
     TypeResult(type: result_type(tr), env: result_env(tr))
 
-  operation type_check_tuple_fields(kb: KB, env: TypingEnv, occ: ExprOccurrence, fields: List[ExprOccurrence], index: Int) -> TypeResult
+  operation type_check_tuple_fields(kb: KB, env: TypingEnv, occ: NodeOccurrence, fields: List[NodeOccurrence], index: Int) -> TypeResult
     effects {Modify[kb], Error[TypeError]} =
     match fields
       case nil -> TypeResult(type: TupleLiteral, env: env)
@@ -589,7 +589,7 @@ namespace anthill.reflect.typing_pass
   -- Match branch checking
   -- ================================================================
 
-  operation check_branches(kb: KB, env: TypingEnv, scrutinee_occ: ExprOccurrence, scrutinee_type: Type, branches: List[MatchBranch]) -> TypeResult
+  operation check_branches(kb: KB, env: TypingEnv, scrutinee_occ: NodeOccurrence, scrutinee_type: Type, branches: List[MatchBranch]) -> TypeResult
     effects {Modify[kb], Error[TypeError]} =
     match branches
       case cons(head: MatchBranch(pattern: p, guard: _, body: b), tail: nil) ->
@@ -601,7 +601,7 @@ namespace anthill.reflect.typing_pass
         let rest_r = check_branches(kb, result_env(br), scrutinee_occ, scrutinee_type, rest)
         assert_compatible(kb, result_env(rest_r), b, result_type(br), result_type(rest_r))
 
-  operation extend_env_from_pattern(kb: KB, env: TypingEnv, occ: ExprOccurrence, pat: Pattern, scrutinee_type: Type) -> TypingEnv
+  operation extend_env_from_pattern(kb: KB, env: TypingEnv, occ: NodeOccurrence, pat: Pattern, scrutinee_type: Type) -> TypingEnv
     effects Error[TypeError] =
     match pat
       case var_pattern(name: n, type_ann: _) -> TypingEnv.bind_var(env, n, scrutinee_type)
@@ -677,7 +677,7 @@ namespace anthill.reflect.typing_pass
   -- Fact typing
   -- ================================================================
 
-  operation type_check_fact(kb: KB, env: TypingEnv, fact_occ: ExprOccurrence) -> TypingEnv
+  operation type_check_fact(kb: KB, env: TypingEnv, fact_occ: NodeOccurrence) -> TypingEnv
     effects Modify[kb] =
     let fact_term = occurrence_term(kb, fact_occ)
     let entity_name = functor_of(kb, fact_term)
@@ -685,7 +685,7 @@ namespace anthill.reflect.typing_pass
     let fields = entity_fields(entity_info)
     type_check_fields(kb, env, fact_occ, fields)
 
-  operation type_check_fields(kb: KB, env: TypingEnv, fact_occ: ExprOccurrence, fields: List[FieldInfo]) -> TypingEnv
+  operation type_check_fields(kb: KB, env: TypingEnv, fact_occ: NodeOccurrence, fields: List[FieldInfo]) -> TypingEnv
     effects {Modify[kb], Error[TypeError]} =
     match fields
       case nil -> env
@@ -700,7 +700,7 @@ namespace anthill.reflect.typing_pass
   -- Rule typing
   -- ================================================================
 
-  operation type_check_rule(kb: KB, env: TypingEnv, head_occ: ExprOccurrence, body: List[ExprOccurrence], equation_rhs: Option[ExprOccurrence]) -> TypingEnv
+  operation type_check_rule(kb: KB, env: TypingEnv, head_occ: NodeOccurrence, body: List[NodeOccurrence], equation_rhs: Option[NodeOccurrence]) -> TypingEnv
     effects {Modify[kb], Error[TypeError]} =
     let env_after_body = type_check_goals(kb, env, body)
     let hr = type_check(kb, env_after_body, head_occ, none)
@@ -711,7 +711,7 @@ namespace anthill.reflect.typing_pass
         result_env(ur)
       case none -> result_env(hr)
 
-  operation type_check_goals(kb: KB, env: TypingEnv, goals: List[ExprOccurrence]) -> TypingEnv
+  operation type_check_goals(kb: KB, env: TypingEnv, goals: List[NodeOccurrence]) -> TypingEnv
     effects Modify[kb] =
     match goals
       case nil -> env
@@ -724,7 +724,7 @@ namespace anthill.reflect.typing_pass
   -- ================================================================
 
   -- Initialize typing pass: register constraints before type checking.
-  -- Uniqueness: each ExprOccurrence gets at most one type.
+  -- Uniqueness: each NodeOccurrence gets at most one type.
   -- Expressed as denial clause; KB recognizes functional dependency
   -- pattern and installs unique index for O(1) check on assert.
   operation init_typing(kb: KB) -> ConstraintId
@@ -745,7 +745,7 @@ namespace anthill.reflect.typing_pass
 
   -- Check that actual effects ⊆ declared effects.
   -- Reports TypeError for each undeclared effect.
-  operation check_effects(kb: KB, occ: ExprOccurrence,
+  operation check_effects(kb: KB, occ: NodeOccurrence,
                           actual: List[Type], declared: List[Type]) -> Bool
     effects Error[TypeError]
 
@@ -808,7 +808,7 @@ namespace anthill.reflect.typing_pass
         let env2 = type_check_fact_occs(kb, env, occs)
         type_check_facts(kb, env2, rest)
 
-  operation type_check_fact_occs(kb: KB, env: TypingEnv, occs: List[ExprOccurrence]) -> TypingEnv
+  operation type_check_fact_occs(kb: KB, env: TypingEnv, occs: List[NodeOccurrence]) -> TypingEnv
     effects Modify[kb] =
     match occs
       case nil -> env
@@ -826,7 +826,7 @@ namespace anthill.reflect.typing_pass
         let env2 = type_check_rule_occs(kb, env, occs)
         type_check_rules(kb, env2, rest)
 
-  operation type_check_rule_occs(kb: KB, env: TypingEnv, occs: List[ExprOccurrence]) -> TypingEnv
+  operation type_check_rule_occs(kb: KB, env: TypingEnv, occs: List[NodeOccurrence]) -> TypingEnv
     effects Modify[kb] =
     match occs
       case nil -> env

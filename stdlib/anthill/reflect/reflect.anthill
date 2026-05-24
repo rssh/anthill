@@ -45,21 +45,21 @@ namespace anthill.reflect
     entity source_span(file: SourceId, start_byte: Int, end_byte: Int)
   end
 
-  -- Opaque handle to a positioned term (not hash-consed)
-  sort Occurrence = ?
-
-  -- Positioned expression node — the subject of typing judgments
-  sort ExprOccurrence = ?
+  -- Positioned node in an expression / rule / operation body: a term plus its
+  -- source span and owner (not hash-consed), and the subject of typing
+  -- judgments. (WI-252: merges the former duplicate sorts `Occurrence` and
+  -- `ExprOccurrence`.)
+  sort NodeOccurrence = ?
 
   -- Builtin operations on occurrences
-  operation occurrence_term(occ: Occurrence) -> Term
-  operation occurrence_span(occ: Occurrence) -> SourceSpan
-  operation occurrence_owner(occ: Occurrence) -> Symbol
-  operation sub_occurrences(occ: Occurrence) -> List[Occurrence]
+  operation occurrence_term(occ: NodeOccurrence) -> Term
+  operation occurrence_span(occ: NodeOccurrence) -> SourceSpan
+  operation occurrence_owner(occ: NodeOccurrence) -> Symbol
+  operation sub_occurrences(occ: NodeOccurrence) -> List[NodeOccurrence]
 
   -- Find occurrences owned by a symbol (operation body, fact head, rule head/body).
-  -- Returns all ExprOccurrences registered under this owner during loading.
-  operation occurrences_of(owner: Symbol) -> List[ExprOccurrence]
+  -- Returns all NodeOccurrences registered under this owner during loading.
+  operation occurrences_of(owner: Symbol) -> List[NodeOccurrence]
 
   -- ================================================================
   -- Source unit: a loaded file and the definitions it contributed.
@@ -312,11 +312,11 @@ namespace anthill.reflect
   -- ================================================================
 
   enum Expr
-    entity match_expr(scrutinee: ExprOccurrence, branches: List[MatchBranch])
-    entity if_expr(cond: ExprOccurrence, then_branch: ExprOccurrence, else_branch: ExprOccurrence)
-    entity let_expr(pattern: Pattern, value: ExprOccurrence, body: ExprOccurrence,
+    entity match_expr(scrutinee: NodeOccurrence, branches: List[MatchBranch])
+    entity if_expr(cond: NodeOccurrence, then_branch: NodeOccurrence, else_branch: NodeOccurrence)
+    entity let_expr(pattern: Pattern, value: NodeOccurrence, body: NodeOccurrence,
                     type_name: Option[T = Term])
-    entity lambda(param: Pattern, body: ExprOccurrence)
+    entity lambda(param: Pattern, body: NodeOccurrence)
     entity apply(fn: Symbol, args: List[ApplyArg],
                  type_args: Option[T = List[type_arg]])
     entity ho_apply(predicate: Term, args: List[Term],
@@ -329,7 +329,7 @@ namespace anthill.reflect
     -- dot rules (proposal 043 §6) rewrite it to `apply` (method) or a field
     -- access (field) once the receiver's type is known. Field access has an
     -- empty `args` list; a method call carries its arguments.
-    entity dot_apply(receiver: ExprOccurrence, name: Symbol, args: List[ApplyArg])
+    entity dot_apply(receiver: NodeOccurrence, name: Symbol, args: List[ApplyArg])
     entity var_ref(name: Symbol)
     entity int_lit(value: Int)
     entity bigint_lit(value: BigInt)
@@ -343,10 +343,10 @@ namespace anthill.reflect
     -- dispatching dictionary; at apply time the eval expands it into the
     -- callee's name-keyed frame.requirements, which the body reads via
     -- `var_ref(__req_*)`. See `docs/design/operation-call-model.md` §"The IR".
-    entity apply_within(fn: Symbol, args: List[ApplyArg], requirements: List[ExprOccurrence])
-    entity ho_apply_within(predicate: Term, args: List[Term], requirements: List[ExprOccurrence])
-    entity constructor_within(name: Symbol, args: List[ApplyArg], requirements: List[ExprOccurrence])
-    entity lambda_within(param: Pattern, body: ExprOccurrence, requirements: List[ExprOccurrence])
+    entity apply_within(fn: Symbol, args: List[ApplyArg], requirements: List[NodeOccurrence])
+    entity ho_apply_within(predicate: Term, args: List[Term], requirements: List[NodeOccurrence])
+    entity constructor_within(name: Symbol, args: List[ApplyArg], requirements: List[NodeOccurrence])
+    entity lambda_within(param: Pattern, body: NodeOccurrence, requirements: List[NodeOccurrence])
 
     -- Requirement-typed primitives.
     -- requirement_at_current(slot, op): OBSOLETE under the WI-237 names
@@ -358,21 +358,21 @@ namespace anthill.reflect
     -- requirement_at_sort(chain, slot): project the slot-th bundled
     -- sub-requirement of `chain`. `chain` is a requirement chain rooted
     -- at a `var_ref` requirement read — enforced by the typer.
-    entity requirement_at_sort(chain: ExprOccurrence, slot: Int)
+    entity requirement_at_sort(chain: NodeOccurrence, slot: Int)
     -- construct_requirement(impl_functor, requirements): allocate a
     -- fresh requirement value bundling the resolved sub-requirements.
-    entity construct_requirement(impl_functor: Symbol, requirements: List[ExprOccurrence])
+    entity construct_requirement(impl_functor: Symbol, requirements: List[NodeOccurrence])
   end
 
   entity MatchBranch(
     pattern: Pattern,
-    guard: Option[ExprOccurrence],
-    body: ExprOccurrence
+    guard: Option[NodeOccurrence],
+    body: NodeOccurrence
   )
 
   entity ApplyArg(
     name: Option[Symbol],
-    value: ExprOccurrence
+    value: NodeOccurrence
   )
 
   -- Call-site type-argument binding emitted by the loader for
@@ -401,7 +401,7 @@ namespace anthill.reflect
 
   -- TypeOf: typing judgment — expression occurrence has type S (Proposal 022)
   enum TypeOf
-    entity type_of(occ: ExprOccurrence, type: Type)
+    entity type_of(occ: NodeOccurrence, type: Type)
   end
 
   -- ================================================================
@@ -423,9 +423,9 @@ namespace anthill.reflect
     params       : List[FieldInfo],
     return_type  : Term,                            -- return type expression
     effects      : List[Term],                      -- effect type expressions
-    requires     : List[ExprOccurrence],            -- precondition expressions (positioned)
-    ensures      : List[ExprOccurrence],            -- postcondition expressions (positioned)
-    body         : Option[ExprOccurrence]           -- expression body (None if declaration only)
+    requires     : List[NodeOccurrence],            -- precondition expressions (positioned)
+    ensures      : List[NodeOccurrence],            -- postcondition expressions (positioned)
+    body         : Option[NodeOccurrence]           -- expression body (None if declaration only)
   )
 
   entity FieldInfo(

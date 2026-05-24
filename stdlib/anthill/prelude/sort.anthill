@@ -5,7 +5,7 @@
    Nothing is the bottom (uninhabited, subtype of everything). >}
 enum anthill.prelude.Type
   import anthill.prelude.{Lattice, Eq, List, Option}
-  import anthill.reflect.{Symbol, ExprOccurrence}
+  import anthill.reflect.{Symbol, NodeOccurrence}
 
   -- Type constructors: all type forms in the language
   entity sort_ref(name: Symbol)
@@ -13,7 +13,7 @@ enum anthill.prelude.Type
   entity named_tuple(fields: List[TypeField])
   entity arrow(param: Type, result: Type, effects: List[Type])
   entity type_var(name: Symbol)
-  entity singleton(value: ExprOccurrence)
+  entity singleton(value: NodeOccurrence)
   entity nothing
 
   {< Type field: a named component in a named tuple type. >}

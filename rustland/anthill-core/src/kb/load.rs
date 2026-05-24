@@ -5997,7 +5997,7 @@ impl<'a> Loader<'a> {
         let ensures_list = self.convert_clause_list(&o.ensures);
 
         // Convert expression body if present. The kb-side representation
-        // is a TermId in `body` (wrapped as `Option[ExprOccurrence]` in
+        // is a TermId in `body` (wrapped as `Option[NodeOccurrence]` in
         // the OperationInfo entity) and a parallel `Rc<NodeOccurrence>`
         // tree stored in `kb.op_bodies` — the latter is what the typer
         // and codegen walk.

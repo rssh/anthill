@@ -72,8 +72,8 @@ namespace anthill.prelude
   -- exhaustiveness-checked typer removes `Error[MatchFailed]` from a match's
   -- inferred effect row when all arms are covered.
   sort MatchFailed
-    import anthill.reflect.{Occurrence, Term}
-    entity match_failed(occurrence: Occurrence, scrutinee: Term)
+    import anthill.reflect.{NodeOccurrence, Term}
+    entity match_failed(occurrence: NodeOccurrence, scrutinee: Term)
   end
 
   -- Register as effects
