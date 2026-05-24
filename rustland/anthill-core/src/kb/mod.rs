@@ -1749,17 +1749,19 @@ impl KnowledgeBase {
             (new_head, new_body)
         };
         // Close the native occurrence body to the same De Bruijn form (Global →
-        // DeBruijn against `vars`); ground facts (`vars` empty) keep it as-is.
-        let db_nodes = body_nodes.map(|nodes| {
-            if vars.is_empty() {
-                nodes
-            } else {
-                nodes
-                    .iter()
-                    .map(|n| node_occurrence::node_to_debruijn(n, &vars))
-                    .collect()
+        // DeBruijn against `vars`, including vars inside TermId pattern/param
+        // fields); ground facts (`vars` empty) keep it as-is.
+        let db_nodes = match body_nodes {
+            None => None,
+            Some(nodes) if vars.is_empty() => Some(nodes),
+            Some(nodes) => {
+                let mut out = Vec::with_capacity(nodes.len());
+                for n in &nodes {
+                    out.push(node_occurrence::node_to_debruijn(self, n, &vars));
+                }
+                Some(out)
             }
-        });
+        };
         let rule_id = self.assert_rule_with_nodes(db_head, db_body, db_nodes, sort, domain, meta);
         let entry = &mut self.rules[rule_id.index()];
         entry.arity = arity;

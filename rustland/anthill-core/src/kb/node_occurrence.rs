@@ -678,16 +678,23 @@ pub fn open_debruijn_node(occ: &Rc<NodeOccurrence>, fresh: &[VarId]) -> Rc<NodeO
 /// genuinely-free Global stays Global. Unchanged subtrees keep their `Rc`.
 ///
 /// This is the precise inverse of [`open_debruijn_node`] (the close/open
-/// round-trip the resolver relies on), and shares its reach: only `Var` leaves
-/// inside `Rc<NodeOccurrence>` children (the explicit Apply/Constructor/
-/// Instantiation/HoApply arms + the `for_each_child` fallback) are rewritten.
-/// Vars embedded in `TermId`-typed occurrence fields (`Let.pattern` /
-/// `Let.type_annotation`, `Lambda.param`, `Match` branch patterns,
-/// `Apply.type_args`) are NOT — exactly as the opener leaves them. So the
-/// round-trip is faithful, but a body atom carrying a var in one of those
-/// fields ends up De Bruijn-encoded by neither pass (a pre-existing occurrence-
-/// machinery gap, shared with the opener — not specific to this direction).
-pub fn node_to_debruijn(occ: &Rc<NodeOccurrence>, var_order: &[VarId]) -> Rc<NodeOccurrence> {
+/// round-trip the resolver relies on). It rewrites `Var` leaves inside
+/// `Rc<NodeOccurrence>` children AND inside the `TermId`-typed occurrence fields
+/// of materialized reflect-data forms — `Let.pattern`/`type_annotation`,
+/// `Lambda`/`LambdaWithin.param`, `Match` branch patterns, and
+/// `Apply`/`ApplyWithin.type_args` — by running those through
+/// `KnowledgeBase::term_to_debruijn` (hence `&mut self`). So a body atom is
+/// fully De Bruijn-closed regardless of where its vars live, matching what the
+/// prior `materialize(term_to_debruijn(t))` path produced (a var nested in such
+/// a field is now in the rule's De Bruijn key space, e.g. for the typer). Note:
+/// `open_debruijn_node` still does not OPEN those `TermId` fields back — same as
+/// before — but reflect-data patterns are matched as data, not resolved as
+/// goals, so they are never opened at a goal position.
+pub fn node_to_debruijn(
+    kb: &mut KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    var_order: &[VarId],
+) -> Rc<NodeOccurrence> {
     let Some(expr) = occ.as_expr() else { return Rc::clone(occ) };
     let rebuilt: Option<Expr> = match expr {
         Expr::Var(Var::Global(vid)) => var_order
@@ -695,38 +702,112 @@ pub fn node_to_debruijn(occ: &Rc<NodeOccurrence>, var_order: &[VarId]) -> Rc<Nod
             .position(|v| v == vid)
             .map(|pos| Expr::Var(Var::DeBruijn((var_order.len() - 1 - pos) as u32))),
         Expr::Apply { functor, pos_args, named_args, type_args } => {
-            let (pos, c1) = close_vec(pos_args, var_order);
-            let (named, c2) = close_named(named_args, var_order);
-            (c1 || c2).then(|| Expr::Apply {
+            let (pos, c1) = close_vec(kb, pos_args, var_order);
+            let (named, c2) = close_named(kb, named_args, var_order);
+            let (ta, c3) = close_type_args(kb, type_args, var_order);
+            (c1 || c2 || c3).then(|| Expr::Apply {
                 functor: *functor,
                 pos_args: pos,
                 named_args: named,
-                type_args: type_args.clone(),
+                type_args: ta,
             })
         }
         Expr::Constructor { name, pos_args, named_args } => {
-            let (pos, c1) = close_vec(pos_args, var_order);
-            let (named, c2) = close_named(named_args, var_order);
+            let (pos, c1) = close_vec(kb, pos_args, var_order);
+            let (named, c2) = close_named(kb, named_args, var_order);
             (c1 || c2).then(|| Expr::Constructor { name: *name, pos_args: pos, named_args: named })
         }
         Expr::Instantiation { name, pos_args, named_args } => {
-            let (pos, c1) = close_vec(pos_args, var_order);
-            let (named, c2) = close_named(named_args, var_order);
+            let (pos, c1) = close_vec(kb, pos_args, var_order);
+            let (named, c2) = close_named(kb, named_args, var_order);
             (c1 || c2).then(|| Expr::Instantiation { name: *name, pos_args: pos, named_args: named })
         }
         Expr::HoApply { predicate, args } => {
-            let p = node_to_debruijn(predicate, var_order);
-            let (a, c2) = close_vec(args, var_order);
+            let p = node_to_debruijn(kb, predicate, var_order);
+            let (a, c2) = close_vec(kb, args, var_order);
             let c1 = !Rc::ptr_eq(&p, predicate);
             (c1 || c2).then(|| Expr::HoApply { predicate: p, args: a })
         }
-        // Child-bearing control-flow / post-elaboration forms (materialized
-        // reflect data, WI-296): close each child generically and reassemble,
-        // mirroring `open_debruijn_node`'s fallback. Leaves enumerate no
-        // children, so `reassemble` returns `occ` unchanged.
+        // Reflect-data forms with `TermId`-typed pattern/param fields: close
+        // both their occurrence children and those `TermId` fields (the latter
+        // via `term_to_debruijn`), so a var living in a pattern/param is closed
+        // to the same De Bruijn space as the rest of the rule.
+        Expr::Let { pattern, type_annotation, value, body } => {
+            let new_pattern = kb.term_to_debruijn(*pattern, var_order);
+            let new_type_ann = type_annotation.map(|t| kb.term_to_debruijn(t, var_order));
+            let v = node_to_debruijn(kb, value, var_order);
+            let b = node_to_debruijn(kb, body, var_order);
+            let changed = new_pattern != *pattern
+                || new_type_ann != *type_annotation
+                || !Rc::ptr_eq(&v, value)
+                || !Rc::ptr_eq(&b, body);
+            changed.then(|| Expr::Let {
+                pattern: new_pattern,
+                type_annotation: new_type_ann,
+                value: v,
+                body: b,
+            })
+        }
+        Expr::Lambda { param, body } => {
+            let new_param = kb.term_to_debruijn(*param, var_order);
+            let b = node_to_debruijn(kb, body, var_order);
+            (new_param != *param || !Rc::ptr_eq(&b, body))
+                .then(|| Expr::Lambda { param: new_param, body: b })
+        }
+        Expr::LambdaWithin { param, body, requirements } => {
+            let new_param = kb.term_to_debruijn(*param, var_order);
+            let b = node_to_debruijn(kb, body, var_order);
+            let (reqs, c) = close_vec(kb, requirements, var_order);
+            (new_param != *param || !Rc::ptr_eq(&b, body) || c)
+                .then(|| Expr::LambdaWithin { param: new_param, body: b, requirements: reqs })
+        }
+        Expr::Match { scrutinee, branches } => {
+            let s = node_to_debruijn(kb, scrutinee, var_order);
+            let mut changed = !Rc::ptr_eq(&s, scrutinee);
+            let mut new_branches: Vec<MatchBranch> = Vec::with_capacity(branches.len());
+            for br in branches {
+                let new_pattern = kb.term_to_debruijn(br.pattern, var_order);
+                if new_pattern != br.pattern {
+                    changed = true;
+                }
+                let guard = match &br.guard {
+                    Some(g) => {
+                        let ng = node_to_debruijn(kb, g, var_order);
+                        if !Rc::ptr_eq(&ng, g) {
+                            changed = true;
+                        }
+                        Some(ng)
+                    }
+                    None => None,
+                };
+                let body = node_to_debruijn(kb, &br.body, var_order);
+                if !Rc::ptr_eq(&body, &br.body) {
+                    changed = true;
+                }
+                new_branches.push(MatchBranch { pattern: new_pattern, guard, body, span: br.span });
+            }
+            changed.then(|| Expr::Match { scrutinee: s, branches: new_branches })
+        }
+        Expr::ApplyWithin { functor, args, named_args, requirements, type_args } => {
+            let (a, c1) = close_vec(kb, args, var_order);
+            let (named, c2) = close_named(kb, named_args, var_order);
+            let (reqs, c3) = close_vec(kb, requirements, var_order);
+            let (ta, c4) = close_type_args(kb, type_args, var_order);
+            (c1 || c2 || c3 || c4).then(|| Expr::ApplyWithin {
+                functor: *functor,
+                args: a,
+                named_args: named,
+                requirements: reqs,
+                type_args: ta,
+            })
+        }
+        // Remaining child-bearing forms carry NO `TermId`-typed var fields
+        // (If / DotApply / collection literals / *Within without param /
+        // RequirementAtSort / ConstructRequirement): close their occurrence
+        // children generically and reassemble, mirroring `open_debruijn_node`.
         _ => {
             let mut closed: Vec<Rc<NodeOccurrence>> = Vec::new();
-            for_each_child(expr, |c| closed.push(node_to_debruijn(c, var_order)));
+            for_each_child(expr, |c| closed.push(node_to_debruijn(kb, c, var_order)));
             return super::simp_rewrite::reassemble(occ, &closed);
         }
     };
@@ -736,32 +817,51 @@ pub fn node_to_debruijn(occ: &Rc<NodeOccurrence>, var_order: &[VarId]) -> Rc<Nod
     }
 }
 
-fn close_vec(items: &[Rc<NodeOccurrence>], var_order: &[VarId]) -> (Vec<Rc<NodeOccurrence>>, bool) {
+fn close_vec(
+    kb: &mut KnowledgeBase,
+    items: &[Rc<NodeOccurrence>],
+    var_order: &[VarId],
+) -> (Vec<Rc<NodeOccurrence>>, bool) {
     let mut changed = false;
-    let out = items
-        .iter()
-        .map(|c| {
-            let r = node_to_debruijn(c, var_order);
-            changed |= !Rc::ptr_eq(&r, c);
-            r
-        })
-        .collect();
+    let mut out = Vec::with_capacity(items.len());
+    for c in items {
+        let r = node_to_debruijn(kb, c, var_order);
+        changed |= !Rc::ptr_eq(&r, c);
+        out.push(r);
+    }
     (out, changed)
 }
 
 fn close_named(
+    kb: &mut KnowledgeBase,
     items: &[(Symbol, Rc<NodeOccurrence>)],
     var_order: &[VarId],
 ) -> (Vec<(Symbol, Rc<NodeOccurrence>)>, bool) {
     let mut changed = false;
-    let out = items
-        .iter()
-        .map(|(s, c)| {
-            let r = node_to_debruijn(c, var_order);
-            changed |= !Rc::ptr_eq(&r, c);
-            (*s, r)
-        })
-        .collect();
+    let mut out = Vec::with_capacity(items.len());
+    for (s, c) in items {
+        let r = node_to_debruijn(kb, c, var_order);
+        changed |= !Rc::ptr_eq(&r, c);
+        out.push((*s, r));
+    }
+    (out, changed)
+}
+
+/// Close vars inside a call site's `type_args` (`(name?, type-TermId)` pairs)
+/// via `term_to_debruijn`. `term_to_debruijn` returns the same hash-consed
+/// `TermId` when nothing changed, so `changed` tracks real rewrites.
+fn close_type_args(
+    kb: &mut KnowledgeBase,
+    items: &[(Option<Symbol>, TermId)],
+    var_order: &[VarId],
+) -> (Vec<(Option<Symbol>, TermId)>, bool) {
+    let mut changed = false;
+    let mut out = Vec::with_capacity(items.len());
+    for &(name, t) in items {
+        let nt = kb.term_to_debruijn(t, var_order);
+        changed |= nt != t;
+        out.push((name, nt));
+    }
     (out, changed)
 }
 
@@ -2017,9 +2117,9 @@ mod tests {
         // `term_to_debruijn`'s `len-1-pos` convention), and `open_debruijn_node`
         // re-opens it to a fresh Global — the loader→resolution round-trip.
         use crate::kb::term::Var;
-        let mut symbols = SymbolTable::new();
-        let gt = symbols.intern("gt");
-        let xname = symbols.intern("x");
+        let mut kb = KnowledgeBase::new();
+        let gt = kb.intern("gt");
+        let xname = kb.intern("x");
         let span = make_span();
         let v0 = VarId::new(7, xname);
         let var0 = NodeOccurrence::new_expr(Expr::Var(Var::Global(v0)), span, None);
@@ -2036,7 +2136,7 @@ mod tests {
         );
 
         // Single-var order: v0 is the only (=last) entry → DeBruijn 0.
-        let closed = node_to_debruijn(&atom, &[v0]);
+        let closed = node_to_debruijn(&mut kb, &atom, &[v0]);
         match closed.as_expr() {
             Some(Expr::Apply { functor, pos_args, .. }) => {
                 assert_eq!(*functor, gt);
@@ -2068,10 +2168,10 @@ mod tests {
         // DeBruijn 0 — exactly `term_to_debruijn`'s convention, so a natively
         // built body aligns with the De Bruijn-converted head.
         use crate::kb::term::Var;
-        let mut symbols = SymbolTable::new();
-        let p = symbols.intern("p");
-        let aname = symbols.intern("a");
-        let bname = symbols.intern("b");
+        let mut kb = KnowledgeBase::new();
+        let p = kb.intern("p");
+        let aname = kb.intern("a");
+        let bname = kb.intern("b");
         let span = make_span();
         let a = VarId::new(1, aname);
         let b = VarId::new(2, bname);
@@ -2088,10 +2188,44 @@ mod tests {
             span,
             None,
         );
-        let closed = node_to_debruijn(&atom, &[a, b]);
+        let closed = node_to_debruijn(&mut kb, &atom, &[a, b]);
         let Some(Expr::Apply { pos_args, .. }) = closed.as_expr() else { panic!("expected Apply") };
         assert!(matches!(pos_args[0].as_expr(), Some(Expr::Var(Var::DeBruijn(1)))));
         assert!(matches!(pos_args[1].as_expr(), Some(Expr::Var(Var::DeBruijn(0)))));
+    }
+
+    #[test]
+    fn node_to_debruijn_closes_vars_in_termid_pattern_fields() {
+        // WI-246 follow-on: a reflect-data `lambda` atom carries its param as a
+        // `TermId` (not an occ child). `node_to_debruijn` must close a Global var
+        // living there to De Bruijn — via `term_to_debruijn` — so it lands in the
+        // rule's De Bruijn key space (e.g. for the typer), matching the prior
+        // materialize(term_to_debruijn(t)) path.
+        use crate::kb::term::Var;
+        let mut kb = KnowledgeBase::new();
+        let xname = kb.intern("x");
+        let span = make_span();
+        let v0 = VarId::new(7, xname);
+        // param TermId holds Global(v0); body is a separate occ var leaf.
+        let param_tid = kb.alloc(Term::Var(Var::Global(v0)));
+        let body = NodeOccurrence::new_expr(Expr::Var(Var::Global(v0)), span, None);
+        let lambda = NodeOccurrence::new_expr(Expr::Lambda { param: param_tid, body }, span, None);
+
+        let closed = node_to_debruijn(&mut kb, &lambda, &[v0]);
+        match closed.as_expr() {
+            Some(Expr::Lambda { param, body }) => {
+                assert!(
+                    matches!(kb.get_term(*param), Term::Var(Var::DeBruijn(0))),
+                    "param TermId var should close to DeBruijn(0), got {:?}",
+                    kb.get_term(*param)
+                );
+                assert!(
+                    matches!(body.as_expr(), Some(Expr::Var(Var::DeBruijn(0)))),
+                    "body occ var should also close to DeBruijn(0)",
+                );
+            }
+            other => panic!("expected Lambda, got {other:?}"),
+        }
     }
 
     /// Build the rule-body atom `gt(Global(v0), 3)` and return `(atom, v0,

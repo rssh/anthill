@@ -7149,18 +7149,11 @@ fn constrain_vid(
 /// `Term::Fn` so the typer no longer reads the term body. Control-flow / reflect
 /// forms add no constraints themselves but are recursed into via their children.
 ///
-/// KNOWN GAP (vs the old term walker): `for_each_child` does not enumerate the
-/// `TermId`-typed sub-pattern fields of materialized reflect-data forms
-/// (`Expr::Lambda.param`, `Expr::Let.pattern`/`type_annotation`, `Expr::Match`
-/// branch patterns), so an op/entity call with a var arg nested INSIDE such a
-/// pattern/param position is not constrained here — whereas the term walker,
-/// treating the atom as a uniform `Term::Fn`, did. The miss is narrow
-/// (reflect/typing rules only) and false-negative-only (a contradiction not
-/// caught, never a spurious one). The proper fix is rooted upstream: those
-/// `TermId` fields still carry `Var::Global` (`node_to_debruijn` doesn't close
-/// inside `TermId` fields — shared with `open_debruijn_node`), so they aren't in
-/// the rule's De Bruijn key space; closing them there is the prerequisite to
-/// covering them here. Tracked as a follow-on.
+/// Reflect-data forms carry their sub-pattern / param / type-annotation as
+/// `TermId` fields (not occ children), which `for_each_child` does not
+/// enumerate. They are closed to the rule's De Bruijn space by
+/// `node_to_debruijn`, so we type-check them via the term collector — covering
+/// op/entity calls nested in a pattern/param exactly as the term walker did.
 fn collect_occurrence_type_constraints(
     kb: &KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
@@ -7175,6 +7168,21 @@ fn collect_occurrence_type_constraints(
         Expr::Constructor { name, pos_args, named_args }
         | Expr::Instantiation { name, pos_args, named_args } => {
             constrain_application(kb, *name, pos_args, named_args, var_types, subst);
+        }
+        // `TermId`-typed pattern/param/type-annotation fields → term collector.
+        Expr::Let { pattern, type_annotation, .. } => {
+            collect_term_type_constraints(kb, *pattern, var_types, subst);
+            if let Some(t) = type_annotation {
+                collect_term_type_constraints(kb, *t, var_types, subst);
+            }
+        }
+        Expr::Lambda { param, .. } | Expr::LambdaWithin { param, .. } => {
+            collect_term_type_constraints(kb, *param, var_types, subst);
+        }
+        Expr::Match { branches, .. } => {
+            for br in branches {
+                collect_term_type_constraints(kb, br.pattern, var_types, subst);
+            }
         }
         _ => {}
     }
