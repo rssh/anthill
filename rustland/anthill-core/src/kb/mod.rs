@@ -1403,12 +1403,16 @@ impl KnowledgeBase {
 
     /// Number of active (non-retracted) entries with empty body (ground facts).
     pub fn fact_count(&self) -> usize {
-        self.rules.iter().filter(|r| !r.retracted && r.body.is_empty()).count()
+        // WI-246: body-emptiness reads the occurrence body (`body_nodes`), not
+        // the term `body` — both have equal arity (assert enforces it), so this
+        // is unchanged, but it does not depend on the term body that is being
+        // retired.
+        self.rules.iter().filter(|r| !r.retracted && r.body_nodes.is_empty()).count()
     }
 
     /// Number of active (non-retracted) entries with non-empty body (proper rules).
     pub fn rule_count(&self) -> usize {
-        self.rules.iter().filter(|r| !r.retracted && !r.body.is_empty()).count()
+        self.rules.iter().filter(|r| !r.retracted && !r.body_nodes.is_empty()).count()
     }
 
     /// Live term count in the hash-consed `TermStore`. Diagnostic — used by

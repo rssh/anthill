@@ -66,7 +66,7 @@ fn lookup_explicit_policy(
         "anthill.realization.policy.TranslationPolicy"
     )?;
     for rid in kb.by_functor(policy_sym) {
-        if !kb.rule_body(rid).is_empty() { continue; }
+        if !kb.is_fact(rid) { continue; }
         let head = kb.rule_head(rid);
         let named = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args,

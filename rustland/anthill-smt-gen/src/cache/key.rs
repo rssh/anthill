@@ -141,7 +141,7 @@ fn fact_dep_hash_from(kb: &KnowledgeBase, referenced: &BTreeSet<u32>) -> String 
         h.update(kb.qualified_name_of(functor).as_bytes());
         h.update([ITEM_SEP]);
         for rid in kb.by_functor(functor) {
-            if !kb.rule_body(rid).is_empty() { continue; }
+            if !kb.is_fact(rid) { continue; }
             let head = kb.rule_head(rid);
             h.update(printer.print_term(head).as_bytes());
             h.update([ITEM_SEP]);

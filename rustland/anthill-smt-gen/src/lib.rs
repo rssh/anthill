@@ -569,7 +569,7 @@ impl<'kb> Emitter<'kb> {
         // like `step_distance_bound(?delta)`.
         if pos_args.len() == 1 && named_args.is_empty()
             && self.kb.by_functor(*functor).iter()
-                .any(|rid| !self.kb.rule_body(*rid).is_empty())
+                .any(|rid| !self.kb.is_fact(*rid))
         {
             let bind_idx = match self.kb.get_term(pos_args[0]) {
                 Term::Var(Var::DeBruijn(i)) => *i,
@@ -627,7 +627,7 @@ impl<'kb> Emitter<'kb> {
         // edits invalidate downstream proofs).
         let functor_qn = self.kb.qualified_name_of(functor).to_string();
         for rid in candidates {
-            if !self.kb.rule_body(rid).is_empty() { continue; }
+            if !self.kb.is_fact(rid) { continue; }
             self.visited_rules.insert(functor_qn.clone());
             let head = self.kb.rule_head(rid);
             let Term::Fn { pos_args: fpos, named_args: fnamed, .. } = self.kb.get_term(head)
@@ -696,7 +696,7 @@ impl<'kb> Emitter<'kb> {
             None => return Ok(false),
         };
         let rid = match self.kb.by_functor(sym).into_iter()
-            .find(|r| !self.kb.rule_body(*r).is_empty())
+            .find(|r| !self.kb.is_fact(*r))
         {
             Some(r) => r,
             None => return Ok(false),
@@ -856,7 +856,7 @@ impl<'kb> Emitter<'kb> {
         let sym = self.kb.try_resolve_symbol(callee_qn)
             .ok_or_else(|| SmtGenError::new(format!("rule call '{callee_qn}' not found")))?;
         let rid = self.kb.by_functor(sym).into_iter()
-            .find(|r| !self.kb.rule_body(*r).is_empty())
+            .find(|r| !self.kb.is_fact(*r))
             .ok_or_else(|| SmtGenError::new(format!(
                 "rule call '{callee_qn}' has no defining clauses")))?;
 
