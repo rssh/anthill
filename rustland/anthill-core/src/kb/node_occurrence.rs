@@ -666,6 +666,105 @@ pub fn open_debruijn_node(occ: &Rc<NodeOccurrence>, fresh: &[VarId]) -> Rc<NodeO
     }
 }
 
+/// WI-246: the inverse of [`open_debruijn_node`] — close a fresh-Global
+/// rule-body-atom occurrence into its De Bruijn form, the occurrence analog of
+/// `KnowledgeBase::term_to_debruijn`. Replaces each `Expr::Var(Var::Global(vid))`
+/// leaf whose `vid` is in `var_order` with `Expr::Var(Var::DeBruijn(idx))`,
+/// using the SAME index convention as `term_to_debruijn`
+/// (`idx = var_order.len() - 1 - position`), so a body built natively in the
+/// loader (Global vars) lands in the De Bruijn form `with_fresh_vars` opens.
+/// Globals not in `var_order` (e.g. an entity-expansion fresh var that the
+/// rule's var collection also saw — it WILL be in `var_order`) are kept; a
+/// genuinely-free Global stays Global. Unchanged subtrees keep their `Rc`.
+///
+/// This is the precise inverse of [`open_debruijn_node`] (the close/open
+/// round-trip the resolver relies on), and shares its reach: only `Var` leaves
+/// inside `Rc<NodeOccurrence>` children (the explicit Apply/Constructor/
+/// Instantiation/HoApply arms + the `for_each_child` fallback) are rewritten.
+/// Vars embedded in `TermId`-typed occurrence fields (`Let.pattern` /
+/// `Let.type_annotation`, `Lambda.param`, `Match` branch patterns,
+/// `Apply.type_args`) are NOT — exactly as the opener leaves them. So the
+/// round-trip is faithful, but a body atom carrying a var in one of those
+/// fields ends up De Bruijn-encoded by neither pass (a pre-existing occurrence-
+/// machinery gap, shared with the opener — not specific to this direction).
+pub fn node_to_debruijn(occ: &Rc<NodeOccurrence>, var_order: &[VarId]) -> Rc<NodeOccurrence> {
+    let Some(expr) = occ.as_expr() else { return Rc::clone(occ) };
+    let rebuilt: Option<Expr> = match expr {
+        Expr::Var(Var::Global(vid)) => var_order
+            .iter()
+            .position(|v| v == vid)
+            .map(|pos| Expr::Var(Var::DeBruijn((var_order.len() - 1 - pos) as u32))),
+        Expr::Apply { functor, pos_args, named_args, type_args } => {
+            let (pos, c1) = close_vec(pos_args, var_order);
+            let (named, c2) = close_named(named_args, var_order);
+            (c1 || c2).then(|| Expr::Apply {
+                functor: *functor,
+                pos_args: pos,
+                named_args: named,
+                type_args: type_args.clone(),
+            })
+        }
+        Expr::Constructor { name, pos_args, named_args } => {
+            let (pos, c1) = close_vec(pos_args, var_order);
+            let (named, c2) = close_named(named_args, var_order);
+            (c1 || c2).then(|| Expr::Constructor { name: *name, pos_args: pos, named_args: named })
+        }
+        Expr::Instantiation { name, pos_args, named_args } => {
+            let (pos, c1) = close_vec(pos_args, var_order);
+            let (named, c2) = close_named(named_args, var_order);
+            (c1 || c2).then(|| Expr::Instantiation { name: *name, pos_args: pos, named_args: named })
+        }
+        Expr::HoApply { predicate, args } => {
+            let p = node_to_debruijn(predicate, var_order);
+            let (a, c2) = close_vec(args, var_order);
+            let c1 = !Rc::ptr_eq(&p, predicate);
+            (c1 || c2).then(|| Expr::HoApply { predicate: p, args: a })
+        }
+        // Child-bearing control-flow / post-elaboration forms (materialized
+        // reflect data, WI-296): close each child generically and reassemble,
+        // mirroring `open_debruijn_node`'s fallback. Leaves enumerate no
+        // children, so `reassemble` returns `occ` unchanged.
+        _ => {
+            let mut closed: Vec<Rc<NodeOccurrence>> = Vec::new();
+            for_each_child(expr, |c| closed.push(node_to_debruijn(c, var_order)));
+            return super::simp_rewrite::reassemble(occ, &closed);
+        }
+    };
+    match rebuilt {
+        Some(e) => NodeOccurrence::new_expr(e, occ.span, occ.owner),
+        None => Rc::clone(occ),
+    }
+}
+
+fn close_vec(items: &[Rc<NodeOccurrence>], var_order: &[VarId]) -> (Vec<Rc<NodeOccurrence>>, bool) {
+    let mut changed = false;
+    let out = items
+        .iter()
+        .map(|c| {
+            let r = node_to_debruijn(c, var_order);
+            changed |= !Rc::ptr_eq(&r, c);
+            r
+        })
+        .collect();
+    (out, changed)
+}
+
+fn close_named(
+    items: &[(Symbol, Rc<NodeOccurrence>)],
+    var_order: &[VarId],
+) -> (Vec<(Symbol, Rc<NodeOccurrence>)>, bool) {
+    let mut changed = false;
+    let out = items
+        .iter()
+        .map(|(s, c)| {
+            let r = node_to_debruijn(c, var_order);
+            changed |= !Rc::ptr_eq(&r, c);
+            (*s, r)
+        })
+        .collect();
+    (out, changed)
+}
+
 fn open_vec(items: &[Rc<NodeOccurrence>], fresh: &[VarId]) -> (Vec<Rc<NodeOccurrence>>, bool) {
     let mut changed = false;
     let out = items
@@ -1886,6 +1985,90 @@ mod tests {
             }
             other => panic!("expected Apply, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn node_to_debruijn_closes_var_leaves_and_round_trips() {
+        // WI-246: the loader builds a Global-var atom `gt(Global(v0), 3)`;
+        // `node_to_debruijn` closes it to `gt(DeBruijn(0), 3)` (matching
+        // `term_to_debruijn`'s `len-1-pos` convention), and `open_debruijn_node`
+        // re-opens it to a fresh Global — the loader→resolution round-trip.
+        use crate::kb::term::Var;
+        let mut symbols = SymbolTable::new();
+        let gt = symbols.intern("gt");
+        let xname = symbols.intern("x");
+        let span = make_span();
+        let v0 = VarId::new(7, xname);
+        let var0 = NodeOccurrence::new_expr(Expr::Var(Var::Global(v0)), span, None);
+        let three = NodeOccurrence::new_expr(Expr::Const(Literal::Int(3)), span, None);
+        let atom = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: gt,
+                pos_args: vec![var0, Rc::clone(&three)],
+                named_args: vec![],
+                type_args: vec![],
+            },
+            span,
+            None,
+        );
+
+        // Single-var order: v0 is the only (=last) entry → DeBruijn 0.
+        let closed = node_to_debruijn(&atom, &[v0]);
+        match closed.as_expr() {
+            Some(Expr::Apply { functor, pos_args, .. }) => {
+                assert_eq!(*functor, gt);
+                assert!(
+                    matches!(pos_args[0].as_expr(), Some(Expr::Var(Var::DeBruijn(0)))),
+                    "Global(v0) should close to DeBruijn(0), got {:?}",
+                    pos_args[0].as_expr()
+                );
+                assert!(Rc::ptr_eq(&pos_args[1], &three), "unchanged const child keeps identity");
+            }
+            other => panic!("expected Apply, got {other:?}"),
+        }
+
+        // Re-open with a fresh global: the leaf comes back as that global.
+        let v_fresh = VarId::new(42, xname);
+        let reopened = open_debruijn_node(&closed, &[v_fresh]);
+        match reopened.as_expr() {
+            Some(Expr::Apply { pos_args, .. }) => assert!(
+                matches!(pos_args[0].as_expr(), Some(Expr::Var(Var::Global(v))) if *v == v_fresh),
+                "round-trip should re-open DeBruijn(0) to the fresh global",
+            ),
+            other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn node_to_debruijn_uses_len_minus_one_minus_pos_index() {
+        // Two vars [a, b]: position 0 (a) → DeBruijn 1, position 1 (b, last) →
+        // DeBruijn 0 — exactly `term_to_debruijn`'s convention, so a natively
+        // built body aligns with the De Bruijn-converted head.
+        use crate::kb::term::Var;
+        let mut symbols = SymbolTable::new();
+        let p = symbols.intern("p");
+        let aname = symbols.intern("a");
+        let bname = symbols.intern("b");
+        let span = make_span();
+        let a = VarId::new(1, aname);
+        let b = VarId::new(2, bname);
+        let atom = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: p,
+                pos_args: vec![
+                    NodeOccurrence::new_expr(Expr::Var(Var::Global(a)), span, None),
+                    NodeOccurrence::new_expr(Expr::Var(Var::Global(b)), span, None),
+                ],
+                named_args: vec![],
+                type_args: vec![],
+            },
+            span,
+            None,
+        );
+        let closed = node_to_debruijn(&atom, &[a, b]);
+        let Some(Expr::Apply { pos_args, .. }) = closed.as_expr() else { panic!("expected Apply") };
+        assert!(matches!(pos_args[0].as_expr(), Some(Expr::Var(Var::DeBruijn(1)))));
+        assert!(matches!(pos_args[1].as_expr(), Some(Expr::Var(Var::DeBruijn(0)))));
     }
 
     /// Build the rule-body atom `gt(Global(v0), 3)` and return `(atom, v0,

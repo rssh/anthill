@@ -11,6 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use smallvec::SmallVec;
 
@@ -19,6 +20,7 @@ use crate::parse::ir::*;
 use crate::span::{Span, SourceId, SourceSpan};
 use super::{KnowledgeBase, SortKind};
 use super::term::{Term, TermId, Var, VarId, Literal};
+use super::node_occurrence::{self, NodeOccurrence};
 use super::typing::{extract_type_param, get_named_arg, list_to_vec};
 
 // ── Load result ──────────────────────────────────────────────
@@ -4585,6 +4587,29 @@ impl<'a> Loader<'a> {
 
     /// var_ref: Term::Ident(sym) → var_ref(name: Ref(sym))
     /// Uses reintern (plain) — lexical variables are NOT KB symbol references.
+    /// WI-246: build the `NodeOccurrence` for one rule-body goal atom — the
+    /// rule's resolver/typer goal source.
+    ///
+    /// Phase 1 (current): materialize from the already-converted (and memoized)
+    /// body term `kb_term`, so the occurrence matches the prior `body_nodes` in
+    /// resolution behavior while the new native-capable assert path is validated.
+    /// The occurrence shares the term body's var identity for free (same term).
+    /// (Not bit-identical: the prior path materialized the *De Bruijn* term,
+    /// whose freshly hash-consed var-bearing subterms had no recorded span, so
+    /// it lost those spans; this builds from the *global* term and so carries
+    /// true source spans — an improvement, observable only via `occurrence_span`
+    /// / error positions, not resolution.)
+    ///
+    /// Phase 2 will walk `parse_id` natively into an `Expr` occurrence (generic
+    /// `Term::Fn → Expr::Apply` + leaves; entity / reflect-key forms keep
+    /// falling back here), so a loaded rule body no longer round-trips through
+    /// the lossy `materialize_from_handle` re-inference — and the term body
+    /// becomes droppable.
+    fn build_body_atom_occurrence(&mut self, parse_id: TermId, kb_term: TermId) -> Rc<NodeOccurrence> {
+        let _ = parse_id; // Phase 2: native parse-IR walk hooks in here.
+        node_occurrence::materialize_from_handle(self.kb, kb_term)
+    }
+
     fn load_var_ref(&mut self, parse_id: TermId) -> TermId {
         let parse_term = self.parsed.terms.get(parse_id).clone();
         let name_ref = if let Term::Ident(sym) = parse_term {
@@ -5549,9 +5574,25 @@ impl<'a> Loader<'a> {
             return;
         }
 
-        let body: Vec<TermId> = r.body.as_ref()
-            .map(|terms| terms.iter().map(|&tid| self.convert_term(tid)).collect())
-            .unwrap_or_default();
+        // WI-246: build the term body AND the native occurrence body together.
+        // The occurrence body becomes the rule's resolver/typer goal source; the
+        // term body stays (DeBruijn var collection, decref, smt-gen) until it is
+        // dropped in a later step. Both share var identity via `self.var_map`
+        // (populated by `convert_term`), so they close to the same De Bruijn
+        // form. Phase 1: the occurrence is `materialize(convert_term(..))` —
+        // same resolution behavior as the prior `body_nodes` (now with true
+        // source spans), routed through the new native-capable assert path.
+        // Phase 2 swaps `build_body_atom_occurrence` to a native parse-IR walk
+        // at this single chokepoint.
+        let mut body: Vec<TermId> = Vec::new();
+        let mut body_nodes: Vec<Rc<NodeOccurrence>> = Vec::new();
+        if let Some(terms) = r.body.as_ref() {
+            for &tid in terms {
+                let kb_term = self.convert_term(tid);
+                body_nodes.push(self.build_body_atom_occurrence(tid, kb_term));
+                body.push(kb_term);
+            }
+        }
         let meta = r.meta.as_ref().map(|mb| self.load_meta_block(mb));
 
         // Proposal 032: head IS the rule's claim. Labeled rules
@@ -5585,8 +5626,8 @@ impl<'a> Loader<'a> {
         };
 
         for kb_head in kb_heads {
-            let rid = self.kb.assert_rule_debruijn(
-                kb_head, body.clone(), rule_sort, domain, meta);
+            let rid = self.kb.assert_rule_debruijn_with_nodes(
+                kb_head, body.clone(), body_nodes.clone(), rule_sort, domain, meta);
             if let Some(label) = label_sym {
                 self.kb.set_rule_label(rid, label);
             }
