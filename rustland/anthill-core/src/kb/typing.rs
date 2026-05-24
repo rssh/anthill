@@ -7028,19 +7028,20 @@ fn term_contains_functor(kb: &KnowledgeBase, term: TermId, target_functor: Symbo
 /// 3. Unify all constraints for each variable — must be consistent
 fn check_rule_typing(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Vec<TypeError>) {
     for rid in kb.by_domain(sort_term) {
-        let body = kb.rule_body(rid);
-        if body.is_empty() { continue; } // facts have no body — nothing to check
+        if kb.is_fact(rid) { continue; } // facts have no body — nothing to check
 
         let head = kb.rule_head(rid);
         let mut subst = Substitution::new();
         let mut var_types: HashMap<u32, TermId> = std::collections::HashMap::new();
 
-        // Collect type constraints from head
+        // Collect type constraints from the head (still a hash-consed term).
         collect_term_type_constraints(kb, head, &mut var_types, &mut subst);
 
-        // Collect type constraints from body goals
-        for &goal_tid in body {
-            collect_term_type_constraints(kb, goal_tid, &mut var_types, &mut subst);
+        // Collect type constraints from the body goals (WI-246: the occurrence
+        // body, not the term body). The head term and the body occurrences are
+        // closed against the same `vars`, so their De Bruijn idx keys align.
+        for node in kb.rule_body_nodes(rid) {
+            collect_occurrence_type_constraints(kb, node, &mut var_types, &mut subst);
         }
 
         // Check for contradictions in the substitution
@@ -7118,14 +7119,109 @@ fn constrain_var_type(
         Term::Var(Var::DeBruijn(idx)) => *idx,
         _ => return,
     };
+    constrain_vid(kb, vid, expected_type, var_types, subst);
+}
 
+/// Shared core of `constrain_var_type` / `constrain_occ_var_type`: record the
+/// var's expected type, or unify against an existing one (keyed by the var's
+/// raw id / De Bruijn idx — the same key space for a rule's head term and its
+/// body occurrences, both closed against the same `vars`).
+fn constrain_vid(
+    kb: &KnowledgeBase,
+    vid: u32,
+    expected_type: TermId,
+    var_types: &mut HashMap<u32, TermId>,
+    subst: &mut Substitution,
+) {
     if let Some(&existing_type) = var_types.get(&vid) {
-        // Variable already has a type — unify with the new expected type
         if !unify_types(kb, subst, existing_type, expected_type) {
             subst.contradiction = true;
         }
     } else {
         var_types.insert(vid, expected_type);
     }
+}
+
+/// WI-246: occurrence-body twin of [`collect_term_type_constraints`] — walk a
+/// rule-body goal OCCURRENCE, constraining op-arg (positional) / entity-field
+/// (named) var positions to their declared types. Mirrors the term walker's
+/// op/entity functor dispatch and recursion, reading `Expr` instead of
+/// `Term::Fn` so the typer no longer reads the term body. Control-flow / reflect
+/// forms add no constraints themselves but are recursed into via their children.
+///
+/// KNOWN GAP (vs the old term walker): `for_each_child` does not enumerate the
+/// `TermId`-typed sub-pattern fields of materialized reflect-data forms
+/// (`Expr::Lambda.param`, `Expr::Let.pattern`/`type_annotation`, `Expr::Match`
+/// branch patterns), so an op/entity call with a var arg nested INSIDE such a
+/// pattern/param position is not constrained here — whereas the term walker,
+/// treating the atom as a uniform `Term::Fn`, did. The miss is narrow
+/// (reflect/typing rules only) and false-negative-only (a contradiction not
+/// caught, never a spurious one). The proper fix is rooted upstream: those
+/// `TermId` fields still carry `Var::Global` (`node_to_debruijn` doesn't close
+/// inside `TermId` fields — shared with `open_debruijn_node`), so they aren't in
+/// the rule's De Bruijn key space; closing them there is the prerequisite to
+/// covering them here. Tracked as a follow-on.
+fn collect_occurrence_type_constraints(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    var_types: &mut HashMap<u32, TermId>,
+    subst: &mut Substitution,
+) {
+    let Some(expr) = occ.as_expr() else { return };
+    match expr {
+        Expr::Apply { functor, pos_args, named_args, .. } => {
+            constrain_application(kb, *functor, pos_args, named_args, var_types, subst);
+        }
+        Expr::Constructor { name, pos_args, named_args }
+        | Expr::Instantiation { name, pos_args, named_args } => {
+            constrain_application(kb, *name, pos_args, named_args, var_types, subst);
+        }
+        _ => {}
+    }
+    for_each_child(expr, |c| collect_occurrence_type_constraints(kb, c, var_types, subst));
+}
+
+/// Constrain the op-arg (positional) / entity-field (named) var positions of one
+/// applied occurrence — the occurrence analog of the op/entity dispatch in
+/// [`collect_term_type_constraints`].
+fn constrain_application(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    var_types: &mut HashMap<u32, TermId>,
+    subst: &mut Substitution,
+) {
+    if let Some(op) = lookup_operation_info_full(kb, functor) {
+        for (i, arg) in pos_args.iter().enumerate() {
+            if let Some(&(_, param_type)) = op.params.get(i) {
+                constrain_occ_var_type(kb, arg, param_type, var_types, subst);
+            }
+        }
+    } else if let Some(field_types) = kb.entity_field_types(functor) {
+        let field_types = field_types.to_vec();
+        for &(field_sym, field_type) in &field_types {
+            if let Some((_, arg)) = named_args.iter().find(|(s, _)| *s == field_sym) {
+                constrain_occ_var_type(kb, arg, field_type, var_types, subst);
+            }
+        }
+    }
+}
+
+/// Occurrence analog of [`constrain_var_type`]: if `occ` is a var leaf, record /
+/// unify its expected type.
+fn constrain_occ_var_type(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    expected_type: TermId,
+    var_types: &mut HashMap<u32, TermId>,
+    subst: &mut Substitution,
+) {
+    let vid = match occ.as_expr() {
+        Some(Expr::Var(Var::Global(vid))) => vid.raw(),
+        Some(Expr::Var(Var::DeBruijn(idx))) => *idx,
+        _ => return,
+    };
+    constrain_vid(kb, vid, expected_type, var_types, subst);
 }
 
