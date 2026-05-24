@@ -633,28 +633,15 @@ impl KnowledgeBase {
         domain: TermId,
         meta: Option<TermId>,
     ) -> RuleId {
-        // Note: builtins always take precedence over rules at resolution time
-        // (checked first in step_init), so rules with builtin functors are
-        // allowed but effectively shadowed during resolution.
-
-        let rule_id = RuleId(self.rules.len() as u32);
-
-        // Incref on all referenced terms
-        self.terms.incref(head);
-        self.terms.incref(sort);
-        self.terms.incref(domain);
-        if let Some(m) = meta {
-            self.terms.incref(m);
-        }
-        // The term `body` is NOT stored or incref'd (WI-246: the term body field
-        // is dropped). It is used transiently below only to materialize the
-        // occurrence body for the non-native callers (facts / synthesized / test
-        // rules); the body terms keep their convert/alloc-time refcount floor.
-
         // WI-246: the occurrence body — the resolver's goal source and the
         // typer/`simp` view. Either supplied natively by the loader, or
         // materialized from the body term as a read-only walk (De Bruijn leaves
-        // preserved as `Expr::Var`). Empty for facts.
+        // preserved as `Expr::Var`). Empty for facts. The term `body` is NOT
+        // stored or incref'd (WI-246: the term body field is dropped); it is read
+        // here only to materialize the occurrence body for the non-native callers
+        // (facts / synthesized / test rules), whose body terms keep their
+        // convert/alloc-time refcount floor. The loader-native path bypasses this
+        // entirely via `finalize_rule_debruijn_nodes` → `assert_rule_nodes`.
         let body_nodes: Vec<Rc<NodeOccurrence>> = match body_nodes {
             Some(nodes) => {
                 debug_assert_eq!(
@@ -671,6 +658,37 @@ impl KnowledgeBase {
                 .map(|&b| node_occurrence::materialize_from_handle(self, b))
                 .collect(),
         };
+        self.assert_rule_nodes(head, body_nodes, sort, domain, meta)
+    }
+
+    /// Core rule-insertion epilogue: the occurrence body is already final (in the
+    /// rule's stored form). Increfs head/sort/domain/meta, pushes the `RuleEntry`,
+    /// and updates the sort / domain / functor / fact-dedup / discrimination
+    /// indexes. Single storage path for both the term-materialized
+    /// (`assert_rule_with_nodes`) and the loader-native
+    /// (`finalize_rule_debruijn_nodes`) callers. Sets `arity`/`shared_arity`/
+    /// `globals` to their ground-fact defaults; De Bruijn callers overwrite them.
+    pub fn assert_rule_nodes(
+        &mut self,
+        head: TermId,
+        body_nodes: Vec<Rc<NodeOccurrence>>,
+        sort: TermId,
+        domain: TermId,
+        meta: Option<TermId>,
+    ) -> RuleId {
+        // Note: builtins always take precedence over rules at resolution time
+        // (checked first in step_init), so rules with builtin functors are
+        // allowed but effectively shadowed during resolution.
+
+        let rule_id = RuleId(self.rules.len() as u32);
+
+        // Incref on all referenced terms
+        self.terms.incref(head);
+        self.terms.incref(sort);
+        self.terms.incref(domain);
+        if let Some(m) = meta {
+            self.terms.incref(m);
+        }
 
         self.rules.push(RuleEntry {
             head,
@@ -1689,41 +1707,46 @@ impl KnowledgeBase {
         meta: Option<TermId>,
     ) -> RuleId {
         let vars = self.collect_head_body_vars(head, &body);
-        self.finalize_rule_debruijn(head, body, None, vars, 0, sort, domain, meta)
+        self.finalize_rule_debruijn(head, body, vars, 0, sort, domain, meta)
     }
 
     /// WI-246: assert a rule with the occurrence body supplied natively by the
-    /// loader (Global-var occurrences, parallel to the Global-var `body` terms).
-    /// `finalize_rule_debruijn` closes BOTH against the shared `vars` ordering,
-    /// so the term body and the occurrence body land in the same De Bruijn form
-    /// — no `materialize_from_handle` round-trip for loaded rule bodies.
+    /// loader (Global-var occurrences) — no term body. The rule's free vars are
+    /// collected from the head (still a hash-consed term) + the occurrence body,
+    /// in the same first-occurrence order the dropped term-body walk produced
+    /// (`collect_occurrence_global_vars_ordered` mirrors `collect_vars_rec`), then
+    /// `finalize_rule_debruijn_nodes` closes head + occurrences to the shared
+    /// De Bruijn form. No `materialize_from_handle` round-trip, no term body.
     pub fn assert_rule_debruijn_with_nodes(
         &mut self,
         head: TermId,
-        body: Vec<TermId>,
         body_nodes: Vec<Rc<NodeOccurrence>>,
         sort: TermId,
         domain: TermId,
         meta: Option<TermId>,
     ) -> RuleId {
-        let vars = self.collect_head_body_vars(head, &body);
-        self.finalize_rule_debruijn(head, body, Some(body_nodes), vars, 0, sort, domain, meta)
+        let mut vars = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        self.collect_vars_rec(head, &mut vars, &mut seen);
+        for n in &body_nodes {
+            node_occurrence::collect_occurrence_global_vars_ordered(self, n, &mut vars, &mut seen);
+        }
+        self.finalize_rule_debruijn_nodes(head, body_nodes, vars, 0, sort, domain, meta)
     }
 
-    /// Shared epilogue for both DeBruijn-asserting paths: convert
-    /// head/body against `vars` (in-place when non-empty), insert as
-    /// a Rule, save `arity`, `shared_arity`, and `globals` on the
-    /// entry. Vars list ordering convention follows
-    /// `term_to_debruijn`'s reverse mapping (last entry → DeBruijn 0).
-    /// `body_nodes`: when `Some`, the loader-built Global-var occurrence body,
-    /// closed to De Bruijn here against the same `vars`; when `None`, the
-    /// occurrence body is materialized from the De Bruijn term body downstream.
+    /// Shared epilogue for the term-body DeBruijn-asserting paths (facts,
+    /// synthesized step rules, hand-built test rules): convert head/body against
+    /// `vars` (in-place when non-empty), insert as a Rule, save `arity`,
+    /// `shared_arity`, and `globals` on the entry. The occurrence body is
+    /// materialized from the De Bruijn term body downstream by
+    /// `assert_rule_with_nodes`. Vars list ordering convention follows
+    /// `term_to_debruijn`'s reverse mapping (last entry → DeBruijn 0). The
+    /// loader-native (no term body) twin is `finalize_rule_debruijn_nodes`.
     #[allow(clippy::too_many_arguments)]
     fn finalize_rule_debruijn(
         &mut self,
         head: TermId,
         body: Vec<TermId>,
-        body_nodes: Option<Vec<Rc<NodeOccurrence>>>,
         vars: Vec<VarId>,
         shared_arity: u32,
         sort: TermId,
@@ -1740,21 +1763,47 @@ impl KnowledgeBase {
                 .collect();
             (new_head, new_body)
         };
-        // Close the native occurrence body to the same De Bruijn form (Global →
-        // DeBruijn against `vars`, including vars inside TermId pattern/param
-        // fields); ground facts (`vars` empty) keep it as-is.
-        let db_nodes = match body_nodes {
-            None => None,
-            Some(nodes) if vars.is_empty() => Some(nodes),
-            Some(nodes) => {
-                let mut out = Vec::with_capacity(nodes.len());
-                for n in &nodes {
-                    out.push(node_occurrence::node_to_debruijn(self, n, &vars));
-                }
-                Some(out)
+        let rule_id = self.assert_rule_with_nodes(db_head, db_body, None, sort, domain, meta);
+        let entry = &mut self.rules[rule_id.index()];
+        entry.arity = arity;
+        entry.shared_arity = shared_arity;
+        entry.globals = vars;
+        rule_id
+    }
+
+    /// WI-246 loader-native finalize: the occurrence body is supplied directly
+    /// (no term body). Closes head + occurrence body to the shared De Bruijn form
+    /// against `vars` (collected by the caller from head + occurrences, in the
+    /// term-walk's first-occurrence order), inserts via `assert_rule_nodes`, and
+    /// records arity / shared_arity / globals. The term-body twin is
+    /// `finalize_rule_debruijn`.
+    #[allow(clippy::too_many_arguments)]
+    fn finalize_rule_debruijn_nodes(
+        &mut self,
+        head: TermId,
+        body_nodes: Vec<Rc<NodeOccurrence>>,
+        vars: Vec<VarId>,
+        shared_arity: u32,
+        sort: TermId,
+        domain: TermId,
+        meta: Option<TermId>,
+    ) -> RuleId {
+        let arity = vars.len() as u32;
+        // Close head + occurrence body to De Bruijn against the shared `vars`
+        // (Global → DeBruijn, including vars inside any TermId pattern/param
+        // fields the occurrence carries); ground facts (`vars` empty) keep both
+        // as-is.
+        let (db_head, db_nodes) = if vars.is_empty() {
+            (head, body_nodes)
+        } else {
+            let new_head = self.term_to_debruijn(head, &vars);
+            let mut out = Vec::with_capacity(body_nodes.len());
+            for n in &body_nodes {
+                out.push(node_occurrence::node_to_debruijn(self, n, &vars));
             }
+            (new_head, out)
         };
-        let rule_id = self.assert_rule_with_nodes(db_head, db_body, db_nodes, sort, domain, meta);
+        let rule_id = self.assert_rule_nodes(db_head, db_nodes, sort, domain, meta);
         let entry = &mut self.rules[rule_id.index()];
         entry.arity = arity;
         entry.shared_arity = shared_arity;
@@ -1855,7 +1904,7 @@ impl KnowledgeBase {
         vars.extend(seed_globals.iter().copied());
 
         let shared_arity = seed_globals.len() as u32;
-        self.finalize_rule_debruijn(head, body, None, vars, shared_arity, sort, domain, meta)
+        self.finalize_rule_debruijn(head, body, vars, shared_arity, sort, domain, meta)
     }
 
     /// Number of leading DeBruijn slots that are shared with a parent

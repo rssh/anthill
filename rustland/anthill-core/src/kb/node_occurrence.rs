@@ -935,6 +935,84 @@ pub(super) fn collect_occurrence_global_vars(
     }
 }
 
+/// Forward-order twin of [`collect_occurrence_global_vars`]: collects the
+/// distinct `Var::Global` ids in first-occurrence order matching the term-side
+/// `collect_vars_rec` (positional args before named, depth-first, siblings
+/// left-to-right) — NOT the stack-reversed sibling order of the legacy resolver
+/// collector. Load-time De Bruijn numbering is assigned from this order, so it
+/// must mirror the term walk it replaced — otherwise rule-body numbering (and
+/// the occurrence-hashed rule cache key, WI-246) would shift. Used by
+/// `finalize_rule_debruijn_nodes` to gather a rule's vars from head + occurrence
+/// body without ever building the dropped term body.
+///
+/// CRUCIAL: must collect EVERY var that [`node_to_debruijn`] later closes,
+/// otherwise an uncollected var stays a stray `Global` in the stored rule body
+/// (escaping per-call freshening) and arity undercounts it. `for_each_child`
+/// reaches only `Rc<NodeOccurrence>` children, so the reflect-data forms that
+/// carry vars in `TermId`-typed pattern / param / type-annotation / type-arg
+/// fields (`Let` / `Lambda` / `LambdaWithin` / `Match` / `Apply` / `ApplyWithin`
+/// — see `node_to_debruijn`) need those fields walked term-side too. They are
+/// collected AFTER the occurrence children so a var that ALSO appears in a
+/// collectible child position keeps that earlier first-occurrence slot (a strict
+/// no-op for such vars); only vars living *exclusively* in a `TermId` field are
+/// newly appended.
+pub(super) fn collect_occurrence_global_vars_ordered(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    vars: &mut Vec<VarId>,
+    seen: &mut std::collections::HashSet<u32>,
+) {
+    match occ.as_expr() {
+        Some(Expr::Var(Var::Global(vid))) => {
+            if seen.insert(vid.raw()) {
+                vars.push(*vid);
+            }
+        }
+        Some(expr) => {
+            for_each_child(expr, |c| {
+                collect_occurrence_global_vars_ordered(kb, c, vars, seen)
+            });
+            collect_expr_termid_field_vars(kb, expr, vars, seen);
+        }
+        None => {}
+    }
+}
+
+/// Collect `Var::Global` ids from the `TermId`-typed var-bearing fields of an
+/// `Expr` — the pattern / param / type-annotation / type-arg fields that
+/// `for_each_child` does not descend but [`node_to_debruijn`] closes. Kept in
+/// lockstep with `node_to_debruijn`'s `term_to_debruijn` calls: any field closed
+/// there must be collected here.
+fn collect_expr_termid_field_vars(
+    kb: &KnowledgeBase,
+    expr: &Expr,
+    vars: &mut Vec<VarId>,
+    seen: &mut std::collections::HashSet<u32>,
+) {
+    match expr {
+        Expr::Apply { type_args, .. } | Expr::ApplyWithin { type_args, .. } => {
+            for (_, t) in type_args {
+                kb.collect_vars_rec(*t, vars, seen);
+            }
+        }
+        Expr::Let { pattern, type_annotation, .. } => {
+            kb.collect_vars_rec(*pattern, vars, seen);
+            if let Some(t) = type_annotation {
+                kb.collect_vars_rec(*t, vars, seen);
+            }
+        }
+        Expr::Lambda { param, .. } | Expr::LambdaWithin { param, .. } => {
+            kb.collect_vars_rec(*param, vars, seen);
+        }
+        Expr::Match { branches, .. } => {
+            for b in branches {
+                kb.collect_vars_rec(b.pattern, vars, seen);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// WI-246: structural equality of two occurrences — used by
 /// `Value::structural_eq` so the resolver's non-linear-pattern consistency
 /// check (a head var bound at two goal positions) treats two structurally-
@@ -2226,6 +2304,79 @@ mod tests {
             }
             other => panic!("expected Lambda, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn collect_ordered_picks_up_vars_living_only_in_termid_fields() {
+        // WI-246 soundness guard: `node_to_debruijn` closes vars in a reflect-
+        // data form's `TermId`-typed param/pattern/type-arg fields, which
+        // `for_each_child` never visits. `collect_occurrence_global_vars_ordered`
+        // must still collect a var that lives EXCLUSIVELY in such a field —
+        // otherwise it would be left a stray Global (escaping per-call
+        // freshening) and the rule's arity would undercount it.
+        use crate::kb::term::Var;
+        let mut kb = KnowledgeBase::new();
+        let xname = kb.intern("x");
+        let yname = kb.intern("y");
+        let span = make_span();
+
+        // A `lambda` whose param holds Global(vx) and whose body mentions only
+        // Global(vy) — vx appears nowhere in an occurrence-child position.
+        let vx = VarId::new(7, xname);
+        let vy = VarId::new(8, yname);
+        let param_tid = kb.alloc(Term::Var(Var::Global(vx)));
+        let body = NodeOccurrence::new_expr(Expr::Var(Var::Global(vy)), span, None);
+        let lambda = NodeOccurrence::new_expr(Expr::Lambda { param: param_tid, body }, span, None);
+
+        let mut vars = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        collect_occurrence_global_vars_ordered(&kb, &lambda, &mut vars, &mut seen);
+
+        assert!(vars.contains(&vx), "param-only var vx must be collected, got {vars:?}");
+        assert!(vars.contains(&vy), "body var vy must be collected, got {vars:?}");
+        // Children walked before TermId fields: vy (occ child) precedes vx (param).
+        assert_eq!(vars, vec![vy, vx], "child vars first, then TermId-field vars");
+
+        // And the closing pass then leaves NO stray Global: with vx in var_order,
+        // the param closes to a DeBruijn index.
+        let closed = node_to_debruijn(&mut kb, &lambda, &vars);
+        let Some(Expr::Lambda { param, .. }) = closed.as_expr() else {
+            panic!("expected Lambda");
+        };
+        assert!(
+            matches!(kb.get_term(*param), Term::Var(Var::DeBruijn(_))),
+            "param var must close to DeBruijn (no stray Global), got {:?}",
+            kb.get_term(*param)
+        );
+    }
+
+    #[test]
+    fn collect_ordered_picks_up_vars_in_apply_type_args() {
+        // The `Apply.type_args` counterpart of the param-only case: a var that
+        // lives only in a type argument (closed by `node_to_debruijn` via
+        // `close_type_args`) must be collected.
+        use crate::kb::term::Var;
+        let mut kb = KnowledgeBase::new();
+        let tname = kb.intern("t");
+        let f = kb.intern("f");
+        let span = make_span();
+        let vt = VarId::new(9, tname);
+        let ta_tid = kb.alloc(Term::Var(Var::Global(vt)));
+        let atom = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: f,
+                pos_args: vec![],
+                named_args: vec![],
+                type_args: vec![(None, ta_tid)],
+            },
+            span,
+            None,
+        );
+
+        let mut vars = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        collect_occurrence_global_vars_ordered(&kb, &atom, &mut vars, &mut seen);
+        assert_eq!(vars, vec![vt], "type-arg var must be collected, got {vars:?}");
     }
 
     /// Build the rule-body atom `gt(Global(v0), 3)` and return `(atom, v0,

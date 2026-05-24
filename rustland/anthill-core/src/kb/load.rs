@@ -4619,20 +4619,34 @@ impl<'a> Loader<'a> {
         let expr = match parse_term {
             Term::Const(lit) => Expr::Const(lit),
             Term::Var(Var::Global(vid)) => {
-                // The term body's `convert_term` ran first on THIS atom and
-                // mapped every var the native walk reaches (same children), so
-                // the lookup must hit. Don't mint a fresh var on a miss: it
-                // wouldn't be in the term body, so `collect_head_body_vars`
-                // wouldn't see it and `node_to_debruijn` couldn't close it —
-                // leaving a stray Global that escapes per-call freshening. Fail
-                // loud instead (a miss means the two walks diverged — a bug).
-                let kb_vid = *self.var_map.get(&vid.raw()).unwrap_or_else(|| {
-                    panic!(
-                        "build_body_atom_occurrence: body var {vid:?} not in var_map — \
-                         the native occurrence walk reached a var the term-body \
-                         convert_term did not map (walks diverged)",
-                    )
-                });
+                // WI-246: this walk IS the rule body's var-identity source (the
+                // term body is gone). Map the parse var to its KB var, minting a
+                // fresh one on the first occurrence — mirroring `convert_term`'s
+                // `Var::Global` arm — and sharing it across body atoms and the
+                // (already-converted) head via the same `var_map`. The De Bruijn
+                // closing then collects these from the occurrence body
+                // (`collect_occurrence_global_vars_ordered`).
+                let kb_vid = if let Some(&mapped) = self.var_map.get(&vid.raw()) {
+                    mapped
+                } else {
+                    let name = self.reintern(vid.name());
+                    let new_vid = self.kb.fresh_var(name);
+                    self.var_map.insert(vid.raw(), new_vid);
+                    new_vid
+                };
+                // Mirror `convert_term`'s tail (load.rs ~3989): a body variable
+                // can carry inline descriptions (`?x {< … >}?`); emit them as
+                // Description facts targeting the Global var term, as the dropped
+                // term-body `convert_term` walk did. (Entity / reflect-form atoms
+                // still emit via the `convert_term` call in the Fn arm below; this
+                // covers vars in generic predicate atoms.)
+                if let Some(desc_texts) = self.parsed.terms.descriptions.get(&parse_id) {
+                    let desc_texts = desc_texts.clone();
+                    let target = self.kb.alloc(Term::Var(Var::Global(kb_vid)));
+                    for desc_text in &desc_texts {
+                        self.emit_desc_fact(target, desc_text, self.current_scope);
+                    }
+                }
                 Expr::Var(Var::Global(kb_vid))
             }
             Term::Var(Var::DeBruijn(n)) => Expr::Var(Var::DeBruijn(n)),
@@ -5649,18 +5663,16 @@ impl<'a> Loader<'a> {
             return;
         }
 
-        // WI-246: build the term body AND the native occurrence body together.
-        // The occurrence body is the rule's resolver/typer goal source; the term
-        // body stays (DeBruijn var collection, decref, smt-gen) until it is
-        // dropped in a later step. `convert_term` runs FIRST per atom, so it
-        // populates `self.var_map` (shared var identity) and memoizes the term
-        // before `build_body_atom_occurrence` reads either — both then close to
-        // the same De Bruijn form.
-        let mut body: Vec<TermId> = Vec::new();
+        // WI-246: build the rule's native occurrence body — the sole body
+        // representation now that the term body is dropped. Each atom is walked
+        // from the parse IR straight to a `NodeOccurrence`
+        // (`build_body_atom_occurrence`), which seeds `self.var_map` itself for
+        // shared var identity across the body atoms and the (already-converted)
+        // head, so `assert_rule_debruijn_with_nodes` can collect the rule's vars
+        // from head + occurrences and close both to De Bruijn — no term body.
         let mut body_nodes: Vec<Rc<NodeOccurrence>> = Vec::new();
         if let Some(terms) = r.body.as_ref() {
             for &tid in terms {
-                body.push(self.convert_term(tid));
                 body_nodes.push(self.build_body_atom_occurrence(tid));
             }
         }
@@ -5698,7 +5710,7 @@ impl<'a> Loader<'a> {
 
         for kb_head in kb_heads {
             let rid = self.kb.assert_rule_debruijn_with_nodes(
-                kb_head, body.clone(), body_nodes.clone(), rule_sort, domain, meta);
+                kb_head, body_nodes.clone(), rule_sort, domain, meta);
             if let Some(label) = label_sym {
                 self.kb.set_rule_label(rid, label);
             }
