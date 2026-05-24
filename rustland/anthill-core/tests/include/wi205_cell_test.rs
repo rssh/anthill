@@ -34,7 +34,7 @@ namespace test.wi205_overwrite
   import anthill.prelude.{Int, Cell, Unit}
 
   operation make(n: Int) -> Cell = Cell.new(n)
-  operation overwrite(c: Cell, n: Int) -> Unit = Cell.set(c, n)
+  operation overwrite(c: Cell, n: Int) -> Unit effects Modify[c] = Cell.set(c, n)
   operation read(c: Cell) -> Int = Cell.get(c)
 end
 "#;
@@ -58,7 +58,7 @@ namespace test.wi205_distinct
   import anthill.prelude.{Int, Cell, Unit}
 
   operation make(n: Int) -> Cell = Cell.new(n)
-  operation set_value(c: Cell, n: Int) -> Unit = Cell.set(c, n)
+  operation set_value(c: Cell, n: Int) -> Unit effects Modify[c] = Cell.set(c, n)
   operation read(c: Cell) -> Int = Cell.get(c)
 end
 "#;

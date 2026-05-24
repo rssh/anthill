@@ -3401,7 +3401,8 @@ end
 fn load_operation_with_lambda_body() {
     let mut kb = load_with_stdlib(r#"
 namespace test.expr
-  operation make_inc() -> Int =
+  import anthill.prelude.{Function, Int}
+  operation make_inc() -> Function[Int, Int] =
     lambda x -> add(x, 1)
 end
 "#);

@@ -51,7 +51,7 @@ fn fresh_var_drives_pattern_query_end_to_end() {
     // rules and stays a pure builtin smoke.
     let src = r#"
 namespace test.wi182_query
-  import anthill.prelude.{LogicalStream, Option, Pair, String}
+  import anthill.prelude.{LogicalStream, Option, Pair, String, Error}
   import anthill.prelude.LogicalStream.{splitFirst}
   import anthill.prelude.Pair.{pair}
   import anthill.prelude.Option.{some, none}
@@ -73,7 +73,7 @@ namespace test.wi182_query
   -- Drive the resolver via fresh_var → pattern_query → splitFirst →
   -- lookup. Each branch returns a distinctive String so the outer test
   -- can assert which path was reached.
-  operation first_parent_name() -> String =
+  operation first_parent_name() -> String effects Error =
     let id_var = fresh_var("id")
     let name_var = fresh_var("p")
     let goal = Item(id: id_var, name: name_var)

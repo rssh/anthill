@@ -28,8 +28,8 @@ fn time_now_returns_iso_z_timestamp() {
 fn time_now_callable_from_anthill_source() {
     let src = r#"
 namespace test.time_now_src
-  import anthill.prelude.Time.{now}
-  operation when() -> String = now()
+  import anthill.prelude.Time.{now, Clock}
+  operation when() -> String effects Clock = now()
 end
 "#;
     let mut interp = interp_for(src);

@@ -453,7 +453,7 @@ namespace test.m2_reduce
       case _ -> acc
 
   operation main() -> Int =
-    let add_pair = lambda (a, b) -> a + b
+    let add_pair: Function[(Int, Int), Int] = lambda (a, b) -> a + b
     let list_sum = reduce_list([1, 2, 3, 4], 0, add_pair)
     reduce_set3({10, 20, 30}, list_sum, add_pair)
 end
@@ -1269,9 +1269,9 @@ fn m5_println_captured_to_buffer() {
     let src = r#"
 namespace test.m5_print
   import anthill.prelude.{Console, Unit, String}
-  import anthill.prelude.Console.{console, print, println}
+  import anthill.prelude.Console.{console, print, println, ConsoleOutput}
 
-  operation greet(c: Console) -> Unit =
+  operation greet(c: Console) -> Unit effects ConsoleOutput =
     println(c, "hello")
 end
 "#;
@@ -1294,9 +1294,9 @@ fn m5_print_no_newline() {
     let src = r#"
 namespace test.m5_print2
   import anthill.prelude.{Console, Unit, String}
-  import anthill.prelude.Console.{console, print}
+  import anthill.prelude.Console.{console, print, ConsoleOutput}
 
-  operation speak(c: Console) -> Unit = print(c, "hi")
+  operation speak(c: Console) -> Unit effects ConsoleOutput = print(c, "hi")
 end
 "#;
     let mut interp = interp_for(src);
@@ -1313,9 +1313,9 @@ fn m5_eprintln_goes_only_to_stderr_buffer() {
     let src = r#"
 namespace test.m5_eprint
   import anthill.prelude.{Console, Unit, String}
-  import anthill.prelude.Console.{console, println, eprintln}
+  import anthill.prelude.Console.{console, println, eprintln, ConsoleOutput, ConsoleError}
 
-  operation diag(c: Console) -> Unit =
+  operation diag(c: Console) -> Unit effects {ConsoleError, ConsoleOutput} =
     let _ = eprintln(c, "oops")
     println(c, "ok")
 end
@@ -1337,9 +1337,9 @@ fn m5_read_line_returns_scripted_input() {
     let src = r#"
 namespace test.m5_read
   import anthill.prelude.{Console, Unit, String}
-  import anthill.prelude.Console.{console, read_line}
+  import anthill.prelude.Console.{console, read_line, ConsoleInput}
 
-  operation ask(c: Console) -> String = read_line(c)
+  operation ask(c: Console) -> String effects ConsoleInput = read_line(c)
 end
 "#;
     let mut interp = interp_for(src);
@@ -1359,9 +1359,9 @@ fn m5_read_then_print_roundtrip() {
     let src = r#"
 namespace test.m5_round
   import anthill.prelude.{Console, Unit, String}
-  import anthill.prelude.Console.{console, println, read_line}
+  import anthill.prelude.Console.{console, println, read_line, ConsoleInput, ConsoleOutput}
 
-  operation echo(c: Console) -> Unit =
+  operation echo(c: Console) -> Unit effects {ConsoleInput, ConsoleOutput} =
     let line = read_line(c)
     println(c, line)
 end
@@ -1385,9 +1385,9 @@ fn m5_unhandled_effect_errors_cleanly() {
     let src = r#"
 namespace test.m5_unhandled
   import anthill.prelude.{Console, Unit, String}
-  import anthill.prelude.Console.{console, println}
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
 
-  operation speak(c: Console) -> Unit = println(c, "x")
+  operation speak(c: Console) -> Unit effects ConsoleOutput = println(c, "x")
 end
 "#;
     let mut interp = interp_for(src);
@@ -1410,9 +1410,9 @@ fn m5_handler_replacement_works_mid_run() {
     let src = r#"
 namespace test.m5_swap
   import anthill.prelude.{Console, Unit, String}
-  import anthill.prelude.Console.{console, println}
+  import anthill.prelude.Console.{console, println, ConsoleOutput}
 
-  operation speak(c: Console, s: String) -> Unit = println(c, s)
+  operation speak(c: Console, s: String) -> Unit effects ConsoleOutput = println(c, s)
 end
 "#;
     let mut interp = interp_for(src);
@@ -1443,7 +1443,7 @@ namespace test.m5_counter
     entity counter
   end
 
-  operation write(n: Int) -> Unit = set(counter(), n)
+  operation write(n: Int) -> Unit effects Modify[T = CounterState] = set(counter(), n)
   operation read() -> Int = get(counter())
 end
 "#;
@@ -1496,8 +1496,8 @@ namespace test.m5_independent
     entity b
   end
 
-  operation put_a(n: Int) -> Unit = set(a(), n)
-  operation put_b(n: Int) -> Unit = set(b(), n)
+  operation put_a(n: Int) -> Unit effects Modify[T = Cells] = set(a(), n)
+  operation put_b(n: Int) -> Unit effects Modify[T = Cells] = set(b(), n)
   operation get_a() -> Int = get(a())
   operation get_b() -> Int = get(b())
 end
@@ -1526,7 +1526,7 @@ namespace test.m5_cycle
     entity counter
   end
 
-  operation bad() -> Unit = set(counter(), counter())
+  operation bad() -> Unit effects Modify[T = CycleState] = set(counter(), counter())
 end
 "#;
     let mut interp = interp_for(src);

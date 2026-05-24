@@ -4150,6 +4150,41 @@ fn check_tuple_literal_constructor(
     Ok(TypeResult { ty: tuple_ty, env: env.clone(), effects, node: Rc::clone(occ) })
 }
 
+/// Type a `ListLiteral` / `SetLiteral` that reached the constructor checker
+/// (un-desugared `[...]` / `{...}`) as `base[T = elem]`. The element type is
+/// the expected `T` (checking direction) or the first element's type, else a
+/// fresh var. Mirrors the `Expr::ListLit` / `Expr::SetLit` build frames.
+/// (WI-289)
+fn check_seq_literal_constructor(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    pos_results: &[Result<TypeResult, TypeError>],
+    expected: Option<TermId>,
+    occ: &Rc<NodeOccurrence>,
+    base_name: &str,
+) -> Result<TypeResult, TypeError> {
+    // Defensive (the constructor checker already surfaced arg errors before
+    // routing here): never `.expect` an `Err` element result.
+    collect_arg_errors(pos_results.iter())?;
+    let mut element_type = expected.and_then(|e| extract_type_param(kb, e, "T"));
+    let mut effects: Vec<TermId> = Vec::new();
+    for r in pos_results {
+        let r = r.as_ref().expect("aggregator");
+        if element_type.is_none() {
+            element_type = Some(r.ty);
+        }
+        effects = merge_effects(&effects, &r.effects);
+    }
+    let t_val = element_type.unwrap_or_else(|| {
+        let fresh = kb.intern("?T");
+        kb.make_type_var(fresh)
+    });
+    let base = kb.make_sort_ref_by_name(base_name);
+    let t_sym = kb.intern("T");
+    let seq_type = kb.make_parameterized_type(base, &[(t_sym, t_val)]);
+    Ok(TypeResult { ty: seq_type, env: env.clone(), effects, node: Rc::clone(occ) })
+}
+
 /// Non-recursive Constructor checker — peer of `check_apply_iter`.
 /// Reads per-arg `TypeResult`s from `pos_results` / `named_results`
 /// (pre-computed by the iterative typer) instead of calling
@@ -4185,6 +4220,21 @@ fn check_constructor_iter(
         return check_tuple_literal_constructor(
             kb, env, named_args, pos_results, named_results, occ,
         );
+    }
+    // WI-289: `[...]` / `{...}` that wasn't desugared to cons/nil (no
+    // expected List/Set type at the use site — e.g. an op body
+    // `-> List[T] = [...]`) is loaded as `constructor(name: ListLiteral
+    // /SetLiteral, args: …)`. Like `TupleLiteral` above, the declared
+    // entity has no element fields, so the field-driven path would type it
+    // as `sort_ref(ListLiteral)` and fail the surrounding `List[T]` check.
+    // Type it as `List[T = elem]` / `Set[T = elem]`, mirroring the
+    // `Expr::ListLit` / `Expr::SetLit` builds. (The body node stays a
+    // `constructor(ListLiteral)` for eval/codegen, which handle it.)
+    if kb.qualified_name_of(ctor_sym) == "anthill.reflect.ListLiteral" {
+        return check_seq_literal_constructor(kb, env, pos_results, expected, occ, "List");
+    }
+    if kb.qualified_name_of(ctor_sym) == "anthill.reflect.SetLiteral" {
+        return check_seq_literal_constructor(kb, env, pos_results, expected, occ, "Set");
     }
 
     // Free-standing entities (declared at namespace level, not nested in a
@@ -4357,6 +4407,30 @@ fn extract_function_param_type(kb: &KnowledgeBase, fn_type: TermId) -> Option<Te
     arrow_parts(kb, fn_type).and_then(|(param, _, _)| param)
 }
 
+/// Ordered component types of a `named_tuple(fields: [TypeField(name,
+/// type), …])` type. Used to bind a tuple-destructuring pattern's
+/// sub-patterns positionally (`lambda (a, b) -> ...` checked against
+/// `Function[(A, B), R]` types `a: A`, `b: B`). Returns `None` for a
+/// non-tuple type.
+fn named_tuple_field_types(kb: &KnowledgeBase, ty: TermId) -> Option<Vec<TermId>> {
+    if type_functor_name(kb, ty) != Some("named_tuple") {
+        return None;
+    }
+    let fields_tid = match kb.get_term(ty) {
+        Term::Fn { named_args, .. } => get_named_arg(kb, named_args, "fields"),
+        _ => None,
+    }?;
+    let mut out = Vec::new();
+    for field in list_to_vec(kb, fields_tid) {
+        if let Term::Fn { named_args, .. } = kb.get_term(field) {
+            if let Some(field_ty) = get_named_arg(kb, named_args, "type") {
+                out.push(field_ty);
+            }
+        }
+    }
+    Some(out)
+}
+
 /// Extract the variable name symbol from a `var_pattern`.
 fn extract_pattern_var_name(kb: &KnowledgeBase, pattern: TermId) -> Option<Symbol> {
     if let Term::Fn { functor, named_args, pos_args, .. } = kb.get_term(pattern) {
@@ -4463,7 +4537,7 @@ fn type_param_vid_in_sort(
 }
 
 fn extend_env_from_pattern(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     env: &mut TypingEnv,
     pattern: TermId,
     scrutinee_type: Option<TermId>,
@@ -4473,9 +4547,18 @@ fn extend_env_from_pattern(
         match functor_name.as_str() {
             "var_pattern" => {
                 if let Some(sym) = extract_sym_arg(kb, &named_args, &pos_args, "name") {
-                    if let Some(ty) = scrutinee_type {
-                        env.bind_var(sym, ty);
-                    }
+                    // Bind the pattern var even when its type is unknown —
+                    // a pattern-bound name is in scope regardless. Without
+                    // this, tuple-destructuring lambda params
+                    // (`lambda (a, b) -> ...`, whose sub-patterns recurse
+                    // here with no component type) and match vars over an
+                    // un-inferred scrutinee stayed unbound and every
+                    // reference failed as `UnresolvedName`. (WI-289)
+                    let ty = scrutinee_type.unwrap_or_else(|| {
+                        let fresh = kb.intern("?pat");
+                        kb.make_type_var(fresh)
+                    });
+                    env.bind_var(sym, ty);
                     // Pattern-bound names are local — effects on them
                     // shouldn't escape the surrounding match/case scope
                     // (matches `check_let_expr`'s declare_local_resource
@@ -4526,11 +4609,22 @@ fn extend_env_from_pattern(
                 }
             }
             "tuple_pattern" => {
-                let args_tid = get_named_arg(kb, &named_args, "args")
-                    .or_else(|| pos_args.first().copied());
-                if let Some(args) = args_tid {
-                    for sub_pat in &list_to_vec(kb, args) {
-                        extend_env_from_pattern(kb, env, *sub_pat, None);
+                // Loaded tuple patterns store their sub-patterns under the
+                // `elements` list (load.rs `PatternTuple` build), not
+                // `args` — the old `args`/`pos_args.first()` lookup always
+                // missed, leaving `lambda (a, b) -> ...` params unbound.
+                // When the scrutinee is a tuple type, bind each
+                // sub-pattern to its component type — so `lambda (a, b) ->
+                // a + b` checked against `Function[(Int, Int), Int]` types
+                // a/b as Int and `+` dispatches uniquely. Otherwise the
+                // component type is unknown and var_pattern mints a fresh
+                // type var.
+                if let Some(elements) = get_named_arg(kb, &named_args, "elements") {
+                    let sub_patterns = list_to_vec(kb, elements);
+                    let components = scrutinee_type.and_then(|t| named_tuple_field_types(kb, t));
+                    for (i, sub_pat) in sub_patterns.iter().enumerate() {
+                        let comp = components.as_ref().and_then(|c| c.get(i).copied());
+                        extend_env_from_pattern(kb, env, *sub_pat, comp);
                     }
                 }
             }
@@ -4972,8 +5066,36 @@ pub fn types_compatible(kb: &KnowledgeBase, actual: TermId, expected: TermId) ->
         (Some("arrow"), Some("arrow")) => {
             arrow_compatible(kb, actual, expected)
         }
+        // `arrow` is the typer's shorthand for the stdlib `Function[A, B, E]`
+        // (see `arrow_parts`), so a lambda's `arrow(Int, Int)` body satisfies
+        // a declared `Function[Int, Int]` return and vice versa. (WI-289)
+        (Some("arrow"), Some("parameterized")) | (Some("parameterized"), Some("arrow")) => {
+            arrow_function_compatible(kb, actual, expected)
+        }
         (Some("named_tuple"), Some("named_tuple")) => {
             named_tuple_compatible(kb, actual, expected)
+        }
+        _ => false,
+    }
+}
+
+/// Compatibility between the typer's `arrow(param, result, effects)` and the
+/// stdlib `Function[A, B, E]` (in either order) — they denote the same
+/// callable type. Decomposes both via [`arrow_parts`] (which yields `None`
+/// for a non-`Function` parameterized type, so `arrow` vs `List[T]` stays
+/// incompatible) and checks param + result compatibility. (WI-289)
+fn arrow_function_compatible(kb: &KnowledgeBase, actual: TermId, expected: TermId) -> bool {
+    match (arrow_parts(kb, actual), arrow_parts(kb, expected)) {
+        (Some((a_param, a_result, _)), Some((b_param, b_result, _))) => {
+            // Param is contravariant (expected param <: actual param) and
+            // result covariant — matching `arrow_compatible`. Effects are
+            // not compared here, also as in `arrow_compatible` (effect
+            // discharge is checked separately on the operation row).
+            let params_ok = match (a_param, b_param) {
+                (Some(ap), Some(bp)) => types_compatible(kb, bp, ap),
+                _ => true,
+            };
+            params_ok && types_compatible(kb, a_result, b_result)
         }
         _ => false,
     }
@@ -6063,7 +6185,7 @@ pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<Lo
 /// does not — higher-order calls of `Function[A,B]`-typed values
 /// (`f(f(x))`), effect-declaration checks, and some name resolution. Flip
 /// to `true` and fix those under **WI-289**.
-const TYPECHECK_FREE_OPS: bool = false;
+const TYPECHECK_FREE_OPS: bool = true;
 
 pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_terms: &[TermId]) -> Vec<TypeError> {
     let mut errors: Vec<TypeError> = Vec::new();
