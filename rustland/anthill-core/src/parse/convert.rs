@@ -1308,7 +1308,7 @@ impl<'a> Converter<'a> {
                 let body = results[drain_start + 1];
                 results.truncate(drain_start);
                 results.push(self.alloc_fn_term(
-                    "lambda",
+                    "lambda_expr",
                     SmallVec::from_slice(&[param, body]),
                     span,
                 ));

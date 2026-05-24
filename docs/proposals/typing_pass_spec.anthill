@@ -162,7 +162,7 @@ namespace anthill.reflect.typing_pass
   -- LAM-SYNTH: annotated parameter only (unannotated ⇒ use LAM-CHECK).
   -- Building a lambda is pure; the body's effects sit in the arrow row.
   rule synth(?G, ?e, arrow(param: ?A, result: ?B, effects: ?Eb), nil)
-    :- occurrence_term(?e, lambda(param: var_pattern(name: ?x, type_ann: some(value: ?A)), body: ?body)),
+    :- occurrence_term(?e, lambda_expr(param: var_pattern(name: ?x, type_ann: some(value: ?A)), body: ?body)),
        synth(var_bind(name: ?x, type: ?A, rest: ?G), ?body, ?B, ?Eb)
 
   -- IF-SYNTH: with no expected type the result is the LEAST UPPER BOUND
@@ -197,7 +197,7 @@ namespace anthill.reflect.typing_pass
   -- LAM-CHECK: check a lambda against an arrow type; ?A comes from the
   -- expected type, so an unannotated parameter is fine.
   rule check(?G, ?e, arrow(param: ?A, result: ?B, effects: ?Eb), nil)
-    :- occurrence_term(?e, lambda(param: var_pattern(name: ?x, type_ann: ?), body: ?body)),
+    :- occurrence_term(?e, lambda_expr(param: var_pattern(name: ?x, type_ann: ?), body: ?body)),
        check(var_bind(name: ?x, type: ?A, rest: ?G), ?body, ?B, ?Eb)
 
   -- IF-CHECK: both branches checked against the SAME expected type — no
@@ -491,14 +491,14 @@ namespace anthill.reflect.typing_pass
 
       -- Lambda with annotation: body effects are encoded in the Function type.
       -- Creating a lambda is pure — effects happen when it's called.
-      case lambda(param: var_pattern(name: n, type_ann: some(value: param_type)), body: b) ->
+      case lambda_expr(param: var_pattern(name: n, type_ann: some(value: param_type)), body: b) ->
         let br = type_check(kb, TypingEnv.bind_var(env, n, param_type), b)
         -- Function[A, B, E] where E = body effects (empty for pure lambdas)
         pure_result(Function[A = param_type, B = result_type(br), E = result_effects(br)],
                     result_env(br))
 
       -- Lambda without annotation: infer param type
-      case lambda(param: var_pattern(name: n, type_ann: none), body: b) ->
+      case lambda_expr(param: var_pattern(name: n, type_ann: none), body: b) ->
         let param_type = fresh_type_var(kb, n)
         let br = type_check(kb, TypingEnv.bind_var(env, n, param_type), b)
         let inferred = TypingEnv.apply_subst(result_env(br), param_type)

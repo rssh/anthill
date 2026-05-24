@@ -136,7 +136,7 @@ impl ReflectSymbols {
             if_expr: r("anthill.reflect.Expr.if_expr"),
             let_expr: r("anthill.reflect.Expr.let_expr"),
             match_expr: r("anthill.reflect.Expr.match_expr"),
-            lambda: r("anthill.reflect.Expr.lambda"),
+            lambda: r("anthill.reflect.Expr.lambda_expr"),
             constructor: r("anthill.reflect.Expr.constructor"),
             apply_within: r("anthill.reflect.Expr.apply_within"),
             ho_apply_within: r("anthill.reflect.Expr.ho_apply_within"),

@@ -319,7 +319,7 @@ namespace anthill.reflect
     entity if_expr(cond: NodeOccurrence, then_branch: NodeOccurrence, else_branch: NodeOccurrence)
     entity let_expr(pattern: Pattern, value: NodeOccurrence, body: NodeOccurrence,
                     type_name: Option[T = Term])
-    entity lambda(param: Pattern, body: NodeOccurrence)
+    entity lambda_expr(param: Pattern, body: NodeOccurrence)
     entity apply(fn: Symbol, args: List[ApplyArg],
                  type_args: Option[T = List[type_arg]])
     entity ho_apply(predicate: Term, args: List[Term],

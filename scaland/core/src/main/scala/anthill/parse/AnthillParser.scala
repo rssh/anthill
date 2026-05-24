@@ -565,7 +565,7 @@ private class AnthillParserImpl(
 
   private def lambdaExpr[$: P]: P[TermId] =
     P(keyword("lambda") ~/ pattern ~ "->" ~ exprBody).map { case (param, body) =>
-      terms.alloc(Term.Fn(intern("lambda"), IArray(param, body), IArray.empty))
+      terms.alloc(Term.Fn(intern("lambda_expr"), IArray(param, body), IArray.empty))
     }
 
   // ── Patterns ─────────────────────────────────────────────────

@@ -2993,7 +2993,7 @@ fn parse_operation_with_lambda_body() {
             let body = op.body.unwrap();
             match parsed.terms.get(body) {
                 Term::Fn { functor, pos_args, .. } => {
-                    assert_eq!(parsed.symbols.name(*functor), "lambda");
+                    assert_eq!(parsed.symbols.name(*functor), "lambda_expr");
                     assert_eq!(pos_args.len(), 2); // param pattern, body
                     // Param should be pattern_var(y)
                     match parsed.terms.get(pos_args[0]) {
@@ -3421,7 +3421,7 @@ fn parse_tuple_literal_with_lambda_element() {
     // The lambda element survived conversion (not dropped, not errored).
     let has_lambda = named.iter().any(|(_, v)| matches!(
         parsed.terms.get(*v),
-        Term::Fn { functor, .. } if parsed.symbols.name(*functor) == "lambda"
+        Term::Fn { functor, .. } if parsed.symbols.name(*functor) == "lambda_expr"
     ));
     assert!(has_lambda, "lambda element should be preserved in the tuple, got {named:?}");
 }

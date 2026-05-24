@@ -1300,7 +1300,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.define("match_expr", "anthill.reflect.Expr.match_expr", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("if_expr", "anthill.reflect.Expr.if_expr", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("let_expr", "anthill.reflect.Expr.let_expr", SymbolKind::Entity, expr_term.raw());
-    kb.symbols.define("lambda", "anthill.reflect.Expr.lambda", SymbolKind::Entity, expr_term.raw());
+    kb.symbols.define("lambda_expr", "anthill.reflect.Expr.lambda_expr", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("apply", "anthill.reflect.Expr.apply", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("ho_apply", "anthill.reflect.Expr.ho_apply", SymbolKind::Entity, expr_term.raw());
     kb.symbols.define("constructor", "anthill.reflect.Expr.constructor", SymbolKind::Entity, expr_term.raw());
@@ -3420,7 +3420,7 @@ impl ExprBuilderSyms {
             match_branch: kb.resolve_symbol("anthill.reflect.MatchBranch"),
             if_expr: kb.resolve_symbol("anthill.reflect.Expr.if_expr"),
             let_expr: kb.resolve_symbol("anthill.reflect.Expr.let_expr"),
-            lambda: kb.resolve_symbol("anthill.reflect.Expr.lambda"),
+            lambda: kb.resolve_symbol("anthill.reflect.Expr.lambda_expr"),
             constructor_pattern: kb.resolve_symbol("anthill.reflect.Pattern.constructor_pattern"),
             tuple_pattern: kb.resolve_symbol("anthill.reflect.Pattern.tuple_pattern"),
             constructor: kb.resolve_symbol("anthill.reflect.Expr.constructor"),
@@ -4161,7 +4161,7 @@ impl<'a> Loader<'a> {
                         work.push(LoadWorkOp::Visit(pos_args[0])); // pattern
                         work.push(LoadWorkOp::PushOccSuppress);
                     }
-                    "lambda" => {
+                    "lambda_expr" => {
                         // Lambda param is in scope for the body.
                         let frame = self.build_pattern_scope_frame(pos_args[0]);
                         work.push(LoadWorkOp::Build(LoadBuildFrame::Lambda {

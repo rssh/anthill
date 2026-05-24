@@ -23,7 +23,7 @@ class ExprLoaderTest extends munit.FunSuite:
     assert(kb.hasQualifiedName("anthill.reflect.Expr.match_expr"))
     assert(kb.hasQualifiedName("anthill.reflect.Expr.if_expr"))
     assert(kb.hasQualifiedName("anthill.reflect.Expr.let_expr"))
-    assert(kb.hasQualifiedName("anthill.reflect.Expr.lambda"))
+    assert(kb.hasQualifiedName("anthill.reflect.Expr.lambda_expr"))
     assert(kb.hasQualifiedName("anthill.reflect.Expr.apply"))
     assert(kb.hasQualifiedName("anthill.reflect.Expr.constructor"))
     assert(kb.hasQualifiedName("anthill.reflect.Expr.var_ref"))

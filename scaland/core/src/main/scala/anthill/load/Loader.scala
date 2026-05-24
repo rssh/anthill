@@ -614,7 +614,7 @@ object Loader:
           case "match_branch" => loadMatchBranch(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
           case "if_expr" => loadIfExpr(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
           case "let_expr" => loadLetExpr(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
-          case "lambda" => loadLambdaExpr(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
+          case "lambda_expr" => loadLambdaExpr(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
           case "pattern_var" => loadPatternVar(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
           case "pattern_wildcard" => loadPatternWildcard(kb)
           case "pattern_literal" => loadPatternLiteral(kb, fileTerms, fileSym, fn.posArgs, scopeTerm, errors, varMap)
@@ -685,7 +685,7 @@ object Loader:
     val ctx = (kb, ft, fs, scope, errors, vm)
     val param = exprRec(ctx, posArgs(0))
     val body = exprRec(ctx, posArgs(1))
-    val lambdaSym = kb.resolveSymbol("anthill.reflect.Expr.lambda")
+    val lambdaSym = kb.resolveSymbol("anthill.reflect.Expr.lambda_expr")
     kb.alloc(Term.Fn(lambdaSym, IArray.empty,
       IArray((kb.intern("param"), param), (kb.intern("body"), body))))
 

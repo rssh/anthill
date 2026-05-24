@@ -1556,7 +1556,7 @@ fn visit_fn(
             push_visit_or_bottom(work, body);
             push_visit_or_bottom(work, value);
         }
-        "lambda" => {
+        "lambda_expr" => {
             let param = get_named_arg(kb, named_args, "param").unwrap_or(t);
             let body = get_named_arg(kb, named_args, "body");
             work.push(WorkOp::Build(BuildFrame::Lambda { span, param }));
@@ -1981,7 +1981,7 @@ pub fn is_reflect_form_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
     matches!(
         expr_form_key(qn, short),
         "int_lit" | "float_lit" | "bigint_lit" | "string_lit" | "bool_lit"
-            | "var_ref" | "if_expr" | "let_expr" | "lambda" | "match_expr"
+            | "var_ref" | "if_expr" | "let_expr" | "lambda_expr" | "match_expr"
             | "apply" | "constructor" | "dot_apply" | "apply_within"
             | "requirement_at_sort" | "construct_requirement"
             | "ListLiteral" | "SetLiteral" | "TupleLiteral"

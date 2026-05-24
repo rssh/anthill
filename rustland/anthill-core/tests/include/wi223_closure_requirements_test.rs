@@ -32,8 +32,8 @@ fn build_lambda(
 ) -> TermId {
     // Construct a `lambda(param: <wildcard>, body: <body>)` term that
     // ignores its argument and reduces to `body`.
-    let lambda_sym = kb.try_resolve_symbol("anthill.reflect.Expr.lambda")
-        .expect("Expr.lambda registered");
+    let lambda_sym = kb.try_resolve_symbol("anthill.reflect.Expr.lambda_expr")
+        .expect("Expr.lambda_expr registered");
     let wildcard_sym = kb.try_resolve_symbol("anthill.reflect.Pattern.wildcard")
         .expect("Pattern.wildcard registered");
     let wildcard = kb.alloc(Term::Fn {

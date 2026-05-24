@@ -82,7 +82,7 @@ object Prelude:
 
     // anthill.reflect.Expr sort + entities
     val exprTerm = defineSort("Expr", "anthill.reflect.Expr", reflectScope)
-    for name <- IndexedSeq("match_expr", "if_expr", "let_expr", "lambda", "apply",
+    for name <- IndexedSeq("match_expr", "if_expr", "let_expr", "lambda_expr", "apply",
       "constructor", "var_ref", "int_lit", "bigint_lit", "float_lit", "string_lit", "bool_lit") do
       defineEntity(name, s"anthill.reflect.Expr.$name", exprTerm)
 
