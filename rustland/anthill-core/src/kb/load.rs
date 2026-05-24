@@ -20,7 +20,7 @@ use crate::parse::ir::*;
 use crate::span::{Span, SourceId, SourceSpan};
 use super::{KnowledgeBase, SortKind};
 use super::term::{Term, TermId, Var, VarId, Literal};
-use super::node_occurrence::{self, NodeOccurrence};
+use super::node_occurrence::{self, Expr, NodeOccurrence};
 use super::typing::{extract_type_param, get_named_arg, list_to_vec};
 
 // ── Load result ──────────────────────────────────────────────
@@ -4588,26 +4588,101 @@ impl<'a> Loader<'a> {
     /// var_ref: Term::Ident(sym) → var_ref(name: Ref(sym))
     /// Uses reintern (plain) — lexical variables are NOT KB symbol references.
     /// WI-246: build the `NodeOccurrence` for one rule-body goal atom — the
-    /// rule's resolver/typer goal source.
+    /// rule's resolver/typer goal source — NATIVELY from the parse IR, so a
+    /// loaded rule body no longer round-trips through the lossy term→occurrence
+    /// `materialize_from_handle` re-inference.
     ///
-    /// Phase 1 (current): materialize from the already-converted (and memoized)
-    /// body term `kb_term`, so the occurrence matches the prior `body_nodes` in
-    /// resolution behavior while the new native-capable assert path is validated.
-    /// The occurrence shares the term body's var identity for free (same term).
-    /// (Not bit-identical: the prior path materialized the *De Bruijn* term,
-    /// whose freshly hash-consed var-bearing subterms had no recorded span, so
-    /// it lost those spans; this builds from the *global* term and so carries
-    /// true source spans — an improvement, observable only via `occurrence_span`
-    /// / error positions, not resolution.)
+    /// Generic applications and leaves are built directly: a non-entity,
+    /// non-reflect `Term::Fn` becomes `Expr::Apply { functor, pos, named }`
+    /// (matching `materialize`'s `UnknownFn` build — a goal atom is just an
+    /// application; `occ_head` reads it as a `Functor`), and `Const`/`Var`/
+    /// `Ref`/`Ident`/`Bottom` map to their `Expr` leaves. Var identity is shared
+    /// with the term body via `self.var_map` (the body-term `convert_term` runs
+    /// first, so every body var is already mapped). Source spans are taken from
+    /// the parse term — info the term-derived path lost (rule-body terms get no
+    /// `term_spans` entry, so `materialize` gave them `empty_span`).
     ///
-    /// Phase 2 will walk `parse_id` natively into an `Expr` occurrence (generic
-    /// `Term::Fn → Expr::Apply` + leaves; entity / reflect-key forms keep
-    /// falling back here), so a loaded rule body no longer round-trips through
-    /// the lossy `materialize_from_handle` re-inference — and the term body
-    /// becomes droppable.
-    fn build_body_atom_occurrence(&mut self, parse_id: TermId, kb_term: TermId) -> Rc<NodeOccurrence> {
-        let _ = parse_id; // Phase 2: native parse-IR walk hooks in here.
-        node_occurrence::materialize_from_handle(self.kb, kb_term)
+    /// Falls back to `materialize(convert_term(parse_id))` for:
+    /// - entity functors — `convert_term` expands partial fields with fresh vars
+    ///   (load.rs); the memoized `convert_term` returns the SAME expanded term so
+    ///   the occurrence shares those vars (a native rebuild would mint different
+    ///   ones); and
+    /// - reflect / control-flow forms (`is_reflect_form_functor`) — whose
+    ///   occurrence shape isn't a plain `Apply`.
+    /// Both are reachable as nested args too (e.g. `member(?x, cons(..))`); the
+    /// memoized `convert_term` keeps every subterm consistent. Narrowing these
+    /// fallbacks (native entities / structural reflect patterns, fixing the
+    /// `apply(args: ?V)` collapse) is later work.
+    fn build_body_atom_occurrence(&mut self, parse_id: TermId) -> Rc<NodeOccurrence> {
+        let parse_term = self.parsed.terms.get(parse_id).clone();
+        let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(parse_id));
+        let expr = match parse_term {
+            Term::Const(lit) => Expr::Const(lit),
+            Term::Var(Var::Global(vid)) => {
+                // The term body's `convert_term` ran first on THIS atom and
+                // mapped every var the native walk reaches (same children), so
+                // the lookup must hit. Don't mint a fresh var on a miss: it
+                // wouldn't be in the term body, so `collect_head_body_vars`
+                // wouldn't see it and `node_to_debruijn` couldn't close it —
+                // leaving a stray Global that escapes per-call freshening. Fail
+                // loud instead (a miss means the two walks diverged — a bug).
+                let kb_vid = *self.var_map.get(&vid.raw()).unwrap_or_else(|| {
+                    panic!(
+                        "build_body_atom_occurrence: body var {vid:?} not in var_map — \
+                         the native occurrence walk reached a var the term-body \
+                         convert_term did not map (walks diverged)",
+                    )
+                });
+                Expr::Var(Var::Global(kb_vid))
+            }
+            Term::Var(Var::DeBruijn(n)) => Expr::Var(Var::DeBruijn(n)),
+            Term::Var(Var::Rigid(_)) => unreachable!("Var::Rigid in stored parse term"),
+            Term::Ref(sym) => Expr::Ref(self.remap_symbol_strict(sym)),
+            Term::Ident(sym) => {
+                let new_sym = self.remap_symbol(sym);
+                // Promote to Ref if the symbol resolved to a defined name —
+                // mirrors `convert_term`'s Ident arm + `materialize`'s leaf map.
+                if self.kb.symbols.is_resolved(new_sym) {
+                    Expr::Ref(new_sym)
+                } else {
+                    Expr::Ident(new_sym)
+                }
+            }
+            Term::Bottom => Expr::Bottom,
+            Term::ParseAux(_) => unreachable!(
+                "Term::ParseAux reached build_body_atom_occurrence — a body atom \
+                 (or its non-ParseAux child) is never a parse-only payload",
+            ),
+            Term::Fn { functor, pos_args, named_args } => {
+                let new_functor = self.remap_symbol(functor);
+                if self.kb.entity_field_names(new_functor).is_some()
+                    || node_occurrence::is_reflect_form_functor(self.kb, new_functor)
+                {
+                    let kb_term = self.convert_term(parse_id); // memoized hit
+                    return node_occurrence::materialize_from_handle(self.kb, kb_term);
+                }
+                // Native generic application. Positional in source order; named
+                // ParseAux-filtered (type_args / type_name are read elsewhere)
+                // with `reintern`ed keys in source order — matching `convert_term`
+                // (no entity-field sort for non-entity functors) and thus the
+                // `UnknownFn` materialization.
+                let mut pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(pos_args.len());
+                for &pid in pos_args.iter() {
+                    pos.push(self.build_body_atom_occurrence(pid));
+                }
+                let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
+                for &(sym, pid) in named_args.iter() {
+                    if self.is_parse_aux(pid) {
+                        continue;
+                    }
+                    let key = self.reintern(sym);
+                    let child = self.build_body_atom_occurrence(pid);
+                    named.push((key, child));
+                }
+                Expr::Apply { functor: new_functor, pos_args: pos, named_args: named, type_args: Vec::new() }
+            }
+        };
+        NodeOccurrence::new_expr(expr, span, None)
     }
 
     fn load_var_ref(&mut self, parse_id: TermId) -> TermId {
@@ -5575,22 +5650,18 @@ impl<'a> Loader<'a> {
         }
 
         // WI-246: build the term body AND the native occurrence body together.
-        // The occurrence body becomes the rule's resolver/typer goal source; the
-        // term body stays (DeBruijn var collection, decref, smt-gen) until it is
-        // dropped in a later step. Both share var identity via `self.var_map`
-        // (populated by `convert_term`), so they close to the same De Bruijn
-        // form. Phase 1: the occurrence is `materialize(convert_term(..))` —
-        // same resolution behavior as the prior `body_nodes` (now with true
-        // source spans), routed through the new native-capable assert path.
-        // Phase 2 swaps `build_body_atom_occurrence` to a native parse-IR walk
-        // at this single chokepoint.
+        // The occurrence body is the rule's resolver/typer goal source; the term
+        // body stays (DeBruijn var collection, decref, smt-gen) until it is
+        // dropped in a later step. `convert_term` runs FIRST per atom, so it
+        // populates `self.var_map` (shared var identity) and memoizes the term
+        // before `build_body_atom_occurrence` reads either — both then close to
+        // the same De Bruijn form.
         let mut body: Vec<TermId> = Vec::new();
         let mut body_nodes: Vec<Rc<NodeOccurrence>> = Vec::new();
         if let Some(terms) = r.body.as_ref() {
             for &tid in terms {
-                let kb_term = self.convert_term(tid);
-                body_nodes.push(self.build_body_atom_occurrence(tid, kb_term));
-                body.push(kb_term);
+                body.push(self.convert_term(tid));
+                body_nodes.push(self.build_body_atom_occurrence(tid));
             }
         }
         let meta = r.meta.as_ref().map(|mb| self.load_meta_block(mb));

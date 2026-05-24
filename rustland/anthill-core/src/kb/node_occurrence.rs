@@ -1742,6 +1742,29 @@ fn expr_form_key<'a>(qn: &'a str, short: &'a str) -> &'a str {
     if last.is_empty() { short } else { last }
 }
 
+/// WI-246: whether `materialize_from_handle` special-cases a `Term::Fn` with
+/// this functor — i.e. would build something OTHER than the generic
+/// `push_unknown_fn → Expr::Apply` (a literal `Const` leaf, a `var_ref`, a
+/// control-flow `If`/`Let`/`Lambda`/`Match`, a reflect `apply`/`constructor`/
+/// `dot_apply`/`*_within`/requirement form, or a `ListLit`/`SetLit`/`TupleLit`).
+/// The loader's native rule-body-atom builder routes these to the materialize
+/// fallback — their occurrence shape isn't a plain `Apply`, and the `*_lit`
+/// keys collapse a concrete `value` to a `Const` leaf — and builds only the
+/// generic-application + leaf cases natively. Mirrors `visit_fn`'s match arms;
+/// keep the two in sync.
+pub fn is_reflect_form_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
+    let qn = kb.qualified_name_of(functor);
+    let short = kb.resolve_sym(functor);
+    matches!(
+        expr_form_key(qn, short),
+        "int_lit" | "float_lit" | "bigint_lit" | "string_lit" | "bool_lit"
+            | "var_ref" | "if_expr" | "let_expr" | "lambda" | "match_expr"
+            | "apply" | "constructor" | "dot_apply" | "apply_within"
+            | "requirement_at_sort" | "construct_requirement"
+            | "ListLiteral" | "SetLiteral" | "TupleLiteral"
+    )
+}
+
 /// Extract the `Symbol` of a `Ref(sym)` or `Ident(sym)` from a named-arg slot.
 fn named_ref(
     kb: &KnowledgeBase,
