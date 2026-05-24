@@ -6915,14 +6915,20 @@ fn check_ho_apply_pattern_occ(
     errors: &mut Vec<TypeError>,
 ) {
     let Some(expr) = occ.as_expr() else { return };
-    let (functor, pos_args, named_args) = match expr {
-        Expr::Apply { functor, pos_args, named_args, .. } => (*functor, pos_args, named_args),
-        Expr::Constructor { name, pos_args, named_args } => (*name, pos_args, named_args),
-        Expr::Instantiation { name, pos_args, named_args } => (*name, pos_args, named_args),
-        _ => return,
+
+    // The ho_apply-specific fragment rules apply to the functor-bearing forms
+    // (Apply/Constructor/Instantiation) — the occurrence analogue of `Term::Fn`.
+    // `ho_apply` materializes to `Expr::Apply`, but match all three for parity
+    // with the term-walker's functor check.
+    let ho_pos_args = match expr {
+        Expr::Apply { functor, pos_args, .. } if *functor == ho_apply_sym => Some(pos_args),
+        Expr::Constructor { name, pos_args, .. } if *name == ho_apply_sym => Some(pos_args),
+        Expr::Instantiation { name, pos_args, .. } if *name == ho_apply_sym => Some(pos_args),
+        _ => None,
     };
 
-    if functor == ho_apply_sym && !pos_args.is_empty() {
+    if let Some(pos_args) = ho_pos_args {
+        if !pos_args.is_empty() {
         // This is an ho_apply — check pattern fragment rules.
 
         // Rule 2: first arg (predicate) must be a variable. If it's instead a
@@ -6966,15 +6972,16 @@ fn check_ho_apply_pattern_occ(
                 });
             }
         }
+        }
     }
 
-    // Recurse into subterms.
-    for arg in pos_args.iter() {
-        check_ho_apply_pattern_occ(kb, arg, ho_apply_sym, rule_sym, span, errors);
-    }
-    for (_, arg) in named_args.iter() {
-        check_ho_apply_pattern_occ(kb, arg, ho_apply_sym, rule_sym, span, errors);
-    }
+    // Recurse into ALL sub-occurrences. The term-walker recursed every
+    // `Term::Fn` child, and reflect-encoded if/match/let/lambda/list/… are
+    // `Term::Fn` in term-land, so an `ho_apply` nested in a control-flow or
+    // container form must still be checked.
+    for_each_child(expr, |c| {
+        check_ho_apply_pattern_occ(kb, c, ho_apply_sym, rule_sym, span, errors);
+    });
 }
 
 /// Check if an occurrence (or any sub-occurrence) contains the given functor.

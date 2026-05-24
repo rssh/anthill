@@ -1582,6 +1582,8 @@ impl KnowledgeBase {
         match v {
             Value::Term(t) => matches!(self.terms.get(*t), Term::Var(_)),
             Value::Node(occ) => matches!(occ.as_expr(), Some(Expr::Var(_))),
+            // WI-109: a value-level logic variable is, itself, a variable.
+            Value::Var(_) => true,
             _ => false,
         }
     }
@@ -1611,6 +1613,8 @@ impl KnowledgeBase {
             // unbound `Expr::Var(Global)` leaf; any other scalar is ground.
             Some(Value::Term(t)) => matches!(self.is_ground(t, subst), GroundCheck::Ground),
             Some(Value::Node(occ)) => !node_occurrence::occurrence_has_unbound_var(&occ),
+            // WI-109: a value-level logic variable is not ground.
+            Some(Value::Var(_)) => false,
             Some(_) => true,
         };
         if ground { BuiltinResult::Success } else { BuiltinResult::Delay }
