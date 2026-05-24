@@ -1306,11 +1306,13 @@ fn print_rule_results(kb: &KnowledgeBase, results: &[RuleId], max: usize) {
 
     for &rid in &results[..limit] {
         let head = kb.rule_head(rid);
-        let body = kb.rule_body(rid);
+        // Head stays a hash-consed term; body atoms are occurrences (WI-246).
+        let body = kb.rule_body_nodes(rid);
         if body.is_empty() {
             println!("  {}", printer.print_term(head));
         } else {
-            let body_strs: Vec<String> = body.iter().map(|&t| printer.print_term(t)).collect();
+            let body_strs: Vec<String> =
+                body.iter().map(|atom| printer.print_occurrence(atom)).collect();
             println!("  {} :- {}", printer.print_term(head), body_strs.join(", "));
         }
     }
