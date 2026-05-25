@@ -1213,13 +1213,6 @@ fn wi295_cross_namespace_rule_predicate_import_resolves() {
 // ── Typing pass spec loading ─────────────────────────────────────
 
 #[test]
-#[ignore = "blocked on WI-302: typing_pass_spec.anthill uses computed type args \
-            (e.g. Function[B = result_type(br)], List[T = f(x)]) that aren't yet \
-            grammatical — sort_binding's value slot is `_type`, not an expression. \
-            Previously false-green (parse() swallowed the ERROR/MISSING nodes; WI-303 \
-            surfaces them). The other blocker — the lambda keyword/functor collision — \
-            was fixed in WI-306 (reflect node renamed lambda -> lambda_expr). \
-            Un-ignore once WI-302 lands."]
 fn typing_pass_spec_parses_and_loads() {
     // The full parse → load → typecheck → requirement-insertion
     // pipeline runs in constant host stack regardless of source

@@ -493,8 +493,13 @@ namespace anthill.reflect.typing_pass
       -- Creating a lambda is pure — effects happen when it's called.
       case lambda_expr(param: var_pattern(name: n, type_ann: some(value: param_type)), body: b) ->
         let br = type_check(kb, TypingEnv.bind_var(env, n, param_type), b)
-        -- Function[A, B, E] where E = body effects (empty for pure lambdas)
-        pure_result(Function[A = param_type, B = result_type(br), E = result_effects(br)],
+        -- Build the Function[A, B, E] type value (E = body effects, empty for
+        -- pure lambdas). Constructed explicitly with the Type constructors —
+        -- this is expression position building a Type, not type-annotation sugar.
+        pure_result(parameterized(base: sort_ref(name: Function),
+                                  bindings: [TypeBinding(param: A, value: param_type),
+                                             TypeBinding(param: B, value: result_type(br)),
+                                             TypeBinding(param: E, value: result_effects(br))]),
                     result_env(br))
 
       -- Lambda without annotation: infer param type
@@ -502,7 +507,10 @@ namespace anthill.reflect.typing_pass
         let param_type = fresh_type_var(kb, n)
         let br = type_check(kb, TypingEnv.bind_var(env, n, param_type), b)
         let inferred = TypingEnv.apply_subst(result_env(br), param_type)
-        pure_result(Function[A = inferred, B = result_type(br), E = result_effects(br)],
+        pure_result(parameterized(base: sort_ref(name: Function),
+                                  bindings: [TypeBinding(param: A, value: inferred),
+                                             TypeBinding(param: B, value: result_type(br)),
+                                             TypeBinding(param: E, value: result_effects(br))]),
                     result_env(br))
 
       -- Match: effects = scrutinee ∪ all branches
@@ -554,7 +562,8 @@ namespace anthill.reflect.typing_pass
     -- Determine result type: expected if given, else List[elem_type]
     let result = match expected
       case some(value: coll_type) -> coll_type
-      case none -> List[T = TypingEnv.apply_subst(env3, elem_type)]
+      case none -> parameterized(base: sort_ref(name: List),
+                                 bindings: [TypeBinding(param: T, value: TypingEnv.apply_subst(env3, elem_type))])
     TypeResult(type: result, env: env3)
 
   -- Type-check each element of a collection against the expected element type.
