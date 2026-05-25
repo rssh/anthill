@@ -162,18 +162,22 @@ region-abstraction is the deferred body.
 `callee_body` is only *one* source of the feed-relationship. An **abstract
 operation** — a primitive, an FFI binding, a body written in another language —
 has **no anthill body to read**, but it can still **declare the feed-relationship
-as metadata**. The form: per higher-order parameter, declare what each of its
-parameters is fed, as an expression over the operation's *own* parameters:
+as metadata**, using anthill's **existing `[key: value]` metadata syntax** (the
+`meta_entry` form — same as `[simp]`, `[trust: …]`; open-keyed, value a `Term`).
+The key is `feeds`; the value is a term saying how each higher-order parameter is
+**applied** — `f(<descriptor per parameter>)`:
 
 ```
 operation foreach[A, effects E](xs: List[A], f: A -> Unit ! E) -> Unit ! E
-   feeds f(x)  with  x : element_of(xs)
+   [feeds: f(element_of(xs))]
 
 operation foldLeft[A, B, effects E](xs: List[A], z: B, f: (B,A) -> B ! E) -> B ! E
-   feeds f(acc, x)  with  acc : threaded(z, f),  x : element_of(xs)
+   [feeds: f(threaded(z, f), element_of(xs))]
 ```
 
-The descriptors (`element_of(xs)`, `threaded(z, f)`) are exactly the
+`[feeds: f(…)]` is an ordinary `meta_entry`: key `feeds`, value the term `f(…)`
+whose argument positions hold a **descriptor** per callback parameter
+(`element_of(xs)`, `threaded(z, f)`). Those descriptors are exactly the
 substitutions `effect_derive` applies to the callback's parameters — the same
 `x ↦ elements(l)` the body-read would yield, but **declared** rather than
 inferred from code. Reading them:
@@ -205,8 +209,11 @@ This:
   fallback for anthill-defined ops that don't declare it.
 
 > **Status:** `feeds` is *proposed*, not implemented — there is no field for it
-> in `OperationInfo`/`arrow` and no test. This section specifies the *form* it
-> should take, not existing behavior.
+> in `OperationInfo`/`arrow` and no test. It **reuses the existing `[key: value]`
+> meta-entry *syntax***, but that meta block attaches to rules/facts today;
+> allowing `[feeds: …]` on **operation declarations** (and surfacing it on
+> `OperationInfo`) is part of the work. This section specifies the *form*, not
+> existing behavior.
 
 **Source priority** for the feed-relationship: declared `feeds` metadata (if
 present) → else read `callee_body` (if the op is anthill-defined) → else opaque
