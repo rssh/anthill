@@ -208,12 +208,14 @@ This:
   `OperationInfo` field, and/or an arrow extension). `callee_body` is the
   fallback for anthill-defined ops that don't declare it.
 
-> **Status:** `feeds` is *proposed*, not implemented — there is no field for it
-> in `OperationInfo`/`arrow` and no test. It **reuses the existing `[key: value]`
-> meta-entry *syntax***, but that meta block attaches to rules/facts today;
-> allowing `[feeds: …]` on **operation declarations** (and surfacing it on
-> `OperationInfo`) is part of the work. This section specifies the *form*, not
-> existing behavior.
+> **Status:** `feeds` is *proposed*, not implemented — no test. It **reuses the
+> existing `[key: value]` meta-entry syntax**, which operation declarations
+> *already accept* (grammar `operation_declaration`, and the IR `Operation.meta`)
+> — but the **loader silently drops it** (`load.rs` never reads `op.meta`) and
+> `OperationInfo` has no field to expose it. So loading + surfacing operation
+> metadata is a **prerequisite** (WI-309), on top of which `[feeds: …]` and its
+> descriptor language are this proposal's work. This section specifies the
+> *form*, not existing behavior.
 
 **Source priority** for the feed-relationship: declared `feeds` metadata (if
 present) → else read `callee_body` (if the op is anthill-defined) → else opaque
