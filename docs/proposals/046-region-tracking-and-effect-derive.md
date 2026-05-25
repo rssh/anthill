@@ -176,7 +176,17 @@ operation foldLeft[A, B, effects E](xs: List[A], z: B, f: (B,A) -> B ! E) -> B !
 The descriptors (`element_of(xs)`, `threaded(z, f)`) are exactly the
 substitutions `effect_derive` applies to the callback's parameters — the same
 `x ↦ elements(l)` the body-read would yield, but **declared** rather than
-inferred from code.
+inferred from code. Reading them:
+
+- **`element_of(xs)`** — ranges over the elements of `xs` (all input-provenance).
+- **`threaded(z, f)`** — the **accumulator chain**: the seed `z` and every
+  intermediate result `f` produces (`z`, `f(z,x₁)`, `f(f(z,x₁),x₂)`, …). It is
+  self-referential (depends on `f`'s own outputs), so its provenance is *mixed* —
+  `z` is input, the intermediates are `f`'s outputs. This loop-carried
+  dependency is the subtle case for masking.
+
+(This `element_of`/`threaded` **descriptor language** is the part still to be
+specified — see Open detail.)
 
 This:
 
