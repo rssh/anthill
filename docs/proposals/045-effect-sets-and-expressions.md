@@ -15,7 +15,7 @@
 Introduce **effect-sets** as a new kind of entity — distinct from types,
 bindable to a logic value (a **row variable**) — declared `effects E = ?` /
 `effects E = (expr)` (parallel to `sort E = ?`), written via an
-**effect-expression** algebra (`+e`, `-e`, `{}`, `+*`, `-*`, `merge`), carried by
+**effect-expression** algebra (`e`/`+e`, `-e`, `{}`, `?`/`E`, `merge`), carried by
 operation `effects` clauses and arrow `@` annotations, and **checked** by
 verifying that an operation's actual effects *satisfy* its declaration.
 
@@ -89,34 +89,45 @@ effect label: present / absent / unspecified). Atoms and operators:
 
 | form | meaning |
 |---|---|
-| `{}` | empty (pure) — nothing present |
-| `*` | universal — everything present (top) — *deferred, see §7.5; first cut says "allow all" by omitting the annotation* |
-| `e` | a single effect, e.g. `Modify[c]` |
-| `E` | an effect-set variable (`effects E = ?`) |
-| `+ e` | **presence** — add `e` |
-| `- e` | **absence** — remove / forbid `e` |
-| `+ *` | allow all (→ `*`) — *deferred, see §7.5* |
-| `- *` | disallow all (→ `{}`) — *deferred, see §7.5* |
-| `merge(x, y)` | combine two expressions; **conflict** (a label `+` in one, `-` in the other) ⇒ **incompatible** (error) |
-| `{ E1, …, EN }` | set literal — **sugar** for iterated `merge` (see below) |
+| `{}` | empty (pure) — nothing present, closed |
+| `e` | a single effect, e.g. `Modify[c]` — **present** (listing a label means presence; this is the default) |
+| `E` / `?` | a row variable — named (`effects E = ?`) or anonymous (`?`). An open tail. |
+| `+ e` | presence, **explicit** — same as bare `e`; `+` is optional sugar |
+| `- e` | **absence** — forbid `e` (a `lacks` constraint on the tail). The `-` is the only load-bearing marker, since presence is the default. |
+| `merge(x, y)` | combine two expressions; **conflict** (a label present in one, `-`/absent in the other) ⇒ row-unification failure |
+| `{ E1, …, EN }` | set literal — **sugar** for iterated `merge` (see below); elements may be `+e` / `-e` / a base row variable |
 
-The normal form is a **base** (`{}` / `*` / a variable `E`) plus finitely many
-`+`/`-` overrides — i.e. a **finite or co-finite** set (the Boolean subalgebra of
-the brainstorm). Examples:
+A row is a **base** (`{}` closed, or an open row variable `E`/`?`) plus finitely
+many `+`/`-` overrides. There is **no `*` (universal top)**: an open row variable
+*is* the surface "top" — see §7.5. Examples:
 
 ```
-effects {}                     -- pure
-effects (+ Modify[c])          -- may modify c
-effects (* - Modify[kb])       -- "does not touch kb" — anything except Modify[kb]  (needs `*`; deferred, §7.5)
-effects E                      -- polymorphic (propagates the callback's row)
-effects merge(E, + Reads[d])   -- the callback's effects, plus Reads[d]
+effects {}                  -- pure (closed empty row)
+effects { ? }               -- allow all (open tail, no constraint)
+effects { Modify[c] }       -- closed: only Modify[c]   (bare = present; no `+` needed)
+effects { ?, -Modify[kb] }  -- "does not touch kb": anything except Modify[kb]
+effects E                   -- polymorphic (propagates the callback's row E)
+effects merge(E, Reads[d])  -- the callback's effects, plus Reads[d]
+effects { E, -Modify[kb] }  -- the callback's effects, but guaranteed not Modify[kb]
 ```
 
-`+ e` / `- e` are exactly **presence polymorphism** (label present / absent /
-poly); `* - e` is the co-finite "anything but `e`"; a variable base is an open
-row. The expression **elaborates to a row** (present labels + tail variable +
-`lacks`); `merge` is row extension, but *fails* on a present/absent clash (`+e`
-vs `-e`) — that's the incompatibility, surfaced as a row-unification failure.
+**Variable convention (kind by position).** A variable in **effect position**
+(inside an `effects …` clause or an `@ …` arrow annotation) is, by convention, an
+**effect-set / row variable** — never a value or ordinary type variable. This is
+the only possible confusion (anthill variables `?` / `?name` are otherwise
+syntactically distinct from labels like `Modify[kb]`), and position settles it,
+the same way `sort T = ?` kinds `T` as a type. So `?` is a fresh anonymous row
+variable, `?r` a named one (reusable to refer to the same tail), and a bare `E`
+references a declared `effects E = ?` binder. Such a variable is the effect row
+of a `Function`-typed parameter in the same signature, or a sort-level
+`effects E = ?` binder — never free-floating.
+
+Listing a label means **present** (the default), so `+` is optional sugar; only
+`- e` (absence) is a marked, load-bearing form — a `lacks` constraint on the
+tail. An open variable base is an open row, and `{ ?, -e }` is the co-finite
+"anything but `e`". The expression **elaborates to a row** (present labels + tail
+variable + `lacks`); `merge` is row extension, but *fails* on a present/absent
+clash — that's the incompatibility, surfaced as a row-unification failure.
 
 **The set literal is `merge` sugar.** `{ E1, …, EN }` desugars to iterated
 `merge` over the empty base, so it is not a separate primitive:
@@ -124,14 +135,14 @@ vs `-e`) — that's the incompatibility, surfaced as a row-unification failure.
 ```
 { E1, …, EN }  ≡  merge(E1, merge(E2, … merge(EN-1, EN)))
 { }            ≡  {}            -- empty base (pure)
-{ e }          ≡  + e          -- a bare effect denotes its singleton presence
+{ e }          ≡  e            -- a bare effect denotes its singleton presence
 ```
 
-Because the elements are effect *expressions* (and a bare effect `e` is its
-singleton presence `+e`), the literal inherits `merge`'s conflict semantics:
-`{ +Modify[c], -Modify[c] }` is **incompatible** for free — no special-casing.
-This lets us offer the familiar `{…}` set surface *and* the `+`/`-`/`merge`
-algebra without two semantics: the braces are pure sugar.
+Because the elements are effect *expressions* (a bare effect `e` is its
+singleton presence, `- e` a `lacks`, `?`/`E` an open tail), the literal inherits
+`merge`'s conflict semantics: `{ Modify[c], -Modify[c] }` is **incompatible** for
+free — no special-casing. This lets us offer the familiar `{…}` set surface *and*
+the `merge`/`-` algebra without two semantics: the braces are pure sugar.
 
 **Inferring effects is not one of these forms.** The table lists everything you
 can *write* — there are no other building blocks. Working out which effects a
@@ -262,23 +273,24 @@ constraints for `- e` absence guarantees.
    set** — when a handler removes a set of effects that isn't statically known.
    If discharge always names the handled effects, repeated `- e` is enough and
    no new operator is needed.
-5. **`*` (top) — *deferred*: start without a writable top.** The first cut uses
-   **finite rows only**, with "allow all" handled by the **default** rather than
-   a `*` atom:
-   - **No effects annotation ⇒ allow-all** (open / unchecked) — including a bare
-     arrow `A -> B` with no `@`. This is how you say "may do anything."
-   - **An explicit `effects (…)` clause ⇒ closed world**: only the listed
-     effects are permitted, unstated ⇒ absent (NAF). Pure is the explicit
-     `effects {}`; specific rows are `+ e` / `{ … }`; absence is `- e` checked
-     against ground rows.
+5. **`*` (top) — *dropped*: the open row variable is the surface top.** There is
+   no `*` / `+ *` / `- *`. An **open row variable** (`?` anonymous, or a named
+   `E`) already provides everything a universal top was wanted for, using the
+   substrate we need anyway for polymorphism:
+   - **allow all** — `effects { ? }` (open tail, no constraint), or simply
+     **omitting** the annotation;
+   - **anything but `e`** (the co-finite case) — `effects { ?, - e }` (open tail
+     + a `lacks e`), with no lattice-top;
+   - **pure** — `effects {}` (closed empty row);
+   - **specific** — `effects { +e, … }` (closed) or `effects { E, … }` (open).
 
-   This is **open by default, closed once you annotate** (note: this *reverses*
-   a "`{}` default" — the default is allow-all, not pure). It drops `*`, `+ *`,
-   `- *`, and the co-finite `* - e` ("anything but `e`") for now: a writable top
-   is only needed for allow-all *inside* a composed expression, and it raises
-   consistency questions (what is `merge(*, - e)` vs `merge(*, + e)`? does `*`
-   fit the normal form or need its own representation in `Set`?). Revisit once
-   finite rows work; `* - Modify[kb]` is the motivating use to come back for.
+   The distinction is **base**: `{}` is a closed empty row, `{ ? }` / `{ E }` is
+   an open row whose tail variable absorbs any extra actual effects (covariant-
+   effects subtyping — what `arrow_compatible` already does). A `- e` is a
+   `lacks` constraint on that tail. This sidesteps the consistency questions a
+   constant `*` raised (`merge(*, ±e)`, fitting the normal form). A constant top
+   would return **only** if some internal lattice computation ever needs it — the
+   surface and checking do not.
 
 ## Prior art
 
