@@ -179,39 +179,118 @@ which is precisely what row polymorphism is built for, and because absence on an
 open row (`- e`) is exactly its **lacks**-constraint machinery — dissolving the
 old "negation on open rows" hard problem rather than deferring it.
 
+### 5.1 The row
+
 A row is a set of **present** labels plus an optional **row-variable tail** `ρ`
 (open row), and — for `- e` — **lacks** constraints on `ρ`. The tail variable is
 an ordinary type variable (`Var::Global`), bound through the typer's existing
-`Substitution`/`occurs_in`/`walk_type`.
+`Substitution`/`occurs_in`/`walk_type`. A label is an effect type `Effect[?]`
+(e.g. `Modify[denoted(c)]`); its argument is itself a `Type` and may reach a
+value/region via `denoted` (WI-302).
 
-For each operation:
+### 5.2 `effect_derive` — the row a call produces
 
-1. **Compute the actual row** of the body: union of the rows of the operations
-   it calls and of its callback row-variables (propagation:
-   `op_effects(map(f, xs)) = op_effects(f)`), with **handlers discharging** the
-   effect they handle (drop a label / strengthen a lacks).
+The typer derives each call's row from one specified relation:
+
+```
+effect_derive(callee_type, args, ctx)  →  output_row
+```
+
+- **`callee_type`** — the **arrow type** of *what is called* (a type, not a
+  name). For a named operation it is the op's declared signature type; for a
+  **higher-order parameter `f`** it is **the type of that parameter** (`f : … !
+  Eᶠ`), so a callback's effect enters via the row carried in its own type. This
+  is what unifies named-op and lambda calls — both just have arrow types.
+- **`args`** — the actual arguments, each as a *(denotation, type)* pair. The
+  denotation (the argument's value-expression / occurrence) is needed to resolve
+  effects that mention the callee's value-parameters (`denoted(pᵢ)`).
+- **`ctx`** — the typing environment (provenance, local/fresh resources). Used
+  only by the deferred masking step (§5.5), never by the core.
+
+**Procedure:**
+
+1. **Unify** `callee_type`'s formal parameter *types* against `args`' types. This
+   binds the effect variables (`E`, tail `ρ`) appearing in `callee_type` to the
+   arguments' rows.
+2. **Substitute** in `callee_type`'s effect field each formal value-parameter
+   `pᵢ` by the *denotation* of `argᵢ` — i.e. `denoted(pᵢ) ↦ denoted(argᵢ)`.
+3. `output_row` = the effect field under (unify ∘ substitute), `∪` the
+   arguments' own performed rows.
+
+Step 1 carries the row tail and effect variables; step 2 threads the actual
+arguments into the `denoted(param)` regions. The default (no special handling)
+already covers **introduction, propagation, and discharge** — they are all just
+"unify the callee type, read its effect field." A handler discharges *by its
+type* (its result row is the body row minus the handled label, via a shared `ρ`);
+no separate rule is needed. The pluggable per-effect hook (rule **or** builtin)
+exists only for transforms not expressible in the type — region masking — which
+is deferred (§5.5).
+
+### 5.3 Worked examples
+
+```
+introduction   set(c,v) : (Cell[T], T) → Unit ! { Modify[denoted(c)] }
+               effect_derive: field {Modify[denoted(c)]}, c ↦ the actual arg
+
+propagation    map(f: Function[A,B,E], xs) → List[B] ! E
+               f : A → B ! { Alloc }   ⇒ unify E := {Alloc}   ⇒ output {Alloc}
+
+two HO params  option_fold(o, on_none: ()→B ! E1, on_some: A→B ! E2) → B ! merge(E1,E2)
+               E1 := on_none's row, E2 := on_some's row (distinct vars), output = merge
+
+discharge      handle : (body: ()→X ! { Error[T] | ρ }) → X ! ρ
+               body : ()→X ! {Error[T], Modify[c]}  ⇒ ρ := {Modify[c]}  ⇒ output {Modify[c]}
+
+threading      foldLeft(xs, z, f: (B,A)→B ! E) → B ! E
+               at apply(f, z, h):  field {Modify[denoted(acc)], Reads[denoted(elem)]}
+               step-2 subst  acc ↦ z,  elem ↦ h  ⇒ {Modify[denoted(z)], Reads[denoted(h)]}
+```
+
+Note `foldLeft`: one HO param ⇒ one `E`; applied `n` times but a row is a set, so
+`merge(E,E)=E` — repetition does not multiply. `option_fold`: two HO params ⇒ two
+*distinct* variables, combined by the declared `merge(E1,E2)`.
+
+### 5.4 Checking an operation
+
+1. **Compute the body row** by `effect_derive` over the body (structural forms —
+   `let`/`if`/`match`/`lambda` — default-propagate the union of children; a
+   `lambda` parks its body row on its arrow).
 2. **Unify / subtype against the declared row** (the row-rewrite rule): to match
-   `{ l | ρ1 }` against another row, surface `l` in it, unify the label
-   presences, unify the tails; an open declared row absorbs extra actual labels
-   into its tail, a closed one does not; a `- e` declaration adds `lacks e` to
-   the tail and **fails if the actual row presents `e`**.
-3. Result: **satisfies** (rows unify / actual is a row-subtype) or a **type
-   error** (an undeclared effect against a closed row, a `lacks` violation, or a
-   `merge` conflict).
+   `{ l | ρ1 }` against another row, surface `l`, unify the presences, unify the
+   tails; an open declared row absorbs extra actual labels into its tail, a
+   closed one does not; a `- e` declaration adds `lacks e` and **fails if the
+   actual row presents `e`**.
+3. Result: **satisfies** or a **type error** (undeclared effect against a closed
+   row, `lacks` violation, or `merge` conflict).
 
 This *replaces* today's two half-measures: `unify_arrow` (`typing.rs`) currently
 **skips the effects field entirely**, and `arrow_compatible` does only a naive
 positional `⊆` subset check with no row variables.
 
-"Input vs output effects": an operation transforms an *input* effect context to
-an *output* row — a **handler** has `output = input` minus the handled label; a
-plain op's output is what it performs. Checking relates the output to the
-declaration.
+### 5.5 The deferred boundary — region resolution / masking
+
+Step 2 of `effect_derive` substitutes actual-argument denotations into
+`denoted(param)` regions. Over a loop/fold this yields *unbounded* per-element /
+per-iteration denotations (`denoted(h)` for every `h ∈ xs`, `denoted(f(z,h))`, …).
+**Collapsing those into a finite effect** ("reads the elements of `xs`",
+"modifies the threaded accumulator") needs **region abstraction**, and deciding
+whether such an effect is observable or **maskable** needs **provenance** (is the
+region an *input* — a parameter, or reachable from one — or *output* — freshly
+allocated, escaping only as the result?). Both are **out of scope** here (a
+separate region proposal; Tofte–Talpin / Talpin–Jouvelot), and they are what the
+`ctx`-driven masking hook would consume.
+
+So **v1** propagates rows *opaquely*: `foldLeft`'s effect is `E` = `f`'s row with
+`acc`/`elem` left as `f`'s parameters ("performs `f`'s effect on what it is
+applied to"). It does **not** resolve them to `xs`-elements vs `z`, and does not
+mask. Constructors must therefore be annotated honestly — `Cell.new : { Alloc }`
+(creating fresh state), **not** `Modify[result]` — so that `map(λ Cell.new)` comes
+out `{ Alloc }` (not falsely pure, not falsely a `Modify` of the caller's world).
 
 **Phasing.** v1a: open rows with present labels + tail variable — real row
 unification in `unify_arrow`, open-row subtyping in `arrow_compatible` — covering
-the common polymorphic-propagation case (no `- e`). v1b: add **lacks**
-constraints for `- e` absence guarantees.
+polymorphic propagation. v1b: `lacks` constraints for `- e`. The region layer
+(resolution + provenance + masking) is a separate proposal.
 
 ## 6. Representation (reflect) and reconciliation
 
