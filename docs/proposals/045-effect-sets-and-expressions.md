@@ -190,44 +190,54 @@ value/region via `denoted` (WI-302).
 
 ### 5.2 `effect_derive` — the row a call produces
 
-The typer derives each call's row from one specified relation:
+The typer derives each call's row from one specified relation. Its **form** was
+fixed by the case analysis in proposal 046 (run over the cases, the naïve 3-arg
+form produces *ill-scoped* output for higher-order calls — see §5.5); the correct
+form is:
 
 ```
-effect_derive(callee_type, args, ctx)  →  output_row
+effect_derive(callee_type, callee_body, args, ctx)  →  output_row
 ```
 
 - **`callee_type`** — the **arrow type** of *what is called* (a type, not a
-  name). For a named operation it is the op's declared signature type; for a
+  name). For a named operation it is the op's signature type; for a
   **higher-order parameter `f`** it is **the type of that parameter** (`f : … !
-  Eᶠ`), so a callback's effect enters via the row carried in its own type. This
-  is what unifies named-op and lambda calls — both just have arrow types.
-- **`args`** — the actual arguments, each as a *(denotation, type)* pair. The
-  denotation (the argument's value-expression / occurrence) is needed to resolve
-  effects that mention the callee's value-parameters (`denoted(pᵢ)`).
-- **`ctx`** — the typing environment (provenance, local/fresh resources). Used
-  only by the deferred masking step (§5.5), never by the core.
+  Eᶠ`). This unifies named-op and lambda calls — both just have arrow types.
+- **`callee_body`** — the callee's **body occurrence** (`operation_body`), or
+  `none` for opaque callees. It carries the **feed-relationship** — how a
+  callback's parameters are bound to the callee's own arguments — which is read
+  only when needed (the HOF case, §5.5).
+- **`args`** — the actual arguments, each a *(denotation, type)* pair. The
+  denotation resolves the callee's *own* value-parameters (`denoted(pᵢ) ↦
+  denoted(argᵢ)`).
+- **`ctx`** — the typing environment (provenance, active handlers).
+
+**Correctness property:** `output_row` is **well-scoped** — it contains **no
+variable bound by the callee's (or a callback's) parameters**; every such
+variable is eliminated by resolving it against `args` / `callee_body`.
 
 **Procedure:**
 
-1. **Unify** `callee_type`'s formal parameter *types* against `args`' types. This
-   binds the effect variables (`E`, tail `ρ`) appearing in `callee_type` to the
-   arguments' rows.
-2. **Substitute** in `callee_type`'s effect field each formal value-parameter
-   `pᵢ` by the *denotation* of `argᵢ` — i.e. `denoted(pᵢ) ↦ denoted(argᵢ)`.
+1. **Unify** `callee_type`'s formal parameter *types* against `args`' types,
+   binding the effect variables (`E`, tail `ρ`).
+2. **Substitute** the callee's *own* value-parameters by the argument
+   denotations (`denoted(pᵢ) ↦ denoted(argᵢ)`).
 3. `output_row` = the effect field under (unify ∘ substitute), `∪` the
-   arguments' own performed rows.
+   arguments' own performed rows — **required to be well-scoped**.
 
-Step 1 carries the row tail and effect variables; step 2 threads the actual
-arguments into the `denoted(param)` regions. These three steps are **all of
-v1** — `effect_derive` is *type + unification, nothing else*. It already covers
-**introduction, propagation, and discharge**: each is just "unify the callee
-type, read its effect field." A handler discharges *by its type* (its result row
-is the body row minus the handled label, via a shared `ρ`) — no special case.
+Steps 1–3 cover **introduction, propagation, discharge, and first-order region
+effects** (`set`, `swap`, `map`, `option_fold`, handlers): each parameter in the
+effect field is the callee's *own*, resolved to its argument (in caller scope) —
+so the output is well-scoped. A handler discharges *by its type* (result row =
+body row minus the handled label, via a shared `ρ`).
 
-There is **no pluggable per-effect hook in v1.** (Region masking would need a
-transform *not* expressible in the type; if/when the region layer is added it
-would attach such a transform on top of `effect_derive` — but that is deferred,
-§5.5. v1 has nothing of the sort.)
+The one case these steps do **not** make well-scoped is a **higher-order call
+whose callback row references the callback's own parameter** (`foreach(λ x →
+set(x))` ⇒ a stray `denoted(x)`). Making *that* well-scoped requires reading the
+**feed-relationship** from `callee_body` and abstracting the result — the
+implementation is deferred (§5.5, proposal 046), but the **form above is the
+correct, final one**: the deferred work plugs into it without changing the
+signature or the well-scopedness obligation.
 
 ### 5.3 Worked examples
 
@@ -244,14 +254,17 @@ two HO params  option_fold(o, on_none: ()→B ! E1, on_some: A→B ! E2) → B !
 discharge      handle : (body: ()→X ! { Error[T] | ρ }) → X ! ρ
                body : ()→X ! {Error[T], Modify[c]}  ⇒ ρ := {Modify[c]}  ⇒ output {Modify[c]}
 
-threading      foldLeft(xs, z, f: (B,A)→B ! E) → B ! E
-               at apply(f, z, h):  field {Modify[denoted(acc)], Reads[denoted(elem)]}
-               step-2 subst  acc ↦ z,  elem ↦ h  ⇒ {Modify[denoted(z)], Reads[denoted(h)]}
+—— the one deferred case (proposal 046, §5.5) ——
+HOF+param      foreach(λ x → set(x, …)) ⇒ naïvely { Modify[denoted(x)] }   -- x escapes: ILL-SCOPED
+               well-scoped output needs callee_body (x ↦ elements(xs)) + region abstraction
+threading      foldLeft(xs, z, f: (B,A)→B) — same: callback params acc/elem need resolving via
+               callee_body, then abstraction; deferred to 046.
 ```
 
-Note `foldLeft`: one HO param ⇒ one `E`; applied `n` times but a row is a set, so
-`merge(E,E)=E` — repetition does not multiply. `option_fold`: two HO params ⇒ two
-*distinct* variables, combined by the declared `merge(E1,E2)`.
+The five above are well-scoped (each parameter is the callee's own, resolved to
+its argument). `option_fold`: two HO params ⇒ two *distinct* variables, combined
+by the declared `merge(E1,E2)`. The last two are the §5.5 deferred case: a
+callback whose row references *its own* parameter.
 
 ### 5.4 Checking an operation
 
@@ -270,25 +283,28 @@ This *replaces* today's two half-measures: `unify_arrow` (`typing.rs`) currently
 **skips the effects field entirely**, and `arrow_compatible` does only a naive
 positional `⊆` subset check with no row variables.
 
-### 5.5 The deferred boundary — region resolution / masking
+### 5.5 The deferred boundary — the one ill-scoped case (proposal 046)
 
-Step 2 of `effect_derive` substitutes actual-argument denotations into
-`denoted(param)` regions. Over a loop/fold this yields *unbounded* per-element /
-per-iteration denotations (`denoted(h)` for every `h ∈ xs`, `denoted(f(z,h))`, …).
-**Collapsing those into a finite effect** ("reads the elements of `xs`",
-"modifies the threaded accumulator") needs **region abstraction**, and deciding
-whether such an effect is observable or **maskable** needs **provenance** (is the
-region an *input* — a parameter, or reachable from one — or *output* — freshly
-allocated, escaping only as the result?). Both are **out of scope** here (a
-separate region proposal; Tofte–Talpin / Talpin–Jouvelot), and they are what the
-`ctx`-driven masking hook would consume.
+There is exactly one case the §5.2 steps do **not** make well-scoped: a
+**higher-order call whose callback row references the callback's own parameter**.
+`foreach(λ x → set(x, …))` would yield `{ Modify[denoted(x)] }` — but `x` is the
+*callback's* parameter, bound by its arrow; at the `foreach` call there is no
+argument to substitute it with (`foreach` binds `x` to elements of `xs` only
+inside its *own body*). That output mentions `x` but not `xs` — **ill-scoped**,
+which the §5.2 correctness property forbids.
 
-So **v1** propagates rows *opaquely*: `foldLeft`'s effect is `E` = `f`'s row with
-`acc`/`elem` left as `f`'s parameters ("performs `f`'s effect on what it is
-applied to"). It does **not** resolve them to `xs`-elements vs `z`, and does not
-mask. Constructors must therefore be annotated honestly — `Cell.new : { Alloc }`
-(creating fresh state), **not** `Modify[result]` — so that `map(λ Cell.new)` comes
-out `{ Alloc }` (not falsely pure, not falsely a `Modify` of the caller's world).
+Producing a well-scoped output here requires reading the **feed-relationship**
+from `callee_body` (`x ↦ elements(xs)`), then **abstracting** the resulting
+*unbounded* per-iteration denotations (`denoted(h)` for every `h ∈ xs`) into a
+finite **region**, and applying **provenance/masking** (is the region an *input*
+parameter or a *fresh output*?). That implementation — region abstraction, escape
+analysis, the recursion fixpoint — is the subject of **proposal 046** and is
+deferred *in detail*. The `effect_derive` **form (§5.2) is already correct**: it
+takes `callee_body` and obliges a well-scoped output; 046 only fills in the body.
+
+Note: the `Cell.new : { Alloc }` discipline (constructors are `Alloc`, **not**
+`Modify[result]`) holds regardless — it keeps `map(λ Cell.new)` honest (`{Alloc}`)
+even before masking exists.
 
 **Phasing.** v1a: open rows with present labels + tail variable — real row
 unification in `unify_arrow`, open-row subtyping in `arrow_compatible` — covering
