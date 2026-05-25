@@ -218,13 +218,16 @@ effect_derive(callee_type, args, ctx)  →  output_row
    arguments' own performed rows.
 
 Step 1 carries the row tail and effect variables; step 2 threads the actual
-arguments into the `denoted(param)` regions. The default (no special handling)
-already covers **introduction, propagation, and discharge** — they are all just
-"unify the callee type, read its effect field." A handler discharges *by its
-type* (its result row is the body row minus the handled label, via a shared `ρ`);
-no separate rule is needed. The pluggable per-effect hook (rule **or** builtin)
-exists only for transforms not expressible in the type — region masking — which
-is deferred (§5.5).
+arguments into the `denoted(param)` regions. These three steps are **all of
+v1** — `effect_derive` is *type + unification, nothing else*. It already covers
+**introduction, propagation, and discharge**: each is just "unify the callee
+type, read its effect field." A handler discharges *by its type* (its result row
+is the body row minus the handled label, via a shared `ρ`) — no special case.
+
+There is **no pluggable per-effect hook in v1.** (Region masking would need a
+transform *not* expressible in the type; if/when the region layer is added it
+would attach such a transform on top of `effect_derive` — but that is deferred,
+§5.5. v1 has nothing of the sort.)
 
 ### 5.3 Worked examples
 
