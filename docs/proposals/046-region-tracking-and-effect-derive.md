@@ -107,6 +107,55 @@ effect_derive(callee_type, callee_body, args, ctx)  →  output_row
 eliminated, region-keyed labels resolved to caller-scope regions or abstracted
 to a region variable.
 
+### 4.1 Concrete instantiation — the `foreach` call
+
+For `foreach(l, λ x → set(x, get(x) + 1))` with `l : List[Cell[Int]]`, the four
+arguments are:
+
+```
+effect_derive(
+
+  callee_type =                                          -- foreach's arrow type
+     ( xs: List[A], f: Function[A, Unit, E] ) → Unit ! E
+
+  callee_body =                                          -- foreach's body occurrence
+     match xs:
+        nil        → unit
+        cons(h, t) → apply(f, h) ; foreach(t, f)
+                          └── feed-relationship: f's param ↦ h,  h ∈ elements(xs)
+
+  args = [
+     ( denotation: l ,
+       type:       List[Cell[Int]] ),
+     ( denotation: λ x → set(x, get(x)+1) ,
+       type:       Cell[Int] → Unit ! { Modify[denoted(x)], Reads[denoted(x)] } )
+                                              └── x = the lambda's parameter
+  ],
+
+  ctx =                                                  -- typing environment
+     { l : List[Cell[Int]]  (an input/parameter) ;  no active handlers }
+)
+```
+
+Deriving:
+
+```
+step 1  unify ( List[A], Function[A,Unit,E] ) ~ args' types
+        ⇒  A := Cell[Int] ,  E := { Modify[denoted(x)], Reads[denoted(x)] }
+
+naïve   output = E = { Modify[denoted(x)], Reads[denoted(x)] }      ✗ ILL-SCOPED
+        (x is the lambda's parameter — there is x, but no l)
+
+correct read callee_body ⇒ feed-relationship  x ↦ elements(l)
+        substitute        ⇒ { Modify[denoted(elements of l)], Reads[denoted(elements of l)] }
+        abstract to region ⇒ { Modify[ρₗ], Reads[ρₗ] }  (ρₗ = region of l's elements)   ✓ well-scoped
+                              └── this read+abstract step is the deferred 046 detail
+```
+
+So the *form* is fully determined (the four arguments above), `ctx` says `l` is
+an input region (so it is kept, not masked), and only the `callee_body`-read +
+region-abstraction is the deferred body.
+
 ## 5. What is type vs. what is deferred detail
 
 This document fixes the **input/output types** of `effect_derive` — that is what
