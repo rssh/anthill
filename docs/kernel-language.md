@@ -351,7 +351,9 @@ operation persist(store: Store, fact: Term, meta: Meta) -> FactId
   effects {Modify[store], Error}   -- store will be mutated; operation can fail
 ```
 
-Because types are terms and type checking is KB querying, referencing values in type positions requires no special dependent-type mechanism — it is simply a term appearing where a term is expected. The KB's unification machinery handles both abstract bindings (`Modify[?]`) and concrete ones (`Modify[store]`) uniformly.
+Because types are terms, a type expression may contain logical variables and concrete value terms directly: the KB's unification machinery handles abstract bindings (`Modify[?]`) and concrete ones (`Modify[store]`) uniformly, with no separate type-variable mechanism. This is the precise content of "types are terms" — the type sublanguage (the `Type` grammar above) is the *normal-form* fragment of terms (names, parameterized applications, tuples, arrows) plus logical variables, over which sort membership and `refines` are decided structurally.
+
+It does **not** mean an arbitrary term may stand in a type position. A term that must be *computed* to yield a type — e.g. an operation call `f(x)` in a binding (`List[T = f(x)]`) — is not itself a type: it is a redex that has to be evaluated to a sort before membership applies, which structural matching over the `Type` forms does not do. Such *computed type arguments* are therefore a separate, reducible extension (carried as a marked `Type.denoted` form and evaluated, rather than matched structurally), not part of this base relation — see WI-302.
 
 Additional types are introduced via `sort` declarations (unspecified, type alias, or defined) in any namespace.
 
