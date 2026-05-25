@@ -194,9 +194,19 @@ This:
   the only source, and it suffices;
 - restores **modularity** — with the feed metadata in the *signature*, a call
   site needs only the signature, never the body;
-- keeps `effect_derive`'s signature unchanged — the feed metadata **rides in
-  `callee_type`** (it is part of the declaration); `callee_body` is the fallback
-  for anthill-defined ops that don't declare it.
+- keeps `effect_derive`'s **argument list** unchanged — the feed metadata is
+  part of the operation's *signature*, so it travels with `callee_type` rather
+  than as a new `effect_derive` argument. **It is not present today:** the
+  current `OperationInfo` (`reflect.anthill`) carries only
+  `name`/`params`/`return_type`/`effects`/`requires`/`ensures`, and the arrow
+  `Type` only `param`/`result`/`effects` — neither has a feed field. Implementing
+  `feeds` means **adding it to the signature representation** (a new
+  `OperationInfo` field, and/or an arrow extension). `callee_body` is the
+  fallback for anthill-defined ops that don't declare it.
+
+> **Status:** `feeds` is *proposed*, not implemented — there is no field for it
+> in `OperationInfo`/`arrow` and no test. This section specifies the *form* it
+> should take, not existing behavior.
 
 **Source priority** for the feed-relationship: declared `feeds` metadata (if
 present) → else read `callee_body` (if the op is anthill-defined) → else opaque
