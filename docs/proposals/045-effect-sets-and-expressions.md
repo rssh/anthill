@@ -1,26 +1,30 @@
 # Proposal 045 — Effect sets, effect expressions, and effect checking
 
-## Status: Draft (2026-05-24)
+## Status: Draft (2026-05-24; row-unification pivot 2026-05-25)
 
 > Promotes `docs/brainstorms/effect-sets.md`, which has the full variant
 > analysis (A/B/D/E/F), the prior art, and the hard problems. This proposal
-> commits to a design: the brainstorm's **B (presence) surface over E (a `Set`
-> value)**, with effect-sets as a new bindable kind and an explicit `+`/`-`
-> **effect-expression** algebra.
+> commits to a design: the brainstorm's **B (presence) surface**, **checked by
+> the textbook row-polymorphism algorithm in the typer**. (Earlier drafts framed
+> checking as ACI matching over a `Set` value; that is dropped — see §5/§6.
+> Effects are dominated by the *polymorphic* case, which is row polymorphism's
+> home, and absence on open rows is its `lacks` machinery, not a hard problem.)
 
 ## Summary
 
 Introduce **effect-sets** as a new kind of entity — distinct from types,
-bindable to a logic value — declared `effects E = ?` / `effects E = (expr)`
-(parallel to `sort E = ?`), built by an **effect-expression** algebra
-(`+e`, `-e`, `{}`, `+*`, `-*`, `merge`), carried by operation `effects` clauses
-and arrow `@` annotations, and **checked** by verifying that an operation's
-actual effects *satisfy* its declared effect expression.
+bindable to a logic value (a **row variable**) — declared `effects E = ?` /
+`effects E = (expr)` (parallel to `sort E = ?`), written via an
+**effect-expression** algebra (`+e`, `-e`, `{}`, `+*`, `-*`, `merge`), carried by
+operation `effects` clauses and arrow `@` annotations, and **checked** by
+verifying that an operation's actual effects *satisfy* its declaration.
 
-Two-layer model (the effect-level analog of `denoted`, WI-302): an
-**`EffectExpression`** (the algebra) **denotes** an **`EffectSet`** — a `Set` of
-effect *types*, normalized modulo the ACI equational laws of `prelude/set.anthill`.
-Checking is presence subsumption (`subset` + `not member`).
+The surface **`EffectExpression`** (the algebra) **elaborates to a row** — a set
+of present labels + an optional row-variable tail (+ `lacks` constraints for
+`-e`). Checking is **row unification** (presence-polymorphic rows; Rémy 1989,
+Lindley & Cheney 2012), run inside the typer as the effects-component of
+arrow-type unification (`unify_arrow` / `arrow_compatible`) — using the typer's
+existing type-variable substrate for the tail variable.
 
 ## Motivation
 
@@ -49,15 +53,14 @@ own kind.
 - An **effect-set** is a new entity kind. It is **not** a `Type`; it is the row
   of effects on an arrow. Its *elements* are effect types (`Effect[?]`), and an
   individual effect (`Modify[c]`) remains a `Type`.
-- The value is a `Set` of effect types over the existing `Set`/`EffectSet`
-  substrate (`prelude/set.anthill`, `prelude/effect-set.anthill`):
-  `member` / `subset` / `union` / `difference`, with the **ACI equational laws**
-  (idempotent + commutative `insert`) giving set semantics by *equational
-  matching* (Maude-style), not bespoke unification.
-- An effect-set is **bindable to a logic value**: a logic variable can range
-  over effect-sets (a row / presence variable). This is how polymorphism and
-  propagation work — ordinary unification of an effect-set–kinded variable,
-  modulo ACI.
+- The value is a **row**: a set of present effect-type labels plus an optional
+  **row-variable tail** (open row), and — for absence — `lacks` constraints on
+  that tail. Set semantics (order/duplicates irrelevant) come from the row
+  representation, not from generic equational `Set` matching.
+- An effect-set is **bindable to a logic value**: the row tail is an ordinary
+  logic/type variable (`Var::Global`), so polymorphism and propagation are just
+  **row unification** of that variable (§5). This is presence-polymorphic rows
+  (Rémy 1989; Lindley & Cheney 2012), not a bespoke scheme.
 
 ## 2. Declaration — `effects E = ?` / `effects E = (expr)`
 
@@ -111,9 +114,9 @@ effects merge(E, + Reads[d])   -- the callback's effects, plus Reads[d]
 
 `+ e` / `- e` are exactly **presence polymorphism** (label present / absent /
 poly); `* - e` is the co-finite "anything but `e`"; a variable base is an open
-row. This is the surface form of the `Set` algebra (`∪`/`\`); it **evaluates /
-normalizes** (via the ACI laws) to an `EffectSet`. (`merge` is `union` on
-presences but *fails* on a present/absent clash — that's the incompatibility.)
+row. The expression **elaborates to a row** (present labels + tail variable +
+`lacks`); `merge` is row extension, but *fails* on a present/absent clash (`+e`
+vs `-e`) — that's the incompatibility, surfaced as a row-unification failure.
 
 **The set literal is `merge` sugar.** `{ E1, …, EN }` desugars to iterated
 `merge` over the empty base, so it is not a separate primitive:
@@ -154,76 +157,91 @@ declaration surface is interchangeable — all denote the same effect-row contra
   — the contract-homed form (closed-world: unstated ⇒ absent by NAF), projected
   to the effect-set on the arrow.
 
-## 5. Checking — "satisfies the definition, or not"
+## 5. Checking — row unification in the typer
+
+Effect checking is the **textbook row-polymorphism algorithm** (presence-
+polymorphic rows: Rémy 1989; Lindley & Cheney 2012 for effects), run **inside
+the typer** as the effects-component of arrow-type unification — *not* a generic
+ACI/`Set` rewrite. This is the right home because effects are dominated by the
+*polymorphic* case (`map`/`fold`/`Stream.map` carry exactly the callback's row),
+which is precisely what row polymorphism is built for, and because absence on an
+open row (`- e`) is exactly its **lacks**-constraint machinery — dissolving the
+old "negation on open rows" hard problem rather than deferring it.
+
+A row is a set of **present** labels plus an optional **row-variable tail** `ρ`
+(open row), and — for `- e` — **lacks** constraints on `ρ`. The tail variable is
+an ordinary type variable (`Var::Global`), bound through the typer's existing
+`Substitution`/`occurs_in`/`walk_type`.
 
 For each operation:
 
-1. **Compute the actual effect expression** of the body: `union` of the effect
-   expressions of the operations it calls and of its callback effect-variables
-   (propagation: `op_effects(map(f, xs)) = op_effects(f)`), with **handlers
-   discharging** the effect they handle (`\` / `- e`).
-2. **Check it satisfies the declared expression**, modulo ACI:
-   - every declared `+ e` is *permitted*: actual `⊆` allowed (`subset`);
-   - every declared `- e` *holds*: `e ∉` actual (`not member`) — including on a
-     polymorphic base, where it constrains the variable's row (a presence
-     variable carrying the absence);
-   - effect-set variables unify / propagate.
-3. Result: **satisfies** (the body's effects are within the declaration) or a
-   **type error** (an undeclared effect, a violated `- e`, or a `merge`
-   incompatibility).
+1. **Compute the actual row** of the body: union of the rows of the operations
+   it calls and of its callback row-variables (propagation:
+   `op_effects(map(f, xs)) = op_effects(f)`), with **handlers discharging** the
+   effect they handle (drop a label / strengthen a lacks).
+2. **Unify / subtype against the declared row** (the row-rewrite rule): to match
+   `{ l | ρ1 }` against another row, surface `l` in it, unify the label
+   presences, unify the tails; an open declared row absorbs extra actual labels
+   into its tail, a closed one does not; a `- e` declaration adds `lacks e` to
+   the tail and **fails if the actual row presents `e`**.
+3. Result: **satisfies** (rows unify / actual is a row-subtype) or a **type
+   error** (an undeclared effect against a closed row, a `lacks` violation, or a
+   `merge` conflict).
+
+This *replaces* today's two half-measures: `unify_arrow` (`typing.rs`) currently
+**skips the effects field entirely**, and `arrow_compatible` does only a naive
+positional `⊆` subset check with no row variables.
 
 "Input vs output effects": an operation transforms an *input* effect context to
-an *output* row — a **handler** has `output = input \ {handled}`; a plain op's
-output is what it performs. Checking relates the output to the declaration.
+an *output* row — a **handler** has `output = input` minus the handled label; a
+plain op's output is what it performs. Checking relates the output to the
+declaration.
+
+**Phasing.** v1a: open rows with present labels + tail variable — real row
+unification in `unify_arrow`, open-row subtyping in `arrow_compatible` — covering
+the common polymorphic-propagation case (no `- e`). v1b: add **lacks**
+constraints for `- e` absence guarantees.
 
 ## 6. Representation (reflect) and reconciliation
 
-- New: **`EffectExpression`** (the algebra of §3), which **denotes** an
-  **`EffectSet`** (the `Set`-value normal form). The effect-level analog of
-  `denoted`.
-- `arrow.effects` and `Function.E` carry an **`EffectExpression`** (not
-  `List[Type]`); the typer normalizes to an `EffectSet` for checking.
-- Reconcile the orphaned pieces: `Set` (complete the recursive `member`/`subset`/
-  `union`/`difference` laws), `EffectSet` (= `Set` of `Effect[?]`), `Function`
-  (`sort E = ?` → `effects E = ?`), `arrow` (effects field → `EffectExpression`).
-- **Matching modulo ACI is the gap to close** — *the* core semantic commitment.
-  The `[simp]` rewrite engine (proposal 043) already fires equations over
-  occurrences during typing, but it has **no AC/ACI *matching***: commutativity/
-  idempotence written as plain `[simp]` equations loop and are non-confluent
-  (see `typing.rs` "commutative law mistagged `[simp]`", `load.rs` "would loop on
-  `add_comm`-style laws"). So `Set` semantics — `insert(a, insert(b, S)) ≡
-  insert(b, insert(a, S))`, `insert(a, insert(a, S)) ≡ insert(a, S)` — cannot be
-  rules; it needs **matching modulo ACI** (operator attributes, or a canonical
-  set normal form the matcher respects) layered on `simp`. That layer, not the
-  rewrite engine, is what phase (1) must build.
+- New: **`EffectExpression`** (the algebra of §3) — the surface a programmer
+  writes. It **elaborates to a row**: present labels + an optional row-variable
+  tail (+ lacks constraints in v1b). `+ e` → present, `- e` → lacks, `E` → tail
+  variable, `merge` → row extension/unification, `{}` → closed empty row.
+- `arrow.effects` and `Function.E` carry this **row** (replacing the closed
+  `List[Type]`); the typer unifies rows directly.
+- `Function`: `sort E = ?` → **`effects E = ?`** (declares a row variable, not a
+  type parameter).
+- **Effect checking is row unification in the typer — not generic ACI/`Set`
+  rewriting.** The row-rewrite rule lives in `unify_arrow` / `arrow_compatible`
+  (`typing.rs`), using the typer's existing type-variable substrate for the tail
+  variable. The `[simp]`/ACI/canonical-`Set` substrate (§ earlier drafts) is
+  **decoupled from effect checking**: it remains only as optional machinery for
+  *general* sets (and the runtime effect catalog), not on the checking path.
+  `Set`/`EffectSet` stay orphaned until a general-set consumer needs them.
 
 ## 7. Open questions / hard points
 
-1. **Negation on open rows — mostly handled by laziness.** Because an
-   `EffectExpression` is *symbolic* and only normalizes to an `EffectSet` when
-   its variables are ground (§6's two-layer split), `merge(E, - e)` over a free
-   `E` simply stays an unevaluated term. It is normalized — and the conflict
-   checked — only when `E` is bound, which happens at every concrete use (the
-   call site supplying the callback). At that point the check is local and
-   decidable: if the bound row contains `e`, the `merge` conflicts → the call
-   site is rejected; otherwise fine. So `effects merge(E, - Modify[kb])` ("this
-   function forbids its callback from modifying kb") needs **no presence
-   variables and no substrate change** — just deferred evaluation.
-   The residual (optional, not a soundness issue): checking a polymorphic
-   declaration *in isolation*, never instantiated — under laziness we defer
-   judgment, so we cannot tell at definition-time whether `merge(E, - e)` is even
-   satisfiable. **Question: do we want abstract definition-time checking of
-   never-grounded polymorphic effect declarations** (which is where presence
-   variables — Rémy/Links; Lindley & Cheney 2012 — would buy something), or is
-   lazy per-instantiation checking sufficient?
-2. **`merge` conflict semantics — *resolved*: hard error.** A present/absent
-   clash (`+e` in one operand, `-e` in the other) is a **hard error**, not a
-   propagating `⊥`/`incompatible` value. Since `merge(E, …)` only normalizes
-   once `E` is ground (per (1)), the error fires at normalization — at the site
-   that produced the conflicting row (a call site binding a callback whose
-   effects violate a declared `- e`, or a directly-written `merge(+e, -e)`),
-   pointing there. No unsatisfiable-row value to track. Open only: the exact
-   diagnostic wording / which operand the message blames.
+1. **Negation on open rows — *resolved* by row polymorphism (no longer a hard
+   part).** Adopting row unification in the typer (§5) means `- e` on an open row
+   is just a **lacks constraint** on the tail variable `ρ` (`ρ lacks e`), the
+   standard presence-polymorphic mechanism (Rémy 1989; Lindley & Cheney 2012). It
+   is checked *abstractly at definition time* — no waiting for `E` to be ground,
+   no laziness hack: unifying a row that presents `e` against a tail carrying
+   `lacks e` fails directly, and the constraint propagates to call sites through
+   ordinary tail-variable unification. So `effects merge(E, - Modify[kb])` ("this
+   function forbids its callback from modifying kb") is a row `{ … | ρ }` with
+   `ρ lacks Modify[kb]`, principal and decidable. This is **v1b** of §5. (The
+   earlier laziness framing is superseded — it was an artifact of the canonical-
+   `Set` approach, which we dropped.)
+2. **`merge` conflict semantics — *resolved*: hard error (a unification
+   failure).** A present/absent clash (`+e` in one operand, `-e` in the other) is
+   a **hard error**, not a propagating `⊥` value. Under row unification it is
+   simply a **failed unification** — presenting label `e` against a tail that
+   `lacks e` — raised at the point the two rows are unified (a call site whose
+   callback row violates a declared `lacks`, or a directly-written
+   `merge(+e, -e)`), pointing there. No unsatisfiable-row value to track. Open
+   only: the exact diagnostic wording / which side the message blames.
 3. **Decidability of effect-checking — induction on the body, fixpoint for
    recursion.** For a **non-recursive** operation, `op_effects` is a `union`/
    discharge fold over the *finite* body term, so it terminates by structural
@@ -293,14 +311,24 @@ output is what it performs. Checking relates the output to the declaration.
 
 ## Next steps
 
-1. Land **matching modulo ACI** on top of the existing `[simp]` engine (operator
-   attributes or a canonical set normal form), then the `Set`/`EffectSet` laws.
-   (`*`/top is deferred — §7.5.) This is the substrate; `simp` itself already
-   exists.
-2. `EffectExpression` reflect sort + the `+`/`-`/`merge` grammar.
-3. `effects E = ?` declaration; `arrow.effects` / `Function.E` →
-   `EffectExpression`.
-4. Effect checking (satisfaction; propagation; handler discharge). Negation on
-   open rows is lazy/symbolic in v1 — no presence variables (§7.1).
-5. Migrate `typing_pass_spec` effect handling onto this; only then is its
-   effect-checking honest.
+The checking algorithm is **row unification in the typer** (§5), not the
+ACI/`Set` substrate. Phases:
+
+1. **v1a — row unification (open rows, presence only).** Represent the
+   `arrow.effects` row as present labels + an optional row-variable tail (an
+   ordinary `Var::Global`). Implement the row-rewrite rule in `unify_arrow`
+   (which today skips effects entirely) and open-row subtyping in
+   `arrow_compatible` (today a naive `⊆` subset check). Covers polymorphic
+   propagation — the common case.
+2. **EffectExpression surface + grammar** (`+`/`-`/`merge`/`{}`/`E`), elaborating
+   to a row; `effects E = ?` declaration binding a row variable; `arrow.effects`
+   / `Function.E` carry the row.
+3. **v1b — lacks constraints.** Add `- e` absence guarantees as `lacks`
+   constraints on the tail variable (§7.1), checked abstractly at definition
+   time.
+4. **Handler discharge** — a handler drops the handled label / strengthens a
+   lacks (relation to proposal 027).
+5. **Migrate `typing_pass_spec`** effect handling onto row unification; only then
+   is its effect-checking honest.
+6. *(Optional, decoupled.)* The `[simp]`/ACI/canonical-`Set` substrate, only if a
+   *general*-set consumer appears — not needed for effect checking.
