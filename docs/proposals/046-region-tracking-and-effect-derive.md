@@ -65,9 +65,20 @@ The incorrect cases share one shape: **a higher-order call whose callback row
 references the callback's own parameter.** The output then names a variable bound
 by the callback's arrow, which is out of scope at the caller. To make it
 well-scoped you must **eliminate that parameter** — resolve it to whatever the
-HOF feeds the callback (`x ↦ elements(xs)`; `a ↦ z`/threaded). That mapping — the
-**feed-relationship** — is not in `foreach`'s *type*; it is in `foreach`'s
-*body* (`apply(f, elem)`, `elem` from `xs`).
+HOF feeds the callback (`x ↦ elements(xs)`; `a ↦ z`/threaded). That mapping is the
+**feed-relationship**.
+
+> **Feed-relationship** (working definition): *which of its own arguments a
+> higher-order operation passes to each callback parameter when it applies the
+> callback* — e.g. `foreach` passes each **element of `xs`** as the callback's
+> argument. It is read off the `apply(f, …)` nodes in the operation's body.
+> This is the standard "a function's **latent effect** is incurred, with its
+> parameter/region variables instantiated, at each **application site**"
+> (Talpin & Jouvelot, *The Type and Effect Discipline*, 1992; region
+> substitution in Tofte & Talpin 1997) — here applied to a *callback* that the
+> operation itself applies. The substitution is not in `foreach`'s *type*
+> (`(List[A], Function[A,Unit,E]) → Unit ! E` — `E` is opaque); it lives in its
+> *body* (`apply(f, elem)`, `elem` from `xs`).
 
 So the form `effect_derive(callee_type, args, ctx)` is **insufficient**: it has
 no input from which to eliminate a callback's parameter.
