@@ -95,10 +95,11 @@ effect_derive(callee_type, callee_body, args, ctx)  →  output_row
 
 - **`callee_type`** — the callee's arrow type (for a HO parameter, that
   parameter's type). Carries parameter binders and the effect field.
-- **`callee_body`** — the callee's **body occurrence** (or `none` for opaque
-  callees). The **feed-relationship** is read from it — *how* a callback's
+- **`callee_body`** — the callee's **body occurrence** (or `none` for abstract /
+  foreign callees). The **feed-relationship** is read from it — *how* a callback's
   parameters are bound to the callee's own arguments. This is the input the
-  3-arg form lacked.
+  3-arg form lacked. (For abstract operations with no body, the feed-relationship
+  is instead **declared as metadata in `callee_type`** — see §4.2.)
 - **`args`** — `(denotation, type)` per argument; denotations resolve the
   *callee's own* parameters (`denoted(pᵢ) ↦ denoted(argᵢ)`).
 - **`ctx`** — the typing environment (provenance, active handlers).
@@ -156,6 +157,41 @@ So the *form* is fully determined (the four arguments above), `ctx` says `l` is
 an input region (so it is kept, not masked), and only the `callee_body`-read +
 region-abstraction is the deferred body.
 
+### 4.2 Feed-relationship from metadata (abstract / foreign operations)
+
+`callee_body` is only *one* source of the feed-relationship. An **abstract
+operation** — a primitive, an FFI binding, a body written in another language —
+has **no anthill body to read**, but it can still **declare the feed-relationship
+as metadata**. The form: per higher-order parameter, declare what each of its
+parameters is fed, as an expression over the operation's *own* parameters:
+
+```
+operation foreach[A, effects E](xs: List[A], f: A -> Unit ! E) -> Unit ! E
+   feeds f(x)  with  x : element_of(xs)
+
+operation foldLeft[A, B, effects E](xs: List[A], z: B, f: (B,A) -> B ! E) -> B ! E
+   feeds f(acc, x)  with  acc : threaded(z, f),  x : element_of(xs)
+```
+
+The descriptors (`element_of(xs)`, `threaded(z, f)`) are exactly the
+substitutions `effect_derive` applies to the callback's parameters — the same
+`x ↦ elements(l)` the body-read would yield, but **declared** rather than
+inferred from code.
+
+This:
+
+- gives **abstract / foreign operations** effect-checking — the annotation is
+  the only source, and it suffices;
+- restores **modularity** — with the feed metadata in the *signature*, a call
+  site needs only the signature, never the body;
+- keeps `effect_derive`'s signature unchanged — the feed metadata **rides in
+  `callee_type`** (it is part of the declaration); `callee_body` is the fallback
+  for anthill-defined ops that don't declare it.
+
+**Source priority** for the feed-relationship: declared `feeds` metadata (if
+present) → else read `callee_body` (if the op is anthill-defined) → else opaque
+(`E` left as a row variable — the conservative result, sound but coarse).
+
 ## 5. What is type vs. what is deferred detail
 
 This document fixes the **input/output types** of `effect_derive` — that is what
@@ -186,8 +222,9 @@ form.
 
 ## Open detail (deferred bodies, not types)
 
-1. **Reading the feed-relationship** from `callee_body` (the intensional read),
-   and the **recursion fixpoint** (`foldLeft`).
+1. **Reading the feed-relationship** — from `callee_body` (intensional read; needs
+   a **recursion fixpoint** for `foldLeft`) or from **declared `feeds` metadata**
+   (§4.2; the descriptor language `element_of`/`threaded` to be specified).
 2. **Region abstraction** — collapsing unbounded per-iteration denotations into a
    finite region so loops have finite, well-scoped effects.
 3. **Provenance / masking** — input vs. fresh-output regions; discharging a
