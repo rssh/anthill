@@ -2209,7 +2209,7 @@ fact WorkItem(
   description: "Computed type arguments: allow an expression (operation / method call) as a type-binding value, e.g. `Function[A = param_type, B = result_type(br), E = result_effects(br)]` and `List[T = TypingEnv.apply_subst(env3, elem_type)]`. PROBLEM: sort_binding's value slot is `_type` (tree-sitter-anthill/grammar.js:1001) = {simple_type, parameterized_type, variable_term, tuple_type, arrow_type}; a function/method call (fn_term / field_access call) is not a `_type`, so `[T = f(x)]` is ungrammatical. The reference typing spec docs/proposals/typing_pass_spec.anthill NEEDS this to express type construction from computed components (a Function type whose B / E are computed from sub-results) in its reference-algorithm part. These parse errors are masked because parse() swallows tree-sitter ERROR / MISSING nodes (see WI-303). CONSEQUENCE: the test typing_pass_spec_parses_and_loads (rustland/anthill-core/tests/include/typing_test.rs) is GREEN only because the errors are swallowed; making it honest is part of WI-303. TASK: decide and implement how computed expressions may appear in type-argument position — likely widen the sort_binding value slot (and convert_instantiation_term's named branch + convert_type_value, which today only preserves parametric type shapes) to accept a term expression, with the typer evaluating / normalizing it to a Type; define the interaction with the existing _type forms. ACCEPTANCE: `List[T = f(x)]` and `Function[B = g(y)]` parse; typing_pass_spec.anthill parses with 0 errors; cargo-test green. SCOPE: grammar + converter are shared; typer is Rust-only (scaland has no typer). RELATED: WI-301 (effect-set type args) — both widen what may appear as a type argument; coordinate the grammar change.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Claimed(agent: "claude", since: "2026-05-24T18:29:54Z"))
+  status: Open)
 
 fact WorkItem(
   id: "WI-303",
@@ -2267,6 +2267,13 @@ fact Feedback(content: "Last deferred item CLEARED: typing_pass_spec.anthill now
 fact WorkItem(
   id: "WI-309",
   description: "Load and surface operation-declaration metadata. Operation declarations already accept a [key: value] meta_block in the grammar (tree-sitter-anthill/grammar.js:319, operation_declaration) AND it is parsed into the IR (Operation.meta: Option<MetaBlock>, parse/ir.rs:336). But the loader (kb/load.rs) NEVER reads op.meta — operation metadata is silently dropped at load — and OperationInfo (stdlib/anthill/reflect/reflect.anthill:424) has no field to expose it (only name/params/return_type/effects/requires/ensures). Work: (1) loader consumes op.meta and stores it in the KB op record; (2) OperationInfo gains a meta field (or per-key surfacing) so operation metadata is queryable from reflection and the typer; (3) regression test: an operation declared with [key: value] has that metadata loaded and retrievable via OperationInfo. Motivation: proposal 046 (effect_derive / region tracking) needs [feeds: ...] metadata on operations to carry the feed-relationship for abstract/foreign higher-order operations that have no anthill body; more generally, ANY operation-level metadata (trust, source, project-defined keys) is currently parsed and thrown away. Prerequisite for 046's feeds annotation.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
+fact WorkItem(
+  id: "WI-310",
+  description: "Add an 'unclaim' command to the anthill-todo CLI. Today there is no way to release a claimed work item back to Open: the command set is init/add/status/list/next/show/claim/deliver/verify/feedback/delete/update/add-dependency/remove-dependency/graph/skill — 'update' explicitly PRESERVES status, and there is no unclaim/release/reopen. Releasing a claim currently requires hand-editing workitems.anthill (status: Claimed(agent,since) -> status: Open), which is error-prone. Add 'anthill-todo unclaim WI-NNN' that transitions a Claimed item back to Open (clearing agent/since). Consider: only valid from Claimed (error otherwise); honor --agent for symmetry/auditing; possibly a paired status-transition audit. ACCEPTANCE: 'anthill-todo unclaim WI-NNN' on a Claimed item sets it to Open; on a non-Claimed item it errors clearly; help lists it. SCOPE: anthill-todo CLI crate.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
   status: Open)
