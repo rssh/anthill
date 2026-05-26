@@ -68,9 +68,6 @@ fn load_literal_type_arg_in_body_no_reentrancy_panic() {
 }
 
 #[test]
-#[ignore = "WI-302 name-case (Simple->denoted via SymbolKind) not yet implemented: \
-            a NAME in type-arg position should denote IFF it resolves to a value. \
-            Spec test — flip to #[test] when the name-case lands."]
 fn modify_name_arg_denotes_by_resolution_kind() {
     // Intended semantics for a NAME `c` in a type-argument position `Modify[c]`,
     // decided by what `c` resolves to (load-time, scope-aware / SymbolKind):
@@ -126,6 +123,88 @@ fn modify_name_arg_denotes_by_resolution_kind() {
         effects_of_f("operation f() -> Int effects Modify[nope]\n").is_err(),
         "Modify[nope] with `nope` unresolved should be a load error",
     );
+}
+
+#[test]
+fn modify_value_param_in_effects_is_denoted() {
+    // WI-302: `effects Modify[c]` where `c` is a value-parameter → the inner
+    // binding lowers to `denoted(value: Ref(c))`, NOT `sort_ref(c)`, so it
+    // reads as a value indexing the Modify effect (proposal 027.1 / 011).
+    let mut kb = load_with_stdlib(r#"
+namespace test.wi302
+  import anthill.prelude.{Cell, Int}
+
+  operation set_cell(c: Cell[V = Int], value: Int) -> Cell[V = Int]
+    effects Modify[c]
+end
+"#);
+
+    let op_info = find_op_info(&mut kb, "test.wi302.set_cell");
+    let effects_list = get_named_arg(&kb, op_info, "effects").expect("effects arg");
+    let effects = cons_list_to_vec(&kb, effects_list);
+    assert_eq!(effects.len(), 1, "expected one effect (Modify[c])");
+
+    // effects[0] = parameterized(base: sort_ref(Modify), bindings: [TypeBinding{..}])
+    let bindings_list = get_named_arg(&kb, effects[0], "bindings").expect("bindings");
+    let bindings = cons_list_to_vec(&kb, bindings_list);
+    assert_eq!(bindings.len(), 1, "Modify[c] has one binding");
+
+    // The binding value must be `denoted(value: Ref(c))`, not `sort_ref(c)`.
+    let value = get_named_arg(&kb, bindings[0], "value").expect("binding value");
+    match kb.get_term(value) {
+        Term::Fn { functor, named_args, .. } => {
+            assert_eq!(kb.resolve_sym(*functor), "denoted",
+                "value-param `c` in Modify[c] must lower to denoted, got `{}`",
+                kb.resolve_sym(*functor));
+            let inner = named_args.iter()
+                .find(|(s, _)| kb.resolve_sym(*s) == "value")
+                .map(|(_, v)| *v)
+                .expect("denoted.value field");
+            match kb.get_term(inner) {
+                Term::Ref(s) => assert_eq!(kb.resolve_sym(*s), "c",
+                    "denoted should carry Ref(c)"),
+                other => panic!("expected Ref(c) inside denoted, got {other:?}"),
+            }
+        }
+        other => panic!("expected denoted Fn for value-param binding, got {other:?}"),
+    }
+}
+
+#[test]
+fn qualified_parameterized_type_parses_and_loads() {
+    // WI-311: a fully-qualified sort name WITH parameters
+    // (`anthill.prelude.List[T = Int]`) parses as a Parameterized type whose
+    // name keeps all qualified segments, and resolves/loads against stdlib.
+    let src = r#"
+namespace test.wi311
+  import anthill.prelude.{Int}
+  entity Box(items: anthill.prelude.List[T = Int])
+end
+"#;
+    let parsed = parse::parse(src).expect("parse failed");
+    let ns = match &parsed.items[0] {
+        Item::Namespace(n) => n,
+        other => panic!("expected Namespace, got {:?}", std::mem::discriminant(other)),
+    };
+    let entity = ns.items.iter().find_map(|it| match it {
+        Item::Entity(e) => Some(e),
+        _ => None,
+    }).expect("entity Box");
+    match &entity.fields[0].ty {
+        TypeExpr::Parameterized { name, bindings } => {
+            let segs: Vec<String> = name.segments.iter()
+                .map(|s| parsed.symbols.name(*s).to_string())
+                .collect();
+            assert_eq!(segs, vec!["anthill", "prelude", "List"],
+                "qualified application base must keep all segments, got {segs:?}");
+            assert_eq!(bindings.len(), 1, "expected one binding (T = Int)");
+        }
+        other => panic!("expected Parameterized field type, got {other:?}"),
+    }
+
+    // Compiles right: the qualified name + parameters resolve against stdlib
+    // (load_with_stdlib panics on any load error).
+    let _kb = load_with_stdlib(src);
 }
 
 #[test]

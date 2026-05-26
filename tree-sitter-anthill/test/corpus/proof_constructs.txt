@@ -16,12 +16,14 @@ end
     (rule_declaration
       heads: (rule_heads
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable))))
       body: (rule_body
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable)))))
     (proof_declaration
@@ -48,12 +50,14 @@ end
     (rule_declaration
       heads: (rule_heads
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable))))
       body: (rule_body
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable)))))
     (proof_declaration
@@ -82,12 +86,14 @@ end
     (rule_declaration
       heads: (rule_heads
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable))))
       body: (rule_body
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable)))))
     (proof_declaration
@@ -122,12 +128,14 @@ end
     (rule_declaration
       heads: (rule_heads
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable))))
       body: (rule_body
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable)))))
     (proof_declaration
@@ -165,22 +173,26 @@ end
     (rule_declaration
       heads: (rule_heads
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable))
           (variable_term
             (variable))))
       body: (rule_body
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (fn_term
-            name: (identifier)
+            name: (name
+              (identifier))
             (variable_term
               (variable))
             (variable_term
               (variable)))
           (fn_term
-            name: (identifier)
+            name: (name
+              (identifier))
             (variable_term
               (variable))
             (variable_term
@@ -226,8 +238,8 @@ end
       name: (name
         (identifier))
       (provides_clause
-        spec: (parameterized_type
-          (name
+        spec: (application
+          name: (name
             (identifier))
           (sort_binding
             param: (name
@@ -255,8 +267,8 @@ end
     name: (name
       (identifier))
     (provides_block
-      spec: (parameterized_type
-        (name
+      spec: (application
+        name: (name
           (identifier))
         (sort_binding
           param: (name
@@ -268,14 +280,16 @@ end
       (rule_declaration
         heads: (rule_heads
           (fn_term
-            name: (identifier)
+            name: (name
+              (identifier))
             (variable_term
               (variable))
             (variable_term
               (variable))))
         body: (rule_body
           (fn_term
-            name: (identifier)
+            name: (name
+              (identifier))
             (named_arg
               name: (identifier)
               value: (variable_term
@@ -310,8 +324,8 @@ end
     name: (name
       (identifier))
     (provides_block
-      spec: (parameterized_type
-        (name
+      spec: (application
+        name: (name
           (identifier))
         (sort_binding
           param: (name
@@ -325,7 +339,8 @@ end
       (carrier_clause
         bindings: (bindings
           (identifier)
-          (identifier)))
+          (name
+            (identifier))))
       (namespace_map_clause
         bindings: (bindings
           (identifier)
@@ -354,34 +369,40 @@ end
     (rule_declaration
       heads: (rule_heads
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable))))
       body: (rule_body
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable)))))
     (rule_declaration
       heads: (rule_heads
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable))))
       body: (rule_body
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable)))))
     (rule_declaration
       heads: (rule_heads
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable))))
       body: (rule_body
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable)))))
     (proof_declaration
@@ -419,13 +440,15 @@ end
         (identifier))
       body: (rule_body
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable))
           (float_literal)))
       heads: (rule_heads
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable))
           (variable_term
@@ -454,27 +477,32 @@ end
         (identifier))
       heads: (rule_heads
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable)))
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable))
           (variable_term
             (variable))))
       body: (rule_body
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (named_arg
             name: (identifier)
             value: (variable_term
               (variable)))
           (named_arg
             name: (identifier)
-            value: (identifier)))
+            value: (name
+              (identifier))))
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable))
           (variable_term
@@ -513,13 +541,15 @@ end
         (identifier))
       heads: (rule_heads
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable))
           (float_literal)))
       body: (rule_body
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable))
           (float_literal))))
@@ -531,13 +561,15 @@ end
           (identifier))
         heads: (rule_heads
           (fn_term
-            name: (identifier)
+            name: (name
+              (identifier))
             (variable_term
               (variable))
             (float_literal)))
         body: (rule_body
           (fn_term
-            name: (identifier)
+            name: (name
+              (identifier))
             (variable_term
               (variable))
             (float_literal)))
@@ -551,13 +583,15 @@ end
           (identifier))
         heads: (rule_heads
           (fn_term
-            name: (identifier)
+            name: (name
+              (identifier))
             (variable_term
               (variable))
             (float_literal)))
         body: (rule_body
           (fn_term
-            name: (identifier)
+            name: (name
+              (identifier))
             (variable_term
               (variable))
             (float_literal)))

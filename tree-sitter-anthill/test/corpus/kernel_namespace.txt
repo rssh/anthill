@@ -70,23 +70,33 @@ end
         (requires_clause
           (rule_body
             (fn_term
-              name: (identifier)
-              (identifier)
-              (identifier)))))
+              name: (name
+                (identifier))
+              (name
+                (identifier))
+              (name
+                (identifier))))))
       (operation_clause
         (ensures_clause
           (rule_body
             (fn_term
-              name: (identifier)
-              (fn_term
-                name: (identifier)
+              name: (name
                 (identifier))
               (fn_term
-                name: (identifier)
-                (fn_term
-                  name: (identifier)
+                name: (name
                   (identifier))
-                (identifier)))))))))
+                (name
+                  (identifier)))
+              (fn_term
+                name: (name
+                  (identifier))
+                (fn_term
+                  name: (name
+                    (identifier))
+                  (name
+                    (identifier)))
+                (name
+                  (identifier))))))))))
 
 =====================================
 Abstract sort (unspecified)
@@ -150,14 +160,16 @@ fact parent("alice", "bob") [trust: axiom, agent: "author"]
 (source_file
   (fact_declaration
     term: (fn_term
-      name: (identifier)
+      name: (name
+        (identifier))
       (string_literal)
       (string_literal))
     (meta_block
       (meta_entry
         key: (name
           (identifier))
-        value: (identifier))
+        value: (name
+          (identifier)))
       (meta_entry
         key: (name
           (identifier))
@@ -185,8 +197,8 @@ sort Ordered {
       definition: (variable_term
         (variable)))
     (requires_declaration
-      type: (parameterized_type
-        (name
+      type: (application
+        name: (name
           (identifier))
         (sort_binding
           param: (name
@@ -276,8 +288,8 @@ namespace banking {
       definition: (variable_term
         (variable)))
     (requires_declaration
-      type: (parameterized_type
-        (name
+      type: (application
+        name: (name
           (identifier))
         (sort_binding
           param: (name
@@ -307,8 +319,8 @@ sort Ordered {
       definition: (variable_term
         (variable)))
     (requires_declaration
-      type: (parameterized_type
-        (name
+      type: (application
+        name: (name
           (identifier))
         (sort_binding
           type: (simple_type
@@ -414,8 +426,9 @@ fact Eq[T = Int]
 
 (source_file
   (fact_declaration
-    term: (instantiation_term
-      name: (identifier)
+    term: (application
+      name: (name
+        (identifier))
       (sort_binding
         param: (name
           (identifier))
@@ -437,15 +450,18 @@ constraint non_negative: gte(balance(?a), 0) :- balance(?a, ?_)
       (identifier))
     head: (rule_body
       (fn_term
-        name: (identifier)
+        name: (name
+          (identifier))
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable)))
         (integer_literal)))
     guard: (rule_body
       (fn_term
-        name: (identifier)
+        name: (name
+          (identifier))
         (variable_term
           (variable))
         (variable_term
@@ -465,7 +481,8 @@ constraint positive: gt(?x, 0)
       (identifier))
     head: (rule_body
       (fn_term
-        name: (identifier)
+        name: (name
+          (identifier))
         (variable_term
           (variable))
         (integer_literal)))))
@@ -485,7 +502,8 @@ rule first: frs(?a, ?) = ?a
     heads: (rule_heads
       (infix_term
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (variable_term
             (variable))
           (variable_term
@@ -554,8 +572,8 @@ sort IntList = List[T = Int]
   (abstract_sort
     name: (name
       (identifier))
-    definition: (parameterized_type
-      (name
+    definition: (application
+      name: (name
         (identifier))
       (sort_binding
         param: (name
@@ -608,7 +626,8 @@ rule test: foo(? {< an unknown value >} ?)
       (identifier))
     heads: (rule_heads
       (fn_term
-        name: (identifier)
+        name: (name
+          (identifier))
         (variable_term
           (variable)
           description: (description_block))))))
@@ -627,7 +646,8 @@ rule test: bar(?x {< the x value >} ?, ?x)
       (identifier))
     heads: (rule_heads
       (fn_term
-        name: (identifier)
+        name: (name
+          (identifier))
         (variable_term
           (variable)
           description: (description_block))
@@ -731,8 +751,8 @@ sort Store {
           (identifier)))
       (operation_clause
         (effects_clause
-          (parameterized_type
-            (name
+          (application
+            name: (name
               (identifier))
             (sort_binding
               type: (simple_type
@@ -762,15 +782,15 @@ operation process(store: Store) -> Bool
         (identifier)))
     (operation_clause
       (effects_clause
-        (parameterized_type
-          (name
+        (application
+          name: (name
             (identifier))
           (sort_binding
             type: (simple_type
               (name
                 (identifier)))))
-        (parameterized_type
-          (name
+        (application
+          name: (name
             (identifier))
           (sort_binding
             type: (simple_type
@@ -814,13 +834,14 @@ fact Effect[T = Read[?]]
 
 (source_file
   (fact_declaration
-    term: (instantiation_term
-      name: (identifier)
+    term: (application
+      name: (name
+        (identifier))
       (sort_binding
         param: (name
           (identifier))
-        type: (parameterized_type
-          (name
+        type: (application
+          name: (name
             (identifier))
           (sort_binding
             type: (variable_term
@@ -837,25 +858,27 @@ rule Effect[T = Read[?r]] :- Effect[T = Modify[?r]]
 (source_file
   (rule_declaration
     heads: (rule_heads
-      (instantiation_term
-        name: (identifier)
+      (application
+        name: (name
+          (identifier))
         (sort_binding
           param: (name
             (identifier))
-          type: (parameterized_type
-            (name
+          type: (application
+            name: (name
               (identifier))
             (sort_binding
               type: (variable_term
                 (variable)))))))
     body: (rule_body
-      (instantiation_term
-        name: (identifier)
+      (application
+        name: (name
+          (identifier))
         (sort_binding
           param: (name
             (identifier))
-          type: (parameterized_type
-            (name
+          type: (application
+            name: (name
               (identifier))
             (sort_binding
               type: (variable_term
@@ -931,8 +954,35 @@ rule test: foo(?x {< first desc >} {< second desc >} ?)
       (identifier))
     heads: (rule_heads
       (fn_term
-        name: (identifier)
+        name: (name
+          (identifier))
         (variable_term
           (variable)
           description: (description_block)
           description: (description_block))))))
+
+=====================================
+Qualified parameterized type (WI-311)
+=====================================
+
+entity Box(value: scala.prelude.List[T = Int])
+
+---
+
+(source_file
+  (entity_declaration
+    name: (name
+      (identifier))
+    (field_decl
+      name: (identifier)
+      type: (application
+        name: (name
+          (identifier)
+          (identifier)
+          (identifier))
+        (sort_binding
+          param: (name
+            (identifier))
+          type: (simple_type
+            (name
+              (identifier))))))))

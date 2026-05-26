@@ -203,15 +203,15 @@ operation run(f: (A) -> B @ {Modifies[kb], Reads[grid]}) -> B
         return_type: (simple_type
           (name
             (identifier)))
-        effect: (parameterized_type
-          (name
+        effect: (application
+          name: (name
             (identifier))
           (sort_binding
             type: (simple_type
               (name
                 (identifier)))))
-        effect: (parameterized_type
-          (name
+        effect: (application
+          name: (name
             (identifier))
           (sort_binding
             type: (simple_type
@@ -235,8 +235,8 @@ operation run(f: Box[T = (A) -> B @ {E1, E2}]) -> B
       (identifier))
     (param
       name: (identifier)
-      type: (parameterized_type
-        (name
+      type: (application
+        name: (name
           (identifier))
         (sort_binding
           param: (name
@@ -278,8 +278,8 @@ operation flatMap(f: (A) -> List[T = B]) -> List[T = B]
           (simple_type
             (name
               (identifier))))
-        return_type: (parameterized_type
-          (name
+        return_type: (application
+          name: (name
             (identifier))
           (sort_binding
             param: (name
@@ -287,8 +287,8 @@ operation flatMap(f: (A) -> List[T = B]) -> List[T = B]
             type: (simple_type
               (name
                 (identifier)))))))
-    return_type: (parameterized_type
-      (name
+    return_type: (application
+      name: (name
         (identifier))
       (sort_binding
         param: (name

@@ -40,12 +40,9 @@ module.exports = grammar({
     [$.operation_declaration],
     [$.variable_term],
     [$.variable_term, $.fn_term],
-    // `Foo.bar` is field_access; `Foo.bar(...)` extends it into
-    // fn_term. Tree-sitter needs to explore both branches and pick
-    // based on whether `(` follows.
+    // `p.x` / `?x.m` is field_access; `p.x(...)` / `?x.m(...)` extends it into
+    // a fn_term. Explore both branches, pick by whether `(` follows.
     [$._atom_term, $.fn_term],
-    // name [ could be parameterized_type or simple_type followed by something else
-    [$.simple_type, $.parameterized_type],
     // [ after rule head could be meta_block or start of next rule_entry with collection_literal
     [$.rule_entry],
   ],
@@ -393,7 +390,7 @@ module.exports = grammar({
 
     _effect_type: $ => choice(
       $.simple_type,
-      $.parameterized_type,
+      $.application,
       $.variable_term,
     ),
 
@@ -750,6 +747,11 @@ module.exports = grammar({
 
     // Atomic terms: everything except infix_term. Used as operands in
     // infix_term and prefix_term to force flat chains.
+    // WI-311: the bare-reference atom is `$.name` (was `$.identifier`), so a
+    // dotted application base (`scala.prelude.List[Int]`) and a qualified ref
+    // share one production; field_access (prec 10) still grabs `.field` so
+    // `p.x` is `field_access(object: name, field)`, and the loader classifies
+    // a name as ref / qualified / projection via SymbolKind.
     _atom_term: $ => choice(
       $.string_literal,
       $.integer_literal,
@@ -757,7 +759,7 @@ module.exports = grammar({
       $.boolean_literal,
       $.variable_term,
       $.fn_term,
-      $.instantiation_term,
+      $.application,
       $.set_literal,
       $.collection_literal,
       $.tuple_literal,
@@ -766,7 +768,7 @@ module.exports = grammar({
       $.ref_term,
       $.prefix_term,
       $.field_access,
-      prec(-1, $.identifier),
+      prec(-1, $.name),
     ),
 
     // Nested implication inside a forall binder, used as a body goal.
@@ -820,10 +822,10 @@ module.exports = grammar({
     // instantiation term.
     fn_term: $ => seq(
       field('name', choice(
-        $.identifier,
+        $.name,
         $.field_access,
         $.variable,
-        $.instantiation_term,
+        $.application,
       )),
       '(',
       commaSep($._fn_arg),
@@ -847,26 +849,15 @@ module.exports = grammar({
       field('value', $._term),
     ),
 
-    // Instantiation term: Eq[Int], List[T = Int], etc.
-    // Same syntax as parameterized_type but in term position.
-    // Name is a single identifier — see fn_term above for why
-    // the dotted form is excluded.
-    instantiation_term: $ => seq(
-      field('name', $.identifier),
-      '[',
-      commaSep1($.sort_binding),
-      ']',
-    ),
-
     // Set literal: {x, y, z} desugars to add(add(add(empty(), x), y), z).
     // {} desugars to empty().
-    // No ambiguity: bare {…} = set literal, Name{…} = instantiation_term.
+    // No ambiguity: bare {…} = set literal, Name{…} = application.
     // prec(-2) so block-level { (rule/operation blocks, sort/namespace bodies)
     // takes precedence when ambiguous.
     set_literal: $ => prec(-2, seq('{', commaSep($._term), '}')),
 
     // Collection literal: [x, y, z] or [x, y | rest].
-    // Bare [...] = collection literal, Name[...] = instantiation_term (disambiguated by leading Name).
+    // Bare [...] = collection literal, Name[...] = application (disambiguated by leading Name).
     // prec(-2) like set_literal/tuple_literal to avoid conflicts with block-level constructs.
     collection_literal: $ => prec(-2, choice(
       seq('[', ']'),                                                          // empty
@@ -1020,7 +1011,7 @@ module.exports = grammar({
 
     _type: $ => choice(
       $.simple_type,
-      $.parameterized_type,
+      $.application,
       $.variable_term,
       $.tuple_type,
       $.arrow_type,
@@ -1052,12 +1043,21 @@ module.exports = grammar({
 
     simple_type: $ => $.name,
 
-    parameterized_type: $ => seq(
-      $.name,
+    // WI-311: unified type/term application — `Name[bindings]`. Merges the
+    // former parameterized_type (type position) and instantiation_term (term
+    // position) into one node; the converter classifies type-vs-term by
+    // position, the loader by SymbolKind. The base is the dotted `$.name` so
+    // fully-qualified parameterized types parse (`scala.prelude.List[Int]`).
+    // prec(1): when a name is followed by `[`, prefer shifting into the
+    // application bracket over reducing the name to `simple_type` and treating
+    // `[…]` as a trailing `meta_block` (abstract-sort / operation-return have an
+    // optional meta_block); `name`'s prec.left otherwise wins that shift-reduce.
+    application: $ => prec(1, seq(
+      field('name', $.name),
       '[',
       commaSep1($.sort_binding),
       ']',
-    ),
+    )),
 
     // =========================================================
     // Bindings (for tool params etc.)

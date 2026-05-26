@@ -5049,6 +5049,23 @@ impl<'a> Loader<'a> {
                     self.type_param_vars.insert(key, var_tid);
                     return var_tid;
                 }
+                // WI-302: a name resolving to a VALUE (operation parameter or
+                // record/tuple field) in a type-argument slot is value-in-type
+                // — `Modify[c]`, `Modify[result]`, `Modify[result.a]`. Lower it
+                // to `denoted(value: Ref(sym))` so it reads as a value indexing
+                // the type, not a `sort_ref`. The faithful occurrence form lands
+                // with the effects→occurrences change; the term-form `Ref` is
+                // adequate for the current `Vec<TermId>` effect representation.
+                let is_value = matches!(
+                    self.kb.symbols.get(sort_sym),
+                    crate::intern::SymbolDef::Resolved {
+                        kind: SymbolKind::Param | SymbolKind::Field, ..
+                    }
+                );
+                if is_value {
+                    let value = self.kb.alloc(Term::Ref(sort_sym));
+                    return self.kb.make_denoted(value);
+                }
                 self.kb.make_sort_ref(sort_sym)
             }
             TypeExpr::Parameterized { name, bindings } => {
