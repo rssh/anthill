@@ -190,10 +190,8 @@ value/region via `denoted` (WI-302).
 
 ### 5.2 `effect_derive` — the row a call produces
 
-The typer derives each call's row from one specified relation. Its **form** was
-fixed by the case analysis in proposal 046 (run over the cases, the naïve 3-arg
-form produces *ill-scoped* output for higher-order calls — see §5.5); the correct
-form is:
+The typer derives each call's row from one specified relation (proposal 046 has
+the case analysis behind its form):
 
 ```
 effect_derive(callee_sig, callee_body, args, ctx)  →  output_row
