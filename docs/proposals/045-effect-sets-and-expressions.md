@@ -199,14 +199,19 @@ form is:
 effect_derive(callee_type, callee_body, args, ctx)  →  output_row
 ```
 
-- **`callee_type`** — the **arrow type** of *what is called* (a type, not a
-  name). For a named operation it is the op's signature type; for a
-  **higher-order parameter `f`** it is **the type of that parameter** (`f : … !
-  Eᶠ`). This unifies named-op and lambda calls — both just have arrow types.
+- **`callee_type`** — the callee's **signature**: its arrow type *and its
+  declared metadata*. For a named operation that is its `OperationInfo` (arrow
+  `+` any `[feeds: …]` metadata — see 046 §4.2, gated on WI-309 surfacing
+  operation metadata); for a **higher-order parameter `f`** it is the type of
+  that parameter (`f : … ! Eᶠ`, no extra metadata). The metadata is part of the
+  signature, so it **rides here** rather than as a separate argument — it is the
+  *declarative* source of the feed-relationship.
 - **`callee_body`** — the callee's **body occurrence** (`operation_body`), or
-  `none` for opaque callees. It carries the **feed-relationship** — how a
-  callback's parameters are bound to the callee's own arguments — which is read
-  only when needed (the HOF case, §5.5).
+  `none` for opaque/foreign callees. The *implementation* source of the
+  **feed-relationship**, read only when needed (the HOF case, §5.5) and only when
+  no `[feeds: …]` metadata is declared. **Source priority:** declared `feeds`
+  metadata (in `callee_type`) → else `callee_body` → else opaque (`E` left a row
+  variable).
 - **`args`** — the actual arguments, each a *(denotation, type)* pair. The
   denotation resolves the callee's *own* value-parameters (`denoted(pᵢ) ↦
   denoted(argᵢ)`).
