@@ -169,6 +169,12 @@ pub enum TypeExpr {
         return_type: Box<TypeExpr>,
         effects: Vec<TypeExpr>,
     },
+    /// Denoted value-in-type (WI-302): a value standing in a type-argument
+    /// position — `Modify[c]`, `Vector[Int, 3]`. Carries the parse expression
+    /// `TermId` for the value (like `Variable` carries `term_id`); lowered to
+    /// `denoted(value: <occurrence>)` by building the value's occurrence via
+    /// `convert_expr_term`. Mirrors reflect `Type.denoted(value: NodeOccurrence)`.
+    Denoted(TermId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

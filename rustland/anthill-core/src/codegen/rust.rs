@@ -356,6 +356,9 @@ impl<'a> RustCodegen<'a> {
                 let ret = self.type_to_rust(return_type);
                 format!("fn({}) -> {ret}", param_types.join(", "))
             }
+            // WI-302: value-in-type (value-dependent) has no direct Rust type;
+            // emit unit as a placeholder. (Codegen of dependent types is unsupported.)
+            TypeExpr::Denoted(_) => "()".to_owned(),
         }
     }
 
@@ -414,6 +417,7 @@ impl<'a> RustCodegen<'a> {
                 let ret = self.type_to_rust_in_sort(return_type, sort_name, type_params, collapse_type_params);
                 format!("fn({}) -> {ret}", param_types.join(", "))
             }
+            TypeExpr::Denoted(_) => "()".to_owned(),
         }
     }
 
@@ -1257,6 +1261,7 @@ fn analyze_effects(effects: &[Effect], symbols: &SymbolTable, type_params: &[Str
             TypeExpr::Variable { .. } => {}
             TypeExpr::Tuple(_) => {}
             TypeExpr::Arrow { .. } => {}
+            TypeExpr::Denoted(_) => {}
         }
     }
 
@@ -1298,6 +1303,7 @@ fn should_collapse_self(info: &SortInfo, symbols: &SymbolTable) -> bool {
             TypeExpr::Variable { .. } => "T".to_owned(),
             TypeExpr::Tuple(_) => "Tuple".to_owned(),
             TypeExpr::Arrow { .. } => "Fn".to_owned(),
+            TypeExpr::Denoted(_) => "Denoted".to_owned(),
         };
 
         if first_type != *param_name {
@@ -1375,6 +1381,7 @@ fn type_expr_name(symbols: &SymbolTable, ty: &TypeExpr) -> String {
         TypeExpr::Variable { .. } => "T".to_owned(),
         TypeExpr::Tuple(_) => "Tuple".to_owned(),
         TypeExpr::Arrow { .. } => "Fn".to_owned(),
+        TypeExpr::Denoted(_) => "Denoted".to_owned(),
     }
 }
 

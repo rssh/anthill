@@ -419,6 +419,11 @@ impl<'a> Converter<'a> {
             "arrow_type" => {
                 self.convert_arrow_type(node)
             }
+            "integer_literal" | "float_literal" | "string_literal" | "boolean_literal" => {
+                // WI-302: a literal standing in a type-argument position
+                // (`Vector[Int, 3]`) is value-in-type → denoted(value).
+                TypeExpr::Denoted(self.convert_term(node))
+            }
             _ => {
                 self.err(format!("unexpected type node: {}", node.kind()), node);
                 let sym = self.intern("?");

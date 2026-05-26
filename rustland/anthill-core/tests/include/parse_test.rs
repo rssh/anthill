@@ -33,6 +33,41 @@ fn parse_empty_namespace() {
 }
 
 #[test]
+fn parse_literal_in_type_arg_is_denoted() {
+    // WI-302: a literal standing in a type-argument position (`Vector[Int, 3]`)
+    // is value-in-type → the converter emits `TypeExpr::Denoted` for the `3`.
+    let source = "entity E(v: Vector[Int, 3])\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    let entity = match &parsed.items[0] {
+        Item::Entity(e) => e,
+        other => panic!("expected Entity, got {:?}", std::mem::discriminant(other)),
+    };
+    let bindings = match &entity.fields[0].ty {
+        TypeExpr::Parameterized { bindings, .. } => bindings,
+        other => panic!("expected Parameterized field type, got {other:?}"),
+    };
+    assert!(
+        bindings.iter().any(|b| matches!(b.bound, TypeExpr::Denoted(_))),
+        "expected a Denoted binding for the literal `3`, got {bindings:?}"
+    );
+}
+
+#[test]
+fn load_literal_type_arg_in_body_no_reentrancy_panic() {
+    // WI-302 regression: a value-in-type literal as a call type-arg inside an
+    // operation body (`g[3](x)`) lowers via `type_expr_to_term`'s Denoted arm,
+    // which runs *inside* the `convert_expr_term` body walk. Lowering it must
+    // NOT re-enter `convert_expr_term` (it is not re-entrant). Loading must not
+    // panic (an Err for unrelated resolution reasons is acceptable).
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    kb.register_standard_builtins();
+    let src = "operation g[n](x: Int) -> Int\noperation f(x: Int) -> Int = g[3](x)\n";
+    let parsed = parse::parse(src).expect("parse failed");
+    let _ = load::load(&mut kb, &parsed, &NullResolver);
+}
+
+#[test]
 fn parse_abstract_sort() {
     let source = "sort Scalar = ?\n";
     let parsed = parse::parse(source).expect("parse failed");

@@ -2296,6 +2296,21 @@ impl KnowledgeBase {
         })
     }
 
+    /// `denoted(value: <term>)` — a value standing in a type-argument
+    /// position (WI-302). Mirrors reflect `Type.denoted`. The `value` is the
+    /// term-form of the carried value occurrence.
+    pub fn make_denoted(&mut self, value: TermId) -> TermId {
+        let denoted_sym = self.resolve_symbol("anthill.prelude.Type.denoted");
+        let value_key = self.intern("value");
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named_args.push((value_key, value));
+        self.alloc(Term::Fn {
+            functor: denoted_sym,
+            pos_args: SmallVec::new(),
+            named_args,
+        })
+    }
+
     /// Convenience: sort_ref from a name string (resolves or interns the name).
     pub fn make_sort_ref_by_name(&mut self, name: &str) -> TermId {
         let sym = if let Some(s) = self.try_resolve_symbol(name) { s } else { self.intern(name) };
