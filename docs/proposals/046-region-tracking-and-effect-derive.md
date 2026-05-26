@@ -94,12 +94,14 @@ effect_derive(callee_type, callee_body, args, ctx)  →  output_row
 ```
 
 - **`callee_type`** — the callee's arrow type (for a HO parameter, that
-  parameter's type). Carries parameter binders and the effect field.
+  parameter's type). Carries parameter binders and the effect field. *(Just the
+  `Type` — it does **not** carry metadata; see below.)*
 - **`callee_body`** — the callee's **body occurrence** (or `none` for abstract /
   foreign callees). The **feed-relationship** is read from it — *how* a callback's
   parameters are bound to the callee's own arguments. This is the input the
   3-arg form lacked. (For abstract operations with no body, the feed-relationship
-  is instead **declared as metadata in `callee_type`** — see §4.2.)
+  is instead **declared as metadata on the operation's `OperationInfo`** — bound
+  to the operation, not the `Type` — see §4.2.)
 - **`args`** — `(denotation, type)` per argument; denotations resolve the
   *callee's own* parameters (`denoted(pᵢ) ↦ denoted(argᵢ)`).
 - **`ctx`** — the typing environment (provenance, active handlers).
@@ -196,17 +198,21 @@ This:
 
 - gives **abstract / foreign operations** effect-checking — the annotation is
   the only source, and it suffices;
-- restores **modularity** — with the feed metadata in the *signature*, a call
-  site needs only the signature, never the body;
-- keeps `effect_derive`'s **argument list** unchanged — the feed metadata is
-  part of the operation's *signature*, so it travels with `callee_type` rather
-  than as a new `effect_derive` argument. **It is not present today:** the
-  current `OperationInfo` (`reflect.anthill`) carries only
-  `name`/`params`/`return_type`/`effects`/`requires`/`ensures`, and the arrow
-  `Type` only `param`/`result`/`effects` — neither has a feed field. Implementing
-  `feeds` means **adding it to the signature representation** (a new
-  `OperationInfo` field, and/or an arrow extension). `callee_body` is the
-  fallback for anthill-defined ops that don't declare it.
+- restores **modularity** — a call site needs only the callee operation's
+  signature record, never its body;
+- **binds to the operation, not the `Type`.** The feed metadata lives on the
+  callee's **`OperationInfo`** (it is a property of *that operation*); it is
+  **not** in `callee_type` / the arrow `Type`, which is hash-consed and shared
+  across operations (two ops with the same signature share one arrow `TermId`
+  but may have different `feeds`). `effect_derive` obtains it from the callee
+  operation's `OperationInfo` (by symbol); the arrow `Type` stays metadata-free,
+  so `effect_derive`'s argument list need not grow. **It is not present today:**
+  `OperationInfo` (`reflect.anthill`) carries only
+  `name`/`params`/`return_type`/`effects`/`requires`/`ensures` — no feed field.
+  Implementing `feeds` means **adding a field to `OperationInfo`** (WI-309).
+  `callee_body` is the fallback for anthill-defined ops that don't declare it;
+  for a higher-order *parameter* (a value, not a named op) there is no
+  `OperationInfo` at all — only its arrow type.
 
 > **Status:** `feeds` is *proposed*, not implemented — no test. It **reuses the
 > existing `[key: value]` meta-entry syntax**, which operation declarations
