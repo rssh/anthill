@@ -10,13 +10,15 @@ rule test(?P) :- ?P(nil)
   (rule_declaration
     heads: (rule_heads
       (fn_term
-        name: (identifier)
+        name: (name
+          (identifier))
         (variable_term
           (variable))))
     body: (rule_body
       (fn_term
         name: (variable)
-        (identifier)))))
+        (name
+          (identifier))))))
 
 =====================================
 Predicate variable with named args
@@ -30,14 +32,16 @@ rule test(?P) :- ?P(cons(head: ?h, tail: ?t))
   (rule_declaration
     heads: (rule_heads
       (fn_term
-        name: (identifier)
+        name: (name
+          (identifier))
         (variable_term
           (variable))))
     body: (rule_body
       (fn_term
         name: (variable)
         (fn_term
-          name: (identifier)
+          name: (name
+            (identifier))
           (named_arg
             name: (identifier)
             value: (variable_term
@@ -59,17 +63,22 @@ rule induction(?P) :- ?P(nil), ?P(a), ?P(b, c)
   (rule_declaration
     heads: (rule_heads
       (fn_term
-        name: (identifier)
+        name: (name
+          (identifier))
         (variable_term
           (variable))))
     body: (rule_body
       (fn_term
         name: (variable)
-        (identifier))
+        (name
+          (identifier)))
       (fn_term
         name: (variable)
-        (identifier))
+        (name
+          (identifier)))
       (fn_term
         name: (variable)
-        (identifier)
-        (identifier)))))
+        (name
+          (identifier))
+        (name
+          (identifier))))))

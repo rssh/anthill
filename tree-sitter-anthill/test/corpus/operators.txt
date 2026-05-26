@@ -52,7 +52,8 @@ fact add(!?a, ?b)
 (source_file
   (fact_declaration
     term: (fn_term
-      name: (identifier)
+      name: (name
+        (identifier))
       (prefix_term
         (variable_term
           (variable)))

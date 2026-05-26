@@ -62,20 +62,24 @@ fact member(Read[?r], {Modify[?r], Error[?e]})
 (source_file
   (fact_declaration
     term: (fn_term
-      name: (identifier)
-      (instantiation_term
-        name: (identifier)
+      name: (name
+        (identifier))
+      (application
+        name: (name
+          (identifier))
         (sort_binding
           type: (variable_term
             (variable))))
       (set_literal
-        (instantiation_term
-          name: (identifier)
+        (application
+          name: (name
+            (identifier))
           (sort_binding
             type: (variable_term
               (variable))))
-        (instantiation_term
-          name: (identifier)
+        (application
+          name: (name
+            (identifier))
           (sort_binding
             type: (variable_term
               (variable))))))))

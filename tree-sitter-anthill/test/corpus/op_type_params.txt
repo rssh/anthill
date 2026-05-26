@@ -8,14 +8,19 @@ operation identity[T](x: T) -> T
 
 (source_file
   (operation_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (operation_type_param_list
       (operation_type_param
         name: (identifier)))
     (param
       name: (identifier)
-      type: (simple_type (name (identifier))))
-    return_type: (simple_type (name (identifier)))))
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))))
 
 ==================================
 Operation with multiple bare type params
@@ -27,7 +32,8 @@ operation pair[A, B](a: A, b: B) -> Pair
 
 (source_file
   (operation_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (operation_type_param_list
       (operation_type_param
         name: (identifier))
@@ -35,11 +41,17 @@ operation pair[A, B](a: A, b: B) -> Pair
         name: (identifier)))
     (param
       name: (identifier)
-      type: (simple_type (name (identifier))))
+      type: (simple_type
+        (name
+          (identifier))))
     (param
       name: (identifier)
-      type: (simple_type (name (identifier))))
-    return_type: (simple_type (name (identifier)))))
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))))
 
 ==================================
 Operation with default type param value
@@ -51,15 +63,22 @@ operation default_int[T = Int](x: T) -> T
 
 (source_file
   (operation_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (operation_type_param_list
       (operation_type_param
         name: (identifier)
-        default: (simple_type (name (identifier)))))
+        default: (simple_type
+          (name
+            (identifier)))))
     (param
       name: (identifier)
-      type: (simple_type (name (identifier))))
-    return_type: (simple_type (name (identifier)))))
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))))
 
 ==================================
 Operation type params inside sort body (operation_entry)
@@ -73,16 +92,22 @@ end
 
 (source_file
   (sort_with_body
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (operation_declaration
-      name: (name (identifier))
+      name: (name
+        (identifier))
       (operation_type_param_list
         (operation_type_param
           name: (identifier)))
       (param
         name: (identifier)
-        type: (simple_type (name (identifier))))
-      return_type: (simple_type (name (identifier))))))
+        type: (simple_type
+          (name
+            (identifier))))
+      return_type: (simple_type
+        (name
+          (identifier))))))
 
 ==================================
 Operation type params on parameterized return type
@@ -94,17 +119,23 @@ operation term_as_entity[E](t: Term) -> Option[E]
 
 (source_file
   (operation_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (operation_type_param_list
       (operation_type_param
         name: (identifier)))
     (param
       name: (identifier)
-      type: (simple_type (name (identifier))))
-    return_type: (parameterized_type
-      (name (identifier))
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (application
+      name: (name
+        (identifier))
       (sort_binding
-        type: (simple_type (name (identifier)))))))
+        type: (simple_type
+          (name
+            (identifier)))))))
 
 ==================================
 Typed call-site: single positional binding
@@ -118,19 +149,26 @@ end
 
 (source_file
   (sort_with_body
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (rule_declaration
       heads: (rule_heads
         (fn_term
-          name: (identifier)
-          (variable_term (variable))))
+          name: (name
+            (identifier))
+          (variable_term
+            (variable))))
       body: (rule_body
         (fn_term
-          name: (instantiation_term
-            name: (identifier)
+          name: (application
+            name: (name
+              (identifier))
             (sort_binding
-              type: (simple_type (name (identifier)))))
-          (variable_term (variable)))))))
+              type: (simple_type
+                (name
+                  (identifier)))))
+          (variable_term
+            (variable)))))))
 
 ==================================
 Typed call-site: named binding
@@ -144,20 +182,28 @@ end
 
 (source_file
   (sort_with_body
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (rule_declaration
       heads: (rule_heads
         (fn_term
-          name: (identifier)
-          (variable_term (variable))))
+          name: (name
+            (identifier))
+          (variable_term
+            (variable))))
       body: (rule_body
         (fn_term
-          name: (instantiation_term
-            name: (identifier)
+          name: (application
+            name: (name
+              (identifier))
             (sort_binding
-              param: (name (identifier))
-              type: (simple_type (name (identifier)))))
-          (variable_term (variable)))))))
+              param: (name
+                (identifier))
+              type: (simple_type
+                (name
+                  (identifier)))))
+          (variable_term
+            (variable)))))))
 
 ==================================
 Typed call-site: positional + named mixed (positional first)
@@ -171,24 +217,36 @@ end
 
 (source_file
   (sort_with_body
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (rule_declaration
       heads: (rule_heads
         (fn_term
-          name: (identifier)
-          (variable_term (variable))
-          (variable_term (variable))))
+          name: (name
+            (identifier))
+          (variable_term
+            (variable))
+          (variable_term
+            (variable))))
       body: (rule_body
         (fn_term
-          name: (instantiation_term
-            name: (identifier)
+          name: (application
+            name: (name
+              (identifier))
             (sort_binding
-              type: (simple_type (name (identifier))))
+              type: (simple_type
+                (name
+                  (identifier))))
             (sort_binding
-              param: (name (identifier))
-              type: (simple_type (name (identifier)))))
-          (variable_term (variable))
-          (variable_term (variable)))))))
+              param: (name
+                (identifier))
+              type: (simple_type
+                (name
+                  (identifier)))))
+          (variable_term
+            (variable))
+          (variable_term
+            (variable)))))))
 
 ==================================
 Disambiguation: bare instantiation_term still parses (no trailing paren)
@@ -200,11 +258,15 @@ fact List[T = Int]
 
 (source_file
   (fact_declaration
-    term: (instantiation_term
-      name: (identifier)
+    term: (application
+      name: (name
+        (identifier))
       (sort_binding
-        param: (name (identifier))
-        type: (simple_type (name (identifier)))))))
+        param: (name
+          (identifier))
+        type: (simple_type
+          (name
+            (identifier)))))))
 
 ==================================
 Disambiguation: sort companion call (proposal 035) still parses
@@ -218,21 +280,31 @@ end
 
 (source_file
   (sort_with_body
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (rule_declaration
       heads: (rule_heads
-        (fn_term name: (identifier)))
+        (fn_term
+          name: (name
+            (identifier))))
       body: (rule_body
         (fn_term
           name: (field_access
-            object: (instantiation_term
-              name: (identifier)
+            object: (application
+              name: (name
+                (identifier))
               (sort_binding
-                param: (name (identifier))
-                type: (simple_type (name (identifier))))
+                param: (name
+                  (identifier))
+                type: (simple_type
+                  (name
+                    (identifier))))
               (sort_binding
-                param: (name (identifier))
-                type: (simple_type (name (identifier)))))
+                param: (name
+                  (identifier))
+                type: (simple_type
+                  (name
+                    (identifier)))))
             field: (identifier)))))))
 
 ==================================
@@ -245,8 +317,13 @@ operation length(l: List) -> Int
 
 (source_file
   (operation_declaration
-    name: (name (identifier))
+    name: (name
+      (identifier))
     (param
       name: (identifier)
-      type: (simple_type (name (identifier))))
-    return_type: (simple_type (name (identifier)))))
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))))

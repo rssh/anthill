@@ -113,6 +113,43 @@ end
 }
 
 #[test]
+fn qualified_parameterized_type_parses_and_loads() {
+    // WI-311: a fully-qualified sort name WITH parameters
+    // (`anthill.prelude.List[T = Int]`) parses as a Parameterized type whose
+    // name keeps all qualified segments, and resolves/loads against stdlib.
+    let src = r#"
+namespace test.wi311
+  import anthill.prelude.{Int}
+  entity Box(items: anthill.prelude.List[T = Int])
+end
+"#;
+    let parsed = parse::parse(src).expect("parse failed");
+    let ns = match &parsed.items[0] {
+        Item::Namespace(n) => n,
+        other => panic!("expected Namespace, got {:?}", std::mem::discriminant(other)),
+    };
+    let entity = ns.items.iter().find_map(|it| match it {
+        Item::Entity(e) => Some(e),
+        _ => None,
+    }).expect("entity Box");
+    match &entity.fields[0].ty {
+        TypeExpr::Parameterized { name, bindings } => {
+            let segs: Vec<String> = name.segments.iter()
+                .map(|s| parsed.symbols.name(*s).to_string())
+                .collect();
+            assert_eq!(segs, vec!["anthill", "prelude", "List"],
+                "qualified application base must keep all segments, got {segs:?}");
+            assert_eq!(bindings.len(), 1, "expected one binding (T = Int)");
+        }
+        other => panic!("expected Parameterized field type, got {other:?}"),
+    }
+
+    // Compiles right: the qualified name + parameters resolve against stdlib
+    // (load_with_stdlib panics on any load error).
+    let _kb = load_with_stdlib(src);
+}
+
+#[test]
 fn parse_abstract_sort() {
     let source = "sort Scalar = ?\n";
     let parsed = parse::parse(source).expect("parse failed");

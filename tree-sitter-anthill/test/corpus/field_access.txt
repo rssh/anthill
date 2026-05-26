@@ -47,7 +47,8 @@ fact f(?a.b, ?c)
 (source_file
   (fact_declaration
     term: (fn_term
-      name: (identifier)
+      name: (name
+        (identifier))
       (field_access
         object: (variable_term
           (variable))
@@ -66,12 +67,15 @@ fact g(p.x, q.y)
 (source_file
   (fact_declaration
     term: (fn_term
-      name: (identifier)
+      name: (name
+        (identifier))
       (field_access
-        object: (identifier)
+        object: (name
+          (identifier))
         field: (identifier))
       (field_access
-        object: (identifier)
+        object: (name
+          (identifier))
         field: (identifier)))))
 
 =====================================
@@ -85,10 +89,12 @@ fact f(state.waypoints.points)
 (source_file
   (fact_declaration
     term: (fn_term
-      name: (identifier)
+      name: (name
+        (identifier))
       (field_access
         object: (field_access
-          object: (identifier)
+          object: (name
+            (identifier))
           field: (identifier))
         field: (identifier)))))
 
@@ -103,16 +109,20 @@ fact wrap(Foo.bar(p.x, q.y))
 (source_file
   (fact_declaration
     term: (fn_term
-      name: (identifier)
+      name: (name
+        (identifier))
       (fn_term
         name: (field_access
-          object: (identifier)
+          object: (name
+            (identifier))
           field: (identifier))
         (field_access
-          object: (identifier)
+          object: (name
+            (identifier))
           field: (identifier))
         (field_access
-          object: (identifier)
+          object: (name
+            (identifier))
           field: (identifier))))))
 
 =====================================
@@ -129,7 +139,8 @@ rule r: result(?val) :- ?val = ?env.fs
       (identifier))
     heads: (rule_heads
       (fn_term
-        name: (identifier)
+        name: (name
+          (identifier))
         (variable_term
           (variable))))
     body: (rule_body
@@ -154,7 +165,8 @@ fact Namespace.Sort()
   (fact_declaration
     term: (fn_term
       name: (field_access
-        object: (identifier)
+        object: (name
+          (identifier))
         field: (identifier)))))
 
 =====================================

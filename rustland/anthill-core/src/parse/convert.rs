@@ -337,6 +337,19 @@ impl<'a> Converter<'a> {
             self.collect_field_access_segments(node, &mut segments);
             return Name { segments, span };
         }
+        if node.kind() == "application" {
+            // WI-311: `Name[bindings]` — the functor/name is the `name` field (a
+            // `name` node now, not a bare identifier), read it directly. The
+            // bindings are consumed separately by callers (e.g. push_fn_term's
+            // type_args). Without this, the identifier-child scan below misses
+            // the nested `name` node and falls back to interning the whole
+            // `Name[binding…]` text as one bogus segment.
+            if let Some(name_node) = self.field(node, "name") {
+                return self.convert_name(name_node);
+            }
+            // A malformed application without a `name` field falls through to
+            // the generic scan / text fallback — never recurse on `node`.
+        }
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             if child.kind() == "identifier" {
@@ -362,18 +375,25 @@ impl<'a> Converter<'a> {
         if let Some(o) = object {
             if o.kind() == "field_access" {
                 self.collect_field_access_segments(o, segments);
-            } else if o.kind() == "identifier" {
-                let sym = self.intern(self.text(o));
-                segments.push(sym);
-            } else if o.kind() == "instantiation_term" {
+            } else if o.kind() == "name" {
+                // WI-311: a field_access receiver is now a `name` (was a bare
+                // `identifier`); push all its segments to flatten the path.
+                let nm = self.convert_name(o);
+                for seg in nm.segments.iter() {
+                    segments.push(*seg);
+                }
+            } else if o.kind() == "application" {
                 // Form (3) of proposal 035: `Map[K = String, V = Int].empty()`.
-                // The instantiation term names a sort with type bindings; for
-                // the runtime call path we only need the sort's name segment
-                // (bindings are erased). The type checker reads the bindings
-                // via the original node when it walks the call site.
+                // The application names a (possibly qualified) sort with type
+                // bindings; for the runtime call path we need the sort's name
+                // segments (bindings erased). WI-311: the base is a `name` node
+                // and may be dotted (`a.b.Map[…].empty()`), so push all its
+                // segments rather than interning the joined text as one symbol.
                 let inst_name = self.field(o, "name").unwrap_or(o);
-                let sym = self.intern(self.text(inst_name));
-                segments.push(sym);
+                let nm = self.convert_name(inst_name);
+                for seg in nm.segments.iter() {
+                    segments.push(*seg);
+                }
             }
         }
         if let Some(f) = field {
@@ -391,8 +411,10 @@ impl<'a> Converter<'a> {
                     .unwrap_or(node);
                 TypeExpr::Simple(self.convert_name(name_node))
             }
-            "parameterized_type" => {
-                let name_node = self.child_by_kind(node, "name").unwrap_or(node);
+            "application" => {
+                // WI-311: was `parameterized_type`; the base is now an
+                // `identifier` field, not a `name` child node.
+                let name_node = self.field(node, "name").unwrap_or(node);
                 let name = self.convert_name(name_node);
                 let bindings = self.children_by_kind(node, "sort_binding")
                     .into_iter()
@@ -558,7 +580,7 @@ impl<'a> Converter<'a> {
                 let tid = self.convert_nested_implication(node);
                 results.push(tid);
             }
-            "instantiation_term" => {
+            "application" => {
                 // Type values are shallow in practice (`Function[A=T, B=U,
                 // E=Es]`); the recursive `convert_instantiation_term`
                 // stays.
@@ -588,6 +610,31 @@ impl<'a> Converter<'a> {
             "identifier" => {
                 let sym = self.intern(self.text(node));
                 results.push(self.terms.alloc(Term::Ident(sym), span));
+            }
+            "name" => {
+                // WI-311: the bare-reference atom is now `$.name` (was
+                // `$.identifier`). A single segment is a plain ref, identical
+                // to the former `identifier` atom. A multi-segment standalone
+                // name folds into the same `field_access(object, Ident(field))`
+                // builtin that an identifier-rooted projection produced, so the
+                // loader sees an unchanged term. (In practice a dotted term
+                // path parses as `field_access` — prec 10 grabs the `.` — so
+                // this arm gets a single segment; the fold is defensive.)
+                let nm = self.convert_name(node);
+                let segs = nm.segments;
+                let mut acc = self.terms.alloc(Term::Ident(segs[0]), span);
+                if segs.len() > 1 {
+                    let field_access_sym = self.intern("field_access");
+                    for seg in &segs[1..] {
+                        let field_tid = self.terms.alloc(Term::Ident(*seg), span);
+                        acc = self.terms.alloc(Term::Fn {
+                            functor: field_access_sym,
+                            pos_args: SmallVec::from_slice(&[acc, field_tid]),
+                            named_args: SmallVec::new(),
+                        }, span);
+                    }
+                }
+                results.push(acc);
             }
             other => {
                 self.err(format!("unexpected term node: {other}"), node);
@@ -619,7 +666,7 @@ impl<'a> Converter<'a> {
         };
 
         // Side-channel for the typer at `Name[bindings](args)` callees.
-        let type_args: Vec<SortBinding> = if name_node.kind() == "instantiation_term" {
+        let type_args: Vec<SortBinding> = if name_node.kind() == "application" {
             self.children_by_kind(name_node, "sort_binding")
                 .into_iter()
                 .map(|b| self.convert_sort_binding(b))
@@ -794,7 +841,7 @@ impl<'a> Converter<'a> {
                     Some(inner) => cur = inner,
                     None => return true,
                 },
-                "identifier" | "instantiation_term" => return false,
+                "name" | "application" => return false,
                 _ => return true,
             }
         }
@@ -1443,7 +1490,7 @@ impl<'a> Converter<'a> {
                         // types fall through to `convert_term`.
                         let t_span = self.span(t);
                         let tid = match t.kind() {
-                            "simple_type" | "parameterized_type" => {
+                            "simple_type" | "application" => {
                                 let name = self.convert_type_to_name(t);
                                 let sym = self.intern_name(&name);
                                 self.terms.alloc(Term::Ref(sym), t_span)
@@ -1475,8 +1522,8 @@ impl<'a> Converter<'a> {
                 let sym = self.intern_name(&name);
                 self.terms.alloc(Term::Ref(sym), span)
             }
-            "parameterized_type" => {
-                let name_node = self.child_by_kind(node, "name").unwrap_or(node);
+            "application" => {
+                let name_node = self.field(node, "name").unwrap_or(node);
                 let name = self.convert_name(name_node);
                 let functor = self.intern_name(&name);
                 let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
@@ -1523,9 +1570,13 @@ impl<'a> Converter<'a> {
         }
     }
 
-    /// Extract a Name from a type CST node (simple_type or parameterized_type).
+    /// Extract a Name from a type CST node (simple_type or application).
     fn convert_type_to_name(&mut self, node: Node) -> Name {
-        let name_node = self.child_by_kind(node, "name").unwrap_or(node);
+        // WI-311: `application` carries its base as an `identifier` field;
+        // `simple_type` carries a `name` child. Prefer the field.
+        let name_node = self.field(node, "name")
+            .or_else(|| self.child_by_kind(node, "name"))
+            .unwrap_or(node);
         self.convert_name(name_node)
     }
 
@@ -1544,7 +1595,7 @@ impl<'a> Converter<'a> {
                         named.push((sym, ty));
                     }
                 }
-                "simple_type" | "parameterized_type" | "variable_term" | "variable" | "tuple_type" => {
+                "simple_type" | "application" | "variable_term" | "variable" | "tuple_type" => {
                     positional.push(self.convert_type(child));
                 }
                 _ => {}
@@ -1948,7 +1999,7 @@ impl<'a> Converter<'a> {
                         let mut cursor2 = child.walk();
                         for type_child in child.named_children(&mut cursor2) {
                             match type_child.kind() {
-                                "simple_type" | "parameterized_type" | "variable_term" => {
+                                "simple_type" | "application" | "variable_term" => {
                                     effects.push(Effect { type_expr: self.convert_type(type_child) });
                                 }
                                 _ => {}
@@ -2251,8 +2302,16 @@ impl<'a> Converter<'a> {
                 Some(TacticArgValue::Tactic(Box::new(tactic)))
             }
             "name" => {
+                // WI-311: bare references are now `name` (was `identifier`). A
+                // single-segment name in tactic position is a bare tactic, like
+                // the former `identifier` case (`then(smt, simplify)`); a dotted
+                // name stays a qualified `Name`.
                 let n = self.convert_name(node);
-                Some(TacticArgValue::Name(n))
+                if n.segments.len() == 1 {
+                    Some(TacticArgValue::Tactic(Box::new(Tactic::Bare(n.segments[0]))))
+                } else {
+                    Some(TacticArgValue::Name(n))
+                }
             }
             _ => None,
         }
@@ -2502,7 +2561,7 @@ fn is_term_kind(kind: &str) -> bool {
             | "variable_term"
             | "fn_term"
             | "nested_implication"
-            | "instantiation_term"
+            | "application"
             | "ref_term"
             | "infix_term"
             | "prefix_term"
@@ -2512,6 +2571,7 @@ fn is_term_kind(kind: &str) -> bool {
             | "tuple_literal"
             | "paren_expr"
             | "identifier"
+            | "name"
             // A lambda is a value expression collectible as a positional
             // argument: `map(xs, lambda x -> f(x))`. The grammar only
             // admits `lambda_expr` in `_fn_arg` / `_expr_body` positions,

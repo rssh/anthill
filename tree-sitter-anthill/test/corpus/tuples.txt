@@ -140,7 +140,8 @@ fact example((1, "hello"))
 (source_file
   (fact_declaration
     term: (fn_term
-      name: (identifier)
+      name: (name
+        (identifier))
       (tuple_literal
         (integer_literal)
         (string_literal)))))

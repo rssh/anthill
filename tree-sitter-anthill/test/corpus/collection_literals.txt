@@ -120,7 +120,8 @@ fact foo([1, 2], [3, 4])
 (source_file
   (fact_declaration
     term: (fn_term
-      name: (identifier)
+      name: (name
+        (identifier))
       (collection_literal
         (integer_literal)
         (integer_literal))
