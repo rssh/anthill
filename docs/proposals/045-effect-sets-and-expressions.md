@@ -274,18 +274,20 @@ derive_K( slice_K, callee_sig, callee_body, args, ctx )  →  derived_slice_K
 
 **How `K`'s derivation is found** (first match wins):
 
-1. a **builtin** keyed on `K`'s effect symbol — for derivations that need the
-   host's dataflow (`ctx`/provenance/regions) and so cannot be pure rules. This
-   is how `Modify` plugs in its region resolution + masking (proposal 046).
-2. a **rule** with the conventional functor `effect_derive`, defined **in `K`'s
-   effect sort** — for declarative transforms expressible over the row (e.g.
-   handler discharge ≡ `merge(in, - e)`); resolved like the `[simp]` index.
-3. otherwise the **default** (propagate + discharge-by-type).
+1. a **rule** with the conventional functor `effect_derive`, defined **in `K`'s
+   effect sort**; resolved like the `[simp]` index. Declarative transforms
+   express directly over the row (e.g. handler discharge ≡ `merge(in, - e)`). A
+   derivation that needs the host's dataflow (`ctx`/provenance/regions) calls a
+   **builtin from its body** — the builtin is an implementation primitive the
+   rule invokes, not a separate dispatch path. This is how `Modify` plugs in its
+   region resolution + masking (proposal 046).
+2. otherwise the **default** (propagate + discharge-by-type).
 
 **v1 ships only the default** — control effects (`Error`, `Branch`, `Tick`) need
 nothing else (their discharge is by type, sound). The first non-default
-contribution is **`Modify`'s** (a builtin, variant 1), and it is **proposal
-046**. So v1 is the framework + default; 046 is `Modify`'s slice.
+contribution is **`Modify`'s** `effect_derive` rule (its body calls a region
+builtin), and it is **proposal 046**. So v1 is the framework + default; 046 is
+`Modify`'s slice.
 
 ### 5.3 Worked examples
 

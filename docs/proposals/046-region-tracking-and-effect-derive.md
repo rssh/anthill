@@ -249,11 +249,13 @@ then **abstract** the (unbounded) result into a region and apply
 escape analysis, and a recursion fixpoint). But its **interface is now correct**,
 so the deferred work plugs in without changing the form.
 
-Concretely, this is **`Modify`'s per-effect derivation** (045 §5.2.1, variant 1:
-a **builtin** keyed on `Modify`, since it consumes `ctx`/regions). It is the
-first non-default contribution to the `effect_derive` dispatch — control effects
-(`Error`/`Branch`) stay on the default. So this proposal *is* the `Modify` slice
-of `effect_derive`; it touches none of the framework or the other effects.
+Concretely, this is **`Modify`'s per-effect derivation** (045 §5.2.1): the
+`effect_derive` rule in the `Modify` sort. Because it consumes `ctx`/regions, the
+host-dataflow step is a **builtin its body calls** — a primitive the rule
+invokes, not a separate dispatch path. It is the first non-default contribution
+to the `effect_derive` dispatch — control effects (`Error`/`Branch`) stay on the
+default. So this proposal *is* the `Modify` slice of `effect_derive`; it touches
+none of the framework or the other effects.
 
 ## 6. Feedback to 045
 
