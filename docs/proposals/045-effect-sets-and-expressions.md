@@ -184,9 +184,14 @@ old "negation on open rows" hard problem rather than deferring it.
 A row is a set of **present** labels plus an optional **row-variable tail** `ρ`
 (open row), and — for `- e` — **lacks** constraints on `ρ`. The tail variable is
 an ordinary type variable (`Var::Global`), bound through the typer's existing
-`Substitution`/`occurs_in`/`walk_type`. A label is an effect type `Effect[?]`
-(e.g. `Modify[denoted(c)]`); its argument is itself a `Type` and may reach a
-value/region via `denoted` (WI-302).
+`Substitution`/`occurs_in`/`walk_type`. A label is an effect type, written `Effect[arg]`. The bracket is
+type-application sugar: surface `Modify[c]` parses to
+`parametrized(sym_ref(anthill.prelude.Modify), [T = c])`. The type-argument `T`
+is itself a `Type`; when `arg` is a *value* name, the name-case (WI-302) wraps it
+in the `denoted` entity — a `TypeExpr`, the type denoted by a compile-time value
+— so the **stored** label is `parametrized(sym_ref(Modify), [T = denoted(c)])`.
+Examples below stay in the surface form `Modify[c]`; the `denoted` term appears
+only when the internal representation is itself the point.
 
 ### 5.2 `effect_derive` — the row a call produces
 
@@ -292,8 +297,8 @@ builtin), and it is **proposal 046**. So v1 is the framework + default; 046 is
 ### 5.3 Worked examples
 
 ```
-introduction   set(c,v) : (Cell[T], T) → Unit ! { Modify[denoted(c)] }
-               effect_derive: field {Modify[denoted(c)]}, c ↦ the actual arg
+introduction   set(c,v) : (Cell[T], T) → Unit ! { Modify[c] }
+               effect_derive: field {Modify[c]}, c ↦ the actual arg
 
 propagation    map(f: Function[A,B,E], xs) → List[B] ! E
                f : A → B ! { Alloc }   ⇒ unify E := {Alloc}   ⇒ output {Alloc}
@@ -305,7 +310,7 @@ discharge      handle : (body: ()→X ! { Error[T] | ρ }) → X ! ρ
                body : ()→X ! {Error[T], Modify[c]}  ⇒ ρ := {Modify[c]}  ⇒ output {Modify[c]}
 
 —— the one deferred case (proposal 046, §5.5) ——
-HOF+param      foreach(λ x → set(x, …)) ⇒ naïvely { Modify[denoted(x)] }   -- x escapes: ILL-SCOPED
+HOF+param      foreach(λ x → set(x, …)) ⇒ naïvely { Modify[x] }   -- x escapes: ILL-SCOPED
                well-scoped output needs callee_body (x ↦ elements(xs)) + region abstraction
 threading      foldLeft(xs, z, f: (B,A)→B) — same: callback params acc/elem need resolving via
                callee_body, then abstraction; deferred to 046.
@@ -337,7 +342,7 @@ positional `⊆` subset check with no row variables.
 
 There is exactly one case the §5.2 steps do **not** make well-scoped: a
 **higher-order call whose callback row references the callback's own parameter**.
-`foreach(λ x → set(x, …))` would yield `{ Modify[denoted(x)] }` — but `x` is the
+`foreach(λ x → set(x, …))` would yield `{ Modify[x] }` — but `x` is the
 *callback's* parameter, bound by its arrow; at the `foreach` call there is no
 argument to substitute it with (`foreach` binds `x` to elements of `xs` only
 inside its *own body*). That output mentions `x` but not `xs` — **ill-scoped**,

@@ -26,16 +26,16 @@ incorrect ones below.
 
 Form under test: `effect_derive(callee_sig, args, ctx) → output_row`, where
 `args` are `(denotation, type)` pairs and the effect field may be region-keyed
-(`Modify[denoted(p)]`, `p` a parameter). "Correct?" = is the output well-scoped?
+(`Modify[p]`, `p` a parameter). "Correct?" = is the output well-scoped?
 
 ```
 case        call                         naive output                       correct?
 ────────────────────────────────────────────────────────────────────────────────────
-intro       set(c, v)                    { Modify[denoted(c)] }             ✓  c = arg, in caller scope
+intro       set(c, v)                    { Modify[c] }                      ✓  c = arg, in caller scope
             c ↦ actual arg by subst
 
-two params  swap(a, b)                   { Modify[denoted(a)],              ✓  a,b = args, in caller scope
-                                            Modify[denoted(b)] }
+two params  swap(a, b)                   { Modify[a],                       ✓  a,b = args, in caller scope
+                                            Modify[b] }
 
 alloc       map(λ x → Cell.new(x))       { Alloc }                          ✓  no parameter reference
 
@@ -44,12 +44,12 @@ two HO      option_fold(o, ifN, ifS)     merge(R1, R2)                      ✓ 
 
 discharge   handle(body)                 body row minus Error               ✓  via the handler's type
 
-HOF + param foreach(λ x → set(x, …))     { Modify[denoted(x)] }             ✗  x = the CALLBACK'S param;
+HOF + param foreach(λ x → set(x, …))     { Modify[x] }                      ✗  x = the CALLBACK'S param;
                                                                                bound by its arrow → ESCAPES.
                                                                                (there's x, but no xs)
 
-threading   foldLeft(xs, z, λ(a,e)…)     { Modify[denoted(a)],              ✗  a, e are the callback's params
-                                            Reads[denoted(e)] }                → escape; not resolved to z / xs
+threading   foldLeft(xs, z, λ(a,e)…)     { Modify[a],                       ✗  a, e are the callback's params
+                                            Reads[e] }                         → escape; not resolved to z / xs
 ```
 
 The first five are **correct**: every parameter in the effect field is the
@@ -135,7 +135,7 @@ effect_derive(
      ( denotation: l ,
        type:       List[Cell[Int]] ),
      ( denotation: λ x → set(x, get(x)+1) ,
-       type:       Cell[Int] → Unit ! { Modify[denoted(x)], Reads[denoted(x)] } )
+       type:       Cell[Int] → Unit ! { Modify[x], Reads[x] } )
                                               └── x = the lambda's parameter
   ],
 
@@ -148,13 +148,13 @@ Deriving:
 
 ```
 step 1  unify ( List[A], Function[A,Unit,E] ) ~ args' types
-        ⇒  A := Cell[Int] ,  E := { Modify[denoted(x)], Reads[denoted(x)] }
+        ⇒  A := Cell[Int] ,  E := { Modify[x], Reads[x] }
 
-naïve   output = E = { Modify[denoted(x)], Reads[denoted(x)] }      ✗ ILL-SCOPED
+naïve   output = E = { Modify[x], Reads[x] }      ✗ ILL-SCOPED
         (x is the lambda's parameter — there is x, but no l)
 
 correct read callee_body ⇒ feed-relationship  x ↦ elements(l)
-        substitute        ⇒ { Modify[denoted(elements of l)], Reads[denoted(elements of l)] }
+        substitute        ⇒ { Modify[elements of l], Reads[elements of l] }
         abstract to region ⇒ { Modify[ρₗ], Reads[ρₗ] }  (ρₗ = region of l's elements)   ✓ well-scoped
                               └── this read+abstract step is the deferred 046 detail
 ```
