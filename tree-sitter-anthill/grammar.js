@@ -126,13 +126,33 @@ module.exports = grammar({
     selective_import: $ => seq('{', commaSep1($.identifier), '}'),
 
     // Sort bindings accept two forms:
-    //   - `name = type`       — named binding (`T = Int`)
-    //   - any type expression — positional (`Function[Int, Int]`,
-    //     `Function[(Int, Int), Int]`, `Effect{?r}` via variable_term)
-    // Bare names route through `_type::simple_type::name`.
+    //   - `name = value`      — named binding (`T = Int`, `n = 3`)
+    //   - any common-type-expr — positional (`Function[Int, Int]`,
+    //     `Function[(Int, Int), Int]`, `Effect{?r}` via variable_term, `3`)
+    // The binding value is a `_common_type_expr` (see below), not a bare
+    // `_type`: a type-argument slot may hold a value (constant, or a value
+    // standing in a type position). The loader classifies name/projection
+    // values as `denoted` vs `sort_ref` via scope+SymbolKind (WI-302).
     sort_binding: $ => choice(
-      seq(field('param', $.name), '=', field('type', $._type)),
-      field('type', $._type),
+      seq(field('param', $.name), '=', field('type', $._common_type_expr)),
+      field('type', $._common_type_expr),
+    ),
+
+    // commonTypeExpr: what may appear as a type argument.
+    //   - `_type`        — the type forms (names, applications, tuples,
+    //                      arrows, variables); covers names/projections that
+    //                      stand for values too (loader decides via SymbolKind).
+    //   - literals       — a constant standing in a type position
+    //                      (`Vector[Int, 3]`, `Fin[8]`); always a value.
+    // Literals are unambiguous here (no `_type` form derives a literal), so
+    // this widening is conflict-free. Calls (`Modify[f(x)]`) are reduce-tier
+    // and deferred until the typer has a reduction hook.
+    _common_type_expr: $ => choice(
+      $._type,
+      $.integer_literal,
+      $.float_literal,
+      $.string_literal,
+      $.boolean_literal,
     ),
 
     export_clause: $ => seq(

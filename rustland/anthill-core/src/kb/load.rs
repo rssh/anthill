@@ -747,6 +747,7 @@ fn type_expr_base_name(parse_sym: &crate::intern::SymbolTable, ty: &TypeExpr) ->
         TypeExpr::Tuple(_) => "TupleLiteral".to_owned(),
         TypeExpr::Arrow { effects, .. } if !effects.is_empty() => "arrow_effect".to_owned(),
         TypeExpr::Arrow { .. } => "arrow".to_owned(),
+        TypeExpr::Denoted(_) => "denoted".to_owned(),
     }
 }
 
@@ -854,6 +855,13 @@ fn build_instantiation_term(
         TypeExpr::Variable { .. } => {
             // Variable in type position → just use a placeholder name term
             kb.make_name_term("?")
+        }
+        // WI-302: value-in-type in a fact/provides binding. This free-fn path
+        // has no access to the expr-occurrence builder; emit a placeholder
+        // `denoted` for now (rare; the operation-signature path is the real one).
+        TypeExpr::Denoted(_) => {
+            let placeholder = kb.make_name_term("?");
+            kb.make_denoted(placeholder)
         }
         TypeExpr::Tuple(fields) => {
             let tuple_sym = kb.symbols.by_qualified_name.get("anthill.reflect.TupleLiteral").copied()
@@ -1176,6 +1184,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.define("type_var", "anthill.prelude.Type.type_var", SymbolKind::Entity, type_sort_term.raw());
     kb.symbols.define("named_tuple", "anthill.prelude.Type.named_tuple", SymbolKind::Entity, type_sort_term.raw());
     kb.symbols.define("nothing", "anthill.prelude.Type.nothing", SymbolKind::Entity, type_sort_term.raw());
+    kb.symbols.define("denoted", "anthill.prelude.Type.denoted", SymbolKind::Entity, type_sort_term.raw());
     kb.symbols.define("TypeField", "anthill.prelude.Type.TypeField", SymbolKind::Entity, type_sort_term.raw());
     kb.symbols.define("TypeBinding", "anthill.prelude.Type.TypeBinding", SymbolKind::Entity, type_sort_term.raw());
 
@@ -5109,6 +5118,17 @@ impl<'a> Loader<'a> {
                     .map(|e| self.type_expr_to_term(e))
                     .collect();
                 self.kb.make_arrow_type(param_type, result_type, &effect_terms)
+            }
+            TypeExpr::Denoted(t) => {
+                // WI-302: value-in-type. Lower the value to its term-form via the
+                // non-re-entrant `convert_term`. NOT `convert_expr_term`: this arm
+                // runs *inside* a `convert_expr_term` walk when a value-in-type
+                // appears as a body call type-arg (`g[3](y)`, build_call_type_args)
+                // or a `let : T` annotation, and `convert_expr_term` is not
+                // re-entrant — it clears the occurrence stacks at entry. The
+                // faithful occurrence form lands with the effects→occurrences change.
+                let value_term = self.convert_term(*t);
+                self.kb.make_denoted(value_term)
             }
         }
     }
