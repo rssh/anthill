@@ -248,6 +248,45 @@ implementation is deferred (§5.5, proposal 046), but the **form above is the
 correct, final one**: the deferred work plugs into it without changing the
 signature or the well-scopedness obligation.
 
+### 5.2.1 Default + per-effect dispatch
+
+Steps 1–3 are the **default** derivation: uniform, effect-agnostic
+(propagate the row by unification; discharge via the handler's type). But
+`effect_derive` is a **framework**, not a monolith — an effect kind may
+contribute its *own* derivation for its *own* labels:
+
+> For each effect **kind** `K` present in the row, `effect_derive` selects `K`'s
+> derivation and applies it to `K`'s **slice** (the labels of kind `K`), then
+> unions the slices. Kinds with no contribution use the **default**.
+
+So an effect definition implements only its slice; adding a new effect needs no
+change to `effect_derive`'s core.
+
+**Per-effect derivation interface.** A `K`-derivation receives `K`'s slice plus
+the same context `effect_derive` has, and returns `K`'s (well-scoped)
+contribution to `output_row`:
+
+```
+derive_K( slice_K, callee_sig, callee_body, args, ctx )  →  derived_slice_K
+   slice_K        : the labels of kind K in the input row
+   derived_slice_K: K's contribution to output_row (well-scoped, §5.2)
+```
+
+**How `K`'s derivation is found** (first match wins):
+
+1. a **builtin** keyed on `K`'s effect symbol — for derivations that need the
+   host's dataflow (`ctx`/provenance/regions) and so cannot be pure rules. This
+   is how `Modify` plugs in its region resolution + masking (proposal 046).
+2. a **rule** with the conventional functor `effect_derive`, defined **in `K`'s
+   effect sort** — for declarative transforms expressible over the row (e.g.
+   handler discharge ≡ `merge(in, - e)`); resolved like the `[simp]` index.
+3. otherwise the **default** (propagate + discharge-by-type).
+
+**v1 ships only the default** — control effects (`Error`, `Branch`, `Tick`) need
+nothing else (their discharge is by type, sound). The first non-default
+contribution is **`Modify`'s** (a builtin, variant 1), and it is **proposal
+046**. So v1 is the framework + default; 046 is `Modify`'s slice.
+
 ### 5.3 Worked examples
 
 ```

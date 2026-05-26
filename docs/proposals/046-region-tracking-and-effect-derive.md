@@ -240,14 +240,20 @@ makes 045 correct:
 - the **well-scoped output** obligation.
 
 For the correct cases (intro/swap/alloc/two-HO/discharge), the *implementation*
-is also given — type + unification + own-parameter substitution. For the
-incorrect-without-it cases (HOF + callback-parameter), the implementation that
-*produces* a well-scoped output — read the feed-relationship from `callee_body`,
-substitute the callback parameter, then **abstract** the (unbounded) result into
-a region and apply **provenance/masking** — is **deferred in detail** (it needs
-region abstraction, escape analysis, and a recursion fixpoint). But its
-**interface is now correct**, so the deferred work plugs in without changing the
-form.
+is also given — type + unification + own-parameter substitution (the **default**
+derivation, 045 §5.2.1). For the incorrect-without-it cases (HOF +
+callback-parameter), the implementation that *produces* a well-scoped output —
+read the feed-relationship from `callee_body`, substitute the callback parameter,
+then **abstract** the (unbounded) result into a region and apply
+**provenance/masking** — is **deferred in detail** (it needs region abstraction,
+escape analysis, and a recursion fixpoint). But its **interface is now correct**,
+so the deferred work plugs in without changing the form.
+
+Concretely, this is **`Modify`'s per-effect derivation** (045 §5.2.1, variant 1:
+a **builtin** keyed on `Modify`, since it consumes `ctx`/regions). It is the
+first non-default contribution to the `effect_derive` dispatch — control effects
+(`Error`/`Branch`) stay on the default. So this proposal *is* the `Modify` slice
+of `effect_derive`; it touches none of the framework or the other effects.
 
 ## 6. Feedback to 045
 
