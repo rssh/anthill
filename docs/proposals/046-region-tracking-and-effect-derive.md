@@ -24,7 +24,7 @@ incorrect ones below.
 
 ## 2. The cases
 
-Form under test: `effect_derive(callee_type, args, ctx) → output_row`, where
+Form under test: `effect_derive(callee_sig, args, ctx) → output_row`, where
 `args` are `(denotation, type)` pairs and the effect field may be region-keyed
 (`Modify[denoted(p)]`, `p` a parameter). "Correct?" = is the output well-scoped?
 
@@ -80,7 +80,7 @@ HOF feeds the callback (`x ↦ elements(xs)`; `a ↦ z`/threaded). That mapping 
 > (`(List[A], Function[A,Unit,E]) → Unit ! E` — `E` is opaque); it lives in its
 > *body* (`apply(f, elem)`, `elem` from `xs`).
 
-So the form `effect_derive(callee_type, args, ctx)` is **insufficient**: it has
+So the form `effect_derive(callee_sig, args, ctx)` is **insufficient**: it has
 no input from which to eliminate a callback's parameter.
 
 ## 4. The input that fixes it
@@ -90,12 +90,15 @@ a `NodeOccurrence` (`operation_body`, WI-305). So the corrected input adds the
 callee's body:
 
 ```
-effect_derive(callee_type, callee_body, args, ctx)  →  output_row
+effect_derive(callee_sig, callee_body, args, ctx)  →  output_row
 ```
 
-- **`callee_type`** — the callee's arrow type (for a HO parameter, that
-  parameter's type). Carries parameter binders and the effect field. *(Just the
-  `Type` — it does **not** carry metadata; see below.)*
+- **`callee_sig`** — the callee's **signature record**. For a **named operation**
+  it is its **`OperationInfo`** — arrow type + `effects` row + `requires`/
+  `ensures` + any **`feeds` metadata** (this is *how the metadata is passed* — it
+  is a field of `OperationInfo`, not of the `Type`). For a **HO parameter** (a
+  value, not a named op) it is just the parameter's arrow `Type` (no
+  `OperationInfo`, no metadata).
 - **`callee_body`** — the callee's **body occurrence** (or `none` for abstract /
   foreign callees). The **feed-relationship** is read from it — *how* a callback's
   parameters are bound to the callee's own arguments. This is the input the
@@ -118,8 +121,9 @@ arguments are:
 ```
 effect_derive(
 
-  callee_type =                                          -- foreach's arrow type
-     ( xs: List[A], f: Function[A, Unit, E] ) → Unit ! E
+  callee_sig =                                          -- foreach's OperationInfo
+     ( xs: List[A], f: Function[A, Unit, E] ) → Unit ! E   -- arrow; no feeds declared here
+                                                           -- (so callee_body is used below)
 
   callee_body =                                          -- foreach's body occurrence
      match xs:
@@ -202,7 +206,7 @@ This:
   signature record, never its body;
 - **binds to the operation, not the `Type`.** The feed metadata lives on the
   callee's **`OperationInfo`** (it is a property of *that operation*); it is
-  **not** in `callee_type` / the arrow `Type`, which is hash-consed and shared
+  **not** in `callee_sig` / the arrow `Type`, which is hash-consed and shared
   across operations (two ops with the same signature share one arrow `TermId`
   but may have different `feeds`). `effect_derive` obtains it from the callee
   operation's `OperationInfo` (by symbol); the arrow `Type` stays metadata-free,

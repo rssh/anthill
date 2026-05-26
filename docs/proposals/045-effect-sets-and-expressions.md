@@ -196,10 +196,10 @@ form produces *ill-scoped* output for higher-order calls — see §5.5); the cor
 form is:
 
 ```
-effect_derive(callee_type, callee_body, args, ctx)  →  output_row
+effect_derive(callee_sig, callee_body, args, ctx)  →  output_row
 ```
 
-- **`callee_type`** — *what is called*, resolved to its **signature**. For a
+- **`callee_sig`** — *what is called*, resolved to its **signature**. For a
   **named operation** this is its `OperationInfo` — carrying the arrow type, the
   `effects` row, *and* any `[feeds: …]` **metadata** (046 §4.2, gated on WI-309).
   For a **higher-order parameter `f`** it is just the parameter's arrow type
@@ -208,8 +208,10 @@ effect_derive(callee_type, callee_body, args, ctx)  →  output_row
   across operations, so it must stay metadata-free (two ops with the same
   signature share one arrow `TermId` but may have different `feeds`).
   `effect_derive` consults the operation's `OperationInfo` (by symbol) for the
-  *declarative* feed-relationship; the name `callee_type` is loose — it means the
-  callee's signature record, not the bare `Type` term.
+  *declarative* feed-relationship. So `callee_sig` is the callee's **signature
+  record** (`OperationInfo` for a named op; a bare arrow `Type` for a value), and
+  the metadata is passed **as a field of that record** — not as a separate
+  argument and not in the `Type`.
 - **`callee_body`** — the callee's **body occurrence** (`operation_body`), or
   `none` for opaque/foreign callees. The *implementation* source of the
   **feed-relationship**, read only when needed (the HOF case, §5.5) and only when
@@ -227,7 +229,7 @@ variable is eliminated by resolving it against `args` / `callee_body`.
 
 **Procedure:**
 
-1. **Unify** `callee_type`'s formal parameter *types* against `args`' types,
+1. **Unify** `callee_sig`'s formal parameter *types* against `args`' types,
    binding the effect variables (`E`, tail `ρ`).
 2. **Substitute** the callee's *own* value-parameters by the argument
    denotations (`denoted(pᵢ) ↦ denoted(argᵢ)`).
