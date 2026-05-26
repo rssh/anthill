@@ -68,6 +68,67 @@ fn load_literal_type_arg_in_body_no_reentrancy_panic() {
 }
 
 #[test]
+#[ignore = "WI-302 name-case (Simple->denoted via SymbolKind) not yet implemented: \
+            a NAME in type-arg position should denote IFF it resolves to a value. \
+            Spec test — flip to #[test] when the name-case lands."]
+fn modify_name_arg_denotes_by_resolution_kind() {
+    // Intended semantics for a NAME `c` in a type-argument position `Modify[c]`,
+    // decided by what `c` resolves to (load-time, scope-aware / SymbolKind):
+    //   c -> a PARAMETER or RESULT (a VALUE) ........ denoted(var_ref(c))
+    //   c -> a SORT (a TYPE) ........................ sort_ref(c)   (NOT denoted)
+    //   c -> unresolved ............................. load error
+    // (Assumes `Modify` is in scope from the prelude effects.)
+    fn contains_functor(kb: &KnowledgeBase, t: TermId, name: &str) -> bool {
+        match kb.get_term(t) {
+            Term::Fn { functor, pos_args, named_args } => {
+                kb.resolve_sym(*functor) == name
+                    || pos_args.iter().any(|&a| contains_functor(kb, a, name))
+                    || named_args.iter().any(|(_, v)| contains_functor(kb, *v, name))
+            }
+            _ => false,
+        }
+    }
+    // Self-contained: define a local `Modify` sort (with a type param) and
+    // return `Int` (which the prelude resolves); only the `[c]`/`[C]`/`[nope]`
+    // argument varies across the three cases.
+    const MODIFY: &str = "sort Modify\n  sort T = ?\nend\n";
+    fn effects_of_f(src: &str) -> Result<(KnowledgeBase, Vec<TermId>), String> {
+        let mut kb = KnowledgeBase::new();
+        load::register_prelude(&mut kb);
+        kb.register_standard_builtins();
+        let full = format!("{MODIFY}{src}");
+        let parsed = parse::parse(&full).map_err(|e| format!("parse: {e:?}"))?;
+        load::load(&mut kb, &parsed, &NullResolver).map_err(|e| format!("load: {e:?}"))?;
+        let sym = kb.try_resolve_symbol("f").ok_or("operation `f` not found")?;
+        let rec = anthill_core::kb::op_info::lookup_operation_info(&kb, sym)
+            .ok_or("no OperationInfo for `f`")?;
+        Ok((kb, rec.effects))
+    }
+
+    // (1) c is a PARAMETER (a value) -> denoted
+    let (kb, eff) = effects_of_f("operation f(c: Int) -> Int effects Modify[c]\n")
+        .expect("parameter case should load");
+    assert!(
+        eff.iter().any(|&e| contains_functor(&kb, e, "denoted")),
+        "Modify[c] with c a parameter should denote, effects={eff:?}",
+    );
+
+    // (2) C is a SORT (a type) -> NOT denoted (sort_ref)
+    let (kb2, eff2) = effects_of_f("sort C = ?\noperation f() -> Int effects Modify[C]\n")
+        .expect("sort case should load");
+    assert!(
+        eff2.iter().all(|&e| !contains_functor(&kb2, e, "denoted")),
+        "Modify[C] with C a sort should NOT denote, effects={eff2:?}",
+    );
+
+    // (3) name does not resolve -> load error
+    assert!(
+        effects_of_f("operation f() -> Int effects Modify[nope]\n").is_err(),
+        "Modify[nope] with `nope` unresolved should be a load error",
+    );
+}
+
+#[test]
 fn parse_abstract_sort() {
     let source = "sort Scalar = ?\n";
     let parsed = parse::parse(source).expect("parse failed");
