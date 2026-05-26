@@ -199,19 +199,23 @@ form is:
 effect_derive(callee_type, callee_body, args, ctx)  →  output_row
 ```
 
-- **`callee_type`** — the callee's **signature**: its arrow type *and its
-  declared metadata*. For a named operation that is its `OperationInfo` (arrow
-  `+` any `[feeds: …]` metadata — see 046 §4.2, gated on WI-309 surfacing
-  operation metadata); for a **higher-order parameter `f`** it is the type of
-  that parameter (`f : … ! Eᶠ`, no extra metadata). The metadata is part of the
-  signature, so it **rides here** rather than as a separate argument — it is the
-  *declarative* source of the feed-relationship.
+- **`callee_type`** — *what is called*, resolved to its **signature**. For a
+  **named operation** this is its `OperationInfo` — carrying the arrow type, the
+  `effects` row, *and* any `[feeds: …]` **metadata** (046 §4.2, gated on WI-309).
+  For a **higher-order parameter `f`** it is just the parameter's arrow type
+  (`f : … ! Eᶠ`), no metadata. **The metadata lives on `OperationInfo`, not on
+  the `Type`** — the arrow `Type` (`sort.anthill`) is hash-consed and shared
+  across operations, so it must stay metadata-free (two ops with the same
+  signature share one arrow `TermId` but may have different `feeds`).
+  `effect_derive` consults the operation's `OperationInfo` (by symbol) for the
+  *declarative* feed-relationship; the name `callee_type` is loose — it means the
+  callee's signature record, not the bare `Type` term.
 - **`callee_body`** — the callee's **body occurrence** (`operation_body`), or
   `none` for opaque/foreign callees. The *implementation* source of the
   **feed-relationship**, read only when needed (the HOF case, §5.5) and only when
   no `[feeds: …]` metadata is declared. **Source priority:** declared `feeds`
-  metadata (in `callee_type`) → else `callee_body` → else opaque (`E` left a row
-  variable).
+  metadata (on `OperationInfo`) → else `callee_body` → else opaque (`E` left a
+  row variable).
 - **`args`** — the actual arguments, each a *(denotation, type)* pair. The
   denotation resolves the callee's *own* value-parameters (`denoted(pᵢ) ↦
   denoted(argᵢ)`).
