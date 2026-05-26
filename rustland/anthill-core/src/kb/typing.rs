@@ -505,6 +505,10 @@ fn extract_effect_resource_sym(kb: &KnowledgeBase, effect: TermId) -> Option<Sym
                 let bindings = list_to_vec(kb, bindings_tid);
                 for b in &bindings {
                     if let Some(value_tid) = binding_value(kb, *b) {
+                        // WI-302: a value-in-type binding (`Modify[c]`) stores the
+                        // resource as `denoted(value: Ref(c))`; see through the
+                        // wrapper to the underlying value before extracting.
+                        let value_tid = unwrap_denoted_value(kb, value_tid);
                         if let Some(sym) = extract_sort_ref_sym(kb, value_tid) {
                             return Some(sym);
                         }
@@ -640,6 +644,13 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
                     format!("({})", parts.join(", "))
                 }
                 "nothing" => "nothing".to_string(),
+                "denoted" => {
+                    // WI-302: value-in-type — render the carried value directly
+                    // (`Modify[c]` shows `c`, not `denoted[value = c]`).
+                    get_named_arg(kb, named_args, "value")
+                        .map(|v| type_display_name(kb, v))
+                        .unwrap_or_else(|| "?".to_string())
+                }
                 _ => {
                     // Fallback: raw term display (for non-type terms)
                     let name = fname.to_string();
@@ -5840,6 +5851,21 @@ pub fn extract_sort_ref_sym(kb: &KnowledgeBase, ty: TermId) -> Option<Symbol> {
         }
     }
     None
+}
+
+/// WI-302: unwrap a `denoted(value: V)` wrapper to its inner value term.
+/// Value-in-type bindings (`Modify[c]`) store the resource as
+/// `denoted(value: Ref(c))`; readers that want the underlying value see
+/// through the wrapper. Returns the input unchanged when not a `denoted`.
+fn unwrap_denoted_value(kb: &KnowledgeBase, ty: TermId) -> TermId {
+    if let Term::Fn { functor, named_args, .. } = kb.get_term(ty) {
+        if kb.resolve_sym(*functor) == "denoted" {
+            if let Some(v) = get_named_arg(kb, named_args, "value") {
+                return v;
+            }
+        }
+    }
+    ty
 }
 
 /// The "sort head" of an inferred type — the least declared sort it
