@@ -483,7 +483,7 @@ impl TypeResult {
 
 /// Filter effects: keep only external effects (on non-local resources).
 /// Effects on let-bound resources are local and don't propagate.
-fn external_effects(kb: &KnowledgeBase, env: &TypingEnv, effects: &[TermId]) -> Vec<TermId> {
+pub(crate) fn external_effects(kb: &KnowledgeBase, env: &TypingEnv, effects: &[TermId]) -> Vec<TermId> {
     effects.iter().filter(|&&effect| {
         // An effect like Modify[store] — check if 'store' is a local resource
         // Effect terms are sort_ref or parameterized. Extract the resource symbol.
@@ -496,7 +496,7 @@ fn external_effects(kb: &KnowledgeBase, env: &TypingEnv, effects: &[TermId]) -> 
 
 /// Extract the resource symbol from an effect term.
 /// e.g., Modify[T = store] → Some(store), or sort_ref(name: Modify) → None (no resource)
-fn extract_effect_resource_sym(kb: &KnowledgeBase, effect: TermId) -> Option<Symbol> {
+pub(crate) fn extract_effect_resource_sym(kb: &KnowledgeBase, effect: TermId) -> Option<Symbol> {
     let functor_name = type_functor_name(kb, effect)?;
     match functor_name {
         "parameterized" => {
@@ -555,7 +555,7 @@ fn extract_var_ref_sym_node(occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
 /// `Modify[c]` is rewritten to `Modify[s]` so the calling op's declared
 /// `effects Modify[s]` matches. Caller is expected to short-circuit on
 /// empty maps (the typical case) — this fn does not check.
-fn substitute_ref_syms(
+pub(crate) fn substitute_ref_syms(
     kb: &mut KnowledgeBase,
     term: TermId,
     map: &HashMap<Symbol, Symbol>,
@@ -6731,6 +6731,10 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
         });
     }
 
+    // WI-314: region set for result-escape masking — program-global, so
+    // compute it once before the per-op loop.
+    let region_sorts = super::region::region_sorts(kb);
+
     for op in &ops_to_check {
         let mut env = TypingEnv::empty();
         // WI-221: snapshot the enclosing sort + its requires chain so
@@ -6769,8 +6773,19 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                     });
                 }
 
-                // Filter out local resource effects — only external effects must be declared
-                let ext_effects = external_effects(kb, &result.env, &result.effects);
+                // WI-314: operation-boundary effect masking. Drops effects
+                // on non-escaping locals (as before) and masks / re-keys
+                // `Modify[result]` from freshly-allocated regions per the
+                // return type — see kb::region.
+                let op_result_sym = kb.try_resolve_symbol(&format!("{}.result", op_qn));
+                let ext_effects = super::region::op_boundary_effects(
+                    kb,
+                    &result.env,
+                    op.return_type,
+                    op_result_sym,
+                    &region_sorts,
+                    &result.effects,
+                );
                 for effect in &ext_effects {
                     if !op.declared_effects.contains(effect) {
                         let effect_name = type_display_name(kb, *effect);

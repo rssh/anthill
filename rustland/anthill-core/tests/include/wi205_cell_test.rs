@@ -33,7 +33,7 @@ fn cell_set_overwrites_value() {
 namespace test.wi205_overwrite
   import anthill.prelude.{Int, Cell, Unit}
 
-  operation make(n: Int) -> Cell = Cell.new(n)
+  operation make(n: Int) -> Cell effects Modify[result] = Cell.new(n)
   operation overwrite(c: Cell, n: Int) -> Unit effects Modify[c] = Cell.set(c, n)
   operation read(c: Cell) -> Int = Cell.get(c)
 end
@@ -57,7 +57,7 @@ fn cell_new_returns_distinct_handles() {
 namespace test.wi205_distinct
   import anthill.prelude.{Int, Cell, Unit}
 
-  operation make(n: Int) -> Cell = Cell.new(n)
+  operation make(n: Int) -> Cell effects Modify[result] = Cell.new(n)
   operation set_value(c: Cell, n: Int) -> Unit effects Modify[c] = Cell.set(c, n)
   operation read(c: Cell) -> Int = Cell.get(c)
 end
@@ -84,7 +84,7 @@ fn cell_handle_drop_reclaims_slot() {
     let src = r#"
 namespace test.wi205_refcount
   import anthill.prelude.{Int, Cell}
-  operation make(n: Int) -> Cell = Cell.new(n)
+  operation make(n: Int) -> Cell effects Modify[result] = Cell.new(n)
 end
 "#;
     let mut interp = interp_for(src);
@@ -106,7 +106,7 @@ fn cell_handle_clone_keeps_slot_alive() {
     let src = r#"
 namespace test.wi205_clone
   import anthill.prelude.{Int, Cell}
-  operation make(n: Int) -> Cell = Cell.new(n)
+  operation make(n: Int) -> Cell effects Modify[result] = Cell.new(n)
 end
 "#;
     let mut interp = interp_for(src);

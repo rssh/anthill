@@ -12,6 +12,7 @@ pub mod resolve;
 pub mod occurrence;
 pub mod node_occurrence;
 pub mod typing;
+pub(crate) mod region;
 pub mod op_info;
 pub mod op_requirements;
 pub mod req_insertion;

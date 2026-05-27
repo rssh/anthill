@@ -12,7 +12,13 @@ sort anthill.prelude.Cell
   -- Identity is the arena slot (opaque-handle scheme per WI-205):
   -- each call returns a distinct cell, and recursive allocations do
   -- not alias. See docs/design/cell-runtime.md §"Identity scheme".
+  -- `effects Modify[result]` marks it as initializing the fresh region it
+  -- returns (proposal 045 §5.5) — the "not pure / not CSE-able" marker, so
+  -- distinct `new()` calls are never merged. The effect is masked at an
+  -- enclosing op's boundary when the cell does not escape (WI-314), so it
+  -- is not viral: only ops that actually return a fresh cell carry it.
   operation new(v: V) -> Cell
+    effects Modify[result]
 
   -- Read the current value.
   operation get(c: Cell) -> V

@@ -121,3 +121,6 @@ mod match_branch_join_test;
 
 #[path = "include/if_branch_join_test.rs"]
 mod if_branch_join_test;
+
+#[path = "include/wi314_region_mask_test.rs"]
+mod wi314_region_mask_test;
