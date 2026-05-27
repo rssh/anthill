@@ -37,7 +37,7 @@ intro       set(c, v)                    { Modify[c] }                      ✓ 
 two params  swap(a, b)                   { Modify[a],                       ✓  a,b = args, in caller scope
                                             Modify[b] }
 
-alloc       map(λ x → Cell.new(x))       { Alloc }                          ✓  no parameter reference
+construct   map(λ x → Cell.new(x))       { Modify[result] }                 ✓  result flows out, not a callback param
 
 two HO      option_fold(o, ifN, ifS)     merge(R1, R2)                      ✓  R1,R2 are the args' rows
                                                                                (no callee param escapes)
@@ -49,7 +49,7 @@ HOF + param foreach(λ x → set(x, …))     { Modify[x] }                     
                                                                                (there's x, but no xs)
 
 threading   foldLeft(xs, z, λ(a,e)…)     { Modify[a],                       ✗  a, e are the callback's params
-                                            Reads[e] }                         → escape; not resolved to z / xs
+                                            Modify[e] }                        → escape; not resolved to z / xs
 ```
 
 The first five are **correct**: every parameter in the effect field is the
@@ -135,7 +135,7 @@ effect_derive(
      ( denotation: l ,
        type:       List[Cell[Int]] ),
      ( denotation: λ x → set(x, get(x)+1) ,
-       type:       Cell[Int] → Unit ! { Modify[x], Reads[x] } )
+       type:       Cell[Int] → Unit ! { Modify[x] } )
                                               └── x = the lambda's parameter
   ],
 
@@ -148,14 +148,14 @@ Deriving:
 
 ```
 step 1  unify ( List[A], Function[A,Unit,E] ) ~ args' types
-        ⇒  A := Cell[Int] ,  E := { Modify[x], Reads[x] }
+        ⇒  A := Cell[Int] ,  E := { Modify[x] }
 
-naïve   output = E = { Modify[x], Reads[x] }      ✗ ILL-SCOPED
+naïve   output = E = { Modify[x] }      ✗ ILL-SCOPED
         (x is the lambda's parameter — there is x, but no l)
 
 correct read callee_body ⇒ feed-relationship  x ↦ elements(l)
-        substitute        ⇒ { Modify[elements of l], Reads[elements of l] }
-        abstract to region ⇒ { Modify[ρₗ], Reads[ρₗ] }  (ρₗ = region of l's elements)   ✓ well-scoped
+        substitute        ⇒ { Modify[elements of l] }
+        abstract to region ⇒ { Modify[ρₗ] }  (ρₗ = region of l's elements)   ✓ well-scoped
                               └── this read+abstract step is the deferred 046 detail
 ```
 

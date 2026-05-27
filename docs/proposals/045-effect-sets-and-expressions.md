@@ -28,8 +28,8 @@ existing type-variable substrate for the tail variable.
 
 ## Motivation
 
-- **Individual effect = type; effect-set ≠ type.** `Modify[c]`, `Reads[d]`,
-  `Error[T]` are types in the lattice; a *set* of them is a row with its own
+- **Individual effect = type; effect-set ≠ type.** `Modify[c]` and `Error[T]`
+  are types in the lattice; a *set* of them is a row with its own
   `subset` order — not a `Type`, but a component of (arrow) types. Today the only
   representation is `arrow(…, effects: List[Type])`, and effect *checking* is
   unimplemented (proposal 013).
@@ -107,7 +107,7 @@ effects { ? }               -- allow all (open tail, no constraint)
 effects { Modify[c] }       -- closed: only Modify[c]   (bare = present; no `+` needed)
 effects { ?, -Modify[kb] }  -- "does not touch kb": anything except Modify[kb]
 effects E                   -- polymorphic (propagates the callback's row E)
-effects merge(E, Reads[d])  -- the callback's effects, plus Reads[d]
+effects merge(E, Modify[d]) -- the callback's effects, plus Modify[d]
 effects { E, -Modify[kb] }  -- the callback's effects, but guaranteed not Modify[kb]
 ```
 
@@ -288,7 +288,7 @@ derive_K( slice_K, callee_sig, callee_body, args, ctx )  →  derived_slice_K
    region resolution + masking (proposal 046).
 2. otherwise the **default** (propagate + discharge-by-type).
 
-**v1 ships only the default** — control effects (`Error`, `Branch`, `Tick`) need
+**v1 ships only the default** — control effects (`Error`, `Branch`) need
 nothing else (their discharge is by type, sound). The first non-default
 contribution is **`Modify`'s** `effect_derive` rule (its body calls a region
 builtin), and it is **proposal 046**. So v1 is the framework + default; 046 is
@@ -301,7 +301,7 @@ introduction   set(c,v) : (Cell[T], T) → Unit ! { Modify[c] }
                effect_derive: field {Modify[c]}, c ↦ the actual arg
 
 propagation    map(f: Function[A,B,E], xs) → List[B] ! E
-               f : A → B ! { Alloc }   ⇒ unify E := {Alloc}   ⇒ output {Alloc}
+               f : A → B ! { Error[T] }   ⇒ unify E := {Error[T]}   ⇒ output {Error[T]}
 
 two HO params  option_fold(o, on_none: ()→B ! E1, on_some: A→B ! E2) → B ! merge(E1,E2)
                E1 := on_none's row, E2 := on_some's row (distinct vars), output = merge
@@ -357,9 +357,12 @@ analysis, the recursion fixpoint — is the subject of **proposal 046** and is
 deferred *in detail*. The `effect_derive` **form (§5.2) is already correct**: it
 takes `callee_body` and obliges a well-scoped output; 046 only fills in the body.
 
-Note: the `Cell.new : { Alloc }` discipline (constructors are `Alloc`, **not**
-`Modify[result]`) holds regardless — it keeps `map(λ Cell.new)` honest (`{Alloc}`)
-even before masking exists.
+Note: a mutable constructor like `Cell.new` has row `{ Modify[result] }` — it
+initializes the region it returns, and `result` flows out (it is the return), so
+the label is well-scoped. So `map(λ x → Cell.new(x))` is honestly
+`{ Modify[result] }` (it modifies the fresh cells it returns); whether a write to
+a freshly-returned region is *observable* is the provenance/masking question
+(proposal 046), not a separate `Alloc` effect.
 
 **Phasing.** v1a: open rows with present labels + tail variable — real row
 unification in `unify_arrow`, open-row subtyping in `arrow_compatible` — covering
