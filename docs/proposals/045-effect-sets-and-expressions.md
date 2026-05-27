@@ -82,6 +82,47 @@ sort Function
 This makes the effect-set parameter its own kind, distinct from a `sort`
 (type) parameter — fixing the `sort E = ?` kind-confusion.
 
+### 2.1 Binding an effect variable on an operation
+
+An effect-row variable in an operation's `effects` clause must be **bound** —
+`effects E` may not mention a free `E`. There are three binding sites (the
+final model, the kind-disambiguation rule, and the loader mechanism are settled
+by **WI-318**, the prerequisite to implementation; the syntax is described here):
+
+- **Sort-level binder** — `effects E = ?` in the enclosing sort body (the
+  `Function` example above; `Stream` is identical — `sort E = ?` today,
+  `effects E = ?` after migration). Member operations reference it:
+  `Stream.head(s: Stream) -> Option[T = T] effects E`.
+- **By position — a function-typed parameter.** A parameter of `Function` type
+  (or an `@`-annotated arrow) introduces its effect slot as the variable:
+  in `map(f: Function[A, B, E], xs: List[A]) -> List[B] effects E`, the `E` in
+  `f`'s type *is* the binder and `effects E` propagates it. Two function
+  parameters give two **distinct** variables —
+  `option_fold(on_none: () -> B @ E1, on_some: A -> B @ E2) -> B effects merge(E1, E2)`.
+  This is the dominant higher-order case (§3 "kind by position", §5.2).
+- **Explicit per-operation binder (new syntax).** For a *free*
+  effect-polymorphic operation that is **not** inside a binding sort and whose
+  variable is **not** introduced by a function-typed parameter, declare it in
+  the type-parameter list with the `effects` keyword:
+
+  ```
+  operation map[A, B, effects E](f: Function[A, B, E], xs: List[A])
+    -> List[B] effects E
+  ```
+
+  This restores symmetry with **type** parameters, which already may be declared
+  per-operation in `[…]` (`operation foo[T](…)`), whereas §3's convention
+  otherwise gives effect variables only the implicit/sort-level forms.
+  **Whether to adopt this explicit form or rely on by-position binding alone is
+  the open decision in WI-318** — it is given here as the candidate surface.
+
+In every case the variable is **effect-kinded** (a row variable), not a
+`sort`/type parameter: the loader kinds it by its effect position, replacing
+today's `sort E = ?` which mis-kinds it as `Sort` (WI-318 (1)). The
+`effects Effect` placeholder in `prelude/collection.anthill` and
+`prelude/iteration.anthill` — the `Effect` kind-marker standing in for a missing
+row variable — is migrated to a real bound variable at the same time.
+
 ## 3. Effect expressions
 
 An **effect expression** denotes an effect-set as a **presence profile** (each
@@ -158,15 +199,20 @@ the earlier `result_effects(br)` row was wrong.
 
 ## 4. Where declared (interchangeable sugars)
 
-Per the brainstorm's "a type is shorthand for a pre/post predicate," the
-declaration surface is interchangeable — all denote the same effect-row contract:
+The effect-set contract is written two interchangeable ways, both denoting the
+same row:
 
 - **`effects <expr>`** clause on an operation; **`@ <expr>`** on an arrow type
   (the *value-attached* form — a function value's effect contract travels with
   its type, mandatory for first-class functions / `apply`).
-- **`ensures (e in effects)`** ≡ `+ e`; **`ensures (e not in effects)`** ≡ `- e`
-  — the contract-homed form (closed-world: unstated ⇒ absent by NAF), projected
-  to the effect-set on the arrow.
+
+*Dropped for now* — an `ensures`-homed surface (`ensures (e in effects)` ≡ `+ e`,
+`ensures (e not in effects)` ≡ `- e`, projected to the row). It is
+**closed-world** (NAF: unstated ⇒ absent), so it can describe only a *closed*
+row — never the open polymorphic tail (`effects E`) that dominates §5 — and it
+overlaps `effects` / `@`. Revisit only if a closed-world contract-homed surface
+is specifically wanted; until then `effects` and `@` are the sole
+effect-declaration forms.
 
 ## 5. Checking — row unification in the typer
 
@@ -282,17 +328,34 @@ derive_K( slice_K, callee_sig, callee_body, args, ctx )  →  derived_slice_K
 1. a **rule** with the conventional functor `effect_derive`, defined **in `K`'s
    effect sort**; resolved like the `[simp]` index. Declarative transforms
    express directly over the row (e.g. handler discharge ≡ `merge(in, - e)`). A
-   derivation that needs the host's dataflow (`ctx`/provenance/regions) calls a
-   **builtin from its body** — the builtin is an implementation primitive the
-   rule invokes, not a separate dispatch path. This is how `Modify` plugs in its
-   region resolution + masking (proposal 046).
+   derivation that needs the host's dataflow (`ctx`/provenance/regions) crosses
+   the **rule ↔ host boundary** in one of two directions: **pull** — the rule
+   body calls a **builtin** (an implementation primitive it invokes); or
+   **push** — a Rust analysis pass **emits KB predicates / stamps node
+   attributes** that the rule then reads declaratively (e.g. an escape pass
+   asserting `escapes(binding, result)`, or per-occurrence region attributes).
+   Either way the host dataflow is *data the rule consumes*, not a separate
+   dispatch path. This is how `Modify` plugs in its region resolution + masking
+   (proposal 046): the heavy escape/region analysis stays in Rust, but its
+   results enter the KB so the declarative `effect_derive` rule — and any other
+   rule — can read them.
 2. otherwise the **default** (propagate + discharge-by-type).
 
 **v1 ships only the default** — control effects (`Error`, `Branch`) need
 nothing else (their discharge is by type, sound). The first non-default
-contribution is **`Modify`'s** `effect_derive` rule (its body calls a region
-builtin), and it is **proposal 046**. So v1 is the framework + default; 046 is
-`Modify`'s slice.
+contribution is **`Modify`'s** `effect_derive` rule (fed by a region
+analysis — pull or push, above), and it is **proposal 046**. So v1 is the
+framework + default; 046 is `Modify`'s slice.
+
+**Reconciling WI-314.** WI-314 shipped `Modify`'s narrow result-region masking
+as a Rust pass (`kb/region.rs` `op_boundary_effects`) called **directly** at the
+operation boundary — ahead of any `effect_derive` rule, since v1 ships only the
+default. Under the model above that pass is precisely the **host-dataflow** half:
+promoting it to *emit* its region/escape results into the KB (predicates /
+attributes) for `Modify`'s `effect_derive` rule to read is what brings it under
+the declarative dispatch (proposal 046). So the hardcoded pass is **not** a
+divergence from this framework — it is the dataflow the rule depends on,
+currently wired straight to the boundary because the rule half is not yet built.
 
 ### 5.3 Worked examples
 
@@ -306,7 +369,7 @@ propagation    map(f: Function[A,B,E], xs) → List[B] ! E
 two HO params  option_fold(o, on_none: ()→B ! E1, on_some: A→B ! E2) → B ! merge(E1,E2)
                E1 := on_none's row, E2 := on_some's row (distinct vars), output = merge
 
-discharge      handle : (body: ()→X ! { Error[T] | ρ }) → X ! ρ
+discharge      handle : (body: ()→X ! { Error[T], ρ }) → X ! ρ
                body : ()→X ! {Error[T], Modify[c]}  ⇒ ρ := {Modify[c]}  ⇒ output {Modify[c]}
 
 —— the one deferred case (proposal 046, §5.5) ——
@@ -327,7 +390,7 @@ callback whose row references *its own* parameter.
    `let`/`if`/`match`/`lambda` — default-propagate the union of children; a
    `lambda` parks its body row on its arrow).
 2. **Unify / subtype against the declared row** (the row-rewrite rule): to match
-   `{ l | ρ1 }` against another row, surface `l`, unify the presences, unify the
+   `{ l, ρ1 }` against another row, surface `l`, unify the presences, unify the
    tails; an open declared row absorbs extra actual labels into its tail, a
    closed one does not; a `- e` declaration adds `lacks e` and **fails if the
    actual row presents `e`**.
@@ -361,22 +424,73 @@ Note: a mutable constructor like `Cell.new` has row `{ Modify[result] }` — it
 initializes the region it returns, and `result` flows out (it is the return), so
 the label is well-scoped. So `map(λ x → Cell.new(x))` is honestly
 `{ Modify[result] }` (it modifies the fresh cells it returns); whether a write to
-a freshly-returned region is *observable* is the provenance/masking question
-(proposal 046), not a separate `Alloc` effect.
+a freshly-returned region is *observable* is the provenance/masking question —
+and its narrow **result-reachability slice is now delivered (WI-314)**: an
+operation-boundary mask (`kb/region.rs`) **drops** `Modify[result]` when the
+operation's return type cannot carry the region (the cell is discarded —
+`make_and_read : Int`) and **keeps** it, re-keyed to the op's own `result`, when
+it can (`make : Cell`), so `Cell.new` is non-viral. The **full** provenance /
+aliasing answer — and the region reachable only through a returned named sort's
+field (WI-316) — remains **proposal 046**. Either way it is masking, not a
+separate `Alloc` effect.
 
 **Phasing.** v1a: open rows with present labels + tail variable — real row
 unification in `unify_arrow`, open-row subtyping in `arrow_compatible` — covering
 polymorphic propagation. v1b: `lacks` constraints for `- e`. The region layer
-(resolution + provenance + masking) is a separate proposal.
+(resolution + provenance + masking) is **proposal 046** — except its narrow
+result-reachability mask, **delivered in WI-314** (`Modify[result]` at the
+operation boundary; see the `Cell.new` note above).
+
+### 5.6 Handler discharge (the static check)
+
+Discharge is **045's** side; proposal 027 supplies the runtime handler — the
+`HandlerAction` carrier, continuations, the standard catalog — that *realises*
+the contract this type describes. 045 models none of that machinery; it checks
+only the **row**.
+
+A handler that discharges effect `K` has a type that **shares a row tail** `ρ`
+between its body parameter and its result, with `K` **present** on the body side
+and **absent** from the result:
+
+```
+handle_K : (body: () -> X ! { K[…], ρ }) -> X ! ρ
+```
+
+Checking a call `handle_K(λ → e)` is then **ordinary row unification** (§5) — no
+special machinery:
+
+1. derive `e`'s row by `effect_derive`;
+2. unify it against `{ K[…], ρ }` — surface the `K` label and bind the tail `ρ`
+   to the **residual** (everything in `e`'s row other than `K`);
+3. the call's row is `ρ`: `K` is **dropped**, every other effect propagates.
+   So `e : () -> X ! { Error[T], Modify[c] }` under `handle_Error` gives
+   `ρ := { Modify[c] }`, output `{ Modify[c] }` (the §5.3 example).
+
+Because discharge is carried entirely by the handler's **type** (a shared tail,
+label present → absent), it is the **default** derivation (§5.2.1): sound for the
+control effects (`Error`, `Branch`) and available the moment v1a's row
+unification lands — no per-effect rule. v1 discharges a **single named** label
+per shared tail; discharging a *statically-unknown effect-set* at once would need
+`difference` (§7 item 4, deferred) — until then, name the handled labels and
+discharge them one tail at a time.
 
 ## 6. Representation (reflect) and reconciliation
 
-- New: **`EffectExpression`** (the algebra of §3) — the surface a programmer
-  writes. It **elaborates to a row**: present labels + an optional row-variable
-  tail (+ lacks constraints in v1b). `+ e` → present, `- e` → lacks, `E` → tail
-  variable, `merge` → row extension/unification, `{}` → closed empty row.
-- `arrow.effects` and `Function.E` carry this **row** (replacing the closed
-  `List[Type]`); the typer unifies rows directly.
+- **`EffectExpression`** — a concrete reflect sort
+  (`stdlib/anthill/prelude/effect-expression.anthill`, modelled on `Type`): an
+  `enum` with `empty_row` (`{}`), `present(label)` (`e` / `+e`), `absent(label)`
+  (`- e` ⇒ a `lacks`), `open(tail)` (a row-variable tail `E` / `?`, carried as a
+  `Type.type_var`), and `merge(left, right)` (union; the set literal `{…}` is
+  iterated `merge`). It is **both** the §3 surface algebra *and* the stored
+  representation — its **normal form** (present labels + optional tail + `lacks`,
+  `merge`s flattened) is the row the typer unifies, so surface and row are **one
+  sort**, not two. (Closes the G1 representation gap; also settles the §5.3/§5.4
+  `{ l | ρ }` vs §3 `{ …, ? }` tail-notation split in favour of the `open`
+  element form `{ …, ρ }`, now applied throughout §5.)
+- `Type.arrow`'s `effects` field and `Function.E` carry an **`EffectExpression`**
+  (replacing the closed `List[Type]`); the typer unifies it through its normal
+  form. Wiring the arrow field + the row unification is WI-307 — this sort is the
+  target it builds against.
 - `Function`: `sort E = ?` → **`effects E = ?`** (declares a row variable, not a
   type parameter).
 - **Effect checking is row unification in the typer — not generic ACI/`Set`
@@ -397,7 +511,7 @@ polymorphic propagation. v1b: `lacks` constraints for `- e`. The region layer
    no laziness hack: unifying a row that presents `e` against a tail carrying
    `lacks e` fails directly, and the constraint propagates to call sites through
    ordinary tail-variable unification. So `effects merge(E, - Modify[kb])` ("this
-   function forbids its callback from modifying kb") is a row `{ … | ρ }` with
+   function forbids its callback from modifying kb") is a row `{ …, ρ }` with
    `ρ lacks Modify[kb]`, principal and decidable. This is **v1b** of §5. (The
    earlier laziness framing is superseded — it was an artifact of the canonical-
    `Set` approach, which we dropped.)
@@ -417,18 +531,28 @@ polymorphic propagation. v1b: `lacks` constraints for `- e`. The region layer
    itself; this is a **monotone fixpoint** over the row lattice. It terminates by
    the ascending-chain condition: only finitely many effect labels occur in the
    program, so the lattice of reachable rows is finite and the `union` ascent
-   stabilizes. Open only: confirming the fixpoint is taken over that finite
-   label set (not over open/co-finite rows that could grow without bound), and
-   how it is scheduled within SLD resolution.
-4. **Grammar surface — *resolved for `{…}`*; one operator still open.** The set
+   stabilizes. **Resolved (WI-317 implements):** the fixpoint runs over **ground**
+   rows — an operation's *own* effects over the finite set of effect labels
+   occurring in the program — so the ascending chain is over subsets of a finite
+   set and stabilises by ACC. Open/co-finite rows do **not** enter the fixpoint:
+   a polymorphic tail variable (`ρ`) or a `lacks` is *propagated by row
+   unification*, not *grown* by the `union` ascent, so nothing grows without
+   bound. Scheduling is the **typer's, not the resolver's**: inference walks the
+   call-graph **SCCs** (acyclic order between SCCs; within a cyclic SCC iterate
+   from `{}` to stabilisation), memoising `op_effects` per operation, so a
+   declarative `effect_derive` rule (§5.2.1) is evaluated against the *current*
+   estimate each iteration rather than recursing through SLD (which would loop).
+   The *checked* model (v1a) needs none of this — a recursive call reads the
+   callee's *declaration*; the fixpoint is only for **inferred** effects
+   (WI-317).
+4. **Grammar surface — *resolved for `{…}`*; `difference` deferred.** The set
    literal `{ E1, …, EN }` is sugar for iterated `merge` (§3), so it adds no new
    semantics. We have `merge(x, y)` for **union** and `- e` for **removing one
-   named effect**. The only open question: do we also need an operator that
-   subtracts a *whole* effect-set, `difference(E1, E2)` (remove everything in
-   `E2` from `E1`)? It matters only for **handler discharge of a variable
-   set** — when a handler removes a set of effects that isn't statically known.
-   If discharge always names the handled effects, repeated `- e` is enough and
-   no new operator is needed.
+   named effect**. *Decided — not in v1:* there is **no** whole-effect-set
+   subtraction operator `difference(E1, E2)`. It would matter only for **handler
+   discharge of a statically-unknown effect-set**; whenever discharge *names* the
+   handled effects, repeated `- e` suffices. `difference` is introduced later
+   **only if** such a variable-set discharge case actually arises.
 5. **`*` (top) — *dropped*: the open row variable is the surface top.** There is
    no `*` / `+ *` / `- *`. An **open row variable** (`?` anonymous, or a named
    `E`) already provides everything a universal top was wanted for, using the
@@ -494,8 +618,8 @@ ACI/`Set` substrate. Phases:
 3. **v1b — lacks constraints.** Add `- e` absence guarantees as `lacks`
    constraints on the tail variable (§7.1), checked abstractly at definition
    time.
-4. **Handler discharge** — a handler drops the handled label / strengthens a
-   lacks (relation to proposal 027).
+4. **Handler discharge** (§5.6) — the handler's shared-tail type drops the
+   handled label by row unification; wire it to proposal 027's runtime handlers.
 5. **Migrate `typing_pass_spec`** effect handling onto row unification; only then
    is its effect-checking honest.
 6. *(Optional, decoupled.)* The `[simp]`/ACI/canonical-`Set` substrate, only if a
