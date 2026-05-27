@@ -5049,17 +5049,28 @@ impl<'a> Loader<'a> {
                     self.type_param_vars.insert(key, var_tid);
                     return var_tid;
                 }
-                // WI-302: a name resolving to a VALUE (operation parameter or
-                // record/tuple field) in a type-argument slot is value-in-type
-                // — `Modify[c]`, `Modify[result]`, `Modify[result.a]`. Lower it
-                // to `denoted(value: Ref(sym))` so it reads as a value indexing
-                // the type, not a `sort_ref`. The faithful occurrence form lands
-                // with the effects→occurrences change; the term-form `Ref` is
-                // adequate for the current `Vec<TermId>` effect representation.
+                // WI-302/WI-313: a name resolving to a VALUE in a type slot is
+                // value-in-type — `Modify[c]`, `Modify[result]`, `Modify[kb]`
+                // (kb a zero-arg accessor). Lower it to `denoted(value: Ref(sym))`
+                // so it reads as a value indexing the type, not a `sort_ref`. The
+                // faithful occurrence form lands with the effects→occurrences
+                // change; the term-form `Ref` is adequate for the current
+                // `Vec<TermId>` effect representation.
+                //
+                // The split is VALUE vs TYPE:
+                //   - Param / Field        → a value binding      → denoted  (WI-302)
+                //   - Operation            → value-producing       → denoted
+                //     (e.g. reflect's `kb()` ambient-KB accessor; an operation
+                //     reference in a type slot denotes the value it yields).
+                //   - Entity               → a TYPE: a standalone entity is sugar
+                //     for a single-constructor sort (kernel-language §6.3), so its
+                //     bare name names that sort → `sort_ref`. (WI-313: entities are
+                //     NOT value-in-type; the motivating `kb` is properly an op.)
+                //   - Sort / Namespace     → a type                → `sort_ref`
                 let is_value = matches!(
                     self.kb.symbols.get(sort_sym),
                     crate::intern::SymbolDef::Resolved {
-                        kind: SymbolKind::Param | SymbolKind::Field, ..
+                        kind: SymbolKind::Param | SymbolKind::Field | SymbolKind::Operation, ..
                     }
                 );
                 if is_value {

@@ -158,24 +158,7 @@ fn sort_functor_of_returns_none_on_type_var() {
     let s = sort_functor_of(&kb, int_ty).expect("sort_functor_of(sort_ref(Int)) Some");
     assert_sort_named(&kb, s, "Int");
 }
-
-#[test]
-fn wi313_min_sort_of_kb_entity_is_kb() {
-    // WI-313: `kb` (an `entity kb` of `sort KB`) is a VALUE — min_sort(kb) = KB.
-    // That is the discriminator behind WI-313: a name whose min_sort is Some is a
-    // value, so `Modify[kb]` SHOULD lower to denoted(kb) (it currently stays
-    // sort_ref(kb) — only Param/Field flip in WI-302's name-case). This pins
-    // min_sort(kb) = KB empirically, confirming kb is a value of sort KB.
-    let mut kb = load_kb();
-    let kb_sort = parse::parse("sort KB {\n  entity kb\n}\n").expect("parse KB");
-    load::load(&mut kb, &kb_sort, &NullResolver).expect("KB load failed");
-    let kb_term = kb.resolve_qualified_name_term("KB.kb");
-    let kb_entity = match kb.get_term(kb_term) {
-        Term::Fn { functor, .. } => *functor,
-        Term::Ref(s) => *s,
-        other => panic!("KB.kb resolved to unexpected term: {other:?}"),
-    };
-    let okb = occ(Expr::Constructor { name: kb_entity, pos_args: vec![], named_args: vec![] });
-    let ms = typed_min_sort(&mut kb, &okb).expect("min_sort(kb) should be Some");
-    assert_sort_named(&kb, ms, "KB");
-}
+// (Removed `wi313_min_sort_of_kb_entity_is_kb`: it asserted `kb` is an entity,
+// but WI-313 resolved with `kb` becoming a zero-arg operation in reflect.anthill
+// — its property "a nullary-entity construction has min_sort = its sort" is
+// covered by `min_sort_of_entity_value_is_its_sort` (Color.red).)

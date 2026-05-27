@@ -72,8 +72,14 @@ fn modify_name_arg_denotes_by_resolution_kind() {
     // Intended semantics for a NAME `c` in a type-argument position `Modify[c]`,
     // decided by what `c` resolves to (load-time, scope-aware / SymbolKind):
     //   c -> a PARAMETER or RESULT (a VALUE) ........ denoted(var_ref(c))
+    //   c -> an OPERATION (value-producing; WI-313) . denoted(var_ref(c))
+    //   c -> an ENTITY (a TYPE; §6.3) ............... sort_ref(c)   (NOT denoted)
     //   c -> a SORT (a TYPE) ........................ sort_ref(c)   (NOT denoted)
     //   c -> unresolved ............................. load error
+    // The split is value vs type. An entity is sugar for a single-constructor
+    // sort (kernel-language §6.3), so its bare name is a TYPE; the ambient-KB
+    // accessor `kb` is properly a zero-arg OPERATION (value-producing) — that is
+    // the value-in-type case WI-313 was really about, not the entity.
     // (Assumes `Modify` is in scope from the prelude effects.)
     fn contains_functor(kb: &KnowledgeBase, t: TermId, name: &str) -> bool {
         match kb.get_term(t) {
@@ -108,6 +114,26 @@ fn modify_name_arg_denotes_by_resolution_kind() {
     assert!(
         eff.iter().any(|&e| contains_functor(&kb, e, "denoted")),
         "Modify[c] with c a parameter should denote, effects={eff:?}",
+    );
+
+    // (1b) kb is an ENTITY -> NOT denoted (sort_ref). A standalone entity is
+    // sugar for a single-constructor sort (§6.3), so its bare name is a TYPE.
+    // WI-313: entities are NOT value-in-type (this was the original mis-modeling).
+    let (kbe, effe) = effects_of_f("sort KB\n  entity kb\nend\noperation f() -> Int effects Modify[kb]\n")
+        .expect("entity case should load");
+    assert!(
+        effe.iter().all(|&e| !contains_functor(&kbe, e, "denoted")),
+        "Modify[kb] with kb an entity should be sort_ref (NOT denoted), effects={effe:?}",
+    );
+
+    // (1c) kb is a zero-arg OPERATION (value-producing, like reflect's ambient-KB
+    // accessor) -> denoted. This is the value-in-type case WI-313 was really
+    // about: `kb()` yields a value, so a reference to it in a type slot denotes.
+    let (kbo, effo) = effects_of_f("operation kb() -> Int\noperation f() -> Int effects Modify[kb]\n")
+        .expect("operation case should load");
+    assert!(
+        effo.iter().any(|&e| contains_functor(&kbo, e, "denoted")),
+        "Modify[kb] with kb a zero-arg operation should denote, effects={effo:?}",
     );
 
     // (2) C is a SORT (a type) -> NOT denoted (sort_ref)

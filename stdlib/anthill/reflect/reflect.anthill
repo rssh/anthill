@@ -197,12 +197,14 @@ namespace anthill.reflect
   -- Implementations (e.g. KnowledgeBase) impl this trait.
 
   sort KB
-    -- Singleton constructor for the ambient knowledge base — anthill code
-    -- writes `kb()` to obtain the KB value passed to KB.execute / etc.
-    -- The interpreter ignores its identity (there is one ambient KB per
-    -- interpreter instance); the entity exists so the type checker can
-    -- accept `KB.execute(kb(), q)` without surfacing an abstract sort.
-    entity kb
+    -- Ambient-knowledge-base accessor — anthill code writes `kb()` to obtain
+    -- the KB value passed to KB.execute / etc. It is a zero-argument OPERATION
+    -- (not an entity): `kb` is value-producing, not a data constructor, so a
+    -- bare reference in a type slot (`Modify[kb]`) is value-in-type. There is
+    -- one ambient KB per interpreter instance, which the runtime supplies; the
+    -- type checker accepts `KB.execute(kb(), q)` without surfacing an abstract
+    -- sort.
+    operation kb() -> KB
 
     -- KB admits Modify[kb]: assert / retract / add_guard mutate the
     -- KB's internal indexes. Required by proposal 037 Rule 8.

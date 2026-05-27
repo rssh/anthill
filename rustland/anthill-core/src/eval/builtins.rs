@@ -79,6 +79,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Map.size", map_size)?;
 
     register_if_present(interp, "anthill.prelude.LogicalStream.splitFirst", logical_stream_split_first)?;
+    register_if_present(interp, "anthill.reflect.KB.kb", kb_ambient)?;
     register_if_present(interp, "anthill.reflect.KB.execute", kb_execute)?;
     register_if_present(interp, "anthill.reflect.KB.facts_of", kb_facts_of)?;
     register_if_present(interp, "anthill.reflect.Substitution.lookup", subst_lookup)?;
@@ -586,6 +587,18 @@ fn logical_stream_split_first(
             })
         }
     }
+}
+
+/// `KB.kb() -> KB` — the ambient-knowledge-base accessor. Returns the sentinel
+/// `Value::Unit`: the evaluator has no first-class KB values and always operates
+/// on the interpreter's own KB, so `KB.execute` / `KB.facts_of` treat their `kb`
+/// argument as a placeholder. Before WI-313 `kb` was a nullary `entity` and
+/// `kb()` constructed that placeholder; it is now a zero-arg operation
+/// (kernel-language §6.3: a value-producing accessor, not a data constructor),
+/// so the construction becomes this builtin.
+fn kb_ambient(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    expect_args::<0>("KB.kb", args)?;
+    Ok(Value::Unit)
 }
 
 /// `KB.execute(kb: KB, q: LogicalQuery) -> Stream[Substitution]`. The KB
