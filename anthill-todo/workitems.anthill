@@ -2345,3 +2345,18 @@ fact WorkItem(
   depends_on: ["WI-314", "WI-307"],
   status: Open)
 
+fact WorkItem(
+  id: "WI-318",
+  description: "Specify effect-variable binding on operations (045 prerequisite -- the operator effect-parameter question). Proposal 045 introduces effect-row variables (effects E) but does NOT pin HOW an operation binds one, and the grammar/loader have no mechanism for it: sort/op params are all SymbolKind::Sort, operation [..] lists admit TYPE params only (operation_type_param = name with optional = type), and there is no effects E = ? binder production. The reflect representation now exists (EffectExpression in prelude/effect-expression.anthill, with an open(type_var) row-variable tail), but its binding story is unspecified. Pin it BEFORE 045 implementation (WI-307) so the loader/grammar/typer build against a settled model.
+
+CURRENT STATE (grounding): Function (function.anthill) declares sort E = ? at the SORT level and apply(f: Function[A,B,E], x) -> B effects E references it; Stream (stream.anthill) likewise has sort E = ? and six operations write effects E (comment: E is the abstract effect required to observe; concrete sorts bind E); collection.anthill and iteration.anthill write effects Effect -- using the Effect KIND-MARKER sort as a polymorphic-effect PLACEHOLDER because no row variable exists (a smell to remove). So today effect vars are mis-kinded as Sort, or hacked via the Effect marker.
+
+THE QUESTION (decide): where and how is an effect-row variable bound on an operation? (a) IMPLICIT BY POSITION (045 section 3): an identifier in EFFECT position (an effects clause, an @ arrow annotation, or a Function-typed parameter effect slot) is a row variable, bound by the Function-typed parameter that introduces it (distinct per parameter -- option_fold gets E1, E2) or by a sort-level binder; never free-floating. (b) SORT-LEVEL BINDER: effects E = ? in a sort body (parallel to sort E = ?), referenced by member operations -- the Function/Stream pattern, but with E kinded as effect not type. (c) EXPLICIT PER-OPERATION BINDER: let an operation declare its own effect parameter (in the [..] list as [effects E] or a kinded [E: Effects], or an operation-level effects E = ?) -- needed for a FREE effect-polymorphic operation not inside a binding sort. ASYMMETRY TO SETTLE: type variables CAN be declared per-operation in [T], but 045 section 3 offers effect variables only (a)+(b), no explicit per-op form. Intended, or should operations bind effect vars explicitly too (symmetry)?
+
+MUST SPECIFY: (1) kind-disambiguation -- how loader/typer knows E in effects E is a ROW variable not a type/sort (today sort E = ? kinds it Sort); (2) binder grammar -- effects E = ? as a sort-body declaration, and whether an explicit per-operation form is added; (3) scoping/binding-site rule for position-bound vars (which parameter binds E; E1/E2 distinctness across multiple function params; reuse of a named E across a signature); (4) migration -- Function and Stream sort E = ? -> effects E = ?, and collection/iteration effects Effect -> a proper row variable.
+
+GATES WI-307 (045 row-unification implementation): WI-307 must build against this settled binding model. ACCEPTANCE: 045 (or a sub-spec) states the binding model + grammar; Function/Stream/collection/iteration migrated in spec/examples; WI-307 unblocked. REFS: 045 sections 2,3,5; EffectExpression (effect-expression.anthill); related WI-301 (effect-sets not type args), WI-013.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
