@@ -589,16 +589,20 @@ fn logical_stream_split_first(
     }
 }
 
-/// `KB.kb() -> KB` — the ambient-knowledge-base accessor. Returns the sentinel
-/// `Value::Unit`: the evaluator has no first-class KB values and always operates
-/// on the interpreter's own KB, so `KB.execute` / `KB.facts_of` treat their `kb`
-/// argument as a placeholder. Before WI-313 `kb` was a nullary `entity` and
-/// `kb()` constructed that placeholder; it is now a zero-arg operation
-/// (kernel-language §6.3: a value-producing accessor, not a data constructor),
-/// so the construction becomes this builtin.
-fn kb_ambient(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+/// `KB.kb() -> KB` — the ambient-knowledge-base accessor. Returns a
+/// parameterless entity-shaped value tagged `kb`, so it prints/inspects as `kb`
+/// when debugging (and canonicalizes, unlike a bare `Value::Unit`). It is still
+/// a singleton sentinel: the evaluator has no first-class KB values and always
+/// operates on the interpreter's own KB, so `KB.execute` / `KB.facts_of` treat
+/// their `kb` argument as a placeholder, and two `kb()` calls compare equal —
+/// one ambient KB. Before WI-313 `kb` was a nullary `entity` and `kb()`
+/// constructed this same shape; it is now a zero-arg operation (kernel-language
+/// §6.3: a value-producing accessor, not a data constructor), so the
+/// construction becomes this builtin.
+fn kb_ambient(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     expect_args::<0>("KB.kb", args)?;
-    Ok(Value::Unit)
+    let functor = require_symbol(interp, "anthill.reflect.KB.kb", "kb")?;
+    Ok(Value::Entity { functor, pos: Vec::new().into(), named: Vec::new().into() })
 }
 
 /// `KB.execute(kb: KB, q: LogicalQuery) -> Stream[Substitution]`. The KB
