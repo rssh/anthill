@@ -17,6 +17,9 @@ mod wi071_positional_sort_binding_test;
 #[path = "include/wi182_fresh_var_test.rs"]
 mod wi182_fresh_var_test;
 
+#[path = "include/kb_query_test.rs"]
+mod kb_query_test;
+
 #[path = "include/wi186_free_standing_parametric_test.rs"]
 mod wi186_free_standing_parametric_test;
 
