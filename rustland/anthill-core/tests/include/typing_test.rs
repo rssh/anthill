@@ -2023,7 +2023,7 @@ use anthill_core::kb::typing::{types_compatible, is_subtype, requires_chain_flat
 fn subtype_same_sort_ref() {
     let mut kb = load_stdlib_kb();
     let int_ty = kb.make_sort_ref_by_name("Int");
-    assert!(types_compatible(&kb, int_ty, int_ty), "Int <: Int");
+    assert!(types_compatible(&mut kb, int_ty, int_ty), "Int <: Int");
 }
 
 #[test]
@@ -2031,7 +2031,7 @@ fn subtype_different_sort_ref_incompatible() {
     let mut kb = load_stdlib_kb();
     let int_ty = kb.make_sort_ref_by_name("Int");
     let string_ty = kb.make_sort_ref_by_name("String");
-    assert!(!types_compatible(&kb, int_ty, string_ty), "Int not <: String");
+    assert!(!types_compatible(&mut kb, int_ty, string_ty), "Int not <: String");
 }
 
 #[test]
@@ -2048,8 +2048,8 @@ end
     let color_sym = kb.resolve_symbol("Color");
     let red_ty = kb.make_sort_ref(red_sym);
     let color_ty = kb.make_sort_ref(color_sym);
-    assert!(types_compatible(&kb, red_ty, color_ty), "red <: Color");
-    assert!(!types_compatible(&kb, color_ty, red_ty), "Color not <: red");
+    assert!(types_compatible(&mut kb, red_ty, color_ty), "red <: Color");
+    assert!(!types_compatible(&mut kb, color_ty, red_ty), "Color not <: red");
 }
 
 #[test]
@@ -2066,7 +2066,7 @@ end
     let blue_sym = kb.resolve_symbol("Color.blue");
     let red_ty = kb.make_sort_ref(red_sym);
     let blue_ty = kb.make_sort_ref(blue_sym);
-    assert!(!types_compatible(&kb, red_ty, blue_ty), "red not <: blue");
+    assert!(!types_compatible(&mut kb, red_ty, blue_ty), "red not <: blue");
 }
 
 #[test]
@@ -2079,8 +2079,8 @@ fn subtype_named_tuple_width() {
     let b_sym = kb.intern("b");
     let wider = kb.make_named_tuple_type(&[(a_sym, int_ty), (b_sym, string_ty)]);
     let narrower = kb.make_named_tuple_type(&[(a_sym, int_ty)]);
-    assert!(types_compatible(&kb, wider, narrower), "(a: Int, b: String) <: (a: Int)");
-    assert!(!types_compatible(&kb, narrower, wider), "(a: Int) not <: (a: Int, b: String)");
+    assert!(types_compatible(&mut kb, wider, narrower), "(a: Int, b: String) <: (a: Int)");
+    assert!(!types_compatible(&mut kb, narrower, wider), "(a: Int) not <: (a: Int, b: String)");
 }
 
 #[test]
@@ -2099,7 +2099,7 @@ end
     let field_sym = kb.intern("color");
     let specific = kb.make_named_tuple_type(&[(field_sym, red_ty)]);
     let general = kb.make_named_tuple_type(&[(field_sym, color_ty)]);
-    assert!(types_compatible(&kb, specific, general), "(color: red) <: (color: Color)");
+    assert!(types_compatible(&mut kb, specific, general), "(color: red) <: (color: Color)");
 }
 
 #[test]
@@ -2118,7 +2118,7 @@ end
     let color_ty = kb.make_sort_ref(color_sym);
     let specific = kb.make_arrow_type(int_ty, red_ty, &[]);
     let general = kb.make_arrow_type(int_ty, color_ty, &[]);
-    assert!(types_compatible(&kb, specific, general), "(Int -> red) <: (Int -> Color)");
+    assert!(types_compatible(&mut kb, specific, general), "(Int -> red) <: (Int -> Color)");
 }
 
 #[test]
@@ -2137,8 +2137,8 @@ end
     let color_ty = kb.make_sort_ref(color_sym);
     let general_param = kb.make_arrow_type(color_ty, int_ty, &[]);
     let specific_param = kb.make_arrow_type(red_ty, int_ty, &[]);
-    assert!(types_compatible(&kb, general_param, specific_param), "(Color -> Int) <: (red -> Int)");
-    assert!(!types_compatible(&kb, specific_param, general_param), "(red -> Int) not <: (Color -> Int)");
+    assert!(types_compatible(&mut kb, general_param, specific_param), "(Color -> Int) <: (red -> Int)");
+    assert!(!types_compatible(&mut kb, specific_param, general_param), "(red -> Int) not <: (Color -> Int)");
 }
 
 #[test]
@@ -2148,7 +2148,7 @@ fn subtype_parameterized_same() {
     let t_sym = kb.intern("T");
     let list_base = kb.make_sort_ref_by_name("List");
     let list_int = kb.make_parameterized_type(list_base, &[(t_sym, int_ty)]);
-    assert!(types_compatible(&kb, list_int, list_int), "List[T=Int] <: List[T=Int]");
+    assert!(types_compatible(&mut kb, list_int, list_int), "List[T=Int] <: List[T=Int]");
 }
 
 #[test]
@@ -2160,7 +2160,7 @@ fn subtype_parameterized_different_binding_incompatible() {
     let list_base = kb.make_sort_ref_by_name("List");
     let list_int = kb.make_parameterized_type(list_base, &[(t_sym, int_ty)]);
     let list_str = kb.make_parameterized_type(list_base, &[(t_sym, string_ty)]);
-    assert!(!types_compatible(&kb, list_int, list_str), "List[T=Int] not <: List[T=String]");
+    assert!(!types_compatible(&mut kb, list_int, list_str), "List[T=Int] not <: List[T=String]");
 }
 
 #[test]
@@ -2169,8 +2169,8 @@ fn subtype_type_var_compatible_with_anything() {
     let int_ty = kb.make_sort_ref_by_name("Int");
     let fresh = kb.intern("?X");
     let var_ty = kb.make_type_var(fresh);
-    assert!(types_compatible(&kb, var_ty, int_ty), "type_var <: Int");
-    assert!(types_compatible(&kb, int_ty, var_ty), "Int <: type_var");
+    assert!(types_compatible(&mut kb, var_ty, int_ty), "type_var <: Int");
+    assert!(types_compatible(&mut kb, int_ty, var_ty), "Int <: type_var");
 }
 
 #[test]
@@ -2178,7 +2178,7 @@ fn subtype_nothing_compatible_with_anything() {
     let mut kb = load_stdlib_kb();
     let int_ty = kb.make_sort_ref_by_name("Int");
     let nothing = kb.make_nothing_type();
-    assert!(types_compatible(&kb, nothing, int_ty), "nothing <: Int");
+    assert!(types_compatible(&mut kb, nothing, int_ty), "nothing <: Int");
 }
 
 #[test]
@@ -2190,7 +2190,7 @@ fn subtype_arrow_pure_subtype_of_effectful() {
     let effect = kb.make_sort_ref(e_sym);
     let pure_fn = kb.make_arrow_type(int_ty, int_ty, &[]);
     let effectful_fn = kb.make_arrow_type(int_ty, int_ty, &[effect]);
-    assert!(types_compatible(&kb, pure_fn, effectful_fn), "pure <: effectful");
+    assert!(types_compatible(&mut kb, pure_fn, effectful_fn), "pure <: effectful");
 }
 
 #[test]
@@ -2204,8 +2204,8 @@ fn subtype_arrow_fewer_effects() {
     let e2 = kb.make_sort_ref(e2_sym);
     let fewer = kb.make_arrow_type(int_ty, int_ty, &[e1]);
     let more = kb.make_arrow_type(int_ty, int_ty, &[e1, e2]);
-    assert!(types_compatible(&kb, fewer, more), "fewer effects <: more effects");
-    assert!(!types_compatible(&kb, more, fewer), "more effects not <: fewer effects");
+    assert!(types_compatible(&mut kb, fewer, more), "fewer effects <: more effects");
+    assert!(!types_compatible(&mut kb, more, fewer), "more effects not <: fewer effects");
 }
 
 #[test]
@@ -2219,7 +2219,7 @@ fn subtype_arrow_different_effects_incompatible() {
     let e2 = kb.make_sort_ref(e2_sym);
     let fn1 = kb.make_arrow_type(int_ty, int_ty, &[e1]);
     let fn2 = kb.make_arrow_type(int_ty, int_ty, &[e2]);
-    assert!(!types_compatible(&kb, fn1, fn2), "different effects not compatible");
+    assert!(!types_compatible(&mut kb, fn1, fn2), "different effects not compatible");
 }
 
 /// WI-307 v1a canonical-form invariant: two arrow types built from the
@@ -2424,13 +2424,175 @@ fn row_unify_open_open_same_labels() {
         "open/open with same labels must unify; tails link through a fresh shared var");
 }
 
+// ── WI-326 v1a row subtyping tests ───────────────────────────────────────
+//
+// These exercise the directional row algorithm in `arrow_compatible`.
+// Pre-WI-326 these would fail because the naive effects-subset check
+// rejected any row containing a `Var` (the open tail) — no functor →
+// types_compatible returns false → subset fails. The new
+// `subtype_effect_rows` honors open-tail subsumption.
+
+/// Pure ≤ effectful — a pure function (closed empty row) is a subtype of
+/// any arrow with effects. Pre-WI-326 path stayed green (no open tails,
+/// no Var rejection); test re-pinned post-row-subtyping to guard against
+/// regressions in the closed-into-closed-via-rows path.
+#[test]
+fn subtype_arrow_pure_subtype_of_effectful_via_rows() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e_sym = kb.intern("SomeEffect");
+    let effect = kb.make_sort_ref(e_sym);
+    let pure_fn = kb.make_arrow_type(int_ty, int_ty, &[]);
+    let effectful_fn = kb.make_arrow_type(int_ty, int_ty, &[effect]);
+    assert!(types_compatible(&mut kb, pure_fn, effectful_fn),
+        "pure (closed empty row) <: effectful (closed {{e}}) — covariant subset");
+    assert!(!types_compatible(&mut kb, effectful_fn, pure_fn),
+        "effectful NOT <: pure — pure has fewer effects, can't accept more");
+}
+
+/// Open ≤ closed with absorbable extras — actual has open tail with no
+/// known labels; expected is closed with some labels. For sub to hold,
+/// actual's tail must close (the local subst will bind it). Pre-WI-326
+/// the open tail (a `Var` in effects_rows_to_flat_list) made every
+/// types_compatible check fail; the new row algorithm closes the tail.
+#[test]
+fn subtype_arrow_open_le_closed_tail_closes() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e1_sym = kb.intern("E1");
+    let e2_sym = kb.intern("E2");
+    let e1 = kb.make_sort_ref(e1_sym);
+    let e2 = kb.make_sort_ref(e2_sym);
+
+    let rho_sym = kb.intern("?rho");
+    let rho_vid = kb.fresh_var(rho_sym);
+    let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
+
+    // Actual: {| ?rho} — open row, no concrete labels.
+    let open_actual = kb.make_arrow_type(int_ty, int_ty, &[rho]);
+    // Expected: {E1, E2} — closed.
+    let closed_expected = kb.make_arrow_type(int_ty, int_ty, &[e1, e2]);
+
+    assert!(types_compatible(&mut kb, open_actual, closed_expected),
+        "open-tail actual (no labels) <: closed expected — actual's tail closes to empty");
+}
+
+/// Open ≤ closed where actual has labels not in expected → must reject.
+/// Actual's known label set has an item expected doesn't cover; expected
+/// is closed (no tail to absorb it).
+#[test]
+fn subtype_arrow_open_le_closed_extras_reject() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e1_sym = kb.intern("E1");
+    let e2_sym = kb.intern("E2");
+    let e3_sym = kb.intern("E3");
+    let e1 = kb.make_sort_ref(e1_sym);
+    let e2 = kb.make_sort_ref(e2_sym);
+    let e3 = kb.make_sort_ref(e3_sym);
+
+    let rho_sym = kb.intern("?rho");
+    let rho_vid = kb.fresh_var(rho_sym);
+    let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
+
+    // Actual: {E1, E3 | ?rho} — has E3 not in expected.
+    let open_actual = kb.make_arrow_type(int_ty, int_ty, &[e1, e3, rho]);
+    // Expected: {E1, E2} — closed, no E3.
+    let closed_expected = kb.make_arrow_type(int_ty, int_ty, &[e1, e2]);
+
+    assert!(!types_compatible(&mut kb, open_actual, closed_expected),
+        "open actual with extra concrete label NOT in closed expected must reject");
+}
+
+/// Closed ≤ open — actual's labels go into expected's tail (or are
+/// covered already). Always compatible: expected is permissive.
+#[test]
+fn subtype_arrow_closed_le_open() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e1_sym = kb.intern("E1");
+    let e1 = kb.make_sort_ref(e1_sym);
+
+    let rho_sym = kb.intern("?rho");
+    let rho_vid = kb.fresh_var(rho_sym);
+    let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
+
+    let closed_actual = kb.make_arrow_type(int_ty, int_ty, &[e1]);
+    let open_expected = kb.make_arrow_type(int_ty, int_ty, &[rho]); // {| ?rho}
+
+    assert!(types_compatible(&mut kb, closed_actual, open_expected),
+        "closed actual <: open expected — expected's tail absorbs actual's labels");
+}
+
+/// F1 regression (code-review): multi-actual-to-single-expected entity
+/// subtyping. Pre-WI-326 `arrow_compatible`'s effects loop was exists-
+/// quantified: `actual.iter().all(|ae| expected.iter().any(|ee| <:))`.
+/// The initial WI-326 implementation used `pair_present_labels` (1-to-1
+/// pairing with a `b_matched` flag), which rejected `{red, blue} <:
+/// {Color}` because `Color` got marked matched after pairing with `red`,
+/// leaving `blue` un-paired. The fix uses `cover_present_labels`
+/// (existential) so one expected can cover many actuals.
+#[test]
+fn subtype_arrow_multi_entity_to_single_sort() {
+    let source = r#"
+enum Color
+  entity red
+  entity blue
+end
+"#;
+    let mut kb = load_with_source(source);
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let red_sym = kb.resolve_symbol("Color.red");
+    let blue_sym = kb.resolve_symbol("Color.blue");
+    let color_sym = kb.resolve_symbol("Color");
+    let red = kb.make_sort_ref(red_sym);
+    let blue = kb.make_sort_ref(blue_sym);
+    let color = kb.make_sort_ref(color_sym);
+
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[red, blue]);
+    let expected = kb.make_arrow_type(int_ty, int_ty, &[color]);
+
+    assert!(types_compatible(&mut kb, actual, expected),
+        "{{red, blue}} <: {{Color}} — multi-entity to single sort; \
+         set-with-subtyping semantics lets Color cover both red and blue");
+}
+
+/// Open ≤ open with shared tail — both sides have open tails. The
+/// directional algorithm (mirroring the unify both-open case) links them
+/// through a fresh shared row variable; the sub holds because the two
+/// rows then agree on the same set.
+#[test]
+fn subtype_arrow_open_le_open_shared_tail() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e1_sym = kb.intern("E1");
+    let e2_sym = kb.intern("E2");
+    let e1 = kb.make_sort_ref(e1_sym);
+    let e2 = kb.make_sort_ref(e2_sym);
+
+    let rho_a_sym = kb.intern("?rho_a");
+    let rho_e_sym = kb.intern("?rho_e");
+    let rho_a_vid = kb.fresh_var(rho_a_sym);
+    let rho_e_vid = kb.fresh_var(rho_e_sym);
+    let rho_a = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_a_vid)));
+    let rho_e = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_e_vid)));
+
+    // Actual: {E1 | ?rho_a}
+    let open_actual = kb.make_arrow_type(int_ty, int_ty, &[e1, rho_a]);
+    // Expected: {E2 | ?rho_e}
+    let open_expected = kb.make_arrow_type(int_ty, int_ty, &[e2, rho_e]);
+
+    assert!(types_compatible(&mut kb, open_actual, open_expected),
+        "open <: open — fresh shared tail accommodates each side's extras");
+}
+
 // ── is_subtype tests (strict, irreflexive) ─────────────────────
 
 #[test]
 fn is_subtype_not_reflexive() {
     let mut kb = load_stdlib_kb();
     let int_ty = kb.make_sort_ref_by_name("Int");
-    assert!(!is_subtype(&kb, int_ty, int_ty), "Int is not a strict subtype of Int");
+    assert!(!is_subtype(&mut kb, int_ty, int_ty), "Int is not a strict subtype of Int");
 }
 
 #[test]
@@ -2445,8 +2607,8 @@ end
     let color_sym = kb.resolve_symbol("Color");
     let red_ty = kb.make_sort_ref(red_sym);
     let color_ty = kb.make_sort_ref(color_sym);
-    assert!(is_subtype(&kb, red_ty, color_ty), "red is a strict subtype of Color");
-    assert!(!is_subtype(&kb, color_ty, red_ty), "Color is not a subtype of red");
+    assert!(is_subtype(&mut kb, red_ty, color_ty), "red is a strict subtype of Color");
+    assert!(!is_subtype(&mut kb, color_ty, red_ty), "Color is not a subtype of red");
 }
 
 #[test]
@@ -2457,8 +2619,8 @@ fn is_subtype_requires_direct() {
     let eq_sym = kb.resolve_symbol("anthill.prelude.Eq");
     let ordered_ty = kb.make_sort_ref(ordered_sym);
     let eq_ty = kb.make_sort_ref(eq_sym);
-    assert!(is_subtype(&kb, ordered_ty, eq_ty), "Ordered <: Eq via requires");
-    assert!(!is_subtype(&kb, eq_ty, ordered_ty), "Eq is not <: Ordered");
+    assert!(is_subtype(&mut kb, ordered_ty, eq_ty), "Ordered <: Eq via requires");
+    assert!(!is_subtype(&mut kb, eq_ty, ordered_ty), "Eq is not <: Ordered");
 }
 
 #[test]
@@ -2469,7 +2631,7 @@ fn requires_compatible() {
     let eq_sym = kb.resolve_symbol("anthill.prelude.Eq");
     let ordered_ty = kb.make_sort_ref(ordered_sym);
     let eq_ty = kb.make_sort_ref(eq_sym);
-    assert!(types_compatible(&kb, ordered_ty, eq_ty), "Ordered compatible with Eq");
+    assert!(types_compatible(&mut kb, ordered_ty, eq_ty), "Ordered compatible with Eq");
 }
 
 // ── requires_chain and obligation checking tests ───────────────
@@ -2578,7 +2740,7 @@ end
     let paintable_sym = kb.resolve_symbol("Paintable");
     let canvas_ty = kb.make_sort_ref(canvas_sym);
     let paintable_ty = kb.make_sort_ref(paintable_sym);
-    assert!(types_compatible(&kb, canvas_ty, paintable_ty), "Canvas <: Paintable via requires");
+    assert!(types_compatible(&mut kb, canvas_ty, paintable_ty), "Canvas <: Paintable via requires");
 }
 
 #[test]
@@ -2610,17 +2772,17 @@ end
     let drawable_ty = kb.make_sort_ref(drawable_sym);
 
     // circle <: Shape (entity_of)
-    assert!(is_subtype(&kb, circle_ty, shape_ty), "circle <: Shape");
+    assert!(is_subtype(&mut kb, circle_ty, shape_ty), "circle <: Shape");
     // Shape <: Drawable (requires)
-    assert!(is_subtype(&kb, shape_ty, drawable_ty), "Shape <: Drawable");
+    assert!(is_subtype(&mut kb, shape_ty, drawable_ty), "Shape <: Drawable");
     // circle <: Drawable (transitively: entity_of + requires)
-    assert!(types_compatible(&kb, circle_ty, drawable_ty), "circle compatible with Drawable");
+    assert!(types_compatible(&mut kb, circle_ty, drawable_ty), "circle compatible with Drawable");
     // NOT compatible with unrelated sort
     let printable_sym = kb.resolve_symbol("Printable");
     let printable_ty = kb.make_sort_ref(printable_sym);
-    assert!(!types_compatible(&kb, circle_ty, printable_ty), "circle not compatible with Printable");
-    assert!(!types_compatible(&kb, shape_ty, printable_ty), "Shape not compatible with Printable");
-    assert!(!types_compatible(&kb, drawable_ty, printable_ty), "Drawable not compatible with Printable");
+    assert!(!types_compatible(&mut kb, circle_ty, printable_ty), "circle not compatible with Printable");
+    assert!(!types_compatible(&mut kb, shape_ty, printable_ty), "Shape not compatible with Printable");
+    assert!(!types_compatible(&mut kb, drawable_ty, printable_ty), "Drawable not compatible with Printable");
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -2676,7 +2838,7 @@ end
     let color_sym = kb.resolve_symbol("Color");
     let red_ty = kb.make_sort_ref(red_sym);
     let color_ty = kb.make_sort_ref(color_sym);
-    assert!(types_compatible(&kb, red_ty, color_ty), "enum: red <: Color");
+    assert!(types_compatible(&mut kb, red_ty, color_ty), "enum: red <: Color");
 }
 
 #[test]

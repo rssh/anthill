@@ -2509,7 +2509,7 @@ pub fn build_dep_projection(
 /// satisfied by `caller`'s binding for the same key (either identical
 /// or with one side being a type-param wildcard, mirroring
 /// `requires_entry_covers_goal`'s flexibility).
-fn entries_cover(kb: &KnowledgeBase, caller: &RequiresEntry, dep: &RequiresEntry) -> bool {
+fn entries_cover(kb: &mut KnowledgeBase, caller: &RequiresEntry, dep: &RequiresEntry) -> bool {
     if caller.required_sort != dep.required_sort {
         return false;
     }
@@ -3012,7 +3012,7 @@ pub enum DispatchOutcome {
 /// `TypingEnv` (see `set_enclosing_sort`) to avoid re-walking
 /// `SortRequiresInfo` per apply check.
 pub fn find_requires_slot(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     subst: &Substitution,
     spec_sort: Symbol,
     chain: &[RequiresEntry],
@@ -3334,7 +3334,7 @@ struct Candidate {
 /// that happen to share the same spec sort; the presence of one in
 /// the KB must not gate dispatch of the other.
 fn collect_provides_candidates(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     goal: &SortGoal,
 ) -> Vec<Candidate> {
     let provides_sym = match kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") {
@@ -3489,7 +3489,7 @@ fn impl_param_symbols(kb: &KnowledgeBase, impl_sort: Symbol) -> SmallVec<[Symbol
 /// the way; returns false on shape mismatch. Recursive on parametric
 /// values so `List[T = A]` properly binds `A` to the per-call's `T`.
 fn match_candidate_against_goal(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     candidate_value: TermId,
     per_call_value: TermId,
     impl_params: &[Symbol],
@@ -3800,7 +3800,7 @@ fn substitute_impl_params_alloc(
 /// Filters out op-bindings (auto-bound `eq`, `neq`, …) — only type-
 /// param bindings constrain matching.
 fn requires_entry_covers_goal(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     entry: &RequiresEntry,
     goal: &SortGoal,
 ) -> bool {
@@ -4105,7 +4105,7 @@ fn resolve_at_goal(
 /// future work (parameterized values, entity-of-sort subtyping in
 /// binding values) keeps working as the relation grows.
 fn dispatch_values_match(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     per_call_value: TermId,
     candidate_value: TermId,
 ) -> bool {
@@ -5414,6 +5414,68 @@ fn pair_present_labels(
     (only_a, only_b)
 }
 
+/// WI-326 subtype variant of [`pair_present_labels`] — existential
+/// covering instead of 1-to-1 pairing. A single expected label can cover
+/// multiple actuals (set-with-subtyping semantics), so `b_covered[i]` is
+/// recorded for the `only_b` computation but NEVER excludes a later
+/// pairing attempt.
+///
+/// Rationale (code-review F1): the pre-WI-326 `arrow_compatible` did
+/// `for ae in actual { expected.any(|ee| types_compatible(ae, ee)) }` —
+/// exists-quantified. Replacing that with the unify-shaped 1-to-1
+/// `pair_present_labels` introduced a regression: `{red, blue} <:
+/// {Color}` (two actual entities of a single expected sort) was rejected
+/// because `Color` got marked matched after pairing with `red`, leaving
+/// `blue` un-paired. Set semantics with element subtyping needs
+/// existential pairing; unify needs strict 1-to-1.
+///
+/// **Returns** `(only_a, only_b)` where:
+/// - `only_a` are actual labels that no expected covered (genuine extras
+///   on the actual side; under subtype these must be empty or absorbed
+///   by expected's open tail).
+/// - `only_b` are expected labels that NO actual matched (allowed under
+///   subset semantics; they're effects expected may have that actual
+///   doesn't use). The tail-binding step still wants these when
+///   expected is open and the algorithm needs to bind actual's tail to
+///   reach them — same shape as the unify case.
+fn cover_present_labels(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    a_present: &[TermId],
+    b_present: &[TermId],
+) -> (Vec<TermId>, Vec<TermId>) {
+    let mut b_covered = vec![false; b_present.len()];
+    let mut only_a: Vec<TermId> = Vec::new();
+    for &al in a_present {
+        let mut paired = false;
+        for (i, &bl) in b_present.iter().enumerate() {
+            // Functor-name pre-filter (same hint as pair_present_labels —
+            // unify_types is authoritative). Does NOT consult b_covered
+            // (covering, not exclusive pairing).
+            let af = type_functor_name(kb, al);
+            let bf = type_functor_name(kb, bl);
+            if af != bf {
+                continue;
+            }
+            if unify_types(kb, subst, al, bl) {
+                b_covered[i] = true;
+                paired = true;
+                break;
+            }
+        }
+        if !paired {
+            only_a.push(al);
+        }
+    }
+    let only_b: Vec<TermId> = b_present
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !b_covered[*i])
+        .map(|(_, &t)| t)
+        .collect();
+    (only_a, only_b)
+}
+
 /// Bind a row-tail variable to a synthesized EffectExpression representing
 /// `extra_labels ++ (open(final_tail) | empty_row)`.
 ///
@@ -5533,6 +5595,85 @@ fn unify_effect_rows(
     }
 }
 
+/// WI-326 v1a row subtyping — the covariant directional analog of
+/// [`unify_effect_rows`], mirroring its decompose/pair/tail-bind pipeline
+/// ([`decompose_effect_row`], [`pair_present_labels`], [`bind_row_tail`])
+/// but asymmetric: `actual <: expected` iff actual's effect *set* is a
+/// subset of expected's. Specifically:
+///
+/// - `only_a` (labels actual has but expected doesn't) must be absorbed
+///   by expected's open tail; with expected closed, that's a hard reject.
+/// - `only_e` (labels expected has but actual doesn't) are always fine
+///   under subset — expected can advertise effects the actual doesn't use.
+///   If actual is open, expected's extras are absorbed by actual's tail
+///   (the row-rewrite equation that makes actual reach expected's labels).
+/// - Actual open + expected closed: actual's tail must close to
+///   `empty_row` (actual can't carry unknown extras beyond expected's
+///   finite set).
+/// - Both open: the unify case applies as-is — a fresh shared tail
+///   accommodates either side's extras; once both rows extend through it,
+///   the sub relation holds.
+///
+/// The `subst` argument is intended to be a **local scratch** substitution
+/// (allocated by [`arrow_compatible`]) — bindings are reasoning witnesses,
+/// not committed into the caller's typing context.
+fn subtype_effect_rows(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    actual_effects: TermId,
+    expected_effects: TermId,
+) -> bool {
+    // Fast path: identical TermIds (hash-cons identity).
+    if actual_effects == expected_effects {
+        return true;
+    }
+
+    let (a_present, a_tail, _a_absent) = decompose_effect_row(kb, subst, actual_effects);
+    let (e_present, e_tail, _e_absent) = decompose_effect_row(kb, subst, expected_effects);
+
+    // WI-326 F1 (code-review): use the covering variant (existential), NOT
+    // the unify-shaped 1-to-1 [`pair_present_labels`]. Set semantics with
+    // element subtyping lets one expected label cover multiple actuals —
+    // e.g. `{red, blue} <: {Color}` where both `red`, `blue` are entities
+    // of `Color`. The 1-to-1 pairing would mark `Color` matched after the
+    // first hit and reject the second.
+    let (only_a, only_e) = cover_present_labels(kb, subst, &a_present, &e_present);
+
+    match (a_tail, e_tail) {
+        // Both closed. actual's extras must be empty (actual ⊆ expected
+        // labels); expected's extras are fine under subset semantics.
+        (None, None) => only_a.is_empty(),
+        // Actual closed, expected open. actual's extras flow into
+        // expected's tail, closing it; expected's extras are already
+        // present in expected's known set — no constraint on actual.
+        (None, Some(e_t)) => bind_row_tail(kb, subst, e_t, &only_a, None),
+        // Actual open, expected closed. expected can't absorb anything
+        // through a tail. actual's open tail must close to empty_row and
+        // actual must have no extras.
+        (Some(a_t), None) => {
+            if !only_a.is_empty() {
+                return false;
+            }
+            bind_row_tail(kb, subst, a_t, &[], None)
+        }
+        // Both open. Mirrors the unify case — once both tails link
+        // through a fresh shared row var, the sub relation holds
+        // (the two rows agree on the same set after extension).
+        (Some(a_t), Some(e_t)) => {
+            let a_walked = walk_type(kb, subst, a_t);
+            let e_walked = walk_type(kb, subst, e_t);
+            if a_walked == e_walked && only_a.is_empty() && only_e.is_empty() {
+                return true;
+            }
+            let fresh_sym = kb.intern("?rho");
+            let fresh_vid = kb.fresh_var(fresh_sym);
+            let fresh_var = kb.alloc(Term::Var(Var::Global(fresh_vid)));
+            bind_row_tail(kb, subst, a_t, &only_e, Some(fresh_var))
+                && bind_row_tail(kb, subst, e_t, &only_a, Some(fresh_var))
+        }
+    }
+}
+
 /// Unify two named tuple types: matching fields must unify.
 fn unify_named_tuple(kb: &mut KnowledgeBase, subst: &mut Substitution, a: TermId, b: TermId) -> bool {
     let (a_args, b_args) = match (kb.get_term(a), kb.get_term(b)) {
@@ -5574,11 +5715,15 @@ fn unify_named_tuple(kb: &mut KnowledgeBase, subst: &mut Substitution, a: TermId
 /// nature of the relation matters (subtype check, effect-element
 /// compatibility, etc.). The strict (irreflexive) version is
 /// [`is_subtype`].
-pub fn types_lesseq(kb: &KnowledgeBase, actual: TermId, expected: TermId) -> bool {
+///
+/// WI-326: takes `&mut KnowledgeBase` because [`arrow_compatible`] now
+/// invokes row subtyping, which allocates fresh row-tail vars in the
+/// both-open case.
+pub fn types_lesseq(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) -> bool {
     types_compatible(kb, actual, expected)
 }
 
-pub fn types_compatible(kb: &KnowledgeBase, actual: TermId, expected: TermId) -> bool {
+pub fn types_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) -> bool {
     if actual == expected {
         return true;
     }
@@ -5661,7 +5806,7 @@ pub fn types_compatible(kb: &KnowledgeBase, actual: TermId, expected: TermId) ->
 /// callable type. Decomposes both via [`arrow_parts`] (which yields `None`
 /// for a non-`Function` parameterized type, so `arrow` vs `List[T]` stays
 /// incompatible) and checks param + result compatibility. (WI-289)
-fn arrow_function_compatible(kb: &KnowledgeBase, actual: TermId, expected: TermId) -> bool {
+fn arrow_function_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) -> bool {
     match (arrow_parts(kb, actual), arrow_parts(kb, expected)) {
         (Some((a_param, a_result, _)), Some((b_param, b_result, _))) => {
             // Param is contravariant (expected param <: actual param) and
@@ -5708,7 +5853,10 @@ fn type_functor_name<'a>(kb: &'a KnowledgeBase, ty: TermId) -> Option<&'a str> {
 
 /// Strict subtype check: actual is a proper subtype of expected.
 /// `is_subtype(A, A)` is false. `is_subtype(red, Color)` is true.
-pub fn is_subtype(kb: &KnowledgeBase, sub: TermId, sup: TermId) -> bool {
+///
+/// WI-326: takes `&mut KnowledgeBase` (transitively, via
+/// [`types_compatible`] → [`arrow_compatible`] → row subtyping).
+pub fn is_subtype(kb: &mut KnowledgeBase, sub: TermId, sup: TermId) -> bool {
     sub != sup && types_compatible(kb, sub, sup)
 }
 
@@ -6573,7 +6721,7 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
 
 /// parameterized(base: A, bindings: [...]) <: parameterized(base: B, bindings: [...])
 /// if bases are compatible and all expected bindings have compatible actual values.
-fn parameterized_compatible(kb: &KnowledgeBase, actual: TermId, expected: TermId) -> bool {
+fn parameterized_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) -> bool {
     let (actual_args, expected_args) = match (kb.get_term(actual), kb.get_term(expected)) {
         (Term::Fn { named_args: a, .. }, Term::Fn { named_args: e, .. }) => {
             (a.clone(), e.clone())
@@ -6646,7 +6794,17 @@ fn binding_value(kb: &KnowledgeBase, binding: TermId) -> Option<TermId> {
 
 /// arrow(param: A1, result: R1, effects: E1) <: arrow(param: A2, result: R2, effects: E2)
 /// if A2 <: A1 (contravariant), R1 <: R2 (covariant), and E1 ⊆ E2 (covariant effects).
-fn arrow_compatible(kb: &KnowledgeBase, actual: TermId, expected: TermId) -> bool {
+///
+/// **WI-326 v1a**: the effects field is now compared via [`subtype_effect_rows`]
+/// — a directional Rémy/Lindley-Cheney row algorithm honoring open-tail
+/// subsumption — replacing the pre-WI-326 naive positional subset over
+/// `effects_rows_to_flat_list`. The substitution that algorithm needs is
+/// local scratch space allocated here; bindings are reasoning witnesses
+/// only, not committed into any caller's typing context. The `&mut
+/// KnowledgeBase` signature ripples up to [`types_compatible`] et al.
+/// because [`subtype_effect_rows`] allocates fresh row-tail vars in the
+/// both-open case.
+fn arrow_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) -> bool {
     let (actual_args, expected_args) = match (kb.get_term(actual), kb.get_term(expected)) {
         (Term::Fn { named_args: a, .. }, Term::Fn { named_args: e, .. }) => {
             (a.clone(), e.clone())
@@ -6678,34 +6836,43 @@ fn arrow_compatible(kb: &KnowledgeBase, actual: TermId, expected: TermId) -> boo
         _ => return false,
     }
 
-    // Covariant effects: actual effects ⊆ expected effects.
-    // A pure function (no effects) is usable where effects are declared.
-    //
-    // WI-307 v1a migration: arrow.effects is now `effects_rows(EffectExpression)`
-    // (singular Type), so decode it via the flat-list shim. The naive
-    // positional subset check below is unchanged — proper row subtyping
-    // (open-tail absorption of extras) lands in the v1a row-unification
-    // commit when this site rewires to walk the EffectExpression directly.
-    let actual_effects = get_named_arg(kb, &actual_args, "effects")
-        .map(|e| effects_rows_to_flat_list(kb, e))
-        .unwrap_or_default();
-    let expected_effects = get_named_arg(kb, &expected_args, "effects")
-        .map(|e| effects_rows_to_flat_list(kb, e))
-        .unwrap_or_default();
-
-    for ae in &actual_effects {
-        if !expected_effects.iter().any(|ee| types_compatible(kb, *ae, *ee)) {
-            return false;
+    // Covariant effects: actual effects ⊆ expected effects, with open-tail
+    // subsumption (WI-326). A pure function (no effects) is usable where
+    // effects are declared. A function with an open row tail is a subtype
+    // of a closed row of compatible labels because its tail can close to
+    // empty_row; symmetrically, expected's extra labels can be absorbed by
+    // actual's tail.
+    let actual_effects = get_named_arg(kb, &actual_args, "effects");
+    let expected_effects = get_named_arg(kb, &expected_args, "effects");
+    match (actual_effects, expected_effects) {
+        // Both arrows omit the effects field — trivially compatible. In
+        // the canonical-form world this is rare (make_arrow_type always
+        // synthesizes effects_rows); kept for defensive symmetry.
+        (None, None) => true,
+        (Some(ae), Some(ee)) => {
+            let mut local_subst = Substitution::new();
+            subtype_effect_rows(kb, &mut local_subst, ae, ee)
+        }
+        // Missing side is interpreted as a closed empty row (pure).
+        (Some(ae), None) => {
+            let empty = kb.make_effect_expression_empty_row();
+            let empty_rows = kb.make_effects_rows_type(empty);
+            let mut local_subst = Substitution::new();
+            subtype_effect_rows(kb, &mut local_subst, ae, empty_rows)
+        }
+        (None, Some(ee)) => {
+            let empty = kb.make_effect_expression_empty_row();
+            let empty_rows = kb.make_effects_rows_type(empty);
+            let mut local_subst = Substitution::new();
+            subtype_effect_rows(kb, &mut local_subst, empty_rows, ee)
         }
     }
-
-    true
 }
 
 /// named_tuple(fields: [...]) <: named_tuple(fields: [...])
 /// Width subtyping: actual may have more fields than expected.
 /// Depth subtyping: each expected field's type must be a supertype of actual's.
-fn named_tuple_compatible(kb: &KnowledgeBase, actual: TermId, expected: TermId) -> bool {
+fn named_tuple_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) -> bool {
     let (actual_args, expected_args) = match (kb.get_term(actual), kb.get_term(expected)) {
         (Term::Fn { named_args: a, .. }, Term::Fn { named_args: e, .. }) => {
             (a.clone(), e.clone())

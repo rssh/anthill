@@ -188,7 +188,7 @@ fn types_compatible_recurses_into_effects_rows_inner() {
     // `types_compatible` call returns true. Before the arm this
     // returned false; after the arm it returns true.
     assert!(
-        types_compatible(&kb, er_nothing, er_var),
+        types_compatible(&mut kb, er_nothing, er_var),
         "expected effects_rows(nothing) compatible with effects_rows(type_var(?N)) via the new arm"
     );
 }
