@@ -1293,6 +1293,27 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.define("TypeField", "anthill.prelude.Type.TypeField", SymbolKind::Entity, type_sort_term.raw());
     kb.symbols.define("TypeBinding", "anthill.prelude.Type.TypeBinding", SymbolKind::Entity, type_sort_term.raw());
 
+    // WI-307 — v1a row-substrate: the EffectExpression algebra entities, the
+    // payload `effects_rows` wraps. Pre-registered so `make_arrow_type` can
+    // build the canonical `effects_rows(merge(present(…), …, empty_row))`
+    // form for the arrow.effects field without depending on stdlib load
+    // order. The stdlib `sort.anthill` re-declares the enum; the loader's
+    // existing `if defined` guards make the re-declare idempotent.
+    let effect_expr_sort_sym = kb.symbols.define("EffectExpression", "anthill.prelude.EffectExpression", SymbolKind::Sort, prelude_term.raw());
+    let effect_expr_sort_term = kb.alloc(Term::Fn {
+        functor: effect_expr_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(effect_expr_sort_term.raw(), ScopeInclusion {
+        parent_scope_raw: prelude_term.raw(),
+        instantiation_term_raw: prelude_term.raw(),
+        is_enclosing: true,
+    });
+    kb.symbols.define("empty_row", "anthill.prelude.EffectExpression.empty_row", SymbolKind::Entity, effect_expr_sort_term.raw());
+    kb.symbols.define("present", "anthill.prelude.EffectExpression.present", SymbolKind::Entity, effect_expr_sort_term.raw());
+    kb.symbols.define("absent", "anthill.prelude.EffectExpression.absent", SymbolKind::Entity, effect_expr_sort_term.raw());
+    kb.symbols.define("open", "anthill.prelude.EffectExpression.open", SymbolKind::Entity, effect_expr_sort_term.raw());
+    kb.symbols.define("merge", "anthill.prelude.EffectExpression.merge", SymbolKind::Entity, effect_expr_sort_term.raw());
+
     // anthill.prelude.EffectsRuntime — variant-7 kind anchor (WI-320).
     // Pre-registered so the bridge-fact emission below can resolve the
     // symbol and assert the fact before stdlib loads. The stdlib file

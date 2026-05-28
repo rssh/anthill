@@ -4422,21 +4422,121 @@ fn arrow_parts(kb: &KnowledgeBase, ty: TermId) -> Option<(Option<TermId>, TermId
             };
             let result = get_named_arg(kb, &named_args, "result")?;
             let param = get_named_arg(kb, &named_args, "param");
+            // WI-307 v1a: arrow.effects is now `effects_rows(EffectExpression)`
+            // (singular Type), not `List[Type]`. Decode the EffectExpression
+            // back to the flat `Vec<TermId>` shape that pre-v1a callers
+            // expect (concrete labels + at most one tail Var) so non-row-aware
+            // consumers (region.rs, op_info, type_display_name) keep working
+            // unchanged. Row-aware callers (unify_arrow, arrow_compatible)
+            // walk the effects_rows EffectExpression directly.
             let effects = get_named_arg(kb, &named_args, "effects")
-                .map(|e| list_to_vec(kb, e))
+                .map(|e| effects_rows_to_flat_list(kb, e))
                 .unwrap_or_default();
             Some((param, result, effects))
         }
         Some("parameterized") if is_function_type(kb, ty) => {
             let result = extract_type_param(kb, ty, "B")?;
             let param = extract_type_param(kb, ty, "A");
+            // Function[E] parameter binding still flows through as List[Type]
+            // (the parameter shape hasn't migrated). When/if Function.E binds
+            // an effects_rows Type, this branch follows the arrow branch.
             let effects = extract_type_param(kb, ty, "E")
-                .map(|e| list_to_vec(kb, e))
+                .map(|e| {
+                    // Accept either the legacy List or the new effects_rows
+                    // wrapper, so an E-bound effects_rows decomposes cleanly.
+                    if type_functor_name(kb, e) == Some("effects_rows") {
+                        effects_rows_to_flat_list(kb, e)
+                    } else {
+                        list_to_vec(kb, e)
+                    }
+                })
                 .unwrap_or_default();
             Some((param, result, effects))
         }
         _ => None,
     }
+}
+
+/// WI-307 v1a: flatten an `effects_rows(EffectExpression)` Type into the
+/// pre-v1a `Vec<TermId>` shape: concrete labels followed by an optional
+/// row-tail `Var`. Walks the right-associated `merge(present(l), …, tail)`
+/// chain — see `KnowledgeBase::build_canonical_effects_rows` for the
+/// inverse build. Tolerates a missing or non-`effects_rows` wrapper by
+/// returning the original list (back-compat during the migration window).
+pub(crate) fn effects_rows_to_flat_list(kb: &KnowledgeBase, ty: TermId) -> Vec<TermId> {
+    // Unwrap effects_rows; if `ty` isn't the wrapper, treat it as a legacy
+    // List[Type] term — the previous representation, still seen in
+    // OperationInfo.effects and parameterized E bindings until those
+    // migrate.
+    let expr = match kb.get_term(ty) {
+        Term::Fn { functor, named_args, .. }
+            if kb.resolve_sym(*functor) == "effects_rows" =>
+        {
+            match get_named_arg(kb, named_args, "effects_expr") {
+                Some(e) => e,
+                None => return Vec::new(),
+            }
+        }
+        _ => return list_to_vec(kb, ty),
+    };
+    // Walk the EffectExpression algebra, collecting present-label types
+    // and the (at most one) tail Var. `absent` labels are dropped — v1a
+    // is presence-only; the flat-list shape has no slot for them.
+    let mut out: Vec<TermId> = Vec::new();
+    let mut node = expr;
+    loop {
+        let (functor_name, named_args) = match kb.get_term(node) {
+            Term::Fn { functor, named_args, .. } => {
+                (kb.resolve_sym(*functor).to_string(), named_args.clone())
+            }
+            _ => break,
+        };
+        match functor_name.as_str() {
+            "empty_row" => break,
+            "present" => {
+                if let Some(label) = get_named_arg(kb, &named_args, "label") {
+                    out.push(label);
+                }
+                break;
+            }
+            "absent" => break, // v1a: drop absences from the flat-list view
+            "open" => {
+                if let Some(tail) = get_named_arg(kb, &named_args, "tail") {
+                    out.push(tail);
+                }
+                break;
+            }
+            "merge" => {
+                // Canonical form is right-associated:
+                //   merge(present(l), <rest>)
+                // so peel the head label/tail and recurse on `right`.
+                if let Some(left) = get_named_arg(kb, &named_args, "left") {
+                    match kb.get_term(left) {
+                        Term::Fn { functor: lf, named_args: la, .. } => {
+                            let ln = kb.resolve_sym(*lf);
+                            if ln == "present" {
+                                if let Some(label) = get_named_arg(kb, la, "label") {
+                                    out.push(label);
+                                }
+                            } else if ln == "open" {
+                                if let Some(tail) = get_named_arg(kb, la, "tail") {
+                                    out.push(tail);
+                                }
+                            }
+                            // `absent` ignored (v1a presence-only).
+                        }
+                        _ => {}
+                    }
+                }
+                match get_named_arg(kb, &named_args, "right") {
+                    Some(r) => node = r,
+                    None => break,
+                }
+            }
+            _ => break,
+        }
+    }
+    out
 }
 
 /// Result + effects of a callable type (`arrow` or `Function[A, B, E]`).
@@ -6194,11 +6294,17 @@ fn arrow_compatible(kb: &KnowledgeBase, actual: TermId, expected: TermId) -> boo
 
     // Covariant effects: actual effects ⊆ expected effects.
     // A pure function (no effects) is usable where effects are declared.
+    //
+    // WI-307 v1a migration: arrow.effects is now `effects_rows(EffectExpression)`
+    // (singular Type), so decode it via the flat-list shim. The naive
+    // positional subset check below is unchanged — proper row subtyping
+    // (open-tail absorption of extras) lands in the v1a row-unification
+    // commit when this site rewires to walk the EffectExpression directly.
     let actual_effects = get_named_arg(kb, &actual_args, "effects")
-        .map(|e| list_to_vec(kb, e))
+        .map(|e| effects_rows_to_flat_list(kb, e))
         .unwrap_or_default();
     let expected_effects = get_named_arg(kb, &expected_args, "effects")
-        .map(|e| list_to_vec(kb, e))
+        .map(|e| effects_rows_to_flat_list(kb, e))
         .unwrap_or_default();
 
     for ae in &actual_effects {

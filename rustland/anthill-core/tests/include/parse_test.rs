@@ -2784,11 +2784,12 @@ fn parse_arrow_type_with_effect_set() {
 }
 
 /// End-to-end: parse an operation whose parameter is an arrow type with
-/// a 2-effect set, load into KB, and verify the resulting `arrow_effect`
-/// term carries an effects cons-list of length 2 with the expected
-/// effect functors.
+/// a 2-effect set, load into KB, and verify the resulting arrow term
+/// carries the WI-307 v1a canonical `effects_rows(EffectExpression)`
+/// payload: a right-folded `merge(present(l₁), merge(present(l₂),
+/// empty_row))` chain whose labels are the two effect functors.
 #[test]
-fn load_arrow_type_with_effect_set_preserves_list() {
+fn load_arrow_type_with_effect_set_canonical_row() {
     let source = r#"sort Modifies { sort T = ? entity Modifies(target: T) }
 sort Reads { sort T = ? entity Reads(target: T) }
 sort Host {
@@ -2814,16 +2815,61 @@ sort Host {
         Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_owned(),
         other => panic!("expected arrow Fn, got {:?}", other),
     };
-    let effects_list = named_arg(&kb, arrow_term, "effects");
-
     assert_eq!(functor_name, "arrow",
         "arrow-effect term should be built via prelude Type.arrow");
-    let effects = cons_list_to_vec(&kb, effects_list);
-    assert_eq!(effects.len(), 2);
+
+    // WI-307 v1a: the effects field is `effects_rows(effects_expr: <EX>)`,
+    // not a List. Walk the wrapper down to the EffectExpression payload.
+    let effects_field = named_arg(&kb, arrow_term, "effects");
+    let er_functor = match kb.get_term(effects_field) {
+        Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_owned(),
+        other => panic!("expected effects_rows Fn, got {:?}", other),
+    };
+    assert_eq!(er_functor, "effects_rows",
+        "arrow.effects should be wrapped in the effects_rows Type entity");
+
+    // Walk the canonical right-folded `merge(present(l), merge(...,
+    // empty_row))` chain and collect the present-label types.
+    let expr = named_arg(&kb, effects_field, "effects_expr");
+    let mut labels: Vec<anthill_core::kb::term::TermId> = Vec::new();
+    let mut node = expr;
+    loop {
+        let (functor, args) = match kb.get_term(node) {
+            Term::Fn { functor, named_args, .. } => {
+                (kb.resolve_sym(*functor).to_owned(), named_args.clone())
+            }
+            other => panic!("expected EffectExpression Fn, got {:?}", other),
+        };
+        match functor.as_str() {
+            "empty_row" => break,
+            "present" => {
+                labels.push(named_arg(&kb, node, "label"));
+                break;
+            }
+            "merge" => {
+                let left = args.iter()
+                    .find(|(s, _)| kb.resolve_sym(*s) == "left")
+                    .map(|(_, v)| *v).expect("merge.left");
+                if let Term::Fn { functor: lf, .. } = kb.get_term(left) {
+                    if kb.resolve_sym(*lf) == "present" {
+                        labels.push(named_arg(&kb, left, "label"));
+                    }
+                }
+                let right = args.iter()
+                    .find(|(s, _)| kb.resolve_sym(*s) == "right")
+                    .map(|(_, v)| *v).expect("merge.right");
+                node = right;
+            }
+            other => panic!("unexpected EffectExpression head `{}`", other),
+        }
+    }
+    assert_eq!(labels.len(), 2, "row should carry two present labels");
 
     // Each `Modifies[host]` lowers to `parameterized(base: sort_ref(name:
-    // Ref(Modifies)), bindings: cons(...))`, so drill base → name.
-    let names: Vec<String> = effects.iter().map(|&effect| {
+    // Ref(Modifies)), bindings: cons(...))`, so drill base → name. The
+    // canonical-form sort orders labels by `type_display_name`, so the
+    // order here is alphabetical (`Modifies` before `Reads`).
+    let names: Vec<String> = labels.iter().map(|&effect| {
         let base = named_arg(&kb, effect, "base");
         let name_tid = named_arg(&kb, base, "name");
         match kb.get_term(name_tid) {
@@ -2832,11 +2878,10 @@ sort Host {
         }
     }).collect();
     assert_eq!(names, vec!["Modifies".to_owned(), "Reads".to_owned()],
-        "effect bases should be Modifies, Reads in order");
+        "effect bases should be Modifies, Reads in canonical (alphabetic) order");
 
-    // Printer regression: arrows fall through to the generic Fn
-    // functor-form (no surface pretty-printing yet), but the output
-    // must still be deterministic and mention every effect's base name.
+    // Printer regression: the arrow's pretty-print must still mention
+    // every effect base name regardless of how `effects` is shaped.
     let printer = anthill_core::persistence::print::TermPrinter::new(&kb);
     let printed = printer.print_term(arrow_term);
     assert!(printed.contains("Modifies") && printed.contains("Reads"),

@@ -2358,17 +2358,32 @@ impl KnowledgeBase {
         })
     }
 
-    /// arrow(param: <type>, result: <type>, effects: List[Type]).
+    /// arrow(param: <type>, result: <type>, effects: <effects_rows Type>).
+    ///
+    /// WI-307 v1a row-substrate: `effects` is the singular
+    /// `effects_rows(EffectExpression)` Type — not `List[Type]`. The caller
+    /// still passes a flat `&[TermId]` of effect labels for ergonomics; we
+    /// canonicalize internally (sort by `type_display_name`, dedup, fold into
+    /// a right-associated `merge`-chain ending in `empty_row` for closed
+    /// rows or `open(tail)` when a `Term::Var` is present). Mixing concrete
+    /// labels and a row-tail `Var` in one list is the documented row shape:
+    /// `effects { Modify[c], E }` lowers to `[Modify[c]-term, Var(E)-term]`
+    /// → `merge(present(Modify[c]), open(?E))`.
+    ///
+    /// At most one `Term::Var` is expected (the row tail). Additional vars
+    /// past the first are folded as if they were extra labels — the
+    /// canonical form still parses, but row unification will treat them as
+    /// duplicate tails (semantically nonsensical, but representable).
     pub fn make_arrow_type(&mut self, param: TermId, result: TermId, effects: &[TermId]) -> TermId {
         let arrow_sym = self.resolve_symbol("anthill.prelude.Type.arrow");
         let param_key = self.intern("param");
         let result_key = self.intern("result");
         let effects_key = self.intern("effects");
 
-        let effects_list = self.build_list(effects);
+        let effects_rows_term = self.build_canonical_effects_rows(effects);
 
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-        named_args.push((effects_key, effects_list));
+        named_args.push((effects_key, effects_rows_term));
         named_args.push((param_key, param));
         named_args.push((result_key, result));
         named_args.sort_by_key(|(s, _)| s.index());
@@ -2377,6 +2392,141 @@ impl KnowledgeBase {
             pos_args: SmallVec::new(),
             named_args,
         })
+    }
+
+    // ── EffectExpression builders (WI-307 v1a) ──────────────────────────
+
+    /// EffectExpression `empty_row` — the closed empty row `{}` (pure).
+    pub fn make_effect_expression_empty_row(&mut self) -> TermId {
+        let sym = self.resolve_symbol("anthill.prelude.EffectExpression.empty_row");
+        self.alloc(Term::Fn {
+            functor: sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        })
+    }
+
+    /// EffectExpression `present(label: Type)` — a single present effect.
+    pub fn make_effect_expression_present(&mut self, label: TermId) -> TermId {
+        let sym = self.resolve_symbol("anthill.prelude.EffectExpression.present");
+        let label_key = self.intern("label");
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named_args.push((label_key, label));
+        self.alloc(Term::Fn {
+            functor: sym,
+            pos_args: SmallVec::new(),
+            named_args,
+        })
+    }
+
+    /// EffectExpression `absent(label: Type)` — `-e` absence guarantee.
+    /// Unused in v1a (presence-only); reserved for v1b's `lacks` constraints.
+    pub fn make_effect_expression_absent(&mut self, label: TermId) -> TermId {
+        let sym = self.resolve_symbol("anthill.prelude.EffectExpression.absent");
+        let label_key = self.intern("label");
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named_args.push((label_key, label));
+        self.alloc(Term::Fn {
+            functor: sym,
+            pos_args: SmallVec::new(),
+            named_args,
+        })
+    }
+
+    /// EffectExpression `open(tail: Type)` — a row variable tail, carrying
+    /// the tail `Type` (a `Term::Var` for an unbound row, or a resolved row
+    /// type after substitution).
+    pub fn make_effect_expression_open(&mut self, tail: TermId) -> TermId {
+        let sym = self.resolve_symbol("anthill.prelude.EffectExpression.open");
+        let tail_key = self.intern("tail");
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named_args.push((tail_key, tail));
+        self.alloc(Term::Fn {
+            functor: sym,
+            pos_args: SmallVec::new(),
+            named_args,
+        })
+    }
+
+    /// EffectExpression `merge(left, right)` — union of two expressions.
+    /// The canonical row form right-folds present labels into this:
+    /// `merge(present(l₁), merge(present(l₂), …, tail))`.
+    pub fn make_effect_expression_merge(&mut self, left: TermId, right: TermId) -> TermId {
+        let sym = self.resolve_symbol("anthill.prelude.EffectExpression.merge");
+        let left_key = self.intern("left");
+        let right_key = self.intern("right");
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named_args.push((left_key, left));
+        named_args.push((right_key, right));
+        named_args.sort_by_key(|(s, _)| s.index());
+        self.alloc(Term::Fn {
+            functor: sym,
+            pos_args: SmallVec::new(),
+            named_args,
+        })
+    }
+
+    /// Wrap an EffectExpression in the `effects_rows(effects_expr: …)` Type
+    /// entity — the bridge from EffectExpression to Type position
+    /// (WI-320 substrate). Use this when storing a row in any Type-typed
+    /// slot (e.g. `arrow.effects`, `EffectsRuntime[Effects = …]`).
+    pub fn make_effects_rows_type(&mut self, expr: TermId) -> TermId {
+        let sym = self.resolve_symbol("anthill.prelude.Type.effects_rows");
+        let expr_key = self.intern("effects_expr");
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named_args.push((expr_key, expr));
+        self.alloc(Term::Fn {
+            functor: sym,
+            pos_args: SmallVec::new(),
+            named_args,
+        })
+    }
+
+    /// Build a canonical `effects_rows(EffectExpression)` Type from a flat
+    /// `&[TermId]` of effect-list elements — the surface representation the
+    /// loader and the typer already produce (mixed `Term::Fn` concrete labels
+    /// and at most one `Term::Var` row-tail).
+    ///
+    /// **Canonical form** (so two arrow types with the same effects in
+    /// different source order hash-cons to the same TermId):
+    ///   - sort labels by `type_display_name` (stable across runs);
+    ///   - dedup adjacent identical labels (rows are sets, idempotent);
+    ///   - right-fold into `merge(present(l₁), merge(present(l₂), …, tail))`
+    ///     where `tail` is `open(?ρ)` if a Var was present, else `empty_row`.
+    ///
+    /// An empty input list with no tail yields `effects_rows(empty_row)` — the
+    /// closed pure row.
+    pub fn build_canonical_effects_rows(&mut self, effects: &[TermId]) -> TermId {
+        // Partition into present labels (Term::Fn) and row-tail Vars
+        // (Term::Var). At most one tail var is expected; if multiple appear,
+        // we treat all-but-the-first as extra labels (the canonical form
+        // still parses, but row unification will surface the malformed shape
+        // as a unification failure).
+        let mut labels: Vec<TermId> = Vec::new();
+        let mut tail_var: Option<TermId> = None;
+        for &e in effects {
+            match self.get_term(e) {
+                crate::kb::term::Term::Var(_) if tail_var.is_none() => {
+                    tail_var = Some(e);
+                }
+                _ => labels.push(e),
+            }
+        }
+        // Canonical ordering: sort by type_display_name, then dedup.
+        labels.sort_by_cached_key(|&t| crate::kb::typing::type_display_name(self, t));
+        labels.dedup();
+
+        // Right-fold: tail first, then wrap each label in present() and
+        // merge() walking back through the sorted list.
+        let mut acc = match tail_var {
+            Some(tail) => self.make_effect_expression_open(tail),
+            None => self.make_effect_expression_empty_row(),
+        };
+        for &label in labels.iter().rev() {
+            let p = self.make_effect_expression_present(label);
+            acc = self.make_effect_expression_merge(p, acc);
+        }
+        self.make_effects_rows_type(acc)
     }
 
     /// type_var(name: <sym>) — a type variable for inference.
