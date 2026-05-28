@@ -1126,32 +1126,47 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
 /// Emit the WI-320 bridge fact:
 /// `EffectsRuntime[Effects = effects_rows(effects_expr = ?fresh)]`.
 ///
-/// Parallel to `fact Effect[T = Modify[?]]` in effects.anthill (which the
-/// stdlib loader emits from a surface-syntax fact), but emitted in Rust
-/// because the surface grammar's `_type` rule does not admit entity-
-/// construction terms like `effects_rows(?)` in type-arg position. See
-/// proposal 045 §2.0.1.
+/// Parallel to `fact Effect[T = Modify[?]]` in effects.anthill, but emitted
+/// in Rust because the surface grammar's `_type` rule does not admit
+/// entity-construction terms like `effects_rows(?)` in type-arg position.
+/// See proposal 045 §2.0.1.
 ///
-/// Idempotent: a second call detects the fact via `fact_dedup` (the fact
-/// term is structurally identical across calls because the fresh-var
-/// allocation uses a stable name).
+/// **Idempotency** — `register_prelude` is called more than once on the
+/// same KB by the common test pattern (e.g. `register_prelude(&mut kb);
+/// kb.register_standard_builtins(); load::load_all(&mut kb, …)` — `load_all`
+/// itself re-enters `register_prelude`). `assert_rule_debruijn` does NOT
+/// consult `fact_dedup` (only `assert_fact` does), so an unguarded second
+/// call duplicates the rule entry in `by_sort` / `by_functor` / `by_domain`
+/// / `discrim`. We therefore early-return when `by_functor[EffectsRuntime]`
+/// is non-empty — at prelude-bootstrap time the bridge is the only fact
+/// with this functor, so a non-empty entry means the bridge is already
+/// installed.
 fn emit_effects_runtime_bridge_fact(kb: &mut KnowledgeBase) {
-    // Resolve the symbols. All defined by `register_stdlib_scopes` above
-    // (effects_rows entity of Type; EffectsRuntime sort).
+    // Resolve the symbols. Both pre-registered by `register_stdlib_scopes`
+    // above (effects_rows entity of Type; EffectsRuntime sort).
     let er_sort_sym = match kb.symbols.by_qualified_name.get("anthill.prelude.EffectsRuntime").copied() {
         Some(s) => s,
-        None => return,  // Defensive: bail if pre-registration didn't happen.
+        None => return,
     };
     let effects_rows_sym = match kb.symbols.by_qualified_name.get("anthill.prelude.Type.effects_rows").copied() {
         Some(s) => s,
         None => return,
     };
+
+    // Idempotency guard — see doc-comment above. The bridge is the only
+    // rule with EffectsRuntime as its head functor at prelude bootstrap,
+    // so a non-empty `by_functor` entry means it is already installed.
+    if !kb.by_functor(er_sort_sym).is_empty() {
+        return;
+    }
+
     let effects_field_sym = kb.intern("Effects");
     let effects_expr_field_sym = kb.intern("effects_expr");
 
-    // The inner DeBruijn-like wildcard — built as a Global var that
-    // `assert_rule_debruijn` will close to `DeBruijn(0)` at rule
-    // finalization. Name `?expr` chosen for diagnostic clarity.
+    // The inner wildcard — built as a Global var that `assert_rule_debruijn`
+    // closes to `DeBruijn(0)` at rule finalization. The name `expr` is for
+    // diagnostic display only (rendered as `?expr` by the pretty-printer's
+    // sigil convention); equality / hash-cons key on VarId uses `id` only.
     let expr_var_name = kb.intern("expr");
     let expr_vid = kb.fresh_var(expr_var_name);
     let expr_var_term = kb.alloc(Term::Var(Var::Global(expr_vid)));

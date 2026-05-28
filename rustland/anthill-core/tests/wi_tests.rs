@@ -124,3 +124,6 @@ mod if_branch_join_test;
 
 #[path = "include/wi314_region_mask_test.rs"]
 mod wi314_region_mask_test;
+
+#[path = "include/wi320_bridge_fact_test.rs"]
+mod wi320_bridge_fact_test;
