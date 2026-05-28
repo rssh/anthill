@@ -499,7 +499,7 @@ discharge them one tail at a time.
   variable. The `[simp]`/ACI/canonical-`Set` substrate (§ earlier drafts) is
   **decoupled from effect checking**: it remains only as optional machinery for
   *general* sets (and the runtime effect catalog), not on the checking path.
-  `Set`/`EffectSet` stay orphaned until a general-set consumer needs them.
+  `Set` stays orphaned until a general-set consumer needs it; **`EffectSet` was removed** (2026-05-28) — superseded by the `EffectExpression` reflect sort.
 
 ## 7. Open questions / hard points
 

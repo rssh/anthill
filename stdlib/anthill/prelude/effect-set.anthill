@@ -1,6 +1,0 @@
--- EffectSet: specialization of Set for effects.
--- Inherits all operations and laws from Set via requires.
-sort anthill.prelude.EffectSet
-  sort E = ?
-  requires Set[S = E, T = Effect[?]]
-end

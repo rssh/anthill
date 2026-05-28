@@ -10,8 +10,9 @@
    A row-variable tail (`open`) reuses the typer's type-variable substrate
    (`Type.type_var`), so effect polymorphism and propagation are ordinary
    unification of that variable (045 §5.1) — not a bespoke scheme. This is
-   the row-polymorphism design (Rémy 1989; Lindley & Cheney 2012), and it
-   supersedes the orphaned `Set`/`EffectSet` (ACI) approach (045 §6).
+   the row-polymorphism design (Rémy 1989; Lindley & Cheney 2012); the prior
+   `EffectSet` specialization of `Set` (ACI matching) is **removed**
+   (2026-05-28), superseded by this sort (045 §6).
 
    NOTE: wiring `Type.arrow.effects` (and `Function.E`) to carry an
    `EffectExpression` instead of `List[Type]`, and the row-unification that
