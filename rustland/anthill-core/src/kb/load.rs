@@ -1113,6 +1113,72 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
     register_stdlib_scopes(kb, global_raw);
     // Register builtin operations (eq, gt, add, etc.) for the resolver.
     kb.register_standard_builtins();
+    // WI-320 (proposal 045 §2.0.1) — emit the EffectsRuntime ↔ effects_rows
+    // bridge fact. Lives here in Rust (not in stdlib/effects-runtime.anthill)
+    // because surface `_type` doesn't admit entity-construction terms like
+    // `effects_rows(?)` in type-arg position. The fact registers any
+    // `effects_rows(...)`-shape Type as a valid `EffectsRuntime[Effects]`
+    // binding — the kind discrimination for the `effects E = ? requires
+    // EffectsRuntime[E]` desugaring.
+    emit_effects_runtime_bridge_fact(kb);
+}
+
+/// Emit the WI-320 bridge fact:
+/// `EffectsRuntime[Effects = effects_rows(effects_expr = ?fresh)]`.
+///
+/// Parallel to `fact Effect[T = Modify[?]]` in effects.anthill (which the
+/// stdlib loader emits from a surface-syntax fact), but emitted in Rust
+/// because the surface grammar's `_type` rule does not admit entity-
+/// construction terms like `effects_rows(?)` in type-arg position. See
+/// proposal 045 §2.0.1.
+///
+/// Idempotent: a second call detects the fact via `fact_dedup` (the fact
+/// term is structurally identical across calls because the fresh-var
+/// allocation uses a stable name).
+fn emit_effects_runtime_bridge_fact(kb: &mut KnowledgeBase) {
+    // Resolve the symbols. All defined by `register_stdlib_scopes` above
+    // (effects_rows entity of Type; EffectsRuntime sort).
+    let er_sort_sym = match kb.symbols.by_qualified_name.get("anthill.prelude.EffectsRuntime").copied() {
+        Some(s) => s,
+        None => return,  // Defensive: bail if pre-registration didn't happen.
+    };
+    let effects_rows_sym = match kb.symbols.by_qualified_name.get("anthill.prelude.Type.effects_rows").copied() {
+        Some(s) => s,
+        None => return,
+    };
+    let effects_field_sym = kb.intern("Effects");
+    let effects_expr_field_sym = kb.intern("effects_expr");
+
+    // The inner DeBruijn-like wildcard — built as a Global var that
+    // `assert_rule_debruijn` will close to `DeBruijn(0)` at rule
+    // finalization. Name `?expr` chosen for diagnostic clarity.
+    let expr_var_name = kb.intern("expr");
+    let expr_vid = kb.fresh_var(expr_var_name);
+    let expr_var_term = kb.alloc(Term::Var(Var::Global(expr_vid)));
+
+    // Build `effects_rows(effects_expr = ?expr)`.
+    let effects_rows_term = kb.alloc(Term::Fn {
+        functor: effects_rows_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(effects_expr_field_sym, expr_var_term)]),
+    });
+
+    // Build the head: `EffectsRuntime(Effects = effects_rows(effects_expr = ?expr))`.
+    let head = kb.alloc(Term::Fn {
+        functor: er_sort_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(effects_field_sym, effects_rows_term)]),
+    });
+
+    // The fact's sort is `EffectsRuntime` itself — same convention as the
+    // stdlib's `fact Effect[T = Modify[?]]` (its fact sort is `Effect`).
+    let er_sort_as_sort_term = kb.alloc(Term::Fn {
+        functor: er_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+    });
+
+    // Assert via `assert_rule_debruijn` to close the Global var to a
+    // DeBruijn — fact = rule with empty body.
+    kb.assert_rule_debruijn(head, vec![], er_sort_as_sort_term, er_sort_as_sort_term, None);
 }
 
 /// Create the stdlib scope hierarchy for names the loader references directly.
@@ -1189,6 +1255,23 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.define("effects_rows", "anthill.prelude.Type.effects_rows", SymbolKind::Entity, type_sort_term.raw());
     kb.symbols.define("TypeField", "anthill.prelude.Type.TypeField", SymbolKind::Entity, type_sort_term.raw());
     kb.symbols.define("TypeBinding", "anthill.prelude.Type.TypeBinding", SymbolKind::Entity, type_sort_term.raw());
+
+    // anthill.prelude.EffectsRuntime — variant-7 kind anchor (WI-320).
+    // Pre-registered so the bridge-fact emission below can resolve the
+    // symbol and assert the fact before stdlib loads. The stdlib file
+    // `prelude/effects-runtime.anthill` re-declares the sort with its
+    // `sort Effects = ?` parameter; the re-declare is idempotent (the
+    // loader's existing `if defined` guards skip the symbol). No
+    // entities, no operations — scope A is a pure kind anchor.
+    let er_sort_sym = kb.symbols.define("EffectsRuntime", "anthill.prelude.EffectsRuntime", SymbolKind::Sort, prelude_term.raw());
+    let er_sort_term = kb.alloc(Term::Fn {
+        functor: er_sort_sym, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(er_sort_term.raw(), ScopeInclusion {
+        parent_scope_raw: prelude_term.raw(),
+        instantiation_term_raw: prelude_term.raw(),
+        is_enclosing: true,
+    });
 
     // anthill.prelude.Option sort
     let option_sym = kb.symbols.define("Option", "anthill.prelude.Option", SymbolKind::Sort, prelude_term.raw());
