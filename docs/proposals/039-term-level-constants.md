@@ -2,23 +2,28 @@
 
 ## Status
 
-Draft. Driver is WI-084: webots binding sentinels and safety-proof magic numbers need a named, typed, single-point-of-definition shape that is unifiable as the underlying primitive type at every use site. Today's workarounds — `entity NAME` + a side fact, or unit-sort-with-coercion — fail that requirement.
+Draft — cleanup pass 2026-05-28: dropped stale Cell.new "effect-pure" threads (superseded by 027.1), pinned the foldable subset and cycle-detection stage, resolved the original Open Questions, surfaced four new ones (A–D) that gate Phase 3+4.
+
+Driver is WI-084: webots binding sentinels and safety-proof magic numbers need a named, typed, single-point-of-definition shape that is unifiable as the underlying primitive type at every use site. Today's workarounds — `entity NAME` + a side fact, or unit-sort-with-coercion — fail that requirement.
 
 ## Depends on
 
 - [018-expressions-and-operation-implementation](018-expressions-and-operation-implementation.md) — operation expression bodies. A constant is a 0-arg operation whose body is the value.
-- [026-expression-evaluator](026-expression-evaluator.md) — load-time evaluator. The validator that gates `const` runs the evaluator over the body in load-time mode.
+- [026-expression-evaluator](026-expression-evaluator.md) — load-time evaluator. The §Validator runs the evaluator over the body in a foldable-subset mode (see §Validator for the subset).
+- [027.1-alloc-effect-and-allocator-revision](027.1-alloc-effect-and-allocator-revision.md) — fresh allocators carry `effects Modify[result]`. This is what excludes `Cell.new`, `Map.empty`, etc. from const-foldability without a special case.
+- [045-effect-sets-and-expressions](045-effect-sets-and-expressions.md) — effect-row language. The foldability and bare-call rules are phrased over the declared effect row.
 
 ## Relates to
 
-- [037-anthill-state-model](037-anthill-state-model.md) — `Cell.new` is declared effect-pure today. Whether `const C: Cell[Int] = Cell.new(0)` is admissible reduces to 037's effect story for allocation; this proposal stays compatible with the 037-as-it-stands answer and with a future revision.
+- [037-anthill-state-model](037-anthill-state-model.md) — state model for mutable resources. Originally framed `Cell.new` as effect-pure; 027.1 superseded that and is what this proposal relies on.
+- [042-explicit-type-parameters-on-operations](042-explicit-type-parameters-on-operations.md) — bracketed type parameters on operations. The Phase 4 adoption of algebraic identities (`Ring.zero`, etc.) routes through the parametric-operation form and is gated on 042.
 - WI-084 (driver), WI-083 (Bytes — adjacent magic-number territory), WI-156 (scaland resync).
 
 ## Affects
 
 - Kernel-language spec §5 (new sugar form documented as §6.X under "Syntactic Sugar"), §6.
-- Grammar (`grammar.js`): one new construct `Const`, both with body and bodyless.
-- Resolver: new symbol kind check at term-position resolution (bare call sugar for pure 0-arg ops — broader than just constants; see §Call-site sugar).
+- Grammar (`grammar.js`): one new construct `Const`, with-body and bodyless. Slots into both `_body_namespace` and `_body_sort` (the same positions as `operation_declaration`).
+- Resolver: new symbol-kind check at term-position resolution (bare-call sugar for 0-arg ops with empty declared effect row — broader than just constants; see §Call-site sugar).
 - Stdlib + examples: opportunistic adoption (webots sentinels first; safety_common's `D_MIN`/`D_MAX` second).
 
 ## Motivation
@@ -55,7 +60,7 @@ The host-binding case and algebraic-identity case are the load-bearing drivers; 
 
 ## Design
 
-A `const` is sugar for a **0-arg pure operation**, optionally with an expression body. The kernel never sees a `Const` construct — it sees the desugared operation. The validator is what gives `const` its meaning.
+A `const` is sugar for a **0-arg operation with an empty declared effect row**, optionally with an expression body. The kernel never sees a `Const` construct — it sees the desugared operation. The §Validator is what gives `const` its meaning.
 
 ### Surface form
 
@@ -104,47 +109,78 @@ operation NAME -> T
 -- (no body — open obligation, filled by an implementation)
 ```
 
-Both forms produce a 0-arg operation with no `effects` clause. The lack of effects is what makes the operation pure, what makes the call-site sugar apply, and what permits load-time folding.
+Both forms produce a 0-arg operation with no `effects` clause (i.e. an empty declared effect row). This is what makes the call-site sugar apply (§Call-site sugar) and what permits load-time folding (§Validator).
 
 ### Validator
 
 `const` enforces three conditions beyond what a plain `operation` requires:
 
 1. **Zero arguments.** Required by the surface grammar — `const NAME: T = ...` has no parameter list.
-2. **No effects.** The desugared operation has no `effects` clause; user attempts to add one are rejected at parse time (the `const` keyword's grammar position doesn't admit an effects clause).
-3. **Foldable body** (when body is present). The body must be a closed expression that the load-time evaluator (proposal 026) can reduce to a single ground term. Conditions:
-   - All references resolve at load time.
-   - No free logical variables.
-   - Only calls to other pure operations whose bodies are themselves foldable. Cycles rejected.
-   - No effectful constructs.
+2. **Empty declared effect row.** The desugared operation has no `effects` clause (equivalently, `effects ()` once 045's empty-set syntax is in). User attempts to add one are rejected at parse time — the `const` keyword's grammar position doesn't admit an effects clause.
+3. **Foldable body** (when body is present). See §Foldable subset below. A `const` whose body is not foldable is a load-time error with a pointer to the offending sub-expression.
 
-A `const` whose body is *not* foldable is a load-time error with a pointer to the offending sub-expression.
+The same foldability check applies to **every anthill-side body** that fills the obligation — whether it is the declaration body, or a body supplied later via an `Implementation` fact's rule clauses. Host-language `Implementation`s (Rust / Scala / C++) waive the check, since the kernel cannot inspect their body; the resulting `Constant` reflection fact (see §Reflection) is omitted in the host-language case until codegen has produced a folded literal it can echo back.
 
-### Call-site sugar — bare for pure 0-arg, parens for effectful
+#### Foldable subset
 
-In term position, an identifier `Name` resolves to a 0-arg operation call when `Name` denotes an operation declared with no `effects` clause (or `effects ()`). For effectful 0-arg operations, the explicit `Name()` form is required.
+A body is **foldable** iff it lies in the following closed grammar, evaluated by proposal 026's evaluator in *fold mode* (no environment, no allocation, no effects):
+
+- **Literals** of the primitive sorts: `Int`, `BigInt`, `Float`, `String`, `Bool`, `Char`.
+- **References** to other `const`-declared names whose own bodies are foldable. (Forward references across files are allowed within one load pipeline pass; see §Cycle detection.)
+- **Calls to operations whose declared effect row is empty** *and* whose body is itself foldable. This recursively excludes allocators (`Cell.new`, `Map.empty`, `Substitution.empty`) since they carry `Modify[result]` per 027.1.
+- **Entity construction** with foldable arguments — `Point(x: 1.0, y: 2.0)` is foldable; an entity field set to a Cell or arena handle is not.
+
+Explicitly **not** foldable: logical variables (`?`, `?name`); operation calls with any declared effect; expressions that depend on the evaluator's activation stack (let-bindings inside a body — discussed under §Open Questions whether to admit); KB queries; pattern matching (use the long-form operation if you need it).
+
+Implementation note: fold mode is a designated entry point on proposal 026's evaluator that returns `Result<Value, FoldError>` instead of the streaming `LogicalStream`. The check is *static* — no runtime branch reads the value; foldability failure is a load-time diagnostic.
+
+#### Cycle detection
+
+After `scan_definitions` populates the symbol table but before expression typing runs, the loader builds the **const-dependency graph** — one node per `const`-declared symbol, edges to every other `const` symbol referenced from its body. Tarjan's SCC pass detects cycles; any SCC of size > 1, or a self-edge, is reported with the cycle path and rejected.
+
+Cross-namespace forward refs are allowed (the dependency graph is built over the whole loaded set, not file-by-file). The order in which folded values are computed is the reverse topological order of the SCC quotient graph.
+
+#### `Constant` reflection fact lifecycle
+
+For declaration-with-body `const`, the `Constant(name, type, value)` fact is asserted at the end of fold-mode execution for that declaration — i.e. once during load, in topological order.
+
+For bodyless `const` declarations filled by an `Implementation` fact, the fact is asserted **at Implementation pairing**: when the loader pairs an `Implementation[S]` fact with the obligation `S.NAME`, it re-runs fold mode over the supplied rule body. Success asserts the `Constant` fact; failure rejects the Implementation.
+
+Under proposal 037's profile-keyed Implementations, multiple Implementations may coexist (one per profile). Each emits its own `Constant` fact keyed by profile — the reflection schema is `Constant(name, type, value, profile)` (profile defaults to a `default` symbol when the Implementation does not declare one). The load-time selector picks one Implementation per profile and binds the corresponding `Constant` for downstream queries.
+
+### Call-site sugar — bare for empty-row 0-arg, parens for everything else
+
+In term position, an identifier `Name` resolves to a 0-arg operation call when `Name` denotes an operation whose **declared effect row is empty** (no `effects` clause, or `effects ()`). For 0-arg operations with any declared effect, the explicit `Name()` form is required.
+
+`Name` covers both short names (`BROADCAST_CHANNEL`, `zero-val`) and qualified paths (`PersistentMap.empty`, `anthill.prelude.Numeric.zero-val`). The resolver's existing dotted-path lookup runs first; the call-site sugar then applies uniformly to whatever symbol the path resolves to. As of today, a qualified bare form like `PersistentMap.empty` (no parens) is reported as an unresolved name (the dotted-path resolver returns the operation symbol but the term-position rule expects a value); Phase 2 lifts both short and qualified bare forms in one go.
 
 ```anthill
-set_channel(em, BROADCAST_CHANNEL)       -- bare; BROADCAST_CHANNEL is a pure 0-arg op (a const)
-let c = Cell.new(0)                       -- parens required for effectful ops
-let m = Map.empty()                       -- parens, even though Map.empty has no effects today (037)
+set_channel(em, BROADCAST_CHANNEL)        -- bare; BROADCAST_CHANNEL is a 0-arg op with empty row (a const)
+let c = Cell.new(0)                        -- parens required: Cell.new has effects Modify[result] (027.1)
+let m = Map.empty()                        -- parens required: Map.empty has effects Modify[result] (027.1)
+let zv = anthill.prelude.Numeric.zero-val  -- bare; zero-val is a 0-arg op with empty row
 ```
 
-This is broader than constants — it's a property of pure 0-arg operations generally. `const`-declared names ride on the same rule. Cf. Scala 3's `def x = 42` (parenless) vs `def x() = 42`; the opposite of Eiffel's uniform-access principle (which hides effects and is widely cited as the wrong call).
+This is broader than constants — it's a property of 0-arg operations with empty rows generally. `const`-declared names ride on the same rule. Cf. Scala 3's `def x = 42` (parenless) vs `def x() = 42`; the opposite of Eiffel's uniform-access principle, which hides effects and is widely cited as the wrong call.
 
-Note that 037-style "pure but identity-distinguishing" allocators (`Map.empty`, `Cell.new`) sit in an interesting position under this rule: by 037's effect declaration they qualify as "pure 0-arg" and would be bare-callable. Whether the call-site sugar should *also* require empty-effect-row at *runtime* (not just at declaration), so identity-allocating ops keep their parens, is captured under Open Questions.
+The rule applies to the **declared** effect row, not to the inferred body-flow row. A 0-arg op declared `effects ()` whose body calls `Cell.new` is still bare-callable at the use site — the discrepancy between declared and inferred row is a separate diagnostic (proposal 045) and not this proposal's concern.
+
+A row-polymorphic declaration (`effects ?E` with `E` unbound) is **not** an empty row; such ops require parens. This is conservative — if a future caller could instantiate `?E` to a non-empty set, the call site shouldn't be bare.
 
 ### Reflection
 
 Every `const NAME: T = EXPR` produces, in addition to the desugared operation, an automatic reflection fact:
 
 ```
-fact Constant(name: "anthill.examples.lf1.webots.BROADCAST_CHANNEL",
-              type:  Int,
-              value: -1)
+fact Constant(name:    "anthill.examples.lf1.webots.BROADCAST_CHANNEL",
+              type:    Int,
+              value:   -1,
+              profile: default)
 ```
 
-For the bodyless case (no value known until an implementation arrives), no `Constant` fact is asserted at declaration; instead, the operation's open-obligation state is observable through the usual `Operation` / `Implementation` reflection. When an implementation provides a foldable body, the kernel asserts the `Constant` fact lazily.
+The `profile` field exists to disambiguate between multiple `Implementation`-supplied bodies under proposal 037's profile-keyed Implementations (see §Validator → `Constant` fact lifecycle). For declaration-with-body `const`, `profile` is `default`.
+
+For the bodyless case, no `Constant` fact is asserted at declaration time — the operation's open-obligation state is observable through the usual `Operation` / `Implementation` reflection. When an Implementation provides a foldable body, the kernel asserts the `Constant` fact at the Implementation-pairing step, keyed by the Implementation's profile.
 
 The `Constant` fact is what codegen, IDE tooling, and KB queries use to enumerate constants. It is *additional* to — not a replacement for — the desugared operation, mirroring how proposal 022 already adds `TypeOf` facts alongside expression occurrences.
 
@@ -217,7 +253,7 @@ fact Implementation[Ring[R = Int]]
 end
 ```
 
-Note: an implementation that supplies `rule zero = some_effectful_expr` would type-check against the operation signature but fail the const-validator's "implementation must be foldable, effect-free" check at the implementation-pairing step. This catches a class of error that today's bodyless-operation form silently admits.
+Note: an implementation that supplies `rule zero = some_effectful_expr` would type-check against the operation signature but fail the foldability check at the implementation-pairing step (§Validator → `Constant` fact lifecycle). This catches a class of error that today's bodyless-operation form silently admits.
 
 ### Const-expression composition (post-026)
 
@@ -229,74 +265,85 @@ const TWO_PI:    Float = 2.0 * PI
 const HALF_PI:   Float = PI / 2.0
 ```
 
-Cycles (`const A = B + 1; const B = A + 1`) are detected by topological sort during the fold phase and rejected with a cycle-path diagnostic.
+Cycles (`const A = B + 1; const B = A + 1`) are detected by the SCC pass over the const-dependency graph (§Cycle detection) and rejected with a cycle-path diagnostic.
 
-## Interaction with proposal 037 (Cell, allocators)
+## Interaction with proposals 027.1 and 037 (allocators)
 
-Proposal 037 declares allocators like `Cell.new`, `Map.empty`, `Substitution.empty` as **effect-pure but identity-distinguishing**:
-
-> Construction is allocation, not mutation — it doesn't modify any existing Cell, so it doesn't carry `Modify[anything]`. […] Two calls to `Cell.new(0)` produce two distinct cells even with identical initial values. Identity is allocation-time, not value-time. (037 §2 / §Identity)
-
-Under 037-as-it-stands, this proposal's validator admits `Cell.new(0)` as a `const` body — it has no effect declaration, and "foldable" reduces to "the evaluator can produce a single ground term for this call." That produces a useful semantics:
+Per proposal 027.1, fresh-allocator operations carry `effects Modify[result]`:
 
 ```anthill
-const COUNTER: Cell[Int] = Cell.new(0)
+-- stdlib/anthill/prelude/cell.anthill:20-21
+operation new(v: V) -> Cell
+  effects Modify[result]
 ```
 
-This is a **singleton cell**: the body folds once at load time, allocating exactly one Cell handle; all references to `COUNTER` are that same handle. Matches the C++/Rust `static`/`constexpr`-anchored singleton pattern.
+Their declared effect row is non-empty, so the §Validator rejects them as `const` bodies and the §Call-site sugar requires parens. `const COUNTER: Cell[Int] = Cell.new(0)` is a load-time error: "body calls operation `Cell.new` with non-empty effect row `{Modify[result]}` — not foldable."
 
-The "`Cell.new() ≠ Cell.new()`" property still holds for two *separate* call sites (`let c1 = Cell.new(0); let c2 = Cell.new(0)`) — different syntactic occurrences, different folds, different handles. A `const` collapses them: one syntactic occurrence (the const declaration), one fold, one handle.
+This is the intended result. A const denotes value-level referential transparency: two reads of the same const are observationally indistinguishable. An allocator violates that — two reads of a load-time-initialised cell are the *same handle*, but the user-level semantics ("this constant has identity, mutating it from one site changes the other") rarely matches what a reader of `const COUNTER: ...` expects. If a load-time singleton is genuinely wanted, declare the operation explicitly:
 
-If 037 is later revised to give `Cell.new` an explicit effect (see "Brainstorm carryover" below), the validator's "no effects" condition would reject `Cell.new(0)` as a const body and force the user to write the long form with explicit allocation context. The proposal-039 surface and desugaring remain unchanged either way; only the validator's pass/fail flips per allocator.
+```anthill
+operation counter() -> Cell[Int]
+  effects Modify[result]
+  = Cell.new(0)
+```
 
-## Equational reasoning and generativity
+…and call it at use sites. The explicit signature makes the effect visible to readers.
 
-The proposal pivots on a single equational fact: a 0-arg operation with no effects and a foldable body is *referentially transparent*. Multiple occurrences may be replaced by a shared value without changing meaning. This is the standard algebraic-effects framing — pure computations admit common-subexpression elimination and let-introduction freely; effectful ones don't.
+Map/Substitution/Stream's stdlib signatures are mid-migration to 027.1 — `cell.anthill` is up to date, `map.anthill` and `substitution.anthill` still have bare `empty()` and are tracked as a follow-up cleanup (TODO at `docs/proposals/037-anthill-state-model.md` §327). The validator's rejection rule fires off the declared effect row at the moment of fold; once the migration completes, all allocators will be rejected uniformly without 039 needing further changes.
 
-When this breaks down — operations like `Cell.new`, `rand()`, SML's generative functor application — the relevant literature is:
+## Equational reasoning
 
-| Work | Relevance |
-|---|---|
-| Pitts & Stark, *nu-calculus* (1993) | Formal calculus for fresh-name generation as an effect. |
-| Milner, Tofte, Harper, *Definition of SML* (1990, '97 rev.) | Generative functor application — same shape as `Cell.new() ≠ Cell.new()` lifted to types. |
-| Plotkin & Power, *Algebraic Operations and Generic Effects* (2003) | `new : 1 → Loc` as the canonical "no input, still not pure" example. |
-| Plotkin & Pretnar, *Handlers of Algebraic Effects* (2009) | Handler framework underlying Frank / Eff / Koka. |
-| Levy, *Call-By-Push-Value* (1999) | Syntactic value/computation distinction — a const is a value, `Cell.new()` is a computation. |
-| Leijen, *Koka* (2014–) | Row-polymorphic effects with `heap` for allocation, `ndet` for randomness. |
-
-Proposal 039 takes the conservative position: rely on the existing anthill effect-declaration mechanism to mark non-pure 0-arg operations. The deeper question of whether 037-style "pure-but-identity-distinguishing" is the right effect-system stance for anthill is out of scope here and tracked separately (see "Brainstorm carryover").
+The proposal pivots on referential transparency: a 0-arg operation with an empty declared effect row and a foldable body denotes the same value at every occurrence. Multiple occurrences may be replaced by a shared value without changing meaning. The generativity question (`Cell.new() ≠ Cell.new()`, SML's generative functor application, `rand()`) is handled outside this proposal — 027.1's `Modify[result]` marks any operation whose call sites can't be collapsed, and the §Validator excludes those. The classical framing is Plotkin & Power's *Algebraic Operations and Generic Effects* (2003), `new : 1 → Loc` as the canonical "no input, still not pure" example; anthill's effect system encodes the same distinction via 027.1's row.
 
 ## Out of scope
 
-- **Parametric constants** (`const empty[T]: List[T] = nil`). Falls naturally into the operation-with-body form (`operation empty[T] -> List[T] { nil }`); the `const`-keyword shorthand is intentionally monomorphic in v1. Defer.
+- **Parametric constants** (`const empty[T]: List[T] = nil`). Falls into the operation-with-body form (`operation empty[T] -> List[T] = nil`); the `const`-keyword shorthand is intentionally monomorphic in v1. Defer. Note this escape hatch is gated on proposal 042 (bracketed type parameters on operations) landing.
 - **Multi-clause "constants"**. Use the long form (`operation` + multiple `rule` clauses or a `match` body). `const` is the explicit declaration of "this name has one foldable value."
 - **Cross-KB override semantics**. Can a downstream namespace redefine an imported constant? Default: no. Override mechanism is a separate proposal in proof-context / scoped-KB territory.
-- **The `Cell.new` effect question**. Whether `Cell.new` should carry an `Alloc`/`Fresh`/`Modify[Heap]` effect is a 037 revision, not a 039 concern.
+- **Allocator-as-const ergonomics**. The "singleton cell at load time" pattern (`const COUNTER: Cell[Int] = Cell.new(0)` under the pre-027.1 effect model) is rejected by this proposal's validator; the explicit-operation workaround in §Interaction with proposals 027.1 and 037 covers the same need with the right effect signature visible to readers.
+
+## Resolved questions
+
+The following were open in earlier drafts and are now settled:
+
+1. **Call-site sugar scope (was Q1).** The bare-identifier rule applies to any 0-arg operation with an empty declared effect row, not specifically to `const`-declared names. Clean now that 027.1 puts allocators in the parens camp via their declared row.
+2. **`Constant` reflection fact (was Q2).** Add it. Small, focused, parallels `Description` and `Implementation`. See §Reflection and §Validator → `Constant` fact lifecycle for the multi-Implementation refinement.
+3. **Description-block placement (was Q3).** Yes — identical treatment to operations.
+4. **`const` inside an operation body (was Q4).** No — `let` already exists in body scope with the right semantics. `const` is a namespace/sort-scope declaration. Reduces grammar surface.
+5. **Singleton-handle constants (was Q5).** Reject — 027.1's `Modify[result]` on allocators causes the validator to refuse `const COUNTER: Cell[Int] = Cell.new(0)`. The workaround (explicit operation with the effect signature) is documented in §Interaction with proposals 027.1 and 037.
 
 ## Open questions
 
-1. **Call-site sugar scope** — should the bare-identifier rule apply to *any* operation with no declared effects, or specifically to `const`-declared names? The proposal recommends *any pure 0-arg op*, which gives a clean rule but admits `let m = Map.empty` (no parens). The trade-off is consistency vs the loss of the visual "this call site does something" cue for identity-distinguishing allocators. **Suggested resolution**: bare for `effects ()` operations regardless of declaration form; revisit if/when 037 gets an explicit allocator effect, which would naturally re-park `Map.empty`/`Cell.new` in the parens camp.
+These are the live questions surfaced in the cleanup pass; the proposal can land Phase 1+2 without resolving them, but Phase 3+4 are blocked until they are.
 
-2. **Const fact reflection — `Constant` or rely on `Operation` + body inspection?** The proposal adds a `Constant(name, type, value)` reflection fact. Alternative: don't add a new fact kind; let consumers query `Operation` facts with arity 0, no effects, and walk to the body for the value. Trade-off: ergonomics of consumer queries vs proliferating reflection-fact kinds. **Suggested resolution**: add `Constant` (small, focused, parallels `Description` and `Implementation`).
+A. **Foldable-subset boundary — let-bindings in const bodies?** §Foldable subset currently excludes let-bindings inside a body (they require the evaluator's activation stack). But `const TWO_PI: Float = 2.0 * PI` already requires the evaluator to consult the const-environment. Letting `const X: Float = { let p = PI; 2.0 * p }` work is a small extension if the foldable subset is "literals + prim ops + const-refs + entity construction + let over the same." Decide before Phase 3.
 
-3. **Description-block placement** — does the standard `DescriptionBlock*` prefix apply to constants the same way as to other declarations? **Suggested resolution**: yes, identical to operations.
+B. **Bare-name precedence vs ADT-variant resolution.** Kernel-language §6 (around line 1419-1423) declares bare names like `Open` may resolve to an ADT variant (`WorkStatus.Open`) and explicitly prefers "ambiguous error" over silent wins. Phase 2 adds 0-arg-op call as a new candidate. When the same bare name has both a 0-arg-op-with-empty-row and an ADT-variant binding in scope, what does the resolver do — ambiguous error, or new precedence rule? The cleanest answer is "ambiguous error" — but that breaks any name that happens to collide (e.g. `nil` as an ADT variant of `List` and as a 0-arg op somewhere else).
 
-4. **`const` inside an operation body — does it exist?** Today, operation bodies have `let`-binding (proposal 018). Should there also be `const` at body scope? **Suggested resolution**: no — `let` already exists with the right semantics inside a body. `const` is a namespace/sort-scope declaration. Reduces grammar surface.
+C. **Foldability of Implementation-supplied bodies — host-language case.** §Validator says host-language `Implementation`s waive the foldability check and the `Constant` fact emission is deferred to codegen echo-back. But codegen doesn't always run in the same load cycle (e.g. spec-only verification mode). Specify whether `Constant` is asserted at codegen-completion or whether a separate trust marker (e.g. `TrustedConstant`) is asserted at Implementation-pairing pending codegen confirmation.
 
-5. **Singleton-handle constants — admit or reject?** `const COUNTER: Cell[Int] = Cell.new(0)` produces a load-time-allocated singleton under 037-as-it-stands. Useful (matches `static AtomicI32` patterns); but the user-visible semantics ("this constant has identity, two references to it are the same cell") may surprise readers who expect a constant to behave like a value-typed primitive. **Suggested resolution**: admit; document explicitly as the singleton pattern. Re-litigate if 037 revises Cell.new's effect.
+D. **Profile-keyed `Constant` reflection — concrete schema.** §Validator → `Constant` fact lifecycle proposes `Constant(name, type, value, profile)`. The kernel-language spec doesn't yet have a "current profile" concept the resolver can scope a query against — KB queries match `Constant(name: "X", ?)` and get all profile variants. Confirm this is the wanted semantics (downstream consumer filters), or whether the resolver should pre-filter by an ambient profile binding.
 
 ## Migration / phasing
 
-**Phase 1 — grammar + desugaring.** Add `const` to `grammar.js`, the parser/converter, and the loader. Bodyless and body forms both. No validator yet — just sugar that produces the operation form. Test that `set_channel(em, BROADCAST_CHANNEL)` parses, desugars to the operation form, and the operation call works at runtime.
+Each phase lands independently with its own tests, except where a phase depends on another proposal landing first.
 
-**Phase 2 — call-site sugar.** Extend resolver: an identifier in term position that resolves to a 0-arg op with no `effects` clause is treated as a call. Test that bare `BROADCAST_CHANNEL` works at use sites; parens form still works for any operation; effectful 0-arg ops still require parens.
+**Phase 1 — grammar + desugaring.** Add `const` to `grammar.js`, the parser/converter, and the loader. Bodyless and body forms both. Slots into `_body_namespace` and `_body_sort`. No validator yet — just sugar that produces the operation form. Test that `set_channel(em, BROADCAST_CHANNEL)` parses, desugars to the operation form, and the operation call works at runtime.
 
-**Phase 3 — validator.** Add the foldability/no-effects/no-args check at load time. Test rejection of effectful bodies and unfoldable expressions. Emit `Constant` reflection facts.
+Independent of any other in-flight proposal.
 
-**Phase 4 — adoption.** Convert lf1 webots sentinels first (BROADCAST_CHANNEL, motor velocity-mode infinity). Then safety_common's `D_MIN`/`D_MAX`. Stdlib algebraic identities (`Ring.zero`, `Group.identity`, etc.) come with the algebra refresh, not as part of this proposal.
+**Phase 2 — call-site sugar.** Extend the resolver: an identifier in term position that resolves to a 0-arg op with empty declared effect row is treated as a call. Test that bare `BROADCAST_CHANNEL` works at use sites; the parens form still works for any operation; ops with any declared effect still require parens.
 
-Each phase lands independently with its own tests.
+Precondition: Open Question B (bare-name precedence vs ADT-variant resolution) is resolved.
 
-## Brainstorm carryover
+**Phase 3 — validator.** Add the foldability check at load time. Land:
+- The foldable-subset checker (§Foldable subset).
+- Cycle detection over the const-dependency graph (§Cycle detection).
+- `Constant` reflection-fact emission (§Validator → `Constant` fact lifecycle).
+- The same check applied at `Implementation`-pairing for bodyless consts.
 
-The work that surfaced this proposal also raised a question that does *not* belong here: **what effect, if any, should `Cell.new` (and `Map.empty`, `Substitution.empty`, `rand`) carry?** Today's 037 stance — pure-but-identity-distinguishing — is a non-standard choice in the algebraic-effects literature. Whether to keep it, or to introduce an `Alloc[Heap]` / `Fresh` / `ndet` effect that matches Koka / Frank / Eff, is a 037 revision worth its own proposal. This proposal stays compatible with either resolution; the validator's pass/fail flips per-allocator, but the surface and desugaring don't change.
+Preconditions: proposal 026's evaluator has a fold-mode entry point (no-environment, no-effects, returns `Result<Value, FoldError>`). Open Questions A, C, D resolved.
+
+**Phase 4a — concrete-literal adoption.** Convert lf1 webots sentinels first (BROADCAST_CHANNEL, motor velocity-mode infinity), then safety_common's `D_MIN`/`D_MAX`. These need only Phase 1+2+3 with the primitive-literal subset of foldability; no upstream-proposal dependency.
+
+**Phase 4b — algebraic-identity adoption.** Stdlib `Ring.zero`, `Group.identity`, etc. — the bodyless-const-over-parametric-sort case. Gated on proposal 042 (bracketed type parameters on operations) since the parametric-operation desugaring (`operation empty[T] -> List[T] = nil`) needs the bracket form in `operation_declaration`.
