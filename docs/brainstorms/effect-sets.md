@@ -1,6 +1,6 @@
 # Effect sets
 
-## Status: Brainstorming draft — **promoted to Proposal 045** (`docs/proposals/045-effect-sets-and-expressions.md`)
+## Status: Brainstorming draft — **promoted to Proposal 045** (`docs/proposals/045-effect-sets-and-expressions.md`); **variant 7 adopted 2026-05-28** (Scope A — substrate only; the §"Addendum — `EffectsRuntime` as the handler-bundle witness" remains a captured follow-on)
 
 How effect *sets* (rows) should work in anthill — representation, kinds, syntax,
 and checking. This records the exploration, the variant space (A/B/D/E/F), and
@@ -396,6 +396,12 @@ cover the common cases (`Function`, `Stream`, `map`); this is the *free
 standalone operation* case. (Tracked as **WI-318**; 045 §2.1 sketches a
 candidate.)
 
+> **Resolution (2026-05-28):** **WI-318 closed** by adoption of variant 7 (below).
+> `[A, B, E]` is uniform; the `effects E` clause is the binding site; the
+> loader auto-emits `requires EffectsRuntime[E]` per free variable. None of
+> the six sub-variants is taken — the whole question dissolves under the
+> auto-requires mechanism.
+
 Variants — 1–3 from the question, 4–6 added:
 
 1. **Bare list, kind by use.** `[A, B, E]`; the loader kinds each entry by *how
@@ -633,3 +639,378 @@ The whole kind question therefore collapses onto a single design fork that is
 downstream of two larger questions: **027's handler model** (stay ambient, or
 expose handler bundles as values?) and **whether anthill adopts `Effectful[R]`
 reification**. Both are bigger than the param-list itself.
+
+## Variant 7 — `effects_rows` as a `Type` variant + `effects` as kind-sugar  *(added 2026-05-28, follow-on) — **ADOPTED 2026-05-28** into proposal 045 (Scope A; the §"Addendum" handler-bundle role is a separate captured follow-on)*
+
+This is **variant 2** ("effect-set = a recognised sub-kind of `Type`") made
+concrete, taking the previous chapter's verdict (effect-rows qualify as types
+under the modern definition) at face value. The whole proposal collapses to
+**one `Type` variant + one keyword + one inference rule**, with everything else
+falling out as sugar over the existing type-param substrate.
+
+### The minimal substrate
+
+Three reflect-side ingredients:
+
+1. **One new `Type` enum variant** — in `stdlib/anthill/prelude/sort.anthill`
+   (the file is `prelude/sort.anthill` today; the user-facing path is
+   `anthill.reflect.Type`):
+
+   ```anthill
+   enum Type
+     ...
+     entity arrow(param: Type, result: Type, effects: List[Type])
+     entity denoted(value: NodeOccurrence)
+     entity effects_rows(effects_expr: EffectExpression)   -- NEW
+     entity nothing
+     ...
+   end
+   ```
+
+   `effects_rows` is exactly parallel to `denoted`: a non-`Type` payload (here
+   `EffectExpression`, there `NodeOccurrence`) brought into `Type` position via
+   one structural constructor. G1's `EffectExpression` reflect sort is
+   unchanged — it remains the row algebra with its own normal form
+   (`present` / `absent` / `open` / `merge` / `empty_row`); `effects_rows` is
+   the bridge into `Type`, not a replacement.
+
+2. **One carrier sort** — the kind anchor:
+
+   ```anthill
+   sort EffectsRuntime
+     sort Effects = ?
+   end
+   ```
+
+   Pure type-level vehicle: no entities, no operations. Exists so
+   `requires EffectsRuntime[Effects = E]` can be written as ordinary `requires`
+   syntax.
+
+3. **One bridge rule** — emitted once by the loader:
+
+   ```anthill
+   rule type_of(?occ, EffectsRuntime[Effects = effects_rows(?expr)])
+     :- is_entity_of(?occ, effects_rows(?expr))
+   ```
+
+   Links the value-occurrence to the kind discriminator. Only
+   `effects_rows(...)`-shape `Type`s satisfy `EffectsRuntime[…]`; any other
+   binding fails the `requires` at binding-site.
+
+### Surface — `effects` keyword as sugar
+
+The new keyword `effects` appears at sort-item position parallel to `sort`:
+
+```
+effects E = ?    ≡   sort E = ?   requires EffectsRuntime[E]
+effects E = X    ≡   sort E = X   requires EffectsRuntime[E]
+effects E        ≡   effects E = ?      (abbreviation, parallel to bare `sort E`)
+```
+
+(Using positional shorthand `EffectsRuntime[E]` = `EffectsRuntime[Effects = E]`.)
+
+`Function` declares cleanly:
+
+```anthill
+sort Function
+  sort A
+  sort B
+  effects E
+  operation apply(a: A): B effects E
+end
+```
+
+— now correctly kinded without inventing a new binder substrate.
+
+### Auto-requires inference
+
+The user never writes `requires EffectsRuntime[E]` on operations. The loader
+walks each operation's `effects <expr>` clause, collects its free variables,
+and emits `requires EffectsRuntime[Effects = E_i]` per free variable into the
+operation's `requires` list:
+
+| effects clause | auto-emitted requires |
+|---|---|
+| `effects E` | `requires EffectsRuntime[E]` |
+| `effects merge(E1, E2)` | `requires EffectsRuntime[E1]`, `requires EffectsRuntime[E2]` |
+| `effects { E, -Modify[kb] }` | `requires EffectsRuntime[E]` |
+| `effects { Modify[c] }` (closed) | (none) |
+
+Operations inheriting from a sort-level `effects E` binder redundantly emit
+the same constraint; idempotent — loader dedupes or accepts both, no
+behavioral difference.
+
+### What dissolves
+
+- **WI-318 (operation effect-parameters).** `[A, B, E]` is a uniform `[…]` list;
+  `E` is `sort E = ?` under the hood; the auto-requires makes it
+  effect-kinded. Variants 1–6 of the previous chapter all collapse — each is a
+  different surface for the same desugaring this scheme already does for free.
+- **045 §2.1's "open decision"** (whether to add `[…, effects E]` per-operation
+  binder grammar). Not needed: the per-operation case writes `[…, E]` plus the
+  `effects E` clause; the constraint is inferred.
+- **The `Function.E` / `Stream.E` mis-kinding.** Today's `sort E = ?` (flagged
+  in the brainstorm's "what anthill has today" table as mis-kinded) becomes
+  `effects E`, which *is* `sort E = ? requires EffectsRuntime[E]` — kinded
+  correctly without a new binder.
+- **The kind-by-position vs kind-by-explicit-binder split** in 045 §3 + §2.1.
+  Both fold into "if `E` appears in an `effects` clause, the typer infers the
+  kind."
+- **Kind-conflict detection.** A user writing `foo[T](x: T): T effects T`
+  (T in both type and effects positions) gets jointly-unsatisfiable
+  constraints: T must be `effects_rows`-form (from auto-requires) *and* equal
+  `x`'s declared type. The error surfaces as an ordinary over-constrained
+  type, uniformly with how anthill handles any over-constrained system —
+  variant 1's "kind-by-use consistency check" arrives for free.
+
+### What stays exactly as it is
+
+- **`EffectExpression`** — the row algebra (G1). Still its own reflect sort
+  with its own normal form. `effects_rows` wraps it; nothing in the algebra
+  changes.
+- **Row unification (045 §5).** Still in `unify_arrow` / `arrow_compatible`.
+  The typer pattern-matches on `Type` variants during unification; one new
+  case (`effects_rows(...)` ↔ `effects_rows(...)`) dispatches to row
+  unification on the wrapped `EffectExpression`. Other `Type` variants do
+  term unification, same as today.
+- **The runtime side (027).** Ambient handlers, `Modify` / `Error` / `Branch`
+  catalog, `HandlerAction` — all unchanged. This is a typing-side
+  simplification only.
+
+### Cost — the §1 principle softens
+
+The variant accepts the runtime-mirror chapter's verdict that effect-rows
+qualify as types under the modern definition. Concretely: **principle 2's
+"effect-set ≠ type" weakens to "effect-row is a structured `Type` variant,
+with the row algebra living inside it."** The brainstorm's variant A
+"type-lattice impurity" worry is mitigated because the variant has internal
+structure (the `EffectExpression`) that *generates* its refines relation —
+not a side-channel imposed on `Type`.
+
+This is the explicit acceptance the runtime-mirror chapter argued for. If the
+verdict isn't accepted, this variant doesn't apply; the brainstorm's
+status-quo line (E + 045 §1 strict separation) holds.
+
+### Open points
+
+1. **`arrow.effects` field shape.** Today `List[Type]`. Under this variant
+   either keep `List[Type]` with each element of `effects_rows(...)`-shape
+   (loose), or collapse to singular `Type` containing one
+   `effects_rows(merged_expr)` per arrow (matches 045 §6 "surface and row are
+   one sort"). The singular form is cleaner; needs the storage migration.
+2. **Grammar disambiguation for `effects`.** Current grammar uses `effects`
+   post-signature as a clause; this variant adds `effects` at sort-item
+   position. Disambiguation is trivially positional (item-start vs
+   post-signature), but the grammar change should be confirmed.
+3. **Explicit `requires` as escape-hatch?** Auto-inference covers the common
+   case; whether to *also* allow user-written
+   `requires EffectsRuntime[Effects = E]` (overriding or supplementing the
+   inference) is a small surface question.
+
+### Net comparison
+
+| metric | 045 status quo (E + §1 strict) | variant 7 (`effects_rows` ∈ Type) |
+|---|---|---|
+| `EffectExpression` as own reflect sort | ✅ (G1) | ✅ (retained, embedded via `effects_rows`) |
+| effect-set ≠ Type (§1) | ✅ strict | ⚠ softened — `effects_rows` is a `Type` variant |
+| `arrow.effects` field type | `EffectExpression` | `Type` of `effects_rows`-shape (singular) |
+| WI-318 binding-site question | open (variants 1–6) | **dissolved** (auto-requires inference) |
+| param-list ergonomics | `effects E = ?` / `[…, effects E]` | uniform `[A, B, E]` |
+| type-param machinery reuse | partial (effect-binder is a parallel construct) | full |
+| row unification | identical algorithm (045 §5) in both — only the field access differs: direct read of `arrow.effects : EffectExpression` vs an extra `effects_rows(e) → e` unwrap on `arrow.effects : Type` | (same) |
+| pattern reuse | new substrate for the effect kind | exact parallel to `denoted` |
+| new grammar | `effects E = ?` binder + `[…, effects E]` slot | one keyword `effects` at item position |
+| undo cost if wrong | low | medium — `Type` gains a variant |
+| consistency with 2026-05-28 chapter | predates verdict | takes verdict at face value |
+
+Net: **variant 7 is internally consistent with the brainstorm's most-recent
+reasoning, in a way 045 status quo currently is not.** The choice between them
+is whether the 2026-05-28 runtime-mirror verdict is being *accepted into the
+design* (variant 7 wins) or *recorded but not acted on* (045 status quo holds).
+
+### Addendum — `EffectsRuntime` as the handler-bundle witness (027/027.1 unification)  *(added 2026-05-28, follow-on)*
+
+Variant 7 introduces `EffectsRuntime[Effects = E]` purely as a **kind anchor**
+(a sort `requires`-discharged so the typer can verify `E` is an effect-row).
+This addendum observes: that witness is **already required at every effectful
+op call site** (auto-emitted by the inference rule above). Letting it also
+**carry the handler-bundle for `E`** unifies 027's ambient-handler model with
+variant 7's substrate and dissolves the need for parallel `ModifyHandler[T]` /
+`ErrorHandler[T]` / … requirements.
+
+**One witness per operation, regardless of how many effect labels are in the
+row.**
+
+#### The move
+
+`EffectsRuntime` evolves from pure kind anchor to **kind anchor + handler
+bundle**:
+
+```anthill
+sort EffectsRuntime
+  sort Effects = ?
+  -- the bundle: dispatch through the witness
+  operation perform[K](label: K, op_sym: Symbol, args: List[Value])
+    -> HandlerAction
+end
+```
+
+(The exact API is one of the open points below; the point is `EffectsRuntime`
+*provides* dispatch, not just discriminates.)
+
+#### How dispatch flows
+
+For a call `Cell.set(c, v)` with effect `Modify[c]`:
+
+1. Variant 7's loader auto-emitted `requires EffectsRuntime[Effects = E]` on
+   `set`.
+2. The caller's scope holds a witness for `EffectsRuntime[Effects =
+   caller_row]` with `Modify[c] ∈ caller_row` (verified statically by row
+   unification, 045 §5).
+3. At the call site, the resolver discharges `set`'s `requires` against the
+   caller's witness — passing it through.
+4. The runtime calls `witness.perform(Modify[c], set_sym, [c, v])` — replacing
+   today's `interp.lookup_handler(Modify_sym).invoke(...)`.
+
+No separate handler-resolution path. **The capability is the discharged
+`requires`.**
+
+#### Polymorphism propagates for free
+
+```anthill
+operation map[A, B, E](f: Function[A, B, E], xs: List[A]) -> List[B] effects E
+  -- auto-emitted: requires EffectsRuntime[Effects = E]
+```
+
+The caller's witness for `EffectsRuntime[Effects = caller_row]` includes
+whatever `f`'s row demands (statically checked via row unification). The same
+witness flows into `map`, into the lambda inside `map`, into the eventual
+`apply(f, x)` call — without per-label threading. The capability chain is
+identical to the row's typing chain, because the row *is* the capability's
+type.
+
+#### Witness composition rule
+
+For row composition (`merge`), the resolver needs a compose rule:
+
+```anthill
+rule EffectsRuntime[Effects = merge(?A, ?B)]
+  :- EffectsRuntime[Effects = ?A], EffectsRuntime[Effects = ?B]
+```
+
+— so a witness for a `merge` row is built from witnesses for its parts.
+Standard typeclass-style chaining; reuses existing `requires` resolution.
+Similar rules for the `present` / `absent` / `open` constructors of
+`EffectExpression` if descent is needed at discharge.
+
+#### `with(handler, body)` mechanics
+
+A scoped handler installs a *more specific* witness for `body`'s scope:
+
+```anthill
+with(my_modify_handler, lambda -> Cell.set(c, 42))
+  -- inside the lambda: a local witness EffectsRuntime[Effects = {Modify[c]}]
+  -- composed with the outer witness for the open tail ρ
+  -- gives a body-scoped witness for EffectsRuntime[Effects = merge({Modify[c]}, ρ)]
+```
+
+045 §5.6's handler discharge type `(body: () → X ! {K, ρ}) → X ! ρ` is
+exactly this composition expressed on types: the handler brings the witness
+for `K`, the caller brings the witness for `ρ`, the body sees the composition.
+**The discharge story is now identical at the type level and the witness
+level** — they're the same thing.
+
+#### What this displaces in 027 / 027.1
+
+| 027 piece | what it becomes |
+|---|---|
+| `Interpreter`'s handler registry | the toplevel default witness for `EffectsRuntime[Effects = ?]` — "what handlers ship by default" |
+| `interp.lookup_handler(sort_sym)` | discharge of `EffectsRuntime[E]`'s `requires` — handler comes from the witness term |
+| `with` / scoped registration | local fact / rule introducing a witness in `body`'s scope |
+| `HandlerAction` return shape | unchanged — what the witness's `perform` returns |
+| `RuntimeAPI` (`push_choice`, `snapshot_eval_state`, …) | unchanged — the witness's `perform` calls into it for control effects |
+| 027.1's allocator dispatch | `requires EffectsRuntime[Effects = {Modify[result]}]`; the witness carries the allocator. No separate `AllocatorHandler[T]` requirement. |
+| 037's `Modifiable[T = X]` gate | becomes "the fact that `X`'s `Modify` handler is present in the current `EffectsRuntime` witness" — the gate and the action collapse into one witness |
+
+The 027.1 discharge analysis (local-flow escape detection for
+`Modify[result]`) stays exactly as it is; what changes is *which witness fires*
+at allocation, not the typing-side discharge logic.
+
+#### 2026-05-28 Reading 1 + Reading 2 unified
+
+The runtime-mirror chapter posed two readings of "what does the row classify?":
+
+- **Reading 1** — the row classifies a **handler bundle** (Eff / Frank /
+  multicore-OCaml).
+- **Reading 2** — the row classifies the **arrow value** that performs the
+  effects (Koka / standard effect rows).
+
+Variant 7 (effect-rows are types) takes Reading 2. This addendum
+(`EffectsRuntime` witness IS the handler-bundle) takes Reading 1. Together
+they're not alternatives — they're the **type side** and the **witness side**
+of one substrate:
+
+| chapter | what it puts into the substrate | Reading |
+|---|---|---|
+| variant 7 (effects_rows ∈ Type) | row classifies arrow values | Reading 2 |
+| this addendum (EffectsRuntime as bundle) | row classifies handler bundles | Reading 1 |
+
+Adopting both gives an Effekt-shaped effect system on top of anthill's
+existing `requires`/witness substrate — without adding either a new dispatch
+mechanism or a new kind grammar.
+
+#### Cost summary vs. current 027
+
+- **Zero new requirement sorts.** No `ModifyHandler[T]`, no `ErrorHandler[T]`.
+  The witness sort is `EffectsRuntime`, which variant 7 already adds.
+- **One `requires` per operation**, not one per effect label.
+- **Polymorphic capability flow is free** — the witness rides on the row
+  variable; no per-label threading.
+- **Lexical handlers are witness-introduction rules** — no new scoping
+  mechanism.
+- **Handler discharge at the type level (045 §5.6) and the witness level
+  become identical** — same `merge`/`absent` composition.
+
+#### Open points
+
+1. **Witness representation.** Is the `EffectsRuntime` witness:
+   - a reflect term with per-label handler-symbol fields (structural,
+     queryable)?
+   - an opaque host-pointer to a handler-table (today's ambient model, just
+     rerouted through `requires`)?
+   - a dictionary built by chained `provides`-style rules (typeclass-style)?
+
+   Probably starts as the host-pointer form for backward compat with today's
+   Rust handlers, with the structural / dictionary forms as later paths.
+2. **The `perform` op's exact signature** — how does it return a
+   `HandlerAction`? Probably mirrors today's `EffectHandler` shape; 027's
+   carrier semantics are unchanged.
+3. **`with(handler, body)` desugaring** — local fact, frame-local KB delta,
+   or a `provides`-style scoped rule. Probably a `provides` clause on the
+   `with` form's body, so resolution finds it before any toplevel witness.
+4. **Toplevel default witnesses.** How does the program start with a
+   "default" `EffectsRuntime[Effects = ?]`? Probably the loader emits a fact
+   tied to the interpreter's built-in registry, so existing ambient handlers
+   work as defaults during migration.
+5. **Migration order.** Variant 7 ships first (`EffectsRuntime` as pure kind
+   anchor); the handler-bundle role is added in a second phase. The substrate
+   lands in two steps, not one.
+6. **Whether to adopt this is downstream of variant 7.** If variant 7 isn't
+   chosen, this addendum doesn't apply (the substrate it builds on isn't
+   there).
+
+#### Net
+
+The whole effect story consolidates to three moves on top of today's
+substrate:
+
+> (i) the `effects_rows` `Type` variant (variant 7),
+> (ii) the `EffectsRuntime` carrier sort (variant 7),
+> (iii) the `EffectsRuntime` witness's dispatch role (this addendum).
+
+(i) and (ii) are variant 7; (iii) extends variant 7 into the runtime side.
+Three sorts/variants total; row machinery + ambient handler registry +
+`Modifiable[T]` gate + 027.1 allocator rules collapse into the one
+`EffectsRuntime` witness. The substrate is then markedly smaller than today's
+collection, while the *typing-side* algorithm of 045 §5 stays exactly as
+specified.
