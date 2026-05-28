@@ -7,6 +7,10 @@ enum anthill.prelude.Pair
 
   operation fst(p: Pair) -> A
   operation snd(p: Pair) -> B
+  -- TODO (WI-324 follow-up): add operation bodies. Both `match p case pair(a, _) -> a`
+  -- and `p.fst` currently fail the typer with "expected A, got Term" — the entity-field
+  -- sort doesn't propagate through self-typed match/access in concrete enum sorts. The
+  -- rules below remain as the de-facto implementation until the typer issue is fixed.
   rule fst(pair(?a, ?b)) = ?a
   rule snd(pair(?a, ?b)) = ?b
 end
