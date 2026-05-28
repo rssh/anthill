@@ -2263,6 +2263,167 @@ fn arrow_effects_empty_canonical_stable() {
     assert_eq!(a, b, "two pure arrows must hash-cons identically");
 }
 
+// ── WI-307 v1a row unification tests ─────────────────────────────────────
+
+/// Closed/closed: identical label sets unify trivially.
+#[test]
+fn row_unify_closed_closed_same() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let ea_sym = kb.intern("EffectA");
+    let eb_sym = kb.intern("EffectB");
+    let e1 = kb.make_sort_ref(ea_sym);
+    let e2 = kb.make_sort_ref(eb_sym);
+    let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1, e2]);
+    let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2, e1]); // reversed input order
+    let mut subst = Substitution::new();
+    assert!(unify_types(&mut kb, &mut subst, arrow_a, arrow_b),
+        "two closed rows with same label set must unify");
+}
+
+/// Closed/closed: different label sets fail.
+#[test]
+fn row_unify_closed_closed_different() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let ea_sym = kb.intern("EffectA");
+    let eb_sym = kb.intern("EffectB");
+    let e1 = kb.make_sort_ref(ea_sym);
+    let e2 = kb.make_sort_ref(eb_sym);
+    let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1]);
+    let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2]);
+    let mut subst = Substitution::new();
+    assert!(!unify_types(&mut kb, &mut subst, arrow_a, arrow_b),
+        "two closed rows with different label sets must NOT unify");
+}
+
+/// Open/closed: the open side's tail absorbs the labels the closed side
+/// carries beyond the common set.
+#[test]
+fn row_unify_open_closed_tail_absorbs() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let ea_sym = kb.intern("EffectA");
+    let eb_sym = kb.intern("EffectB");
+    let e1 = kb.make_sort_ref(ea_sym);
+    let e2 = kb.make_sort_ref(eb_sym);
+
+    let rho_sym = kb.intern("?rho");
+    let rho_vid = kb.fresh_var(rho_sym);
+    let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
+
+    let open_row    = kb.make_arrow_type(int_ty, int_ty, &[e1, rho]);   // {EffectA | ?rho}
+    let closed_row  = kb.make_arrow_type(int_ty, int_ty, &[e1, e2]);    // {EffectA, EffectB}
+
+    let mut subst = Substitution::new();
+    assert!(unify_types(&mut kb, &mut subst, open_row, closed_row),
+        "open row should unify with closed row of same labels + extras");
+    assert!(subst.resolve_with_term(rho_vid).is_some(),
+        "?rho should be bound after row unification");
+}
+
+/// Open/closed: open row's labels exceed closed row's — closed can't
+/// provide the missing label, so unification fails.
+#[test]
+fn row_unify_open_closed_missing_label_fails() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let ea_sym = kb.intern("EffectA");
+    let eb_sym = kb.intern("EffectB");
+    let ec_sym = kb.intern("EffectC");
+    let e1 = kb.make_sort_ref(ea_sym);
+    let e2 = kb.make_sort_ref(eb_sym);
+    let e3 = kb.make_sort_ref(ec_sym);
+
+    let rho_sym = kb.intern("?rho");
+    let rho_vid = kb.fresh_var(rho_sym);
+    let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
+
+    let open_row   = kb.make_arrow_type(int_ty, int_ty, &[e1, e3, rho]); // {EffectA, EffectC | ?rho}
+    let closed_row = kb.make_arrow_type(int_ty, int_ty, &[e1, e2]);      // {EffectA, EffectB}
+
+    let mut subst = Substitution::new();
+    assert!(!unify_types(&mut kb, &mut subst, open_row, closed_row),
+        "open row with extra labels not in closed row must NOT unify");
+}
+
+/// Open/open with shared identical tail var and same labels — hash-cons
+/// fast path covers this (the arrows share a TermId).
+#[test]
+fn row_unify_open_open_same_tail() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let ea_sym = kb.intern("EffectA");
+    let e1 = kb.make_sort_ref(ea_sym);
+
+    let rho_sym = kb.intern("?rho");
+    let rho_vid = kb.fresh_var(rho_sym);
+    let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
+
+    let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1, rho]);
+    let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e1, rho]); // identical
+    assert_eq!(arrow_a, arrow_b, "identical open rows share TermId");
+
+    let mut subst = Substitution::new();
+    assert!(unify_types(&mut kb, &mut subst, arrow_a, arrow_b),
+        "identical open rows unify trivially");
+}
+
+/// Open/open with DIFFERENT tail vars and disjoint extras — both tails
+/// bind to absorb the other side's labels + a fresh shared row variable.
+/// This is the canonical Rémy fresh-tail case.
+#[test]
+fn row_unify_open_open_disjoint_extras() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let ea_sym = kb.intern("EffectA");
+    let eb_sym = kb.intern("EffectB");
+    let e1 = kb.make_sort_ref(ea_sym);
+    let e2 = kb.make_sort_ref(eb_sym);
+
+    let rho_a_sym = kb.intern("?rho_a");
+    let rho_b_sym = kb.intern("?rho_b");
+    let rho_a_vid = kb.fresh_var(rho_a_sym);
+    let rho_b_vid = kb.fresh_var(rho_b_sym);
+    let rho_a = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_a_vid)));
+    let rho_b = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_b_vid)));
+
+    let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1, rho_a]); // {EffectA | ?rho_a}
+    let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2, rho_b]); // {EffectB | ?rho_b}
+
+    let mut subst = Substitution::new();
+    assert!(unify_types(&mut kb, &mut subst, arrow_a, arrow_b),
+        "open/open with disjoint extras must unify (Rémy fresh-tail case)");
+    assert!(subst.resolve_with_term(rho_a_vid).is_some(),
+        "?rho_a should be bound");
+    assert!(subst.resolve_with_term(rho_b_vid).is_some(),
+        "?rho_b should be bound");
+}
+
+/// Open/open where each side carries the same common label plus its own
+/// tail — both tails should be unifiable (with no extras to migrate).
+#[test]
+fn row_unify_open_open_same_labels() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let ea_sym = kb.intern("EffectA");
+    let e1 = kb.make_sort_ref(ea_sym);
+
+    let rho_a_sym = kb.intern("?rho_a");
+    let rho_b_sym = kb.intern("?rho_b");
+    let rho_a_vid = kb.fresh_var(rho_a_sym);
+    let rho_b_vid = kb.fresh_var(rho_b_sym);
+    let rho_a = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_a_vid)));
+    let rho_b = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_b_vid)));
+
+    let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1, rho_a]);
+    let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e1, rho_b]);
+
+    let mut subst = Substitution::new();
+    assert!(unify_types(&mut kb, &mut subst, arrow_a, arrow_b),
+        "open/open with same labels must unify; tails link through a fresh shared var");
+}
+
 // ── is_subtype tests (strict, irreflexive) ─────────────────────
 
 #[test]
@@ -2565,7 +2726,7 @@ fn unify_identical_types() {
     let mut kb = load_stdlib_kb();
     let int_ty = kb.make_sort_ref_by_name("Int");
     let mut subst = Substitution::new();
-    assert!(unify_types(&kb, &mut subst, int_ty, int_ty), "Int unifies with Int");
+    assert!(unify_types(&mut kb, &mut subst, int_ty, int_ty), "Int unifies with Int");
 }
 
 #[test]
@@ -2576,7 +2737,7 @@ fn unify_var_binds_to_type() {
     let vid = kb.fresh_var(sym);
     let var_term = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(vid)));
     let mut subst = Substitution::new();
-    assert!(unify_types(&kb, &mut subst, var_term, int_ty), "Var unifies with Int");
+    assert!(unify_types(&mut kb, &mut subst, var_term, int_ty), "Var unifies with Int");
     assert_eq!(subst.resolve_with_term(vid), Some(int_ty), "Var should be bound to Int");
 }
 
@@ -2590,7 +2751,7 @@ fn unify_both_vars_bind() {
     let var1 = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(vid1)));
     let var2 = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(vid2)));
     let mut subst = Substitution::new();
-    assert!(unify_types(&kb, &mut subst, var1, var2), "two vars unify");
+    assert!(unify_types(&mut kb, &mut subst, var1, var2), "two vars unify");
     // One should be bound to the other
     assert!(subst.resolve_with_term(vid1).is_some() || subst.resolve_with_term(vid2).is_some(),
         "at least one var should be bound");
@@ -2602,7 +2763,7 @@ fn unify_incompatible_ground_types() {
     let int_ty = kb.make_sort_ref_by_name("Int");
     let str_ty = kb.make_sort_ref_by_name("String");
     let mut subst = Substitution::new();
-    assert!(!unify_types(&kb, &mut subst, int_ty, str_ty), "Int does not unify with String");
+    assert!(!unify_types(&mut kb, &mut subst, int_ty, str_ty), "Int does not unify with String");
 }
 
 #[test]
@@ -2621,7 +2782,7 @@ fn unify_parameterized_with_var_binding() {
     let list_int = kb.make_parameterized_type(list_base, &[(t_sym, int_ty)]);
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&kb, &mut subst, list_var, list_int), "List[T=?X] unifies with List[T=Int]");
+    assert!(unify_types(&mut kb, &mut subst, list_var, list_int), "List[T=?X] unifies with List[T=Int]");
     assert_eq!(subst.resolve_with_term(x_vid), Some(int_ty), "?X should be bound to Int");
 }
 
@@ -2643,7 +2804,7 @@ fn unify_arrow_with_var_binding() {
     let arrow_concrete = kb.make_arrow_type(int_ty, str_ty, &[]);
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&kb, &mut subst, arrow_var, arrow_concrete), "(?A -> ?B) unifies with (Int -> String)");
+    assert!(unify_types(&mut kb, &mut subst, arrow_var, arrow_concrete), "(?A -> ?B) unifies with (Int -> String)");
     assert_eq!(subst.resolve_with_term(a_vid), Some(int_ty), "?A = Int");
     assert_eq!(subst.resolve_with_term(b_vid), Some(str_ty), "?B = String");
 }
@@ -2664,7 +2825,7 @@ end
     let t_ref = kb.make_sort_ref(t_sym);
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&kb, &mut subst, t_ref, int_ty),
+    assert!(unify_types(&mut kb, &mut subst, t_ref, int_ty),
         "sort_ref(T) should unify with Int via SortAlias");
 }
 

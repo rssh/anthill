@@ -2817,7 +2817,7 @@ fn lookup_operation_info_full(kb: &KnowledgeBase, functor: Symbol) -> Option<Ope
 /// the user sees the typo rather than a silent return-type Var leaking
 /// to the caller.
 fn seed_op_type_args(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     op: &OperationInfoFull,
     occ: &Rc<NodeOccurrence>,
@@ -4902,7 +4902,14 @@ use super::subst::Substitution;
 /// - `Term::Var` on either side → bind in substitution
 /// - `sort_ref(name: X)` where X is a type param (SortAlias to Var) → resolve and recurse
 /// - Ground types → check `types_compatible` (includes subtyping)
-pub fn unify_types(kb: &KnowledgeBase, subst: &mut Substitution, a: TermId, b: TermId) -> bool {
+///
+/// WI-307 v1a: `kb` is `&mut` to enable fresh tail-variable allocation
+/// inside `unify_effect_expression` when both rows have labels the other
+/// lacks (the canonical Rémy row-rewrite arm). Pre-WI-307 this function
+/// took `&KnowledgeBase`; the change ripples to every `unify_*` helper
+/// and to `types_compatible` (which `unify_types` falls back to). All
+/// 49 call sites in the typer already have `&mut KnowledgeBase` available.
+pub fn unify_types(kb: &mut KnowledgeBase, subst: &mut Substitution, a: TermId, b: TermId) -> bool {
     let a_resolved = walk_type(kb, subst, a);
     let b_resolved = walk_type(kb, subst, b);
 
@@ -4979,7 +4986,7 @@ pub fn unify_types(kb: &KnowledgeBase, subst: &mut Substitution, a: TermId, b: T
 /// Bases must match. Type params not bound on the parameterized side
 /// stay unbound (caller didn't constrain them — width subtyping).
 fn unify_parameterized_with_sort_ref(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     parameterized: TermId,
     sort_ref: TermId,
@@ -5154,7 +5161,7 @@ fn resolve_sort_alias(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
 }
 
 /// Unify two parameterized types: bases must unify, each binding value must unify.
-fn unify_parameterized(kb: &KnowledgeBase, subst: &mut Substitution, a: TermId, b: TermId) -> bool {
+fn unify_parameterized(kb: &mut KnowledgeBase, subst: &mut Substitution, a: TermId, b: TermId) -> bool {
     let (a_args, b_args) = match (kb.get_term(a), kb.get_term(b)) {
         (Term::Fn { named_args: aa, .. }, Term::Fn { named_args: ba, .. }) => (aa.clone(), ba.clone()),
         _ => return false,
@@ -5193,7 +5200,7 @@ fn unify_parameterized(kb: &KnowledgeBase, subst: &mut Substitution, a: TermId, 
 }
 
 /// Unify two arrow types: params, results, and effects must unify.
-fn unify_arrow(kb: &KnowledgeBase, subst: &mut Substitution, a: TermId, b: TermId) -> bool {
+fn unify_arrow(kb: &mut KnowledgeBase, subst: &mut Substitution, a: TermId, b: TermId) -> bool {
     let (a_args, b_args) = match (kb.get_term(a), kb.get_term(b)) {
         (Term::Fn { named_args: aa, .. }, Term::Fn { named_args: ba, .. }) => (aa.clone(), ba.clone()),
         _ => return false,
@@ -5219,11 +5226,315 @@ fn unify_arrow(kb: &KnowledgeBase, subst: &mut Substitution, a: TermId, b: TermI
         _ => return false,
     }
 
+    // WI-307 v1a: unify the effects rows. Pre-WI-307 this site SKIPPED
+    // effects entirely; the row unification arm dispatches the
+    // Rémy/Lindley-Cheney algorithm over the `effects_rows(EffectExpression)`
+    // payload built by `make_arrow_type`'s canonicalization.
+    let a_effects = get_named_arg(kb, &a_args, "effects");
+    let b_effects = get_named_arg(kb, &b_args, "effects");
+    match (a_effects, b_effects) {
+        (Some(ae), Some(be)) => {
+            if !unify_effect_rows(kb, subst, ae, be) { return false; }
+        }
+        // One side missing the effects field — treat as empty row on that
+        // side and require the other to also be empty.
+        (None, None) => {}
+        (Some(ae), None) => {
+            let empty = kb.make_effect_expression_empty_row();
+            let empty_rows = kb.make_effects_rows_type(empty);
+            if !unify_effect_rows(kb, subst, ae, empty_rows) { return false; }
+        }
+        (None, Some(be)) => {
+            let empty = kb.make_effect_expression_empty_row();
+            let empty_rows = kb.make_effects_rows_type(empty);
+            if !unify_effect_rows(kb, subst, empty_rows, be) { return false; }
+        }
+    }
+
     true
 }
 
+// ── WI-307 v1a row unification ──────────────────────────────────────────
+
+/// Decompose an arrow.effects field (`effects_rows(EffectExpression)` Type)
+/// into (present_labels, open_tail, absent_labels) by structurally walking
+/// the EffectExpression algebra through the current substitution.
+///
+/// Walks substitution at every node — if a row-tail `open(?ρ)` has been
+/// bound to a concrete EffectExpression (merge chain etc.) by a prior row
+/// unification, the walk recurses into the bound value. So a row that was
+/// just `open(?ρ)` becomes its full decomposed shape once ?ρ is resolved.
+///
+/// `absent_labels` (v1b's `-e` lacks-constraint slot) is collected but not
+/// yet consumed by the unifier — v1a is presence-only.
+fn decompose_effect_row(
+    kb: &KnowledgeBase,
+    subst: &Substitution,
+    effects_field: TermId,
+) -> (Vec<TermId>, Option<TermId>, Vec<TermId>) {
+    // Walk the wrapper through substitution; unwrap effects_rows.
+    let walked_field = walk_type(kb, subst, effects_field);
+    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.Type.effects_rows");
+    let expr = match (effects_rows_sym, kb.get_term(walked_field)) {
+        (Some(er), Term::Fn { functor, named_args, .. }) if *functor == er => {
+            match get_named_arg(kb, named_args, "effects_expr") {
+                Some(e) => e,
+                None => return (Vec::new(), None, Vec::new()),
+            }
+        }
+        // Not an effects_rows wrapper — could be a bare Var (the whole row
+        // is itself an unbound row variable, mostly seen in tests building
+        // partial arrows). Treat as a single open-tail row.
+        (_, Term::Var(_)) => return (Vec::new(), Some(walked_field), Vec::new()),
+        _ => return (Vec::new(), None, Vec::new()),
+    };
+
+    let mut present = Vec::new();
+    let mut absent = Vec::new();
+    let mut tail: Option<TermId> = None;
+    let mut stack: Vec<TermId> = vec![expr];
+    while let Some(node_raw) = stack.pop() {
+        let node = walk_type(kb, subst, node_raw);
+        match kb.get_term(node) {
+            // Unbound Var directly inside the algebra — row-tail.
+            Term::Var(_) => {
+                // If we somehow already have a tail and this is a different
+                // var, the row is malformed. Keep the first; later v1a
+                // hardening will reject this.
+                if tail.is_none() {
+                    tail = Some(node);
+                }
+            }
+            Term::Fn { functor, named_args, .. } => {
+                let name = kb.resolve_sym(*functor);
+                match name {
+                    "empty_row" => {}
+                    "present" => {
+                        if let Some(l) = get_named_arg(kb, named_args, "label") {
+                            present.push(l);
+                        }
+                    }
+                    "absent" => {
+                        if let Some(l) = get_named_arg(kb, named_args, "label") {
+                            absent.push(l);
+                        }
+                    }
+                    "open" => {
+                        if let Some(t) = get_named_arg(kb, named_args, "tail") {
+                            // Re-walk through the open-tail: a bound row
+                            // variable resolves to a concrete EffectExpression
+                            // here. Pushing onto the stack continues the walk.
+                            stack.push(t);
+                        }
+                    }
+                    "merge" => {
+                        if let Some(r) = get_named_arg(kb, named_args, "right") {
+                            stack.push(r);
+                        }
+                        if let Some(l) = get_named_arg(kb, named_args, "left") {
+                            stack.push(l);
+                        }
+                    }
+                    _ => {
+                        // Unknown functor inside an EffectExpression —
+                        // upstream bug. Surface in dev, tolerate in release.
+                        debug_assert!(
+                            false,
+                            "decompose_effect_row: unexpected functor `{}`",
+                            name
+                        );
+                    }
+                }
+            }
+            _ => {
+                debug_assert!(
+                    false,
+                    "decompose_effect_row: unexpected term shape"
+                );
+            }
+        }
+    }
+
+    (present, tail, absent)
+}
+
+/// Pair present-labels from two rows by greedy structural unification.
+///
+/// Returns `(only_a, only_b)` — labels left over once every successful
+/// pairing has been unified through `subst`. The canonical form
+/// (`build_canonical_effects_rows`) sorts labels by `type_display_name`, so
+/// parallel rows present labels in the same order and the greedy walk
+/// produces the natural pairing for the common case (`{Modify[c], Error}`
+/// vs `{Modify[c], Error}`).
+///
+/// **Limitation (v1a)** — no rollback. If a greedy pair unifies but a
+/// downstream tail-binding step fails, the substitution is contaminated. In
+/// practice the typer wraps unification calls in higher-level error
+/// reporting, so the failed unification produces a top-level type error
+/// rather than silent corruption. Backtracking is a v1b nicety.
+fn pair_present_labels(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    a_present: &[TermId],
+    b_present: &[TermId],
+) -> (Vec<TermId>, Vec<TermId>) {
+    let mut b_matched = vec![false; b_present.len()];
+    let mut only_a: Vec<TermId> = Vec::new();
+    for &al in a_present {
+        let mut paired = false;
+        for (i, &bl) in b_present.iter().enumerate() {
+            if b_matched[i] {
+                continue;
+            }
+            // Functor-name pre-filter: cheap rejection before invoking
+            // unify_types (which may bind the substitution on failure for
+            // partial structural success). This is just a hint — the
+            // authoritative match is unify_types' return value.
+            let af = type_functor_name(kb, al);
+            let bf = type_functor_name(kb, bl);
+            if af != bf {
+                continue;
+            }
+            if unify_types(kb, subst, al, bl) {
+                b_matched[i] = true;
+                paired = true;
+                break;
+            }
+        }
+        if !paired {
+            only_a.push(al);
+        }
+    }
+    let only_b: Vec<TermId> = b_present
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !b_matched[*i])
+        .map(|(_, &t)| t)
+        .collect();
+    (only_a, only_b)
+}
+
+/// Bind a row-tail variable to a synthesized EffectExpression representing
+/// `extra_labels ++ (open(final_tail) | empty_row)`.
+///
+/// `tail` is the open()'s tail field (a `Term::Var(Var::Global(vid))` in
+/// practice). The binding `vid := merge(present(l1), …, merge(present(ln),
+/// <open(final_tail) or empty_row>))` plays the role of the row-rewrite
+/// equation: subsequent `decompose_effect_row` calls that walk through the
+/// substitution recover the labels and the new tail position.
+///
+/// When `final_tail` is `None`, the tail closes (`empty_row`); when
+/// `Some(fresh)`, it stays open and `fresh` becomes the shared extension
+/// point between two open rows.
+fn bind_row_tail(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    tail: TermId,
+    extra_labels: &[TermId],
+    final_tail: Option<TermId>,
+) -> bool {
+    let vid = match kb.get_term(tail) {
+        Term::Var(Var::Global(vid)) => *vid,
+        // Tail isn't a bindable Global Var — only succeed if the binding
+        // would have been a no-op (no extras, no fresh tail).
+        _ => return extra_labels.is_empty() && final_tail.is_none(),
+    };
+
+    // Build the inner tail: open(fresh) if shared, empty_row if closed.
+    let inner = match final_tail {
+        Some(ft) => kb.make_effect_expression_open(ft),
+        None => kb.make_effect_expression_empty_row(),
+    };
+    // Right-fold extras into the inner tail.
+    let mut acc = inner;
+    for &l in extra_labels.iter().rev() {
+        let p = kb.make_effect_expression_present(l);
+        acc = kb.make_effect_expression_merge(p, acc);
+    }
+
+    if occurs_in(kb, vid, acc) {
+        return false;
+    }
+    subst.bind(vid, acc);
+    !subst.is_contradiction()
+}
+
+/// WI-307 v1a row unification — the Rémy/Lindley-Cheney algorithm on
+/// `effects_rows(EffectExpression)` payloads.
+///
+/// 1. Decompose each row into (present, tail, absent) through the current
+///    substitution.
+/// 2. Pair common labels by greedy unification (canonical sort makes the
+///    parallel order natural).
+/// 3. Resolve tails:
+///    - both closed, no extras → trivially unify;
+///    - both closed but extras present → reject (sets differ);
+///    - one open, the other closed → other-side extras absorbed by the
+///      open tail, closing it;
+///    - both open → fresh shared tail `?ρ'`; each side's tail binds to its
+///      own extras + `open(?ρ')`.
+///
+/// **Presence-only** for v1a — `absent` labels (`-e` lacks-constraints) are
+/// collected during decomposition but the unifier doesn't reject on them.
+/// v1b's `lacks` arm extends this.
+fn unify_effect_rows(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    a_effects: TermId,
+    b_effects: TermId,
+) -> bool {
+    // Fast path: identical TermIds — hash-cons identity covers the canonical
+    // case where both arrows shared an effects field.
+    if a_effects == b_effects {
+        return true;
+    }
+
+    let (a_present, a_tail, _a_absent) = decompose_effect_row(kb, subst, a_effects);
+    let (b_present, b_tail, _b_absent) = decompose_effect_row(kb, subst, b_effects);
+
+    let (only_a, only_b) = pair_present_labels(kb, subst, &a_present, &b_present);
+
+    match (a_tail, b_tail) {
+        (None, None) => only_a.is_empty() && only_b.is_empty(),
+        (None, Some(b_t)) => {
+            // a is closed, b is open.
+            // a has no tail to absorb b's extras — b's extras must be empty.
+            if !only_b.is_empty() {
+                return false;
+            }
+            // b's tail absorbs a's extras, closing b.
+            bind_row_tail(kb, subst, b_t, &only_a, None)
+        }
+        (Some(a_t), None) => {
+            // Symmetric.
+            if !only_a.is_empty() {
+                return false;
+            }
+            bind_row_tail(kb, subst, a_t, &only_b, None)
+        }
+        (Some(a_t), Some(b_t)) => {
+            // Both open. If tails are already the same Var and no extras,
+            // we're done — avoids allocating a fresh tail.
+            let a_walked = walk_type(kb, subst, a_t);
+            let b_walked = walk_type(kb, subst, b_t);
+            if a_walked == b_walked && only_a.is_empty() && only_b.is_empty() {
+                return true;
+            }
+            // Fresh shared tail var ρ'. Both sides extend their respective
+            // labels and end in `open(ρ')` — afterward a future
+            // decompose_effect_row reveals (only_a + only_b) as present
+            // labels with shared tail ρ'.
+            let fresh_sym = kb.intern("?rho");
+            let fresh_vid = kb.fresh_var(fresh_sym);
+            let fresh_var = kb.alloc(Term::Var(Var::Global(fresh_vid)));
+            bind_row_tail(kb, subst, a_t, &only_b, Some(fresh_var))
+                && bind_row_tail(kb, subst, b_t, &only_a, Some(fresh_var))
+        }
+    }
+}
+
 /// Unify two named tuple types: matching fields must unify.
-fn unify_named_tuple(kb: &KnowledgeBase, subst: &mut Substitution, a: TermId, b: TermId) -> bool {
+fn unify_named_tuple(kb: &mut KnowledgeBase, subst: &mut Substitution, a: TermId, b: TermId) -> bool {
     let (a_args, b_args) = match (kb.get_term(a), kb.get_term(b)) {
         (Term::Fn { named_args: aa, .. }, Term::Fn { named_args: ba, .. }) => (aa.clone(), ba.clone()),
         _ => return false,
@@ -7336,7 +7647,7 @@ fn term_contains_functor(kb: &KnowledgeBase, term: TermId, target_functor: Symbo
 /// 1. Collect type constraints from head (operation params, entity fields)
 /// 2. Collect type constraints from body goals
 /// 3. Unify all constraints for each variable — must be consistent
-fn check_rule_typing(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Vec<TypeError>) {
+fn check_rule_typing(kb: &mut KnowledgeBase, sort_term: TermId, errors: &mut Vec<TypeError>) {
     for rid in kb.by_domain(sort_term) {
         if kb.is_fact(rid) { continue; } // facts have no body — nothing to check
 
@@ -7350,7 +7661,12 @@ fn check_rule_typing(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Vec<Typ
         // Collect type constraints from the body goals (WI-246: the occurrence
         // body, not the term body). The head term and the body occurrences are
         // closed against the same `vars`, so their De Bruijn idx keys align.
-        for node in kb.rule_body_nodes(rid) {
+        // WI-307: `collect_occurrence_type_constraints` now takes `&mut kb`
+        // (so `unify_types` can allocate fresh row tails); the body-node
+        // slice is cloned out first so the immutable borrow doesn't conflict
+        // with the inner mutable kb pass.
+        let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+        for node in &body_nodes {
             collect_occurrence_type_constraints(kb, node, &mut var_types, &mut subst);
         }
 
@@ -7374,7 +7690,7 @@ fn check_rule_typing(kb: &KnowledgeBase, sort_term: TermId, errors: &mut Vec<Typ
 /// Collect type constraints from a term: for each variable in an operation/entity
 /// argument position, record the expected type.
 fn collect_term_type_constraints(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     term: TermId,
     var_types: &mut HashMap<u32, TermId>,
     subst: &mut Substitution,
@@ -7418,7 +7734,7 @@ fn collect_term_type_constraints(
 /// If `term` is a variable, record that it should have `expected_type`.
 /// If the variable already has a type, unify the two.
 fn constrain_var_type(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     term: TermId,
     expected_type: TermId,
     var_types: &mut HashMap<u32, TermId>,
@@ -7437,7 +7753,7 @@ fn constrain_var_type(
 /// raw id / De Bruijn idx — the same key space for a rule's head term and its
 /// body occurrences, both closed against the same `vars`).
 fn constrain_vid(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     vid: u32,
     expected_type: TermId,
     var_types: &mut HashMap<u32, TermId>,
@@ -7465,7 +7781,7 @@ fn constrain_vid(
 /// `node_to_debruijn`, so we type-check them via the term collector — covering
 /// op/entity calls nested in a pattern/param exactly as the term walker did.
 fn collect_occurrence_type_constraints(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     var_types: &mut HashMap<u32, TermId>,
     subst: &mut Substitution,
@@ -7511,7 +7827,7 @@ fn collect_occurrence_type_constraints(
 /// applied occurrence — the occurrence analog of the op/entity dispatch in
 /// [`collect_term_type_constraints`].
 fn constrain_application(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     functor: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
@@ -7537,7 +7853,7 @@ fn constrain_application(
 /// Occurrence analog of [`constrain_var_type`]: if `occ` is a var leaf, record /
 /// unify its expected type.
 fn constrain_occ_var_type(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     expected_type: TermId,
     var_types: &mut HashMap<u32, TermId>,
