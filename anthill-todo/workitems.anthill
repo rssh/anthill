@@ -399,7 +399,7 @@ fact WorkItem(
   description: "cache stdlib KB across integration tests. load_kb_with re-parses + re-loads the full stdlib (~50 files) per test. With ~25 eval tests × ~400ms this dominates test run time. Fix: Lazy<Arc<KB>> in tests/common that loads stdlib once per test binary, with a cheap 'clone or fork' path that user sources extend. Requires either KB::clone (potentially expensive if hash-consed term store is deep-cloned — prefer Arc-sharing of immutable parts) or a 'fresh copy extending a read-only base' API. Needs a design sketch; profile first to confirm savings.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  status: PreOpened)
 
 fact WorkItem(
   id: "WI-060",
