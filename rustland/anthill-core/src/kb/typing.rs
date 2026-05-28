@@ -651,6 +651,18 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
                         .map(|v| type_display_name(kb, v))
                         .unwrap_or_else(|| "?".to_string())
                 }
+                "effects_rows" => {
+                    // WI-320: EffectExpression-in-Type — render with row braces
+                    // (`{…}`) around the wrapped expression. The inner is an
+                    // EffectExpression term (present / absent / open / merge /
+                    // empty_row); a dedicated EffectExpression pretty-printer
+                    // is a WI-307 follow-on. For now the inner term renders
+                    // through type_display_name's generic Fn fallback, which is
+                    // readable enough for diagnostics until row machinery lands.
+                    get_named_arg(kb, named_args, "effects_expr")
+                        .map(|e| format!("{{{}}}", type_display_name(kb, e)))
+                        .unwrap_or_else(|| "{?}".to_string())
+                }
                 _ => {
                     // Fallback: raw term display (for non-type terms)
                     let name = fname.to_string();
@@ -3588,6 +3600,17 @@ fn parametric_value_parts(
                 }
                 return base.map(|b| (b, out));
             }
+            // WI-320: `effects_rows(effects_expr = E)` is a structural Type
+            // variant (wraps an EffectExpression), not a parametric spec
+            // carrier — `effects_expr` is a *field*, not a spec parameter.
+            // Without this explicit None, the generic-Fn catch-all below
+            // would falsely classify it as a parametric instance with a
+            // phantom (param = effects_expr, value = E) binding, leading
+            // spec-resolution and `values_structurally_equal` to treat it
+            // as a satisfaction site.
+            if f_qn == "effects_rows" || f_qn.ends_with(".effects_rows") {
+                return None;
+            }
             // Generic Fn — non-empty named_args means parametric.
             if !named_args.is_empty() {
                 Some((*functor, named_args.clone()))
@@ -4742,6 +4765,30 @@ pub fn unify_types(kb: &KnowledgeBase, subst: &mut Substitution, a: TermId, b: T
         (Some("named_tuple"), Some("named_tuple")) => {
             unify_named_tuple(kb, subst, a_resolved, b_resolved)
         }
+        (Some("effects_rows"), Some("effects_rows")) => {
+            // WI-320 substrate: structural unification on the wrapped
+            // EffectExpression. The hash-cons short-circuit at line 4711
+            // already caught the both-ground identical case; this arm
+            // covers the post-walk case where the wrappers point at
+            // structurally-equivalent but distinct TermIds. Row
+            // unification proper (Rémy / Lindley-Cheney over the
+            // EffectExpression algebra) is WI-307 — when it lands the
+            // recursive `unify_types` call here will dispatch into
+            // dedicated `present` / `absent` / `open` / `merge` arms
+            // instead of falling through to `types_compatible`.
+            let a_inner = match kb.get_term(a_resolved) {
+                Term::Fn { named_args, .. } => get_named_arg(kb, named_args, "effects_expr"),
+                _ => return false,
+            };
+            let b_inner = match kb.get_term(b_resolved) {
+                Term::Fn { named_args, .. } => get_named_arg(kb, named_args, "effects_expr"),
+                _ => return false,
+            };
+            match (a_inner, b_inner) {
+                (Some(x), Some(y)) => unify_types(kb, subst, x, y),
+                _ => false,
+            }
+        }
         _ => types_compatible(kb, a_resolved, b_resolved),
     }
 }
@@ -5096,6 +5143,28 @@ pub fn types_compatible(kb: &KnowledgeBase, actual: TermId, expected: TermId) ->
         }
         (Some("named_tuple"), Some("named_tuple")) => {
             named_tuple_compatible(kb, actual, expected)
+        }
+        (Some("effects_rows"), Some("effects_rows")) => {
+            // WI-320 substrate: compatibility on the wrapped EffectExpression.
+            // The line-5049 short-circuit (`actual == expected`) handled the
+            // identical-TermId case via hash-consing; this arm catches the
+            // structurally-equivalent-but-distinct-TermId case. Row
+            // subsumption (open-tail absorbing extra labels; `lacks` check)
+            // is WI-307; until then this is conservative — distinct logical-
+            // var positions inside differently-allocated EffectExpression
+            // terms compare incompatible. Sound (no false positives).
+            let a_inner = match kb.get_term(actual) {
+                Term::Fn { named_args, .. } => get_named_arg(kb, named_args, "effects_expr"),
+                _ => return false,
+            };
+            let b_inner = match kb.get_term(expected) {
+                Term::Fn { named_args, .. } => get_named_arg(kb, named_args, "effects_expr"),
+                _ => return false,
+            };
+            match (a_inner, b_inner) {
+                (Some(x), Some(y)) => types_compatible(kb, x, y),
+                _ => false,
+            }
         }
         _ => false,
     }
@@ -5926,6 +5995,14 @@ pub fn sort_functor_of(kb: &KnowledgeBase, ty: TermId) -> Option<Symbol> {
             }?;
             sort_functor_of(kb, base)
         }
+        // WI-320: `effects_rows(EffectExpression)` is a structural Type
+        // variant — like `denoted`, it has no underlying sort head to widen
+        // to. Returning None means `min_sort` is undefined for occurrences
+        // typed as an effect-row, which is the correct conservative answer
+        // for Scope A (no `[simp]` rules target effect-row positions yet).
+        // Once WI-307 wires `arrow.effects` to row form, returning the
+        // `EffectsRuntime` kind anchor here may be revisited.
+        Some("effects_rows") => None,
         _ => match kb.get_term(ty) {
             Term::Ref(s) => Some(*s),
             _ => None,
