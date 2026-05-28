@@ -357,7 +357,7 @@ fact WorkItem(
   description: "per-operation compile caches (follow-up to M1-M3). Add memoization arenas keyed on reflect tree nodes: (a) decision tree for match_expr keyed on OccurrenceId — built on first hit, reused; (b) Symbol → (body_term, params) cache replacing the linear OperationInfo walk in eval::lookup_operation_body; (c) per-operation slot-index table so var_ref lookups become array-indexed instead of linear-scanned. Stays on the reflect tree — no separate IR, just side-tables. Revisit after M4/M5 to decide if a targeted bytecode lowering is warranted. Brainstorm discussion in conversation 2026-04-19.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-044"],
-  status: Open)
+  status: PreOpened)
 
 fact WorkItem(
   id: "WI-054",
