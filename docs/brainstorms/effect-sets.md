@@ -379,3 +379,257 @@ to effects in Links (Lindley & Cheney 2012).
    reconcile `Function` ↔ `arrow`.
 5. Promote to a numbered proposal; *only then* touch `typing_pass_spec` and
    013's effect-checking.
+
+## Operation effect-parameters — kinding `E` in `op[…]`  *(added 2026-05-27, firming up 045)*
+
+**Problem.** An operation's type-parameter list can mix a *type* parameter and an
+*effect-set* parameter:
+
+```
+twice[A, B, E](f: A => B @ E)        -- A, B : types ;  E : effect-set (a row)
+```
+
+`A`, `B` are kinded as types; `E` is an effect-set — a **different kind**
+("effect-set ≠ type", Principles §2). How is `E` distinguished / kinded inside
+`[…]`? The sort-level `effects E = ?` binder and **by-position** binding already
+cover the common cases (`Function`, `Stream`, `map`); this is the *free
+standalone operation* case. (Tracked as **WI-318**; 045 §2.1 sketches a
+candidate.)
+
+Variants — 1–3 from the question, 4–6 added:
+
+1. **Bare list, kind by use.** `[A, B, E]`; the loader kinds each entry by *how
+   it is used* (an `@ …` / effects position ⇒ effect-set, a type position ⇒
+   type). `?E` already parses in effect position today, just unkinded — this lets
+   position assign the kind. **+** no new syntax. **−** needs kind-inference + a
+   consistency check (error if `E` is used both ways); the list no longer states
+   the kinds at a glance.
+
+2. **Effect-set = a recognised sub-kind of `Type`.** `effects E = ?` ≡
+   `sort E = ?` + `fact is_effect_expression(E)` — *or* an `EffectExpression`
+   **variant of `Type`**, the way `named_tuple` already is. Then `[A, B, E]` is
+   uniform (all type-params) and `E` is the fact-marked one. **+** reuses *all*
+   type-param machinery (instantiation `[E = …]`, binder, unification); a real
+   precedent ("if named tuples can be a special `Type`, why not effect
+   expressions?"). **−** it **re-merges** the kinds 045 §1 split apart (that split
+   was the *root-problem fix*), and reverses G1's just-landed choice to give
+   `EffectExpression` its **own sort** — under (2) it becomes a `Type` variant and
+   `arrow.effects` is a `Type`. (This is the doc's variant **A** — "reuse the
+   type-param slot" — made principled with a marker fact.)
+
+3. **Explicit marker in the list.** `twice[A, B, @E]` — reuse the arrow `@`; or
+   `twice[A, B, effects E]` (the `effects` keyword, 045 §2.1). **+** explicit; the
+   list states the kinds; no inference. **−** small grammar addition; two possible
+   markers (`@` vs `effects`) to choose between.
+
+4. **Kinded quantifier.** `twice[A, B, E: Effects](…)` — a *kind ascription*, the
+   general form the doc's variant **D** names ("kinded quantifiers"). **+** uniform
+   and future-proof (any later kind — `R: Region`, `N: Nat` — uses the same slot);
+   explicit. **−** the most machinery (a kind grammar + kind-checking), heavier
+   than a single marker for the one kind we have today.
+
+5. **Separate channel — don't mix kinds in one list.** Effect params get their own
+   home: an operation-level `effects E = ?` clause (no `[…]` entry), or a second
+   bracket `twice[A, B]{E}(…)` (types in `[…]`, effect-sets in `{…}`, echoing the
+   `{…}` set literal). **+** each list stays single-kind (no inference, no
+   ambiguity). **−** more surface; `{…}` overloads the set-literal braces.
+
+6. **No list entry — bind by position only** (045 §3). Don't list `E` (or even
+   `A, B`): the signature's free variables are implicitly quantified, kinded by
+   position — `twice(f: A => B @ E)` binds `A, B` (type) and `E` (effect) from
+   `f`'s type. **+** zero ceremony for the polymorphic case (which dominates).
+   **−** needs implicit type/effect-var quantification (today `[…]` is explicit);
+   no at-a-glance parameter list.
+
+**The crux** (rippling through all six): **is an effect-set a kind *distinct from*
+`Type` (own sort — G1's `EffectExpression`; variants 3/4/5/6) or a *recognised
+sub-kind of* `Type` (variant 2)?** 045 §1 and the landed `EffectExpression` sort
+take the distinct-kind line; variant 2 is the one-kind alternative — attractive
+precisely because the param-list problem then *vanishes* (effect params are type
+params), at the cost of re-merging the kinds and redoing G1. Decide this in
+WI-318 *before* the grammar, since it also redirects G1.
+
+**Lean (for WI-318):** holding "effect-set ≠ type" (consistent with §1 + G1), the
+**kinded quantifier (4)** subsumes (3) and generalises, with **by-position (6)** as
+the no-ceremony default — don't *require* a list entry when `E` comes from a
+parameter; when a free op genuinely binds one, write `[…, E: Effects]`. Variant
+**2** is the serious counter-proposal, worth taking *only if* we accept
+effect-expressions as a (marked) kind of `Type`. (The next chapter revisits this
+from first principles and shows the *phantom* worry largely dissolves.)
+
+## Are effect-expressions *types*? — the runtime-mirror argument  *(added 2026-05-28)*
+
+The operation-effect-parameter question above hinges on a deeper one: **is an
+effect-expression a kind distinct from `Type` (own sort — G1's `EffectExpression`)
+or a recognisable sub-kind of `Type` (variant 2)?** The classical test is "a
+type classifies runtime values with operations." Working that test through for
+effect-expressions reshapes the answer.
+
+### Two value-classifier readings, and 027 today
+
+If effect-expressions classify runtime values, *what* values? Two coherent
+readings, both with PL precedent:
+
+- **Reading 1 — handler configuration.** A value of type `{ Modify[c], Error[T] }`
+  is a *handler bundle* supplying those effects; `with(b, body)` passes it as a
+  first-class value. Eff / Frank / multicore-OCaml live here.
+- **Reading 2 — effect-record / dictionary.** Each effect is a record of its
+  operations (`Modify.get`, `Modify.set`); the set is a composite dictionary.
+  Type-class / Wadler–Blott qualified-types lineage; also the older `Set + ACI`
+  view that 045 pivoted away from.
+
+**Anthill today (027) is *neither*** — handlers are *ambient* (registered on the
+`Interpreter`), not values you bind. So no runtime value has type `{ Modify[c] }`
+*as anthill currently runs*. That is where the "phantom Type variant" objection
+originally came from — and it was contingent on 027 staying ambient, not
+fundamental.
+
+### Type-level rows vs runtime representation — decoupled
+
+A common confusion needs disposing of: 045's row-unification pivot picked **rows
+over Set/ACI** at the *type level*. That is **independent** of the runtime
+representation of effect-set values:
+
+- Typed *by a row directly* — the value's type *is* the row — same row machinery
+  applies; runtime can be a dictionary or a chain or anything. **Compatible** with
+  the pivot. (Haskell type classes do exactly this: row-of-constraints types +
+  dictionary passing.)
+- Typed *by `Set[Effect[?]]`* — a parameterised `Set` value — would reintroduce
+  Set/ACI *as a second type-level mechanism* alongside rows. *That* is what 045
+  dropped.
+
+So Reading 2 doesn't conflict with the pivot as long as the value's type *is* the
+row, not a `Set[Effect]`. Type-level checking and runtime representation describe
+one algebraic object via different representations.
+
+### The row-distinctive algebra: lacks and the tail *gate* operations
+
+An effect-expression isn't an effect *set*: it carries **present labels**, a
+**lacks** set, and an **open tail**. A runtime mirror's algebra splits in two —
+the set-common ops plus the row-distinctive ones that a set cannot express:
+
+- *Constructors / observers (set-common, mirror §3):* `empty`, `present(K)`,
+  `absent(K)`, `open(ρ)`, `merge`, plus observers on three dimensions
+  (`presents` / `lacks` / `tail`).
+- *Row-distinctive:* `forbid(r, K)` (the lacks dimension as an op),
+  `close(r)` (commit the tail), `extend(r, K)` (**gated** by lacks + tail),
+  `subsumes(a, b)` (respect `b`'s lacks, extend its tail), `unify(a, b)`
+  (fails on `+K`/`-K` clash).
+- *Operational (only when the value carries handlers):* `with(b, body)`,
+  `lookup(b, K)`.
+
+The key insight: **lacks and the tail aren't decorative data, they *gate* the
+operations themselves.** A set's `insert` is unconditional; a row's `extend` is
+permitted only when lacks and tail allow. A set's `union` is total; a row's
+`merge` *fails* on present/absent clash. Erase lacks and the tail and the row
+algebra collapses to the set algebra — the row-distinctive ops vanish.
+
+### Canonical pattern: `{?E, -Modify[xs]}`
+
+The interesting row-with-lacks pattern in practice is an **open tail + a
+targeted lacks**:
+
+```
+for_each[T, E](xs: List[T], f: T -> Unit @ {?E, -Modify[xs]}) -> Unit @ ?E
+```
+
+`for_each` accepts a callback that may do *arbitrary* effects (the open tail
+`?E`) but is *guaranteed not* to mutate `xs`. The lacks prevents the iteration
+from concurrently mutating the very list being iterated; the tail keeps
+`for_each` composable with any effects. Compile-time, zero runtime cost. A plain
+set cannot even *spell* the guarantee — this is what justifies the row-with-lacks
+apparatus over the set algebra.
+
+### Runtime-runtime: erased witness + the deny-handler trick
+
+At *execution* time, in a type-erased implementation (Eff, Koka,
+multicore-OCaml), lacks and the tail carry **no runtime data** — they're
+guarantees enforced before execution and then gone. The runtime witness is the
+**dispatch chain** — the actual stack of installed handlers — and the row is its
+*static description*. There's no `Row` struct in memory; the chain *is* the
+object the row describes.
+
+A natural enrichment: **install a `default-deny` handler at the chain root** for
+each lacked effect, so that an attempted invocation of `-K` is an actual
+throwable runtime error rather than UB. That gives `-K` an explicit *runtime
+witness* — a deny-handler in the chain — belt-and-braces with the static check.
+
+A reified-row alternative — store the `EffectExpression` term alongside the chain
+and have `install` / `lookup` consult it dynamically — is possible but duplicates
+the typer's work; most algebraic-effect runtimes don't bother.
+
+### What *is* a type? — three readings
+
+The classical / strict / modern / categorical spectrum matters for the answer:
+
+1. **Classical** — types classify runtime *values*; phantom is an edge case.
+   *(Effect-rows fail in the ambient model; pass under Reading 1.)*
+2. **Specification / erased-tolerant** (mainstream today) — a type is a
+   *specification* of value/computation shape; runtime witness *optional*. Java
+   generics (erased), Rust `PhantomData`, dependent-type propositions live here.
+   *(Effect-rows pass — the spec role is exactly what they play.)*
+3. **Categorical** — anything that appears as `T` in `e : T`. *(Trivially pass.)*
+
+Under (2) / (3) — the mainstream modern view — **effect-rows are types**. Runtime
+erasure doesn't disqualify them any more than it disqualifies Java's erased
+generics.
+
+### `Effectful[R]` — monadic reification as an *additive* option
+
+A clean way to make effect-rows *unambiguously* first-class is to add a monadic
+carrier sort:
+
+```
+sort EffectsRunner
+  effects E = ?
+  sort Effectful { sort R = ? }
+  operation reify[A, B](f: A -> B @ E, a: A) -> Effectful[R = B]
+end
+```
+
+`Effectful[R = B]` is a *value* representing an effectful computation that
+yields `B` when run; `reify` lifts `f(a)` into the carrier; a
+`with_handlers(eff, hs) -> R` discharges it back to a direct result. This is the
+Eff / Frank / Free-monad / mtl lineage.
+
+**Direct style and monadic style are two surfaces of the same semantics**, not
+competing models. The mechanical translation is Free-monad / CPS, and
+algebraic-effect runtimes typically use *both* (direct surface, monadic
+interpretation under the hood). The direct form of `reify` is just anthill's
+existing `Function.apply : (f: Function[A, B, E], x: A) -> B effects E`; the
+monadic form returns a reified `Effectful[R = B]` instead. Same evaluation, two
+presentations:
+
+| | direct | monadic |
+|---|---|---|
+| signature | `apply(f, a) -> B effects E` | `reify(f, a) -> Effectful[R = B]` |
+| when effects fire | immediately | when `with_handlers` runs the carrier |
+
+Adding `Effectful[R]` is **additive**, not a replacement — same relationship as
+iterators vs `for` loops; both coexist, picked per use site. If anthill exposes
+`Effectful[R]`, effect-rows naturally parameterise it (`Effectful[E, R]`) and
+become first-class types in every classical sense — no ambiguity, no phantom
+worry.
+
+### Verdict — the phantom objection has dissolved
+
+Three converging arguments:
+
+1. **The modern definition of *type* already accommodates effect-rows** —
+   runtime witness is optional; the specification role is enough.
+2. **There *is* a runtime witness anyway** — the dispatch chain (and an explicit
+   deny-handler for `-K`) — even in 027's ambient model.
+3. **The `Effectful[R]` direction** (if taken) makes effect-rows unambiguously
+   first-class types.
+
+So the phantom-Type-variant objection to variant 2 has **dissolved**. Effect-rows
+qualify as types under the prevailing usage; what's left for the kind debate is
+*surface ergonomics* — how visible to make them in user-facing param lists —
+which is no longer a fundamental disagreement, just a style choice between
+**variant 2** (uniform `[A, B, E]`) and **variant 4** (kinded quantifier
+`[E: Effects]`).
+
+The whole kind question therefore collapses onto a single design fork that is
+downstream of two larger questions: **027's handler model** (stay ambient, or
+expose handler bundles as values?) and **whether anthill adopts `Effectful[R]`
+reification**. Both are bigger than the param-list itself.
