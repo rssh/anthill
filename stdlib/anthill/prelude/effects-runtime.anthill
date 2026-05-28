@@ -1,0 +1,29 @@
+{< EffectsRuntime: kind anchor for effect-row type parameters (proposal 045 §2;
+   brainstorm variant 7 adoption — WI-320).
+
+   The `effects` keyword at sort-item position is sugar for:
+     effects E = ?   ≡   sort E = ?   requires EffectsRuntime[Effects = E]
+     effects E = X   ≡   sort E = X   requires EffectsRuntime[Effects = E]
+     effects E       ≡   effects E = ?           (abbreviation)
+
+   Operations carrying `effects <expr>` get a `requires EffectsRuntime[Effects = E_i]`
+   auto-emitted by the loader per free variable of the expression (045 §2.1).
+
+   The bridge between `Effects` and `effects_rows(...)`-shape Type values
+   — "every effects_rows wrapper is a valid Effects binding" — is emitted by
+   the Rust loader during prelude bootstrap (kb/load.rs), parallel to
+   `fact Effect[T = Modify[?]]` in effects.anthill. It is emitted in Rust
+   because the surface grammar disallows entity-construction terms
+   (`effects_rows(?)`) in type-argument position (`_type` admits only
+   simple_type / parameterized_type / variable_term — Modify[?] is a
+   parameterized_type the grammar handles; effects_rows(?) is a value-level
+   construction it doesn't).
+
+   Scope A (WI-320) — pure kind anchor: no entities, no operations. The
+   handler-bundle role (a `perform` op for capability-passing dispatch that
+   would collapse 027 / 027.1 / 037 into one witness) is a captured
+   brainstorm follow-on ("Addendum — EffectsRuntime as the handler-bundle
+   witness") and is intentionally out of scope here. >}
+sort anthill.prelude.EffectsRuntime
+  sort Effects = ?
+end

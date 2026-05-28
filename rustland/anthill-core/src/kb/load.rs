@@ -1185,6 +1185,8 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
     kb.symbols.define("named_tuple", "anthill.prelude.Type.named_tuple", SymbolKind::Entity, type_sort_term.raw());
     kb.symbols.define("nothing", "anthill.prelude.Type.nothing", SymbolKind::Entity, type_sort_term.raw());
     kb.symbols.define("denoted", "anthill.prelude.Type.denoted", SymbolKind::Entity, type_sort_term.raw());
+    // WI-320 — variant-7 substrate: the EffectExpression-into-Type bridge.
+    kb.symbols.define("effects_rows", "anthill.prelude.Type.effects_rows", SymbolKind::Entity, type_sort_term.raw());
     kb.symbols.define("TypeField", "anthill.prelude.Type.TypeField", SymbolKind::Entity, type_sort_term.raw());
     kb.symbols.define("TypeBinding", "anthill.prelude.Type.TypeBinding", SymbolKind::Entity, type_sort_term.raw());
 

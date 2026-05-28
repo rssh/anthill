@@ -4,7 +4,7 @@
    No top type exists (the lattice is unbounded above).
    Nothing is the bottom (uninhabited, subtype of everything). >}
 enum anthill.prelude.Type
-  import anthill.prelude.{Lattice, Eq, List, Option}
+  import anthill.prelude.{Lattice, Eq, List, Option, EffectExpression}
   import anthill.reflect.{Symbol, NodeOccurrence}
 
   -- Type constructors: all type forms in the language
@@ -22,6 +22,18 @@ enum anthill.prelude.Type
   -- Type by a computation is different — that is ordinary expression code using
   -- the Type constructors directly, not this seam.)
   entity denoted(value: NodeOccurrence)
+  -- The bridge from the EffectExpression row algebra (prelude/effect-expression.anthill)
+  -- into Type position — exactly parallel to `denoted(NodeOccurrence)` above.
+  -- An effect-row is `effects_rows(expr)` where `expr` is an EffectExpression
+  -- (present / absent / open / merge / empty_row), and the row sits in:
+  --   (a) the `Effects` type-arg slot of `EffectsRuntime[Effects = effects_rows(...)]`,
+  --       so an effects type-parameter can be constrained by ordinary `requires` —
+  --       see proposal 045 §2 (variant 7 adoption; WI-320);
+  --   (b) `arrow.effects` once WI-307 lands the singular-Type migration of that field.
+  -- The variant has no behavior of its own — it is a pure structural wrapper
+  -- (like `denoted`). EffectExpression keeps its own reflect sort + normal form;
+  -- the row-unification algorithm dispatches on this variant in `unify_arrow`.
+  entity effects_rows(effects_expr: EffectExpression)
   entity nothing
 
   {< Type field: a named component in a named tuple type. >}
