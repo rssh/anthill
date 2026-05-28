@@ -986,3 +986,127 @@ entity Box(value: scala.prelude.List[T = Int])
           type: (simple_type
             (name
               (identifier))))))))
+
+=====================================
+Effects sort-item alongside operation effects_clause (WI-320)
+=====================================
+
+sort Function {
+  effects E = ?
+  operation apply(x: Int) -> Int effects E
+}
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name
+      (identifier))
+    (effects_sort_item
+      name: (name
+        (identifier))
+      definition: (variable_term
+        (variable)))
+    (operation_declaration
+      name: (name
+        (identifier))
+      (param
+        name: (identifier)
+        type: (simple_type
+          (name
+            (identifier))))
+      return_type: (simple_type
+        (name
+          (identifier)))
+      (operation_clause
+        (effects_clause
+          (simple_type
+            (name
+              (identifier))))))))
+
+=====================================
+Effects sort-item: explicit anonymous (WI-320)
+=====================================
+
+sort S {
+  effects E = ?
+}
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name
+      (identifier))
+    (effects_sort_item
+      name: (name
+        (identifier))
+      definition: (variable_term
+        (variable)))))
+
+=====================================
+Effects sort-item: bound to a type (WI-320)
+=====================================
+
+sort S {
+  effects E = X
+}
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name
+      (identifier))
+    (effects_sort_item
+      name: (name
+        (identifier))
+      definition: (simple_type
+        (name
+          (identifier))))))
+
+=====================================
+Effects sort-item: end-body form (WI-320 stdlib migration shape)
+=====================================
+
+sort anthill.prelude.Stream
+  sort T = ?
+  effects E = ?
+
+  operation head(s: Stream) -> T effects E
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name
+      (identifier)
+      (identifier)
+      (identifier))
+    (abstract_sort
+      name: (name
+        (identifier))
+      definition: (variable_term
+        (variable)))
+    (effects_sort_item
+      name: (name
+        (identifier))
+      definition: (variable_term
+        (variable)))
+    (operation_declaration
+      name: (name
+        (identifier))
+      (param
+        name: (identifier)
+        type: (simple_type
+          (name
+            (identifier))))
+      return_type: (simple_type
+        (name
+          (identifier)))
+      (operation_clause
+        (effects_clause
+          (simple_type
+            (name
+              (identifier))))))))

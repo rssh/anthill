@@ -191,6 +191,7 @@ module.exports = grammar({
       $.namespace_declaration,
       $.abstract_sort,
       $.sort_with_body,
+      $.effects_sort_item,
       $.enum_declaration,
       $.rule_declaration,
       $.operation_declaration,
@@ -230,6 +231,32 @@ module.exports = grammar({
       optional($.meta_block),
     ),
 
+    // WI-320 / proposal 045: effects-keyword sugar for an effect-row
+    // variable at sort-item position. Mandatory `=` form:
+    //   - `effects E = ?`    (explicit `?`)  — anonymous row variable
+    //   - `effects E = X`    (bound)         — row variable bound to X
+    //
+    // Desugars at convert time to the pair
+    //   `sort E = ?` (or `= X`)  +  `requires EffectsRuntime[Effects = E]`
+    //
+    // The `=` is mandatory to disambiguate from `effects_clause` (an
+    // operation-clause variant) — both productions can begin `effects E`,
+    // and a bare-form `effects_sort_item` collides with `effects_clause`
+    // inside `operation_declaration`'s `repeat($.operation_clause)`. With
+    // `=` required, the two productions are unambiguous at every position.
+    // The cost: migration sites write `effects E = ?` rather than
+    // `effects E` — a few extra characters, fully explicit about the row
+    // variable's `?` kind.
+    effects_sort_item: $ => seq(
+      repeat(field('description', $.description_block)),
+      optional($.visibility),
+      'effects',
+      field('name', $.name),
+      '=',
+      field('definition', $._type),
+      optional($.meta_block),
+    ),
+
     enum_declaration: $ => seq(
       repeat(field('description', $.description_block)),
       optional($.visibility),
@@ -246,6 +273,7 @@ module.exports = grammar({
 
     _enum_content: $ => choice(
       $.abstract_sort,
+      $.effects_sort_item,
       $.requires_declaration,
       $.entity_declaration,
       $.operation_declaration,

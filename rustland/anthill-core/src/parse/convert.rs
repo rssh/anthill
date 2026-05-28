@@ -296,9 +296,22 @@ impl<'a> Converter<'a> {
     pub fn convert_file(&mut self, root: Node) {
         let mut cursor = root.walk();
         for child in root.named_children(&mut cursor) {
-            if let Some(item) = self.convert_item(child) {
-                self.items.push(item);
-            }
+            let items = self.convert_items_at(child);
+            self.items.extend(items);
+        }
+    }
+
+    /// One CST node → its IR item(s).
+    ///
+    /// Most CST nodes map 1:1 onto an `Item` (handled in `convert_item`). The
+    /// `effects_sort_item` sugar (WI-320 / proposal 045) is the exception: a
+    /// single `effects E [= T]` source node desugars to TWO IR items —
+    /// `AbstractSort(E [= T])` followed by `RequiresDecl(EffectsRuntime[Effects = E])`.
+    /// Returning `Vec<Item>` keeps the three sort/namespace/root walks uniform.
+    fn convert_items_at(&mut self, node: Node) -> Vec<Item> {
+        match node.kind() {
+            "effects_sort_item" => self.convert_effects_sort_item(node),
+            _ => self.convert_item(node).into_iter().collect(),
         }
     }
 
@@ -1737,9 +1750,8 @@ impl<'a> Converter<'a> {
             match child.kind() {
                 "name" | "import_clause" | "export_clause" => {}
                 _ => {
-                    if let Some(item) = self.convert_item(child) {
-                        items.push(item);
-                    }
+                    let converted = self.convert_items_at(child);
+                    items.extend(converted);
                 }
             }
         }
@@ -1838,6 +1850,92 @@ impl<'a> Converter<'a> {
         Some(AbstractSort { visibility, name, definition, descriptions, meta, span })
     }
 
+    /// WI-320 / proposal 045: desugar an `effects E = T` sort-item into the
+    /// canonical pair
+    ///   `sort E = T`  +  `requires EffectsRuntime[Effects = E]`
+    /// at convert time. The rest of the loader treats the two pieces as
+    /// ordinary `AbstractSort` + `RequiresDecl` items — no new loader hook,
+    /// no new IR variant. Returning `Vec<Item>` lets one CST node fan out to
+    /// two IR items; callers splice the result into their item list via
+    /// `convert_items_at`.
+    ///
+    /// The grammar requires an explicit `= …` form (typical `effects E = ?`
+    /// for an anonymous row variable, or `effects E = X` for one bound to a
+    /// concrete carrier) — the bare `effects E` form would collide with
+    /// `effects_clause` at the sort-content/operation-clause boundary. The
+    /// `Vec::new()` arm below remains defensive against parses with no
+    /// `definition` field; in practice the grammar guarantees one is present.
+    fn convert_effects_sort_item(&mut self, node: Node) -> Vec<Item> {
+        let Some(name) = self.field(node, "name").map(|n| self.convert_name(n)) else {
+            // Grammar guarantees `name`; this arm fires only on tree-sitter
+            // error recovery. Per CLAUDE.md 'avoid fallbacks, better know
+            // about errors early' — record the diagnostic instead of
+            // silently dropping the whole desugar, so the user sees
+            // *something* attributing later `unresolved E` errors to a
+            // malformed declaration here.
+            self.err("effects_sort_item missing required `name` field", node);
+            return Vec::new();
+        };
+        let visibility = self.convert_visibility(node);
+        let meta = self.convert_meta_block(node);
+        let span = self.span(node);
+
+        let definition = self.field(node, "definition")
+            .map(|def| self.convert_type(def))
+            .unwrap_or_else(|| {
+                // Same fallback shape as `convert_abstract_sort`: a fresh
+                // anonymous logical variable bound to a `Term::Var(Global)`.
+                let sym = self.intern("_");
+                let vid = crate::kb::term::VarId::new(self.next_var, sym);
+                self.next_var += 1;
+                let tid = self.terms.alloc(Term::Var(Var::Global(vid)), span);
+                TypeExpr::Variable { term_id: tid, descriptions: Vec::new() }
+            });
+
+        let mut descriptions: Vec<String> = self.fields_by_name(node, "description")
+            .into_iter()
+            .map(|d| strip_description_delimiters(self.text(d)))
+            .collect();
+        if descriptions.is_empty() {
+            if let TypeExpr::Variable { descriptions: ref var_descs, .. } = definition {
+                descriptions = var_descs.clone();
+            }
+        }
+
+        let abstract_sort = AbstractSort {
+            visibility,
+            name: name.clone(),
+            definition,
+            descriptions,
+            meta,
+            span,
+        };
+
+        // Build `EffectsRuntime[Effects = <row-var-name>]`. The base name is
+        // bare `EffectsRuntime` — the loader resolves it through the prelude
+        // imports just like every other reference to a stdlib sort. `Effects`
+        // is EffectsRuntime's row-parameter slot (`sort Effects = ?` in
+        // `prelude/effects-runtime.anthill` / `register_stdlib_scopes`).
+        let effects_runtime_sym = self.intern("EffectsRuntime");
+        let effects_param_sym = self.intern("Effects");
+        let requires_type = TypeExpr::Parameterized {
+            name: Name::simple(effects_runtime_sym, span),
+            bindings: vec![SortBinding {
+                param: Some(Name::simple(effects_param_sym, span)),
+                bound: TypeExpr::Simple(name),
+            }],
+        };
+        let requires_decl = RequiresDecl {
+            type_expr: requires_type,
+            span,
+        };
+
+        vec![
+            Item::AbstractSort(abstract_sort),
+            Item::RequiresDecl(requires_decl),
+        ]
+    }
+
     fn convert_sort_like(&mut self, node: Node, kind: SortDeclKind) -> Option<SortWithBody> {
         let name = self.field(node, "name")
             .map(|n| self.convert_name(n))?;
@@ -1869,9 +1967,8 @@ impl<'a> Converter<'a> {
                 "name" | "visibility" | "import_clause" | "export_clause" | "meta_block"
                 | "description_block" => {}
                 _ => {
-                    if let Some(item) = self.convert_item(child) {
-                        items.push(item);
-                    }
+                    let converted = self.convert_items_at(child);
+                    items.extend(converted);
                 }
             }
         }
