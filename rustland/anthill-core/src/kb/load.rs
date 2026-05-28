@@ -1156,16 +1156,24 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
 /// with this functor, so a non-empty entry means the bridge is already
 /// installed.
 fn emit_effects_runtime_bridge_fact(kb: &mut KnowledgeBase) {
-    // Resolve the symbols. Both pre-registered by `register_stdlib_scopes`
-    // above (effects_rows entity of Type; EffectsRuntime sort).
-    let er_sort_sym = match kb.symbols.by_qualified_name.get("anthill.prelude.EffectsRuntime").copied() {
-        Some(s) => s,
-        None => return,
-    };
-    let effects_rows_sym = match kb.symbols.by_qualified_name.get("anthill.prelude.Type.effects_rows").copied() {
-        Some(s) => s,
-        None => return,
-    };
+    // Resolve the symbols. Both are unconditionally pre-registered by
+    // `register_stdlib_scopes` above (line ~1187 for `effects_rows`, line
+    // ~1258 for `EffectsRuntime`). A missing symbol here means
+    // `register_stdlib_scopes` was bypassed or its definitions were
+    // accidentally removed — a serious bootstrap regression. Per CLAUDE.md
+    // (`avoid fallbacks, better know about errors early`) we panic with a
+    // clear message rather than silently skipping the bridge (which would
+    // leave the `requires EffectsRuntime[E]` desugaring undischargeable and
+    // surface as a confusing "requires unmet" error at every effect-using
+    // operation).
+    let er_sort_sym = kb.try_resolve_symbol("anthill.prelude.EffectsRuntime").expect(
+        "WI-320 bootstrap invariant: anthill.prelude.EffectsRuntime symbol \
+         pre-registered by register_stdlib_scopes — see kb/load.rs",
+    );
+    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.Type.effects_rows").expect(
+        "WI-320 bootstrap invariant: anthill.prelude.Type.effects_rows symbol \
+         pre-registered by register_stdlib_scopes — see kb/load.rs",
+    );
 
     // Idempotency guard — see doc-comment above. The bridge is the only
     // rule with EffectsRuntime as its head functor at prelude bootstrap,
