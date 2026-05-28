@@ -11,7 +11,7 @@ use smallvec::SmallVec;
 
 use super::term::{Term, TermId, Literal, Var, VarId};
 use super::node_occurrence::{
-    for_each_child, materialize_from_handle,
+    for_each_child, for_each_pattern_child, materialize_from_handle,
     Expr, MatchBranch, NodeKind, NodeOccurrence,
 };
 use super::{KnowledgeBase, SortKind};
@@ -7289,6 +7289,16 @@ fn collect_occurrence_type_constraints(
     var_types: &mut HashMap<u32, TermId>,
     subst: &mut Substitution,
 ) {
+    // WI-298: descend into Pattern children so a var living in a pattern's
+    // nested type-annotation Expr leaf gets the same op-arg / entity-field
+    // constraint walk applied to the rest of the rule. Symmetric with
+    // `node_to_debruijn` and `collect_occurrence_global_vars_ordered`.
+    if let Some(pat) = occ.as_pattern() {
+        for_each_pattern_child(pat, |c| {
+            collect_occurrence_type_constraints(kb, c, var_types, subst)
+        });
+        return;
+    }
     let Some(expr) = occ.as_expr() else { return };
     match expr {
         Expr::Apply { functor, pos_args, named_args, .. } => {

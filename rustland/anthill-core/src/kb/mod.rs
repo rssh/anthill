@@ -2093,10 +2093,15 @@ impl KnowledgeBase {
             // apply the head-match rename via `substitute_occurrence` (replace
             // fresh vars with the concrete head-match values; unmatched fresh
             // vars stay as variables, bound during body resolution).
-            let opened_nodes: Vec<Rc<NodeOccurrence>> = body_nodes
-                .iter()
-                .map(|n| node_occurrence::open_debruijn_node(n, &fresh_vars))
-                .collect();
+            // WI-298: thread `self` into the opener so it can remap DeBruijn
+            // vars inside the remaining TermId-typed Expr fields
+            // (Let.type_annotation, Apply.type_args, ApplyWithin.type_args)
+            // via `term_from_debruijn`, mirroring `node_to_debruijn` on the
+            // closing side.
+            let mut opened_nodes: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(body_nodes.len());
+            for n in body_nodes.iter() {
+                opened_nodes.push(node_occurrence::open_debruijn_node(self, n, &fresh_vars));
+            }
             let final_nodes = if body_rename.bindings.is_empty() {
                 opened_nodes
             } else {

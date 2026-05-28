@@ -830,7 +830,11 @@ pub fn reassemble_pattern(
 /// reflect-`Expr` data — WI-296). Those are opened generically via
 /// `for_each_child` + `simp_rewrite::reassemble`. Recursion depth is bounded by
 /// the atom's structure.
-pub fn open_debruijn_node(occ: &Rc<NodeOccurrence>, fresh: &[VarId]) -> Rc<NodeOccurrence> {
+pub fn open_debruijn_node(
+    kb: &mut KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    fresh: &[VarId],
+) -> Rc<NodeOccurrence> {
     // WI-318: a Pattern-kind occurrence walks its children uniformly
     // (Pattern's own structure has no DeBruijn vars — names are
     // Symbols, literals are values). DeBruijn vars live only in
@@ -838,7 +842,7 @@ pub fn open_debruijn_node(occ: &Rc<NodeOccurrence>, fresh: &[VarId]) -> Rc<NodeO
     // those via `for_each_pattern_child` + `reassemble_pattern`.
     if let Some(pat) = occ.as_pattern() {
         let mut opened: Vec<Rc<NodeOccurrence>> = Vec::new();
-        for_each_pattern_child(pat, |c| opened.push(open_debruijn_node(c, fresh)));
+        for_each_pattern_child(pat, |c| opened.push(open_debruijn_node(kb, c, fresh)));
         return reassemble_pattern(occ, &opened);
     }
     let Some(expr) = occ.as_expr() else { return Rc::clone(occ) };
@@ -846,31 +850,72 @@ pub fn open_debruijn_node(occ: &Rc<NodeOccurrence>, fresh: &[VarId]) -> Rc<NodeO
         Expr::Var(Var::DeBruijn(idx)) => fresh
             .get(*idx as usize)
             .map(|&vid| Expr::Var(Var::Global(vid))),
+        // WI-298: Apply.type_args is a TermId field that can carry DeBruijn
+        // vars from the rule's shared space — open it via `term_from_debruijn`
+        // alongside the occurrence children, mirroring `close_type_args` on
+        // the closing side (`node_to_debruijn`).
         Expr::Apply { functor, pos_args, named_args, type_args } => {
-            let (pos, c1) = open_vec(pos_args, fresh);
-            let (named, c2) = open_named(named_args, fresh);
-            (c1 || c2).then(|| Expr::Apply {
+            let (pos, c1) = open_vec(kb, pos_args, fresh);
+            let (named, c2) = open_named(kb, named_args, fresh);
+            let (ta, c3) = open_type_args(kb, type_args, fresh);
+            (c1 || c2 || c3).then(|| Expr::Apply {
                 functor: *functor,
                 pos_args: pos,
                 named_args: named,
-                type_args: type_args.clone(),
+                type_args: ta,
             })
         }
         Expr::Constructor { name, pos_args, named_args } => {
-            let (pos, c1) = open_vec(pos_args, fresh);
-            let (named, c2) = open_named(named_args, fresh);
+            let (pos, c1) = open_vec(kb, pos_args, fresh);
+            let (named, c2) = open_named(kb, named_args, fresh);
             (c1 || c2).then(|| Expr::Constructor { name: *name, pos_args: pos, named_args: named })
         }
         Expr::Instantiation { name, pos_args, named_args } => {
-            let (pos, c1) = open_vec(pos_args, fresh);
-            let (named, c2) = open_named(named_args, fresh);
+            let (pos, c1) = open_vec(kb, pos_args, fresh);
+            let (named, c2) = open_named(kb, named_args, fresh);
             (c1 || c2).then(|| Expr::Instantiation { name: *name, pos_args: pos, named_args: named })
         }
         Expr::HoApply { predicate, args } => {
-            let p = open_debruijn_node(predicate, fresh);
-            let (a, c2) = open_vec(args, fresh);
+            let p = open_debruijn_node(kb, predicate, fresh);
+            let (a, c2) = open_vec(kb, args, fresh);
             let c1 = !Rc::ptr_eq(&p, predicate);
             (c1 || c2).then(|| Expr::HoApply { predicate: p, args: a })
+        }
+        // WI-298: Let.type_annotation is a TermId (a type expression — proposal
+        // 027.1) that can carry DeBruijn vars from the rule's shared space —
+        // open it via `term_from_debruijn` alongside the occurrence children,
+        // mirroring the closing side (`node_to_debruijn`).
+        Expr::Let { pattern, type_annotation, value, body } => {
+            let new_pattern = open_debruijn_node(kb, pattern, fresh);
+            let new_value = open_debruijn_node(kb, value, fresh);
+            let new_body = open_debruijn_node(kb, body, fresh);
+            let (new_ta, ta_changed) = open_option_termid(kb, type_annotation, fresh);
+            let c1 = !Rc::ptr_eq(&new_pattern, pattern);
+            let c2 = !Rc::ptr_eq(&new_value, value);
+            let c3 = !Rc::ptr_eq(&new_body, body);
+            (c1 || c2 || c3 || ta_changed).then(|| Expr::Let {
+                pattern: new_pattern,
+                type_annotation: new_ta,
+                value: new_value,
+                body: new_body,
+            })
+        }
+        // WI-298: ApplyWithin.type_args mirrors Apply.type_args; the generic
+        // `_` arm below would leave them un-remapped because `for_each_child`
+        // doesn't enumerate TermId fields. Explicit arm closes that gap and
+        // mirrors `node_to_debruijn`'s ApplyWithin handling.
+        Expr::ApplyWithin { functor, args, named_args, requirements, type_args } => {
+            let (a, c1) = open_vec(kb, args, fresh);
+            let (named, c2) = open_named(kb, named_args, fresh);
+            let (reqs, c3) = open_vec(kb, requirements, fresh);
+            let (ta, c4) = open_type_args(kb, type_args, fresh);
+            (c1 || c2 || c3 || c4).then(|| Expr::ApplyWithin {
+                functor: *functor,
+                args: a,
+                named_args: named,
+                requirements: reqs,
+                type_args: ta,
+            })
         }
         // WI-296: a *child-bearing* form CAN occur at a rule-body atom
         // position — reflection / typing rules match expression structure as
@@ -883,7 +928,7 @@ pub fn open_debruijn_node(occ: &Rc<NodeOccurrence>, fresh: &[VarId]) -> Rc<NodeO
         // unchanged.
         _ => {
             let mut opened: Vec<Rc<NodeOccurrence>> = Vec::new();
-            for_each_child(expr, |c| opened.push(open_debruijn_node(c, fresh)));
+            for_each_child(expr, |c| opened.push(open_debruijn_node(kb, c, fresh)));
             return super::simp_rewrite::reassemble(occ, &opened);
         }
     };
@@ -906,17 +951,18 @@ pub fn open_debruijn_node(occ: &Rc<NodeOccurrence>, fresh: &[VarId]) -> Rc<NodeO
 ///
 /// This is the precise inverse of [`open_debruijn_node`] (the close/open
 /// round-trip the resolver relies on). It rewrites `Var` leaves inside
-/// `Rc<NodeOccurrence>` children AND inside the `TermId`-typed occurrence fields
-/// of materialized reflect-data forms — `Let.pattern`/`type_annotation`,
-/// `Lambda`/`LambdaWithin.param`, `Match` branch patterns, and
-/// `Apply`/`ApplyWithin.type_args` — by running those through
+/// `Rc<NodeOccurrence>` children AND inside the remaining `TermId`-typed
+/// occurrence fields — `Let.type_annotation`, `Apply`/`ApplyWithin.type_args`
+/// (post-WI-319 the pattern slots — Lambda/LambdaWithin.param, Let.pattern,
+/// MatchBranch.pattern — are themselves Pattern-kind Rc<NodeOccurrence>
+/// children, no longer TermId) — by running those through
 /// `KnowledgeBase::term_to_debruijn` (hence `&mut self`). So a body atom is
 /// fully De Bruijn-closed regardless of where its vars live, matching what the
 /// prior `materialize(term_to_debruijn(t))` path produced (a var nested in such
-/// a field is now in the rule's De Bruijn key space, e.g. for the typer). Note:
-/// `open_debruijn_node` still does not OPEN those `TermId` fields back — same as
-/// before — but reflect-data patterns are matched as data, not resolved as
-/// goals, so they are never opened at a goal position.
+/// a field is now in the rule's De Bruijn key space, e.g. for the typer).
+/// WI-298 makes [`open_debruijn_node`] OPEN the same `TermId` fields back
+/// symmetrically — the close/open round-trip is now uniform across child
+/// occurrences and TermId fields.
 pub fn node_to_debruijn(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
@@ -967,9 +1013,10 @@ pub fn node_to_debruijn(
         // via `term_to_debruijn`), so a var living in a pattern/param is closed
         // to the same De Bruijn space as the rest of the rule.
         // WI-318: pattern is now a Pattern-kind Rc<NodeOccurrence>,
-        // walked via the generic `for_each_child` + `reassemble` path
-        // below. `type_annotation` (Option<TermId>) is a type expression
-        // — its DeBruijn-remap is WI-298 scope and left as-is here.
+        // walked structurally via the explicit Let arm below.
+        // WI-298: type_annotation (Option<TermId>) is a type expression
+        // — close DeBruijn vars in it via `term_to_debruijn`, mirroring
+        // `open_debruijn_node` on the opening side.
         // WI-318: Lambda / LambdaWithin no longer have a TermId-typed
         // param — the param is now a Pattern-kind Rc<NodeOccurrence>
         // that walks via the generic `for_each_child` + `reassemble`
@@ -978,6 +1025,21 @@ pub fn node_to_debruijn(
         // WI-318: MatchBranch.pattern is now a Pattern-kind occurrence —
         // close it via the recursive node walker like any other child.
         // (Was: `kb.term_to_debruijn(br.pattern, var_order)`.)
+        Expr::Let { pattern, type_annotation, value, body } => {
+            let new_pattern = node_to_debruijn(kb, pattern, var_order);
+            let new_value = node_to_debruijn(kb, value, var_order);
+            let new_body = node_to_debruijn(kb, body, var_order);
+            let (new_ta, ta_changed) = close_option_termid(kb, type_annotation, var_order);
+            let c1 = !Rc::ptr_eq(&new_pattern, pattern);
+            let c2 = !Rc::ptr_eq(&new_value, value);
+            let c3 = !Rc::ptr_eq(&new_body, body);
+            (c1 || c2 || c3 || ta_changed).then(|| Expr::Let {
+                pattern: new_pattern,
+                type_annotation: new_ta,
+                value: new_value,
+                body: new_body,
+            })
+        }
         Expr::Match { scrutinee, branches } => {
             let s = node_to_debruijn(kb, scrutinee, var_order);
             let mut changed = !Rc::ptr_eq(&s, scrutinee);
@@ -1082,33 +1144,87 @@ fn close_type_args(
     (out, changed)
 }
 
-fn open_vec(items: &[Rc<NodeOccurrence>], fresh: &[VarId]) -> (Vec<Rc<NodeOccurrence>>, bool) {
+/// WI-298: close vars inside an `Option<TermId>` field (today only
+/// `Let.type_annotation`) via `term_to_debruijn` — twin of
+/// `open_option_termid` on the opening side. Returns `(remapped, changed)`.
+fn close_option_termid(
+    kb: &mut KnowledgeBase,
+    item: &Option<TermId>,
+    var_order: &[VarId],
+) -> (Option<TermId>, bool) {
+    match item {
+        Some(t) => {
+            let nt = kb.term_to_debruijn(*t, var_order);
+            (Some(nt), nt != *t)
+        }
+        None => (None, false),
+    }
+}
+
+fn open_vec(
+    kb: &mut KnowledgeBase,
+    items: &[Rc<NodeOccurrence>],
+    fresh: &[VarId],
+) -> (Vec<Rc<NodeOccurrence>>, bool) {
     let mut changed = false;
-    let out = items
-        .iter()
-        .map(|c| {
-            let r = open_debruijn_node(c, fresh);
-            changed |= !Rc::ptr_eq(&r, c);
-            r
-        })
-        .collect();
+    let mut out = Vec::with_capacity(items.len());
+    for c in items {
+        let r = open_debruijn_node(kb, c, fresh);
+        changed |= !Rc::ptr_eq(&r, c);
+        out.push(r);
+    }
     (out, changed)
 }
 
 fn open_named(
+    kb: &mut KnowledgeBase,
     items: &[(Symbol, Rc<NodeOccurrence>)],
     fresh: &[VarId],
 ) -> (Vec<(Symbol, Rc<NodeOccurrence>)>, bool) {
     let mut changed = false;
-    let out = items
-        .iter()
-        .map(|(s, c)| {
-            let r = open_debruijn_node(c, fresh);
-            changed |= !Rc::ptr_eq(&r, c);
-            (*s, r)
-        })
-        .collect();
+    let mut out = Vec::with_capacity(items.len());
+    for (s, c) in items {
+        let r = open_debruijn_node(kb, c, fresh);
+        changed |= !Rc::ptr_eq(&r, c);
+        out.push((*s, r));
+    }
     (out, changed)
+}
+
+/// WI-298: open DeBruijn vars inside a call site's `type_args` (`(name?,
+/// type-TermId)` pairs) via `term_from_debruijn` — the opener twin of
+/// `close_type_args`. `term_from_debruijn` returns the same hash-consed
+/// `TermId` when nothing changed, so `changed` tracks real rewrites.
+fn open_type_args(
+    kb: &mut KnowledgeBase,
+    items: &[(Option<Symbol>, TermId)],
+    fresh: &[VarId],
+) -> (Vec<(Option<Symbol>, TermId)>, bool) {
+    let mut changed = false;
+    let mut out = Vec::with_capacity(items.len());
+    for &(name, t) in items {
+        let nt = kb.term_from_debruijn(t, fresh);
+        changed |= nt != t;
+        out.push((name, nt));
+    }
+    (out, changed)
+}
+
+/// WI-298: open DeBruijn vars inside an `Option<TermId>` field (today only
+/// `Let.type_annotation`) via `term_from_debruijn` — the opener twin of
+/// `node_to_debruijn`'s symmetric Let arm. Returns `(remapped, changed)`.
+fn open_option_termid(
+    kb: &mut KnowledgeBase,
+    item: &Option<TermId>,
+    fresh: &[VarId],
+) -> (Option<TermId>, bool) {
+    match item {
+        Some(t) => {
+            let nt = kb.term_from_debruijn(*t, fresh);
+            (Some(nt), nt != *t)
+        }
+        None => (None, false),
+    }
 }
 
 /// WI-246: does the occurrence contain any `Expr::Var(Var::Global)` leaf?
@@ -1116,13 +1232,24 @@ fn open_named(
 /// unbound (bound ones were spliced by [`substitute_occurrence`]), so this is
 /// the occurrence analog of `KnowledgeBase::is_ground`'s "has unbound var"
 /// test. Iterative pre-order — flat host stack regardless of nesting.
+///
+/// WI-298: also descends into `NodeKind::Pattern` occurrences via
+/// `for_each_pattern_child` so a Global living in a pattern's nested
+/// type-annotation Expr child is detected — symmetric with
+/// `node_to_debruijn` / `open_debruijn_node`, which both walk Pattern
+/// children uniformly.
 pub fn occurrence_has_unbound_var(root: &Rc<NodeOccurrence>) -> bool {
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(root)];
     while let Some(occ) = stack.pop() {
-        match occ.as_expr() {
-            Some(Expr::Var(Var::Global(_))) => return true,
-            Some(expr) => for_each_child(expr, |c| stack.push(Rc::clone(c))),
-            None => {}
+        match &occ.kind {
+            NodeKind::Expr { expr, .. } => match expr {
+                Expr::Var(Var::Global(_)) => return true,
+                _ => for_each_child(expr, |c| stack.push(Rc::clone(c))),
+            },
+            NodeKind::Pattern(pat) => {
+                for_each_pattern_child(pat, |c| stack.push(Rc::clone(c)));
+            }
+            NodeKind::RuleHead { .. } => {}
         }
     }
     false
@@ -1133,6 +1260,12 @@ pub fn occurrence_has_unbound_var(root: &Rc<NodeOccurrence>) -> bool {
 /// `collect_vars_rec` — which likewise collects only `Var::Global` (Rigid /
 /// DeBruijn ignored). Used by `with_fresh_vars`'s legacy path to gather a
 /// rule's body vars without reading the term body (WI-246).
+///
+/// WI-298: also descends into `NodeKind::Pattern` occurrences via
+/// `for_each_pattern_child` — symmetric with `node_to_debruijn` and
+/// `open_debruijn_node`. Without this descent a Global living only in a
+/// pattern's nested type-annotation Expr child would escape the legacy
+/// rule-body var collection.
 pub(super) fn collect_occurrence_global_vars(
     root: &Rc<NodeOccurrence>,
     vars: &mut Vec<VarId>,
@@ -1140,14 +1273,19 @@ pub(super) fn collect_occurrence_global_vars(
 ) {
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(root)];
     while let Some(occ) = stack.pop() {
-        match occ.as_expr() {
-            Some(Expr::Var(Var::Global(vid))) => {
-                if seen.insert(vid.raw()) {
-                    vars.push(*vid);
+        match &occ.kind {
+            NodeKind::Expr { expr, .. } => match expr {
+                Expr::Var(Var::Global(vid)) => {
+                    if seen.insert(vid.raw()) {
+                        vars.push(*vid);
+                    }
                 }
+                _ => for_each_child(expr, |c| stack.push(Rc::clone(c))),
+            },
+            NodeKind::Pattern(pat) => {
+                for_each_pattern_child(pat, |c| stack.push(Rc::clone(c)));
             }
-            Some(expr) => for_each_child(expr, |c| stack.push(Rc::clone(c))),
-            None => {}
+            NodeKind::RuleHead { .. } => {}
         }
     }
 }
@@ -1179,19 +1317,32 @@ pub(super) fn collect_occurrence_global_vars_ordered(
     vars: &mut Vec<VarId>,
     seen: &mut std::collections::HashSet<u32>,
 ) {
-    match occ.as_expr() {
-        Some(Expr::Var(Var::Global(vid))) => {
-            if seen.insert(vid.raw()) {
-                vars.push(*vid);
+    match &occ.kind {
+        NodeKind::Expr { expr, .. } => match expr {
+            Expr::Var(Var::Global(vid)) => {
+                if seen.insert(vid.raw()) {
+                    vars.push(*vid);
+                }
             }
-        }
-        Some(expr) => {
-            for_each_child(expr, |c| {
+            _ => {
+                for_each_child(expr, |c| {
+                    collect_occurrence_global_vars_ordered(kb, c, vars, seen)
+                });
+                collect_expr_termid_field_vars(kb, expr, vars, seen);
+            }
+        },
+        // WI-298: descend into Pattern children so a Global living only in
+        // a pattern's nested type-annotation Expr leaf is collected. Without
+        // this descent the loader's first-occurrence-order arity walk would
+        // miss it, leaving the rule's `node_to_debruijn` close to misplace
+        // the var (or worse, undercount arity). Symmetric with
+        // `node_to_debruijn`'s Pattern arm.
+        NodeKind::Pattern(pat) => {
+            for_each_pattern_child(pat, |c| {
                 collect_occurrence_global_vars_ordered(kb, c, vars, seen)
             });
-            collect_expr_termid_field_vars(kb, expr, vars, seen);
         }
-        None => {}
+        NodeKind::RuleHead { .. } => {}
     }
 }
 
@@ -1301,7 +1452,23 @@ pub fn occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> T
 /// instead of asserting. `Bottom`/absent reify to `⊥` (`Some`). Used by
 /// `occurrence_term`'s arg reification, where a reflection pattern of such a
 /// form is simply not yet supported (no match) rather than a bug.
+///
+/// WI-298: a `NodeKind::Pattern` occurrence reifies via `pattern_to_term`
+/// to its reflect-Term shape (var_pattern / wildcard / literal_pattern /
+/// constructor_pattern / tuple_pattern); the latter recursively converts
+/// nested Expr-kind type-annotation children via `occurrence_to_term`,
+/// so a var inside a Pattern's annotation lands as `Term::Var`. Without
+/// this route a Pattern child reached as a sub-occurrence would have
+/// fallen to the `None => kb.alloc(Term::Bottom)` arm below — silently
+/// reifying to ⊥ instead of the reflect-Pattern shape callers expect.
+/// (Note: `pattern_to_term` resolves `anthill.reflect.Pattern.*` symbols,
+/// so this path requires a prelude-loaded KB; the existing in-tree
+/// callers — `occurrence_term` builtins in resolve.rs and the typer —
+/// always run on such a KB.)
 pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<TermId> {
+    if let NodeKind::Pattern(_) = &occ.kind {
+        return Some(pattern_to_term(kb, occ));
+    }
     Some(match occ.as_expr() {
         Some(Expr::Var(v)) => kb.alloc(Term::Var(*v)),
         Some(Expr::Const(lit)) => kb.alloc(Term::Const(lit.clone())),
@@ -1840,16 +2007,20 @@ pub fn substitute_occurrence(
     let Some(expr) = occ.as_expr() else { return Rc::clone(occ) };
     let rebuilt: Option<Rc<NodeOccurrence>> = match expr {
         Expr::Var(Var::Global(vid)) => return subst_var_leaf(kb, *vid, subst, occ),
+        // WI-298: Apply.type_args is a TermId field — apply σ to it via
+        // `apply_subst` so a Global appearing in a type argument gets the same
+        // rewrite as elsewhere, mirroring the opener's `open_type_args` arm.
         Expr::Apply { functor, pos_args, named_args, type_args } => {
             let (pos, c1) = subst_vec(kb, pos_args, subst);
             let (named, c2) = subst_named(kb, named_args, subst);
-            (c1 || c2).then(|| {
+            let (ta, c3) = subst_type_args(kb, type_args, subst);
+            (c1 || c2 || c3).then(|| {
                 NodeOccurrence::new_expr(
                     Expr::Apply {
                         functor: *functor,
                         pos_args: pos,
                         named_args: named,
-                        type_args: type_args.clone(),
+                        type_args: ta,
                     },
                     occ.span,
                     occ.owner,
@@ -1886,6 +2057,54 @@ pub fn substitute_occurrence(
                 NodeOccurrence::new_expr(Expr::HoApply { predicate: p, args: a }, occ.span, occ.owner)
             })
         }
+        // WI-298: Let.type_annotation is a TermId — apply σ to it via
+        // `apply_subst` alongside the occurrence children, mirroring the
+        // opener's explicit Let arm. The generic fall-through below would
+        // leave it un-substituted because `for_each_child` skips TermId
+        // fields.
+        Expr::Let { pattern, type_annotation, value, body } => {
+            let new_pattern = substitute_occurrence(kb, pattern, subst);
+            let new_value = substitute_occurrence(kb, value, subst);
+            let new_body = substitute_occurrence(kb, body, subst);
+            let (new_ta, ta_changed) = subst_option_termid(kb, type_annotation, subst);
+            let c1 = !Rc::ptr_eq(&new_pattern, pattern);
+            let c2 = !Rc::ptr_eq(&new_value, value);
+            let c3 = !Rc::ptr_eq(&new_body, body);
+            (c1 || c2 || c3 || ta_changed).then(|| {
+                NodeOccurrence::new_expr(
+                    Expr::Let {
+                        pattern: new_pattern,
+                        type_annotation: new_ta,
+                        value: new_value,
+                        body: new_body,
+                    },
+                    occ.span,
+                    occ.owner,
+                )
+            })
+        }
+        // WI-298: ApplyWithin.type_args mirrors Apply.type_args. The generic
+        // fall-through would leave them un-substituted; explicit arm closes
+        // that gap, parallel to the opener.
+        Expr::ApplyWithin { functor, args, named_args, requirements, type_args } => {
+            let (a, c1) = subst_vec(kb, args, subst);
+            let (named, c2) = subst_named(kb, named_args, subst);
+            let (reqs, c3) = subst_vec(kb, requirements, subst);
+            let (ta, c4) = subst_type_args(kb, type_args, subst);
+            (c1 || c2 || c3 || c4).then(|| {
+                NodeOccurrence::new_expr(
+                    Expr::ApplyWithin {
+                        functor: *functor,
+                        args: a,
+                        named_args: named,
+                        requirements: reqs,
+                        type_args: ta,
+                    },
+                    occ.span,
+                    occ.owner,
+                )
+            })
+        }
         // WI-296: a *child-bearing* control-flow / post-elaboration form CAN
         // occur at a rule-body atom position — reflection / typing rules match
         // expression structure as data (e.g. `occurrence_term(?e, lambda(...))`).
@@ -1899,6 +2118,42 @@ pub fn substitute_occurrence(
         }
     };
     rebuilt.unwrap_or_else(|| Rc::clone(occ))
+}
+
+/// WI-298: apply σ to the TermId entries in a call site's `type_args` —
+/// the substitution twin of `open_type_args` / `close_type_args`.
+/// `apply_subst` returns the same hash-consed `TermId` when nothing changed,
+/// so `changed` tracks real rewrites.
+fn subst_type_args(
+    kb: &mut KnowledgeBase,
+    items: &[(Option<Symbol>, TermId)],
+    subst: &Substitution,
+) -> (Vec<(Option<Symbol>, TermId)>, bool) {
+    let mut changed = false;
+    let mut out = Vec::with_capacity(items.len());
+    for &(name, t) in items {
+        let nt = kb.apply_subst(t, subst);
+        changed |= nt != t;
+        out.push((name, nt));
+    }
+    (out, changed)
+}
+
+/// WI-298: apply σ to an `Option<TermId>` field (today only
+/// `Let.type_annotation`) — the substitution twin of `open_option_termid` /
+/// `close_option_termid`.
+fn subst_option_termid(
+    kb: &mut KnowledgeBase,
+    item: &Option<TermId>,
+    subst: &Substitution,
+) -> (Option<TermId>, bool) {
+    match item {
+        Some(t) => {
+            let nt = kb.apply_subst(*t, subst);
+            (Some(nt), nt != *t)
+        }
+        None => (None, false),
+    }
 }
 
 /// Resolve a `Expr::Var(Global)` leaf against σ. `None` ⇒ unbound, keep the
@@ -2725,9 +2980,11 @@ mod tests {
         // (reflection / typing rules match expression structure as data, e.g.
         // `occurrence_term(?e, if_expr(cond: ?c, ...))`). The opener must
         // descend into it and remap DeBruijn -> Global rather than assert it
-        // can't occur (the old `_`-arm panic).
-        let mut symbols = SymbolTable::new();
-        let v = symbols.intern("v");
+        // can't occur (the old `_`-arm panic). WI-298: opener now threads
+        // `&mut KnowledgeBase` so it can remap DeBruijn vars inside TermId
+        // fields (Let.type_annotation, Apply/ApplyWithin.type_args).
+        let mut kb = KnowledgeBase::new();
+        let v = kb.intern("v");
         let span = make_span();
         let cond = NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(0)), span, None);
         let then_b = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
@@ -2739,7 +2996,7 @@ mod tests {
         );
         let fresh = [VarId::new(7, v)];
         // Must not panic, and the nested DeBruijn(0) must remap to Global(7).
-        let opened = open_debruijn_node(&if_occ, &fresh);
+        let opened = open_debruijn_node(&mut kb, &if_occ, &fresh);
         match opened.as_expr().unwrap() {
             Expr::If { condition, .. } => match condition.as_expr().unwrap() {
                 Expr::Var(Var::Global(vid)) => assert_eq!(vid.raw(), 7),
@@ -2757,7 +3014,7 @@ mod tests {
             span,
             None,
         );
-        match open_debruijn_node(&req, &fresh).as_expr().unwrap() {
+        match open_debruijn_node(&mut kb, &req, &fresh).as_expr().unwrap() {
             Expr::RequirementAtSort { chain, .. } => match chain.as_expr().unwrap() {
                 Expr::Var(Var::Global(vid)) => assert_eq!(vid.raw(), 7),
                 other => panic!("chain should be a Global var, got {other:?}"),
@@ -2869,10 +3126,12 @@ mod tests {
     fn open_debruijn_remaps_var_leaves() {
         // WI-246: a De Bruijn rule-body atom `gt(DeBruijn(0), 3)` opens to
         // `gt(Global(v0), 3)`; the unchanged `3` leaf keeps its Rc identity.
+        // WI-298: opener now threads `&mut KnowledgeBase` for TermId-field
+        // remap.
         use crate::kb::term::Var;
-        let mut symbols = SymbolTable::new();
-        let gt = symbols.intern("gt");
-        let xname = symbols.intern("x");
+        let mut kb = KnowledgeBase::new();
+        let gt = kb.intern("gt");
+        let xname = kb.intern("x");
         let span = make_span();
         let db0 = NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(0)), span, None);
         let three = NodeOccurrence::new_expr(Expr::Const(Literal::Int(3)), span, None);
@@ -2887,7 +3146,7 @@ mod tests {
             None,
         );
         let v0 = VarId::new(7, xname);
-        let opened = open_debruijn_node(&atom, &[v0]);
+        let opened = open_debruijn_node(&mut kb, &atom, &[v0]);
         match opened.as_expr() {
             Some(Expr::Apply { functor, pos_args, .. }) => {
                 assert_eq!(*functor, gt);
@@ -2944,7 +3203,7 @@ mod tests {
 
         // Re-open with a fresh global: the leaf comes back as that global.
         let v_fresh = VarId::new(42, xname);
-        let reopened = open_debruijn_node(&closed, &[v_fresh]);
+        let reopened = open_debruijn_node(&mut kb, &closed, &[v_fresh]);
         match reopened.as_expr() {
             Some(Expr::Apply { pos_args, .. }) => assert!(
                 matches!(pos_args[0].as_expr(), Some(Expr::Var(Var::Global(v))) if *v == v_fresh),
@@ -3080,6 +3339,278 @@ mod tests {
             "type_args var must close to DeBruijn (no stray Global), got {:?}",
             kb.get_term(type_args[0].1)
         );
+    }
+
+    #[test]
+    fn wi298_open_remaps_debruijn_inside_apply_type_args() {
+        // WI-298: a rule whose body has `Apply.type_args` containing
+        // DeBruijn(0) must, on opening, surface the fresh `Global(v0)` in
+        // that type-arg slot — mirroring `node_to_debruijn`'s
+        // `close_type_args` on the closing side. Without the WI-298 fix
+        // the opener cloned `type_args` verbatim, leaving the stored
+        // DeBruijn in place.
+        use crate::kb::term::Var;
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("f");
+        let xname = kb.intern("x");
+        let span = make_span();
+        // A type_args entry holding a DeBruijn(0) leaf (the rule's shared
+        // De Bruijn space).
+        let ta_db = kb.alloc(Term::Var(Var::DeBruijn(0)));
+        let atom = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: f,
+                pos_args: vec![],
+                named_args: vec![],
+                type_args: vec![(None, ta_db)],
+            },
+            span,
+            None,
+        );
+        let v0 = VarId::new(7, xname);
+        let opened = open_debruijn_node(&mut kb, &atom, &[v0]);
+        let Some(Expr::Apply { type_args, .. }) = opened.as_expr() else {
+            panic!("expected Apply");
+        };
+        let Term::Var(Var::Global(vid)) = kb.get_term(type_args[0].1) else {
+            panic!("type_args entry should open to Global, got {:?}", kb.get_term(type_args[0].1));
+        };
+        assert_eq!(*vid, v0, "type_args DeBruijn(0) must open to fresh Global(v0)");
+    }
+
+    #[test]
+    fn wi298_open_remaps_debruijn_inside_let_type_annotation() {
+        // WI-298: a Let occurrence in a rule body whose `type_annotation` and
+        // `body` both contain a leaf `Var::DeBruijn(0)` (the rule's shared
+        // De Bruijn space). Opening with `fresh = [v0]` must remap BOTH the
+        // body leaf and the type_annotation TermId to the same `Global(v0)`,
+        // so a hypothetical `?p` shared between the annotation and the body
+        // resolves to one fresh global. Without the WI-298 fix the
+        // annotation kept its DeBruijn in place.
+        use crate::kb::term::Var;
+        let mut kb = KnowledgeBase::new();
+        let xname = kb.intern("x");
+        let span = make_span();
+        let v0 = VarId::new(7, xname);
+        // Pattern: `Pattern::Var { name: x, type_ann: None }`.
+        let pattern = NodeOccurrence::new_pattern(
+            Pattern::Var { name: xname, type_ann: None },
+            span,
+            None,
+        );
+        // value/body are bare literals — uninteresting for this test.
+        let value = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
+        let body = NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(0)), span, None);
+        // Annotation: a DeBruijn(0) standing for ?p in type position.
+        let ta_db = kb.alloc(Term::Var(Var::DeBruijn(0)));
+        let let_occ = NodeOccurrence::new_expr(
+            Expr::Let {
+                pattern,
+                type_annotation: Some(ta_db),
+                value,
+                body,
+            },
+            span,
+            None,
+        );
+        let opened = open_debruijn_node(&mut kb, &let_occ, &[v0]);
+        let Some(Expr::Let { type_annotation, body, .. }) = opened.as_expr() else {
+            panic!("expected Let");
+        };
+        let Some(ta) = type_annotation else {
+            panic!("type_annotation should still be Some after open");
+        };
+        let Term::Var(Var::Global(ta_vid)) = kb.get_term(*ta) else {
+            panic!("type_annotation should open to Global, got {:?}", kb.get_term(*ta));
+        };
+        assert_eq!(*ta_vid, v0, "type_annotation DeBruijn(0) must open to fresh Global(v0)");
+        // And the body's ?p must have opened to the SAME global — the
+        // observable property the acceptance criterion calls for.
+        let Some(Expr::Var(Var::Global(body_vid))) = body.as_expr() else {
+            panic!("body should be Global, got {:?}", body.as_expr());
+        };
+        assert_eq!(*body_vid, v0, "body var and type_annotation var must share the same fresh global");
+    }
+
+    #[test]
+    fn wi298_close_remaps_global_inside_let_type_annotation() {
+        // WI-298: complementing the opener test — node_to_debruijn must also
+        // close a Global living in `Let.type_annotation` into the rule's
+        // shared De Bruijn space, mirroring the opener. Without this the
+        // stored rule body would carry a stray Global that escaped
+        // per-call freshening.
+        use crate::kb::term::Var;
+        let mut kb = KnowledgeBase::new();
+        let xname = kb.intern("x");
+        let span = make_span();
+        let v0 = VarId::new(7, xname);
+        let pattern = NodeOccurrence::new_pattern(
+            Pattern::Var { name: xname, type_ann: None },
+            span,
+            None,
+        );
+        let value = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
+        let body = NodeOccurrence::new_expr(Expr::Var(Var::Global(v0)), span, None);
+        let ta_global = kb.alloc(Term::Var(Var::Global(v0)));
+        let let_occ = NodeOccurrence::new_expr(
+            Expr::Let {
+                pattern,
+                type_annotation: Some(ta_global),
+                value,
+                body,
+            },
+            span,
+            None,
+        );
+        let closed = node_to_debruijn(&mut kb, &let_occ, &[v0]);
+        let Some(Expr::Let { type_annotation, body, .. }) = closed.as_expr() else {
+            panic!("expected Let");
+        };
+        let Some(ta) = type_annotation else {
+            panic!("type_annotation should still be Some after close");
+        };
+        assert!(
+            matches!(kb.get_term(*ta), Term::Var(Var::DeBruijn(0))),
+            "Let.type_annotation Global must close to DeBruijn(0), got {:?}",
+            kb.get_term(*ta),
+        );
+        assert!(
+            matches!(body.as_expr(), Some(Expr::Var(Var::DeBruijn(0)))),
+            "Let.body Global must close to DeBruijn(0), got {:?}",
+            body.as_expr(),
+        );
+    }
+
+    #[test]
+    fn wi298_substitute_applies_sigma_to_apply_type_args() {
+        // WI-298: `substitute_occurrence` must apply σ to the TermId
+        // entries of `Apply.type_args`. Without the fix it cloned them
+        // verbatim, so a rule-param Global in a call-site type argument
+        // would not be replaced by its head-matched concrete value.
+        use crate::kb::term::Var;
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("f");
+        let int_sym = kb.intern("Int");
+        let xname = kb.intern("x");
+        let span = make_span();
+        let v0 = VarId::new(7, xname);
+        // A type_args entry holding Global(v0).
+        let ta_global = kb.alloc(Term::Var(Var::Global(v0)));
+        let atom = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: f,
+                pos_args: vec![],
+                named_args: vec![],
+                type_args: vec![(None, ta_global)],
+            },
+            span,
+            None,
+        );
+        let int_ref = kb.alloc(Term::Ref(int_sym));
+        let mut subst = Substitution::new();
+        subst.bind(v0, int_ref);
+
+        let out = substitute_occurrence(&mut kb, &atom, &subst);
+        let Some(Expr::Apply { type_args, .. }) = out.as_expr() else {
+            panic!("expected Apply, got {:?}", out.as_expr());
+        };
+        assert_eq!(
+            type_args[0].1, int_ref,
+            "Apply.type_args must be substituted to Ref(Int) under σ; got {:?}",
+            kb.get_term(type_args[0].1),
+        );
+    }
+
+    #[test]
+    fn wi298_substitute_applies_sigma_to_let_type_annotation() {
+        // WI-298: the substitute_occurrence Let arm must apply σ to
+        // type_annotation, mirroring the Apply arm. Without the explicit Let
+        // arm the generic _ fall-through would skip the TermId field.
+        use crate::kb::term::Var;
+        let mut kb = KnowledgeBase::new();
+        let int_sym = kb.intern("Int");
+        let xname = kb.intern("x");
+        let span = make_span();
+        let v0 = VarId::new(7, xname);
+        let pattern = NodeOccurrence::new_pattern(
+            Pattern::Var { name: xname, type_ann: None },
+            span,
+            None,
+        );
+        let value = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
+        let body = NodeOccurrence::new_expr(Expr::Const(Literal::Int(2)), span, None);
+        let ta_global = kb.alloc(Term::Var(Var::Global(v0)));
+        let let_occ = NodeOccurrence::new_expr(
+            Expr::Let {
+                pattern,
+                type_annotation: Some(ta_global),
+                value,
+                body,
+            },
+            span,
+            None,
+        );
+        let int_ref = kb.alloc(Term::Ref(int_sym));
+        let mut subst = Substitution::new();
+        subst.bind(v0, int_ref);
+
+        let out = substitute_occurrence(&mut kb, &let_occ, &subst);
+        let Some(Expr::Let { type_annotation, .. }) = out.as_expr() else {
+            panic!("expected Let, got {:?}", out.as_expr());
+        };
+        let Some(ta) = type_annotation else {
+            panic!("type_annotation should still be Some after subst");
+        };
+        assert_eq!(
+            *ta, int_ref,
+            "Let.type_annotation must be substituted to Ref(Int) under σ; got {:?}",
+            kb.get_term(*ta),
+        );
+    }
+
+    #[test]
+    fn wi298_apply_within_type_args_round_trip_through_debruijn() {
+        // WI-298: the new explicit ApplyWithin arms in open/close handle
+        // type_args symmetrically with Apply. A Global → DeBruijn → Global
+        // round-trip should reproduce the fresh var.
+        use crate::kb::term::Var;
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("f");
+        let tname = kb.intern("t");
+        let span = make_span();
+        let v0 = VarId::new(7, tname);
+        let ta_global = kb.alloc(Term::Var(Var::Global(v0)));
+        let atom = NodeOccurrence::new_expr(
+            Expr::ApplyWithin {
+                functor: f,
+                args: vec![],
+                named_args: vec![],
+                requirements: vec![],
+                type_args: vec![(None, ta_global)],
+            },
+            span,
+            None,
+        );
+        // Close: Global(v0) → DeBruijn(0).
+        let closed = node_to_debruijn(&mut kb, &atom, &[v0]);
+        let Some(Expr::ApplyWithin { type_args, .. }) = closed.as_expr() else {
+            panic!("expected ApplyWithin after close");
+        };
+        assert!(
+            matches!(kb.get_term(type_args[0].1), Term::Var(Var::DeBruijn(0))),
+            "ApplyWithin.type_args Global must close to DeBruijn(0); got {:?}",
+            kb.get_term(type_args[0].1),
+        );
+        // Open with fresh global: DeBruijn(0) → Global(v_fresh).
+        let v_fresh = VarId::new(42, tname);
+        let reopened = open_debruijn_node(&mut kb, &closed, &[v_fresh]);
+        let Some(Expr::ApplyWithin { type_args, .. }) = reopened.as_expr() else {
+            panic!("expected ApplyWithin after open");
+        };
+        let Term::Var(Var::Global(vid)) = kb.get_term(type_args[0].1) else {
+            panic!("type_args entry should open to Global, got {:?}", kb.get_term(type_args[0].1));
+        };
+        assert_eq!(*vid, v_fresh, "round-trip must yield the fresh global");
     }
 
     #[test]

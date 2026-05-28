@@ -2712,12 +2712,23 @@ impl KnowledgeBase {
     /// vars in an occurrence arg that remain unbound under `subst`, chasing
     /// `Value::Term` bindings back into term-land (where the existing
     /// term-walker takes over).
+    ///
+    /// WI-298: descends into `NodeKind::Pattern` occurrences via
+    /// `for_each_pattern_child` so a Global living in a pattern's nested
+    /// type-annotation Expr leaf is counted; symmetric with
+    /// `collect_occurrence_global_vars` / `occurrence_has_unbound_var`.
     fn collect_unbound_vars_node(
         &self,
         arg: &Rc<NodeOccurrence>,
         subst: &Substitution,
         out: &mut Vec<VarId>,
     ) {
+        if let Some(pat) = arg.as_pattern() {
+            node_occurrence::for_each_pattern_child(pat, |c| {
+                self.collect_unbound_vars_node(c, subst, out)
+            });
+            return;
+        }
         match arg.as_expr() {
             Some(Expr::Var(Var::Global(vid))) => match subst.resolve_with_term(*vid) {
                 Some(t) => self.collect_unbound_vars(t, subst, out),
