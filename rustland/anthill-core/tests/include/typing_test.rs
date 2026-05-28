@@ -2222,6 +2222,47 @@ fn subtype_arrow_different_effects_incompatible() {
     assert!(!types_compatible(&kb, fn1, fn2), "different effects not compatible");
 }
 
+/// WI-307 v1a canonical-form invariant: two arrow types built from the
+/// SAME set of effect labels in DIFFERENT input order must hash-cons to the
+/// SAME TermId. Pins the docstring promise on
+/// `build_canonical_effects_rows` against code-review #12 (existing
+/// parse_test had source order == alphabetic order, so it couldn't
+/// distinguish source-order from canonical-order behavior).
+#[test]
+fn arrow_effects_canonical_form_hash_cons_stable() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    // Use names whose alphabetic order is OPPOSITE to source order, so the
+    // canonical sort must actively reorder to make the TermIds match.
+    let z_sym = kb.intern("ZebraEffect");
+    let a_sym = kb.intern("AlphaEffect");
+    let z = kb.make_sort_ref(z_sym);
+    let a = kb.make_sort_ref(a_sym);
+
+    let arrow_forward  = kb.make_arrow_type(int_ty, int_ty, &[z, a]); // source: Z, A
+    let arrow_reverse  = kb.make_arrow_type(int_ty, int_ty, &[a, z]); // source: A, Z
+
+    assert_eq!(
+        arrow_forward, arrow_reverse,
+        "two arrows with the same effect set in reversed source order must \
+         hash-cons to the same TermId — that's the whole point of the \
+         canonical form. forward={:?} reverse={:?}",
+        arrow_forward, arrow_reverse,
+    );
+}
+
+/// Empty effects, in two orderings, also produce identical TermIds —
+/// guards against a regression where an empty input fell into a different
+/// path (e.g. a stray `Vec::new()` branch) than the general one.
+#[test]
+fn arrow_effects_empty_canonical_stable() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let a = kb.make_arrow_type(int_ty, int_ty, &[]);
+    let b = kb.make_arrow_type(int_ty, int_ty, &[]);
+    assert_eq!(a, b, "two pure arrows must hash-cons identically");
+}
+
 // ── is_subtype tests (strict, irreflexive) ─────────────────────
 
 #[test]

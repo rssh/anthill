@@ -678,6 +678,28 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
             }
         }
         Term::Ref(s) => kb.resolve_sym(*s).to_string(),
+        Term::Var(v) => {
+            // WI-307 code-review #7: render variables by their name (not
+            // TermId Debug, which would embed allocation-order indices and
+            // break the canonical-form-stable-across-runs claim of
+            // `build_canonical_effects_rows`). All three Var variants —
+            // Global, DeBruijn, Rigid — carry a `name: Symbol`; resolve it
+            // so two distinct vars sharing a textual name (e.g. `T` from
+            // different scopes) sort together.
+            let name_sym = match v {
+                crate::kb::term::Var::Global(vid) => vid.name(),
+                crate::kb::term::Var::DeBruijn(_) => {
+                    // De Bruijn indices have no name; render as `?` so they
+                    // sort consistently. In practice these don't reach
+                    // `type_display_name` because the typer operates on
+                    // post-binder-open terms, but the arm keeps the
+                    // function total.
+                    return "?".to_string();
+                }
+                crate::kb::term::Var::Rigid(vid) => vid.name(),
+            };
+            format!("?{}", kb.resolve_sym(name_sym))
+        }
         _ => format!("{:?}", ty),
     }
 }
@@ -4440,11 +4462,23 @@ fn arrow_parts(kb: &KnowledgeBase, ty: TermId) -> Option<(Option<TermId>, TermId
             // Function[E] parameter binding still flows through as List[Type]
             // (the parameter shape hasn't migrated). When/if Function.E binds
             // an effects_rows Type, this branch follows the arrow branch.
+            //
+            // WI-307 code-review #5: dispatch via Symbol identity, not
+            // short-name compare. A user-defined entity in another namespace
+            // with short name `effects_rows` would otherwise be misrouted
+            // through effects_rows_to_flat_list. The cached symbol resolves
+            // against the canonical anthill.prelude.Type.effects_rows; a
+            // missing symbol (pre-stdlib bootstrap) falls back to the legacy
+            // List path, which is correct since no effects_rows term can
+            // exist before its symbol is registered.
+            let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.Type.effects_rows");
             let effects = extract_type_param(kb, ty, "E")
                 .map(|e| {
-                    // Accept either the legacy List or the new effects_rows
-                    // wrapper, so an E-bound effects_rows decomposes cleanly.
-                    if type_functor_name(kb, e) == Some("effects_rows") {
+                    let is_effects_rows = match (effects_rows_sym, kb.get_term(e)) {
+                        (Some(er), Term::Fn { functor, .. }) => *functor == er,
+                        _ => false,
+                    };
+                    if is_effects_rows {
                         effects_rows_to_flat_list(kb, e)
                     } else {
                         list_to_vec(kb, e)
@@ -4459,81 +4493,122 @@ fn arrow_parts(kb: &KnowledgeBase, ty: TermId) -> Option<(Option<TermId>, TermId
 
 /// WI-307 v1a: flatten an `effects_rows(EffectExpression)` Type into the
 /// pre-v1a `Vec<TermId>` shape: concrete labels followed by an optional
-/// row-tail `Var`. Walks the right-associated `merge(present(l), …, tail)`
-/// chain — see `KnowledgeBase::build_canonical_effects_rows` for the
-/// inverse build. Tolerates a missing or non-`effects_rows` wrapper by
-/// returning the original list (back-compat during the migration window).
+/// row-tail `Var`. Inverse of `KnowledgeBase::build_canonical_effects_rows`.
+///
+/// **Structural walk** — visits the EffectExpression algebra via a stack
+/// (no shape assumption about `merge` associativity). Each node dispatches
+/// by short functor name:
+///   - `empty_row`         → terminate this branch
+///   - `present(label)`    → push `label` to `out`
+///   - `absent(label)`     → skip (v1a presence-only; the flat-list shape
+///                          has no slot for absences, lacks-constraints
+///                          land with v1b)
+///   - `open(tail)`        → push `tail` (the row-tail Var) to `out`
+///   - `merge(left, right)`→ stack both subtrees
+///   - bare `Term::Var`    → push as tail (matches the shape the WI-320
+///                          bridge fact emits: `effects_rows(?expr)` whose
+///                          inner is an unbound Var. Without this, the
+///                          bridge head decodes to an empty flat list and
+///                          effects silently vanish.)
+///
+/// **Non-wrapper tolerance** — when `ty` is not an `effects_rows` term, the
+/// function falls back to `list_to_vec(kb, ty)` for back-compat with the
+/// legacy List[Type] shape that still lives in OperationInfo.effects and
+/// parameterized E bindings until those slots migrate. A `debug_assert`
+/// surfaces the case in dev builds so any unexpected non-wrapper reaching
+/// this site is easy to spot during migration.
 pub(crate) fn effects_rows_to_flat_list(kb: &KnowledgeBase, ty: TermId) -> Vec<TermId> {
-    // Unwrap effects_rows; if `ty` isn't the wrapper, treat it as a legacy
-    // List[Type] term — the previous representation, still seen in
-    // OperationInfo.effects and parameterized E bindings until those
-    // migrate.
-    let expr = match kb.get_term(ty) {
-        Term::Fn { functor, named_args, .. }
-            if kb.resolve_sym(*functor) == "effects_rows" =>
-        {
+    // Unwrap effects_rows; non-wrapper inputs flow through legacy list_to_vec.
+    // The fallback path is intentional during the migration window, but
+    // surface unexpected shapes in dev builds so silent data-loss doesn't
+    // accumulate.
+    //
+    // Dispatch via Symbol identity (code-review #5) rather than short-name
+    // compare so a user-defined `effects_rows` entity in another namespace
+    // isn't misrouted here.
+    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.Type.effects_rows");
+    let expr = match (effects_rows_sym, kb.get_term(ty)) {
+        (Some(er), Term::Fn { functor, named_args, .. }) if *functor == er => {
             match get_named_arg(kb, named_args, "effects_expr") {
                 Some(e) => e,
-                None => return Vec::new(),
+                None => {
+                    debug_assert!(
+                        false,
+                        "effects_rows term missing effects_expr field"
+                    );
+                    return Vec::new();
+                }
             }
         }
-        _ => return list_to_vec(kb, ty),
+        _ => {
+            // Legacy: caller passed an unwrapped List or some other shape.
+            // OperationInfo.effects (still List) and Function[E] with a
+            // legacy List binding hit this; the typer's transient terms
+            // before make_arrow_type also can.
+            return list_to_vec(kb, ty);
+        }
     };
-    // Walk the EffectExpression algebra, collecting present-label types
-    // and the (at most one) tail Var. `absent` labels are dropped — v1a
-    // is presence-only; the flat-list shape has no slot for them.
+
+    // Structural walk over the EffectExpression algebra (any associativity).
     let mut out: Vec<TermId> = Vec::new();
-    let mut node = expr;
-    loop {
-        let (functor_name, named_args) = match kb.get_term(node) {
+    let mut stack: Vec<TermId> = vec![expr];
+    while let Some(node) = stack.pop() {
+        match kb.get_term(node) {
+            // Bare Var inside effects_rows is an open-row tail (e.g. the
+            // WI-320 bridge fact head shape `effects_rows(?expr)`). Treat
+            // as if wrapped in `open(tail = ?expr)` — pushing it to `out`
+            // keeps the row-tail visible to downstream readers.
+            Term::Var(_) => out.push(node),
             Term::Fn { functor, named_args, .. } => {
-                (kb.resolve_sym(*functor).to_string(), named_args.clone())
-            }
-            _ => break,
-        };
-        match functor_name.as_str() {
-            "empty_row" => break,
-            "present" => {
-                if let Some(label) = get_named_arg(kb, &named_args, "label") {
-                    out.push(label);
-                }
-                break;
-            }
-            "absent" => break, // v1a: drop absences from the flat-list view
-            "open" => {
-                if let Some(tail) = get_named_arg(kb, &named_args, "tail") {
-                    out.push(tail);
-                }
-                break;
-            }
-            "merge" => {
-                // Canonical form is right-associated:
-                //   merge(present(l), <rest>)
-                // so peel the head label/tail and recurse on `right`.
-                if let Some(left) = get_named_arg(kb, &named_args, "left") {
-                    match kb.get_term(left) {
-                        Term::Fn { functor: lf, named_args: la, .. } => {
-                            let ln = kb.resolve_sym(*lf);
-                            if ln == "present" {
-                                if let Some(label) = get_named_arg(kb, la, "label") {
-                                    out.push(label);
-                                }
-                            } else if ln == "open" {
-                                if let Some(tail) = get_named_arg(kb, la, "tail") {
-                                    out.push(tail);
-                                }
-                            }
-                            // `absent` ignored (v1a presence-only).
+                let name = kb.resolve_sym(*functor);
+                match name {
+                    "empty_row" => {}
+                    "present" => {
+                        if let Some(label) = get_named_arg(kb, named_args, "label") {
+                            out.push(label);
                         }
-                        _ => {}
+                    }
+                    "absent" => {
+                        // v1a presence-only — lacks-constraint slot lands w/ v1b.
+                    }
+                    "open" => {
+                        if let Some(tail) = get_named_arg(kb, named_args, "tail") {
+                            out.push(tail);
+                        }
+                    }
+                    "merge" => {
+                        // Push right first so left is visited first (LIFO).
+                        // The walk is shape-agnostic: nested merges in
+                        // either subtree are descended structurally rather
+                        // than peeked at the head — non-canonical
+                        // associativity no longer drops payload.
+                        if let Some(r) = get_named_arg(kb, named_args, "right") {
+                            stack.push(r);
+                        }
+                        if let Some(l) = get_named_arg(kb, named_args, "left") {
+                            stack.push(l);
+                        }
+                    }
+                    _ => {
+                        // Unknown functor inside an EffectExpression payload
+                        // — likely an upstream construction bug. Surface in
+                        // dev builds; tolerate in release (caller decides).
+                        debug_assert!(
+                            false,
+                            "unexpected functor in EffectExpression walk: {}",
+                            name
+                        );
                     }
                 }
-                match get_named_arg(kb, &named_args, "right") {
-                    Some(r) => node = r,
-                    None => break,
-                }
             }
-            _ => break,
+            // Term::Ref / Const / Ident / Bottom inside an EffectExpression
+            // are ill-typed — surface in dev, ignore in release.
+            _ => {
+                debug_assert!(
+                    false,
+                    "unexpected term shape in EffectExpression walk"
+                );
+            }
         }
     }
     out

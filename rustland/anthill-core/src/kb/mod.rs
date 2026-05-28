@@ -2365,15 +2365,29 @@ impl KnowledgeBase {
     /// still passes a flat `&[TermId]` of effect labels for ergonomics; we
     /// canonicalize internally (sort by `type_display_name`, dedup, fold into
     /// a right-associated `merge`-chain ending in `empty_row` for closed
-    /// rows or `open(tail)` when a `Term::Var` is present). Mixing concrete
-    /// labels and a row-tail `Var` in one list is the documented row shape:
-    /// `effects { Modify[c], E }` lowers to `[Modify[c]-term, Var(E)-term]`
+    /// rows or `open(tail)` when a `Var::Global` is present). Mixing concrete
+    /// labels and a row-tail `Var::Global` in one list is the documented row
+    /// shape: `effects { Modify[c], E }` lowers to
+    /// `[Modify[c]-term, Var(E)-term]`
     /// → `merge(present(Modify[c]), open(?E))`.
     ///
-    /// At most one `Term::Var` is expected (the row tail). Additional vars
-    /// past the first are folded as if they were extra labels — the
-    /// canonical form still parses, but row unification will treat them as
-    /// duplicate tails (semantically nonsensical, but representable).
+    /// At most one `Var::Global` is expected (the row tail). Additional
+    /// Var::Global past the first are folded as if they were extra labels —
+    /// the canonical form still parses, but row unification will treat them
+    /// as duplicate tails (semantically nonsensical, but representable).
+    /// Var::DeBruijn and Var::Rigid fall through to the labels arm (per
+    /// code-review #6) — their unification semantics aren't row-tail.
+    ///
+    /// **Bootstrap dependency** (code-review #13) — beyond the
+    /// `anthill.prelude.Type.arrow` symbol pre-WI-307 made_arrow_type
+    /// needed, this function now also requires
+    /// `anthill.prelude.Type.effects_rows` and the five
+    /// `anthill.prelude.EffectExpression.{empty_row, present, absent, open,
+    /// merge}` entity symbols. All six are pre-registered by
+    /// `kb::load::register_stdlib_scopes` (the same path that registers
+    /// `Type.arrow`); a KB constructed without `register_prelude` panics
+    /// at the first builder call with a clear `resolve_symbol` message
+    /// rather than silently producing malformed terms.
     pub fn make_arrow_type(&mut self, param: TermId, result: TermId, effects: &[TermId]) -> TermId {
         let arrow_sym = self.resolve_symbol("anthill.prelude.Type.arrow");
         let param_key = self.intern("param");
@@ -2406,12 +2420,21 @@ impl KnowledgeBase {
         })
     }
 
+    // WI-307 code-review #11: every EffectExpression / effects_rows
+    // builder calls `sort_by_key` on named_args before allocating, even
+    // when only one field is pushed. This is a no-op today (single-element
+    // SmallVec is trivially sorted), but uniformly enforcing the
+    // "named args sorted by field name" convention (per CLAUDE.md) keeps
+    // hash-cons identity stable if any peer later gains a second field —
+    // otherwise push-order would silently determine the SmallVec layout.
+
     /// EffectExpression `present(label: Type)` — a single present effect.
     pub fn make_effect_expression_present(&mut self, label: TermId) -> TermId {
         let sym = self.resolve_symbol("anthill.prelude.EffectExpression.present");
         let label_key = self.intern("label");
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named_args.push((label_key, label));
+        named_args.sort_by_key(|(s, _)| s.index());
         self.alloc(Term::Fn {
             functor: sym,
             pos_args: SmallVec::new(),
@@ -2426,6 +2449,7 @@ impl KnowledgeBase {
         let label_key = self.intern("label");
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named_args.push((label_key, label));
+        named_args.sort_by_key(|(s, _)| s.index());
         self.alloc(Term::Fn {
             functor: sym,
             pos_args: SmallVec::new(),
@@ -2441,6 +2465,7 @@ impl KnowledgeBase {
         let tail_key = self.intern("tail");
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named_args.push((tail_key, tail));
+        named_args.sort_by_key(|(s, _)| s.index());
         self.alloc(Term::Fn {
             functor: sym,
             pos_args: SmallVec::new(),
@@ -2475,6 +2500,7 @@ impl KnowledgeBase {
         let expr_key = self.intern("effects_expr");
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named_args.push((expr_key, expr));
+        named_args.sort_by_key(|(s, _)| s.index());
         self.alloc(Term::Fn {
             functor: sym,
             pos_args: SmallVec::new(),
@@ -2497,16 +2523,25 @@ impl KnowledgeBase {
     /// An empty input list with no tail yields `effects_rows(empty_row)` — the
     /// closed pure row.
     pub fn build_canonical_effects_rows(&mut self, effects: &[TermId]) -> TermId {
-        // Partition into present labels (Term::Fn) and row-tail Vars
-        // (Term::Var). At most one tail var is expected; if multiple appear,
+        // Partition into present labels (Term::Fn) and row-tail Var::Global.
+        // At most one tail var is expected; if multiple Global vars appear,
         // we treat all-but-the-first as extra labels (the canonical form
         // still parses, but row unification will surface the malformed shape
         // as a unification failure).
+        //
+        // WI-307 code-review #6: only Var::Global qualifies as a row-tail.
+        // Var::DeBruijn (rule-side, pre-binder-open) and Var::Rigid (forall
+        // Skolems) have different unification semantics — silently treating
+        // them as row tails muddles WI-307 v1a's row-unification. Variants
+        // other than Global fall through to the labels arm, where row
+        // unification will surface them as schema-shape failures rather
+        // than silent mis-classification.
+        use crate::kb::term::{Term, Var};
         let mut labels: Vec<TermId> = Vec::new();
         let mut tail_var: Option<TermId> = None;
         for &e in effects {
             match self.get_term(e) {
-                crate::kb::term::Term::Var(_) if tail_var.is_none() => {
+                Term::Var(Var::Global(_)) if tail_var.is_none() => {
                     tail_var = Some(e);
                 }
                 _ => labels.push(e),
