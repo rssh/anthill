@@ -7,7 +7,10 @@ sort anthill.prelude.Stream
   import anthill.prelude.{Option, Pair, List, Bool, Int}
 
   sort T = ?              -- element type
-  sort E = ?              -- effect required to observe
+  -- WI-320 / proposal 045: `effects E = ?` lifts E to a row variable with
+  -- the EffectsRuntime kind anchor (desugars to
+  -- `sort E = ? requires EffectsRuntime[Effects = E]`).
+  effects E = ?           -- effect row required to observe
 
   operation splitFirst(s: Stream) -> Option[T = Pair[A = T, B = Stream]]
     effects E

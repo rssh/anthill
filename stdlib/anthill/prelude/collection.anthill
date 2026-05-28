@@ -6,7 +6,11 @@ sort anthill.prelude.Collection
 
   sort Collection = ?
   sort Element = ?
-  sort Effect = ?
+  -- WI-320 / proposal 045: Effect is the row variable for the effects
+  -- required to materialize a collection. `effects Effect = ?` desugars to
+  --   sort Effect = ? requires EffectsRuntime[Effects = Effect]
+  -- — same EffectsRuntime anchor Function.E / Stream.E receive.
+  effects Effect = ?
 
   requires Iteration[Iterator = Collection, Element, Effect]
 

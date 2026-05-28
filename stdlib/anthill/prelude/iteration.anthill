@@ -5,7 +5,10 @@ sort anthill.prelude.Iteration
 
   sort Iterator = ?
   sort Element = ?
-  sort Effect = ?
+  -- WI-320 / proposal 045: Effect is the row variable for the iterator's
+  -- observation effects. `effects Effect = ?` desugars to
+  --   sort Effect = ? requires EffectsRuntime[Effects = Effect]
+  effects Effect = ?
 
   operation split(i: Iterator) -> Option[(Element, Iterator)]
     effects Effect

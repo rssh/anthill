@@ -5,7 +5,11 @@
 sort anthill.prelude.Function
   sort A = ?
   sort B = ?
-  sort E = ?
+  -- WI-320 / proposal 045: `effects E = ?` desugars to
+  --   sort E = ? requires EffectsRuntime[Effects = E]
+  -- giving E a kind anchor (EffectsRuntime) reachable at typing time —
+  -- the substrate for the row-rewrite that WI-307 will bring in.
+  effects E = ?
 
   operation apply(f: Function[A, B, E], x: A) -> B effects E
 end
