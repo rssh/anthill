@@ -6167,8 +6167,13 @@ impl<'a> Loader<'a> {
             .collect();
         let effects_list = build_list(self.kb, &effect_terms);
 
-        // Build requires and ensures lists
-        let requires_list = self.convert_clause_list(&o.requires);
+        // Build requires and ensures lists. Auto-requires inference
+        // (WI-320 / proposal 045 §6 Phase 0) extends the user-written
+        // requires with one `EffectsRuntime[Effects = E_i]` per free row
+        // variable in the effects clause — see `infer_effects_row_requires`
+        // for the row-variable heuristic and the spec examples.
+        let auto_requires_terms = self.infer_effects_row_requires(o);
+        let requires_list = self.convert_clause_list_with_extra(&o.requires, &auto_requires_terms);
         let ensures_list = self.convert_clause_list(&o.ensures);
 
         // Convert expression body if present. WI-305: discard the term handle;
@@ -6958,7 +6963,20 @@ impl<'a> Loader<'a> {
     /// Convert a list of clauses (each a Vec<TermId>) into a cons-list.
     /// Multi-goal clauses are wrapped in a conjunction term.
     fn convert_clause_list(&mut self, clauses: &[Vec<TermId>]) -> TermId {
-        let clause_terms: Vec<TermId> = clauses
+        self.convert_clause_list_with_extra(clauses, &[])
+    }
+
+    /// Like `convert_clause_list`, plus a tail of additional kb-space clause
+    /// terms to append after the user-written clauses. The `extra_terms` are
+    /// already-built kb TermIds (one term per clause, no conjunction wrap),
+    /// used by WI-320's auto-requires inference to append synthesized
+    /// `EffectsRuntime[Effects = E_i]` clauses to a user's requires list.
+    fn convert_clause_list_with_extra(
+        &mut self,
+        clauses: &[Vec<TermId>],
+        extra_terms: &[TermId],
+    ) -> TermId {
+        let mut clause_terms: Vec<TermId> = clauses
             .iter()
             .map(|clause| {
                 let goal_terms: Vec<TermId> = clause.iter().map(|&tid| self.convert_term(tid)).collect();
@@ -6974,7 +6992,98 @@ impl<'a> Loader<'a> {
                 }
             })
             .collect();
+        clause_terms.extend_from_slice(extra_terms);
         build_list(self.kb, &clause_terms)
+    }
+
+    /// WI-320 / proposal 045 §6 Phase 0 — auto-requires inference for an
+    /// operation's `effects <expr>` clause.
+    ///
+    /// Walks the operation's effects and emits one `EffectsRuntime[Effects = E_i]`
+    /// kb term per distinct free row variable. The OperationInfo.requires list
+    /// then contains the synthesized clauses alongside user-written ones —
+    /// avoiding boilerplate at every operation declaration that mentions a
+    /// row variable.
+    ///
+    /// **Heuristic for "free row variable":** the current `_effect_set`
+    /// grammar admits `simple_type | application | variable_term`. Only the
+    /// bare `simple_type` form (`effects E`) can name a row variable; both
+    /// `application` (`Modify[T]` — closed) and `variable_term` (`?x` —
+    /// reserved for term-level variables, not row vars at the type level)
+    /// short-circuit. A bare name qualifies as a row variable when its
+    /// resolved symbol participates in a `SortAlias(<sym>, Var)` fact —
+    /// shorthand for "declared as `sort X = ?`", which is exactly the shape
+    /// the `effects X` sugar (this WI's `effects_sort_item`) desugars to and
+    /// the shape pre-existing migration sites (Function.E, Stream.E, etc.)
+    /// already had. Concrete effect sorts like `Suspension`/`Branch` lack
+    /// the SortAlias fact and are rightly excluded.
+    ///
+    /// **Per-spec examples:**
+    ///   - `effects E`                  → one requires
+    ///   - `effects merge(E1, E2)`      → two requires  (forward-looking;
+    ///                                     the current grammar's
+    ///                                     `_effect_set` does not yet admit
+    ///                                     row-combinator applications, so
+    ///                                     this case is a no-op today)
+    ///   - `effects { E, -Modify[kb] }` → one requires  (E only)
+    ///   - `effects { Modify[c] }`      → none          (closed row)
+    ///
+    /// The kb term emitted per row variable is the SortAlias-backed Var
+    /// shape that `type_expr_to_term` returns for the effect — the same
+    /// Term that goes into OperationInfo.effects, keeping the row var's
+    /// identity consistent across effects/requires. This is structurally
+    /// distinct from what a hand-written `requires EffectsRuntime[Effects = E]`
+    /// lowers to (which routes through convert_instantiation_term →
+    /// convert_type_value and produces a `Term::Ref(E_sym)` value, not the
+    /// SortAlias Var). Both shapes happen to unify against the bridge fact
+    /// head `EffectsRuntime[Effects = effects_rows(?expr)]` — the Var/Ref
+    /// query-side binds to the effects_rows subterm via the discrim tree's
+    /// standard Var-skip path — but they are NOT interchangeable Terms,
+    /// despite the symmetry the surface syntax suggests.
+    fn infer_effects_row_requires(&mut self, o: &Operation) -> Vec<TermId> {
+        // EffectsRuntime is unconditionally pre-registered by
+        // `register_stdlib_scopes` (and the bridge fact emission at
+        // `emit_effects_runtime_bridge_fact` `.expect()`s the same symbol).
+        // A missing symbol here is the same bootstrap regression as the
+        // bridge-fact path — surface it loudly rather than silently dropping
+        // every operation's auto-requires (which would mask the upstream
+        // failure behind confusing per-operation 'requires unmet' errors).
+        // Matches code-review #9's policy from commit 9ed183d.
+        let er_sym = self.kb.try_resolve_symbol("anthill.prelude.EffectsRuntime").expect(
+            "WI-320 bootstrap invariant: anthill.prelude.EffectsRuntime symbol \
+             pre-registered by register_stdlib_scopes — see kb/load.rs",
+        );
+        let effects_param_sym = self.kb.intern("Effects");
+
+        let mut seen: HashSet<Symbol> = HashSet::new();
+        let mut result: Vec<TermId> = Vec::new();
+        for eff in &o.effects {
+            let TypeExpr::Simple(name) = &eff.type_expr else {
+                continue;
+            };
+            // Cache the resolved sym to avoid pushing duplicate UnresolvedName
+            // diagnostics: `remap_name` errors-on-miss, so calling it once
+            // here AND again via `type_expr_to_term` (~7067) would double a
+            // legitimate error. We resolve once, dedup-by-sym, then reuse the
+            // SortAlias Var directly without re-routing through remap_name.
+            let sym = self.remap_name(name);
+            if !seen.insert(sym) {
+                continue;
+            }
+            // Row-variable test: must be backed by a SortAlias fact. Skipping
+            // here also skips the second `remap_name` call below for non-row
+            // effects (concrete sorts like `Suspension`).
+            let Some(row_var_term) = self.find_sort_alias_var(sym) else {
+                continue;
+            };
+            let er_term = self.kb.alloc(Term::Fn {
+                functor: er_sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[(effects_param_sym, row_var_term)]),
+            });
+            result.push(er_term);
+        }
+        result
     }
 
     // ── Member fact emission ───────────────────────────────────
