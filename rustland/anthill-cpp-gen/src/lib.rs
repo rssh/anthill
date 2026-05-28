@@ -1589,6 +1589,10 @@ fn lower_node(
             message: "rule-head occurrence in expression body — \
                       should never reach cpp-gen".into(),
         }),
+        NodeKind::Pattern(_) => return Err(CppCodegenError {
+            message: "pattern occurrence in expression body — \
+                      should be consumed by parent let/lambda/match (WI-318)".into(),
+        }),
     };
     match expr {
         Expr::Const(lit) => Ok(lower_literal(lit)),
@@ -1738,7 +1742,8 @@ fn lower_node(
         }
         Expr::Let { .. } => lower_let_chain_node(ctx, occ),
         Expr::Lambda { param, body } => {
-            let pname = pattern_var_name(kb, *param)?;
+            // WI-318: param is now a Pattern-kind occurrence.
+            let pname = pattern_var_name_occ(kb, param)?;
             let body_s = lower_node(ctx, body)?;
             Ok(format!("[=](auto {pname}) {{ return {body_s}; }}"))
         }
@@ -1853,8 +1858,11 @@ fn lower_let_chain_node(
     let body_node = loop {
         let next_body = match &current.kind {
             NodeKind::Expr { expr: Expr::Let { pattern, value, body, .. }, .. } => {
-                if !is_wildcard_pattern(kb, *pattern) {
-                    let bind_name = pattern_var_name(kb, *pattern)?;
+                // WI-318: pattern is a Pattern-kind occurrence.
+                use anthill_core::kb::node_occurrence::Pattern;
+                let is_wildcard = matches!(pattern.as_pattern(), Some(Pattern::Wildcard));
+                if !is_wildcard {
+                    let bind_name = pattern_var_name_occ(kb, pattern)?;
                     check_recursive_lambda_node(kb, value, &bind_name)?;
                     let val_s = lower_node(ctx, value)?;
                     slots.push(Slot::Bind(bind_name, val_s));
@@ -2340,7 +2348,8 @@ fn lower_match_branches_node(
     }
     let mut compiled: Vec<Compiled> = Vec::with_capacity(branches.len());
     for branch in branches {
-        let info = analyse_pattern(kb, branch.pattern, scrutinee)?;
+        // WI-318: branch.pattern is a Pattern-kind occurrence.
+        let info = analyse_pattern_occ(kb, &branch.pattern, scrutinee)?;
         // Bindings frame: `?w` in the body refers to the local
         // `auto w` introduced by the IIFE, not to the access
         // expression — the latter could re-trigger side effects.
@@ -2397,94 +2406,88 @@ struct PatternInfo {
 ///   `w → s.value()`. For other entities, binds each sub-`var_pattern`
 ///   to `std::get<Ctor>(s).<field_name>` in declaration order.
 /// - `Pattern.wildcard` — no tag check (None), no bindings.
-fn analyse_pattern(
+/// WI-318: Pattern-occurrence variant of `analyse_pattern`.
+/// Dispatches on the structural `Pattern` enum instead of round-
+/// tripping through a TermId.
+fn analyse_pattern_occ(
     kb: &KnowledgeBase,
-    pat: TermId,
+    occ: &std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>,
     scrutinee: &str,
 ) -> Result<PatternInfo, CppCodegenError> {
-    let Term::Fn { functor, named_args, .. } = kb.get_term(pat) else {
+    use anthill_core::kb::node_occurrence::Pattern;
+    let Some(pat) = occ.as_pattern() else {
         return Err(CppCodegenError {
-            message: format!("expected pattern Fn, got {:?}", kb.get_term(pat)),
+            message: "expected Pattern-kind occurrence in match branch (WI-318)".into(),
         });
     };
-    let pat_qn = kb.qualified_name_of(*functor);
-    match pat_qn {
-        "anthill.reflect.Pattern.wildcard" => Ok(PatternInfo {
+    match pat {
+        Pattern::Wildcard => Ok(PatternInfo {
             tag_check: None,
             decls: Vec::new(),
         }),
-        "anthill.reflect.Pattern.var_pattern" => {
-            let name_term = find_named(kb, named_args, "name").ok_or_else(|| {
-                CppCodegenError { message: "var_pattern missing 'name'".into() }
-            })?;
-            let ctor_qn = match kb.get_term(name_term) {
-                Term::Ref(s) | Term::Ident(s) => kb.qualified_name_of(*s).to_string(),
-                _ => return Err(CppCodegenError {
-                    message: "var_pattern's 'name' is not a Ref".into(),
-                }),
-            };
+        Pattern::Var { name, .. } => {
+            let ctor_qn = kb.qualified_name_of(*name).to_string();
             let tag = nullary_tag_check(&ctor_qn, scrutinee);
             Ok(PatternInfo { tag_check: Some(tag), decls: Vec::new() })
         }
-        "anthill.reflect.Pattern.constructor_pattern" => {
-            let name_term = find_named(kb, named_args, "name").ok_or_else(|| {
-                CppCodegenError { message: "constructor_pattern missing 'name'".into() }
-            })?;
-            let args_term = find_named(kb, named_args, "args").ok_or_else(|| {
-                CppCodegenError { message: "constructor_pattern missing 'args'".into() }
-            })?;
-            let (ctor_sym, ctor_qn) = match kb.get_term(name_term) {
-                Term::Ref(s) | Term::Ident(s) => (*s, kb.qualified_name_of(*s).to_string()),
-                _ => return Err(CppCodegenError {
-                    message: "constructor_pattern's 'name' is not a Ref".into(),
-                }),
-            };
-            let sub_pats: Vec<TermId> = walk_list(kb, args_term);
+        Pattern::Constructor { name, pos_args, .. } => {
+            let ctor_sym = *name;
+            let ctor_qn = kb.qualified_name_of(ctor_sym).to_string();
             let short = short_name_of(&ctor_qn);
-            // Option.some(?w) — special-cased because Option lowers
-            // to std::optional, not std::variant.
+            // Option.some(?w) special case mirrors the term-based path.
             if ctor_qn == "anthill.prelude.Option.some" || ctor_qn == "Option.some" {
-                if sub_pats.len() != 1 {
+                if pos_args.len() != 1 {
                     return Err(CppCodegenError {
-                        message: format!("Option.some pattern expects 1 sub-pattern, got {}", sub_pats.len()),
+                        message: format!("Option.some pattern expects 1 sub-pattern, got {}", pos_args.len()),
                     });
                 }
-                let bind_name = pattern_var_name(kb, sub_pats[0])?;
+                let bind_name = pattern_var_name_occ(kb, &pos_args[0])?;
                 return Ok(PatternInfo {
                     tag_check: Some(format!("{scrutinee}.has_value()")),
                     decls: vec![(bind_name, format!("{scrutinee}.value()"))],
                 });
             }
-            // Generic variant constructor: std::holds_alternative + std::get.
-            let fields = kb.entity_field_types(ctor_sym).ok_or_else(|| {
-                CppCodegenError {
-                    message: format!(
-                        "constructor pattern '{ctor_qn}' is not a known entity"
-                    ),
-                }
+            if ctor_qn == "anthill.prelude.Option.none" || ctor_qn == "Option.none" {
+                return Ok(PatternInfo {
+                    tag_check: Some(format!("!{scrutinee}.has_value()")),
+                    decls: Vec::new(),
+                });
+            }
+            // Generic entity constructor: variant tag + per-sub-pattern
+            // bind into `std::get<Ctor>(s).<field>`. Mirrors the pre-WI-318
+            // term-based path's error reporting — fail loudly on unknown
+            // entity and arity mismatch rather than emit invalid C++.
+            let tag = format!("std::holds_alternative<{short}>({scrutinee})");
+            let fields = kb.entity_field_types(ctor_sym).ok_or_else(|| CppCodegenError {
+                message: format!(
+                    "constructor pattern '{ctor_qn}' is not a known entity"
+                ),
             })?;
-            if sub_pats.len() != fields.len() {
+            if pos_args.len() != fields.len() {
                 return Err(CppCodegenError {
                     message: format!(
                         "constructor pattern '{ctor_qn}' expects {} sub-patterns, got {}",
-                        fields.len(), sub_pats.len()
+                        fields.len(),
+                        pos_args.len()
                     ),
                 });
             }
-            let mut decls = Vec::new();
-            for (sub_pat, (field_sym, _)) in sub_pats.iter().zip(fields.iter()) {
-                if is_wildcard_pattern(kb, *sub_pat) { continue; }
-                let bind_name = pattern_var_name(kb, *sub_pat)?;
+            let mut decls: Vec<(String, String)> = Vec::new();
+            for (sub_pat, (field_sym, _)) in pos_args.iter().zip(fields.iter()) {
+                if matches!(sub_pat.as_pattern(), Some(Pattern::Wildcard)) {
+                    continue;
+                }
+                let bind_name = pattern_var_name_occ(kb, sub_pat)?;
                 let field_name = kb.resolve_sym(*field_sym);
-                decls.push((bind_name, format!("std::get<{short}>({scrutinee}).{field_name}")));
+                decls.push((
+                    bind_name,
+                    format!("std::get<{short}>({scrutinee}).{field_name}"),
+                ));
             }
-            Ok(PatternInfo {
-                tag_check: Some(format!("std::holds_alternative<{short}>({scrutinee})")),
-                decls,
-            })
+            Ok(PatternInfo { tag_check: Some(tag), decls })
         }
-        other => Err(CppCodegenError {
-            message: format!("match: unsupported pattern '{other}'"),
+        Pattern::Tuple { .. } | Pattern::Literal { .. } => Err(CppCodegenError {
+            message: format!("match pattern not yet supported in cpp-gen: {pat:?}"),
         }),
     }
 }
@@ -2498,20 +2501,14 @@ fn nullary_tag_check(ctor_qn: &str, scrutinee: &str) -> String {
     format!("std::holds_alternative<{short}>({scrutinee})")
 }
 
-/// True if the pattern is `Pattern.wildcard` — used by let-chain
-/// lowering to emit a `expr;` discard instead of `auto _ = expr;`,
-/// since the value of a side-effecting call may be `void`.
-fn is_wildcard_pattern(kb: &KnowledgeBase, pat: TermId) -> bool {
-    if let Term::Fn { functor, .. } = kb.get_term(pat) {
-        return kb.qualified_name_of(*functor) == "anthill.reflect.Pattern.wildcard";
-    }
-    false
-}
-
 /// Extract the bound name from a `Pattern.var_pattern(name: Ref(<n>), ...)`.
 /// Used by let / lambda lowering. Constructor / tuple / wildcard /
 /// literal pattern shapes are handled by `pattern_constructor_name`
-/// in the match path instead.
+/// in the match path instead. WI-318: pre-lift sibling of
+/// `pattern_var_name_occ`, kept for the term-form code paths still in
+/// use (constructor analysis fallbacks); the let/lambda lowering uses
+/// the `_occ` variant.
+#[allow(dead_code)] // WI-318: pre-lift sibling, kept for future fallback paths.
 fn pattern_var_name(kb: &KnowledgeBase, pat: TermId) -> Result<String, CppCodegenError> {
     if let Term::Fn { functor, named_args, .. } = kb.get_term(pat) {
         let qn = kb.qualified_name_of(*functor);
@@ -2530,6 +2527,28 @@ fn pattern_var_name(kb: &KnowledgeBase, pat: TermId) -> Result<String, CppCodege
     Err(CppCodegenError {
         message: format!("expected var_pattern, got {:?}", kb.get_term(pat)),
     })
+}
+
+/// WI-318: Pattern-occurrence variant of `pattern_var_name`. Reads the
+/// bound name directly from `Pattern::Var`; other Pattern variants are
+/// not yet supported in let/lambda binder position by cpp-gen.
+fn pattern_var_name_occ(
+    kb: &KnowledgeBase,
+    occ: &std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>,
+) -> Result<String, CppCodegenError> {
+    use anthill_core::kb::node_occurrence::Pattern;
+    match occ.as_pattern() {
+        Some(Pattern::Var { name, .. }) => {
+            let qn = kb.qualified_name_of(*name);
+            Ok(short_name_of(qn).to_string())
+        }
+        Some(other) => Err(CppCodegenError {
+            message: format!("let/lambda binder: only Var pattern supported, got {other:?}"),
+        }),
+        None => Err(CppCodegenError {
+            message: "let/lambda binder: expected Pattern-kind occurrence".into(),
+        }),
+    }
 }
 
 /// Lower a `Literal` to its C++ source spelling. String literals get

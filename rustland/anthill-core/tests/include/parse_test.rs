@@ -3528,8 +3528,13 @@ end
             assert_eq!(branches.len(), 2, "two branches");
 
             // First branch: pattern = constructor_pattern(zero), body = bool literal
+            // WI-318: branch.pattern is now a Pattern-kind occurrence.
             let branch1 = &branches[0];
-            assert_eq!(functor_name(&kb, branch1.pattern), "constructor_pattern");
+            use anthill_core::kb::node_occurrence::Pattern;
+            assert!(
+                matches!(branch1.pattern.as_pattern(), Some(Pattern::Constructor { .. })),
+                "branch pattern should be a Constructor pattern, got {:?}", branch1.pattern.as_pattern(),
+            );
             assert!(matches!(branch1.body.as_expr(), Some(Expr::Const(_))),
                 "branch body should be a bool literal, got {:?}", branch1.body.as_expr());
             // Guard should be none
@@ -3554,8 +3559,12 @@ end
     let body = op_body_occ(&kb, op_info, "name").expect("op body missing");
     match body.as_expr() {
         Some(Expr::Let { pattern, value, body: inner_body, .. }) => {
-            // pattern is a var_pattern (a Pattern TermId, not an occurrence)
-            assert_eq!(functor_name(&kb, *pattern), "var_pattern");
+            // WI-318: pattern is now a Pattern-kind occurrence.
+            use anthill_core::kb::node_occurrence::Pattern;
+            assert!(
+                matches!(pattern.as_pattern(), Some(Pattern::Var { .. })),
+                "let pattern should be a Var pattern, got {:?}", pattern.as_pattern(),
+            );
             // value is a var ref (x)
             assert!(matches!(value.as_expr(), Some(Expr::VarRef { .. } | Expr::Var(_))),
                 "value should be a var ref, got {:?}", value.as_expr());
@@ -3582,8 +3591,12 @@ end
     let body = op_body_occ(&kb, op_info, "name").expect("op body missing");
     match body.as_expr() {
         Some(Expr::Lambda { param, body: lambda_body }) => {
-            // param is a var_pattern (Pattern TermId)
-            assert_eq!(functor_name(&kb, *param), "var_pattern");
+            // WI-318: param is now a Pattern-kind Rc<NodeOccurrence>.
+            use anthill_core::kb::node_occurrence::Pattern;
+            assert!(
+                matches!(param.as_pattern(), Some(Pattern::Var { .. })),
+                "lambda param is a Pattern::Var, got {:?}", param.as_pattern(),
+            );
             // lambda body is an Apply (add(x, 1)) with 2 positional args
             match lambda_body.as_expr() {
                 Some(Expr::Apply { pos_args, .. }) => {

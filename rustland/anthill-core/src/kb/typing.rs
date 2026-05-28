@@ -1131,7 +1131,10 @@ fn visit_type(
     let occ_span = Some(occ.span.span);
     let expr = match &occ.kind {
         NodeKind::Expr { expr, .. } => expr,
-        NodeKind::RuleHead { .. } => {
+        NodeKind::RuleHead { .. } | NodeKind::Pattern(_) => {
+            // RuleHead never appears in op/rule body position; Pattern
+            // is reached via its parent Expr's pattern slot and handled
+            // there, not as a typing target on its own (WI-318).
             results.push(Err(TypeError::BottomExpr { span: occ_span }));
             return;
         }
@@ -1139,7 +1142,9 @@ fn visit_type(
     match expr {
         // ── Iterative cases ─────────────────────────────────────
         Expr::Let { pattern, type_annotation, value, body } => {
-            let pattern = *pattern;
+            // WI-318: pattern is now a Pattern-kind occurrence; bridge
+            // to TermId for the existing term-based env-extension path.
+            let pattern = super::node_occurrence::pattern_to_term(kb, pattern);
             let annotation = *type_annotation;
             let value_occ = Rc::clone(value);
             let body_occ = Rc::clone(body);
@@ -1163,7 +1168,7 @@ fn visit_type(
             let branches_cloned: Vec<MatchBranch> = branches
                 .iter()
                 .map(|b| MatchBranch {
-                    pattern: b.pattern,
+                    pattern: Rc::clone(&b.pattern),
                     guard: b.guard.as_ref().map(Rc::clone),
                     body: Rc::clone(&b.body),
                     span: b.span,
@@ -1179,7 +1184,12 @@ fn visit_type(
             push_visit_no_hint(work, scrutinee_occ, env, fuel);
         }
         Expr::Lambda { param, body } => {
-            let param = *param;
+            // WI-318: `param` is now a Pattern-kind Rc<NodeOccurrence>.
+            // The typer's existing helpers (extract_pattern_type_ann /
+            // extend_env_from_pattern) operate on the reflect-Term shape,
+            // so bridge via `pattern_to_term` for now. A follow-up should
+            // rewrite those helpers to consume Pattern natively.
+            let param = super::node_occurrence::pattern_to_term(kb, param);
             let body_occ = Rc::clone(body);
             // Lambda param type, in priority order:
             //   1. explicit annotation on the pattern,
@@ -1425,9 +1435,12 @@ fn reassemble_if_enabled(
 /// bodies. Match needs its own path because its **guards are not
 /// typed/visited** (so they have no result `node`); they're re-read from
 /// `occ` unchanged and interleaved after each body, reproducing
-/// `for_each_child(Match)` order ([scrutinee, body, guard?, …]) for the
-/// shared `reassemble`. `branch_results` are the branch-body `TypeResult`s
-/// (all `Ok`), in branch order. Returns `occ` unchanged when nothing moved.
+/// `for_each_child(Match)` order ([scrutinee, pattern, body, guard?, …])
+/// for the shared `reassemble`. WI-318: `pattern` is now a Pattern-kind
+/// occurrence child — typer doesn't rewrite patterns so they're passed
+/// through identical (Rc::clone of the original `branch.pattern`).
+/// `branch_results` are the branch-body `TypeResult`s (all `Ok`), in
+/// branch order. Returns `occ` unchanged when nothing moved.
 fn reassemble_match(
     occ: &Rc<NodeOccurrence>,
     scr_node: &Rc<NodeOccurrence>,
@@ -1438,9 +1451,11 @@ fn reassemble_match(
         _ => return Rc::clone(occ),
     };
     let mut children: Vec<Rc<NodeOccurrence>> =
-        Vec::with_capacity(1 + branch_results.len() * 2);
+        Vec::with_capacity(1 + branch_results.len() * 3);
     children.push(Rc::clone(scr_node));
     for (branch, r) in branches.iter().zip(branch_results.iter()) {
+        // WI-318: emit pattern in for_each_child order.
+        children.push(Rc::clone(&branch.pattern));
         children.push(Rc::clone(&r.as_ref().expect("reassemble_match: Ok body").node));
         if let Some(g) = &branch.guard {
             children.push(Rc::clone(g));
@@ -1591,10 +1606,19 @@ fn build_type(
                 }
             };
             let effects = merge_effects(&value_effects, &body_r.effects);
-            // WI-283: reassemble the `Let` from [value, body]
-            // (`for_each_child(Let)` order) so a rewrite in either propagates.
+            // WI-283: reassemble the `Let` from [pattern, value, body]
+            // (`for_each_child(Let)` order, WI-318 added pattern) so a
+            // rewrite in any of them propagates. The pattern itself is
+            // passed through unchanged (typer doesn't rewrite patterns).
             let node = if simp_enabled {
-                super::simp_rewrite::reassemble(&occ, &[value_node, Rc::clone(&body_r.node)])
+                let pattern_clone = match occ.as_expr() {
+                    Some(Expr::Let { pattern, .. }) => Rc::clone(pattern),
+                    _ => Rc::clone(&occ), // defensive; unreachable for Let frame
+                };
+                super::simp_rewrite::reassemble(
+                    &occ,
+                    &[pattern_clone, value_node, Rc::clone(&body_r.node)],
+                )
             } else {
                 Rc::clone(&occ)
             };
@@ -1640,15 +1664,18 @@ fn build_type(
                 .unwrap_or_default();
             let mut branch_envs: Vec<Rc<TypingEnv>> = Vec::with_capacity(branches.len());
             for branch in &branches {
+                // WI-318: branch.pattern is a Pattern-kind occurrence;
+                // bridge to TermId for the existing term-based helpers.
+                let pattern_tid = super::node_occurrence::pattern_to_term(kb, &branch.pattern);
                 collect_covered_entities(
                     kb,
-                    branch.pattern,
+                    pattern_tid,
                     &scrutinee_ctors,
                     &mut covered_entities,
                     &mut has_wildcard,
                 );
                 let mut branch_env = (*outer_env).clone();
-                extend_env_from_pattern(kb, &mut branch_env, branch.pattern, scr_ty);
+                extend_env_from_pattern(kb, &mut branch_env, pattern_tid, scr_ty);
                 branch_envs.push(Rc::new(branch_env));
             }
 
@@ -1778,11 +1805,17 @@ fn build_type(
             // If the body itself errored, propagate that error rather than
             // synthesizing a lambda over an ill-typed body.
             match body_r {
-                // WI-283: reassemble the lambda from its (possibly-rewritten)
-                // body so a `[simp]` rewrite inside the body propagates up.
+                // WI-283: reassemble the lambda from its [param, body]
+                // (WI-318 added param) so a `[simp]` rewrite in either
+                // propagates up. The param is passed through unchanged
+                // (typer doesn't rewrite patterns).
                 Ok(ref r) => {
                     let node = if simp_enabled {
-                        super::simp_rewrite::reassemble(&occ, &[Rc::clone(&r.node)])
+                        let param_clone = match occ.as_expr() {
+                            Some(Expr::Lambda { param, .. }) => Rc::clone(param),
+                            _ => Rc::clone(&occ), // defensive; unreachable
+                        };
+                        super::simp_rewrite::reassemble(&occ, &[param_clone, Rc::clone(&r.node)])
                     } else {
                         Rc::clone(&occ)
                     };
@@ -7188,21 +7221,19 @@ fn collect_occurrence_type_constraints(
         | Expr::Instantiation { name, pos_args, named_args } => {
             constrain_application(kb, *name, pos_args, named_args, var_types, subst);
         }
-        // `TermId`-typed pattern/param/type-annotation fields → term collector.
-        Expr::Let { pattern, type_annotation, .. } => {
-            collect_term_type_constraints(kb, *pattern, var_types, subst);
+        // WI-318: pattern is now a Pattern-kind child reached by
+        // `for_each_child` below. Only `type_annotation` remains a
+        // TermId-typed field needing the term-collector.
+        Expr::Let { type_annotation, .. } => {
             if let Some(t) = type_annotation {
                 collect_term_type_constraints(kb, *t, var_types, subst);
             }
         }
-        Expr::Lambda { param, .. } | Expr::LambdaWithin { param, .. } => {
-            collect_term_type_constraints(kb, *param, var_types, subst);
-        }
-        Expr::Match { branches, .. } => {
-            for br in branches {
-                collect_term_type_constraints(kb, br.pattern, var_types, subst);
-            }
-        }
+        // WI-318: Lambda / LambdaWithin params AND MatchBranch.pattern
+        // are now Pattern-kind occurrences walked by `for_each_child`
+        // below. Any nested TermId-typed children (e.g. a Var pattern's
+        // type_ann Expr-kind occurrence) are reached via that recursion;
+        // no explicit term-level call needed here.
         _ => {}
     }
     for_each_child(expr, |c| collect_occurrence_type_constraints(kb, c, var_types, subst));

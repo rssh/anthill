@@ -4357,6 +4357,7 @@ impl<'a> Loader<'a> {
                     let n = self.expr_match_metas.len();
                     let branches = self.expr_match_metas.split_off(n - branch_count);
                     node_occurrence::build_frame(
+                        self.kb,
                         node_occurrence::BuildFrame::Match { span, branches },
                         &mut self.expr_occ_results,
                     );
@@ -4416,6 +4417,7 @@ impl<'a> Loader<'a> {
                     let span = SourceSpan::from_span(
                         self.source_id, self.parsed.terms.span(outer_parse_id));
                     node_occurrence::build_frame(
+                        self.kb,
                         node_occurrence::BuildFrame::If { span },
                         &mut self.expr_occ_results,
                     );
@@ -4466,6 +4468,7 @@ impl<'a> Loader<'a> {
                         None
                     };
                     node_occurrence::build_frame(
+                        self.kb,
                         node_occurrence::BuildFrame::Let { span, pattern, type_annotation },
                         &mut self.expr_occ_results,
                     );
@@ -4491,6 +4494,7 @@ impl<'a> Loader<'a> {
                     let span = SourceSpan::from_span(
                         self.source_id, self.parsed.terms.span(outer_parse_id));
                     node_occurrence::build_frame(
+                        self.kb,
                         node_occurrence::BuildFrame::Lambda { span, param },
                         &mut self.expr_occ_results,
                     );
@@ -4613,7 +4617,7 @@ impl<'a> Loader<'a> {
                             named_keys: occ_named_keys, type_args,
                         }
                     };
-                    node_occurrence::build_frame(frame, &mut self.expr_occ_results);
+                    node_occurrence::build_frame(self.kb, frame, &mut self.expr_occ_results);
                 }
             }
             LoadBuildFrame::DotApply { outer_parse_id, name_ref, pos_count, named_keys } => {
@@ -4662,6 +4666,7 @@ impl<'a> Loader<'a> {
                     let occ_named_keys: Vec<Symbol> =
                         named_keys.iter().map(|s| self.reintern(*s)).collect();
                     node_occurrence::build_frame(
+                        self.kb,
                         node_occurrence::BuildFrame::DotApply {
                             span, name, pos_count, named_keys: occ_named_keys,
                         },

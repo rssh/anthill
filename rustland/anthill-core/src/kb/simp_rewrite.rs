@@ -512,22 +512,26 @@ pub(super) fn reassemble(
             else_branch: cur.take(else_branch),
         },
         Expr::Let { pattern, type_annotation, value, body } => Expr::Let {
-            pattern: *pattern,
+            pattern: cur.take(pattern),
             type_annotation: *type_annotation,
             value: cur.take(value),
             body: cur.take(body),
         },
-        Expr::Lambda { param, body } => Expr::Lambda { param: *param, body: cur.take(body) },
+        Expr::Lambda { param, body } => Expr::Lambda {
+            param: cur.take(param),
+            body: cur.take(body),
+        },
         Expr::Match { scrutinee, branches } => {
             let scr = cur.take(scrutinee);
-            // `for_each_child` visits each branch as body then guard?, so
-            // consume in that order to keep the cursor aligned.
+            // WI-318: `for_each_child` now visits each branch as
+            // pattern, body, guard? — consume in that order.
             let new_branches: Vec<MatchBranch> = branches
                 .iter()
                 .map(|br| {
+                    let pattern = cur.take(&br.pattern);
                     let body = cur.take(&br.body);
                     let guard = br.guard.as_ref().map(|g| cur.take(g));
-                    MatchBranch { pattern: br.pattern, guard, body, span: br.span }
+                    MatchBranch { pattern, guard, body, span: br.span }
                 })
                 .collect();
             Expr::Match { scrutinee: scr, branches: new_branches }
@@ -568,7 +572,7 @@ pub(super) fn reassemble(
             }
         }
         Expr::LambdaWithin { param, body, requirements } => Expr::LambdaWithin {
-            param: *param,
+            param: cur.take(param),
             body: cur.take(body),
             requirements: cur.take_vec(requirements),
         },

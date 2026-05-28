@@ -49,7 +49,57 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
         buf
     }
 
+    /// WI-318: render a Pattern-kind occurrence in surface form.
+    /// Recurses into sub-patterns (Constructor.pos_args /
+    /// Tuple.positional). Var-pattern's optional `type_ann` is rendered
+    /// as `name: <type>` (the type is an Expr-kind occurrence). If a
+    /// sub-occurrence isn't Pattern-kind (the reflection-meta-var case
+    /// from term_pattern_as_expr_occ), delegate to `write_occurrence`
+    /// so the term shape is rendered as data instead of the literal
+    /// `<not-a-pattern>` placeholder.
+    fn write_pattern(&self, occ: &NodeOccurrence, buf: &mut String) {
+        use crate::kb::node_occurrence::Pattern;
+        let Some(pat) = occ.as_pattern() else {
+            // Expr-kind (or RuleHead) child in a pattern slot — render
+            // via the generic occurrence writer so the term shape
+            // surfaces faithfully.
+            return self.write_occurrence(occ, buf);
+        };
+        match pat {
+            Pattern::Var { name, type_ann } => {
+                buf.push_str(self.view.sym_name(*name));
+                if let Some(t) = type_ann {
+                    buf.push_str(": ");
+                    self.write_occurrence(t, buf);
+                }
+            }
+            Pattern::Wildcard => buf.push('_'),
+            Pattern::Literal { value } => self.write_literal(value, buf),
+            Pattern::Constructor { name, pos_args, .. } => {
+                buf.push_str(self.view.sym_name(*name));
+                buf.push('(');
+                for (i, p) in pos_args.iter().enumerate() {
+                    if i > 0 { buf.push_str(", "); }
+                    self.write_pattern(p, buf);
+                }
+                buf.push(')');
+            }
+            Pattern::Tuple { positional, .. } => {
+                buf.push('(');
+                for (i, p) in positional.iter().enumerate() {
+                    if i > 0 { buf.push_str(", "); }
+                    self.write_pattern(p, buf);
+                }
+                buf.push(')');
+            }
+        }
+    }
+
     fn write_occurrence(&self, occ: &NodeOccurrence, buf: &mut String) {
+        if occ.as_pattern().is_some() {
+            self.write_pattern(occ, buf);
+            return;
+        }
         let Some(expr) = occ.as_expr() else {
             // A rule-head wrapper has no surface body form; bodies are Expr.
             buf.push_str("<head>");
@@ -122,8 +172,9 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 self.write_occurrence(else_branch, buf);
             }
             Expr::Let { pattern, value, body, .. } => {
+                // WI-318: pattern is a Pattern-kind occurrence.
                 buf.push_str("let ");
-                self.write_term(*pattern, buf);
+                self.write_pattern(pattern, buf);
                 buf.push_str(" = ");
                 self.write_occurrence(value, buf);
                 buf.push_str(" in ");
@@ -131,8 +182,10 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             }
             Expr::Lambda { param, body }
             | Expr::LambdaWithin { param, body, .. } => {
+                // WI-318: `param` is a Pattern-kind occurrence — render
+                // structurally via `write_pattern`.
                 buf.push('(');
-                self.write_term(*param, buf);
+                self.write_pattern(param, buf);
                 buf.push_str(") => ");
                 self.write_occurrence(body, buf);
             }
@@ -141,7 +194,8 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 self.write_occurrence(scrutinee, buf);
                 buf.push_str(" { ");
                 for b in branches.iter() {
-                    self.write_term(b.pattern, buf);
+                    // WI-318: b.pattern is a Pattern-kind occurrence.
+                    self.write_pattern(&b.pattern, buf);
                     buf.push_str(" => ");
                     self.write_occurrence(&b.body, buf);
                     buf.push_str("; ");

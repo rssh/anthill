@@ -82,12 +82,40 @@ impl Drop for NodeOccurrence {
 /// `Vec`/placeholder so the natural Drop of `occ` finds nothing to
 /// recurse through.
 fn drain_node(occ: &mut NodeOccurrence, stack: &mut Vec<Rc<NodeOccurrence>>) {
-    if let NodeKind::Expr { expr, origin, .. } = &mut occ.kind {
-        if let OccurrenceOrigin::Synthesized { from, .. } = origin {
-            let placeholder = NodeOccurrence::new_expr(Expr::Bottom, empty_span(), None);
-            stack.push(std::mem::replace(from, placeholder));
+    match &mut occ.kind {
+        NodeKind::Expr { expr, origin, .. } => {
+            if let OccurrenceOrigin::Synthesized { from, .. } = origin {
+                let placeholder = NodeOccurrence::new_expr(Expr::Bottom, empty_span(), None);
+                stack.push(std::mem::replace(from, placeholder));
+            }
+            drain_expr_children(expr, stack);
         }
-        drain_expr_children(expr, stack);
+        NodeKind::Pattern(pat) => drain_pattern_children(pat, stack),
+        NodeKind::RuleHead { .. } => {}
+    }
+}
+
+/// WI-318: mirror of `drain_expr_children` for `Pattern`. Steals each
+/// `Rc<NodeOccurrence>` child slot (sub-patterns + the Var `type_ann`)
+/// into the caller's work stack, replacing each with an emptied
+/// container so the natural `Drop` on the unwrapped node finds nothing
+/// to recurse through.
+fn drain_pattern_children(pat: &mut Pattern, stack: &mut Vec<Rc<NodeOccurrence>>) {
+    match pat {
+        Pattern::Var { type_ann, .. } => {
+            if let Some(t) = type_ann.take() {
+                stack.push(t);
+            }
+        }
+        Pattern::Wildcard | Pattern::Literal { .. } => {}
+        Pattern::Constructor { pos_args, named_args, .. } => {
+            for c in std::mem::take(pos_args) { stack.push(c); }
+            for (_, c) in std::mem::take(named_args) { stack.push(c); }
+        }
+        Pattern::Tuple { positional, named } => {
+            for c in std::mem::take(positional) { stack.push(c); }
+            for (_, c) in std::mem::take(named) { stack.push(c); }
+        }
     }
 }
 
@@ -113,21 +141,29 @@ fn drain_expr_children(expr: &mut Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
             stack.push(std::mem::replace(then_branch, mk_placeholder()));
             stack.push(std::mem::replace(else_branch, mk_placeholder()));
         }
-        Expr::Let { value, body, .. } => {
+        Expr::Let { pattern, value, body, .. } => {
+            stack.push(std::mem::replace(pattern, mk_placeholder()));
             stack.push(std::mem::replace(value, mk_placeholder()));
             stack.push(std::mem::replace(body, mk_placeholder()));
         }
         Expr::Match { scrutinee, branches } => {
             stack.push(std::mem::replace(scrutinee, mk_placeholder()));
             for mut b in std::mem::take(branches) {
+                stack.push(std::mem::replace(&mut b.pattern, mk_placeholder()));
                 stack.push(std::mem::replace(&mut b.body, mk_placeholder()));
                 if let Some(g) = b.guard.take() {
                     stack.push(g);
                 }
             }
         }
-        Expr::Lambda { body, .. } | Expr::LambdaWithin { body, .. } => {
+        Expr::Lambda { param, body } => {
+            stack.push(std::mem::replace(param, mk_placeholder()));
             stack.push(std::mem::replace(body, mk_placeholder()));
+        }
+        Expr::LambdaWithin { param, body, requirements } => {
+            stack.push(std::mem::replace(param, mk_placeholder()));
+            stack.push(std::mem::replace(body, mk_placeholder()));
+            for r in std::mem::take(requirements) { stack.push(r); }
         }
         Expr::ListLit(es) | Expr::SetLit(es) => {
             for e in std::mem::take(es) { stack.push(e); }
@@ -228,10 +264,27 @@ impl NodeOccurrence {
         })
     }
 
+    /// Build a pattern occurrence (WI-318).
+    pub fn new_pattern(pattern: Pattern, span: SourceSpan, owner: Option<Symbol>) -> Rc<Self> {
+        Rc::new(NodeOccurrence {
+            kind: NodeKind::Pattern(pattern),
+            span,
+            owner,
+        })
+    }
+
     /// If this occurrence wraps an expression, return it.
     pub fn as_expr(&self) -> Option<&Expr> {
         match &self.kind {
             NodeKind::Expr { expr, .. } => Some(expr),
+            _ => None,
+        }
+    }
+
+    /// If this occurrence wraps a pattern (WI-318), return it.
+    pub fn as_pattern(&self) -> Option<&Pattern> {
+        match &self.kind {
+            NodeKind::Pattern(pat) => Some(pat),
             _ => None,
         }
     }
@@ -336,6 +389,19 @@ pub enum NodeKind {
         pos_args: Vec<TermId>,
         named_args: Vec<(Symbol, TermId)>,
     },
+    /// Pattern content — a match-time matcher (var binding, wildcard,
+    /// literal, constructor destructure, tuple destructure). Patterns
+    /// are not expressions: they have their own grammar (per `_pattern`
+    /// in tree-sitter grammar.js — `pattern_var` / `pattern_wildcard` /
+    /// `pattern_literal` / `pattern_constructor` / `pattern_tuple`) and
+    /// are consumed by `eval/pattern.rs::match_pattern`, not the
+    /// evaluator. WI-318: lifted from a TermId field on Lambda/Let/
+    /// MatchBranch into a sibling NodeKind so the De Bruijn opener/
+    /// closer + simp walkers handle pattern children uniformly via
+    /// `for_each_pattern_child` + `reassemble_pattern`, dropping the
+    /// per-pattern-field special-case arms that existed in the
+    /// term-stored era.
+    Pattern(Pattern),
 }
 
 // ── Expr ────────────────────────────────────────────────────────
@@ -379,16 +445,24 @@ pub enum Expr {
         then_branch: Rc<NodeOccurrence>,
         else_branch: Rc<NodeOccurrence>,
     },
-    /// `let pat = value in body`.
+    /// `let pat = value in body`. WI-318: `pattern` is a Pattern-kind
+    /// occurrence (typically `Pattern::Var { name, type_ann: None }`).
+    /// `type_annotation` is the OUTER `: T` annotation from WI-185
+    /// (`let p: T = …`), legitimately a TermId because it's a type
+    /// expression (proposal 027.1) — its DeBruijn-remap stays in
+    /// WI-298 scope.
     Let {
-        pattern: TermId,
+        pattern: Rc<NodeOccurrence>,
         type_annotation: Option<TermId>,
         value: Rc<NodeOccurrence>,
         body: Rc<NodeOccurrence>,
     },
-    /// Lambda — `(param) => body`.
+    /// Lambda — `(param) => body`. WI-318: `param` is a Pattern-kind
+    /// occurrence (typically `Pattern::Var { name, type_ann: None }`
+    /// for `lambda x -> ...` or `Pattern::Tuple` for
+    /// `lambda (a, b) -> ...`).
     Lambda {
-        param: TermId,
+        param: Rc<NodeOccurrence>,
         body: Rc<NodeOccurrence>,
     },
     /// Generic instantiation — `Name { bindings }`.
@@ -451,9 +525,10 @@ pub enum Expr {
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
         requirements: Vec<Rc<NodeOccurrence>>,
     },
-    /// Lambda carrying captured requirements.
+    /// Lambda carrying captured requirements. WI-318: `param` is a
+    /// Pattern-kind occurrence (see `Lambda.param`).
     LambdaWithin {
-        param: TermId,
+        param: Rc<NodeOccurrence>,
         body: Rc<NodeOccurrence>,
         requirements: Vec<Rc<NodeOccurrence>>,
     },
@@ -482,10 +557,59 @@ pub enum Expr {
 
 #[derive(Debug)]
 pub struct MatchBranch {
-    pub pattern: TermId,
+    /// WI-318: pattern is now a Pattern-kind occurrence (or
+    /// `Expr::Var`-kind for reflection meta-vars). Walked structurally
+    /// by `for_each_child` via the `Match` arm.
+    pub pattern: Rc<NodeOccurrence>,
     pub guard: Option<Rc<NodeOccurrence>>,
     pub body: Rc<NodeOccurrence>,
     pub span: SourceSpan,
+}
+
+// ── Pattern ─────────────────────────────────────────────────────
+
+/// Structural pattern IR (WI-318). One-to-one with the surface
+/// `_pattern` non-terminal in tree-sitter `grammar.js`
+/// (`pattern_var` / `pattern_wildcard` / `pattern_literal` /
+/// `pattern_constructor` / `pattern_tuple`). Each sub-pattern slot is
+/// itself an `Rc<NodeOccurrence>` whose `.kind` is
+/// `NodeKind::Pattern(...)` — so opener / closer / simp walkers handle
+/// pattern children via the same `for_each_*_child` + reassemble
+/// shape they use for `Expr`.
+///
+/// Patterns do NOT contain `Term::Var(DeBruijn)` in any production
+/// path (the grammar's `pattern_var` is a bare identifier — see
+/// `tree-sitter-anthill/grammar.js:975`); the binding name is a
+/// `Symbol`, resolved as a frame-local at eval time, not as a rule
+/// logical-var. The `type_ann` slot inside `Var` is an `Expr`-kind
+/// occurrence (a TYPE expression — proposal 027.1 types-are-terms),
+/// not a sub-pattern.
+#[derive(Debug)]
+pub enum Pattern {
+    /// `pattern_var p` — bind the scrutinee to a frame-local named
+    /// `name`. Optional `type_ann` carries the declared type for
+    /// patterns that admit one (currently only via WI-185 `let p: T`
+    /// at the outer Let.type_annotation; the Pattern's own `type_ann`
+    /// is reserved for future grammar extensions).
+    Var {
+        name: Symbol,
+        type_ann: Option<Rc<NodeOccurrence>>,
+    },
+    /// `_` — match anything, bind nothing.
+    Wildcard,
+    /// `42`, `"hi"`, `true`, etc. — match by literal value.
+    Literal { value: Literal },
+    /// `Cons(h, t)` — destructure an entity / tagged-term scrutinee.
+    Constructor {
+        name: Symbol,
+        pos_args: Vec<Rc<NodeOccurrence>>,
+        named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+    },
+    /// `(a, b)` / `(x: a, y: b)` — destructure a tuple scrutinee.
+    Tuple {
+        positional: Vec<Rc<NodeOccurrence>>,
+        named: Vec<(Symbol, Rc<NodeOccurrence>)>,
+    },
 }
 
 /// Walk a NodeOccurrence tree top-down, invoking `visit(occ, class)`
@@ -541,18 +665,23 @@ pub fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
             f(then_branch);
             f(else_branch);
         }
-        Expr::Let { value, body, .. } => {
+        Expr::Let { pattern, value, body, .. } => {
+            f(pattern);
             f(value);
             f(body);
         }
         Expr::Match { scrutinee, branches } => {
             f(scrutinee);
             for b in branches.iter() {
+                f(&b.pattern);
                 f(&b.body);
                 if let Some(g) = &b.guard { f(g); }
             }
         }
-        Expr::Lambda { body, .. } => f(body),
+        Expr::Lambda { param, body } => {
+            f(param);
+            f(body);
+        }
         Expr::ListLit(es) | Expr::SetLit(es) => {
             for e in es.iter() { f(e); }
         }
@@ -584,7 +713,8 @@ pub fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
             for (_, c) in named_args.iter() { f(c); }
             for r in requirements.iter() { f(r); }
         }
-        Expr::LambdaWithin { body, requirements, .. } => {
+        Expr::LambdaWithin { param, body, requirements } => {
+            f(param);
             f(body);
             for r in requirements.iter() { f(r); }
         }
@@ -595,6 +725,93 @@ pub fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
         Expr::Const(_) | Expr::Ref(_) | Expr::Ident(_)
         | Expr::Var(_) | Expr::Bottom | Expr::VarRef { .. } => {}
     }
+}
+
+/// WI-318: mirror of `for_each_child` for `Pattern`. Invokes `f` once
+/// per direct `Rc<NodeOccurrence>` child slot of a pattern, in a fixed
+/// per-variant order (field order: type_ann; then positional then
+/// named). The order is load-bearing — `reassemble_pattern` consumes
+/// children positionally and relies on it matching this enumeration.
+#[inline]
+pub fn for_each_pattern_child(pat: &Pattern, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
+    match pat {
+        Pattern::Var { type_ann, .. } => {
+            if let Some(t) = type_ann { f(t); }
+        }
+        Pattern::Wildcard | Pattern::Literal { .. } => {}
+        Pattern::Constructor { pos_args, named_args, .. } => {
+            for c in pos_args.iter() { f(c); }
+            for (_, c) in named_args.iter() { f(c); }
+        }
+        Pattern::Tuple { positional, named } => {
+            for c in positional.iter() { f(c); }
+            for (_, c) in named.iter() { f(c); }
+        }
+    }
+}
+
+/// WI-318: mirror of `simp_rewrite::reassemble` for a `Pattern`-kind
+/// occurrence. Replaces each child slot by consuming `new_children` in
+/// `for_each_pattern_child` order; returns `occ` unchanged (same `Rc`)
+/// when no child moved. Used by `open_debruijn_node` /
+/// `node_to_debruijn` after walking a Pattern's children — patterns
+/// have no DeBruijn vars at their own structure (names are Symbols,
+/// literals are values), so the parent walker only needs to rebuild
+/// when a child Expr-kind type_ann was rewritten.
+pub fn reassemble_pattern(
+    occ: &Rc<NodeOccurrence>,
+    new_children: &[Rc<NodeOccurrence>],
+) -> Rc<NodeOccurrence> {
+    let pat = match &occ.kind {
+        NodeKind::Pattern(p) => p,
+        _ => return Rc::clone(occ),
+    };
+    // Detect any move first; if every new child is ptr-eq to the
+    // original, reuse `occ`. Otherwise rebuild.
+    let mut changed = false;
+    {
+        let mut i = 0;
+        for_each_pattern_child(pat, |c| {
+            if !Rc::ptr_eq(c, &new_children[i]) {
+                changed = true;
+            }
+            i += 1;
+        });
+    }
+    if !changed {
+        return Rc::clone(occ);
+    }
+    let mut idx = 0;
+    let mut take = || {
+        let c = Rc::clone(&new_children[idx]);
+        idx += 1;
+        c
+    };
+    let new_pat = match pat {
+        Pattern::Var { name, type_ann } => Pattern::Var {
+            name: *name,
+            type_ann: type_ann.as_ref().map(|_| take()),
+        },
+        Pattern::Wildcard => Pattern::Wildcard,
+        Pattern::Literal { value } => Pattern::Literal { value: value.clone() },
+        Pattern::Constructor { name, pos_args, named_args } => {
+            let pos: Vec<Rc<NodeOccurrence>> = pos_args.iter().map(|_| take()).collect();
+            let named: Vec<(Symbol, Rc<NodeOccurrence>)> = named_args
+                .iter()
+                .map(|(s, _)| (*s, take()))
+                .collect();
+            Pattern::Constructor { name: *name, pos_args: pos, named_args: named }
+        }
+        Pattern::Tuple { positional, named } => {
+            let pos: Vec<Rc<NodeOccurrence>> = positional.iter().map(|_| take()).collect();
+            let named_out: Vec<(Symbol, Rc<NodeOccurrence>)> = named
+                .iter()
+                .map(|(s, _)| (*s, take()))
+                .collect();
+            Pattern::Tuple { positional: pos, named: named_out }
+        }
+    };
+    NodeOccurrence::new_pattern(new_pat, occ.span, occ.owner)
 }
 
 // ── De Bruijn opening (rule-body atoms) ─────────────────────────
@@ -614,6 +831,16 @@ pub fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
 /// `for_each_child` + `simp_rewrite::reassemble`. Recursion depth is bounded by
 /// the atom's structure.
 pub fn open_debruijn_node(occ: &Rc<NodeOccurrence>, fresh: &[VarId]) -> Rc<NodeOccurrence> {
+    // WI-318: a Pattern-kind occurrence walks its children uniformly
+    // (Pattern's own structure has no DeBruijn vars — names are
+    // Symbols, literals are values). DeBruijn vars live only in
+    // Expr-kind child slots like the Var's `type_ann`; recurse into
+    // those via `for_each_pattern_child` + `reassemble_pattern`.
+    if let Some(pat) = occ.as_pattern() {
+        let mut opened: Vec<Rc<NodeOccurrence>> = Vec::new();
+        for_each_pattern_child(pat, |c| opened.push(open_debruijn_node(c, fresh)));
+        return reassemble_pattern(occ, &opened);
+    }
     let Some(expr) = occ.as_expr() else { return Rc::clone(occ) };
     let rebuilt: Option<Expr> = match expr {
         Expr::Var(Var::DeBruijn(idx)) => fresh
@@ -695,6 +922,13 @@ pub fn node_to_debruijn(
     occ: &Rc<NodeOccurrence>,
     var_order: &[VarId],
 ) -> Rc<NodeOccurrence> {
+    // WI-318: pattern occurrences walk uniformly — see the mirror
+    // comment on `open_debruijn_node` for the rationale.
+    if let Some(pat) = occ.as_pattern() {
+        let mut closed: Vec<Rc<NodeOccurrence>> = Vec::new();
+        for_each_pattern_child(pat, |c| closed.push(node_to_debruijn(kb, c, var_order)));
+        return reassemble_pattern(occ, &closed);
+    }
     let Some(expr) = occ.as_expr() else { return Rc::clone(occ) };
     let rebuilt: Option<Expr> = match expr {
         Expr::Var(Var::Global(vid)) => var_order
@@ -732,42 +966,25 @@ pub fn node_to_debruijn(
         // both their occurrence children and those `TermId` fields (the latter
         // via `term_to_debruijn`), so a var living in a pattern/param is closed
         // to the same De Bruijn space as the rest of the rule.
-        Expr::Let { pattern, type_annotation, value, body } => {
-            let new_pattern = kb.term_to_debruijn(*pattern, var_order);
-            let new_type_ann = type_annotation.map(|t| kb.term_to_debruijn(t, var_order));
-            let v = node_to_debruijn(kb, value, var_order);
-            let b = node_to_debruijn(kb, body, var_order);
-            let changed = new_pattern != *pattern
-                || new_type_ann != *type_annotation
-                || !Rc::ptr_eq(&v, value)
-                || !Rc::ptr_eq(&b, body);
-            changed.then(|| Expr::Let {
-                pattern: new_pattern,
-                type_annotation: new_type_ann,
-                value: v,
-                body: b,
-            })
-        }
-        Expr::Lambda { param, body } => {
-            let new_param = kb.term_to_debruijn(*param, var_order);
-            let b = node_to_debruijn(kb, body, var_order);
-            (new_param != *param || !Rc::ptr_eq(&b, body))
-                .then(|| Expr::Lambda { param: new_param, body: b })
-        }
-        Expr::LambdaWithin { param, body, requirements } => {
-            let new_param = kb.term_to_debruijn(*param, var_order);
-            let b = node_to_debruijn(kb, body, var_order);
-            let (reqs, c) = close_vec(kb, requirements, var_order);
-            (new_param != *param || !Rc::ptr_eq(&b, body) || c)
-                .then(|| Expr::LambdaWithin { param: new_param, body: b, requirements: reqs })
-        }
+        // WI-318: pattern is now a Pattern-kind Rc<NodeOccurrence>,
+        // walked via the generic `for_each_child` + `reassemble` path
+        // below. `type_annotation` (Option<TermId>) is a type expression
+        // — its DeBruijn-remap is WI-298 scope and left as-is here.
+        // WI-318: Lambda / LambdaWithin no longer have a TermId-typed
+        // param — the param is now a Pattern-kind Rc<NodeOccurrence>
+        // that walks via the generic `for_each_child` + `reassemble`
+        // path below. The explicit arms here are gone; fall-through
+        // handles them uniformly.
+        // WI-318: MatchBranch.pattern is now a Pattern-kind occurrence —
+        // close it via the recursive node walker like any other child.
+        // (Was: `kb.term_to_debruijn(br.pattern, var_order)`.)
         Expr::Match { scrutinee, branches } => {
             let s = node_to_debruijn(kb, scrutinee, var_order);
             let mut changed = !Rc::ptr_eq(&s, scrutinee);
             let mut new_branches: Vec<MatchBranch> = Vec::with_capacity(branches.len());
             for br in branches {
-                let new_pattern = kb.term_to_debruijn(br.pattern, var_order);
-                if new_pattern != br.pattern {
+                let new_pattern = node_to_debruijn(kb, &br.pattern, var_order);
+                if !Rc::ptr_eq(&new_pattern, &br.pattern) {
                     changed = true;
                 }
                 let guard = match &br.guard {
@@ -995,20 +1212,18 @@ fn collect_expr_termid_field_vars(
                 kb.collect_vars_rec(*t, vars, seen);
             }
         }
-        Expr::Let { pattern, type_annotation, .. } => {
-            kb.collect_vars_rec(*pattern, vars, seen);
+        Expr::Let { type_annotation, .. } => {
+            // WI-318: pattern is now a Pattern-kind occurrence walked by
+            // `for_each_child` in the caller. Only `type_annotation`
+            // remains a TermId-typed field needing the term-collector.
             if let Some(t) = type_annotation {
                 kb.collect_vars_rec(*t, vars, seen);
             }
         }
-        Expr::Lambda { param, .. } | Expr::LambdaWithin { param, .. } => {
-            kb.collect_vars_rec(*param, vars, seen);
-        }
-        Expr::Match { branches, .. } => {
-            for b in branches {
-                kb.collect_vars_rec(b.pattern, vars, seen);
-            }
-        }
+        // WI-318: Lambda / LambdaWithin params and MatchBranch.pattern
+        // are now Pattern-kind occurrences walked by `for_each_child`
+        // in the caller (vars in any nested type_ann are reached
+        // through that recursion).
         _ => {}
     }
 }
@@ -1179,11 +1394,449 @@ fn occ_build_fn(
 /// iterative `apply_subst`/`materialize_from_handle`, not by this recursion —
 /// so the host stack stays flat. Forms that can't occur at a rule-body atom
 /// position pass through unchanged.
+/// WI-318: read a TermId in a lambda/let/match param/pattern position and
+/// build the corresponding `Rc<NodeOccurrence>`. Two cases:
+///
+/// 1. **Structural pattern term** (`var_pattern` / `wildcard` /
+///    `literal_pattern` / `constructor_pattern` / `tuple_pattern`) →
+///    `NodeKind::Pattern(...)` mirroring the term's structure.
+/// 2. **Logical variable** (`Term::Var`) — a *meta-variable* in a
+///    reflection rule body atom like `lambda(param: ?x, body: ?b)`. The
+///    `?x` here doesn't represent a pattern; it's bound at SLD time to
+///    whatever pattern appears in the matched lambda. → `NodeKind::Expr`
+///    with `Expr::Var(...)`, the same shape the rest of the rule-body
+///    walkers expect.
+///
+/// Used at the loader / materializer build sites that feed a TermId
+/// through `BuildFrame::Lambda` (etc.) and need to surface the
+/// param/pattern as an `Rc<NodeOccurrence>` in the lifted
+/// `Expr::Lambda.param` slot. The reverse of `pattern_to_term`.
+///
+/// `span` is propagated to the synthesized occurrence (no per-node
+/// span tracking on the term side; caller supplies the parent span as
+/// a coarse fallback). An unrecognized Fn functor falls back to
+/// `Pattern::Wildcard` to avoid cascading panics.
+pub fn term_to_param_occurrence(
+    kb: &KnowledgeBase,
+    tid: TermId,
+    span: SourceSpan,
+) -> Rc<NodeOccurrence> {
+    let term = kb.get_term(tid).clone();
+    let Term::Fn { functor, named_args, .. } = term else {
+        // Logical Var in pattern position → reflection meta-var.
+        if let Term::Var(v) = kb.get_term(tid) {
+            return NodeOccurrence::new_expr(Expr::Var(*v), span, None);
+        }
+        // Other non-Fn terms (Const / Ref / Ident / Bottom) — surface
+        // as an Expr leaf so the walkers stay uniform.
+        let expr = match kb.get_term(tid) {
+            Term::Const(lit) => Expr::Const(lit.clone()),
+            Term::Ref(s) => Expr::Ref(*s),
+            Term::Ident(s) => Expr::Ident(*s),
+            _ => Expr::Bottom,
+        };
+        return NodeOccurrence::new_expr(expr, span, None);
+    };
+    // WI-318: dispatch on QUALIFIED name (not short name) to avoid
+    // collisions with user-defined entities whose short name happens to
+    // be one of {var_pattern, wildcard, …}. This mirrors cpp-gen's
+    // analyse_pattern_occ.
+    let functor_qn = kb.qualified_name_of(functor);
+    let pat = match functor_qn {
+        "anthill.reflect.Pattern.var_pattern" => {
+            // Grammar-emitted var_pattern always has a `name: Ref(sym)`.
+            // Reflection rules can carry `var_pattern(name: ?x, …)` as
+            // DATA — `?x` becomes a logical Var after rule encoding,
+            // which doesn't fit the `name: Symbol` field. In that case
+            // fall through to the Expr-kind term representation so
+            // structural matchers see it as data.
+            match extract_term_ref_sym(kb, &named_args, "name") {
+                Some(name) => {
+                    // WI-318: preserve `type_ann: some(t)` if present.
+                    // The grammar's `pattern_var` doesn't surface a
+                    // type annotation today (`type_ann: none()` from the
+                    // loader), but proposal 035 and typing_pass_spec
+                    // already reference annotated var_patterns. The
+                    // value is wrapped in `some(value: <type>)` (the
+                    // anthill.prelude.Option.some shape) by the loader.
+                    let type_ann = extract_option_some_value(kb, &named_args, "type_ann")
+                        .map(|t| term_to_expr_leaf_occ(kb, t, span));
+                    Pattern::Var { name, type_ann }
+                }
+                None => return term_pattern_as_expr_occ(kb, tid, span),
+            }
+        }
+        "anthill.reflect.Pattern.wildcard" => Pattern::Wildcard,
+        "anthill.reflect.Pattern.literal_pattern" => {
+            // CLAUDE.md: avoid silent fallbacks. If `value` isn't a
+            // Term::Const (e.g. a logical Var via a reflection-data
+            // synthesizer), surface the pattern as Expr instead of
+            // silently coercing to `Literal::Int(0)`.
+            match extract_literal_arg(kb, &named_args, "value") {
+                Some(lit) => Pattern::Literal { value: lit },
+                None => return term_pattern_as_expr_occ(kb, tid, span),
+            }
+        }
+        "anthill.reflect.Pattern.constructor_pattern" => {
+            match extract_term_ref_sym(kb, &named_args, "name") {
+                Some(name) => {
+                    let pos_args: Vec<Rc<NodeOccurrence>> = extract_named_list(kb, &named_args, "args")
+                        .iter()
+                        .map(|&t| term_to_param_occurrence(kb, t, span))
+                        .collect();
+                    Pattern::Constructor { name, pos_args, named_args: Vec::new() }
+                }
+                None => return term_pattern_as_expr_occ(kb, tid, span),
+            }
+        }
+        "anthill.reflect.Pattern.tuple_pattern" => {
+            let positional: Vec<Rc<NodeOccurrence>> = extract_named_list(kb, &named_args, "elements")
+                .iter()
+                .map(|&t| term_to_param_occurrence(kb, t, span))
+                .collect();
+            Pattern::Tuple { positional, named: Vec::new() }
+        }
+        _ => {
+            // Unknown functor in a pattern slot: surface as Expr-kind so
+            // downstream walkers see the term shape as data, rather
+            // than silently coercing to Pattern::Wildcard (which would
+            // make any match unconditionally succeed). The reflection-
+            // meta-var path also takes this fall-through.
+            return term_pattern_as_expr_occ(kb, tid, span);
+        }
+    };
+    NodeOccurrence::new_pattern(pat, span, None)
+}
+
+/// WI-318: read `field: some(value: t)` from `named_args` and return
+/// `Some(t)`; return `None` for `none()` or a missing field. Mirrors
+/// the `Option` cons-list shape the loader emits (load.rs::build_some
+/// / build_none).
+fn extract_option_some_value(
+    kb: &KnowledgeBase,
+    named_args: &[(Symbol, TermId)],
+    field: &str,
+) -> Option<TermId> {
+    let (_, tid) = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == field)?;
+    match kb.get_term(*tid) {
+        Term::Fn { functor, named_args: inner, .. } => {
+            // `some(value: t)` — Option.some has qualified name
+            // anthill.prelude.Option.some.
+            let qn = kb.qualified_name_of(*functor);
+            if qn != "anthill.prelude.Option.some" {
+                return None;
+            }
+            inner.iter()
+                .find(|(s, _)| kb.resolve_sym(*s) == "value")
+                .map(|(_, t)| *t)
+        }
+        _ => None,
+    }
+}
+
+/// WI-318: build an Expr-kind leaf occurrence for a `TermId` that names
+/// a type / value expression (typically a type position). Used by the
+/// Pattern::Var.type_ann surfacer — type expressions go through the
+/// same surface as the rest of the rule body. Compound types (Fn)
+/// surface as `Expr::Apply` (the parameterised/named/sort-ref shapes
+/// the typer reads as terms-as-types).
+fn term_to_expr_leaf_occ(
+    kb: &KnowledgeBase,
+    tid: TermId,
+    span: SourceSpan,
+) -> Rc<NodeOccurrence> {
+    match kb.get_term(tid).clone() {
+        Term::Var(v) => NodeOccurrence::new_expr(Expr::Var(v), span, None),
+        Term::Const(lit) => NodeOccurrence::new_expr(Expr::Const(lit), span, None),
+        Term::Ref(s) => NodeOccurrence::new_expr(Expr::Ref(s), span, None),
+        Term::Ident(s) => NodeOccurrence::new_expr(Expr::Ident(s), span, None),
+        Term::Fn { functor, pos_args, named_args } => {
+            // Surface a type-position Fn as an Expr::Apply with NO
+            // type_args (these are types-as-terms; the args are the
+            // type's structural components). Children pass through
+            // `term_to_expr_leaf_occ` so a nested Var is preserved as
+            // an Expr::Var occurrence.
+            let pos: Vec<Rc<NodeOccurrence>> = pos_args
+                .iter()
+                .map(|&t| term_to_expr_leaf_occ(kb, t, span))
+                .collect();
+            let named: Vec<(Symbol, Rc<NodeOccurrence>)> = named_args
+                .iter()
+                .map(|&(s, t)| (s, term_to_expr_leaf_occ(kb, t, span)))
+                .collect();
+            NodeOccurrence::new_expr(
+                Expr::Apply { functor, pos_args: pos, named_args: named, type_args: Vec::new() },
+                span,
+                None,
+            )
+        }
+        _ => NodeOccurrence::new_expr(Expr::Bottom, span, None),
+    }
+}
+
+/// WI-318: fall-back surfacer for a "pattern term whose ground structure
+/// can't be captured by the `Pattern` enum" — typically a reflection
+/// rule's `var_pattern(name: ?x, …)` where the name is a logical Var.
+/// Surface as an `Expr::Apply` over the children so structural matchers
+/// see it as data. Children are recursively projected: nested
+/// var_pattern / constructor_pattern / tuple_pattern keep the
+/// Pattern-or-Expr decision per-node, so a ground sub-pattern still
+/// becomes Pattern-kind and only the non-ground spine stays Expr.
+fn term_pattern_as_expr_occ(
+    kb: &KnowledgeBase,
+    tid: TermId,
+    span: SourceSpan,
+) -> Rc<NodeOccurrence> {
+    match kb.get_term(tid).clone() {
+        Term::Fn { functor, pos_args, named_args } => {
+            let pos: Vec<Rc<NodeOccurrence>> = pos_args
+                .iter()
+                .map(|&t| term_pattern_child_as_occ(kb, t, span))
+                .collect();
+            let named: Vec<(Symbol, Rc<NodeOccurrence>)> = named_args
+                .iter()
+                .map(|&(s, t)| (s, term_pattern_child_as_occ(kb, t, span)))
+                .collect();
+            NodeOccurrence::new_expr(
+                Expr::Apply { functor, pos_args: pos, named_args: named, type_args: Vec::new() },
+                span,
+                None,
+            )
+        }
+        Term::Var(v) => NodeOccurrence::new_expr(Expr::Var(v), span, None),
+        Term::Const(lit) => NodeOccurrence::new_expr(Expr::Const(lit), span, None),
+        Term::Ref(s) => NodeOccurrence::new_expr(Expr::Ref(s), span, None),
+        Term::Ident(s) => NodeOccurrence::new_expr(Expr::Ident(s), span, None),
+        _ => NodeOccurrence::new_expr(Expr::Bottom, span, None),
+    }
+}
+
+/// Per-child projection inside a non-ground pattern term (see
+/// `term_pattern_as_expr_occ`): a child that's itself a recognised
+/// pattern term goes back through `term_to_param_occurrence` (so a
+/// ground sub-pattern surfaces as Pattern-kind); otherwise it's lifted
+/// to an Expr leaf so structural matchers see the right shape.
+fn term_pattern_child_as_occ(
+    kb: &KnowledgeBase,
+    tid: TermId,
+    span: SourceSpan,
+) -> Rc<NodeOccurrence> {
+    match kb.get_term(tid) {
+        Term::Fn { functor, .. } => {
+            let name = kb.resolve_sym(*functor);
+            if matches!(
+                name,
+                "var_pattern" | "wildcard" | "literal_pattern"
+                    | "constructor_pattern" | "tuple_pattern"
+            ) {
+                return term_to_param_occurrence(kb, tid, span);
+            }
+            term_pattern_as_expr_occ(kb, tid, span)
+        }
+        Term::Var(v) => NodeOccurrence::new_expr(Expr::Var(*v), span, None),
+        Term::Const(lit) => NodeOccurrence::new_expr(Expr::Const(lit.clone()), span, None),
+        Term::Ref(s) => NodeOccurrence::new_expr(Expr::Ref(*s), span, None),
+        Term::Ident(s) => NodeOccurrence::new_expr(Expr::Ident(*s), span, None),
+        _ => NodeOccurrence::new_expr(Expr::Bottom, span, None),
+    }
+}
+
+fn extract_term_ref_sym(
+    kb: &KnowledgeBase,
+    named_args: &[(Symbol, TermId)],
+    field: &str,
+) -> Option<Symbol> {
+    let (_, tid) = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == field)?;
+    match kb.get_term(*tid) {
+        Term::Ref(s) => Some(*s),
+        Term::Ident(s) => Some(*s),
+        _ => None,
+    }
+}
+fn extract_literal_arg(
+    kb: &KnowledgeBase,
+    named_args: &[(Symbol, TermId)],
+    field: &str,
+) -> Option<Literal> {
+    let (_, tid) = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == field)?;
+    match kb.get_term(*tid) {
+        Term::Const(lit) => Some(lit.clone()),
+        _ => None,
+    }
+}
+fn extract_named_list(
+    kb: &KnowledgeBase,
+    named_args: &[(Symbol, TermId)],
+    field: &str,
+) -> Vec<TermId> {
+    let Some((_, tid)) = named_args.iter().find(|(s, _)| kb.resolve_sym(*s) == field) else {
+        return Vec::new();
+    };
+    list_to_vec(kb, *tid)
+}
+
+/// WI-318: convert a Pattern-kind occurrence back to the reflect-Term
+/// shape (`var_pattern` / `wildcard` / `literal_pattern` /
+/// `constructor_pattern` / `tuple_pattern`) that the loader used to
+/// store before the lift. A bridge for consumers (typer's
+/// `extend_env_from_pattern` / `extract_pattern_type_ann`, the printer,
+/// reflection) that still operate on the term form. Each pattern
+/// child is recursively converted (they too are Pattern-kind), so a
+/// nested constructor pattern lowers to a cons-list of converted
+/// children — byte-identical to what `load_pattern_*` produced.
+///
+/// Panics (debug) if `occ` isn't a Pattern-kind occurrence.
+pub fn pattern_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> TermId {
+    let pat = match &occ.kind {
+        NodeKind::Pattern(p) => p,
+        // WI-318: `term_to_param_occurrence` legitimately surfaces Expr-
+        // kind occurrences for reflection meta-vars (a `lambda(param:
+        // ?x, …)` body atom has param kind Expr::Var, not Pattern).
+        // Reify those back via `occurrence_to_term` instead of
+        // returning Bottom — Bottom would silently make match_pattern /
+        // extend_env_from_pattern no-op without a diagnostic.
+        NodeKind::Expr { .. } => return occurrence_to_term(kb, occ),
+        // RuleHead in a pattern slot is genuinely unreachable — bodies
+        // are GOAL positions, never RuleHead. Surface as Bottom + assert
+        // for the caller (only fires in debug).
+        NodeKind::RuleHead { .. } => {
+            debug_assert!(false, "pattern_to_term: RuleHead in pattern slot");
+            return kb.alloc(Term::Bottom);
+        }
+    };
+    use smallvec::SmallVec;
+    let name_key = kb.intern("name");
+    let type_ann_key = kb.intern("type_ann");
+    let args_key = kb.intern("args");
+    let value_key = kb.intern("value");
+    let elements_key = kb.intern("elements");
+    match pat {
+        Pattern::Var { name, type_ann } => {
+            let name_ref = kb.alloc(Term::Ref(*name));
+            let type_ann_tid = match type_ann {
+                Some(t) => {
+                    let inner = occurrence_to_term(kb, t);
+                    build_some(kb, inner)
+                }
+                None => build_none(kb),
+            };
+            let functor = kb.resolve_symbol("anthill.reflect.Pattern.var_pattern");
+            kb.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[(name_key, name_ref), (type_ann_key, type_ann_tid)]),
+            })
+        }
+        Pattern::Wildcard => {
+            let functor = kb.resolve_symbol("anthill.reflect.Pattern.wildcard");
+            kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args: SmallVec::new() })
+        }
+        Pattern::Literal { value } => {
+            let value_tid = kb.alloc(Term::Const(value.clone()));
+            let functor = kb.resolve_symbol("anthill.reflect.Pattern.literal_pattern");
+            kb.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[(value_key, value_tid)]),
+            })
+        }
+        Pattern::Constructor { name, pos_args, .. } => {
+            // Constructor patterns canonically lower to
+            // `constructor_pattern(name: Ref, args: List[...])`. Named
+            // sub-patterns aren't part of the surface today (the loader's
+            // `LoadBuildFrame::PatternConstructor` consumes positional only),
+            // so this mirror handles only the positional form. If the future
+            // grammar adds `named_pattern_field` lowering, extend here.
+            let name_ref = kb.alloc(Term::Ref(*name));
+            let args: Vec<TermId> = pos_args
+                .iter()
+                .map(|c| pattern_to_term(kb, c))
+                .collect();
+            let args_list = build_list_termid(kb, &args);
+            let functor = kb.resolve_symbol("anthill.reflect.Pattern.constructor_pattern");
+            kb.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[(name_key, name_ref), (args_key, args_list)]),
+            })
+        }
+        Pattern::Tuple { positional, .. } => {
+            // Tuple patterns lower to `tuple_pattern(elements: List[...])`.
+            let elements: Vec<TermId> = positional
+                .iter()
+                .map(|c| pattern_to_term(kb, c))
+                .collect();
+            let elements_list = build_list_termid(kb, &elements);
+            let functor = kb.resolve_symbol("anthill.reflect.Pattern.tuple_pattern");
+            kb.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[(elements_key, elements_list)]),
+            })
+        }
+    }
+}
+
+/// Internal helper: build a cons-list TermId from a slice of element
+/// TermIds (mirror of `load.rs::build_list` over the same `cons`/`nil`
+/// shape).
+fn build_list_termid(kb: &mut KnowledgeBase, items: &[TermId]) -> TermId {
+    use smallvec::SmallVec;
+    let nil_sym = kb.resolve_symbol("anthill.prelude.List.nil");
+    let cons_sym = kb.resolve_symbol("anthill.prelude.List.cons");
+    let head_key = kb.intern("head");
+    let tail_key = kb.intern("tail");
+    let mut acc = kb.alloc(Term::Fn {
+        functor: nil_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+    for &item in items.iter().rev() {
+        acc = kb.alloc(Term::Fn {
+            functor: cons_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(head_key, item), (tail_key, acc)]),
+        });
+    }
+    acc
+}
+
+/// Internal helper: build `anthill.prelude.Option.some(value: t)` / `none()`.
+fn build_some(kb: &mut KnowledgeBase, t: TermId) -> TermId {
+    use smallvec::SmallVec;
+    let some_sym = kb.resolve_symbol("anthill.prelude.Option.some");
+    let value_key = kb.intern("value");
+    kb.alloc(Term::Fn {
+        functor: some_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(value_key, t)]),
+    })
+}
+fn build_none(kb: &mut KnowledgeBase) -> TermId {
+    use smallvec::SmallVec;
+    let none_sym = kb.resolve_symbol("anthill.prelude.Option.none");
+    kb.alloc(Term::Fn {
+        functor: none_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    })
+}
+
 pub fn substitute_occurrence(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     subst: &Substitution,
 ) -> Rc<NodeOccurrence> {
+    // WI-318: walk through Pattern-kind occurrences uniformly — their
+    // structure has no `Expr::Var` leaves to bind (names are Symbols),
+    // but their Expr-kind type_ann children CAN hold a `Var::Global`
+    // that the substitution should rewrite. Mirror of the
+    // `open_debruijn_node` Pattern arm.
+    if let Some(pat) = occ.as_pattern() {
+        let mut subst_children: Vec<Rc<NodeOccurrence>> = Vec::new();
+        for_each_pattern_child(pat, |c| subst_children.push(substitute_occurrence(kb, c, subst)));
+        return reassemble_pattern(occ, &subst_children);
+    }
     let Some(expr) = occ.as_expr() else { return Rc::clone(occ) };
     let rebuilt: Option<Rc<NodeOccurrence>> = match expr {
         Expr::Var(Var::Global(vid)) => return subst_var_leaf(kb, *vid, subst, occ),
@@ -1361,7 +2014,7 @@ pub fn materialize_from_handle(
     while let Some(op) = work.pop() {
         match op {
             WorkOp::Visit(t) => visit_term(kb, t, &mut work, &mut results),
-            WorkOp::Build(frame) => build_frame(frame, &mut results),
+            WorkOp::Build(frame) => build_frame(kb, frame, &mut results),
         }
     }
 
@@ -1803,7 +2456,11 @@ fn visit_or_bottom_op(slot: Option<TermId>) -> WorkOp {
     }
 }
 
-pub(crate) fn build_frame(frame: BuildFrame, results: &mut Vec<Rc<NodeOccurrence>>) {
+pub(crate) fn build_frame(
+    kb: &KnowledgeBase,
+    frame: BuildFrame,
+    results: &mut Vec<Rc<NodeOccurrence>>,
+) {
     match frame {
         BuildFrame::Bottom => results.push(bottom_node()),
         BuildFrame::If { span } => {
@@ -1816,14 +2473,22 @@ pub(crate) fn build_frame(frame: BuildFrame, results: &mut Vec<Rc<NodeOccurrence
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
         BuildFrame::Let { span, pattern, type_annotation } => {
+            // WI-318: build the Pattern-kind pattern occurrence from the
+            // TermId carried in the BuildFrame, same as BuildFrame::Lambda.
             let body = results.pop().expect("let: missing body");
             let value = results.pop().expect("let: missing value");
-            let expr = Expr::Let { pattern, type_annotation, value, body };
+            let pattern_occ = term_to_param_occurrence(kb, pattern, span);
+            let expr = Expr::Let { pattern: pattern_occ, type_annotation, value, body };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
         BuildFrame::Lambda { span, param } => {
+            // WI-318: build the Pattern-kind param occurrence from the
+            // TermId carried in the BuildFrame. `term_to_param_occurrence` reads
+            // the loader-emitted var_pattern / constructor_pattern /
+            // ... shape and produces the structural Pattern equivalent.
             let body = results.pop().expect("lambda: missing body");
-            let expr = Expr::Lambda { param, body };
+            let param_occ = term_to_param_occurrence(kb, param, span);
+            let expr = Expr::Lambda { param: param_occ, body };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
         BuildFrame::Match { span, mut branches } => {
@@ -1838,8 +2503,12 @@ pub(crate) fn build_frame(frame: BuildFrame, results: &mut Vec<Rc<NodeOccurrence
                     None
                 };
                 let body = results.pop().expect("match: missing branch body");
+                // WI-318: convert the BranchMeta's pattern TermId to a
+                // Pattern-kind (or Expr-kind for reflection meta-vars)
+                // occurrence, mirroring BuildFrame::Lambda / Let.
+                let pattern = term_to_param_occurrence(kb, meta.pattern, meta.span);
                 built_branches.push(MatchBranch {
-                    pattern: meta.pattern,
+                    pattern,
                     guard,
                     body,
                     span: meta.span,
@@ -2318,33 +2987,38 @@ mod tests {
     }
 
     #[test]
-    fn node_to_debruijn_closes_vars_in_termid_pattern_fields() {
-        // WI-246 follow-on: a reflect-data `lambda` atom carries its param as a
-        // `TermId` (not an occ child). `node_to_debruijn` must close a Global var
-        // living there to De Bruijn — via `term_to_debruijn` — so it lands in the
-        // rule's De Bruijn key space (e.g. for the typer), matching the prior
-        // materialize(term_to_debruijn(t)) path.
+    fn lambda_param_round_trip_through_pattern_occurrence() {
+        // WI-318: with param lifted to a Pattern-kind Rc<NodeOccurrence>,
+        // the De Bruijn closer/opener no longer needs a special arm for
+        // it — the structural for_each_child + reassemble walk uniformly
+        // handles the param's children (currently always empty for a
+        // typical `Pattern::Var { name: Symbol, type_ann: None }`).
+        // Verify a Lambda built with a Pattern::Var param round-trips
+        // through node_to_debruijn unchanged (no vars to remap, but the
+        // walker still must accept it).
         use crate::kb::term::Var;
         let mut kb = KnowledgeBase::new();
         let xname = kb.intern("x");
         let span = make_span();
         let v0 = VarId::new(7, xname);
-        // param TermId holds Global(v0); body is a separate occ var leaf.
-        let param_tid = kb.alloc(Term::Var(Var::Global(v0)));
+        let param = NodeOccurrence::new_pattern(
+            Pattern::Var { name: xname, type_ann: None },
+            span,
+            None,
+        );
         let body = NodeOccurrence::new_expr(Expr::Var(Var::Global(v0)), span, None);
-        let lambda = NodeOccurrence::new_expr(Expr::Lambda { param: param_tid, body }, span, None);
+        let lambda = NodeOccurrence::new_expr(Expr::Lambda { param, body }, span, None);
 
         let closed = node_to_debruijn(&mut kb, &lambda, &[v0]);
         match closed.as_expr() {
             Some(Expr::Lambda { param, body }) => {
                 assert!(
-                    matches!(kb.get_term(*param), Term::Var(Var::DeBruijn(0))),
-                    "param TermId var should close to DeBruijn(0), got {:?}",
-                    kb.get_term(*param)
+                    matches!(param.as_pattern(), Some(Pattern::Var { .. })),
+                    "param stays a Pattern-kind occurrence after close",
                 );
                 assert!(
                     matches!(body.as_expr(), Some(Expr::Var(Var::DeBruijn(0)))),
-                    "body occ var should also close to DeBruijn(0)",
+                    "body var closes to DeBruijn(0)",
                 );
             }
             other => panic!("expected Lambda, got {other:?}"),
@@ -2352,46 +3026,59 @@ mod tests {
     }
 
     #[test]
-    fn collect_ordered_picks_up_vars_living_only_in_termid_fields() {
-        // WI-246 soundness guard: `node_to_debruijn` closes vars in a reflect-
-        // data form's `TermId`-typed param/pattern/type-arg fields, which
-        // `for_each_child` never visits. `collect_occurrence_global_vars_ordered`
-        // must still collect a var that lives EXCLUSIVELY in such a field —
-        // otherwise it would be left a stray Global (escaping per-call
-        // freshening) and the rule's arity would undercount it.
+    fn collect_ordered_picks_up_vars_in_apply_type_args_wi318() {
+        // WI-318: with patterns lifted out of TermId fields, the remaining
+        // TermId-bearing positions reachable by node_to_debruijn (and that
+        // for_each_child does NOT descend into) are the type-position
+        // TermIds: Apply.type_args, ApplyWithin.type_args, and Let.type_
+        // annotation. `collect_occurrence_global_vars_ordered` must still
+        // collect a Global living exclusively in one of those — otherwise
+        // it would be left as a stray Global (escaping per-call freshening)
+        // and the rule's arity would undercount it.
+        //
+        // This test exercises Apply.type_args specifically. (See the older
+        // `collect_ordered_picks_up_vars_in_apply_type_args` below for the
+        // pre-WI-318 sibling.)
         use crate::kb::term::Var;
         let mut kb = KnowledgeBase::new();
         let xname = kb.intern("x");
         let yname = kb.intern("y");
         let span = make_span();
 
-        // A `lambda` whose param holds Global(vx) and whose body mentions only
-        // Global(vy) — vx appears nowhere in an occurrence-child position.
         let vx = VarId::new(7, xname);
         let vy = VarId::new(8, yname);
-        let param_tid = kb.alloc(Term::Var(Var::Global(vx)));
-        let body = NodeOccurrence::new_expr(Expr::Var(Var::Global(vy)), span, None);
-        let lambda = NodeOccurrence::new_expr(Expr::Lambda { param: param_tid, body }, span, None);
+        // An Apply whose type_args carry Global(vx); body args reference vy.
+        let type_arg_tid = kb.alloc(Term::Var(Var::Global(vx)));
+        let body_arg = NodeOccurrence::new_expr(Expr::Var(Var::Global(vy)), span, None);
+        let f_sym = kb.intern("f");
+        let apply = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: f_sym,
+                pos_args: vec![body_arg],
+                named_args: vec![],
+                type_args: vec![(None, type_arg_tid)],
+            },
+            span,
+            None,
+        );
 
         let mut vars = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        collect_occurrence_global_vars_ordered(&kb, &lambda, &mut vars, &mut seen);
+        collect_occurrence_global_vars_ordered(&kb, &apply, &mut vars, &mut seen);
 
-        assert!(vars.contains(&vx), "param-only var vx must be collected, got {vars:?}");
-        assert!(vars.contains(&vy), "body var vy must be collected, got {vars:?}");
-        // Children walked before TermId fields: vy (occ child) precedes vx (param).
+        assert!(vars.contains(&vx), "type_args-only var vx must be collected, got {vars:?}");
+        assert!(vars.contains(&vy), "body-arg var vy must be collected, got {vars:?}");
         assert_eq!(vars, vec![vy, vx], "child vars first, then TermId-field vars");
 
-        // And the closing pass then leaves NO stray Global: with vx in var_order,
-        // the param closes to a DeBruijn index.
-        let closed = node_to_debruijn(&mut kb, &lambda, &vars);
-        let Some(Expr::Lambda { param, .. }) = closed.as_expr() else {
-            panic!("expected Lambda");
+        // Closing leaves NO stray Global:
+        let closed = node_to_debruijn(&mut kb, &apply, &vars);
+        let Some(Expr::Apply { type_args, .. }) = closed.as_expr() else {
+            panic!("expected Apply");
         };
         assert!(
-            matches!(kb.get_term(*param), Term::Var(Var::DeBruijn(_))),
-            "param var must close to DeBruijn (no stray Global), got {:?}",
-            kb.get_term(*param)
+            matches!(kb.get_term(type_args[0].1), Term::Var(Var::DeBruijn(_))),
+            "type_args var must close to DeBruijn (no stray Global), got {:?}",
+            kb.get_term(type_args[0].1)
         );
     }
 

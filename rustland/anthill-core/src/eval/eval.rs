@@ -102,6 +102,14 @@ impl Interpreter {
                     "unexpected RuleHead occurrence in expression position".into(),
                 ));
             }
+            NodeKind::Pattern(_) => {
+                // Patterns are consumed by `match_pattern` at let/lambda/
+                // match dispatch — they should never reach `reduce_node`
+                // as a top-level expression target (WI-318).
+                return Err(EvalError::Internal(
+                    "unexpected Pattern occurrence in expression position".into(),
+                ));
+            }
         };
         match expr {
             Expr::Const(lit) => {
@@ -114,12 +122,12 @@ impl Interpreter {
                 self.start_if(condition, then_branch, else_branch)
             }
             Expr::Let { pattern, value, body, .. } => {
-                self.start_let(*pattern, value, body)
+                self.start_let(Rc::clone(pattern), value, body)
             }
             Expr::Match { scrutinee, branches } => {
                 self.start_match(scrutinee, branches)
             }
-            Expr::Lambda { param, body } => self.reduce_lambda(*param, body.clone()),
+            Expr::Lambda { param, body } => self.reduce_lambda(Rc::clone(param), body.clone()),
             Expr::Apply { functor, pos_args, named_args, .. } => {
                 // WI-218: the typer may have classified this apply for
                 // spec-op rewrite. PinNow redirects the call to the
@@ -237,9 +245,15 @@ impl Interpreter {
 
     fn reduce_lambda(
         &mut self,
-        param: TermId,
+        param: Rc<NodeOccurrence>,
         body: Rc<NodeOccurrence>,
     ) -> Result<StepOutcome, EvalError> {
+        // WI-318: `param` is a Pattern-kind Rc<NodeOccurrence>. The
+        // closure still stores it as a TermId (`Closure.param_pattern`)
+        // for `match_pattern` to consume — bridge via `pattern_to_term`
+        // for now. A follow-up should make `match_pattern` dispatch on
+        // the Pattern enum directly.
+        let param: TermId = crate::kb::node_occurrence::pattern_to_term(&mut self.kb, &param);
         // Any pattern is legal as a lambda param; match_pattern unpacks it
         // at call time. `lambda (a, b) -> body` is a tuple pattern against
         // a single tuple arg; `lambda _` ignores the arg; `lambda x` is
@@ -394,13 +408,17 @@ impl Interpreter {
 
     fn start_let(
         &mut self,
-        pattern: TermId,
+        pattern: Rc<NodeOccurrence>,
         value: &Rc<NodeOccurrence>,
         body: &Rc<NodeOccurrence>,
     ) -> Result<StepOutcome, EvalError> {
+        // WI-318: pattern is a Pattern-kind occurrence. The LetBind
+        // AwaitState still stores it as a TermId for `match_pattern` —
+        // bridge via `pattern_to_term`.
+        let pattern_tid = crate::kb::node_occurrence::pattern_to_term(&mut self.kb, &pattern);
         self.suspend_and_push(
             AwaitState::LetBind {
-                pattern,
+                pattern: pattern_tid,
                 body: body.clone(),
             },
             value.clone(),
@@ -415,7 +433,7 @@ impl Interpreter {
         let branches_cloned: Vec<MatchBranch> = branches
             .iter()
             .map(|b| MatchBranch {
-                pattern: b.pattern,
+                pattern: Rc::clone(&b.pattern),
                 guard: b.guard.clone(),
                 body: b.body.clone(),
                 span: b.span,
@@ -942,7 +960,14 @@ impl Interpreter {
                     let scrutinee_functor = value_functor(&self.kb, &v);
                     let mut picked: Option<(Rc<NodeOccurrence>, super::pattern::Bindings)> = None;
                     for branch in &branches {
-                        let pat_tid = branch.pattern;
+                        // WI-318: branch.pattern is a Pattern-kind
+                        // occurrence; bridge to TermId for the existing
+                        // term-based `match_pattern` / `constructor_
+                        // pattern_name` helpers.
+                        let pat_tid = crate::kb::node_occurrence::pattern_to_term(
+                            &mut self.kb,
+                            &branch.pattern,
+                        );
                         // Cheap pre-filter: constructor-pattern functor
                         // mismatch can skip the full match attempt.
                         // `functor_matches` collapses short vs. qualified
