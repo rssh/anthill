@@ -11,13 +11,16 @@
 
    The bridge between `Effects` and `effects_rows(...)`-shape Type values
    — "every effects_rows wrapper is a valid Effects binding" — is emitted by
-   the Rust loader during prelude bootstrap (kb/load.rs), parallel to
-   `fact Effect[T = Modify[?]]` in effects.anthill. It is emitted in Rust
-   because the surface grammar disallows entity-construction terms
-   (`effects_rows(?)`) in type-argument position (`_type` admits only
-   simple_type / parameterized_type / variable_term — Modify[?] is a
-   parameterized_type the grammar handles; effects_rows(?) is a value-level
-   construction it doesn't).
+   the Rust loader during prelude bootstrap (kb/load.rs), shape-analogous to
+   `fact Effect[T = Modify[?]]` in effects.anthill (with a different index:
+   sort=EffectsRuntime, not the load_fact default sort=Fact). It is emitted
+   in Rust because the surface grammar disallows entity-construction terms
+   (`effects_rows(?)`) in type-argument position: `_type` admits only
+   simple_type / application / variable_term (post-WI-311 the older
+   `parameterized_type` and `instantiation_term` rules were merged into
+   one `application` rule). `Modify[?]` is an `application` the grammar
+   handles; `effects_rows(?)` is a value-level entity-construction it
+   doesn't.
 
    Scope A (WI-320) — pure kind anchor: no entities, no operations. The
    handler-bundle role (a `perform` op for capability-passing dispatch that

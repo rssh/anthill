@@ -1116,7 +1116,11 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
     // WI-320 (proposal 045 §2.0.1) — emit the EffectsRuntime ↔ effects_rows
     // bridge fact. Lives here in Rust (not in stdlib/effects-runtime.anthill)
     // because surface `_type` doesn't admit entity-construction terms like
-    // `effects_rows(?)` in type-arg position. The fact registers any
+    // `effects_rows(?)` in type-arg position — that position is an
+    // `application` (the `parameterized_type`/`instantiation_term` rules
+    // were merged into one `application` rule under WI-311), and
+    // `application` carries a type-arg list, not a value-position
+    // entity-construction expression. The fact registers any
     // `effects_rows(...)`-shape Type as a valid `EffectsRuntime[Effects]`
     // binding — the kind discrimination for the `effects E = ? requires
     // EffectsRuntime[E]` desugaring.
@@ -1126,10 +1130,20 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
 /// Emit the WI-320 bridge fact:
 /// `EffectsRuntime[Effects = effects_rows(effects_expr = ?fresh)]`.
 ///
-/// Parallel to `fact Effect[T = Modify[?]]` in effects.anthill, but emitted
-/// in Rust because the surface grammar's `_type` rule does not admit
-/// entity-construction terms like `effects_rows(?)` in type-arg position.
-/// See proposal 045 §2.0.1.
+/// Shape-analogous to `fact Effect[T = Modify[?]]` in effects.anthill — both
+/// register a parameterized-sort-instantiation pattern as a satisfiable
+/// goal — but emitted in Rust because the surface grammar's `_type` rule
+/// does not admit entity-construction terms like `effects_rows(?)` in
+/// type-arg position. The bridge is also *indexed differently* from the
+/// stdlib precedent: a surface-syntax `fact F[…]` without a sort
+/// annotation lands in `by_sort[Fact]` and `by_domain[<enclosing-scope>]`
+/// (load_fact at load.rs ~5728, `f.sort.unwrap_or("Fact")`), whereas this
+/// Rust-emitted fact uses `sort = domain = EffectsRuntime` to keep its
+/// intent (a statement about EffectsRuntime) attached to its `by_sort` /
+/// `by_domain` keys. Resolution still works through the discrim tree;
+/// reflection consumers that enumerate `by_sort["Fact"]` won't see this
+/// fact, which is intentional (it isn't a user-written fact). See
+/// proposal 045 §2.0.1.
 ///
 /// **Idempotency** — `register_prelude` is called more than once on the
 /// same KB by the common test pattern (e.g. `register_prelude(&mut kb);

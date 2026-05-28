@@ -37,7 +37,6 @@ static STDLIB_SOURCES: &[(&str, &str)] = &[
     ("anthill/prelude/logical_stream", include_str!("../../../stdlib/anthill/prelude/logical_stream.anthill")),
     ("anthill/prelude/lattice", include_str!("../../../stdlib/anthill/prelude/lattice.anthill")),
     ("anthill/prelude/effects", include_str!("../../../stdlib/anthill/prelude/effects.anthill")),
-    ("anthill/prelude/effect-expression", include_str!("../../../stdlib/anthill/prelude/effect-expression.anthill")),
     ("anthill/prelude/effects-runtime", include_str!("../../../stdlib/anthill/prelude/effects-runtime.anthill")),
     ("anthill/prelude/cell", include_str!("../../../stdlib/anthill/prelude/cell.anthill")),
     ("anthill/prelude/console", include_str!("../../../stdlib/anthill/prelude/console.anthill")),

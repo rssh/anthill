@@ -2,9 +2,19 @@
    Every sort declaration introduces a Type value.
    Type forms a lattice via entity_of and refines relationships.
    No top type exists (the lattice is unbounded above).
-   Nothing is the bottom (uninhabited, subtype of everything). >}
+   Nothing is the bottom (uninhabited, subtype of everything).
+
+   Type and EffectExpression are *co-defined* in this file: Type carries
+   an EffectExpression in `effects_rows`, and EffectExpression's element
+   forms (`present` / `absent` / `open`) carry a `Type`. Splitting them
+   across files created a cross-file import cycle whose soundness depended
+   on the loader's 2-pass scan; colocating them removes the cross-file
+   cycle entirely (parallel to how `TypeField` / `TypeBinding`, which are
+   tightly coupled with Type's shape, are also defined here). The
+   brainstorm's G1 — `EffectExpression as own reflect sort` — is unchanged:
+   it remains its own `enum`, just sitting next to Type in this file. >}
 enum anthill.prelude.Type
-  import anthill.prelude.{Lattice, Eq, List, Option, EffectExpression}
+  import anthill.prelude.{Lattice, Eq, List, Option}
   import anthill.reflect.{Symbol, NodeOccurrence}
 
   -- Type constructors: all type forms in the language
@@ -22,7 +32,7 @@ enum anthill.prelude.Type
   -- Type by a computation is different — that is ordinary expression code using
   -- the Type constructors directly, not this seam.)
   entity denoted(value: NodeOccurrence)
-  -- The bridge from the EffectExpression row algebra (prelude/effect-expression.anthill)
+  -- The bridge from the EffectExpression row algebra (co-defined below)
   -- into Type position — exactly parallel to `denoted(NodeOccurrence)` above.
   -- An effect-row is `effects_rows(expr)` where `expr` is an EffectExpression
   -- (present / absent / open / merge / empty_row), and the row sits in:
@@ -31,8 +41,12 @@ enum anthill.prelude.Type
   --       see proposal 045 §2 (variant 7 adoption; WI-320);
   --   (b) `arrow.effects` once WI-307 lands the singular-Type migration of that field.
   -- The variant has no behavior of its own — it is a pure structural wrapper
-  -- (like `denoted`). EffectExpression keeps its own reflect sort + normal form;
-  -- the row-unification algorithm dispatches on this variant in `unify_arrow`.
+  -- (like `denoted`). EffectExpression keeps its own reflect sort + normal form
+  -- (the WI-320 substrate adds five typing.rs arms — `type_display_name`,
+  -- `types_compatible`, `unify_types`, `parametric_value_parts`,
+  -- `sort_functor_of` — so the variant is recognized through the typer; the
+  -- *row* unification that consumes the wrapped EffectExpression on
+  -- `arrow.effects` is the WI-307 follow-on).
   entity effects_rows(effects_expr: EffectExpression)
   entity nothing
 
@@ -44,4 +58,58 @@ enum anthill.prelude.Type
 
   fact Eq[T = Type]
   fact Lattice[T = Type]
+end
+
+{< EffectExpression: the effect-set carried by an arrow (proposal 045 §3, §6).
+
+   The surface algebra a programmer writes — `present` / `absent` / `open`
+   tail / `merge` / `empty_row` (`{}`) — which is *also* the stored representation:
+   it replaces `Type.arrow`'s `effects : List[Type]`. Its **normal form**
+   (the present labels + an optional row-variable tail + the `absent`/`lacks`
+   constraints, with `merge`s flattened) is "the row" the typer unifies
+   (045 §5), so surface and row are one sort, not two.
+
+   A row-variable tail (`open`) reuses the typer's type-variable substrate
+   (`Type.type_var`), so effect polymorphism and propagation are ordinary
+   unification of that variable (045 §5.1) — not a bespoke scheme. This is
+   the row-polymorphism design (Rémy 1989; Lindley & Cheney 2012); the prior
+   `EffectSet` specialization of `Set` (ACI matching) is **removed**
+   (2026-05-28), superseded by this sort (045 §6).
+
+   Co-defined with `Type` above (WI-320, 2026-05-28): both are mutually
+   recursive — `present`/`absent`/`open` carry a `Type`, and Type's
+   `effects_rows` carries an `EffectExpression`. Splitting them into two
+   files created a cross-file import cycle; colocating them removes it.
+
+   NOTE: wiring `Type.arrow.effects` (and `Function.E`) to carry an
+   `EffectExpression` instead of `List[Type]`, and the row-unification that
+   checks it, is the implementation step tracked by WI-307; this sort is the
+   agreed representation it targets. >}
+enum anthill.prelude.EffectExpression
+
+  -- `{}` — the closed empty row (pure: nothing present, no open tail).
+  -- Named `empty_row` (not `empty`) to avoid colliding with the various
+  -- `Collection`/`Map`/`Set`/`LogicalStream` `empty` operations.
+  entity empty_row
+
+  -- a single present effect label, e.g. `Modify[c]` (the `e` / `+e` form;
+  -- listing a label means presence). `label` is the effect Type —
+  -- `parametrized(base: sort_ref(Modify), …)`.
+  entity present(label: Type)
+
+  -- `- e` — a guaranteed-absent effect: a `lacks` constraint on the tail.
+  -- The only load-bearing marker, since presence is the default.
+  entity absent(label: Type)
+
+  -- an open row tail: a row variable `E` / `?`, carried as a `Type.type_var`.
+  -- An open row absorbs extra actual labels (covariant-effects subtyping);
+  -- a closed expression (no `open`) does not. `effects E = ?` binds one.
+  entity open(tail: Type)
+
+  -- `merge(x, y)` — union of two expressions; the set literal `{ E1, …, EN }`
+  -- is iterated `merge` (pure sugar). A present/absent clash on the same
+  -- label is a row-unification failure, not a propagating value (045 §7.2).
+  entity merge(left: EffectExpression, right: EffectExpression)
+
+  fact Eq[T = EffectExpression]
 end
