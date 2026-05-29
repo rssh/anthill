@@ -2878,6 +2878,85 @@ end
          set-with-subtyping semantics lets Color cover both red and blue");
 }
 
+// ── WI-334 shared row var with non-empty extras ──────────────────────────
+//
+// Pre-WI-334 the both-open arm in subtype_effect_rows and unify_effect_rows
+// allocated a fresh tail and called bind_row_tail TWICE on the same VarId
+// when a_walked == e_walked but extras were non-empty:
+//   bind rho := only_e ++ open(fresh)
+//   bind rho := only_a ++ open(fresh)
+// Two distinct terms → subst.is_contradiction() → false. Valid sub /
+// unify rejected. Fix: detect shared tail and bind ONCE with the union of
+// both extras (the two rows agree on the same set after binding).
+
+/// WI-334 subtype: shared rho with only_e extras.
+#[test]
+fn subtype_arrow_shared_rho_only_e_extras() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e2_sym = kb.intern("E2");
+    let e2 = kb.make_sort_ref(e2_sym);
+
+    // ONE rho var — shared between actual and expected.
+    let rho_sym = kb.intern("?rho");
+    let rho_vid = kb.fresh_var(rho_sym);
+    let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
+
+    // A = {| ?rho}, B = {E2 | ?rho} — both reference the SAME rho.
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[rho]);
+    let expected = kb.make_arrow_type(int_ty, int_ty, &[e2, rho]);
+
+    assert!(types_compatible(&mut kb, actual, expected),
+        "arrow({{|?rho}}) <: arrow({{E2 | ?rho}}) — same rho var means \
+         A's set = ?rho-content ⊆ {{E2}} ∪ ?rho-content = B's set");
+}
+
+/// WI-334 subtype: symmetric case — only_a extras non-empty.
+#[test]
+fn subtype_arrow_shared_rho_only_a_extras() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e1_sym = kb.intern("E1");
+    let e1 = kb.make_sort_ref(e1_sym);
+
+    let rho_sym = kb.intern("?rho");
+    let rho_vid = kb.fresh_var(rho_sym);
+    let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
+
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[e1, rho]);
+    let expected = kb.make_arrow_type(int_ty, int_ty, &[rho]);
+
+    // Under the shared-rho binding K = {E1 | fresh}, both rows become
+    // {E1 | fresh}. Equal sets → A <: B.
+    assert!(types_compatible(&mut kb, actual, expected),
+        "arrow({{E1 | ?rho}}) <: arrow({{| ?rho}}) — shared-rho binding \
+         absorbs E1 into the common tail");
+}
+
+/// WI-334 unify: shared rho with non-empty extras. Pre-WI-334
+/// unify_types over arrows sharing rho with extras hit the same
+/// double-bind contradiction in unify_effect_rows.
+#[test]
+fn unify_arrow_shared_rho_with_extras() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e2_sym = kb.intern("E2");
+    let e2 = kb.make_sort_ref(e2_sym);
+
+    let rho_sym = kb.intern("?rho");
+    let rho_vid = kb.fresh_var(rho_sym);
+    let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
+
+    let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[rho]);
+    let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2, rho]);
+
+    let mut subst = Substitution::new();
+    assert!(unify_types(&mut kb, &mut subst, arrow_a, arrow_b),
+        "unify of arrows sharing rho with one side carrying extras must succeed");
+    assert!(subst.resolve_with_term(rho_vid).is_some(),
+        "?rho should be bound after unification");
+}
+
 /// Open ≤ open with shared tail — both sides have open tails. The
 /// directional algorithm (mirroring the unify both-open case) links them
 /// through a fresh shared row variable; the sub holds because the two

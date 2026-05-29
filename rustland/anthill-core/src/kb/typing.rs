@@ -5575,17 +5575,29 @@ fn unify_effect_rows(
             bind_row_tail(kb, subst, a_t, &only_b, None)
         }
         (Some(a_t), Some(b_t)) => {
-            // Both open. If tails are already the same Var and no extras,
-            // we're done — avoids allocating a fresh tail.
+            // Both open. If tails are already the same Var, the
+            // extras must merge into ONE binding to avoid the
+            // contradicting double-bind (WI-334) — see analogous arm
+            // in subtype_effect_rows for the soundness argument.
             let a_walked = walk_type(kb, subst, a_t);
             let b_walked = walk_type(kb, subst, b_t);
-            if a_walked == b_walked && only_a.is_empty() && only_b.is_empty() {
-                return true;
+            if a_walked == b_walked {
+                if only_a.is_empty() && only_b.is_empty() {
+                    return true;
+                }
+                let fresh_sym = kb.intern("?rho");
+                let fresh_vid = kb.fresh_var(fresh_sym);
+                let fresh_var = kb.alloc(Term::Var(Var::Global(fresh_vid)));
+                let mut all_extras: Vec<TermId> =
+                    Vec::with_capacity(only_a.len() + only_b.len());
+                all_extras.extend(only_a.iter().copied());
+                all_extras.extend(only_b.iter().copied());
+                return bind_row_tail(kb, subst, a_walked, &all_extras, Some(fresh_var));
             }
-            // Fresh shared tail var ρ'. Both sides extend their respective
-            // labels and end in `open(ρ')` — afterward a future
-            // decompose_effect_row reveals (only_a + only_b) as present
-            // labels with shared tail ρ'.
+            // Distinct tails: fresh shared tail var ρ'. Both sides extend
+            // their respective labels and end in `open(ρ')` — afterward a
+            // future decompose_effect_row reveals (only_a + only_b) as
+            // present labels with shared tail ρ'.
             let fresh_sym = kb.intern("?rho");
             let fresh_vid = kb.fresh_var(fresh_sym);
             let fresh_var = kb.alloc(Term::Var(Var::Global(fresh_vid)));
@@ -5662,9 +5674,33 @@ fn subtype_effect_rows(
         (Some(a_t), Some(e_t)) => {
             let a_walked = walk_type(kb, subst, a_t);
             let e_walked = walk_type(kb, subst, e_t);
-            if a_walked == e_walked && only_a.is_empty() && only_e.is_empty() {
-                return true;
+            // WI-334: shared row var (a_walked == e_walked). The two
+            // distinct bind_row_tail calls below would each try to bind
+            // the same VarId to two structurally different terms
+            // (`only_e ++ open(fresh)` vs `only_a ++ open(fresh)`) —
+            // contradicting subst.bind, returning false even for valid
+            // subtypes. Bind once with the union of both extras instead:
+            // A's set = a_present ∪ K, B's set = e_present ∪ K, where K
+            // is the shared tail. Binding K to {only_a ∪ only_e | fresh}
+            // makes both rows agree on the same set (paired_a unifies
+            // with paired_e via pair_present_labels), satisfying
+            // actual <: expected.
+            if a_walked == e_walked {
+                if only_a.is_empty() && only_e.is_empty() {
+                    return true;
+                }
+                let fresh_sym = kb.intern("?rho");
+                let fresh_vid = kb.fresh_var(fresh_sym);
+                let fresh_var = kb.alloc(Term::Var(Var::Global(fresh_vid)));
+                let mut all_extras: Vec<TermId> =
+                    Vec::with_capacity(only_a.len() + only_e.len());
+                all_extras.extend(only_a.iter().copied());
+                all_extras.extend(only_e.iter().copied());
+                return bind_row_tail(kb, subst, a_walked, &all_extras, Some(fresh_var));
             }
+            // Distinct tails: each side's tail absorbs the other's
+            // extras + a fresh shared continuation. Symmetric Rémy
+            // fresh-tail step.
             let fresh_sym = kb.intern("?rho");
             let fresh_vid = kb.fresh_var(fresh_sym);
             let fresh_var = kb.alloc(Term::Var(Var::Global(fresh_vid)));

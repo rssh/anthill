@@ -2474,7 +2474,7 @@ fact WorkItem(
   description: "Code-review WI-326 F4: both-open subtype arm with shared row var + non-empty extras falsely rejects (completeness gap, inherited from unify_effect_rows). PROBLEM: when a_tail and e_tail walk to the same VarId (shared row var across two arrows) AND only one of only_a/only_e is non-empty, the fast-path early-return at typing.rs ~5660 requires both extras empty so it doesn't fire. Code then allocates a fresh shared tail and calls bind_row_tail(a_t, &only_e, Some(fresh)) followed by bind_row_tail(e_t, &only_a, Some(fresh)). For a_t == e_t this is two distinct binds on the same VarId with two structurally different terms → subst.is_contradiction() → returns false. EXAMPLE: A = arrow(Int,Int,{|rho}), B = arrow(Int,Int,{E2|rho}) (legal when arrows share rho via a generic context). decompose: a_present=[], a_tail=Some(rho), e_present=[E2], e_tail=Some(rho), only_a=[], only_e=[E2]. Semantically A's set = content_of_rho ⊆ {E2} ∪ content_of_rho = B's set, so A <: B should hold. But algorithm rejects. SCOPE: extend the both-open fast-path to handle a_walked == e_walked with non-empty extras: bind the shared tail once to merge(only_a, merge(only_e, open(fresh))) instead of two contradicting binds. Mirror fix into unify_effect_rows (where same pattern lurks). Add regression tests for both 'shared rho with only_a empty + only_e non-empty' and the symmetric case. ACCEPTANCE: shared-row-var subtype tests pass; unify_effect_rows fix has its own tests; full cargo-test green.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-326"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-29T05:32:47Z"))
 
 fact WorkItem(
   id: "WI-335",
