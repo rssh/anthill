@@ -5406,14 +5406,17 @@ fn unify_view_structural<A: TermView, B: TermView>(
         (Some("parameterized"), Some("parameterized")) => {
             unify_parameterized_view(kb, subst, a, b)
         }
-        // P4-B: `arrow` / `effects_rows` / `parameterized`-vs-`sort_ref` /
-        // `named_tuple` structural unification of a `Value` carrier is wired with
-        // the row-machinery migration (when `unify_term_dispatch` and this
-        // dispatch are consolidated and `unify_parameterized` is expressed via
-        // `unify_parameterized_view`). `types_compatible` must gain the matching
-        // Value arms in the same step (the unify/subtype lockstep). Until then,
-        // refuse rather than mis-unify — sound, but a false-negative once a
-        // producer mints these Value-carried forms into live typing.
+        (Some("arrow"), Some("arrow")) => unify_arrow_view(kb, subst, a, b),
+        // Two effect rows directly (the WI-320 `effects_rows`-vs-`effects_rows`
+        // case, carrier-agnostic): hand to the row algorithm.
+        (Some("effects_rows"), Some("effects_rows")) => unify_effect_rows(kb, subst, a, b),
+        // P4-B2/#11: `parameterized`-vs-`sort_ref` (binds the base sort's
+        // type-param vars) and `named_tuple` for a `Value` carrier are wired
+        // when `unify_parameterized_with_sort_ref` / `unify_named_tuple` are made
+        // carrier-agnostic; `types_compatible` gains the matching Value arms in
+        // the same step (the unify/subtype lockstep). Until then refuse rather
+        // than mis-unify — sound, but a false-negative for those Value-carried
+        // forms.
         _ => false,
     }
 }
@@ -5455,6 +5458,51 @@ fn unify_parameterized_view<A: TermView, B: TermView>(
         }
     }
     true
+}
+
+/// WI-342 P4-B: carrier-agnostic `arrow` unification — the [`TermView`] analog
+/// of [`unify_arrow`]. `param`/`result` unify via the generic [`unify_types`];
+/// `effects` via the carrier-agnostic [`unify_effect_rows`]. A missing effects
+/// field is treated as the empty row (mirrors [`unify_arrow`]).
+fn unify_arrow_view<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    a: &A,
+    b: &B,
+) -> bool {
+    let param_sym = kb.intern("param");
+    let result_sym = kb.intern("result");
+    let effects_sym = kb.intern("effects");
+
+    match (named_child_value(kb, a, param_sym), named_child_value(kb, b, param_sym)) {
+        (Some(x), Some(y)) => {
+            if !unify_types(kb, subst, &x, &y) {
+                return false;
+            }
+        }
+        _ => return false,
+    }
+    match (named_child_value(kb, a, result_sym), named_child_value(kb, b, result_sym)) {
+        (Some(x), Some(y)) => {
+            if !unify_types(kb, subst, &x, &y) {
+                return false;
+            }
+        }
+        _ => return false,
+    }
+
+    match (named_child_value(kb, a, effects_sym), named_child_value(kb, b, effects_sym)) {
+        (Some(x), Some(y)) => unify_effect_rows(kb, subst, &x, &y),
+        (None, None) => true,
+        (Some(x), None) => match kb.try_make_empty_effects_rows() {
+            Some(er) => unify_effect_rows(kb, subst, &x, &TermIdView(er)),
+            None => false,
+        },
+        (None, Some(y)) => match kb.try_make_empty_effects_rows() {
+            Some(er) => unify_effect_rows(kb, subst, &TermIdView(er), &y),
+            None => false,
+        },
+    }
 }
 
 /// WI-342 P4: a `parameterized` type's `(param, value)` bindings read
@@ -9557,6 +9605,60 @@ mod p4_tests {
         assert!(
             !unify_types(&mut kb, &mut s, &TermIdView(ground), &occ_read),
             "Modify[c] vs Read[c] differ on base"
+        );
+    }
+
+    /// `Value`-carried arrow `Unit -> Unit` with a single present effect label
+    /// `Modify[sym]`: arrow → effects_rows → present → parameterized(Modify,
+    /// denoted(Ref sym)). Param/result are ground; the effect label is poisoned.
+    fn value_modify_arrow(
+        kb: &mut KnowledgeBase,
+        modify: crate::intern::Symbol,
+        p: crate::intern::Symbol,
+        unit_ref: TermId,
+        sym: crate::intern::Symbol,
+    ) -> Rc<NodeOccurrence> {
+        let label = occ_param(kb, modify, p, sym);
+        let present = kb.make_present_occ(TypeChild::Node(label), span(), None);
+        let rows = kb.make_effects_rows_occ(TypeChild::Node(present), span(), None);
+        kb.make_arrow_occ(
+            TypeChild::Ground(unit_ref),
+            TypeChild::Ground(unit_ref),
+            TypeChild::Node(rows),
+            span(),
+            None,
+        )
+    }
+
+    /// The headline P4-B target: a ground arrow `Unit -> Unit {Modify[c]}`
+    /// unifies cross-carrier with its `Value`-carried twin *through the row
+    /// machinery* (decompose → pair present labels → denoted Ref-compare);
+    /// `{Modify[c]}` vs `{Modify[d]}` is rejected at the effect label.
+    #[test]
+    fn cross_carrier_modify_c_arrow_unifies_through_rows() {
+        let mut kb = kb_with_prelude();
+        let modify = kb.intern("Modify");
+        let p = kb.intern("resource");
+        let c = kb.intern("c");
+        let d = kb.intern("d");
+        let unit = kb.intern("Unit");
+        let unit_ref = kb.make_sort_ref(unit);
+
+        let ground_label = ground_param(&mut kb, modify, p, c);
+        let ground_arrow = kb.make_arrow_type(unit_ref, unit_ref, &[ground_label]);
+
+        let value_arrow_c = value_modify_arrow(&mut kb, modify, p, unit_ref, c);
+        let mut s = Substitution::new();
+        assert!(
+            unify_types(&mut kb, &mut s, &TermIdView(ground_arrow), &value_arrow_c),
+            "ground Unit->Unit {{Modify[c]}} vs Value-carried twin (through rows)"
+        );
+
+        let value_arrow_d = value_modify_arrow(&mut kb, modify, p, unit_ref, d);
+        let mut s2 = Substitution::new();
+        assert!(
+            !unify_types(&mut kb, &mut s2, &TermIdView(ground_arrow), &value_arrow_d),
+            "{{Modify[c]}} vs {{Modify[d]}} effect rows differ"
         );
     }
 }
