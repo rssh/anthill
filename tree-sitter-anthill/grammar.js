@@ -416,7 +416,44 @@ module.exports = grammar({
       seq('{', commaSep1($._effect_type), '}'),         // multiple: {A, B}
     ),
 
+    // WI-327: extended `_effect_type` admits the proposal-045 surface
+    // algebra — explicit `+E` presence, `-E` absence (lacks-constraint,
+    // v1b consumer), and `merge(E1, …, En)` union (sugar for the braced
+    // set form, allowing nested effect-expressions).
     _effect_type: $ => choice(
+      $.simple_type,
+      $.application,
+      $.variable_term,
+      $.effect_presence,
+      $.effect_absence,
+      $.effect_merge,
+    ),
+
+    // `+E` — explicit presence. Sugar; the bare `E` form already defaults
+    // to presence. Allowed on a simple effect (not on `merge(...)` —
+    // doesn't compose meaningfully).
+    effect_presence: $ => seq('+', field('effect', $._simple_effect)),
+
+    // `-E` — absence / lacks-constraint. v1a parses + lowers to
+    // `absent(E)`; v1b consumes via [`unify_effect_rows`]' `_a_absent`
+    // slot.
+    effect_absence: $ => seq('-', field('effect', $._simple_effect)),
+
+    // `merge(E1, …, En)` — union of effect expressions. Lowers
+    // identically to the braced-set form `{E1, …, En}` (each element
+    // canonicalized into the same `effects_rows` merge chain). Allows
+    // nesting (e.g. `merge(+A, -B, rho)`).
+    effect_merge: $ => seq(
+      'merge',
+      '(',
+      commaSep1(field('effect', $._effect_type)),
+      ')',
+    ),
+
+    // Simple effect — without the WI-327 composite forms. Used as the
+    // RHS of `+` and `-` (the prefix operators don't recurse into
+    // composite forms; `+merge(…)` is ill-formed).
+    _simple_effect: $ => choice(
       $.simple_type,
       $.application,
       $.variable_term,

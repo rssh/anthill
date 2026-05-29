@@ -2523,43 +2523,68 @@ impl KnowledgeBase {
     /// An empty input list with no tail yields `effects_rows(empty_row)` — the
     /// closed pure row.
     pub fn build_canonical_effects_rows(&mut self, effects: &[TermId]) -> TermId {
-        // Partition into present labels (Term::Fn) and row-tail Var::Global.
-        // At most one tail var is expected; if multiple Global vars appear,
-        // we treat all-but-the-first as extra labels (the canonical form
-        // still parses, but row unification will surface the malformed shape
-        // as a unification failure).
+        // Partition into atoms (`present(label)` / `absent(label)`) and
+        // row-tail Var::Global. At most one tail var is expected; if
+        // multiple Global vars appear, all-but-the-first are stuffed
+        // into the atoms list (canonical form still parses; row
+        // unification surfaces the malformed shape).
         //
         // WI-307 code-review #6: only Var::Global qualifies as a row-tail.
         // Var::DeBruijn (rule-side, pre-binder-open) and Var::Rigid (forall
         // Skolems) have different unification semantics — silently treating
         // them as row tails muddles WI-307 v1a's row-unification. Variants
-        // other than Global fall through to the labels arm, where row
+        // other than Global fall through to the atoms arm, where row
         // unification will surface them as schema-shape failures rather
         // than silent mis-classification.
+        //
+        // WI-327: pre-built `present` / `absent` atoms (e.g. `-E` from
+        // surface grammar lowered via `make_effect_expression_absent`)
+        // are recognized by their functor symbols and kept as-is. Bare
+        // labels are still wrapped in `present(label)`. Mixed input is
+        // sorted by display name with the wrapper applied so canonical
+        // form is stable regardless of how each atom arrived.
         use crate::kb::term::{Term, Var};
-        let mut labels: Vec<TermId> = Vec::new();
+        let absent_sym = self.try_resolve_symbol(
+            "anthill.prelude.EffectExpression.absent",
+        );
+        let present_sym = self.try_resolve_symbol(
+            "anthill.prelude.EffectExpression.present",
+        );
+        let mut atoms: Vec<TermId> = Vec::new();
         let mut tail_var: Option<TermId> = None;
         for &e in effects {
             match self.get_term(e) {
                 Term::Var(Var::Global(_)) if tail_var.is_none() => {
                     tail_var = Some(e);
                 }
-                _ => labels.push(e),
+                Term::Fn { functor, .. }
+                    if Some(*functor) == absent_sym
+                        || Some(*functor) == present_sym =>
+                {
+                    // Pre-built EffectExpression atom (WI-327 `-E` →
+                    // `absent(E)`, or any prior `present(E)` wrapper).
+                    // Keep as-is.
+                    atoms.push(e);
+                }
+                _ => {
+                    // Bare label — wrap in present().
+                    let wrapped = self.make_effect_expression_present(e);
+                    atoms.push(wrapped);
+                }
             }
         }
         // Canonical ordering: sort by type_display_name, then dedup.
-        labels.sort_by_cached_key(|&t| crate::kb::typing::type_display_name(self, t));
-        labels.dedup();
+        atoms.sort_by_cached_key(|&t| crate::kb::typing::type_display_name(self, t));
+        atoms.dedup();
 
-        // Right-fold: tail first, then wrap each label in present() and
-        // merge() walking back through the sorted list.
+        // Right-fold: tail first, then merge() walking back through the
+        // sorted atom list.
         let mut acc = match tail_var {
             Some(tail) => self.make_effect_expression_open(tail),
             None => self.make_effect_expression_empty_row(),
         };
-        for &label in labels.iter().rev() {
-            let p = self.make_effect_expression_present(label);
-            acc = self.make_effect_expression_merge(p, acc);
+        for &atom in atoms.iter().rev() {
+            acc = self.make_effect_expression_merge(atom, acc);
         }
         self.make_effects_rows_type(acc)
     }

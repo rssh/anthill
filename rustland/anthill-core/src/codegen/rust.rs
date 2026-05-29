@@ -359,6 +359,10 @@ impl<'a> RustCodegen<'a> {
             // WI-302: value-in-type (value-dependent) has no direct Rust type;
             // emit unit as a placeholder. (Codegen of dependent types is unsupported.)
             TypeExpr::Denoted(_) => "()".to_owned(),
+            // WI-327: `-E` absence-form. Effect-position-only construct;
+            // codegen of effect rows is not implemented, so emit `()`
+            // identically to Denoted/effect-bearing arrows.
+            TypeExpr::EffectAbsent(_) => "()".to_owned(),
         }
     }
 
@@ -418,6 +422,7 @@ impl<'a> RustCodegen<'a> {
                 format!("fn({}) -> {ret}", param_types.join(", "))
             }
             TypeExpr::Denoted(_) => "()".to_owned(),
+            TypeExpr::EffectAbsent(_) => "()".to_owned(),
         }
     }
 
@@ -1262,6 +1267,8 @@ fn analyze_effects(effects: &[Effect], symbols: &SymbolTable, type_params: &[Str
             TypeExpr::Tuple(_) => {}
             TypeExpr::Arrow { .. } => {}
             TypeExpr::Denoted(_) => {}
+            // WI-327: `-E` doesn't contribute Modify/Error analysis.
+            TypeExpr::EffectAbsent(_) => {}
         }
     }
 
@@ -1304,6 +1311,7 @@ fn should_collapse_self(info: &SortInfo, symbols: &SymbolTable) -> bool {
             TypeExpr::Tuple(_) => "Tuple".to_owned(),
             TypeExpr::Arrow { .. } => "Fn".to_owned(),
             TypeExpr::Denoted(_) => "Denoted".to_owned(),
+            TypeExpr::EffectAbsent(_) => "EffectAbsent".to_owned(),
         };
 
         if first_type != *param_name {
@@ -1382,6 +1390,7 @@ fn type_expr_name(symbols: &SymbolTable, ty: &TypeExpr) -> String {
         TypeExpr::Tuple(_) => "Tuple".to_owned(),
         TypeExpr::Arrow { .. } => "Fn".to_owned(),
         TypeExpr::Denoted(_) => "Denoted".to_owned(),
+        TypeExpr::EffectAbsent(_) => "EffectAbsent".to_owned(),
     }
 }
 

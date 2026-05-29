@@ -2890,6 +2890,172 @@ sort Host {
         "printer output should mention the effects field; got `{}`", printed);
 }
 
+// ── WI-327 EffectExpression surface grammar ─────────────────────────────
+//
+// Adds `+E` (explicit presence sugar), `-E` (absence / lacks-constraint),
+// and `merge(E1, …, En)` (sugar for braced set form) to the effects
+// surface grammar (proposal 045 §3, §Phase 2). The bare `E` form keeps
+// its meaning; `+E` lowers identically; `-E` produces an `absent(E)`
+// EffectExpression atom; `merge(...)` flattens like a braced set.
+
+/// WI-327: `+E` parses and is structurally identical to bare `E`.
+#[test]
+fn parse_effect_presence_lowers_like_bare() {
+    let preamble = r#"
+sort Modify
+  sort T = ?
+  entity Modify(target: T)
+end
+sort Host
+  entity host
+"#;
+    let source_bare = format!("{preamble}\n  operation foo() -> Int effects Modify[host]\nend\n");
+    let source_plus = format!("{preamble}\n  operation foo() -> Int effects +Modify[host]\nend\n");
+    let parsed_bare = parse::parse(&source_bare).expect("bare parse failed");
+    let parsed_plus = parse::parse(&source_plus).expect("`+E` parse failed");
+
+    let mut kb_bare = KnowledgeBase::new();
+    load::register_prelude(&mut kb_bare);
+    load::load(&mut kb_bare, &parsed_bare, &NullResolver).expect("bare load failed");
+
+    let mut kb_plus = KnowledgeBase::new();
+    load::register_prelude(&mut kb_plus);
+    load::load(&mut kb_plus, &parsed_plus, &NullResolver).expect("`+E` load failed");
+
+    // Build the canonical effects rows from the same input set in both
+    // KBs; they should match the post-load operation's effects.
+    let kb_sym_bare = find_operation_info(&mut kb_bare, "foo");
+    let kb_sym_plus = find_operation_info(&mut kb_plus, "foo");
+
+    let eff_bare = named_arg(&kb_bare, kb_sym_bare, "effects");
+    let eff_plus = named_arg(&kb_plus, kb_sym_plus, "effects");
+
+    // Cross-KB structural equivalence (TermIds aren't comparable across
+    // KBs, so check the head functor is `cons` and the head label name
+    // matches).
+    fn first_label_name(kb: &KnowledgeBase, eff_list: anthill_core::kb::term::TermId) -> String {
+        // OperationInfo.effects is still a cons-list at the reflect-side
+        // (the canonical effects_rows lives in the arrow.effects path).
+        match kb.get_term(eff_list) {
+            Term::Fn { functor, named_args, .. } if kb.resolve_sym(*functor) == "cons" => {
+                let head = named_args.iter()
+                    .find(|(s, _)| kb.resolve_sym(*s) == "head")
+                    .map(|(_, v)| *v).expect("cons.head");
+                // head is the effect term — parameterized(Modify, [c = ...]) etc.
+                let base = named_arg(kb, head, "base");
+                let name_tid = named_arg(kb, base, "name");
+                match kb.get_term(name_tid) {
+                    Term::Ref(sym) => kb.resolve_sym(*sym).to_owned(),
+                    _ => "?".to_owned(),
+                }
+            }
+            _ => "?".to_owned(),
+        }
+    }
+
+    let name_bare = first_label_name(&kb_bare, eff_bare);
+    let name_plus = first_label_name(&kb_plus, eff_plus);
+    assert_eq!(name_bare, name_plus,
+        "`effects +E` should lower identically to `effects E`");
+    assert_eq!(name_bare, "Modify",
+        "expected the effect to be Modify; got `{}`", name_bare);
+}
+
+/// WI-327: `-E` parses and lowers to an `absent(E)` atom inside the
+/// canonical effects_rows.
+#[test]
+fn parse_effect_absence_lowers_to_absent_atom() {
+    let source = r#"
+sort Error
+  entity Error
+end
+sort Host
+  entity host
+  operation foo() -> Int effects -Error
+end
+"#;
+    let parsed = parse::parse(source).expect("parse failed");
+    let mut kb = KnowledgeBase::new();
+    load::register_prelude(&mut kb);
+    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+
+    // The reflect-side effects list still uses cons. Walk it and verify
+    // the head element is an `absent(...)` EffectExpression atom.
+    let foo_op = find_operation_info(&mut kb, "foo");
+    let eff_list = named_arg(&kb, foo_op, "effects");
+    let head = match kb.get_term(eff_list) {
+        Term::Fn { functor, named_args, .. } if kb.resolve_sym(*functor) == "cons" => {
+            named_args.iter()
+                .find(|(s, _)| kb.resolve_sym(*s) == "head")
+                .map(|(_, v)| *v).expect("cons.head")
+        }
+        other => panic!("expected cons head, got {:?}", other),
+    };
+    let head_functor = match kb.get_term(head) {
+        Term::Fn { functor, .. } => kb.resolve_sym(*functor).to_owned(),
+        other => panic!("expected Fn head, got {:?}", other),
+    };
+    assert_eq!(head_functor, "absent",
+        "`-E` should lower to an `absent(...)` atom; got `{}`", head_functor);
+}
+
+/// WI-327: `merge(E1, E2)` flattens identically to the braced-set form.
+#[test]
+fn parse_effect_merge_lowers_like_braced_set() {
+    let preamble = r#"
+sort Modify
+  sort T = ?
+  entity Modify(target: T)
+end
+sort Reads
+  sort T = ?
+  entity Reads(target: T)
+end
+sort Host
+  entity host
+"#;
+    let source_merge = format!("{preamble}\n  operation foo() -> Int effects merge(Modify[host], Reads[host])\nend\n");
+    let source_braced = format!("{preamble}\n  operation foo() -> Int effects {{Modify[host], Reads[host]}}\nend\n");
+    let parsed_merge = parse::parse(&source_merge).expect("merge parse failed");
+    let parsed_braced = parse::parse(&source_braced).expect("braced parse failed");
+
+    let mut kb_merge = KnowledgeBase::new();
+    load::register_prelude(&mut kb_merge);
+    load::load(&mut kb_merge, &parsed_merge, &NullResolver).expect("merge load failed");
+
+    let mut kb_braced = KnowledgeBase::new();
+    load::register_prelude(&mut kb_braced);
+    load::load(&mut kb_braced, &parsed_braced, &NullResolver).expect("braced load failed");
+
+    // Count cons cells in both effects lists — should be 2 each.
+    fn count_cons(kb: &KnowledgeBase, tid: anthill_core::kb::term::TermId) -> usize {
+        let mut node = tid;
+        let mut n = 0;
+        loop {
+            match kb.get_term(node) {
+                Term::Fn { functor, named_args, .. } if kb.resolve_sym(*functor) == "cons" => {
+                    n += 1;
+                    let tail = named_args.iter()
+                        .find(|(s, _)| kb.resolve_sym(*s) == "tail")
+                        .map(|(_, v)| *v).expect("cons.tail");
+                    node = tail;
+                }
+                _ => return n,
+            }
+        }
+    }
+
+    let op_merge = find_operation_info(&mut kb_merge, "foo");
+    let op_braced = find_operation_info(&mut kb_braced, "foo");
+    let eff_merge = named_arg(&kb_merge, op_merge, "effects");
+    let eff_braced = named_arg(&kb_braced, op_braced, "effects");
+
+    assert_eq!(count_cons(&kb_merge, eff_merge), 2,
+        "merge(E1, E2) should flatten to 2 effects");
+    assert_eq!(count_cons(&kb_braced, eff_braced), 2,
+        "braced {{E1, E2}} should produce 2 effects");
+}
+
 #[test]
 fn parse_arrow_type_nullary() {
     let source = "operation delay(f: () -> A) -> A\n";

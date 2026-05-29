@@ -748,6 +748,8 @@ fn type_expr_base_name(parse_sym: &crate::intern::SymbolTable, ty: &TypeExpr) ->
         TypeExpr::Arrow { effects, .. } if !effects.is_empty() => "arrow_effect".to_owned(),
         TypeExpr::Arrow { .. } => "arrow".to_owned(),
         TypeExpr::Denoted(_) => "denoted".to_owned(),
+        // WI-327: nested base name peeks past the absence wrapper.
+        TypeExpr::EffectAbsent(inner) => type_expr_base_name(parse_sym, inner),
     }
 }
 
@@ -898,6 +900,13 @@ fn build_instantiation_term(
                 named_args: SmallVec::new(),
             })
         }
+        // WI-327: instantiation-term position for `-E` is not yet used
+        // by any caller (absence forms only appear in effects positions,
+        // which take the separate make_arrow_type path). Build a
+        // placeholder so the match is total; if a caller ever lands a
+        // `-E` here it'll surface as a malformed-name binding rather
+        // than a panic.
+        TypeExpr::EffectAbsent(_) => kb.make_name_term("?absent"),
     }
 }
 
@@ -5311,6 +5320,17 @@ impl<'a> Loader<'a> {
                 // faithful occurrence form lands with the effects→occurrences change.
                 let value_term = self.convert_term(*t);
                 self.kb.make_denoted(value_term)
+            }
+            // WI-327: `-E` lowers to the `absent(E)` EffectExpression atom.
+            // Only meaningful in effects positions — `build_canonical_effects_
+            // rows` recognizes the wrapper and threads it through the
+            // canonical row form. In any other position the canonicalizer
+            // never sees the atom, so the wrapped term behaves like an
+            // opaque tag in the diagnostics path; the typer treats it as
+            // a non-label entry.
+            TypeExpr::EffectAbsent(inner) => {
+                let inner_term = self.type_expr_to_term(inner);
+                self.kb.make_effect_expression_absent(inner_term)
             }
         }
     }

@@ -175,6 +175,17 @@ pub enum TypeExpr {
     /// `denoted(value: <occurrence>)` by building the value's occurrence via
     /// `convert_expr_term`. Mirrors reflect `Type.denoted(value: NodeOccurrence)`.
     Denoted(TermId),
+    /// WI-327: `-E` absence / lacks-constraint surface form (proposal 045
+    /// §3, §Phase 2). Carries the inner effect TypeExpr. The loader
+    /// lowers `EffectAbsent(t)` into the `absent(t)` `EffectExpression`
+    /// builder; canonicalization preserves the wrapper so v1b row
+    /// unification (the `_a_absent` slot in `decompose_effect_row`) can
+    /// consume it.
+    ///
+    /// Only meaningful inside an effect-clause position. Other positions
+    /// that see this variant should reject — the converter places it
+    /// only in `TypeExpr::Arrow.effects` and `Operation.effects`.
+    EffectAbsent(Box<TypeExpr>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

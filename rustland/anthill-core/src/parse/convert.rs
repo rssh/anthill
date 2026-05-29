@@ -459,6 +459,38 @@ impl<'a> Converter<'a> {
                 // (`Vector[Int, 3]`) is value-in-type → denoted(value).
                 TypeExpr::Denoted(self.convert_term(node))
             }
+            // WI-327: `+E` — explicit presence sugar. Presence is the
+            // default for bare labels, so unwrap to the inner.
+            "effect_presence" => {
+                let inner = self.field(node, "effect")
+                    .map(|n| self.convert_type(n))
+                    .unwrap_or_else(|| {
+                        self.err("effect_presence missing inner effect", node);
+                        let sym = self.intern("?");
+                        TypeExpr::Simple(Name::simple(sym, self.span(node)))
+                    });
+                inner
+            }
+            // WI-327: `-E` — absence / lacks-constraint. Wrap inner in
+            // EffectAbsent; the loader lowers to make_effect_expression_
+            // absent(...).
+            "effect_absence" => {
+                let inner = self.field(node, "effect")
+                    .map(|n| self.convert_type(n))
+                    .unwrap_or_else(|| {
+                        self.err("effect_absence missing inner effect", node);
+                        let sym = self.intern("?");
+                        TypeExpr::Simple(Name::simple(sym, self.span(node)))
+                    });
+                TypeExpr::EffectAbsent(Box::new(inner))
+            }
+            // WI-327: `merge(E1, …, En)` should not reach this single-
+            // TypeExpr return path — merge flattens into the parent
+            // effects vec at the effects_clause / arrow-effects walker.
+            // If it does reach here, the caller used merge in a single-
+            // type context (not inside an effects collection); fall
+            // through to the error arm rather than silently lose the
+            // children.
             _ => {
                 self.err(format!("unexpected type node: {}", node.kind()), node);
                 let sym = self.intern("?");
@@ -1663,13 +1695,49 @@ impl<'a> Converter<'a> {
         // empty Vec. `_effect_set` is a hidden production, so its
         // delimiters (`{`, `,`, `}`) inherit the `effect` field name —
         // skip the anonymous tokens and only keep the type-kind nodes.
-        let effects: Vec<TypeExpr> = self.fields_by_name(node, "effect")
-            .into_iter()
-            .filter(|n| n.is_named())
-            .map(|n| self.convert_type(n))
-            .collect();
+        //
+        // WI-327: route through [`convert_effect_into`] so `merge(…)`
+        // flattens into multiple TypeExpr entries and `-E` lowers to
+        // `EffectAbsent`.
+        let mut effect_items: Vec<Effect> = Vec::new();
+        for n in self.fields_by_name(node, "effect") {
+            if !n.is_named() {
+                continue;
+            }
+            self.convert_effect_into(n, &mut effect_items);
+        }
+        let effects: Vec<TypeExpr> =
+            effect_items.into_iter().map(|e| e.type_expr).collect();
 
         TypeExpr::Arrow { params, return_type, effects }
+    }
+
+    /// WI-327: lower one effect-position CST node into one or more
+    /// [`Effect`] entries. Bare label / variable / application / presence /
+    /// absence forms append a single entry; `effect_merge` recurses into
+    /// each child so a nested `merge(merge(A, B), C)` flattens to three
+    /// entries.
+    fn convert_effect_into(&mut self, node: Node, out: &mut Vec<Effect>) {
+        match node.kind() {
+            "effect_merge" => {
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    self.convert_effect_into(child, out);
+                }
+            }
+            // Single-entry forms — direct convert_type covers each.
+            "simple_type"
+            | "application"
+            | "variable_term"
+            | "effect_presence"
+            | "effect_absence" => {
+                out.push(Effect { type_expr: self.convert_type(node) });
+            }
+            _ => {
+                // Unknown node — skip silently (mirrors prior behavior
+                // for unexpected children).
+            }
+        }
     }
 
     // ── Visibility ──────────────────────────────────────────────
@@ -2095,12 +2163,7 @@ impl<'a> Converter<'a> {
                     "effects_clause" => {
                         let mut cursor2 = child.walk();
                         for type_child in child.named_children(&mut cursor2) {
-                            match type_child.kind() {
-                                "simple_type" | "application" | "variable_term" => {
-                                    effects.push(Effect { type_expr: self.convert_type(type_child) });
-                                }
-                                _ => {}
-                            }
+                            self.convert_effect_into(type_child, &mut effects);
                         }
                     }
                     _ => {}
