@@ -182,7 +182,7 @@ fn effect_functor_sym(kb: &KnowledgeBase, short: &str) -> Option<Symbol> {
 /// A `TypeChild` as a non-borrowing [`ViewItem`]: ground → `Term`, poisoned →
 /// `Node` (a cheap `Rc` clone). Neither variant borrows from `child`, so the
 /// returned item is free of the caller's borrow.
-fn type_child_view_item<'a>(child: &TypeChild) -> ViewItem<'a> {
+pub(crate) fn type_child_view_item<'a>(child: &TypeChild) -> ViewItem<'a> {
     match child {
         TypeChild::Ground(t) => ViewItem::Term(*t),
         TypeChild::Node(rc) => ViewItem::Node(Rc::clone(rc)),

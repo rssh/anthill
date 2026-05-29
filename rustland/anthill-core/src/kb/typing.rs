@@ -15,7 +15,7 @@ use super::node_occurrence::{
     Expr, MatchBranch, NodeKind, NodeOccurrence, TypeChild, TypeNode,
 };
 use super::persist_subst::BindValue;
-use super::term_view::{TermIdView, TermView, ViewHead, ViewItem};
+use super::term_view::{type_child_view_item, TermIdView, TermView, ViewHead, ViewItem};
 use super::{KnowledgeBase, SortKind};
 use crate::eval::value::Value;
 use crate::intern::Symbol;
@@ -5514,12 +5514,11 @@ fn view_item_value(item: &ViewItem) -> Value {
 }
 
 /// A [`TypeChild`] as an owned [`Value`]: ground → `Value::Term`, poisoned →
-/// `Value::Node` (a cheap `Rc` clone).
+/// `Value::Node`. Routed through [`type_child_view_item`] so the `TypeChild`
+/// carrier mapping lives in exactly one place (the view layer), not duplicated
+/// here — drift between the two would mis-read a child's carrier.
 fn type_child_to_value(child: &TypeChild) -> Value {
-    match child {
-        TypeChild::Ground(t) => Value::Term(*t),
-        TypeChild::Node(rc) => Value::Node(Rc::clone(rc)),
-    }
+    view_item_value(&type_child_view_item(child))
 }
 
 /// WI-342 P3: resolve a view through the substitution to a `Value` (the
