@@ -5805,21 +5805,105 @@ pub fn types_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId
 /// stdlib `Function[A, B, E]` (in either order) — they denote the same
 /// callable type. Decomposes both via [`arrow_parts`] (which yields `None`
 /// for a non-`Function` parameterized type, so `arrow` vs `List[T]` stays
-/// incompatible) and checks param + result compatibility. (WI-289)
+/// incompatible), checks contravariant param + covariant result compat,
+/// and (WI-332) covariant effects via [`subtype_effect_rows`] when both
+/// sides explicitly carry an effects field. Original WI-289.
 fn arrow_function_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) -> bool {
-    match (arrow_parts(kb, actual), arrow_parts(kb, expected)) {
-        (Some((a_param, a_result, _)), Some((b_param, b_result, _))) => {
-            // Param is contravariant (expected param <: actual param) and
-            // result covariant — matching `arrow_compatible`. Effects are
-            // not compared here, also as in `arrow_compatible` (effect
-            // discharge is checked separately on the operation row).
-            let params_ok = match (a_param, b_param) {
-                (Some(ap), Some(bp)) => types_compatible(kb, bp, ap),
-                _ => true,
-            };
-            params_ok && types_compatible(kb, a_result, b_result)
+    let (a_param, a_result, _) = match arrow_parts(kb, actual) {
+        Some(parts) => parts,
+        None => return false,
+    };
+    let (b_param, b_result, _) = match arrow_parts(kb, expected) {
+        Some(parts) => parts,
+        None => return false,
+    };
+
+    // Param is contravariant (expected param <: actual param), result
+    // covariant — matching `arrow_compatible`. A missing param on either
+    // side (bare `Function` without an `A` binding, polymorphic) is treated
+    // as unconstrained, accepting.
+    let params_ok = match (a_param, b_param) {
+        (Some(ap), Some(bp)) => types_compatible(kb, bp, ap),
+        _ => true,
+    };
+    if !params_ok {
+        return false;
+    }
+    if !types_compatible(kb, a_result, b_result) {
+        return false;
+    }
+
+    // WI-332: covariant effects via [`subtype_effect_rows`], consistent
+    // with `arrow_compatible`. Pre-WI-332 this site discarded effects
+    // entirely, so the same denotational type written as the typer's
+    // `arrow(Int, Int, {ReadIO})` and the stdlib `Function[A=Int, B=Int,
+    // E=…]` shorthand could give opposite subtype answers — the arrow
+    // form went through `arrow_compatible` (effects checked) while the
+    // Function form landed here (effects discarded).
+    //
+    // **Missing E** is treated symmetrically with missing A: omitting the
+    // binding entirely means *polymorphic* (accept any), not *empty*. So
+    // `Function[A, B]` (no E binding) is a callable type whose effects
+    // are unconstrained, and an effectful actual subtypes it. The
+    // explicit `Function[A=…, B=…, E={}]` form retains the closed-empty
+    // semantic and rejects effectful actuals (regression-tested below).
+    // The arrow side always synthesizes an `effects` field (via
+    // `make_arrow_type` and `build_canonical_effects_rows`), so its None
+    // arm is defensive only.
+    let actual_effects_field = arrow_effects_field(kb, actual);
+    let expected_effects_field = arrow_effects_field(kb, expected);
+    match (actual_effects_field, expected_effects_field) {
+        // Either side polymorphic in E → accept (matches the
+        // missing-param convention above).
+        (None, _) | (_, None) => true,
+        (Some(ae), Some(ee)) => {
+            let mut local_subst = Substitution::new();
+            subtype_effect_rows(kb, &mut local_subst, ae, ee)
         }
-        _ => false,
+    }
+}
+
+/// Extract the raw effects-row Type term from a callable type (either an
+/// `arrow(...)` or a `Function[A, B, E]`-shaped parameterized). Returns
+/// `None` when the side omits the field (Function without an explicit `E`
+/// binding) — the caller uses that to distinguish *polymorphic* (no
+/// constraint) from *explicit closed empty row*.
+///
+/// Stays in the raw `effects_rows`-or-legacy-List shape; the caller
+/// normalizes via [`KnowledgeBase::build_canonical_effects_rows`] only
+/// when both sides are explicitly bound.
+fn arrow_effects_field(kb: &mut KnowledgeBase, ty: TermId) -> Option<TermId> {
+    match type_functor_name(kb, ty) {
+        Some("arrow") => {
+            let named_args = match kb.get_term(ty) {
+                Term::Fn { named_args, .. } => named_args.clone(),
+                _ => return None,
+            };
+            // arrow.effects field is always `effects_rows(EffectExpression)`
+            // post-WI-307; pass it through directly.
+            get_named_arg(kb, &named_args, "effects")
+        }
+        Some("parameterized") if is_function_type(kb, ty) => {
+            // Function.E binding may be either `effects_rows(...)` (new)
+            // or a legacy `List[Type]` (until the stdlib schema sync of
+            // WI-331). Normalize the legacy shape via the same flatten +
+            // canonicalize path arrow_parts uses; pass through the
+            // canonical shape directly.
+            let e_value = extract_type_param(kb, ty, "E")?;
+            let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.Type.effects_rows");
+            let is_effects_rows = match (effects_rows_sym, kb.get_term(e_value)) {
+                (Some(er), Term::Fn { functor, .. }) => *functor == er,
+                _ => false,
+            };
+            if is_effects_rows {
+                Some(e_value)
+            } else {
+                // Legacy List[Type] — flatten and re-canonicalize.
+                let flat = list_to_vec(kb, e_value);
+                Some(kb.build_canonical_effects_rows(&flat))
+            }
+        }
+        _ => None,
     }
 }
 

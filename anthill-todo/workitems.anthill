@@ -2460,7 +2460,7 @@ fact WorkItem(
   description: "Code-review WI-326 F3: arrow_function_compatible discards effects while arrow_compatible (post-WI-326) checks them via row subtyping. PROBLEM: types_compatible(arrow(Int,Int,{ReadIO}), parameterized Function[A=Int,B=Int]) routes to arrow_function_compatible (typing.rs ~5664) which destructures (Some((a_param, a_result, _)), Some((b_param, b_result, _))) — discards effects via _, returns true. The semantically-identical types_compatible(arrow(Int,Int,{ReadIO}), arrow(Int,Int,{})) goes through arrow_compatible and is correctly rejected by subtype_effect_rows. Same denotational type written in two syntaxes (typer's arrow shorthand vs stdlib Function[A,B,E] alias) gives opposite subtype answers. Doc comment at ~5668-5671 ('Effects are not compared here, also as in arrow_compatible') is now stale. SCOPE: extend arrow_function_compatible to invoke subtype_effect_rows on the effects field of the Function[E] parameterized side (extract via arrow_parts which returns the flattened Vec — use effects_rows_to_flat_list canonicalization or reconstruct an effects_rows term first); update the docstring. Confirm both directions (arrow vs Function[E], Function[E] vs arrow) get consistent treatment. ACCEPTANCE: new test 'subtype_arrow_function_path_effects_consistent' demonstrates arrow(int,int,{Reads}) NOT <: Function[A=Int,B=Int,E=List[]] (was true pre-fix; should be false). Full cargo-test green.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-326"],
-  status: Open)
+  status: Claimed(agent: "claude", since: "2026-05-29T04:50:32Z"))
 
 fact WorkItem(
   id: "WI-333",

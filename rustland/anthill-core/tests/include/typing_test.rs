@@ -2524,6 +2524,133 @@ fn subtype_arrow_closed_le_open() {
         "closed actual <: open expected — expected's tail absorbs actual's labels");
 }
 
+// ── WI-332 arrow-vs-Function path effects consistency ──────────────────
+//
+// Pre-WI-332 arrow_function_compatible discarded effects entirely while
+// arrow_compatible (post-WI-326) compared them via row subtyping. So the
+// same denotational type (arrow shorthand vs Function[A,B,E] alias)
+// got different sub answers depending on syntactic form.
+
+/// WI-332: an arrow with effects must NOT be a subtype of a Function with
+/// fewer effects (closed empty E). Pre-WI-332 this was incorrectly
+/// accepted because arrow_function_compatible discarded effects.
+#[test]
+fn subtype_arrow_with_effect_not_le_function_no_effect() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let reads_sym = kb.intern("Reads");
+    let reads = kb.make_sort_ref(reads_sym);
+
+    // arrow(Int, Int, {Reads})
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[reads]);
+
+    // Function[A=Int, B=Int, E=effects_rows(empty_row)] — closed empty
+    // effects (no Reads). Explicit binding distinguishes this from the
+    // "missing E = polymorphic" case (see below).
+    let fn_sym = kb.resolve_symbol("anthill.prelude.Function");
+    let fn_base = kb.make_sort_ref(fn_sym);
+    let a_sym = kb.intern("A");
+    let b_sym = kb.intern("B");
+    let e_sym = kb.intern("E");
+    let empty_effects_rows = kb.build_canonical_effects_rows(&[]);
+    let expected = kb.make_parameterized_type(
+        fn_base,
+        &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, empty_effects_rows)],
+    );
+
+    assert!(!types_compatible(&mut kb, actual, expected),
+        "arrow(Int, Int, {{Reads}}) NOT <: Function[A=Int, B=Int, E={{}}] — \
+         actual has Reads, expected closed-empty can't accept");
+}
+
+/// WI-332: an arrow with empty effects IS a subtype of a Function with
+/// effects (covariant subset). Already worked pre-WI-332 (effects
+/// ignored), now works for the right reason (closed empty ⊆ any closed).
+#[test]
+fn subtype_arrow_pure_le_function_with_effects() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let reads_sym = kb.intern("Reads");
+    let reads = kb.make_sort_ref(reads_sym);
+
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[]);
+
+    let fn_sym = kb.resolve_symbol("anthill.prelude.Function");
+    let fn_base = kb.make_sort_ref(fn_sym);
+    let a_sym = kb.intern("A");
+    let b_sym = kb.intern("B");
+    let e_sym = kb.intern("E");
+    let effects_rows = kb.build_canonical_effects_rows(&[reads]);
+    let expected = kb.make_parameterized_type(
+        fn_base,
+        &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, effects_rows)],
+    );
+
+    assert!(types_compatible(&mut kb, actual, expected),
+        "arrow(Int, Int, {{}}) <: Function[A=Int, B=Int, E={{Reads}}] — \
+         pure (empty) is a subset of any closed effect set");
+}
+
+/// WI-332: Function with NO E binding is polymorphic in effects — accepts
+/// effectful actuals (matches the missing-A convention). Distinguishes
+/// `Function[Int, Int]` (polymorphic E, accept anything) from
+/// `Function[A=Int, B=Int, E={}]` (explicit closed empty, reject
+/// effectful). Without this distinction, common user code like
+/// `operation use(f: Function[Int, Int]) = f(5)` would regress against
+/// effectful lambda actuals that worked pre-WI-332.
+#[test]
+fn subtype_arrow_with_effect_le_function_no_E_binding_polymorphic() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let reads_sym = kb.intern("Reads");
+    let reads = kb.make_sort_ref(reads_sym);
+
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[reads]);
+
+    let fn_sym = kb.resolve_symbol("anthill.prelude.Function");
+    let fn_base = kb.make_sort_ref(fn_sym);
+    let a_sym = kb.intern("A");
+    let b_sym = kb.intern("B");
+    // Function[A=Int, B=Int] — NO E binding, polymorphic in effects.
+    let expected = kb.make_parameterized_type(
+        fn_base,
+        &[(a_sym, int_ty), (b_sym, int_ty)],
+    );
+
+    assert!(types_compatible(&mut kb, actual, expected),
+        "arrow(Int, Int, {{Reads}}) <: Function[A=Int, B=Int] — missing \
+         E binding is polymorphic in effects, accepts any actual");
+}
+
+/// WI-332: Function-vs-arrow direction (mirrors the arrow-vs-Function
+/// direction). Pre-WI-332 effects discarded; post-WI-332 row sub honored.
+#[test]
+fn subtype_function_with_effect_not_le_arrow_no_effect() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let reads_sym = kb.intern("Reads");
+    let reads = kb.make_sort_ref(reads_sym);
+
+    // Function[A=Int, B=Int, E={Reads}]
+    let fn_sym = kb.resolve_symbol("anthill.prelude.Function");
+    let fn_base = kb.make_sort_ref(fn_sym);
+    let a_sym = kb.intern("A");
+    let b_sym = kb.intern("B");
+    let e_sym = kb.intern("E");
+    let effects_rows = kb.build_canonical_effects_rows(&[reads]);
+    let actual = kb.make_parameterized_type(
+        fn_base,
+        &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, effects_rows)],
+    );
+
+    // arrow(Int, Int, {}) — closed empty
+    let expected = kb.make_arrow_type(int_ty, int_ty, &[]);
+
+    assert!(!types_compatible(&mut kb, actual, expected),
+        "Function[A=Int, B=Int, E={{Reads}}] NOT <: arrow(Int, Int, {{}}) — \
+         same denotational shape as arrow-vs-arrow rejection");
+}
+
 /// F1 regression (code-review): multi-actual-to-single-expected entity
 /// subtyping. Pre-WI-326 `arrow_compatible`'s effects loop was exists-
 /// quantified: `actual.iter().all(|ae| expected.iter().any(|ee| <:))`.
