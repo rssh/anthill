@@ -24,8 +24,7 @@
 //! insertion pass"); WI-227 commit 91578d2 for the IR emitter.
 
 
-use anthill_core::kb::term::Term;
-use anthill_core::kb::typing::get_named_arg;
+use anthill_core::kb::typing::{CallClass, ResolvedRequiresNode};
 use crate::common::interp_for;
 
 #[test]
@@ -35,6 +34,17 @@ fn pin_now_threads_conditional_tree_into_nested_construct_requirement() {
     // T = List[Int] — Pin-now resolves to EqList.eq with a
     // Conditional tree whose sole sub_resolution is the rustland's
     // `fact Eq[T = Int]` leaf (Int as the carrier).
+    //
+    // WI-325 made `List` itself declare `requires Eq[T]`, so the
+    // stdlib emits Eq.eq apply_within rewrites of its own; those
+    // collide with `Driver.drive`'s eq rewrite in the hash-consed
+    // `dispatch_rewrites` table (per `materialize_apply`'s synthetic
+    // `apply(fn=spec_op, args=nil)` key). The test now inspects the
+    // typer's per-occurrence CallClass directly — `resolved_tree`
+    // carries the same nested impl-sort structure
+    // `record_apply_within_concrete` would emit into the IR, so the
+    // WI-228 invariant ("tree is threaded into the rewrite") is
+    // verified at the source where it lives.
     let src = r#"
 namespace test.wi228.pin_now_tree
   import anthill.prelude.{Eq, List, Int, Bool}
@@ -54,160 +64,91 @@ end
     let interp = interp_for(src);
     let kb = interp.kb();
 
-    let eq_spec_sym = kb
-        .try_resolve_symbol("anthill.prelude.Eq.eq")
-        .expect("Eq.eq registered");
     let int_sym = kb
         .try_resolve_symbol("anthill.prelude.Int")
         .expect("Int registered");
     let impl_eq_sym = kb
         .try_resolve_symbol("test.wi228.pin_now_tree.EqList.eq")
         .expect("EqList.eq registered");
-    let aw_sym = kb
-        .try_resolve_symbol("anthill.reflect.Expr.apply_within")
-        .expect("apply_within in stdlib");
-    let cr_sym = kb
-        .try_resolve_symbol("anthill.reflect.Expr.construct_requirement")
-        .expect("construct_requirement in stdlib");
-    let nil_sym = kb
-        .try_resolve_symbol("anthill.prelude.List.nil")
-        .expect("List.nil in stdlib");
-    let cons_sym = kb
-        .try_resolve_symbol("anthill.prelude.List.cons")
-        .expect("List.cons in stdlib");
-
-    // Find Driver.drive's `eq()` call rewrite.
-    let mut rewritten_for_eq = None;
-    for (rewritten_tid, spec_sym) in kb.dispatch_origin_iter() {
-        if spec_sym == eq_spec_sym {
-            rewritten_for_eq = Some(rewritten_tid);
-        }
-    }
-    let rewritten_tid =
-        rewritten_for_eq.expect("eq(x, y) at T = List[Int] must be Pin-now-rewritten");
-
-    // apply_within(fn = Ref(EqList.eq), args = ?, requirements = ?)
-    let (functor, named_args) = match kb.get_term(rewritten_tid) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
-        other => panic!("rewritten term must be Fn; got {other:?}"),
-    };
-    assert_eq!(
-        functor, aw_sym,
-        "Pin-now to impl with `requires` must emit apply_within; got {}",
-        kb.qualified_name_of(functor)
-    );
-
-    let fn_tid = get_named_arg(kb, &named_args, "fn").expect("apply_within `fn`");
-    match kb.get_term(fn_tid) {
-        Term::Ref(s) => assert_eq!(
-            *s, impl_eq_sym,
-            "fn must Ref the impl op (EqList.eq); got Ref({})",
-            kb.qualified_name_of(*s)
-        ),
-        other => panic!("apply_within fn must be Ref(impl); got {other:?}"),
-    }
-
-    // WI-234 Model 1: requirements is a single-entry list containing
-    // the dispatching dict (the whole resolved tree, not just its
-    // sub-resolutions). Shape:
-    //   requirements = cons(
-    //     construct_requirement(EqList, [          -- the dispatching dict
-    //       construct_requirement(Int, [])         -- EqList's sole sub-instance
-    //     ]),
-    //     nil
-    //   )
     let eqlist_sym = kb
         .try_resolve_symbol("test.wi228.pin_now_tree.EqList")
         .expect("EqList sort registered");
+    let drive_sym = kb
+        .try_resolve_symbol("test.wi228.pin_now_tree.Driver.drive")
+        .expect("Driver.drive registered");
 
-    let reqs_tid = get_named_arg(kb, &named_args, "requirements").expect("requirements arg");
-    let (list_functor, list_named) = match kb.get_term(reqs_tid) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
-        other => panic!("requirements list must be Fn; got {other:?}"),
-    };
+    // Driver.drive's body has a single classified spec-op call (the
+    // `eq(x, y)`); collect every CallClass on that body and pick the
+    // ConcreteApplyWithin entry naming EqList.eq.
+    let body = kb.op_body_node(drive_sym).expect("Driver.drive has a body");
+    let mut classifications: Vec<CallClass> = Vec::new();
+    anthill_core::kb::node_occurrence::visit_classifications(body, &mut |_, c| {
+        classifications.push(c.clone());
+    });
+
+    let (fn_target_sym, callee_spec_sort, resolved_tree) = classifications
+        .iter()
+        .find_map(|c| match c {
+            CallClass::ConcreteApplyWithin {
+                fn_target_sym,
+                callee_spec_sort,
+                resolved_tree,
+                ..
+            } if *fn_target_sym == impl_eq_sym => Some((
+                *fn_target_sym,
+                *callee_spec_sort,
+                resolved_tree.clone(),
+            )),
+            _ => None,
+        })
+        .expect("Driver.drive's eq() must classify as ConcreteApplyWithin → EqList.eq");
+
     assert_eq!(
-        list_functor, cons_sym,
-        "single dispatching dict wrapped in cons; got {}",
-        kb.qualified_name_of(list_functor)
+        fn_target_sym, impl_eq_sym,
+        "fn_target_sym must be EqList.eq; got {}",
+        kb.qualified_name_of(fn_target_sym)
+    );
+    assert_eq!(
+        callee_spec_sort, eqlist_sym,
+        "callee_spec_sort must be EqList (the carrier sort); got {}",
+        kb.qualified_name_of(callee_spec_sort)
     );
 
-    // Tail = nil (single-entry list under Model 1).
-    let tail_tid = get_named_arg(kb, &list_named, "tail").expect("cons tail");
-    let tail_functor = match kb.get_term(tail_tid) {
-        Term::Fn { functor, .. } => *functor,
-        other => panic!("tail must be Fn; got {other:?}"),
-    };
-    assert_eq!(tail_functor, nil_sym, "single-entry list's tail must be nil");
-
-    // Head = construct_requirement(EqList, [<sub>]) — the dispatching
-    // dict for the callee, with EqList as the impl carrier.
-    let head_tid = get_named_arg(kb, &list_named, "head").expect("cons head");
-    let (head_functor, head_named) = match kb.get_term(head_tid) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
-        other => panic!("dispatching dict must be Fn; got {other:?}"),
+    // WI-228: the resolved_tree carries the full impl tree the IR
+    // emitter walks. Shape: Conditional { impl_sort = EqList,
+    // sub_resolutions = [Leaf { impl_sort = Int }] }.
+    let tree = resolved_tree
+        .expect("ConcreteApplyWithin for Pin-now Conditional must carry resolved_tree");
+    let (outer_impl_sort, sub_resolutions) = match tree {
+        ResolvedRequiresNode::Conditional { impl_sort, sub_resolutions, .. } => {
+            (impl_sort, sub_resolutions)
+        }
+        other => panic!(
+            "resolved_tree must be Conditional (EqList has a `requires` chain); \
+             got {other:?}"
+        ),
     };
     assert_eq!(
-        head_functor, cr_sym,
-        "Pin-now's dispatching dict must be construct_requirement; got {}",
-        kb.qualified_name_of(head_functor)
+        outer_impl_sort, eqlist_sym,
+        "outer impl_sort must be EqList; got {}",
+        kb.qualified_name_of(outer_impl_sort)
     );
-
-    let outer_impl_tid = get_named_arg(kb, &head_named, "impl_functor")
-        .expect("outer construct_requirement impl_functor");
-    let outer_impl_sym = match kb.get_term(outer_impl_tid) {
-        Term::Ref(s) | Term::Ident(s) => *s,
-        other => panic!("impl_functor must be a Ref; got {other:?}"),
-    };
     assert_eq!(
-        outer_impl_sym, eqlist_sym,
-        "outer dispatching dict carrier must be EqList; got {}",
-        kb.qualified_name_of(outer_impl_sym)
+        sub_resolutions.len(),
+        1,
+        "EqList has one require → tree has one sub_resolution"
     );
-
-    // Inner: EqList's sub_requires has one entry — the resolved Eq[T = Int]
-    // = Int (per the stdlib's `fact Eq[T = Int]`).
-    let outer_subreqs_tid = get_named_arg(kb, &head_named, "requirements")
-        .expect("outer construct_requirement requirements");
-    let (outer_subreqs_functor, outer_subreqs_named) = match kb.get_term(outer_subreqs_tid) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
-        other => panic!("outer sub-reqs must be Fn; got {other:?}"),
+    let inner_impl_sort = match &sub_resolutions[0] {
+        ResolvedRequiresNode::Leaf { impl_sort, .. } => *impl_sort,
+        ResolvedRequiresNode::Conditional { impl_sort, .. } => *impl_sort,
+        other => panic!(
+            "sub-resolution for Eq[T = Int] must be Leaf/Conditional naming Int; \
+             got {other:?}"
+        ),
     };
     assert_eq!(
-        outer_subreqs_functor, cons_sym,
-        "EqList has one require → its sub-reqs cons-list has one entry"
-    );
-    let inner_head_tid = get_named_arg(kb, &outer_subreqs_named, "head")
-        .expect("inner cons head");
-    let (inner_head_functor, inner_head_named) = match kb.get_term(inner_head_tid) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
-        other => panic!("inner head must be Fn; got {other:?}"),
-    };
-    assert_eq!(
-        inner_head_functor, cr_sym,
-        "sub-instance for Eq[T=Int] must be construct_requirement(Int, []); got {}",
-        kb.qualified_name_of(inner_head_functor)
-    );
-    let inner_impl_tid = get_named_arg(kb, &inner_head_named, "impl_functor")
-        .expect("inner construct_requirement impl_functor");
-    let inner_impl_sym = match kb.get_term(inner_impl_tid) {
-        Term::Ref(s) | Term::Ident(s) => *s,
-        other => panic!("inner impl_functor must be a Ref; got {other:?}"),
-    };
-    assert_eq!(
-        inner_impl_sym, int_sym,
+        inner_impl_sort, int_sym,
         "Eq[T = Int]'s carrier is Int (per stdlib's `fact Eq[T = Int]`); got {}",
-        kb.qualified_name_of(inner_impl_sym)
-    );
-
-    // Innermost requirements list = nil — Int has no transitive deps.
-    let innermost_tid = get_named_arg(kb, &inner_head_named, "requirements")
-        .expect("inner construct_requirement requirements arg");
-    let innermost_functor = match kb.get_term(innermost_tid) {
-        Term::Fn { functor, .. } => *functor,
-        other => panic!("innermost requirements must be Fn; got {other:?}"),
-    };
-    assert_eq!(
-        innermost_functor, nil_sym,
-        "Int has no requires; innermost requirements must be nil"
+        kb.qualified_name_of(inner_impl_sort)
     );
 }

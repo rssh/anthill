@@ -1748,8 +1748,14 @@ fn load_phase_inner(
     // with a `CallClass`; run the requirement-insertion pass to emit
     // the IR rewrites into `kb.dispatch_rewrites`. Skipping this call
     // would leave the IR in the typed-but-unelaborated state (useful
-    // for alternative codegen targets).
-    super::req_insertion::run(kb);
+    // for alternative codegen targets). WI-325: also returns any
+    // `MissingRequiresForSpecOp` diagnostics from `UnresolvedSpecOp`
+    // tags (typer-detected abstract spec-op calls without a covering
+    // `requires`); merged into the load-time error list.
+    let req_errors = super::req_insertion::run(kb);
+    for err in req_errors {
+        all_errors.push(err.to_load_error(kb));
+    }
     mark!("req_insertion::run");
     if all_errors.is_empty() {
         Ok((

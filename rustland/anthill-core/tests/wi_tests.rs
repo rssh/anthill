@@ -127,3 +127,6 @@ mod wi314_region_mask_test;
 
 #[path = "include/wi320_bridge_fact_test.rs"]
 mod wi320_bridge_fact_test;
+
+#[path = "include/wi325_missing_requires_test.rs"]
+mod wi325_missing_requires_test;

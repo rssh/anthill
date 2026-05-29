@@ -86,6 +86,21 @@ pub enum TypeError {
         op: Symbol,
         type_param: Symbol,
     },
+    /// WI-325: a spec-op call left at least one type parameter abstract
+    /// AND the enclosing operation's `requires` chain does not cover the
+    /// spec sort. Without a covering `requires`, the runtime has no impl
+    /// to dispatch to — so we name this at body-load time rather than at
+    /// the first call site that hits a fresh carrier. `spec_op_sym` is the
+    /// spec op (e.g. `anthill.prelude.Eq.eq`), `spec_sort_sym` is the spec
+    /// sort (e.g. `anthill.prelude.Eq`), and `abstract_params` lists the
+    /// spec's short type-param names the call left abstract — used to
+    /// suggest the exact `requires {spec}[{T = …}]` clause to add.
+    MissingRequiresForSpecOp {
+        span: Option<Span>,
+        spec_op_sym: Symbol,
+        spec_sort_sym: Symbol,
+        abstract_params: SmallVec<[Symbol; 2]>,
+    },
     /// Bottom or other post-elaboration expression seen by the surface
     /// typer — emitted only by `req_insertion`, never user-written.
     BottomExpr {
@@ -207,6 +222,23 @@ impl TypeError {
                     short_name_of(op_name),
                 )
             }
+            TypeError::MissingRequiresForSpecOp {
+                spec_op_sym, spec_sort_sym, abstract_params, ..
+            } => {
+                let op_qn = kb.qualified_name_of(*spec_op_sym);
+                let spec_qn = kb.qualified_name_of(*spec_sort_sym);
+                let spec_short = short_name_of(spec_qn);
+                let params_list: Vec<String> = abstract_params
+                    .iter()
+                    .map(|p| format!("{0} = …", kb.resolve_sym(*p)))
+                    .collect();
+                format!(
+                    "spec op `{}` called at abstract type — add `requires {}[{}]` to the enclosing sort, or specialize to a concrete carrier",
+                    op_qn,
+                    spec_short,
+                    params_list.join(", "),
+                )
+            }
             TypeError::BottomExpr { .. } => {
                 "bottom or post-elaboration expression in surface IR".to_string()
             }
@@ -231,6 +263,7 @@ impl TypeError {
             | TypeError::DispatchAmbiguous { span, .. }
             | TypeError::NoSuchTypeParam { span, .. }
             | TypeError::UnconstrainedTypeParam { span, .. }
+            | TypeError::MissingRequiresForSpecOp { span, .. }
             | TypeError::BottomExpr { span } => *span,
             TypeError::Other { span, .. } => *span,
             TypeError::NoParentSort { .. } => None,
@@ -336,6 +369,29 @@ impl TypeError {
                     entity_name: op_qn.to_string(),
                     field_name: "type_arg".to_string(),
                     expected_type: format!("a type for '{}'", kb.resolve_sym(*type_param)),
+                    actual_type: suggestion,
+                    span: self.span(kb),
+                }
+            }
+            TypeError::MissingRequiresForSpecOp {
+                spec_op_sym, spec_sort_sym, abstract_params, ..
+            } => {
+                let op_qn = kb.qualified_name_of(*spec_op_sym);
+                let spec_qn = kb.qualified_name_of(*spec_sort_sym);
+                let spec_short = short_name_of(spec_qn);
+                let params_list: Vec<String> = abstract_params
+                    .iter()
+                    .map(|p| format!("{0} = …", kb.resolve_sym(*p)))
+                    .collect();
+                let suggestion = format!(
+                    "missing `requires {}[{}]` on enclosing sort",
+                    spec_short,
+                    params_list.join(", "),
+                );
+                LoadError::TypeMismatch {
+                    entity_name: op_qn.to_string(),
+                    field_name: "requires".to_string(),
+                    expected_type: format!("`requires {}[…]` covering abstract type parameter", spec_short),
                     actual_type: suggestion,
                     span: self.span(kb),
                 }
@@ -2139,7 +2195,107 @@ fn check_apply_iter(
             );
             let enclosing_sort = env.enclosing_sort();
             match outcome {
-                DispatchOutcome::NoCandidates => {}
+                DispatchOutcome::NoCandidates => {
+                    // WI-325: distinguish concrete-binding NoCandidates
+                    // (legitimate pass-through — host builtin / spec-derived
+                    // rule may resolve at runtime) from abstract-binding
+                    // NoCandidates with no covering `requires` (unsafe —
+                    // dispatch will fail at first call site). Concrete:
+                    // leave untagged so the call stays as the spec op.
+                    // Abstract: tag the occurrence so `req_insertion::run`
+                    // can emit a `MissingRequiresForSpecOp` diagnostic.
+                    //
+                    // Gate on `spec_warrants_abstract_check`: stdlib specs
+                    // like `Map`, `List`, `Stream`, `Collection`, `Iteration`,
+                    // … deliberately have zero `fact Spec[…]` records —
+                    // they're host built-ins where the runtime resolves
+                    // operations directly. Abstract calls against such
+                    // specs are intentionally allowed (the `NoCandidates`
+                    // doc comment names them). User-defined specs (outside
+                    // the `anthill.*` namespace) without providers are NOT
+                    // host-builtin — they're the WI-324 'forgot to register
+                    // an impl' case and warrant the diagnostic. Stdlib
+                    // specs with at least one provider (Eq, Numeric, Ordered,
+                    // …) also warrant it — the spec_has_any_providers leg.
+                    //
+                    // Detection lives here because the per-call substitution
+                    // is still in scope; `req_insertion::run` only sees the
+                    // IR shape, not the typer's subst.
+                    //
+                    // Why we walk type_params directly instead of consuming
+                    // `sort_goal_from_subst`: `sort_goal_from_subst` only
+                    // emits a binding when `subst.resolve_with_term(vid)`
+                    // returns `Some` — but unification often binds the
+                    // *caller's* var to the spec's var (e.g. `Container.T
+                    // → Eq.T`), leaving the spec's var as the equivalence-
+                    // class root with no direct binding. Resolving the
+                    // spec's var then returns `None`, and the goal has zero
+                    // bindings even though `T` is plainly abstract. The
+                    // direct walk treats `None`-resolved AND
+                    // `Var`-resolved as abstract.
+                    //
+                    // Loader-inconsistency arms (the three former silent
+                    // `continue`s) now treat the param as abstract: if we
+                    // can't introspect the param's alias var, we can't
+                    // prove it's concrete either, so the conservative
+                    // outcome is to surface the diagnostic. This guards
+                    // against a future spec representation (e.g. denoted
+                    // / value-in-type params per WI-302) silently disabling
+                    // the WI-325 protection.
+                    if spec_warrants_abstract_check(kb, spec_sort) {
+                        let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+                        let mut abstract_params: SmallVec<[Symbol; 2]> = SmallVec::new();
+                        for short in kb.type_params_of_sort(spec_sort) {
+                            let short_qn = format!("{spec_qn}.{short}");
+                            let short_qn_sym = match kb.try_resolve_symbol(&short_qn) {
+                                Some(s) => s,
+                                None => {
+                                    // Loader inconsistency — qualified param
+                                    // name missing. Conservatively report.
+                                    abstract_params.push(kb.intern(&short));
+                                    continue;
+                                }
+                            };
+                            let alias_target = match resolve_sort_alias(kb, short_qn_sym) {
+                                Some(t) => t,
+                                None => {
+                                    // No SortAlias fact — can't introspect.
+                                    abstract_params.push(short_qn_sym);
+                                    continue;
+                                }
+                            };
+                            let vid = match kb.get_term(alias_target) {
+                                Term::Var(Var::Global(v)) => *v,
+                                _ => {
+                                    // Future-shape alias (denoted/value-
+                                    // dependent) — assume abstract.
+                                    abstract_params.push(short_qn_sym);
+                                    continue;
+                                }
+                            };
+                            let is_abstract = match subst.resolve_with_term(vid) {
+                                None => true,
+                                Some(bound) => is_type_param_value(kb, bound),
+                            };
+                            if is_abstract {
+                                abstract_params.push(short_qn_sym);
+                            }
+                        }
+                        if !abstract_params.is_empty() {
+                            classify(
+                                kb,
+                                occ,
+                                CallClass::UnresolvedSpecOp {
+                                    spec_op_sym: fn_sym,
+                                    spec_sort_sym: spec_sort,
+                                    abstract_params,
+                                    span,
+                                    enclosing_sort,
+                                },
+                            );
+                        }
+                    }
+                }
                 DispatchOutcome::Unique(impl_op_sym) => {
                     // WI-231: tag the call site. The requirement-
                     // insertion pass (`req_insertion::run`) reads the
@@ -2977,6 +3133,26 @@ pub enum CallClass {
         slot: usize,
         enclosing_sort: Option<Symbol>,
     },
+    /// WI-325: dispatch returned `NoCandidates` AND the call's per-call
+    /// substitution leaves at least one of the spec's type parameters
+    /// abstract (`is_type_param_value`). The typer detects the abstract
+    /// case here (where the subst is still in scope) and tags the
+    /// occurrence; `req_insertion::run` translates the tag into a
+    /// `MissingRequiresForSpecOp` error. Concrete-binding `NoCandidates`
+    /// is **not** classified — it remains a legitimate pass-through
+    /// (host builtin / spec-derived rule may resolve at runtime).
+    ///
+    /// `abstract_params` lists the spec's short type-param names
+    /// (e.g. `T`) that the call left abstract. `enclosing_sort` is
+    /// `Some(spec_sort_sym)` only for self-recursive calls inside the
+    /// spec's own body — `req_insertion::run` filters those out.
+    UnresolvedSpecOp {
+        spec_op_sym: Symbol,
+        spec_sort_sym: Symbol,
+        abstract_params: SmallVec<[Symbol; 2]>,
+        span: Option<Span>,
+        enclosing_sort: Option<Symbol>,
+    },
 }
 
 /// WI-210 — dispatch result for a spec-op call.
@@ -3333,6 +3509,62 @@ struct Candidate {
 /// and `Eq[T = Int]` (equality on Int values) are independent specs
 /// that happen to share the same spec sort; the presence of one in
 /// the KB must not gate dispatch of the other.
+/// WI-325 — true iff abstract-binding `NoCandidates` on this spec
+/// should fire the `MissingRequiresForSpecOp` diagnostic. Two cases
+/// warrant it:
+///
+/// 1. Spec has at least one declared provider (Eq, Numeric, Ordered,
+///    …): the user clearly intends per-carrier dispatch and forgot
+///    either the `requires` clause or to specialize the call.
+/// 2. Spec is user-defined (outside the stdlib `anthill.*` namespace
+///    prefix) and has zero providers: the WI-324 'forgot to register
+///    an impl' case. Without this leg, a user who defines `sort MySpec
+///    { … }` and calls a MySpec op on abstract T silently slips through
+///    just because no `fact MySpec[T = …]` has been written yet — the
+///    exact phantom WI-325 set out to eliminate.
+///
+/// Stdlib specs with no providers (Map, List, Stream, Collection,
+/// Iteration, IndexedSeq, Field, Lattice, BoundedLattice, Algebra, …)
+/// are host-builtin: the runtime resolves their operations directly,
+/// no `fact Spec[…]` ever appears, and abstract calls against them
+/// (e.g. `Map.empty()` at unbound K, V) are legitimate pass-through.
+fn spec_warrants_abstract_check(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
+    if spec_has_any_providers(kb, spec_sort) {
+        return true;
+    }
+    // User-defined spec without providers: still warrants the check.
+    !kb.qualified_name_of(spec_sort).starts_with("anthill.")
+}
+
+/// WI-325 — true iff at least one `SortProvidesInfo` fact exists whose
+/// spec base matches `spec_sort`, regardless of whether the bindings
+/// match any particular per-call goal. Used as one leg of
+/// `spec_warrants_abstract_check`.
+fn spec_has_any_providers(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
+    let provides_sym = match kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") {
+        Some(s) => s,
+        None => return false,
+    };
+    for rid in kb.by_functor(provides_sym) {
+        if !kb.is_fact(rid) { continue; }
+        let head = kb.rule_head(rid);
+        let head_named = match kb.get_term(head) {
+            Term::Fn { named_args, .. } => named_args.clone(),
+            _ => continue,
+        };
+        let spec_view_tid = match get_named_arg(kb, &head_named, "spec") {
+            Some(t) => t,
+            None => continue,
+        };
+        if let Some((view_base_sym, _)) = unwrap_spec_view(kb, spec_view_tid) {
+            if view_base_sym == spec_sort {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn collect_provides_candidates(
     kb: &mut KnowledgeBase,
     goal: &SortGoal,

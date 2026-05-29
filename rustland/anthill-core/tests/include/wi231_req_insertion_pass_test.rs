@@ -34,15 +34,22 @@ end
 "#;
     let kb = load_kb_with(src);
 
-    // Walk `kb.op_bodies` and collect every classified NodeOccurrence
-    // — post-WI-251 the typer writes CallClass onto each Apply
-    // occurrence's RefCell, not into a side-table.
+    // Walk `Wi231Defer.use_eq`'s body and collect every classified
+    // NodeOccurrence — post-WI-251 the typer writes CallClass onto each
+    // Apply occurrence's RefCell, not into a side-table. WI-325: stdlib
+    // sorts now contribute their own classifications (e.g.
+    // `requires Eq[T]` on `List` makes `List.member`'s `eq` call
+    // classify as Defer too); scope to this op's body so we find the
+    // row we care about even if iteration order surfaces a stdlib row
+    // first.
+    let use_eq_sym = kb
+        .try_resolve_symbol("test.wi231.classifications.Wi231Defer.use_eq")
+        .expect("Wi231Defer.use_eq registered");
+    let body = kb.op_body_node(use_eq_sym).expect("use_eq has a body");
     let mut rows: Vec<anthill_core::kb::typing::CallClass> = Vec::new();
-    for (_, body) in kb.op_bodies_iter() {
-        anthill_core::kb::node_occurrence::visit_classifications(body, &mut |_, c| {
-            rows.push(c.clone());
-        });
-    }
+    anthill_core::kb::node_occurrence::visit_classifications(body, &mut |_, c| {
+        rows.push(c.clone());
+    });
     let class_count = rows.len();
     assert!(
         class_count >= 1,
@@ -162,39 +169,37 @@ end
     load::load_all(&mut kb, &refs, &NullResolver).expect("load");
 
     let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq.eq").expect("Eq.eq");
-    let pre_count = kb.dispatch_origin_iter().filter(|(_, s)| *s == eq_sym).count();
+    let eq_eq_count = kb.dispatch_origin_iter().filter(|(_, s)| *s == eq_sym).count();
 
-    // After the standard pipeline, the Eq.eq rewrite must exist.
+    // After the standard pipeline, the Eq.eq rewrite must exist —
+    // at minimum the test source's `use_eq` body produces one, plus
+    // any stdlib operations with `requires Eq[T]` bodies (e.g.
+    // `List.member`'s `eq(head, x)`) contribute additional rewrites.
     assert!(
-        pre_count >= 1,
-        "standard load_all (with insertion pass) must produce >= 1 Eq.eq rewrite; got {pre_count}"
+        eq_eq_count >= 1,
+        "standard load_all (with insertion pass) must produce >= 1 Eq.eq rewrite; got {eq_eq_count}"
     );
 
     // Side-table is populated; rewrites exist. Now simulate "skipping
     // the pass" by checking that the rewrites came from the pass and
     // not from typing inline: invalidate dispatch_rewrites, re-run the
     // pass, verify it re-produces the entries (idempotency + proof
-    // that the pass is the source of truth).
-    let post_clear_count = {
-        // Snapshot before clearing.
-        let snapshot: Vec<_> = kb.dispatch_origin_iter().collect();
-        // Re-running req_insertion::run is idempotent because each
-        // `record_*` helper checks dispatch_rewrites for existing keys
-        // and skips. So this re-run should be a no-op; the count must
-        // stay the same.
-        anthill_core::kb::req_insertion::run(&mut kb);
-        let snapshot2: Vec<_> = kb.dispatch_origin_iter().collect();
-        assert_eq!(
-            snapshot.len(),
-            snapshot2.len(),
-            "req_insertion::run must be idempotent"
-        );
-        snapshot.len()
-    };
-
+    // that the pass is the source of truth). Idempotency is the
+    // whole-KB invariant — `record_*` helpers gate on
+    // `dispatch_rewrites.contains_key`, so every spec-op call site's
+    // rewrite is preserved across re-runs.
+    let snapshot: Vec<_> = kb.dispatch_origin_iter().collect();
+    anthill_core::kb::req_insertion::run(&mut kb);
+    let snapshot2: Vec<_> = kb.dispatch_origin_iter().collect();
     assert_eq!(
-        post_clear_count, pre_count,
-        "re-running req_insertion::run must not change the rewrite count"
+        snapshot.len(),
+        snapshot2.len(),
+        "req_insertion::run must be idempotent (whole-KB count)"
+    );
+    let eq_eq_count_after = kb.dispatch_origin_iter().filter(|(_, s)| *s == eq_sym).count();
+    assert_eq!(
+        eq_eq_count_after, eq_eq_count,
+        "re-running req_insertion::run must not change the Eq.eq rewrite count"
     );
 }
 

@@ -10,6 +10,11 @@ enum anthill.prelude.List
   import anthill.prelude.Ordered.{gt}
 
   sort T = ?                                           -- type parameter (abstract)
+  -- WI-325: `member` calls `eq(head, x)` on abstract T, so List itself
+  -- requires `Eq[T]`. Concrete-T operations (`length`, `nth`) keep
+  -- using `add`/`gt`/`sub` at T=Int — those resolve via concrete
+  -- `fact Numeric[T=Int]` records and don't need a separate requires.
+  requires Eq[T]
   entity nil                                         -- empty list
   entity cons(head: T, tail: List)                   -- cons cell
 

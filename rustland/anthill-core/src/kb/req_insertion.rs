@@ -30,6 +30,7 @@ use crate::kb::term::{Term, TermId};
 use crate::kb::typing::{
     record_apply_rewrite, record_apply_within_concrete,
     record_apply_within_rewrite, requires_chain, CallClass, RequiresEntry,
+    TypeError,
 };
 use crate::kb::KnowledgeBase;
 
@@ -38,7 +39,12 @@ use crate::kb::KnowledgeBase;
 /// rewrite. Idempotent: re-running on a kb where rewrites already
 /// exist is a no-op (the `record_*` helpers check
 /// `kb.dispatch_rewrites.contains_key` before emitting).
-pub fn run(kb: &mut KnowledgeBase) {
+///
+/// WI-325: also collects `MissingRequiresForSpecOp` diagnostics for
+/// `CallClass::UnresolvedSpecOp` tags — the typer detected an abstract
+/// spec-op call without a covering `requires`. Returned to the load
+/// pipeline alongside the typer's errors.
+pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     // Collect into Vecs so we don't hold a borrow on `kb.op_bodies`
     // while emitting (each `record_*` mutates `kb.dispatch_rewrites`).
     let body_roots: Vec<Rc<NodeOccurrence>> =
@@ -48,13 +54,47 @@ pub fn run(kb: &mut KnowledgeBase) {
         collect_classified(root, &mut raw_entries);
     }
 
-    // Materialize each classified Apply into a Term::Fn apply that
-    // the existing `record_*` helpers can act on. Each helper rewrites
-    // the synthesized apply (replacing the `fn` slot with the impl
-    // symbol) and inserts the (rewritten → spec_op_sym) pair into
+    // Split into IR-rewrite entries (need materialized Apply terms) and
+    // error-only entries (UnresolvedSpecOp — no rewrite, just a
+    // diagnostic). Materializing every entry would waste allocation
+    // for the error-only ones and pollute `dispatch_origin`.
+    let mut errors: Vec<TypeError> = Vec::new();
+    let mut to_materialize: Vec<RawClassified> = Vec::with_capacity(raw_entries.len());
+    for raw in raw_entries {
+        match &raw.class {
+            CallClass::UnresolvedSpecOp {
+                spec_op_sym,
+                spec_sort_sym,
+                abstract_params,
+                span,
+                enclosing_sort,
+            } => {
+                // Self-recursive use inside the spec's own body — e.g. a
+                // hypothetical derived `operation neq(a: T, b: T) = not(eq(a, b))`
+                // inside `Eq` itself — is legitimate: `T` is the spec's own
+                // type parameter and there's no enclosing user-side sort
+                // that could carry a `requires` clause.
+                if *enclosing_sort == Some(*spec_sort_sym) {
+                    continue;
+                }
+                errors.push(TypeError::MissingRequiresForSpecOp {
+                    span: *span,
+                    spec_op_sym: *spec_op_sym,
+                    spec_sort_sym: *spec_sort_sym,
+                    abstract_params: abstract_params.clone(),
+                });
+            }
+            _ => to_materialize.push(raw),
+        }
+    }
+
+    // Materialize each remaining classified Apply into a Term::Fn apply
+    // that the existing `record_*` helpers can act on. Each helper
+    // rewrites the synthesized apply (replacing the `fn` slot with the
+    // impl symbol) and inserts the (rewritten → spec_op_sym) pair into
     // `dispatch_origin`, which is what tooling and the WI-218 tests
     // observe.
-    let entries: Vec<ClassifiedApply> = raw_entries
+    let entries: Vec<ClassifiedApply> = to_materialize
         .into_iter()
         .map(|raw| materialize_apply(kb, raw))
         .collect();
@@ -91,8 +131,14 @@ pub fn run(kb: &mut KnowledgeBase) {
                     spec_op_sym, enclosing_sort, slot,
                 );
             }
+            CallClass::UnresolvedSpecOp { .. } => {
+                // Pre-filtered above into `errors`. Unreachable.
+                unreachable!("UnresolvedSpecOp survived the pre-filter");
+            }
         }
     }
+
+    errors
 }
 
 /// Pre-materialization: the apply's structural identity plus the
