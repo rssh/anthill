@@ -113,6 +113,30 @@ and there is no `TermView`-level alpha-equivalence. Making types
 carrier-polymorphic means moving the typer's `match`/`unify`/alpha-equivalence/
 `walk` onto `TermView`. That is the core of the migration.
 
+### 4·1 Two unifications: one substrate, distinct relations
+
+There are two unification-shaped operations today, and they are **correctly
+different relations** — `TermView` consolidates their *substrate*, not the
+relations:
+
+- **resolution-unify** — `match_term` / `match_view` (mod.rs): exact, syntactic,
+  first-order unification of a goal/head against a target. **No subtyping** (SLD
+  must not subtype — it would be unsound). Already `TermView`-based.
+- **type-check** — `unify_types` / `types_compatible` / `is_subtype` (typing.rs):
+  unification **up to subtyping** — arrow **variance** (contravariant param,
+  covariant result), `effects_rows` **row-rewriting**, sort_ref↔parameterized
+  compatibility. A *separate*, `TermId`-only walker today; shares only
+  `Substitution` with the resolver.
+
+Moving the typer onto `TermView` (§8) is **not** merging these. The end state:
+**one structural substrate** — `TermView` accessors + `Substitution` + var-bind +
+occurs-check — with the **two relations layered on top** (resolution's exact
+match; the typer's subtype/unify/row relation, keeping its variance/row logic).
+A caveat keeps the *traversals* from fully merging: subtyping is **directional /
+variance-flipping**, whereas `match_view` is symmetric exact matching — so the
+type side reuses the low-level view accessors but keeps its own variance/row
+layer; it cannot simply *be* `match_view`.
+
 ## 4a. Choosing the carrier — by creation site
 
 Carrier follows the *need* of the site that creates the type. Three criteria,
