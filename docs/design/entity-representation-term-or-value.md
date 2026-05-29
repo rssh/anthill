@@ -80,34 +80,70 @@ Bruijn indices grafted into the hash-consed store, and *not* a special arrow
 node. The earlier doc's options A–D were all attempts to solve, at the arrow
 level, a problem that the carrier rule solves at the entity level.
 
-## 4. Unify and alpha-equivalence are `TermView` algorithms
+## 4. *All* structural operations are `TermView` algorithms
 
-If `Term`, `Value`, and `NodeOccurrence` all implement `TermView`, then the
-operations over term-like structure should be **defined on `TermView`**, not on
-any one carrier. Two in particular:
+If `Term`, `Value`, and `NodeOccurrence` all implement `TermView`, then **every**
+operation over term-like structure should be **defined on `TermView`**, not on
+any one carrier — not just some. The full set:
 
-- **Unification** — `unify(a: impl TermView, b: impl TermView)` walks functor +
-  arguments through the view, binds logical variables in the substitution,
-  occurs-checks — all carrier-agnostic. A type backed by a `Term` and a type
-  backed by a `Value` unify by the *same* code. This is the genuinely
-  load-bearing content of "types behave like terms": they unify with logical
-  variables **through `TermView`**, regardless of carrier.
-- **Alpha-equivalence** — likewise a `TermView`-level relation: two views are
+- **`match`** — structural matching of a pattern against a target. `match_view<V:
+  TermView>` (kb/mod.rs) already does exactly this on the resolver's binding side
+  (proposal 026.1 Q2): a hash-consed candidate matched against a `Value` / row
+  without hash-consing it. This is the precedent the rest follow.
+- **`unify`** — `unify(a: impl TermView, b: impl TermView)`: walk functor +
+  arguments through the view, bind logical variables in the substitution,
+  occurs-check — carrier-agnostic. A `Term`-carried type and a `Value`-carried
+  type unify by the *same* code. This is the load-bearing content of "types
+  behave like terms": they unify with logical variables **through `TermView`**.
+- **Alpha-equivalence** — a `TermView`-level relation: two views are
   alpha-equivalent iff their structures match up to renaming of bound positions.
-  Cast at this level, alpha-equivalence stops being an arrow-representation
-  special case (the earlier doc's A–D) — it is one structural relation over any
-  carrier, and the binder it ranges over is whatever the view exposes (a
-  `NodeOccurrence`'s `Lambda`/`VarRef`, an arrow's params). The `denoted`/`Value`
-  carrier and the `TermView` algorithm together replace "De Bruijn in the
-  hash-consed store."
+  Cast here it stops being an arrow special case (the earlier doc's A–D) — one
+  structural relation over any carrier, ranging over whatever binder the view
+  exposes (`NodeOccurrence`'s `Lambda`/`VarRef`, an arrow's params).
+- **`walk` / `decompose` / occurs-check / display** — likewise: structural
+  traversal is the view's job, so each is written once.
 
-Current state / gap: `match_view<V: TermView>` (kb/mod.rs) exists and is used on
-the **binding side of resolution** (proposal 026.1 Q2 — external rows / `Value`s
-unify against hash-consed candidates without being hash-consed). The **typer's
-`unify_types`** (typing.rs) is still `TermId`-only, and there is no
-`TermView`-level alpha-equivalence yet. Making types carrier-polymorphic means
-expressing the typer's unification — and a new alpha-equivalence relation —
-over `TermView`. That is the core of the migration.
+So `TermView` is *the* structural interface and the carrier is invisible to
+every algorithm above. The `denoted`/`Value` carrier and these `TermView`
+algorithms together replace "De Bruijn in the hash-consed store."
+
+Current state / gap: only `match_view` is `TermView`-based today (resolver
+binding side). The **typer's `unify_types`** (typing.rs) is still `TermId`-only,
+and there is no `TermView`-level alpha-equivalence. Making types
+carrier-polymorphic means moving the typer's `match`/`unify`/alpha-equivalence/
+`walk` onto `TermView`. That is the core of the migration.
+
+## 4a. Choosing the carrier — by creation site
+
+Carrier follows the *need* of the site that creates the type. Three criteria,
+which usually agree because the creation site fixes them together:
+
+- **Source-derived & an error target** → **`NodeOccurrence`** (carries span/owner
+  → a mismatch points back to what the user wrote).
+- **Internally synthesized & not itself the error** (inference vars,
+  instantiations) → **`Value`** (no span of its own; errors point at the
+  *expression*, which has its own occurrence).
+- **Well-known / ground / shared** (prelude types, nominal identities, index
+  keys) → **hash-consed `Term`** (sharing + O(1) equality earn their keep).
+
+Floor: `denoted`-containment forces **≥ `Value`** (never `Term`).
+
+A survey of the builders' callers makes this concrete (and the criteria align):
+
+| Builder | Called from | Kind of type | Carrier |
+|---|---|---|---|
+| `make_denoted` | **`load.rs` only** | source-derived, error target | **`NodeOccurrence`** (and floor satisfied) |
+| `make_type_var` | **`typing.rs` only** | synthesized inference var | **`Value`** |
+| `make_sort_ref` | mostly well-known nominal | ground identity / index key | **`Term`** |
+| `make_arrow_type` / `make_parameterized_type` / `make_named_tuple_type` | **mixed** (load=source, typing=synthesized) | per-site | source→`NodeOccurrence`, synth→`Value`, ground→`Term` |
+
+Sharp finding: **`make_denoted` is called *only* from the loader** — every
+`denoted` is born from source, exactly where span-bearing error reporting is
+wanted. So `denoted`-containing types naturally want `NodeOccurrence`, which
+*simultaneously* satisfies the carrier rule (non-hash-consed) and the
+error-reporting goal. A synthesized `denoted` (none today) would be plain
+`Value`. The criteria don't compete; the creation site usually settles all
+three.
 
 ## 5. Today vs target — and why this *is* WI-341
 
@@ -159,15 +195,18 @@ non-`denoted` structural types; building §5.5 region analysis (046).
 
 ## 8. Open questions
 
-1. **`Value` carrier for a type** — reuse `Value::Node(Rc<NodeOccurrence>)`
-   (types ride the `NodeKind::Type` slot `occurrence-as-value-type.md` reserves),
-   or add a dedicated `Value::Type`? Note the positional caveat: a source-written
-   type occurrence is positional (fits `NodeKind::Type`); a synthesized /
-   unified type value is not.
-2. **Typer over `TermView`** — how much of `unify_types` becomes
-   `TermView`-generic vs a type-specific view; where the new `TermView`-level
-   **alpha-equivalence** relation lives and how it ranges over the binder the
-   view exposes; interaction with the existing resolver-side `match_view`.
+1. **Carrier choice** — *which* carrier per site is settled by §4a (source →
+   NodeOccurrence, synthesized → Value, well-known → Term; `denoted` floor ≥
+   Value). Remaining **mechanics**: does a `Value`-carried type reuse
+   `Value::Node(Rc<NodeOccurrence>)` (riding the `NodeKind::Type` slot
+   `occurrence-as-value-type.md` reserves) or a dedicated `Value::Type`? And how
+   is the source-`NodeOccurrence` vs synthesized-`Value` split realized when the
+   same builder (`make_arrow_type`, …) serves both?
+2. **Typer over `TermView`** — moving the typer's `match` / `unify` /
+   alpha-equivalence / `walk` (all of §4) off `TermId`-only onto `TermView`; how
+   much becomes generic vs a type-specific view; where the `TermView`-level
+   alpha-equivalence relation lives; interaction with the existing resolver-side
+   `match_view`.
 3. **Equality / caching** without hash-cons identity for `Value`-carried types —
    what backs the `TermId ==` fast paths (`a_effects == b_effects`, dispatch
    caches)? Per-node canonical hashing / `Rc::ptr_eq` / up-to-alpha memoization.
