@@ -32,6 +32,8 @@ static STDLIB_SOURCES: &[(&str, &str)] = &[
     ("anthill/prelude/function", include_str!("../../../stdlib/anthill/prelude/function.anthill")),
     ("anthill/prelude/collection", include_str!("../../../stdlib/anthill/prelude/collection.anthill")),
     ("anthill/prelude/iteration", include_str!("../../../stdlib/anthill/prelude/iteration.anthill")),
+    ("anthill/prelude/iterable", include_str!("../../../stdlib/anthill/prelude/iterable.anthill")),
+    ("anthill/prelude/mutable_collection", include_str!("../../../stdlib/anthill/prelude/mutable_collection.anthill")),
     ("anthill/prelude/indexed_seq", include_str!("../../../stdlib/anthill/prelude/indexed_seq.anthill")),
     ("anthill/prelude/stream", include_str!("../../../stdlib/anthill/prelude/stream.anthill")),
     ("anthill/prelude/logical_stream", include_str!("../../../stdlib/anthill/prelude/logical_stream.anthill")),
