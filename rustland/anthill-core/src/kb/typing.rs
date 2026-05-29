@@ -667,7 +667,10 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
                     }
                 }
                 "arrow" => {
-                    // arrow(param: type, result: type, effects: List[Type])
+                    // arrow(param: Type, result: Type, effects: Type)
+                    // — WI-307/WI-331: `effects` is a singular
+                    // `effects_rows(EffectExpression)` Type, not a
+                    // legacy `List[Type]`.
                     let p = get_named_arg(kb, named_args, "param")
                         .map(|t| type_display_name(kb, t))
                         .unwrap_or_else(|| "?".to_string());

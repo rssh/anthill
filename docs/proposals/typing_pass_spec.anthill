@@ -93,6 +93,12 @@ namespace anthill.reflect.typing_pass
 
   rule wf_type(?G, parameterized(base: ?B, bindings: ?Bs))
     :- wf_type(?G, ?B), wf_bindings(?G, ?Bs)
+  -- STALE — WI-307 / WI-331: `arrow.effects` is now a singular
+  -- `Type` (effects_rows-wrapped EffectExpression), not `List[Type]`.
+  -- `wf_type_list` over `?Es` matches the old shape only. WI-330
+  -- migrates this rule (and the synth/check arrow arms below) onto
+  -- the EffectExpression row algebra. Kept here so the proposed
+  -- structure stays documented until the migration lands.
   rule wf_type(?G, arrow(param: ?P, result: ?R, effects: ?Es))
     :- wf_type(?G, ?P), wf_type(?G, ?R), wf_type_list(?G, ?Es)
   rule wf_type(?G, named_tuple(fields: ?Fs)) :- wf_type_fields(?G, ?Fs)

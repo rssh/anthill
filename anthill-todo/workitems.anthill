@@ -2511,3 +2511,10 @@ fact WorkItem(
   depends_on: ["WI-326"],
   status: Open)
 
+fact WorkItem(
+  id: "WI-340",
+  description: "Scaland follow-on: AnthillParser.scala (line ~414, typeExprToRef) still lowers TypeExpr.Arrow to arrow(effects: cons-list, ...), diverging from the post-WI-307 / WI-331 Rust loader shape (effects: effects_rows(EffectExpression) as a singular Type) and from the stdlib schema. Today this is LATENT — scaland has no operation loading or native typer (per memory: scaland-no-operation-loading.md), so nothing consumes the malformed arrow term and no test catches the divergence. The pre-existing WI-288 test (ParseTest.scala:471) only asserts the arrow functor name 'anthill.prelude.Type.arrow', not the effects-field shape. SCOPE: update AnthillParser.typeExprToRef to construct effects as the canonical effects_rows(EffectExpression) wrapper (the Scala port of build_canonical_effects_rows), matching the Rust loader. The Scala-side EffectExpression entity builders need to be added (parallel to Rust make_effect_expression_*). Add a ParseTest assertion that checks the effects field shape (effects_rows wrapper + inner merge chain) on a 2-effect arrow type, not just the arrow functor name. Will become a blocker once scaland gains operation loading (WI-292 / WI-294). ACCEPTANCE: scaland arrow terms match Rust shape; new ParseTest asserts effects_rows; existing tests still green. (depends: WI-307, WI-331)",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
+
