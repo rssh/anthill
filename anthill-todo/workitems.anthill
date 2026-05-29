@@ -2553,3 +2553,22 @@ REFERENCES: rustland/anthill-core/src/kb/op_requirements.rs (requires / provider
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
   status: Open)
+
+fact WorkItem(
+  id: "WI-344",
+  description: "Provider admissibility in `type_compatible`: a value whose sort PROVIDES a spec is usable where that spec is expected — the typing-side twin of WI-281's runtime dispatch. PRINCIPLE (settled in design discussion): `requires X` and `fact X[Y]` are the demand/supply ends of ONE relation — a `requires` is discharged by searching for a supplying `fact` (globally, or threaded down from the caller's require tree). \"Use a value of sort X where spec S is expected\" is the SAME demand→search: the position demands S, and `fact S[X]` supplies it; the require tree built IS the dictionary that travels with the value and carries S's operations (just as `Ordered requires Eq` bundles the Eq impl). So this is not new machinery — it is requirement resolution run at the value position.
+
+PROBLEM: today `types_compatible` (rustland/anthill-core/src/kb/typing.rs:6137) relates types only NOMINALLY (same TermId; sort_ref identity; parameterized base+args; arrow; named_tuple; effects_rows) plus the `requires`-chain via `refines`. It NEVER consults the satisfaction facts (`fact S[X]`). The spec-side relation `refines` (stdlib/anthill/reflect/typing.anthill:42, `refines(?A,?B) :- SortRequiresInfo(?A,?B)`) is `requires`-only (spec→spec, e.g. Ordered⊑Eq); it does not cover carrier→spec provision (List provides Stream is a `fact`, not a `requires`). Consequence: `type_compatible(List, Stream)` is false, so `operation iterator(xs: List) -> Stream = xs` fails to load with `TypeMismatch{ iterator.return: expected Stream, got List }` — empirically reproduced while implementing proposal 002. This blocks every Level-1 (return-Stream) iteration provider: 002's `List`/`PersistentMap` providing `Iterable`, and 001-map's `Map` providing `Iterable` via `entries`.
+
+CHANGE (small, on-model):
+1. stdlib/anthill/reflect/typing.anthill — add a rule SIBLING to `:- refines` / `:- is_entity_of`:  `rule type_compatible(?A, ?S) :- provides(?A, ?S)`  where `provides(?A,?S)` queries the satisfaction fact (`fact S[carrier = ?A]`), mirroring how `refines` queries `SortRequiresInfo`. (Confirm whether a `provides`-style predicate over Implementation/satisfaction facts already exists, else add it.)
+2. rustland/anthill-core/src/kb/typing.rs — add the mirroring arm to `types_compatible`: when nominal/refines fail and `expected` is a spec, run the EXISTING fact-search (the `requires_chain` / candidate-matching machinery the requires path already uses) for `fact expected[actual]`; on success return true and thread the resolved requirement into `subst` (the require-tree builder, reused — not a new search).
+3. docs/kernel-language.md §8.2 — extend the existing one-line pointer (which today names only spec-refinement `refines()`) to also name provider-admissibility (`provides`).
+4. docs/proposals/022-typing-as-facts.md — add provider-admissibility to the enumerated compatibility rules (alongside same-type / entity-subtyping / spec-refinement).
+
+NOT 035 (parameterized-sort variance, Map[Cat]<:Map[Animal] — a different axis) and NOT `refines` (requires-only). COMPANIONS: WI-281 (runtime dispatch — uses the require tree this builds; the two halves of \"provides ⟹ usable as\"); WI-343 + op-provision completeness (the rule TRUSTS the `fact`; specs are weak today — a `fact S[X]` can be asserted without X actually implementing S, so soundness is gated on validating the fact: X provides S's ops AND satisfies S's requires).
+
+ACCEPTANCE: a test where a sort X with `fact S[X]` is admissible where S is expected (e.g. `iterator(xs: List) -> Stream = xs` typechecks once `List` provides `fact Stream[List]`); existing typing_test stdlib no-spurious-errors stay green; unblocks proposal 002's `List`/`Map` Iterable providers.",
+  acceptance: [ToolPasses("cargo-test")],
+  depends_on: [],
+  status: Open)
