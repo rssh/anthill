@@ -12,6 +12,7 @@ use std::rc::Rc;
 
 use smallvec::SmallVec;
 
+use crate::eval::value::Value;
 use crate::intern::Symbol;
 
 use super::node_occurrence::NodeOccurrence;
@@ -32,7 +33,11 @@ pub struct OpInfoRecord {
     /// Each entry: `(param_name_symbol, declared_type_term)`.
     pub params: Vec<(Symbol, TermId)>,
     pub return_type: TermId,
-    pub effects: Vec<TermId>,
+    /// WI-342 effects-vertical: effect labels are carrier-agnostic `Value`.
+    /// Sourced from the hash-consed `OperationInfo` fact's `TermId` list (wrapped
+    /// `Value::Term` here); a denoted-bearing label moves to a Value-carried
+    /// side-table in E2.
+    pub effects: Vec<Value>,
     /// Operation-level type parameters from `operation foo[A, B](...)`.
     /// Each entry: `(name_symbol, Var(VarId) term)`. The typer matches
     /// call-site bindings against this table to seed its substitution.
@@ -63,7 +68,7 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
 
         let return_type = find_named(kb, &named_args, "return_type")?;
         let effects = find_named(kb, &named_args, "effects")
-            .map(|t| list_to_vec(kb, t))
+            .map(|t| list_to_vec(kb, t).into_iter().map(Value::Term).collect())
             .unwrap_or_default();
         let params = extract_params(kb, &named_args);
         let type_params = extract_type_params(kb, &named_args);

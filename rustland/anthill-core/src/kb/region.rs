@@ -36,6 +36,7 @@ use super::typing::{
     external_effects, extract_effect_resource_sym, extract_sort_ref_sym, substitute_ref_syms,
     TypingEnv,
 };
+use crate::eval::value::Value;
 use crate::intern::Symbol;
 
 /// The sorts admitted by `Modifiable[T = …]` facts (`{Cell}` in the
@@ -139,6 +140,29 @@ fn rekey_resource(kb: &mut KnowledgeBase, effect: TermId, from: Symbol, to: Symb
     substitute_ref_syms(kb, effect, &map)
 }
 
+/// WI-342 effects-vertical: carrier-agnostic [`rekey_resource`]. A ground label
+/// re-keys via `substitute_ref_syms`; a `Value::Node` label needs occurrence
+/// `Ref` rewrite — deferred to E2 (no Node effect label is minted pre-E2).
+fn rekey_resource_value(kb: &mut KnowledgeBase, effect: &Value, from: Symbol, to: Symbol) -> Value {
+    match effect {
+        Value::Term(t) => Value::Term(rekey_resource(kb, *t, from, to)),
+        other => other.clone(),
+    }
+}
+
+/// Push `effect` into `out` unless a structurally-equal label is already present.
+/// `Value` has no `PartialEq`; ground labels dedup by `TermId` (every label
+/// pre-E2), a `Value::Node` label is always pushed (harmless).
+fn push_effect_dedup(out: &mut Vec<Value>, effect: Value) {
+    let dup = match &effect {
+        Value::Term(t) => out.iter().any(|e| matches!(e, Value::Term(et) if et == t)),
+        _ => false,
+    };
+    if !dup {
+        out.push(effect);
+    }
+}
+
 /// Operation-boundary effect masking (WI-314). Given the body's derived
 /// effect row, the op's return type, and its reserved `result` symbol,
 /// return the externally-visible row: locals dropped, escaping fresh
@@ -150,34 +174,30 @@ pub(crate) fn op_boundary_effects(
     return_type: TermId,
     op_result_sym: Option<Symbol>,
     regions: &HashSet<Symbol>,
-    effects: &[TermId],
-) -> Vec<TermId> {
+    effects: &[Value],
+) -> Vec<Value> {
     // 1. Existing local-resource drop (let/match-bound names).
     let after_local = external_effects(kb, env, effects);
     // 2. Result-region masking, keyed on whether the result can carry one.
     let admits = result_type_admits_region(kb, return_type, regions);
-    let mut out: Vec<TermId> = Vec::with_capacity(after_local.len());
+    let mut out: Vec<Value> = Vec::with_capacity(after_local.len());
     for effect in after_local {
-        match extract_effect_resource_sym(kb, effect) {
+        match extract_effect_resource_sym(kb, &effect) {
             Some(sym) if is_result_region_sym(kb, sym) => {
                 if admits {
                     // Escapes via the result — re-key to the op's own
                     // `result` and keep (the op honestly allocates).
                     let kept = match op_result_sym {
-                        Some(target) => rekey_resource(kb, effect, sym, target),
+                        Some(target) => rekey_resource_value(kb, &effect, sym, target),
                         None => effect,
                     };
-                    if !out.contains(&kept) {
-                        out.push(kept);
-                    }
+                    push_effect_dedup(&mut out, kept);
                 }
                 // else: the fresh region cannot reach the result — drop.
             }
             _ => {
                 // Parameter / unknown resource — external, keep.
-                if !out.contains(&effect) {
-                    out.push(effect);
-                }
+                push_effect_dedup(&mut out, effect);
             }
         }
     }

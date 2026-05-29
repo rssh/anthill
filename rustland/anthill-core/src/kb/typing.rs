@@ -562,7 +562,10 @@ impl TypingEnv {
 pub struct TypeResult {
     pub ty: TermId,
     pub env: TypingEnv,
-    pub effects: Vec<TermId>,
+    /// WI-342 effects-vertical: effect labels are carrier-agnostic `Value`
+    /// (ground → `Value::Term`, denoted-bearing → `Value::Node`). Pre-E2 every
+    /// label is `Value::Term` (behaviour-identical to the old `Vec<TermId>`).
+    pub effects: Vec<Value>,
     /// WI-283: the (possibly-rewritten) occurrence this result describes.
     /// The typer is *tree-producing*: every result carries the node it
     /// is the type of, so a parent build-frame can reassemble itself
@@ -583,20 +586,34 @@ impl TypeResult {
 
 /// Filter effects: keep only external effects (on non-local resources).
 /// Effects on let-bound resources are local and don't propagate.
-pub(crate) fn external_effects(kb: &KnowledgeBase, env: &TypingEnv, effects: &[TermId]) -> Vec<TermId> {
-    effects.iter().filter(|&&effect| {
+pub(crate) fn external_effects(kb: &KnowledgeBase, env: &TypingEnv, effects: &[Value]) -> Vec<Value> {
+    effects.iter().filter(|effect| {
         // An effect like Modify[store] — check if 'store' is a local resource
         // Effect terms are sort_ref or parameterized. Extract the resource symbol.
         match extract_effect_resource_sym(kb, effect) {
             Some(sym) => !env.is_local_resource(sym),
             None => true, // can't determine resource — assume external
         }
-    }).copied().collect()
+    }).cloned().collect()
 }
 
-/// Extract the resource symbol from an effect term.
+/// Extract the resource symbol from an effect label, carrier-agnostically
+/// (WI-342 effects-vertical). A ground (`Value::Term`) label delegates to the
+/// hash-consed reader; a `Value::Node` (denoted-bearing) label is read off the
+/// occurrence in E2 (no Node label is minted into effects pre-E2, so the arm is
+/// currently unreachable — `None` is the sound default).
+pub(crate) fn extract_effect_resource_sym(kb: &KnowledgeBase, effect: &Value) -> Option<Symbol> {
+    match effect {
+        Value::Term(t) => extract_effect_resource_sym_term(kb, *t),
+        // TODO(WI-342 E2): read the resource sym off a `Value::Node` parameterized
+        // label's denoted binding (carrier-agnostic `denoted_ref_sym`).
+        _ => None,
+    }
+}
+
+/// Extract the resource symbol from a hash-consed effect term.
 /// e.g., Modify[T = store] → Some(store), or sort_ref(name: Modify) → None (no resource)
-pub(crate) fn extract_effect_resource_sym(kb: &KnowledgeBase, effect: TermId) -> Option<Symbol> {
+fn extract_effect_resource_sym_term(kb: &KnowledgeBase, effect: TermId) -> Option<Symbol> {
     let functor_name = type_functor_name(kb, effect)?;
     match functor_name {
         "parameterized" => {
@@ -626,11 +643,42 @@ pub(crate) fn extract_effect_resource_sym(kb: &KnowledgeBase, effect: TermId) ->
 }
 
 /// Merge two effect lists (set union by TermId).
-fn merge_effects(a: &[TermId], b: &[TermId]) -> Vec<TermId> {
+/// WI-342 effects-vertical: materialize carrier-agnostic effect labels back to
+/// hash-consed `TermId`s for the builders that still require them (e.g.
+/// `make_arrow_type`, which folds labels into a `TermId` `effects_rows`). Lossless
+/// for `Value::Term` (every label pre-E2). A `Value::Node` label would need a
+/// Value-carried arrow builder + a Value-carried `ty` slot — out of scope until a
+/// lambda actually accumulates a denoted-bearing effect (E2); assert rather than
+/// silently drop a label from a function type.
+fn effects_as_term_ids(effects: &[Value]) -> Vec<TermId> {
+    effects
+        .iter()
+        .filter_map(|e| match e {
+            Value::Term(t) => Some(*t),
+            _ => {
+                debug_assert!(false, "WI-342 E1: Value::Node effect label reached a TermId arrow builder");
+                None
+            }
+        })
+        .collect()
+}
+
+fn merge_effects(a: &[Value], b: &[Value]) -> Vec<Value> {
     let mut result = a.to_vec();
     for e in b {
-        if !result.contains(e) {
-            result.push(*e);
+        // WI-342 effects-vertical: dedup carrier-agnostically. `Value` has no
+        // `PartialEq`, so ground labels (`Value::Term`, the only form pre-E2)
+        // dedup by `TermId`; a `Value::Node` label has no structural `Eq` here
+        // and is always pushed (set semantics are recovered by the row
+        // canonicalizer / pairing; duplicates are harmless).
+        let dup = match e {
+            Value::Term(t) => result
+                .iter()
+                .any(|r| matches!(r, Value::Term(rt) if rt == t)),
+            _ => false,
+        };
+        if !dup {
+            result.push(e.clone());
         }
     }
     result
@@ -671,7 +719,46 @@ pub(crate) fn substitute_ref_syms(
     }
 }
 
+/// WI-342 effects-vertical: param-name `Ref` substitution over a carrier-agnostic
+/// effect label. A ground (`Value::Term`) label rewrites via [`substitute_ref_syms`];
+/// a `Value::Node` label needs occurrence-level `Ref` rewrite — deferred to E2
+/// (no Node effect label is minted pre-E2, so it is currently unreachable).
+fn substitute_ref_syms_value(
+    kb: &mut KnowledgeBase,
+    e: &Value,
+    map: &HashMap<Symbol, Symbol>,
+) -> Value {
+    match e {
+        Value::Term(t) => Value::Term(substitute_ref_syms(kb, *t, map)),
+        other => other.clone(),
+    }
+}
+
+/// WI-342 effects-vertical: deep type-var resolution over a carrier-agnostic
+/// effect label. Ground labels resolve via [`walk_type_deep`]; a `Value::Node`
+/// label is returned as-is (E2 walks the occurrence — unreachable pre-E2).
+fn walk_type_deep_value(kb: &mut KnowledgeBase, subst: &Substitution, e: &Value) -> Value {
+    match e {
+        Value::Term(t) => Value::Term(walk_type_deep(kb, subst, *t)),
+        other => other.clone(),
+    }
+}
+
 // ── Helpers ────────────────────────────────────────────────────
+
+/// WI-342 effects-vertical: display name of a carrier-agnostic effect label.
+/// A ground label uses [`type_display_name`]; a `Value::Node` label renders via
+/// its [`TermView`] functor (adequate for the effect-name comparison; full
+/// occurrence pretty-printing is out of scope).
+fn type_display_name_value(kb: &KnowledgeBase, v: &Value) -> String {
+    match v {
+        Value::Term(t) => type_display_name(kb, *t),
+        other => match resolved_functor_name(kb, other) {
+            Some(name) => name.to_string(),
+            None => "?".to_string(),
+        },
+    }
+}
 
 pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
     match kb.get_term(ty) {
@@ -1046,7 +1133,7 @@ enum TypeBuildFrame {
         /// `LetAfterValue` (its `TypeResult` is consumed there); paired
         /// with the body's node to reassemble the `Let` (WI-283).
         value_node: Rc<NodeOccurrence>,
-        value_effects: Vec<TermId>,
+        value_effects: Vec<Value>,
     },
     /// Scrutinee finished; walk the branch patterns for coverage,
     /// compute each branch's env, schedule body Visits + a
@@ -1070,7 +1157,7 @@ enum TypeBuildFrame {
         /// reassemble the `Match` (WI-283). Guards aren't typed/visited,
         /// so they're re-read from `occ` unchanged.
         scr_node: Rc<NodeOccurrence>,
-        scr_effects: Vec<TermId>,
+        scr_effects: Vec<Value>,
         branch_envs: Vec<Rc<TypingEnv>>,
         branch_count: usize,
         outer_env: Rc<TypingEnv>,
@@ -2095,7 +2182,7 @@ fn build_type(
                 .ok()
                 .map(|r| r.effects.clone())
                 .unwrap_or_default();
-            let fn_type = kb.make_arrow_type(a_val, b_val, &body_effects);
+            let fn_type = kb.make_arrow_type(a_val, b_val, &effects_as_term_ids(&body_effects));
             // Creating a lambda is itself pure — body effects live in the type.
             // If the body itself errored, propagate that error rather than
             // synthesizing a lambda over an ill-typed body.
@@ -2299,7 +2386,7 @@ fn check_apply_iter(
         if let Some(exp) = expected {
             unify_types(kb, &mut subst, &TermIdView(op.return_type), &TermIdView(exp));
         }
-        let mut arg_effects: Vec<TermId> = Vec::new();
+        let mut arg_effects: Vec<Value> = Vec::new();
         let mut param_to_arg_sym: HashMap<Symbol, Symbol> = HashMap::new();
 
         for (i, arg_occ) in pos_args.iter().enumerate() {
@@ -2337,17 +2424,17 @@ fn check_apply_iter(
         // (e.g. `Stream.head`'s `effects E` → `Error` once `vid_E` is
         // bound by `unify_parameterized_with_sort_ref`). Skip the
         // param-name walk when no var_ref args were seen.
-        let pre_substituted: Vec<TermId> = if param_to_arg_sym.is_empty() {
+        let pre_substituted: Vec<Value> = if param_to_arg_sym.is_empty() {
             op.effects.clone()
         } else {
             op.effects
                 .iter()
-                .map(|e| substitute_ref_syms(kb, *e, &param_to_arg_sym))
+                .map(|e| substitute_ref_syms_value(kb, e, &param_to_arg_sym))
                 .collect()
         };
-        let substituted_op_effects: Vec<TermId> = pre_substituted
+        let substituted_op_effects: Vec<Value> = pre_substituted
             .iter()
-            .map(|e| walk_type_deep(kb, &subst, *e))
+            .map(|e| walk_type_deep_value(kb, &subst, e))
             .collect();
         let effects = merge_effects(&substituted_op_effects, &arg_effects);
 
@@ -2652,13 +2739,16 @@ fn check_apply_iter(
     // Path 2: variable with arrow type
     if let Some(fn_type_tid) = env.lookup_var(fn_sym) {
         if let Some((ret_type, effects)) = extract_function_type_parts(kb, fn_type_tid) {
+            // WI-342: `extract_function_type_parts` yields ground `TermId` effect
+            // labels (read off a hash-consed arrow type) — wrap as `Value::Term`.
+            let effects = effects.into_iter().map(Value::Term).collect();
             return Ok(TypeResult { ty: ret_type, env: env.clone(), effects, node: Rc::clone(occ) });
         }
     }
 
     // Path 3: unknown functor — collect arg effects (from pre-computed
     // results) and fall back to the declared return type if any.
-    let mut effects: Vec<TermId> = Vec::new();
+    let mut effects: Vec<Value> = Vec::new();
     for r in pos_results.iter().chain(named_results.iter()) {
         if let Ok(r) = r {
             effects = merge_effects(&effects, &r.effects);
@@ -3235,7 +3325,7 @@ pub(crate) fn record_apply_within_rewrite(
 struct OperationInfoFull {
     params: Vec<(Symbol, TermId)>,  // (param_name, param_type)
     return_type: TermId,
-    effects: Vec<TermId>,
+    effects: Vec<Value>,
     /// Operation-level type parameters in declaration order, as
     /// `(name, Var(VarId) term)` pairs.
     type_params: Vec<(Symbol, TermId)>,
@@ -4824,7 +4914,7 @@ fn check_tuple_literal_constructor(
         .zip(named_results.iter())
         .map(|((name, _), r)| (*name, r.as_ref().expect("aggregator")));
 
-    let mut effects: Vec<TermId> = Vec::new();
+    let mut effects: Vec<Value> = Vec::new();
     let mut tuple_fields: Vec<(Symbol, TermId)> = Vec::new();
     for (label, r) in pos_labeled.chain(named_labeled) {
         tuple_fields.push((label, r.ty));
@@ -4851,7 +4941,7 @@ fn check_seq_literal_constructor(
     // routing here): never `.expect` an `Err` element result.
     collect_arg_errors(pos_results.iter())?;
     let mut element_type = expected.and_then(|e| extract_type_param(kb, e, "T"));
-    let mut effects: Vec<TermId> = Vec::new();
+    let mut effects: Vec<Value> = Vec::new();
     for r in pos_results {
         let r = r.as_ref().expect("aggregator");
         if element_type.is_none() {
@@ -9189,7 +9279,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
     struct OpInfo {
         op_sym: Symbol,
         return_type: TermId,
-        declared_effects: Vec<TermId>,
+        declared_effects: Vec<Value>,
         body_node: Rc<NodeOccurrence>,
         params: Vec<(Symbol, TermId)>,
         span: Option<Span>,
@@ -9274,20 +9364,22 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                     &region_sorts,
                     &result.effects,
                 );
+                // WI-342 effects-vertical: labels are `Value`; compare by
+                // display name (the authoritative check — the old `contains`
+                // `TermId`-identity fast-path is subsumed, since a declared
+                // effect's name always matches its own).
                 for effect in &ext_effects {
-                    if !op.declared_effects.contains(effect) {
-                        let effect_name = type_display_name(kb, *effect);
-                        let declared_names: Vec<String> = op.declared_effects.iter()
-                            .map(|e| type_display_name(kb, *e))
-                            .collect();
-                        if !declared_names.iter().any(|d| d == &effect_name) {
-                            errors.push(TypeError::Other {
-                                span: op.span,
-                                context: TypeErrorContext::OperationEffects { op_name: op.op_sym },
-                                expected: format!("declared: [{}]", declared_names.join(", ")),
-                                actual: format!("undeclared effect: {}", effect_name),
-                            });
-                        }
+                    let effect_name = type_display_name_value(kb, effect);
+                    let declared_names: Vec<String> = op.declared_effects.iter()
+                        .map(|e| type_display_name_value(kb, e))
+                        .collect();
+                    if !declared_names.iter().any(|d| d == &effect_name) {
+                        errors.push(TypeError::Other {
+                            span: op.span,
+                            context: TypeErrorContext::OperationEffects { op_name: op.op_sym },
+                            expected: format!("declared: [{}]", declared_names.join(", ")),
+                            actual: format!("undeclared effect: {}", effect_name),
+                        });
                     }
                 }
 

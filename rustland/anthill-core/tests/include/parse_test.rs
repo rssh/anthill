@@ -105,7 +105,15 @@ fn modify_name_arg_denotes_by_resolution_kind() {
         let sym = kb.try_resolve_symbol("f").ok_or("operation `f` not found")?;
         let rec = anthill_core::kb::op_info::lookup_operation_info(&kb, sym)
             .ok_or("no OperationInfo for `f`")?;
-        Ok((kb, rec.effects))
+        // WI-342 effects-vertical: OpInfoRecord.effects is now carrier-agnostic
+        // `Value`; in E1 every label is a ground `Value::Term` sourced from the
+        // hash-consed fact, so materialize back to `TermId` for these
+        // term-shape assertions (which check the WI-302 `denoted` lowering).
+        let effects: Vec<TermId> = rec.effects.into_iter().map(|v| match v {
+            anthill_core::eval::Value::Term(t) => t,
+            other => panic!("E1: effect label is not Value::Term: {other:?}"),
+        }).collect();
+        Ok((kb, effects))
     }
 
     // (1) c is a PARAMETER (a value) -> denoted
