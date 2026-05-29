@@ -2064,7 +2064,7 @@ use anthill_core::kb::subst::Substitution;
 /// independence is the right default — each call gets its own subst.
 fn types_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) -> bool {
     let mut subst = Substitution::new();
-    raw_types_compatible(kb, &mut subst, actual, expected)
+    raw_types_compatible(kb, &mut subst, &TermIdView(actual), &TermIdView(expected))
 }
 
 #[test]

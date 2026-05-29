@@ -22,13 +22,14 @@ use anthill_core::kb::typing::{
     types_compatible as raw_types_compatible,
 };
 use anthill_core::kb::subst::Substitution;
+use anthill_core::kb::term_view::TermIdView;
 use smallvec::SmallVec;
 
 /// Test-private wrapper: see typing_test.rs::types_compatible for the
 /// WI-335 fresh-subst convention.
 fn types_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) -> bool {
     let mut subst = Substitution::new();
-    raw_types_compatible(kb, &mut subst, actual, expected)
+    raw_types_compatible(kb, &mut subst, &TermIdView(actual), &TermIdView(expected))
 }
 
 fn effects_runtime_sym(kb: &KnowledgeBase) -> anthill_core::intern::Symbol {
