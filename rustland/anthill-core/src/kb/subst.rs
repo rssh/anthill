@@ -23,9 +23,11 @@ pub struct Substitution {
     pub contradiction: bool,
     /// WI-328 (proposal 045 §5.5 / §7.1) — `lacks` constraints on
     /// (unbound) row-tail variables: each effect-row tail `ρ` may carry a
-    /// set of effect-label `TermId`s it is forbidden to present (`- e` /
+    /// set of effect-label types it is forbidden to present (`- e` /
     /// `absent(e)`). Keyed by the tail's `VarId`, the labels stored as
-    /// effect-type `TermId`s. This is a side-table parallel to `bindings`
+    /// effect-type carrier-agnostic [`Value`]s (WI-342 P4-B: a denoted-bearing
+    /// label like `-Modify[c]` is a `Value::Node`, a ground one a
+    /// `Value::Term`). This is a side-table parallel to `bindings`
     /// (not a `Value` binding) because the constraint is on the *unbound*
     /// tail, not on a concrete value — once the tail binds, the constraint
     /// has already been checked against (and propagated through) the
@@ -35,7 +37,7 @@ pub struct Substitution {
     /// rollback (`subst.clone()` … `*subst = snapshot`) that WI-338's
     /// `pair_present_labels` / `cover_present_labels` already exercise, so a
     /// failed row-unification attempt discards its tentative lacks too.
-    pub lacks: HashMap<VarId, Vec<TermId>>,
+    pub lacks: HashMap<VarId, Vec<Value>>,
 }
 
 impl Substitution {
@@ -171,33 +173,29 @@ impl Substitution {
     }
 
     /// WI-328 — record `lacks` labels on a row-tail variable. The labels
-    /// are effect-type `TermId`s the tail `var` may never present. Idempotent
-    /// per `TermId` (a row stating `- e` twice adds `e` once); order is not
-    /// significant (a row is a set).
+    /// are effect-type [`Value`]s the tail `var` may never present. Order is
+    /// not significant (a row is a set).
+    ///
+    /// WI-342 P4-B: `Value` has no `PartialEq`, so the previous per-`TermId`
+    /// dedup is dropped — duplicate lacks entries are harmless because the
+    /// consumer (`label_violates_lacks`) is idempotent (it re-checks each
+    /// lacked label by unification and a repeat checks the same thing twice).
     pub fn add_lacks<I>(&mut self, var: VarId, labels: I)
     where
-        I: IntoIterator<Item = TermId>,
+        I: IntoIterator<Item = Value>,
     {
-        let existing = self.lacks.entry(var).or_default();
-        for l in labels {
-            if !existing.contains(&l) {
-                existing.push(l);
-            }
-        }
+        self.lacks.entry(var).or_default().extend(labels);
     }
 
     /// WI-328 — the full `lacks` set on a row-tail variable, unioned across
     /// the parent chain (a tail's constraints may have been recorded in an
     /// ancestor substitution before a child was forked). Returns an owned
     /// `Vec` since the union may span levels; callers iterate it read-only.
-    pub fn lacks_of(&self, var: VarId) -> Vec<TermId> {
-        let mut out: Vec<TermId> = self.lacks.get(&var).cloned().unwrap_or_default();
+    /// (WI-342 P4-B: no dedup across levels — see [`Self::add_lacks`].)
+    pub fn lacks_of(&self, var: VarId) -> Vec<Value> {
+        let mut out: Vec<Value> = self.lacks.get(&var).cloned().unwrap_or_default();
         if let Some(ref parent) = self.parent {
-            for l in parent.lacks_of(var) {
-                if !out.contains(&l) {
-                    out.push(l);
-                }
-            }
+            out.extend(parent.lacks_of(var));
         }
         out
     }

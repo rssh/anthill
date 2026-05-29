@@ -6042,7 +6042,7 @@ fn decompose_effect_row(
     kb: &KnowledgeBase,
     subst: &Substitution,
     effects_field: TermId,
-) -> Option<(Vec<TermId>, Option<TermId>, Vec<TermId>)> {
+) -> Option<(Vec<Value>, Option<TermId>, Vec<Value>)> {
     // Walk the wrapper through substitution; unwrap effects_rows.
     let walked_field = walk_type(kb, subst, effects_field);
     let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.Type.effects_rows");
@@ -6145,6 +6145,12 @@ fn decompose_effect_row(
         }
     }
 
+    // WI-342 P4-B: present/absent labels surface as carrier-agnostic `Value`s.
+    // This B1 slice still walks a hash-consed `TermId` row, so every label is a
+    // ground `Value::Term`; B2 makes the walk itself carrier-agnostic so a
+    // `Value`-carried (denoted-bearing) label survives as a `Value::Node`.
+    let present = present.into_iter().map(Value::Term).collect();
+    let absent = absent.into_iter().map(Value::Term).collect();
     Some((present, tail, absent))
 }
 
@@ -6165,9 +6171,9 @@ fn decompose_effect_row(
 fn pair_present_labels(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
-    a_present: &[TermId],
-    b_present: &[TermId],
-) -> (Vec<TermId>, Vec<TermId>) {
+    a_present: &[Value],
+    b_present: &[Value],
+) -> (Vec<Value>, Vec<Value>) {
     // WI-338 F11: each unify_types attempt may bind variables in `subst`
     // *before* it determines it can't complete the unification (partial
     // structural success that fails on a downstream sub-term). Snapshot
@@ -6185,15 +6191,15 @@ fn pair_present_labels(
     // unnecessary with the per-attempt snapshot/restore — and is
     // removed. `unify_types`' return value is authoritative.
     let mut b_matched = vec![false; b_present.len()];
-    let mut only_a: Vec<TermId> = Vec::new();
-    for &al in a_present {
+    let mut only_a: Vec<Value> = Vec::new();
+    for al in a_present {
         let mut paired = false;
-        for (i, &bl) in b_present.iter().enumerate() {
+        for (i, bl) in b_present.iter().enumerate() {
             if b_matched[i] {
                 continue;
             }
             let snapshot = subst.clone();
-            if unify_types(kb, subst, &TermIdView(al), &TermIdView(bl)) {
+            if unify_types(kb, subst, al, bl) {
                 b_matched[i] = true;
                 paired = true;
                 break;
@@ -6202,14 +6208,14 @@ fn pair_present_labels(
             *subst = snapshot;
         }
         if !paired {
-            only_a.push(al);
+            only_a.push(al.clone());
         }
     }
-    let only_b: Vec<TermId> = b_present
+    let only_b: Vec<Value> = b_present
         .iter()
         .enumerate()
         .filter(|(i, _)| !b_matched[*i])
-        .map(|(_, &t)| t)
+        .map(|(_, t)| t.clone())
         .collect();
     (only_a, only_b)
 }
@@ -6241,21 +6247,21 @@ fn pair_present_labels(
 fn cover_present_labels(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
-    a_present: &[TermId],
-    b_present: &[TermId],
-) -> (Vec<TermId>, Vec<TermId>) {
+    a_present: &[Value],
+    b_present: &[Value],
+) -> (Vec<Value>, Vec<Value>) {
     // WI-338 F11: snapshot/restore around each unify_types attempt to
     // avoid partial-bind leakage on failed pairings. WI-338 F8: dropped
     // the pre-WI-338 functor-name pre-filter so cross-arm
     // (sort_ref vs parameterized) pairings unify_types can decide.
     // See `pair_present_labels` above for the soundness argument.
     let mut b_covered = vec![false; b_present.len()];
-    let mut only_a: Vec<TermId> = Vec::new();
-    for &al in a_present {
+    let mut only_a: Vec<Value> = Vec::new();
+    for al in a_present {
         let mut paired = false;
-        for (i, &bl) in b_present.iter().enumerate() {
+        for (i, bl) in b_present.iter().enumerate() {
             let snapshot = subst.clone();
-            if unify_types(kb, subst, &TermIdView(al), &TermIdView(bl)) {
+            if unify_types(kb, subst, al, bl) {
                 b_covered[i] = true;
                 paired = true;
                 break;
@@ -6263,14 +6269,14 @@ fn cover_present_labels(
             *subst = snapshot;
         }
         if !paired {
-            only_a.push(al);
+            only_a.push(al.clone());
         }
     }
-    let only_b: Vec<TermId> = b_present
+    let only_b: Vec<Value> = b_present
         .iter()
         .enumerate()
         .filter(|(i, _)| !b_covered[*i])
-        .map(|(_, &t)| t)
+        .map(|(_, t)| t.clone())
         .collect();
     (only_a, only_b)
 }
@@ -6314,7 +6320,7 @@ fn bind_row_tail(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     tail: TermId,
-    extra_labels: &[TermId],
+    extra_labels: &[Value],
     final_tail: Option<TermId>,
 ) -> bool {
     let vid = match kb.get_term(tail) {
@@ -6335,10 +6341,25 @@ fn bind_row_tail(
     // (this is the "{Error | ρ} with ρ-lacks-Error fails" impossibility).
     let vid_lacks = subst.lacks_of(vid);
     if !vid_lacks.is_empty() {
-        for &l in extra_labels {
+        for l in extra_labels {
             if label_violates_lacks(kb, subst, l, &vid_lacks) {
                 return false;
             }
+        }
+    }
+
+    // WI-342 P4-B: a denoted-bearing extra label (`Value::Node`) would require
+    // synthesizing a *Value-carried* row occurrence (`make_present_occ` …) and
+    // binding the tail via `bind_value`. That path (open rows carrying a
+    // denoted-bearing label, e.g. `{Modify[c] | ρ}`) is deferred — refuse
+    // rather than mis-bind (sound). The ground extras below cover the closed-row
+    // cross-carrier target this slice validates. In B1 `decompose_effect_row`
+    // walks a `TermId` row, so every extra is already `Value::Term` here.
+    let mut ground_extras: Vec<TermId> = Vec::with_capacity(extra_labels.len());
+    for l in extra_labels {
+        match l {
+            Value::Term(t) => ground_extras.push(*t),
+            _ => return false,
         }
     }
 
@@ -6364,7 +6385,7 @@ fn bind_row_tail(
     };
     // Right-fold extras into the inner tail.
     let mut acc = inner;
-    for &l in extra_labels.iter().rev() {
+    for &l in ground_extras.iter().rev() {
         let p = kb.make_effect_expression_present(l);
         acc = kb.make_effect_expression_merge(p, acc);
     }
@@ -6388,7 +6409,7 @@ fn bind_row_tail(
         if let Some(ft) = final_tail {
             if let Term::Var(Var::Global(fresh_vid)) = kb.get_term(ft) {
                 let fresh_vid = *fresh_vid;
-                subst.add_lacks(fresh_vid, vid_lacks.iter().copied());
+                subst.add_lacks(fresh_vid, vid_lacks.iter().cloned());
             }
         }
     }
@@ -6413,12 +6434,12 @@ fn bind_row_tail(
 fn label_violates_lacks(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
-    label: TermId,
-    lacked: &[TermId],
+    label: &Value,
+    lacked: &[Value],
 ) -> bool {
-    for &l in lacked {
+    for l in lacked {
         let mut probe = subst.clone();
-        if unify_types(kb, &mut probe, &TermIdView(label), &TermIdView(l)) {
+        if unify_types(kb, &mut probe, label, l) {
             return true;
         }
     }
@@ -6436,14 +6457,14 @@ fn register_row_lacks(
     kb: &KnowledgeBase,
     subst: &mut Substitution,
     tail: Option<TermId>,
-    absent: &[TermId],
+    absent: &[Value],
 ) {
     if absent.is_empty() {
         return;
     }
     if let Some(t) = tail {
         if let Term::Var(Var::Global(vid)) = kb.get_term(t) {
-            subst.add_lacks(*vid, absent.iter().copied());
+            subst.add_lacks(*vid, absent.iter().cloned());
         }
     }
 }
@@ -6558,10 +6579,10 @@ fn unify_effect_rows(
                     return true;
                 }
                 let fresh_var = fresh_row_tail_var(kb);
-                let mut all_extras: Vec<TermId> =
+                let mut all_extras: Vec<Value> =
                     Vec::with_capacity(only_a.len() + only_b.len());
-                all_extras.extend(only_a.iter().copied());
-                all_extras.extend(only_b.iter().copied());
+                all_extras.extend(only_a.iter().cloned());
+                all_extras.extend(only_b.iter().cloned());
                 return bind_row_tail(kb, subst, a_walked, &all_extras, Some(fresh_var));
             }
             // Distinct tails: fresh shared tail var ρ'. Both sides extend
@@ -6680,10 +6701,10 @@ fn subtype_effect_rows(
                     return true;
                 }
                 let fresh_var = fresh_row_tail_var(kb);
-                let mut all_extras: Vec<TermId> =
+                let mut all_extras: Vec<Value> =
                     Vec::with_capacity(only_a.len() + only_e.len());
-                all_extras.extend(only_a.iter().copied());
-                all_extras.extend(only_e.iter().copied());
+                all_extras.extend(only_a.iter().cloned());
+                all_extras.extend(only_e.iter().cloned());
                 return bind_row_tail(kb, subst, a_walked, &all_extras, Some(fresh_var));
             }
             // Distinct tails: each side's tail absorbs the other's
