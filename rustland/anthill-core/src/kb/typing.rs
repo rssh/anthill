@@ -468,13 +468,20 @@ impl TypingEnv {
     }
 
     /// Set the sort whose body is currently being type-checked and
-    /// snapshot its `requires` chain (cheap-ish: one `SortRequiresInfo`
-    /// scan via `requires_chain`). `check_apply` reads the cached chain
-    /// per spec-op dispatch without re-walking facts.
+    /// snapshot its **direct** `requires` chain (cheap-ish: one
+    /// `SortRequiresInfo` scan via `direct_requires_chain`). `check_apply`
+    /// reads the cached chain per spec-op dispatch without re-walking
+    /// facts.
+    ///
+    /// WI-239: direct (not flat-transitive) so the slot indices
+    /// `find_requires_slot` / `build_dep_projection` / `FromScope`
+    /// produce line up with `synth_req_names` (also direct). A transitive
+    /// spec reached through a direct require is located by
+    /// `find_requires_location` instead.
     pub fn set_enclosing_sort(&mut self, kb: &mut KnowledgeBase, sort: Option<Symbol>) {
         self.enclosing = sort.map(|s| EnclosingSort {
             sort: s,
-            requires: requires_chain(kb, s),
+            requires: direct_requires_chain(kb, s),
         });
     }
 
@@ -2193,10 +2200,55 @@ fn check_apply_iter(
             let op_qn = kb.qualified_name_of(fn_sym).to_string();
             let op_short_sym = kb.intern(short_name_of(&op_qn));
             let enclosing_requires = env.enclosing_requires().unwrap_or(&[]);
+            let enclosing_sort = env.enclosing_sort();
+
+            // WI-239: defer-to-requirement takes priority over provider-
+            // based dispatch. If the spec op is reachable through the
+            // enclosing sort's `requires` tree — directly (a frame slot)
+            // or transitively (nested inside a direct requirement's
+            // value) — the impl is selected at runtime from the threaded
+            // requirement, so classify the deferral and skip dispatch.
+            // The path's head is the direct frame slot; its tail is the
+            // `requirement_at_sort` projection path (empty for a direct
+            // require). The pre-WI-239 flat chain made transitive specs
+            // direct slots, so `dispatch_spec_op_cached`'s direct-only
+            // trigger covered them; under the direct-chain ABI the nested
+            // case needs this tree walk.
+            if !enclosing_requires.is_empty() {
+                if let Some(path) = enclosing_sort
+                    .and_then(|encl| find_requires_location(kb, &subst, spec_sort, encl))
+                {
+                    // `path` is non-empty on `Some`. Head = direct frame
+                    // slot; tail = projection path into its bundled value.
+                    let slot = path[0];
+                    let proj_path: SmallVec<[usize; 2]> = path[1..].iter().copied().collect();
+                    // WI-232: capture the matched direct-require entry so
+                    // req_insertion::run can read it without re-indexing.
+                    let resolved_spec = enclosing_requires[slot].clone();
+                    classify(
+                        kb,
+                        occ,
+                        CallClass::DeferToRequirement {
+                            spec_op_sym: fn_sym,
+                            op_short_sym,
+                            resolved_spec,
+                            slot,
+                            proj_path,
+                            enclosing_sort,
+                        },
+                    );
+                    return Ok(TypeResult {
+                        ty: resolved_ret,
+                        env: env.clone(),
+                        effects,
+                        node: Rc::clone(occ),
+                    });
+                }
+            }
+
             let (outcome, resolved_tree) = dispatch_spec_op_cached(
                 kb, &subst, spec_sort, op_short_sym, enclosing_requires,
             );
-            let enclosing_sort = env.enclosing_sort();
             match outcome {
                 DispatchOutcome::NoCandidates => {
                     // WI-325: distinguish concrete-binding NoCandidates
@@ -2349,6 +2401,12 @@ fn check_apply_iter(
                     return Err(TypeError::DispatchAmbiguous { span, op: fn_sym });
                 }
                 DispatchOutcome::Deferred => {
+                    // Fallback: the WI-239 pre-check above already caught
+                    // every spec reachable via `find_requires_location`
+                    // (a superset of `find_requires_slot`), so this fires
+                    // only when `resolve_at_goal` deferred via a path the
+                    // tree walk's matcher missed. It can only resolve a
+                    // DIRECT slot, hence an empty `proj_path`.
                     if let Some(slot) =
                         find_requires_slot(kb, &subst, spec_sort, enclosing_requires)
                     {
@@ -2364,6 +2422,7 @@ fn check_apply_iter(
                                 op_short_sym,
                                 resolved_spec,
                                 slot,
+                                proj_path: SmallVec::new(),
                                 enclosing_sort,
                             },
                         );
@@ -2568,14 +2627,26 @@ fn build_dispatching_dict_direct(
     caller_requires: &[RequiresEntry],
     syms: &ProjectionSyms,
 ) -> Option<TermId> {
-    let callee_chain = requires_chain(kb, callee_spec_sort);
-    // Hoist Strategy 2's per-slot `requires_chain` walk out of the dep
+    // WI-239: the callee's DIRECT requires — one projection per slot the
+    // callee body reads by `__req_<spec>` name. Matches `synth_req_names`
+    // (also direct) so the constructed dict's arity equals the callee's
+    // direct-require count, satisfying eval's `expand_dispatching_dict`
+    // arity invariant. Transitive callee requires are bundled recursively
+    // inside each direct projection, not flattened into this list.
+    let callee_chain = direct_requires_chain(kb, callee_spec_sort);
+    // Hoist Strategy 2's per-slot direct-requires walk out of the dep
     // loop: it depends only on `caller_requires`, not on the current
     // dep, so the worst-case cost drops from O(deps × slots × |SortRequiresInfo|)
     // to O(slots × |SortRequiresInfo|).
+    //
+    // WI-239: DIRECT (not transitive). A requirement value bundles only
+    // its own direct sub-requires, so `requirement_at_sort(__req_i, k)`'s
+    // `k` indexes the i-th caller require's *direct* sub-chain. A deeper
+    // dep (reachable only past two levels) is not found by Strategy 2 and
+    // falls through to Strategy 3's SLD construction.
     let caller_sub_chains: Vec<Vec<RequiresEntry>> = caller_requires
         .iter()
-        .map(|ar| requires_chain(kb, ar.required_sort))
+        .map(|ar| direct_requires_chain(kb, ar.required_sort))
         .collect();
     let mut proj_terms: Vec<TermId> = Vec::with_capacity(callee_chain.len());
     for dep in &callee_chain {
@@ -2608,8 +2679,11 @@ fn wrap_dispatch_channel(
 /// as the caller's frame-level requirement chain. Tries named-param
 /// match, then nested-handle match via `caller_sub_chains[i]`, then SLD
 /// resolution against `SortProvidesInfo`. `caller_sub_chains` must be
-/// `[requires_chain(c.required_sort) for c in caller_requires]` — the
-/// nested-search index, computed once by the caller.
+/// `[direct_requires_chain(c.required_sort) for c in caller_requires]`
+/// (WI-239) — the nested-search index, computed once by the caller. It
+/// is the *direct* sub-chain because a requirement value bundles only
+/// its own direct sub-requires, so a single `requirement_at_sort`
+/// projection indexes it.
 ///
 /// `caller_sort` is the enclosing op's parent sort — needed to turn a
 /// caller-chain index into the synthesized `__req_*` param name
@@ -2640,10 +2714,12 @@ pub fn build_dep_projection(
         return Some(build_req_var_ref(kb, syms, name));
     }
 
-    // Strategy 2 — nested via caller slots' transitive `requires_chain`,
+    // Strategy 2 — nested via caller slots' DIRECT requires (WI-239),
     // binding-aware. The slot's runtime requirement value bundles its
-    // spec's deps in the same order, so a single `requirement_at_sort`
-    // projects them.
+    // own direct sub-requires in the same order, so a single
+    // `requirement_at_sort` projects them. A dep reachable only past a
+    // second level is not found here and falls through to Strategy 3's
+    // SLD construction.
     for (i, sub_chain) in caller_sub_chains.iter().enumerate() {
         if let Some(k) = sub_chain.iter().position(|s| entries_cover(kb, s, dep)) {
             let name = req_name_for_chain_index(kb, caller_sort?, i)?;
@@ -2883,14 +2959,21 @@ pub(crate) fn record_apply_within_concrete(
     true
 }
 
-/// WI-222 Phase C+D / WI-237 (names model): defer-to-requirement rewrite.
-/// Emits `apply_within(fn = Ref(spec_op_sym), args = <orig>,
-/// requirements = [var_ref(name = __req_<slot>)])`. Dispatch from
-/// spec-op to impl-op happens at the apply_within reduction by reading
-/// the dispatching dict's functor. `slot` is the position of the
-/// matching entry in `enclosing_sort`'s `requires` chain; the chain
-/// index is mapped to the synthesized `__req_*` param name via
-/// `req_name_for_chain_index`.
+/// WI-222 Phase C+D / WI-237 (names model) / WI-239: defer-to-requirement
+/// rewrite. Emits `apply_within(fn = Ref(spec_op_sym), args = <orig>,
+/// requirements = [<dispatching dict>])`. Dispatch from spec-op to
+/// impl-op happens at the apply_within reduction by reading the
+/// dispatching dict's functor. `slot` is the DIRECT requirement's
+/// position in `enclosing_sort`'s requires chain, mapped to the
+/// synthesized `__req_*` param name via `req_name_for_chain_index`.
+///
+/// WI-239: `proj_path` descends into that direct requirement's bundled
+/// value. Empty ⇒ the dispatching dict is the bare
+/// `var_ref(name = __req_<slot>)` (the original WI-222 direct case);
+/// non-empty ⇒ the spec is nested, so wrap the `var_ref` in one
+/// `requirement_at_sort(chain, slot = k)` per `proj_path` index
+/// (outermost last) — the same shape `build_dep_projection` Strategy 2
+/// emits, here driven by the resolved tree path.
 pub(crate) fn record_apply_within_rewrite(
     kb: &mut KnowledgeBase,
     original_apply: TermId,
@@ -2899,6 +2982,7 @@ pub(crate) fn record_apply_within_rewrite(
     spec_op_sym: Symbol,
     enclosing_sort: Option<Symbol>,
     slot: usize,
+    proj_path: &[usize],
 ) -> bool {
     use smallvec::SmallVec;
 
@@ -2926,7 +3010,12 @@ pub(crate) fn record_apply_within_rewrite(
         Some(n) => n,
         None => return false,
     };
-    let dict_expr = build_req_var_ref(kb, &syms, name);
+    // var_ref(__req_<slot>), then one requirement_at_sort step per
+    // projection index for the nested case (no-op when proj_path empty).
+    let mut dict_expr = build_req_var_ref(kb, &syms, name);
+    for &k in proj_path {
+        dict_expr = build_req_at_sort(kb, &syms, dict_expr, k);
+    }
     let requirements_list = wrap_dispatch_channel(kb, dict_expr, &syms);
 
     let fn_ref = kb.alloc(Term::Ref(spec_op_sym));
@@ -3129,11 +3218,22 @@ pub enum CallClass {
     /// time. Embedding it eliminates the slot→entry re-indexing in
     /// `req_insertion::run`; `resolved_spec.required_sort` replaces the
     /// previous parallel `spec_sort` field.
+    ///
+    /// WI-239: `slot` is always a DIRECT requirement slot. `proj_path`
+    /// descends into that direct requirement's tree-shaped value: empty
+    /// when the spec *is* the direct requirement (read the frame slot
+    /// directly — the original WI-222 case), non-empty when the spec is
+    /// reached transitively, by applying one `requirement_at_sort`
+    /// projection per index. The pre-WI-239 flat `requires` chain made
+    /// every transitive spec a top-level slot, so `proj_path` was always
+    /// empty; the direct-chain ABI moves transitive specs inside their
+    /// direct parent's bundled value.
     DeferToRequirement {
         spec_op_sym: Symbol,
         op_short_sym: Symbol,
         resolved_spec: RequiresEntry,
         slot: usize,
+        proj_path: SmallVec<[usize; 2]>,
         enclosing_sort: Option<Symbol>,
     },
     /// WI-325: dispatch returned `NoCandidates` AND the call's per-call
@@ -3196,91 +3296,157 @@ pub fn find_requires_slot(
     spec_sort: Symbol,
     chain: &[RequiresEntry],
 ) -> Option<usize> {
-    use smallvec::SmallVec;
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+    chain
+        .iter()
+        .position(|entry| entry_matches_subst(kb, subst, spec_sort, &spec_qn, entry))
+}
 
-    for (idx, entry) in chain.iter().enumerate() {
-        if entry.required_sort != spec_sort {
-            continue;
-        }
-        // Extract bindings from the entry's SortView term. Plain
-        // bindingless requires (e.g. `requires Paintable`) match
-        // unconditionally — any per-call subst for this spec is reached
-        // via the requires.
-        let bindings: SmallVec<[(Symbol, TermId); 2]> = match kb.get_term(entry.spec) {
-            Term::Fn { functor, named_args, pos_args } => {
-                let f_qn = kb.qualified_name_of(*functor);
-                if f_qn == "anthill.reflect.SortView" || f_qn.ends_with(".SortView") {
-                    named_args.clone()
-                } else if pos_args.is_empty() && named_args.is_empty() {
-                    // Plain sort term, e.g. `requires Paintable`.
-                    SmallVec::new()
-                } else {
-                    continue;
-                }
+/// WI-221/WI-222 — true iff `entry` is a `requires` for `spec_sort`
+/// whose bindings are consistent with the per-call substitution `subst`
+/// (the defer-to-requirement match). Extracted from `find_requires_slot`
+/// (WI-239) so the same predicate drives both the flat-chain slot search
+/// and the tree walk in `find_requires_location`. `spec_qn` is
+/// `qualified_name_of(spec_sort)`, hoisted by callers that test many
+/// entries.
+fn entry_matches_subst(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    spec_qn: &str,
+    entry: &RequiresEntry,
+) -> bool {
+    if entry.required_sort != spec_sort {
+        return false;
+    }
+    // Extract bindings from the entry's SortView term. Plain
+    // bindingless requires (e.g. `requires Paintable`) match
+    // unconditionally — any per-call subst for this spec is reached
+    // via the requires.
+    let bindings: SmallVec<[(Symbol, TermId); 2]> = match kb.get_term(entry.spec) {
+        Term::Fn { functor, named_args, pos_args } => {
+            let f_qn = kb.qualified_name_of(*functor);
+            if f_qn == "anthill.reflect.SortView" || f_qn.ends_with(".SortView") {
+                named_args.clone()
+            } else if pos_args.is_empty() && named_args.is_empty() {
+                // Plain sort term, e.g. `requires Paintable`.
+                SmallVec::new()
+            } else {
+                return false;
             }
-            Term::Ref(_) | Term::Ident(_) => SmallVec::new(),
+        }
+        Term::Ref(_) | Term::Ident(_) => SmallVec::new(),
+        _ => return false,
+    };
+
+    if bindings.is_empty() {
+        return true;
+    }
+
+    // The post-`resolve_requires_bindings` SortView for a `requires`
+    // entry carries bindings for both type-params (e.g. `T`) and
+    // auto-bound operations (e.g. `eq`, `neq`). Only the type-param
+    // bindings constrain the per-call substitution — op bindings are
+    // resolved against the enclosing sort's operations and don't
+    // participate in defer-to-requirement matching. We detect a
+    // type-param slot via SortAlias resolution: only spec params
+    // produce a `Term::Var` alias target. If no type-param bindings
+    // surface (spec has no params, or all bindings are ops), the
+    // entry matches vacuously.
+    for (binding_short_sym, entry_value) in &bindings {
+        let binding_short = kb.resolve_sym(*binding_short_sym);
+        let param_qn = format!("{spec_qn}.{binding_short}");
+        let param_qn_sym = match kb.try_resolve_symbol(&param_qn) {
+            Some(s) => s,
+            None => continue,
+        };
+        let alias_target = match resolve_sort_alias(kb, param_qn_sym) {
+            Some(t) => t,
+            None => continue,
+        };
+        let vid = match kb.get_term(alias_target) {
+            Term::Var(Var::Global(v)) => *v,
             _ => continue,
         };
-
-        if bindings.is_empty() {
-            return Some(idx);
-        }
-
-        // The post-`resolve_requires_bindings` SortView for a `requires`
-        // entry carries bindings for both type-params (e.g. `T`) and
-        // auto-bound operations (e.g. `eq`, `neq`). Only the type-param
-        // bindings constrain the per-call substitution — op bindings are
-        // resolved against the enclosing sort's operations and don't
-        // participate in defer-to-requirement matching. We detect a
-        // type-param slot via SortAlias resolution: only spec params
-        // produce a `Term::Var` alias target. If no type-param bindings
-        // surface (spec has no params, or all bindings are ops), the
-        // entry matches vacuously.
-        let mut all_match = true;
-        for (binding_short_sym, entry_value) in &bindings {
-            let binding_short = kb.resolve_sym(*binding_short_sym);
-            let param_qn = format!("{spec_qn}.{binding_short}");
-            let param_qn_sym = match kb.try_resolve_symbol(&param_qn) {
-                Some(s) => s,
-                None => continue,
-            };
-            let alias_target = match resolve_sort_alias(kb, param_qn_sym) {
-                Some(t) => t,
-                None => continue,
-            };
-            let vid = match kb.get_term(alias_target) {
-                Term::Var(Var::Global(v)) => *v,
-                _ => continue,
-            };
-            let per_call_value = match subst.resolve_with_term(vid) {
-                // Unbound spec param: this is the OPEN-T defer trigger.
-                // The call's binding was not constrained to a concrete
-                // carrier (often because the typer unified two free Vars
-                // and bound the *other* direction). Per
-                // `docs/design/operation-call-model.md` §"Defer-to-
-                // requirement detection", an open type-var in the goal
-                // means defer — the impl is determined at runtime by the
-                // requirement value the caller passed. Match this entry.
-                None => continue,
-                Some(v) => v,
-            };
-            // Either side may be a wildcard (a type-param value): the
-            // requires entry might use the enclosing sort's open T
-            // (`requires Eq[T]`) or a concrete carrier (`requires Eq[T=Int]`).
-            // Symmetric match — try both directions.
-            if !dispatch_values_match(kb, per_call_value, *entry_value)
-                && !dispatch_values_match(kb, *entry_value, per_call_value)
-            {
-                all_match = false;
-                break;
-            }
-        }
-        if all_match {
-            return Some(idx);
+        let per_call_value = match subst.resolve_with_term(vid) {
+            // Unbound spec param: this is the OPEN-T defer trigger.
+            // The call's binding was not constrained to a concrete
+            // carrier (often because the typer unified two free Vars
+            // and bound the *other* direction). Per
+            // `docs/design/operation-call-model.md` §"Defer-to-
+            // requirement detection", an open type-var in the goal
+            // means defer — the impl is determined at runtime by the
+            // requirement value the caller passed. Match this entry.
+            None => continue,
+            Some(v) => v,
+        };
+        // Either side may be a wildcard (a type-param value): the
+        // requires entry might use the enclosing sort's open T
+        // (`requires Eq[T]`) or a concrete carrier (`requires Eq[T=Int]`).
+        // Symmetric match — try both directions.
+        if !dispatch_values_match(kb, per_call_value, *entry_value)
+            && !dispatch_values_match(kb, *entry_value, per_call_value)
+        {
+            return false;
         }
     }
-    None
+    true
+}
+
+/// WI-239 — locate the spec a deferred call needs within `sort_sym`'s
+/// `requires` **tree** (substitution-composed). Pre-order DFS; returns
+/// the path of child indices to the first node whose entry matches
+/// `subst` at `spec_sort`, or `None` if unreachable. The path is always
+/// non-empty on `Some`: its head is the DIRECT (frame-slot) index, and
+/// any tail indices are the `requirement_at_sort` projection path into
+/// that direct requirement's bundled value (empty tail = the spec *is*
+/// the direct requirement).
+///
+/// Reproduces — on the DIRECT chain plus its tree — the reachability the
+/// pre-WI-239 flat `requires_chain` gave `find_requires_slot` for free
+/// (the flat chain spliced transitive entries inline as top-level slots).
+/// Under the tree-native ABI a transitive entry is no longer a frame
+/// slot, so the typer's classification consults this to recover the
+/// `(slot, proj_path)` encoding for `CallClass::DeferToRequirement`.
+pub fn find_requires_location(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    sort_sym: Symbol,
+) -> Option<SmallVec<[usize; 2]>> {
+    let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+    let tree = requires_tree(kb, sort_sym);
+    let mut path: SmallVec<[usize; 2]> = SmallVec::new();
+    if find_in_requires_nodes(kb, subst, spec_sort, &spec_qn, &tree, &mut path) {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+/// WI-239 — pre-order DFS helper for [`find_requires_location`]. Pushes
+/// each node's index onto `path` before testing; on a match leaves
+/// `path` holding the full path to the matched node. `nodes` comes from
+/// the substitution-composed `requires_tree`, so it does not alias `kb`.
+fn find_in_requires_nodes(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    spec_qn: &str,
+    nodes: &[RequiresNode],
+    path: &mut SmallVec<[usize; 2]>,
+) -> bool {
+    for (i, node) in nodes.iter().enumerate() {
+        path.push(i);
+        if entry_matches_subst(kb, subst, spec_sort, spec_qn, &node.entry) {
+            return true;
+        }
+        if find_in_requires_nodes(kb, subst, spec_sort, spec_qn, &node.sub_requires, path) {
+            return true;
+        }
+        path.pop();
+    }
+    false
 }
 
 // ── WI-224 — SLD-based instance synthesis ──────────────────────
@@ -3931,16 +4097,26 @@ fn pick_most_specific(_kb: &KnowledgeBase, candidates: &[Candidate]) -> Option<u
 }
 
 /// Build subgoals for a chosen conditional candidate by substituting
-/// the impl-side substitution into the impl sort's `requires_chain`.
-/// Filters out op-bindings (which the loader stores alongside type-
-/// param bindings on a `SortView` — see `find_requires_slot`'s same
+/// the impl-side substitution into the impl sort's **direct** `requires`
+/// (WI-239). Filters out op-bindings (which the loader stores alongside
+/// type-param bindings on a `SortView` — see `find_requires_slot`'s same
 /// distinction) — only type-param bindings drive resolution.
+///
+/// WI-239: direct, not transitive. The resolution tree mirrors the
+/// runtime requirement-value tree: each `Conditional` node bundles one
+/// `sub_resolution` per *direct* require, and transitive requires are
+/// resolved recursively when those sub-resolutions are themselves
+/// `Conditional`. This keeps a constructed requirement value's arity
+/// equal to `synth_req_names(impl_sort)` (also direct) — the invariant
+/// eval's `expand_dispatching_dict` cross-checks. A flat chain here
+/// would over-count the sub-resolutions (the duplicated-subtree problem)
+/// and break that arity check.
 fn candidate_sub_goals_owned(
     kb: &mut KnowledgeBase,
     impl_sort: Symbol,
     impl_subst: &[(Symbol, TermId)],
 ) -> Vec<SortGoal> {
-    let chain = requires_chain(kb, impl_sort);
+    let chain = direct_requires_chain(kb, impl_sort);
     let mut out: Vec<SortGoal> = Vec::with_capacity(chain.len());
     for entry in &chain {
         let required_sort = entry.required_sort;
@@ -4266,6 +4442,13 @@ pub fn dispatch_spec_op_cached(
     op_short_sym: Symbol,
     enclosing_requires: &[RequiresEntry],
 ) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
+    // Direct defer trigger: a spec that is a *direct* `requires` of the
+    // enclosing sort (i.e. present in `enclosing_requires`) is dispatched
+    // at runtime from the threaded requirement value. The typer arm
+    // (WI-239) handles transitive (nested) reachability separately via
+    // `find_requires_location` before reaching here, so this trigger only
+    // needs the direct chain. The compat API (`find_unique_impl_op`,
+    // exercised by the WI-221 tests with synthetic chains) relies on it.
     if !enclosing_requires.is_empty()
         && find_requires_slot(kb, subst, spec_sort, enclosing_requires).is_some()
     {
@@ -6839,11 +7022,34 @@ pub fn requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresE
     flatten_requires_tree(&tree)
 }
 
+/// WI-239 — a sort's **direct** `requires` entries: the top-level
+/// `requires_tree` nodes' entries, substitution-composed/root-scoped
+/// (same per-entry form `requires_chain` produces, but without the
+/// transitive descent and without the pre-order duplication of shared
+/// subtrees).
+///
+/// This is the tree-native requirement ABI: under the names model a
+/// body reads only its DIRECT requires by `__req_<spec>` name; a
+/// transitive require lives inside a direct requirement's tree-shaped
+/// dict value, reached at runtime via `requirement_at_sort`. The
+/// duplication the flat chain suffers — `requires Eq, Ordered` with
+/// `Ordered requires Eq` flattening to `[Eq, Ordered, Eq]` — does not
+/// arise here: the result is exactly `[Eq, Ordered]`.
+///
+/// Consumers that must remain transitive (resolution-tree subgoals are
+/// recursive per-level, obligation checks, the `sort_refines` reach
+/// relation) use `requires_chain` / `requires_chain_flat` instead.
+pub fn direct_requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
+    let tree = requires_tree(kb, sort_sym);
+    tree.iter().map(|n| n.entry.clone()).collect()
+}
+
 /// Synthesize the requirement-param name for each entry of
-/// `parent_sort`'s transitive `requires` chain. Returns `Rc<Vec<Symbol>>`
-/// in chain order — index `k` is chain slot `k`. Memoized on
-/// `synth_req_names_cache`; invalidated alongside `requires_chain` caches
-/// when new `SortRequiresInfo` facts are asserted.
+/// `parent_sort`'s **direct** `requires` chain (WI-239). Returns
+/// `Rc<Vec<Symbol>>` in chain order — index `k` is direct-require slot
+/// `k`. Memoized on `synth_req_names_cache`; invalidated alongside
+/// `requires_chain` caches when new `SortRequiresInfo` facts are
+/// asserted.
 ///
 /// The name is `__req_<spec short name, lowercased>`; chain entries that
 /// share that base (two-of-the-same-spec, or two specs with the same
@@ -6854,14 +7060,21 @@ pub fn requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresE
 /// Self slot (`__req_self`) is not part of the chain — frame-push and
 /// the emitter handle it separately.
 ///
-/// Uses `requires_chain` (always substitution-composed) rather than
-/// `requires_chain_flat` (whose bindings depend on tree-cache state),
-/// so the names are deterministic across the typer and eval passes.
+/// WI-239: walks the DIRECT requires (top-level `requires_tree` nodes),
+/// not the flattened transitive chain. The flat chain duplicated shared
+/// subtrees — `requires Eq, Ordered` with `Ordered requires Eq` flattened
+/// to `[Eq, Ordered, Eq]`, yielding a benign `__req_eq` name collision —
+/// whereas the direct chain is exactly `[Eq, Ordered]`. A transitive
+/// require is not a frame slot under this model; it lives inside a direct
+/// requirement's tree-shaped dict value, reached via `requirement_at_sort`.
+///
+/// Uses `direct_requires_chain` (always substitution-composed) so the
+/// names are deterministic across the typer and eval passes.
 pub fn synth_req_names(kb: &mut KnowledgeBase, parent_sort: Symbol) -> Rc<Vec<Symbol>> {
     if let Some(cached) = kb.synth_req_names_cache.borrow().get(&parent_sort) {
         return cached.clone();
     }
-    let chain = requires_chain(kb, parent_sort);
+    let chain = direct_requires_chain(kb, parent_sort);
     let mut bases: Vec<String> = Vec::with_capacity(chain.len());
     for entry in &chain {
         let mut s = String::from("__req_");

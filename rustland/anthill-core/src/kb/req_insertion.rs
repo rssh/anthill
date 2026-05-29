@@ -28,9 +28,8 @@ use crate::intern::Symbol;
 use crate::kb::node_occurrence::{Expr, NodeKind, NodeOccurrence, for_each_child};
 use crate::kb::term::{Term, TermId};
 use crate::kb::typing::{
-    record_apply_rewrite, record_apply_within_concrete,
-    record_apply_within_rewrite, requires_chain, CallClass, RequiresEntry,
-    TypeError,
+    direct_requires_chain, record_apply_rewrite, record_apply_within_concrete,
+    record_apply_within_rewrite, CallClass, RequiresEntry, TypeError,
 };
 use crate::kb::KnowledgeBase;
 
@@ -125,10 +124,12 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                     enclosing_sort, &caller_requires, resolved_tree.as_ref(),
                 );
             }
-            CallClass::DeferToRequirement { spec_op_sym, slot, enclosing_sort, .. } => {
+            CallClass::DeferToRequirement {
+                spec_op_sym, slot, proj_path, enclosing_sort, ..
+            } => {
                 record_apply_within_rewrite(
                     kb, apply_term, &named_args, &pos_args,
-                    spec_op_sym, enclosing_sort, slot,
+                    spec_op_sym, enclosing_sort, slot, &proj_path,
                 );
             }
             CallClass::UnresolvedSpecOp { .. } => {
@@ -217,8 +218,10 @@ fn materialize_apply(kb: &mut KnowledgeBase, raw: RawClassified) -> ClassifiedAp
     }
 }
 
-/// WI-232 — fetch the caller's `requires` chain for `enclosing_sort`,
-/// computing it at most once per sort across the whole pass.
+/// WI-232 — fetch the caller's **direct** `requires` chain for
+/// `enclosing_sort`, computing it at most once per sort across the whole
+/// pass. WI-239: direct (not flat-transitive) so the `caller_requires`
+/// indices fed to `build_dep_projection` align with `synth_req_names`.
 fn chain_for(
     kb: &mut KnowledgeBase,
     cache: &mut HashMap<Symbol, Vec<RequiresEntry>>,
@@ -231,7 +234,7 @@ fn chain_for(
     if let Some(cached) = cache.get(&s) {
         return cached.clone();
     }
-    let chain = requires_chain(kb, s);
+    let chain = direct_requires_chain(kb, s);
     cache.insert(s, chain.clone());
     chain
 }

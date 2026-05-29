@@ -156,9 +156,9 @@ impl Interpreter {
                 use crate::kb::typing::CallClass;
                 match class.as_deref() {
                     Some(CallClass::DeferToRequirement {
-                        spec_op_sym, slot, enclosing_sort, ..
+                        spec_op_sym, slot, proj_path, enclosing_sort, ..
                     }) => self.start_apply_deferred(
-                        *spec_op_sym, *slot, *enclosing_sort,
+                        *spec_op_sym, *slot, proj_path, *enclosing_sort,
                         pos_args, named_args, type_args,
                     ),
                     Some(CallClass::ConcreteApplyWithin {
@@ -567,15 +567,20 @@ impl Interpreter {
 
     /// Runtime path for `CallClass::DeferToRequirement`: resolve the
     /// dispatching dict from the caller frame's `__req_<spec>` slot,
-    /// then dispatch the impl op with the dict's sub-instances expanded
-    /// into the callee's frame requirements. Equivalent to evaluating
-    /// `apply_within(fn = spec_op_sym, args = …, requirements =
-    /// [var_ref(__req_<spec>)])` directly against the original `Apply`
-    /// NodeOccurrence (no IR rewrite).
+    /// optionally descend a `proj_path` into its bundled sub-requirements
+    /// (WI-239 nested case), then dispatch the impl op with the dict's
+    /// sub-instances expanded into the callee's frame requirements.
+    /// Equivalent to evaluating `apply_within(fn = spec_op_sym, args = …,
+    /// requirements = [requirement_at_sort(…var_ref(__req_<spec>)…)])`
+    /// directly against the original `Apply` NodeOccurrence (no IR
+    /// rewrite). `proj_path` is empty for a direct require (read the slot
+    /// as-is), non-empty when the spec is nested inside a direct
+    /// requirement's tree-shaped value.
     fn start_apply_deferred(
         &mut self,
         spec_op_sym: Symbol,
         slot: usize,
+        proj_path: &[usize],
         enclosing_sort: Option<Symbol>,
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
@@ -587,7 +592,7 @@ impl Interpreter {
         let name_sym = *caller_names.get(slot).ok_or_else(|| EvalError::Internal(format!(
             "DeferToRequirement slot {slot} out of range for {} (chain len {})",
             self.kb.resolve_sym(encl), caller_names.len())))?;
-        let dispatching_dict = {
+        let mut dispatching_dict = {
             let top = self.stack.top().ok_or_else(|| EvalError::Internal(
                 "start_apply_deferred without a current frame".into()))?;
             find_requirement(&top.requirements, name_sym)
@@ -596,6 +601,21 @@ impl Interpreter {
                     self.kb.resolve_sym(name_sym))))?
                 .clone()
         };
+        // WI-239: descend into the direct requirement's bundled value for
+        // a nested spec (`requirement_at_sort` semantics). A bounds check
+        // before each projection keeps a producer/consumer mismatch a
+        // clean `EvalError` rather than the arena's `project` panic.
+        for &k in proj_path {
+            let arity = dispatching_dict.arity();
+            if k >= arity {
+                return Err(EvalError::Internal(format!(
+                    "DeferToRequirement: projection index {k} out of range \
+                     (requirement `{}` bundles {arity} sub-requirement(s))",
+                    self.kb.resolve_sym(name_sym),
+                )));
+            }
+            dispatching_dict = dispatching_dict.project(k);
+        }
         let target = self.dispatch_via_sort_ops_table(spec_op_sym, &dispatching_dict);
         let requirements = self.expand_dispatching_dict(target, &dispatching_dict)?;
         self.dispatch_apply_with_requirements(

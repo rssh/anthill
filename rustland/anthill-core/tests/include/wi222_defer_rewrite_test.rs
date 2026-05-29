@@ -448,3 +448,113 @@ end
         classifications,
     );
 }
+
+// ── WI-239 — tree-native (direct) requirement ABI ──────────────────
+
+#[test]
+fn synth_req_names_for_multi_requires_is_direct_no_dup() {
+    // WI-239: `Wi239Multi requires Eq[T], requires Ordered[T]` with
+    // `Ordered requires Eq[T]` (stdlib). The pre-WI-239 *flat* chain
+    // flattened to `[Eq, Ordered, Eq]` — a duplicated Eq that forced
+    // `synth_req_names` to disambiguate the two `__req_eq` bases by spec
+    // TermId. The DIRECT chain is exactly `[Eq, Ordered]`, so the
+    // synthesized frame-requirement names are the clean
+    // `[__req_eq, __req_ordered]`, no collision and no duplication.
+    let src = r#"
+namespace test.wi239.multi
+  import anthill.prelude.{Eq, Ordered, Int}
+  export Wi239Multi
+  sort Wi239Multi
+    sort T = ?
+    requires Eq[T]
+    requires Ordered[T]
+  end
+end
+"#;
+    let mut interp = interp_for(src);
+    let multi_sym = interp.kb()
+        .try_resolve_symbol("test.wi239.multi.Wi239Multi")
+        .expect("Wi239Multi registered");
+    let names = anthill_core::kb::typing::synth_req_names(interp.kb_mut(), multi_sym);
+    let resolved: Vec<String> = names
+        .iter()
+        .map(|s| interp.kb().resolve_sym(*s).to_string())
+        .collect();
+    assert_eq!(
+        resolved,
+        vec!["__req_eq".to_string(), "__req_ordered".to_string()],
+        "WI-239: the direct requires chain yields one clean per-spec name \
+         each, with no `[Eq, Ordered, Eq]` duplication / `__req_eq` \
+         collision; got {resolved:?}",
+    );
+}
+
+#[test]
+fn transitive_eq_call_classifies_as_nested_deferral() {
+    // WI-239: `Wi239Nested requires Ordered[T]`; `Ordered requires Eq[T]`
+    // (stdlib). The body calls `eq(a, b)` — an Eq op reached only
+    // TRANSITIVELY, through Ordered. Under the direct-chain ABI Eq is not
+    // a frame slot of Wi239Nested; it lives inside the `__req_ordered`
+    // requirement's bundled value. So the call must classify as
+    // `DeferToRequirement { slot: 0 (Ordered), proj_path: [0] (Eq is
+    // Ordered's 0th direct require) }` — a NON-EMPTY `proj_path` marks the
+    // nested case, vs. an empty `proj_path` for a direct require (which
+    // would wrongly read a non-existent `__req_eq` frame slot), and NOT
+    // `UnresolvedSpecOp` (the pre-WI-239 direct-chain regression, where
+    // the transitive spec fell through to a missing-requires error).
+    let src = r#"
+namespace test.wi239.nested
+  import anthill.prelude.Eq.{eq}
+  import anthill.prelude.{Eq, Ordered, Bool}
+  export Wi239Nested
+  sort Wi239Nested
+    sort T = ?
+    requires Ordered[T]
+    operation use_eq(a: T, b: T) -> Bool = eq(a, b)
+  end
+end
+"#;
+    let interp = interp_for(src);
+    let kb = interp.kb();
+
+    let use_eq_sym = kb
+        .try_resolve_symbol("test.wi239.nested.Wi239Nested.use_eq")
+        .expect("use_eq registered");
+    let eq_sym = kb
+        .try_resolve_symbol("anthill.prelude.Eq.eq")
+        .expect("Eq.eq registered");
+
+    let body = kb.op_body_node(use_eq_sym).expect("use_eq has a body");
+    let mut classifications: Vec<anthill_core::kb::typing::CallClass> = Vec::new();
+    anthill_core::kb::node_occurrence::visit_classifications(body, &mut |_, c| {
+        classifications.push(c.clone());
+    });
+
+    use anthill_core::kb::typing::CallClass;
+    let (slot, proj_path) = classifications
+        .iter()
+        .find_map(|c| match c {
+            CallClass::DeferToRequirement {
+                spec_op_sym,
+                slot,
+                proj_path,
+                ..
+            } if *spec_op_sym == eq_sym => Some((*slot, proj_path.clone())),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!(
+            "transitive eq() must classify as DeferToRequirement → Eq.eq; \
+             got {classifications:?}"
+        ));
+
+    assert_eq!(
+        slot, 0,
+        "Ordered is Wi239Nested's direct require slot 0",
+    );
+    assert_eq!(
+        proj_path.as_slice(),
+        &[0usize],
+        "Eq is nested inside Ordered (its 0th direct require) — non-empty \
+         projection path [0] marks the nested deferral",
+    );
+}

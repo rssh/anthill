@@ -1831,13 +1831,19 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
         Value::Cell(handle)
     };
 
-    // Build the chain_dicts for Main's flattened requires chain. Walk
-    // the chain via the public requires_chain_flat API and allocate
-    // a dictionary handle per entry — FileBasedWorkitemStore for the
+    // Build the chain_dicts for Main's DIRECT requires chain. Walk the
+    // chain via the public direct_requires_chain API and allocate a
+    // dictionary handle per entry — FileBasedWorkitemStore for the
     // WorkItemStore slot (so cmd_X dispatch lands on the impl), and
     // self-referential placeholders for every other slot. Walking
     // dynamically avoids hard-coding the chain length, which can grow
     // when Main gains more requires.
+    //
+    // WI-239: direct (not flat-transitive) so the count and order line
+    // up with `synth_req_names(Main)` — `call_with_requirements` checks
+    // `chain_dicts.len() == synth_req_names(Main).len()`, and both are
+    // now the direct-require count. A transitive require is bundled
+    // inside its direct parent's dict, not a top-level slot.
     let chain_dicts: smallvec::SmallVec<[_; 2]> = {
         let main_sym = interp.kb().try_resolve_symbol("anthill.todo.Main")
             .expect("anthill.todo.Main must be loaded");
@@ -1845,8 +1851,8 @@ fn run_anthill_bundle(argv: &[String]) -> ExitCode {
             .try_resolve_symbol("anthill.todo.store.WorkItemStore");
         let filebased_sym = interp.kb_mut()
             .intern("anthill.todo.store.FileBasedWorkitemStore");
-        let entries = anthill_core::kb::typing::requires_chain_flat(
-            interp.kb(), main_sym,
+        let entries = anthill_core::kb::typing::direct_requires_chain(
+            interp.kb_mut(), main_sym,
         );
         let mut out: smallvec::SmallVec<[_; 2]> = smallvec::SmallVec::new();
         for entry in &entries {

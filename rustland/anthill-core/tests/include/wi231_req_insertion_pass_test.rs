@@ -58,7 +58,7 @@ end
 
     // Find the Defer row and confirm its data.
     let defer_row = rows.iter().find_map(|c| match c {
-        CallClass::DeferToRequirement { spec_op_sym, op_short_sym, resolved_spec, slot, enclosing_sort } => {
+        CallClass::DeferToRequirement { spec_op_sym, op_short_sym, resolved_spec, slot, enclosing_sort, .. } => {
             Some((*spec_op_sym, *op_short_sym, resolved_spec.clone(), *slot, *enclosing_sort))
         }
         _ => None,
