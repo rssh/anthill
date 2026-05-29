@@ -185,6 +185,15 @@ namespace anthill.reflect.typing
        bindings_variance_compatible(?S, ?Actual, ?rest)
 
   -- Arrow subtyping: contravariant param, covariant result, covariant effects
+  --
+  -- STALE — WI-307 / WI-331: `arrow.effects` is now a singular `Type`
+  -- holding an `effects_rows(EffectExpression)` wrapper, not a `List[Type]`.
+  -- `effects_subset` below still walks a cons-list, so this reflect-side
+  -- rule will not fire correctly until WI-330 migrates the spec onto row
+  -- unification (matching the Rust typer's `subtype_effect_rows`). Kept as
+  -- a placeholder so the surface shape (contravariant param, covariant
+  -- result, covariant effects) is documented; downstream tests do not
+  -- exercise this rule today.
   rule type_compatible(
     arrow(param: ?P1, result: ?R1, effects: ?E1),
     arrow(param: ?P2, result: ?R2, effects: ?E2))
@@ -192,7 +201,11 @@ namespace anthill.reflect.typing
        type_compatible(?R1, ?R2),
        effects_subset(?E1, ?E2)
 
-  -- Effect subset: actual effects ⊆ expected effects
+  -- Effect subset: actual effects ⊆ expected effects.
+  -- WI-307 / WI-331 stale (see note on `type_compatible` above): the
+  -- arrow.effects field is now a single `Type` wrapping an
+  -- `EffectExpression`, not a cons-list. WI-330 replaces this with a
+  -- row-unification rule.
   rule effects_subset(nil, ?)
   rule effects_subset(cons(head: ?E, tail: ?rest), ?expected)
     :- list_contains(?E, ?expected),

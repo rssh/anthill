@@ -21,7 +21,13 @@ enum anthill.prelude.Type
   entity sort_ref(name: Symbol)
   entity parameterized(base: Type, bindings: List[TypeBinding])
   entity named_tuple(fields: List[TypeField])
-  entity arrow(param: Type, result: Type, effects: List[Type])
+  -- `effects` is the `effects_rows`-wrapped EffectExpression carrying the
+  -- arrow's effect row (WI-307 v1a). Stored as a single `Type` (the row
+  -- algebra is internal to the EffectExpression value); previous to
+  -- WI-307 / WI-331 this field's declared type was `List[Type]` while
+  -- the loader already produced the singular-Type shape — the
+  -- declaration is now aligned with `make_arrow_type`'s output.
+  entity arrow(param: Type, result: Type, effects: Type)
   entity type_var(name: Symbol)
   -- The one seam from the type sublanguage into the expression language:
   -- a Type *denoted* by a carried VALUE occurrence — a value standing in a
