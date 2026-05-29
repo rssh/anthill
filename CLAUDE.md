@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Anthill
 
-A kernel language and knowledge base system for formal specification and reasoning. Four core constructs: `namespace`, `sort`, `rule`, `operation`. Types are terms, sort relations are facts. SLD resolution with discrimination tree indexing and hash-consed term storage.
+A kernel language and knowledge base system for formal specification and reasoning. Four core constructs: `namespace`, `sort`, `rule`, `operation`. We can use logical variables in types as in logical terms (types unify — substitution, occurs-check); sort relations are facts. SLD resolution with discrimination tree indexing.
+
+> **Representation note (not "types are terms").** The old "types are terms" mantra was too abstract and invited a false conclusion — that types must be hash-consed `TermId`s. They need not be. Hash-consing is a storage choice for **ground, searched structure** (facts, rule heads, query patterns, nominal sort identities), not implied by type-hood, and specifically **inappropriate for binders** (arrow / dependent types), whose scope and alpha-equivalence don't fit a global dedup store. The genuinely load-bearing claim is only that types carry logical variables and unify.
 
 Specification: `docs/kernel-language.md` — canonical language spec (should be kept in sync with implementation).
 
