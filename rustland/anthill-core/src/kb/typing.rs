@@ -5407,9 +5407,14 @@ fn unify_view_structural<A: TermView, B: TermView>(
             unify_parameterized_view(kb, subst, a, b)
         }
         (Some("arrow"), Some("arrow")) => unify_arrow_view(kb, subst, a, b),
-        // Two effect rows directly (the WI-320 `effects_rows`-vs-`effects_rows`
-        // case, carrier-agnostic): hand to the row algorithm.
-        (Some("effects_rows"), Some("effects_rows")) => unify_effect_rows(kb, subst, a, b),
+        // NB: a bare `effects_rows`-vs-`effects_rows` arm is deliberately NOT
+        // wired here. The arrow arm above unifies the effects child via
+        // `unify_effect_rows` directly; routing a *top-level* effects_rows pair
+        // through the full row algorithm would diverge from the legacy
+        // `unify_term_dispatch` arm (which does the weaker WI-320 structural
+        // unify of the inner `effects_expr`). Keep them consistent — defer to
+        // the dispatch-consolidation step rather than introduce a carrier-
+        // dependent answer for the same functor pair.
         // P4-B2/#11: `parameterized`-vs-`sort_ref` (binds the base sort's
         // type-param vars) and `named_tuple` for a `Value` carrier are wired
         // when `unify_parameterized_with_sort_ref` / `unify_named_tuple` are made
@@ -6105,7 +6110,14 @@ fn decompose_effect_row(
     let right_key = kb.intern("right");
 
     let walked = walk_view(kb, subst, effects);
-    let is_effects_rows = resolved_functor_name(kb, &walked) == Some("effects_rows");
+    // Match the wrapper by its fully-qualified symbol (not the short name), as
+    // the pre-P4 `TermId` walk did — a same-short-named functor in another
+    // namespace must NOT be mistaken for the prelude `Type.effects_rows`.
+    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.Type.effects_rows");
+    let is_effects_rows = matches!(
+        walked.head(kb),
+        ViewHead::Functor { functor: Some(f), .. } if Some(f) == effects_rows_sym
+    );
     let expr: Value = if is_effects_rows {
         match named_child_value(kb, &walked, effects_expr_key) {
             Some(e) => e,

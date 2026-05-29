@@ -176,15 +176,31 @@ impl Substitution {
     /// are effect-type [`Value`]s the tail `var` may never present. Order is
     /// not significant (a row is a set).
     ///
-    /// WI-342 P4-B: `Value` has no `PartialEq`, so the previous per-`TermId`
-    /// dedup is dropped — duplicate lacks entries are harmless because the
-    /// consumer (`label_violates_lacks`) is idempotent (it re-checks each
-    /// lacked label by unification and a repeat checks the same thing twice).
+    /// WI-342 P4-B: `Value` has no `PartialEq`, so dedup is best-effort —
+    /// ground labels (`Value::Term`, the only label form today) dedup by
+    /// `TermId`, preserving the pre-P4 bound on a tail's lacks set (important:
+    /// `bind_row_tail` propagates the whole parent-chain union onto each fresh
+    /// continuation, so un-deduped ground labels would accumulate superlinearly
+    /// across open-row chains). A `Value::Node` label has no structural `Eq`
+    /// here and is always pushed — harmless (`label_violates_lacks` is
+    /// idempotent), and not yet reachable (no producer mints denoted-bearing
+    /// absents into a tail).
     pub fn add_lacks<I>(&mut self, var: VarId, labels: I)
     where
         I: IntoIterator<Item = Value>,
     {
-        self.lacks.entry(var).or_default().extend(labels);
+        let existing = self.lacks.entry(var).or_default();
+        for l in labels {
+            let dup = match &l {
+                Value::Term(t) => existing
+                    .iter()
+                    .any(|e| matches!(e, Value::Term(et) if et == t)),
+                _ => false,
+            };
+            if !dup {
+                existing.push(l);
+            }
+        }
     }
 
     /// WI-328 — the full `lacks` set on a row-tail variable, unioned across
