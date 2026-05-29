@@ -2467,7 +2467,7 @@ fact WorkItem(
   description: "Code-review WI-326 F5: parameterized_compatible bypasses row subtyping for the Function[E] denotation. PROBLEM: types_compatible(Function[E={Reads}], Function[E={Reads, Writes}]) recurses via parameterized_compatible on each binding, hitting types_compatible(effects_rows({Reads}), effects_rows({Reads, Writes})). The (effects_rows, effects_rows) arm at typing.rs ~5633 does conservative recursive structural compatibility on effects_expr only — explicit doc-comment notes 'distinct logical-var positions inside differently-allocated EffectExpression terms compare incompatible. Sound (no false positives).' But arrow(Int,Int,{Reads}) <: arrow(Int,Int,{Reads,Writes}) is now correctly accepted via subtype_effect_rows post-WI-326. Same denotational type written as Function[E] gives a different answer than the arrow form. SCOPE: dispatch the (effects_rows, effects_rows) arm in types_compatible to subtype_effect_rows instead of recursive structural equality. Need a local Substitution (matches arrow_compatible's pattern); the result is the directional row sub. This makes Function[E={Reads}] <: Function[E={Reads, Writes}] hold consistently with the arrow form. ACCEPTANCE: new test 'subtype_function_E_binding_uses_row_sub' covers Function[E={A}] <: Function[E={A, B}] and the negative case. Full cargo-test green. Closely related to WI-326 F3 (WI-332) but distinct: F3 is the arrow-vs-Function alias path, F5 is the Function-vs-Function path.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-326"],
-  status: Open)
+  status: Claimed(agent: "claude", since: "2026-05-29T05:13:47Z"))
 
 fact WorkItem(
   id: "WI-334",

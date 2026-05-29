@@ -5776,26 +5776,26 @@ pub fn types_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId
             named_tuple_compatible(kb, actual, expected)
         }
         (Some("effects_rows"), Some("effects_rows")) => {
-            // WI-320 substrate: compatibility on the wrapped EffectExpression.
-            // The line-5049 short-circuit (`actual == expected`) handled the
-            // identical-TermId case via hash-consing; this arm catches the
-            // structurally-equivalent-but-distinct-TermId case. Row
-            // subsumption (open-tail absorbing extra labels; `lacks` check)
-            // is WI-307; until then this is conservative — distinct logical-
-            // var positions inside differently-allocated EffectExpression
-            // terms compare incompatible. Sound (no false positives).
-            let a_inner = match kb.get_term(actual) {
-                Term::Fn { named_args, .. } => get_named_arg(kb, named_args, "effects_expr"),
-                _ => return false,
-            };
-            let b_inner = match kb.get_term(expected) {
-                Term::Fn { named_args, .. } => get_named_arg(kb, named_args, "effects_expr"),
-                _ => return false,
-            };
-            match (a_inner, b_inner) {
-                (Some(x), Some(y)) => types_compatible(kb, x, y),
-                _ => false,
-            }
+            // WI-333: row subsumption via [`subtype_effect_rows`]. The
+            // identical-TermId case is already short-circuited by
+            // [`KnowledgeBase`]'s hash-consing at the top of
+            // [`types_compatible`]; this arm reaches when both sides are
+            // effects_rows wrappers with structurally-distinct payloads.
+            //
+            // Pre-WI-333 this did conservative structural recursion via
+            // `types_compatible` on the inner `effects_expr` — sound
+            // (no false positives) but rejected open-row subsumption
+            // (`{Reads} <: {Reads, Writes}` failed because the inner
+            // EffectExpression trees differed). After WI-326 the arrow
+            // shape had row subsumption; the Function[E] denotation
+            // (parameterized → recursive types_compatible → this arm)
+            // didn't — same denotational type, opposite answers.
+            //
+            // Now both paths invoke the directional row algorithm with a
+            // local scratch substitution (same pattern as
+            // `arrow_compatible` / `arrow_function_compatible`).
+            let mut local_subst = Substitution::new();
+            subtype_effect_rows(kb, &mut local_subst, actual, expected)
         }
         _ => false,
     }

@@ -2651,6 +2651,200 @@ fn subtype_function_with_effect_not_le_arrow_no_effect() {
          same denotational shape as arrow-vs-arrow rejection");
 }
 
+// ── WI-333 Function-vs-Function effects path uses row subtyping ─────────
+//
+// Pre-WI-333 the (effects_rows, effects_rows) arm in types_compatible did
+// conservative structural recursion — sound but missed open-row subsumption.
+// So Function[E={Reads}] <: Function[E={Reads, Writes}] was REJECTED (the
+// inner EffectExpression trees differ), even though arrow(_, _, {Reads}) <:
+// arrow(_, _, {Reads, Writes}) was ACCEPTED post-WI-326. Same denotational
+// type written via the parameterized form, opposite answer.
+
+/// WI-333: Function[E={Reads}] IS a subtype of Function[E={Reads, Writes}]
+/// — fewer effects subset of more effects (closed/closed). Pre-WI-333
+/// rejected via the conservative structural recursion.
+#[test]
+fn subtype_function_E_fewer_effects_le_more() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let reads_sym = kb.intern("Reads");
+    let writes_sym = kb.intern("Writes");
+    let reads = kb.make_sort_ref(reads_sym);
+    let writes = kb.make_sort_ref(writes_sym);
+
+    let fn_sym = kb.resolve_symbol("anthill.prelude.Function");
+    let fn_base = kb.make_sort_ref(fn_sym);
+    let a_sym = kb.intern("A");
+    let b_sym = kb.intern("B");
+    let e_sym = kb.intern("E");
+
+    let fewer_rows = kb.build_canonical_effects_rows(&[reads]);
+    let more_rows = kb.build_canonical_effects_rows(&[reads, writes]);
+
+    let fewer = kb.make_parameterized_type(
+        fn_base,
+        &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, fewer_rows)],
+    );
+    let more = kb.make_parameterized_type(
+        fn_base,
+        &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, more_rows)],
+    );
+
+    assert!(types_compatible(&mut kb, fewer, more),
+        "Function[E={{Reads}}] <: Function[E={{Reads, Writes}}] — fewer effects");
+    assert!(!types_compatible(&mut kb, more, fewer),
+        "Function[E={{Reads, Writes}}] NOT <: Function[E={{Reads}}]");
+}
+
+/// WI-333: disjoint effect sets are incompatible — Function[E={Reads}] vs
+/// Function[E={Writes}]. Closed/closed with only_a non-empty → reject.
+#[test]
+fn subtype_function_E_disjoint_effects_incompatible() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let reads_sym = kb.intern("Reads");
+    let writes_sym = kb.intern("Writes");
+    let reads = kb.make_sort_ref(reads_sym);
+    let writes = kb.make_sort_ref(writes_sym);
+
+    let fn_sym = kb.resolve_symbol("anthill.prelude.Function");
+    let fn_base = kb.make_sort_ref(fn_sym);
+    let a_sym = kb.intern("A");
+    let b_sym = kb.intern("B");
+    let e_sym = kb.intern("E");
+
+    let reads_rows = kb.build_canonical_effects_rows(&[reads]);
+    let writes_rows = kb.build_canonical_effects_rows(&[writes]);
+
+    let fn_reads = kb.make_parameterized_type(
+        fn_base,
+        &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, reads_rows)],
+    );
+    let fn_writes = kb.make_parameterized_type(
+        fn_base,
+        &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, writes_rows)],
+    );
+
+    assert!(!types_compatible(&mut kb, fn_reads, fn_writes),
+        "Function[E={{Reads}}] NOT <: Function[E={{Writes}}] — disjoint");
+}
+
+/// WI-333: open-row subsumption works through the Function[E] path now,
+/// matching arrow_compatible behavior. Function[E={| ?rho}] <:
+/// Function[E={Reads}] — actual's open tail closes to empty under the
+/// directional row algorithm.
+#[test]
+fn subtype_function_E_open_le_closed() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let reads_sym = kb.intern("Reads");
+    let reads = kb.make_sort_ref(reads_sym);
+
+    let rho_sym = kb.intern("?rho");
+    let rho_vid = kb.fresh_var(rho_sym);
+    let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
+
+    let fn_sym = kb.resolve_symbol("anthill.prelude.Function");
+    let fn_base = kb.make_sort_ref(fn_sym);
+    let a_sym = kb.intern("A");
+    let b_sym = kb.intern("B");
+    let e_sym = kb.intern("E");
+
+    let open_rows = kb.build_canonical_effects_rows(&[rho]);
+    let closed_rows = kb.build_canonical_effects_rows(&[reads]);
+
+    let actual = kb.make_parameterized_type(
+        fn_base,
+        &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, open_rows)],
+    );
+    let expected = kb.make_parameterized_type(
+        fn_base,
+        &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, closed_rows)],
+    );
+
+    assert!(types_compatible(&mut kb, actual, expected),
+        "Function[E={{|?rho}}] <: Function[E={{Reads}}] — open tail closes");
+}
+
+/// WI-333: open actual with EXTRA concrete labels NOT in closed expected
+/// must reject (mirrors `subtype_arrow_open_le_closed_extras_reject` from
+/// the arrow path). Confirms only_a non-empty rejection survives through
+/// the parameterized→arm dispatch.
+#[test]
+fn subtype_function_E_open_le_closed_extras_reject() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e1_sym = kb.intern("E1");
+    let e2_sym = kb.intern("E2");
+    let e3_sym = kb.intern("E3");
+    let e1 = kb.make_sort_ref(e1_sym);
+    let e2 = kb.make_sort_ref(e2_sym);
+    let e3 = kb.make_sort_ref(e3_sym);
+
+    let rho_sym = kb.intern("?rho");
+    let rho_vid = kb.fresh_var(rho_sym);
+    let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
+
+    let fn_sym = kb.resolve_symbol("anthill.prelude.Function");
+    let fn_base = kb.make_sort_ref(fn_sym);
+    let a_sym = kb.intern("A");
+    let b_sym = kb.intern("B");
+    let e_sym = kb.intern("E");
+
+    // Actual: {E1, E3 | ?rho} — open with E3 NOT in expected.
+    let open_actual_rows = kb.build_canonical_effects_rows(&[e1, e3, rho]);
+    // Expected: {E1, E2} — closed, no E3.
+    let closed_expected_rows = kb.build_canonical_effects_rows(&[e1, e2]);
+
+    let actual = kb.make_parameterized_type(
+        fn_base,
+        &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, open_actual_rows)],
+    );
+    let expected = kb.make_parameterized_type(
+        fn_base,
+        &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, closed_expected_rows)],
+    );
+
+    assert!(!types_compatible(&mut kb, actual, expected),
+        "Function[E={{E1, E3 | ?rho}}] NOT <: Function[E={{E1, E2}}] — \
+         open actual carries E3 that closed expected can't accept");
+}
+
+/// WI-333: closed actual ≤ open expected — actual's labels absorbed by
+/// expected's tail (mirrors `subtype_arrow_closed_le_open`).
+#[test]
+fn subtype_function_E_closed_le_open() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e1_sym = kb.intern("E1");
+    let e1 = kb.make_sort_ref(e1_sym);
+
+    let rho_sym = kb.intern("?rho");
+    let rho_vid = kb.fresh_var(rho_sym);
+    let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
+
+    let fn_sym = kb.resolve_symbol("anthill.prelude.Function");
+    let fn_base = kb.make_sort_ref(fn_sym);
+    let a_sym = kb.intern("A");
+    let b_sym = kb.intern("B");
+    let e_sym = kb.intern("E");
+
+    let closed_actual_rows = kb.build_canonical_effects_rows(&[e1]);
+    let open_expected_rows = kb.build_canonical_effects_rows(&[rho]);
+
+    let actual = kb.make_parameterized_type(
+        fn_base,
+        &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, closed_actual_rows)],
+    );
+    let expected = kb.make_parameterized_type(
+        fn_base,
+        &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, open_expected_rows)],
+    );
+
+    assert!(types_compatible(&mut kb, actual, expected),
+        "Function[E={{E1}}] <: Function[E={{|?rho}}] — expected's tail absorbs E1");
+}
+
 /// F1 regression (code-review): multi-actual-to-single-expected entity
 /// subtyping. Pre-WI-326 `arrow_compatible`'s effects loop was exists-
 /// quantified: `actual.iter().all(|ae| expected.iter().any(|ee| <:))`.

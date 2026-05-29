@@ -149,46 +149,48 @@ fn sort_functor_of_returns_none_for_effects_rows() {
 }
 
 #[test]
-fn types_compatible_recurses_into_effects_rows_inner() {
-    // Code-review #2: prior to the dedicated arm, two `effects_rows`
-    // wrappers with distinct TermIds fell to `_ => false` — even when
-    // the wrapped inner Types were compatible. The new arm recurses
-    // into the wrapped inner.
+fn types_compatible_routes_effects_rows_via_row_subtyping() {
+    // WI-320 substrate originally added a dedicated (effects_rows,
+    // effects_rows) arm in types_compatible so distinct-TermId wrappers
+    // wouldn't fall to `_ => false`; the substrate did recursive
+    // structural types_compatible on the inner.
     //
-    // We pick an inner pair where compatibility is asymmetric — `nothing`
-    // is the bottom type (compatible with anything), so wrapping
-    // `nothing` in `effects_rows` should be compatible with any other
-    // `effects_rows`. Before the arm: `_ => false`; after: the recursive
-    // call honors `nothing`'s bottom semantics.
+    // **WI-333 supersedes that recursive structural check** — the arm
+    // now dispatches to `subtype_effect_rows`, which is row-aware
+    // (open-tail subsumption, set semantics with element subtyping).
+    // The substrate's "the arm exists and routes the inner pair" check
+    // moves here, expressed in row-semantics terms: two structurally
+    // distinct effects_rows wrappers with row-compatible payloads should
+    // compare compatible.
+    //
+    // Use a valid EffectExpression pair: empty_row vs merge(present(X),
+    // empty_row) — closed/closed where actual ⊆ expected. The wrappers
+    // are distinct TermIds (different EffectExpression payloads), so the
+    // hash-cons fast path doesn't fire — the arm dispatch is what's
+    // being exercised.
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
 
-    let nothing = build_nothing(&mut kb);
-    // A second, distinct-TermId inner: `type_var(?N)` — a fresh logical var.
-    let type_var_sym = kb.try_resolve_symbol("anthill.prelude.Type.type_var")
-        .expect("type_var entity symbol pre-registered");
-    let name_field = kb.intern("name");
-    let n_sym = kb.intern("N");
-    let n_ref = kb.alloc(Term::Ref(n_sym));
-    let type_var_term = kb.alloc(Term::Fn {
-        functor: type_var_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[(name_field, n_ref)]),
-    });
+    let empty = kb.make_effect_expression_empty_row();
+    let x_sym = kb.intern("X");
+    let x_label = kb.make_sort_ref(x_sym);
+    let present_x = kb.make_effect_expression_present(x_label);
+    let one_label = kb.make_effect_expression_merge(present_x, empty);
 
-    let er_nothing = build_effects_rows_wrapping(&mut kb, nothing);
-    let er_var = build_effects_rows_wrapping(&mut kb, type_var_term);
+    let er_empty = kb.make_effects_rows_type(empty);
+    let er_one = kb.make_effects_rows_type(one_label);
 
-    // Wrappers are distinct TermIds (different inners), so the
-    // line-5049 `actual == expected` short-circuit does not fire — the
-    // new arm is what's being exercised.
-    assert_ne!(er_nothing, er_var);
+    // Distinct TermIds — hash-cons short-circuit doesn't fire here.
+    assert_ne!(er_empty, er_one);
 
-    // `nothing` is bottom (compatible with anything) so the recursive
-    // `types_compatible` call returns true. Before the arm this
-    // returned false; after the arm it returns true.
+    // Closed empty <: closed {X} — subset semantics under row sub.
     assert!(
-        types_compatible(&mut kb, er_nothing, er_var),
-        "expected effects_rows(nothing) compatible with effects_rows(type_var(?N)) via the new arm"
+        types_compatible(&mut kb, er_empty, er_one),
+        "expected effects_rows(empty_row) <: effects_rows({{X}}) via row sub"
+    );
+    // Reverse direction: closed {X} NOT <: closed empty.
+    assert!(
+        !types_compatible(&mut kb, er_one, er_empty),
+        "expected effects_rows({{X}}) NOT <: effects_rows(empty_row)"
     );
 }
