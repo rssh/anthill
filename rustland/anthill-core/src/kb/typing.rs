@@ -14,7 +14,10 @@ use super::node_occurrence::{
     for_each_child, for_each_pattern_child, materialize_from_handle,
     Expr, MatchBranch, NodeKind, NodeOccurrence,
 };
+use super::persist_subst::BindValue;
+use super::term_view::{TermIdView, TermView, ViewHead};
 use super::{KnowledgeBase, SortKind};
+use crate::eval::value::Value;
 use crate::intern::Symbol;
 use crate::span::Span;
 
@@ -2105,7 +2108,7 @@ fn check_apply_iter(
         // op's `?E` Var binds to WorkItem here, and the post-arg
         // unconstrained-param check sees it as pinned.
         if let Some(exp) = expected {
-            unify_types(kb, &mut subst, op.return_type, exp);
+            unify_types(kb, &mut subst, &TermIdView(op.return_type), &TermIdView(exp));
         }
         let mut arg_effects: Vec<TermId> = Vec::new();
         let mut param_to_arg_sym: HashMap<Symbol, Symbol> = HashMap::new();
@@ -2118,7 +2121,7 @@ fn check_apply_iter(
             }
             if let Ok(ref arg_result) = pos_results[i] {
                 if let Some(&(_, param_type)) = op.params.get(i) {
-                    unify_types(kb, &mut subst, arg_result.ty, param_type);
+                    unify_types(kb, &mut subst, &TermIdView(arg_result.ty), &TermIdView(param_type));
                 }
                 arg_effects = merge_effects(&arg_effects, &arg_result.effects);
             }
@@ -2133,7 +2136,7 @@ fn check_apply_iter(
                     .find(|(s, _)| *s == *arg_name)
                     .map(|(_, t)| *t)
                 {
-                    unify_types(kb, &mut subst, arg_result.ty, param_type);
+                    unify_types(kb, &mut subst, &TermIdView(arg_result.ty), &TermIdView(param_type));
                 }
                 arg_effects = merge_effects(&arg_effects, &arg_result.effects);
             }
@@ -3102,7 +3105,7 @@ fn seed_op_type_args(
                 }
             }
         };
-        unify_types(kb, subst, target, *value);
+        unify_types(kb, subst, &TermIdView(target), &TermIdView(*value));
     }
     Ok(())
 }
@@ -4754,13 +4757,13 @@ fn check_constructor_iter(
     // empty-field-types early return below so 0-arg constructors
     // (`nil()`, `Map.empty()`) also see the hint.
     if let Some(exp) = expected {
-        unify_types(kb, &mut subst, parent_type, exp);
+        unify_types(kb, &mut subst, &TermIdView(parent_type), &TermIdView(exp));
     }
 
     for &(field_sym, declared_type) in &field_types {
         if let Some((idx, _)) = named_args.iter().enumerate().find(|(_, (s, _))| *s == field_sym) {
             if let Ok(ref r) = named_results[idx] {
-                unify_types(kb, &mut subst, r.ty, declared_type);
+                unify_types(kb, &mut subst, &TermIdView(r.ty), &TermIdView(declared_type));
                 effects = merge_effects(&effects, &r.effects);
             }
         }
@@ -4769,7 +4772,7 @@ fn check_constructor_iter(
     for (i, r_opt) in pos_results.iter().enumerate() {
         if let Some(&(_, declared_type)) = field_types.get(i) {
             if let Ok(r) = r_opt {
-                unify_types(kb, &mut subst, r.ty, declared_type);
+                unify_types(kb, &mut subst, &TermIdView(r.ty), &TermIdView(declared_type));
                 effects = merge_effects(&effects, &r.effects);
             }
         }
@@ -5321,38 +5324,223 @@ fn lookup_operation_field(kb: &KnowledgeBase, functor: Symbol, field: &str) -> O
 
 use super::subst::Substitution;
 
-/// Unify two type terms, binding type variables in the substitution.
-/// Returns true if unification succeeds.
+/// Unify two types **carrier-agnostically** (WI-342 P3): each side is any
+/// [`TermView`] — a `TermId` (wrap in [`TermIdView`]) or a `Value`-carried type
+/// (a `Value::Node` occurrence from `make_*_occ`, a `Value::Var`, …). This is
+/// the migrated entry point — there is no `TermId`-only facade; callers holding
+/// a `TermId` pass `&TermIdView(t)`.
 ///
-/// - `Term::Var` on either side → bind in substitution
-/// - `sort_ref(name: X)` where X is a type param (SortAlias to Var) → resolve and recurse
-/// - Ground types → check `types_compatible` (includes subtyping)
+/// Each side is resolved through the substitution to a `Value` — the same
+/// carrier-agnostic representation [`Substitution`] already stores bindings in
+/// (`Value::Term` is the hash-consed carrier; `Value::Node` an occurrence type;
+/// `Value::Var` a logic var). This slice (P3) carries the var-bind + `denoted`
+/// paths; the structural arms (`unify_parameterized`/`unify_arrow`/rows) are
+/// still `TermId`-only and are reached only when BOTH sides resolve to
+/// `Value::Term` — full structural unification of `Value`-carried
+/// arrows/parameterized/rows is P4 (slice b).
 ///
-/// WI-307 v1a: `kb` is `&mut` to enable fresh tail-variable allocation
-/// inside `unify_effect_expression` when both rows have labels the other
-/// lacks (the canonical Rémy row-rewrite arm). Pre-WI-307 this function
-/// took `&KnowledgeBase`; the change ripples to every `unify_*` helper
-/// and to `types_compatible` (which `unify_types` falls back to). All
-/// 49 call sites in the typer already have `&mut KnowledgeBase` available.
-pub fn unify_types(kb: &mut KnowledgeBase, subst: &mut Substitution, a: TermId, b: TermId) -> bool {
-    let a_resolved = walk_type(kb, subst, a);
-    let b_resolved = walk_type(kb, subst, b);
+/// WI-307 v1a: `kb` is `&mut` for fresh tail-variable allocation in the row
+/// arms; all type-checker call sites already hold `&mut KnowledgeBase`.
+pub fn unify_types<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    a: &A,
+    b: &B,
+) -> bool {
+    let a = walk_view(kb, subst, a);
+    let b = walk_view(kb, subst, b);
 
-    if a_resolved == b_resolved {
-        return true;
+    // Identity fast-path — only hash-consed TermId carriers have O(1) eq.
+    if let (Value::Term(x), Value::Term(y)) = (&a, &b) {
+        if x == y {
+            return true;
+        }
     }
 
-    if let Term::Var(Var::Global(vid)) = kb.get_term(a_resolved) {
-        if occurs_in(kb, *vid, b_resolved) { return false; }
-        subst.bind(*vid, b_resolved);
-        return !subst.is_contradiction();
+    // Var arms — a logic var may be a hash-consed `Term::Var(Global)` or a
+    // `Value::Var(Global)`; bind the other side by its carrier.
+    if let Some(vid) = resolved_var(kb, &a) {
+        return bind_resolved(kb, subst, vid, b);
     }
-    if let Term::Var(Var::Global(vid)) = kb.get_term(b_resolved) {
-        if occurs_in(kb, *vid, a_resolved) { return false; }
-        subst.bind(*vid, a_resolved);
-        return !subst.is_contradiction();
+    if let Some(vid) = resolved_var(kb, &b) {
+        return bind_resolved(kb, subst, vid, a);
     }
 
+    match (&a, &b) {
+        // Both hash-consed → today's `TermId` structural dispatch. This is the
+        // hot path (no producer mints `Value`-carried types yet) and stays free
+        // of the carrier-agnostic `denoted` check: two `TermId` `denoted`s with
+        // distinct refs have distinct TermIds (→ `false` via the dispatch) and
+        // equal ones share a TermId (→ the identity fast-path above), so the
+        // `denoted` Ref-compare is only needed when hash-cons identity is lost
+        // (a `Value` carrier on at least one side).
+        (Value::Term(x), Value::Term(y)) => unify_term_dispatch(kb, subst, *x, *y),
+        // At least one `Value` carrier. Only `denoted`-vs-`denoted` is wired this
+        // slice (carrier-agnostic Ref-symbol compare); structural unification of
+        // a `Value`-carried arrow/parameterized/row is deferred to P4 →
+        // conservative `false` (sound: refuses rather than mis-unifies).
+        _ => {
+            if resolved_functor_name(kb, &a) == Some("denoted")
+                && resolved_functor_name(kb, &b) == Some("denoted")
+            {
+                unify_denoted_view(kb, &a, &b)
+            } else {
+                false
+            }
+        }
+    }
+}
+
+/// WI-342 P3: resolve a view through the substitution to a `Value` (the
+/// carrier-agnostic resolved type). The concrete carrier is recovered via
+/// [`TermView::as_bind_value`] — a `TermId` carrier runs the existing
+/// `walk_type` (var + sort-alias resolution); a `Value` carrier walks
+/// `Value::Term`/`Value::Var` and surfaces the rest (`Value::Node`, entities).
+fn walk_view(kb: &KnowledgeBase, subst: &Substitution, v: &impl TermView) -> Value {
+    match v.as_bind_value() {
+        BindValue::Term(t) => walk_term_to_resolved(kb, subst, t),
+        BindValue::Value(val) => walk_value_to_resolved(kb, subst, val),
+        BindValue::Path(_) => {
+            // A discrim-tree var-path is not a type carrier — refuse rather than
+            // fabricate one (`Unit` unifies with nothing meaningful here).
+            debug_assert!(false, "unify_types: Path carrier in a type position");
+            Value::Unit
+        }
+    }
+}
+
+/// Walk a `TermId`-carried type, then surface a non-`Term` `Value` binding the
+/// `TermId` walk can't see (`resolve_with_term` skips non-`Term` bindings).
+fn walk_term_to_resolved(kb: &KnowledgeBase, subst: &Substitution, t: TermId) -> Value {
+    let t2 = walk_type(kb, subst, t);
+    if let Term::Var(Var::Global(vid)) = kb.get_term(t2) {
+        if let Some(v) = subst.resolve_as_value(*vid) {
+            if !matches!(v, Value::Term(_)) {
+                return walk_value_to_resolved(kb, subst, v.clone());
+            }
+        }
+    }
+    Value::Term(t2)
+}
+
+/// Walk a `Value`-carried type through the substitution. `Value::Term` defers to
+/// the `TermId` walk; an unbound `Value::Var` resolves through `subst`; every
+/// other form (`Value::Node`, entities) is already resolved.
+fn walk_value_to_resolved(kb: &KnowledgeBase, subst: &Substitution, val: Value) -> Value {
+    match val {
+        Value::Term(t) => walk_term_to_resolved(kb, subst, t),
+        Value::Var(Var::Global(vid)) => match subst.resolve_as_value(vid) {
+            Some(bound) => walk_value_to_resolved(kb, subst, bound.clone()),
+            None => Value::Var(Var::Global(vid)),
+        },
+        other => other,
+    }
+}
+
+/// The logic-var id a resolved type *is*, if any — a hash-consed
+/// `Term::Var(Global)` or a `Value::Var(Global)`.
+fn resolved_var(kb: &KnowledgeBase, r: &Value) -> Option<VarId> {
+    match r {
+        Value::Term(t) => match kb.get_term(*t) {
+            Term::Var(Var::Global(vid)) => Some(*vid),
+            _ => None,
+        },
+        Value::Var(Var::Global(vid)) => Some(*vid),
+        _ => None,
+    }
+}
+
+/// Bind `vid` to a resolved type by its carrier (WI-342 P3): `bind_term` for a
+/// hash-consed `TermId`, `bind_value` for any other `Value` carrier.
+fn bind_resolved(kb: &mut KnowledgeBase, subst: &mut Substitution, vid: VarId, other: Value) -> bool {
+    match other {
+        Value::Term(t) => {
+            if occurs_in(kb, vid, t) {
+                return false;
+            }
+            subst.bind_term(vid, t);
+        }
+        other => {
+            if occurs_in_view(kb, vid, &other) {
+                return false;
+            }
+            subst.bind_value(vid, other);
+        }
+    }
+    !subst.is_contradiction()
+}
+
+/// Short functor name of a resolved type, carrier-agnostically (via [`TermView`]).
+fn resolved_functor_name<'a>(kb: &'a KnowledgeBase, r: &impl TermView) -> Option<&'a str> {
+    match r.head(kb) {
+        ViewHead::Functor { functor: Some(sym), .. } => Some(kb.resolve_sym(sym)),
+        _ => None,
+    }
+}
+
+/// WI-342 P3: unify two `denoted` types by their carried value. For the value
+/// forms produced today the carried value is an `Expr::Ref(sym)` / `Term::Ref`
+/// occurrence — both expose `ViewHead::Ref` — so two `denoted` unify iff their
+/// value refers to the same symbol. Works cross-carrier (a ground
+/// `denoted(Ref(c))` unifies with a `Value`-carried `denoted(Node(Ref(c)))`),
+/// which is what lets P3 run while loaders stay on the legacy path.
+fn unify_denoted_view(kb: &KnowledgeBase, a: &Value, b: &Value) -> bool {
+    match (denoted_ref_sym(kb, a), denoted_ref_sym(kb, b)) {
+        (Some(sa), Some(sb)) => sa == sb,
+        // TODO(WI-341/alpha): a non-`Ref` carried value (a bound-name reference,
+        // a nested apply) needs alpha-equivalence over the carried `Expr` spine,
+        // not symbol equality. Refuse to unify what we can't yet compare.
+        _ => false,
+    }
+}
+
+/// The symbol a `denoted`'s `value` child refers to, if it is a `Ref`-shaped
+/// occurrence — read carrier-agnostically through [`TermView`].
+fn denoted_ref_sym(kb: &KnowledgeBase, r: &impl TermView) -> Option<Symbol> {
+    let value_key = kb.lookup_symbol("value")?;
+    let child = r.named_arg(kb, value_key)?;
+    match child.head(kb) {
+        ViewHead::Ref(s) => Some(s),
+        _ => None,
+    }
+}
+
+/// Occurs check over a [`TermView`] (the `Value`-carried analog of
+/// [`occurs_in`]): does `vid` appear anywhere inside `v`?
+fn occurs_in_view(kb: &KnowledgeBase, vid: VarId, v: &impl TermView) -> bool {
+    match v.head(kb) {
+        ViewHead::Var(x) => x == vid,
+        ViewHead::Functor { pos_arity, .. } => {
+            for i in 0..pos_arity {
+                if let Some(c) = v.pos_arg(kb, i) {
+                    if occurs_in_view(kb, vid, &c) {
+                        return true;
+                    }
+                }
+            }
+            for k in v.named_keys(kb) {
+                if let Some(c) = v.named_arg(kb, k) {
+                    if occurs_in_view(kb, vid, &c) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// The `TermId`-only structural dispatch (functor-pair match) — reached from
+/// [`unify_types`] only when both sides resolve to a hash-consed `Term`. Byte-
+/// identical to the pre-P3 `unify_types` tail; migrating these arms onto
+/// `TermView` is P4 (slice b).
+fn unify_term_dispatch(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    a_resolved: TermId,
+    b_resolved: TermId,
+) -> bool {
     let a_functor = type_functor_name(kb, a_resolved);
     let b_functor = type_functor_name(kb, b_resolved);
 
@@ -5374,15 +5562,10 @@ pub fn unify_types(kb: &mut KnowledgeBase, subst: &mut Substitution, a: TermId, 
         }
         (Some("effects_rows"), Some("effects_rows")) => {
             // WI-320 substrate: structural unification on the wrapped
-            // EffectExpression. The hash-cons short-circuit at line 4711
-            // already caught the both-ground identical case; this arm
-            // covers the post-walk case where the wrappers point at
-            // structurally-equivalent but distinct TermIds. Row
-            // unification proper (Rémy / Lindley-Cheney over the
-            // EffectExpression algebra) is WI-307 — when it lands the
-            // recursive `unify_types` call here will dispatch into
-            // dedicated `present` / `absent` / `open` / `merge` arms
-            // instead of falling through to `types_compatible`.
+            // EffectExpression. The hash-cons short-circuit already caught the
+            // both-ground identical case; this arm covers post-walk wrappers
+            // pointing at structurally-equivalent but distinct TermIds. Row
+            // unification proper (Rémy / Lindley-Cheney) is WI-307.
             let a_inner = match kb.get_term(a_resolved) {
                 Term::Fn { named_args, .. } => get_named_arg(kb, named_args, "effects_expr"),
                 _ => return false,
@@ -5392,7 +5575,7 @@ pub fn unify_types(kb: &mut KnowledgeBase, subst: &mut Substitution, a: TermId, 
                 _ => return false,
             };
             match (a_inner, b_inner) {
-                (Some(x), Some(y)) => unify_types(kb, subst, x, y),
+                (Some(x), Some(y)) => unify_types(kb, subst, &TermIdView(x), &TermIdView(y)),
                 _ => false,
             }
         }
@@ -5597,7 +5780,7 @@ fn unify_parameterized(kb: &mut KnowledgeBase, subst: &mut Substitution, a: Term
     let b_base = get_named_arg(kb, &b_args, "base");
     match (a_base, b_base) {
         (Some(ab), Some(bb)) => {
-            if !unify_types(kb, subst, ab, bb) { return false; }
+            if !unify_types(kb, subst, &TermIdView(ab), &TermIdView(bb)) { return false; }
         }
         _ => return false,
     }
@@ -5616,7 +5799,7 @@ fn unify_parameterized(kb: &mut KnowledgeBase, subst: &mut Substitution, a: Term
                 .find(|bb| binding_param_sym(kb, **bb) == Some(param))
                 .and_then(|bb| binding_value(kb, *bb));
             if let Some(bv) = bv {
-                if !unify_types(kb, subst, av, bv) { return false; }
+                if !unify_types(kb, subst, &TermIdView(av), &TermIdView(bv)) { return false; }
             }
         }
     }
@@ -5636,7 +5819,7 @@ fn unify_arrow(kb: &mut KnowledgeBase, subst: &mut Substitution, a: TermId, b: T
     let b_param = get_named_arg(kb, &b_args, "param");
     match (a_param, b_param) {
         (Some(ap), Some(bp)) => {
-            if !unify_types(kb, subst, ap, bp) { return false; }
+            if !unify_types(kb, subst, &TermIdView(ap), &TermIdView(bp)) { return false; }
         }
         _ => return false,
     }
@@ -5646,7 +5829,7 @@ fn unify_arrow(kb: &mut KnowledgeBase, subst: &mut Substitution, a: TermId, b: T
     let b_result = get_named_arg(kb, &b_args, "result");
     match (a_result, b_result) {
         (Some(ar), Some(br)) => {
-            if !unify_types(kb, subst, ar, br) { return false; }
+            if !unify_types(kb, subst, &TermIdView(ar), &TermIdView(br)) { return false; }
         }
         _ => return false,
     }
@@ -5874,7 +6057,7 @@ fn pair_present_labels(
                 continue;
             }
             let snapshot = subst.clone();
-            if unify_types(kb, subst, al, bl) {
+            if unify_types(kb, subst, &TermIdView(al), &TermIdView(bl)) {
                 b_matched[i] = true;
                 paired = true;
                 break;
@@ -5936,7 +6119,7 @@ fn cover_present_labels(
         let mut paired = false;
         for (i, &bl) in b_present.iter().enumerate() {
             let snapshot = subst.clone();
-            if unify_types(kb, subst, al, bl) {
+            if unify_types(kb, subst, &TermIdView(al), &TermIdView(bl)) {
                 b_covered[i] = true;
                 paired = true;
                 break;
@@ -6099,7 +6282,7 @@ fn label_violates_lacks(
 ) -> bool {
     for &l in lacked {
         let mut probe = subst.clone();
-        if unify_types(kb, &mut probe, label, l) {
+        if unify_types(kb, &mut probe, &TermIdView(label), &TermIdView(l)) {
             return true;
         }
     }
@@ -6399,7 +6582,7 @@ fn unify_named_tuple(kb: &mut KnowledgeBase, subst: &mut Substitution, a: TermId
                 .and_then(|af| field_type(kb, *af));
             match at {
                 Some(at) => {
-                    if !unify_types(kb, subst, at, bt) { return false; }
+                    if !unify_types(kb, subst, &TermIdView(at), &TermIdView(bt)) { return false; }
                 }
                 None => return false,
             }
@@ -8697,7 +8880,11 @@ fn check_rule_typing(kb: &mut KnowledgeBase, sort_term: TermId, errors: &mut Vec
 
         let head = kb.rule_head(rid);
         let mut subst = Substitution::new();
-        let mut var_types: HashMap<u32, TermId> = std::collections::HashMap::new();
+        // WI-342 P3: keyed by var id → its constrained type, carried
+        // carrier-agnostically as `Value` (today every entry is `Value::Term`
+        // from `OperationInfo`/entity-field metadata; it holds a `Value::Node`
+        // type unchanged once those producers migrate in P4).
+        let mut var_types: HashMap<u32, Value> = std::collections::HashMap::new();
 
         // Collect type constraints from the head (still a hash-consed term).
         collect_term_type_constraints(kb, head, &mut var_types, &mut subst);
@@ -8736,7 +8923,7 @@ fn check_rule_typing(kb: &mut KnowledgeBase, sort_term: TermId, errors: &mut Vec
 fn collect_term_type_constraints(
     kb: &mut KnowledgeBase,
     term: TermId,
-    var_types: &mut HashMap<u32, TermId>,
+    var_types: &mut HashMap<u32, Value>,
     subst: &mut Substitution,
 ) {
     match kb.get_term(term) {
@@ -8781,7 +8968,7 @@ fn constrain_var_type(
     kb: &mut KnowledgeBase,
     term: TermId,
     expected_type: TermId,
-    var_types: &mut HashMap<u32, TermId>,
+    var_types: &mut HashMap<u32, Value>,
     subst: &mut Substitution,
 ) {
     let vid = match kb.get_term(term) {
@@ -8800,15 +8987,15 @@ fn constrain_vid(
     kb: &mut KnowledgeBase,
     vid: u32,
     expected_type: TermId,
-    var_types: &mut HashMap<u32, TermId>,
+    var_types: &mut HashMap<u32, Value>,
     subst: &mut Substitution,
 ) {
-    if let Some(&existing_type) = var_types.get(&vid) {
-        if !unify_types(kb, subst, existing_type, expected_type) {
+    if let Some(existing) = var_types.get(&vid) {
+        if !unify_types(kb, subst, existing, &TermIdView(expected_type)) {
             subst.contradiction = true;
         }
     } else {
-        var_types.insert(vid, expected_type);
+        var_types.insert(vid, Value::Term(expected_type));
     }
 }
 
@@ -8827,7 +9014,7 @@ fn constrain_vid(
 fn collect_occurrence_type_constraints(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
-    var_types: &mut HashMap<u32, TermId>,
+    var_types: &mut HashMap<u32, Value>,
     subst: &mut Substitution,
 ) {
     // WI-298: descend into Pattern children so a var living in a pattern's
@@ -8875,7 +9062,7 @@ fn constrain_application(
     functor: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
-    var_types: &mut HashMap<u32, TermId>,
+    var_types: &mut HashMap<u32, Value>,
     subst: &mut Substitution,
 ) {
     if let Some(op) = lookup_operation_info_full(kb, functor) {
@@ -8900,7 +9087,7 @@ fn constrain_occ_var_type(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     expected_type: TermId,
-    var_types: &mut HashMap<u32, TermId>,
+    var_types: &mut HashMap<u32, Value>,
     subst: &mut Substitution,
 ) {
     let vid = match occ.as_expr() {
@@ -8909,5 +9096,123 @@ fn constrain_occ_var_type(
         _ => return,
     };
     constrain_vid(kb, vid, expected_type, var_types, subst);
+}
+
+#[cfg(test)]
+mod p3_tests {
+    //! WI-342 P3 — carrier-agnostic `unify_types` over `TermView`.
+    use super::unify_types;
+    use crate::eval::value::Value;
+    use crate::kb::load::register_prelude;
+    use crate::kb::node_occurrence::TypeNode;
+    use crate::kb::subst::Substitution;
+    use crate::kb::term::{Term, Var};
+    use crate::kb::term_view::TermIdView;
+    use crate::kb::KnowledgeBase;
+    use crate::span::{SourceId, SourceSpan};
+    use std::rc::Rc;
+
+    fn kb_with_prelude() -> KnowledgeBase {
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        kb
+    }
+
+    fn span() -> SourceSpan {
+        SourceSpan::new(SourceId::from_raw(0), 0, 1)
+    }
+
+    fn fresh_vid(kb: &mut KnowledgeBase, name: &str) -> crate::kb::term::VarId {
+        let sym = kb.intern(name);
+        kb.fresh_var(sym)
+    }
+
+    /// A fresh inference var `?T` binds to a `Value`-carried `denoted` and
+    /// resolves back to it (identity preserved) — the var↔Value-carried path.
+    #[test]
+    fn unify_var_with_value_carried_denoted() {
+        let mut kb = kb_with_prelude();
+        let c = kb.intern("c");
+        let denoted_occ = kb.make_denoted_occ_ref(c, span(), None);
+        let tname = kb.intern("T");
+        let vid = kb.fresh_var(tname);
+        let var_t = kb.alloc(Term::Var(Var::Global(vid)));
+
+        let mut subst = Substitution::new();
+        assert!(unify_types(&mut kb, &mut subst, &TermIdView(var_t), &denoted_occ));
+
+        match subst.resolve_as_value(vid) {
+            Some(Value::Node(occ)) => {
+                assert!(Rc::ptr_eq(occ, &denoted_occ), "binding preserves occurrence identity");
+                assert!(matches!(occ.as_type(), Some(TypeNode::Denoted { .. })));
+            }
+            other => panic!("expected ?T → Value::Node(denoted), got {other:?}"),
+        }
+    }
+
+    /// `denoted` unifies cross-carrier by its `Ref` symbol: ground `denoted(Ref c)`
+    /// vs `Value`-carried `denoted(Ref c)` succeeds; vs `Ref d` fails; Node vs Node
+    /// succeeds for the same symbol.
+    #[test]
+    fn cross_carrier_denoted_unify() {
+        let mut kb = kb_with_prelude();
+        let c = kb.intern("c");
+        let d = kb.intern("d");
+        let c_ref = kb.alloc(Term::Ref(c));
+        let ground_c = kb.make_denoted(c_ref);
+        let occ_c = kb.make_denoted_occ_ref(c, span(), None);
+        let occ_d = kb.make_denoted_occ_ref(d, span(), None);
+
+        let mut s = Substitution::new();
+        assert!(unify_types(&mut kb, &mut s, &TermIdView(ground_c), &occ_c), "ground c vs occ c");
+        let mut s2 = Substitution::new();
+        assert!(!unify_types(&mut kb, &mut s2, &TermIdView(ground_c), &occ_d), "c vs d differ");
+        let occ_c2 = kb.make_denoted_occ_ref(c, span(), None);
+        let mut s3 = Substitution::new();
+        assert!(unify_types(&mut kb, &mut s3, &occ_c, &occ_c2), "occ c vs occ c");
+    }
+
+    /// Regression: two ground `denoted(Ref c)` hash-cons to one TermId and unify
+    /// via the identity fast-path; distinct refs fail via the new `denoted` arm —
+    /// i.e. the label-site behavior is unchanged for the all-`TermId` case.
+    #[test]
+    fn ground_denoted_unchanged() {
+        let mut kb = kb_with_prelude();
+        let c = kb.intern("c");
+        let d = kb.intern("d");
+        let cref = kb.alloc(Term::Ref(c));
+        let dc1 = kb.make_denoted(cref);
+        let cref2 = kb.alloc(Term::Ref(c));
+        let dc2 = kb.make_denoted(cref2);
+        assert_eq!(dc1, dc2, "ground denoted(Ref c) hash-cons to one TermId");
+        let dref = kb.alloc(Term::Ref(d));
+        let dd = kb.make_denoted(dref);
+
+        let mut s = Substitution::new();
+        assert!(unify_types(&mut kb, &mut s, &TermIdView(dc1), &TermIdView(dc2)));
+        let mut s2 = Substitution::new();
+        assert!(!unify_types(&mut kb, &mut s2, &TermIdView(dc1), &TermIdView(dd)));
+    }
+
+    /// `bind_value` contradiction via the extended `occurrence_structural_eq`:
+    /// binding a var twice to structurally-equal (distinct `Rc`) Value-carried
+    /// types must NOT contradict; to a different one must.
+    #[test]
+    fn bind_value_structural_eq_no_false_contradiction() {
+        let mut kb = kb_with_prelude();
+        let vid = fresh_vid(&mut kb, "T");
+        let c = kb.intern("c");
+        let d = kb.intern("d");
+        let occ_c1 = kb.make_denoted_occ_ref(c, span(), None);
+        let occ_c2 = kb.make_denoted_occ_ref(c, span(), None); // equal, distinct Rc
+        let occ_d = kb.make_denoted_occ_ref(d, span(), None);
+
+        let mut s = Substitution::new();
+        s.bind_value(vid, Value::Node(occ_c1));
+        s.bind_value(vid, Value::Node(occ_c2));
+        assert!(!s.is_contradiction(), "equal Value-carried types must not contradict");
+        s.bind_value(vid, Value::Node(occ_d));
+        assert!(s.is_contradiction(), "a distinct Value-carried type contradicts");
+    }
 }
 

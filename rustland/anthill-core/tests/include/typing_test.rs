@@ -2291,7 +2291,7 @@ fn row_unify_closed_closed_same() {
     let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1, e2]);
     let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2, e1]); // reversed input order
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, arrow_a, arrow_b),
+    assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_a), &TermIdView(arrow_b)),
         "two closed rows with same label set must unify");
 }
 
@@ -2307,7 +2307,7 @@ fn row_unify_closed_closed_different() {
     let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1]);
     let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2]);
     let mut subst = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst, arrow_a, arrow_b),
+    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(arrow_a), &TermIdView(arrow_b)),
         "two closed rows with different label sets must NOT unify");
 }
 
@@ -2330,7 +2330,7 @@ fn row_unify_open_closed_tail_absorbs() {
     let closed_row  = kb.make_arrow_type(int_ty, int_ty, &[e1, e2]);    // {EffectA, EffectB}
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, open_row, closed_row),
+    assert!(unify_types(&mut kb, &mut subst, &TermIdView(open_row), &TermIdView(closed_row)),
         "open row should unify with closed row of same labels + extras");
     assert!(subst.resolve_with_term(rho_vid).is_some(),
         "?rho should be bound after row unification");
@@ -2357,7 +2357,7 @@ fn row_unify_open_closed_missing_label_fails() {
     let closed_row = kb.make_arrow_type(int_ty, int_ty, &[e1, e2]);      // {EffectA, EffectB}
 
     let mut subst = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst, open_row, closed_row),
+    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(open_row), &TermIdView(closed_row)),
         "open row with extra labels not in closed row must NOT unify");
 }
 
@@ -2379,7 +2379,7 @@ fn row_unify_open_open_same_tail() {
     assert_eq!(arrow_a, arrow_b, "identical open rows share TermId");
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, arrow_a, arrow_b),
+    assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_a), &TermIdView(arrow_b)),
         "identical open rows unify trivially");
 }
 
@@ -2406,7 +2406,7 @@ fn row_unify_open_open_disjoint_extras() {
     let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2, rho_b]); // {EffectB | ?rho_b}
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, arrow_a, arrow_b),
+    assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_a), &TermIdView(arrow_b)),
         "open/open with disjoint extras must unify (Rémy fresh-tail case)");
     assert!(subst.resolve_with_term(rho_a_vid).is_some(),
         "?rho_a should be bound");
@@ -2434,7 +2434,7 @@ fn row_unify_open_open_same_labels() {
     let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e1, rho_b]);
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, arrow_a, arrow_b),
+    assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_a), &TermIdView(arrow_b)),
         "open/open with same labels must unify; tails link through a fresh shared var");
 }
 
@@ -2465,7 +2465,7 @@ fn row_lacks_unify_non_conflicting_label_ok() {
     let lacks_row    = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho]); // {-Error | ρ}
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, closed_other, lacks_row),
+    assert!(unify_types(&mut kb, &mut subst, &TermIdView(closed_other), &TermIdView(lacks_row)),
         "{{Other}} unifies with {{-Error | ρ}} — Other is not the lacked Error");
     assert!(subst.resolve_with_term(rho_vid).is_some(),
         "ρ should be bound (absorbs Other, closing the row)");
@@ -2489,7 +2489,7 @@ fn row_lacks_unify_present_lacked_label_fails() {
     let lacks_row  = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho]); // {-Error | ρ}
 
     let mut subst = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst, closed_err, lacks_row),
+    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(closed_err), &TermIdView(lacks_row)),
         "{{Error}} must NOT unify with {{-Error | ρ}} — ρ lacks Error");
 }
 
@@ -2514,7 +2514,7 @@ fn row_lacks_open_open_present_into_lacking_tail_fails() {
     let err_row   = kb.make_arrow_type(int_ty, int_ty, &[err, rho_b]);        // {Error | ρb}
 
     let mut subst = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst, lacks_row, err_row),
+    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(lacks_row), &TermIdView(err_row)),
         "{{-Error | ρa}} must NOT unify with {{Error | ρb}} — Error flows into ρa which lacks it");
 }
 
@@ -2543,13 +2543,13 @@ fn row_lacks_propagates_to_fresh_shared_tail() {
     let open_b    = kb.make_arrow_type(int_ty, int_ty, &[rho_b]);             // {ρb}
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, lacks_row, open_b),
+    assert!(unify_types(&mut kb, &mut subst, &TermIdView(lacks_row), &TermIdView(open_b)),
         "step 1: {{-Error | ρa}} unifies with {{ρb}} (both open)");
 
     // Step 2: present Error against ρb's now-shared tail — must fail.
     let closed_err = kb.make_arrow_type(int_ty, int_ty, &[err]);             // {Error}
     let open_b2    = kb.make_arrow_type(int_ty, int_ty, &[rho_b]);           // {ρb} (resolves to fresh tail)
-    assert!(!unify_types(&mut kb, &mut subst, closed_err, open_b2),
+    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(closed_err), &TermIdView(open_b2)),
         "step 2: {{Error}} must NOT unify with the shared tail that inherited lacks-Error");
 }
 
@@ -2567,7 +2567,7 @@ fn row_present_absent_same_label_rejected() {
     let closed_err = kb.make_arrow_type(int_ty, int_ty, &[err]);             // {Error}
 
     let mut subst = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst, clash_row, closed_err),
+    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(clash_row), &TermIdView(closed_err)),
         "{{Error, -Error}} is malformed (present/absent clash) — unification rejects");
 }
 
@@ -3145,11 +3145,11 @@ fn types_compatible_bootstrap_safe_when_prelude_not_registered() {
 
     // unify_types reaches unify_arrow's (Some, None) / (None, Some) arms.
     let mut subst1 = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst1, arrow_with_effects, arrow_no_effects),
+    assert!(!unify_types(&mut kb, &mut subst1, &TermIdView(arrow_with_effects), &TermIdView(arrow_no_effects)),
         "unify_arrow (Some, None): bootstrap-uninitialized KB rejects \
          without panicking");
     let mut subst2 = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst2, arrow_no_effects, arrow_with_effects),
+    assert!(!unify_types(&mut kb, &mut subst2, &TermIdView(arrow_no_effects), &TermIdView(arrow_with_effects)),
         "unify_arrow (None, Some): symmetric arm also bootstrap-safe");
 
     // bind_row_tail is reachable via the bare-Var path in
@@ -3245,12 +3245,12 @@ fn unify_rejects_rigid_tail_against_closed() {
     let arrow_closed = kb.make_arrow_type(int_ty, int_ty, &[e1]);
 
     let mut subst = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst, arrow_open_rigid, arrow_closed),
+    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(arrow_open_rigid), &TermIdView(arrow_closed)),
         "unify of {{E1 | ?rho_rigid}} with closed {{E1}} must REJECT — \
          Rigid can't be bound to empty by the unifier");
     // Symmetric direction.
     let mut subst2 = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst2, arrow_closed, arrow_open_rigid),
+    assert!(!unify_types(&mut kb, &mut subst2, &TermIdView(arrow_closed), &TermIdView(arrow_open_rigid)),
         "symmetric direction: unify of closed {{E1}} with {{E1 | ?rho_rigid}} must REJECT");
 }
 
@@ -3381,7 +3381,7 @@ fn unify_arrow_shared_rho_with_extras() {
     let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2, rho]);
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, arrow_a, arrow_b),
+    assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_a), &TermIdView(arrow_b)),
         "unify of arrows sharing rho with one side carrying extras must succeed");
     assert!(subst.resolve_with_term(rho_vid).is_some(),
         "?rho should be bound after unification");
@@ -3451,7 +3451,7 @@ fn subtype_rejects_malformed_multi_tail_row() {
 
     // unify_types also rejects (propagates the decompose None as false).
     let mut subst = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst, arrow_malformed, arrow_clean),
+    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(arrow_malformed), &TermIdView(arrow_clean)),
         "unify rejects against malformed multi-tail row");
 }
 
@@ -3863,6 +3863,7 @@ end
 // ══════════════════════════════════════════════════════════════════
 
 use anthill_core::kb::typing::unify_types;
+use anthill_core::kb::term_view::TermIdView;
 // Substitution already imported above for the types_compatible test wrapper.
 
 #[test]
@@ -3870,7 +3871,7 @@ fn unify_identical_types() {
     let mut kb = load_stdlib_kb();
     let int_ty = kb.make_sort_ref_by_name("Int");
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, int_ty, int_ty), "Int unifies with Int");
+    assert!(unify_types(&mut kb, &mut subst, &TermIdView(int_ty), &TermIdView(int_ty)), "Int unifies with Int");
 }
 
 #[test]
@@ -3881,7 +3882,7 @@ fn unify_var_binds_to_type() {
     let vid = kb.fresh_var(sym);
     let var_term = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(vid)));
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, var_term, int_ty), "Var unifies with Int");
+    assert!(unify_types(&mut kb, &mut subst, &TermIdView(var_term), &TermIdView(int_ty)), "Var unifies with Int");
     assert_eq!(subst.resolve_with_term(vid), Some(int_ty), "Var should be bound to Int");
 }
 
@@ -3895,7 +3896,7 @@ fn unify_both_vars_bind() {
     let var1 = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(vid1)));
     let var2 = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(vid2)));
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, var1, var2), "two vars unify");
+    assert!(unify_types(&mut kb, &mut subst, &TermIdView(var1), &TermIdView(var2)), "two vars unify");
     // One should be bound to the other
     assert!(subst.resolve_with_term(vid1).is_some() || subst.resolve_with_term(vid2).is_some(),
         "at least one var should be bound");
@@ -3907,7 +3908,7 @@ fn unify_incompatible_ground_types() {
     let int_ty = kb.make_sort_ref_by_name("Int");
     let str_ty = kb.make_sort_ref_by_name("String");
     let mut subst = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst, int_ty, str_ty), "Int does not unify with String");
+    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(int_ty), &TermIdView(str_ty)), "Int does not unify with String");
 }
 
 #[test]
@@ -3926,7 +3927,7 @@ fn unify_parameterized_with_var_binding() {
     let list_int = kb.make_parameterized_type(list_base, &[(t_sym, int_ty)]);
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, list_var, list_int), "List[T=?X] unifies with List[T=Int]");
+    assert!(unify_types(&mut kb, &mut subst, &TermIdView(list_var), &TermIdView(list_int)), "List[T=?X] unifies with List[T=Int]");
     assert_eq!(subst.resolve_with_term(x_vid), Some(int_ty), "?X should be bound to Int");
 }
 
@@ -3948,7 +3949,7 @@ fn unify_arrow_with_var_binding() {
     let arrow_concrete = kb.make_arrow_type(int_ty, str_ty, &[]);
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, arrow_var, arrow_concrete), "(?A -> ?B) unifies with (Int -> String)");
+    assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_var), &TermIdView(arrow_concrete)), "(?A -> ?B) unifies with (Int -> String)");
     assert_eq!(subst.resolve_with_term(a_vid), Some(int_ty), "?A = Int");
     assert_eq!(subst.resolve_with_term(b_vid), Some(str_ty), "?B = String");
 }
@@ -3969,7 +3970,7 @@ end
     let t_ref = kb.make_sort_ref(t_sym);
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, t_ref, int_ty),
+    assert!(unify_types(&mut kb, &mut subst, &TermIdView(t_ref), &TermIdView(int_ty)),
         "sort_ref(T) should unify with Int via SortAlias");
 }
 

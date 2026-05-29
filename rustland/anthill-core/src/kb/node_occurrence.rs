@@ -1596,6 +1596,17 @@ pub fn occurrence_structural_eq(a: &Rc<NodeOccurrence>, b: &Rc<NodeOccurrence>) 
     if Rc::ptr_eq(a, b) {
         return true;
     }
+    // WI-342: two Value-carried types/effects are equal iff their kind + spine
+    // match structurally (distinct `Rc`s of the same `{-Modify[c]}` must compare
+    // equal — `bind_value`'s contradiction check relies on this so binding a var
+    // twice to equal carriers is consistent, not a false contradiction). Kept in
+    // lockstep with `unify_denoted_view`: a `denoted` compares its value occ.
+    if let (Some(ta), Some(tb)) = (a.as_type(), b.as_type()) {
+        return type_node_eq(ta, tb);
+    }
+    if let (Some(ea), Some(eb)) = (a.as_effect_expr(), b.as_effect_expr()) {
+        return effect_expr_node_eq(ea, eb);
+    }
     match (a.as_expr(), b.as_expr()) {
         (Some(Expr::Var(x)), Some(Expr::Var(y))) => x == y,
         (Some(Expr::Const(x)), Some(Expr::Const(y))) => x == y,
@@ -1626,6 +1637,62 @@ fn occ_children_eq(
         && na.len() == nb.len()
         && pa.iter().zip(pb).all(|(x, y)| occurrence_structural_eq(x, y))
         && na.iter().zip(nb).all(|((ka, va), (kb, vb))| ka == kb && occurrence_structural_eq(va, vb))
+}
+
+/// WI-342: structural equality of a `TypeChild` — a ground subtree by `TermId`
+/// identity (hash-consed, so `==` is exact), a poisoned subtree recursively.
+fn type_child_eq(a: &TypeChild, b: &TypeChild) -> bool {
+    match (a, b) {
+        (TypeChild::Ground(x), TypeChild::Ground(y)) => x == y,
+        (TypeChild::Node(x), TypeChild::Node(y)) => occurrence_structural_eq(x, y),
+        _ => false,
+    }
+}
+
+/// WI-342: structural equality of two [`TypeNode`]s (same variant + children).
+fn type_node_eq(a: &TypeNode, b: &TypeNode) -> bool {
+    match (a, b) {
+        (TypeNode::Denoted { value: va }, TypeNode::Denoted { value: vb }) => {
+            occurrence_structural_eq(va, vb)
+        }
+        (
+            TypeNode::Parameterized { base: ba, bindings: bsa },
+            TypeNode::Parameterized { base: bb, bindings: bsb },
+        ) => {
+            type_child_eq(ba, bb)
+                && bsa.len() == bsb.len()
+                && bsa
+                    .iter()
+                    .zip(bsb)
+                    .all(|((ka, va), (kb, vb))| ka == kb && type_child_eq(va, vb))
+        }
+        (
+            TypeNode::EffectsRows { effects_expr: ea },
+            TypeNode::EffectsRows { effects_expr: eb },
+        ) => type_child_eq(ea, eb),
+        (
+            TypeNode::Arrow { param: pa, result: ra, effects: ea },
+            TypeNode::Arrow { param: pb, result: rb, effects: eb },
+        ) => type_child_eq(pa, pb) && type_child_eq(ra, rb) && type_child_eq(ea, eb),
+        _ => false,
+    }
+}
+
+/// WI-342: structural equality of two [`EffectExprNode`]s.
+fn effect_expr_node_eq(a: &EffectExprNode, b: &EffectExprNode) -> bool {
+    match (a, b) {
+        (
+            EffectExprNode::Merge { left: la, right: ra },
+            EffectExprNode::Merge { left: lb, right: rb },
+        ) => type_child_eq(la, lb) && type_child_eq(ra, rb),
+        (EffectExprNode::Present { label: a }, EffectExprNode::Present { label: b })
+        | (EffectExprNode::Absent { label: a }, EffectExprNode::Absent { label: b }) => {
+            type_child_eq(a, b)
+        }
+        (EffectExprNode::Open { tail: a }, EffectExprNode::Open { tail: b }) => type_child_eq(a, b),
+        (EffectExprNode::EmptyRow, EffectExprNode::EmptyRow) => true,
+        _ => false,
+    }
 }
 
 /// WI-246: reify a rule-body-atom occurrence to a hash-consed `TermId` — the
