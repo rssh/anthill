@@ -5897,6 +5897,14 @@ fn bind_row_tail(
 /// The probe unifies on a CLONE of `subst` so a match leaves no bindings
 /// behind — the caller is deciding whether to reject the row, not
 /// committing the label pairing.
+///
+/// **WI-341 coupling**: for a value-carrying label like `Modify[c]`, this
+/// comparison (and v1a's `pair_present_labels`/`cover_present_labels`) works
+/// only because the value occurrence `c` is currently flattened to a
+/// hash-consed `denoted(value: Ref(c))`, so two `Modify[c]` share a TermId
+/// and `unify_types` matches them. When `denoted` migrates to carry a real
+/// `Rc<NodeOccurrence>` (per its `sort.anthill` schema), this must become
+/// occurrence-aware — same change for the v1a label sites. See WI-341.
 fn label_violates_lacks(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
