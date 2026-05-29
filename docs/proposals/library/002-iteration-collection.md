@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft 2026-05-29. Second proposal under `docs/proposals/library/`. Surfaced by [`001-map.md`](001-map.md): Map's `MapReadable` / `PersistentMap` / `MutableMap` is the *keyed* instance of a split the sequence/collection traits should also carry. Open questions 2–5 were settled in design discussion (shared `Iterable` bridge adopted at Level 1; persistent collections provide rather than self-iterate; `insert` stays `Unit`; no umbrella); only the read-layer naming (Q 1) is open.
+Draft 2026-05-29. Second proposal under `docs/proposals/library/`. Surfaced by [`001-map.md`](001-map.md): Map's `MapReadable` / `PersistentMap` / `MutableMap` is the *keyed* instance of a split the sequence/collection traits should also carry. Open questions were settled in design discussion: read layer keeps the name `Iteration` (Q 1); shared `Iterable` bridge adopted at Level 1 (Q 2); persistent collections provide rather than self-iterate (Q 3); `insert` stays `Unit` (Q 4); no umbrella supertrait (Q 5).
 
 ## Motivation
 
@@ -125,7 +125,7 @@ The `Collection → PersistentCollection` rename of the trait name is the wide-f
 
 ## Open questions
 
-1. **Read-layer name — keep `Iteration`, or `CollectionReadable`?** `Iteration` is the *iterator* concept (self-consuming `split`). `MapReadable` is a *readable container* (random access + produces iterators) — strictly richer. For un-keyed sequences "readable ≈ iterable," so `Iteration` + `Iterable` may suffice. *Recommend keeping `Iteration`* and not minting `CollectionReadable` unless a sequence read-capability beyond iteration (e.g. `size`/`contains` as primitives rather than folds) earns its own trait. **(Still open.)**
+1. *(Resolved — keep `Iteration`)* **Read-layer name.** `Iteration` is the *iterator* concept (self-consuming `split`); `Iterable` already supplies the "readable/walkable" verb on top of it. No `CollectionReadable` is minted — it would only be warranted if a sequence read-capability beyond iteration (e.g. `size`/`contains` as primitives rather than folds) earned its own trait, which nothing yet needs.
 
 2. *(Resolved)* **Shared iteration interface — yes, `Iterable`.** Both builders `requires Iterable`; `iterator(c) -> Stream[Element, E]` (Level 1). The richer **Level 2** — an associated iterator type (`sort It = ?` + `requires Iteration[Iterator = It]`, the full `IntoIterator`), which would let a carrier yield a *non-sequential* iterator (parallel / chunked / paged) — is the upgrade path, the same one [001-map](001-map.md) Open Q 6 defers until a real driver appears.
 
