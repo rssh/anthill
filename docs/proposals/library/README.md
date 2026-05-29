@@ -6,7 +6,7 @@ Library proposals are distinct from **kernel-language proposals** (in the parent
 
 ## Conventions
 
-- **Filenames** are descriptive slugs without numbers. The directory namespace isolates these from the main proposal sequence; no number is needed to disambiguate.
+- **Filenames** are digit-prefixed (`001-map.md`, `002-list.md`, …) with a descriptive slug after the number. The number sequence is local to this directory — it runs independently of the kernel-proposal sequence in the parent directory, so library `001` and kernel `001` are unrelated.
 - **Structure** mirrors the kernel proposals: §Status, §Motivation, §Design, §Migration / phasing, §Interaction with other proposals, §Open questions, §Phasing.
 - **Cross-references** to kernel proposals use the parent-directory path (e.g. `[027.1-alloc-effect](../027.1-alloc-effect-and-allocator-revision.md)`).
 - **Implementation status** is tracked in workitems (`anthill-todo/workitems.anthill`) under the relevant WI; the proposal documents the *design*, not the progress.
@@ -15,11 +15,11 @@ Library proposals are distinct from **kernel-language proposals** (in the parent
 
 | File | Status | Subject |
 |---|---|---|
-| [`map.md`](map.md) | Draft 2026-05-28 | Split `Map` into three sorts: `MapReadable` (typeclass for read-only ops), `PersistentMap` (functional update), `MutableMap` (in-place mutation per 027.1). Effect-polymorphic iteration via `Stream[T, E]`. |
+| [`001-map.md`](001-map.md) | Draft 2026-05-28 | Split `Map` into three sorts: `MapReadable` (typeclass for read-only ops), `PersistentMap` (functional update), `MutableMap` (in-place mutation per 027.1). Effect-polymorphic iteration via `Stream[T, E]`. |
 
 ## Candidate / planned proposals
 
-These follow naturally from `map.md` and other in-flight work. Each is a separate proposal when the time comes; this section is the holding pen so the design space is visible without scattered TODOs.
+These follow naturally from `001-map.md` and other in-flight work. Each is a separate proposal when the time comes; this section is the holding pen so the design space is visible without scattered TODOs.
 
 | Slug | Subject | Driver |
 |---|---|---|
@@ -34,7 +34,7 @@ These follow naturally from `map.md` and other in-flight work. Each is a separat
 
 ## Naming conventions for split sorts
 
-When a library proposal splits a container into readable + persistent + mutable variants, the convention from `map.md` applies:
+When a library proposal splits a container into readable + persistent + mutable variants, the convention from `001-map.md` applies:
 
 - **Readable** — typeclass / abstract spec with read-only operations; named with the `Readable` suffix. Effect parameter `E` for iteration effect. Concrete sorts `requires` this typeclass.
 - **PersistentX** — functional-update variant. Verbs: `empty()`, `with(c, …)`, `without(c, …)`. No declared effects on update operations. Two empties denote the same value.
