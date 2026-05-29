@@ -2438,6 +2438,139 @@ fn row_unify_open_open_same_labels() {
         "open/open with same labels must unify; tails link through a fresh shared var");
 }
 
+// ── WI-328 v1b lacks-constraint tests ────────────────────────────────────
+//
+// `-e` (`absent(e)`) on an open row is a `lacks e` constraint on its tail:
+// no binding of that tail may present `e`. These exercise the four pieces:
+// registration (decompose's absent slot → Substitution::lacks), the bind
+// check (present-into-lacked-tail rejected), propagation onto a fresh
+// shared tail, and the within-row present/absent clash reject.
+
+/// A closed row presenting a NON-lacked effect unifies with `{-Error | ρ}`:
+/// `Other` ≠ `Error`, so the tail closes to `{Other}` without violating the
+/// lacks. ρ is bound.
+#[test]
+fn row_lacks_unify_non_conflicting_label_ok() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let err = kb.make_sort_ref_by_name("Error");
+    let other = kb.make_sort_ref_by_name("Other");
+
+    let rho_sym = kb.intern("?rho");
+    let rho_vid = kb.fresh_var(rho_sym);
+    let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
+
+    let absent_err = kb.make_effect_expression_absent(err);
+    let closed_other = kb.make_arrow_type(int_ty, int_ty, &[other]);     // {Other}
+    let lacks_row    = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho]); // {-Error | ρ}
+
+    let mut subst = Substitution::new();
+    assert!(unify_types(&mut kb, &mut subst, closed_other, lacks_row),
+        "{{Other}} unifies with {{-Error | ρ}} — Other is not the lacked Error");
+    assert!(subst.resolve_with_term(rho_vid).is_some(),
+        "ρ should be bound (absorbs Other, closing the row)");
+}
+
+/// A closed row presenting the LACKED effect must NOT unify with
+/// `{-Error | ρ}`: binding ρ to `{Error}` would present a forbidden effect.
+/// This is the §7.1 "presents e against a tail carrying lacks e fails".
+#[test]
+fn row_lacks_unify_present_lacked_label_fails() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let err = kb.make_sort_ref_by_name("Error");
+
+    let rho_sym = kb.intern("?rho");
+    let rho_vid = kb.fresh_var(rho_sym);
+    let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
+
+    let absent_err = kb.make_effect_expression_absent(err);
+    let closed_err = kb.make_arrow_type(int_ty, int_ty, &[err]);          // {Error}
+    let lacks_row  = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho]); // {-Error | ρ}
+
+    let mut subst = Substitution::new();
+    assert!(!unify_types(&mut kb, &mut subst, closed_err, lacks_row),
+        "{{Error}} must NOT unify with {{-Error | ρ}} — ρ lacks Error");
+}
+
+/// Open/open: `{-Error | ρa}` unified with `{Error | ρb}` fails — the
+/// `Error` presented on the b side flows into ρa (which lacks Error) during
+/// the Rémy fresh-tail step. Proven impossibility on the open/open arm.
+#[test]
+fn row_lacks_open_open_present_into_lacking_tail_fails() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let err = kb.make_sort_ref_by_name("Error");
+
+    let rho_a_sym = kb.intern("?rho_a");
+    let rho_a_vid = kb.fresh_var(rho_a_sym);
+    let rho_a = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_a_vid)));
+    let rho_b_sym = kb.intern("?rho_b");
+    let rho_b_vid = kb.fresh_var(rho_b_sym);
+    let rho_b = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_b_vid)));
+
+    let absent_err = kb.make_effect_expression_absent(err);
+    let lacks_row = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho_a]); // {-Error | ρa}
+    let err_row   = kb.make_arrow_type(int_ty, int_ty, &[err, rho_b]);        // {Error | ρb}
+
+    let mut subst = Substitution::new();
+    assert!(!unify_types(&mut kb, &mut subst, lacks_row, err_row),
+        "{{-Error | ρa}} must NOT unify with {{Error | ρb}} — Error flows into ρa which lacks it");
+}
+
+/// Propagation onto the fresh shared tail. Step 1 unifies `{-Error | ρa}`
+/// with `{ρb}` (both open, no present labels): ρa/ρb link through a fresh
+/// shared tail that INHERITS the lacks-Error. Step 2, reusing the same
+/// substitution, unifies `{Error}` against `{ρb}` — ρb now resolves to the
+/// fresh tail, so presenting Error must fail, proving the constraint
+/// propagated. (This is the map/fold callback shape: a `-Error` on one
+/// arrow's tail constrains the shared tail every later row links to.)
+#[test]
+fn row_lacks_propagates_to_fresh_shared_tail() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let err = kb.make_sort_ref_by_name("Error");
+
+    let rho_a_sym = kb.intern("?rho_a");
+    let rho_a_vid = kb.fresh_var(rho_a_sym);
+    let rho_a = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_a_vid)));
+    let rho_b_sym = kb.intern("?rho_b");
+    let rho_b_vid = kb.fresh_var(rho_b_sym);
+    let rho_b = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_b_vid)));
+
+    let absent_err = kb.make_effect_expression_absent(err);
+    let lacks_row = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho_a]); // {-Error | ρa}
+    let open_b    = kb.make_arrow_type(int_ty, int_ty, &[rho_b]);             // {ρb}
+
+    let mut subst = Substitution::new();
+    assert!(unify_types(&mut kb, &mut subst, lacks_row, open_b),
+        "step 1: {{-Error | ρa}} unifies with {{ρb}} (both open)");
+
+    // Step 2: present Error against ρb's now-shared tail — must fail.
+    let closed_err = kb.make_arrow_type(int_ty, int_ty, &[err]);             // {Error}
+    let open_b2    = kb.make_arrow_type(int_ty, int_ty, &[rho_b]);           // {ρb} (resolves to fresh tail)
+    assert!(!unify_types(&mut kb, &mut subst, closed_err, open_b2),
+        "step 2: {{Error}} must NOT unify with the shared tail that inherited lacks-Error");
+}
+
+/// A row that both presents and absents the SAME label (`{Error, -Error}`)
+/// is malformed — decompose rejects it, so any unification involving it
+/// fails (proposal §7.2 present/absent clash).
+#[test]
+fn row_present_absent_same_label_rejected() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let err = kb.make_sort_ref_by_name("Error");
+
+    let absent_err = kb.make_effect_expression_absent(err);
+    let clash_row  = kb.make_arrow_type(int_ty, int_ty, &[err, absent_err]); // {Error, -Error}
+    let closed_err = kb.make_arrow_type(int_ty, int_ty, &[err]);             // {Error}
+
+    let mut subst = Substitution::new();
+    assert!(!unify_types(&mut kb, &mut subst, clash_row, closed_err),
+        "{{Error, -Error}} is malformed (present/absent clash) — unification rejects");
+}
+
 // ── WI-326 v1a row subtyping tests ───────────────────────────────────────
 //
 // These exercise the directional row algorithm in `arrow_compatible`.

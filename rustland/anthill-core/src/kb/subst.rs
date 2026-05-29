@@ -21,6 +21,21 @@ pub struct Substitution {
     pub parent: Option<Box<Substitution>>,
     /// Set to true when a variable is bound to two different concrete terms.
     pub contradiction: bool,
+    /// WI-328 (proposal 045 §5.5 / §7.1) — `lacks` constraints on
+    /// (unbound) row-tail variables: each effect-row tail `ρ` may carry a
+    /// set of effect-label `TermId`s it is forbidden to present (`- e` /
+    /// `absent(e)`). Keyed by the tail's `VarId`, the labels stored as
+    /// effect-type `TermId`s. This is a side-table parallel to `bindings`
+    /// (not a `Value` binding) because the constraint is on the *unbound*
+    /// tail, not on a concrete value — once the tail binds, the constraint
+    /// has already been checked against (and propagated through) the
+    /// binding by [`crate::kb::typing`]'s `bind_row_tail`.
+    ///
+    /// Living on `Substitution` means it inherits the snapshot/restore
+    /// rollback (`subst.clone()` … `*subst = snapshot`) that WI-338's
+    /// `pair_present_labels` / `cover_present_labels` already exercise, so a
+    /// failed row-unification attempt discards its tentative lacks too.
+    pub lacks: HashMap<VarId, Vec<TermId>>,
 }
 
 impl Substitution {
@@ -29,6 +44,7 @@ impl Substitution {
             bindings: HashMap::new(),
             parent: None,
             contradiction: false,
+            lacks: HashMap::new(),
         }
     }
 
@@ -37,6 +53,7 @@ impl Substitution {
             bindings: HashMap::new(),
             parent: Some(Box::new(parent)),
             contradiction: false,
+            lacks: HashMap::new(),
         }
     }
 
@@ -151,6 +168,38 @@ impl Substitution {
             }
             self.bindings.insert(vid, Value::Term(term));
         }
+    }
+
+    /// WI-328 — record `lacks` labels on a row-tail variable. The labels
+    /// are effect-type `TermId`s the tail `var` may never present. Idempotent
+    /// per `TermId` (a row stating `- e` twice adds `e` once); order is not
+    /// significant (a row is a set).
+    pub fn add_lacks<I>(&mut self, var: VarId, labels: I)
+    where
+        I: IntoIterator<Item = TermId>,
+    {
+        let existing = self.lacks.entry(var).or_default();
+        for l in labels {
+            if !existing.contains(&l) {
+                existing.push(l);
+            }
+        }
+    }
+
+    /// WI-328 — the full `lacks` set on a row-tail variable, unioned across
+    /// the parent chain (a tail's constraints may have been recorded in an
+    /// ancestor substitution before a child was forked). Returns an owned
+    /// `Vec` since the union may span levels; callers iterate it read-only.
+    pub fn lacks_of(&self, var: VarId) -> Vec<TermId> {
+        let mut out: Vec<TermId> = self.lacks.get(&var).cloned().unwrap_or_default();
+        if let Some(ref parent) = self.parent {
+            for l in parent.lacks_of(var) {
+                if !out.contains(&l) {
+                    out.push(l);
+                }
+            }
+        }
+        out
     }
 
     /// Iterate over all bindings. Yields `(VarId, Value)` references;

@@ -5512,8 +5512,12 @@ fn unify_arrow(kb: &mut KnowledgeBase, subst: &mut Substitution, a: TermId, b: T
 /// unification, the walk recurses into the bound value. So a row that was
 /// just `open(?ρ)` becomes its full decomposed shape once ?ρ is resolved.
 ///
-/// `absent_labels` (v1b's `-e` lacks-constraint slot) is collected but not
-/// yet consumed by the unifier — v1a is presence-only.
+/// `absent_labels` (the `-e` lacks-constraint slot) is consumed by
+/// [`unify_effect_rows`] / [`subtype_effect_rows`] (WI-328): each side's
+/// absents are registered as `lacks` constraints on that side's tail var
+/// (`Substitution::add_lacks`) before the tail-binding step. A within-row
+/// `present`/`absent` clash on the same label is rejected here (see the
+/// end of the function).
 ///
 /// **WI-339 F13** — returns `None` on **malformed input**:
 /// - a second row-tail `Var` encountered after one was already recorded
@@ -5614,6 +5618,23 @@ fn decompose_effect_row(
             }
             _ => {
                 // WI-339 F13: unexpected term shape — hard reject.
+                return None;
+            }
+        }
+    }
+
+    // WI-328 (piece d / proposal §7.2): a row presenting and absenting the
+    // SAME label (`{ e, - e }`) is malformed — the `lacks e` contradicts
+    // the `present e` within one row. Reject hard so the caller surfaces a
+    // row-shape error rather than registering an immediately-violated
+    // lacks. Labels are compared through the substitution (a tail bound to
+    // a concrete label resolves to the same TermId as a literal one). The
+    // proposal frames this as a parse-time error; enforcing it here too
+    // closes the door on hand-built / loader-produced malformed rows.
+    for &p in &present {
+        let pw = walk_type(kb, subst, p);
+        for &a in &absent {
+            if walk_type(kb, subst, a) == pw {
                 return None;
             }
         }
@@ -5802,6 +5823,20 @@ fn bind_row_tail(
         _ => return extra_labels.is_empty() && final_tail.is_none(),
     };
 
+    // WI-328: lacks-constraint check. Any present label flowing INTO this
+    // tail (via `extra_labels`) must not be one the tail is constrained to
+    // lack (`ρ lacks e`). If `vid lacks e` and the binding would present
+    // `e`, the row would carry a forbidden effect — reject the binding
+    // (this is the "{Error | ρ} with ρ-lacks-Error fails" impossibility).
+    let vid_lacks = subst.lacks_of(vid);
+    if !vid_lacks.is_empty() {
+        for &l in extra_labels {
+            if label_violates_lacks(kb, subst, l, &vid_lacks) {
+                return false;
+            }
+        }
+    }
+
     // WI-337: bootstrap-safety — `decompose_effect_row`'s bare-Var
     // path (line ~5535) returns a `Var::Global` tail without ever
     // resolving any `EffectExpression` symbol, so we can reach here
@@ -5833,7 +5868,71 @@ fn bind_row_tail(
         return false;
     }
     subst.bind(vid, acc);
-    !subst.is_contradiction()
+    if subst.is_contradiction() {
+        return false;
+    }
+
+    // WI-328: propagate this tail's lacks set onto the fresh continuation.
+    // `ρ = extra_labels ∪ open(fresh)` and `ρ lacks L` (the extras were
+    // already checked clean above) implies `fresh lacks L` — otherwise a
+    // later binding of `fresh` could smuggle a forbidden effect back into
+    // the row through the shared tail. Closed continuations (`final_tail =
+    // None`) have no tail to carry the constraint, and that's sound: the
+    // row is now fully determined and the extras passed the lacks check.
+    if !vid_lacks.is_empty() {
+        if let Some(ft) = final_tail {
+            if let Term::Var(Var::Global(fresh_vid)) = kb.get_term(ft) {
+                let fresh_vid = *fresh_vid;
+                subst.add_lacks(fresh_vid, vid_lacks.iter().copied());
+            }
+        }
+    }
+    true
+}
+
+/// WI-328 — does presenting `label` violate any `lacks` constraint in
+/// `lacked`? A present label conflicts with a lacked label when the two
+/// effect types unify (`Error` vs `Error`; `Modify[c]` vs `Modify[c]`; a
+/// parameterized `Modify[?x]` lacked vs a concrete `Modify[c]` presented).
+/// The probe unifies on a CLONE of `subst` so a match leaves no bindings
+/// behind — the caller is deciding whether to reject the row, not
+/// committing the label pairing.
+fn label_violates_lacks(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    label: TermId,
+    lacked: &[TermId],
+) -> bool {
+    for &l in lacked {
+        let mut probe = subst.clone();
+        if unify_types(kb, &mut probe, label, l) {
+            return true;
+        }
+    }
+    false
+}
+
+/// WI-328 — register a row side's `absent` labels as `lacks` constraints on
+/// that side's tail variable. Absents on a *closed* row (no tail) are
+/// dropped: there is no tail to carry the constraint, and any cross-row
+/// attempt to present a label the closed row forbids is already rejected by
+/// the presence-pairing step (a forbidden label appears as an unabsorbable
+/// extra). Only `Var::Global` tails carry lacks (Rigid/DeBruijn are
+/// non-bindable per WI-336, so a lacks on them is unobservable).
+fn register_row_lacks(
+    kb: &KnowledgeBase,
+    subst: &mut Substitution,
+    tail: Option<TermId>,
+    absent: &[TermId],
+) {
+    if absent.is_empty() {
+        return;
+    }
+    if let Some(t) = tail {
+        if let Term::Var(Var::Global(vid)) = kb.get_term(t) {
+            subst.add_lacks(*vid, absent.iter().copied());
+        }
+    }
 }
 
 /// Allocate a fresh row-tail variable for the both-open arm of
@@ -5878,9 +5977,12 @@ fn fresh_row_tail_var(kb: &mut KnowledgeBase) -> TermId {
 ///    - both open → fresh shared tail `?ρ'`; each side's tail binds to its
 ///      own extras + `open(?ρ')`.
 ///
-/// **Presence-only** for v1a — `absent` labels (`-e` lacks-constraints) are
-/// collected during decomposition but the unifier doesn't reject on them.
-/// v1b's `lacks` arm extends this.
+/// **Lacks-constraints (WI-328 / v1b)** — `absent` labels (`-e`) are
+/// registered as `lacks` constraints on each side's tail
+/// (`register_row_lacks`) before step 3; `bind_row_tail` then rejects any
+/// present label flowing into a tail that lacks it, and propagates the
+/// lacks set onto fresh shared tails so the constraint survives further
+/// unification.
 fn unify_effect_rows(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -5896,14 +5998,20 @@ fn unify_effect_rows(
     // WI-339 F13: decompose returns None on malformed input — propagate
     // as a unify rejection so the typer surfaces the row-shape error
     // instead of proceeding on incomplete decomposition.
-    let (a_present, a_tail, _a_absent) = match decompose_effect_row(kb, subst, a_effects) {
+    let (a_present, a_tail, a_absent) = match decompose_effect_row(kb, subst, a_effects) {
         Some(p) => p,
         None => return false,
     };
-    let (b_present, b_tail, _b_absent) = match decompose_effect_row(kb, subst, b_effects) {
+    let (b_present, b_tail, b_absent) = match decompose_effect_row(kb, subst, b_effects) {
         Some(p) => p,
         None => return false,
     };
+
+    // WI-328: register each side's `- e` absents as `lacks` constraints on
+    // that side's tail BEFORE the tail-binding step, so `bind_row_tail`
+    // sees them when it checks the labels flowing into each tail.
+    register_row_lacks(kb, subst, a_tail, &a_absent);
+    register_row_lacks(kb, subst, b_tail, &b_absent);
 
     let (only_a, only_b) = pair_present_labels(kb, subst, &a_present, &b_present);
 
@@ -5989,14 +6097,28 @@ fn subtype_effect_rows(
 
     // WI-339 F13: decompose returns None on malformed input — propagate
     // as a sub rejection.
-    let (a_present, a_tail, _a_absent) = match decompose_effect_row(kb, subst, actual_effects) {
+    let (a_present, a_tail, a_absent) = match decompose_effect_row(kb, subst, actual_effects) {
         Some(p) => p,
         None => return false,
     };
-    let (e_present, e_tail, _e_absent) = match decompose_effect_row(kb, subst, expected_effects) {
+    let (e_present, e_tail, e_absent) = match decompose_effect_row(kb, subst, expected_effects) {
         Some(p) => p,
         None => return false,
     };
+
+    // WI-328: register `- e` absents as `lacks` on each side's tail before
+    // the tail-binding step (same as the unify path). Directional subtyping
+    // reuses the symmetric `bind_row_tail` lacks check: a label absorbed
+    // into a tail that lacks it is rejected on either side. This is **sound
+    // but conservative** on the open/open arm: when expected presents `e`
+    // and actual's tail lacks `e` (`{-e | ρa} <: {e | ρe}`), the shared-tail
+    // step would bind `ρa` to absorb `e`, which the lacks check rejects —
+    // so the pair is reported incompatible. Rejecting is the safe direction
+    // (binding a lacked label into the tail would be unsound); the rare
+    // genuinely-compatible directional case (route `e` only into the
+    // expected side) is left for a later refinement.
+    register_row_lacks(kb, subst, a_tail, &a_absent);
+    register_row_lacks(kb, subst, e_tail, &e_absent);
 
     // WI-326 F1 (code-review): use the covering variant (existential), NOT
     // the unify-shaped 1-to-1 [`pair_present_labels`]. Set semantics with
