@@ -6653,7 +6653,17 @@ pub fn types_compatible(kb: &mut KnowledgeBase, subst: &mut Substitution, actual
 
     match (actual_functor, expected_functor) {
         (Some("sort_ref"), Some("sort_ref")) => {
+            // Nominal / entity-subtyping / refines, then WI-344 provider
+            // admissibility: a value of a bare carrier sort is usable
+            // where a bare spec it provides is expected. Confined to the
+            // bare↔bare arm so it never rides `base_sort_compatible` and
+            // drops a parameterized spec's bindings — see
+            // `sort_provides_admissibly`.
             sort_ref_compatible(kb, actual, expected)
+                || match (extract_sort_ref_sym(kb, actual), extract_sort_ref_sym(kb, expected)) {
+                    (Some(a), Some(e)) => sort_provides_admissibly(kb, a, e),
+                    _ => false,
+                }
         }
         (Some("parameterized"), Some("parameterized")) => {
             parameterized_compatible(kb, subst, actual, expected)
@@ -7134,6 +7144,43 @@ fn sort_sym_compatible(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym: Sym
         return true;
     }
 
+    false
+}
+
+/// WI-344: provider admissibility — `actual_sym` (or, if it is an entity,
+/// its parent sort) declares `fact expected_sym[carrier = …]`, so a value
+/// of `actual_sym` is usable where the spec `expected_sym` is required.
+/// The value-position twin of `requires`: `requires X` and `fact X[Y]` are
+/// the demand and supply ends of one relation, so a position demanding the
+/// spec is discharged by the supplying fact (the same `SortProvidesInfo`
+/// that `requires`-resolution and field-membership checks consult — see
+/// `check_value_sort_membership`).
+///
+/// Deliberately base-only and called ONLY from the `(sort_ref, sort_ref)`
+/// arm of [`types_compatible`] — NOT from `sort_sym_compatible`, because
+/// that is also reached via `base_sort_compatible`, the `sort_ref ↔
+/// parameterized` bridge that drops the parameterized side's bindings. A
+/// base-only accept there would admit a binding mismatch (a `Widget`
+/// providing `Comparable[T = Widget]` accepted where `Comparable[T =
+/// Gadget]` is expected). Restricting to `(sort_ref, sort_ref)` keeps it
+/// sound: a bare spec carries no bindings, and the same-parameter
+/// parameterized case (`List[T]` vs `Stream[T]`) reaches here only through
+/// `parameterized_compatible`'s base check — where its per-binding loop
+/// validates the bindings separately. The bare-value-vs-parameterized-spec
+/// case (`Widget` vs `Comparable[T = Widget]`) stays rejected, as before;
+/// admitting it needs binding-precise resolution (a follow-up, cf. WI-274's
+/// `spec_resolves_at_bindings` for field positions). The fact is trusted to
+/// mean `actual` implements `expected` (WI-343 validates that separately).
+fn sort_provides_admissibly(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym: Symbol) -> bool {
+    if sort_provides(kb, actual_sym, expected_sym) {
+        return true;
+    }
+    // An entity value's provision comes from its parent sort.
+    if let Some(parent_tid) = kb.constructor_parent_sort(actual_sym) {
+        if let Term::Fn { functor: parent_functor, .. } = kb.get_term(parent_tid) {
+            return sort_provides_admissibly(kb, *parent_functor, expected_sym);
+        }
+    }
     false
 }
 

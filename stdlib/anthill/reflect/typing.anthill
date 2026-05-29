@@ -1,7 +1,7 @@
 namespace anthill.reflect.typing
   import anthill.prelude.{List, Bool}
 
-  import anthill.reflect.{Term, Symbol, KB, SortInfo, OperationInfo, EntityInfo, SortRequiresInfo, scope}
+  import anthill.reflect.{Term, Symbol, KB, SortInfo, OperationInfo, EntityInfo, SortRequiresInfo, SortProvidesInfo, scope}
 
   -- ================================================================
   -- Helper: cons-list membership
@@ -49,6 +49,17 @@ namespace anthill.reflect.typing
        refines(?B, ?C_inst)
 
   -- ================================================================
+  -- provides: carrier admissibility via SortProvidesInfo (WI-344)
+  -- ================================================================
+  -- A value of carrier sort A is usable where spec S_inst is expected
+  -- when A PROVIDES S — a `fact S[carrier = A]` records a
+  -- SortProvidesInfo(sort_ref: A, spec: S_inst). The demand/supply twin
+  -- of `refines`: `requires X` and `fact X[Y]` are the two ends of one
+  -- relation, so a position demanding the spec is discharged by the
+  -- supplying fact. `spec` is the SortView carrying the carrier bindings.
+  rule provides(?A, ?S_inst) :- SortProvidesInfo(sort_ref: ?A, spec: ?S_inst)
+
+  -- ================================================================
   -- type_compatible: can type A be used where type B is expected?
   -- ================================================================
 
@@ -60,6 +71,10 @@ namespace anthill.reflect.typing
 
   -- Spec refinement: Ordered where Eq expected.
   rule type_compatible(?A, ?B) :- refines(?A, ?B)
+
+  -- Provider admissibility: List where Stream expected, when List
+  -- provides Stream (WI-344). The value-position twin of `refines`.
+  rule type_compatible(?A, ?S) :- provides(?A, ?S)
 
   -- ================================================================
   -- sort_requires: query what a sort requires (convenience)

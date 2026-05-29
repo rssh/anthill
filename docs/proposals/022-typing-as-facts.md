@@ -239,7 +239,7 @@ The temporary `build_list_with_tail` desugaring in the loader is replaced by the
 
 The typing function (`type_check`) detects type errors during its walk via `assert_compatible(kb, actual, expected)`. When the inferred type doesn't match the expected type from context, the function reports an error with the source position (from the ExprOccurrence's span).
 
-The `type_compatible` rule (from `typing.anthill`) determines compatibility: same type (unification), entity subtyping (`is_entity_of`), or spec refinement (`refines`). Type variables are resolved via KB query unification.
+The `type_compatible` rule (from `typing.anthill`) determines compatibility: same type (unification), entity subtyping (`is_entity_of`), spec refinement (`refines`), or provider admissibility (`provides` — a value whose sort declares `fact S[carrier]` is usable where spec `S` is expected; WI-344). Type variables are resolved via KB query unification.
 
 ### No separate typed AST
 

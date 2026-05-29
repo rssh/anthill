@@ -1326,7 +1326,7 @@ sort Color {
 
 Entity subtyping does **not** arise from nesting. A sort `T` declared inside a namespace or sort body is a **parameter**, not an entity. Only the constructor-of relationship creates entity subtyping.
 
-Spec refinement (`requires` chains) is a separate relationship handled by `refines()` rules in `stdlib/anthill/reflect/typing.anthill`.
+Spec refinement (`requires` chains) is a separate relationship handled by `refines()` rules in `stdlib/anthill/reflect/typing.anthill`. Provider admissibility — a value whose sort *provides* a spec (`fact S[carrier]`) is usable where that spec is expected — is the demand/supply twin of refinement, handled by the sibling `provides()` rule in the same file. (`requires X` and `fact X[Y]` are the two ends of one relation: a position demanding the spec is discharged by the supplying fact.)
 
 ### 8.3 Rule Evaluation
 

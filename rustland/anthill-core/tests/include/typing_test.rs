@@ -405,6 +405,40 @@ sort C {
     assert!(results.len() >= 2, "C refines both B[T=T] (direct) and A[T=T] (transitive), got {} results", results.len());
 }
 
+// WI-344: the reflect-queryable `provides` rule mirrors `refines` over
+// SortProvidesInfo — it resolves the satisfaction facts a `fact
+// Spec[carrier]` emits. This is the SLD-level twin of the Rust
+// `types_compatible` provider-admissibility arm. Queried with a variable
+// carrier so the check is robust to the `sort_ref` term shape (the
+// namespace-level emitter builds it via `make_name_term_from_sym`); the
+// point is that the rule fires against an emitted `SortProvidesInfo`.
+#[test]
+fn provides_rule_resolves_satisfaction_facts() {
+    let source = r#"
+namespace test.wi344_provides
+  sort Comparable
+    sort T = ?
+    operation cmp(a: T, b: T) -> Bool
+  end
+  sort Widget
+    entity widget(id: Int)
+  end
+  fact Comparable[T = Widget]
+end
+"#;
+    let mut kb = load_stdlib_kb();
+    load_source(&mut kb, source);
+
+    let var_carrier = make_var(&mut kb, "carrier");
+    let var_spec = make_var(&mut kb, "spec");
+
+    let goal = make_goal(&mut kb, "anthill.reflect.typing.provides", &[var_carrier, var_spec]);
+    let results = kb.resolve(&[goal], &default_config());
+    assert!(!results.is_empty(),
+        "the `provides` rule must resolve at least the SortProvidesInfo \
+         emitted by `fact Comparable[T = Widget]`");
+}
+
 // ── type_compatible tests ────────────────────────────────────────
 
 #[test]
@@ -4657,6 +4691,101 @@ end
         .collect();
     assert!(!field_errors.is_empty(),
         "Gadget does not provide Comparable, so the field should be rejected, got: {:?}", errors);
+}
+
+// WI-344: provider admissibility in `types_compatible` — a value whose sort
+// PROVIDES a spec is usable where that spec is expected, at a *value
+// position* (operation return / argument), not just a field-membership
+// check (WI-036). The WI's motivating shape is `iterator(xs: List) ->
+// Stream = xs` once `List` provides `fact Stream[List]`; here the same
+// mechanism is exercised with a self-contained spec/carrier pair.
+#[test]
+fn operation_return_accepts_value_whose_sort_provides_spec() {
+    let source = r#"
+namespace test.wi344_ok
+  sort Comparable
+    sort T = ?
+    operation cmp(a: T, b: T) -> Bool
+  end
+  sort Widget
+    entity widget(id: Int)
+  end
+  fact Comparable[T = Widget]
+  operation as_comparable(w: Widget) -> Comparable = w
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let op_errors: Vec<_> = errors.iter()
+        .filter(|e| format!("{}", e).contains("as_comparable"))
+        .collect();
+    assert!(op_errors.is_empty(),
+        "Widget provides Comparable, so returning a Widget where Comparable \
+         is expected must type-check (WI-344 provider admissibility), got: {:?}",
+        errors);
+}
+
+// WI-344 negative: a value whose sort does NOT provide the spec is still
+// rejected at the value position — provider admissibility must not blanket-
+// accept unrelated sorts.
+#[test]
+fn operation_return_rejects_value_whose_sort_lacks_provides() {
+    let source = r#"
+namespace test.wi344_bad
+  sort Comparable
+    sort T = ?
+    operation cmp(a: T, b: T) -> Bool
+  end
+  sort Gadget
+    entity gadget(id: Int)
+  end
+  operation as_comparable(g: Gadget) -> Comparable = g
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let op_errors: Vec<_> = errors.iter()
+        .filter(|e| format!("{}", e).contains("as_comparable"))
+        .collect();
+    assert!(!op_errors.is_empty(),
+        "Gadget does not provide Comparable, so the return must be rejected, got: {:?}",
+        errors);
+}
+
+// WI-344 soundness: provider admissibility must NOT drop the expected
+// spec's type-param bindings. Widget provides `Comparable[T = Widget]`, so
+// returning a Widget where `Comparable[T = Gadget]` is expected must STILL
+// be rejected — the bare-carrier provider arm is confined to the bare↔bare
+// `types_compatible` case and never rides `base_sort_compatible` (which
+// would discard the `[T = Gadget]` binding). Pins the fix for the binding-
+// mismatch hole the bare-only `sort_provides` would otherwise reopen.
+#[test]
+fn operation_return_rejects_provider_at_mismatched_binding() {
+    let source = r#"
+namespace test.wi344_binding_mismatch
+  sort Comparable
+    sort T = ?
+    operation cmp(a: T, b: T) -> Bool
+  end
+  sort Widget
+    entity widget(id: Int)
+  end
+  sort Gadget
+    entity gadget(id: Int)
+  end
+  fact Comparable[T = Widget]
+  operation as_cmp_gadget(w: Widget) -> Comparable[T = Gadget] = w
+end
+"#;
+    let (mut kb, result) = load_with_result(source);
+    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let op_errors: Vec<_> = errors.iter()
+        .filter(|e| format!("{}", e).contains("as_cmp_gadget"))
+        .collect();
+    assert!(!op_errors.is_empty(),
+        "Widget provides Comparable only at T = Widget, so returning it where \
+         Comparable[T = Gadget] is expected must be rejected (no binding-drop), got: {:?}",
+        errors);
 }
 
 // WI-036: spec satisfaction also applies through parameterized field types —
