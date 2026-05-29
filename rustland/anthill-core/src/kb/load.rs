@@ -3090,7 +3090,11 @@ fn collect_sort_operations(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Symb
 
 /// Find an operation with the given short name in a sort's OperationInfo facts.
 /// Uses the symbol table's scope to check if the operation belongs to the sort.
-fn find_operation_in_scope(kb: &mut KnowledgeBase, sort_ref_tid: TermId, short_name: &str) -> Option<Symbol> {
+/// Resolve a `short_name` to an operation declared on the sort named by
+/// `sort_ref_tid` (its `OperationInfo` scope equals that sort). Used by the
+/// WI-279 dot-dispatch default fallback: `?x.m(args)` resolves `m` against
+/// the receiver's least sort.
+pub(crate) fn find_operation_in_scope(kb: &mut KnowledgeBase, sort_ref_tid: TermId, short_name: &str) -> Option<Symbol> {
     let op_info_sym = match kb.try_resolve_symbol("anthill.reflect.OperationInfo") {
         Some(sym) => sym,
         None => return None,

@@ -109,6 +109,17 @@ pub enum TypeError {
     BottomExpr {
         span: Option<Span>,
     },
+    /// WI-279: a value-receiver dot form `?x.member(args)` / `?x.member`
+    /// whose `member` resolves to no operation declared on the receiver's
+    /// least sort (the dot-dispatch default fallback found nothing).
+    /// `receiver_sort` is the receiver's `min_sort`, or `None` when the
+    /// receiver's type is unresolved (dispatch then undecidable). Reported
+    /// at the dot's source span.
+    DotDispatchNoMatch {
+        span: Option<Span>,
+        member: Symbol,
+        receiver_sort: Option<Symbol>,
+    },
     /// Aggregation node — collects multiple sibling failures
     /// (e.g. a list literal with two ill-typed elements).
     Multiple {
@@ -245,6 +256,19 @@ impl TypeError {
             TypeError::BottomExpr { .. } => {
                 "bottom or post-elaboration expression in surface IR".to_string()
             }
+            TypeError::DotDispatchNoMatch { member, receiver_sort, .. } => {
+                let m = kb.resolve_sym(*member);
+                match receiver_sort {
+                    Some(s) => format!(
+                        "no member '{}' on {}: dot dispatch found no operation '{}' declared on the receiver's sort",
+                        m, kb.qualified_name_of(*s), m,
+                    ),
+                    None => format!(
+                        "cannot dispatch `.{}`: the receiver's type is unresolved",
+                        m,
+                    ),
+                }
+            }
             TypeError::Multiple { errors } => {
                 let parts: Vec<String> = errors.iter().map(|e| e.format(kb)).collect();
                 parts.join("; ")
@@ -267,6 +291,7 @@ impl TypeError {
             | TypeError::NoSuchTypeParam { span, .. }
             | TypeError::UnconstrainedTypeParam { span, .. }
             | TypeError::MissingRequiresForSpecOp { span, .. }
+            | TypeError::DotDispatchNoMatch { span, .. }
             | TypeError::BottomExpr { span } => *span,
             TypeError::Other { span, .. } => *span,
             TypeError::NoParentSort { .. } => None,
@@ -404,6 +429,15 @@ impl TypeError {
                 field_name: "expr".to_string(),
                 expected_type: "surface expression".to_string(),
                 actual_type: "bottom / post-elaboration form".to_string(),
+                span: self.span(kb),
+            },
+            TypeError::DotDispatchNoMatch { member, receiver_sort, .. } => LoadError::TypeMismatch {
+                entity_name: receiver_sort
+                    .map(|s| kb.qualified_name_of(s).to_string())
+                    .unwrap_or_else(|| "<unresolved receiver>".to_string()),
+                field_name: kb.resolve_sym(*member).to_string(),
+                expected_type: "operation declared on the receiver's sort".to_string(),
+                actual_type: "no such member (dot dispatch)".to_string(),
                 span: self.span(kb),
             },
             TypeError::Multiple { errors } => {
@@ -967,6 +1001,25 @@ enum TypeBuildFrame {
         /// WI-283: fire-fuel — see [`TypeBuildFrame::Apply::fuel`].
         fuel: usize,
     },
+    /// WI-279: all DotApply children finished (drain order
+    /// `[receiver, ...pos, ...named]`). Resolve `member` against the
+    /// receiver's least sort (`min_sort`, read from the receiver child's
+    /// result type), then synthesize the dispatched `Apply` and re-`Visit`
+    /// it — so the produced call rides normal Apply typing + type-param
+    /// inference + req_insertion. `pos_count` / `named_keys` size the drain
+    /// and rebuild the synthesized call's args from the (typed) child nodes.
+    /// No match ⇒ a `DotDispatchNoMatch` diagnostic at the dot span.
+    DotApply {
+        occ: Rc<NodeOccurrence>,
+        member: Symbol,
+        pos_count: usize,
+        named_keys: Vec<Symbol>,
+        env: Rc<TypingEnv>,
+        expected: Option<TermId>,
+        /// WI-283: fire-fuel inherited from this node's `Visit`; spent
+        /// (`fuel - 1`) on the re-`Visit` of the synthesized call.
+        fuel: usize,
+    },
     /// Value finished; compute the body's ext_env and schedule the
     /// body Visit, plus a `LetFinal` frame to combine results. If the
     /// value's TypeResult is `None`, the let propagates failure up
@@ -1211,6 +1264,27 @@ fn collect_arg_errors<'a>(
     } else {
         Err(aggregate_errors(errors))
     }
+}
+
+/// Resolve a binding by short (last-segment) name against an env's var
+/// bindings. WI-279: a value-receiver `?x` interns to a plain symbol, while
+/// a parameter is bound under a scope-qualified symbol — an exact
+/// `lookup_var` then misses, so a `?x` naming a param resolves here by short
+/// name. Within one operation body short names are unique, so the match is
+/// unambiguous. Returns the first binding whose key's short name equals
+/// `short_name_of(var_sym)`.
+fn lookup_binding_by_short_name(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    var_sym: Symbol,
+) -> Option<TermId> {
+    // `resolve_sym` borrows `kb` immutably; the closure re-borrows it the same
+    // way, so `target` and each key's name coexist as shared borrows (no clone).
+    let target = short_name_of(kb.resolve_sym(var_sym));
+    env.var_bindings
+        .iter()
+        .find(|(s, _)| short_name_of(kb.resolve_sym(**s)) == target)
+        .map(|(_, t)| *t)
 }
 
 /// Dispatch a single Visit: produce a leaf TypeResult directly,
@@ -1472,27 +1546,69 @@ fn visit_type(
             }
         }
 
-        // Unresolved logical-var slots in the surface IR are not a
-        // typer-level error — the surface programmer wrote `?y` and
-        // the loader couldn't pin it to a let/match binding by symbol.
-        // Synthesize a fresh type-var so the surrounding apply / let
-        // can still type-check; declared signatures resolve the
-        // expression's type on the consumer side.
-        Expr::Var(_) => {
-            let fresh = kb.intern("?logical_var");
-            let ty = kb.make_type_var(fresh);
+        // A surface `?x` whose name matches an in-scope binding (param /
+        // let / lambda / match) *refers to* that binding — the same lookup
+        // the `Ident` path does via `check_bare_ref`. WI-279: this is what
+        // gives a value-receiver `?x.method()` a concrete type to dispatch
+        // on (`?xs: List[Int]` ⇒ `min_sort` = List). Only `Var::Global`
+        // carries a name; a genuinely-free `?x` (no matching binding), a
+        // `DeBruijn`, or a `Rigid` falls back to a fresh type-var — not a
+        // typer-level error, so the surrounding apply / let still
+        // type-checks and declared signatures resolve it on the consumer
+        // side.
+        Expr::Var(var) => {
+            // Exact-symbol lookup resolves let/lambda/match-bound `?x` (binder
+            // and body var share an intern). A param binds under a
+            // scope-qualified symbol while a body `?x` is a plain intern, so an
+            // exact match misses — fall back to a short-name match (unique
+            // within one body). A genuinely-free `?x` matches neither and gets
+            // a fresh type-var.
+            let bound = match var {
+                Var::Global(vid) => env
+                    .lookup_var(vid.name())
+                    .or_else(|| lookup_binding_by_short_name(kb, &env, vid.name())),
+                _ => None,
+            };
+            let ty = bound.unwrap_or_else(|| {
+                let fresh = kb.intern("?logical_var");
+                kb.make_type_var(fresh)
+            });
             results.push(Ok(TypeResult::pure(ty, unwrap_env(env), Rc::clone(&occ))));
         }
 
-        // `DotApply` is a pre-dispatch form (WI-278): the `[simp]` dot rules
-        // should have rewritten it to an `Apply` / field access before the
-        // typer runs. One surviving here is an unresolved member access — the
-        // no-match error at its source span. A dedicated diagnostic is part of
-        // the dot-dispatch deliverable; for now it falls into `BottomExpr`.
-        Expr::DotApply { .. }
+        // WI-279: a value-receiver dot form `?x.member(args)` / `?x.member`.
+        // Type the receiver + args (no hint), then a `DotApply` Build frame
+        // resolves `member` against the receiver's least sort and synthesizes
+        // the dispatched call. Running here (in the typer, env in hand) is what
+        // lets a receiver referencing a let/lambda/match-bound local resolve.
+        Expr::DotApply { receiver, name, pos_args, named_args } => {
+            let member = *name;
+            let receiver = Rc::clone(receiver);
+            let pos_args = pos_args.clone();
+            let named_args = named_args.clone();
+            let named_keys: Vec<Symbol> = named_args.iter().map(|(k, _)| *k).collect();
+            work.push(TypeWorkOp::Build(TypeBuildFrame::DotApply {
+                occ: Rc::clone(&occ),
+                member,
+                pos_count: pos_args.len(),
+                named_keys,
+                env: Rc::clone(&env),
+                expected,
+                fuel,
+            }));
+            // Drain order is `[receiver, ...pos, ...named]` (matches
+            // `for_each_child`): push reversed so the receiver pops first.
+            for (_, arg) in named_args.iter().rev() {
+                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env), fuel);
+            }
+            for arg in pos_args.iter().rev() {
+                push_visit_no_hint(work, Rc::clone(arg), Rc::clone(&env), fuel);
+            }
+            push_visit_no_hint(work, receiver, env, fuel);
+        }
         // Post-elaboration forms — emitted by req_insertion, not the
         // surface typer.
-        | Expr::HoApply { .. }
+        Expr::HoApply { .. }
         | Expr::Instantiation { .. }
         | Expr::ApplyWithin { .. }
         | Expr::HoApplyWithin { .. }
@@ -1677,6 +1793,79 @@ fn build_type(
                 &pos_results, &named_results, span, expected, &node,
             );
             results.push(r);
+        }
+        TypeBuildFrame::DotApply { occ, member, pos_count, named_keys, env, expected, fuel } => {
+            // Children were drained in `[receiver, ...pos, ...named]` order.
+            let total = 1 + pos_count + named_keys.len();
+            let drain_start = results.len() - total;
+            let child_results: Vec<Result<TypeResult, TypeError>> =
+                results.drain(drain_start..).collect();
+            // Surface an ill-typed child first — `Ok` children are needed to
+            // read their result `.node` / `.ty`.
+            if let Err(e) = collect_arg_errors(child_results.iter()) {
+                results.push(Err(e));
+                return;
+            }
+            let recv = child_results[0].as_ref().expect("DotApply: Ok receiver");
+            let receiver_node = Rc::clone(&recv.node);
+            // `min_sort`: widen the receiver to its least declared sort. Read
+            // the child's result type directly (don't depend on the receiver's
+            // `Stamp` frame ordering).
+            let recv_sort = sort_functor_of(kb, recv.ty);
+            let dot_span = Some(occ.span.span);
+
+            // DEFAULT method fallback: resolve `member` to an operation declared
+            // on the receiver's sort, then synthesize `op(receiver, ...args)` —
+            // `x.m(a)` becomes `m(x, a)`. This is engine logic (functor resolved
+            // dynamically), not a writable rule.
+            // Owned: `kb` is mutated below (alloc / find_operation_in_scope),
+            // so the borrowed name can't be held across it.
+            let short = short_name_of(kb.resolve_sym(member)).to_string();
+            let op_sym = recv_sort.and_then(|s| {
+                // `find_operation_in_scope` reads the sort symbol from a bare
+                // `Ref(sort)` / `sort(args)` head — not the `sort_ref(name:…)`
+                // wrapper `make_sort_ref` builds (whose functor is `sort_ref`).
+                let sort_term = kb.alloc(Term::Ref(s));
+                super::load::find_operation_in_scope(kb, sort_term, &short)
+            });
+            if let Some(op_sym) = op_sym {
+                let mut synth_pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(1 + pos_count);
+                synth_pos.push(receiver_node);
+                for r in &child_results[1..1 + pos_count] {
+                    synth_pos.push(Rc::clone(&r.as_ref().expect("DotApply: Ok positional arg").node));
+                }
+                let synth_named: Vec<(Symbol, Rc<NodeOccurrence>)> = named_keys
+                    .iter()
+                    .zip(&child_results[1 + pos_count..])
+                    .map(|(k, r)| (*k, Rc::clone(&r.as_ref().expect("DotApply: Ok named arg").node)))
+                    .collect();
+                let pass = super::simp_rewrite::simp_pass(kb);
+                let synth = NodeOccurrence::synthesized_expr(
+                    Expr::Apply {
+                        functor: op_sym,
+                        pos_args: synth_pos,
+                        named_args: synth_named,
+                        type_args: Vec::new(),
+                    },
+                    Rc::clone(&occ),
+                    pass,
+                    occ.owner,
+                );
+                // Re-type the synthesized call: it rides normal Apply typing +
+                // type-param inference + req_insertion, and its result becomes
+                // this DotApply node's result.
+                push_visit(work, synth, env, expected, fuel.saturating_sub(1));
+                return;
+            }
+
+            // No match → clear diagnostic at the dot span. (INC 1b — a zero-arg
+            // member resolving to a field on a free-standing-entity receiver —
+            // is a follow-up; until then a field dot also lands here.)
+            results.push(Err(TypeError::DotDispatchNoMatch {
+                span: dot_span,
+                member,
+                receiver_sort: recv_sort,
+            }));
         }
         TypeBuildFrame::LetAfterValue { occ, pattern, annotation, body_occ, body_expected, fuel } => {
             let value_r = results.pop().expect("LetAfterValue: missing value result");

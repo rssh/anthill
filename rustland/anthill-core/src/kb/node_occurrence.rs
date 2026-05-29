@@ -585,11 +585,12 @@ pub enum Expr {
     /// (WI-278). A pre-dispatch form emitted by the converter for
     /// value-receiver dot forms: the operation isn't resolved yet, only the
     /// textual member `name` and the receiver expression are known. The
-    /// `[simp]` dot rules (`default_dot` / `dot_field`, proposal 043 §6)
-    /// rewrite it — once the receiver's type is known — into an `Apply`
-    /// (method) or a field access (field). A `DotApply` reaching the typer
-    /// is a no-match error at its source span. `name`-less field access has
-    /// empty arg lists; a method call carries its positional / named args.
+    /// typer dispatches it (WI-279, proposal 043 §6) — once the receiver's
+    /// least sort is known — by synthesizing an `Apply(op, [receiver, …args])`
+    /// when `name` resolves to an operation declared on that sort, then
+    /// re-typing that apply. No match ⇒ a `DotDispatchNoMatch` error at the
+    /// dot's source span. `name`-less field access has empty arg lists; a
+    /// method call carries its positional / named args.
     DotApply {
         receiver: Rc<NodeOccurrence>,
         name: Symbol,
