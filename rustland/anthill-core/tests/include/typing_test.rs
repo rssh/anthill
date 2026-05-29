@@ -2017,7 +2017,21 @@ end
 // types_compatible tests
 // ══════════════════════════════════════════════════════════════════
 
-use anthill_core::kb::typing::{types_compatible, is_subtype, requires_chain_flat, check_obligations, type_check_sorts};
+use anthill_core::kb::typing::{
+    types_compatible as raw_types_compatible,
+    is_subtype, requires_chain_flat, check_obligations, type_check_sorts,
+};
+use anthill_core::kb::subst::Substitution;
+
+/// Test-private wrapper around [`raw_types_compatible`] that allocates a
+/// fresh substitution per call. WI-335 added an explicit `&mut Substitution`
+/// argument so nested arrow checks could thread row-var bindings across
+/// sibling positions; for unit tests of isolated type pairs that
+/// independence is the right default — each call gets its own subst.
+fn types_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) -> bool {
+    let mut subst = Substitution::new();
+    raw_types_compatible(kb, &mut subst, actual, expected)
+}
 
 #[test]
 fn subtype_same_sort_ref() {
@@ -2878,6 +2892,76 @@ end
          set-with-subtyping semantics lets Color cover both red and blue");
 }
 
+/// WI-335 probe: nested arrow sharing a row var across positions with
+/// inconsistent expected bindings. Pre-WI-335 each arrow_compatible call
+/// allocated a fresh local_subst, so the param check bound rho := {E1}
+/// and the result check bound rho := empty independently — no
+/// contradiction surfaced. Outer wrongly accepted.
+#[test]
+fn subtype_nested_arrow_shared_rho_inconsistent_binding_rejects() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e1_sym = kb.intern("E1");
+    let e2_sym = kb.intern("E2");
+    let e1 = kb.make_sort_ref(e1_sym);
+    let e2 = kb.make_sort_ref(e2_sym);
+
+    // One shared rho across both inner arrows.
+    let rho_sym = kb.intern("?rho");
+    let rho_vid = kb.fresh_var(rho_sym);
+    let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
+
+    // actual = arrow(arrow(Int, Int, {rho}), arrow(Int, Int, {rho}), {})
+    let inner_actual_left = kb.make_arrow_type(int_ty, int_ty, &[rho]);
+    let inner_actual_right = kb.make_arrow_type(int_ty, int_ty, &[rho]);
+    let actual = kb.make_arrow_type(inner_actual_left, inner_actual_right, &[]);
+
+    // expected = arrow(arrow(Int, Int, {E1}), arrow(Int, Int, {E2}), {})
+    let inner_expected_left = kb.make_arrow_type(int_ty, int_ty, &[e1]);
+    let inner_expected_right = kb.make_arrow_type(int_ty, int_ty, &[e2]);
+    let expected = kb.make_arrow_type(inner_expected_left, inner_expected_right, &[]);
+
+    // No consistent global binding of rho can satisfy both:
+    //   param (contravariant): expected_param <: actual_param needs rho ⊇ E1
+    //   result (covariant):    actual_result  <: expected_result needs rho ⊆ {E2}
+    // These conflict. Post-WI-335: types_compatible threads a shared subst,
+    // the conflict surfaces as contradiction, and the outer rejects.
+    assert!(!types_compatible(&mut kb, actual, expected),
+        "nested arrows sharing rho across positions with inconsistent \
+         expected bindings must REJECT (no consistent global rho)");
+}
+
+/// WI-335 positive control: shared rho across positions with CONSISTENT
+/// expected bindings accepts. Both positions want rho := {E1}, so the
+/// shared subst resolves them coherently. Guards against the fix
+/// over-rejecting valid sub.
+#[test]
+fn subtype_nested_arrow_shared_rho_consistent_binding_accepts() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e1_sym = kb.intern("E1");
+    let e1 = kb.make_sort_ref(e1_sym);
+
+    let rho_sym = kb.intern("?rho");
+    let rho_vid = kb.fresh_var(rho_sym);
+    let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
+
+    // actual = arrow(arrow(Int, Int, {rho}), arrow(Int, Int, {rho}), {})
+    let inner_actual_left = kb.make_arrow_type(int_ty, int_ty, &[rho]);
+    let inner_actual_right = kb.make_arrow_type(int_ty, int_ty, &[rho]);
+    let actual = kb.make_arrow_type(inner_actual_left, inner_actual_right, &[]);
+
+    // expected = arrow(arrow(Int, Int, {E1}), arrow(Int, Int, {E1}), {})
+    // Both positions agree on {E1} → rho := {E1} satisfies both.
+    let inner_expected_left = kb.make_arrow_type(int_ty, int_ty, &[e1]);
+    let inner_expected_right = kb.make_arrow_type(int_ty, int_ty, &[e1]);
+    let expected = kb.make_arrow_type(inner_expected_left, inner_expected_right, &[]);
+
+    assert!(types_compatible(&mut kb, actual, expected),
+        "nested arrows sharing rho across positions with CONSISTENT \
+         expected bindings must ACCEPT (rho := {{E1}} works for both)");
+}
+
 // ── WI-334 shared row var with non-empty extras ──────────────────────────
 //
 // Pre-WI-334 the both-open arm in subtype_effect_rows and unify_effect_rows
@@ -3281,7 +3365,7 @@ end
 // ══════════════════════════════════════════════════════════════════
 
 use anthill_core::kb::typing::unify_types;
-use anthill_core::kb::subst::Substitution;
+// Substitution already imported above for the types_compatible test wrapper.
 
 #[test]
 fn unify_identical_types() {

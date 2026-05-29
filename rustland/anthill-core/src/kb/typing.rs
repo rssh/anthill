@@ -4347,7 +4347,11 @@ fn dispatch_values_match(
     if is_type_param_value(kb, candidate_value) {
         return true;
     }
-    if types_lesseq(kb, per_call_value, candidate_value) {
+    // WI-335: dispatch decisions are independent of each other (dispatch
+    // values are typically nominal sort_refs; row reasoning is rare).
+    // Each call gets a fresh scratch substitution.
+    let mut subst = Substitution::new();
+    if types_lesseq(kb, &mut subst, per_call_value, candidate_value) {
         return true;
     }
     let per_call_sym = sort_sym_of_term(kb, per_call_value);
@@ -5203,7 +5207,7 @@ pub fn unify_types(kb: &mut KnowledgeBase, subst: &mut Substitution, a: TermId, 
                 _ => false,
             }
         }
-        _ => types_compatible(kb, a_resolved, b_resolved),
+        _ => types_compatible(kb, subst, a_resolved, b_resolved),
     }
 }
 
@@ -5227,21 +5231,21 @@ fn unify_parameterized_with_sort_ref(
         Term::Fn { named_args, .. } => {
             match get_named_arg(kb, named_args, "base") {
                 Some(b) => b,
-                None => return types_compatible(kb, parameterized, sort_ref),
+                None => return types_compatible(kb, subst, parameterized, sort_ref),
             }
         }
-        _ => return types_compatible(kb, parameterized, sort_ref),
+        _ => return types_compatible(kb, subst, parameterized, sort_ref),
     };
     let pbase_sym = match extract_sort_ref_sym(kb, pbase) {
         Some(s) => s,
-        None => return types_compatible(kb, parameterized, sort_ref),
+        None => return types_compatible(kb, subst, parameterized, sort_ref),
     };
     let sref_sym = match extract_sort_ref_sym(kb, sort_ref) {
         Some(s) => s,
-        None => return types_compatible(kb, parameterized, sort_ref),
+        None => return types_compatible(kb, subst, parameterized, sort_ref),
     };
     if pbase_sym != sref_sym {
-        return types_compatible(kb, parameterized, sort_ref);
+        return types_compatible(kb, subst, parameterized, sort_ref);
     }
 
     let bindings_tid = match kb.get_term(parameterized) {
@@ -5987,11 +5991,35 @@ fn unify_named_tuple(kb: &mut KnowledgeBase, subst: &mut Substitution, a: TermId
 /// WI-326: takes `&mut KnowledgeBase` because [`arrow_compatible`] now
 /// invokes row subtyping, which allocates fresh row-tail vars in the
 /// both-open case.
-pub fn types_lesseq(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) -> bool {
-    types_compatible(kb, actual, expected)
+///
+/// WI-335: takes `&mut Substitution` so nested arrow checks (e.g.
+/// `arrow_compatible`'s param + result + effects sub-checks, plus any
+/// recursive descent through [`parameterized_compatible`] /
+/// [`named_tuple_compatible`] / [`arrow_function_compatible`]) thread
+/// **one** substitution through the whole sub-tree. This makes row-var
+/// bindings from one sub-position visible to sibling positions —
+/// fixing the soundness gap where nested arrows sharing a row var
+/// across positions got inconsistent bindings under independent local
+/// substitutions.
+///
+/// **Caller contract**: most call sites want each check independent of
+/// any other check; they allocate `Substitution::new()` per call. Call
+/// sites in a row-aware chain (e.g. inside another `types_compatible`
+/// frame) thread the same subst through.
+///
+/// **Failure semantics**: when this function returns `false`, the
+/// substitution may carry partial bindings from sub-checks that
+/// succeeded before a sibling failed (and may even be marked
+/// `is_contradiction()`). Callers that intend to make a subsequent
+/// independent decision after a `false` result MUST discard the
+/// substitution (or snapshot before the call). Threading-through
+/// callers in this module rely on the early-return-on-false discipline
+/// and never re-use a failed subst.
+pub fn types_lesseq(kb: &mut KnowledgeBase, subst: &mut Substitution, actual: TermId, expected: TermId) -> bool {
+    types_compatible(kb, subst, actual, expected)
 }
 
-pub fn types_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) -> bool {
+pub fn types_compatible(kb: &mut KnowledgeBase, subst: &mut Substitution, actual: TermId, expected: TermId) -> bool {
     if actual == expected {
         return true;
     }
@@ -6014,7 +6042,7 @@ pub fn types_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId
             sort_ref_compatible(kb, actual, expected)
         }
         (Some("parameterized"), Some("parameterized")) => {
-            parameterized_compatible(kb, actual, expected)
+            parameterized_compatible(kb, subst, actual, expected)
         }
         // Name-binding normalization: a bare sort name `S` is `S` with
         // its type params unconstrained — it is compatible with any
@@ -6032,16 +6060,16 @@ pub fn types_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId
             base_sort_compatible(kb, expected, parameterized_base(kb, actual))
         }
         (Some("arrow"), Some("arrow")) => {
-            arrow_compatible(kb, actual, expected)
+            arrow_compatible(kb, subst, actual, expected)
         }
         // `arrow` is the typer's shorthand for the stdlib `Function[A, B, E]`
         // (see `arrow_parts`), so a lambda's `arrow(Int, Int)` body satisfies
         // a declared `Function[Int, Int]` return and vice versa. (WI-289)
         (Some("arrow"), Some("parameterized")) | (Some("parameterized"), Some("arrow")) => {
-            arrow_function_compatible(kb, actual, expected)
+            arrow_function_compatible(kb, subst, actual, expected)
         }
         (Some("named_tuple"), Some("named_tuple")) => {
-            named_tuple_compatible(kb, actual, expected)
+            named_tuple_compatible(kb, subst, actual, expected)
         }
         (Some("effects_rows"), Some("effects_rows")) => {
             // WI-333: row subsumption via [`subtype_effect_rows`]. The
@@ -6050,20 +6078,19 @@ pub fn types_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId
             // [`types_compatible`]; this arm reaches when both sides are
             // effects_rows wrappers with structurally-distinct payloads.
             //
-            // Pre-WI-333 this did conservative structural recursion via
-            // `types_compatible` on the inner `effects_expr` — sound
-            // (no false positives) but rejected open-row subsumption
-            // (`{Reads} <: {Reads, Writes}` failed because the inner
-            // EffectExpression trees differed). After WI-326 the arrow
-            // shape had row subsumption; the Function[E] denotation
-            // (parameterized → recursive types_compatible → this arm)
-            // didn't — same denotational type, opposite answers.
-            //
-            // Now both paths invoke the directional row algorithm with a
-            // local scratch substitution (same pattern as
-            // `arrow_compatible` / `arrow_function_compatible`).
-            let mut local_subst = Substitution::new();
-            subtype_effect_rows(kb, &mut local_subst, actual, expected)
+            // WI-335: uses the threaded subst so row-var bindings from
+            // sibling positions are visible. This affects multiple
+            // entry paths into this arm:
+            //   - direct (effects_rows, effects_rows) comparison;
+            //   - parameterized_compatible recursing on Function[E]
+            //     bindings (the WI-333 path);
+            //   - any nested types_compatible inside an arrow's param /
+            //     result / effects sub-check.
+            // Pre-WI-335 a local scratch subst meant each invocation
+            // reasoned in isolation, accepting nested arrows /
+            // parameterized bindings whose shared row var had no
+            // consistent global binding across sibling positions.
+            subtype_effect_rows(kb, subst, actual, expected)
         }
         _ => false,
     }
@@ -6076,7 +6103,7 @@ pub fn types_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId
 /// incompatible), checks contravariant param + covariant result compat,
 /// and (WI-332) covariant effects via [`subtype_effect_rows`] when both
 /// sides explicitly carry an effects field. Original WI-289.
-fn arrow_function_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) -> bool {
+fn arrow_function_compatible(kb: &mut KnowledgeBase, subst: &mut Substitution, actual: TermId, expected: TermId) -> bool {
     let (a_param, a_result, _) = match arrow_parts(kb, actual) {
         Some(parts) => parts,
         None => return false,
@@ -6091,13 +6118,13 @@ fn arrow_function_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: T
     // side (bare `Function` without an `A` binding, polymorphic) is treated
     // as unconstrained, accepting.
     let params_ok = match (a_param, b_param) {
-        (Some(ap), Some(bp)) => types_compatible(kb, bp, ap),
+        (Some(ap), Some(bp)) => types_compatible(kb, subst, bp, ap),
         _ => true,
     };
     if !params_ok {
         return false;
     }
-    if !types_compatible(kb, a_result, b_result) {
+    if !types_compatible(kb, subst, a_result, b_result) {
         return false;
     }
 
@@ -6118,6 +6145,11 @@ fn arrow_function_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: T
     // The arrow side always synthesizes an `effects` field (via
     // `make_arrow_type` and `build_canonical_effects_rows`), so its None
     // arm is defensive only.
+    //
+    // WI-335: the threaded subst is shared across param/result/effects
+    // sub-checks so a row var bound by the param check (or the effects
+    // check) is visible in the others — same fix as in
+    // `arrow_compatible`.
     let actual_effects_field = arrow_effects_field(kb, actual);
     let expected_effects_field = arrow_effects_field(kb, expected);
     match (actual_effects_field, expected_effects_field) {
@@ -6125,8 +6157,7 @@ fn arrow_function_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: T
         // missing-param convention above).
         (None, _) | (_, None) => true,
         (Some(ae), Some(ee)) => {
-            let mut local_subst = Substitution::new();
-            subtype_effect_rows(kb, &mut local_subst, ae, ee)
+            subtype_effect_rows(kb, subst, ae, ee)
         }
     }
 }
@@ -6208,8 +6239,19 @@ fn type_functor_name<'a>(kb: &'a KnowledgeBase, ty: TermId) -> Option<&'a str> {
 ///
 /// WI-326: takes `&mut KnowledgeBase` (transitively, via
 /// [`types_compatible`] → [`arrow_compatible`] → row subtyping).
+///
+/// WI-335: does NOT take a `&mut Substitution` argument. Unlike
+/// [`types_compatible`], `is_subtype` is a context-free lattice
+/// question — "is sub strictly less than sup?" — that should not depend
+/// on any caller's bindings. We allocate a fresh substitution internally
+/// so the answer is purely a function of `(kb, sub, sup)`. Callers that
+/// want row-binding propagation should use [`types_compatible`] directly.
 pub fn is_subtype(kb: &mut KnowledgeBase, sub: TermId, sup: TermId) -> bool {
-    sub != sup && types_compatible(kb, sub, sup)
+    if sub == sup {
+        return false;
+    }
+    let mut subst = Substitution::new();
+    types_compatible(kb, &mut subst, sub, sup)
 }
 
 /// WI-287: one step up the entity→enclosing-sort chain. `Some(parent
@@ -6252,7 +6294,12 @@ fn join_types(kb: &mut KnowledgeBase, a: TermId, b: TermId) -> Option<TermId> {
     // Bound defensively against any pathological parent cycle; real
     // entity→sort chains are a single level.
     for _ in 0..64 {
-        match (types_compatible(kb, a, b), types_compatible(kb, b, a)) {
+        // WI-335: each direction of the lattice check is an independent
+        // question — allocate per-direction substs so a binding made
+        // checking `a <: b` doesn't influence the `b <: a` check.
+        let mut subst_ab = Substitution::new();
+        let mut subst_ba = Substitution::new();
+        match (types_compatible(kb, &mut subst_ab, a, b), types_compatible(kb, &mut subst_ba, b, a)) {
             // `a <: b` only: `b` is the supertype.
             (true, false) => return Some(b),
             // `b <: a` only: `a` is the supertype.
@@ -6359,7 +6406,9 @@ fn compute_branch_join_type(
     // type-checked the synthesized type, which was branch 0.
     if let Some(exp) = expected {
         for &(bt, span) in branch_tys {
-            if !types_compatible(kb, bt, exp) {
+            // WI-335: each branch's conformance check is independent.
+            let mut subst = Substitution::new();
+            if !types_compatible(kb, &mut subst, bt, exp) {
                 return Err(TypeError::TypeMismatch {
                     span,
                     context: branch_ctx,
@@ -6390,7 +6439,8 @@ fn compute_branch_join_type(
         // (and never collapse a precise join to a `type_var` hint).
         (None, None) => Ok(acc),
         (None, Some(exp)) => {
-            if acc == exp || types_compatible(kb, acc, exp) {
+            let mut subst = Substitution::new();
+            if acc == exp || types_compatible(kb, &mut subst, acc, exp) {
                 Ok(acc)
             } else {
                 Ok(exp)
@@ -7073,7 +7123,7 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
 
 /// parameterized(base: A, bindings: [...]) <: parameterized(base: B, bindings: [...])
 /// if bases are compatible and all expected bindings have compatible actual values.
-fn parameterized_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) -> bool {
+fn parameterized_compatible(kb: &mut KnowledgeBase, subst: &mut Substitution, actual: TermId, expected: TermId) -> bool {
     let (actual_args, expected_args) = match (kb.get_term(actual), kb.get_term(expected)) {
         (Term::Fn { named_args: a, .. }, Term::Fn { named_args: e, .. }) => {
             (a.clone(), e.clone())
@@ -7086,7 +7136,7 @@ fn parameterized_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: Te
     let expected_base = get_named_arg(kb, &expected_args, "base");
     match (actual_base, expected_base) {
         (Some(a), Some(e)) => {
-            if !types_compatible(kb, a, e) {
+            if !types_compatible(kb, subst, a, e) {
                 return false;
             }
         }
@@ -7112,7 +7162,7 @@ fn parameterized_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: Te
                     .and_then(|ab| binding_value(kb, *ab));
                 match actual_val {
                     Some(av) => {
-                        if !types_compatible(kb, av, exp_val) {
+                        if !types_compatible(kb, subst, av, exp_val) {
                             return false;
                         }
                     }
@@ -7150,13 +7200,15 @@ fn binding_value(kb: &KnowledgeBase, binding: TermId) -> Option<TermId> {
 /// **WI-326 v1a**: the effects field is now compared via [`subtype_effect_rows`]
 /// — a directional Rémy/Lindley-Cheney row algorithm honoring open-tail
 /// subsumption — replacing the pre-WI-326 naive positional subset over
-/// `effects_rows_to_flat_list`. The substitution that algorithm needs is
-/// local scratch space allocated here; bindings are reasoning witnesses
-/// only, not committed into any caller's typing context. The `&mut
-/// KnowledgeBase` signature ripples up to [`types_compatible`] et al.
-/// because [`subtype_effect_rows`] allocates fresh row-tail vars in the
-/// both-open case.
-fn arrow_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) -> bool {
+/// `effects_rows_to_flat_list`.
+///
+/// **WI-335**: the substitution is now THREADED from the caller (the
+/// `&mut Substitution` argument) instead of allocated locally. The
+/// param + result + effects sub-checks share that one subst so a row
+/// var bound in one position is visible to siblings — closing the
+/// nested-arrow soundness gap where independent local substs accepted
+/// arrows whose shared row var had no consistent global binding.
+fn arrow_compatible(kb: &mut KnowledgeBase, subst: &mut Substitution, actual: TermId, expected: TermId) -> bool {
     let (actual_args, expected_args) = match (kb.get_term(actual), kb.get_term(expected)) {
         (Term::Fn { named_args: a, .. }, Term::Fn { named_args: e, .. }) => {
             (a.clone(), e.clone())
@@ -7169,7 +7221,7 @@ fn arrow_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) ->
     let expected_param = get_named_arg(kb, &expected_args, "param");
     match (actual_param, expected_param) {
         (Some(ap), Some(ep)) => {
-            if !types_compatible(kb, ep, ap) {  // note: reversed for contravariance
+            if !types_compatible(kb, subst, ep, ap) {  // note: reversed for contravariance
                 return false;
             }
         }
@@ -7181,7 +7233,7 @@ fn arrow_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) ->
     let expected_result = get_named_arg(kb, &expected_args, "result");
     match (actual_result, expected_result) {
         (Some(ar), Some(er)) => {
-            if !types_compatible(kb, ar, er) {
+            if !types_compatible(kb, subst, ar, er) {
                 return false;
             }
         }
@@ -7202,21 +7254,18 @@ fn arrow_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) ->
         // synthesizes effects_rows); kept for defensive symmetry.
         (None, None) => true,
         (Some(ae), Some(ee)) => {
-            let mut local_subst = Substitution::new();
-            subtype_effect_rows(kb, &mut local_subst, ae, ee)
+            subtype_effect_rows(kb, subst, ae, ee)
         }
         // Missing side is interpreted as a closed empty row (pure).
         (Some(ae), None) => {
             let empty = kb.make_effect_expression_empty_row();
             let empty_rows = kb.make_effects_rows_type(empty);
-            let mut local_subst = Substitution::new();
-            subtype_effect_rows(kb, &mut local_subst, ae, empty_rows)
+            subtype_effect_rows(kb, subst, ae, empty_rows)
         }
         (None, Some(ee)) => {
             let empty = kb.make_effect_expression_empty_row();
             let empty_rows = kb.make_effects_rows_type(empty);
-            let mut local_subst = Substitution::new();
-            subtype_effect_rows(kb, &mut local_subst, empty_rows, ee)
+            subtype_effect_rows(kb, subst, empty_rows, ee)
         }
     }
 }
@@ -7224,7 +7273,7 @@ fn arrow_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) ->
 /// named_tuple(fields: [...]) <: named_tuple(fields: [...])
 /// Width subtyping: actual may have more fields than expected.
 /// Depth subtyping: each expected field's type must be a supertype of actual's.
-fn named_tuple_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) -> bool {
+fn named_tuple_compatible(kb: &mut KnowledgeBase, subst: &mut Substitution, actual: TermId, expected: TermId) -> bool {
     let (actual_args, expected_args) = match (kb.get_term(actual), kb.get_term(expected)) {
         (Term::Fn { named_args: a, .. }, Term::Fn { named_args: e, .. }) => {
             (a.clone(), e.clone())
@@ -7250,7 +7299,7 @@ fn named_tuple_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: Term
                     .and_then(|af| field_type(kb, *af));
                 match actual_type {
                     Some(at) => {
-                        if !types_compatible(kb, at, et) {
+                        if !types_compatible(kb, subst, at, et) {
                             return false;
                         }
                     }
@@ -7885,7 +7934,8 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                 if !Rc::ptr_eq(&result.node, &op.body_node) {
                     kb.set_op_body_node(op.op_sym, Rc::clone(&result.node));
                 }
-                if !types_compatible(kb, result.ty, op.return_type) {
+                let mut subst = Substitution::new();
+                if !types_compatible(kb, &mut subst, result.ty, op.return_type) {
                     errors.push(TypeError::TypeMismatch {
                         span: None,
                         context: TypeErrorContext::OperationReturn { op_name: op.op_sym },

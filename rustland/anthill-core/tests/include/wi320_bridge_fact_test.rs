@@ -16,9 +16,20 @@
 
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load;
-use anthill_core::kb::term::Term;
-use anthill_core::kb::typing::{sort_functor_of, type_display_name, types_compatible};
+use anthill_core::kb::term::{Term, TermId};
+use anthill_core::kb::typing::{
+    sort_functor_of, type_display_name,
+    types_compatible as raw_types_compatible,
+};
+use anthill_core::kb::subst::Substitution;
 use smallvec::SmallVec;
+
+/// Test-private wrapper: see typing_test.rs::types_compatible for the
+/// WI-335 fresh-subst convention.
+fn types_compatible(kb: &mut KnowledgeBase, actual: TermId, expected: TermId) -> bool {
+    let mut subst = Substitution::new();
+    raw_types_compatible(kb, &mut subst, actual, expected)
+}
 
 fn effects_runtime_sym(kb: &KnowledgeBase) -> anthill_core::intern::Symbol {
     kb.try_resolve_symbol("anthill.prelude.EffectsRuntime")
