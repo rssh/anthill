@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft 2026-05-29. Second proposal under `docs/proposals/library/`. Surfaced by [`001-map.md`](001-map.md): Map's `MapReadable` / `PersistentMap` / `MutableMap` is the *keyed* instance of a split the sequence/collection traits should also carry.
+Draft 2026-05-29. Second proposal under `docs/proposals/library/`. Surfaced by [`001-map.md`](001-map.md): Map's `MapReadable` / `PersistentMap` / `MutableMap` is the *keyed* instance of a split the sequence/collection traits should also carry. Open questions 2–5 were settled in design discussion (shared `Iterable` bridge adopted at Level 1; persistent collections provide rather than self-iterate; `insert` stays `Unit`; no umbrella); only the read-layer naming (Q 1) is open.
 
 ## Motivation
 
@@ -22,79 +22,96 @@ This proposal makes the collection hierarchy the same three-layer split as Map.
 
 ## Design
 
-| layer | trait | carrier is its own iterator? | map analog ([001-map](001-map.md)) |
+Four traits in two pairs — a read pair (consume / produce) and a build pair (persistent / mutable):
+
+| role | trait | what it is | map analog ([001-map](001-map.md)) |
 |---|---|---|---|
-| read / iterate | `Iteration` (the "CollectionRead" layer) | — (it *is* the iterator) | `MapReadable` |
-| persistent build | `PersistentCollection` *(rename of `Collection`)* | yes — as `List` is | `PersistentMap` |
-| mutable build | `MutableCollection` *(new)* | no — see below | `MutableMap` |
+| iterator (consume) | `Iteration` | a thing you `split` into element + rest | (`Stream`) |
+| **iterable (produce)** | **`Iterable`** *(new)* | `iterator(c) -> Stream` — the shared "can be walked" layer | `MapReadable` (via `entries`) |
+| persistent build | `PersistentCollection` *(rename of `Collection`)* | functional `empty` / `insert` | `PersistentMap` |
+| mutable build | `MutableCollection` *(new)* | in-place `new` / `insert` | `MutableMap` |
 
-As with Map, the relationship between a concrete sort and these traits is **provides** (a satisfaction `fact` + operation bodies), never `requires`; `requires` is reserved for genuine dependencies and for the superclass constraint *inside* a trait declaration (`PersistentCollection requires Iteration`). See [001-map §Alignment](001-map.md) and its Open Q 2.
+As with Map, the relationship between a concrete sort and these traits is **provides** (a satisfaction `fact` + operation bodies), never `requires`; `requires` is reserved for genuine dependencies and for the superclass constraint *inside* a trait declaration. See [001-map §Alignment](001-map.md) and its Open Q 2.
 
-There is **no umbrella `Collection` supertrait** — `Iteration` is the shared read layer, exactly as `MapReadable` is for maps (where no umbrella `Map` exists).
+`Iterable` is the shared read layer both builders sit on — the analog of `MapReadable` for maps. There is **no umbrella `Collection` supertrait**: `Iterable` is the only thing the two builders have in common.
 
-### Read layer — `Iteration` (unchanged)
+### Iterator vs iterable — `Iteration` and `Iterable`
 
-`Iteration` stays as it is: the iterator capability. `split` decomposes a carrier into element + rest-of-same-type; a carrier *provides* it via `fact Iteration[Iterator = C, Element = …]` + a `split` body. `List` and `Stream` are iterators.
+`Iteration` is the low-level **iterator**: `split(i) -> Option[(Element, Iterator)]`, the carrier consuming itself one element at a time. `Stream` provides it (`splitFirst` *is* `split`); so does `List`.
 
-This is the read layer the user calls "CollectionRead." Whether it is renamed `CollectionReadable` for surface symmetry with `MapReadable` is Open Q 1; the capability is the same either way.
+`Iterable` is the new shared **"can be walked"** capability — it *produces* an iterator rather than *being* one:
+
+```anthill
+sort anthill.prelude.Iterable
+  import anthill.prelude.Stream
+
+  sort C = ?                          -- carrier (the collection)
+  sort Element = ?
+  effects E = ?                       -- iteration/access effect (rides on the produced Stream)
+
+  operation iterator(c: C) -> Stream[Element, E]
+end
+```
+
+`iterator` returns a `Stream` (the Level-1 choice; see Open Q 2). Because `Stream` is abstract, the concrete shape is the carrier's to pick — a persistent list returns a stream that is a bare pointer into itself; a mutable collection returns a snapshot or a live cursor; the host pays no boxing it doesn't need. The `iterator` call carries no effect of its own (like `MapReadable.entries`); the access effect `E` lives on the returned `Stream` and is paid on consumption.
+
+This split is the Rust `IntoIterator` (produce) vs `Iterator` (consume) distinction. It is what lets a **mutable** collection be walked without "splitting consumes the container": a mutable carrier never self-`split`s — it hands out a `Stream` and the `Stream` is the `Iteration` witness.
 
 ### Persistent builder — `PersistentCollection`
 
-Today's `Collection`, renamed, with the carrier parameter renamed `Collection → C` to match `IndexedSeq`/the new trait. Functional build; `requires Iteration` over itself — a persistent collection can cheaply produce its rest, so it *is* its own iterator:
+Today's `Collection`, renamed, with the carrier parameter renamed `Collection → C`. Functional build, and it `requires Iterable` (not self-`Iteration`) — every collection can be walked through the one shared interface:
 
 ```anthill
 sort anthill.prelude.PersistentCollection
-  import anthill.prelude.Iteration
+  import anthill.prelude.Iterable
 
   sort C = ?
   sort Element = ?
   effects Effect = ?
-  requires Iteration[Iterator = C, Element, Effect]   -- persistent ⇒ may be its own iterator
+  requires Iterable[C = C, Element, E = Effect]   -- a built collection can be walked
 
   operation insert(c: C, elem: Element) -> C    effects Effect
   operation empty() -> C
 end
 ```
 
-`List` provides it: `fact PersistentCollection[C = List[T], Element = T]`, `insert = cons`, `empty = nil`. `PersistentMap` provides it with `Element = Pair[K, V]` (`insert(m, pair(k, v)) = with(m, k, v)`).
+`List` provides it: `fact PersistentCollection[C = List[T], Element = T]`, `insert = cons`, `empty = nil`, and `fact Iterable[C = List[T], Element = T]` with `iterator(l)` a stream over `l`. `PersistentMap` provides it with `Element = Pair[K, V]` (`insert(m, pair(k, v)) = with(m, k, v)`).
 
 ### Mutable builder — `MutableCollection` (new)
 
-In-place build. The allocator `new` carries `Modify[result]` (proposal 027.1); `insert`/`clear` mutate in place and return `Unit`:
+In-place build, and it too `requires Iterable`. The allocator `new` carries `Modify[result]` (proposal 027.1); `insert`/`clear` mutate in place and return `Unit`:
 
 ```anthill
 sort anthill.prelude.MutableCollection
-  import anthill.prelude.{Unit, Stream}
+  import anthill.prelude.{Unit, Iterable}
 
   sort C = ?
   sort Element = ?
-  effects E = ?                       -- read/access effect (snapshot vs live cursor)
+  effects E = ?
+  requires Iterable[C = C, Element, E]   -- reads go through the shared Iterable.iterator -> Stream
 
   operation new() -> C                         effects Modify[result]
   operation insert(c: C, elem: Element) -> Unit   effects Modify[c]
   operation clear(c: C) -> Unit                effects Modify[c]
-
-  -- read side: a mutable collection is *iterable* (produces a Stream),
-  -- not its own iterator — see below
-  operation stream(c: C) -> Stream[Element, E]
 end
 ```
 
-Why `MutableCollection` does **not** `requires Iteration[Iterator = C]`: `Iteration.split` returns the rest-of-same-type — it *consumes* the carrier. For a mutable collection, "splitting consumes the collection" is the wrong semantics (iterating would empty the container). So a mutable collection is *iterable*: it produces a `Stream` (a snapshot or a cursor) via `stream`, and the **`Stream`** is the `Iteration` witness. This is the Rust `IntoIterator` vs `Iterator` distinction, and the same call [001-map](001-map.md) made for `MutableMap` (which reads via `entries -> Stream`, not by self-splitting).
+Both builders `requires Iterable` rather than `Iteration`: a mutable collection must not be its own self-consuming iterator (`split` returning the rest-of-same-type would mean "walking empties the container"), and routing the persistent side through the same `Iterable` gives one uniform iteration path instead of two trait shapes (Open Q 3, resolved: persistent collections *provide* `Iterable`, they are not required to self-`Iterate`).
 
 ## Relationship to `Stream` and `IndexedSeq`
 
-- **`Stream`** is itself an `Iteration` (`splitFirst` *is* `split`). It is the iterable bridge for any carrier that should not self-consume — the return type of `MutableCollection.stream` and of `MapReadable.entries`/`keys`/`values`.
+- **`Stream`** is itself an `Iteration` (`splitFirst` *is* `split`), and it is what `Iterable.iterator` returns — the bridge for any carrier that should not self-consume, the same type `MapReadable.entries`/`keys`/`values` already return. (`Stream` trivially provides `Iterable` too: `iterator(s) = s`.)
 - **`IndexedSeq`** (`length` + `nth`) is a *read refinement* — random access by position — orthogonal to the build axis. Both a persistent and a mutable carrier may additionally provide `IndexedSeq`; it neither requires nor is required by the build traits.
 
 ## Migration
 
 Small blast radius: only `collection.anthill` (defines the trait) and `list.anthill` (provides it) mention these today.
 
-1. **Rename** `sort Collection → PersistentCollection` in `collection.anthill`; rename the carrier parameter `Collection → C`.
-2. **Update `list.anthill`**: `fact Collection[Collection = List[T], Element = T]` → `fact PersistentCollection[C = List[T], Element = T]`; update the `import` and the `Collection.insert`/`Collection.empty` comments.
-3. **Add `mutable_collection.anthill`** with `MutableCollection`.
-4. **Retarget [001-map](001-map.md)**: `PersistentMap`'s `fact Collection[…]` becomes `fact PersistentCollection[…]`, and `MutableMap` gains `fact MutableCollection[…]` once a mutable carrier lands.
+1. **Add `iterable.anthill`** with the `Iterable` trait. Have `Stream` provide it (`iterator(s) = s`).
+2. **Rename** `sort Collection → PersistentCollection` in `collection.anthill`; rename the carrier parameter `Collection → C`; change `requires Iteration[Iterator = C, …]` → `requires Iterable[C = C, …]`.
+3. **Update `list.anthill`**: `fact Collection[Collection = List[T], Element = T]` → `fact PersistentCollection[C = List[T], Element = T]`; add `fact Iterable[C = List[T], Element = T]` with an `iterator` body (a stream over the list — `List`'s existing `split` can back it). Update imports.
+4. **Add `mutable_collection.anthill`** with `MutableCollection`.
+5. **Retarget [001-map](001-map.md)**: `PersistentMap`'s `fact Collection[…]` becomes `fact PersistentCollection[…]`; `MapReadable` already returns `Stream` from `entries`, so a map provides `Iterable` (`iterator(m) = entries(m)`) for free; `MutableMap` gains `fact MutableCollection[…]` once a mutable carrier lands.
 
 The `Collection → PersistentCollection` rename of the trait name is the wide-feeling but mechanically tiny part; do it in one PR.
 
@@ -108,24 +125,26 @@ The `Collection → PersistentCollection` rename of the trait name is the wide-f
 
 ## Open questions
 
-1. **Read-layer name — keep `Iteration`, or `CollectionReadable`?** `Iteration` is the *iterator* concept (self-consuming `split`). `MapReadable` is a *readable container* (random access + produces iterators) — strictly richer. For un-keyed sequences "readable ≈ iterable," so `Iteration` may suffice. *Recommend keeping `Iteration`* and not minting `CollectionReadable` unless a sequence read-capability beyond iteration (e.g. `size`/`contains` as primitives rather than folds) earns its own trait.
+1. **Read-layer name — keep `Iteration`, or `CollectionReadable`?** `Iteration` is the *iterator* concept (self-consuming `split`). `MapReadable` is a *readable container* (random access + produces iterators) — strictly richer. For un-keyed sequences "readable ≈ iterable," so `Iteration` + `Iterable` may suffice. *Recommend keeping `Iteration`* and not minting `CollectionReadable` unless a sequence read-capability beyond iteration (e.g. `size`/`contains` as primitives rather than folds) earns its own trait. **(Still open.)**
 
-2. **A shared `Iterable` bridge?** `MutableCollection.stream(c) -> Stream` produces an iterator without consuming. Should that be its own shared trait — `Iterable`/`Streamable` with `stream(c) -> Stream[Element, E]` — that *both* persistent and mutable carriers provide (the `IntoIterator` analog), rather than an ad-hoc op on `MutableCollection`? This would also give persistent collections one uniform iteration path (Q 3).
+2. *(Resolved)* **Shared iteration interface — yes, `Iterable`.** Both builders `requires Iterable`; `iterator(c) -> Stream[Element, E]` (Level 1). The richer **Level 2** — an associated iterator type (`sort It = ?` + `requires Iteration[Iterator = It]`, the full `IntoIterator`), which would let a carrier yield a *non-sequential* iterator (parallel / chunked / paged) — is the upgrade path, the same one [001-map](001-map.md) Open Q 6 defers until a real driver appears.
 
-3. **Does `PersistentCollection` need self-`Iteration` at all?** It currently `requires Iteration[Iterator = C]` (self-split), matching `List`. If the `Iterable` bridge (Q 2) exists, persistent collections could iterate through it too, giving a single iteration path across both builders. Keeping self-split is cheap for persistent carriers; uniformity argues against it. Decide together with Q 2.
+3. *(Resolved)* **`PersistentCollection` does not self-`Iterate`.** It `requires Iterable` like the mutable builder; one uniform iteration path. A persistent carrier *may* still be its own `Iteration` as an internal convenience (cheap `split`), but that is an implementation detail behind its `iterator`, not a hierarchy requirement.
 
-4. **`MutableCollection.insert` return value.** It returns `Unit`. The keyed analog `setMany` returns the count newly inserted ([001-map](001-map.md) Open Q 10) and `deleteMany` the count removed; for consistency a `MutableCollection` might return `Bool` ("was new") from `insert`. Defer with the same reasoning as 001-map Open Q 9/10 — keep `Unit` until a caller wants the witness.
+4. *(Resolved — keep `Unit`)* **`MutableCollection.insert` return value.** Stays `Unit`; the post-condition carries its meaning. Revisit (e.g. `Bool` "was new") only if a caller wants the witness, mirroring [001-map](001-map.md) Open Q 9/10.
 
-5. **No umbrella.** Confirmed mirror of Map: no `Collection` supertrait over the persistent/mutable builders; `Iteration` (or the Q 2 `Iterable`) is the only shared layer. Flag here only so the absence is deliberate, not an oversight.
+5. *(Resolved — no umbrella)* **`Iterable` is the only shared layer.** No `Collection` supertrait over the persistent/mutable builders; `Iterable` is the single thing they share, mirroring `MapReadable` for maps. Deliberate, not an oversight.
 
 ## Phasing
 
 Each phase lands independently with its own tests.
 
-**Phase 1 — rename.** `Collection → PersistentCollection` (+ carrier `Collection → C`) in `collection.anthill`; update `list.anthill`'s `fact`/imports. Test: `list.anthill` loads, the `PersistentCollection` fact resolves, existing List tests pass.
+**Phase 1 — `Iterable`.** Add `iterable.anthill` (`iterator(c) -> Stream[Element, E]`); have `Stream` provide it. Test: file loads, exports resolve.
 
-**Phase 2 — `MutableCollection`.** Add `mutable_collection.anthill`. No carriers yet. Test: file loads, exports resolve.
+**Phase 2 — rename + reparent.** `Collection → PersistentCollection` (+ carrier `Collection → C`), and `requires Iteration` → `requires Iterable`, in `collection.anthill`; update `list.anthill` (`fact PersistentCollection`, add `fact Iterable`, imports). Test: `list.anthill` loads, both facts resolve, existing List tests pass.
 
-**Phase 3 — first mutable carrier.** A concrete mutable sequence (a `MutableList`, or `MutableMap` from 001-map with `Element = Pair[K, V]`) provides `MutableCollection`; wire the arena. Test: full mutable lifecycle under effect tracking.
+**Phase 3 — `MutableCollection`.** Add `mutable_collection.anthill` (`requires Iterable`). No carriers yet. Test: file loads, exports resolve.
 
-**Phase 4 (optional) — `Iterable` bridge.** If Open Q 2 resolves yes, introduce the shared `stream`-producing trait and route both builders through it.
+**Phase 4 — first mutable carrier.** A concrete mutable sequence (a `MutableList`, or `MutableMap` from 001-map with `Element = Pair[K, V]`) provides `MutableCollection` + `Iterable`; wire the arena. Test: full mutable lifecycle under effect tracking.
+
+**Phase 5 (deferred) — Level 2 `Iterable`.** Promote `iterator`'s return to an associated iterator type (`IntoIterator`) when a non-sequential iterator (parallel/chunked/paged) needs it — coordinated with [001-map](001-map.md) Open Q 6.

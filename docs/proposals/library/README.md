@@ -16,7 +16,7 @@ Library proposals are distinct from **kernel-language proposals** (in the parent
 | File | Status | Subject |
 |---|---|---|
 | [`001-map.md`](001-map.md) | Draft 2026-05-28 | Split `Map` into three sorts: `MapReadable` (typeclass for read-only ops), `PersistentMap` (functional update), `MutableMap` (in-place mutation per 027.1). Effect-polymorphic iteration via `Stream[T, E]`. |
-| [`002-iteration-collection.md`](002-iteration-collection.md) | Draft 2026-05-29 | The same three-layer split for sequences: read = `Iteration`, persistent build = `PersistentCollection` (rename of `Collection`), mutable build = new `MutableCollection`. Map is the keyed instance of this. |
+| [`002-iteration-collection.md`](002-iteration-collection.md) | Draft 2026-05-29 | The same split for sequences: `Iteration` (consume) + new shared `Iterable` (produce, `iterator -> Stream`) as the read layer; `PersistentCollection` (rename of `Collection`) and new `MutableCollection` both `requires Iterable`. Map is the keyed instance. |
 
 ## Candidate / planned proposals
 
