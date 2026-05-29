@@ -1,6 +1,6 @@
 -- List: a parametric sort (T is the abstract sort parameter)
 enum anthill.prelude.List
-  import anthill.prelude.Collection
+  import anthill.prelude.PersistentCollection
   import anthill.prelude.Iteration
   import anthill.prelude.IndexedSeq
   import anthill.prelude.Bool.{ite}
@@ -44,9 +44,10 @@ enum anthill.prelude.List
   rule append(nil, ?ys) = ?ys
   rule append(cons(head: ?x, tail: ?xs), ?ys) = cons(head: ?x, tail: append(?xs, ?ys))
 
-  -- List satisfies Collection (pure). Effect left unbound: `Effect = {}`
-  -- is not yet expressible as a type argument — restore it under WI-301.
-  fact Collection[Collection = List[T], Element = T]
+  -- List satisfies PersistentCollection (pure). Effect left unbound:
+  -- `Effect = {}` is not yet expressible as a type argument — restore it
+  -- under WI-301.
+  fact PersistentCollection[C = List[T], Element = T]
 
   -- List satisfies IndexedSeq (no effects). Cost is O(N) per `nth` —
   -- callers that need O(1) should depend on a future RandomAccess
@@ -63,11 +64,11 @@ enum anthill.prelude.List
   rule nth(cons(?h, ?_), 0) = some(?h)
   rule nth(cons(?_, ?t), ?i) = nth(?t, sub(?i, 1)) :- gt(?i, 0)
 
-  -- Collection.insert for List: prepend element
+  -- PersistentCollection.insert for List: prepend element
   operation insert(c: List, elem: T) -> List = cons(head: elem, tail: c)
   rule insert(?c, ?elem) = cons(head: ?elem, tail: ?c)
 
-  -- Collection.empty for List
+  -- PersistentCollection.empty for List
   operation empty() -> List = nil
   rule empty() = nil
 

@@ -1,0 +1,20 @@
+-- Iterable: "can be walked" — *produces* an iterator, as opposed to
+-- Iteration, which *is* one (self-consuming `split`). This is the
+-- IntoIterator / Iterable layer: the shared read interface that both
+-- PersistentCollection and MutableCollection sit on (proposal
+-- docs/proposals/library/002-iteration-collection.md).
+--
+-- `iterator` returns an abstract Stream (Level 1). Because Stream is
+-- itself representation-defined, a carrier picks the concrete shape:
+-- a snapshot, a cursor, or a bare pointer. The access effect E rides on
+-- the produced Stream and is paid on consumption, so `iterator` itself
+-- carries no effect (cf. MapReadable.entries in 001-map).
+sort anthill.prelude.Iterable
+  import anthill.prelude.Stream
+
+  sort C = ?                          -- carrier (the collection)
+  sort Element = ?
+  effects E = ?                       -- iteration/access effect; rides on the produced Stream
+
+  operation iterator(c: C) -> Stream[Element, E]
+end

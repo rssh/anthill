@@ -1,0 +1,22 @@
+-- MutableCollection: the in-place builder, mirror of PersistentCollection
+-- (proposal docs/proposals/library/002-iteration-collection.md). Reads go
+-- through the shared Iterable interface (a mutable carrier must not be its
+-- own self-consuming Iteration — `split` returning the rest-of-same-type
+-- would empty the container). The allocator `new` carries Modify[result]
+-- (proposal 027.1); `insert`/`clear` mutate in place. `insert` returns the
+-- membership witness ("was new"), the singular shadow of a batched count
+-- (001-map setMany/deleteMany).
+sort anthill.prelude.MutableCollection
+  import anthill.prelude.{Unit, Bool, Iterable, Modifiable}
+
+  sort C = ?
+  sort Element = ?
+  effects E = ?                       -- read/access effect, via Iterable
+
+  requires Iterable[C = C, Element = Element, E = E]   -- reads go through Iterable.iterator -> Stream
+  requires Modifiable[T = C]                            -- admits Modify[c] in the mutating rows
+
+  operation new() -> C                            effects Modify[result]
+  operation insert(c: C, elem: Element) -> Bool   effects Modify[c]   -- true if newly added (collection changed)
+  operation clear(c: C) -> Unit                   effects Modify[c]
+end
