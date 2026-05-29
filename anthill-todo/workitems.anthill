@@ -2509,7 +2509,7 @@ fact WorkItem(
   description: "Code-review WI-326 F10/F13: docs & malformed-input hardening. (F10) Stale doc on requires_chain_flat at typing.rs ~6204 says 'Keeps &KnowledgeBase so callers up the types_compatible chain don't need to convert to &mut' — but WI-326 made that chain &mut. The function legitimately remains & (no mutation), but the recorded rationale misleads. Fix: re-word the doc to say 'still & because the function does no mutation; types_compatible chain moved to &mut in WI-326, but this site doesn't need to'. (F13) decompose_effect_row at typing.rs ~5300-5307 silently drops second-and-later row tails on malformed inputs (debug_assert at ~5341 fires only in debug builds). External producers (loader bug, hand-built test term) could create EffectExpression like merge(open(?rho_1), open(?rho_2)) — two tail vars. The algorithm sees only ?rho_1; subtype/unify proceeds on incomplete info. Per CLAUDE.md 'avoid fallbacks, know about errors early', the algorithm should hard-reject (return None/false propagated as a row-shape error). Fix: turn the debug_assert into a hard error path (return Err(MalformedRow) or a sentinel that callers translate into false), and add a test that hand-builds a multi-tail row and confirms rejection. ACCEPTANCE: doc fixed; hard-rejection path tested with a malformed-row probe; full cargo-test green.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-326"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-29T07:58:12Z"))
 
 fact WorkItem(
   id: "WI-340",

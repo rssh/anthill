@@ -5514,11 +5514,26 @@ fn unify_arrow(kb: &mut KnowledgeBase, subst: &mut Substitution, a: TermId, b: T
 ///
 /// `absent_labels` (v1b's `-e` lacks-constraint slot) is collected but not
 /// yet consumed by the unifier — v1a is presence-only.
+///
+/// **WI-339 F13** — returns `None` on **malformed input**:
+/// - a second row-tail `Var` encountered after one was already recorded
+///   (e.g. `merge(open(?ρ_1), open(?ρ_2))` — semantically nonsensical;
+///   pre-WI-339 we kept the first and dropped subsequent ones silently);
+/// - an unexpected functor inside the EffectExpression algebra (not
+///   `empty_row` / `present` / `absent` / `open` / `merge`);
+/// - an unexpected term shape (not `Term::Var` or `Term::Fn`).
+///
+/// Per `CLAUDE.md` *avoid fallbacks, know about errors early* — callers
+/// translate `None` into a sub/unify rejection rather than proceeding
+/// on incomplete decomposition. The well-formed inputs the typer
+/// produces today never trip this; the hard-reject closes the door on
+/// external producers (loader bugs, hand-built test terms) leaking
+/// silent miscompares.
 fn decompose_effect_row(
     kb: &KnowledgeBase,
     subst: &Substitution,
     effects_field: TermId,
-) -> (Vec<TermId>, Option<TermId>, Vec<TermId>) {
+) -> Option<(Vec<TermId>, Option<TermId>, Vec<TermId>)> {
     // Walk the wrapper through substitution; unwrap effects_rows.
     let walked_field = walk_type(kb, subst, effects_field);
     let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.Type.effects_rows");
@@ -5526,14 +5541,14 @@ fn decompose_effect_row(
         (Some(er), Term::Fn { functor, named_args, .. }) if *functor == er => {
             match get_named_arg(kb, named_args, "effects_expr") {
                 Some(e) => e,
-                None => return (Vec::new(), None, Vec::new()),
+                None => return Some((Vec::new(), None, Vec::new())),
             }
         }
         // Not an effects_rows wrapper — could be a bare Var (the whole row
         // is itself an unbound row variable, mostly seen in tests building
         // partial arrows). Treat as a single open-tail row.
-        (_, Term::Var(_)) => return (Vec::new(), Some(walked_field), Vec::new()),
-        _ => return (Vec::new(), None, Vec::new()),
+        (_, Term::Var(_)) => return Some((Vec::new(), Some(walked_field), Vec::new())),
+        _ => return Some((Vec::new(), None, Vec::new())),
     };
 
     let mut present = Vec::new();
@@ -5545,11 +5560,18 @@ fn decompose_effect_row(
         match kb.get_term(node) {
             // Unbound Var directly inside the algebra — row-tail.
             Term::Var(_) => {
-                // If we somehow already have a tail and this is a different
-                // var, the row is malformed. Keep the first; later v1a
-                // hardening will reject this.
-                if tail.is_none() {
-                    tail = Some(node);
+                // WI-339 F13: a second distinct row-tail var is a
+                // malformed-row signal (e.g. `merge(open(?ρ_1),
+                // open(?ρ_2))`). Pre-WI-339 we silently kept the first
+                // and dropped subsequent ones; now reject hard so the
+                // caller can propagate the row-shape error rather than
+                // proceed on incomplete information.
+                match tail {
+                    None => tail = Some(node),
+                    Some(existing) if existing == node => {
+                        // Same var seen again — benign duplicate; ignore.
+                    }
+                    Some(_) => return None,
                 }
             }
             Term::Fn { functor, named_args, .. } => {
@@ -5583,26 +5605,21 @@ fn decompose_effect_row(
                         }
                     }
                     _ => {
-                        // Unknown functor inside an EffectExpression —
-                        // upstream bug. Surface in dev, tolerate in release.
-                        debug_assert!(
-                            false,
-                            "decompose_effect_row: unexpected functor `{}`",
-                            name
-                        );
+                        // WI-339 F13: unknown functor inside the
+                        // EffectExpression algebra — hard reject. The
+                        // caller maps this to a sub/unify failure.
+                        return None;
                     }
                 }
             }
             _ => {
-                debug_assert!(
-                    false,
-                    "decompose_effect_row: unexpected term shape"
-                );
+                // WI-339 F13: unexpected term shape — hard reject.
+                return None;
             }
         }
     }
 
-    (present, tail, absent)
+    Some((present, tail, absent))
 }
 
 /// Pair present-labels from two rows by greedy structural unification.
@@ -5876,8 +5893,17 @@ fn unify_effect_rows(
         return true;
     }
 
-    let (a_present, a_tail, _a_absent) = decompose_effect_row(kb, subst, a_effects);
-    let (b_present, b_tail, _b_absent) = decompose_effect_row(kb, subst, b_effects);
+    // WI-339 F13: decompose returns None on malformed input — propagate
+    // as a unify rejection so the typer surfaces the row-shape error
+    // instead of proceeding on incomplete decomposition.
+    let (a_present, a_tail, _a_absent) = match decompose_effect_row(kb, subst, a_effects) {
+        Some(p) => p,
+        None => return false,
+    };
+    let (b_present, b_tail, _b_absent) = match decompose_effect_row(kb, subst, b_effects) {
+        Some(p) => p,
+        None => return false,
+    };
 
     let (only_a, only_b) = pair_present_labels(kb, subst, &a_present, &b_present);
 
@@ -5961,8 +5987,16 @@ fn subtype_effect_rows(
         return true;
     }
 
-    let (a_present, a_tail, _a_absent) = decompose_effect_row(kb, subst, actual_effects);
-    let (e_present, e_tail, _e_absent) = decompose_effect_row(kb, subst, expected_effects);
+    // WI-339 F13: decompose returns None on malformed input — propagate
+    // as a sub rejection.
+    let (a_present, a_tail, _a_absent) = match decompose_effect_row(kb, subst, actual_effects) {
+        Some(p) => p,
+        None => return false,
+    };
+    let (e_present, e_tail, _e_absent) = match decompose_effect_row(kb, subst, expected_effects) {
+        Some(p) => p,
+        None => return false,
+    };
 
     // WI-326 F1 (code-review): use the covering variant (existential), NOT
     // the unify-shaped 1-to-1 [`pair_present_labels`]. Set semantics with
@@ -6751,8 +6785,16 @@ fn push_short_lc(kb: &KnowledgeBase, sym: Symbol, out: &mut String) {
 /// WI-230 — pre-WI-230 flat chain (no substitution composition). Used
 /// by consumers that only filter on `required_sort` and don't read the
 /// spec bindings — `sort_refines`, `check_obligations`,
-/// `seed_entry_requirements`, etc. Keeps `&KnowledgeBase` so callers
-/// up the `types_compatible` chain don't need to convert to `&mut`.
+/// `seed_entry_requirements`, etc.
+///
+/// WI-326 / WI-339: takes `&KnowledgeBase` because this function does
+/// no mutation. The `types_compatible` chain moved to `&mut
+/// KnowledgeBase` for row subtyping, but this site is independent of
+/// that chain and reads the cached `requires_tree` immutably. Pre-WI-326
+/// the doc-comment argued for `&KB` "so callers up the types_compatible
+/// chain don't need to convert to &mut"; that rationale is stale now
+/// that the chain is &mut everywhere — keeping & here is justified
+/// purely on "the function is read-only".
 ///
 /// Memoized on the same `requires_tree_cache` as `requires_tree` since
 /// the flat shape can be derived by flattening the tree. The

@@ -3254,6 +3254,74 @@ fn unify_arrow_shared_rho_with_extras() {
         "?rho should be bound after unification");
 }
 
+// ── WI-339 decompose_effect_row malformed-input hard reject ──────────────
+//
+// Per CLAUDE.md "avoid fallbacks, know about errors early", the row
+// decomposer now returns None instead of debug_assert + silently-
+// returning-incomplete-results when it sees:
+//   - a second distinct row-tail Var (e.g. merge(open(?rho_1),
+//     open(?rho_2)));
+//   - an unknown functor inside the EffectExpression algebra;
+//   - an unexpected term shape.
+// Callers in unify_effect_rows / subtype_effect_rows map None to a
+// rejection (return false).
+
+/// WI-339 F13: a hand-built EffectExpression with two distinct
+/// row-tail vars is malformed. Pre-WI-339 the second tail was
+/// silently dropped and the sub/unify check proceeded on incomplete
+/// information; post-WI-339 it hard-rejects.
+#[test]
+fn subtype_rejects_malformed_multi_tail_row() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+
+    // Build a malformed inner EffectExpression: merge(open(?rho_1),
+    // open(?rho_2)). decompose_effect_row's stack walk will see two
+    // distinct Vars in tail position.
+    let rho1_sym = kb.intern("?rho_1");
+    let rho2_sym = kb.intern("?rho_2");
+    let rho1_vid = kb.fresh_var(rho1_sym);
+    let rho2_vid = kb.fresh_var(rho2_sym);
+    let rho1 = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho1_vid)));
+    let rho2 = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho2_vid)));
+    let open1 = kb.make_effect_expression_open(rho1);
+    let open2 = kb.make_effect_expression_open(rho2);
+    let merge_two_tails = kb.make_effect_expression_merge(open1, open2);
+    let malformed_rows = kb.make_effects_rows_type(merge_two_tails);
+
+    // Hand-construct an arrow with the malformed effects field directly
+    // (bypassing make_arrow_type's canonicalization).
+    let arrow_sym = kb.try_resolve_symbol("anthill.prelude.Type.arrow")
+        .expect("arrow symbol pre-registered");
+    let param_key = kb.intern("param");
+    let result_key = kb.intern("result");
+    let effects_key = kb.intern("effects");
+    let mut na: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]>
+        = SmallVec::new();
+    na.push((param_key, int_ty));
+    na.push((result_key, int_ty));
+    na.push((effects_key, malformed_rows));
+    na.sort_by_key(|(s, _)| s.index());
+    let arrow_malformed = kb.alloc(Term::Fn {
+        functor: arrow_sym,
+        pos_args: SmallVec::new(),
+        named_args: na,
+    });
+
+    // A well-formed arrow against the malformed one — must reject.
+    let arrow_clean = kb.make_arrow_type(int_ty, int_ty, &[]);
+
+    assert!(!types_compatible(&mut kb, arrow_malformed, arrow_clean),
+        "malformed multi-tail row must reject the subtype check");
+    assert!(!types_compatible(&mut kb, arrow_clean, arrow_malformed),
+        "malformed multi-tail row must reject the symmetric subtype check");
+
+    // unify_types also rejects (propagates the decompose None as false).
+    let mut subst = Substitution::new();
+    assert!(!unify_types(&mut kb, &mut subst, arrow_malformed, arrow_clean),
+        "unify rejects against malformed multi-tail row");
+}
+
 // ── WI-338 pair/cover_present_labels hardening ───────────────────────────
 //
 // F8: dropped the strict functor-name pre-filter so cross-arm
