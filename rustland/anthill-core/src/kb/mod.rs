@@ -286,6 +286,15 @@ pub struct KnowledgeBase {
     pub(crate) dispatch_rewrites: HashMap<TermId, TermId>,
     pub(crate) dispatch_origin: HashMap<TermId, Symbol>,
 
+    // WI-341 step 1 — the reserved-result-name binder symbols (`<op>.result`,
+    // proposal 041), recorded as each operation scope is created
+    // (`scan_operation_params`). Lets `kb::region` recognise an effect's
+    // result-region resource by **symbol identity** (membership) instead of
+    // interrogating the symbol's *spelling* (`rsplit('.') == "result"`).
+    // Symbols already carry identity; this just stops encoding the
+    // result-region *role* in the name and parsing it back out.
+    pub(crate) result_binder_syms: HashSet<Symbol>,
+
     // WI-226 Cache A — memoized transitive `requires` closure per sort.
     // After WI-230, this cache is dormant — `requires_chain` now routes
     // through `requires_tree_cache` (the tree-shaped cache). Kept here
@@ -364,6 +373,7 @@ impl KnowledgeBase {
             routes: route::RouteRegistry::new(),
             dispatch_rewrites: HashMap::new(),
             dispatch_origin: HashMap::new(),
+            result_binder_syms: HashSet::new(),
             requires_chain_cache: RefCell::new(HashMap::new()),
             requires_tree_cache: RefCell::new(HashMap::new()),
             synth_req_names_cache: RefCell::new(HashMap::new()),
@@ -2730,6 +2740,20 @@ impl KnowledgeBase {
     /// O(1) lookup via pre-built index populated by register_entity_of.
     pub fn is_constructor_symbol(&self, functor: Symbol) -> bool {
         self.constructor_symbols.contains(&functor)
+    }
+
+    /// WI-341 step 1 — record an operation's reserved `result` binder symbol
+    /// (`<op>.result`, proposal 041) as its scope is created. Called from
+    /// `scan_operation_params`.
+    pub(crate) fn register_result_binder(&mut self, sym: Symbol) {
+        self.result_binder_syms.insert(sym);
+    }
+
+    /// WI-341 step 1 — whether `sym` is a reserved `result` binder symbol,
+    /// by symbol identity (membership), replacing the prior spelling match
+    /// (`qualified_name_of(sym).rsplit('.') == "result"`) in `kb::region`.
+    pub(crate) fn is_result_binder(&self, sym: Symbol) -> bool {
+        self.result_binder_syms.contains(&sym)
     }
 
     /// A free-standing entity: declared at namespace level (registered fields)

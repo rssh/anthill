@@ -389,7 +389,11 @@ fn scan_operation_params(
         kb.symbols.define(param_name, &qualified, SymbolKind::Param, op_term.raw());
     }
     let result_qualified = make_qualified(prefix, "result");
-    kb.symbols.define("result", &result_qualified, SymbolKind::Param, op_term.raw());
+    let result_sym = kb.symbols.define("result", &result_qualified, SymbolKind::Param, op_term.raw());
+    // WI-341 step 1: record the result-binder symbol so `kb::region`
+    // recognises an effect's result-region resource by symbol identity
+    // rather than by parsing the symbol's spelling.
+    kb.register_result_binder(result_sym);
 
     // Pre-register `result.<field>` for each named-tuple return component.
     // Effects rows take *types*, not general term expressions, so the dot
