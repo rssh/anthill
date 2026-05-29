@@ -5724,6 +5724,29 @@ fn cover_present_labels(
 /// When `final_tail` is `None`, the tail closes (`empty_row`); when
 /// `Some(fresh)`, it stays open and `fresh` becomes the shared extension
 /// point between two open rows.
+///
+/// **WI-336 — Var-variant gating**. Only `Var::Global` row tails are
+/// bindable:
+///
+/// - `Var::Rigid` represents a forall-Skolem — the universally-quantified
+///   row whose contents are unknown to this scope. We can't bind it (it's
+///   a constant to the unifier) and we can't safely claim it equals
+///   `empty_row` or any specific shape on the basis of a "no-op" binding;
+///   either side could instantiate `Rigid` to a row that contradicts the
+///   caller's claim. Reject.
+/// - `Var::DeBruijn` shouldn't appear in a resolved (post-`with_fresh_vars`)
+///   context; the typer opens binders before this is reached. Treat as a
+///   schema error and reject.
+/// - A non-`Var` tail is defensive only — `decompose_effect_row` returns
+///   `Some(tail)` only for `Term::Var` nodes. If a malformed input
+///   somehow reaches here, accept only the literal no-op (no extras, no
+///   final_tail) so the algorithm degrades gracefully.
+///
+/// Currently latent for v1a (the typer never produces Rigid/DeBruijn
+/// effect-row tails), but the v1b lacks-constraint + polymorphic-row work
+/// will introduce universally-quantified row variables in arrow.effects
+/// positions — at which point the pre-WI-336 fallback would silently
+/// accept unsoundly.
 fn bind_row_tail(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -5733,8 +5756,12 @@ fn bind_row_tail(
 ) -> bool {
     let vid = match kb.get_term(tail) {
         Term::Var(Var::Global(vid)) => *vid,
-        // Tail isn't a bindable Global Var — only succeed if the binding
-        // would have been a no-op (no extras, no fresh tail).
+        // WI-336: forall-quantified (Rigid) or unopened DeBruijn tail —
+        // not bindable, and the "would-be-no-op" assumption isn't safe.
+        Term::Var(Var::Rigid(_)) | Term::Var(Var::DeBruijn(_)) => return false,
+        // Non-Var tail: decompose_effect_row only returns Var for the
+        // tail slot, so this is defensive against a malformed input.
+        // Accept only a literal no-op.
         _ => return extra_labels.is_empty() && final_tail.is_none(),
     };
 

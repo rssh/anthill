@@ -2488,7 +2488,7 @@ fact WorkItem(
   description: "Code-review WI-326 F12: bind_row_tail's non-Global fallback returns true for Rigid/DeBruijn row tails — latent unsoundness for forall-quantified row vars. PROBLEM: bind_row_tail at typing.rs ~5440 matches the tail term against Term::Var(Var::Global(vid)); the fallback arm is '_ => return extra_labels.is_empty() && final_tail.is_none()'. For a Var::Rigid (forall-Skolem) or Var::DeBruijn tail, this returns TRUE whenever the binding would be a no-op (case 3 of subtype_effect_rows always calls bind_row_tail(a_t, &[], None) when only_a is empty). But a Rigid row var represents 'some universally-quantified row whose contents are unknown to this scope' — treating it as 'closes to empty' is unsound; ?rho_rigid could instantiate to {B} which is NOT subset of expected = {A}. SCOPE: in subtype_effect_rows case 3 (Some(a_t), None), explicitly check that a_t is Term::Var(Var::Global(_)) before treating the close-to-empty as a valid sub witness; reject otherwise. Symmetric check for the case 2 (None, Some(e_t)) where e_t being Rigid means 'we can't safely close it'. Currently latent (v1a has no forall-quantified effect-row vars in arrow.effects) but becomes a real hole when WI-307 v1b's lacks-constraint or polymorphic-effect-row signatures land. ACCEPTANCE: hardening check rejects Rigid/DeBruijn tails in case 2/3 of subtype_effect_rows; new test 'subtype_rejects_rigid_tail_close_to_empty' demonstrates the rejection; full cargo-test green; document in subtype_effect_rows docstring.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-326"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-29T06:21:53Z"))
 
 fact WorkItem(
   id: "WI-337",

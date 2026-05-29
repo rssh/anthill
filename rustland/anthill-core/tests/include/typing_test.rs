@@ -2931,6 +2931,104 @@ fn subtype_nested_arrow_shared_rho_inconsistent_binding_rejects() {
          expected bindings must REJECT (no consistent global rho)");
 }
 
+// ── WI-336 Rigid row tail hardening ──────────────────────────────────────
+//
+// `Var::Rigid` represents a forall-Skolem — a universally-quantified row
+// variable whose contents are unknown to this scope. Pre-WI-336
+// `bind_row_tail`'s fallback returned `extras.is_empty() && final_tail.
+// is_none()` for any non-Global Var (including Rigid), so case 3 of
+// `subtype_effect_rows` accepted `actual={| ?rho_rigid} <: closed
+// expected` whenever actual had no extras — silently assuming
+// rigid_contents = empty. Unsound: rigid could instantiate to any row.
+//
+// Currently latent for v1a (the typer never produces Rigid effect-row
+// tails); WI-307 v1b lacks-constraints + polymorphic-row work will
+// surface this.
+
+/// WI-336: actual open with Rigid tail, expected closed, only_a empty.
+/// Pre-WI-336 the fallback accepted as a no-op; post-WI-336 rejects
+/// because Rigid's contents are universally quantified and can't be
+/// claimed empty.
+#[test]
+fn subtype_rejects_rigid_tail_close_to_empty() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e1_sym = kb.intern("E1");
+    let e1 = kb.make_sort_ref(e1_sym);
+
+    let rigid_name = kb.intern("rho_rigid");
+    let rigid_vid = kb.fresh_var(rigid_name);
+    let rigid_tail = kb.alloc(Term::Var(
+        anthill_core::kb::term::Var::Rigid(rigid_vid),
+    ));
+
+    // actual = arrow(Int, Int, {| ?rho_rigid}) — open with Rigid tail.
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[rigid_tail]);
+    // expected = arrow(Int, Int, {E1}) — closed.
+    let expected = kb.make_arrow_type(int_ty, int_ty, &[e1]);
+
+    // a_present=[], a_tail=Some(Rigid), e_present=[E1], e_tail=None.
+    // only_a=[], only_e=[E1]. Case 3 (Some(a_t), None) with only_a empty.
+    // Pre-WI-336: bind_row_tail(Rigid, &[], None) → fallback returns
+    // true → arm returns true → SUB ACCEPTED (unsound).
+    // Post-WI-336: bind_row_tail rejects Rigid → arm returns false →
+    // SUB REJECTED (sound).
+    assert!(!types_compatible(&mut kb, actual, expected),
+        "arrow({{|?rho_rigid}}) NOT <: arrow({{E1}}) — Rigid tail's \
+         universally-quantified contents could violate the closed bound");
+}
+
+/// WI-336: same idea for unify — unify_effect_rows' (Some(a_t), None) arm
+/// with Rigid a_t and only_b empty pre-WI-336 unsoundly unified.
+#[test]
+fn unify_rejects_rigid_tail_against_closed() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e1_sym = kb.intern("E1");
+    let e1 = kb.make_sort_ref(e1_sym);
+
+    let rigid_name = kb.intern("rho_rigid");
+    let rigid_vid = kb.fresh_var(rigid_name);
+    let rigid_tail = kb.alloc(Term::Var(
+        anthill_core::kb::term::Var::Rigid(rigid_vid),
+    ));
+
+    let arrow_open_rigid = kb.make_arrow_type(int_ty, int_ty, &[e1, rigid_tail]);
+    let arrow_closed = kb.make_arrow_type(int_ty, int_ty, &[e1]);
+
+    let mut subst = Substitution::new();
+    assert!(!unify_types(&mut kb, &mut subst, arrow_open_rigid, arrow_closed),
+        "unify of {{E1 | ?rho_rigid}} with closed {{E1}} must REJECT — \
+         Rigid can't be bound to empty by the unifier");
+    // Symmetric direction.
+    let mut subst2 = Substitution::new();
+    assert!(!unify_types(&mut kb, &mut subst2, arrow_closed, arrow_open_rigid),
+        "symmetric direction: unify of closed {{E1}} with {{E1 | ?rho_rigid}} must REJECT");
+}
+
+/// WI-336 positive control: Global (regular) row tail with the same
+/// shape still works — confirms the fix doesn't over-reject.
+#[test]
+fn subtype_accepts_global_tail_close_to_empty() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e1_sym = kb.intern("E1");
+    let e1 = kb.make_sort_ref(e1_sym);
+
+    let global_name = kb.intern("?rho");
+    let global_vid = kb.fresh_var(global_name);
+    let global_tail = kb.alloc(Term::Var(
+        anthill_core::kb::term::Var::Global(global_vid),
+    ));
+
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[global_tail]);
+    let expected = kb.make_arrow_type(int_ty, int_ty, &[e1]);
+
+    // Same shape as the Rigid case but with Global — must accept.
+    assert!(types_compatible(&mut kb, actual, expected),
+        "arrow({{|?rho_global}}) <: arrow({{E1}}) — Global tail can close to empty");
+}
+
 /// WI-335 positive control: shared rho across positions with CONSISTENT
 /// expected bindings accepts. Both positions want rho := {E1}, so the
 /// shared subst resolves them coherently. Guards against the fix
