@@ -1231,10 +1231,13 @@ fn visit_type(
     let occ_span = Some(occ.span.span);
     let expr = match &occ.kind {
         NodeKind::Expr { expr, .. } => expr,
-        NodeKind::RuleHead { .. } | NodeKind::Pattern(_) => {
+        NodeKind::RuleHead { .. } | NodeKind::Pattern(_)
+        | NodeKind::Type(_) | NodeKind::EffectExpr(_) => {
             // RuleHead never appears in op/rule body position; Pattern
             // is reached via its parent Expr's pattern slot and handled
             // there, not as a typing target on its own (WI-318).
+            // WI-342: Type/EffectExpr occurrences are type-level data,
+            // not an expression typing target.
             results.push(Err(TypeError::BottomExpr { span: occ_span }));
             return;
         }

@@ -2327,6 +2327,157 @@ impl KnowledgeBase {
         })
     }
 
+    // ── WI-342: Value-carried (occurrence) type builders ───────────────
+    //
+    // Peers of the `make_*` `TermId` builders above, producing the
+    // `Value`-carried form (`Rc<NodeOccurrence>` with `NodeKind::Type` /
+    // `NodeKind::EffectExpr`) required once a subtree carries a real `denoted`
+    // occurrence (the carrier rule, design doc §2). These do NOT allocate in
+    // the `TermStore` — they wrap occurrences — and are NOT yet called from the
+    // live loader (dual-path; the `TermId` builders stay the live path until
+    // P3 routes `unify_types` onto `TermView`). Ground children ride in
+    // `TypeChild::Ground(TermId)`; only the `denoted` spine is occurrence-linked.
+
+    /// `denoted(value: NodeOccurrence)` carried as a Type occurrence
+    /// (`TypeNode::Denoted`). `value` is the carried source content — for
+    /// `Modify[c]` an `Expr::Ref(c)` occurrence (see [`Self::make_denoted_occ_ref`]).
+    /// Occurrence-form peer of [`Self::make_denoted`].
+    pub fn make_denoted_occ(
+        &self,
+        value: Rc<NodeOccurrence>,
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Rc<NodeOccurrence> {
+        NodeOccurrence::new_type(node_occurrence::TypeNode::Denoted { value }, span, owner)
+    }
+
+    /// Convenience: `denoted(value: Ref(sym))` carried as an occurrence — the
+    /// occurrence-form peer of `make_denoted(alloc(Term::Ref(sym)))`, which is
+    /// exactly how the loader lowers a value-in-type today (load.rs:5244).
+    pub fn make_denoted_occ_ref(
+        &self,
+        sym: Symbol,
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Rc<NodeOccurrence> {
+        let value = NodeOccurrence::new_expr(node_occurrence::Expr::Ref(sym), span, owner);
+        self.make_denoted_occ(value, span, owner)
+    }
+
+    /// `parameterized(base, bindings)` carried as a Type occurrence.
+    /// Occurrence peer of [`Self::make_parameterized_type`].
+    pub fn make_parameterized_occ(
+        &self,
+        base: node_occurrence::TypeChild,
+        bindings: Vec<(Symbol, node_occurrence::TypeChild)>,
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Rc<NodeOccurrence> {
+        NodeOccurrence::new_type(
+            node_occurrence::TypeNode::Parameterized { base, bindings },
+            span,
+            owner,
+        )
+    }
+
+    /// `arrow(param, result, effects)` carried as a Type occurrence.
+    /// Occurrence peer of [`Self::make_arrow_type`].
+    pub fn make_arrow_occ(
+        &self,
+        param: node_occurrence::TypeChild,
+        result: node_occurrence::TypeChild,
+        effects: node_occurrence::TypeChild,
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Rc<NodeOccurrence> {
+        NodeOccurrence::new_type(
+            node_occurrence::TypeNode::Arrow { param, result, effects },
+            span,
+            owner,
+        )
+    }
+
+    /// `effects_rows(effects_expr: EffectExpression)` carried as a Type
+    /// occurrence. Occurrence peer of [`Self::make_effects_rows_type`].
+    pub fn make_effects_rows_occ(
+        &self,
+        effects_expr: node_occurrence::TypeChild,
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Rc<NodeOccurrence> {
+        NodeOccurrence::new_type(
+            node_occurrence::TypeNode::EffectsRows { effects_expr },
+            span,
+            owner,
+        )
+    }
+
+    /// EffectExpression `present(label)` carried as an occurrence.
+    pub fn make_present_occ(
+        &self,
+        label: node_occurrence::TypeChild,
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Rc<NodeOccurrence> {
+        NodeOccurrence::new_effect_expr(
+            node_occurrence::EffectExprNode::Present { label },
+            span,
+            owner,
+        )
+    }
+
+    /// EffectExpression `absent(label)` carried as an occurrence.
+    pub fn make_absent_occ(
+        &self,
+        label: node_occurrence::TypeChild,
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Rc<NodeOccurrence> {
+        NodeOccurrence::new_effect_expr(
+            node_occurrence::EffectExprNode::Absent { label },
+            span,
+            owner,
+        )
+    }
+
+    /// EffectExpression `merge(left, right)` carried as an occurrence.
+    pub fn make_merge_occ(
+        &self,
+        left: node_occurrence::TypeChild,
+        right: node_occurrence::TypeChild,
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Rc<NodeOccurrence> {
+        NodeOccurrence::new_effect_expr(
+            node_occurrence::EffectExprNode::Merge { left, right },
+            span,
+            owner,
+        )
+    }
+
+    /// EffectExpression `open(tail)` carried as an occurrence.
+    pub fn make_open_occ(
+        &self,
+        tail: node_occurrence::TypeChild,
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Rc<NodeOccurrence> {
+        NodeOccurrence::new_effect_expr(
+            node_occurrence::EffectExprNode::Open { tail },
+            span,
+            owner,
+        )
+    }
+
+    /// EffectExpression `empty_row` carried as an occurrence.
+    pub fn make_empty_row_occ(
+        &self,
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Rc<NodeOccurrence> {
+        NodeOccurrence::new_effect_expr(node_occurrence::EffectExprNode::EmptyRow, span, owner)
+    }
+
     /// Convenience: sort_ref from a name string (resolves or interns the name).
     pub fn make_sort_ref_by_name(&mut self, name: &str) -> TermId {
         let sym = if let Some(s) = self.try_resolve_symbol(name) { s } else { self.intern(name) };
@@ -3205,6 +3356,164 @@ mod tests {
         // Non-Term bindings → resolve_with_term returns None (lineage preserved).
         assert!(subst.resolve_with_term(av).is_none());
         assert!(subst.resolve_with_term(bv).is_none());
+    }
+
+    #[test]
+    fn wi342_value_carried_modify_c_arrow_reads_through_termview() {
+        // WI-342 P1+P2 slice. Build a real `(Cell) -> Unit ! {-Modify[c]}` arrow
+        // as a Value-carried occurrence spine: the `denoted(c)` carries an
+        // Rc<NodeOccurrence>, so the carrier rule poisons every container up to
+        // `arrow` — each is `NodeKind::Type` / `NodeKind::EffectExpr`, while
+        // ground children (param/result/sort_ref/empty_row) stay hash-consed
+        // `TermId`. Assert it reads back through `TermView` with the SAME functor
+        // surface as its `Term::Fn` twin, and that the `denoted` is reached
+        // (Rep A: via the type-specific `as_type` walk for `bindings`) carrying
+        // the identity-bearing occurrence the producer built.
+        use crate::kb::load::register_prelude;
+        use crate::kb::node_occurrence::{Expr, TypeChild, TypeNode};
+        use crate::kb::term_view::{TermIdView, TermView, ViewHead, ViewItem};
+        use crate::span::{SourceId, SourceSpan};
+
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 10);
+
+        let c_sym = kb.intern("c");
+        let modify_sym = kb.intern("Modify");
+        let t_sym = kb.intern("T");
+        let param_ty = kb.make_sort_ref_by_name("Cell");
+        let result_ty = kb.make_sort_ref_by_name("Unit");
+
+        // ── TermId twin: interns the field keys + yields reference functors. ──
+        let modify_base = kb.make_sort_ref(modify_sym);
+        let c_ref = kb.alloc(Term::Ref(c_sym));
+        let denoted_term = kb.make_denoted(c_ref);
+        let modify_param = kb.make_parameterized_type(modify_base, &[(t_sym, denoted_term)]);
+        let absent_term = kb.make_effect_expression_absent(modify_param);
+        // `make_arrow_type` folds the effect list into the canonical
+        // `effects_rows(merge(absent(...), empty_row))` — the exact spine the
+        // Value form mirrors below.
+        let arrow_term = kb.make_arrow_type(param_ty, result_ty, &[absent_term]);
+        let empty_row_tid = kb.make_effect_expression_empty_row();
+
+        let arrow_sym = kb.resolve_symbol("anthill.prelude.Type.arrow");
+        let parameterized_sym = kb.resolve_symbol("anthill.prelude.Type.parameterized");
+        let effects_rows_sym = kb.resolve_symbol("anthill.prelude.Type.effects_rows");
+        let merge_sym = kb.resolve_symbol("anthill.prelude.EffectExpression.merge");
+        let absent_sym = kb.resolve_symbol("anthill.prelude.EffectExpression.absent");
+
+        let param_key = kb.intern("param");
+        let result_key = kb.intern("result");
+        let effects_key = kb.intern("effects");
+        let effects_expr_key = kb.intern("effects_expr");
+        let left_key = kb.intern("left");
+        let right_key = kb.intern("right");
+        let label_key = kb.intern("label");
+        let base_key = kb.intern("base");
+
+        // ── Value-carried spine (the new producer builders). ──
+        let denoted_occ = kb.make_denoted_occ_ref(c_sym, span, None);
+        let param_occ = kb.make_parameterized_occ(
+            TypeChild::Ground(modify_base),
+            vec![(t_sym, TypeChild::Node(Rc::clone(&denoted_occ)))],
+            span,
+            None,
+        );
+        let absent_occ = kb.make_absent_occ(TypeChild::Node(Rc::clone(&param_occ)), span, None);
+        let merge_occ = kb.make_merge_occ(
+            TypeChild::Node(Rc::clone(&absent_occ)),
+            TypeChild::Ground(empty_row_tid),
+            span,
+            None,
+        );
+        let effects_rows_occ =
+            kb.make_effects_rows_occ(TypeChild::Node(Rc::clone(&merge_occ)), span, None);
+        let arrow_occ = kb.make_arrow_occ(
+            TypeChild::Ground(param_ty),
+            TypeChild::Ground(result_ty),
+            TypeChild::Node(Rc::clone(&effects_rows_occ)),
+            span,
+            None,
+        );
+
+        let functor_of = |h: &ViewHead| match h {
+            ViewHead::Functor { functor, .. } => *functor,
+            _ => None,
+        };
+
+        // Carrier identity: the Value-form arrow head matches its TermId twin.
+        let head = arrow_occ.head(&kb);
+        assert_eq!(functor_of(&head), Some(arrow_sym));
+        assert_eq!(functor_of(&head), functor_of(&TermIdView(arrow_term).head(&kb)));
+        assert!(
+            matches!(head, ViewHead::Functor { named_arity: 3, pos_arity: 0, .. }),
+            "arrow exposes param/result/effects, got {head:?}",
+        );
+
+        // arrow.param / arrow.result are ground (no denoted) → hash-consed Terms.
+        let p = arrow_occ.named_arg(&kb, param_key).expect("arrow.param");
+        assert!(matches!(p, ViewItem::Term(t) if t == param_ty), "param ground, got {p:?}");
+        let r = arrow_occ.named_arg(&kb, result_key).expect("arrow.result");
+        assert!(matches!(r, ViewItem::Term(t) if t == result_ty), "result ground, got {r:?}");
+
+        // Walk the poisoned spine through `TermView`, functor by functor.
+        let eff = arrow_occ.named_arg(&kb, effects_key).expect("arrow.effects");
+        assert_eq!(functor_of(&eff.head(&kb)), Some(effects_rows_sym));
+
+        let merge_v = eff.named_arg(&kb, effects_expr_key).expect("effects_rows.effects_expr");
+        assert_eq!(functor_of(&merge_v.head(&kb)), Some(merge_sym));
+
+        // merge.left is poisoned (Node → absent); merge.right is the ground
+        // `empty_row` (Term), proving ground subtrees stay hash-consed.
+        let left = merge_v.named_arg(&kb, left_key).expect("merge.left");
+        assert_eq!(functor_of(&left.head(&kb)), Some(absent_sym));
+        let right = merge_v.named_arg(&kb, right_key).expect("merge.right");
+        assert!(
+            matches!(right, ViewItem::Term(t) if t == empty_row_tid),
+            "merge.right is the ground empty_row Term, got {right:?}",
+        );
+
+        let paramd = left.named_arg(&kb, label_key).expect("absent.label");
+        assert_eq!(functor_of(&paramd.head(&kb)), Some(parameterized_sym));
+        let base = paramd.named_arg(&kb, base_key).expect("parameterized.base");
+        assert!(
+            matches!(base, ViewItem::Term(t) if t == modify_base),
+            "parameterized.base is the ground sort_ref(Modify) Term, got {base:?}",
+        );
+
+        // Rep A: `bindings` isn't on the generic view; reach the `denoted`
+        // type-specifically via `as_type`, asserting occurrence identity.
+        let ViewItem::Node(param_seen) = &paramd else {
+            panic!("parameterized read as a Node occurrence, got {paramd:?}");
+        };
+        assert!(Rc::ptr_eq(param_seen, &param_occ), "view preserves Rc identity");
+        let TypeNode::Parameterized { bindings, .. } =
+            param_seen.as_type().expect("parameterized is a Type node")
+        else {
+            panic!("expected Parameterized");
+        };
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].0, t_sym, "binding param is T");
+        let TypeChild::Node(denoted_seen) = &bindings[0].1 else {
+            panic!("binding value is the poisoned denoted, not ground");
+        };
+        assert!(Rc::ptr_eq(denoted_seen, &denoted_occ), "denoted Rc identity preserved");
+        let TypeNode::Denoted { value } =
+            denoted_seen.as_type().expect("denoted is a Type node")
+        else {
+            panic!("expected Denoted");
+        };
+        assert!(
+            matches!(value.as_expr(), Some(Expr::Ref(s)) if *s == c_sym),
+            "denoted carries the source Ref(c) occurrence, got {:?}",
+            value.as_expr(),
+        );
+        // The carried occurrence is NOT a hash-consed Ref — it is an
+        // identity-bearing NodeOccurrence (the whole point of the carrier rule).
+        assert!(
+            value.as_type().is_none() && value.as_expr().is_some(),
+            "denoted value is an Expr-kind occurrence",
+        );
     }
 
     #[test]

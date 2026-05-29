@@ -91,7 +91,61 @@ fn drain_node(occ: &mut NodeOccurrence, stack: &mut Vec<Rc<NodeOccurrence>>) {
             drain_expr_children(expr, stack);
         }
         NodeKind::Pattern(pat) => drain_pattern_children(pat, stack),
+        NodeKind::Type(tn) => drain_type_node(tn, stack),
+        NodeKind::EffectExpr(en) => drain_effect_expr_node(en, stack),
         NodeKind::RuleHead { .. } => {}
+    }
+}
+
+/// WI-342: steal the one `Rc<NodeOccurrence>` a poisoned [`TypeChild`] holds
+/// onto the work stack, leaving a trivially-dropped placeholder behind — so
+/// the iterative `Drop` bounds host-stack depth over a `Type`/`EffectExpr`
+/// spine just as it does over `Expr`/`Pattern`. A ground child holds only a
+/// `TermId` (no `Rc`, nothing to drain).
+fn drain_type_child(child: &mut TypeChild, stack: &mut Vec<Rc<NodeOccurrence>>) {
+    if let TypeChild::Node(rc) = child {
+        let placeholder = NodeOccurrence::new_expr(Expr::Bottom, empty_span(), None);
+        stack.push(std::mem::replace(rc, placeholder));
+    }
+}
+
+/// WI-342: drain every `Rc<NodeOccurrence>` child of a [`TypeNode`] — the
+/// `denoted` value occurrence and each poisoned `TypeChild` — mirroring
+/// [`drain_expr_children`] for the `Type` carrier.
+fn drain_type_node(tn: &mut TypeNode, stack: &mut Vec<Rc<NodeOccurrence>>) {
+    match tn {
+        TypeNode::Denoted { value } => {
+            let placeholder = NodeOccurrence::new_expr(Expr::Bottom, empty_span(), None);
+            stack.push(std::mem::replace(value, placeholder));
+        }
+        TypeNode::Parameterized { base, bindings } => {
+            drain_type_child(base, stack);
+            for (_, c) in bindings.iter_mut() {
+                drain_type_child(c, stack);
+            }
+        }
+        TypeNode::EffectsRows { effects_expr } => drain_type_child(effects_expr, stack),
+        TypeNode::Arrow { param, result, effects } => {
+            drain_type_child(param, stack);
+            drain_type_child(result, stack);
+            drain_type_child(effects, stack);
+        }
+    }
+}
+
+/// WI-342: drain every poisoned-child `Rc<NodeOccurrence>` of an
+/// [`EffectExprNode`].
+fn drain_effect_expr_node(en: &mut EffectExprNode, stack: &mut Vec<Rc<NodeOccurrence>>) {
+    match en {
+        EffectExprNode::Merge { left, right } => {
+            drain_type_child(left, stack);
+            drain_type_child(right, stack);
+        }
+        EffectExprNode::Present { label } | EffectExprNode::Absent { label } => {
+            drain_type_child(label, stack)
+        }
+        EffectExprNode::Open { tail } => drain_type_child(tail, stack),
+        EffectExprNode::EmptyRow => {}
     }
 }
 
@@ -273,6 +327,29 @@ impl NodeOccurrence {
         })
     }
 
+    /// Build a Type occurrence (WI-342) — the `Value`-carried form of a
+    /// `denoted`-containing `Type` entity.
+    pub fn new_type(ty: TypeNode, span: SourceSpan, owner: Option<Symbol>) -> Rc<Self> {
+        Rc::new(NodeOccurrence {
+            kind: NodeKind::Type(ty),
+            span,
+            owner,
+        })
+    }
+
+    /// Build an EffectExpression occurrence (WI-342).
+    pub fn new_effect_expr(
+        expr: EffectExprNode,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Rc<Self> {
+        Rc::new(NodeOccurrence {
+            kind: NodeKind::EffectExpr(expr),
+            span,
+            owner,
+        })
+    }
+
     /// If this occurrence wraps an expression, return it.
     pub fn as_expr(&self) -> Option<&Expr> {
         match &self.kind {
@@ -285,6 +362,22 @@ impl NodeOccurrence {
     pub fn as_pattern(&self) -> Option<&Pattern> {
         match &self.kind {
             NodeKind::Pattern(pat) => Some(pat),
+            _ => None,
+        }
+    }
+
+    /// If this occurrence wraps a Type (WI-342), return it.
+    pub fn as_type(&self) -> Option<&TypeNode> {
+        match &self.kind {
+            NodeKind::Type(ty) => Some(ty),
+            _ => None,
+        }
+    }
+
+    /// If this occurrence wraps an EffectExpression (WI-342), return it.
+    pub fn as_effect_expr(&self) -> Option<&EffectExprNode> {
+        match &self.kind {
+            NodeKind::EffectExpr(e) => Some(e),
             _ => None,
         }
     }
@@ -402,6 +495,23 @@ pub enum NodeKind {
     /// per-pattern-field special-case arms that existed in the
     /// term-stored era.
     Pattern(Pattern),
+    /// Type content (WI-342). The `Value`-carried form of a `Type` entity
+    /// whose subtree transitively contains a `denoted` (so it cannot be a
+    /// hash-consed `Term` — the carrier rule, see
+    /// `docs/design/entity-representation-term-or-value.md` §2). Mirrors the
+    /// `Type` sort (`stdlib/anthill/prelude/sort.anthill`). Sibling NodeKind
+    /// per the WI-318 `Pattern` precedent: a distinct stdlib sort gets a
+    /// distinct NodeKind. The poisoned spine is `Rc<NodeOccurrence>`-linked
+    /// (uniform with `Expr`/`Pattern`, so `TermView` / `Drop` / occurrence
+    /// substitution read it through the existing machinery); ground subtrees
+    /// stay hash-consed `TermId` (carried in `TypeChild::Ground`).
+    Type(TypeNode),
+    /// EffectExpression content (WI-342). The sibling carrier for the
+    /// `EffectExpression` sort, reached because a `denoted`-bearing effect
+    /// label (`{-Modify[c]}`) poisons its containing row upward — the row is
+    /// itself `Value`-carried (design doc §2). Kept a distinct NodeKind from
+    /// `Type` because `EffectExpression` is a distinct sort.
+    EffectExpr(EffectExprNode),
 }
 
 // ── Expr ────────────────────────────────────────────────────────
@@ -612,6 +722,72 @@ pub enum Pattern {
     },
 }
 
+// ── TypeNode / EffectExprNode (WI-342) ──────────────────────────
+
+/// A child slot of a [`TypeNode`] / [`EffectExprNode`] — either a **ground**
+/// hash-consed subtree (no `denoted` beneath it, so it stays a `TermId`) or a
+/// **poisoned** subtree on the `denoted` spine, carried as a sibling
+/// `Rc<NodeOccurrence>` (a `NodeKind::Type` or `NodeKind::EffectExpr`). The
+/// minimal-`Value`-spine principle: only the path from a container down to a
+/// `denoted` is `Value`-carried; everything else stays interned.
+///
+/// `Rc<NodeOccurrence>` (not `Box<TypeNode>`) so a poisoned child is read
+/// through `TermView::pos_arg`/`named_arg` as a `ViewItem::Node`, drained by
+/// the iterative `Drop`, and spliced by `substitute_occurrence` — exactly the
+/// machinery `Expr`/`Pattern` children already use.
+#[derive(Clone, Debug)]
+pub enum TypeChild {
+    Ground(TermId),
+    Node(Rc<NodeOccurrence>),
+}
+
+/// Structural `Type`-sort IR (WI-342). One arm per `Type` entity variant that
+/// can sit on a `denoted` spine for the first migrated producer
+/// (`{-Modify[c]}`). Variants the slice doesn't yet mint (`sort_ref`,
+/// `type_var`, `nothing`, `named_tuple`) are not represented here — they are
+/// always ground, so they ride in `TypeChild::Ground(TermId)`; arms are added
+/// only when a producer carries one on a poisoned spine.
+#[derive(Debug)]
+pub enum TypeNode {
+    /// `denoted(value: NodeOccurrence)` — the poison source. `value` is an
+    /// `Expr`-kind occurrence (e.g. `Expr::Ref(c)`), identity-bearing and
+    /// span-carrying, which is exactly why its containers cannot hash-cons.
+    Denoted { value: Rc<NodeOccurrence> },
+    /// `parameterized(base, bindings)` — `base` is usually a ground
+    /// `sort_ref`; a binding's value is what carries the `denoted`.
+    Parameterized {
+        base: TypeChild,
+        bindings: Vec<(Symbol, TypeChild)>,
+    },
+    /// `effects_rows(effects_expr: EffectExpression)` — the bridge from the
+    /// `EffectExpression` sort into a `Type` slot; `effects_expr` wraps a
+    /// `NodeKind::EffectExpr` child.
+    EffectsRows { effects_expr: TypeChild },
+    /// `arrow(param, result, effects)`.
+    Arrow {
+        param: TypeChild,
+        result: TypeChild,
+        effects: TypeChild,
+    },
+}
+
+/// Structural `EffectExpression`-sort IR (WI-342). Mirrors the row algebra
+/// (`merge`/`present`/`absent`/`open`/`empty_row`) in
+/// `stdlib/anthill/prelude/sort.anthill`.
+#[derive(Debug)]
+pub enum EffectExprNode {
+    /// `merge(left, right)` — row union; the canonical form right-folds atoms.
+    Merge { left: TypeChild, right: TypeChild },
+    /// `present(label: Type)` — a single present effect label.
+    Present { label: TypeChild },
+    /// `absent(label: Type)` — a `-e` absence guarantee.
+    Absent { label: TypeChild },
+    /// `open(tail: Type)` — a row-variable tail.
+    Open { tail: TypeChild },
+    /// `empty_row` — the closed empty row (ground; no children).
+    EmptyRow,
+}
+
 /// Walk a NodeOccurrence tree top-down, invoking `visit(occ, class)`
 /// at every `NodeKind::Expr` whose `classification` RefCell is set.
 /// Children of every Expr variant are visited regardless of whether
@@ -749,6 +925,14 @@ pub fn for_each_pattern_child(pat: &Pattern, mut f: impl FnMut(&Rc<NodeOccurrenc
         }
     }
 }
+
+// WI-342: non-destructive `for_each_*` walkers over Type/EffectExpr children
+// (the twins of `for_each_child` / `for_each_pattern_child`) are intentionally
+// NOT added in this slice — the only consumers would be the rule-body var
+// collectors / rewriters, which are deferred to P3 (see the symmetry note in
+// `occurrence_has_unbound_var`). The destructive `Drop` analogs (`drain_type_
+// node` / `drain_effect_expr_node`) ARE present because `Drop` totality is
+// mandatory the moment the variants exist.
 
 /// WI-318: mirror of `simp_rewrite::reassemble` for a `Pattern`-kind
 /// occurrence. Replaces each child slot by consuming `new_children` in
@@ -1250,6 +1434,16 @@ pub fn occurrence_has_unbound_var(root: &Rc<NodeOccurrence>) -> bool {
                 for_each_pattern_child(pat, |c| stack.push(Rc::clone(c)));
             }
             NodeKind::RuleHead { .. } => {}
+            // WI-342: a Type/EffectExpr occurrence is type-level data, not an
+            // Expr body atom — no producer embeds one in a walked body in this
+            // slice, so reaching here is a bug, not a silent no-op. Surface it
+            // (no error channel here — `debug_assert` like `pattern_to_term`).
+            // P3 replaces this with a real descent, adding the var-*rewriter*
+            // arms (substitute_occurrence / open_/node_to_debruijn) in the same
+            // change so collect and rewrite stay symmetric.
+            NodeKind::Type(_) | NodeKind::EffectExpr(_) => {
+                debug_assert!(false, "WI-342: type/effect occurrence in rule-body var walk (not wired until P3)");
+            }
         }
     }
     false
@@ -1286,6 +1480,11 @@ pub(super) fn collect_occurrence_global_vars(
                 for_each_pattern_child(pat, |c| stack.push(Rc::clone(c)));
             }
             NodeKind::RuleHead { .. } => {}
+            // WI-342: see the symmetry note in `occurrence_has_unbound_var` —
+            // a type occurrence here is a bug until P3 wires it, so assert.
+            NodeKind::Type(_) | NodeKind::EffectExpr(_) => {
+                debug_assert!(false, "WI-342: type/effect occurrence in rule-body var walk (not wired until P3)");
+            }
         }
     }
 }
@@ -1343,6 +1542,13 @@ pub(super) fn collect_occurrence_global_vars_ordered(
             });
         }
         NodeKind::RuleHead { .. } => {}
+        // WI-342: a type occurrence in a rule-body var walk is a bug until P3
+        // wires it (and the matching var-*rewriters* — `open_debruijn_node` /
+        // `node_to_debruijn` / `substitute_occurrence`) together; assert rather
+        // than silently undercount arity. See `occurrence_has_unbound_var`.
+        NodeKind::Type(_) | NodeKind::EffectExpr(_) => {
+            debug_assert!(false, "WI-342: type/effect occurrence in rule-body var walk (not wired until P3)");
+        }
     }
 }
 
@@ -1868,6 +2074,12 @@ pub fn pattern_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Term
         // for the caller (only fires in debug).
         NodeKind::RuleHead { .. } => {
             debug_assert!(false, "pattern_to_term: RuleHead in pattern slot");
+            return kb.alloc(Term::Bottom);
+        }
+        // WI-342: a Type/EffectExpr occurrence in a pattern slot is
+        // unreachable (patterns never carry types). Mirror RuleHead.
+        NodeKind::Type(_) | NodeKind::EffectExpr(_) => {
+            debug_assert!(false, "pattern_to_term: Type/EffectExpr in pattern slot");
             return kb.alloc(Term::Bottom);
         }
     };

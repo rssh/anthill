@@ -1593,6 +1593,10 @@ fn lower_node(
             message: "pattern occurrence in expression body — \
                       should be consumed by parent let/lambda/match (WI-318)".into(),
         }),
+        NodeKind::Type(_) | NodeKind::EffectExpr(_) => return Err(CppCodegenError {
+            message: "Type/EffectExpr occurrence in expression body — \
+                      type-level data, never an evaluation target (WI-342)".into(),
+        }),
     };
     match expr {
         Expr::Const(lit) => Ok(lower_literal(lit)),

@@ -110,6 +110,13 @@ impl Interpreter {
                     "unexpected Pattern occurrence in expression position".into(),
                 ));
             }
+            NodeKind::Type(_) | NodeKind::EffectExpr(_) => {
+                // WI-342: Type/EffectExpr occurrences are type-level data,
+                // never an evaluation target.
+                return Err(EvalError::Internal(
+                    "unexpected Type/EffectExpr occurrence in expression position".into(),
+                ));
+            }
         };
         match expr {
             Expr::Const(lit) => {
