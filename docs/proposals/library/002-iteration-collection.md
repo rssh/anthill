@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft 2026-05-29. Second proposal under `docs/proposals/library/`. Surfaced by [`001-map.md`](001-map.md): Map's `MapReadable` / `PersistentMap` / `MutableMap` is the *keyed* instance of a split the sequence/collection traits should also carry. Open questions were settled in design discussion: read layer keeps the name `Iteration` (Q 1); shared `Iterable` bridge adopted at Level 1 (Q 2); persistent collections provide rather than self-iterate (Q 3); `insert` stays `Unit` (Q 4); no umbrella supertrait (Q 5).
+Draft 2026-05-29. Second proposal under `docs/proposals/library/`. Surfaced by [`001-map.md`](001-map.md): Map's `MapReadable` / `PersistentMap` / `MutableMap` is the *keyed* instance of a split the sequence/collection traits should also carry. Open questions were settled in design discussion: read layer keeps the name `Iteration` (Q 1); shared `Iterable` bridge adopted at Level 1 (Q 2); persistent collections provide rather than self-iterate (Q 3); `insert` returns `Bool` "was new" (Q 4); no umbrella supertrait (Q 5).
 
 ## Motivation
 
@@ -83,7 +83,7 @@ In-place build, and it too `requires Iterable`. The allocator `new` carries `Mod
 
 ```anthill
 sort anthill.prelude.MutableCollection
-  import anthill.prelude.{Unit, Iterable}
+  import anthill.prelude.{Unit, Bool, Iterable}
 
   sort C = ?
   sort Element = ?
@@ -91,7 +91,7 @@ sort anthill.prelude.MutableCollection
   requires Iterable[C = C, Element, E]   -- reads go through the shared Iterable.iterator -> Stream
 
   operation new() -> C                         effects Modify[result]
-  operation insert(c: C, elem: Element) -> Unit   effects Modify[c]
+  operation insert(c: C, elem: Element) -> Bool   effects Modify[c]   -- true if newly added (collection changed)
   operation clear(c: C) -> Unit                effects Modify[c]
 end
 ```
@@ -131,7 +131,7 @@ The `Collection → PersistentCollection` rename of the trait name is the wide-f
 
 3. *(Resolved)* **`PersistentCollection` does not self-`Iterate`.** It `requires Iterable` like the mutable builder; one uniform iteration path. A persistent carrier *may* still be its own `Iteration` as an internal convenience (cheap `split`), but that is an implementation detail behind its `iterator`, not a hierarchy requirement.
 
-4. *(Resolved — keep `Unit`)* **`MutableCollection.insert` return value.** Stays `Unit`; the post-condition carries its meaning. Revisit (e.g. `Bool` "was new") only if a caller wants the witness, mirroring [001-map](001-map.md) Open Q 9/10.
+4. *(Resolved — `Bool`)* **`MutableCollection.insert` return value.** Returns `Bool` = "was the element new" (the collection changed) — Java `Collection.add` / Rust `HashSet::insert`: `false` when a set-like carrier already held it, vacuously `true` for a list/bag. This is the singular shadow of `setMany`'s "count newly inserted": singular ops return the witness, batched ops return the count. **Consequence for [001-map](001-map.md):** when `MutableMap` provides `MutableCollection` (`insert(m, pair(k, v))`), the "was new" bit must come from somewhere. The native `set` already knows whether it overwrote; recomputing it with a separate `contains` before `set` costs an extra read — fatal on a DB carrier. So `MutableMap.set` should likewise return `Bool` ("was the key new"), and by symmetry `delete -> Bool` ("was present") — i.e. 001-map Open Q 9 resolves *yes*. That alignment is 001-map's to make.
 
 5. *(Resolved — no umbrella)* **`Iterable` is the only shared layer.** No `Collection` supertrait over the persistent/mutable builders; `Iterable` is the single thing they share, mirroring `MapReadable` for maps. Deliberate, not an oversight.
 
