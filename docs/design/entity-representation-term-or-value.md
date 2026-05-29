@@ -212,6 +212,19 @@ general form of step 2, no longer arrow-specific.
    typer unifies over `TermView`. This is the substantive build, naturally
    driven by §5.5 / 046 dependent effects (the first real `denoted`-in-type
    producers) and absorbing WI-341 step 2.
+
+   > **Sequencing finding (2026-05-29, from reading the substrate).** This step
+   > **cannot meaningfully precede its producer.** `unify_types` has 17 callers,
+   > all holding `TermId`; `walk_type` carries type-specific logic (sort-alias
+   > resolution, not just var-chasing); and **nothing mints a `Value`/`Node`-
+   > carried type yet.** So a generic `unify_types_view` entry would have zero
+   > non-`TermId` callers (dead code), and its var/structural generality could
+   > only be hit by synthetic tests — the speculative-generality anti-pattern
+   > `occurrence-as-value-type.md` warns against, on the most central typer
+   > function. **The `TermView` unification migration is therefore the opening
+   > move of §5.5, built and validated against the first `denoted`-bearing type
+   > it must unify — not a standalone precursor.** What can be done independently
+   > is non-carrier work (e.g. WI-341 step 1, delivered).
 4. Non-`denoted` entities stay hash-consed `Term` — no migration.
 
 Non-goals: removing hash-consing for facts/rules/nominal identities or for
