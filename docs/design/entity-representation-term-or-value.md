@@ -230,6 +230,20 @@ general form of step 2, no longer arrow-specific.
 Non-goals: removing hash-consing for facts/rules/nominal identities or for
 non-`denoted` structural types; building §5.5 region analysis (046).
 
+**Tracked as WI-342** with a concrete, codebase-grounded phase plan (file:line
+touch-points in the WI). Decisions taken there: the `Value`-carried type is
+`Value::Node(Rc<NodeOccurrence{kind: NodeKind::Type(TypeNode)}>)` — `NodeKind::Type`
+added as a sibling kind mirroring the **WI-318 `Pattern` precedent**; `TypeNode`
+is a new enum mirroring the `Type` sort, holding `TermId` for ground subtrees
+and `Box<TypeNode>` / `Rc<NodeOccurrence>` only on the `denoted`-poisoned spine
+(minimal `Value` spine, ground children stay hash-consed). Phases: **P1**
+substrate-only add (populated-but-not-consumed, zero behavior change) → **P2**
+first producer behind a *new* `make_denoted_occ` + upward `Value`-carriage,
+dual-path → **P3** route `unify_types` onto `TermView`, validated against P2
+(riskiest) → **P4** widen + retire the `Ref`-denoted path. The chicken-and-egg
+(producer breaks `Ref`-consumers; consumer needs producer) is broken by
+additive-substrate-first → dual-path → narrow-vertical → widen.
+
 ## 8. Open questions
 
 1. **Carrier choice** — *which* carrier per site is settled by §4a (source →
