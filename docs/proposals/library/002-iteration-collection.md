@@ -115,6 +115,10 @@ Small blast radius: only `collection.anthill` (defines the trait) and `list.anth
 
 The `Collection → PersistentCollection` rename of the trait name is the wide-feeling but mechanically tiny part; do it in one PR.
 
+**Build gotcha:** new prelude files must be registered in the two embedded-stdlib lists (`rustland/anthill-cli/src/stdlib_embedded.rs` and `rustland/anthill-todo/src/stdlib_embedded.rs`) — the `include_str!` bundles the CLIs ship, distinct from the dir-scan the `anthill-core` tests use. A file present on disk but absent from those lists loads fine under test yet fails to resolve in the CLI bundle.
+
+**Status (2026-05-29):** steps 1–4 *declarations* + the rename have landed (`iterable.anthill`, `mutable_collection.anthill`, `collection.anthill`, `list.anthill`, both embedded lists). Deferred: carriers actually *providing* `Iterable` (step 3's `iterator` body, step 5's map provision) — there is no ordered `List → Stream` bridge yet, so `List` provides `PersistentCollection` (which `requires Iterable`) without providing `Iterable`. That unmet requirement loads silently because spec-level `requires` without a provider is not diagnosed; the diagnostic is filed as **WI-341**.
+
 ## Interaction with other proposals
 
 - **[001-map](001-map.md)** — the keyed instance. `PersistentMap` provides `PersistentCollection`; `MutableMap` provides `MutableCollection`; both provide `MapReadable` (the keyed read layer, richer than `Iteration` because maps have key lookup).
