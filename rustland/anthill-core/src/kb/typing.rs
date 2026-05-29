@@ -5625,6 +5625,22 @@ fn pair_present_labels(
     a_present: &[TermId],
     b_present: &[TermId],
 ) -> (Vec<TermId>, Vec<TermId>) {
+    // WI-338 F11: each unify_types attempt may bind variables in `subst`
+    // *before* it determines it can't complete the unification (partial
+    // structural success that fails on a downstream sub-term). Snapshot
+    // the substitution before each attempt and roll back on failure so
+    // failed pairings don't leak bindings into the substitution. Required
+    // for callers that share `subst` with downstream reasoning
+    // (`unify_effect_rows` from inside `unify_arrow` does — its subst
+    // propagates into the typer's main state).
+    //
+    // WI-338 F8: the pre-WI-338 implementation rejected pairings whose
+    // functors differed (sort_ref vs parameterized) before calling
+    // `unify_types`. That rejected legitimate cross-functor compatible
+    // labels (a bare sort vs its instantiation). The pre-filter
+    // existed to limit subst pollution from doomed attempts — now
+    // unnecessary with the per-attempt snapshot/restore — and is
+    // removed. `unify_types`' return value is authoritative.
     let mut b_matched = vec![false; b_present.len()];
     let mut only_a: Vec<TermId> = Vec::new();
     for &al in a_present {
@@ -5633,20 +5649,14 @@ fn pair_present_labels(
             if b_matched[i] {
                 continue;
             }
-            // Functor-name pre-filter: cheap rejection before invoking
-            // unify_types (which may bind the substitution on failure for
-            // partial structural success). This is just a hint — the
-            // authoritative match is unify_types' return value.
-            let af = type_functor_name(kb, al);
-            let bf = type_functor_name(kb, bl);
-            if af != bf {
-                continue;
-            }
+            let snapshot = subst.clone();
             if unify_types(kb, subst, al, bl) {
                 b_matched[i] = true;
                 paired = true;
                 break;
             }
+            // Restore — discard partial bindings from the failed attempt.
+            *subst = snapshot;
         }
         if !paired {
             only_a.push(al);
@@ -5691,24 +5701,23 @@ fn cover_present_labels(
     a_present: &[TermId],
     b_present: &[TermId],
 ) -> (Vec<TermId>, Vec<TermId>) {
+    // WI-338 F11: snapshot/restore around each unify_types attempt to
+    // avoid partial-bind leakage on failed pairings. WI-338 F8: dropped
+    // the pre-WI-338 functor-name pre-filter so cross-arm
+    // (sort_ref vs parameterized) pairings unify_types can decide.
+    // See `pair_present_labels` above for the soundness argument.
     let mut b_covered = vec![false; b_present.len()];
     let mut only_a: Vec<TermId> = Vec::new();
     for &al in a_present {
         let mut paired = false;
         for (i, &bl) in b_present.iter().enumerate() {
-            // Functor-name pre-filter (same hint as pair_present_labels —
-            // unify_types is authoritative). Does NOT consult b_covered
-            // (covering, not exclusive pairing).
-            let af = type_functor_name(kb, al);
-            let bf = type_functor_name(kb, bl);
-            if af != bf {
-                continue;
-            }
+            let snapshot = subst.clone();
             if unify_types(kb, subst, al, bl) {
                 b_covered[i] = true;
                 paired = true;
                 break;
             }
+            *subst = snapshot;
         }
         if !paired {
             only_a.push(al);
@@ -5810,6 +5819,33 @@ fn bind_row_tail(
     !subst.is_contradiction()
 }
 
+/// Allocate a fresh row-tail variable for the both-open arm of
+/// [`unify_effect_rows`] / [`subtype_effect_rows`].
+///
+/// **WI-338 F9 known cost**: each call permanently increments
+/// `kb.next_var` and inserts a new `Term::Var` into the hash-cons store.
+/// The fresh var is bound in a local substitution that is typically
+/// discarded after `arrow_compatible` returns — so the var ends up
+/// orphaned but never observable. For long-running typer sessions
+/// (language server, repeated batch checks) the VarId space grows
+/// monotonically. Acceptable in practice today; if it ever becomes a
+/// measured concern, possible mitigations:
+///
+/// - **memoize** `subtype_effect_rows` / `unify_effect_rows` results on
+///   `(actual_effects, expected_effects)` so repeat queries don't
+///   re-allocate;
+/// - maintain a **free-list** of fresh row-tail vars on `KnowledgeBase`,
+///   returning to the pool when a local substitution is dropped.
+///
+/// Both are out of scope for v1a hardening. This helper consolidates
+/// the four pre-WI-338 inline allocation sites into one place so the
+/// future fix has a single point of change.
+fn fresh_row_tail_var(kb: &mut KnowledgeBase) -> TermId {
+    let fresh_sym = kb.intern("?rho");
+    let fresh_vid = kb.fresh_var(fresh_sym);
+    kb.alloc(Term::Var(Var::Global(fresh_vid)))
+}
+
 /// WI-307 v1a row unification — the Rémy/Lindley-Cheney algorithm on
 /// `effects_rows(EffectExpression)` payloads.
 ///
@@ -5874,9 +5910,7 @@ fn unify_effect_rows(
                 if only_a.is_empty() && only_b.is_empty() {
                     return true;
                 }
-                let fresh_sym = kb.intern("?rho");
-                let fresh_vid = kb.fresh_var(fresh_sym);
-                let fresh_var = kb.alloc(Term::Var(Var::Global(fresh_vid)));
+                let fresh_var = fresh_row_tail_var(kb);
                 let mut all_extras: Vec<TermId> =
                     Vec::with_capacity(only_a.len() + only_b.len());
                 all_extras.extend(only_a.iter().copied());
@@ -5887,9 +5921,7 @@ fn unify_effect_rows(
             // their respective labels and end in `open(ρ')` — afterward a
             // future decompose_effect_row reveals (only_a + only_b) as
             // present labels with shared tail ρ'.
-            let fresh_sym = kb.intern("?rho");
-            let fresh_vid = kb.fresh_var(fresh_sym);
-            let fresh_var = kb.alloc(Term::Var(Var::Global(fresh_vid)));
+            let fresh_var = fresh_row_tail_var(kb);
             bind_row_tail(kb, subst, a_t, &only_b, Some(fresh_var))
                 && bind_row_tail(kb, subst, b_t, &only_a, Some(fresh_var))
         }
@@ -5978,9 +6010,7 @@ fn subtype_effect_rows(
                 if only_a.is_empty() && only_e.is_empty() {
                     return true;
                 }
-                let fresh_sym = kb.intern("?rho");
-                let fresh_vid = kb.fresh_var(fresh_sym);
-                let fresh_var = kb.alloc(Term::Var(Var::Global(fresh_vid)));
+                let fresh_var = fresh_row_tail_var(kb);
                 let mut all_extras: Vec<TermId> =
                     Vec::with_capacity(only_a.len() + only_e.len());
                 all_extras.extend(only_a.iter().copied());
@@ -5990,9 +6020,7 @@ fn subtype_effect_rows(
             // Distinct tails: each side's tail absorbs the other's
             // extras + a fresh shared continuation. Symmetric Rémy
             // fresh-tail step.
-            let fresh_sym = kb.intern("?rho");
-            let fresh_vid = kb.fresh_var(fresh_sym);
-            let fresh_var = kb.alloc(Term::Var(Var::Global(fresh_vid)));
+            let fresh_var = fresh_row_tail_var(kb);
             bind_row_tail(kb, subst, a_t, &only_e, Some(fresh_var))
                 && bind_row_tail(kb, subst, e_t, &only_a, Some(fresh_var))
         }

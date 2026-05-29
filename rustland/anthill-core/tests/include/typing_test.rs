@@ -3254,6 +3254,90 @@ fn unify_arrow_shared_rho_with_extras() {
         "?rho should be bound after unification");
 }
 
+// ── WI-338 pair/cover_present_labels hardening ───────────────────────────
+//
+// F8: dropped the strict functor-name pre-filter so cross-arm
+// (sort_ref vs parameterized) label pairs are tried via unify_types.
+// F11: subst snapshot/restore per attempt so failed pairings don't
+// leak bindings into the substitution.
+
+/// WI-338 F8: an effect-row label that's a bare sort_ref must pair
+/// with the same sort presented as parameterized (with no bindings).
+/// types_compatible's (sort_ref, parameterized) bridge arm accepts
+/// this; pre-WI-338 the functor-name pre-filter rejected the pairing
+/// before unify_types could fire it.
+#[test]
+fn cover_pairs_sort_ref_with_parameterized_same_base() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+
+    // Use stdlib's `List` sort so we can build both shapes against the
+    // same base symbol. Effect labels in arrow.effects are typically
+    // sort_refs (Reads, Writes, etc.) — but the cross-arm pairing also
+    // surfaces for entities-of-sort comparisons.
+    let list_base = kb.make_sort_ref_by_name("List");
+    let list_param = kb.make_parameterized_type(list_base, &[]); // bare List[]
+
+    // arrow(Int, Int, [list_param]) where the label is parameterized.
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[list_param]);
+    // arrow(Int, Int, [list_base]) where the label is sort_ref(List).
+    let expected = kb.make_arrow_type(int_ty, int_ty, &[list_base]);
+
+    // The two arrows' effects should compare compatibly via the
+    // (parameterized, sort_ref) bridge in types_compatible — pre-WI-338
+    // pair/cover_present_labels' functor-name pre-filter rejected this
+    // since type_functor_name("List") == Some("sort_ref") and the
+    // parameterized term reports Some("parameterized"). Now the pre-filter
+    // is gone and unify_types' fallback to types_compatible's bridge arm
+    // handles it.
+    assert!(types_compatible(&mut kb, actual, expected),
+        "effects with mixed sort_ref / parameterized(same base) must \
+         pair via the types_compatible bridge arm");
+    assert!(types_compatible(&mut kb, expected, actual),
+        "symmetric — sort_ref vs parameterized is two-way compatible");
+}
+
+/// WI-338 F11: a label-pair attempt that partially binds variables and
+/// then fails must not leak the partial bindings into the caller's
+/// substitution. After WI-338 each unify_types attempt is wrapped in a
+/// snapshot/restore.
+///
+/// Hard to exercise externally — partial-bind happens deep inside
+/// unify_arrow when one sub-position unifies before another fails. We
+/// use a simpler proxy: pair a label that succeeds against the FIRST
+/// candidate in `b_present` then fails on a later step. The subst
+/// should remain clean after the failed pair (besides bindings from
+/// the successful pair, which the algorithm needs).
+#[test]
+fn cover_snapshot_restore_on_failed_pairing_no_leak() {
+    let mut kb = load_stdlib_kb();
+    let int_ty = kb.make_sort_ref_by_name("Int");
+    let e1_sym = kb.intern("E1");
+    let e2_sym = kb.intern("E2");
+    let e1 = kb.make_sort_ref(e1_sym);
+    let e2 = kb.make_sort_ref(e2_sym);
+
+    // actual = {E1, E2}, expected = {E1} — both closed.
+    // Pairing: E1 matches E1 (success, marks b_covered[0]); E2 tries
+    // E1, unify_types fails. Pre-WI-338 a failed unify_types could
+    // partially bind subst on the E2 attempt; post-WI-338 the snapshot
+    // restore wipes any partial bindings.
+    //
+    // The subtype check itself rejects (only_a=[E2] non-empty). The
+    // important property: rejection happens for the RIGHT reason
+    // (only_a non-empty), not because partial bindings made downstream
+    // logic misbehave.
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[e1, e2]);
+    let expected = kb.make_arrow_type(int_ty, int_ty, &[e1]);
+
+    assert!(!types_compatible(&mut kb, actual, expected),
+        "arrow({{E1, E2}}) NOT <: arrow({{E1}}) — actual has E2 expected lacks");
+    // A second comparison on the same fresh KB also rejects cleanly
+    // (no stale bindings from the first call leaked into anywhere).
+    assert!(!types_compatible(&mut kb, actual, expected),
+        "idempotent: repeated subtype query returns the same answer");
+}
+
 /// Open ≤ open with shared tail — both sides have open tails. The
 /// directional algorithm (mirroring the unify both-open case) links them
 /// through a fresh shared row variable; the sub holds because the two
