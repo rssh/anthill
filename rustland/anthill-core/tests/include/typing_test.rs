@@ -2931,6 +2931,121 @@ fn subtype_nested_arrow_shared_rho_inconsistent_binding_rejects() {
          expected bindings must REJECT (no consistent global rho)");
 }
 
+// ── WI-337 bootstrap-safe arrow comparison ───────────────────────────────
+//
+// Pre-WI-337 arrow_compatible / unify_arrow synthesized an empty
+// effects_rows for the missing-side case via
+// `make_effect_expression_empty_row` + `make_effects_rows_type` — both
+// of which call panic-on-miss `resolve_symbol`. If a hand-built arrow
+// reaches the typer BEFORE `register_prelude` has registered the
+// `EffectExpression.empty_row` / `Type.effects_rows` symbols, the
+// resolve panics. WI-337 routes through the new bootstrap-safe builder
+// `kb.try_make_empty_effects_rows()` which returns `None` instead.
+
+/// WI-337: hand-built arrows with only one side carrying effects must
+/// not panic when compared on a fresh KB that hasn't been
+/// register_prelude'd. The sound conservative answer is `false` (we
+/// can't synthesize the empty row to compare against).
+#[test]
+fn types_compatible_bootstrap_safe_when_prelude_not_registered() {
+    let mut kb = KnowledgeBase::new();
+    // Deliberately DO NOT call load::register_prelude(&mut kb).
+    // Build two arrow terms with only param + result populated (no
+    // effects field on either side, then one side with an effects-like
+    // field shape).
+    let arrow_sym = kb.intern("anthill.prelude.Type.arrow");
+    let int_sym = kb.intern("anthill.prelude.Int");
+    let int_ty = kb.alloc(Term::Fn {
+        functor: int_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+    let param_key = kb.intern("param");
+    let result_key = kb.intern("result");
+    let effects_key = kb.intern("effects");
+
+    // arrow_no_effects: arrow(param: Int, result: Int) — no effects field.
+    let mut na: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]>
+        = SmallVec::new();
+    na.push((param_key, int_ty));
+    na.push((result_key, int_ty));
+    na.sort_by_key(|(s, _)| s.index());
+    let arrow_no_effects = kb.alloc(Term::Fn {
+        functor: arrow_sym,
+        pos_args: SmallVec::new(),
+        named_args: na,
+    });
+
+    // arrow_with_effects: arrow(param: Int, result: Int, effects: <Var>).
+    // Use a Var for the effects slot so the missing side triggers the
+    // (Some, None) arm via the *opposite* side's None.
+    let v_sym = kb.intern("?eff");
+    let vid = kb.fresh_var(v_sym);
+    let v_term = kb.alloc(Term::Var(
+        anthill_core::kb::term::Var::Global(vid),
+    ));
+    let mut na2: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]>
+        = SmallVec::new();
+    na2.push((param_key, int_ty));
+    na2.push((result_key, int_ty));
+    na2.push((effects_key, v_term));
+    na2.sort_by_key(|(s, _)| s.index());
+    let arrow_with_effects = kb.alloc(Term::Fn {
+        functor: arrow_sym,
+        pos_args: SmallVec::new(),
+        named_args: na2,
+    });
+
+    // Pre-WI-337: types_compatible PANICS at make_effect_expression_
+    // empty_row's resolve_symbol call.
+    // Post-WI-337: no panic; returns false (conservative reject — the
+    // missing-side empty row can't be synthesized without the prelude).
+    //
+    // Cover all four return-false sites: (Some, None) and (None, Some)
+    // in both arrow_compatible (types_compatible path) and unify_arrow
+    // (unify_types path).
+    assert!(!types_compatible(&mut kb, arrow_with_effects, arrow_no_effects),
+        "arrow_compatible (Some, None): bootstrap-uninitialized KB rejects \
+         without panicking");
+    assert!(!types_compatible(&mut kb, arrow_no_effects, arrow_with_effects),
+        "arrow_compatible (None, Some): symmetric arm also bootstrap-safe");
+
+    // unify_types reaches unify_arrow's (Some, None) / (None, Some) arms.
+    let mut subst1 = Substitution::new();
+    assert!(!unify_types(&mut kb, &mut subst1, arrow_with_effects, arrow_no_effects),
+        "unify_arrow (Some, None): bootstrap-uninitialized KB rejects \
+         without panicking");
+    let mut subst2 = Substitution::new();
+    assert!(!unify_types(&mut kb, &mut subst2, arrow_no_effects, arrow_with_effects),
+        "unify_arrow (None, Some): symmetric arm also bootstrap-safe");
+
+    // bind_row_tail is reachable via the bare-Var path in
+    // decompose_effect_row when both arrows carry an effects field of
+    // bare-Var shape (a malformed but parse-tolerant input). Build that
+    // case and confirm no panic.
+    let v_sym2 = kb.intern("?eff2");
+    let vid2 = kb.fresh_var(v_sym2);
+    let v_term2 = kb.alloc(Term::Var(
+        anthill_core::kb::term::Var::Global(vid2),
+    ));
+    let mut na3: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]>
+        = SmallVec::new();
+    na3.push((param_key, int_ty));
+    na3.push((result_key, int_ty));
+    na3.push((effects_key, v_term2));
+    na3.sort_by_key(|(s, _)| s.index());
+    let arrow_with_other_var = kb.alloc(Term::Fn {
+        functor: arrow_sym,
+        pos_args: SmallVec::new(),
+        named_args: na3,
+    });
+    // Both sides have bare-Var effects; subtype_effect_rows /
+    // unify_effect_rows reach bind_row_tail with a Var::Global tail
+    // and would panic at make_effect_expression_empty_row pre-WI-337.
+    assert!(!types_compatible(&mut kb, arrow_with_effects, arrow_with_other_var),
+        "bind_row_tail via bare-Var effects: bootstrap-safe reject without panic");
+}
+
 // ── WI-336 Rigid row tail hardening ──────────────────────────────────────
 //
 // `Var::Rigid` represents a forall-Skolem — a universally-quantified row

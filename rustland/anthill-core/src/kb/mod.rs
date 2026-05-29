@@ -2420,6 +2420,41 @@ impl KnowledgeBase {
         })
     }
 
+    /// WI-337: bootstrap-safe variant of the
+    /// `make_effects_rows_type(make_effect_expression_empty_row())` pair.
+    /// Returns `None` when the EffectExpression / `effects_rows` symbols
+    /// are not yet registered (i.e. before [`load::register_prelude`] has
+    /// run). The panicking variants are convenient for the typer hot
+    /// path — `make_arrow_type` and friends require the symbols already
+    /// — but `arrow_compatible` / `unify_arrow` can be reached at
+    /// bootstrap time on a malformed legacy arrow term that has only one
+    /// of `param`/`result`/`effects` populated, in which case the typer
+    /// should degrade gracefully rather than crash. The caller decides
+    /// the soundness-preserving fallback (typically "reject the missing
+    /// side" so the check returns false without claiming compatibility).
+    pub fn try_make_empty_effects_rows(&mut self) -> Option<TermId> {
+        let empty_sym = self.try_resolve_symbol(
+            "anthill.prelude.EffectExpression.empty_row",
+        )?;
+        let rows_sym = self.try_resolve_symbol(
+            "anthill.prelude.Type.effects_rows",
+        )?;
+        let empty = self.alloc(Term::Fn {
+            functor: empty_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        let expr_key = self.intern("effects_expr");
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        named_args.push((expr_key, empty));
+        named_args.sort_by_key(|(s, _)| s.index());
+        Some(self.alloc(Term::Fn {
+            functor: rows_sym,
+            pos_args: SmallVec::new(),
+            named_args,
+        }))
+    }
+
     // WI-307 code-review #11: every EffectExpression / effects_rows
     // builder calls `sort_by_key` on named_args before allocating, even
     // when only one field is pushed. This is a no-op today (single-element

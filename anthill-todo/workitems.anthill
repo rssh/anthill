@@ -2495,7 +2495,7 @@ fact WorkItem(
   description: "Code-review WI-326 F2: arrow_compatible's (Some,None)/(None,Some) effects branches panic if prelude not registered. PROBLEM: pre-WI-326 arrow_compatible used get_named_arg(...).map(effects_rows_to_flat_list).unwrap_or_default() and produced an empty Vec without any bootstrap symbol lookup. Post-WI-326 the missing-side arms call kb.make_effect_expression_empty_row() and kb.make_effects_rows_type() at typing.rs ~6790, ~6796 — both call kb.resolve_symbol() on bootstrap names ('anthill.prelude.EffectExpression.empty_row', 'anthill.prelude.Type.effects_rows'). resolve_symbol panics with 'resolve_symbol: X is not a resolved symbol' if X hasn't been registered. SCOPE: either (a) guard the symbols with try_resolve_symbol and degrade gracefully (return false or true depending on semantics) for bootstrap-time fixtures, or (b) lift the empty_rows construction to a one-time pre-computed TermId stored on KB (cached on first registration), making it bootstrap-safe and faster. Option (b) is consistent with how the loader pre-registers stdlib scopes. ACCEPTANCE: a test invoking types_compatible on hand-built arrow terms BEFORE register_prelude (or after a partial-reset) does not panic; full cargo-test green. Low practical impact today (make_arrow_type always synthesizes effects_rows so the field is rarely missing), but a removed safety property that the bootstrap path used to provide.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-326"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-29T07:38:39Z"))
 
 fact WorkItem(
   id: "WI-338",

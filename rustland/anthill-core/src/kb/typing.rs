@@ -5478,14 +5478,22 @@ fn unify_arrow(kb: &mut KnowledgeBase, subst: &mut Substitution, a: TermId, b: T
         // One side missing the effects field — treat as empty row on that
         // side and require the other to also be empty.
         (None, None) => {}
+        // WI-337: synthesize an empty `effects_rows` for the missing
+        // side via the bootstrap-safe builder; if the prelude isn't
+        // registered yet, return false (no row to compare against ⇒
+        // can't prove equivalence, sound conservative reject).
         (Some(ae), None) => {
-            let empty = kb.make_effect_expression_empty_row();
-            let empty_rows = kb.make_effects_rows_type(empty);
+            let empty_rows = match kb.try_make_empty_effects_rows() {
+                Some(er) => er,
+                None => return false,
+            };
             if !unify_effect_rows(kb, subst, ae, empty_rows) { return false; }
         }
         (None, Some(be)) => {
-            let empty = kb.make_effect_expression_empty_row();
-            let empty_rows = kb.make_effects_rows_type(empty);
+            let empty_rows = match kb.try_make_empty_effects_rows() {
+                Some(er) => er,
+                None => return false,
+            };
             if !unify_effect_rows(kb, subst, empty_rows, be) { return false; }
         }
     }
@@ -5767,6 +5775,21 @@ fn bind_row_tail(
         // Accept only a literal no-op.
         _ => return extra_labels.is_empty() && final_tail.is_none(),
     };
+
+    // WI-337: bootstrap-safety — `decompose_effect_row`'s bare-Var
+    // path (line ~5535) returns a `Var::Global` tail without ever
+    // resolving any `EffectExpression` symbol, so we can reach here
+    // on a KB whose prelude isn't registered. The builders below all
+    // call panic-on-miss `resolve_symbol`. Probe the symbols first;
+    // if any are missing, reject the binding (sound — we can't
+    // synthesize the inner term, so we can't claim the bind holds).
+    if kb.try_resolve_symbol("anthill.prelude.EffectExpression.empty_row").is_none()
+        || kb.try_resolve_symbol("anthill.prelude.EffectExpression.open").is_none()
+        || kb.try_resolve_symbol("anthill.prelude.EffectExpression.present").is_none()
+        || kb.try_resolve_symbol("anthill.prelude.EffectExpression.merge").is_none()
+    {
+        return false;
+    }
 
     // Build the inner tail: open(fresh) if shared, empty_row if closed.
     let inner = match final_tail {
@@ -7287,14 +7310,20 @@ fn arrow_compatible(kb: &mut KnowledgeBase, subst: &mut Substitution, actual: Te
             subtype_effect_rows(kb, subst, ae, ee)
         }
         // Missing side is interpreted as a closed empty row (pure).
+        // WI-337: bootstrap-safe builder; pre-prelude callers get a
+        // sound conservative reject instead of a `resolve_symbol` panic.
         (Some(ae), None) => {
-            let empty = kb.make_effect_expression_empty_row();
-            let empty_rows = kb.make_effects_rows_type(empty);
+            let empty_rows = match kb.try_make_empty_effects_rows() {
+                Some(er) => er,
+                None => return false,
+            };
             subtype_effect_rows(kb, subst, ae, empty_rows)
         }
         (None, Some(ee)) => {
-            let empty = kb.make_effect_expression_empty_row();
-            let empty_rows = kb.make_effects_rows_type(empty);
+            let empty_rows = match kb.try_make_empty_effects_rows() {
+                Some(er) => er,
+                None => return false,
+            };
             subtype_effect_rows(kb, subst, empty_rows, ee)
         }
     }
