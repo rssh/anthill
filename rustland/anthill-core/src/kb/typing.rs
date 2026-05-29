@@ -12,10 +12,10 @@ use smallvec::SmallVec;
 use super::term::{Term, TermId, Literal, Var, VarId};
 use super::node_occurrence::{
     for_each_child, for_each_pattern_child, materialize_from_handle,
-    Expr, MatchBranch, NodeKind, NodeOccurrence,
+    Expr, MatchBranch, NodeKind, NodeOccurrence, TypeChild, TypeNode,
 };
 use super::persist_subst::BindValue;
-use super::term_view::{TermIdView, TermView, ViewHead};
+use super::term_view::{TermIdView, TermView, ViewHead, ViewItem};
 use super::{KnowledgeBase, SortKind};
 use crate::eval::value::Value;
 use crate::intern::Symbol;
@@ -5375,19 +5375,150 @@ pub fn unify_types<A: TermView, B: TermView>(
         // `denoted` Ref-compare is only needed when hash-cons identity is lost
         // (a `Value` carrier on at least one side).
         (Value::Term(x), Value::Term(y)) => unify_term_dispatch(kb, subst, *x, *y),
-        // At least one `Value` carrier. Only `denoted`-vs-`denoted` is wired this
-        // slice (carrier-agnostic Ref-symbol compare); structural unification of
-        // a `Value`-carried arrow/parameterized/row is deferred to P4 →
-        // conservative `false` (sound: refuses rather than mis-unifies).
-        _ => {
-            if resolved_functor_name(kb, &a) == Some("denoted")
-                && resolved_functor_name(kb, &b) == Some("denoted")
-            {
-                unify_denoted_view(kb, &a, &b)
-            } else {
-                false
+        // At least one `Value` carrier (hash-cons identity is lost). Dispatch
+        // structurally through the carrier-agnostic [`TermView`] arms (WI-342
+        // P4): a `Value`-carried `denoted` / `parameterized` unifies against its
+        // ground twin (cross-carrier) or another `Value` carrier. Forms not yet
+        // wired return `false` (sound: refuses rather than mis-unifies).
+        _ => unify_view_structural(kb, subst, &a, &b),
+    }
+}
+
+/// WI-342 P4: carrier-agnostic structural dispatch — the [`TermView`] analog of
+/// [`unify_term_dispatch`], reached from [`unify_types`] when at least one side
+/// is a non-hash-consed carrier (a `Value::Node`). Reads each side's functor
+/// name and immediate children through [`TermView`] and recurses via the generic
+/// [`unify_types`], so a child of any carrier unifies uniformly.
+///
+/// This is deliberately a *separate* dispatch from [`unify_term_dispatch`]
+/// rather than a single generic one folded over both arms: the `(Term, Term)`
+/// path is the hot, heavily row-tested path (WI-307/328) and stays byte-
+/// identical. Consolidating the two dispatches once the row machinery is fully
+/// carrier-agnostic (P4-B) is a follow-up.
+fn unify_view_structural<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    a: &A,
+    b: &B,
+) -> bool {
+    match (resolved_functor_name(kb, a), resolved_functor_name(kb, b)) {
+        (Some("denoted"), Some("denoted")) => unify_denoted_view(kb, a, b),
+        (Some("parameterized"), Some("parameterized")) => {
+            unify_parameterized_view(kb, subst, a, b)
+        }
+        // P4-B: `arrow` / `effects_rows` / `parameterized`-vs-`sort_ref` /
+        // `named_tuple` structural unification of a `Value` carrier is wired with
+        // the row-machinery migration (when `unify_term_dispatch` and this
+        // dispatch are consolidated and `unify_parameterized` is expressed via
+        // `unify_parameterized_view`). `types_compatible` must gain the matching
+        // Value arms in the same step (the unify/subtype lockstep). Until then,
+        // refuse rather than mis-unify — sound, but a false-negative once a
+        // producer mints these Value-carried forms into live typing.
+        _ => false,
+    }
+}
+
+/// WI-342 P4: carrier-agnostic `parameterized` unification — the [`TermView`]
+/// analog of [`unify_parameterized`]. Bases unify via the generic
+/// [`unify_types`]; bindings are matched by param name (a-side bindings present
+/// on the b-side must unify; b-only bindings are width-ignored, matching the
+/// `TermId` arm's semantics).
+fn unify_parameterized_view<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    a: &A,
+    b: &B,
+) -> bool {
+    // `intern` (not `lookup_symbol`) so the arm is robust in a KB that hasn't
+    // yet interned the well-known `base` field symbol (a production KB always
+    // has via stdlib load; idempotent either way). The view's `type_node_named`
+    // resolves the same name through `lookup_symbol`, which now matches.
+    let base_sym = kb.intern("base");
+    let a_base = a.named_arg(kb, base_sym).map(|it| view_item_value(&it));
+    let b_base = b.named_arg(kb, base_sym).map(|it| view_item_value(&it));
+    match (a_base, b_base) {
+        (Some(ab), Some(bb)) => {
+            if !unify_types(kb, subst, &ab, &bb) {
+                return false;
             }
         }
+        _ => return false,
+    }
+
+    let a_bindings = parameterized_bindings(kb, a);
+    let b_bindings = parameterized_bindings(kb, b);
+    for (param, av) in &a_bindings {
+        if let Some((_, bv)) = b_bindings.iter().find(|(p, _)| p == param) {
+            if !unify_types(kb, subst, av, bv) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// WI-342 P4: a `parameterized` type's `(param, value)` bindings read
+/// carrier-agnostically as owned [`Value`]s. The two carriers store bindings
+/// differently — a `TermId` carries `bindings: List[TypeBinding]` (Rep A's view
+/// exposes only `base`), a `Value::Node` carries `Vec<(Symbol, TypeChild)>` —
+/// so this branches on the concrete carrier rather than going through the view's
+/// `named_arg` (which can't enumerate either shape uniformly).
+fn parameterized_bindings(kb: &KnowledgeBase, v: &impl TermView) -> Vec<(Symbol, Value)> {
+    match v.as_bind_value() {
+        // `Value::as_bind_value` maps `Value::Term` → `BindValue::Term`, so the
+        // `Value(Value::Term)` shape is unreachable from the `Value` carrier
+        // today; kept folded in defensively for any future `TermView` whose
+        // `as_bind_value` wraps a `Value::Term`.
+        BindValue::Term(t) | BindValue::Value(Value::Term(t)) => {
+            parameterized_bindings_term(kb, t)
+        }
+        BindValue::Value(Value::Node(occ)) => match occ.as_type() {
+            Some(TypeNode::Parameterized { bindings, .. }) => bindings
+                .iter()
+                .map(|(s, c)| (*s, type_child_to_value(c)))
+                .collect(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
+/// Bindings of a `TermId`-carried `parameterized` (`List[TypeBinding]`).
+fn parameterized_bindings_term(kb: &KnowledgeBase, t: TermId) -> Vec<(Symbol, Value)> {
+    let args = match kb.get_term(t) {
+        Term::Fn { named_args, .. } => named_args.clone(),
+        _ => return Vec::new(),
+    };
+    let list = match get_named_arg(kb, &args, "bindings") {
+        Some(b) => b,
+        None => return Vec::new(),
+    };
+    list_to_vec(kb, list)
+        .into_iter()
+        .filter_map(|b| {
+            let param = binding_param_sym(kb, b)?;
+            let value = binding_value(kb, b)?;
+            Some((param, Value::Term(value)))
+        })
+        .collect()
+}
+
+/// A [`ViewItem`] (which may borrow `kb`) as an owned [`Value`], freeing the
+/// caller's `kb` borrow before a `&mut kb` recursion.
+fn view_item_value(item: &ViewItem) -> Value {
+    match item {
+        ViewItem::Term(t) => Value::Term(*t),
+        ViewItem::Value(v) => (*v).clone(),
+        ViewItem::Node(rc) => Value::Node(Rc::clone(rc)),
+    }
+}
+
+/// A [`TypeChild`] as an owned [`Value`]: ground → `Value::Term`, poisoned →
+/// `Value::Node` (a cheap `Rc` clone).
+fn type_child_to_value(child: &TypeChild) -> Value {
+    match child {
+        TypeChild::Ground(t) => Value::Term(*t),
+        TypeChild::Node(rc) => Value::Node(Rc::clone(rc)),
     }
 }
 
@@ -5484,8 +5615,12 @@ fn resolved_functor_name<'a>(kb: &'a KnowledgeBase, r: &impl TermView) -> Option
 /// value refers to the same symbol. Works cross-carrier (a ground
 /// `denoted(Ref(c))` unifies with a `Value`-carried `denoted(Node(Ref(c)))`),
 /// which is what lets P3 run while loaders stay on the legacy path.
-fn unify_denoted_view(kb: &KnowledgeBase, a: &Value, b: &Value) -> bool {
-    match (denoted_ref_sym(kb, a), denoted_ref_sym(kb, b)) {
+fn unify_denoted_view<A: TermView, B: TermView>(kb: &mut KnowledgeBase, a: &A, b: &B) -> bool {
+    // Sequential (not a single tuple) so each `&mut kb` borrow is released
+    // before the next — `denoted_ref_sym` interns the `value` field symbol.
+    let sa = denoted_ref_sym(kb, a);
+    let sb = denoted_ref_sym(kb, b);
+    match (sa, sb) {
         (Some(sa), Some(sb)) => sa == sb,
         // TODO(WI-341/alpha): a non-`Ref` carried value (a bound-name reference,
         // a nested apply) needs alpha-equivalence over the carried `Expr` spine,
@@ -5495,9 +5630,11 @@ fn unify_denoted_view(kb: &KnowledgeBase, a: &Value, b: &Value) -> bool {
 }
 
 /// The symbol a `denoted`'s `value` child refers to, if it is a `Ref`-shaped
-/// occurrence — read carrier-agnostically through [`TermView`].
-fn denoted_ref_sym(kb: &KnowledgeBase, r: &impl TermView) -> Option<Symbol> {
-    let value_key = kb.lookup_symbol("value")?;
+/// occurrence — read carrier-agnostically through [`TermView`]. `intern` (not
+/// `lookup_symbol`) so the read is robust in a KB that hasn't interned the
+/// well-known `value` field symbol (a production KB always has via stdlib load).
+fn denoted_ref_sym(kb: &mut KnowledgeBase, r: &impl TermView) -> Option<Symbol> {
+    let value_key = kb.intern("value");
     let child = r.named_arg(kb, value_key)?;
     match child.head(kb) {
         ViewHead::Ref(s) => Some(s),
@@ -9260,6 +9397,119 @@ mod p3_tests {
         assert!(!s.is_contradiction(), "equal Value-carried types must not contradict");
         s.bind_value(vid, Value::Node(occ_d));
         assert!(s.is_contradiction(), "a distinct Value-carried type contradicts");
+    }
+}
+
+#[cfg(test)]
+mod p4_tests {
+    //! WI-342 P4-A — carrier-agnostic structural unification of a
+    //! `Value`-carried `parameterized` (the denoted-bearing effect label),
+    //! standalone (not yet inside a row — that's P4-B).
+    use super::unify_types;
+    use crate::kb::load::register_prelude;
+    use crate::kb::node_occurrence::{NodeOccurrence, TypeChild};
+    use crate::kb::subst::Substitution;
+    use crate::kb::term::{Term, TermId};
+    use crate::kb::term_view::TermIdView;
+    use crate::kb::KnowledgeBase;
+    use crate::span::{SourceId, SourceSpan};
+    use std::rc::Rc;
+
+    fn kb_with_prelude() -> KnowledgeBase {
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        kb
+    }
+
+    fn span() -> SourceSpan {
+        SourceSpan::new(SourceId::from_raw(0), 0, 1)
+    }
+
+    /// Ground `parameterized(sort_ref(Modify), [p = denoted(Ref sym)])`.
+    fn ground_param(kb: &mut KnowledgeBase, modify: crate::intern::Symbol, p: crate::intern::Symbol, sym: crate::intern::Symbol) -> TermId {
+        let cref = kb.alloc(Term::Ref(sym));
+        let denoted = kb.make_denoted(cref);
+        let base = kb.make_sort_ref(modify);
+        kb.make_parameterized_type(base, &[(p, denoted)])
+    }
+
+    /// `Value`-carried `parameterized(sort_ref(Modify), [p = denoted(Ref sym)])`
+    /// — a ground `sort_ref` base, a poisoned (denoted-bearing) binding value.
+    fn occ_param(kb: &mut KnowledgeBase, modify: crate::intern::Symbol, p: crate::intern::Symbol, sym: crate::intern::Symbol) -> Rc<NodeOccurrence> {
+        let base = kb.make_sort_ref(modify);
+        let denoted_occ = kb.make_denoted_occ_ref(sym, span(), None);
+        kb.make_parameterized_occ(
+            TypeChild::Ground(base),
+            vec![(p, TypeChild::Node(denoted_occ))],
+            span(),
+            None,
+        )
+    }
+
+    /// Cross-carrier: ground `Modify[c]` unifies with `Value`-carried
+    /// `Modify[c]` (base by identity, binding value by the denoted Ref-compare);
+    /// `Modify[c]` vs `Modify[d]` is rejected.
+    #[test]
+    fn cross_carrier_parameterized_denoted_unify() {
+        let mut kb = kb_with_prelude();
+        let modify = kb.intern("Modify");
+        let p = kb.intern("resource");
+        let c = kb.intern("c");
+        let d = kb.intern("d");
+
+        let ground = ground_param(&mut kb, modify, p, c);
+        let occ_c = occ_param(&mut kb, modify, p, c);
+        let mut s = Substitution::new();
+        assert!(
+            unify_types(&mut kb, &mut s, &TermIdView(ground), &occ_c),
+            "ground Modify[c] vs Value Modify[c]"
+        );
+
+        let occ_d = occ_param(&mut kb, modify, p, d);
+        let mut s2 = Substitution::new();
+        assert!(
+            !unify_types(&mut kb, &mut s2, &TermIdView(ground), &occ_d),
+            "Modify[c] vs Modify[d] differ"
+        );
+    }
+
+    /// Value-vs-Value: two distinct-`Rc` `Value`-carried `Modify[c]` unify;
+    /// `Modify[c]` vs `Modify[d]` is rejected.
+    #[test]
+    fn value_value_parameterized_denoted_unify() {
+        let mut kb = kb_with_prelude();
+        let modify = kb.intern("Modify");
+        let p = kb.intern("resource");
+        let c = kb.intern("c");
+        let d = kb.intern("d");
+
+        let occ_c1 = occ_param(&mut kb, modify, p, c);
+        let occ_c2 = occ_param(&mut kb, modify, p, c);
+        let mut s = Substitution::new();
+        assert!(unify_types(&mut kb, &mut s, &occ_c1, &occ_c2), "Value Modify[c] vs Value Modify[c]");
+
+        let occ_d = occ_param(&mut kb, modify, p, d);
+        let mut s2 = Substitution::new();
+        assert!(!unify_types(&mut kb, &mut s2, &occ_c1, &occ_d), "Value Modify[c] vs Value Modify[d]");
+    }
+
+    /// A different base sort makes the parameterized types disagree even when
+    /// the binding values match (`Modify[c]` vs `Read[c]`).
+    #[test]
+    fn parameterized_distinct_base_rejected() {
+        let mut kb = kb_with_prelude();
+        let modify = kb.intern("Modify");
+        let read = kb.intern("Read");
+        let p = kb.intern("resource");
+        let c = kb.intern("c");
+
+        let ground = ground_param(&mut kb, modify, p, c);
+        let occ_read = occ_param(&mut kb, read, p, c);
+        let mut s = Substitution::new();
+        assert!(
+            !unify_types(&mut kb, &mut s, &TermIdView(ground), &occ_read),
+            "Modify[c] vs Read[c] differ on base"
+        );
     }
 }
 
