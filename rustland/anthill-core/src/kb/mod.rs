@@ -1717,8 +1717,17 @@ impl KnowledgeBase {
     ///
     /// Uses the discrimination tree for multi-level structural dispatch.
     /// Variable bindings are resolved via path extraction from head terms.
-    pub fn query(&self, pattern: TermId) -> Vec<(RuleId, subst::Substitution)> {
-        self.query_view(&term_view::TermIdView(pattern))
+    /// Representation-neutral (WI-349): the pattern is anything implementing
+    /// [`term_view::TermView`] — a `TermId` ground pattern, a `Value`, or a
+    /// `Value::Node` occurrence — so there is no term-only query door. Thin
+    /// alias for [`Self::query_view`] (the established `TermView` core), which
+    /// reads the pattern against the structurally-keyed discrimination tree (no
+    /// hash-cons identity required).
+    pub fn query<V: term_view::TermView>(
+        &self,
+        pattern: V,
+    ) -> Vec<(RuleId, subst::Substitution)> {
+        self.query_view(&pattern)
     }
 
     /// `query` generic over the goal representation: `pattern` is anything
@@ -1757,7 +1766,11 @@ impl KnowledgeBase {
     }
 
     /// Find all active rules (non-empty body) whose head matches the pattern.
-    pub fn query_rules(&self, pattern: TermId) -> Vec<(RuleId, subst::Substitution)> {
+    /// Representation-neutral over the pattern carrier (WI-349).
+    pub fn query_rules<V: term_view::TermView>(
+        &self,
+        pattern: V,
+    ) -> Vec<(RuleId, subst::Substitution)> {
         self.query(pattern)
             .into_iter()
             .filter(|(rid, _)| !self.rules[rid.index()].body_nodes.is_empty())

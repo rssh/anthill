@@ -421,6 +421,67 @@ impl TermView for TermIdView {
     }
 }
 
+/// WI-349: a bare `TermId` is itself a `TermView` (delegating to [`TermIdView`]),
+/// so the representation-neutral KB query/resolution interface (`query` /
+/// `resolve`, generic over `V: TermView`) accepts a `TermId` ground pattern
+/// directly — alongside a `Value` or a `Value::Node` occurrence — with no
+/// term-only entry point and no caller churn. `TermView` is local and `TermId`
+/// is local, so this is not an orphan-rule violation (the `TermIdView` wrapper's
+/// original rationale notwithstanding); the wrapper stays for callers that hold
+/// a `TermId` where a distinct view type reads better.
+impl TermView for TermId {
+    // Bodies mirror `TermIdView` (a `TermId` *is* a `TermIdView(self)`); inlined
+    // rather than delegated because `ViewItem<'a>` would otherwise tie `'a` to a
+    // borrowed temporary `TermIdView` instead of the caller's `&'a self`/`&'a kb`.
+    fn head(&self, kb: &KnowledgeBase) -> ViewHead {
+        match kb.get_term(*self) {
+            Term::Var(Var::Global(vid)) => ViewHead::Var(*vid),
+            Term::Var(Var::Rigid(_)) | Term::Var(Var::DeBruijn(_)) => ViewHead::Opaque,
+            Term::Const(lit) => ViewHead::Const(lit.clone()),
+            Term::Fn { functor, pos_args, named_args } => ViewHead::Functor {
+                functor: Some(*functor),
+                pos_arity: pos_args.len(),
+                named_arity: named_args.len(),
+            },
+            Term::Ref(s) => ViewHead::Ref(*s),
+            Term::Ident(s) => ViewHead::Ident(*s),
+            Term::Bottom => ViewHead::Bottom,
+            Term::ParseAux(_) => unreachable!(
+                "parse-only Term::ParseAux variant reached the KB-side TermView for TermId",
+            ),
+        }
+    }
+    fn pos_arg<'a>(&'a self, kb: &'a KnowledgeBase, i: usize) -> Option<ViewItem<'a>> {
+        match kb.get_term(*self) {
+            Term::Fn { pos_args, .. } => pos_args.get(i).copied().map(ViewItem::Term),
+            _ => None,
+        }
+    }
+    fn named_arg<'a>(&'a self, kb: &'a KnowledgeBase, sym: Symbol) -> Option<ViewItem<'a>> {
+        match kb.get_term(*self) {
+            Term::Fn { named_args, .. } => named_args.iter()
+                .find(|(s, _)| *s == sym)
+                .map(|(_, t)| ViewItem::Term(*t)),
+            _ => None,
+        }
+    }
+    fn named_keys(&self, kb: &KnowledgeBase) -> Vec<Symbol> {
+        match kb.get_term(*self) {
+            Term::Fn { named_args, .. } => named_args.iter().map(|(s, _)| *s).collect(),
+            _ => Vec::new(),
+        }
+    }
+    fn as_bind_value(&self) -> BindValue {
+        BindValue::Term(*self)
+    }
+    fn index_var(&self, kb: &KnowledgeBase) -> Option<Var> {
+        match kb.get_term(*self) {
+            Term::Var(v) => Some(*v),
+            _ => None,
+        }
+    }
+}
+
 impl TermView for Value {
     fn head(&self, kb: &KnowledgeBase) -> ViewHead {
         match self {

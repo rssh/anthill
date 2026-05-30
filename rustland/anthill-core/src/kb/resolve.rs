@@ -19,10 +19,27 @@ use super::subst::Substitution;
 use super::node_occurrence::{self, Expr, NodeOccurrence};
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::term_view::{ReflectedExpr, ReflectSyms, TermIdView, TermView, ViewHead, ViewItem};
+use super::persist_subst::BindValue;
 use crate::intern::Symbol;
 use crate::eval::value::Value;
 use super::RuleId;
 use super::KnowledgeBase;
+
+/// Capture a `TermView`'s top-level carrier as an owned `Value` goal (WI-349) —
+/// `Value::Term` for a hash-consed pattern, the cloned `Value`/`Value::Node` for
+/// a value/occurrence goal. The owned form the mutable search frame needs.
+fn bind_value_to_value(bv: BindValue) -> Value {
+    match bv {
+        BindValue::Term(t) => Value::Term(t),
+        BindValue::Value(v) => v,
+        // `Path` is the discrim tree's deferred fact-leaf extraction; a goal's
+        // own `as_bind_value` (TermId / Value / occurrence carriers) never
+        // yields it, so reaching it here is a broken invariant, not a fallback.
+        BindValue::Path(_) => unreachable!(
+            "bind_value_to_value: a goal view produced BindValue::Path (WI-349)",
+        ),
+    }
+}
 
 // ── Builtin tags ───────────────────────────────────────────────
 
@@ -1290,9 +1307,17 @@ impl SearchStream {
 // ── SLD Resolution ──────────────────────────────────────────────
 
 impl KnowledgeBase {
-    /// Create a lazy search stream for the given goals.
-    pub fn resolve_lazy(&self, goals: &[TermId], config: &ResolveConfig) -> SearchStream {
-        self.resolve_lazy_goals(goals.iter().copied().map(Value::Term).collect(), config)
+    /// Create a lazy search stream for the given goals. Representation-neutral
+    /// (WI-349): a goal is anything that implements [`TermView`] — the same
+    /// read-through-any-carrier abstraction the matcher and discrimination tree
+    /// already speak — so a `TermId` ground pattern, a `Value`, or a
+    /// `Value::Node` occurrence goal all go through one door, with no term-only
+    /// entry point. Each goal is captured into the owned `Vec<Value>` goal list
+    /// (the mutable search frame needs ownership) via its `as_bind_value`.
+    /// [`Self::resolve_lazy_goals`] is the canonical `Vec<Value>` core.
+    pub fn resolve_lazy<V: TermView>(&self, goals: &[V], config: &ResolveConfig) -> SearchStream {
+        let value_goals = goals.iter().map(|g| bind_value_to_value(g.as_bind_value())).collect();
+        self.resolve_lazy_goals(value_goals, config)
     }
 
     /// Like [`Self::resolve_lazy`] but takes pre-built `Value` goals — e.g. the
@@ -1319,21 +1344,25 @@ impl KnowledgeBase {
         }
     }
 
-    /// Resolve a list of goals using SLD resolution.
+    /// Resolve a list of goals using SLD resolution. Representation-neutral
+    /// (WI-349): a goal is anything that implements [`TermView`] — a `TermId`
+    /// ground pattern, a `Value`, or a `Value::Node` occurrence goal — so an
+    /// occurrence query (carrying source spans) and a term query go through the
+    /// same door.
     ///
     /// Returns all solutions (up to `config.max_solutions`) that satisfy all
     /// goals simultaneously. Each solution contains variable bindings from
-    /// the original query variables to ground terms.
-    pub fn resolve(&mut self, goals: &[TermId], config: &ResolveConfig) -> Vec<Solution> {
+    /// the original query variables.
+    pub fn resolve<V: TermView>(&mut self, goals: &[V], config: &ResolveConfig) -> Vec<Solution> {
         self.resolve_with_stats(goals, config).0
     }
 
-    /// Resolve a list of pre-built `Value` goals (e.g. `Value::Node` occurrence
-    /// goals from [`Self::with_fresh_vars`]). The `Value`-goal counterpart of
-    /// [`Self::resolve`] — and the entry goals migrate toward as queries/bodies
-    /// go occurrence-native; `resolve(&[TermId])` is the term-front-end shim.
-    /// Named `_goals` (not `_value`) to avoid colliding with the subst-layer
-    /// `resolve_as_value` (a variable→binding lookup, an unrelated operation).
+    /// Resolve pre-built `Value` goals by value — the canonical `Vec<Value>`
+    /// core that the slice front doors ([`Self::resolve`]) coerce into. Handy
+    /// when a caller already owns a `Vec<Value>` (e.g. the `Value::Node`
+    /// occurrence goals from [`Self::with_fresh_vars`]). Named `_goals` (not
+    /// `_value`) to avoid colliding with the subst-layer `resolve_as_value` (a
+    /// variable→binding lookup, an unrelated operation).
     pub fn resolve_goals(&mut self, goals: Vec<Value>, config: &ResolveConfig) -> Vec<Solution> {
         let mut stream = self.resolve_lazy_goals(goals, config);
         let mut solutions = Vec::new();
@@ -1354,9 +1383,9 @@ impl KnowledgeBase {
     /// Like `resolve`, but also returns telemetry from the underlying
     /// search stream (see `ResolveStats`). Used by performance-oriented
     /// tests; production callers can stick with `resolve`.
-    pub fn resolve_with_stats(
+    pub fn resolve_with_stats<V: TermView>(
         &mut self,
-        goals: &[TermId],
+        goals: &[V],
         config: &ResolveConfig,
     ) -> (Vec<Solution>, ResolveStats) {
         let mut stream = self.resolve_lazy(goals, config);
