@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use crate::intern::Symbol;
 use crate::kb::KnowledgeBase;
-use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+use crate::kb::node_occurrence::{EffectExprNode, Expr, NodeOccurrence, TypeChild, TypeNode};
 use crate::kb::term::{Literal, Term, TermId, TermSource, Var};
 
 /// Append `s` quoted with `.anthill`-syntax escapes for `"`, `\`, `\n`,
@@ -95,13 +95,100 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
         }
     }
 
+    /// Render a `Type`-child — a ground hash-consed type (`write_term`) or a
+    /// nested occurrence (`write_occurrence`), uniformly (WI-348/349).
+    fn write_type_child(&self, child: &TypeChild, buf: &mut String) {
+        match child {
+            TypeChild::Ground(t) => self.write_term(*t, buf),
+            TypeChild::Node(occ) => self.write_occurrence(occ, buf),
+        }
+    }
+
+    /// Render a `Type`-sort occurrence (WI-342 IR). Structural and faithful —
+    /// `Parameterized` shows its `[param = value]` bindings (the part a
+    /// `denoted` value-index like `Modify[c]` lives in), `denoted(..)` marks a
+    /// value-in-type so it reads distinctly from a type argument.
+    fn write_type_node(&self, tn: &TypeNode, buf: &mut String) {
+        match tn {
+            TypeNode::Denoted { value } => {
+                buf.push_str("denoted(");
+                self.write_occurrence(value, buf);
+                buf.push(')');
+            }
+            TypeNode::Parameterized { base, bindings } => {
+                self.write_type_child(base, buf);
+                buf.push('[');
+                for (i, (sym, val)) in bindings.iter().enumerate() {
+                    if i > 0 { buf.push_str(", "); }
+                    buf.push_str(self.view.sym_name(*sym));
+                    buf.push_str(" = ");
+                    self.write_type_child(val, buf);
+                }
+                buf.push(']');
+            }
+            TypeNode::EffectsRows { effects_expr } => {
+                buf.push_str("effects_rows(");
+                self.write_type_child(effects_expr, buf);
+                buf.push(')');
+            }
+            TypeNode::Arrow { param, result, effects } => {
+                self.write_type_child(param, buf);
+                buf.push_str(" -> ");
+                self.write_type_child(result, buf);
+                buf.push_str(" ! ");
+                self.write_type_child(effects, buf);
+            }
+            TypeNode::NamedTuple { fields } => {
+                buf.push('(');
+                for (i, (sym, val)) in fields.iter().enumerate() {
+                    if i > 0 { buf.push_str(", "); }
+                    buf.push_str(self.view.sym_name(*sym));
+                    buf.push_str(": ");
+                    self.write_type_child(val, buf);
+                }
+                buf.push(')');
+            }
+        }
+    }
+
+    /// Render an `EffectExpression`-sort occurrence (the row algebra, WI-342).
+    fn write_effect_expr_node(&self, en: &EffectExprNode, buf: &mut String) {
+        match en {
+            EffectExprNode::Merge { left, right } => {
+                self.write_type_child(left, buf);
+                buf.push_str(", ");
+                self.write_type_child(right, buf);
+            }
+            EffectExprNode::Present { label } => self.write_type_child(label, buf),
+            EffectExprNode::Absent { label } => {
+                buf.push('-');
+                self.write_type_child(label, buf);
+            }
+            EffectExprNode::Open { tail } => self.write_type_child(tail, buf),
+            EffectExprNode::EmptyRow => buf.push_str("{}"),
+        }
+    }
+
     fn write_occurrence(&self, occ: &NodeOccurrence, buf: &mut String) {
         if occ.as_pattern().is_some() {
             self.write_pattern(occ, buf);
             return;
         }
+        // WI-348/349: a `Type` / `EffectExpr` occurrence (e.g. a `Modify[c]`
+        // effect label on an `OperationInfo` value fact) is not an `Expr`, so it
+        // used to fall to the `<head>` placeholder. Render it structurally —
+        // including `Parameterized.bindings`, which `TermView` hides — so query
+        // output and diagnostics show the actual type, not `<head>`.
+        if let Some(tn) = occ.as_type() {
+            self.write_type_node(tn, buf);
+            return;
+        }
+        if let Some(en) = occ.as_effect_expr() {
+            self.write_effect_expr_node(en, buf);
+            return;
+        }
         let Some(expr) = occ.as_expr() else {
-            // A rule-head wrapper has no surface body form; bodies are Expr.
+            // A genuine rule-head wrapper has no surface body form; bodies are Expr.
             buf.push_str("<head>");
             return;
         };
