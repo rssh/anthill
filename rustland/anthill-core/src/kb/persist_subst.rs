@@ -16,6 +16,8 @@ use crate::eval::value::Value;
 use crate::intern::Symbol;
 use super::subst::Substitution;
 use super::term::{Term, TermId, TermStore, VarId};
+use crate::kb::term_view::{TermView, ViewItem};
+use crate::kb::KnowledgeBase;
 
 // ── VarPath — position of a variable binding in a term ──────────
 
@@ -80,6 +82,28 @@ pub(crate) fn extract_at_path(terms: &TermStore, fact_term: TermId, path: &VarPa
     }
 }
 
+/// Carrier-faithful peer of [`extract_at_path`] (WI-348 Phase B): extract a
+/// subterm of a `Value` fact head following a `VarPath`, returning a `Value` so
+/// a `Value::Node` child keeps its occurrence identity in the answer. Walks the
+/// head through `TermView` — the SAME surface the discrimination tree indexed it
+/// by — so a named-arg position reads the child the path was recorded against
+/// (the term-store walk would read a sorted-by-name skeleton; see the design
+/// doc's named-order finding).
+pub(crate) fn extract_value_at_path(kb: &KnowledgeBase, head: &Value, path: &VarPath) -> Value {
+    let item = match path {
+        VarPath::Root => return head.clone(),
+        VarPath::Arg(ArgPos::Positional(n)) => head.pos_arg(kb, *n),
+        VarPath::Arg(ArgPos::Named(sym)) => head.named_arg(kb, *sym),
+    };
+    match item {
+        Some(ViewItem::Term(t)) => Value::Term(t),
+        Some(ViewItem::Value(v)) => v.clone(),
+        Some(ViewItem::Node(occ)) => Value::Node(occ),
+        // Mirror extract_at_path's fallback: an invalid path yields the head.
+        None => head.clone(),
+    }
+}
+
 // ── PersistSubst trait ──────────────────────────────────────────
 
 /// Persistent substitution for tree traversal.
@@ -91,6 +115,12 @@ pub(crate) trait PersistSubst: Clone {
     fn new() -> Self;
     fn with_binding(self, var: VarId, value: BindValue) -> Self;
     fn resolve_leaf(self, terms: &TermStore, fact_term: TermId) -> Substitution;
+
+    /// Carrier-faithful peer of [`resolve_leaf`] (WI-348 Phase B): resolve
+    /// deferred paths against a `Value` fact head instead of a hash-consed
+    /// `TermId`, so a value fact's bindings keep `Value::Node` identity and read
+    /// the carrier the discrimination tree actually indexed.
+    fn resolve_leaf_view(self, kb: &KnowledgeBase, fact_head: &Value) -> Substitution;
 }
 
 // ── SmallSubst — SmallVec-based (clone = memcpy) ────────────────
@@ -116,6 +146,20 @@ impl PersistSubst for SmallSubst {
             match val {
                 BindValue::Term(tid) => s.bind_term(vid, tid),
                 BindValue::Path(path) => s.bind_term(vid, extract_at_path(terms, fact_term, &path)),
+                BindValue::Value(v) => s.bind_value(vid, v),
+            }
+        }
+        s
+    }
+
+    fn resolve_leaf_view(self, kb: &KnowledgeBase, fact_head: &Value) -> Substitution {
+        let mut s = Substitution::new();
+        for (vid, val) in self.bindings {
+            match val {
+                BindValue::Term(tid) => s.bind_term(vid, tid),
+                BindValue::Path(path) => {
+                    s.bind_value(vid, extract_value_at_path(kb, fact_head, &path))
+                }
                 BindValue::Value(v) => s.bind_value(vid, v),
             }
         }
@@ -158,6 +202,22 @@ impl PersistSubst for SharedSubst {
             match &cell.value {
                 BindValue::Term(tid) => s.bind_term(cell.var, *tid),
                 BindValue::Path(path) => s.bind_term(cell.var, extract_at_path(terms, fact_term, path)),
+                BindValue::Value(v) => s.bind_value(cell.var, v.clone()),
+            }
+            cur = &cell.tail;
+        }
+        s
+    }
+
+    fn resolve_leaf_view(self, kb: &KnowledgeBase, fact_head: &Value) -> Substitution {
+        let mut s = Substitution::new();
+        let mut cur = &self.head;
+        while let Some(cell) = cur {
+            match &cell.value {
+                BindValue::Term(tid) => s.bind_term(cell.var, *tid),
+                BindValue::Path(path) => {
+                    s.bind_value(cell.var, extract_value_at_path(kb, fact_head, path))
+                }
                 BindValue::Value(v) => s.bind_value(cell.var, v.clone()),
             }
             cur = &cell.tail;

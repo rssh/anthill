@@ -12,15 +12,18 @@
 /// See: docs/stage0/rust-term-store-design.md §7.6
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
+use crate::eval::value::Value;
 use crate::intern::Symbol;
+use super::node_occurrence::NodeOccurrence;
 use super::persist_subst::{ArgPos, BindValue, PersistSubst, SmallSubst, VarPath};
 use super::subst::Substitution;
-use super::term::{Literal, Term, TermId, TermStore, Var};
+use super::term::{Literal, TermId, Var};
 use super::term_view::{TermView, ViewHead, ViewItem};
 use super::KnowledgeBase;
 #[cfg(test)]
-use super::term::VarId;
+use super::term::{Term, VarId};
 
 // ── DiscrimKey — concrete edge labels ───────────────────────────
 
@@ -98,186 +101,184 @@ impl<L> SubstTree<L> {
     }
 }
 
-// ── Term-driven insert ──────────────────────────────────────────
+// ── OwnedView — a lifetime-free child descriptor ────────────────
+//
+// The remove walk flattens a nested compound's args together with the
+// remaining outer args into one sequence (the pruning back-walk needs them
+// contiguous). A borrowed [`ViewItem`] can't survive that splice — its
+// `Value` arm borrows its parent, whose borrow ends each recursion level.
+// `OwnedView` owns its payload (an `Rc`/`Value` clone — cheap; remove is the
+// cold retract path), so flattened sequences carry no borrow. It re-exposes a
+// [`ViewItem`] on demand via [`OwnedView::view`]. The insert walk keeps the
+// borrowed `ViewItem` — it never stores a child across recursion levels.
+
+#[derive(Clone)]
+enum OwnedView {
+    Term(TermId),
+    Value(Value),
+    Node(Rc<NodeOccurrence>),
+}
+
+impl OwnedView {
+    fn from_item(item: &ViewItem<'_>) -> Self {
+        match item {
+            ViewItem::Term(t) => OwnedView::Term(*t),
+            ViewItem::Value(v) => OwnedView::Value((*v).clone()),
+            ViewItem::Node(occ) => OwnedView::Node(Rc::clone(occ)),
+        }
+    }
+
+    fn view(&self) -> ViewItem<'_> {
+        match self {
+            OwnedView::Term(t) => ViewItem::Term(*t),
+            OwnedView::Value(v) => ViewItem::Value(v),
+            OwnedView::Node(occ) => ViewItem::Node(Rc::clone(occ)),
+        }
+    }
+}
+
+// ── View-driven insert ──────────────────────────────────────────
 
 impl<L> SubstTree<L> {
+    /// Insert a ground term. Ground heads carry no variables, so the pattern
+    /// walk indexes them identically — its var-edge arm is simply never
+    /// reached. Test-only today; the live ground path is `assert_fact` →
+    /// `insert_pattern`.
     #[allow(dead_code)]
-    pub(crate) fn insert_ground(&mut self, terms: &TermStore, term_id: TermId, leaf: L) {
-        let node = Self::insert_walk(&mut self.root, terms, term_id);
+    pub(crate) fn insert_ground<V: TermView>(&mut self, kb: &KnowledgeBase, term: &V, leaf: L) {
+        self.insert_pattern(kb, term, leaf)
+    }
+
+    /// Insert a stored pattern (a rule / fact head), creating concrete edges
+    /// for structure and var-edges for variables. Driven by [`TermView`]
+    /// (WI-348): a `TermId` head and a `Value::Node`-carrying value fact
+    /// decompose into the *same* structural [`DiscrimKey`]s, so both index
+    /// identically.
+    pub(crate) fn insert_pattern<V: TermView>(&mut self, kb: &KnowledgeBase, pattern: &V, leaf: L) {
+        let node = Self::insert_walk(&mut self.root, kb, pattern);
         node.leaves.push(leaf);
     }
 
-    /// Walk the term structure, creating concrete edges. Returns the final node.
-    fn insert_walk<'a>(
+    /// Walk the view's structure, creating edges. Returns the final node.
+    /// The "recurse into this child" pointer is a [`ViewItem`] (itself a
+    /// `TermView`), not a `TermId` — so a Node child is walked in place.
+    fn insert_walk<'a, V: TermView>(
         node: &'a mut DiscrimNode<L>,
-        terms: &TermStore,
-        term_id: TermId,
+        kb: &KnowledgeBase,
+        view: &V,
     ) -> &'a mut DiscrimNode<L> {
-        match terms.get(term_id) {
-            Term::Fn { functor, pos_args, named_args } => {
-                let functor = *functor;
-                let pos_args = pos_args.clone();
-                let named_args = named_args.clone();
-                let arity = pos_args.len() + named_args.len();
+        // A stored-pattern variable of any kind (Global / Rigid / DeBruijn)
+        // keys a var-edge — see [`TermView::index_var`].
+        if let Some(var) = view.index_var(kb) {
+            let pos = node.var_edges.iter().position(|(v, _)| *v == var);
+            return if let Some(idx) = pos {
+                &mut node.var_edges[idx].1
+            } else {
+                node.var_edges.push((var, DiscrimNode::new()));
+                let last = node.var_edges.len() - 1;
+                &mut node.var_edges[last].1
+            };
+        }
+        match view.head(kb) {
+            ViewHead::Functor { functor: Some(functor), pos_arity, named_arity } => {
+                let arity = pos_arity + named_arity;
                 let n = node.concrete.entry(DiscrimKey::Functor(functor))
                     .or_insert_with(DiscrimNode::new);
                 let n = n.concrete.entry(DiscrimKey::Arity(arity as u16))
                     .or_insert_with(DiscrimNode::new);
-                Self::insert_walk_args(n, terms, &pos_args, &named_args)
+                Self::insert_walk_args(n, kb, view, pos_arity)
             }
-            Term::Const(lit) => {
-                node.concrete.entry(DiscrimKey::Lit(lit.clone()))
-                    .or_insert_with(DiscrimNode::new)
-            }
-            Term::Ident(sym) => {
-                node.concrete.entry(DiscrimKey::Ident(*sym))
-                    .or_insert_with(DiscrimNode::new)
-            }
-            Term::Ref(sym) => {
-                node.concrete.entry(DiscrimKey::Ref(*sym))
-                    .or_insert_with(DiscrimNode::new)
-            }
-            Term::Bottom => {
-                node.concrete.entry(DiscrimKey::Bottom)
-                    .or_insert_with(DiscrimNode::new)
-            }
-            Term::Var(_) => node,
-            Term::ParseAux(_) => unreachable!(
-                "parse-only Term::ParseAux variant reached the KB discrim tree",
+            ViewHead::Const(lit) => node.concrete.entry(DiscrimKey::Lit(lit))
+                .or_insert_with(DiscrimNode::new),
+            ViewHead::Ident(sym) => node.concrete.entry(DiscrimKey::Ident(sym))
+                .or_insert_with(DiscrimNode::new),
+            ViewHead::Ref(sym) => node.concrete.entry(DiscrimKey::Ref(sym))
+                .or_insert_with(DiscrimNode::new),
+            ViewHead::Bottom => node.concrete.entry(DiscrimKey::Bottom)
+                .or_insert_with(DiscrimNode::new),
+            // Functor-less aggregates (tuple / unit) and Opaque heads
+            // (closures, streams, …, and Rigid/DeBruijn vars, which `head`
+            // collapses to Opaque) carry no concrete discrimination key. A
+            // leaf attached at the current node would be unreachable by exact
+            // query — the query walk follows only var-edges for these heads —
+            // and would collide with every other such head in one
+            // undiscriminated bucket. No fact form in use today produces one
+            // as a stored pattern (heads are `Term::Fn` / entities, always
+            // with a functor); the value facts of WI-348 Phase B (and the
+            // DeBruijn value heads of Phase C) must add real keying before
+            // this can fire. Fail loudly now rather than silently mis-index
+            // (Phase A review guard #1/#2).
+            ViewHead::Functor { functor: None, .. } | ViewHead::Opaque => panic!(
+                "discrim insert: functor-less / opaque head carries no \
+                 discrimination key — value-fact keying is unimplemented \
+                 (WI-348 Phase B/C)"
             ),
+            // Variables of every kind (Global / Rigid / DeBruijn) were routed
+            // to a var-edge by `index_var` above, so a bare `Var` head is
+            // unreachable here.
+            ViewHead::Var(_) => unreachable!("Var head handled by index_var"),
         }
     }
 
-    fn insert_walk_args<'a>(
+    /// Walk a compound's args in canonical order — positionals first, then
+    /// named in [`TermView::named_keys`] order — the same order the query
+    /// walk uses, so insert and lookup descend the tree in lockstep.
+    fn insert_walk_args<'a, V: TermView>(
         node: &'a mut DiscrimNode<L>,
-        terms: &TermStore,
-        positional: &[TermId],
-        named: &[(Symbol, TermId)],
+        kb: &KnowledgeBase,
+        view: &V,
+        pos_arity: usize,
     ) -> &'a mut DiscrimNode<L> {
         let mut cur = node;
-        for &id in positional {
+        for i in 0..pos_arity {
+            let arg = view.pos_arg(kb, i).expect("pos_arg in range during insert");
             cur = cur.concrete.entry(DiscrimKey::Positional)
                 .or_insert_with(DiscrimNode::new);
-            cur = Self::insert_walk(cur, terms, id);
+            cur = Self::insert_walk(cur, kb, &arg);
         }
-        for &(sym, id) in named {
+        for sym in view.named_keys(kb) {
+            let arg = view.named_arg(kb, sym).expect("named_arg present during insert");
             cur = cur.concrete.entry(DiscrimKey::NamedKey(sym))
                 .or_insert_with(DiscrimNode::new);
-            cur = Self::insert_walk(cur, terms, id);
+            cur = Self::insert_walk(cur, kb, &arg);
         }
         cur
     }
 
-    pub(crate) fn insert_pattern(&mut self, terms: &TermStore, pattern_id: TermId, leaf: L) {
-        let node = Self::insert_pattern_walk(&mut self.root, terms, pattern_id);
-        node.leaves.push(leaf);
-    }
+    // ── View-driven remove ──────────────────────────────────────
 
-    fn insert_pattern_walk<'a>(
-        node: &'a mut DiscrimNode<L>,
-        terms: &TermStore,
-        term_id: TermId,
-    ) -> &'a mut DiscrimNode<L> {
-        match terms.get(term_id) {
-            Term::Var(var) => {
-                let var = *var;
-                let pos = node.var_edges.iter().position(|(v, _)| *v == var);
-                if let Some(idx) = pos {
-                    &mut node.var_edges[idx].1
-                } else {
-                    node.var_edges.push((var, DiscrimNode::new()));
-                    let last = node.var_edges.len() - 1;
-                    &mut node.var_edges[last].1
-                }
-            }
-            Term::Fn { functor, pos_args, named_args } => {
-                let functor = *functor;
-                let pos_args = pos_args.clone();
-                let named_args = named_args.clone();
-                let arity = pos_args.len() + named_args.len();
-                let n = node.concrete.entry(DiscrimKey::Functor(functor))
-                    .or_insert_with(DiscrimNode::new);
-                let n = n.concrete.entry(DiscrimKey::Arity(arity as u16))
-                    .or_insert_with(DiscrimNode::new);
-                Self::insert_pattern_walk_args(n, terms, &pos_args, &named_args)
-            }
-            Term::Const(lit) => {
-                node.concrete.entry(DiscrimKey::Lit(lit.clone()))
-                    .or_insert_with(DiscrimNode::new)
-            }
-            Term::Ident(sym) => {
-                node.concrete.entry(DiscrimKey::Ident(*sym))
-                    .or_insert_with(DiscrimNode::new)
-            }
-            Term::Ref(sym) => {
-                node.concrete.entry(DiscrimKey::Ref(*sym))
-                    .or_insert_with(DiscrimNode::new)
-            }
-            Term::Bottom => {
-                node.concrete.entry(DiscrimKey::Bottom)
-                    .or_insert_with(DiscrimNode::new)
-            }
-            Term::ParseAux(_) => unreachable!(
-                "parse-only Term::ParseAux variant reached the KB discrim tree",
-            ),
-        }
-    }
-
-    fn insert_pattern_walk_args<'a>(
-        node: &'a mut DiscrimNode<L>,
-        terms: &TermStore,
-        positional: &[TermId],
-        named: &[(Symbol, TermId)],
-    ) -> &'a mut DiscrimNode<L> {
-        let mut cur = node;
-        for &id in positional {
-            cur = cur.concrete.entry(DiscrimKey::Positional)
-                .or_insert_with(DiscrimNode::new);
-            cur = Self::insert_pattern_walk(cur, terms, id);
-        }
-        for &(sym, id) in named {
-            cur = cur.concrete.entry(DiscrimKey::NamedKey(sym))
-                .or_insert_with(DiscrimNode::new);
-            cur = Self::insert_pattern_walk(cur, terms, id);
-        }
-        cur
-    }
-
-    // ── Term-driven remove ──────────────────────────────────────
-
-    pub(crate) fn remove_ground(&mut self, terms: &TermStore, term_id: TermId, leaf: &L)
+    pub(crate) fn remove_ground<V: TermView>(&mut self, kb: &KnowledgeBase, view: &V, leaf: &L)
     where L: PartialEq,
     {
-        Self::remove_walk_term(&mut self.root, terms, term_id, leaf);
+        Self::remove_walk(&mut self.root, kb, view, leaf);
     }
 
-    /// Walk the term structure to find and remove a leaf, pruning empty nodes.
-    fn remove_walk_term(
+    /// Walk the view's structure to find and remove a leaf, pruning empty
+    /// nodes on the way back. The structural mirror of [`insert_walk`]
+    /// (WI-348).
+    fn remove_walk<V: TermView>(
         node: &mut DiscrimNode<L>,
-        terms: &TermStore,
-        term_id: TermId,
+        kb: &KnowledgeBase,
+        view: &V,
         leaf: &L,
     ) -> bool
     where L: PartialEq,
     {
-        match terms.get(term_id) {
-            Term::Fn { functor, pos_args, named_args } => {
-                let functor = *functor;
-                let pos_args = pos_args.clone();
-                let named_args = named_args.clone();
-                let arity = pos_args.len() + named_args.len();
+        // Removing a var-headed pattern by structure is never requested — the
+        // callers retract stored ground/`TermId` heads. Mirror the old
+        // `Term::Var(_)` no-op.
+        if view.index_var(kb).is_some() {
+            return node.is_empty();
+        }
+        match view.head(kb) {
+            ViewHead::Functor { functor: Some(functor), pos_arity, named_arity } => {
+                let arity = pos_arity + named_arity;
                 let fk = DiscrimKey::Functor(functor);
                 let prune_fn = if let Some(fn_child) = node.concrete.get_mut(&fk) {
                     let ak = DiscrimKey::Arity(arity as u16);
                     let prune_ar = if let Some(ar_child) = fn_child.concrete.get_mut(&ak) {
-                        let mut arg_seq: Vec<(DiscrimKey, TermId)> = Vec::new();
-                        for &id in &pos_args {
-                            arg_seq.push((DiscrimKey::Positional, id));
-                        }
-                        for &(sym, id) in &named_args {
-                            arg_seq.push((DiscrimKey::NamedKey(sym), id));
-                        }
-                        Self::remove_walk_args(ar_child, terms, &arg_seq, 0, leaf)
+                        let arg_seq = Self::owned_arg_seq(kb, view, pos_arity);
+                        Self::remove_walk_args(ar_child, kb, &arg_seq, 0, leaf)
                     } else { false };
                     if prune_ar { fn_child.concrete.remove(&ak); }
                     fn_child.is_empty()
@@ -285,15 +286,43 @@ impl<L> SubstTree<L> {
                 if prune_fn { node.concrete.remove(&fk); }
                 node.is_empty()
             }
-            Term::Const(lit) => Self::remove_at_leaf_key(node, DiscrimKey::Lit(lit.clone()), leaf),
-            Term::Ident(sym) => Self::remove_at_leaf_key(node, DiscrimKey::Ident(*sym), leaf),
-            Term::Ref(sym) => Self::remove_at_leaf_key(node, DiscrimKey::Ref(*sym), leaf),
-            Term::Bottom => Self::remove_at_leaf_key(node, DiscrimKey::Bottom, leaf),
-            Term::Var(_) => node.is_empty(),
-            Term::ParseAux(_) => unreachable!(
-                "parse-only Term::ParseAux variant reached the KB discrim tree",
+            ViewHead::Const(lit) => Self::remove_at_leaf_key(node, DiscrimKey::Lit(lit), leaf),
+            ViewHead::Ident(sym) => Self::remove_at_leaf_key(node, DiscrimKey::Ident(sym), leaf),
+            ViewHead::Ref(sym) => Self::remove_at_leaf_key(node, DiscrimKey::Ref(sym), leaf),
+            ViewHead::Bottom => Self::remove_at_leaf_key(node, DiscrimKey::Bottom, leaf),
+            // Mirror of `insert_walk`'s guard: such a head can never have been
+            // inserted (insert panics on it), so retracting one is a logic
+            // error (Phase A review guard #1/#2).
+            ViewHead::Functor { functor: None, .. } | ViewHead::Opaque => panic!(
+                "discrim remove: functor-less / opaque head carries no \
+                 discrimination key — value-fact keying is unimplemented \
+                 (WI-348 Phase B/C)"
             ),
+            // Variables were routed by `index_var` above (handled at the top
+            // of this fn for the structural-var no-op case).
+            ViewHead::Var(_) => unreachable!("Var head handled by index_var"),
         }
+    }
+
+    /// The canonical arg sequence (positionals then named, in
+    /// [`TermView::named_keys`] order) as owned, borrow-free [`OwnedView`]
+    /// descriptors, so a nested compound's args can be flattened with the
+    /// remaining outer args.
+    fn owned_arg_seq<V: TermView>(
+        kb: &KnowledgeBase,
+        view: &V,
+        pos_arity: usize,
+    ) -> Vec<(DiscrimKey, OwnedView)> {
+        let mut seq = Vec::new();
+        for i in 0..pos_arity {
+            let item = view.pos_arg(kb, i).expect("pos_arg in range during remove");
+            seq.push((DiscrimKey::Positional, OwnedView::from_item(&item)));
+        }
+        for sym in view.named_keys(kb) {
+            let item = view.named_arg(kb, sym).expect("named_arg present during remove");
+            seq.push((DiscrimKey::NamedKey(sym), OwnedView::from_item(&item)));
+        }
+        seq
     }
 
     /// Remove leaf at a terminal key, prune if empty.
@@ -318,8 +347,8 @@ impl<L> SubstTree<L> {
     /// Walk through arg sequence, one arg at a time, pruning on the way back.
     fn remove_walk_args(
         node: &mut DiscrimNode<L>,
-        terms: &TermStore,
-        arg_seq: &[(DiscrimKey, TermId)],
+        kb: &KnowledgeBase,
+        arg_seq: &[(DiscrimKey, OwnedView)],
         idx: usize,
         leaf: &L,
     ) -> bool
@@ -333,9 +362,8 @@ impl<L> SubstTree<L> {
         }
 
         let marker = arg_seq[idx].0.clone();
-        let arg_term_id = arg_seq[idx].1;
         let prune = if let Some(marker_child) = node.concrete.get_mut(&marker) {
-            Self::remove_walk_arg_value(marker_child, terms, arg_term_id, arg_seq, idx, leaf)
+            Self::remove_walk_arg_value(marker_child, kb, &arg_seq[idx].1, arg_seq, idx, leaf)
         } else { false };
         if prune { node.concrete.remove(&marker); }
         node.is_empty()
@@ -344,33 +372,28 @@ impl<L> SubstTree<L> {
     /// Walk a single arg's value, then continue with remaining args.
     fn remove_walk_arg_value(
         node: &mut DiscrimNode<L>,
-        terms: &TermStore,
-        arg_term_id: TermId,
-        arg_seq: &[(DiscrimKey, TermId)],
+        kb: &KnowledgeBase,
+        arg: &OwnedView,
+        arg_seq: &[(DiscrimKey, OwnedView)],
         idx: usize,
         leaf: &L,
     ) -> bool
     where L: PartialEq,
     {
-        match terms.get(arg_term_id) {
-            Term::Fn { functor, pos_args, named_args } => {
-                let functor = *functor;
-                let inner_pos = pos_args.clone();
-                let inner_named = named_args.clone();
-                let arity = inner_pos.len() + inner_named.len();
+        let view = arg.view();
+        if view.index_var(kb).is_some() {
+            return node.is_empty();
+        }
+        match view.head(kb) {
+            ViewHead::Functor { functor: Some(functor), pos_arity, named_arity } => {
+                let arity = pos_arity + named_arity;
                 let fk = DiscrimKey::Functor(functor);
                 let prune_fn = if let Some(fn_child) = node.concrete.get_mut(&fk) {
                     let ak = DiscrimKey::Arity(arity as u16);
                     let prune_ar = if let Some(ar_child) = fn_child.concrete.get_mut(&ak) {
-                        let mut combined: Vec<(DiscrimKey, TermId)> = Vec::new();
-                        for &id in &inner_pos {
-                            combined.push((DiscrimKey::Positional, id));
-                        }
-                        for &(sym, id) in &inner_named {
-                            combined.push((DiscrimKey::NamedKey(sym), id));
-                        }
-                        combined.extend_from_slice(&arg_seq[idx + 1..]);
-                        Self::remove_walk_args(ar_child, terms, &combined, 0, leaf)
+                        let mut combined = Self::owned_arg_seq(kb, &view, pos_arity);
+                        combined.extend(arg_seq[idx + 1..].iter().cloned());
+                        Self::remove_walk_args(ar_child, kb, &combined, 0, leaf)
                     } else { false };
                     if prune_ar { fn_child.concrete.remove(&ak); }
                     fn_child.is_empty()
@@ -378,22 +401,28 @@ impl<L> SubstTree<L> {
                 if prune_fn { node.concrete.remove(&fk); }
                 node.is_empty()
             }
-            Term::Const(lit) => {
-                Self::remove_value_then_continue(node, DiscrimKey::Lit(lit.clone()), terms, arg_seq, idx, leaf)
+            ViewHead::Const(lit) => {
+                Self::remove_value_then_continue(node, DiscrimKey::Lit(lit), kb, arg_seq, idx, leaf)
             }
-            Term::Ident(sym) => {
-                Self::remove_value_then_continue(node, DiscrimKey::Ident(*sym), terms, arg_seq, idx, leaf)
+            ViewHead::Ident(sym) => {
+                Self::remove_value_then_continue(node, DiscrimKey::Ident(sym), kb, arg_seq, idx, leaf)
             }
-            Term::Ref(sym) => {
-                Self::remove_value_then_continue(node, DiscrimKey::Ref(*sym), terms, arg_seq, idx, leaf)
+            ViewHead::Ref(sym) => {
+                Self::remove_value_then_continue(node, DiscrimKey::Ref(sym), kb, arg_seq, idx, leaf)
             }
-            Term::Bottom => {
-                Self::remove_value_then_continue(node, DiscrimKey::Bottom, terms, arg_seq, idx, leaf)
+            ViewHead::Bottom => {
+                Self::remove_value_then_continue(node, DiscrimKey::Bottom, kb, arg_seq, idx, leaf)
             }
-            Term::Var(_) => node.is_empty(),
-            Term::ParseAux(_) => unreachable!(
-                "parse-only Term::ParseAux variant reached the KB discrim tree",
+            // Mirror of `insert_walk_args`' guard: such an arg can never have
+            // been inserted, so encountering one on remove is a logic error
+            // (Phase A review guard #1/#2).
+            ViewHead::Functor { functor: None, .. } | ViewHead::Opaque => panic!(
+                "discrim remove: functor-less / opaque arg carries no \
+                 discrimination key — value-fact keying is unimplemented \
+                 (WI-348 Phase B/C)"
             ),
+            // Variables were handled by the `index_var` check above.
+            ViewHead::Var(_) => unreachable!("Var arg handled by index_var"),
         }
     }
 
@@ -401,15 +430,15 @@ impl<L> SubstTree<L> {
     fn remove_value_then_continue(
         node: &mut DiscrimNode<L>,
         key: DiscrimKey,
-        terms: &TermStore,
-        arg_seq: &[(DiscrimKey, TermId)],
+        kb: &KnowledgeBase,
+        arg_seq: &[(DiscrimKey, OwnedView)],
         idx: usize,
         leaf: &L,
     ) -> bool
     where L: PartialEq,
     {
         let prune = if let Some(child) = node.concrete.get_mut(&key) {
-            Self::remove_walk_args(child, terms, arg_seq, idx + 1, leaf)
+            Self::remove_walk_args(child, kb, arg_seq, idx + 1, leaf)
         } else { false };
         if prune { node.concrete.remove(&key); }
         node.is_empty()
@@ -447,6 +476,35 @@ impl<L: Clone> SubstTree<L> {
             .map(|(leaf, subst)| {
                 let fact_term = resolve_term(&leaf);
                 let s = subst.resolve_leaf(&kb.terms, fact_term);
+                (leaf, s)
+            })
+            .collect()
+    }
+
+    /// Carrier-faithful peer of [`query_resolved`] (WI-348 Phase B). The fact
+    /// head is resolved as a `Value`: a `Value::Term` head takes the fast term
+    /// path ([`PersistSubst::resolve_leaf`], unchanged); any other carrier (a
+    /// value fact with a `Value::Node` subterm) resolves deferred paths against
+    /// the head's own `TermView` ([`PersistSubst::resolve_leaf_view`]), so
+    /// named-arg positions read the same carrier the tree indexed (the
+    /// term-store path would read a sorted-by-name skeleton — the named-order
+    /// finding).
+    pub(crate) fn query_resolved_value<V: TermView, F>(
+        &self,
+        kb: &KnowledgeBase,
+        query: &V,
+        resolve_head: F,
+    ) -> Vec<(L, Substitution)>
+    where
+        F: Fn(&L) -> Value,
+    {
+        self.query_raw(kb, query).into_iter()
+            .map(|(leaf, subst)| {
+                let head = resolve_head(&leaf);
+                let s = match &head {
+                    Value::Term(t) => subst.resolve_leaf(&kb.terms, *t),
+                    _ => subst.resolve_leaf_view(kb, &head),
+                };
                 (leaf, s)
             })
             .collect()
@@ -813,7 +871,7 @@ mod tests {
         let term = env.alloc(Term::Fn {
             functor: f, pos_args: SmallVec::from_elem(val, 1), named_args: SmallVec::new(),
         });
-        tree.insert_ground(&env.kb.terms, term, 1);
+        tree.insert_ground(&env.kb, &view(term), 1);
         let results = tree.query_resolved(&env.kb, &view(term), |_| term);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, 1);
@@ -828,7 +886,7 @@ mod tests {
         let v2 = env.alloc(Term::Const(Literal::Int(2)));
         let t1 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(v1, 1), named_args: SmallVec::new() });
         let t2 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(v2, 1), named_args: SmallVec::new() });
-        tree.insert_ground(&env.kb.terms, t1, 1);
+        tree.insert_ground(&env.kb, &view(t1), 1);
         assert!(tree.query_raw(&env.kb, &view(t2)).is_empty());
     }
 
@@ -842,8 +900,8 @@ mod tests {
         let c = env.alloc(Term::Const(Literal::String("charlie".into())));
         let f1 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_slice(&[a, b]), named_args: SmallVec::new() });
         let f2 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_slice(&[b, c]), named_args: SmallVec::new() });
-        tree.insert_ground(&env.kb.terms, f1, 1);
-        tree.insert_ground(&env.kb.terms, f2, 2);
+        tree.insert_ground(&env.kb, &view(f1), 1);
+        tree.insert_ground(&env.kb, &view(f2), 2);
         let res = make_resolver(vec![(1, f1), (2, f2)]);
         assert_eq!(tree.query_resolved(&env.kb, &view(f1), &res).len(), 1);
         assert_eq!(tree.query_resolved(&env.kb, &view(f2), &res).len(), 1);
@@ -858,8 +916,8 @@ mod tests {
         let v2 = env.alloc(Term::Const(Literal::Int(2)));
         let t1 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(v1, 1), named_args: SmallVec::new() });
         let t2 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(v2, 1), named_args: SmallVec::new() });
-        tree.insert_ground(&env.kb.terms, t1, 1);
-        tree.insert_ground(&env.kb.terms, t2, 2);
+        tree.insert_ground(&env.kb, &view(t1), 1);
+        tree.insert_ground(&env.kb, &view(t2), 2);
 
         let vid = env.fresh_var("x");
         let var = env.alloc(Term::Var(Var::Global(vid)));
@@ -887,7 +945,7 @@ mod tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_slice(&[(id_s, vid), (name_s, vname)]),
         });
-        tree.insert_ground(&env.kb.terms, fact, 1);
+        tree.insert_ground(&env.kb, &view(fact), 1);
 
         let xv = env.fresh_var("x");
         let var_x = env.alloc(Term::Var(Var::Global(xv)));
@@ -910,8 +968,8 @@ mod tests {
         let val = env.alloc(Term::Const(Literal::Int(1)));
         let tf = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(val, 1), named_args: SmallVec::new() });
         let tg = env.alloc(Term::Fn { functor: g, pos_args: SmallVec::new(), named_args: SmallVec::new() });
-        tree.insert_ground(&env.kb.terms, tf, 1);
-        tree.insert_ground(&env.kb.terms, tg, 2);
+        tree.insert_ground(&env.kb, &view(tf), 1);
+        tree.insert_ground(&env.kb, &view(tg), 2);
 
         let vid = env.fresh_var("x");
         let var_q = env.alloc(Term::Var(Var::Global(vid)));
@@ -936,8 +994,8 @@ mod tests {
         let g2 = env.alloc(Term::Fn { functor: g, pos_args: SmallVec::from_elem(v2, 1), named_args: SmallVec::new() });
         let fg1 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(g1, 1), named_args: SmallVec::new() });
         let fg2 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(g2, 1), named_args: SmallVec::new() });
-        tree.insert_ground(&env.kb.terms, fg1, 1);
-        tree.insert_ground(&env.kb.terms, fg2, 2);
+        tree.insert_ground(&env.kb, &view(fg1), 1);
+        tree.insert_ground(&env.kb, &view(fg2), 2);
 
         let res = make_resolver(vec![(1, fg1), (2, fg2)]);
         let r1 = tree.query_resolved(&env.kb, &view(fg1), &res);
@@ -957,9 +1015,9 @@ mod tests {
         let f = env.intern("f");
         let val = env.alloc(Term::Const(Literal::Int(42)));
         let term = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(val, 1), named_args: SmallVec::new() });
-        tree.insert_ground(&env.kb.terms, term, 1);
+        tree.insert_ground(&env.kb, &view(term), 1);
         assert_eq!(tree.query_raw(&env.kb, &view(term)).len(), 1);
-        tree.remove_ground(&env.kb.terms, term, &1);
+        tree.remove_ground(&env.kb, &view(term), &1);
         assert!(tree.query_raw(&env.kb, &view(term)).is_empty());
         assert!(tree.root.is_empty());
     }
@@ -971,9 +1029,9 @@ mod tests {
         let f = env.intern("f");
         let val = env.alloc(Term::Const(Literal::Int(1)));
         let term = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(val, 1), named_args: SmallVec::new() });
-        tree.insert_ground(&env.kb.terms, term, 1);
-        tree.insert_ground(&env.kb.terms, term, 2);
-        tree.remove_ground(&env.kb.terms, term, &1);
+        tree.insert_ground(&env.kb, &view(term), 1);
+        tree.insert_ground(&env.kb, &view(term), 2);
+        tree.remove_ground(&env.kb, &view(term), &1);
         let results = tree.query_raw(&env.kb, &view(term));
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, 2);
@@ -989,7 +1047,7 @@ mod tests {
         let vid = env.fresh_var("x");
         let var_term = env.alloc(Term::Var(Var::Global(vid)));
         let pat = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(var_term, 1), named_args: SmallVec::new() });
-        tree.insert_pattern(&env.kb.terms, pat, 100);
+        tree.insert_pattern(&env.kb, &view(pat), 100);
         let val = env.alloc(Term::Const(Literal::Int(42)));
         let ground = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(val, 1), named_args: SmallVec::new() });
         let results = tree.query_raw(&env.kb, &view(ground));
@@ -1004,12 +1062,12 @@ mod tests {
         let f = env.intern("f");
         let v42 = env.alloc(Term::Const(Literal::Int(42)));
         let ground = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(v42, 1), named_args: SmallVec::new() });
-        tree.insert_ground(&env.kb.terms, ground, 1);
+        tree.insert_ground(&env.kb, &view(ground), 1);
 
         let vid = env.fresh_var("x");
         let var_term = env.alloc(Term::Var(Var::Global(vid)));
         let pat = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(var_term, 1), named_args: SmallVec::new() });
-        tree.insert_pattern(&env.kb.terms, pat, 2);
+        tree.insert_pattern(&env.kb, &view(pat), 2);
 
         assert_eq!(tree.query_raw(&env.kb, &view(ground)).len(), 2);
         let v99 = env.alloc(Term::Const(Literal::Int(99)));

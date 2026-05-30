@@ -107,7 +107,12 @@ struct Guard {
 // ── Rule entry ──────────────────────────────────────────────────
 
 struct RuleEntry {
-    head: TermId,
+    /// The fact/rule head, carrier-agnostic (WI-348 Phase B): `Value::Term`
+    /// for the universal hash-consed case, a `Value::Node` for a value fact
+    /// carrying a `denoted` occurrence. The many term-only callers read it as a
+    /// `TermId` via `head_term_id` (which panics on a non-Term head — value
+    /// heads route through carrier-aware code, not those readers).
+    head: crate::eval::value::Value,
     /// WI-246: the rule body — body atoms as `NodeOccurrence` (De Bruijn-encoded
     /// `Expr::Var` leaves), the SOLE body representation now that the term
     /// `body: Vec<TermId>` field is dropped. What the resolver opens as goals
@@ -142,6 +147,76 @@ struct RuleEntry {
     /// is `gte`, label is `simple_lemma`). `None` for unlabeled rules
     /// (they remain reachable through `by_functor` on the head).
     label: Option<Symbol>,
+}
+
+/// Read a rule/fact head as a hash-consed `TermId`. The head is stored
+/// carrier-agnostically (`Value`, WI-348 Phase B); the universal case is
+/// `Value::Term`. Panics on a non-Term head — the value-fact paths that can
+/// produce one route through carrier-aware code, never this term-only reader.
+fn head_term_id(head: &crate::eval::value::Value) -> TermId {
+    match head {
+        crate::eval::value::Value::Term(t) => *t,
+        other => panic!(
+            "rule head is not a Term carrier (WI-348: value head reached a \
+             term-only reader): {}",
+            other.type_name(),
+        ),
+    }
+}
+
+/// Collect the ground `TermId` leaves reachable in a value (WI-348 Phase B), for
+/// the value-fact refcount helpers. Recurses through `Value::Entity` / `Tuple`
+/// children directly and through a `Value::Node` occurrence via `TermView`.
+fn collect_value_ground_terms_into(
+    kb: &KnowledgeBase,
+    v: &crate::eval::value::Value,
+    out: &mut Vec<TermId>,
+) {
+    use crate::eval::value::Value;
+    match v {
+        Value::Term(t) => out.push(*t),
+        Value::Entity { pos, named, .. } | Value::Tuple { pos, named } => {
+            for c in pos.iter() {
+                collect_value_ground_terms_into(kb, c, out);
+            }
+            for (_, c) in named.iter() {
+                collect_value_ground_terms_into(kb, c, out);
+            }
+        }
+        Value::Node(occ) => collect_occ_ground_terms_into(kb, occ, out),
+        _ => {}
+    }
+}
+
+/// Walk a `Value::Node` occurrence through `TermView`, pushing every ground
+/// `TermId` child and recursing into nested value / occurrence children. A
+/// non-`Functor` head (Const / Ref / Ident / Opaque) carries no ground child.
+fn collect_occ_ground_terms_into(
+    kb: &KnowledgeBase,
+    occ: &std::rc::Rc<node_occurrence::NodeOccurrence>,
+    out: &mut Vec<TermId>,
+) {
+    use term_view::{TermView, ViewHead, ViewItem};
+    let pos_arity = match occ.head(kb) {
+        ViewHead::Functor { pos_arity, .. } => pos_arity,
+        _ => return,
+    };
+    for i in 0..pos_arity {
+        match occ.pos_arg(kb, i) {
+            Some(ViewItem::Term(t)) => out.push(t),
+            Some(ViewItem::Value(c)) => collect_value_ground_terms_into(kb, c, out),
+            Some(ViewItem::Node(o)) => collect_occ_ground_terms_into(kb, &o, out),
+            None => {}
+        }
+    }
+    for sym in occ.named_keys(kb) {
+        match occ.named_arg(kb, sym) {
+            Some(ViewItem::Term(t)) => out.push(t),
+            Some(ViewItem::Value(c)) => collect_value_ground_terms_into(kb, c, out),
+            Some(ViewItem::Node(o)) => collect_occ_ground_terms_into(kb, &o, out),
+            None => {}
+        }
+    }
 }
 
 // ── Sort kind ───────────────────────────────────────────────────
@@ -729,7 +804,7 @@ impl KnowledgeBase {
         }
 
         self.rules.push(RuleEntry {
-            head,
+            head: crate::eval::value::Value::Term(head),
             body_nodes,
             sort,
             domain,
@@ -761,10 +836,42 @@ impl KnowledgeBase {
             self.fact_dedup.entry((head, sort, domain)).or_insert(rule_id);
         }
 
-        // Discrimination tree index (insert_pattern handles vars in head)
-        self.discrim.insert_pattern(&self.terms, head, rule_id);
+        // Discrimination tree index (insert_pattern handles vars in head).
+        // The view-driven walk needs `&self` (Node-carrying value heads read
+        // the whole KB — WI-348), so run it with the index detached.
+        self.with_discrim_detached(|kb, discrim| {
+            discrim.insert_pattern(kb, &term_view::TermIdView(head), rule_id);
+        });
 
         rule_id
+    }
+
+    /// Run `f` with the discrimination index moved out of `self`, so a
+    /// view-driven walk can read the whole KB (`&self` — Node-carrying value
+    /// heads need it, WI-348) without aliasing `&mut self.discrim`. The index
+    /// is always swapped back before returning — including when `f`
+    /// early-returns — so the KB can never be left holding the empty
+    /// placeholder (Phase A review guard #4). A panic inside `f` unwinds past
+    /// the restore, but that already aborts the operation loudly.
+    fn with_discrim_detached<R>(
+        &mut self,
+        f: impl FnOnce(&Self, &mut SubstTree<RuleId>) -> R,
+    ) -> R {
+        // Restore the index on drop — including on unwind — so a panic inside
+        // `f` (the discrim ViewHead guards, the insert/remove `expect`s) can
+        // never leave the KB holding the empty placeholder (WI-348 review #5).
+        struct Restore<'a> {
+            kb: &'a mut KnowledgeBase,
+            discrim: SubstTree<RuleId>,
+        }
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                self.kb.discrim = std::mem::replace(&mut self.discrim, SubstTree::new());
+            }
+        }
+        let detached = std::mem::replace(&mut self.discrim, SubstTree::new());
+        let mut guard = Restore { kb: self, discrim: detached };
+        f(&*guard.kb, &mut guard.discrim)
     }
 
     // ── Guards ───────────────────────────────────────────────────
@@ -1132,6 +1239,105 @@ impl KnowledgeBase {
         self.assert_rule(term, vec![], sort, domain, meta)
     }
 
+    /// Assert a value fact — a fact whose head is carrier-agnostic and may
+    /// carry a `Value::Node` (denoted) subterm (WI-348 Phase B). A `Value::Term`
+    /// head is an ordinary ground fact and routes to [`Self::assert_fact`]
+    /// (hash-consed dedup + refcount). A Node-bearing head is stored directly:
+    /// indexed by functor via its `TermView`, skipped by `fact_dedup` (no
+    /// `TermId` key — a dedup-miss, not unsound), and inserted into the
+    /// discrimination tree through the value carrier.
+    pub fn assert_fact_value(
+        &mut self,
+        head: crate::eval::value::Value,
+        sort: TermId,
+        domain: TermId,
+        meta: Option<TermId>,
+    ) -> RuleId {
+        use crate::eval::value::Value;
+        if let Value::Term(t) = head {
+            return self.assert_fact(t, sort, domain, meta);
+        }
+
+        let rule_id = RuleId(self.rules.len() as u32);
+
+        // Refcount the head's ground `TermId` leaves + sort / domain / meta.
+        self.incref_value_ground(&head);
+        self.terms.incref(sort);
+        self.terms.incref(domain);
+        if let Some(m) = meta {
+            self.terms.incref(m);
+        }
+
+        // Top-level functor via the head's `TermView` (any carrier).
+        let functor = match term_view::TermView::head(&head, self) {
+            term_view::ViewHead::Functor { functor: Some(f), .. } => Some(f),
+            _ => None,
+        };
+
+        self.rules.push(RuleEntry {
+            head: head.clone(),
+            body_nodes: Vec::new(),
+            sort,
+            domain,
+            meta,
+            retracted: false,
+            arity: 0,
+            globals: Vec::new(),
+            shared_arity: 0,
+            label: None,
+        });
+
+        self.by_sort.entry(sort).or_default().push(rule_id);
+        self.by_domain.entry(domain).or_default().push(rule_id);
+        if let Some(f) = functor {
+            self.by_functor.entry(f).or_default().push(rule_id);
+        }
+        // `fact_dedup` is SKIPPED for a non-Term head — no `TermId` key.
+
+        self.with_discrim_detached(move |kb, discrim| {
+            discrim.insert_pattern(kb, &head, rule_id);
+        });
+
+        rule_id
+    }
+
+    /// Incref the ground `TermId` leaves reachable in a value head (WI-348
+    /// Phase B), keeping them alive for the rule's lifetime — including those
+    /// carried *inside* a `Value::Node` occurrence (e.g. a `denoted` Type's
+    /// `TypeChild::Ground`), which the occurrence builders do NOT refcount
+    /// themselves (review #1): without this, a hash-consed term shared with a
+    /// term-carrier fact would dangle when that fact is retracted. Walks the
+    /// head through `TermView` — the same surface the discrimination tree
+    /// indexes — so the owned set matches what is searched.
+    ///
+    /// Known gap (deferred to the value-fact payoff phase): a Type/EffectExpr
+    /// occurrence's `type_args`, and any field key not yet interned, are not
+    /// surfaced by `TermView` and so are not owned here. Symmetric with
+    /// `release_value_ground`, so balanced regardless.
+    fn incref_value_ground(&mut self, v: &crate::eval::value::Value) {
+        for t in self.collect_value_ground_terms(v) {
+            self.terms.incref(t);
+        }
+    }
+
+    /// Inverse of [`Self::incref_value_ground`], for retract. Collects the same
+    /// multiset (the head Value is immutable once stored), so every incref is
+    /// matched by exactly one release.
+    fn release_value_ground(&mut self, v: &crate::eval::value::Value) {
+        for t in self.collect_value_ground_terms(v) {
+            self.terms.release(t);
+        }
+    }
+
+    /// The ground `TermId` leaves reachable in a value, via `TermView` (so a
+    /// `Value::Node` occurrence's ground children are included). Read-only; the
+    /// caller increfs / releases the result.
+    fn collect_value_ground_terms(&self, v: &crate::eval::value::Value) -> Vec<TermId> {
+        let mut out = Vec::new();
+        collect_value_ground_terms_into(self, v, &mut out);
+        out
+    }
+
     /// Mark a rule/fact as retracted. Removes from active indexes, decrements refcounts.
     pub fn retract(&mut self, id: RuleId) {
         let entry = &mut self.rules[id.index()];
@@ -1140,7 +1346,7 @@ impl KnowledgeBase {
         }
         entry.retracted = true;
 
-        let head = entry.head;
+        let head_val = entry.head.clone();
         let sort = entry.sort;
         let domain = entry.domain;
         let meta = entry.meta;
@@ -1156,8 +1362,13 @@ impl KnowledgeBase {
         if let Some(v) = self.by_domain.get_mut(&domain) {
             v.retain(|&rid| rid != id);
         }
-        if let Term::Fn { functor, .. } = *self.terms.get(head) {
-            if let Some(v) = self.by_functor.get_mut(&functor) {
+        // by_functor via the head's `TermView` functor (any carrier — WI-348).
+        let head_functor = match term_view::TermView::head(&head_val, self) {
+            term_view::ViewHead::Functor { functor: Some(f), .. } => Some(f),
+            _ => None,
+        };
+        if let Some(f) = head_functor {
+            if let Some(v) = self.by_functor.get_mut(&f) {
                 v.retain(|&rid| rid != id);
             }
         }
@@ -1172,21 +1383,27 @@ impl KnowledgeBase {
         // previously-retracted-then-re-asserted fact may have a
         // different RuleId at that key.
         if is_fact {
-            if let std::collections::hash_map::Entry::Occupied(e) =
-                self.fact_dedup.entry((head, sort, domain))
-            {
-                if *e.get() == id {
-                    e.remove();
+            // Only Term-carrier heads were dedup-indexed (WI-348 Phase B).
+            if let crate::eval::value::Value::Term(head_t) = &head_val {
+                if let std::collections::hash_map::Entry::Occupied(e) =
+                    self.fact_dedup.entry((*head_t, sort, domain))
+                {
+                    if *e.get() == id {
+                        e.remove();
+                    }
                 }
             }
         }
 
-        // Remove from discrimination tree (before releasing terms)
-        self.discrim.remove_ground(&self.terms, head, &id);
+        // Remove from discrimination tree (before releasing terms). The
+        // view-driven walk needs `&self`, so detach the index first (WI-348).
+        self.with_discrim_detached(|kb, discrim| {
+            discrim.remove_ground(kb, &head_val, &id);
+        });
 
         // Release refcounts (head/sort/domain/meta; the body atoms are
         // occurrences with no term-store refcount of their own — WI-246).
-        self.terms.release(head);
+        self.release_value_ground(&head_val);
         self.terms.release(sort);
         self.terms.release(domain);
         if let Some(m) = meta {
@@ -1286,7 +1503,7 @@ impl KnowledgeBase {
     /// drive automatic SLD rewriting (which would loop on rules
     /// like `add_comm: add(a, b) = add(b, a)`).
     pub fn unindex_functor(&mut self, id: RuleId) {
-        let head = self.rules[id.index()].head;
+        let head = head_term_id(&self.rules[id.index()].head);
         if let Term::Fn { functor, .. } = *self.terms.get(head) {
             if let Some(v) = self.by_functor.get_mut(&functor) {
                 v.retain(|&rid| rid != id);
@@ -1323,7 +1540,7 @@ impl KnowledgeBase {
 
     /// Get the head term of a rule.
     pub fn rule_head(&self, id: RuleId) -> TermId {
-        self.rules[id.index()].head
+        head_term_id(&self.rules[id.index()].head)
     }
 
     /// Whether a rule id refers to a live (non-retracted) rule. Out-of-bounds
@@ -1498,7 +1715,7 @@ impl KnowledgeBase {
         target: &V,
     ) -> Option<subst::Substitution> {
         let mut tree = SubstTree::<()>::new();
-        tree.insert_pattern(&self.terms, pattern, ());
+        tree.insert_pattern(self, &term_view::TermIdView(pattern), ());
         let results = tree.query_resolved(self, target, |_| pattern);
         results.into_iter()
             .map(|(_, s)| s)
@@ -1524,10 +1741,10 @@ impl KnowledgeBase {
         pattern: &V,
     ) -> Vec<(RuleId, subst::Substitution)> {
         let rules = &self.rules;
-        let candidates = self.discrim.query_resolved(
+        let candidates = self.discrim.query_resolved_value(
             self,
             pattern,
-            |rid: &RuleId| rules[rid.index()].head,
+            |rid: &RuleId| rules[rid.index()].head.clone(),
         );
 
         let mut results = Vec::new();
@@ -2016,7 +2233,7 @@ impl KnowledgeBase {
         if !entry.body_nodes.is_empty() || entry.retracted {
             return false;
         }
-        match self.terms.get(entry.head) {
+        match self.terms.get(head_term_id(&entry.head)) {
             Term::Fn { functor, pos_args, .. } => {
                 self.symbols.name(*functor) == "eq" && pos_args.len() == 2
             }
@@ -2048,7 +2265,7 @@ impl KnowledgeBase {
         tree_subst: &subst::Substitution,
     ) -> (Vec<Rc<NodeOccurrence>>, subst::Substitution) {
         let arity = self.rules[id.index()].arity;
-        let head = self.rules[id.index()].head;
+        let head = head_term_id(&self.rules[id.index()].head);
         // WI-246: the rule's occurrence body — opened + head-match-renamed, then
         // pushed by the resolver as `Value::Node` goals (and driving the
         // caller-var delay pre-check). The term body (`RuleEntry.body`) is no
@@ -3120,6 +3337,138 @@ mod tests {
         let results = kb.by_sort(sort_account);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], fid);
+    }
+
+    #[test]
+    fn value_fact_node_head_indexes_queries_and_preserves_node_identity() {
+        // WI-348 Phase B: a fact whose head carries a `Value::Node` (denoted)
+        // is stored, indexed (by_sort / by_functor / discrim), queried back, and
+        // — crucially — a variable query binds the SAME occurrence (Node identity
+        // preserved through the answer via the carrier-faithful resolve).
+        use crate::eval::value::Value;
+        use crate::intern::Symbol;
+        use crate::kb::load::register_prelude;
+        use crate::span::{SourceId, SourceSpan};
+        use std::rc::Rc;
+        use term::Var;
+
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb); // interns Type.denoted etc. for occ_head
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 10);
+
+        let f_sym = kb.intern("op_with_denoted");
+        let c_sym = kb.intern("c");
+        let sort = kb.make_name_term("MySort");
+        let domain = kb.make_name_term("test");
+
+        // Head: f(denoted(value: Ref(c))) — the positional arg is a Node.
+        let denoted_occ = kb.make_denoted_occ_ref(c_sym, span, None);
+        let head = Value::Entity {
+            functor: f_sym,
+            pos: Rc::from(vec![Value::Node(Rc::clone(&denoted_occ))]),
+            named: Rc::from(Vec::<(Symbol, Value)>::new()),
+        };
+
+        let rid = kb.assert_fact_value(head, sort, domain, None);
+
+        // Indexed by sort and by top-level functor (via the head's TermView).
+        assert_eq!(kb.by_sort(sort), vec![rid]);
+        assert_eq!(kb.by_functor(f_sym), vec![rid]);
+
+        // Query f(?x): the value fact matches; ?x binds the Node by identity.
+        let xv = kb.fresh_var(c_sym);
+        let var_t = kb.alloc(Term::Var(Var::Global(xv)));
+        let query = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(var_t, 1),
+            named_args: SmallVec::new(),
+        });
+        let results = kb.query(query);
+        assert_eq!(results.len(), 1, "value fact should be found by f(?x)");
+        assert_eq!(results[0].0, rid);
+        match results[0].1.resolve_as_value(xv) {
+            Some(Value::Node(occ)) => assert!(
+                Rc::ptr_eq(&occ, &denoted_occ),
+                "?x must bind the SAME occurrence — Node identity preserved",
+            ),
+            other => panic!("?x should bind a Value::Node, got {other:?}"),
+        }
+
+        // Retract removes it from the active indexes.
+        kb.retract(rid);
+        assert!(kb.by_sort(sort).is_empty(), "retracted value fact left in by_sort");
+        assert!(kb.query(query).is_empty(), "retracted value fact still queryable");
+    }
+
+    #[test]
+    fn value_fact_named_node_args_resolve_by_key() {
+        // WI-348 Phase B (review #4): a value head with NAMED args — one a Node,
+        // one a ground term — resolves each query var to the child keyed by NAME
+        // (not by position), and the Node arg keeps occurrence identity. Exercises
+        // the carrier-faithful `extract_value_at_path` Named arm that the
+        // positional-only happy-path test never touched.
+        use crate::eval::value::Value;
+        use crate::intern::Symbol;
+        use crate::kb::load::register_prelude;
+        use crate::span::{SourceId, SourceSpan};
+        use std::rc::Rc;
+        use term::Var;
+
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 10);
+
+        let f_sym = kb.intern("op_named");
+        let c_sym = kb.intern("c");
+        // `alpha` interned before `beta` → canonical (Symbol-index) order [alpha, beta].
+        let alpha = kb.intern("alpha");
+        let beta = kb.intern("beta");
+        let sort = kb.make_name_term("MySort");
+        let domain = kb.make_name_term("test");
+
+        let denoted_occ = kb.make_denoted_occ_ref(c_sym, span, None);
+        let beta_t = kb.alloc(Term::Const(Literal::Int(7)));
+        let head = Value::Entity {
+            functor: f_sym,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: {
+                let n: Vec<(Symbol, Value)> = vec![
+                    (alpha, Value::Node(Rc::clone(&denoted_occ))),
+                    (beta, Value::Term(beta_t)),
+                ];
+                Rc::from(n)
+            },
+        };
+
+        let rid = kb.assert_fact_value(head, sort, domain, None);
+
+        // Query f(alpha: ?x, beta: ?y).
+        let xv = kb.fresh_var(c_sym);
+        let yv = kb.fresh_var(c_sym);
+        let xt = kb.alloc(Term::Var(Var::Global(xv)));
+        let yt = kb.alloc(Term::Var(Var::Global(yv)));
+        let query = kb.alloc(Term::Fn {
+            functor: f_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(alpha, xt), (beta, yt)]),
+        });
+        let results = kb.query(query);
+        assert_eq!(results.len(), 1, "named-arg value fact should be found");
+        assert_eq!(results[0].0, rid);
+
+        // alpha → the Node (by key); beta → the Int term (by key).
+        match results[0].1.resolve_as_value(xv) {
+            Some(Value::Node(occ)) => assert!(
+                Rc::ptr_eq(&occ, &denoted_occ),
+                "alpha must bind the SAME occurrence",
+            ),
+            other => panic!("alpha should bind the Node, got {other:?}"),
+        }
+        assert_eq!(
+            results[0].1.resolve_with_term(yv),
+            Some(beta_t),
+            "beta must bind its ground term by key, not by position",
+        );
     }
 
     #[test]

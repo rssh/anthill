@@ -205,6 +205,117 @@ record** read via `TermView`, collapsing the side-tables. It is the wrong move:
 The value fact subsumes both goals at once: queryable **and** Node-carrying, with
 the side-tables collapsing back into the fact.
 
+## Phase B — implementation plan (decided)
+
+Phase A (the discrimination-tree INSERT/REMOVE → `TermView` rewrite) is delivered,
+with loud guards on the un-keyable head/arg cases (functor-less / opaque heads
+`panic` until value-head keying lands). This section records the Phase B decisions,
+taken against the live code.
+
+### Why the head's type must change — and to what
+
+The head must stop being a `TermId` for the **same reason effects left the fact**:
+a hash-consed `TermId` cannot hold a `Value::Node`. An occurrence carries identity
+and a span, so it can't be hash-consed, can't be a `Term`'s child, and can't be an
+element of a `Vec<TermId>` collection (the effects cons-list). Any position that
+must carry a `denoted` Node — the effects list yesterday, the fact head now — has
+to move from a TermId-only collection to a carrier that admits Nodes.
+
+That carrier already exists: **`Value`**. `Value` is *the* carrier-agnostic union
+— it has both a `Value::Term(TermId)` arm and a `Value::Node(Rc<NodeOccurrence>)`
+arm (WI-109 / WI-342). So the head simply becomes:
+
+```rust
+struct RuleEntry { head: Value, /* … */ }   // common case: Value::Term(tid)
+```
+
+A bespoke `enum HeadCarrier { Term(TermId), Value(Value) }` was considered and
+**rejected as redundant**: `HeadCarrier::Term(t)` is exactly `Value::Term(t)` and
+`HeadCarrier::Value(v)` is exactly `v` — it re-encodes a distinction `Value`
+already makes, and would be a second classification to keep in sync with the
+carrier the resolver / typer / substitution layer already speak (`Substitution`
+is `HashMap<VarId, Value>`; goals are `Vec<Value>`). `Value` admits non-head
+shapes (`Int`, `Closure`, …) that a head never takes, but those simply never occur
+as a head and `head_view()` handles any carrier uniformly — the looseness costs
+nothing and matches existing goal / subst usage.
+
+Blast radius: every reader of `head` updates from `TermId` to `Value` (or to
+`head.head_view()` / a `head_term() -> Option<TermId>` accessor) —
+incref/release, `by_functor`, `fact_dedup`, the `query_view` resolve closure,
+`with_fresh_vars` (rules only — facts are never opened), the `rule_head` getter,
+persistence / `print`, codegen, and cross-crate readers. The common `Value::Term`
+case threads through unchanged behaviourally.
+
+### Indexing
+
+- **`by_functor`** — free: `head.head_view().head(kb)` yields the functor for both
+  carriers (a `Value::Node` reads its functor through the Phase-A `TermView`).
+- **`by_sort` / `by_domain`** — *no change.* They key on the fact's `sort` /
+  `domain` arguments, always ground `TermId`s supplied to `assert_*`,
+  independent of the head carrier. (The doc's earlier "small decision" resolves to
+  *nothing to decide* — they stay TermId-keyed.)
+- **`fact_dedup`** (`HashMap<(TermId,TermId,TermId), RuleId>`) — **skip when the
+  head is not `Value::Term`.** A Node-bearing head has no `TermId` key; this is a
+  dedup-*miss* (the same value fact asserted twice stores twice), not unsound.
+  Ground facts keep their O(1) dedup. Document at the skip site.
+
+### Discrimination tree
+
+INSERT/REMOVE are already `TermView`-driven (Phase A); assert/retract call them
+through `head.head_view()`. A `Value::Node` head decomposes into the same
+`DiscrimKey`s as its term twin. No further tree work.
+
+### Resolution — the load-bearing finding (named-arg order)
+
+`query_view` finds candidate rules in the tree, then `resolve_leaf` walks the
+**fact head** along the discrim-recorded `VarPath`s (`Positional(i)` /
+`Named(sym)`) to extract variable bindings. The head passed to resolution **must
+be the same carrier the tree indexed**, because **named-argument order differs by
+carrier**:
+
+- an occurrence's `named_keys` (`occ_named_keys` / `type_node_keys` /
+  `effect_expr_keys`) returns a **fixed slice order** — e.g. an arrow node yields
+  `[param, result, effects]`;
+- a hash-consed `Term::Fn` stores `named_args` **sorted by field name** (the
+  canonical-ordering invariant).
+
+So resolving a value head's paths against a *reified `TermId` skeleton* of that
+head would read the **wrong child** at named positions. A reified-skeleton
+shortcut is therefore **unsound** for binding extraction — and it is why the
+"keep `head: TermId` + a shadow `Value`" representation was a non-starter.
+
+**Decision: resolution is carrier-faithful** — `resolve_leaf` walks
+`head.head_view()` and returns `Value` subterms, which also preserves `Node`
+identity in the answer substitution (folding in the part of Phase E that matters
+for value facts). Implementation: thread a `TermView` (not a bare `TermId`)
+through `SubstTree::query_resolved`'s resolve closure and the `resolve_leaf` impls
+(`SmallSubst` / `SharedSubst`, `persist_subst.rs`), or add a carrier-aware sibling
+selected when the matched candidate's head is not `Value::Term`.
+
+### Refcounting
+
+- `Value::Term(t)` head — incref/release `t`, unchanged.
+- Node-bearing head — incref/release the **ground `TermId` leaves** reachable in
+  the `Value` (`Value::Term` subterms) to keep them alive; the `Value::Node`
+  (`Rc`) subterms are owned by the `Value` and need no `TermStore` refcount. Add a
+  `Value`-walking incref/release helper.
+
+### Retract
+
+Mirror assert: discrim REMOVE via `head.head_view()`; `by_functor` via its
+functor; `fact_dedup` skip for non-`Value::Term`; release the ground subterms.
+
+### Staging and test
+
+Land the substrate end-to-end: `head: Value`, `assert_fact_value`, indexing,
+discrim insert/remove, carrier-faithful resolve, retract. Test by asserting a
+Node-carrying value fact (a minimal `f(denoted(value: Ref(c)))` or an
+`OperationInfo`-shaped head) and querying it back with **both** a ground query and
+a `f(?x)` variable query, asserting the bound `?x` is the `Node` (identity
+preserved through the answer). The `op_effects` / `op_bodies` → fact collapse —
+building `OperationInfo` itself as a value fact — is the **payoff that follows**
+once this substrate exists; it is not part of the Phase B substrate landing.
+
 ## References
 
 - `docs/design/entity-representation-term-or-value.md` — the carrier rule.

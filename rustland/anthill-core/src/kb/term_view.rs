@@ -336,6 +336,23 @@ pub trait TermView {
     /// `BindValue::Value`. Called at the top level (when the query's head
     /// itself matches a tree-var) and at sub-arg var-edge captures.
     fn as_bind_value(&self) -> BindValue;
+
+    /// The logic variable at this view's head, for discrimination-tree
+    /// *indexing* (insert / remove of a stored pattern). Unlike [`head`],
+    /// which collapses Rigid / DeBruijn vars to `Opaque` (goal-side
+    /// semantics: a rigid goal var must not match concrete keys), the index
+    /// side keys a stored-pattern variable of *any* kind as a var-edge.
+    /// Returns the full `Var` so distinct binders (`DeBruijn(0)` vs
+    /// `DeBruijn(1)`) key distinct edges. `None` for non-variable heads — the
+    /// walk then keys on [`head`]. Default reads a `Global` var off [`head`];
+    /// the `TermId` / `Value` carriers override to also surface Rigid /
+    /// DeBruijn (WI-348).
+    fn index_var(&self, kb: &KnowledgeBase) -> Option<Var> {
+        match self.head(kb) {
+            ViewHead::Var(vid) => Some(Var::Global(vid)),
+            _ => None,
+        }
+    }
 }
 
 /// Wrapper so we can `impl TermView for TermIdView` without orphan-rule
@@ -394,6 +411,13 @@ impl TermView for TermIdView {
 
     fn as_bind_value(&self) -> BindValue {
         BindValue::Term(self.0)
+    }
+
+    fn index_var(&self, kb: &KnowledgeBase) -> Option<Var> {
+        match kb.get_term(self.0) {
+            Term::Var(v) => Some(*v),
+            _ => None,
+        }
     }
 }
 
@@ -497,6 +521,29 @@ impl TermView for Value {
             other => BindValue::Value(other.clone()),
         }
     }
+
+    fn index_var(&self, kb: &KnowledgeBase) -> Option<Var> {
+        match self {
+            Value::Term(tid) => match kb.get_term(*tid) {
+                Term::Var(v) => Some(*v),
+                _ => None,
+            },
+            Value::Var(v) => Some(*v),
+            // Occurrence heads surface only `Global` vars; an occurrence whose
+            // head is a Rigid / DeBruijn binder reads `Opaque` (`occ_head`), so
+            // this returns `None` and the insert walk then keys on `head` —
+            // which is `Opaque`, and so panics (discrim insert guard #1). That
+            // is intentional for now: a value rule head carrying a DeBruijn
+            // binder is Phase-C work (WI-348). Surfacing those binders as
+            // distinct var-edges here is the Phase-C fix; until then they fail
+            // loudly rather than silently mis-index (Phase A review guard #2).
+            Value::Node(_) => match self.head(kb) {
+                ViewHead::Var(vid) => Some(Var::Global(vid)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
 }
 
 /// WI-277: an occurrence is itself a first-class match target. Implementing
@@ -579,6 +626,24 @@ impl TermView for ViewItem<'_> {
             ViewItem::Term(t) => BindValue::Term(*t),
             ViewItem::Value(v) => BindValue::Value((*v).clone()),
             ViewItem::Node(occ) => BindValue::Value(Value::Node(Rc::clone(occ))),
+        }
+    }
+
+    fn index_var(&self, kb: &KnowledgeBase) -> Option<Var> {
+        match self {
+            ViewItem::Term(t) => match kb.get_term(*t) {
+                Term::Var(v) => Some(*v),
+                _ => None,
+            },
+            ViewItem::Value(v) => (*v).index_var(kb),
+            // See `Value::index_var`: Node heads surface only `Global`; a
+            // Rigid / DeBruijn occurrence head reads `Opaque` and so fails
+            // loudly at insert until Phase C surfaces it as a var-edge
+            // (Phase A review guard #2).
+            ViewItem::Node(_) => match self.head(kb) {
+                ViewHead::Var(vid) => Some(Var::Global(vid)),
+                _ => None,
+            },
         }
     }
 }
