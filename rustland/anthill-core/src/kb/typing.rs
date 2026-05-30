@@ -1720,6 +1720,57 @@ fn try_fire_dot_rule(
     None
 }
 
+/// WI-281: spec-satisfaction method resolution. When `member` is not declared
+/// directly on the receiver's sort, look for it on a spec the receiver's sort
+/// *provides* (`fact Spec[Carrier = recv_sort]`): e.g. `(3).min(5)` resolves
+/// `min` to `Ordered.min` because `Int` provides `Ordered`. Returns the spec
+/// operation's fully-qualified symbol; the caller synthesizes the same
+/// `Apply(op, [receiver, ...args])` as the direct-sort case, so the produced
+/// call rides the normal spec-op dispatch + `req_insertion` — the requirement
+/// (`Ordered[Int]`) is threaded by that machinery, not re-implemented here.
+///
+/// Walks `SortProvidesInfo` for the specs `recv_sort` provides (mirroring
+/// `build_sort_ops_table`'s pass-2 snapshot) and resolves `member` within each
+/// spec's scope via `find_operation_in_scope`. First match wins (a member name
+/// shared across two provided specs is left for a later disambiguation pass).
+fn find_spec_op_for_provided_sort(
+    kb: &mut KnowledgeBase,
+    recv_sort: Symbol,
+    short: &str,
+) -> Option<Symbol> {
+    let provides_sym = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo")?;
+    // Snapshot the provided specs first: the resolution loop below mutates `kb`
+    // (`alloc` / `find_operation_in_scope`), so it can't run while iterating.
+    let mut spec_syms: Vec<Symbol> = Vec::new();
+    for rid in kb.by_functor(provides_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let named = match kb.get_term(kb.rule_head(rid)) {
+            Term::Fn { named_args, .. } => named_args.clone(),
+            _ => continue,
+        };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
+        // `same_symbol`, not `==`: a sort carries distinct Symbol ids
+        // (bare-interned vs fully-qualified) — match `try_fire_dot_rule`.
+        if !same_symbol(kb, carrier, recv_sort) {
+            continue;
+        }
+        let Some(spec_t) = get_named_arg(kb, &named, "spec") else { continue };
+        if let Some(spec_sym) = super::load::provides_spec_base_sym(kb, spec_t) {
+            spec_syms.push(spec_sym);
+        }
+    }
+    for spec_sym in spec_syms {
+        let spec_term = kb.alloc(Term::Ref(spec_sym));
+        if let Some(op) = super::load::find_operation_in_scope(kb, spec_term, short) {
+            return Some(op);
+        }
+    }
+    None
+}
+
 /// Match a reflect `dot_apply(receiver:, name:, args:List[ApplyArg])` rule LHS
 /// against a DotApply occurrence's parts, binding the LHS's logical vars to the
 /// (typed) receiver / arg occurrences. Handles a *var* receiver and *positional
@@ -2406,6 +2457,13 @@ fn build_type(
                 // wrapper `make_sort_ref` builds (whose functor is `sort_ref`).
                 let sort_term = kb.alloc(Term::Ref(s));
                 super::load::find_operation_in_scope(kb, sort_term, &short)
+                    // WI-281: spec-satisfaction fallback — `member` may be an
+                    // operation on a spec `s` *provides* (e.g. `(3).min(5)` →
+                    // `Ordered.min` via `fact Ordered[Int]`), not declared on
+                    // `s` itself. The synthesized `Apply` below is identical;
+                    // re-typing it rides the normal spec-op dispatch +
+                    // `req_insertion`, which threads the requirement.
+                    .or_else(|| find_spec_op_for_provided_sort(kb, s, &short))
             });
             if let Some(op_sym) = op_sym {
                 let mut synth_pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(1 + pos_count);

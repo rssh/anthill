@@ -8,6 +8,9 @@ mod wi009_phase3_builtins_test;
 #[path = "include/wi279_dot_dispatch_test.rs"]
 mod wi279_dot_dispatch_test;
 
+#[path = "include/wi281_spec_dot_dispatch_test.rs"]
+mod wi281_spec_dot_dispatch_test;
+
 #[path = "include/wi246_rule_body_desc_test.rs"]
 mod wi246_rule_body_desc_test;
 
