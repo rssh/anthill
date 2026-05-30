@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft 2026-05-29. Second proposal under `docs/proposals/library/`. Surfaced by [`001-map.md`](001-map.md): Map's `MapReadable` / `PersistentMap` / `MutableMap` is the *keyed* instance of a split the sequence/collection traits should also carry. Open questions were settled in design discussion: read layer keeps the name `Iteration` (Q 1); shared `Iterable` bridge adopted at Level 1 (Q 2); persistent collections provide rather than self-iterate (Q 3); `insert` returns `Bool` "was new" (Q 4); no umbrella supertrait (Q 5).
+Draft 2026-05-29. Second proposal under `docs/proposals/library/`. Surfaced by [`001-map.md`](001-map.md): Map's `MapReadable` / `PersistentMap` / `MutableMap` is the *keyed* instance of a split the sequence/collection traits should also carry. Open questions were settled in design discussion: read layer keeps the name `Iteration` (Q 1); shared `Iterable` bridge whose `iterator` returns a `Stream` (Q 2); persistent collections provide rather than self-iterate (Q 3); `insert` returns `Bool` "was new" (Q 4); no umbrella supertrait (Q 5).
 
 ## Motivation
 
@@ -53,7 +53,7 @@ sort anthill.prelude.Iterable
 end
 ```
 
-`iterator` returns a `Stream` (the Level-1 choice; see Open Q 2). Because `Stream` is abstract, the concrete shape is the carrier's to pick — a persistent list returns a stream that is a bare pointer into itself; a mutable collection returns a snapshot or a live cursor; the host pays no boxing it doesn't need. The `iterator` call carries no effect of its own (like `MapReadable.entries`); the access effect `E` lives on the returned `Stream` and is paid on consumption.
+`iterator` returns a `Stream`. Because `Stream` is abstract, the concrete shape is the carrier's to pick — a persistent list returns a stream that is a bare pointer into itself; a mutable collection returns a snapshot or a live cursor; the host pays no boxing it doesn't need. The `iterator` call carries no effect of its own (like `MapReadable.entries`); the access effect `E` lives on the returned `Stream` and is paid on consumption.
 
 This split is the Rust `IntoIterator` (produce) vs `Iterator` (consume) distinction. It is what lets a **mutable** collection be walked without "splitting consumes the container": a mutable carrier never self-`split`s — it hands out a `Stream` and the `Stream` is the `Iteration` witness.
 
@@ -117,9 +117,13 @@ The `Collection → PersistentCollection` rename of the trait name is the wide-f
 
 **Build gotcha:** new prelude files must be registered in the two embedded-stdlib lists (`rustland/anthill-cli/src/stdlib_embedded.rs` and `rustland/anthill-todo/src/stdlib_embedded.rs`) — the `include_str!` bundles the CLIs ship, distinct from the dir-scan the `anthill-core` tests use. A file present on disk but absent from those lists loads fine under test yet fails to resolve in the CLI bundle.
 
-**Status (2026-05-29):** steps 1–4 *declarations* + the rename have landed (`iterable.anthill`, `mutable_collection.anthill`, `collection.anthill`, `list.anthill`, both embedded lists). Deferred: carriers actually *providing* `Iterable` (step 3's `iterator` body, step 5's map provision).
+**Status (2026-05-30):** steps 1–4 *declarations* + the rename have landed (`iterable.anthill`, `mutable_collection.anthill`, `collection.anthill`, `list.anthill`, both embedded lists). **WI-344** (provider admissibility in `type_compatible`) has also landed (on `main`) — the typer now admits a value where a spec it *provides* is expected, the enabler for every provider here. Remaining to land: carriers actually *providing* `Iterable` (`Stream` and `List` via the `iterator` body; the map provision in [001-map](001-map.md)), plus the soundness gate below.
 
-The blocker is **not** a missing `List → Stream` conversion (an earlier mis-diagnosis). A `List` *is* a `Stream` — it can declare `fact Stream[List]` (its `split` is `splitFirst`), so `iterator(xs) = xs` is the right body. The real blocker is **the typer**: `types_compatible(List, Stream)` returns false today (`expected Stream, got List`) because it only matches types nominally + the `requires`-chain, and never consults the `fact Stream[List]` provision. Making the typer admit a value where a spec it *provides* is expected — the same demand→search that discharges a `requires` — is **WI-344** (provider admissibility in `type_compatible`); it is the enabler for every provider here. Until it lands, `List` provides `PersistentCollection` (which `requires Iterable`) without providing `Iterable`, and that unmet requirement loads silently because spec-level `requires` without a provider is not diagnosed (**WI-343**); WI-343 + op-provision completeness are the companion track that makes the `fact` the typer trusts actually *true*.
+A `List` *is* a `Stream` — it can declare `fact Stream[List]` (its `split` is `splitFirst`), so `iterator(xs) = xs` is the right body. The typer used to reject this: `types_compatible(List, Stream)` returned false (`expected Stream, got List`) because it matched types only nominally + the `requires`-chain and never consulted the `fact Stream[List]` provision. **WI-344** fixed exactly that — admitting a value where a spec it *provides* is expected, the same demand→search that discharges a `requires`, run at the value position — so the providers now typecheck.
+
+What remains is **soundness**, not typing. Today `List` provides `PersistentCollection` (which `requires Iterable`) without providing `Iterable`, and that unmet requirement loads silently because a spec-level `requires` with no provider is not diagnosed (**WI-343**, open). Adding the `Iterable` provision closes that instance, but the `fact Stream[List]` it leans on is itself trusted-not-checked: `Stream`'s `takeN`/`collect` have no derived rules, so a carrier can claim `Stream` without backing the full op set. WI-343 + op-provision completeness are the companion track that makes the facts the typer trusts actually *true*.
+
+**Implementation surface.** The read/persistent half is **stdlib-only**: the `fact`/`operation` provisions need no compiler or interpreter change, because WI-344 (the one required typer change) has landed. The soundness gate (WI-343) is a small loader/typer diagnostic. Only **Phase 4** (the first mutable carrier) needs real compiler + interpreter work — `Modify[result]`/`Modify[c]` effect tracking and arena resources (027.1, 037); and running a walk end-to-end (rather than just loading/typechecking it) additionally needs the runtime side of provider dispatch (WI-281).
 
 ## Interaction with other proposals
 
@@ -133,7 +137,7 @@ The blocker is **not** a missing `List → Stream` conversion (an earlier mis-di
 
 1. *(Resolved — keep `Iteration`)* **Read-layer name.** `Iteration` is the *iterator* concept (self-consuming `split`); `Iterable` already supplies the "readable/walkable" verb on top of it. No `CollectionReadable` is minted — it would only be warranted if a sequence read-capability beyond iteration (e.g. `size`/`contains` as primitives rather than folds) earned its own trait, which nothing yet needs.
 
-2. *(Resolved)* **Shared iteration interface — yes, `Iterable`.** Both builders `requires Iterable`; `iterator(c) -> Stream[Element, E]` (Level 1). The richer **Level 2** — an associated iterator type (`sort It = ?` + `requires Iteration[Iterator = It]`, the full `IntoIterator`), which would let a carrier yield a *non-sequential* iterator (parallel / chunked / paged) — is the upgrade path, the same one [001-map](001-map.md) Open Q 6 defers until a real driver appears.
+2. *(Resolved)* **Shared iteration interface — yes, `Iterable`.** Both builders `requires Iterable`, and `iterator(c) -> Stream[Element, E]` — every carrier produces a `Stream`. `Stream` is the iterator type; that is the whole shared read interface.
 
 3. *(Resolved)* **`PersistentCollection` does not self-`Iterate`.** It `requires Iterable` like the mutable builder; one uniform iteration path. A persistent carrier *may* still be its own `Iteration` as an internal convenience (cheap `split`), but that is an implementation detail behind its `iterator`, not a hierarchy requirement.
 
@@ -152,5 +156,3 @@ Each phase lands independently with its own tests.
 **Phase 3 — `MutableCollection`.** Add `mutable_collection.anthill` (`requires Iterable`). No carriers yet. Test: file loads, exports resolve.
 
 **Phase 4 — first mutable carrier.** A concrete mutable sequence (a `MutableList`, or `MutableMap` from 001-map with `Element = Pair[K, V]`) provides `MutableCollection` + `Iterable`; wire the arena. Test: full mutable lifecycle under effect tracking.
-
-**Phase 5 (deferred) — Level 2 `Iterable`.** Promote `iterator`'s return to an associated iterator type (`IntoIterator`) when a non-sequential iterator (parallel/chunked/paged) needs it — coordinated with [001-map](001-map.md) Open Q 6.
