@@ -294,8 +294,9 @@ pub(super) fn try_fire(
 
 /// The functor of an equation's LHS, read from the *stored* head (no
 /// DeBruijn opening). Used to skip non-matching rules before the
-/// allocate-heavy `open_equation`.
-fn stored_lhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symbol> {
+/// allocate-heavy `open_equation`. `pub(super)`: the typer's dot-rule
+/// firing (WI-279 INC2) pre-filters `[simp]` equations by LHS functor.
+pub(super) fn stored_lhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symbol> {
     let head = kb.rule_head(rid);
     let lhs = match kb.get_term(head) {
         Term::Fn { pos_args, .. } if pos_args.len() == 2 => pos_args[0],
@@ -310,8 +311,9 @@ fn stored_lhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symbol> {
 /// Open an equation's DeBruijn vars to fresh globals and return its
 /// `(lhs, rhs)` as matchable/buildable terms. Uses the KB's
 /// `term_from_debruijn` (the same opener `with_fresh_vars` uses) — not a
-/// reimplementation of the resolver's rule-opening.
-fn open_equation(kb: &mut KnowledgeBase, rid: RuleId) -> Option<(TermId, TermId)> {
+/// reimplementation of the resolver's rule-opening. `pub(super)`: the
+/// typer's dot-rule firing (WI-279 INC2) opens a matched `[simp]` dot rule.
+pub(super) fn open_equation(kb: &mut KnowledgeBase, rid: RuleId) -> Option<(TermId, TermId)> {
     let arity = kb.rule_arity(rid);
     let head = kb.rule_head(rid);
     let opened = if arity > 0 {
@@ -332,7 +334,7 @@ fn open_equation(kb: &mut KnowledgeBase, rid: RuleId) -> Option<(TermId, TermId)
 /// matched child occurrence (`Value::Node`) is reused in place (identity
 /// preserved); a functor builds a synthesized `Apply`; a literal builds a
 /// `Const`. New nodes carry `origin: Synthesized { from, by }`.
-fn substitute_to_occurrence(
+pub(super) fn substitute_to_occurrence(
     kb: &KnowledgeBase,
     term: TermId,
     subst: &Substitution,

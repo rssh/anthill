@@ -197,3 +197,82 @@ fn dot_no_match_reports_clear_error_at_span() {
     assert!(text.contains("Box"),
         "expected the no-match diagnostic to name the receiver's sort Box; got:\n{text}");
 }
+
+// ── Acceptance item 2: sort-specific dot rule overrides the default ──────
+
+#[test]
+fn dot_rule_override_enables_dispatch() {
+    // `special` is NOT an operation on Box, so the default fallback would fail
+    // (no-match). A sort-specific [simp] dot rule rewrites `?b.special(x)` to
+    // `regular(b, x)` — so the body type-checks ONLY IF the override fires.
+    let src = r#"
+        namespace wi279.override
+          export Box
+          sort Box
+            entity box(value: Int)
+            operation regular(b: Box, x: Int) -> Int = x
+            rule dr: dot_apply(?e, special, ?x) = regular(?e, ?x) [simp]
+            operation use_override(b: Box) -> Int = ?b.special(7)
+          end
+        end
+    "#;
+    let (_kb, errs) = load_capturing_errors(src);
+    assert!(errs.is_empty(),
+        "expected the [simp] dot rule to rewrite ?b.special(7) -> regular(b, 7) \
+         (no `special` op exists, so the body type-checks only if the rule fired); got:\n{}",
+        errors_text(&errs));
+}
+
+#[test]
+fn dot_rule_override_is_sort_scoped() {
+    // A dot rule for `special` declared in Box must NOT fire for a non-Box
+    // receiver (the enclosing-sort guard). `Other` has no `special` op and the
+    // Box rule's guard excludes it, so `?o.special(7)` is a clean no-match —
+    // the Box rule does not hijack the member name across sorts.
+    let src = r#"
+        namespace wi279.override_scoped
+          export Box, Other
+          sort Box
+            entity box(value: Int)
+            operation regular(b: Box, x: Int) -> Int = x
+            rule dr: dot_apply(?e, special, ?x) = regular(?e, ?x) [simp]
+          end
+          sort Other
+            entity other(tag: Int)
+            operation use_other(o: Other) -> Int = ?o.special(7)
+          end
+        end
+    "#;
+    let (_kb, errs) = load_capturing_errors(src);
+    let text = errors_text(&errs);
+    assert!(!errs.is_empty(),
+        "expected a no-match for ?o.special(7): the Box dot rule must not fire for an Other receiver");
+    assert!(text.contains("no such member (dot dispatch)") && text.contains("special"),
+        "expected a dot-dispatch no-match naming 'special' for the Other receiver; got:\n{text}");
+}
+
+#[test]
+fn dot_rule_nonlinear_lhs_does_not_fire_on_distinct_args() {
+    // A non-linear LHS `dot_apply(?e, special, ?e)` requires the receiver and
+    // the arg to be the SAME term. `?b.special(7)` has distinct receiver (b) and
+    // arg (7), so the implied equality fails — the rule must NOT fire (the
+    // matcher honours the substitution's contradiction). With no `special` op,
+    // the result is a clean no-match, not an unsound rewrite to `regular(b)`.
+    let src = r#"
+        namespace wi279.nonlinear
+          export Box
+          sort Box
+            entity box(value: Int)
+            operation regular(b: Box) -> Int = 0
+            rule dr: dot_apply(?e, special, ?e) = regular(?e) [simp]
+            operation use_nl(b: Box) -> Int = ?b.special(7)
+          end
+        end
+    "#;
+    let (_kb, errs) = load_capturing_errors(src);
+    let text = errors_text(&errs);
+    assert!(!errs.is_empty(),
+        "expected a no-match: the non-linear rule must not fire when receiver != arg");
+    assert!(text.contains("no such member (dot dispatch)") && text.contains("special"),
+        "expected a dot-dispatch no-match naming 'special'; got:\n{text}");
+}

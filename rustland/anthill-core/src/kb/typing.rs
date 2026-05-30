@@ -1374,6 +1374,183 @@ fn lookup_binding_by_short_name(
         .map(|(_, t)| *t)
 }
 
+// ── WI-279 INC2: sort-specific `[simp]` dot-rule override ────────────────
+//
+// A dot rule like `dot_apply(?e, map, ?f) = either_map(?e, ?f) [simp]`
+// (declared in a sort) OVERRIDES the default method fallback for receivers
+// whose least sort conforms to that sort. A written dot rule LOADS as the
+// reflect `Expr.dot_apply` ENTITY (`receiver:` / `name:` / `args:
+// List[ApplyArg]`) — a different shape than a surface occurrence's
+// `Expr::DotApply` (flattened `pos_args`, `name` as a Symbol field). Rather
+// than teach the generic matcher both shapes, this dedicated path scans the
+// `[simp]` dot equations, guards by the rule's enclosing sort (`rule_domain`),
+// matches the entity LHS against the occurrence's receiver/args, and
+// instantiates the RHS — reusing `simp_rewrite`'s opener + RHS builder. It
+// handles a *var* receiver with *positional var* args (the Either-style
+// case); a name mismatch, a non-var pattern, a named-arg dot call, or an arity
+// mismatch makes it skip the rule, falling through to the default.
+
+/// Fire a sort-specific `[simp]` dot rule at a DotApply, or `None` to fall to
+/// the default. `recv_sort` is the receiver's least sort (the firing guard's
+/// key); `from` is the DotApply occ (synthesized-RHS provenance).
+fn try_fire_dot_rule(
+    kb: &mut KnowledgeBase,
+    recv_sort: Symbol,
+    member: Symbol,
+    receiver: &Rc<NodeOccurrence>,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    from: &Rc<NodeOccurrence>,
+) -> Option<Rc<NodeOccurrence>> {
+    let dot_apply_sym = kb.try_resolve_symbol("anthill.reflect.Expr.dot_apply")?;
+    let eq_sym = kb.eq_functor();
+    for rid in kb.by_functor(eq_sym) {
+        if !kb.is_equation(rid)
+            || !super::load::meta_has_flag(kb, kb.rule_meta(rid), "simp")
+            || super::simp_rewrite::stored_lhs_functor(kb, rid) != Some(dot_apply_sym)
+        {
+            continue;
+        }
+        // Enclosing-sort guard: a dot rule fires only where the receiver's
+        // least sort conforms to the rule's defining sort — by identity or spec
+        // satisfaction. `rule_domain` is the *sort term* (a nullary `Fn` / `Ref`
+        // whose functor IS the sort), so read the functor directly;
+        // `sort_functor_of` is for `sort_ref`-wrapped *type* terms and returns
+        // `None` on a bare sort term. Without this guard one sort's `map` rule
+        // would hijack the member name for every receiver (unsound).
+        let encl = match kb.get_term(kb.rule_domain(rid)) {
+            Term::Fn { functor, .. } => *functor,
+            Term::Ref(s) => *s,
+            _ => continue,
+        };
+        // `same_symbol` (not raw `==`): a sort can carry distinct Symbol ids
+        // (bare-interned vs fully-qualified) — match the convention used by
+        // `sort_provides` / sort widening. Identity OR spec satisfaction.
+        if !same_symbol(kb, recv_sort, encl) && !sort_provides(kb, recv_sort, encl) {
+            continue;
+        }
+        let Some((lhs, rhs)) = super::simp_rewrite::open_equation(kb, rid) else { continue };
+        if let Some(subst) = match_dot_rule_lhs(kb, lhs, member, receiver, pos_args, named_args) {
+            let pass = super::simp_rewrite::simp_pass(kb);
+            return Some(super::simp_rewrite::substitute_to_occurrence(kb, rhs, &subst, from, pass));
+        }
+    }
+    None
+}
+
+/// Match a reflect `dot_apply(receiver:, name:, args:List[ApplyArg])` rule LHS
+/// against a DotApply occurrence's parts, binding the LHS's logical vars to the
+/// (typed) receiver / arg occurrences. Handles a *var* receiver and *positional
+/// var* args; returns `None` (skip → default) for a name mismatch, a non-var
+/// pattern, a named-arg dot call, or an arity mismatch.
+fn match_dot_rule_lhs(
+    kb: &KnowledgeBase,
+    lhs: TermId,
+    member: Symbol,
+    receiver: &Rc<NodeOccurrence>,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> Option<Substitution> {
+    if !named_args.is_empty() {
+        return None; // named-arg dot calls: follow-up
+    }
+    let la = match kb.get_term(lhs) {
+        Term::Fn { named_args, .. } => named_args.clone(),
+        _ => return None,
+    };
+    let r_pat = get_named_arg(kb, &la, "receiver")?;
+    let name_t = get_named_arg(kb, &la, "name")?;
+    let args_t = get_named_arg(kb, &la, "args")?;
+    // Member name — compared by short name, robust to interning differences
+    // between the rule's `name:` field and the occurrence's member symbol.
+    let rule_name = dot_member_sym(kb, name_t)?;
+    if short_name_of(kb.resolve_sym(rule_name)) != short_name_of(kb.resolve_sym(member)) {
+        return None;
+    }
+    let val_pats = collect_positional_arg_value_pats(kb, args_t)?;
+    if val_pats.len() != pos_args.len() {
+        return None;
+    }
+    let mut subst = Substitution::new();
+    bind_var_pattern_to_node(&mut subst, kb, r_pat, receiver)?;
+    for (pat, occ) in val_pats.iter().zip(pos_args.iter()) {
+        bind_var_pattern_to_node(&mut subst, kb, *pat, occ)?;
+    }
+    // A non-linear LHS (a var repeated across receiver/args) implies an
+    // equality constraint: `bind_value` flags a contradiction when the same
+    // var is bound to two structurally-distinct occurrences. Honour it (the
+    // generic `try_fire` does the same) — else the rule would fire unsoundly,
+    // dropping the equality the pattern demanded.
+    if subst.is_contradiction() {
+        return None;
+    }
+    Some(subst)
+}
+
+/// Bind a logical-var pattern term to an occurrence as a `Value::Node` (so the
+/// RHS builder substitutes the typed occurrence in). `None` for a non-var
+/// pattern — the caller then skips the rule (constructor-pattern receivers are
+/// a follow-up).
+fn bind_var_pattern_to_node(
+    subst: &mut Substitution,
+    kb: &KnowledgeBase,
+    pat: TermId,
+    occ: &Rc<NodeOccurrence>,
+) -> Option<()> {
+    match kb.get_term(pat) {
+        Term::Var(Var::Global(vid)) => {
+            subst.bind_value(*vid, Value::Node(Rc::clone(occ)));
+            Some(())
+        }
+        _ => None,
+    }
+}
+
+/// The member symbol of a dot rule's `name:` field (a `Ref` / `Ident`, or a
+/// nullary `Fn` functor).
+fn dot_member_sym(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> {
+    match kb.get_term(t) {
+        Term::Ref(s) | Term::Ident(s) => Some(*s),
+        Term::Fn { functor, pos_args, named_args }
+            if pos_args.is_empty() && named_args.is_empty() =>
+        {
+            Some(*functor)
+        }
+        _ => None,
+    }
+}
+
+/// Collect a dot rule's positional arg value-patterns from its reflect
+/// `args: List[ApplyArg]` field (`cons(head: ApplyArg(name: none, value: pat),
+/// tail: …)` … `nil`). `None` (→ rule skipped) if the list is malformed or any
+/// ApplyArg is named (`name: some(…)`) — named dot-rule args are a follow-up.
+fn collect_positional_arg_value_pats(kb: &KnowledgeBase, args_t: TermId) -> Option<Vec<TermId>> {
+    let mut out = Vec::new();
+    // `list_to_vec` walks the `cons(head, tail) … nil` spine; each element is an
+    // `ApplyArg(name: <none/some>, value: <pat>)`.
+    for elem in list_to_vec(kb, args_t) {
+        let aargs = match kb.get_term(elem) {
+            Term::Fn { functor, named_args, .. }
+                if short_name_of(kb.resolve_sym(*functor)) == "ApplyArg" =>
+            {
+                named_args.clone()
+            }
+            _ => return None,
+        };
+        // Positional only: `name` must be `none()` (a named arg is `some(...)`).
+        let name_t = get_named_arg(kb, &aargs, "name")?;
+        let name_functor = match kb.get_term(name_t) {
+            Term::Fn { functor, .. } => *functor,
+            _ => return None,
+        };
+        if short_name_of(kb.resolve_sym(name_functor)) != "none" {
+            return None; // named arg → follow-up
+        }
+        out.push(get_named_arg(kb, &aargs, "value")?);
+    }
+    Some(out)
+}
+
 /// Dispatch a single Visit: produce a leaf TypeResult directly,
 /// delegate to a recursive helper, or push a Build frame + child
 /// Visits for the env-changing Let / Match / Lambda cases.
@@ -1900,6 +2077,34 @@ fn build_type(
             // `Stamp` frame ordering).
             let recv_sort = sort_functor_of(kb, recv.ty);
             let dot_span = Some(occ.span.span);
+            // The (typed) arg occurrences — used by both the dot-rule override
+            // and the default method fallback.
+            let pos_nodes: Vec<Rc<NodeOccurrence>> = child_results[1..1 + pos_count]
+                .iter()
+                .map(|r| Rc::clone(&r.as_ref().expect("DotApply: Ok positional arg").node))
+                .collect();
+            let named_nodes: Vec<(Symbol, Rc<NodeOccurrence>)> = named_keys
+                .iter()
+                .zip(&child_results[1 + pos_count..])
+                .map(|(k, r)| (*k, Rc::clone(&r.as_ref().expect("DotApply: Ok named arg").node)))
+                .collect();
+
+            // INC2: a sort-specific `[simp]` dot rule (declared in the
+            // receiver's sort) OVERRIDES the default. Fire it first; only fall
+            // to the default fallback when none fires. Gated on remaining
+            // fire-fuel (bounds the fire→re-Visit chain, as the Apply/Ctor arms
+            // do), `[simp]` rules existing, and a resolved receiver sort (the
+            // firing guard's key).
+            if fuel > 0 && simp_enabled {
+                if let Some(rs) = recv_sort {
+                    if let Some(synth) = try_fire_dot_rule(
+                        kb, rs, member, &receiver_node, &pos_nodes, &named_nodes, &occ,
+                    ) {
+                        push_visit(work, synth, env, expected, fuel - 1);
+                        return;
+                    }
+                }
+            }
 
             // DEFAULT method fallback: resolve `member` to an operation declared
             // on the receiver's sort, then synthesize `op(receiver, ...args)` —
@@ -1918,20 +2123,13 @@ fn build_type(
             if let Some(op_sym) = op_sym {
                 let mut synth_pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(1 + pos_count);
                 synth_pos.push(receiver_node);
-                for r in &child_results[1..1 + pos_count] {
-                    synth_pos.push(Rc::clone(&r.as_ref().expect("DotApply: Ok positional arg").node));
-                }
-                let synth_named: Vec<(Symbol, Rc<NodeOccurrence>)> = named_keys
-                    .iter()
-                    .zip(&child_results[1 + pos_count..])
-                    .map(|(k, r)| (*k, Rc::clone(&r.as_ref().expect("DotApply: Ok named arg").node)))
-                    .collect();
+                synth_pos.extend(pos_nodes);
                 let pass = super::simp_rewrite::simp_pass(kb);
                 let synth = NodeOccurrence::synthesized_expr(
                     Expr::Apply {
                         functor: op_sym,
                         pos_args: synth_pos,
-                        named_args: synth_named,
+                        named_args: named_nodes,
                         type_args: Vec::new(),
                     },
                     Rc::clone(&occ),
