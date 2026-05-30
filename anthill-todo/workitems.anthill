@@ -2031,7 +2031,7 @@ fact WorkItem(
   description: "Requirement-aware dot dispatch for spec-satisfaction methods (WI-278 6.6 / D6). A method coming from a spec the receiver's sort SATISFIES must resolve and thread/check its requires: (3).min(5) -> Ordered.min via fact Ordered[Int]; a.min(b) needs Ord; l.contains(e) needs Eq. find_operation_on_sort currently uses the WI-240 sort_ops table whose pass-2 covers ONLY user 'fact Spec[ImplSort]' impls, NOT builtin satisfaction (Int->Ordered) — verified Int.min -> None, so (3).min(5) does not dispatch (pinned by spec_satisfaction_method_is_a_known_gap test). Needs resolution over the satisfied-spec chain + requires insertion/checking on the produced apply, with an unsatisfied requires reported as a clear error at the dot-call span. Acceptance: (3).min(5) dispatches to Ordered.min; l.contains(e) threads Eq; unsatisfied requires -> clear error at the dot span; flip the known-gap test; cargo-test green.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-279"],
-  status: Claimed(agent: "claude", since: "2026-05-30T18:54:44Z"))
+  status: Delivered(agent: "claude", at: "2026-05-30T19:32:58Z"))
 
 fact WorkItem(
   id: "WI-282",
