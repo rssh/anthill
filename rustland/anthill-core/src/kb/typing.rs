@@ -5588,19 +5588,21 @@ fn check_constructor_iter(
         unify_types(kb, &mut subst, &TermIdView(parent_type), &TermIdView(exp));
     }
 
-    for &(field_sym, declared_type) in &field_types {
-        if let Some((idx, _)) = named_args.iter().enumerate().find(|(_, (s, _))| *s == field_sym) {
+    // WI-342: `declared_type` is a carrier-agnostic `Value` (a value-in-type
+    // field rides as `Value::Node`); pass it directly to `unify_types`.
+    for (field_sym, declared_type) in &field_types {
+        if let Some((idx, _)) = named_args.iter().enumerate().find(|(_, (s, _))| s == field_sym) {
             if let Ok(ref r) = named_results[idx] {
-                unify_types(kb, &mut subst, &r.ty, &TermIdView(declared_type));
+                unify_types(kb, &mut subst, &r.ty, declared_type);
                 effects = merge_effects(&effects, &r.effects);
             }
         }
     }
 
     for (i, r_opt) in pos_results.iter().enumerate() {
-        if let Some(&(_, declared_type)) = field_types.get(i) {
+        if let Some((_, declared_type)) = field_types.get(i) {
             if let Ok(r) = r_opt {
-                unify_types(kb, &mut subst, &r.ty, &TermIdView(declared_type));
+                unify_types(kb, &mut subst, &r.ty, declared_type);
                 effects = merge_effects(&effects, &r.effects);
             }
         }
@@ -6069,10 +6071,13 @@ fn extend_env_from_pattern(
                             .zip(parent_sort)
                             .and_then(|(st, p)| build_pattern_subst(kb, st, p));
                         for (i, sub_pat) in sub_patterns.iter().enumerate() {
+                            // WI-342: the field type is a carrier-agnostic `Value`;
+                            // the env binds a hash-consed `TermId`, so re-ground.
                             let field_type = fields.get(i).map(|(_, ty)| {
+                                let t = value_to_term_id(kb, ty);
                                 match &subst {
-                                    Some(s) => walk_type(kb, s, *ty),
-                                    None => *ty,
+                                    Some(s) => walk_type(kb, s, t),
+                                    None => t,
                                 }
                             });
                             extend_env_from_pattern(kb, env, *sub_pat, field_type);
@@ -9508,17 +9513,20 @@ fn check_value_against_parameterized(
         None => return None,
     };
 
-    for &(fsym, declared_field_type) in &ctor_field_types {
-        let fval = match val_named_args.iter().find(|(s, _)| *s == fsym) {
+    for (fsym, declared_field_type) in &ctor_field_types {
+        let fval = match val_named_args.iter().find(|(s, _)| s == fsym) {
             Some((_, v)) => *v,
             None => continue,
         };
         if matches!(kb.get_term(fval), Term::Var(_)) { continue; }
 
-        // Walk the field type through the substitution to resolve type params
-        let instantiated_type = walk_type(kb, &subst, declared_field_type);
+        // Walk the field type through the substitution to resolve type params.
+        // WI-342: the field type is a carrier-agnostic `Value`; re-ground for the
+        // term-based value/type check.
+        let declared_term = value_to_term_id(kb, declared_field_type);
+        let instantiated_type = walk_type(kb, &subst, declared_term);
 
-        if let Some(err) = check_value_against_type(kb, fval, instantiated_type, entity_sym, fsym, span) {
+        if let Some(err) = check_value_against_type(kb, fval, instantiated_type, entity_sym, *fsym, span) {
             return Some(err);
         }
     }
@@ -9617,7 +9625,8 @@ fn check_entity_facts(kb: &mut KnowledgeBase, ctor_syms: &[Symbol], errors: &mut
                 .or_else(|| kb.functor_span(ctor_sym))
                 .map(|s| s.span);
 
-            for &(field_sym, declared_type) in &field_types {
+            for (field_sym, declared_type) in &field_types {
+                let field_sym = *field_sym;
                 let field_value = match named_args.iter().find(|(s, _)| *s == field_sym) {
                     Some((_, v)) => *v,
                     None => continue,
@@ -9627,7 +9636,9 @@ fn check_entity_facts(kb: &mut KnowledgeBase, ctor_syms: &[Symbol], errors: &mut
                     continue;
                 }
 
-                if let Some(err) = check_value_against_type(kb, field_value, declared_type, ctor_sym, field_sym, span) {
+                // WI-342: field type is a carrier-agnostic `Value`; re-ground.
+                let declared_term = value_to_term_id(kb, declared_type);
+                if let Some(err) = check_value_against_type(kb, field_value, declared_term, ctor_sym, field_sym, span) {
                     errors.push(err);
                 }
             }
@@ -10114,9 +10125,12 @@ fn collect_term_type_constraints(
             } else if let Some(field_types) = kb.entity_field_types(functor) {
                 // Entity constructor: match named args to field types
                 let field_types = field_types.to_vec();
-                for &(field_sym, field_type) in &field_types {
-                    if let Some((_, arg_tid)) = named_args.iter().find(|(s, _)| *s == field_sym) {
-                        constrain_var_type(kb, *arg_tid, field_type, var_types, subst);
+                for (field_sym, field_type) in &field_types {
+                    if let Some((_, arg_tid)) = named_args.iter().find(|(s, _)| s == field_sym) {
+                        let arg_tid = *arg_tid;
+                        // WI-342: field type is a carrier-agnostic `Value`; re-ground.
+                        let field_term = value_to_term_id(kb, field_type);
+                        constrain_var_type(kb, arg_tid, field_term, var_types, subst);
                     }
                 }
             }
@@ -10244,9 +10258,11 @@ fn constrain_application(
         }
     } else if let Some(field_types) = kb.entity_field_types(functor) {
         let field_types = field_types.to_vec();
-        for &(field_sym, field_type) in &field_types {
-            if let Some((_, arg)) = named_args.iter().find(|(s, _)| *s == field_sym) {
-                constrain_occ_var_type(kb, arg, field_type, var_types, subst);
+        for (field_sym, field_type) in &field_types {
+            if let Some((_, arg)) = named_args.iter().find(|(s, _)| s == field_sym) {
+                // WI-342: field type is a carrier-agnostic `Value`; re-ground.
+                let field_term = value_to_term_id(kb, field_type);
+                constrain_occ_var_type(kb, arg, field_term, var_types, subst);
             }
         }
     }
@@ -10692,5 +10708,6 @@ mod p4_tests {
             "occurs-check must reject binding ?v to a Node tuple whose field mentions ?v"
         );
     }
+
 }
 

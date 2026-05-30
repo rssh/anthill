@@ -4088,8 +4088,11 @@ impl<'a> Loader<'a> {
                     .iter()
                     .enumerate()
                     .map(|(i, &id)| {
+                        // WI-342: field types are carrier-agnostic; the
+                        // conversion hint only wants a ground `TermId` (a
+                        // denoted-bearing field is no literal-typing hint → None).
                         let exp = self.kb.entity_field_types(new_functor)
-                            .and_then(|ft| ft.get(i).map(|(_, t)| *t));
+                            .and_then(|ft| ft.get(i).and_then(|(_, t)| t.as_term()));
                         self.convert_term_with_expected(id, exp)
                     })
                     .collect();
@@ -4114,7 +4117,7 @@ impl<'a> Loader<'a> {
                     .map(|(sym, id)| {
                         let new_sym = self.reintern(sym);
                         let exp = self.kb.entity_field_types(new_functor)
-                            .and_then(|ft| ft.iter().find(|(s, _)| *s == new_sym).map(|(_, t)| *t));
+                            .and_then(|ft| ft.iter().find(|(s, _)| *s == new_sym).and_then(|(_, t)| t.as_term()));
                         (new_sym, self.convert_term_with_expected(id, exp))
                     })
                     .collect();
@@ -5343,26 +5346,27 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// WI-342 E2 (the live flip) — build one operation effect label as a
-    /// carrier-agnostic [`Value`], honoring the carrier rule: a label whose
-    /// structure transitively contains a `denoted` (`Modify[c]`, where `c`
-    /// names a value) is minted as a `Value::Node` occurrence; a fully-ground
-    /// label rides as `Value::Term` (the hash-consed form, identical to the
-    /// `OperationInfo` fact). Confined to effect-label positions — the full
-    /// `type_expr_to_term` → carrier-agnostic flip stays deferred.
-    fn effect_label_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
-        let span = self.effect_label_span(ty);
+    /// WI-342 — lower a `TypeExpr` to a carrier-agnostic [`Value`], honoring the
+    /// carrier rule: a type whose structure transitively contains a `denoted`
+    /// (`Modify[c]`, a value-in-type field) is minted as a `Value::Node`
+    /// occurrence; a fully-ground type rides as `Value::Term` (the hash-consed
+    /// form). The dual-carrier peer of [`Self::type_expr_to_term`]. Used for
+    /// operation effect labels (E2) and entity field types; the remaining
+    /// `TermId`-only loader positions (params/return/let) flip incrementally as
+    /// their storage gains a `Value` carrier.
+    fn type_expr_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
+        let span = self.type_expr_span(ty);
         let owner = self.current_owner;
-        match self.effect_label_child(ty, span, owner) {
+        match self.type_expr_to_child(ty, span, owner) {
             node_occurrence::TypeChild::Ground(t) => crate::eval::value::Value::Term(t),
             node_occurrence::TypeChild::Node(n) => crate::eval::value::Value::Node(n),
         }
     }
 
-    /// Span for an effect label's occurrence — the label's leading `Name`
-    /// span when available, else a synthetic span on the current source.
-    /// Occurrence spans here feed diagnostics only.
-    fn effect_label_span(&self, ty: &TypeExpr) -> SourceSpan {
+    /// Span for a lowered type's occurrence — its leading `Name` span when
+    /// available, else a synthetic span on the current source. Occurrence spans
+    /// here feed diagnostics only.
+    fn type_expr_span(&self, ty: &TypeExpr) -> SourceSpan {
         match ty {
             TypeExpr::Simple(n) | TypeExpr::Parameterized { name: n, .. } => {
                 SourceSpan::from_span(self.source_id, n.span)
@@ -5376,10 +5380,10 @@ impl<'a> Loader<'a> {
     /// sub-tree is fully ground (reusing the hash-consed builder verbatim), or
     /// `Node(Rc<NodeOccurrence>)` when it carries a `denoted`. The carrier of a
     /// `parameterized` follows its bindings — any `Node` binding poisons the
-    /// whole label to `Node`. Only the shapes an effect label can take are
-    /// Node-aware (`Simple`-as-value, `Parameterized`); every other shape stays
-    /// ground via `type_expr_to_term` (no denoted ⇒ no carrier obligation).
-    fn effect_label_child(
+    /// whole type to `Node`. Only the value-in-type shapes are Node-aware
+    /// (`Simple`-as-value, `Parameterized`); every other shape (arrow, tuple, …)
+    /// stays ground via `type_expr_to_term` (no denoted ⇒ no carrier obligation).
+    fn type_expr_to_child(
         &mut self,
         ty: &TypeExpr,
         span: SourceSpan,
@@ -5423,7 +5427,7 @@ impl<'a> Loader<'a> {
                 let mut positional_index: usize = 0;
                 let mut any_node = false;
                 for b in bindings {
-                    let bound_child = self.effect_label_child(&b.bound, span, owner);
+                    let bound_child = self.type_expr_to_child(&b.bound, span, owner);
                     if matches!(bound_child, node_occurrence::TypeChild::Node(_)) {
                         any_node = true;
                     }
@@ -5988,12 +5992,22 @@ impl<'a> Loader<'a> {
         let entity_sort = self.kb.make_name_term("Entity");
         let functor = self.remap_name(&e.name);
 
-        let named_args: SmallVec<[(Symbol, TermId); 2]> = e.fields
+        // WI-342: lower each field type ONCE, carrier-agnostically — a value-in-
+        // type field (`Modify[c]`-shaped / dependent) is carried as `Value::Node`,
+        // a ground field type as `Value::Term`. The reflect `Entity` fact needs
+        // the hash-consed `TermId` form, derived below via `as_term` (entity field
+        // types are ground today — no value-in-type field — so this never `None`s;
+        // a future denoted field would re-ground here). Lowering once avoids
+        // double-firing per-field side effects like `emit_desc_fact` (a described
+        // type-var field type).
+        let field_types: Vec<(Symbol, crate::eval::value::Value)> = e.fields
             .iter()
-            .map(|f| {
-                let field_sym = self.reintern(f.name);
-                let type_term = self.type_expr_to_term(&f.ty);
-                (field_sym, type_term)
+            .map(|f| (self.reintern(f.name), self.type_expr_to_value(&f.ty)))
+            .collect();
+        let named_args: SmallVec<[(Symbol, TermId); 2]> = field_types
+            .iter()
+            .map(|(s, v)| {
+                (*s, v.as_term().expect("entity field type is ground (no value-in-type field)"))
             })
             .collect();
 
@@ -6002,7 +6016,6 @@ impl<'a> Loader<'a> {
         // the short name, so that sugar-generated facts (which use unqualified
         // functor names like "WorkItem") can also look up entity fields.
         let field_names: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
-        let field_types: Vec<(Symbol, TermId)> = named_args.iter().map(|&(s, t)| (s, t)).collect();
         self.kb.register_entity_fields(functor, field_names.clone());
         self.kb.register_entity_field_types(functor, field_types.clone());
         let short_name = if e.name.segments.len() == 1 {
@@ -6350,7 +6363,7 @@ impl<'a> Loader<'a> {
         // Value-carried effect carrier live in production typing.
         let effect_values: Vec<crate::eval::value::Value> = o.effects
             .iter()
-            .map(|e| self.effect_label_to_value(&e.type_expr))
+            .map(|e| self.type_expr_to_value(&e.type_expr))
             .collect();
         self.kb.set_op_effects(functor, effect_values);
 

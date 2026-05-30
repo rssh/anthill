@@ -271,7 +271,7 @@ pub struct KnowledgeBase {
 
     // Entity field type registry: functor symbol → [(field_name, type_term)].
     // Populated during load_entity, used by type_check_sorts.
-    entity_field_types: HashMap<Symbol, Vec<(Symbol, TermId)>>,
+    entity_field_types: HashMap<Symbol, Vec<(Symbol, crate::eval::value::Value)>>,
 
     // SortRequiresInfo facts already finalized by resolve_requires_bindings.
     // Keyed by post-reassert RuleId. Lets incremental loads skip stdlib facts.
@@ -2928,13 +2928,16 @@ impl KnowledgeBase {
         self.entity_fields.get(&functor).map(|v| v.as_slice())
     }
 
-    /// Register entity field types: functor → [(field_name, type_term)].
-    pub fn register_entity_field_types(&mut self, functor: Symbol, fields: Vec<(Symbol, TermId)>) {
+    /// Register entity field types: functor → [(field_name, type)]. WI-342: the
+    /// field type is carrier-agnostic — a `denoted`-bearing field type (a
+    /// value-in-type / dependent field) rides as `Value::Node`, a ground field
+    /// type as `Value::Term`.
+    pub fn register_entity_field_types(&mut self, functor: Symbol, fields: Vec<(Symbol, crate::eval::value::Value)>) {
         self.entity_field_types.insert(functor, fields);
     }
 
-    /// Look up the field types for an entity functor.
-    pub fn entity_field_types(&self, functor: Symbol) -> Option<&[(Symbol, TermId)]> {
+    /// Look up the field types for an entity functor (carrier-agnostic `Value`).
+    pub fn entity_field_types(&self, functor: Symbol) -> Option<&[(Symbol, crate::eval::value::Value)]> {
         self.entity_field_types.get(&functor).map(|v| v.as_slice())
     }
 

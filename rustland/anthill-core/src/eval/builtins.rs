@@ -804,7 +804,10 @@ fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) ->
             })
             .map(|(_, &sym)| sym)?
     };
-    let field_types: Vec<(Symbol, TermId)> =
+    // WI-342: field types are carrier-agnostic `Value`. Eval only inspects them
+    // to default optional fields (see `is_option_type` below); a denoted-bearing
+    // (Value::Node) field type is never an `Option`.
+    let field_types: Vec<(Symbol, Value)> =
         interp.kb.entity_field_types(canonical)?.to_vec();
     // Default missing `Option[T = …]` fields to `none()` — on-disk facts
     // omit optional named args (a `WorkItem` fact skips
@@ -820,7 +823,7 @@ fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) ->
             .find(|(s, _)| *s == *fname)
             .map(|(_, t)| *t)
             .or_else(|| pos_args.get(idx).copied());
-        let is_opt = is_option_type(interp, *ftype);
+        let is_opt = ftype.as_term().is_some_and(|t| is_option_type(interp, t));
         match field_tid {
             // The loader's partial-named-arg expansion (kb/load.rs:2752)
             // fills absent slots with a fresh Var so the discrim tree
