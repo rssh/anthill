@@ -3674,6 +3674,14 @@ end
 
 /// Helper: load stdlib + extra source into a KB. Returns the KB.
 fn load_with_stdlib(extra_source: &str) -> KnowledgeBase {
+    try_load_with_stdlib(extra_source).unwrap_or_else(|errs| panic!("load failed: {errs:?}"))
+}
+
+/// Non-panicking peer of [`load_with_stdlib`] — returns the load/type errors so a
+/// test can assert a program is REJECTED (e.g. an undeclared effect).
+fn try_load_with_stdlib(
+    extra_source: &str,
+) -> Result<KnowledgeBase, Vec<anthill_core::kb::load::LoadError>> {
     let dir = stdlib_dir();
     let files = collect_anthill_files(&dir);
     let mut all_parsed: Vec<_> = files.iter()
@@ -3690,10 +3698,8 @@ fn load_with_stdlib(extra_source: &str) -> KnowledgeBase {
     let refs: Vec<_> = all_parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .expect("load failed");
-
-    kb
+    load::load_all(&mut kb, &refs, &NullResolver)?;
+    Ok(kb)
 }
 
 
@@ -4465,16 +4471,14 @@ end
 }
 
 #[test]
-fn wi342_e2_lambda_body_calls_modify_op_grounds_effect() {
-    // WI-342 E2/E3 regression: a lambda whose body calls a `Modify[c]` operation
-    // makes a `Value::Node` effect label flow into the lambda's arrow type. The
-    // arrow's `effects_rows` is a hash-consed `TermId` (TypeResult.ty is not yet
-    // Value-carried — that migration is deferred), so the Node label must be
-    // re-grounded at that boundary (see `effects_as_term_ids` /
-    // `value_effect_to_term_id`), NOT panic (debug) or be silently dropped
-    // (release). Pre-E2 this carried a ground denoted; this asserts E2 did not
-    // regress it. (`outer` returns an arrow, so the lambda body's effects live
-    // in the returned function type.)
+fn wi342_tyslot_lambda_carries_modify_effect() {
+    // WI-342 ty-slot migration: a lambda whose body calls a `Modify[c]` op makes
+    // a `Value::Node` effect flow into the lambda's arrow type. With `TypeResult.ty`
+    // now carrier-agnostic, the LambdaBody frame builds a `Value::Node` arrow that
+    // CARRIES the effect (no per-lambda re-grounding); the op-boundary return check
+    // compares it cross-carrier against the declared (ground) `@ {Modify[s]}`.
+    //
+    // POSITIVE: the declared effect matches the lambda's actual effect → loads.
     let kb = load_with_stdlib(r#"
 namespace test.wi342lambda
   import anthill.prelude.{Cell, Int}
@@ -4486,9 +4490,36 @@ namespace test.wi342lambda
     = lambda v -> set_cell(s, v)
 end
 "#);
-    // Loading + typing must complete without panicking. The op itself loaded.
     assert!(
         kb.try_resolve_symbol("test.wi342lambda.outer").is_some(),
         "outer should have loaded",
     );
+
+    // NEGATIVE (the load-bearing assertion): if the returned arrow is declared
+    // PURE, the carried `Modify[s]` effect must be REJECTED. A pure function is a
+    // subtype of an effectful one, so were the effect silently dropped (the bug
+    // this migration removes), the lambda would type as pure and wrongly load.
+    // The op-boundary cross-carrier subtype check must surface the undeclared
+    // effect instead.
+    let pure_decl = r#"
+namespace test.wi342lambda_neg
+  import anthill.prelude.{Cell, Int}
+
+  operation set_cell(c: Cell[V = Int], v: Int) -> Cell[V = Int]
+    effects Modify[c]
+
+  operation outer(s: Cell[V = Int]) -> (Int) -> Cell[V = Int]
+    = lambda v -> set_cell(s, v)
+end
+"#;
+    match try_load_with_stdlib(pure_decl) {
+        Ok(_) => panic!(
+            "a lambda carrying Modify[s] must NOT satisfy a pure declared return \
+             type — the effect was silently dropped instead of carried + checked",
+        ),
+        Err(errs) => assert!(
+            !errs.is_empty(),
+            "expected a type error rejecting the undeclared lambda effect",
+        ),
+    }
 }

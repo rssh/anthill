@@ -2576,15 +2576,29 @@ impl KnowledgeBase {
     /// at the first builder call with a clear `resolve_symbol` message
     /// rather than silently producing malformed terms.
     pub fn make_arrow_type(&mut self, param: TermId, result: TermId, effects: &[TermId]) -> TermId {
+        let effects_rows_term = self.build_canonical_effects_rows(effects);
+        self.make_arrow_from_effects_rows(param, result, effects_rows_term)
+    }
+
+    /// Build `arrow(param, result, effects)` from an ALREADY-canonical
+    /// `effects_rows(EffectExpression)` Type. WI-342: the `Value::Node`-arrow
+    /// re-grounding path (`occ_to_term`) materializes an arrow whose
+    /// `effects` child is an occurrence-carried `effects_rows` that is already
+    /// canonical — it must NOT be re-canonicalized (it is a row, not a raw label
+    /// list). [`Self::make_arrow_type`] canonicalizes then calls this.
+    pub(crate) fn make_arrow_from_effects_rows(
+        &mut self,
+        param: TermId,
+        result: TermId,
+        effects_rows: TermId,
+    ) -> TermId {
         let arrow_sym = self.resolve_symbol("anthill.prelude.Type.arrow");
         let param_key = self.intern("param");
         let result_key = self.intern("result");
         let effects_key = self.intern("effects");
 
-        let effects_rows_term = self.build_canonical_effects_rows(effects);
-
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-        named_args.push((effects_key, effects_rows_term));
+        named_args.push((effects_key, effects_rows));
         named_args.push((param_key, param));
         named_args.push((result_key, result));
         named_args.sort_by_key(|(s, _)| s.index());

@@ -58,10 +58,12 @@ fn assert_node_identity(kb: &mut KnowledgeBase, input: &Rc<NodeOccurrence>) {
         Rc::ptr_eq(&r.node, input),
         "TypeResult.node must be the input occurrence (identity) until a rule fires",
     );
-    // node↔type coherence: Stamp wrote `r.ty` onto `r.node`.
+    // node↔type coherence: Stamp wrote `r.ty` onto `r.node`. WI-342:
+    // `inferred_type` stays a hash-consed `TermId` (the Stamp frame re-grounds
+    // the carrier-agnostic `ty`); for this ground type it is the same TermId.
     assert_eq!(
         r.node.inferred_type(),
-        Some(r.ty),
+        r.ty.as_term(),
         "the result's node carries the inferred type the Stamp frame recorded",
     );
 }

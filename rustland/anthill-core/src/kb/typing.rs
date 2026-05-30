@@ -560,7 +560,12 @@ impl TypingEnv {
 /// Result of type_check: inferred type + updated env + collected effects.
 /// Mirrors typing_pass_spec.anthill: TypeResult(type: Type, env: TypingEnv, effects: List[Type])
 pub struct TypeResult {
-    pub ty: TermId,
+    /// WI-342 ty-slot migration: the inferred type is carrier-agnostic — a
+    /// ground type rides as `Value::Term`, a denoted-bearing type (today: a
+    /// lambda arrow carrying a `Modify[c]` effect) as `Value::Node`. Consumers
+    /// that need a hash-consed `TermId` materialize via [`value_to_term_id`];
+    /// the unify/subtype sites take it directly (`Value: TermView`).
+    pub ty: Value,
     pub env: TypingEnv,
     /// WI-342 effects-vertical: effect labels are carrier-agnostic `Value`
     /// (ground → `Value::Term`, denoted-bearing → `Value::Node`). Pre-E2 every
@@ -578,9 +583,12 @@ pub struct TypeResult {
 }
 
 impl TypeResult {
-    /// Pure result — no effects.
+    /// Pure result — no effects. WI-342: takes a ground `TermId` (the common
+    /// case) and wraps it `Value::Term`, so the ~14 ground producers are
+    /// unchanged. A producer of a `Value`-carried type (the LambdaBody Node
+    /// arrow) builds `TypeResult { ty: <Value>, .. }` directly.
     pub fn pure(ty: TermId, env: TypingEnv, node: Rc<NodeOccurrence>) -> Self {
-        Self { ty, env, effects: Vec::new(), node }
+        Self { ty: Value::Term(ty), env, effects: Vec::new(), node }
     }
 }
 
@@ -660,77 +668,127 @@ fn extract_effect_resource_sym_term(kb: &KnowledgeBase, effect: TermId) -> Optio
     }
 }
 
-/// WI-342 effects-vertical: materialize carrier-agnostic effect labels to
-/// hash-consed `TermId`s for the consumers that still require them — namely the
-/// lambda-arrow builder ([`KnowledgeBase::make_arrow_type`], whose `effects_rows`
-/// is a `TermId`), which cannot hold a `Value::Node` because [`TypeResult::ty`]
-/// is still a `TermId` (the Value-carried arrow / `ty`-slot migration is
-/// deferred). A `Value::Term` is already ground; a `Value::Node` (a denoted-
-/// bearing label such as a rekeyed `Modify[s]`) is re-grounded by
-/// [`value_effect_to_term_id`] into the equivalent hash-consed term — the
-/// inverse of the loader's `effect_label_child`, lossless for the `Ref`-carried
-/// denoted shape minted today, and exactly the ground form this consumer carried
-/// pre-E2. The live Node form is still used where it matters (op-boundary region
-/// masking, which is Value-native); this re-grounds it only at the not-yet-
-/// migrated `TermId` arrow boundary. The `debug_assert` now guards a genuinely
-/// unrepresentable shape (none minted today), not the common Node case.
+/// Materialize a list of carrier-agnostic effect labels to ground `TermId`s for
+/// [`KnowledgeBase::make_arrow_type`] (its `effects_rows` is a `TermId`). Each
+/// label re-grounds via [`value_to_term_id`]. Used by the LambdaBody ground-arrow
+/// path; a lambda whose effects contain a `Value::Node` takes the Value-carried
+/// arrow path instead (WI-342 ty-slot migration), so this no longer sees a Node
+/// effect on the live lambda path.
 fn effects_as_term_ids(kb: &mut KnowledgeBase, effects: &[Value]) -> Vec<TermId> {
-    effects
-        .iter()
-        .filter_map(|e| {
-            let t = value_effect_to_term_id(kb, e);
-            debug_assert!(
-                t.is_some(),
-                "WI-342: effect label could not be grounded for the TermId arrow builder: {e:?}"
-            );
-            t
-        })
-        .collect()
+    effects.iter().map(|e| value_to_term_id(kb, e)).collect()
 }
 
-/// Materialize one carrier-agnostic effect label to a ground hash-consed
-/// `TermId`. `Value::Term` is already ground; a `Value::Node` is rebuilt by
-/// [`type_occ_to_term`]. Returns `None` only for a Node shape the term builders
-/// can't express (not minted today — see [`effects_as_term_ids`]).
-fn value_effect_to_term_id(kb: &mut KnowledgeBase, e: &Value) -> Option<TermId> {
-    match e {
-        Value::Term(t) => Some(*t),
-        Value::Node(occ) => type_occ_to_term(kb, occ),
-        _ => None,
-    }
-}
-
-/// Re-ground a `Value`-carried `Type` occurrence into the equivalent hash-consed
-/// term — the inverse of the loader's `effect_label_child` / `type_expr_to_term`.
-/// Covers the effect-label shapes (`denoted`, `parameterized`); `effects_rows` /
-/// `arrow` Node labels are not minted, so they return `None`.
-fn type_occ_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<TermId> {
-    match occ.as_type()? {
-        TypeNode::Denoted { value } => match &value.kind {
-            NodeKind::Expr { expr: Expr::Ref(s), .. } => {
-                let v = kb.alloc(Term::Ref(*s));
-                Some(kb.make_denoted(v))
-            }
-            _ => None,
-        },
-        TypeNode::Parameterized { base, bindings } => {
-            let base_term = type_child_to_term(kb, base)?;
-            let mut bs: Vec<(Symbol, TermId)> = Vec::with_capacity(bindings.len());
-            for (p, c) in bindings {
-                bs.push((*p, type_child_to_term(kb, c)?));
-            }
-            Some(kb.make_parameterized_type(base_term, &bs))
+/// WI-342 ty-slot migration: materialize a carrier-agnostic type [`Value`] to a
+/// ground hash-consed `TermId`, for the consumers that still require one — the
+/// `TermId` type builders / collections, the `inferred_type` node slot, and
+/// [`TypeError`] fields. A `Value::Term` unwraps; a `Value::Node` is re-grounded
+/// by [`occ_to_term`] (the inverse of the `make_*_occ` builders, lossless for the
+/// shapes minted today). The Node arrow flows as a `Value` only to the
+/// unify/subtype sites (`Value: TermView`); everywhere a `TermId` is needed it is
+/// re-grounded here. The `debug_assert` guards a shape the term builders can't
+/// express (none minted today); the release fallback (a fresh type var) is
+/// unreachable.
+fn value_to_term_id(kb: &mut KnowledgeBase, v: &Value) -> TermId {
+    match v {
+        Value::Term(t) => *t,
+        Value::Node(occ) => occ_to_term(kb, occ).unwrap_or_else(|| {
+            debug_assert!(false, "WI-342: type Value could not be grounded: {v:?}");
+            let sym = kb.intern("?ungrounded");
+            kb.make_type_var(sym)
+        }),
+        other => {
+            debug_assert!(false, "WI-342: non-type Value reached value_to_term_id: {other:?}");
+            let sym = kb.intern("?ungrounded");
+            kb.make_type_var(sym)
         }
-        TypeNode::EffectsRows { .. } | TypeNode::Arrow { .. } => None,
     }
+}
+
+/// Re-ground a `Value`-carried `Type` / `EffectExpression` occurrence into the
+/// equivalent hash-consed term — the total inverse of the `make_*_occ` builders
+/// (`make_denoted` / `make_parameterized_type` / `make_arrow_from_effects_rows` /
+/// `make_effects_rows_type` / `make_effect_expression_*`). `None` only for a
+/// carried-value shape the builders can't express (a non-`Ref` denoted value —
+/// not minted; same TODO as `unify_denoted_view`).
+fn occ_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<TermId> {
+    if let Some(tn) = occ.as_type() {
+        return match tn {
+            TypeNode::Denoted { value } => match &value.kind {
+                NodeKind::Expr { expr: Expr::Ref(s), .. } => {
+                    let v = kb.alloc(Term::Ref(*s));
+                    Some(kb.make_denoted(v))
+                }
+                _ => None,
+            },
+            TypeNode::Parameterized { base, bindings } => {
+                let base_term = type_child_to_term(kb, base)?;
+                let mut bs: Vec<(Symbol, TermId)> = Vec::with_capacity(bindings.len());
+                for (p, c) in bindings {
+                    bs.push((*p, type_child_to_term(kb, c)?));
+                }
+                Some(kb.make_parameterized_type(base_term, &bs))
+            }
+            TypeNode::EffectsRows { effects_expr } => {
+                let inner = type_child_to_term(kb, effects_expr)?;
+                Some(kb.make_effects_rows_type(inner))
+            }
+            TypeNode::Arrow { param, result, effects } => {
+                let p = type_child_to_term(kb, param)?;
+                let r = type_child_to_term(kb, result)?;
+                // `effects` is an already-canonical `effects_rows` child — re-ground
+                // it directly (NOT via make_arrow_type, which re-canonicalizes raw
+                // labels).
+                let e = type_child_to_term(kb, effects)?;
+                Some(kb.make_arrow_from_effects_rows(p, r, e))
+            }
+        };
+    }
+    if let Some(en) = occ.as_effect_expr() {
+        return match en {
+            EffectExprNode::Present { label } => {
+                let l = type_child_to_term(kb, label)?;
+                Some(kb.make_effect_expression_present(l))
+            }
+            EffectExprNode::Absent { label } => {
+                let l = type_child_to_term(kb, label)?;
+                Some(kb.make_effect_expression_absent(l))
+            }
+            EffectExprNode::Merge { left, right } => {
+                let l = type_child_to_term(kb, left)?;
+                let r = type_child_to_term(kb, right)?;
+                Some(kb.make_effect_expression_merge(l, r))
+            }
+            EffectExprNode::Open { tail } => {
+                let t = type_child_to_term(kb, tail)?;
+                Some(kb.make_effect_expression_open(t))
+            }
+            EffectExprNode::EmptyRow => Some(kb.make_effect_expression_empty_row()),
+        };
+    }
+    None
 }
 
 /// Re-ground a [`TypeChild`]: `Ground` is already a `TermId`; `Node` recurses
-/// through [`type_occ_to_term`].
+/// through [`occ_to_term`].
 fn type_child_to_term(kb: &mut KnowledgeBase, child: &TypeChild) -> Option<TermId> {
     match child {
         TypeChild::Ground(t) => Some(*t),
-        TypeChild::Node(n) => type_occ_to_term(kb, n),
+        TypeChild::Node(n) => occ_to_term(kb, n),
+    }
+}
+
+/// WI-342: place a carrier-agnostic type [`Value`] into a [`TypeChild`] slot of a
+/// `Value::Node` occurrence being built — `Term` → `Ground`, `Node` → `Node`.
+/// The inverse of [`type_child_to_value`]. A scalar/`Var` type value is a typer
+/// bug (types are `Term`/`Node`); re-ground it defensively so we don't panic.
+fn value_to_type_child(kb: &mut KnowledgeBase, v: &Value) -> TypeChild {
+    match v {
+        Value::Term(t) => TypeChild::Ground(*t),
+        Value::Node(occ) => TypeChild::Node(Rc::clone(occ)),
+        other => {
+            debug_assert!(false, "WI-342: non-type Value in a TypeChild slot: {other:?}");
+            TypeChild::Ground(value_to_term_id(kb, v))
+        }
     }
 }
 
@@ -2111,7 +2169,11 @@ fn build_type(
             // (possibly-rewritten) node. Ill-typed nodes (`Err`) are
             // left unstamped (`inferred_type` stays `None`).
             if let Some(Ok(r)) = results.last() {
-                r.node.set_inferred_type(r.ty);
+                // WI-342: `inferred_type` stays a hash-consed `TermId` (its
+                // readers — `min_sort`/`sort_functor_of` — only need the functor);
+                // re-ground the carrier-agnostic `ty` here.
+                let ty_term = value_to_term_id(kb, &r.ty);
+                r.node.set_inferred_type(ty_term);
             }
         }
         TypeBuildFrame::Apply { occ, fn_sym, pos_args, named_args, env, expected, fuel } => {
@@ -2210,7 +2272,8 @@ fn build_type(
             // `min_sort`: widen the receiver to its least declared sort. Read
             // the child's result type directly (don't depend on the receiver's
             // `Stamp` frame ordering).
-            let recv_sort = sort_functor_of(kb, recv.ty);
+            let recv_term = value_to_term_id(kb, &recv.ty);
+            let recv_sort = sort_functor_of(kb, recv_term);
             let dot_span = Some(occ.span.span);
             // The (typed) arg occurrences — used by both the dot-rule override
             // and the default method fallback.
@@ -2301,8 +2364,10 @@ fn build_type(
             // WI-283: keep the value's (possibly-rewritten) node to
             // reassemble the `Let` at `LetFinal` (its result is consumed here).
             let value_node = Rc::clone(&r.node);
-            let (value_ty, value_effects, mut ext_env) =
-                (Some(r.ty), r.effects, r.env);
+            // WI-342: the env binds a hash-consed `TermId` type — re-ground the
+            // let value's carrier-agnostic `ty`.
+            let value_ty = Some(value_to_term_id(kb, &r.ty));
+            let (value_effects, mut ext_env) = (r.effects, r.env);
             let bound_ty = annotation.or(value_ty);
             extend_env_from_pattern(kb, &mut ext_env, pattern, bound_ty);
             if let Some(var_name) = extract_pattern_var_name(kb, pattern) {
@@ -2346,7 +2411,9 @@ fn build_type(
         }
         TypeBuildFrame::MatchAfterScrutinee { occ, branches, outer_env, body_expected, fuel } => {
             let scr_r = results.pop().expect("MatchAfterScrutinee: missing scrutinee result");
-            let scr_ty = scr_r.as_ref().ok().map(|r| r.ty);
+            // WI-342: the scrutinee sort lookup + pattern env binding use a
+            // hash-consed `TermId`; re-ground the carrier-agnostic `ty`.
+            let scr_ty = scr_r.as_ref().ok().map(|r| value_to_term_id(kb, &r.ty));
             let scr_effects = scr_r.as_ref().ok().map(|r| r.effects.clone()).unwrap_or_default();
             // WI-283: the scrutinee's (possibly-rewritten) node for
             // reassembly — falling back to the original when it didn't type.
@@ -2447,7 +2514,9 @@ fn build_type(
                 Vec::with_capacity(branch_count);
             for (i, body_r) in branch_results.into_iter().enumerate() {
                 let body_r = body_r.expect("aggregator");
-                branch_tys.push((body_r.ty, Some(body_r.node.span.span)));
+                // WI-342: branch join works over hash-consed `TermId`s; re-ground.
+                let body_ty = value_to_term_id(kb, &body_r.ty);
+                branch_tys.push((body_ty, Some(body_r.node.span.span)));
                 // Filter effects against this branch's locals so
                 // pattern-bound resources don't leak past the case
                 // arm (their bindings live only inside the branch).
@@ -2497,7 +2566,7 @@ fn build_type(
                     }
                 }
             }
-            results.push(Ok(TypeResult { ty: result_ty, env: result_env, effects, node }));
+            results.push(Ok(TypeResult { ty: Value::Term(result_ty), env: result_env, effects, node }));
         }
         TypeBuildFrame::LambdaBody { occ, param_type, outer_env } => {
             let body_r = results.pop().expect("LambdaBody: missing body result");
@@ -2506,17 +2575,53 @@ fn build_type(
             // (see the `Expr::Lambda` visit case), so the arrow's param
             // slot and the body's view of the param agree.
             let a_val = param_type;
-            let b_val = body_r.as_ref().ok().map(|r| r.ty).unwrap_or_else(|| {
+            let body_ty: Value = body_r.as_ref().ok().map(|r| r.ty.clone()).unwrap_or_else(|| {
                 let fresh = kb.intern("?result");
-                kb.make_type_var(fresh)
+                Value::Term(kb.make_type_var(fresh))
             });
             let body_effects = body_r
                 .as_ref()
                 .ok()
                 .map(|r| r.effects.clone())
                 .unwrap_or_default();
-            let effect_tids = effects_as_term_ids(kb, &body_effects);
-            let fn_type = kb.make_arrow_type(a_val, b_val, &effect_tids);
+            // WI-342 ty-slot migration: when a body effect is carrier-poisoned
+            // (a denoted-bearing `Modify[c]` rode in as `Value::Node`), build the
+            // arrow as a `Value::Node` occurrence so the effect is CARRIED on the
+            // lambda's type rather than re-grounded — the op-boundary return check
+            // then compares it cross-carrier (`arrow_compatible_view` +
+            // `subtype_effect_rows`). When every effect is ground, the hash-consed
+            // `make_arrow_type` path is unchanged. (Label order is not
+            // load-bearing: row unify/subtype compare label sets.)
+            let fn_ty: Value = if body_effects.iter().any(|e| matches!(e, Value::Node(_))) {
+                let span = occ.span;
+                let owner = occ.owner;
+                let mut row = kb.make_empty_row_occ(span, owner);
+                for label in body_effects.iter().rev() {
+                    let label_child = value_to_type_child(kb, label);
+                    let present = kb.make_present_occ(label_child, span, owner);
+                    row = kb.make_merge_occ(
+                        TypeChild::Node(present),
+                        TypeChild::Node(row),
+                        span,
+                        owner,
+                    );
+                }
+                let effects_child =
+                    TypeChild::Node(kb.make_effects_rows_occ(TypeChild::Node(row), span, owner));
+                let result_child = value_to_type_child(kb, &body_ty);
+                let arrow = kb.make_arrow_occ(
+                    TypeChild::Ground(a_val),
+                    result_child,
+                    effects_child,
+                    span,
+                    owner,
+                );
+                Value::Node(arrow)
+            } else {
+                let b_val = value_to_term_id(kb, &body_ty);
+                let effect_tids = effects_as_term_ids(kb, &body_effects);
+                Value::Term(kb.make_arrow_type(a_val, b_val, &effect_tids))
+            };
             // Creating a lambda is itself pure — body effects live in the type.
             // If the body itself errored, propagate that error rather than
             // synthesizing a lambda over an ill-typed body.
@@ -2535,7 +2640,12 @@ fn build_type(
                     } else {
                         Rc::clone(&occ)
                     };
-                    results.push(Ok(TypeResult::pure(fn_type, unwrap_env(outer_env), node)))
+                    results.push(Ok(TypeResult {
+                        ty: fn_ty,
+                        env: unwrap_env(outer_env),
+                        effects: Vec::new(),
+                        node,
+                    }))
                 }
                 Err(e) => results.push(Err(e)),
             }
@@ -2563,9 +2673,12 @@ fn build_type(
             // against `expected` when present), not just the then-branch
             // type — an `if` with incompatible arms is otherwise silently
             // typed as its then-branch.
+            // WI-342: branch join works over hash-consed `TermId`s; re-ground.
+            let then_ty = value_to_term_id(kb, &then_r.ty);
+            let else_ty = value_to_term_id(kb, &else_r.ty);
             let branch_tys = [
-                (then_r.ty, Some(then_r.node.span.span)),
-                (else_r.ty, Some(else_r.node.span.span)),
+                (then_ty, Some(then_r.node.span.span)),
+                (else_ty, Some(else_r.node.span.span)),
             ];
             let ty = match compute_branch_join_type(kb, &branch_tys, expected, "if") {
                 Ok(ty) => ty,
@@ -2574,7 +2687,7 @@ fn build_type(
                     return;
                 }
             };
-            results.push(Ok(TypeResult { ty, env: unwrap_env(env), effects, node }));
+            results.push(Ok(TypeResult { ty: Value::Term(ty), env: unwrap_env(env), effects, node }));
         }
         TypeBuildFrame::ListLit { occ, env, element_hint, count } => {
             let drain_start = results.len() - count;
@@ -2590,7 +2703,8 @@ fn build_type(
             for r in group {
                 let r = r.expect("aggregator");
                 if element_type.is_none() {
-                    element_type = Some(r.ty);
+                    // WI-342: List/Set are parameterized over a hash-consed `TermId`.
+                    element_type = Some(value_to_term_id(kb, &r.ty));
                 }
                 effects = merge_effects(&effects, &r.effects);
             }
@@ -2601,7 +2715,7 @@ fn build_type(
             let list_base = kb.make_sort_ref_by_name("List");
             let t_sym = kb.intern("T");
             let list_type = kb.make_parameterized_type(list_base, &[(t_sym, t_val)]);
-            results.push(Ok(TypeResult { ty: list_type, env: unwrap_env(env), effects, node }));
+            results.push(Ok(TypeResult { ty: Value::Term(list_type), env: unwrap_env(env), effects, node }));
         }
         TypeBuildFrame::SetLit { occ, env, element_hint, count } => {
             let drain_start = results.len() - count;
@@ -2617,7 +2731,8 @@ fn build_type(
             for r in group {
                 let r = r.expect("aggregator");
                 if element_type.is_none() {
-                    element_type = Some(r.ty);
+                    // WI-342: List/Set are parameterized over a hash-consed `TermId`.
+                    element_type = Some(value_to_term_id(kb, &r.ty));
                 }
                 effects = merge_effects(&effects, &r.effects);
             }
@@ -2628,7 +2743,7 @@ fn build_type(
             let set_base = kb.make_sort_ref_by_name("Set");
             let t_sym = kb.intern("T");
             let set_type = kb.make_parameterized_type(set_base, &[(t_sym, t_val)]);
-            results.push(Ok(TypeResult { ty: set_type, env: unwrap_env(env), effects, node }));
+            results.push(Ok(TypeResult { ty: Value::Term(set_type), env: unwrap_env(env), effects, node }));
         }
         TypeBuildFrame::TupleLit { occ, env, pos_count, named_names } => {
             let total = pos_count + named_names.len();
@@ -2646,16 +2761,18 @@ fn build_type(
             for i in 0..pos_count {
                 let r = it.next().unwrap().expect("aggregator");
                 let field_name = kb.intern(&format!("_{}", i));
-                field_types.push((field_name, r.ty));
+                let field_ty = value_to_term_id(kb, &r.ty);
+                field_types.push((field_name, field_ty));
                 effects = merge_effects(&effects, &r.effects);
             }
             for name in named_names {
                 let r = it.next().unwrap().expect("aggregator");
-                field_types.push((name, r.ty));
+                let field_ty = value_to_term_id(kb, &r.ty);
+                field_types.push((name, field_ty));
                 effects = merge_effects(&effects, &r.effects);
             }
             let tuple_type = kb.make_named_tuple_type(&field_types);
-            results.push(Ok(TypeResult { ty: tuple_type, env: unwrap_env(env), effects, node }));
+            results.push(Ok(TypeResult { ty: Value::Term(tuple_type), env: unwrap_env(env), effects, node }));
         }
     }
 }
@@ -2731,7 +2848,7 @@ fn check_apply_iter(
             }
             if let Ok(ref arg_result) = pos_results[i] {
                 if let Some(&(_, param_type)) = op.params.get(i) {
-                    unify_types(kb, &mut subst, &TermIdView(arg_result.ty), &TermIdView(param_type));
+                    unify_types(kb, &mut subst, &arg_result.ty, &TermIdView(param_type));
                 }
                 arg_effects = merge_effects(&arg_effects, &arg_result.effects);
             }
@@ -2746,7 +2863,7 @@ fn check_apply_iter(
                     .find(|(s, _)| *s == *arg_name)
                     .map(|(_, t)| *t)
                 {
-                    unify_types(kb, &mut subst, &TermIdView(arg_result.ty), &TermIdView(param_type));
+                    unify_types(kb, &mut subst, &arg_result.ty, &TermIdView(param_type));
                 }
                 arg_effects = merge_effects(&arg_effects, &arg_result.effects);
             }
@@ -2854,7 +2971,7 @@ fn check_apply_iter(
                         },
                     );
                     return Ok(TypeResult {
-                        ty: resolved_ret,
+                        ty: Value::Term(resolved_ret),
                         env: env.clone(),
                         effects,
                         node: Rc::clone(occ),
@@ -3067,7 +3184,7 @@ fn check_apply_iter(
             }
         }
 
-        return Ok(TypeResult { ty: resolved_ret, env: env.clone(), effects, node: Rc::clone(occ) });
+        return Ok(TypeResult { ty: Value::Term(resolved_ret), env: env.clone(), effects, node: Rc::clone(occ) });
     }
 
     // Path 2: variable with arrow type
@@ -3076,7 +3193,7 @@ fn check_apply_iter(
             // WI-342: `extract_function_type_parts` yields ground `TermId` effect
             // labels (read off a hash-consed arrow type) — wrap as `Value::Term`.
             let effects = effects.into_iter().map(Value::Term).collect();
-            return Ok(TypeResult { ty: ret_type, env: env.clone(), effects, node: Rc::clone(occ) });
+            return Ok(TypeResult { ty: Value::Term(ret_type), env: env.clone(), effects, node: Rc::clone(occ) });
         }
     }
 
@@ -3091,7 +3208,7 @@ fn check_apply_iter(
     let _ = pos_args;
     let _ = named_args;
     lookup_operation_return_type(kb, fn_sym)
-        .map(|ty| TypeResult { ty, env: env.clone(), effects, node: Rc::clone(occ) })
+        .map(|ty| TypeResult { ty: Value::Term(ty), env: env.clone(), effects, node: Rc::clone(occ) })
         .ok_or(TypeError::UnknownApplyFunctor { span, name: fn_sym })
 }
 
@@ -5239,23 +5356,26 @@ fn check_tuple_literal_constructor(
 
     collect_arg_errors(pos_results.iter().chain(named_results.iter()))?;
 
-    let pos_labeled = pos_results
-        .iter()
-        .enumerate()
-        .map(|(i, r)| (kb.intern(&format!("_{}", i)), r.as_ref().expect("aggregator")));
-    let named_labeled = named_args
-        .iter()
-        .zip(named_results.iter())
-        .map(|((name, _), r)| (*name, r.as_ref().expect("aggregator")));
+    // Collect (field label, result) eagerly — interning the positional `_i`
+    // labels here releases the `kb` borrow before the `value_to_term_id` loop
+    // below also needs `&mut kb` (WI-342).
+    let mut labeled: Vec<(Symbol, &TypeResult)> = Vec::new();
+    for (i, r) in pos_results.iter().enumerate() {
+        labeled.push((kb.intern(&format!("_{}", i)), r.as_ref().expect("aggregator")));
+    }
+    for ((name, _), r) in named_args.iter().zip(named_results.iter()) {
+        labeled.push((*name, r.as_ref().expect("aggregator")));
+    }
 
     let mut effects: Vec<Value> = Vec::new();
     let mut tuple_fields: Vec<(Symbol, TermId)> = Vec::new();
-    for (label, r) in pos_labeled.chain(named_labeled) {
-        tuple_fields.push((label, r.ty));
+    for (label, r) in labeled {
+        let field_ty = value_to_term_id(kb, &r.ty);
+        tuple_fields.push((label, field_ty));
         effects = merge_effects(&effects, &r.effects);
     }
     let tuple_ty = kb.make_named_tuple_type(&tuple_fields);
-    Ok(TypeResult { ty: tuple_ty, env: env.clone(), effects, node: Rc::clone(occ) })
+    Ok(TypeResult { ty: Value::Term(tuple_ty), env: env.clone(), effects, node: Rc::clone(occ) })
 }
 
 /// Type a `ListLiteral` / `SetLiteral` that reached the constructor checker
@@ -5279,7 +5399,7 @@ fn check_seq_literal_constructor(
     for r in pos_results {
         let r = r.as_ref().expect("aggregator");
         if element_type.is_none() {
-            element_type = Some(r.ty);
+            element_type = Some(value_to_term_id(kb, &r.ty));
         }
         effects = merge_effects(&effects, &r.effects);
     }
@@ -5290,7 +5410,7 @@ fn check_seq_literal_constructor(
     let base = kb.make_sort_ref_by_name(base_name);
     let t_sym = kb.intern("T");
     let seq_type = kb.make_parameterized_type(base, &[(t_sym, t_val)]);
-    Ok(TypeResult { ty: seq_type, env: env.clone(), effects, node: Rc::clone(occ) })
+    Ok(TypeResult { ty: Value::Term(seq_type), env: env.clone(), effects, node: Rc::clone(occ) })
 }
 
 /// Non-recursive Constructor checker — peer of `check_apply_iter`.
@@ -5376,7 +5496,7 @@ fn check_constructor_iter(
     for &(field_sym, declared_type) in &field_types {
         if let Some((idx, _)) = named_args.iter().enumerate().find(|(_, (s, _))| *s == field_sym) {
             if let Ok(ref r) = named_results[idx] {
-                unify_types(kb, &mut subst, &TermIdView(r.ty), &TermIdView(declared_type));
+                unify_types(kb, &mut subst, &r.ty, &TermIdView(declared_type));
                 effects = merge_effects(&effects, &r.effects);
             }
         }
@@ -5385,14 +5505,14 @@ fn check_constructor_iter(
     for (i, r_opt) in pos_results.iter().enumerate() {
         if let Some(&(_, declared_type)) = field_types.get(i) {
             if let Ok(r) = r_opt {
-                unify_types(kb, &mut subst, &TermIdView(r.ty), &TermIdView(declared_type));
+                unify_types(kb, &mut subst, &r.ty, &TermIdView(declared_type));
                 effects = merge_effects(&effects, &r.effects);
             }
         }
     }
 
     if subst.bindings.is_empty() {
-        return Ok(TypeResult { ty: parent_type, env: env.clone(), effects, node: Rc::clone(occ) });
+        return Ok(TypeResult { ty: Value::Term(parent_type), env: env.clone(), effects, node: Rc::clone(occ) });
     }
 
     // Build parameterized type from the sort's type params + substitution bindings.
@@ -5403,9 +5523,9 @@ fn check_constructor_iter(
     let parent_sym = match parent_sort {
         Some(parent_tid) => match kb.get_term(parent_tid) {
             Term::Fn { functor, .. } => *functor,
-            _ => return Ok(TypeResult { ty: parent_type, env: env.clone(), effects, node: Rc::clone(occ) }),
+            _ => return Ok(TypeResult { ty: Value::Term(parent_type), env: env.clone(), effects, node: Rc::clone(occ) }),
         },
-        None => return Ok(TypeResult { ty: parent_type, env: env.clone(), effects, node: Rc::clone(occ) }),
+        None => return Ok(TypeResult { ty: Value::Term(parent_type), env: env.clone(), effects, node: Rc::clone(occ) }),
     };
 
     let alias_sym = kb.try_resolve_symbol("SortAlias");
@@ -5443,11 +5563,11 @@ fn check_constructor_iter(
     }
 
     if param_bindings.is_empty() {
-        Ok(TypeResult { ty: parent_type, env: env.clone(), effects, node: Rc::clone(occ) })
+        Ok(TypeResult { ty: Value::Term(parent_type), env: env.clone(), effects, node: Rc::clone(occ) })
     } else {
         let base = kb.make_sort_ref(parent_sym);
         let param_type = kb.make_parameterized_type(base, &param_bindings);
-        Ok(TypeResult { ty: param_type, env: env.clone(), effects, node: Rc::clone(occ) })
+        Ok(TypeResult { ty: Value::Term(param_type), env: env.clone(), effects, node: Rc::clone(occ) })
     }
 }
 
@@ -9465,12 +9585,18 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                     kb.set_op_body_node(op.op_sym, Rc::clone(&result.node));
                 }
                 let mut subst = Substitution::new();
-                if !types_compatible(kb, &mut subst, &TermIdView(result.ty), &TermIdView(op.return_type)) {
+                // WI-342 ty-slot: the result type is carrier-agnostic. The
+                // subtype check takes it directly (`Value: TermView`) — this is
+                // where a lambda's `Value::Node` arrow flows cross-carrier against
+                // the declared (ground) return arrow. The `TypeError` field stays
+                // a `TermId`, so re-ground for the diagnostic.
+                if !types_compatible(kb, &mut subst, &result.ty, &TermIdView(op.return_type)) {
+                    let actual = value_to_term_id(kb, &result.ty);
                     errors.push(TypeError::TypeMismatch {
                         span: None,
                         context: TypeErrorContext::OperationReturn { op_name: op.op_sym },
                         expected: op.return_type,
-                        actual: result.ty,
+                        actual,
                     });
                 }
 
