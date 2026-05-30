@@ -642,42 +642,38 @@ fn extract_effect_resource_sym_term(kb: &KnowledgeBase, effect: TermId) -> Optio
     }
 }
 
-/// Merge two effect lists (set union by TermId).
 /// WI-342 effects-vertical: materialize carrier-agnostic effect labels back to
 /// hash-consed `TermId`s for the builders that still require them (e.g.
 /// `make_arrow_type`, which folds labels into a `TermId` `effects_rows`). Lossless
-/// for `Value::Term` (every label pre-E2). A `Value::Node` label would need a
-/// Value-carried arrow builder + a Value-carried `ty` slot — out of scope until a
-/// lambda actually accumulates a denoted-bearing effect (E2); assert rather than
-/// silently drop a label from a function type.
+/// for `Value::Term` (every label pre-E2). A `Value::Node` label can't be
+/// represented in a `TermId` arrow — it needs a Value-carried arrow builder + a
+/// Value-carried `ty` slot, which E2 introduces (this path is then retired).
+/// Until then a Node label is unreachable here: `debug_assert` panics in
+/// tests/CI (the regression guard); the release `None`-drop is a stopgap, not a
+/// sanctioned widening — E2 must land before any producer mints a Node effect
+/// into a lambda body.
 fn effects_as_term_ids(effects: &[Value]) -> Vec<TermId> {
     effects
         .iter()
-        .filter_map(|e| match e {
-            Value::Term(t) => Some(*t),
-            _ => {
-                debug_assert!(false, "WI-342 E1: Value::Node effect label reached a TermId arrow builder");
-                None
-            }
+        .filter_map(|e| {
+            let t = e.as_term();
+            debug_assert!(
+                t.is_some(),
+                "WI-342 E1: Value::Node effect label reached a TermId arrow builder"
+            );
+            t
         })
         .collect()
 }
 
+/// Merge two effect lists (set union). WI-342 effects-vertical: dedup
+/// carrier-agnostically via [`Value::scalar_eq`] (ground labels by `TermId`; a
+/// `Value::Node` label has no structural `Eq` so it is always pushed — harmless,
+/// set semantics are recovered by the row canonicalizer / pairing).
 fn merge_effects(a: &[Value], b: &[Value]) -> Vec<Value> {
     let mut result = a.to_vec();
     for e in b {
-        // WI-342 effects-vertical: dedup carrier-agnostically. `Value` has no
-        // `PartialEq`, so ground labels (`Value::Term`, the only form pre-E2)
-        // dedup by `TermId`; a `Value::Node` label has no structural `Eq` here
-        // and is always pushed (set semantics are recovered by the row
-        // canonicalizer / pairing; duplicates are harmless).
-        let dup = match e {
-            Value::Term(t) => result
-                .iter()
-                .any(|r| matches!(r, Value::Term(rt) if rt == t)),
-            _ => false,
-        };
-        if !dup {
+        if !result.iter().any(|r| r.scalar_eq(e)) {
             result.push(e.clone());
         }
     }

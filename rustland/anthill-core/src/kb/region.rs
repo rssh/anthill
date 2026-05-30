@@ -154,11 +154,7 @@ fn rekey_resource_value(kb: &mut KnowledgeBase, effect: &Value, from: Symbol, to
 /// `Value` has no `PartialEq`; ground labels dedup by `TermId` (every label
 /// pre-E2), a `Value::Node` label is always pushed (harmless).
 fn push_effect_dedup(out: &mut Vec<Value>, effect: Value) {
-    let dup = match &effect {
-        Value::Term(t) => out.iter().any(|e| matches!(e, Value::Term(et) if et == t)),
-        _ => false,
-    };
-    if !dup {
+    if !out.iter().any(|e| e.scalar_eq(&effect)) {
         out.push(effect);
     }
 }

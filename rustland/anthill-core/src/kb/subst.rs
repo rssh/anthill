@@ -191,13 +191,10 @@ impl Substitution {
     {
         let existing = self.lacks.entry(var).or_default();
         for l in labels {
-            let dup = match &l {
-                Value::Term(t) => existing
-                    .iter()
-                    .any(|e| matches!(e, Value::Term(et) if et == t)),
-                _ => false,
-            };
-            if !dup {
+            // Dedup carrier-agnostically via `Value::scalar_eq` (ground labels
+            // by `TermId`; `Value::Node` has no structural `Eq` → always pushed,
+            // harmless — `label_violates_lacks` is idempotent).
+            if !existing.iter().any(|e| e.scalar_eq(&l)) {
                 existing.push(l);
             }
         }
