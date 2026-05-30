@@ -792,6 +792,53 @@ fn value_to_type_child(kb: &mut KnowledgeBase, v: &Value) -> TypeChild {
     }
 }
 
+/// WI-342: re-ground any [`TermView`] to a hash-consed `TermId`. Bridges the
+/// view-dispatch fallback for functor pairs whose carrier-agnostic arm isn't
+/// wired yet (`parameterized`-vs-`sort_ref`, `named_tuple`, …) — re-grounding is
+/// lossless, so delegating such a pair to the proven `*_term_dispatch` is sound
+/// and strictly more complete than refusing (`_ => false`). The per-arm view
+/// wirings remain the eventual replacement for this bridge.
+fn view_to_term_id(kb: &mut KnowledgeBase, v: &impl TermView) -> TermId {
+    match v.as_bind_value() {
+        BindValue::Term(t) => t,
+        BindValue::Value(val) => value_to_term_id(kb, &val),
+        other => {
+            debug_assert!(false, "WI-342: cannot re-ground TermView to TermId: {other:?}");
+            let sym = kb.intern("?ungrounded");
+            kb.make_type_var(sym)
+        }
+    }
+}
+
+/// WI-342: build `parameterized(base, bindings)` carrier-agnostically. When any
+/// binding value is a `Value::Node` (e.g. a `List` whose element type is a
+/// lambda-arrow carrying `Modify[c]`), mint a `Value::Node` via
+/// [`KnowledgeBase::make_parameterized_occ`] so the poisoned child is CARRIED,
+/// not re-grounded; otherwise the hash-consed [`KnowledgeBase::make_parameterized_type`].
+/// `base` is the ground `sort_ref` (`List`/`Set`/…); `span`/`owner` stamp the new
+/// occurrence when Node-carried.
+fn parameterized_value(
+    kb: &mut KnowledgeBase,
+    base: TermId,
+    bindings: &[(Symbol, Value)],
+    span: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+) -> Value {
+    if bindings.iter().any(|(_, v)| matches!(v, Value::Node(_))) {
+        let mut children: Vec<(Symbol, TypeChild)> = Vec::with_capacity(bindings.len());
+        for (s, v) in bindings {
+            children.push((*s, value_to_type_child(kb, v)));
+        }
+        Value::Node(kb.make_parameterized_occ(TypeChild::Ground(base), children, span, owner))
+    } else {
+        let mut terms: Vec<(Symbol, TermId)> = Vec::with_capacity(bindings.len());
+        for (s, v) in bindings {
+            terms.push((*s, value_to_term_id(kb, v)));
+        }
+        Value::Term(kb.make_parameterized_type(base, &terms))
+    }
+}
+
 /// Merge two effect lists (set union). WI-342 effects-vertical: dedup
 /// carrier-agnostically via [`Value::structural_eq`] — ground labels compare by
 /// `TermId` (its `scalar_eq` fallback), and a `Value::Node` label (now live —
@@ -2510,13 +2557,13 @@ fn build_type(
                 Rc::clone(&occ)
             };
             let mut effects = scr_effects;
-            let mut branch_tys: Vec<(TermId, Option<Span>)> =
+            // WI-342: branch types are carrier-agnostic `Value`s — a branch may be
+            // a `Value::Node` lambda arrow; the join carries it (no re-grounding).
+            let mut branch_tys: Vec<(Value, Option<Span>)> =
                 Vec::with_capacity(branch_count);
             for (i, body_r) in branch_results.into_iter().enumerate() {
                 let body_r = body_r.expect("aggregator");
-                // WI-342: branch join works over hash-consed `TermId`s; re-ground.
-                let body_ty = value_to_term_id(kb, &body_r.ty);
-                branch_tys.push((body_ty, Some(body_r.node.span.span)));
+                branch_tys.push((body_r.ty.clone(), Some(body_r.node.span.span)));
                 // Filter effects against this branch's locals so
                 // pattern-bound resources don't leak past the case
                 // arm (their bindings live only inside the branch).
@@ -2530,7 +2577,7 @@ fn build_type(
             // result is the join (a common supertype) of the branch types,
             // and branches with no common supertype are a type error rather
             // than being silently typed as branch 0.
-            let result_ty = match compute_branch_join_type(kb, &branch_tys, body_expected, "match") {
+            let result_ty: Value = match compute_branch_join_type(kb, &branch_tys, body_expected, "match") {
                 Ok(ty) => ty,
                 Err(e) => {
                     results.push(Err(e));
@@ -2566,7 +2613,7 @@ fn build_type(
                     }
                 }
             }
-            results.push(Ok(TypeResult { ty: Value::Term(result_ty), env: result_env, effects, node }));
+            results.push(Ok(TypeResult { ty: result_ty, env: result_env, effects, node }));
         }
         TypeBuildFrame::LambdaBody { occ, param_type, outer_env } => {
             let body_r = results.pop().expect("LambdaBody: missing body result");
@@ -2673,21 +2720,20 @@ fn build_type(
             // against `expected` when present), not just the then-branch
             // type — an `if` with incompatible arms is otherwise silently
             // typed as its then-branch.
-            // WI-342: branch join works over hash-consed `TermId`s; re-ground.
-            let then_ty = value_to_term_id(kb, &then_r.ty);
-            let else_ty = value_to_term_id(kb, &else_r.ty);
+            // WI-342: branch types are carrier-agnostic `Value`s (a branch may be
+            // a `Value::Node` lambda arrow); the join carries it (no re-grounding).
             let branch_tys = [
-                (then_ty, Some(then_r.node.span.span)),
-                (else_ty, Some(else_r.node.span.span)),
+                (then_r.ty.clone(), Some(then_r.node.span.span)),
+                (else_r.ty.clone(), Some(else_r.node.span.span)),
             ];
-            let ty = match compute_branch_join_type(kb, &branch_tys, expected, "if") {
+            let ty: Value = match compute_branch_join_type(kb, &branch_tys, expected, "if") {
                 Ok(ty) => ty,
                 Err(e) => {
                     results.push(Err(e));
                     return;
                 }
             };
-            results.push(Ok(TypeResult { ty: Value::Term(ty), env: unwrap_env(env), effects, node }));
+            results.push(Ok(TypeResult { ty, env: unwrap_env(env), effects, node }));
         }
         TypeBuildFrame::ListLit { occ, env, element_hint, count } => {
             let drain_start = results.len() - count;
@@ -2698,24 +2744,26 @@ fn build_type(
             }
             // WI-283: reassemble from the (possibly-rewritten) elements.
             let node = reassemble_if_enabled(simp_enabled, &occ, &group);
+            let (span, owner) = (occ.span, occ.owner);
             let mut effects = Vec::new();
-            let mut element_type: Option<TermId> = element_hint;
+            // WI-342: keep the element type carrier-agnostic so a `Value::Node`
+            // element (e.g. a list of effectful lambdas) is CARRIED, not re-grounded.
+            let mut element_type: Option<Value> = element_hint.map(Value::Term);
             for r in group {
                 let r = r.expect("aggregator");
                 if element_type.is_none() {
-                    // WI-342: List/Set are parameterized over a hash-consed `TermId`.
-                    element_type = Some(value_to_term_id(kb, &r.ty));
+                    element_type = Some(r.ty.clone());
                 }
                 effects = merge_effects(&effects, &r.effects);
             }
             let t_val = element_type.unwrap_or_else(|| {
                 let fresh = kb.intern("?T");
-                kb.make_type_var(fresh)
+                Value::Term(kb.make_type_var(fresh))
             });
             let list_base = kb.make_sort_ref_by_name("List");
             let t_sym = kb.intern("T");
-            let list_type = kb.make_parameterized_type(list_base, &[(t_sym, t_val)]);
-            results.push(Ok(TypeResult { ty: Value::Term(list_type), env: unwrap_env(env), effects, node }));
+            let list_type = parameterized_value(kb, list_base, &[(t_sym, t_val)], span, owner);
+            results.push(Ok(TypeResult { ty: list_type, env: unwrap_env(env), effects, node }));
         }
         TypeBuildFrame::SetLit { occ, env, element_hint, count } => {
             let drain_start = results.len() - count;
@@ -2726,24 +2774,25 @@ fn build_type(
             }
             // WI-283: reassemble from the (possibly-rewritten) elements.
             let node = reassemble_if_enabled(simp_enabled, &occ, &group);
+            let (span, owner) = (occ.span, occ.owner);
             let mut effects = Vec::new();
-            let mut element_type: Option<TermId> = element_hint;
+            // WI-342: carrier-agnostic element type (carry a `Value::Node` element).
+            let mut element_type: Option<Value> = element_hint.map(Value::Term);
             for r in group {
                 let r = r.expect("aggregator");
                 if element_type.is_none() {
-                    // WI-342: List/Set are parameterized over a hash-consed `TermId`.
-                    element_type = Some(value_to_term_id(kb, &r.ty));
+                    element_type = Some(r.ty.clone());
                 }
                 effects = merge_effects(&effects, &r.effects);
             }
             let t_val = element_type.unwrap_or_else(|| {
                 let fresh = kb.intern("?T");
-                kb.make_type_var(fresh)
+                Value::Term(kb.make_type_var(fresh))
             });
             let set_base = kb.make_sort_ref_by_name("Set");
             let t_sym = kb.intern("T");
-            let set_type = kb.make_parameterized_type(set_base, &[(t_sym, t_val)]);
-            results.push(Ok(TypeResult { ty: Value::Term(set_type), env: unwrap_env(env), effects, node }));
+            let set_type = parameterized_value(kb, set_base, &[(t_sym, t_val)], span, owner);
+            results.push(Ok(TypeResult { ty: set_type, env: unwrap_env(env), effects, node }));
         }
         TypeBuildFrame::TupleLit { occ, env, pos_count, named_names } => {
             let total = pos_count + named_names.len();
@@ -5394,23 +5443,26 @@ fn check_seq_literal_constructor(
     // Defensive (the constructor checker already surfaced arg errors before
     // routing here): never `.expect` an `Err` element result.
     collect_arg_errors(pos_results.iter())?;
-    let mut element_type = expected.and_then(|e| extract_type_param(kb, e, "T"));
+    // WI-342: carrier-agnostic element type — a `Value::Node` element (an
+    // effectful lambda) is carried into the `List`/`Set` parameterization.
+    let mut element_type: Option<Value> =
+        expected.and_then(|e| extract_type_param(kb, e, "T")).map(Value::Term);
     let mut effects: Vec<Value> = Vec::new();
     for r in pos_results {
         let r = r.as_ref().expect("aggregator");
         if element_type.is_none() {
-            element_type = Some(value_to_term_id(kb, &r.ty));
+            element_type = Some(r.ty.clone());
         }
         effects = merge_effects(&effects, &r.effects);
     }
     let t_val = element_type.unwrap_or_else(|| {
         let fresh = kb.intern("?T");
-        kb.make_type_var(fresh)
+        Value::Term(kb.make_type_var(fresh))
     });
     let base = kb.make_sort_ref_by_name(base_name);
     let t_sym = kb.intern("T");
-    let seq_type = kb.make_parameterized_type(base, &[(t_sym, t_val)]);
-    Ok(TypeResult { ty: Value::Term(seq_type), env: env.clone(), effects, node: Rc::clone(occ) })
+    let seq_type = parameterized_value(kb, base, &[(t_sym, t_val)], occ.span, occ.owner);
+    Ok(TypeResult { ty: seq_type, env: env.clone(), effects, node: Rc::clone(occ) })
 }
 
 /// Non-recursive Constructor checker — peer of `check_apply_iter`.
@@ -6148,14 +6200,17 @@ fn unify_view_structural<A: TermView, B: TermView>(
         // unify of the inner `effects_expr`). Keep them consistent — defer to
         // the dispatch-consolidation step rather than introduce a carrier-
         // dependent answer for the same functor pair.
-        // P4-B2/#11: `parameterized`-vs-`sort_ref` (binds the base sort's
-        // type-param vars) and `named_tuple` for a `Value` carrier are wired
-        // when `unify_parameterized_with_sort_ref` / `unify_named_tuple` are made
-        // carrier-agnostic; `types_compatible` gains the matching Value arms in
-        // the same step (the unify/subtype lockstep). Until then refuse rather
-        // than mis-unify — sound, but a false-negative for those Value-carried
-        // forms.
-        _ => false,
+        // WI-342: any functor pair without a carrier-agnostic arm yet
+        // (`parameterized`-vs-`sort_ref`, `named_tuple`, top-level `effects_rows`)
+        // re-grounds both sides and delegates to the proven `unify_term_dispatch`
+        // — sound (re-grounding is lossless) and strictly more complete than the
+        // old `_ => false` false-negative. The per-arm view wirings replace this
+        // bridge incrementally.
+        _ => {
+            let at = view_to_term_id(kb, a);
+            let bt = view_to_term_id(kb, b);
+            unify_term_dispatch(kb, subst, at, bt)
+        }
     }
 }
 
@@ -7685,14 +7740,16 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
         (Some("parameterized"), Some("parameterized")) => {
             parameterized_compatible_view(kb, subst, &a, &e)
         }
-        // Deferred (sound refuse), in lockstep with `unify_view_structural`'s
-        // same gaps: `arrow`-vs-`Function[…]` (arrow_function_compatible),
-        // `parameterized`-vs-`sort_ref` (base_sort_compatible), `named_tuple`.
-        // `sort_ref`/`named_tuple` are never `Value::Node` (no `denoted` to
-        // poison them) and a ground child routes to the term dispatch, so only
-        // the arrow-vs-Function case is reachable here — and it refuses on both
-        // the unify and subtype sides, so the two relations stay consistent.
-        _ => false,
+        // WI-342: any pair without a carrier-agnostic subtype arm yet
+        // (`arrow`-vs-`Function[…]`, `parameterized`-vs-`sort_ref`, `named_tuple`)
+        // re-grounds both sides and delegates to `types_compatible_term_dispatch`
+        // — sound (lossless) and strictly more complete than the old `_ => false`.
+        // In lockstep with `unify_view_structural`'s identical bridge.
+        _ => {
+            let at = view_to_term_id(kb, &a);
+            let et = view_to_term_id(kb, &e);
+            types_compatible_term_dispatch(kb, subst, at, et)
+        }
     }
 }
 
@@ -7972,6 +8029,16 @@ fn widen_to_parent_sort(kb: &mut KnowledgeBase, t: TermId) -> Option<TermId> {
     Some(sort_term_to_type(kb, parent))
 }
 
+/// WI-342: carrier-agnostic widen for [`join_types`]. Only a nominal sort widens
+/// up the entity→sort lattice; a `Value::Node` (an arrow / denoted-bearing type)
+/// has no parent sort, so two incomparable Node arrows correctly fail to join.
+fn widen_value(kb: &mut KnowledgeBase, v: &Value) -> Option<Value> {
+    match v {
+        Value::Term(t) => widen_to_parent_sort(kb, *t).map(Value::Term),
+        _ => None,
+    }
+}
+
 /// WI-287: a common supertype (an upper bound) of two branch types in the
 /// (top-less) Type lattice, or `None` when they have none. NOT necessarily
 /// the strict least upper bound: a polymorphic `none()`/`nil()` typed bare
@@ -7989,11 +8056,16 @@ fn widen_to_parent_sort(kb: &mut KnowledgeBase, t: TermId) -> Option<TermId> {
 /// decides; failing both, the sides are widened one level up the
 /// entity→enclosing-sort chain and retried. The climb is bounded — each
 /// step strictly ascends or a side stops widening — so it terminates.
-fn join_types(kb: &mut KnowledgeBase, a: TermId, b: TermId) -> Option<TermId> {
-    if type_functor_name(kb, a) == Some("type_var") {
+fn join_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<Value> {
+    // WI-342: carrier-agnostic — `a`/`b` are `Value`s (a branch may be a
+    // `Value::Node` lambda arrow). The join only ever RETURNS one of its inputs
+    // (or widens a nominal side up the lattice); it never constructs a new type,
+    // so no occurrence-level lub is needed. `types_compatible` is already
+    // carrier-agnostic; we pass the `Value`s directly rather than re-grounding.
+    if resolved_functor_name(kb, &a) == Some("type_var") {
         return Some(b);
     }
-    if type_functor_name(kb, b) == Some("type_var") {
+    if resolved_functor_name(kb, &b) == Some("type_var") {
         return Some(a);
     }
     let (mut a, mut b) = (a, b);
@@ -8005,7 +8077,7 @@ fn join_types(kb: &mut KnowledgeBase, a: TermId, b: TermId) -> Option<TermId> {
         // checking `a <: b` doesn't influence the `b <: a` check.
         let mut subst_ab = Substitution::new();
         let mut subst_ba = Substitution::new();
-        match (types_compatible(kb, &mut subst_ab, &TermIdView(a), &TermIdView(b)), types_compatible(kb, &mut subst_ba, &TermIdView(b), &TermIdView(a))) {
+        match (types_compatible(kb, &mut subst_ab, &a, &b), types_compatible(kb, &mut subst_ba, &b, &a)) {
             // `a <: b` only: `b` is the supertype.
             (true, false) => return Some(b),
             // `b <: a` only: `a` is the supertype.
@@ -8020,21 +8092,19 @@ fn join_types(kb: &mut KnowledgeBase, a: TermId, b: TermId) -> Option<TermId> {
             // `List[Int]`/`List[String]` are NOT mutually compatible — the
             // parameterized arm checks bindings — so they fall through to
             // the widen step.)
-            (true, true) => return Some(more_general_type(kb, a, b)),
+            (true, true) => return Some(more_general_type(kb, &a, &b)),
             // Incomparable: widen the entity side(s) one level and retry.
             (false, false) => {
-                let wa = widen_to_parent_sort(kb, a);
-                let wb = widen_to_parent_sort(kb, b);
-                match (wa, wb) {
-                    (None, None) => return None,
-                    _ => {
-                        if let Some(x) = wa {
-                            a = x;
-                        }
-                        if let Some(y) = wb {
-                            b = y;
-                        }
-                    }
+                let wa = widen_value(kb, &a);
+                let wb = widen_value(kb, &b);
+                if wa.is_none() && wb.is_none() {
+                    return None;
+                }
+                if let Some(x) = wa {
+                    a = x;
+                }
+                if let Some(y) = wb {
+                    b = y;
                 }
             }
         }
@@ -8057,11 +8127,11 @@ fn join_types(kb: &mut KnowledgeBase, a: TermId, b: TermId) -> Option<TermId> {
 /// return/annotation pins the bindings via checked mode regardless; this
 /// only affects annotation-free synthesis. Returns `a` when neither side
 /// is parameterized (identical types). Keeps [`join_types`] commutative.
-fn more_general_type(kb: &KnowledgeBase, a: TermId, b: TermId) -> TermId {
-    match (type_functor_name(kb, a), type_functor_name(kb, b)) {
-        (Some("sort_ref"), Some("parameterized")) => a,
-        (Some("parameterized"), Some("sort_ref")) => b,
-        _ => a,
+fn more_general_type(kb: &KnowledgeBase, a: &Value, b: &Value) -> Value {
+    match (resolved_functor_name(kb, a), resolved_functor_name(kb, b)) {
+        (Some("sort_ref"), Some("parameterized")) => a.clone(),
+        (Some("parameterized"), Some("sort_ref")) => b.clone(),
+        _ => a.clone(),
     }
 }
 
@@ -8084,18 +8154,22 @@ fn more_general_type(kb: &KnowledgeBase, a: TermId, b: TermId) -> TermId {
 /// the join.
 fn compute_branch_join_type(
     kb: &mut KnowledgeBase,
-    branch_tys: &[(TermId, Option<Span>)],
+    branch_tys: &[(Value, Option<Span>)],
     expected: Option<TermId>,
     construct: &str,
-) -> Result<TermId, TypeError> {
+) -> Result<Value, TypeError> {
     // Intern once up front so the type-lattice borrows below can take
     // `kb` immutably without colliding with a deferred `kb.intern`.
     let branch_ctx = TypeErrorContext::Rule {
         name: kb.intern(construct),
         field: RuleField::Whole,
     };
-    let (first_ty, _) = match branch_tys.first() {
-        Some(&b) => b,
+    // WI-342: branch types are carrier-agnostic `Value`s (a branch may be a
+    // `Value::Node` lambda arrow). The join returns one of them — no
+    // re-grounding. `TypeError` fields stay `TermId`, so re-ground only at the
+    // (cold) diagnostic-construction sites.
+    let first_ty: Value = match branch_tys.first() {
+        Some((b, _)) => b.clone(),
         None => {
             return Err(TypeError::Other {
                 span: None,
@@ -8111,15 +8185,16 @@ fn compute_branch_join_type(
     // This is the enforcement the old code skipped — it only ever
     // type-checked the synthesized type, which was branch 0.
     if let Some(exp) = expected {
-        for &(bt, span) in branch_tys {
+        for (bt, span) in branch_tys {
             // WI-335: each branch's conformance check is independent.
             let mut subst = Substitution::new();
-            if !types_compatible(kb, &mut subst, &TermIdView(bt), &TermIdView(exp)) {
+            if !types_compatible(kb, &mut subst, bt, &TermIdView(exp)) {
+                let actual = value_to_term_id(kb, bt);
                 return Err(TypeError::TypeMismatch {
-                    span,
+                    span: *span,
                     context: branch_ctx,
                     expected: exp,
-                    actual: bt,
+                    actual,
                 });
             }
         }
@@ -8128,12 +8203,12 @@ fn compute_branch_join_type(
     // Synthesized type: the join (common supertype) of the branch types. Track the
     // branch that breaks the join (no common supertype) for diagnostics.
     let mut acc = first_ty;
-    let mut clash: Option<(TermId, Option<Span>)> = None;
-    for &(bt, span) in &branch_tys[1..] {
-        match join_types(kb, acc, bt) {
+    let mut clash: Option<(Value, Option<Span>)> = None;
+    for (bt, span) in &branch_tys[1..] {
+        match join_types(kb, acc.clone(), bt.clone()) {
             Some(j) => acc = j,
             None => {
-                clash = Some((bt, span));
+                clash = Some((bt.clone(), *span));
                 break;
             }
         }
@@ -8146,10 +8221,10 @@ fn compute_branch_join_type(
         (None, None) => Ok(acc),
         (None, Some(exp)) => {
             let mut subst = Substitution::new();
-            if acc == exp || types_compatible(kb, &mut subst, &TermIdView(acc), &TermIdView(exp)) {
+            if types_compatible(kb, &mut subst, &acc, &TermIdView(exp)) {
                 Ok(acc)
             } else {
-                Ok(exp)
+                Ok(Value::Term(exp))
             }
         }
         // No climb-computed join, but every branch conforms to `expected`
@@ -8161,24 +8236,30 @@ fn compute_branch_join_type(
         // type_var guard in the `(None, Some)` arm above.
         (Some((bt, span)), Some(exp)) => {
             if type_functor_name(kb, exp) == Some("type_var") {
+                let expected_t = value_to_term_id(kb, &acc);
+                let actual_t = value_to_term_id(kb, &bt);
                 Err(TypeError::TypeMismatch {
                     span,
                     context: branch_ctx,
-                    expected: acc,
-                    actual: bt,
+                    expected: expected_t,
+                    actual: actual_t,
                 })
             } else {
-                Ok(exp)
+                Ok(Value::Term(exp))
             }
         }
         // No expected type and no common supertype — the top-less lattice
         // has no join, so the branch types genuinely clash.
-        (Some((bt, span)), None) => Err(TypeError::TypeMismatch {
-            span,
-            context: branch_ctx,
-            expected: acc,
-            actual: bt,
-        }),
+        (Some((bt, span)), None) => {
+            let expected_t = value_to_term_id(kb, &acc);
+            let actual_t = value_to_term_id(kb, &bt);
+            Err(TypeError::TypeMismatch {
+                span,
+                context: branch_ctx,
+                expected: expected_t,
+                actual: actual_t,
+            })
+        }
     }
 }
 
