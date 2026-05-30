@@ -886,15 +886,13 @@ fn operations_in_sort(
 
     let mut out = Vec::new();
     for rid in kb.by_functor(op_info_sym) {
-        let head = kb.rule_head(rid);
-
-        let name_term = match named_arg(kb, head, "name") {
-            Some(t) => t,
+        // WI-348: the OperationInfo head may be a *value fact* (Node-carrying)
+        // for an op with a `denoted` effect (`Modify[c]`), so it can't be read
+        // as a term. Match the fact to its op symbol carrier-agnostically, then
+        // read its fields through the `op_info` API rather than walking the head.
+        let op_sym = match anthill_core::kb::op_info::head_name_ref(kb, kb.rule_head_value(rid)) {
+            Some(s) => s,
             None => continue,
-        };
-        let op_sym = match kb.get_term(name_term) {
-            Term::Ref(s) => *s,
-            _ => continue,
         };
         // The operation's parent sort is the prefix of its qualified
         // name (test.simple.Greeter.count → test.simple.Greeter).
@@ -905,44 +903,30 @@ fn operations_in_sort(
         }
 
         let name = kb.resolve_sym(op_sym).to_string();
+        let rec = anthill_core::kb::op_info::lookup_operation_info(kb, op_sym)
+            .ok_or_else(|| CppCodegenError {
+                message: format!("operation '{name}' missing OperationInfo"),
+            })?;
 
-        let return_term = named_arg(kb, head, "return_type").ok_or_else(|| {
-            CppCodegenError {
-                message: format!("operation '{name}' missing return_type"),
-            }
-        })?;
+        let return_term = rec.return_type;
         let return_type_cpp = lower_type(ctx, return_term)?;
 
-        let params_term = named_arg(kb, head, "params");
         let mut params = Vec::new();
-        if let Some(plist) = params_term {
-            for finfo in walk_list(kb, plist) {
-                let p_name = match named_arg(kb, finfo, "name") {
-                    Some(t) => match kb.get_term(t) {
-                        Term::Ref(s) => kb.resolve_sym(*s).to_string(),
-                        _ => continue,
-                    },
-                    None => continue,
-                };
-                let p_type = match named_arg(kb, finfo, "type_name") {
-                    Some(t) => t,
-                    None => continue,
-                };
-                let cpp_type = lower_type(ctx, p_type)?;
-                params.push(ParamInfo { name: p_name, cpp_type });
-            }
+        for (p_name_sym, p_type) in &rec.params {
+            let cpp_type = lower_type(ctx, *p_type)?;
+            params.push(ParamInfo { name: kb.resolve_sym(*p_name_sym).to_string(), cpp_type });
         }
 
         // Pull declared effects so we can wrap the return type for
-        // Error-bearing ops. `effects` is a List of effect sort
-        // references / instantiations.
-        let has_error_effect = named_arg(kb, head, "effects")
-            .map(|eff_list| {
-                walk_list(kb, eff_list).into_iter()
-                    .filter_map(|eff| effect_kind_short(kb, eff))
-                    .any(|k| k == "Error")
-            })
-            .unwrap_or(false);
+        // Error-bearing ops. Effect labels are carrier-agnostic `Value`s; an
+        // `Error` label is always a ground `Value::Term` (a `denoted` label like
+        // `Modify[c]` is a `Value::Node` and never an `Error`).
+        let has_error_effect = rec.effects.iter().any(|eff| match eff {
+            anthill_core::eval::Value::Term(t) => {
+                effect_kind_short(kb, *t).as_deref() == Some("Error")
+            }
+            _ => false,
+        });
         let return_type_cpp = if has_error_effect {
             ctx.requested_includes.borrow_mut()
                 .insert("#include <tl/expected.hpp>".to_string());
@@ -1350,12 +1334,10 @@ fn classify_namespace(
     let mut traits_qns: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let Some(op_info_sym) = kb.try_resolve_symbol("anthill.reflect.OperationInfo") {
         for rid in kb.by_functor(op_info_sym) {
-            let head = kb.rule_head(rid);
-            let Some(name_term) = named_arg(kb, head, "name") else { continue };
-            let op_sym = match kb.get_term(name_term) {
-                Term::Ref(s) => *s,
-                _ => continue,
-            };
+            // WI-348: carrier-agnostic — the head may be a value fact for an op
+            // with a `denoted` effect; match it to its op symbol via `op_info`.
+            let Some(op_sym) = anthill_core::kb::op_info::head_name_ref(kb, kb.rule_head_value(rid))
+            else { continue };
             let Some(parent_qn) = parent_qualified_name(kb, op_sym) else { continue };
             if !parent_qn.starts_with(&prefix) { continue; }
             let rest = &parent_qn[prefix.len()..];

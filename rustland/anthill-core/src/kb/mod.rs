@@ -332,17 +332,13 @@ pub struct KnowledgeBase {
     /// See `docs/design/occurrence-as-value-type.md`.
     pub(crate) op_bodies: HashMap<Symbol, Rc<NodeOccurrence>>,
 
-    /// WI-342 effects-vertical (E2) — carrier-agnostic operation effect
-    /// labels keyed by operation symbol. Mirrors `op_bodies`: a `denoted`-
-    /// bearing label (`Modify[c]`) cannot live in the hash-consed
-    /// `OperationInfo` fact's `TermId` list, so the loader mints it as a
-    /// `Value::Node` here (a ground label rides as `Value::Term`, identical
-    /// to the fact). `lookup_operation_info` reads this table when present,
-    /// falling back to the fact's `TermId` list for ops not built by the
-    /// loader path (builtins / hand-asserted facts). The fact's effects list
-    /// is now vestigial for loader-built ops — kept (harmless) like the
-    /// body handle was pre-WI-305.
-    pub(crate) op_effects: HashMap<Symbol, Vec<crate::eval::value::Value>>,
+    // WI-348 (value-fact payoff): the `op_effects` side-table is GONE. A
+    // `denoted`-bearing effect label (`Modify[c]`) now lives in the
+    // `OperationInfo` fact itself — the loader builds that fact as a *value
+    // fact* (a `Value::Node` head carrying a value effects list) and
+    // `lookup_operation_info` reads the effects back from the fact. This is
+    // the side-table collapse the WI-348 design doc names as the payoff:
+    // effects ride in the queryable fact, not a Rust-side map.
 
     // Entity field type registry: functor symbol → [(field_name, type_term)].
     // Populated during load_entity, used by type_check_sorts.
@@ -454,7 +450,6 @@ impl KnowledgeBase {
             term_spans: HashMap::new(),
             functor_spans: HashMap::new(),
             op_bodies: HashMap::new(),
-            op_effects: HashMap::new(),
             entity_field_types: HashMap::new(),
             resolved_requires_facts: HashSet::new(),
             sources: SourceRegistry::new(),
@@ -581,19 +576,6 @@ impl KnowledgeBase {
     /// Called by the loader during operation conversion.
     pub fn set_op_body_node(&mut self, op_sym: Symbol, node: Rc<NodeOccurrence>) {
         self.op_bodies.insert(op_sym, node);
-    }
-
-    /// WI-342 E2 — carrier-agnostic effect labels for an operation, if the
-    /// loader minted any. `None` for ops not built by the loader path (their
-    /// effects are read from the `OperationInfo` fact instead).
-    pub fn op_effects_of(&self, op_sym: Symbol) -> Option<&Vec<crate::eval::value::Value>> {
-        self.op_effects.get(&op_sym)
-    }
-
-    /// WI-342 E2 — record the carrier-agnostic effect labels for an
-    /// operation. Called by the loader during operation conversion.
-    pub fn set_op_effects(&mut self, op_sym: Symbol, effects: Vec<crate::eval::value::Value>) {
-        self.op_effects.insert(op_sym, effects);
     }
 
     /// WI-251 — span for a stored term, if the loader recorded one.
@@ -1541,6 +1523,15 @@ impl KnowledgeBase {
     /// Get the head term of a rule.
     pub fn rule_head(&self, id: RuleId) -> TermId {
         head_term_id(&self.rules[id.index()].head)
+    }
+
+    /// Get the head of a rule as a carrier-agnostic `Value` (WI-348). The
+    /// universal case is `Value::Term`; a value fact (e.g. an `OperationInfo`
+    /// carrying a `denoted` effect label) carries a `Value::Entity` / `Value::Node`.
+    /// Readers that must tolerate both carriers walk this via `TermView` rather
+    /// than calling the panicking `rule_head` term-only reader.
+    pub fn rule_head_value(&self, id: RuleId) -> &crate::eval::value::Value {
+        &self.rules[id.index()].head
     }
 
     /// Whether a rule id refers to a live (non-retracted) rule. Out-of-bounds

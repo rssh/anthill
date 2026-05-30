@@ -1189,9 +1189,13 @@ fn kb_facts_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
     let functor_sym = crate::eval::eval::value_functor(&interp.kb, &sort_arg)
         .ok_or_else(|| type_mismatch("Type (entity reference)", &sort_arg, None))?;
 
+    // WI-348: carrier-agnostic — a fact head may be a value fact (e.g. an
+    // `OperationInfo` carrying a `denoted` effect). `rule_head_value` returns the
+    // head's `Value` directly (`Value::Term` for the universal hash-consed case),
+    // so `facts_of(kb, OperationInfo)` no longer panics on a Node-carrying head.
     let rule_ids = interp.kb.by_functor(functor_sym);
     let elements: Vec<Value> = rule_ids.into_iter()
-        .map(|rid| Value::Term(interp.kb.rule_head(rid)))
+        .map(|rid| interp.kb.rule_head_value(rid).clone())
         .collect();
 
     interp.build_list_value(elements, &[])

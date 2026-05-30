@@ -95,10 +95,10 @@ fn modify_name_arg_denotes_by_resolution_kind() {
     // return `Int` (which the prelude resolves); only the `[c]`/`[C]`/`[nope]`
     // argument varies across the three cases.
     const MODIFY: &str = "sort Modify\n  sort T = ?\nend\n";
-    // WI-342 E2 (the live flip): a value-in-type effect label (`Modify[c]`) is
-    // now minted by the loader as a carrier-poisoned `Value::Node` (the carrier
-    // rule — a `denoted` cannot be a hash-consed term), sourced from the
-    // `op_effects` side-table by `lookup_operation_info`. A type-in-type label
+    // WI-342 E2 / WI-348: a value-in-type effect label (`Modify[c]`) is minted
+    // by the loader as a carrier-poisoned `Value::Node` (the carrier rule — a
+    // `denoted` cannot be a hash-consed term), now carried in the `OperationInfo`
+    // value fact and read back by `lookup_operation_info`. A type-in-type label
     // (`Modify[Sort]`) stays a ground `Value::Term`. So "denotes" is now a
     // carrier predicate: a `Node` label denotes by construction; a `Term` label
     // denotes only if its hash-consed structure contains a `denoted` functor.
@@ -170,7 +170,17 @@ fn modify_value_param_in_effects_is_denoted() {
     // WI-302: `effects Modify[c]` where `c` is a value-parameter → the inner
     // binding lowers to `denoted(value: Ref(c))`, NOT `sort_ref(c)`, so it
     // reads as a value indexing the Modify effect (proposal 027.1 / 011).
-    let mut kb = load_with_stdlib(r#"
+    //
+    // WI-348 (value-fact payoff): the `denoted` label now lives in the
+    // `OperationInfo` fact as a `Value::Node` (the fact is a value fact); there
+    // is no more vestigial hash-consed `denoted` term in the fact, and no
+    // `op_effects` side-table. We read the label via `lookup_operation_info` and
+    // assert on the value carrier's own `TypeNode` structure — the carrier is
+    // exactly what preserves the `denoted(value: Ref(c))` shape (a Type
+    // occurrence does not re-ground to a queryable term).
+    use anthill_core::kb::node_occurrence::{Expr, NodeKind, TypeChild, TypeNode};
+
+    let kb = load_with_stdlib(r#"
 namespace test.wi302
   import anthill.prelude.{Cell, Int}
 
@@ -179,49 +189,54 @@ namespace test.wi302
 end
 "#);
 
-    let op_info = find_op_info(&mut kb, "test.wi302.set_cell");
-    let effects_list = get_named_arg(&kb, op_info, "effects").expect("effects arg");
-    let effects = cons_list_to_vec(&kb, effects_list);
+    let sym = kb.try_resolve_symbol("test.wi302.set_cell").expect("set_cell symbol");
+    let effects = anthill_core::kb::op_info::lookup_operation_info(&kb, sym)
+        .expect("OperationInfo for set_cell")
+        .effects;
     assert_eq!(effects.len(), 1, "expected one effect (Modify[c])");
 
-    // effects[0] = parameterized(base: sort_ref(Modify), bindings: [TypeBinding{..}])
-    let bindings_list = get_named_arg(&kb, effects[0], "bindings").expect("bindings");
-    let bindings = cons_list_to_vec(&kb, bindings_list);
+    // Modify[c] = parameterized(base: sort_ref(Modify), bindings: [(c, <value>)]).
+    let occ = match &effects[0] {
+        anthill_core::eval::Value::Node(o) => o,
+        other => panic!("Modify[c] should be a value-carried Node label, got {other:?}"),
+    };
+    let bindings = match &occ.kind {
+        NodeKind::Type(TypeNode::Parameterized { bindings, .. }) => bindings,
+        other => panic!("expected a parameterized Type carrier, got {other:?}"),
+    };
     assert_eq!(bindings.len(), 1, "Modify[c] has one binding");
 
-    // The binding value must be `denoted(value: Ref(c))`, not `sort_ref(c)`.
-    let value = get_named_arg(&kb, bindings[0], "value").expect("binding value");
-    match kb.get_term(value) {
-        Term::Fn { functor, named_args, .. } => {
-            assert_eq!(kb.resolve_sym(*functor), "denoted",
-                "value-param `c` in Modify[c] must lower to denoted, got `{}`",
-                kb.resolve_sym(*functor));
-            let inner = named_args.iter()
-                .find(|(s, _)| kb.resolve_sym(*s) == "value")
-                .map(|(_, v)| *v)
-                .expect("denoted.value field");
-            match kb.get_term(inner) {
-                Term::Ref(s) => assert_eq!(kb.resolve_sym(*s), "c",
-                    "denoted should carry Ref(c)"),
-                other => panic!("expected Ref(c) inside denoted, got {other:?}"),
-            }
+    // The binding value must be a `denoted` carrying `Ref(c)`, NOT a ground
+    // `sort_ref(c)` — i.e. `c` is treated as a value indexing the effect.
+    let binding_node = match &bindings[0].1 {
+        TypeChild::Node(n) => n,
+        TypeChild::Ground(g) => panic!(
+            "binding value must be a denoted Node, got ground term {:?}",
+            kb.get_term(*g),
+        ),
+    };
+    let denoted_value = match &binding_node.kind {
+        NodeKind::Type(TypeNode::Denoted { value }) => value,
+        other => panic!("value-param `c` in Modify[c] must lower to denoted, got {other:?}"),
+    };
+    match &denoted_value.kind {
+        NodeKind::Expr { expr: Expr::Ref(s), .. } => {
+            assert_eq!(kb.resolve_sym(*s), "c", "denoted should carry Ref(c)")
         }
-        other => panic!("expected denoted Fn for value-param binding, got {other:?}"),
+        other => panic!("expected Ref(c) inside denoted, got {other:?}"),
     }
 }
 
 #[test]
 fn wi342_e2_modify_c_loads_value_carried() {
-    // WI-342 E2 (the live flip): an operation declaring `effects Modify[c]`
-    // (where `c` is a value-parameter) is the canonical motivating case for the
-    // carrier rule — the effect label transitively contains a `denoted`, so it
-    // cannot be a hash-consed term and must ride as a `Value::Node`. This is the
-    // end-to-end assertion that the loader actually mints the Value-carried
-    // carrier into the `op_effects` side-table (sourced by the typer), not just
-    // that the latent machinery exists. The hash-consed `OperationInfo` fact
-    // keeps its (now-vestigial) term `denoted` form — checked by
-    // `modify_value_param_in_effects_is_denoted` — but the typer reads the
-    // side-table, so the Node form is what's live.
+    // WI-342 E2 / WI-348 (value-fact payoff): an operation declaring
+    // `effects Modify[c]` (where `c` is a value-parameter) is the canonical
+    // motivating case for the carrier rule — the effect label transitively
+    // contains a `denoted`, so it cannot be a hash-consed term and must ride as
+    // a `Value::Node`. The label now lives in the `OperationInfo` fact itself
+    // (a *value fact*), read back via `lookup_operation_info` — there is no
+    // `op_effects` side-table. This is the end-to-end assertion that the loader
+    // builds the value fact and the lookup decodes the Node label.
     let kb = load_with_stdlib(r#"
 namespace test.wi342
   import anthill.prelude.{Cell, Int}
@@ -233,7 +248,9 @@ end
 
     let sym = kb.try_resolve_symbol("test.wi342.set_cell")
         .expect("set_cell symbol");
-    let effects = kb.op_effects_of(sym).expect("op_effects side-table entry");
+    let effects = anthill_core::kb::op_info::lookup_operation_info(&kb, sym)
+        .expect("OperationInfo for set_cell")
+        .effects;
     assert_eq!(effects.len(), 1, "expected one effect label (Modify[c])");
     assert!(
         matches!(effects[0], anthill_core::eval::Value::Node(_)),
@@ -242,7 +259,8 @@ end
         effects[0],
     );
 
-    // A ground effect label, by contrast, stays a Value::Term — confirming the
+    // A ground effect label, by contrast, stays a Value::Term and its
+    // OperationInfo fact stays a hash-consed (non-value) fact — confirming the
     // carrier is decided by the presence of a `denoted`, not blanket-applied.
     let kb_ground = load_with_stdlib(r#"
 namespace test.wi342b
@@ -258,12 +276,30 @@ end
 "#);
     let sym2 = kb_ground.try_resolve_symbol("test.wi342b.may_fail")
         .expect("may_fail symbol");
-    let effects2 = kb_ground.op_effects_of(sym2).expect("op_effects entry");
+    let effects2 = anthill_core::kb::op_info::lookup_operation_info(&kb_ground, sym2)
+        .expect("OperationInfo for may_fail")
+        .effects;
     assert_eq!(effects2.len(), 1, "expected one effect label (Error)");
     assert!(
         matches!(effects2[0], anthill_core::eval::Value::Term(_)),
         "a ground effect label (Error) must stay a Value::Term, got {:?}",
         effects2[0],
+    );
+
+    // WI-348 (payoff): an op with a `denoted` effect (Modify[c] — the `kb` KB
+    // above) produces a *value-fact* OperationInfo head (non-`Value::Term`),
+    // which is what lets the effect label live in the queryable fact instead of
+    // the now-deleted `op_effects` side-table. The ground `may_fail` op, by
+    // contrast, keeps a hash-consed `Value::Term` head.
+    let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo").unwrap();
+    let has_value_fact = kb.by_functor(op_info_sym).into_iter().any(|rid| {
+        kb.is_fact(rid)
+            && !matches!(kb.rule_head_value(rid), anthill_core::eval::Value::Term(_))
+    });
+    assert!(
+        has_value_fact,
+        "an op with a `denoted` effect (Modify[c]) must produce a value-fact \
+         OperationInfo head (non-Value::Term), collapsing the op_effects side-table",
     );
 }
 
@@ -3746,7 +3782,12 @@ fn find_op_info(kb: &mut KnowledgeBase, qualified_substr: &str) -> TermId {
     let op_sort = kb.make_name_term("Operation");
     let ops = kb.by_sort(op_sort);
     for &fid in &ops {
-        let tid = kb.fact_term(fid);
+        // WI-348: an OperationInfo for an op with a `denoted` effect is a value
+        // fact (Node-carrying head); this term-only helper skips those.
+        let tid = match kb.rule_head_value(fid) {
+            anthill_core::eval::Value::Term(t) => *t,
+            _ => continue,
+        };
         if let Some(name_tid) = get_named_arg(kb, tid, "name") {
             if let Term::Ref(sym) = kb.get_term(name_tid) {
                 let qname = kb.qualified_name_of(*sym);

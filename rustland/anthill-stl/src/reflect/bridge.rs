@@ -86,12 +86,23 @@ impl KbBridge {
     }
 
     /// Get all fact head TermIds for a given KB sort name (e.g. "Sort", "Operation").
+    ///
+    /// WI-348: a fact head may be a carrier-agnostic *value fact* (Node-carrying)
+    /// — for the "Operation" sort, an op with a `denoted` effect (`Modify[c]`).
+    /// This TermId-only bridge cannot represent a Node-carrying head, so such
+    /// facts are skipped here (the carrier-faithful path is the `KB.*` reflect
+    /// builtins, which read effects via `op_info`). Skipping rather than calling
+    /// `fact_term` avoids the value-head panic; for every other sort all heads
+    /// are hash-consed terms, so nothing is dropped.
     fn facts_by_sort_name(&self, sort_name: &str) -> Vec<(anthill_core::kb::RuleId, TermId)> {
         let sort_term = self.resolve_sort_name(sort_name);
         let kb = self.kb.borrow();
         kb.by_sort(sort_term)
             .into_iter()
-            .map(|rid| (rid, kb.fact_term(rid)))
+            .filter_map(|rid| match kb.rule_head_value(rid) {
+                anthill_core::eval::Value::Term(t) => Some((rid, *t)),
+                _ => None,
+            })
             .collect()
     }
 

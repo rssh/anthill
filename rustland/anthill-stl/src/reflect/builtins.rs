@@ -414,25 +414,36 @@ fn kb_operations(
     let [_kb, sort_name] = expect_args::<2>("KB.operations", args)?;
     let sort_name = str_arg(sort_name)?;
     let kb = interp.kb_mut();
+    let op_sort = kb.make_name_term("Operation");
 
-    let facts = facts_by_sort_name(kb, "Operation");
     let mut entries: Vec<Value> = Vec::new();
-    for (rid, head) in facts {
-        if term_functor_sym(kb, head) != Some(syms.operation_info) { continue; }
+    for rid in kb.by_sort(op_sort) {
+        if !kb.is_fact(rid) { continue; }
+        // WI-348: the OperationInfo head may be a *value fact* (Node-carrying)
+        // for an op with a `denoted` effect (`Modify[c]`), so it can't be read as
+        // a term. Read its fields carrier-agnostically via the `op_info` API:
+        // name / return / params are ground `TermId`s either way; effects come
+        // back as carrier-faithful `Value`s (a `Modify[c]` label stays a Node).
+        let head = kb.rule_head_value(rid).clone();
+        let name_tid = match anthill_core::kb::op_info::head_field_term(kb, &head, "name") {
+            Some(t) => t,
+            None => continue,
+        };
         let domain = kb.fact_domain(rid);
         let domain_name = term_display_name(kb, domain);
         if domain_name != sort_name && short_of(&domain_name) != sort_name { continue; }
 
-        let named = term_named_args(kb, head);
-        let field = |key: Symbol| named.iter().find(|(n, _)| *n == key).map(|(_, tid)| *tid);
-
-        let name_tid = match field(syms.f_name) { Some(t) => t, None => continue };
-        let return_tid = match field(syms.f_return_type) { Some(t) => t, None => continue };
-        let params_list = field(syms.f_params).map(|t| collect_list_terms(kb, syms, t)).unwrap_or_default();
-        let effects_list = field(syms.f_effects).map(|t| collect_list_terms(kb, syms, t)).unwrap_or_default();
+        let return_tid = match anthill_core::kb::op_info::head_field_term(kb, &head, "return_type") {
+            Some(t) => t,
+            None => continue,
+        };
+        let params_list = anthill_core::kb::op_info::head_field_term(kb, &head, "params")
+            .map(|t| collect_list_terms(kb, syms, t))
+            .unwrap_or_default();
+        let effects_values = anthill_core::kb::op_info::effects_of_head(kb, &head);
 
         let params_v = build_list_value(syms, params_list.into_iter().map(Value::Term).collect());
-        let effects_v = build_list_value(syms, effects_list.into_iter().map(Value::Term).collect());
+        let effects_v = build_list_value(syms, effects_values);
 
         let fields = vec![
             (syms.f_name, Value::Term(name_tid)),

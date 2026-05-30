@@ -6131,23 +6131,16 @@ fn lookup_operation_return_type(kb: &KnowledgeBase, functor: Symbol) -> Option<T
 
 
 fn lookup_operation_field(kb: &KnowledgeBase, functor: Symbol, field: &str) -> Option<TermId> {
+    // WI-348: carrier-agnostic — the OperationInfo head may be a value fact
+    // (Node-carrying) for ops with a `denoted` effect. Read fields through the
+    // shared `op_info` helpers, which view either carrier. This path serves
+    // `lookup_operation_return_type`, whose `field` is always ground.
     let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo")?;
     for rid in kb.by_functor(op_info_sym) {
         if !kb.is_fact(rid) { continue; }
-        let head = kb.rule_head(rid);
-        if let Term::Fn { named_args, .. } = kb.get_term(head) {
-            let name_val = named_args.iter()
-                .find(|(s, _)| kb.resolve_sym(*s) == "name")
-                .map(|(_, v)| *v);
-            if let Some(name_tid) = name_val {
-                if let Term::Ref(s) = kb.get_term(name_tid) {
-                    if *s == functor {
-                        return named_args.iter()
-                            .find(|(s, _)| kb.resolve_sym(*s) == field)
-                            .map(|(_, v)| *v);
-                    }
-                }
-            }
+        let head = kb.rule_head_value(rid);
+        if super::op_info::head_name_ref(kb, head) == Some(functor) {
+            return super::op_info::head_field_term(kb, head, field);
         }
     }
     None

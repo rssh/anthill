@@ -1836,7 +1836,12 @@ end
 
     for rid in kb.by_functor(op_info_sym) {
         if !kb.is_fact(rid) { continue; }
-        let head = kb.rule_head(rid);
+        // WI-348: skip value-fact heads (an op with a `denoted` effect, e.g.
+        // stdlib's Cell.set) — `id` has none, so its head is a hash-consed term.
+        let head = match kb.rule_head_value(rid) {
+            anthill_core::eval::Value::Term(t) => *t,
+            _ => continue,
+        };
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
             // Check if this is the "id" operation
             let is_id = named_args.iter()

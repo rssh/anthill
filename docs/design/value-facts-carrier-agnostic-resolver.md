@@ -316,6 +316,33 @@ preserved through the answer). The `op_effects` / `op_bodies` → fact collapse 
 building `OperationInfo` itself as a value fact — is the **payoff that follows**
 once this substrate exists; it is not part of the Phase B substrate landing.
 
+## Delivered — `op_effects` → fact collapse (the payoff)
+
+Done. The `op_effects` side-table is **gone**; an operation's effect labels now
+ride in the `OperationInfo` fact itself. The loader assembles the
+`OperationInfo` named args once (single source of field set/order); when every
+effect label is a ground `Value::Term` the head stays a hash-consed `Term::Fn`
+(dedup-able, the universal case), and when any label is a `Value::Node` (a
+`denoted` like `Modify[c]`) the effects ride as a value cons-list and the head is
+a `Value::Entity` value fact via `assert_fact_value`. `lookup_operation_info`
+reads the labels back from either carrier (carrier-faithful — a `Modify[c]`
+label is returned as the same `Value::Node`, identity intact), so the typer/eval
+see an identical `Vec<Value>` to what the side-table returned.
+
+Every reader of the `OperationInfo` fact was made carrier-agnostic: the shared
+`op_info` helpers (`head_name_ref` / `head_field_term` / `effects_of_head`, the
+last three now `pub` for out-of-crate use), `typing::lookup_operation_field`,
+`load::find_operation_in_scope`, the reflect `KB.operations` builtin
+(anthill-stl) and the `kb_facts_of` builtin, and cpp-gen's `operations_in_sort` /
+namespace classification (which now route through `lookup_operation_info`). The
+dead `KbBridge` (TermId-only, can't hold a Node effect) skips value-fact heads.
+
+**Remaining (unchanged by this phase):** `op_bodies` still rides in its own
+side-table, reached via the `operation_body` builtin (WI-305) rather than a fact
+field — a separate collapse. And the optional substrate phases C (De Bruijn for
+value *rule* heads), D (5 remaining builtins → `TermView`), and E (boundary
+reify) still lack a driving consumer.
+
 ## References
 
 - `docs/design/entity-representation-term-or-value.md` — the carrier rule.

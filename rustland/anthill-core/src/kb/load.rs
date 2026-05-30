@@ -3099,8 +3099,6 @@ pub(crate) fn find_operation_in_scope(kb: &mut KnowledgeBase, sort_ref_tid: Term
         Some(sym) => sym,
         None => return None,
     };
-    let name_field = kb.intern("name");
-
     // Get the sort symbol from the sort_ref term
     let sort_sym = match kb.get_term(sort_ref_tid) {
         Term::Fn { functor, .. } => *functor,
@@ -3113,16 +3111,11 @@ pub(crate) fn find_operation_in_scope(kb: &mut KnowledgeBase, sort_ref_tid: Term
         if !kb.is_fact(rid) {
             continue;
         }
-        let head = kb.rule_head(rid);
-        if let Term::Fn { ref named_args, .. } = kb.get_term(head).clone() {
-            // Extract the operation symbol from the name field
-            let op_sym = named_args.iter()
-                .find(|(s, _)| *s == name_field)
-                .and_then(|(_, tid)| match kb.get_term(*tid) {
-                    Term::Ref(sym) => Some(*sym),
-                    _ => None,
-                });
-
+        // WI-348: carrier-agnostic — the OperationInfo head may be a value fact
+        // (Node-carrying) for ops with a `denoted` effect. Extract the op
+        // symbol from the `name` field through the shared `op_info` helper.
+        let op_sym = crate::kb::op_info::head_name_ref(kb, kb.rule_head_value(rid));
+        {
             if let Some(op_s) = op_sym {
                 // Check if the operation's scope is the sort
                 let op_scope_matches = match kb.symbols.get(op_s) {
@@ -3178,6 +3171,34 @@ fn build_list_with_tail(kb: &mut KnowledgeBase, items: &[TermId], tail: Option<T
         });
     }
 
+    list
+}
+
+/// WI-348 — build a carrier-agnostic cons/nil list of `Value`s, the value-fact
+/// twin of [`build_list`]. Used for an `OperationInfo` effects list that carries
+/// a `Value::Node` label (`Modify[c]`), which cannot live in a `TermId` list.
+/// `cons`/`nil` cells are `Value::Entity`s over the same prelude constructors,
+/// so the result decomposes into the same `DiscrimKey`s as a term list.
+fn build_value_list(kb: &mut KnowledgeBase, items: Vec<crate::eval::value::Value>) -> crate::eval::value::Value {
+    use crate::eval::value::Value;
+    use std::rc::Rc;
+    let nil_sym = kb.resolve_symbol("anthill.prelude.List.nil");
+    let cons_sym = kb.resolve_symbol("anthill.prelude.List.cons");
+    let head_sym = kb.intern("head");
+    let tail_sym = kb.intern("tail");
+
+    let mut list = Value::Entity {
+        functor: nil_sym,
+        pos: Rc::from(Vec::<Value>::new()),
+        named: Rc::from(Vec::<(Symbol, Value)>::new()),
+    };
+    for item in items.into_iter().rev() {
+        list = Value::Entity {
+            functor: cons_sym,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(vec![(head_sym, item), (tail_sym, list)]),
+        };
+    }
     list
 }
 
@@ -6348,24 +6369,18 @@ impl<'a> Loader<'a> {
             .collect();
         let params_list = build_list(self.kb, &param_terms);
 
-        // Build effects list (hash-consed, for the OperationInfo fact).
-        let effect_terms: Vec<TermId> = o.effects
-            .iter()
-            .map(|e| self.type_expr_to_term(&e.type_expr))
-            .collect();
-        let effects_list = build_list(self.kb, &effect_terms);
-
-        // WI-342 E2 (the live flip) — also mint the carrier-agnostic effect
-        // labels into the `op_effects` side-table. A `Modify[c]` label lands as
-        // a `Value::Node` here (it cannot live in the `TermId` fact above); a
-        // ground label rides as `Value::Term`. The typer reads effects from
-        // this table (via `lookup_operation_info`), so this is what makes the
-        // Value-carried effect carrier live in production typing.
+        // WI-348 (value-fact payoff): effect labels are carrier-agnostic
+        // `Value`s and ride directly in the `OperationInfo` fact built below —
+        // no `op_effects` side-table. A `Modify[c]` label is a `Value::Node` (a
+        // `denoted` cannot be a hash-consed term); a ground label (`Error`) is a
+        // `Value::Term`. When any label is non-`Term` the fact is built as a
+        // *value fact* (Node-carrying head, `assert_fact_value`); when all are
+        // `Term` it stays a hash-consed fact. Either way `lookup_operation_info`
+        // reads these same labels back from the fact.
         let effect_values: Vec<crate::eval::value::Value> = o.effects
             .iter()
             .map(|e| self.type_expr_to_value(&e.type_expr))
             .collect();
-        self.kb.set_op_effects(functor, effect_values);
 
         // Build requires and ensures lists. Auto-requires inference
         // (WI-320 / proposal 045 §6 Phase 0) extends the user-written
@@ -6407,20 +6422,66 @@ impl<'a> Loader<'a> {
         let name_ref = self.kb.alloc(Term::Ref(functor));
         let type_params_list = build_list(self.kb, &type_param_var_terms);
 
-        let op_info = self.kb.alloc(Term::Fn {
-            functor: op_info_sym,
-            pos_args: SmallVec::new(),
-            named_args: SmallVec::from_slice(&[
-                (name_sym, name_ref),
-                (params_sym, params_list),
-                (return_type_sym, return_term),
-                (effects_sym, effects_list),
-                (requires_sym, requires_list),
-                (ensures_sym, ensures_list),
-                (type_params_sym, type_params_list),
-            ]),
-        });
-        self.kb.assert_fact(op_info, op_sort, domain, None);
+        // WI-348: assemble the OperationInfo named args ONCE, carrier-agnostically.
+        // Only `effects` varies by carrier: when every label is a ground
+        // `Value::Term` the effects fit a hash-consed `TermId` cons-list and the
+        // whole head stays a hash-consed term (the universal, dedup-able case);
+        // when any label is a `Value::Node` (a `denoted` like `Modify[c]`) the
+        // effects ride as a value cons-list and the head must be a value fact.
+        // Every other field is always a ground `Value::Term`.
+        use crate::eval::value::Value;
+        let all_ground = effect_values
+            .iter()
+            .all(|v| matches!(v, Value::Term(_)));
+        let effects_field = if all_ground {
+            let effect_terms: Vec<TermId> = effect_values
+                .iter()
+                .map(|v| match v {
+                    Value::Term(t) => *t,
+                    _ => unreachable!("all_ground guard guarantees Value::Term"),
+                })
+                .collect();
+            Value::Term(build_list(self.kb, &effect_terms))
+        } else {
+            build_value_list(self.kb, effect_values)
+        };
+        // Single source of truth for the field set / order. Readers resolve by
+        // key (functor + `NamedKey(sym)`), so order is not load-bearing.
+        let named: Vec<(Symbol, Value)> = vec![
+            (name_sym, Value::Term(name_ref)),
+            (params_sym, Value::Term(params_list)),
+            (return_type_sym, Value::Term(return_term)),
+            (effects_sym, effects_field),
+            (requires_sym, Value::Term(requires_list)),
+            (ensures_sym, Value::Term(ensures_list)),
+            (type_params_sym, Value::Term(type_params_list)),
+        ];
+        if all_ground {
+            // Ground head → hash-consed `Term::Fn` (dedup, structural sharing).
+            // Every field is a `Value::Term` here, so the extraction is total.
+            let named_args: SmallVec<[(Symbol, TermId); 2]> = named
+                .iter()
+                .map(|(s, v)| match v {
+                    Value::Term(t) => (*s, *t),
+                    _ => unreachable!("all_ground ⇒ every OperationInfo field is Value::Term"),
+                })
+                .collect();
+            let op_info = self.kb.alloc(Term::Fn {
+                functor: op_info_sym,
+                pos_args: SmallVec::new(),
+                named_args,
+            });
+            self.kb.assert_fact(op_info, op_sort, domain, None);
+        } else {
+            // A `denoted`-bearing effect forces a `Value::Node` somewhere in the
+            // head, which a hash-consed `Term` cannot hold → value fact.
+            let head = Value::Entity {
+                functor: op_info_sym,
+                pos: std::rc::Rc::from(Vec::<Value>::new()),
+                named: std::rc::Rc::from(named),
+            };
+            self.kb.assert_fact_value(head, op_sort, domain, None);
+        }
 
         // Emit OperationImpl fact for operations with expression bodies. WI-305:
         // the body field is dropped — the occurrence lives in op_body_node and is
