@@ -1300,20 +1300,59 @@ fn run_check(args: &CheckArgs) -> Result<(), i32> {
 
 // ── Display helpers ─────────────────────────────────────────────────
 
+/// Render a carrier-agnostic `Value` for display (WI-348). A fact head or a
+/// query binding may be a `Value::Term` (hash-consed), a `Value::Node`
+/// (occurrence — e.g. a `denoted` effect on an `OperationInfo` value fact), or
+/// a structural `Value::Entity`/`Tuple`. Reading it "as a term" (`rule_head` /
+/// `resolve_with_term`) panics on a value head and drops `Node` bindings, so the
+/// query output reads the `Value` and renders each carrier here.
+fn render_value(
+    printer: &TermPrinter<'_, KnowledgeBase>,
+    kb: &KnowledgeBase,
+    v: &anthill_core::eval::Value,
+) -> String {
+    use anthill_core::eval::Value;
+    match v {
+        Value::Term(t) => printer.print_term(*t),
+        Value::Node(occ) => printer.print_occurrence(occ),
+        Value::Int(n) => n.to_string(),
+        Value::BigInt(n) => n.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Str(s) => format!("{s:?}"),
+        Value::Entity { functor, pos, named } => {
+            let mut parts: Vec<String> = pos.iter().map(|c| render_value(printer, kb, c)).collect();
+            parts.extend(named.iter().map(|(s, c)| {
+                format!("{}: {}", kb.resolve_sym(*s), render_value(printer, kb, c))
+            }));
+            format!("{}({})", kb.resolve_sym(*functor), parts.join(", "))
+        }
+        Value::Tuple { pos, named } => {
+            let mut parts: Vec<String> = pos.iter().map(|c| render_value(printer, kb, c)).collect();
+            parts.extend(named.iter().map(|(s, c)| {
+                format!("{}: {}", kb.resolve_sym(*s), render_value(printer, kb, c))
+            }));
+            format!("({})", parts.join(", "))
+        }
+        other => format!("{other:?}"),
+    }
+}
+
 fn print_rule_results(kb: &KnowledgeBase, results: &[RuleId], max: usize) {
     let printer = TermPrinter::new(kb);
     let limit = if max == 0 { results.len() } else { max.min(results.len()) };
 
     for &rid in &results[..limit] {
-        let head = kb.rule_head(rid);
-        // Head stays a hash-consed term; body atoms are occurrences (WI-246).
+        // WI-348: a head may be a value fact (Node-carrying); read it as a Value.
+        let head = render_value(&printer, kb, kb.rule_head_value(rid));
+        // Facts have no body; rule body atoms are occurrences (WI-246).
         let body = kb.rule_body_nodes(rid);
         if body.is_empty() {
-            println!("  {}", printer.print_term(head));
+            println!("  {head}");
         } else {
             let body_strs: Vec<String> =
                 body.iter().map(|atom| printer.print_occurrence(atom)).collect();
-            println!("  {} :- {}", printer.print_term(head), body_strs.join(", "));
+            println!("  {} :- {}", head, body_strs.join(", "));
         }
     }
 
@@ -1334,23 +1373,13 @@ fn print_query_results(
     let limit = if max == 0 { results.len() } else { max.min(results.len()) };
 
     for (rid, subst) in &results[..limit] {
-        let head = kb.rule_head(*rid);
-        print!("  {}", printer.print_term(head));
-        // Print bindings if any
+        // WI-348: read the head as a Value (may be a Node-carrying value fact).
+        print!("  {}", render_value(&printer, kb, kb.rule_head_value(*rid)));
+        // Print bindings if any — carrier-agnostic (a binding may be a Node).
         let bindings: Vec<String> = subst
             .iter()
             .map(|(vid, val)| {
-                use anthill_core::eval::Value;
-                let rendered = match val {
-                    Value::Term(tid) => printer.print_term(*tid),
-                    Value::Int(n) => n.to_string(),
-                    Value::BigInt(n) => n.to_string(),
-                    Value::Float(f) => f.to_string(),
-                    Value::Bool(b) => b.to_string(),
-                    Value::Str(s) => format!("{:?}", s),
-                    other => format!("{:?}", other),
-                };
-                format!("?{} = {}", kb.resolve_sym(vid.name()), rendered)
+                format!("?{} = {}", kb.resolve_sym(vid.name()), render_value(&printer, kb, val))
             })
             .collect();
         if !bindings.is_empty() {
@@ -1388,8 +1417,10 @@ fn print_solutions(
         let bindings: Vec<String> = query_vars
             .iter()
             .filter_map(|vid| {
-                sol.subst.resolve_with_term(*vid).map(|tid| {
-                    format!("?{} = {}", kb.resolve_sym(vid.name()), printer.print_term(tid))
+                // WI-348: read the binding as a Value — `resolve_with_term` would
+                // drop a `Value::Node` binding (e.g. a `denoted` effect label).
+                sol.subst.resolve_as_value(*vid).map(|val| {
+                    format!("?{} = {}", kb.resolve_sym(vid.name()), render_value(&printer, kb, val))
                 })
             })
             .collect();
