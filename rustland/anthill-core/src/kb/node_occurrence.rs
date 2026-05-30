@@ -2400,6 +2400,95 @@ pub fn substitute_occurrence(
     rebuilt.unwrap_or_else(|| Rc::clone(occ))
 }
 
+/// WI-342 E2 — rewrite `Expr::Ref(s)` leaves to `Expr::Ref(map[s])` inside a
+/// `Value`-carried `Type` / `EffectExpression` effect-label occurrence. The
+/// occurrence analog of `typing::substitute_ref_syms`: re-keys a callee's
+/// `Modify[c]` to the caller's `Modify[s]` (call-site param substitution) and a
+/// fresh result-region to the enclosing op's `result` (region escape). Only the
+/// spines an effect label takes are walked (`denoted` / `parameterized` /
+/// `effects_rows` / `arrow` + the row algebra); a `Ground` `TypeChild` carries no
+/// occurrence `Ref` (its hash-consed `Term::Ref`s are re-keyed by the term-world
+/// `substitute_ref_syms`), so it passes through. A non-`Type`/`EffectExpr`
+/// occurrence is never an effect label and is returned unchanged.
+pub(crate) fn substitute_ref_syms_occ(
+    occ: &Rc<NodeOccurrence>,
+    map: &std::collections::HashMap<Symbol, Symbol>,
+) -> Rc<NodeOccurrence> {
+    match &occ.kind {
+        NodeKind::Type(tn) => {
+            let rebuilt = match tn {
+                TypeNode::Denoted { value } => TypeNode::Denoted {
+                    value: rewrite_ref_expr(value, map),
+                },
+                TypeNode::Parameterized { base, bindings } => TypeNode::Parameterized {
+                    base: rewrite_ref_child(base, map),
+                    bindings: bindings
+                        .iter()
+                        .map(|(s, c)| (*s, rewrite_ref_child(c, map)))
+                        .collect(),
+                },
+                TypeNode::EffectsRows { effects_expr } => TypeNode::EffectsRows {
+                    effects_expr: rewrite_ref_child(effects_expr, map),
+                },
+                TypeNode::Arrow { param, result, effects } => TypeNode::Arrow {
+                    param: rewrite_ref_child(param, map),
+                    result: rewrite_ref_child(result, map),
+                    effects: rewrite_ref_child(effects, map),
+                },
+            };
+            NodeOccurrence::new_type(rebuilt, occ.span, occ.owner)
+        }
+        NodeKind::EffectExpr(en) => {
+            let rebuilt = match en {
+                EffectExprNode::Merge { left, right } => EffectExprNode::Merge {
+                    left: rewrite_ref_child(left, map),
+                    right: rewrite_ref_child(right, map),
+                },
+                EffectExprNode::Present { label } => EffectExprNode::Present {
+                    label: rewrite_ref_child(label, map),
+                },
+                EffectExprNode::Absent { label } => EffectExprNode::Absent {
+                    label: rewrite_ref_child(label, map),
+                },
+                EffectExprNode::Open { tail } => EffectExprNode::Open {
+                    tail: rewrite_ref_child(tail, map),
+                },
+                EffectExprNode::EmptyRow => EffectExprNode::EmptyRow,
+            };
+            NodeOccurrence::new_effect_expr(rebuilt, occ.span, occ.owner)
+        }
+        _ => Rc::clone(occ),
+    }
+}
+
+/// Re-key Refs inside a [`TypeChild`]. `Ground` is hash-consed `Term` (re-keyed,
+/// if ever needed, by the term-world `substitute_ref_syms`); `Node` recurses.
+fn rewrite_ref_child(
+    child: &TypeChild,
+    map: &std::collections::HashMap<Symbol, Symbol>,
+) -> TypeChild {
+    match child {
+        TypeChild::Ground(t) => TypeChild::Ground(*t),
+        TypeChild::Node(n) => TypeChild::Node(substitute_ref_syms_occ(n, map)),
+    }
+}
+
+/// Re-key a `denoted`'s carried value when it is an `Expr::Ref(s)` — the only
+/// carried-value shape minted today. A richer carried value (bound-name
+/// reference, nested apply) needs alpha-aware rewrite — deferred with the same
+/// TODO as `unify_denoted_view`; it passes through unchanged for now.
+fn rewrite_ref_expr(
+    occ: &Rc<NodeOccurrence>,
+    map: &std::collections::HashMap<Symbol, Symbol>,
+) -> Rc<NodeOccurrence> {
+    if let NodeKind::Expr { expr: Expr::Ref(s), .. } = &occ.kind {
+        if let Some(&new_sym) = map.get(s) {
+            return NodeOccurrence::new_expr(Expr::Ref(new_sym), occ.span, occ.owner);
+        }
+    }
+    Rc::clone(occ)
+}
+
 /// WI-298: apply σ to the TermId entries in a call site's `type_args` —
 /// the substitution twin of `open_type_args` / `close_type_args`.
 /// `apply_subst` returns the same hash-consed `TermId` when nothing changed,

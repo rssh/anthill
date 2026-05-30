@@ -67,9 +67,14 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
         if name_match != Some(op_sym) { continue; }
 
         let return_type = find_named(kb, &named_args, "return_type")?;
-        let effects = find_named(kb, &named_args, "effects")
-            .map(|t| list_to_vec(kb, t).into_iter().map(Value::Term).collect())
-            .unwrap_or_default();
+        // WI-342 E2: prefer the loader's carrier-agnostic effect labels
+        // (which carry `Modify[c]` as a `Value::Node`); fall back to the
+        // hash-consed fact list for ops the loader path didn't build.
+        let effects = kb.op_effects_of(op_sym).cloned().unwrap_or_else(|| {
+            find_named(kb, &named_args, "effects")
+                .map(|t| list_to_vec(kb, t).into_iter().map(Value::Term).collect())
+                .unwrap_or_default()
+        });
         let params = extract_params(kb, &named_args);
         let type_params = extract_type_params(kb, &named_args);
         let body_node = kb.op_body_node(op_sym).cloned();

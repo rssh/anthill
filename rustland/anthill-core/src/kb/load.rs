@@ -5343,6 +5343,126 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// WI-342 E2 (the live flip) — build one operation effect label as a
+    /// carrier-agnostic [`Value`], honoring the carrier rule: a label whose
+    /// structure transitively contains a `denoted` (`Modify[c]`, where `c`
+    /// names a value) is minted as a `Value::Node` occurrence; a fully-ground
+    /// label rides as `Value::Term` (the hash-consed form, identical to the
+    /// `OperationInfo` fact). Confined to effect-label positions — the full
+    /// `type_expr_to_term` → carrier-agnostic flip stays deferred.
+    fn effect_label_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
+        let span = self.effect_label_span(ty);
+        let owner = self.current_owner;
+        match self.effect_label_child(ty, span, owner) {
+            node_occurrence::TypeChild::Ground(t) => crate::eval::value::Value::Term(t),
+            node_occurrence::TypeChild::Node(n) => crate::eval::value::Value::Node(n),
+        }
+    }
+
+    /// Span for an effect label's occurrence — the label's leading `Name`
+    /// span when available, else a synthetic span on the current source.
+    /// Occurrence spans here feed diagnostics only.
+    fn effect_label_span(&self, ty: &TypeExpr) -> SourceSpan {
+        match ty {
+            TypeExpr::Simple(n) | TypeExpr::Parameterized { name: n, .. } => {
+                SourceSpan::from_span(self.source_id, n.span)
+            }
+            _ => SourceSpan::new(self.source_id, 0, 0),
+        }
+    }
+
+    /// Dual-carrier peer of the relevant [`Self::type_expr_to_term`] arms,
+    /// returning a [`node_occurrence::TypeChild`]: `Ground(TermId)` when the
+    /// sub-tree is fully ground (reusing the hash-consed builder verbatim), or
+    /// `Node(Rc<NodeOccurrence>)` when it carries a `denoted`. The carrier of a
+    /// `parameterized` follows its bindings — any `Node` binding poisons the
+    /// whole label to `Node`. Only the shapes an effect label can take are
+    /// Node-aware (`Simple`-as-value, `Parameterized`); every other shape stays
+    /// ground via `type_expr_to_term` (no denoted ⇒ no carrier obligation).
+    fn effect_label_child(
+        &mut self,
+        ty: &TypeExpr,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+    ) -> node_occurrence::TypeChild {
+        match ty {
+            TypeExpr::Simple(name) => {
+                let sort_sym = self.remap_name(name);
+                let short_name = self.kb.resolve_sym(sort_sym).to_owned();
+                // A type-param name is a ground logic Var — defer to the
+                // hash-consed builder (no denoted).
+                if self.kb.symbols.is_type_param(self.current_scope.raw(), &short_name) {
+                    return node_occurrence::TypeChild::Ground(self.type_expr_to_term(ty));
+                }
+                // WI-302/WI-313: a name resolving to a VALUE in a type slot is
+                // value-in-type (`Modify[c]`) — the `denoted` source. Mint it as
+                // a `Value::Node` occurrence rather than the ground `make_denoted`.
+                let is_value = matches!(
+                    self.kb.symbols.get(sort_sym),
+                    SymbolDef::Resolved {
+                        kind: SymbolKind::Param | SymbolKind::Field | SymbolKind::Operation, ..
+                    }
+                );
+                if is_value {
+                    node_occurrence::TypeChild::Node(
+                        self.kb.make_denoted_occ_ref(sort_sym, span, owner),
+                    )
+                } else {
+                    node_occurrence::TypeChild::Ground(self.kb.make_sort_ref(sort_sym))
+                }
+            }
+            TypeExpr::Parameterized { name, bindings } => {
+                let sort_sym = self.remap_name(name);
+                let base_term = self.kb.make_sort_ref(sort_sym);
+                // Same positional→declared-param-name mapping as the
+                // `type_expr_to_term` Parameterized arm, so a label's binding
+                // symbols match across the two builders (the display-name
+                // comparison in the op-boundary check relies on this).
+                let declared_params = self.kb.type_params_of_sort(sort_sym);
+                let mut child_bindings: Vec<(Symbol, node_occurrence::TypeChild)> = Vec::new();
+                let mut positional_index: usize = 0;
+                let mut any_node = false;
+                for b in bindings {
+                    let bound_child = self.effect_label_child(&b.bound, span, owner);
+                    if matches!(bound_child, node_occurrence::TypeChild::Node(_)) {
+                        any_node = true;
+                    }
+                    let param_sym = if let Some(p) = &b.param {
+                        Some(self.reintern(p.last()))
+                    } else if positional_index < declared_params.len() {
+                        let param_name = declared_params[positional_index].clone();
+                        positional_index += 1;
+                        Some(self.kb.intern(&param_name))
+                    } else {
+                        None
+                    };
+                    if let Some(sym) = param_sym {
+                        child_bindings.push((sym, bound_child));
+                    }
+                }
+                if any_node {
+                    node_occurrence::TypeChild::Node(self.kb.make_parameterized_occ(
+                        node_occurrence::TypeChild::Ground(base_term),
+                        child_bindings,
+                        span,
+                        owner,
+                    ))
+                } else {
+                    // No denoted binding ⇒ the ground hash-consed form is
+                    // faithful; rebuild it via the canonical builder.
+                    node_occurrence::TypeChild::Ground(self.type_expr_to_term(ty))
+                }
+            }
+            // No denoted obligation for any other label shape (sort_ref,
+            // arrow, tuple, bare denoted, `-E`): build the hash-consed form.
+            // A bare top-level `denoted` effect label is not minted by any
+            // current producer; if one appears it rides as a ground `Term`
+            // denoted (the pre-E2 behavior), which the deferred non-effect
+            // loader-flip slice will Node-ify.
+            _ => node_occurrence::TypeChild::Ground(self.type_expr_to_term(ty)),
+        }
+    }
+
     /// Convert a TypeExpr to a sort instantiation term (SortView) for `requires` clauses.
     /// Unlike type_expr_to_term, this preserves operation bindings alongside type bindings.
     fn sort_inst_to_term(&mut self, ty: &TypeExpr) -> TermId {
@@ -6215,12 +6335,24 @@ impl<'a> Loader<'a> {
             .collect();
         let params_list = build_list(self.kb, &param_terms);
 
-        // Build effects list
+        // Build effects list (hash-consed, for the OperationInfo fact).
         let effect_terms: Vec<TermId> = o.effects
             .iter()
             .map(|e| self.type_expr_to_term(&e.type_expr))
             .collect();
         let effects_list = build_list(self.kb, &effect_terms);
+
+        // WI-342 E2 (the live flip) — also mint the carrier-agnostic effect
+        // labels into the `op_effects` side-table. A `Modify[c]` label lands as
+        // a `Value::Node` here (it cannot live in the `TermId` fact above); a
+        // ground label rides as `Value::Term`. The typer reads effects from
+        // this table (via `lookup_operation_info`), so this is what makes the
+        // Value-carried effect carrier live in production typing.
+        let effect_values: Vec<crate::eval::value::Value> = o.effects
+            .iter()
+            .map(|e| self.effect_label_to_value(&e.type_expr))
+            .collect();
+        self.kb.set_op_effects(functor, effect_values);
 
         // Build requires and ensures lists. Auto-requires inference
         // (WI-320 / proposal 045 §6 Phase 0) extends the user-written

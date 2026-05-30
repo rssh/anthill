@@ -146,15 +146,24 @@ fn rekey_resource(kb: &mut KnowledgeBase, effect: TermId, from: Symbol, to: Symb
 fn rekey_resource_value(kb: &mut KnowledgeBase, effect: &Value, from: Symbol, to: Symbol) -> Value {
     match effect {
         Value::Term(t) => Value::Term(rekey_resource(kb, *t, from, to)),
+        // WI-342 E2: re-key the `Ref` spine of a `Value::Node` label (a callee's
+        // fresh `Modify[c]` → the enclosing op's `Modify[result]`) via the
+        // occurrence rewriter — the carrier peer of `rekey_resource`.
+        Value::Node(occ) => {
+            let mut map = HashMap::new();
+            map.insert(from, to);
+            Value::Node(super::node_occurrence::substitute_ref_syms_occ(occ, &map))
+        }
         other => other.clone(),
     }
 }
 
 /// Push `effect` into `out` unless a structurally-equal label is already present.
-/// `Value` has no `PartialEq`; ground labels dedup by `TermId` (every label
-/// pre-E2), a `Value::Node` label is always pushed (harmless).
+/// `Value` has no `PartialEq`; [`Value::structural_eq`] dedups ground labels by
+/// `TermId` and a now-live `Value::Node` label (`Modify[c]`) by occurrence
+/// structure.
 fn push_effect_dedup(out: &mut Vec<Value>, effect: Value) {
-    if !out.iter().any(|e| e.scalar_eq(&effect)) {
+    if !out.iter().any(|e| e.structural_eq(&effect)) {
         out.push(effect);
     }
 }

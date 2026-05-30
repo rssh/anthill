@@ -95,7 +95,21 @@ fn modify_name_arg_denotes_by_resolution_kind() {
     // return `Int` (which the prelude resolves); only the `[c]`/`[C]`/`[nope]`
     // argument varies across the three cases.
     const MODIFY: &str = "sort Modify\n  sort T = ?\nend\n";
-    fn effects_of_f(src: &str) -> Result<(KnowledgeBase, Vec<TermId>), String> {
+    // WI-342 E2 (the live flip): a value-in-type effect label (`Modify[c]`) is
+    // now minted by the loader as a carrier-poisoned `Value::Node` (the carrier
+    // rule — a `denoted` cannot be a hash-consed term), sourced from the
+    // `op_effects` side-table by `lookup_operation_info`. A type-in-type label
+    // (`Modify[Sort]`) stays a ground `Value::Term`. So "denotes" is now a
+    // carrier predicate: a `Node` label denotes by construction; a `Term` label
+    // denotes only if its hash-consed structure contains a `denoted` functor.
+    fn label_denotes(kb: &KnowledgeBase, v: &anthill_core::eval::Value) -> bool {
+        match v {
+            anthill_core::eval::Value::Node(_) => true,
+            anthill_core::eval::Value::Term(t) => contains_functor(kb, *t, "denoted"),
+            _ => false,
+        }
+    }
+    fn effects_of_f(src: &str) -> Result<(KnowledgeBase, Vec<anthill_core::eval::Value>), String> {
         let mut kb = KnowledgeBase::new();
         load::register_prelude(&mut kb);
         kb.register_standard_builtins();
@@ -105,22 +119,14 @@ fn modify_name_arg_denotes_by_resolution_kind() {
         let sym = kb.try_resolve_symbol("f").ok_or("operation `f` not found")?;
         let rec = anthill_core::kb::op_info::lookup_operation_info(&kb, sym)
             .ok_or("no OperationInfo for `f`")?;
-        // WI-342 effects-vertical: OpInfoRecord.effects is now carrier-agnostic
-        // `Value`; in E1 every label is a ground `Value::Term` sourced from the
-        // hash-consed fact, so materialize back to `TermId` for these
-        // term-shape assertions (which check the WI-302 `denoted` lowering).
-        let effects: Vec<TermId> = rec.effects.into_iter().map(|v| match v {
-            anthill_core::eval::Value::Term(t) => t,
-            other => panic!("E1: effect label is not Value::Term: {other:?}"),
-        }).collect();
-        Ok((kb, effects))
+        Ok((kb, rec.effects))
     }
 
-    // (1) c is a PARAMETER (a value) -> denoted
+    // (1) c is a PARAMETER (a value) -> denoted (now a Value::Node)
     let (kb, eff) = effects_of_f("operation f(c: Int) -> Int effects Modify[c]\n")
         .expect("parameter case should load");
     assert!(
-        eff.iter().any(|&e| contains_functor(&kb, e, "denoted")),
+        eff.iter().any(|e| label_denotes(&kb, e)),
         "Modify[c] with c a parameter should denote, effects={eff:?}",
     );
 
@@ -130,7 +136,7 @@ fn modify_name_arg_denotes_by_resolution_kind() {
     let (kbe, effe) = effects_of_f("sort KB\n  entity kb\nend\noperation f() -> Int effects Modify[kb]\n")
         .expect("entity case should load");
     assert!(
-        effe.iter().all(|&e| !contains_functor(&kbe, e, "denoted")),
+        effe.iter().all(|e| !label_denotes(&kbe, e)),
         "Modify[kb] with kb an entity should be sort_ref (NOT denoted), effects={effe:?}",
     );
 
@@ -140,7 +146,7 @@ fn modify_name_arg_denotes_by_resolution_kind() {
     let (kbo, effo) = effects_of_f("operation kb() -> Int\noperation f() -> Int effects Modify[kb]\n")
         .expect("operation case should load");
     assert!(
-        effo.iter().any(|&e| contains_functor(&kbo, e, "denoted")),
+        effo.iter().any(|e| label_denotes(&kbo, e)),
         "Modify[kb] with kb a zero-arg operation should denote, effects={effo:?}",
     );
 
@@ -148,7 +154,7 @@ fn modify_name_arg_denotes_by_resolution_kind() {
     let (kb2, eff2) = effects_of_f("sort C = ?\noperation f() -> Int effects Modify[C]\n")
         .expect("sort case should load");
     assert!(
-        eff2.iter().all(|&e| !contains_functor(&kb2, e, "denoted")),
+        eff2.iter().all(|e| !label_denotes(&kb2, e)),
         "Modify[C] with C a sort should NOT denote, effects={eff2:?}",
     );
 
@@ -202,6 +208,63 @@ end
         }
         other => panic!("expected denoted Fn for value-param binding, got {other:?}"),
     }
+}
+
+#[test]
+fn wi342_e2_modify_c_loads_value_carried() {
+    // WI-342 E2 (the live flip): an operation declaring `effects Modify[c]`
+    // (where `c` is a value-parameter) is the canonical motivating case for the
+    // carrier rule — the effect label transitively contains a `denoted`, so it
+    // cannot be a hash-consed term and must ride as a `Value::Node`. This is the
+    // end-to-end assertion that the loader actually mints the Value-carried
+    // carrier into the `op_effects` side-table (sourced by the typer), not just
+    // that the latent machinery exists. The hash-consed `OperationInfo` fact
+    // keeps its (now-vestigial) term `denoted` form — checked by
+    // `modify_value_param_in_effects_is_denoted` — but the typer reads the
+    // side-table, so the Node form is what's live.
+    let kb = load_with_stdlib(r#"
+namespace test.wi342
+  import anthill.prelude.{Cell, Int}
+
+  operation set_cell(c: Cell[V = Int], value: Int) -> Cell[V = Int]
+    effects Modify[c]
+end
+"#);
+
+    let sym = kb.try_resolve_symbol("test.wi342.set_cell")
+        .expect("set_cell symbol");
+    let effects = kb.op_effects_of(sym).expect("op_effects side-table entry");
+    assert_eq!(effects.len(), 1, "expected one effect label (Modify[c])");
+    assert!(
+        matches!(effects[0], anthill_core::eval::Value::Node(_)),
+        "Modify[c] (c a value-param) must load as a carrier-poisoned Value::Node, \
+         got {:?}",
+        effects[0],
+    );
+
+    // A ground effect label, by contrast, stays a Value::Term — confirming the
+    // carrier is decided by the presence of a `denoted`, not blanket-applied.
+    let kb_ground = load_with_stdlib(r#"
+namespace test.wi342b
+  import anthill.prelude.{Int}
+
+  sort Error
+    entity err
+  end
+
+  operation may_fail(x: Int) -> Int
+    effects Error
+end
+"#);
+    let sym2 = kb_ground.try_resolve_symbol("test.wi342b.may_fail")
+        .expect("may_fail symbol");
+    let effects2 = kb_ground.op_effects_of(sym2).expect("op_effects entry");
+    assert_eq!(effects2.len(), 1, "expected one effect label (Error)");
+    assert!(
+        matches!(effects2[0], anthill_core::eval::Value::Term(_)),
+        "a ground effect label (Error) must stay a Value::Term, got {:?}",
+        effects2[0],
+    );
 }
 
 #[test]
@@ -4399,4 +4462,33 @@ end
     // Pre-fix this panicked with index-out-of-bounds in convert_term.
     load::load(&mut kb, &parsed, &NullResolver)
         .expect("load should succeed (1-arg dot_apply falls through, no panic)");
+}
+
+#[test]
+fn wi342_e2_lambda_body_calls_modify_op_grounds_effect() {
+    // WI-342 E2/E3 regression: a lambda whose body calls a `Modify[c]` operation
+    // makes a `Value::Node` effect label flow into the lambda's arrow type. The
+    // arrow's `effects_rows` is a hash-consed `TermId` (TypeResult.ty is not yet
+    // Value-carried — that migration is deferred), so the Node label must be
+    // re-grounded at that boundary (see `effects_as_term_ids` /
+    // `value_effect_to_term_id`), NOT panic (debug) or be silently dropped
+    // (release). Pre-E2 this carried a ground denoted; this asserts E2 did not
+    // regress it. (`outer` returns an arrow, so the lambda body's effects live
+    // in the returned function type.)
+    let kb = load_with_stdlib(r#"
+namespace test.wi342lambda
+  import anthill.prelude.{Cell, Int}
+
+  operation set_cell(c: Cell[V = Int], v: Int) -> Cell[V = Int]
+    effects Modify[c]
+
+  operation outer(s: Cell[V = Int]) -> (Int) -> Cell[V = Int] @ {Modify[s]}
+    = lambda v -> set_cell(s, v)
+end
+"#);
+    // Loading + typing must complete without panicking. The op itself loaded.
+    assert!(
+        kb.try_resolve_symbol("test.wi342lambda.outer").is_some(),
+        "outer should have loaded",
+    );
 }

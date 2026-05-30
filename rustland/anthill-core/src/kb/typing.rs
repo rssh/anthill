@@ -12,7 +12,7 @@ use smallvec::SmallVec;
 use super::term::{Term, TermId, Literal, Var, VarId};
 use super::node_occurrence::{
     for_each_child, for_each_pattern_child, materialize_from_handle, occurrence_structural_eq,
-    Expr, MatchBranch, NodeKind, NodeOccurrence, TypeChild, TypeNode,
+    EffectExprNode, Expr, MatchBranch, NodeKind, NodeOccurrence, TypeChild, TypeNode,
 };
 use super::persist_subst::BindValue;
 use super::term_view::{type_child_view_item, TermIdView, TermView, ViewHead, ViewItem};
@@ -605,8 +605,26 @@ pub(crate) fn external_effects(kb: &KnowledgeBase, env: &TypingEnv, effects: &[V
 pub(crate) fn extract_effect_resource_sym(kb: &KnowledgeBase, effect: &Value) -> Option<Symbol> {
     match effect {
         Value::Term(t) => extract_effect_resource_sym_term(kb, *t),
-        // TODO(WI-342 E2): read the resource sym off a `Value::Node` parameterized
-        // label's denoted binding (carrier-agnostic `denoted_ref_sym`).
+        // WI-342 E2: a `Value::Node` label is a `parameterized` (`Modify[c]`)
+        // whose resource binding carries the region as a `denoted(Ref(c))`. Read
+        // the bindings carrier-agnostically and return the first denoted Ref —
+        // the occurrence peer of the `unwrap_denoted_value` read in the term arm.
+        _ => parameterized_bindings(kb, effect)
+            .iter()
+            .find_map(|(_, v)| value_denoted_ref(v)),
+    }
+}
+
+/// The symbol a `Value::Node` `denoted`'s carried value refers to, if it is an
+/// `Expr::Ref` occurrence (`Modify[c]`'s `c`). Occurrence peer of the
+/// `unwrap_denoted_value` → `Ref` read used by [`extract_effect_resource_sym_term`].
+fn value_denoted_ref(v: &Value) -> Option<Symbol> {
+    let Value::Node(occ) = v else { return None };
+    match occ.as_type() {
+        Some(TypeNode::Denoted { value }) => match &value.kind {
+            NodeKind::Expr { expr: Expr::Ref(s), .. } => Some(*s),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -642,38 +660,90 @@ fn extract_effect_resource_sym_term(kb: &KnowledgeBase, effect: TermId) -> Optio
     }
 }
 
-/// WI-342 effects-vertical: materialize carrier-agnostic effect labels back to
-/// hash-consed `TermId`s for the builders that still require them (e.g.
-/// `make_arrow_type`, which folds labels into a `TermId` `effects_rows`). Lossless
-/// for `Value::Term` (every label pre-E2). A `Value::Node` label can't be
-/// represented in a `TermId` arrow — it needs a Value-carried arrow builder + a
-/// Value-carried `ty` slot, which E2 introduces (this path is then retired).
-/// Until then a Node label is unreachable here: `debug_assert` panics in
-/// tests/CI (the regression guard); the release `None`-drop is a stopgap, not a
-/// sanctioned widening — E2 must land before any producer mints a Node effect
-/// into a lambda body.
-fn effects_as_term_ids(effects: &[Value]) -> Vec<TermId> {
+/// WI-342 effects-vertical: materialize carrier-agnostic effect labels to
+/// hash-consed `TermId`s for the consumers that still require them — namely the
+/// lambda-arrow builder ([`KnowledgeBase::make_arrow_type`], whose `effects_rows`
+/// is a `TermId`), which cannot hold a `Value::Node` because [`TypeResult::ty`]
+/// is still a `TermId` (the Value-carried arrow / `ty`-slot migration is
+/// deferred). A `Value::Term` is already ground; a `Value::Node` (a denoted-
+/// bearing label such as a rekeyed `Modify[s]`) is re-grounded by
+/// [`value_effect_to_term_id`] into the equivalent hash-consed term — the
+/// inverse of the loader's `effect_label_child`, lossless for the `Ref`-carried
+/// denoted shape minted today, and exactly the ground form this consumer carried
+/// pre-E2. The live Node form is still used where it matters (op-boundary region
+/// masking, which is Value-native); this re-grounds it only at the not-yet-
+/// migrated `TermId` arrow boundary. The `debug_assert` now guards a genuinely
+/// unrepresentable shape (none minted today), not the common Node case.
+fn effects_as_term_ids(kb: &mut KnowledgeBase, effects: &[Value]) -> Vec<TermId> {
     effects
         .iter()
         .filter_map(|e| {
-            let t = e.as_term();
+            let t = value_effect_to_term_id(kb, e);
             debug_assert!(
                 t.is_some(),
-                "WI-342 E1: Value::Node effect label reached a TermId arrow builder"
+                "WI-342: effect label could not be grounded for the TermId arrow builder: {e:?}"
             );
             t
         })
         .collect()
 }
 
+/// Materialize one carrier-agnostic effect label to a ground hash-consed
+/// `TermId`. `Value::Term` is already ground; a `Value::Node` is rebuilt by
+/// [`type_occ_to_term`]. Returns `None` only for a Node shape the term builders
+/// can't express (not minted today — see [`effects_as_term_ids`]).
+fn value_effect_to_term_id(kb: &mut KnowledgeBase, e: &Value) -> Option<TermId> {
+    match e {
+        Value::Term(t) => Some(*t),
+        Value::Node(occ) => type_occ_to_term(kb, occ),
+        _ => None,
+    }
+}
+
+/// Re-ground a `Value`-carried `Type` occurrence into the equivalent hash-consed
+/// term — the inverse of the loader's `effect_label_child` / `type_expr_to_term`.
+/// Covers the effect-label shapes (`denoted`, `parameterized`); `effects_rows` /
+/// `arrow` Node labels are not minted, so they return `None`.
+fn type_occ_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<TermId> {
+    match occ.as_type()? {
+        TypeNode::Denoted { value } => match &value.kind {
+            NodeKind::Expr { expr: Expr::Ref(s), .. } => {
+                let v = kb.alloc(Term::Ref(*s));
+                Some(kb.make_denoted(v))
+            }
+            _ => None,
+        },
+        TypeNode::Parameterized { base, bindings } => {
+            let base_term = type_child_to_term(kb, base)?;
+            let mut bs: Vec<(Symbol, TermId)> = Vec::with_capacity(bindings.len());
+            for (p, c) in bindings {
+                bs.push((*p, type_child_to_term(kb, c)?));
+            }
+            Some(kb.make_parameterized_type(base_term, &bs))
+        }
+        TypeNode::EffectsRows { .. } | TypeNode::Arrow { .. } => None,
+    }
+}
+
+/// Re-ground a [`TypeChild`]: `Ground` is already a `TermId`; `Node` recurses
+/// through [`type_occ_to_term`].
+fn type_child_to_term(kb: &mut KnowledgeBase, child: &TypeChild) -> Option<TermId> {
+    match child {
+        TypeChild::Ground(t) => Some(*t),
+        TypeChild::Node(n) => type_occ_to_term(kb, n),
+    }
+}
+
 /// Merge two effect lists (set union). WI-342 effects-vertical: dedup
-/// carrier-agnostically via [`Value::scalar_eq`] (ground labels by `TermId`; a
-/// `Value::Node` label has no structural `Eq` so it is always pushed — harmless,
-/// set semantics are recovered by the row canonicalizer / pairing).
+/// carrier-agnostically via [`Value::structural_eq`] — ground labels compare by
+/// `TermId` (its `scalar_eq` fallback), and a `Value::Node` label (now live —
+/// `Modify[c]`) compares by occurrence structure rather than never-dedup. Set
+/// semantics thus hold for both carriers at the merge point, not only after the
+/// row canonicalizer.
 fn merge_effects(a: &[Value], b: &[Value]) -> Vec<Value> {
     let mut result = a.to_vec();
     for e in b {
-        if !result.iter().any(|r| r.scalar_eq(e)) {
+        if !result.iter().any(|r| r.structural_eq(e)) {
             result.push(e.clone());
         }
     }
@@ -726,13 +796,21 @@ fn substitute_ref_syms_value(
 ) -> Value {
     match e {
         Value::Term(t) => Value::Term(substitute_ref_syms(kb, *t, map)),
+        // WI-342 E2: re-key the `Ref` spine of a `Value::Node` label (a callee's
+        // `Modify[c]` → the caller's `Modify[s]`) via the occurrence rewriter.
+        Value::Node(occ) => {
+            Value::Node(super::node_occurrence::substitute_ref_syms_occ(occ, map))
+        }
         other => other.clone(),
     }
 }
 
 /// WI-342 effects-vertical: deep type-var resolution over a carrier-agnostic
-/// effect label. Ground labels resolve via [`walk_type_deep`]; a `Value::Node`
-/// label is returned as-is (E2 walks the occurrence — unreachable pre-E2).
+/// effect label. Ground labels resolve via [`walk_type_deep`]; a live
+/// `Value::Node` label (`Modify[c]`) carries its resource as an `Expr::Ref`, not
+/// a type variable, so there is nothing to resolve and it is returned as-is —
+/// correct, not merely deferred. (A future Node label that nests an unresolved
+/// type-var in a binding would need an occurrence walk here; none is minted.)
 fn walk_type_deep_value(kb: &mut KnowledgeBase, subst: &Substitution, e: &Value) -> Value {
     match e {
         Value::Term(t) => Value::Term(walk_type_deep(kb, subst, *t)),
@@ -749,10 +827,71 @@ fn walk_type_deep_value(kb: &mut KnowledgeBase, subst: &Substitution, e: &Value)
 fn type_display_name_value(kb: &KnowledgeBase, v: &Value) -> String {
     match v {
         Value::Term(t) => type_display_name(kb, *t),
+        // WI-342 E2: render a `Value::Node` label to the SAME string
+        // `type_display_name` produces for the equivalent term (see
+        // [`type_display_name_occ`]) — the op-boundary check compares declared
+        // vs. actual labels by name across carriers, so the two must agree.
+        Value::Node(occ) => type_display_name_occ(kb, occ),
         other => match resolved_functor_name(kb, other) {
             Some(name) => name.to_string(),
             None => "?".to_string(),
         },
+    }
+}
+
+/// Render a `Value::Node` `Type` / `EffectExpression` effect-label occurrence to
+/// the SAME string [`type_display_name`] produces for the equivalent hash-consed
+/// term. Carrier-paired with that function arm-for-arm (a `denoted` shows its
+/// carried value; `parameterized` shows `base[p = v, …]`; `effects_rows` shows
+/// `{…}`) so a declared label and a structurally-equal actual label compare
+/// equal regardless of which carrier each rode in on.
+fn type_display_name_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String {
+    match &occ.kind {
+        NodeKind::Type(TypeNode::Denoted { value }) => match &value.kind {
+            NodeKind::Expr { expr: Expr::Ref(s), .. } => kb.resolve_sym(*s).to_string(),
+            _ => "?".to_string(),
+        },
+        NodeKind::Type(TypeNode::Parameterized { base, bindings }) => {
+            let base_name = type_child_display_name(kb, base);
+            if bindings.is_empty() {
+                base_name
+            } else {
+                let params: Vec<String> = bindings
+                    .iter()
+                    .map(|(p, c)| format!("{} = {}", kb.resolve_sym(*p), type_child_display_name(kb, c)))
+                    .collect();
+                format!("{}[{}]", base_name, params.join(", "))
+            }
+        }
+        NodeKind::Type(TypeNode::EffectsRows { effects_expr }) => {
+            format!("{{{}}}", type_child_display_name(kb, effects_expr))
+        }
+        NodeKind::Type(TypeNode::Arrow { param, result, .. }) => format!(
+            "{} -> {}",
+            type_child_display_name(kb, param),
+            type_child_display_name(kb, result)
+        ),
+        NodeKind::EffectExpr(EffectExprNode::Present { label })
+        | NodeKind::EffectExpr(EffectExprNode::Absent { label }) => {
+            type_child_display_name(kb, label)
+        }
+        NodeKind::EffectExpr(EffectExprNode::Merge { left, right }) => format!(
+            "{}, {}",
+            type_child_display_name(kb, left),
+            type_child_display_name(kb, right)
+        ),
+        NodeKind::EffectExpr(EffectExprNode::Open { tail }) => type_child_display_name(kb, tail),
+        NodeKind::EffectExpr(EffectExprNode::EmptyRow) => String::new(),
+        _ => "?".to_string(),
+    }
+}
+
+/// Display name of a [`TypeChild`]: ground via [`type_display_name`], poisoned
+/// via [`type_display_name_occ`].
+fn type_child_display_name(kb: &KnowledgeBase, child: &TypeChild) -> String {
+    match child {
+        TypeChild::Ground(t) => type_display_name(kb, *t),
+        TypeChild::Node(n) => type_display_name_occ(kb, n),
     }
 }
 
@@ -2376,7 +2515,8 @@ fn build_type(
                 .ok()
                 .map(|r| r.effects.clone())
                 .unwrap_or_default();
-            let fn_type = kb.make_arrow_type(a_val, b_val, &effects_as_term_ids(&body_effects));
+            let effect_tids = effects_as_term_ids(kb, &body_effects);
+            let fn_type = kb.make_arrow_type(a_val, b_val, &effect_tids);
             // Creating a lambda is itself pure — body effects live in the type.
             // If the body itself errored, propagate that error rather than
             // synthesizing a lambda over an ill-typed body.
