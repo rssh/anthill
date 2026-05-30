@@ -741,6 +741,13 @@ fn occ_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<TermI
                 let e = type_child_to_term(kb, effects)?;
                 Some(kb.make_arrow_from_effects_rows(p, r, e))
             }
+            TypeNode::NamedTuple { fields } => {
+                let mut fs: Vec<(Symbol, TermId)> = Vec::with_capacity(fields.len());
+                for (s, c) in fields {
+                    fs.push((*s, type_child_to_term(kb, c)?));
+                }
+                Some(kb.make_named_tuple_type(&fs))
+            }
         };
     }
     if let Some(en) = occ.as_effect_expr() {
@@ -836,6 +843,33 @@ fn parameterized_value(
             terms.push((*s, value_to_term_id(kb, v)));
         }
         Value::Term(kb.make_parameterized_type(base, &terms))
+    }
+}
+
+/// WI-342: build `named_tuple(fields)` carrier-agnostically. When any field type
+/// is a `Value::Node` (e.g. a tuple element that is a lambda carrying
+/// `Modify[c]`), mint a `Value::Node` via [`KnowledgeBase::make_named_tuple_occ`]
+/// so the poisoned field is CARRIED, not re-grounded; otherwise the hash-consed
+/// [`KnowledgeBase::make_named_tuple_type`]. A Node tuple compares cross-carrier
+/// via the `view_to_term_id` dispatch bridge.
+fn named_tuple_value(
+    kb: &mut KnowledgeBase,
+    fields: &[(Symbol, Value)],
+    span: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+) -> Value {
+    if fields.iter().any(|(_, v)| matches!(v, Value::Node(_))) {
+        let mut children: Vec<(Symbol, TypeChild)> = Vec::with_capacity(fields.len());
+        for (s, v) in fields {
+            children.push((*s, value_to_type_child(kb, v)));
+        }
+        Value::Node(kb.make_named_tuple_occ(children, span, owner))
+    } else {
+        let mut terms: Vec<(Symbol, TermId)> = Vec::with_capacity(fields.len());
+        for (s, v) in fields {
+            terms.push((*s, value_to_term_id(kb, v)));
+        }
+        Value::Term(kb.make_named_tuple_type(&terms))
     }
 }
 
@@ -976,6 +1010,14 @@ fn type_display_name_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String
             type_child_display_name(kb, param),
             type_child_display_name(kb, result)
         ),
+        // Mirrors `type_display_name`'s `named_tuple` arm: `(f: T, n: U)`.
+        NodeKind::Type(TypeNode::NamedTuple { fields }) => {
+            let parts: Vec<String> = fields
+                .iter()
+                .map(|(n, c)| format!("{}: {}", kb.resolve_sym(*n), type_child_display_name(kb, c)))
+                .collect();
+            format!("({})", parts.join(", "))
+        }
         NodeKind::EffectExpr(EffectExprNode::Present { label })
         | NodeKind::EffectExpr(EffectExprNode::Absent { label }) => {
             type_child_display_name(kb, label)
@@ -2804,24 +2846,25 @@ fn build_type(
             }
             // WI-283: reassemble from [positional…, named…] elements.
             let node = reassemble_if_enabled(simp_enabled, &occ, &group);
+            let (span, owner) = (occ.span, occ.owner);
             let mut effects = Vec::new();
-            let mut field_types: Vec<(Symbol, TermId)> = Vec::new();
+            // WI-342: keep field types carrier-agnostic so a `Value::Node` field
+            // (a tuple element that is an effectful lambda) is CARRIED, not re-grounded.
+            let mut field_types: Vec<(Symbol, Value)> = Vec::new();
             let mut it = group.into_iter();
             for i in 0..pos_count {
                 let r = it.next().unwrap().expect("aggregator");
                 let field_name = kb.intern(&format!("_{}", i));
-                let field_ty = value_to_term_id(kb, &r.ty);
-                field_types.push((field_name, field_ty));
+                field_types.push((field_name, r.ty.clone()));
                 effects = merge_effects(&effects, &r.effects);
             }
             for name in named_names {
                 let r = it.next().unwrap().expect("aggregator");
-                let field_ty = value_to_term_id(kb, &r.ty);
-                field_types.push((name, field_ty));
+                field_types.push((name, r.ty.clone()));
                 effects = merge_effects(&effects, &r.effects);
             }
-            let tuple_type = kb.make_named_tuple_type(&field_types);
-            results.push(Ok(TypeResult { ty: Value::Term(tuple_type), env: unwrap_env(env), effects, node }));
+            let tuple_type = named_tuple_value(kb, &field_types, span, owner);
+            results.push(Ok(TypeResult { ty: tuple_type, env: unwrap_env(env), effects, node }));
         }
     }
 }
@@ -5417,14 +5460,14 @@ fn check_tuple_literal_constructor(
     }
 
     let mut effects: Vec<Value> = Vec::new();
-    let mut tuple_fields: Vec<(Symbol, TermId)> = Vec::new();
+    // WI-342: carrier-agnostic field types (carry a `Value::Node` field).
+    let mut tuple_fields: Vec<(Symbol, Value)> = Vec::new();
     for (label, r) in labeled {
-        let field_ty = value_to_term_id(kb, &r.ty);
-        tuple_fields.push((label, field_ty));
+        tuple_fields.push((label, r.ty.clone()));
         effects = merge_effects(&effects, &r.effects);
     }
-    let tuple_ty = kb.make_named_tuple_type(&tuple_fields);
-    Ok(TypeResult { ty: Value::Term(tuple_ty), env: env.clone(), effects, node: Rc::clone(occ) })
+    let tuple_ty = named_tuple_value(kb, &tuple_fields, occ.span, occ.owner);
+    Ok(TypeResult { ty: tuple_ty, env: env.clone(), effects, node: Rc::clone(occ) })
 }
 
 /// Type a `ListLiteral` / `SetLiteral` that reached the constructor checker
@@ -6485,7 +6528,19 @@ fn denoted_ref_sym(kb: &mut KnowledgeBase, r: &impl TermView) -> Option<Symbol> 
 
 /// Occurs check over a [`TermView`] (the `Value`-carried analog of
 /// [`occurs_in`]): does `vid` appear anywhere inside `v`?
+///
+/// WI-342: a `Value::Node` Rep-A type (`parameterized`/`named_tuple`) does NOT
+/// expose its bindings/fields through the view (only `base`, resp. nothing — the
+/// view layer reads them via the dedicated `parameterized_bindings` /
+/// `named_tuple_fields` readers). Walking such a node through the view alone
+/// would MISS a var nested in a binding/field, letting `bind_resolved` create a
+/// cyclic binding. So a `Value::Node` is walked completely via [`occ_contains_var`]
+/// over the occurrence spine; every other carrier (a `TermId`, which exposes all
+/// children) uses the view walk.
 fn occurs_in_view(kb: &KnowledgeBase, vid: VarId, v: &impl TermView) -> bool {
+    if let BindValue::Value(Value::Node(occ)) = v.as_bind_value() {
+        return occ_contains_var(kb, vid, &occ);
+    }
     match v.head(kb) {
         ViewHead::Var(x) => x == vid,
         ViewHead::Functor { pos_arity, .. } => {
@@ -6507,6 +6562,41 @@ fn occurs_in_view(kb: &KnowledgeBase, vid: VarId, v: &impl TermView) -> bool {
         }
         _ => false,
     }
+}
+
+/// Complete occurs-check over a `Value::Node` occurrence spine — walks ALL
+/// children (including the bindings/fields the [`TermView`] doesn't expose for
+/// Rep-A `parameterized`/`named_tuple`). A ground `TypeChild` defers to the
+/// hash-consed [`occurs_in`]; a poisoned child recurses.
+fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) -> bool {
+    let child = |kb: &KnowledgeBase, c: &TypeChild| match c {
+        TypeChild::Ground(t) => occurs_in(kb, vid, *t),
+        TypeChild::Node(n) => occ_contains_var(kb, vid, n),
+    };
+    if let Some(tn) = occ.as_type() {
+        return match tn {
+            // A `denoted`'s carried value is an `Expr::Ref` (a value ref), never a
+            // type var, so it cannot capture `vid`.
+            TypeNode::Denoted { .. } => false,
+            TypeNode::Parameterized { base, bindings } => {
+                child(kb, base) || bindings.iter().any(|(_, c)| child(kb, c))
+            }
+            TypeNode::EffectsRows { effects_expr } => child(kb, effects_expr),
+            TypeNode::Arrow { param, result, effects } => {
+                child(kb, param) || child(kb, result) || child(kb, effects)
+            }
+            TypeNode::NamedTuple { fields } => fields.iter().any(|(_, c)| child(kb, c)),
+        };
+    }
+    if let Some(en) = occ.as_effect_expr() {
+        return match en {
+            EffectExprNode::Present { label } | EffectExprNode::Absent { label } => child(kb, label),
+            EffectExprNode::Merge { left, right } => child(kb, left) || child(kb, right),
+            EffectExprNode::Open { tail } => child(kb, tail),
+            EffectExprNode::EmptyRow => false,
+        };
+    }
+    false
 }
 
 /// The `TermId`-only structural dispatch (functor-pair match) — reached from
@@ -10500,6 +10590,106 @@ mod p4_tests {
         assert!(
             !types_compatible(&mut kb, &mut s3, &TermIdView(ground_arrow), &value_arrow_d),
             "{{Modify[c]}} not <: {{Modify[d]}}"
+        );
+    }
+
+    /// WI-342 collection migration: a `Value::Node` `named_tuple` with a poisoned
+    /// (Node-arrow) field — `(f: Unit -> Unit {Modify[c]}, n: Int)` — unifies and
+    /// is mutually compatible with its ground twin CROSS-CARRIER, through the
+    /// view-dispatch bridge (`view_to_term_id` re-grounds the Node tuple via
+    /// `occ_to_term`'s NamedTuple arm, then delegates to the `named_tuple`
+    /// term dispatch). A different field effect (`{Modify[d]}`) is rejected.
+    /// (Surface syntax can't express a tuple-of-lambda *type* annotation, so this
+    /// exercises the new `make_named_tuple_occ` / `TypeNode::NamedTuple` path
+    /// directly.)
+    #[test]
+    fn cross_carrier_named_tuple_with_node_field() {
+        let mut kb = kb_with_prelude();
+        let modify = kb.intern("Modify");
+        let p = kb.intern("resource");
+        let c = kb.intern("c");
+        let d = kb.intern("d");
+        let unit = kb.intern("Unit");
+        let unit_ref = kb.make_sort_ref(unit);
+        let int = kb.intern("Int");
+        let int_ref = kb.make_sort_ref(int);
+        let f = kb.intern("f");
+        let n = kb.intern("n");
+
+        // ground named_tuple `(f: Unit -> Unit {Modify[c]}, n: Int)`
+        let ground_label = ground_param(&mut kb, modify, p, c);
+        let ground_arrow = kb.make_arrow_type(unit_ref, unit_ref, &[ground_label]);
+        let ground_tuple = kb.make_named_tuple_type(&[(f, ground_arrow), (n, int_ref)]);
+
+        // Value-carried twin: the `f` field is a Node arrow (poisoned spine).
+        let value_arrow_c = value_modify_arrow(&mut kb, modify, p, unit_ref, c);
+        let value_tuple_c = kb.make_named_tuple_occ(
+            vec![(f, TypeChild::Node(value_arrow_c)), (n, TypeChild::Ground(int_ref))],
+            span(),
+            None,
+        );
+
+        let mut s = Substitution::new();
+        assert!(
+            unify_types(&mut kb, &mut s, &TermIdView(ground_tuple), &value_tuple_c),
+            "ground tuple vs Value-carried twin (Node arrow field) — via the bridge"
+        );
+        let mut s2 = Substitution::new();
+        assert!(
+            types_compatible(&mut kb, &mut s2, &value_tuple_c, &TermIdView(ground_tuple)),
+            "Value tuple <: ground tuple"
+        );
+
+        let value_arrow_d = value_modify_arrow(&mut kb, modify, p, unit_ref, d);
+        let value_tuple_d = kb.make_named_tuple_occ(
+            vec![(f, TypeChild::Node(value_arrow_d)), (n, TypeChild::Ground(int_ref))],
+            span(),
+            None,
+        );
+        let mut s3 = Substitution::new();
+        assert!(
+            !unify_types(&mut kb, &mut s3, &TermIdView(ground_tuple), &value_tuple_d),
+            "tuple field {{Modify[c]}} vs {{Modify[d]}} differ"
+        );
+    }
+
+    /// WI-342 occurs-check over a `Value::Node` Rep-A type: binding `?v` to a Node
+    /// `named_tuple` whose field mentions `?v` must be REJECTED (the view hides
+    /// fields, so `occurs_in_view` walks the occurrence spine via
+    /// `occ_contains_var`). Without the complete walk this would create a cyclic
+    /// binding `?v = (f: ?v -> …)`.
+    #[test]
+    fn occurs_check_var_in_node_tuple_field() {
+        use crate::kb::term::Var;
+        let mut kb = kb_with_prelude();
+        let unit = kb.intern("Unit");
+        let unit_ref = kb.make_sort_ref(unit);
+        let modify = kb.intern("Modify");
+        let p = kb.intern("resource");
+        let c = kb.intern("c");
+        let f = kb.intern("f");
+        let vsym = kb.intern("v");
+        let vid = kb.fresh_var(vsym);
+        let v_term = kb.alloc(Term::Var(Var::Global(vid)));
+
+        // Node arrow `?v -> Unit {Modify[c]}` (Node because of the effect label),
+        // with `?v` as its param; wrapped as the single field of a Node tuple.
+        let label = occ_param(&mut kb, modify, p, c);
+        let present = kb.make_present_occ(TypeChild::Node(label), span(), None);
+        let rows = kb.make_effects_rows_occ(TypeChild::Node(present), span(), None);
+        let arrow = kb.make_arrow_occ(
+            TypeChild::Ground(v_term),
+            TypeChild::Ground(unit_ref),
+            TypeChild::Node(rows),
+            span(),
+            None,
+        );
+        let tuple = kb.make_named_tuple_occ(vec![(f, TypeChild::Node(arrow))], span(), None);
+
+        let mut s = Substitution::new();
+        assert!(
+            !unify_types(&mut kb, &mut s, &TermIdView(v_term), &tuple),
+            "occurs-check must reject binding ?v to a Node tuple whose field mentions ?v"
         );
     }
 }

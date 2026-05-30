@@ -2406,6 +2406,22 @@ impl KnowledgeBase {
         )
     }
 
+    /// `named_tuple(fields)` carried as a Type occurrence (WI-342). Occurrence
+    /// peer of [`Self::make_named_tuple_type`]; minted when a tuple field's type
+    /// is `denoted`-bearing.
+    pub fn make_named_tuple_occ(
+        &self,
+        fields: Vec<(Symbol, node_occurrence::TypeChild)>,
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Rc<NodeOccurrence> {
+        NodeOccurrence::new_type(
+            node_occurrence::TypeNode::NamedTuple { fields },
+            span,
+            owner,
+        )
+    }
+
     /// `arrow(param, result, effects)` carried as a Type occurrence.
     /// Occurrence peer of [`Self::make_arrow_type`].
     pub fn make_arrow_occ(

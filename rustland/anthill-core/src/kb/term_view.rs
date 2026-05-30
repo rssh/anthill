@@ -196,6 +196,9 @@ fn type_node_head(tn: &TypeNode, kb: &KnowledgeBase) -> ViewHead {
         TypeNode::Parameterized { .. } => ("parameterized", 1),
         TypeNode::EffectsRows { .. } => ("effects_rows", 1),
         TypeNode::Arrow { .. } => ("arrow", 3),
+        // Fields are not a uniformly-exposed named child (like Parameterized's
+        // bindings); they're read via the dedicated `named_tuple_fields` reader.
+        TypeNode::NamedTuple { .. } => ("named_tuple", 0),
     };
     match type_functor_sym(kb, short) {
         Some(f) => ViewHead::Functor { functor: Some(f), pos_arity: 0, named_arity },
@@ -209,6 +212,7 @@ fn type_node_keys(tn: &TypeNode, kb: &KnowledgeBase) -> Vec<Symbol> {
         TypeNode::Parameterized { .. } => &["base"],
         TypeNode::EffectsRows { .. } => &["effects_expr"],
         TypeNode::Arrow { .. } => &["param", "result", "effects"],
+        TypeNode::NamedTuple { .. } => &[],
     };
     keys.iter().filter_map(|k| kb.lookup_symbol(k)).collect()
 }

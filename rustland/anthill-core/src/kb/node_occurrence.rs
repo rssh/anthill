@@ -130,6 +130,11 @@ fn drain_type_node(tn: &mut TypeNode, stack: &mut Vec<Rc<NodeOccurrence>>) {
             drain_type_child(result, stack);
             drain_type_child(effects, stack);
         }
+        TypeNode::NamedTuple { fields } => {
+            for (_, c) in fields.iter_mut() {
+                drain_type_child(c, stack);
+            }
+        }
     }
 }
 
@@ -770,6 +775,14 @@ pub enum TypeNode {
         result: TypeChild,
         effects: TypeChild,
     },
+    /// `named_tuple(fields: [TypeField(name, type), …])` — a tuple type whose
+    /// fields are `(name, type)` pairs. WI-342: minted when a tuple literal has a
+    /// field whose type is `denoted`-bearing (a `Value::Node`, e.g. a tuple
+    /// element that is a lambda carrying `Modify[c]`). The hash-consed form keys
+    /// the fields under a single `fields` named-arg `List`; the occurrence form
+    /// holds them inline as `Vec<(Symbol, TypeChild)>` (mirroring `Parameterized`
+    /// bindings).
+    NamedTuple { fields: Vec<(Symbol, TypeChild)> },
 }
 
 /// Structural `EffectExpression`-sort IR (WI-342). Mirrors the row algebra
@@ -2434,6 +2447,12 @@ pub(crate) fn substitute_ref_syms_occ(
                     param: rewrite_ref_child(param, map),
                     result: rewrite_ref_child(result, map),
                     effects: rewrite_ref_child(effects, map),
+                },
+                TypeNode::NamedTuple { fields } => TypeNode::NamedTuple {
+                    fields: fields
+                        .iter()
+                        .map(|(s, c)| (*s, rewrite_ref_child(c, map)))
+                        .collect(),
                 },
             };
             NodeOccurrence::new_type(rebuilt, occ.span, occ.owner)
