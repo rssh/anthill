@@ -139,13 +139,24 @@ Node-carrying, indexed, queryable head).
 ### Remaining work — phased
 
 - **Phase A — discrimination-tree INSERT/REMOVE → `TermView`** (the main piece;
-  lookup is done). `insert_ground` / `insert_pattern` / `remove_walk` still walk
-  `TermStore`/`TermId` (~500 lines of structural recursion). Rewrite to drive off
-  `head`/`pos_arg`/`named_arg`. **One design decision:** a `Value::Node` subterm
-  can't be a structural discrimination key (non-structural identity) → index it
-  as a **wildcard / var-edge** (matches anything). Sound because the tree only
-  *narrows candidates*; full unification filters later. **Difficulty: HIGH
-  (mechanical), hottest path, the real risk.**
+  lookup is already `TermView`-driven). `insert_ground` / `insert_pattern` /
+  `remove_walk` still walk `TermStore`/`TermId` (~500 lines of structural
+  recursion); rewrite to drive off `head`/`pos_arg`/`named_arg`, carrying a
+  `ViewItem` (not a `TermId`) as the "recurse into this child" pointer in
+  `arg_seq`.
+  **The tree uses NO hash-consing** — its keys (`DiscrimKey`) are purely
+  structural (`Functor(Symbol)` / `Arity` / `NamedKey` / `Positional` /
+  `Lit(Literal-value)` / `Ident` / `Ref(Symbol)` / `Bottom`); nodes hold
+  `concrete: HashMap<DiscrimKey,_>`, `var_edges` keyed on `VarId`, `leaves:
+  Vec<RuleId>`. No `TermId` is ever a key, stored in a node, or compared. So
+  there is **no hash-cons semantics to preserve** — a `Value::Node` decomposes
+  into the *same* structural keys via `TermView` (`head` → `Functor`+`Arity`; a
+  `denoted` → `Functor("denoted")` whose `Ref(c)` value → `Ref(c)`; `Const` →
+  `Lit`; children via `pos_arg`/`named_arg`), so a Node is **structurally
+  indexed like a term**. (Indexing a Node as a wildcard/var-edge is a *sound but
+  conservative fallback*, not required.) **Difficulty: MEDIUM — mechanical
+  decomposition on a perf-sensitive path; the risk is the volume/correctness of
+  the walk rewrite, NOT untangling a hash-cons dependency (there is none).**
 - **Phase B — value-fact storage.** Add an `assert_fact_value` path; make
   `RuleEntry.head` carrier-agnostic. `by_functor` is free (`TermView::head`);
   `by_sort` / `by_domain` need a small decision on how a value fact's sort/domain
@@ -167,9 +178,16 @@ Node-carrying, indexed, queryable head).
 
 ### Risks / decisions
 
-- Phase A is the hot SLD path — the genuine cost + risk.
-- `fact_dedup` and `by_sort` for value facts are *semantic* decisions ("what does
-  dedup / sort-keying mean for a non-hash-consable head?"), not just code.
+- Phase A is volume on a perf-sensitive path (the discrimination-tree walk
+  rewrite), but it carries **no hidden hash-cons dependency** — the tree keys
+  purely on decomposed structure (`DiscrimKey`), never on `TermId` identity, so a
+  Node decomposes into the same keys via `TermView`. The risk is getting the walk
+  rewrite right, not preserving hash-cons semantics.
+- The genuine *semantic* decisions are in **Phase B, not the tree**:
+  `fact_dedup` (keyed on `(TermId,TermId,TermId)`) and `by_sort`/`by_domain` —
+  "what does dedup / sort-keying mean for a non-hash-consable head?" The answer
+  for `fact_dedup` is skip-for-Node (dedup-miss, not unsound); `by_sort`/`by_domain`
+  need a small key decision.
 
 ## Why the Rust-side record is the wrong fix
 
