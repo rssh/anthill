@@ -1466,6 +1466,8 @@ rule eq(?_, ?_) = false
 
 Since facts are scoped to namespaces, different namespaces can provide different instantiations of the same spec for the same type (e.g. different orderings). A consumer chooses which instantiation to use via `import`.
 
+**Instance coherence.** Instance selection is scoped, not global. Within a single scope a spec has at most one provider for a given carrier — two is an ambiguity error (the coherence rule in `docs/design/spec-instance-dispatch.md`) — while different scopes may resolve the same `Spec[carrier]` to different providers, the per-`import` choice noted above. A sort's *embedded* requirements — the providers that fill its `requires` slots — are resolved in **that sort's** scope and captured when its instance is constructed, so `Spec[carrier]` behaves consistently within any one instance. Coherence is therefore lexical and per-scope: two routes to `A[X]` resolved in the same scope agree by construction, but a diamond whose arms captured providers from different scopes may observe different `A[X]` behavior. This is permitted — keeping `A[X]` canonical is a matter of resolving it in one scope (or using distinct carriers), not a guarantee the kernel enforces globally.
+
 **Operation auto-binding.** Operations in parametric sorts are implicitly parameterized — like type parameters (`sort T = ?`), they are logical variables bound at instantiation. When a sort satisfies a spec via `fact S[T]`, operations with matching names and compatible signatures are **automatically unified** — no explicit binding needed.
 
 The binding gradient:
@@ -1482,6 +1484,8 @@ fact Monoid[T, combine = add]
 ```
 
 When `fact S[T]` appears inside a sort body, it means both spec satisfaction AND operation inheritance: the sort gains all operations defined in the spec. Derived operations (defined by rules in the spec) carry over automatically; the satisfying sort only provides the primitive operations. For example, if `Stream` defines `head` as a derived rule from `splitFirst`, a sort declaring `fact Stream[T]` inherits `head` without redeclaring it.
+
+**Operation override.** A satisfying sort may **redefine** an operation the spec already supplies (a derived rule, or a defaulted operation); its own definition then wins for that carrier. Override is carrier-driven — a call resolves to the carrier's own operation when it has one, otherwise to the spec's. This is the `provides`/`fact` direction. A sort that merely `requires` a spec and happens to declare an operation of the same name is **not** overriding it: that operation is unrelated, and declaring it is reported as a warning that it shadows the required name. An overriding operation must **refine** the spec's contract — its effect row stays within the spec's, and its `requires`/`ensures` are no stronger / no weaker respectively (the effect check is described in `docs/design/spec-instance-dispatch.md`; the `requires`/`ensures` check is a planned follow-up).
 
 Note: namespace-level `fact Eq[T = Int]` (standalone, not inside a sort body) does NOT trigger auto-binding of operations — operations there are standalone rules associated with the fact.
 

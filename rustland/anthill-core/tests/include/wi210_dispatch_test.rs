@@ -620,3 +620,70 @@ fn dispatch_int_add_x_x_type_checks_via_spec_satisfaction() {
         "expected add(x, x) for x:Int to type-check; got {:?} (dispatch likely failed)",
         result.as_ref().err());
 }
+
+// ─── Override is a `provides` concept, not a `requires` one ───────
+//
+// Design note (operation override, kernel-language.md §8.7): a sort
+// that *provides* a spec (`fact Spec[...]`) and supplies its own
+// operation overrides the spec's, and participates in dispatch. A
+// sort that merely *requires* the spec and happens to declare a
+// same-named operation is NOT overriding — that op is unrelated and
+// must not enter the spec's dispatch candidate set.
+
+#[test]
+fn requires_user_with_same_named_op_does_not_provide_or_override() {
+    let mut kb = load_with(r#"
+        namespace ovr.req_vs_prov
+          export OvrSpec, OvrCarrier, OvrProv, OvrReq
+          sort OvrSpec
+            sort T = ?
+            operation ovr_op(x: T) -> T
+          end
+          sort OvrCarrier
+            entity ovr_e
+          end
+          sort OvrProv
+            fact OvrSpec[T = OvrCarrier]
+            operation ovr_op(x: OvrCarrier) -> OvrCarrier = x
+          end
+          sort OvrReq
+            requires OvrSpec[T = OvrCarrier]
+            operation ovr_op(x: OvrCarrier) -> OvrCarrier = x
+          end
+        end
+    "#);
+
+    // 1. The provider emits SortProvidesInfo; the requires-user does NOT.
+    let heads = provides_info_heads(&mut kb);
+    assert!(heads.iter().any(|h| h.contains("OvrProv") && h.contains("OvrSpec")),
+        "OvrProv (fact OvrSpec) must emit SortProvidesInfo; saw:\n{heads:#?}");
+    assert!(!heads.iter().any(|h| h.contains("OvrReq") && h.contains("OvrSpec")),
+        "OvrReq (requires OvrSpec) must NOT emit SortProvidesInfo — \
+         requires is not provides; saw:\n{heads:#?}");
+
+    // 2. The requires-user's op is a distinct symbol from the spec op
+    //    (it shadows the inherited name; it is not the spec op itself).
+    let spec_op = kb.try_resolve_symbol("ovr.req_vs_prov.OvrSpec.ovr_op")
+        .expect("OvrSpec.ovr_op registered");
+    let req_op = kb.try_resolve_symbol("ovr.req_vs_prov.OvrReq.ovr_op")
+        .expect("OvrReq.ovr_op registered");
+    assert_ne!(spec_op, req_op,
+        "the requires-user's same-named op must be a distinct symbol, not the spec op");
+
+    // 3. Dispatch for OvrSpec at T=OvrCarrier resolves uniquely to the
+    //    provider — the requires-user is not in the candidate set.
+    let spec_sort = lookup_spec_op_dispatch(&kb, spec_op)
+        .expect("OvrSpec.ovr_op is a spec op");
+    let subst = subst_with_t(&mut kb, "ovr.req_vs_prov.OvrSpec", "ovr.req_vs_prov.OvrCarrier");
+    let op_short = kb.intern("ovr_op");
+    match find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]) {
+        DispatchOutcome::Unique(s) => {
+            let qn = kb.qualified_name_of(s).to_string();
+            assert!(qn.contains("OvrProv"),
+                "dispatch must resolve to the provider OvrProv.ovr_op; got {qn}");
+        }
+        other => panic!(
+            "expected Unique dispatch to the provider (requires-user must not \
+             contribute a candidate); got {other:?}"),
+    }
+}
