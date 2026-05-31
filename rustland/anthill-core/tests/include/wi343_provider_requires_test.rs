@@ -133,3 +133,95 @@ fn provider_of_requireless_spec_loads() {
         "providing a requirement-free spec should load clean; got:\n{}",
         errors_text(&errs));
 }
+
+// ── WI-356: binding-precise — a provider satisfying the sub-spec at the
+//    WRONG bindings must error (v0 base-level passed it) ──────────────────
+
+#[test]
+fn provider_satisfies_subspec_at_wrong_bindings_errors() {
+    // `VS[V, F] requires Ring[F]`. `Carrier` provides `VS[V=Carrier, F=NonRing]`
+    // and also `Ring[F=Carrier]`. So *some* sort named in the provision (the
+    // carrier) provides `Ring` — v0's base-level check passes. But the
+    // requirement at THIS provision's bindings is `Ring[F=NonRing]`, and
+    // `NonRing` does not provide `Ring`. The binding-precise check (σ grounds
+    // `F` to the concrete `NonRing`, so the goal resolves precisely) must
+    // reject it. Pins WI-356 point (a).
+    let src = r#"
+        namespace wi356.wrongbind
+          export Ring, VS, Carrier, NonRing
+          sort Ring
+            sort F = ?
+            operation rtag(x: F) -> Int
+            rule rtag(?x) = 0
+          end
+          sort VS
+            sort V = ?
+            sort F = ?
+            requires Ring[F = F]
+            operation vtag(v: V) -> Int
+            rule vtag(?v) = 0
+          end
+          sort NonRing
+            entity nonring(id: Int)
+          end
+          sort Carrier
+            entity carrier(id: Int)
+            fact Ring[F = Carrier]
+            fact VS[V = Carrier, F = NonRing]
+          end
+        end
+    "#;
+    let (_kb, errs) = load_capturing_errors(src);
+    let text = errors_text(&errs);
+    assert!(!errs.is_empty(),
+        "expected an UnsatisfiedProviderRequires error: VS[V=Carrier, F=NonRing] \
+         requires Ring[F=NonRing], and NonRing does not provide Ring (the carrier \
+         providing Ring at a different binding must not satisfy it); got clean load");
+    assert!(text.contains("wi356.wrongbind.VS") && text.contains("wi356.wrongbind.Ring"),
+        "expected the diagnostic to name VS and its unmet Ring requirement; got:\n{text}");
+}
+
+// ── WI-356: transitive — a gap two hops down the `requires` chain errors ──
+
+#[test]
+fn provider_transitive_requires_gap_errors() {
+    // `Spec requires A`, `A requires B`, all at the carrier's binding.
+    // `Thing` provides `Spec` and `A` but NOT `B`. The chain `Spec → A → B`
+    // is checked at the concrete binding `T=Thing`: `A`'s contract (`requires
+    // B[T=Thing]`) is unmet, so providing `A` (and transitively `Spec`) is
+    // unsound. Pins WI-356 point (c).
+    let src = r#"
+        namespace wi356.transitive
+          export B, A, Spec, Thing
+          sort B
+            sort T = ?
+            operation btag(x: T) -> Int
+            rule btag(?x) = 0
+          end
+          sort A
+            sort T = ?
+            requires B[T = T]
+            operation atag(x: T) -> Int
+            rule atag(?x) = 0
+          end
+          sort Spec
+            sort T = ?
+            requires A[T = T]
+            operation stag(x: T) -> Int
+            rule stag(?x) = 0
+          end
+          sort Thing
+            entity thing(id: Int)
+            fact A[T = Thing]
+            fact Spec[T = Thing]
+          end
+        end
+    "#;
+    let (_kb, errs) = load_capturing_errors(src);
+    let text = errors_text(&errs);
+    assert!(!errs.is_empty(),
+        "expected an UnsatisfiedProviderRequires error: Thing provides A (and Spec, \
+         which requires A which requires B) but does not provide B; got clean load");
+    assert!(text.contains("wi356.transitive.B"),
+        "expected the diagnostic to name the unmet transitive requirement B; got:\n{text}");
+}

@@ -5143,22 +5143,34 @@ fn candidate_sub_goals_owned(
     out
 }
 
-/// WI-343 — provider-side requires coverage. For every satisfaction fact
-/// `fact Spec[sort_ref = X, spec = Spec[σ]]`, each spec-level `requires`
-/// of `Spec` (instantiated at the provision's bindings σ) must itself be
-/// satisfied by some provider. An unsatisfied requirement means the fact
-/// is unsound: `X` is declared to provide `Spec`, yet `Spec`'s contract
-/// (its `requires`) does not hold for `X`.
+/// WI-343/WI-356 — provider-side requires coverage. For every satisfaction
+/// fact `fact Spec[sort_ref = X, spec = Spec[σ]]`, each spec-level `requires`
+/// of `Spec`, **instantiated at the provision's bindings σ**, must itself
+/// resolve. An unsatisfied requirement means the fact is unsound: `X` is
+/// declared to provide `Spec`, yet `Spec`'s contract (its `requires`) does
+/// not hold at `X`'s bindings.
 ///
-/// v0 is base-level (like `check_sort_requirements_coverage`): a requirement
-/// `requires R[…]` is satisfied if *any* sort named in the provision — the
-/// carrier or any binding value — provides `R`. This covers both the common
-/// shape (`Ordered requires Eq[T]`, where the carrier is the `Eq` carrier) and
-/// the cross-param shape (`VectorSpace[V, F] requires Ring[F]`, where the
-/// binding value `F` is the `Ring` carrier) without per-binding substitution;
-/// binding-precise checking is a deferred refinement. The `EffectsRuntime`
-/// kind-anchor (synthesized from `effects E = ?`) is skipped: it is satisfied
-/// structurally by the effect-row machinery, never by a carrier `fact`.
+/// Binding-precise and transitive where the representation allows it
+/// (WI-356). `provider_requires_subgoals` substitutes σ into each `requires
+/// R[…]` clause (σ keyed by short *name* — see there). Then, per clause:
+///
+///  - If σ grounded every binding to a **concrete** value, resolve the exact
+///    instance via `spec_resolves_at_bindings` — binding-precise (a provider
+///    satisfying `R` at the *wrong* bindings now fails) AND transitive (the
+///    resolver recurses into `R`'s own `requires`). This is the case the WI
+///    targets: `Ordered[T=Int] requires Eq[T]` is checked as `Eq[T=Int]`.
+///  - If a binding stays an abstract type-param, fall back to v0's base-level
+///    existence check (some sort named in the provision provides `R`). Two
+///    stdlib realities force this: the shorthand `requires Ring[F]` drops the
+///    `F`→`Ring.T` binding when the names differ (Ring's param is `T`), so σ
+///    can't ground it; and an unbound goal value can't be matched against a
+///    ground `fact` (`dispatch_values_match` only treats the *candidate* as a
+///    wildcard). Recovering precision for that shape needs the loader to
+///    record the cross-param binding — a separate change.
+///
+/// The `EffectsRuntime` kind-anchor (synthesized from `effects E = ?`) is
+/// skipped: it is satisfied structurally by the effect-row machinery, never
+/// by a carrier `fact`.
 pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
     use super::load::LoadError;
     let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
@@ -5167,13 +5179,17 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
     let effects_runtime = kb.try_resolve_symbol("anthill.prelude.EffectsRuntime");
 
     // Snapshot each provision before the requires walk, which mutates `kb`
-    // (`direct_requires_chain` may allocate substituted terms).
+    // (`provider_requires_subgoals` allocates substituted terms).
     struct Provision {
         carrier: Symbol,
         spec: Symbol,
-        /// Sorts named in the provision (carrier + binding values) — the
-        /// candidates that may satisfy the spec's requires.
-        candidates: SmallVec<[Symbol; 4]>,
+        /// σ — the spec's type-param **short name** → the provision's
+        /// binding value (`"F" → Float`). Keyed by short name, not symbol:
+        /// the stdlib shorthand `requires Eq[T]` stores the requires-binding
+        /// value as the *required* spec's own param (`Eq.T`), linked to the
+        /// enclosing param only by the shared short name, so a symbol-keyed
+        /// σ would never reach it.
+        sigma: SmallVec<[(String, TermId); 2]>,
     }
     let mut provisions: Vec<Provision> = Vec::new();
     for rid in kb.by_functor(provides_sym) {
@@ -5190,37 +5206,64 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
         let Some(spec_view) = get_named_arg(kb, &named, "spec") else { continue };
         let Some((spec_base, _)) = unwrap_spec_view(kb, spec_view) else { continue };
 
-        let mut candidates: SmallVec<[Symbol; 4]> = SmallVec::new();
-        candidates.push(carrier);
-        // Binding values of the spec view (`F = Float`, positional `Float`):
-        // pos_args[0] of a SortView is the spec base itself, so skip it.
-        // `sort_sym_of_term` reads any binding-value shape (bare `Ref`/`Ident`,
-        // nullary `Fn`, or a `sort_ref(name: X)` wrapper).
-        if let Term::Fn { pos_args, named_args, .. } = kb.get_term(spec_view) {
-            let pos_args = pos_args.clone();
-            let named_args = named_args.clone();
-            for t in pos_args.iter().skip(1) {
-                if let Some(s) = sort_sym_of_term(kb, *t) {
-                    candidates.push(s);
+        let spec_qn = kb.qualified_name_of(spec_base).to_string();
+        let mut sigma: SmallVec<[(String, TermId); 2]> = SmallVec::new();
+        if let Term::Fn { functor, pos_args, named_args } = kb.get_term(spec_view).clone() {
+            let is_sortview = kb.qualified_name_of(functor).ends_with("SortView");
+            // Named bindings (`F = Float`, `C = List[T]`).
+            for (k, v) in &named_args {
+                if is_type_param_binding(kb, *k, &spec_qn) {
+                    sigma.push((kb.resolve_sym(*k).to_string(), *v));
                 }
             }
-            for (_, t) in &named_args {
-                if let Some(s) = sort_sym_of_term(kb, *t) {
-                    candidates.push(s);
+            // Positional bindings (`VectorSpace[Vec3, Float]`): `unwrap_spec_view`
+            // keeps only named args, so map the view's positional args to the
+            // spec's params by declaration order. A `SortView` wrapper carries
+            // the spec base in `pos_args[0]`; a bare parameterized term does not.
+            // Fill only params not already pinned by a named binding, so a mixed
+            // `Spec[V = Vec3, Float]` assigns the positional to the next free param.
+            let skip = if is_sortview { 1 } else { 0 };
+            if pos_args.len() > skip {
+                let unbound: Vec<String> = kb.type_params_of_sort(spec_base)
+                    .into_iter()
+                    .filter(|p| !sigma.iter().any(|(n, _)| n == p))
+                    .collect();
+                for (val, name) in pos_args.iter().skip(skip).zip(unbound.iter()) {
+                    sigma.push((name.clone(), *val));
                 }
             }
         }
-        provisions.push(Provision { carrier, spec: spec_base, candidates });
+        provisions.push(Provision { carrier, spec: spec_base, sigma });
     }
 
     let mut errors = Vec::new();
     for p in &provisions {
-        for entry in direct_requires_chain(kb, p.spec) {
-            let required = entry.required_sort;
+        for goal in provider_requires_subgoals(kb, p.spec, &p.sigma) {
+            let required = goal.spec_sort;
             if Some(required) == effects_runtime {
                 continue;
             }
-            let satisfied = p.candidates.iter().any(|&c| sort_provides(kb, c, required));
+            // Binding-precise where the representation allows it: when σ
+            // grounded every binding to a concrete value, resolve the exact
+            // instance through the canonical resolver (binding-precise AND
+            // transitive — `resolve` recurses into R's own `requires`). When
+            // a binding stays an abstract type-param — the stdlib shorthand
+            // `requires Ring[F]` drops the `F`→`Ring.T` link (Ring's param is
+            // `T`), and an unbound value can't match a ground fact
+            // (`dispatch_values_match`) — fall back to v0's base-level
+            // existence check (some sort named in the provision provides R).
+            let concrete = goal.bindings.iter().all(|(_, v)| !contains_type_param(kb, *v));
+            let satisfied = if concrete {
+                spec_resolves_at_bindings(kb, required, goal.bindings)
+            } else {
+                let mut cands: SmallVec<[Symbol; 4]> = SmallVec::from_elem(p.carrier, 1);
+                for (_, v) in &p.sigma {
+                    if let Some(s) = sort_sym_of_term(kb, *v) {
+                        cands.push(s);
+                    }
+                }
+                cands.iter().any(|&c| sort_provides(kb, c, required))
+            };
             if !satisfied {
                 errors.push(LoadError::UnsatisfiedProviderRequires {
                     carrier: kb.qualified_name_of(p.carrier).to_string(),
@@ -5231,6 +5274,122 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
         }
     }
     errors
+}
+
+/// Build the `requires` sub-goals for the provider-side check (WI-356).
+/// Walks `spec`'s **direct** `requires`, instantiating each clause at the
+/// provision's σ. Distinct from `candidate_sub_goals_owned` (the resolver's
+/// impl-side template) in that σ is keyed by short **name**, not symbol: the
+/// stdlib shorthand `requires Eq[T]` stores the binding value as the
+/// *required* spec's own param (`Eq.T`), tied to the enclosing param only by
+/// the shared short name `T`; a symbol-keyed substitution (what the resolver
+/// uses, where the requires values reference the impl's *own* params) never
+/// reaches it. Matching by name grounds `Eq[T] → Eq[T=Int]` from an
+/// `Ordered[T=Int]` provision. A requires-param the provision leaves unbound
+/// stays as its original type-param ref — the caller (`check_provider_requires`)
+/// inspects each goal and only resolves the *fully concrete* ones precisely,
+/// falling back to a base-level existence check otherwise (the unbound shape
+/// can't be matched against ground facts — see `dispatch_values_match`). The
+/// carrier never discriminates here (WI-350): these are by-binding sub-goals,
+/// so `carrier` is `None`.
+fn provider_requires_subgoals(
+    kb: &mut KnowledgeBase,
+    spec: Symbol,
+    sigma: &[(String, TermId)],
+) -> Vec<SortGoal> {
+    let chain = direct_requires_chain(kb, spec);
+    let mut out: Vec<SortGoal> = Vec::with_capacity(chain.len());
+    for entry in &chain {
+        let required = entry.required_sort;
+        let Some((_, entry_bindings)) = unwrap_spec_view(kb, entry.spec) else {
+            continue;
+        };
+        let r_qn = kb.qualified_name_of(required).to_string();
+        let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        for (k, v) in &entry_bindings {
+            if !is_type_param_binding(kb, *k, &r_qn) {
+                continue;
+            }
+            let nv = subst_requires_value(kb, *v, sigma);
+            bindings.push((*k, nv));
+        }
+        out.push(SortGoal { spec_sort: required, bindings, carrier: None });
+    }
+    out
+}
+
+/// Substitute σ into one `requires`-clause binding value (by short name);
+/// leave anything σ doesn't ground unchanged. Recurses through `Fn`
+/// children (`List[T]`, `Pair[A, B]`).
+fn subst_requires_value(
+    kb: &mut KnowledgeBase,
+    v: TermId,
+    sigma: &[(String, TermId)],
+) -> TermId {
+    match kb.get_term(v).clone() {
+        Term::Ref(s) | Term::Ident(s) => map_requires_name(kb, s, v, sigma),
+        Term::Fn { functor, pos_args, named_args }
+            if pos_args.is_empty() && named_args.is_empty() =>
+        {
+            // Nullary Fn — `convert_term`'s shape for a bare name.
+            map_requires_name(kb, functor, v, sigma)
+        }
+        Term::Fn { functor, pos_args, named_args } => {
+            let mut changed = false;
+            let new_pos: SmallVec<[TermId; 4]> = pos_args.iter().map(|t| {
+                let nt = subst_requires_value(kb, *t, sigma);
+                if nt != *t { changed = true; }
+                nt
+            }).collect();
+            let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args.iter().map(|(k, t)| {
+                let nt = subst_requires_value(kb, *t, sigma);
+                if nt != *t { changed = true; }
+                (*k, nt)
+            }).collect();
+            if !changed { return v; }
+            kb.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named })
+        }
+        _ => v,
+    }
+}
+
+/// σ-ground a bare name in a `requires` value by short name; otherwise keep
+/// it as-is. See [`provider_requires_subgoals`].
+fn map_requires_name(
+    kb: &KnowledgeBase,
+    s: Symbol,
+    orig: TermId,
+    sigma: &[(String, TermId)],
+) -> TermId {
+    let short = kb.resolve_sym(s);
+    sigma.iter().find(|(n, _)| n == short).map_or(orig, |(_, val)| *val)
+}
+
+/// True iff `value` mentions any abstract type-parameter anywhere in its
+/// structure — a `Var`, a `Ref`/`Ident` to a `sort T = ?` param, or that
+/// param as a nullary `Fn` functor (the `make_name_term` shape the loader
+/// emits for a bare name, e.g. the unbound `E` left by `requires
+/// Iterable[…, E = Effect]`). Used to decide whether a σ-instantiated
+/// `requires` goal is concrete enough to resolve precisely against ground
+/// facts, vs. falling back to the base-level existence check (WI-356).
+fn contains_type_param(kb: &KnowledgeBase, value: TermId) -> bool {
+    if is_type_param_value(kb, value) {
+        return true;
+    }
+    match kb.get_term(value) {
+        Term::Fn { functor, pos_args, named_args } => {
+            // A `Fn` functor that is itself a param (`Fn{Effect}` nullary, or a
+            // param used as a head) makes the value abstract.
+            if is_sort_param_symbol(kb, *functor) {
+                return true;
+            }
+            let pos: SmallVec<[TermId; 4]> = pos_args.clone();
+            let named: SmallVec<[(Symbol, TermId); 2]> = named_args.clone();
+            pos.iter().any(|t| contains_type_param(kb, *t))
+                || named.iter().any(|(_, t)| contains_type_param(kb, *t))
+        }
+        _ => false,
+    }
 }
 
 /// True iff `short` names a type-parameter (vs an op) of the spec at
