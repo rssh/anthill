@@ -2794,7 +2794,9 @@ fn parse_arrow_type_unary() {
             match &o.params[0].ty {
                 TypeExpr::Arrow { params, return_type, effects } => {
                     assert_eq!(params.len(), 1);
-                    match &params[0] {
+                    // Unnamed param `(A)` — no field_decl name.
+                    assert!(params[0].0.is_none());
+                    match &params[0].1 {
                         TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "A"),
                         other => panic!("expected Simple param, got {:?}", other),
                     }
@@ -2819,13 +2821,16 @@ fn parse_arrow_type_named_params() {
         Item::Operation(o) => {
             match &o.params[0].ty {
                 TypeExpr::Arrow { params, return_type, effects } => {
-                    // Named params (a: A, b: B) — names are discarded, types kept
+                    // WI-355: named params `(acc: A, elem: B)` — names are now
+                    // PRESERVED (spec §5.4), not discarded.
                     assert_eq!(params.len(), 2);
-                    match &params[0] {
+                    assert_eq!(parsed.symbols.name(params[0].0.expect("acc name")), "acc");
+                    match &params[0].1 {
                         TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "A"),
                         other => panic!("expected Simple param, got {:?}", other),
                     }
-                    match &params[1] {
+                    assert_eq!(parsed.symbols.name(params[1].0.expect("elem name")), "elem");
+                    match &params[1].1 {
                         TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "B"),
                         other => panic!("expected Simple param, got {:?}", other),
                     }
@@ -2840,6 +2845,55 @@ fn parse_arrow_type_named_params() {
         }
         other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
     }
+}
+
+/// WI-355: a multi-param callback arrow lowers to a `named_tuple` whose
+/// `TypeField` names come from the declared param names (`acc`, `elem`),
+/// not the synthetic `_0`/`_1`; an *unnamed* multi-param arrow gets the
+/// **1-based** positional names `_1`/`_2` (spec §4.5, matching plain tuples).
+#[test]
+fn wi355_arrow_param_names_lowered_to_named_tuple() {
+    // Collect every `TypeField` name symbol reachable under `t`.
+    fn typefield_names(kb: &KnowledgeBase, t: TermId, out: &mut Vec<String>) {
+        if let Term::Fn { functor, pos_args, named_args } = kb.get_term(t) {
+            if kb.resolve_sym(*functor) == "TypeField" {
+                for (k, v) in named_args {
+                    if kb.resolve_sym(*k) == "name" {
+                        if let Term::Ref(s) = kb.get_term(*v) {
+                            out.push(kb.resolve_sym(*s).to_string());
+                        }
+                    }
+                }
+            }
+            let pos: Vec<TermId> = pos_args.to_vec();
+            let nmd: Vec<TermId> = named_args.iter().map(|(_, v)| *v).collect();
+            for a in pos { typefield_names(kb, a, out); }
+            for v in nmd { typefield_names(kb, v, out); }
+        }
+    }
+    fn callback_field_names(src: &str) -> Vec<String> {
+        let mut kb = KnowledgeBase::new();
+        load::register_prelude(&mut kb);
+        kb.register_standard_builtins();
+        let parsed = parse::parse(src).expect("parse");
+        load::load(&mut kb, &parsed, &NullResolver).expect("load");
+        let sym = kb.try_resolve_symbol("foo").expect("op foo");
+        let rec = anthill_core::kb::op_info::lookup_operation_info(&kb, sym).expect("opinfo");
+        let arrow = rec.params[0].1; // the single param `f`, an arrow type
+        let mut out = Vec::new();
+        typefield_names(&kb, arrow, &mut out);
+        out
+    }
+
+    // Named params preserved.
+    let named = callback_field_names("operation foo(f: (acc: Int, elem: Int) -> Int) -> Int\n");
+    assert_eq!(named, vec!["acc".to_string(), "elem".to_string()],
+        "named arrow params should lower to fields acc/elem, got {named:?}");
+
+    // Unnamed params → 1-based positional, not 0-based.
+    let unnamed = callback_field_names("operation foo(f: (Int, Int) -> Int) -> Int\n");
+    assert_eq!(unnamed, vec!["_1".to_string(), "_2".to_string()],
+        "unnamed arrow params should lower to 1-based _1/_2, got {unnamed:?}");
 }
 
 #[test]
@@ -3289,7 +3343,7 @@ end
                 TypeExpr::Arrow { params, return_type, effects } => {
                     assert_eq!(params.len(), 1);
                     assert!(effects.is_empty());
-                    match &params[0] {
+                    match &params[0].1 {
                         TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "R"),
                         other => panic!("expected Simple param R, got {:?}", other),
                     }

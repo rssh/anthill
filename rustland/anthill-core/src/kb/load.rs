@@ -890,7 +890,7 @@ fn build_instantiation_term(
                 kb.symbols.intern("arrow")
             };
             let mut pos_args: SmallVec<[TermId; 4]> = params.iter()
-                .map(|p| build_instantiation_term(kb, parse_sym, p, _current_scope))
+                .map(|(_, p)| build_instantiation_term(kb, parse_sym, p, _current_scope))
                 .collect();
             let ret = build_instantiation_term(kb, parse_sym, return_type, _current_scope);
             pos_args.push(ret);
@@ -5325,12 +5325,23 @@ impl<'a> Loader<'a> {
             }
             TypeExpr::Arrow { params, return_type, effects } => {
                 // For single-param arrows, use param directly.
-                // For multi-param, build a named_tuple of param types.
+                // For multi-param, build a named_tuple of param types — keyed
+                // by the param's declared name when present (spec §5.4), else
+                // the 1-based positional name `_1`, `_2`, … (spec §4.5,
+                // matching plain tuples, see `convert.rs` positional naming).
                 let param_type = if params.len() == 1 {
-                    self.type_expr_to_term(&params[0])
+                    self.type_expr_to_term(&params[0].1)
                 } else {
-                    let param_fields: Vec<(Symbol, TermId)> = params.iter().enumerate().map(|(i, p)| {
-                        let key = self.kb.intern(&format!("_{}", i));
+                    let param_fields: Vec<(Symbol, TermId)> = params.iter().enumerate().map(|(i, (name, p))| {
+                        // `name` is a parse-IR symbol; resolve to text and
+                        // re-intern into the KB symbol table.
+                        let key = match name {
+                            Some(sym) => {
+                                let nm = self.parsed.symbols.name(*sym).to_owned();
+                                self.kb.intern(&nm)
+                            }
+                            None => self.kb.intern(&format!("_{}", i + 1)),
+                        };
                         let val = self.type_expr_to_term(p);
                         (key, val)
                     }).collect();

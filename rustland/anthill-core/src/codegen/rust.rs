@@ -351,7 +351,7 @@ impl<'a> RustCodegen<'a> {
             }
             TypeExpr::Arrow { params, return_type, .. } => {
                 let param_types: Vec<String> = params.iter()
-                    .map(|p| self.type_to_rust(p))
+                    .map(|(_, p)| self.type_to_rust(p))
                     .collect();
                 let ret = self.type_to_rust(return_type);
                 format!("fn({}) -> {ret}", param_types.join(", "))
@@ -416,7 +416,7 @@ impl<'a> RustCodegen<'a> {
             }
             TypeExpr::Arrow { params, return_type, .. } => {
                 let param_types: Vec<String> = params.iter()
-                    .map(|p| self.type_to_rust_in_sort(p, sort_name, type_params, collapse_type_params))
+                    .map(|(_, p)| self.type_to_rust_in_sort(p, sort_name, type_params, collapse_type_params))
                     .collect();
                 let ret = self.type_to_rust_in_sort(return_type, sort_name, type_params, collapse_type_params);
                 format!("fn({}) -> {ret}", param_types.join(", "))

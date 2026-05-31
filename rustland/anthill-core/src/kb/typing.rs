@@ -2912,7 +2912,12 @@ fn build_type(
             let mut it = group.into_iter();
             for i in 0..pos_count {
                 let r = it.next().unwrap().expect("aggregator");
-                let field_name = kb.intern(&format!("_{}", i));
+                // WI-355: positional field names are 1-based `_1`, `_2`, … (spec
+                // §4.5), matching the type surface (`convert.rs`) and arrow params
+                // so `unify_named_tuple` (name-based) unifies a tuple value's type
+                // against a tuple-typed / multi-param-arrow param. Eval/patterns
+                // treat `_N` positionally, so the base is invisible to them.
+                let field_name = kb.intern(&format!("_{}", i + 1));
                 field_types.push((field_name, r.ty.clone()));
                 effects = merge_effects(&effects, &r.effects);
             }
@@ -5705,9 +5710,11 @@ fn check_tuple_literal_constructor(
     // Collect (field label, result) eagerly — interning the positional `_i`
     // labels here releases the `kb` borrow before the `value_to_term_id` loop
     // below also needs `&mut kb` (WI-342).
+    // WI-355: 1-based positional names `_1`, `_2`, … (spec §4.5) so the tuple
+    // value's type unifies (by name) against a tuple-typed / arrow param.
     let mut labeled: Vec<(Symbol, &TypeResult)> = Vec::new();
     for (i, r) in pos_results.iter().enumerate() {
-        labeled.push((kb.intern(&format!("_{}", i)), r.as_ref().expect("aggregator")));
+        labeled.push((kb.intern(&format!("_{}", i + 1)), r.as_ref().expect("aggregator")));
     }
     for ((name, _), r) in named_args.iter().zip(named_results.iter()) {
         labeled.push((*name, r.as_ref().expect("aggregator")));

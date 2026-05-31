@@ -164,8 +164,13 @@ pub enum TypeExpr {
     /// Arrow type: `(A) -> B`, `(A, B) -> C @ E`, or `(A) -> B @ {E1, E2}`.
     /// `effects` empty means no annotation; single-effect surface and
     /// braced effect-set surface both lower into this Vec.
+    ///
+    /// Each param carries its optional `field_decl` name (spec §5.4: arrow
+    /// params may be named, like named-tuple elements). `None` for an
+    /// unnamed param (`(A, B) -> C`); the lowering then fills the 1-based
+    /// positional name `_1`, `_2`, … (spec §4.5, matching plain tuples).
     Arrow {
-        params: Vec<TypeExpr>,
+        params: Vec<(Option<Symbol>, TypeExpr)>,
         return_type: Box<TypeExpr>,
         effects: Vec<TypeExpr>,
     },

@@ -1666,16 +1666,18 @@ impl<'a> Converter<'a> {
     fn convert_arrow_type(&mut self, node: Node) -> TypeExpr {
         // Params are inside the arrow_params node (via "params" field)
         let params_node = self.field(node, "params");
-        let params: Vec<TypeExpr> = if let Some(pn) = params_node {
+        let params: Vec<(Option<Symbol>, TypeExpr)> = if let Some(pn) = params_node {
             let mut cursor = pn.walk();
             pn.named_children(&mut cursor)
                 .map(|child| match child.kind() {
                     "field_decl" => {
-                        // Named param: (a: A) -> B — extract the type
+                        // Named param: (a: A) -> B — keep the name (spec §5.4)
+                        // and the type.
+                        let name = self.field(child, "name").map(|n| self.intern(self.text(n)));
                         let type_node = self.field(child, "type").unwrap_or(child);
-                        self.convert_type(type_node)
+                        (name, self.convert_type(type_node))
                     }
-                    _ => self.convert_type(child),
+                    _ => (None, self.convert_type(child)),
                 })
                 .collect()
         } else {
