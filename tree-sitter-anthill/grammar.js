@@ -1095,7 +1095,7 @@ module.exports = grammar({
 
     arrow_params: $ => choice(
       seq('(', ')'),                                                // () -> A
-      seq('(', $._type, ')'),                                       // (A) -> B
+      seq('(', $._tuple_type_arg, ')'),                             // (A) -> B  /  (a: A) -> B
       seq('(', $._tuple_type_arg, ',', commaSep1($._tuple_type_arg), ')'),  // (A, B) -> C
     ),
 

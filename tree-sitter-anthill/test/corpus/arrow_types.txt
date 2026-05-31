@@ -329,3 +329,31 @@ operation fold(f: (acc: A, elem: B) -> A) -> A
     return_type: (simple_type
       (name
         (identifier)))))
+
+==================
+Single-param named arrow type
+==================
+
+operation findp(p: (x: Int) -> Bool) -> Bool
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (param
+      name: (identifier)
+      type: (arrow_type
+        params: (arrow_params
+          (field_decl
+            name: (identifier)
+            type: (simple_type
+              (name
+                (identifier)))))
+        return_type: (simple_type
+          (name
+            (identifier)))))
+    return_type: (simple_type
+      (name
+        (identifier)))))

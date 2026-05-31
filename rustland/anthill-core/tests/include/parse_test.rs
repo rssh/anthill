@@ -2847,6 +2847,37 @@ fn parse_arrow_type_named_params() {
     }
 }
 
+/// WI-358: a *single*-param arrow may be named too — `(x: A) -> B`. Before
+/// WI-358 the grammar's single-param `arrow_params` form was a bare type, so
+/// only 2+ params could be named; this asserts the name now survives at arity 1
+/// (the prerequisite for single-param-callback places like `findp.p.x`).
+#[test]
+fn parse_arrow_type_single_named_param() {
+    let source = "operation findp(p: (x: A) -> B) -> B\n";
+    let parsed = parse::parse(source).expect("parse failed");
+    match &parsed.items[0] {
+        Item::Operation(o) => {
+            match &o.params[0].ty {
+                TypeExpr::Arrow { params, return_type, effects } => {
+                    assert_eq!(params.len(), 1);
+                    assert_eq!(parsed.symbols.name(params[0].0.expect("x name")), "x");
+                    match &params[0].1 {
+                        TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "A"),
+                        other => panic!("expected Simple param, got {:?}", other),
+                    }
+                    match return_type.as_ref() {
+                        TypeExpr::Simple(n) => assert_eq!(parsed.symbols.name(n.last()), "B"),
+                        other => panic!("expected Simple return, got {:?}", other),
+                    }
+                    assert!(effects.is_empty());
+                }
+                other => panic!("expected Arrow type, got {:?}", other),
+            }
+        }
+        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
 /// WI-355: a multi-param callback arrow lowers to a `named_tuple` whose
 /// `TypeField` names come from the declared param names (`acc`, `elem`),
 /// not the synthetic `_0`/`_1`; an *unnamed* multi-param arrow gets the

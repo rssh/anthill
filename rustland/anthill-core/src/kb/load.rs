@@ -7608,21 +7608,26 @@ mod wi351_place_tests {
         assert!(!kb.is_result_binder(sym("reduce.f.result")));
     }
 
-    /// A *single*-param callback registers its sole param and result even
-    /// though the arrow type lowers to the param type **directly** (not a
-    /// named tuple, WI-355): `scan_operation_params` matches the parse-IR
-    /// `TypeExpr::Arrow` regardless of arity, so the arity-1 path is covered
-    /// too. Uses an *unnamed* param — single-param **named** arrows
-    /// (`(x: Int) -> Bool`) are a current grammar gap (`arrow_params`'
-    /// single-param form is a bare `_type`, not a `field_decl`; only 2+ params
-    /// accept names), so a named place like `findp.p.x` is not yet reachable
-    /// from source. The loader already handles it once the grammar does.
+    /// A *single*-param callback registers its sole param and result.
+    /// `scan_operation_params` matches the parse-IR `TypeExpr::Arrow` regardless
+    /// of arity — single-param arrows lower to the param type *directly* (not a
+    /// named tuple, WI-355), but the place names come off the IR, so the
+    /// lowering shape is irrelevant. Named single-param arrows parse since
+    /// WI-358 (`(x: Int) -> Bool` → `findp.p.x`); an unnamed one falls back to
+    /// the 1-based `_1`.
     #[test]
     fn single_param_callback_place() {
-        let kb = load_op("operation findp(p: (Int) -> Bool) -> Bool\n");
+        // Named single param (WI-358): the place takes the declared name.
+        let kb = load_op("operation findp(p: (x: Int) -> Bool) -> Bool\n");
         let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.place_role(s));
-        assert_eq!(role("findp.p._1"), Some(PlaceRole::CallbackParam));
+        assert_eq!(role("findp.p.x"), Some(PlaceRole::CallbackParam));
         assert_eq!(role("findp.p.result"), Some(PlaceRole::CallbackResult));
+
+        // Unnamed single param: 1-based positional fallback.
+        let kb = load_op("operation g(p: (Int) -> Bool) -> Bool\n");
+        let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.place_role(s));
+        assert_eq!(role("g.p._1"), Some(PlaceRole::CallbackParam));
+        assert_eq!(role("g.p.result"), Some(PlaceRole::CallbackResult));
     }
 
     /// Unnamed callback params fall back to the **1-based** positional names
