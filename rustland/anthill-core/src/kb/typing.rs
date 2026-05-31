@@ -3149,12 +3149,25 @@ fn check_apply_iter(
             // self-receiver spec from resolving `Ambiguous` for a
             // legitimately abstract call.
             if carrier == ReceiverCarrier::Abstract {
-                return Ok(TypeResult {
-                    ty: Value::Term(resolved_ret),
-                    env: env.clone(),
-                    effects,
-                    node: Rc::clone(occ),
-                });
+                // WI-325 exception: a spec that warrants the abstract check but
+                // has NO provider at all (a user-defined, wholly-unimplemented
+                // spec) has no runtime witness to defer to — every call will
+                // fail at first dispatch. Fall through to the dispatch
+                // `NoCandidates` arm so that case is surfaced at type-check
+                // (that arm still returns the same interface type, just with the
+                // diagnostic attached). Specs with ≥1 provider — and host
+                // built-ins, which deliberately have none and don't warrant the
+                // check — take the deferring early return.
+                let has_witness = spec_has_any_providers(kb, spec_sort)
+                    || !spec_warrants_abstract_check(kb, spec_sort);
+                if has_witness {
+                    return Ok(TypeResult {
+                        ty: Value::Term(resolved_ret),
+                        env: env.clone(),
+                        effects,
+                        node: Rc::clone(occ),
+                    });
+                }
             }
             let carrier_sym = match carrier {
                 ReceiverCarrier::Concrete(c) => Some(c),

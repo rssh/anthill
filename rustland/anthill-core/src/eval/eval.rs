@@ -874,6 +874,17 @@ impl Interpreter {
         // declares a `requires` chain would need that chain threaded (the
         // rewrite path's `construct_requirement` machinery) — surfaced as a
         // requirement-read error rather than silently mis-dispatched.
+        //
+        // Resolves an impl the *operation interpreter* can run: a carrier-
+        // defined body, or a builtin-backed declaration (e.g. the body-less
+        // `LogicalStream.splitFirst`, registered as a builtin). A spec op whose
+        // only definition is equational rules (`Stream.head`, given by `rule
+        // head(?s) = … :- splitFirst(?s) = …`) is evaluated by the SLD resolver,
+        // not here — the interpreter has no equational-rewrite fallback. Such an
+        // op has no own `sort_ops` entry, so the inherited entry points back at
+        // the body-less spec op (`impl_target == target`); the guard below skips
+        // it and it falls through to `UnknownOperation`, exactly as before this
+        // change.
         if let Some(impl_target) = self.resolve_spec_op_target_by_value(target, &arg_values) {
             if impl_target != target {
                 if let Some(builtin) = self.builtins.get(&impl_target).cloned() {

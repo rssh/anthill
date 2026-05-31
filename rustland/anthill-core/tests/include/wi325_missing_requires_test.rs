@@ -164,6 +164,43 @@ end
 }
 
 #[test]
+fn user_defined_self_receiver_spec_without_providers_errors_on_abstract_call() {
+    // WI-350 guard: a SELF-RECEIVER spec (`render(w: Widget)` — `w` typed as
+    // the spec sort itself, not its type-parameter) types abstract receivers
+    // through the interface and defers the impl to the runtime value's witness.
+    // But a user-defined self-receiver spec with NO provider at all has no
+    // witness — every call fails at first dispatch. The Abstract branch must
+    // fall through to the `NoCandidates` WI-325 diagnostic so a wholly-
+    // unimplemented spec is caught at type-check, not deferred to a runtime
+    // `UnknownOperation`. Distinct from the type-param-carrier case above
+    // (`describe(x: T)`), which never took the Abstract early return.
+    let src = r#"
+namespace test.wi325.user_self_receiver_no_provider
+  import anthill.prelude.Bool
+
+  sort Widget
+    sort T = ?
+    operation render(w: Widget) -> Bool
+  end
+
+  sort Driver
+    operation drive(w: Widget) -> Bool = render(w)
+  end
+end
+"#;
+    let (_kb, errs) = try_load(src);
+    assert!(
+        !errs.is_empty(),
+        "wholly-unimplemented self-receiver spec should error on abstract call; got clean load",
+    );
+    let formatted = fmt_errs(&errs);
+    assert!(
+        formatted.contains("Widget"),
+        "expected a Widget spec diagnostic; got:\n{formatted}",
+    );
+}
+
+#[test]
 fn stdlib_spec_without_providers_still_passes_through() {
     // Counter-test for the namespace heuristic: stdlib `Map` (in
     // `anthill.prelude.*`) has zero providers but is a host built-in.
