@@ -12,12 +12,13 @@
 -- anthill-side struct outlives the next step / sensor read.
 namespace anthill.geometry
   import anthill.prelude.{Float}
-  import anthill.prelude.algebra.{VectorSpace}
-
-  -- Vec3 over Float satisfies the VectorSpace spec — the abstract
-  -- vec_add / vec_sub / vec_scale / vec_zero operations resolve to
-  -- this namespace's per-component implementations below.
-  fact VectorSpace[Vec3, Float]
+  -- Vec3 over Float satisfies the VectorSpace spec (its abstract
+  -- vec_add / vec_sub / vec_scale / vec_zero resolve to the per-component
+  -- implementations below). That satisfaction — `fact VectorSpace[Vec3,
+  -- Float]` — depends on `Float` being a `Ring`, which lives in the
+  -- per-language binding layer (proposal 038); so the fact is declared
+  -- there (rustland/anthill-stl/anthill/geometry.anthill), not here:
+  -- a stdlib-only load has no `Ring[Float]` to satisfy the requirement.
 
   -- 3-vector for spatial quantities (position, velocity, direction,
   -- angular velocity in body frame). Field names are world / body

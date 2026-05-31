@@ -67,6 +67,9 @@ static STDLIB_SOURCES: &[(&str, &str)] = &[
     ("rustland/anthill-stl/float", include_str!("../../anthill-stl/anthill/float.anthill")),
     ("rustland/anthill-stl/string", include_str!("../../anthill-stl/anthill/string.anthill")),
     ("rustland/anthill-stl/bool", include_str!("../../anthill-stl/anthill/bool.anthill")),
+    // Binding-layer satisfaction: Vec3 is a VectorSpace over Float (needs
+    // Ring[Float] from float.anthill above) — see the file's header / WI-343.
+    ("rustland/anthill-stl/geometry", include_str!("../../anthill-stl/anthill/geometry.anthill")),
 ];
 
 /// Parse all embedded stdlib sources. Returns (parsed files, warnings).

@@ -1,7 +1,9 @@
 -- List: a parametric sort (T is the abstract sort parameter)
 enum anthill.prelude.List
   import anthill.prelude.PersistentCollection
+  import anthill.prelude.Iterable
   import anthill.prelude.Iteration
+  import anthill.prelude.Stream
   import anthill.prelude.IndexedSeq
   import anthill.prelude.Bool.{ite}
   import anthill.prelude.Eq.{eq}
@@ -48,6 +50,15 @@ enum anthill.prelude.List
   -- `Effect = {}` is not yet expressible as a type argument — restore it
   -- under WI-301.
   fact PersistentCollection[C = List[T], Element = T]
+
+  -- List provides Iterable (proposal library/002), so the built collection
+  -- can be walked through the one shared read interface — this satisfies
+  -- PersistentCollection's `requires Iterable`. A List *is* a Stream (its
+  -- `split` is `splitFirst`), so `iterator(l) = l`: the value is admissible
+  -- as a Stream because List provides Stream (WI-344 provider admissibility).
+  fact Stream[T = T]
+  fact Iterable[C = List[T], Element = T]
+  operation iterator(l: List) -> Stream = l
 
   -- List satisfies IndexedSeq (no effects). Cost is O(N) per `nth` —
   -- callers that need O(1) should depend on a future RandomAccess

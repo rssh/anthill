@@ -1,0 +1,15 @@
+-- Binding-layer satisfaction for anthill.geometry (proposal 038).
+--
+-- `Vec3` is a `VectorSpace` over `Float` — but VectorSpace `requires Ring[F]`,
+-- and `Float` being a `Ring` is a per-language binding fact (see
+-- float.anthill's `provides Float language rust` block). So the
+-- `fact VectorSpace[Vec3, Float]` satisfaction is declared here, in the host
+-- closure where `Ring[Float]` exists, rather than in the abstract
+-- `stdlib/anthill/geometry.anthill` (a stdlib-only load has no `Ring[Float]`,
+-- so the claim would be unsound there — WI-343 provider-side requires check).
+namespace anthill.geometry
+  import anthill.prelude.{Float}
+  import anthill.prelude.algebra.{VectorSpace}
+
+  fact VectorSpace[Vec3, Float]
+end

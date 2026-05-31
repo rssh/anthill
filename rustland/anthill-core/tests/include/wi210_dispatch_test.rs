@@ -591,14 +591,21 @@ fn wi350_abstract_stream_receiver_types_via_interface_with_two_impls() {
 
 #[test]
 fn dispatch_polymorphic_candidate_matches_any_per_call_value() {
-    // LogicalStream's `fact Stream[T]` (T = LogicalStream's own type-param)
-    // records a universally-quantified impl. The matcher must treat such
-    // a candidate's binding value as a wildcard against the per-call concrete.
+    use anthill_core::kb::typing::dispatch_spec_op_cached;
+    // A `fact Stream[T]` (T = the impl's own type-param) records a
+    // universally-quantified impl; the matcher must treat such a candidate's
+    // binding value as a wildcard against the per-call concrete T. With
+    // proposal-002 List now also a Stream impl, `Stream` is a self-receiver
+    // spec with ≥2 carriers, so the carrier discriminates (WI-350): supplying
+    // the receiver's carrier (`LogicalStream`) picks that impl uniquely at
+    // T = Int, while the carrier-less compat path is genuinely Ambiguous.
     let mut kb = load_with("");
     let head_sym = kb.try_resolve_symbol("anthill.prelude.Stream.head")
         .expect("Stream.head registered");
     let spec_sort = lookup_spec_op_dispatch(&kb, head_sym)
         .expect("Stream.head is a spec op");
+    let logical_stream = kb.try_resolve_symbol("anthill.prelude.LogicalStream")
+        .expect("LogicalStream registered");
     let subst = subst_with_param(
         &mut kb,
         "anthill.prelude.Stream",
@@ -606,10 +613,21 @@ fn dispatch_polymorphic_candidate_matches_any_per_call_value() {
         "anthill.prelude.Int",
     );
     let op_short = kb.intern("head");
-    let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
-    assert!(matches!(outcome, DispatchOutcome::Unique(_)),
-        "expected Unique dispatch for Stream.head with polymorphic LogicalStream \
-         impl candidate at T=Int; got {outcome:?}");
+
+    // Carrier = LogicalStream: the universal `fact Stream[T]` candidate
+    // matches the per-call T = Int and the carrier filter keeps only it.
+    let (with_carrier, _) = dispatch_spec_op_cached(
+        &mut kb, &subst, spec_sort, op_short, &[], Some(logical_stream),
+    );
+    assert!(matches!(with_carrier, DispatchOutcome::Unique(_)),
+        "expected Unique dispatch for Stream.head at carrier=LogicalStream, T=Int; \
+         got {with_carrier:?}");
+
+    // Carrier-less compat path: ≥2 Stream impls both match the universal
+    // binding, so dispatch is Ambiguous without a carrier to discriminate.
+    let no_carrier = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
+    assert_eq!(no_carrier, DispatchOutcome::Ambiguous,
+        "expected Ambiguous for carrier-less Stream.head with ≥2 impls; got {no_carrier:?}");
 }
 
 #[test]
