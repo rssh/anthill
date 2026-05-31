@@ -250,6 +250,35 @@ pub(crate) struct SortOpsTable {
     by_impl: HashMap<Symbol, HashMap<Symbol, Symbol>>,
 }
 
+/// WI-351 — the *role* of an operation-frame **place**: a name addressing a
+/// position in an operation's signature, qualified under the op (and, for
+/// callbacks, under the callback parameter). Generalizes proposal 041's lone
+/// `<op>.result` to the full set the `Modify`-effect feed/flow analysis
+/// references (`docs/design/modify-effect-derive.md` §"Where flow facts live"):
+/// `op.param`, `op.callback.param`, `op.callback.result`, `op.result` — e.g.
+/// `foldLeft.xs`, `foldLeft.f.a`, `foldLeft.f.result`, `foldLeft.result`.
+///
+/// The role is what the prior boolean `result_binder_syms` membership encoded
+/// for a single case; widening it to an enum lets the flow pass (WI-352) and
+/// region masking (WI-353) classify a place by what it *is* (input vs fresh
+/// callback output vs op result) instead of re-deriving it from spelling.
+/// `is_result_binder` is now just `role == OpResult`, so `Cell.new.result`
+/// masking (WI-314) is byte-for-byte unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlaceRole {
+    /// An operation parameter — `foldLeft.xs`, `foldLeft.z`, `foldLeft.f`.
+    Input,
+    /// The operation's reserved return-value name — `foldLeft.result`
+    /// (proposal 041). The only role `is_result_binder` accepts.
+    OpResult,
+    /// A parameter of a callback-typed op parameter — `foldLeft.f.a`,
+    /// `foldLeft.f.t` (read off the arrow type's named params, WI-355).
+    CallbackParam,
+    /// A callback-typed op parameter's result — `foldLeft.f.result`. The
+    /// `fresh_output` provenance of the feed analysis attaches here.
+    CallbackResult,
+}
+
 // ── KnowledgeBase ───────────────────────────────────────────────
 
 pub struct KnowledgeBase {
@@ -369,14 +398,16 @@ pub struct KnowledgeBase {
     pub(crate) dispatch_rewrites: HashMap<TermId, TermId>,
     pub(crate) dispatch_origin: HashMap<TermId, Symbol>,
 
-    // WI-341 step 1 — the reserved-result-name binder symbols (`<op>.result`,
-    // proposal 041), recorded as each operation scope is created
+    // WI-341 step 1 / WI-351 — operation-frame **places** mapped to their
+    // [`PlaceRole`], recorded as each operation scope is created
     // (`scan_operation_params`). Lets `kb::region` recognise an effect's
-    // result-region resource by **symbol identity** (membership) instead of
-    // interrogating the symbol's *spelling* (`rsplit('.') == "result"`).
-    // Symbols already carry identity; this just stops encoding the
-    // result-region *role* in the name and parsing it back out.
-    pub(crate) result_binder_syms: HashSet<Symbol>,
+    // result-region resource by **symbol identity** (the `OpResult` role)
+    // instead of interrogating the symbol's *spelling* (`rsplit('.') ==
+    // "result"`), and gives the `Modify` feed/flow analysis (WI-352/353) a
+    // ground place→role table for `op.param` / `op.callback.param` /
+    // `op.callback.result`. WI-341 stored only the result binder as a
+    // `HashSet`; this widens it to the full place set keyed by role.
+    pub(crate) place_roles: HashMap<Symbol, PlaceRole>,
 
     // WI-226 Cache A — memoized transitive `requires` closure per sort.
     // After WI-230, this cache is dormant — `requires_chain` now routes
@@ -456,7 +487,7 @@ impl KnowledgeBase {
             routes: route::RouteRegistry::new(),
             dispatch_rewrites: HashMap::new(),
             dispatch_origin: HashMap::new(),
-            result_binder_syms: HashSet::new(),
+            place_roles: HashMap::new(),
             requires_chain_cache: RefCell::new(HashMap::new()),
             requires_tree_cache: RefCell::new(HashMap::new()),
             synth_req_names_cache: RefCell::new(HashMap::new()),
@@ -3176,18 +3207,39 @@ impl KnowledgeBase {
         self.constructor_symbols.contains(&functor)
     }
 
+    /// WI-351 — record an operation-frame **place** symbol with its
+    /// [`PlaceRole`] as the op scope is created. Called from
+    /// `scan_operation_params` for op params (`Input`), callback params
+    /// (`CallbackParam`), callback results (`CallbackResult`), and the
+    /// reserved `result` (`OpResult`).
+    pub(crate) fn register_place(&mut self, sym: Symbol, role: PlaceRole) {
+        self.place_roles.insert(sym, role);
+    }
+
+    /// WI-351 — the [`PlaceRole`] of `sym`, or `None` if `sym` is not a
+    /// registered operation-frame place. The feed/flow analysis (WI-352/353)
+    /// classifies a place by this role rather than by re-parsing its name.
+    pub(crate) fn place_role(&self, sym: Symbol) -> Option<PlaceRole> {
+        self.place_roles.get(&sym).copied()
+    }
+
     /// WI-341 step 1 — record an operation's reserved `result` binder symbol
-    /// (`<op>.result`, proposal 041) as its scope is created. Called from
-    /// `scan_operation_params`.
+    /// (`<op>.result`, proposal 041) as its scope is created. The
+    /// `OpResult`-role projection of [`register_place`]; kept as a named
+    /// wrapper for the proposal-041 call site (`scan_operation_params`) and
+    /// the region test.
     pub(crate) fn register_result_binder(&mut self, sym: Symbol) {
-        self.result_binder_syms.insert(sym);
+        self.register_place(sym, PlaceRole::OpResult);
     }
 
     /// WI-341 step 1 — whether `sym` is a reserved `result` binder symbol,
-    /// by symbol identity (membership), replacing the prior spelling match
-    /// (`qualified_name_of(sym).rsplit('.') == "result"`) in `kb::region`.
+    /// by symbol identity (the `OpResult` role), replacing the prior spelling
+    /// match (`qualified_name_of(sym).rsplit('.') == "result"`) in
+    /// `kb::region`. WI-351 widened the backing store from a result-only set
+    /// to the full place→role map; this stays exactly the `OpResult` slice, so
+    /// `Cell.new.result` masking is unchanged.
     pub(crate) fn is_result_binder(&self, sym: Symbol) -> bool {
-        self.result_binder_syms.contains(&sym)
+        self.place_role(sym) == Some(PlaceRole::OpResult)
     }
 
     /// A free-standing entity: declared at namespace level (registered fields)
