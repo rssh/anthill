@@ -77,7 +77,7 @@ HOF feeds the callback (`x ↦ elements(xs)`; `a ↦ z`/threaded). That mapping 
 > (Talpin & Jouvelot, *The Type and Effect Discipline*, 1992; region
 > substitution in Tofte & Talpin 1997) — here applied to a *callback* that the
 > operation itself applies. The substitution is not in `foreach`'s *type*
-> (`(List[A], Function[A,Unit,E]) → Unit ! E` — `E` is opaque); it lives in its
+> (`(List[A], Function[A,Unit,E]) -> Unit effects E` — `E` is opaque); it lives in its
 > *body* (`apply(f, elem)`, `elem` from `xs`).
 
 So the form `effect_derive(callee_sig, args, ctx)` is **insufficient**: it has
@@ -122,8 +122,8 @@ arguments are:
 effect_derive(
 
   callee_sig =                                          -- foreach's OperationInfo
-     ( xs: List[A], f: Function[A, Unit, E] ) → Unit ! E   -- arrow; no feeds declared here
-                                                           -- (so callee_body is used below)
+     ( xs: List[A], f: Function[A, Unit, E] ) -> Unit effects E  -- no feeds declared here
+                                                                 -- (so callee_body is used below)
 
   callee_body =                                          -- foreach's body occurrence
      match xs:
@@ -135,7 +135,7 @@ effect_derive(
      ( denotation: l ,
        type:       List[Cell[Int]] ),
      ( denotation: λ x → set(x, get(x)+1) ,
-       type:       Cell[Int] → Unit ! { Modify[x] } )
+       type:       (Cell[Int]) -> Unit @ { Modify[x] } )
                                               └── x = the lambda's parameter
   ],
 
@@ -174,12 +174,36 @@ The key is `feeds`; the value is a term saying how each higher-order parameter i
 **applied** — `f(<descriptor per parameter>)`:
 
 ```
-operation foreach[A, effects E](xs: List[A], f: A -> Unit ! E) -> Unit ! E
+operation foreach[A, E](xs: List[A], f: (A) -> Unit @ E) -> Unit effects E
    [feeds: f(element_of(xs))]
 
-operation foldLeft[A, B, effects E](xs: List[A], z: B, f: (B,A) -> B ! E) -> B ! E
+operation foldLeft[A, B, E](xs: List[A], z: B, f: (B, A) -> B @ E) -> B effects E
    [feeds: f(threaded(z, f), element_of(xs))]
 ```
+
+> **Surface-syntax note.** Effects on a *function/arrow type* use `@`
+> (`(A) -> Unit @ E`), arrow params are parenthesized, the operation's own effect
+> is the `effects E` clause, and operation type parameters are a bare list
+> `[A, B, E]` (there is no `effects` keyword inside `[...]`). The `! E` /
+> `[…, effects E]` / unparenthesized-arrow forms used in the schematic blocks of
+> §2 and §4.1 are informal exposition, not grammar.
+>
+> **`feeds` need not be a meta-entry — it can be a plain `rule`.** `[feeds: …]`
+> is an open-keyed `meta_entry` (no new keyword), but its value is one inert
+> `Term`. The feed-relationship is better written as ordinary KB rules over a
+> `fed` relation, with parameters referenced by qualified name (`op.param`,
+> generalizing proposal 041's `op.result`):
+>
+> ```
+> rule fed(foreach.f, ?x)  :- member(?x, foreach.xs)
+> rule fed(foldLeft.f, (acc: ?a, elem: ?e))
+>        :- member(?e, foldLeft.xs), seed_or_result(?a, foldLeft.z, foldLeft.f)
+> ```
+>
+> This adds no syntax and keeps the feed-relationship **SLD-resolvable** — the
+> `effect_derive` builtin queries it like any other relation (and like
+> `OperationInfo` itself, WI-348) rather than parsing an inert descriptor. See
+> `docs/design/modify-effect-derive.md` §3.
 
 `[feeds: f(…)]` is an ordinary `meta_entry`: key `feeds`, value the term `f(…)`
 whose argument positions hold a **descriptor** per callback parameter
@@ -230,6 +254,66 @@ This:
 **Source priority** for the feed-relationship: declared `feeds` metadata (if
 present) → else read `callee_body` (if the op is anthill-defined) → else opaque
 (`E` left as a row variable — the conservative result, sound but coarse).
+
+## 4.3 Stdlib vocabulary — the feed-relationship as relations
+
+> **Supersedes the descriptor-language framing of §4.2.** §4.2 sketched the
+> feed-relationship as a bespoke descriptor language (`element_of(xs)`,
+> `threaded(z, f)`) carried in `[feeds: …]` metadata. That is **rejected**: a
+> reader cannot tell what `element_of(xs)` means, and anthill is *already* a
+> relational KB. The feed-relationship is instead a **set of ordinary relations**
+> over places — defined in the stdlib, derived (not hand-written) for native ops,
+> and resolved by SLD. Full design + the worked `foldLeft` spec:
+> `docs/design/modify-effect-derive.md`.
+
+The feed-relationship is realized by a small **reflect-layer vocabulary** (home:
+`stdlib/anthill/reflect/`, alongside `reflect/typing.anthill` — these are
+typing/effect-derivation *analysis* relations the typer queries, not surface
+effects). Places are named by qualified path (`foldLeft.xs`, `foldLeft.f.a`,
+`foldLeft.f.result`, `foldLeft.result`) — the `op.param` reference, proposal 041's
+`op.result` generalized (WI-351).
+
+```anthill
+sort FlowKind                       -- the kind of a dataflow edge
+  entity direct                     --   y is x itself        (identity / threading)
+  entity element_of                 --   y is an element of x
+  entity field_of(field: Symbol)    --   y is x.field
+end
+sort Flow
+  entity flow(kind: FlowKind, from: Symbol, to: Symbol)     -- these facts ARE the feed
+end
+sort Provenance
+  entity input  entity fresh_output  entity op_result  entity local
+end
+sort PlaceProvenance
+  entity provenance(place: Symbol, is: Provenance)
+end
+
+rule reaches(?from, ?to) :- flow(kind: ?k, from: ?from, to: ?to)
+rule reaches(?from, ?to) :- flow(kind: ?k, from: ?from, to: ?mid), reaches(?mid, ?to)
+rule origin(?place, ?src) :- reaches(?src, ?place)
+
+rule keep_modify(?p, ?r)      :- origin(?p, ?r), provenance(?r, input)
+rule keep_modify(?p, ?result) :- origin(?p, ?src), provenance(?src, fresh_output),
+                                 reaches(?src, ?result), provenance(?result, op_result)
+```
+
+**Naming.** `flow` / `provenance` / `reaches` / `origin` are **effect-agnostic**
+dataflow relations (the substrate generalizes — `Modify` is just the *first*
+non-default `effect_derive` contributor, §5); only `keep_modify` is
+`Modify`-specific masking. So the substrate is **not** named `flow_modify` — its
+`Modify`-scoping for v1 lives in the namespace and in `keep_modify`, leaving the
+dataflow primitive reusable by a future effect's derivation.
+
+**What is derived vs declared.** For an anthill-defined op the `flow` facts are
+**derived from the body** (and from defining rules/laws) by a load pass and
+asserted top-level — *identical* to what a bodyless op would declare; `provenance`
+comes from the signature. Only fully-opaque FFI declares by hand. So this
+vocabulary is realized by **WI-352** (the flow-derivation pass defines these sorts
+and asserts the facts); **WI-353** (`region.rs`) is the `keep_modify` consumer at
+the operation boundary. The `kind` field is **precision-only** — soundness never
+depends on it (collapsing every edge to `direct` re-keys to a containing region,
+always sound); v1 keeps the field but treats every edge as `direct`.
 
 ## 5. What is type vs. what is deferred detail
 
