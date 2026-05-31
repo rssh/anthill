@@ -3085,6 +3085,16 @@ fn check_apply_iter(
             let enclosing_requires = env.enclosing_requires().unwrap_or(&[]);
             let enclosing_sort = env.enclosing_sort();
 
+            // WI-350: classify the receiver to pick the dispatch carrier.
+            // A self-receiver spec (`head(s: Stream)`) needs the receiver
+            // argument's concrete carrier sort to disambiguate ≥2 impls
+            // (its carrier is not a type-parameter, so the per-call subst
+            // never pins it); an abstract spec value (`s : Stream[T]`)
+            // carries no concrete impl and types through the interface.
+            let carrier = receiver_carrier(
+                kb, &op, spec_sort, named_args, pos_results, named_results,
+            );
+
             // WI-239: defer-to-requirement takes priority over provider-
             // based dispatch. If the spec op is reachable through the
             // enclosing sort's `requires` tree — directly (a frame slot)
@@ -3129,8 +3139,30 @@ fn check_apply_iter(
                 }
             }
 
+            // WI-350: an abstract spec receiver (`s : Stream[T]`, or an
+            // unresolved receiver type) that the `requires` pre-check above
+            // did not cover pins no concrete impl. Type through the spec
+            // op's interface signature (`resolved_ret`, already walked
+            // through the per-call subst) and leave the call as the spec
+            // op — eval resolves the impl from the runtime value's own
+            // sort. Skipping concrete dispatch is what keeps a ≥2-impl
+            // self-receiver spec from resolving `Ambiguous` for a
+            // legitimately abstract call.
+            if carrier == ReceiverCarrier::Abstract {
+                return Ok(TypeResult {
+                    ty: Value::Term(resolved_ret),
+                    env: env.clone(),
+                    effects,
+                    node: Rc::clone(occ),
+                });
+            }
+            let carrier_sym = match carrier {
+                ReceiverCarrier::Concrete(c) => Some(c),
+                ReceiverCarrier::NotApplicable | ReceiverCarrier::Abstract => None,
+            };
+
             let (outcome, resolved_tree) = dispatch_spec_op_cached(
-                kb, &subst, spec_sort, op_short_sym, enclosing_requires,
+                kb, &subst, spec_sort, op_short_sym, enclosing_requires, carrier_sym,
             );
             match outcome {
                 DispatchOutcome::NoCandidates => {
@@ -3770,6 +3802,9 @@ fn goal_from_requires_entry(kb: &KnowledgeBase, entry: &RequiresEntry) -> Option
     Some(SortGoal {
         spec_sort: entry.required_sort,
         bindings,
+        // A `requires` entry resolves by its declared bindings; carrier
+        // discrimination is a call-site concern (WI-350).
+        carrier: None,
     })
 }
 
@@ -4354,6 +4389,47 @@ fn find_in_requires_nodes(
 pub struct SortGoal {
     pub spec_sort: Symbol,
     pub bindings: SmallVec<[(Symbol, TermId); 2]>,
+    /// WI-350 — the receiver's concrete carrier sort, when the spec op
+    /// has a *self-receiver* parameter (one declared with the spec sort
+    /// itself, e.g. `head(s: Stream)`). For such specs the carrier is
+    /// NOT a type parameter (Stream's only param `T` is the element),
+    /// so the per-call `bindings` never pin which impl provides the op
+    /// — every impl's universally-quantified `fact Stream[T]` matches,
+    /// and a ≥2-impl spec would resolve `Ambiguous` for even a fully
+    /// concrete call. The carrier (the receiver argument's base sort —
+    /// `List`, `LogicalStream`) discriminates: `collect_provides_candidates`
+    /// keeps only candidates whose `impl_sort` equals it. `None` for
+    /// the common type-parameter-carrier specs (`Eq`/`Numeric`/`Iterable`,
+    /// where the carrier IS a binding and dispatch is already pinned) and
+    /// for transitive sub-goals — those resolve by binding alone.
+    pub carrier: Option<Symbol>,
+}
+
+/// WI-350 — classification of a spec op's receiver at a call site,
+/// driving carrier-aware dispatch. Computed by [`receiver_carrier`] from
+/// the spec op's *self-receiver* parameter (the one declared with the
+/// spec sort itself, e.g. `head(s: Stream)`) and that argument's actual
+/// inferred type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReceiverCarrier {
+    /// No self-receiver parameter — the op's carrier arguments are typed
+    /// with the spec's own type-parameter (`Eq.eq(a: T, b: T)`,
+    /// `Iterable.iterator(c: C)`). The carrier is a binding, so the
+    /// per-call substitution already pins it; dispatch proceeds by
+    /// binding (the pre-WI-350 behaviour, including legitimate `Ambiguous`
+    /// for two impls at the same binding).
+    NotApplicable,
+    /// A self-receiver parameter exists and its argument's base sort IS
+    /// the spec sort (`s : Stream[T = …]`) — an abstract spec value — or
+    /// its type is still unresolved. No concrete impl is pinnable here;
+    /// the call types through the spec op's interface signature and the
+    /// impl is resolved at runtime from the value's own witness (or, if
+    /// earlier `find_requires_location` matched, from a `requires` slot).
+    Abstract,
+    /// A self-receiver parameter exists and its argument has a concrete
+    /// carrier sort (`s : List[Int]` → `List`). Dispatch keeps only the
+    /// candidate whose `impl_sort` equals this carrier.
+    Concrete(Symbol),
 }
 
 /// Context for `resolve` — the `requires` entries already in scope
@@ -4660,6 +4736,24 @@ fn collect_provides_candidates(
         };
         if view_base_sym != goal.spec_sort {
             continue;
+        }
+
+        // WI-350: when the call supplies a concrete receiver carrier (a
+        // self-receiver spec — `head(s: Stream)` with `s : List[…]`),
+        // keep only the impl that carrier provides. Without this, a spec
+        // whose carrier is not a type parameter (Stream's only param is
+        // the *element*) matches every impl's universally-quantified
+        // `fact Stream[T]` and resolves `Ambiguous` for ≥2 impls — even a
+        // fully concrete call. For type-parameter-carrier specs (`Eq`,
+        // `Numeric`, `Iterable`) `goal.carrier` is `None` and binding
+        // matching below does the discrimination. Canonicalize both sides:
+        // `impl_sort` (a `SortProvidesInfo.sort_ref` functor) and the carrier
+        // may be interned under different copies of the same logical sort —
+        // the same normalization `sort_ops_lookup` applies to `impl_sort`.
+        if let Some(carrier) = goal.carrier {
+            if kb.canonical_sort_sym(impl_sort) != kb.canonical_sort_sym(carrier) {
+                continue;
+            }
         }
 
         let impl_param_set = impl_param_symbols(kb, impl_sort);
@@ -5023,6 +5117,9 @@ fn candidate_sub_goals_owned(
         out.push(SortGoal {
             spec_sort: required_sort,
             bindings,
+            // Transitive `requires` sub-goals resolve by binding; the
+            // receiver carrier discriminates only the top-level call (WI-350).
+            carrier: None,
         });
     }
     out
@@ -5206,6 +5303,7 @@ pub fn sort_goal_from_subst(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
     spec_sort: Symbol,
+    carrier: Option<Symbol>,
 ) -> SortGoal {
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
     let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
@@ -5235,6 +5333,7 @@ pub fn sort_goal_from_subst(
     SortGoal {
         spec_sort,
         bindings,
+        carrier,
     }
 }
 
@@ -5284,6 +5383,84 @@ fn canonicalize_type_value(kb: &mut KnowledgeBase, ty: TermId) -> TermId {
     })
 }
 
+/// WI-350 — classify a spec op's receiver at a call site to drive
+/// carrier-aware dispatch. Finds the op's *self-receiver* parameter — the
+/// first one declared with the spec sort itself (`head(s: Stream)`; vs
+/// `Eq.eq(a: T, b: T)`, whose params are typed with the spec's type-
+/// parameter `T`) — and reads that argument's inferred base sort.
+///
+/// - No self-receiver parameter ⇒ [`ReceiverCarrier::NotApplicable`]: the
+///   carrier is a type-parameter binding, already pinned by the subst.
+/// - Receiver's base sort is the spec sort (`s : Stream[T]`) or its type
+///   is unresolved ⇒ [`ReceiverCarrier::Abstract`]: no concrete impl.
+/// - Receiver's base sort is a concrete carrier (`s : List[Int]` → `List`)
+///   ⇒ [`ReceiverCarrier::Concrete`].
+fn receiver_carrier(
+    kb: &KnowledgeBase,
+    op: &OperationInfoFull,
+    spec_sort: Symbol,
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_results: &[Result<TypeResult, TypeError>],
+) -> ReceiverCarrier {
+    let Some(idx) = self_receiver_param_index(kb, &op.params, spec_sort) else {
+        return ReceiverCarrier::NotApplicable;
+    };
+    let param_name = op.params[idx].0;
+    // The argument may be supplied positionally (matched by declaration
+    // index, as `check_apply_iter`'s unify loop does) or by name.
+    let arg_ty: Option<&Value> = pos_results
+        .get(idx)
+        .and_then(|r| r.as_ref().ok())
+        .map(|r| &r.ty)
+        .or_else(|| {
+            named_args
+                .iter()
+                .position(|(n, _)| *n == param_name)
+                .and_then(|j| named_results.get(j))
+                .and_then(|r| r.as_ref().ok())
+                .map(|r| &r.ty)
+        });
+    let spec_canon = kb.canonical_sort_sym(spec_sort);
+    match arg_ty.and_then(|v| carrier_sort_of_value(kb, v)) {
+        // A concrete carrier distinct from the spec sort itself. Store the
+        // canonical sort symbol so the candidate filter (which canonicalizes
+        // `impl_sort`) compares like-for-like.
+        Some(base) if kb.canonical_sort_sym(base) != spec_canon => {
+            ReceiverCarrier::Concrete(kb.canonical_sort_sym(base))
+        }
+        // Base == spec sort (abstract spec value) or unresolved type: no
+        // concrete impl is pinnable.
+        _ => ReceiverCarrier::Abstract,
+    }
+}
+
+/// WI-350 — index of a spec op's *self-receiver* parameter: the first one
+/// declared with the spec sort itself (`head(s: Stream)`), as opposed to a
+/// type-parameter-carrier parameter (`Eq.eq(a: T, b: T)`, whose type is the
+/// spec's own type-parameter). `None` when the op has no self-receiver
+/// parameter. Shared by the typer's [`receiver_carrier`] and the
+/// interpreter's value-directed dispatch so the two never disagree about
+/// which argument names the carrier. Compares canonical sort symbols (the
+/// same logical sort may be interned under several `Symbol`s).
+pub(crate) fn self_receiver_param_index(
+    kb: &KnowledgeBase,
+    params: &[(Symbol, TermId)],
+    spec_sort: Symbol,
+) -> Option<usize> {
+    let spec_canon = kb.canonical_sort_sym(spec_sort);
+    params.iter().position(|(_, pty)| {
+        sort_functor_of(kb, *pty).map(|s| kb.canonical_sort_sym(s)) == Some(spec_canon)
+    })
+}
+
+/// WI-350 — the base sort symbol of a value standing in *type* position
+/// (an argument's inferred `TypeResult.ty`). Type results are carried as
+/// `Value::Term` of a typer-reflect Type shape, read by [`sort_functor_of`].
+fn carrier_sort_of_value(kb: &KnowledgeBase, v: &Value) -> Option<Symbol> {
+    sort_functor_of(kb, v.as_term()?)
+}
+
 /// WI-210/WI-224 — find the unique impl operation symbol for a spec-op
 /// call. Thin wrapper over `dispatch_spec_op_with_tree` that drops the
 /// `ResolvedRequiresNode`. Callers that need the tree (WI-228: requirement
@@ -5312,7 +5489,8 @@ pub fn dispatch_spec_op_with_tree(
     op_short_sym: Symbol,
     enclosing_requires: &[RequiresEntry],
 ) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
-    dispatch_spec_op_cached(kb, subst, spec_sort, op_short_sym, enclosing_requires)
+    // Compat entry — no call-site receiver, so no carrier discrimination.
+    dispatch_spec_op_cached(kb, subst, spec_sort, op_short_sym, enclosing_requires, None)
 }
 
 /// WI-226 — cached variant of `dispatch_spec_op_with_tree`. Repeated
@@ -5327,6 +5505,7 @@ pub fn dispatch_spec_op_cached(
     spec_sort: Symbol,
     op_short_sym: Symbol,
     enclosing_requires: &[RequiresEntry],
+    carrier: Option<Symbol>,
 ) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
     // Direct defer trigger: a spec that is a *direct* `requires` of the
     // enclosing sort (i.e. present in `enclosing_requires`) is dispatched
@@ -5340,7 +5519,11 @@ pub fn dispatch_spec_op_cached(
     {
         return (DispatchOutcome::Deferred, None);
     }
-    let goal = sort_goal_from_subst(kb, subst, spec_sort);
+    // WI-350: `carrier` rides inside the goal so it participates in the
+    // resolve-cache key (a `List` call and a `LogicalStream` call on the
+    // same `Stream[T = Int]` goal must not share a memo entry) and reaches
+    // `collect_provides_candidates`' impl-sort filter.
+    let goal = sort_goal_from_subst(kb, subst, spec_sort, carrier);
     let key = (goal.clone(), enclosing_requires.to_vec());
     if let Some(cached) = kb.resolve_cache.borrow().get(&key) {
         return cached.clone();
@@ -9636,7 +9819,9 @@ fn spec_resolves_at_bindings(
     spec_sort: Symbol,
     bindings: SmallVec<[(Symbol, TermId); 2]>,
 ) -> bool {
-    let goal = SortGoal { spec_sort, bindings };
+    // Field validation resolves a spec at declared bindings — no call-site
+    // receiver, so no carrier discrimination (WI-350).
+    let goal = SortGoal { spec_sort, bindings, carrier: None };
     let scope = ResolutionScope { available_requires: &[] };
     matches!(resolve(kb, &goal, &scope), ResolutionResult::Resolved(_))
 }

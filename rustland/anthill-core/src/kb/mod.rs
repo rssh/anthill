@@ -1622,7 +1622,10 @@ impl KnowledgeBase {
     /// resolved load-time copy); `by_qualified_name` maps the QN to one
     /// canonical resolved symbol. Used as the `sort_ops` outer key so a
     /// table populated under one copy is found via another at dispatch.
-    fn canonical_sort_sym(&self, sym: Symbol) -> Symbol {
+    /// WI-350: also used by the carrier-aware dispatch filter and the
+    /// interpreter's value-directed dispatch, which compare sort identities
+    /// that may be interned under different copies.
+    pub(crate) fn canonical_sort_sym(&self, sym: Symbol) -> Symbol {
         let qn = self.qualified_name_of(sym);
         self.symbols.by_qualified_name.get(qn).copied().unwrap_or(sym)
     }

@@ -422,6 +422,173 @@ fn dispatch_ambiguous_when_two_impls_match_same_binding() {
         "expected Ambiguous when two impls provide the same binding; got {outcome:?}");
 }
 
+/// WI-350 — load a synthetic *self-receiver* spec `Box` (`peek(b: Box)` —
+/// `b` typed with the spec sort itself, not its type-parameter) with two
+/// carrier impls (`ListBox`, `StreamBox`). Box's only parameter `T` is the
+/// *element*, so the carrier is not a binding: every impl's universally-
+/// quantified `fact Box[T]` matches a per-call `Box[T = Int]` goal.
+fn load_box_two_carriers() -> KnowledgeBase {
+    load_with(r#"
+        namespace wi350.box
+          export Box, ListBox, StreamBox
+          sort Box
+            sort T = ?
+            operation peek(b: Box) -> T
+          end
+          sort ListBox
+            sort T = ?
+            entity lbox(item: T)
+            fact Box[T]
+            operation peek(b: ListBox) -> T = match b case lbox(x) -> x
+          end
+          sort StreamBox
+            sort T = ?
+            entity sbox(item: T)
+            fact Box[T]
+            operation peek(b: StreamBox) -> T = match b case sbox(x) -> x
+          end
+        end
+    "#)
+}
+
+#[test]
+fn wi350_self_receiver_spec_is_ambiguous_without_carrier() {
+    // Baseline: with no receiver carrier, the per-call binding `Box[T = Int]`
+    // matches BOTH carriers' `fact Box[T]` — exactly the pathology WI-350
+    // describes ("EVERY Stream-op call is DispatchAmbiguous"). This is the
+    // `dispatch_spec_op_cached(.., carrier = None)` path.
+    let mut kb = load_box_two_carriers();
+    let peek_sym = kb.try_resolve_symbol("wi350.box.Box.peek")
+        .expect("Box.peek registered");
+    let spec_sort = lookup_spec_op_dispatch(&kb, peek_sym)
+        .expect("Box.peek is a spec op");
+    let subst = subst_with_t(&mut kb, "wi350.box.Box", "anthill.prelude.Int");
+    let op_short = kb.intern("peek");
+    let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
+    assert_eq!(outcome, DispatchOutcome::Ambiguous,
+        "two carrier impls + no carrier discriminator must be Ambiguous; got {outcome:?}");
+}
+
+#[test]
+fn wi350_concrete_carrier_disambiguates_self_receiver_spec() {
+    use anthill_core::kb::typing::dispatch_spec_op_cached;
+    // The fix: threading the receiver's concrete carrier (`ListBox`) keeps
+    // only that carrier's impl, so the same goal resolves Unique.
+    let mut kb = load_box_two_carriers();
+    let peek_sym = kb.try_resolve_symbol("wi350.box.Box.peek")
+        .expect("Box.peek registered");
+    let spec_sort = lookup_spec_op_dispatch(&kb, peek_sym)
+        .expect("Box.peek is a spec op");
+    let listbox_sym = kb.try_resolve_symbol("wi350.box.ListBox")
+        .expect("ListBox registered");
+    let listbox_peek = kb.try_resolve_symbol("wi350.box.ListBox.peek")
+        .expect("ListBox.peek registered");
+    let subst = subst_with_t(&mut kb, "wi350.box.Box", "anthill.prelude.Int");
+    let op_short = kb.intern("peek");
+
+    let (outcome, _tree) = dispatch_spec_op_cached(
+        &mut kb, &subst, spec_sort, op_short, &[], Some(listbox_sym),
+    );
+    assert_eq!(outcome, DispatchOutcome::Unique(listbox_peek),
+        "carrier = ListBox must resolve uniquely to ListBox.peek; got {outcome:?}");
+}
+
+#[test]
+fn wi350_abstract_stream_receiver_types_via_interface_with_two_impls() {
+    use anthill_core::kb::term::Term;
+    use anthill_core::kb::typing::{extract_sort_ref_sym, get_named_arg};
+    use smallvec::SmallVec;
+    // Add a SECOND Stream impl alongside LogicalStream, so a per-call
+    // `Stream[T = …]` goal is genuinely ambiguous by binding (both impls'
+    // `fact Stream[T]` match). An abstract receiver `s : Stream[T = Term]`
+    // — base sort IS the spec — must still type through `Stream.head`'s
+    // interface to `Option[T = Term]`, NOT resolve `Ambiguous`: the
+    // concrete impl is the runtime value's own concern (WI-350 case b).
+    // Pre-WI-350 this raised `DispatchAmbiguous`.
+    let mut kb = load_with(r#"
+        namespace wi350.stream2
+          import anthill.prelude.{Stream, Option, Pair}
+          sort MyStream2
+            sort T = ?
+            fact Stream[T]
+            operation splitFirst(s: MyStream2[?A])
+              -> Option[Pair[?A, MyStream2[?A]]]
+          end
+        end
+    "#);
+
+    let head_sym = kb.try_resolve_symbol("anthill.prelude.Stream.head")
+        .expect("Stream.head registered");
+    let stream_sym = kb.try_resolve_symbol("anthill.prelude.Stream")
+        .expect("Stream registered");
+    let term_sym = kb.try_resolve_symbol("anthill.reflect.Term")
+        .expect("Term registered");
+    let error_sym = kb.try_resolve_symbol("anthill.prelude.Error")
+        .expect("Error registered");
+
+    // Sanity: there really are ≥2 Stream providers now.
+    let providers: Vec<String> = provides_info_heads(&mut kb)
+        .into_iter().filter(|h| h.contains("Stream")).collect();
+    assert!(providers.len() >= 2,
+        "expected ≥2 Stream impls (LogicalStream + MyStream2); saw:\n{providers:#?}");
+
+    let t_field = kb.intern("T");
+    let e_field = kb.intern("E");
+    let term_ty = kb.make_sort_ref(term_sym);
+    let error_ty = kb.make_sort_ref(error_sym);
+    let stream_base = kb.make_sort_ref(stream_sym);
+    let stream_concrete = kb.make_parameterized_type(
+        stream_base, &[(t_field, term_ty), (e_field, error_ty)],
+    );
+
+    let apply_arg_sym = kb.try_resolve_symbol("anthill.reflect.ApplyArg")
+        .expect("ApplyArg registered");
+    let var_ref_sym = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
+        .expect("var_ref registered");
+    let name_arg = kb.intern("name");
+    let value_arg = kb.intern("value");
+    let s_sym = kb.intern("s");
+    let apply_sym = kb.intern("apply");
+    let fn_arg = kb.intern("fn");
+    let args_arg = kb.intern("args");
+
+    let s_ref = kb.alloc(Term::Ref(s_sym));
+    let head_ref = kb.alloc(Term::Ref(head_sym));
+    let var_s = kb.alloc(Term::Fn {
+        functor: var_ref_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(name_arg, s_ref)]),
+    });
+    let arg_s = kb.alloc(Term::Fn {
+        functor: apply_arg_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(name_arg, s_ref), (value_arg, var_s)]),
+    });
+    let args_list = kb.build_list(&[arg_s]);
+    let apply_term = kb.alloc(Term::Fn {
+        functor: apply_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(fn_arg, head_ref), (args_arg, args_list)]),
+    });
+
+    let mut env = TypingEnv::empty();
+    env.bind_var(s_sym, stream_concrete);
+
+    let result = type_check_expr(&mut kb, &env, apply_term)
+        .expect("head(s) on abstract Stream[T] must type-check (not Ambiguous) with ≥2 impls");
+    let ty = result.ty.as_term().expect("ground return type");
+    let ty_str = TermPrinter::new(&kb).print_term(ty);
+    let named = match kb.get_term(ty) {
+        Term::Fn { named_args, .. } => named_args.clone(),
+        _ => panic!("expected parameterized Option return; got {ty_str}"),
+    };
+    let base = get_named_arg(&kb, &named, "base")
+        .and_then(|b| extract_sort_ref_sym(&kb, b))
+        .unwrap_or_else(|| panic!("return type base not a sort_ref; got {ty_str}"));
+    assert_eq!(kb.qualified_name_of(base), "anthill.prelude.Option",
+        "abstract-receiver head must type via interface to Option; got {ty_str}");
+}
+
 #[test]
 fn dispatch_polymorphic_candidate_matches_any_per_call_value() {
     // LogicalStream's `fact Stream[T]` (T = LogicalStream's own type-param)

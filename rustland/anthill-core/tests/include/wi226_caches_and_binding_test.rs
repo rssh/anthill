@@ -102,7 +102,7 @@ fn resolve_cache_memoizes_dispatch_at_same_goal_and_scope() {
 
     let before = kb.resolve_cache_len();
     let _ = dispatch_spec_op_cached(
-        &mut kb, &subst, eq_sym, eq_op_short, &enclosing_requires,
+        &mut kb, &subst, eq_sym, eq_op_short, &enclosing_requires, None,
     );
     let after_first = kb.resolve_cache_len();
     assert_eq!(
@@ -113,7 +113,7 @@ fn resolve_cache_memoizes_dispatch_at_same_goal_and_scope() {
 
     // Second call at the same (goal, scope) — no new entry, served from cache.
     let _ = dispatch_spec_op_cached(
-        &mut kb, &subst, eq_sym, eq_op_short, &enclosing_requires,
+        &mut kb, &subst, eq_sym, eq_op_short, &enclosing_requires, None,
     );
     let after_second = kb.resolve_cache_len();
     assert_eq!(

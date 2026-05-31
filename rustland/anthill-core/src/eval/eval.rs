@@ -396,6 +396,44 @@ impl Interpreter {
         }
     }
 
+    /// WI-350 — value-directed dispatch for a body-less spec op the typer
+    /// left un-rewritten. That happens for an *abstract-receiver* call: the
+    /// receiver's static type was the spec sort itself (`s : Stream[T]`), so
+    /// no concrete impl was pinnable at type-check and the call types through
+    /// the spec op's interface. At runtime the receiver is a concrete value
+    /// that names its own carrier — resolve the impl from it: the self-
+    /// receiver argument's entity functor → its parent sort → that sort's
+    /// operation for this spec op's short name (the same `(impl_sort,
+    /// op_short)` table the requirement-dict path uses). Mirrors the typer's
+    /// `receiver_carrier`: the self-receiver parameter is the one declared
+    /// with the spec sort itself. Returns `None` when the op has no self-
+    /// receiver parameter, the receiver carries no sort, or that sort
+    /// provides no impl — the caller then reports `UnknownOperation`.
+    fn resolve_spec_op_target_by_value(
+        &self,
+        spec_op: Symbol,
+        arg_values: &[Value],
+    ) -> Option<Symbol> {
+        use crate::kb::typing::{lookup_spec_op_dispatch, self_receiver_param_index};
+        let spec_sort = lookup_spec_op_dispatch(&self.kb, spec_op)?;
+        let rec = crate::kb::op_info::lookup_operation_info(&self.kb, spec_op)?;
+        // Same self-receiver classification the typer's `receiver_carrier`
+        // uses, so the two never disagree about which argument names the
+        // carrier. `arg_values` is in callee-parameter order here (the typer
+        // reorders named args), so the declaration index reads the receiver.
+        let idx = self_receiver_param_index(&self.kb, &rec.params, spec_sort)?;
+        let functor = value_functor(&self.kb, arg_values.get(idx)?)?;
+        let parent_tid = self.kb.constructor_parent_sort(functor)?;
+        let carrier = match self.kb.get_term(parent_tid) {
+            Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
+            _ => return None,
+        };
+        let op_qn = self.kb.qualified_name_of(spec_op);
+        let op_short = op_qn.rsplit('.').next().unwrap_or(op_qn);
+        let op_short_sym = self.kb.lookup_symbol(op_short)?;
+        self.kb.sort_ops_lookup(carrier, op_short_sym)
+    }
+
     // ── Binder starts: update top.awaiting, push child frame. ──────
 
     fn start_if(
@@ -817,9 +855,40 @@ impl Interpreter {
         }
 
         // 3. Anthill-defined operation body.
-        let (body_node, params) = self.cached_operation_body(target)
-            .ok_or_else(|| EvalError::UnknownOperation { name: target_name })?;
-        self.enter_operation(target, body_node, &params, arg_values, requirements, type_args)
+        if let Some((body_node, params)) = self.cached_operation_body(target) {
+            return self.enter_operation(
+                target, body_node, &params, arg_values, requirements, type_args,
+            );
+        }
+
+        // 3b. WI-350 — a body-less spec op left un-rewritten by the typer
+        // (abstract-receiver call). Resolve the impl from the receiver
+        // value's own runtime sort and dispatch to it. Purely additive: it
+        // only fires where step 3 found no body, turning what would be an
+        // `UnknownOperation` on a spec op into a concrete impl call.
+        //
+        // The resolved impl is entered with the spec call's own
+        // `requirements`/`type_args` channel (empty for the plain abstract
+        // call that reaches here via `start_apply`). This covers leaf impls
+        // whose bodies are self-contained; an impl whose parent sort itself
+        // declares a `requires` chain would need that chain threaded (the
+        // rewrite path's `construct_requirement` machinery) — surfaced as a
+        // requirement-read error rather than silently mis-dispatched.
+        if let Some(impl_target) = self.resolve_spec_op_target_by_value(target, &arg_values) {
+            if impl_target != target {
+                if let Some(builtin) = self.builtins.get(&impl_target).cloned() {
+                    let result = (builtin)(self, &arg_values)?;
+                    return self.deliver(result);
+                }
+                if let Some((body_node, params)) = self.cached_operation_body(impl_target) {
+                    return self.enter_operation(
+                        impl_target, body_node, &params, arg_values, requirements, type_args,
+                    );
+                }
+            }
+        }
+
+        Err(EvalError::UnknownOperation { name: target_name })
     }
 
     /// Operation-body lookup, memoized. `lookup_operation_body` linear-scans

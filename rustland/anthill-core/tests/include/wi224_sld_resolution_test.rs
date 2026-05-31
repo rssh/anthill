@@ -73,7 +73,9 @@ fn goal_for(kb: &mut KnowledgeBase, spec_qn: &str, param_short: &str, carrier_qn
     let carrier_term = kb.make_sort_ref(carrier_sym);
     let mut subst = Substitution::new();
     subst.bind_term(param_var, carrier_term);
-    sort_goal_from_subst(kb, &subst, spec_sym)
+    // WI-350: these SLD-resolution tests dispatch by binding (the carrier
+    // here is the binding *value*, not a self-receiver carrier).
+    sort_goal_from_subst(kb, &subst, spec_sym, None)
 }
 
 /// Build a parametric carrier value `Outer[Param = Inner]` (e.g.,
@@ -154,6 +156,7 @@ fn one_level_conditional_resolves_via_subgoal() {
     let goal = SortGoal {
         spec_sort: eq_sym,
         bindings: SmallVec::from_slice(&[(t_sym, list_int)]),
+        carrier: None,
     };
     let subst = Substitution::new();
     let scope = empty_scope(&subst);
@@ -212,6 +215,7 @@ fn two_level_conditional_chains_recursively() {
     let goal = SortGoal {
         spec_sort: eq_sym,
         bindings: SmallVec::from_slice(&[(t_sym, list_list_int)]),
+        carrier: None,
     };
     let subst = Substitution::new();
     let scope = empty_scope(&subst);

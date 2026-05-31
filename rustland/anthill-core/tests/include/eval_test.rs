@@ -1578,3 +1578,38 @@ fn m5_modify_handler_taken_is_none() {
         "expected 'no handler' Internal, got {err:?}",
     );
 }
+
+#[test]
+fn wi350_eval_resolves_abstract_spec_op_from_value_runtime_sort() {
+    // WI-350 (eval leg): a body-less spec op (`Box.peek` — a self-receiver
+    // spec, `peek(b: Box)`) called on a concrete value resolves the impl
+    // from the value's OWN runtime sort. The typer leaves abstract-receiver
+    // spec-op calls un-rewritten (the concrete impl is the value's concern,
+    // not pinnable statically); the interpreter must then resolve
+    // `Box.peek(lbox(7))` to `ListBox.peek` via the receiver value's functor
+    // → parent sort → sort-ops table. Without the leg, dispatch raises
+    // `UnknownOperation` on the body-less `Box.peek`.
+    let src = r#"
+namespace test.wi350_box
+  sort Box
+    sort T = ?
+    operation peek(b: Box) -> Int
+  end
+  sort ListBox
+    entity lbox(item: Int)
+    fact Box[T = Int]
+    operation peek(b: ListBox) -> Int = match b case lbox(x) -> x
+  end
+  -- `b : Box` is an abstract spec value, so `Box.peek(b)` types through the
+  -- interface and stays `Box.peek` (no static impl pinned). At runtime `b`
+  -- is the concrete ListBox the caller threads in.
+  operation use_box(b: Box) -> Int = Box.peek(b)
+  operation main() -> Int = use_box(lbox(7))
+end
+"#;
+    let kb = load_kb_with(src);
+    let mut interp = Interpreter::new(kb);
+    let result = interp.call("test.wi350_box.main", &[])
+        .expect("in-body Box.peek on a ListBox value resolves via the value's runtime sort");
+    assert_eq!(expect_int(result), 7);
+}
