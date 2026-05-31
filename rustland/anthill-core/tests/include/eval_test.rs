@@ -1613,3 +1613,32 @@ end
         .expect("in-body Box.peek on a ListBox value resolves via the value's runtime sort");
     assert_eq!(expect_int(result), 7);
 }
+
+#[test]
+fn wi343_list_splitfirst_is_a_functional_stream_primitive() {
+    // proposal library/002: List provides Stream, with `splitFirst` as the
+    // primitive (not a hollow `fact Stream[T]`). `splitFirst(aList)` must
+    // dispatch to List's impl (concrete carrier, WI-350) and decompose a
+    // non-empty list to `some(pair(head, tail))`, so a List genuinely acts as
+    // a Stream at runtime. (The element type does not thread through the
+    // destructured `Pair` at the type level yet — a separate typer-inference
+    // limitation — so this asserts the runtime `some(...)` decomposition
+    // rather than extracting a typed element.)
+    let src = r#"
+namespace test.wi343_list_stream
+  import anthill.prelude.{List, Int, Bool}
+  import anthill.prelude.List.{splitFirst}
+  import anthill.prelude.Option.{some, none}
+
+  operation nonempty_via_splitfirst() -> Bool =
+    match splitFirst([1, 2])
+      case some(_) -> true
+      case none() -> false
+end
+"#;
+    let kb = load_kb_with(src);
+    let mut interp = Interpreter::new(kb);
+    let nonempty = interp.call("test.wi343_list_stream.nonempty_via_splitfirst", &[])
+        .expect("splitFirst on a non-empty List must dispatch to List's Stream impl");
+    assert_eq!(expect_bool(nonempty), true, "splitFirst([1,2]) must be some(...)");
+}

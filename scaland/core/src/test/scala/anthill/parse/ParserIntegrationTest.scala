@@ -701,12 +701,15 @@ class ParserIntegrationTest extends munit.FunSuite:
       .getOrElse(fail("expected namespace"))
     assertEquals(ns.name.segments.map(geomPf.symbols.name).mkString("."), "anthill.geometry")
 
-    // 2 entities (Vec3, EulerAngles), 1 fact (VectorSpace[Vec3, Float]),
-    // 12 rules: 4 vec_* implementations + 8 algebraic laws.
+    // 2 entities (Vec3, EulerAngles), 12 rules (4 vec_* implementations +
+    // 8 algebraic laws). No satisfaction fact in stdlib: `VectorSpace[Vec3,
+    // Float]` moved to the per-language binding layer (rust-side WI-343),
+    // because it depends on `Ring[Float]` — a binding fact — so the claim is
+    // unsound in a stdlib-only load. (Same pattern as Float's facts above.)
     assertEquals(countItems(ns.items) { case Item.EntityItem(_) => }, 2,
       "geometry should expose 2 entities (Vec3, EulerAngles)")
-    assertEquals(countItems(ns.items) { case Item.FactItem(_) => }, 1,
-      "geometry should declare VectorSpace[Vec3, Float]")
+    assertEquals(countItems(ns.items) { case Item.FactItem(_) => }, 0,
+      "geometry's VectorSpace[Vec3, Float] satisfaction moved to the binding layer")
     assertEquals(countItems(ns.items) { case Item.RuleItem(_) => }, 12,
       "geometry should declare 12 rules (4 impls + 8 laws)")
 
