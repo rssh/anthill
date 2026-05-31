@@ -1626,7 +1626,7 @@ fn wi343_list_splitfirst_is_a_functional_stream_primitive() {
     // rather than extracting a typed element.)
     let src = r#"
 namespace test.wi343_list_stream
-  import anthill.prelude.{List, Int, Bool}
+  import anthill.prelude.{List, Bool}
   import anthill.prelude.List.{splitFirst}
   import anthill.prelude.Option.{some, none}
 

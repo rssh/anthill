@@ -59,7 +59,8 @@ enum anthill.prelude.List
   -- provides Stream (WI-344 provider admissibility). Stream's primitive is
   -- `splitFirst` (distinct from Iteration's `split`: it returns a `Pair`,
   -- and its tail is itself a Stream); List provides it below over cons/nil,
-  -- so head / tail / isEmpty / takeN / collect derive from it on a List.
+  -- so head / tail / isEmpty derive from it on a List (takeN / collect are
+  -- declared on Stream but have no derivation rule yet).
   fact Stream[T = T]
   fact Iterable[C = List[T], Element = T]
   operation iterator(l: List) -> Stream = l
@@ -67,9 +68,11 @@ enum anthill.prelude.List
   -- Stream primitive: peel the head and return the tail (itself a List, hence
   -- a Stream). `pair`-shaped (not Iteration's tuple `split`) so Stream's
   -- `head = fst ∘ splitFirst` / `tail = snd ∘ splitFirst` laws apply. The
-  -- precise `Pair[A = T, B = List]` return (cf. Stream's `Pair[A = T, B =
-  -- Stream]`) carries the element type T through, so `head` on a List[Int]
-  -- types as `Option[Int]`, not an unbound element.
+  -- `Pair[A = T, B = List]` return mirrors Stream's `Pair[A = T, B = Stream]`
+  -- (the Stream-conformant shape) and carries the element type T in the
+  -- *signature*. Threading T through a destructured `Pair` at consumption
+  -- sites (so `head` on a `List[Int]` statically types as `Option[Int]`) is
+  -- not wired in the typer yet — see WI-356.
   operation splitFirst(xs: List) -> Option[T = Pair[A = T, B = List]] =
     match xs
       case nil() -> none
