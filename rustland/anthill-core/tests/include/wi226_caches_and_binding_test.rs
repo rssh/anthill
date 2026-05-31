@@ -50,6 +50,13 @@ fn requires_chain_memoizes_top_level_query() {
         .try_resolve_symbol("anthill.prelude.Ordered")
         .expect("Ordered sort");
 
+    // WI-343's provider-side `requires` check runs at load and walks
+    // `direct_requires_chain` for every provided spec (`fact Ordered[T=…]`
+    // among them), warming the requires-chain cache. Reset it so this test
+    // measures cache growth from its own `requires_chain` calls — mirroring
+    // `resolve_cache_memoizes_dispatch_at_same_goal_and_scope`'s reset below.
+    kb.invalidate_requires_chain_cache();
+
     // Cache is empty for Ordered before first call.
     assert!(
         !kb.requires_chain_cache_contains(ordered_sym),

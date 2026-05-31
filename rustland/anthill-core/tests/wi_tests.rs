@@ -11,6 +11,9 @@ mod wi279_dot_dispatch_test;
 #[path = "include/wi281_spec_dot_dispatch_test.rs"]
 mod wi281_spec_dot_dispatch_test;
 
+#[path = "include/wi343_provider_requires_test.rs"]
+mod wi343_provider_requires_test;
+
 #[path = "include/wi246_rule_body_desc_test.rs"]
 mod wi246_rule_body_desc_test;
 

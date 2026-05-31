@@ -188,19 +188,15 @@ fn dot_min_dispatches_via_int_ordered() {
         errors_text(&errs));
 }
 
-// ── Known gap (WI-343): unsatisfied spec-level requires passes silently ─
+// ── Unsatisfied spec-level requires is now diagnosed (WI-343) ───────────
 
 #[test]
-fn dot_spec_method_unsatisfied_requires_passes_silently_wi343_gap() {
+fn dot_spec_method_unsatisfied_requires_errors_wi343() {
     // `Comparable requires Nameable[T]`, and `Gadget` provides `Comparable` but
-    // NOT `Nameable`. Ideally dispatching `?a.pick(?b)` would be diagnosed: the
-    // threaded `Comparable[Gadget]` requires `Nameable[Gadget]`, which has no
-    // provider. But a *provider-side* unmet spec-level `requires` is not
-    // diagnosed today — `fact Comparable[Gadget]` loads silently and the
-    // dispatched call rides it. That diagnostic is WI-343 (the soundness gate;
-    // the same gap proposal library/002 names), not the dot path's to own — the
-    // dot call routes through the SAME spec-op dispatch as a plain call. When
-    // WI-343 lands, flip this to assert the error appears at the dot span.
+    // NOT `Nameable`. WI-343 (provider-side requires coverage) rejects the
+    // `fact Comparable[Gadget]` outright — the satisfaction fact is unsound, so
+    // the dispatched `?a.pick(?b)` never gets a sound spec to ride. (Was a
+    // known gap pinned here before WI-343 landed.)
     let src = r#"
         namespace wi281.unsat
           export Nameable, Comparable, Gadget
@@ -223,10 +219,10 @@ fn dot_spec_method_unsatisfied_requires_passes_silently_wi343_gap() {
         end
     "#;
     let (_kb, errs) = load_capturing_errors(src);
-    // Documents the current (unsound) behavior — see WI-343.
-    assert!(errs.is_empty(),
-        "WI-343 gap: provider-side unmet `requires` is undiagnosed today, so \
-         ?a.pick(?b) loads clean. If this now errors, WI-343 has landed — flip \
-         the assertion to require an error at the dot span. Got:\n{}",
-        errors_text(&errs));
+    let text = errors_text(&errs);
+    assert!(!errs.is_empty(),
+        "WI-343: Gadget provides Comparable (which requires Nameable) without \
+         providing Nameable → should be rejected; got clean load");
+    assert!(text.contains("Comparable") && text.contains("Nameable"),
+        "expected the diagnostic to name Comparable and its unmet Nameable; got:\n{text}");
 }

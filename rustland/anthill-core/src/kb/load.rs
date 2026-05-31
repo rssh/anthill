@@ -134,6 +134,16 @@ pub enum LoadError {
         actual_type: String,
         span: Option<Span>,
     },
+    /// WI-343: a carrier provides a spec whose own `requires` is not
+    /// satisfied by that carrier — e.g. `fact PersistentCollection[List]`
+    /// where `PersistentCollection requires Iterable` but `List` provides
+    /// no `Iterable`. The satisfaction fact is unsound: the spec's contract
+    /// does not hold for the carrier.
+    UnsatisfiedProviderRequires {
+        carrier: String,
+        spec: String,
+        required: String,
+    },
     Other {
         message: String,
     },
@@ -163,6 +173,10 @@ impl LoadError {
                     format!("type mismatch in {}.{}: expected {}, got {}", entity_name, field_name, expected_type, actual_type)
                 }
             }
+            LoadError::UnsatisfiedProviderRequires { carrier, spec, required } => {
+                format!("'{}' provides '{}', which requires '{}', but '{}' does not provide '{}' (add a `fact {}[…]` for the carrier)",
+                    carrier, spec, required, carrier, required, required)
+            }
             LoadError::Other { message } => {
                 format!("load error: {}", message)
             }
@@ -178,7 +192,8 @@ impl LoadError {
     pub fn is_load_blocking(&self) -> bool {
         matches!(self,
             LoadError::TypeMismatch { .. }
-            | LoadError::UnresolvedImport { .. })
+            | LoadError::UnresolvedImport { .. }
+            | LoadError::UnsatisfiedProviderRequires { .. })
     }
 }
 
@@ -200,6 +215,10 @@ impl std::fmt::Display for LoadError {
                 } else {
                     write!(f, "type mismatch in {}.{}: expected {}, got {}", entity_name, field_name, expected_type, actual_type)
                 }
+            }
+            LoadError::UnsatisfiedProviderRequires { carrier, spec, required } => {
+                write!(f, "'{}' provides '{}', which requires '{}', but '{}' does not provide '{}'",
+                    carrier, spec, required, carrier, required)
             }
             LoadError::Other { message } => {
                 write!(f, "load error: {}", message)
@@ -1770,6 +1789,11 @@ fn load_phase_inner(
         all_errors.push(err.to_load_error(kb));
     }
     mark!("req_insertion::run");
+    // WI-343: provider-side requires coverage. For each `fact Spec[X]`,
+    // every spec-level `requires` of Spec (at the provision's bindings)
+    // must itself be satisfied — else the satisfaction fact is unsound.
+    all_errors.extend(super::typing::check_provider_requires(kb));
+    mark!("check_provider_requires");
     if all_errors.is_empty() {
         Ok((
             LoadResult { defined_sorts: all_sorts, fact_rule_ids: all_fact_ids },

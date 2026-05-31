@@ -5143,6 +5143,96 @@ fn candidate_sub_goals_owned(
     out
 }
 
+/// WI-343 — provider-side requires coverage. For every satisfaction fact
+/// `fact Spec[sort_ref = X, spec = Spec[σ]]`, each spec-level `requires`
+/// of `Spec` (instantiated at the provision's bindings σ) must itself be
+/// satisfied by some provider. An unsatisfied requirement means the fact
+/// is unsound: `X` is declared to provide `Spec`, yet `Spec`'s contract
+/// (its `requires`) does not hold for `X`.
+///
+/// v0 is base-level (like `check_sort_requirements_coverage`): a requirement
+/// `requires R[…]` is satisfied if *any* sort named in the provision — the
+/// carrier or any binding value — provides `R`. This covers both the common
+/// shape (`Ordered requires Eq[T]`, where the carrier is the `Eq` carrier) and
+/// the cross-param shape (`VectorSpace[V, F] requires Ring[F]`, where the
+/// binding value `F` is the `Ring` carrier) without per-binding substitution;
+/// binding-precise checking is a deferred refinement. The `EffectsRuntime`
+/// kind-anchor (synthesized from `effects E = ?`) is skipped: it is satisfied
+/// structurally by the effect-row machinery, never by a carrier `fact`.
+pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
+    use super::load::LoadError;
+    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
+        return Vec::new();
+    };
+    let effects_runtime = kb.try_resolve_symbol("anthill.prelude.EffectsRuntime");
+
+    // Snapshot each provision before the requires walk, which mutates `kb`
+    // (`direct_requires_chain` may allocate substituted terms).
+    struct Provision {
+        carrier: Symbol,
+        spec: Symbol,
+        /// Sorts named in the provision (carrier + binding values) — the
+        /// candidates that may satisfy the spec's requires.
+        candidates: SmallVec<[Symbol; 4]>,
+    }
+    let mut provisions: Vec<Provision> = Vec::new();
+    for rid in kb.by_functor(provides_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let head = kb.rule_head(rid);
+        let named = match kb.get_term(head) {
+            Term::Fn { named_args, .. } => named_args.clone(),
+            _ => continue,
+        };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
+        let Some(spec_view) = get_named_arg(kb, &named, "spec") else { continue };
+        let Some((spec_base, _)) = unwrap_spec_view(kb, spec_view) else { continue };
+
+        let mut candidates: SmallVec<[Symbol; 4]> = SmallVec::new();
+        candidates.push(carrier);
+        // Binding values of the spec view (`F = Float`, positional `Float`):
+        // pos_args[0] of a SortView is the spec base itself, so skip it.
+        // `sort_sym_of_term` reads any binding-value shape (bare `Ref`/`Ident`,
+        // nullary `Fn`, or a `sort_ref(name: X)` wrapper).
+        if let Term::Fn { pos_args, named_args, .. } = kb.get_term(spec_view) {
+            let pos_args = pos_args.clone();
+            let named_args = named_args.clone();
+            for t in pos_args.iter().skip(1) {
+                if let Some(s) = sort_sym_of_term(kb, *t) {
+                    candidates.push(s);
+                }
+            }
+            for (_, t) in &named_args {
+                if let Some(s) = sort_sym_of_term(kb, *t) {
+                    candidates.push(s);
+                }
+            }
+        }
+        provisions.push(Provision { carrier, spec: spec_base, candidates });
+    }
+
+    let mut errors = Vec::new();
+    for p in &provisions {
+        for entry in direct_requires_chain(kb, p.spec) {
+            let required = entry.required_sort;
+            if Some(required) == effects_runtime {
+                continue;
+            }
+            let satisfied = p.candidates.iter().any(|&c| sort_provides(kb, c, required));
+            if !satisfied {
+                errors.push(LoadError::UnsatisfiedProviderRequires {
+                    carrier: kb.qualified_name_of(p.carrier).to_string(),
+                    spec: kb.qualified_name_of(p.spec).to_string(),
+                    required: kb.qualified_name_of(required).to_string(),
+                });
+            }
+        }
+    }
+    errors
+}
+
 /// True iff `short` names a type-parameter (vs an op) of the spec at
 /// `spec_qn`. Determined by checking whether `<spec_qn>.<short>`
 /// resolves to a SortAlias-bearing symbol — only spec params do.
