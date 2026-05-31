@@ -142,3 +142,6 @@ mod wi325_missing_requires_test;
 
 #[path = "include/wi351_callback_place_test.rs"]
 mod wi351_callback_place_test;
+
+#[path = "include/wi352_flow_derive_test.rs"]
+mod wi352_flow_derive_test;

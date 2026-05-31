@@ -18,7 +18,7 @@ use smallvec::SmallVec;
 use crate::intern::{Symbol, SymbolDef, SymbolKind, ScopeInclusion, ResolveResult};
 use crate::parse::ir::*;
 use crate::span::{Span, SourceId, SourceSpan};
-use super::{KnowledgeBase, SortKind, PlaceRole};
+use super::{KnowledgeBase, SortKind};
 use super::term::{Term, TermId, Var, VarId, Literal};
 use super::node_occurrence::{self, Expr, NodeOccurrence};
 use super::typing::{extract_type_param, get_named_arg, list_to_vec};
@@ -397,6 +397,10 @@ fn scan_operation_params(
         kb.symbols.add_type_param(op_term.raw(), tp_name);
     }
 
+    // WI-352: the op's ordered argument-place symbols, recorded on the op
+    // symbol so a self-recursive `apply(op, args)` maps `args[i]` to the op's
+    // i-th param place from symbol data alone (the flow-derivation pass).
+    let mut op_arg_places: Vec<Symbol> = Vec::new();
     for p in &op.params {
         let param_name = parse_sym.name(p.name);
         // Skip param-name `result` here; the load pass reports the
@@ -405,12 +409,13 @@ fn scan_operation_params(
             continue;
         }
         let qualified = make_qualified(prefix, param_name);
+        // WI-352: an op parameter's `SymbolKind::Param` *is* its place
+        // classification (provenance `input`) — no side-table.
         let param_sym =
             kb.symbols.define(param_name, &qualified, SymbolKind::Param, op_term.raw());
-        // WI-351: the op parameter is an `Input` place of the operation frame.
-        kb.register_place(param_sym, PlaceRole::Input);
+        op_arg_places.push(param_sym);
 
-        // WI-351: a callback-typed parameter contributes its own places — a
+        // WI-352: a callback-typed parameter contributes its own places — a
         // `CallbackParam` per arrow param and a `CallbackResult` for the arrow
         // return, qualified under `<op>.<param>` (`foldLeft.f.a`, `foldLeft.f.t`,
         // `foldLeft.f.result`). These are the projection references the
@@ -431,12 +436,14 @@ fn scan_operation_params(
             );
         }
     }
+    // WI-352: publish the op's ordered argument places on the op symbol.
+    kb.symbols.set_arg_places(op_sym, op_arg_places);
+
     let result_qualified = make_qualified(prefix, "result");
-    let result_sym = kb.symbols.define("result", &result_qualified, SymbolKind::Param, op_term.raw());
-    // WI-341 step 1: record the result-binder symbol so `kb::region`
-    // recognises an effect's result-region resource by symbol identity
-    // rather than by parsing the symbol's spelling.
-    kb.register_result_binder(result_sym);
+    // WI-352: the reserved result binder carries its role in its kind —
+    // `OpResult` (provenance `op_result`). `is_result_binder` and WI-314 region
+    // masking key on this kind; no side-table registration.
+    kb.symbols.define("result", &result_qualified, SymbolKind::OpResult, op_term.raw());
 
     // Pre-register `result.<field>` for each named-tuple return component.
     // Effects rows take *types*, not general term expressions, so the dot
@@ -452,17 +459,24 @@ fn scan_operation_params(
             let field_name = parse_sym.name(*field_sym);
             let dotted = format!("result.{}", field_name);
             let qualified = make_qualified(prefix, &dotted);
+            // WI-352: keep `result.<field>` as `Param` (NOT `OpResult`): the bare
+            // `result` is the WI-314 masking binder (`is_result_binder`), but a
+            // result COMPONENT is not — classifying it `OpResult` would widen
+            // `is_result_binder` and re-key per-component `Modify[result.a]` to
+            // `Modify[result]` (a precision loss / behavior change). Its precise
+            // classification (a result projection) is deferred; not a flow node
+            // in v1 (no tuple-result HOF), so its provenance is never consulted.
             kb.symbols.define(&dotted, &qualified, SymbolKind::Param, op_term.raw());
         }
     }
 }
 
-/// WI-351: recursively register the [`PlaceRole`] places of a callback (arrow)
-/// type rooted at `rel_path` — the dotted path from the operation to this
-/// callback (`f`, or `f.g` for a nested one). Each arrow param becomes a
-/// `CallbackParam` place `<op>.<rel_path>.<name>` and the arrow return a
-/// `CallbackResult` place `<op>.<rel_path>.result`; a param or result that is
-/// *itself* an arrow is descended into, so arbitrarily nested callbacks
+/// WI-352: recursively define the places of a callback (arrow) type rooted at
+/// `rel_path` — the dotted path from the operation to this callback (`f`, or
+/// `f.g` for a nested one), classifying each by its `SymbolKind`. Each arrow
+/// param becomes a `CallbackParam` place `<op>.<rel_path>.<name>` and the arrow
+/// return a `CallbackResult` place `<op>.<rel_path>.result`; a param or result
+/// that is *itself* an arrow is descended into, so arbitrarily nested callbacks
 /// (`f.g.x`, `f.result.z`) all resolve to a place. Param names are read off the
 /// parse-IR arrow (WI-355 preserves them); unnamed params fall back to the
 /// 1-based positional `_{i+1}` matching the arrow-type lowering (spec §4.5). All
@@ -477,6 +491,10 @@ fn register_callback_places(
     prefix: &str,
     rel_path: &str,
 ) {
+    // WI-352: this callback's ordered argument-place symbols, published on the
+    // callback's own symbol (so `apply(f, args)` maps positionally from symbol
+    // data — the flow-derivation pass).
+    let mut cb_arg_places: Vec<Symbol> = Vec::new();
     for (i, (cb_name_sym, cb_ty)) in params.iter().enumerate() {
         let cb_name = match cb_name_sym {
             Some(s) => parse_sym.name(*s).to_owned(),
@@ -491,8 +509,9 @@ fn register_callback_places(
         }
         let sub_path = format!("{}.{}", rel_path, cb_name);
         let qualified = make_qualified(prefix, &sub_path);
-        let sym = kb.symbols.define(&sub_path, &qualified, SymbolKind::Param, op_scope_raw);
-        kb.register_place(sym, PlaceRole::CallbackParam);
+        let cb_sym =
+            kb.symbols.define(&sub_path, &qualified, SymbolKind::CallbackParam, op_scope_raw);
+        cb_arg_places.push(cb_sym);
         // A param that is itself a callback — descend.
         if let TypeExpr::Arrow { params: inner, return_type: inner_ret, .. } = cb_ty {
             register_callback_places(
@@ -503,13 +522,17 @@ fn register_callback_places(
     // The callback's own result place — `<op>.<rel_path>.result`.
     let res_path = format!("{}.result", rel_path);
     let qualified = make_qualified(prefix, &res_path);
-    let sym = kb.symbols.define(&res_path, &qualified, SymbolKind::Param, op_scope_raw);
-    kb.register_place(sym, PlaceRole::CallbackResult);
+    kb.symbols.define(&res_path, &qualified, SymbolKind::CallbackResult, op_scope_raw);
     // A result that is itself a callback (a curried op) — descend.
     if let TypeExpr::Arrow { params: inner, return_type: inner_ret, .. } = return_type {
         register_callback_places(
             kb, parse_sym, inner, inner_ret, op_scope_raw, prefix, &res_path,
         );
+    }
+    // Publish the ordered arg places on this callback's symbol (`<op>.<rel_path>`).
+    let self_qn = make_qualified(prefix, rel_path);
+    if let Some(self_sym) = kb.symbols.by_qualified_name.get(&self_qn).copied() {
+        kb.symbols.set_arg_places(self_sym, cb_arg_places);
     }
 }
 
@@ -1626,6 +1649,20 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_raw: u32) {
         is_enclosing: true,
     });
 
+    // anthill.reflect.feed namespace (WI-352) — created here so the `provenance`
+    // builtin can register before stdlib/anthill/reflect/feed.anthill loads.
+    let feed_sym = kb.symbols.define("feed", "anthill.reflect.feed", SymbolKind::Namespace, reflect_term.raw());
+    let feed_term = kb.alloc(Term::Fn {
+        functor: feed_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
+    kb.symbols.add_parent(feed_term.raw(), ScopeInclusion {
+        parent_scope_raw: reflect_term.raw(),
+        instantiation_term_raw: reflect_term.raw(),
+        is_enclosing: true,
+    });
+
     // anthill.kernel namespace — resolver primitives (proposal 033).
     // Pre-declared here so that the loader's resolve_symbol calls find
     // these names with proper scoping when stdlib/anthill/kernel/ loads.
@@ -1869,6 +1906,12 @@ fn load_phase_inner(
         all_errors.push(err.to_load_error(kb));
     }
     mark!("req_insertion::run");
+    // WI-352: derive `flow(kind, from, to)` facts from operation bodies for the
+    // Modify effect_derive slice. Runs after bodies are fully elaborated; the
+    // facts are auxiliary metadata (own namespace/functor) and don't perturb
+    // resolution. WI-353 will consume them via `keep_modify`.
+    super::flow_derive::run(kb);
+    mark!("flow_derive::run");
     // WI-343: provider-side requires coverage. For each `fact Spec[X]`,
     // every spec-level `requires` of Spec (at the provision's bindings)
     // must itself be satisfied — else the satisfaction fact is unsound.
@@ -3484,7 +3527,17 @@ fn resolve_by_short_name(kb: &KnowledgeBase, name: &str) -> Option<Symbol> {
         // Op params and entity fields are local to their declaring
         // scope; reaching them via global short-name lookup is a leak.
         if let SymbolDef::Resolved { kind, .. } = kb.symbols.get(sym) {
-            if matches!(kind, SymbolKind::Param | SymbolKind::Field) {
+            // WI-352: operation-frame places (result / callback binders / let
+            // locals) are scope-local too — encapsulated like params/fields.
+            if matches!(
+                kind,
+                SymbolKind::Param
+                    | SymbolKind::Field
+                    | SymbolKind::OpResult
+                    | SymbolKind::CallbackParam
+                    | SymbolKind::CallbackResult
+                    | SymbolKind::LocalLet
+            ) {
                 continue;
             }
         }
@@ -5369,7 +5422,11 @@ impl<'a> Loader<'a> {
                 let is_value = matches!(
                     self.kb.symbols.get(sort_sym),
                     crate::intern::SymbolDef::Resolved {
-                        kind: SymbolKind::Param | SymbolKind::Field | SymbolKind::Operation, ..
+                        kind: SymbolKind::Param | SymbolKind::Field | SymbolKind::Operation
+                            // WI-352: operation-frame places are value-binders too
+                            // (`Modify[result]` / `Modify[f.a]` denote values).
+                            | SymbolKind::OpResult | SymbolKind::CallbackParam
+                            | SymbolKind::CallbackResult | SymbolKind::LocalLet, ..
                     }
                 );
                 if is_value {
@@ -5540,7 +5597,11 @@ impl<'a> Loader<'a> {
                 let is_value = matches!(
                     self.kb.symbols.get(sort_sym),
                     SymbolDef::Resolved {
-                        kind: SymbolKind::Param | SymbolKind::Field | SymbolKind::Operation, ..
+                        kind: SymbolKind::Param | SymbolKind::Field | SymbolKind::Operation
+                            // WI-352: operation-frame places are value-binders too
+                            // (`Modify[result]` / `Modify[f.a]` denote values).
+                            | SymbolKind::OpResult | SymbolKind::CallbackParam
+                            | SymbolKind::CallbackResult | SymbolKind::LocalLet, ..
                     }
                 );
                 if is_value {
@@ -7547,15 +7608,15 @@ impl<'a> Loader<'a> {
 
 #[cfg(test)]
 mod wi351_place_tests {
-    //! WI-351 — `scan_operation_params` registers an operation-frame
-    //! [`PlaceRole`] for every place the `Modify` feed/flow analysis names:
-    //! op params (`Input`), callback params (`CallbackParam`), callback
-    //! results (`CallbackResult`), and the reserved `result` (`OpResult`).
-    //! The place→role contract is `pub(crate)`, so it is unit-tested here
-    //! rather than in the integration crate; public *resolution* is also
-    //! covered by `tests/include/wi351_callback_place_test.rs`.
+    //! WI-352 — `scan_operation_params` classifies every operation-frame place
+    //! by its `SymbolKind`: op params (`Param`), callback params
+    //! (`CallbackParam`), callback results (`CallbackResult`), the reserved
+    //! `result` (`OpResult`). `provenance` and `is_result_binder` are functions
+    //! of this kind (no side-table). Public *resolution* is also covered by
+    //! `tests/include/wi351_callback_place_test.rs`.
     use super::{load, register_prelude, NullResolver};
-    use crate::kb::{KnowledgeBase, PlaceRole};
+    use crate::intern::SymbolKind;
+    use crate::kb::KnowledgeBase;
     use crate::parse;
 
     /// Load a self-contained snippet off the bare prelude. Mirrors
@@ -7571,32 +7632,32 @@ mod wi351_place_tests {
     }
 
     /// Foldleft-shaped op `reduce(z, f: (a, t) -> _) -> _`: op params are
-    /// `Input` places, the callback's params/result get `CallbackParam` /
-    /// `CallbackResult`, and the reserved `result` stays the sole `OpResult`
-    /// — so `is_result_binder` (and thus `Cell.new.result` masking, WI-314)
-    /// is unchanged.
+    /// `Param` (= input places), the callback's params/result get
+    /// `CallbackParam` / `CallbackResult`, and the reserved `result` is the
+    /// sole `OpResult` — so `is_result_binder` (and thus `Cell.new.result`
+    /// masking, WI-314) is unchanged.
     #[test]
-    fn callback_places_registered_with_roles() {
+    fn callback_places_classified_by_kind() {
         let kb = load_op("operation reduce(z: Int, f: (a: Int, t: Int) -> Int) -> Int\n");
 
-        let place = |qn: &str| -> PlaceRole {
+        let place = |qn: &str| -> SymbolKind {
             let sym = kb
                 .try_resolve_symbol(qn)
                 .unwrap_or_else(|| panic!("place `{qn}` should resolve"));
-            kb.place_role(sym)
-                .unwrap_or_else(|| panic!("place `{qn}` should carry a role"))
+            kb.kind_of(sym)
+                .unwrap_or_else(|| panic!("place `{qn}` should carry a kind"))
         };
 
-        // Op params → Input.
-        assert_eq!(place("reduce.z"), PlaceRole::Input);
-        assert_eq!(place("reduce.f"), PlaceRole::Input);
+        // Op params → Param (an op param is its own input place).
+        assert_eq!(place("reduce.z"), SymbolKind::Param);
+        assert_eq!(place("reduce.f"), SymbolKind::Param);
         // Callback params (read off the arrow's named params, WI-355).
-        assert_eq!(place("reduce.f.a"), PlaceRole::CallbackParam);
-        assert_eq!(place("reduce.f.t"), PlaceRole::CallbackParam);
+        assert_eq!(place("reduce.f.a"), SymbolKind::CallbackParam);
+        assert_eq!(place("reduce.f.t"), SymbolKind::CallbackParam);
         // Callback result.
-        assert_eq!(place("reduce.f.result"), PlaceRole::CallbackResult);
+        assert_eq!(place("reduce.f.result"), SymbolKind::CallbackResult);
         // The op's reserved result — the sole OpResult (proposal 041).
-        assert_eq!(place("reduce.result"), PlaceRole::OpResult);
+        assert_eq!(place("reduce.result"), SymbolKind::OpResult);
 
         // `is_result_binder` is exactly the OpResult slice: only the op result
         // is a binder; inputs and callback places are not.
@@ -7619,15 +7680,15 @@ mod wi351_place_tests {
     fn single_param_callback_place() {
         // Named single param (WI-358): the place takes the declared name.
         let kb = load_op("operation findp(p: (x: Int) -> Bool) -> Bool\n");
-        let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.place_role(s));
-        assert_eq!(role("findp.p.x"), Some(PlaceRole::CallbackParam));
-        assert_eq!(role("findp.p.result"), Some(PlaceRole::CallbackResult));
+        let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
+        assert_eq!(role("findp.p.x"), Some(SymbolKind::CallbackParam));
+        assert_eq!(role("findp.p.result"), Some(SymbolKind::CallbackResult));
 
         // Unnamed single param: 1-based positional fallback.
         let kb = load_op("operation g(p: (Int) -> Bool) -> Bool\n");
-        let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.place_role(s));
-        assert_eq!(role("g.p._1"), Some(PlaceRole::CallbackParam));
-        assert_eq!(role("g.p.result"), Some(PlaceRole::CallbackResult));
+        let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
+        assert_eq!(role("g.p._1"), Some(SymbolKind::CallbackParam));
+        assert_eq!(role("g.p.result"), Some(SymbolKind::CallbackResult));
     }
 
     /// Unnamed callback params fall back to the **1-based** positional names
@@ -7636,10 +7697,10 @@ mod wi351_place_tests {
     #[test]
     fn unnamed_callback_params_are_one_based() {
         let kb = load_op("operation app(f: (Int, Int) -> Int) -> Int\n");
-        let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.place_role(s));
-        assert_eq!(role("app.f._1"), Some(PlaceRole::CallbackParam));
-        assert_eq!(role("app.f._2"), Some(PlaceRole::CallbackParam));
-        assert_eq!(role("app.f.result"), Some(PlaceRole::CallbackResult));
+        let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
+        assert_eq!(role("app.f._1"), Some(SymbolKind::CallbackParam));
+        assert_eq!(role("app.f._2"), Some(SymbolKind::CallbackParam));
+        assert_eq!(role("app.f.result"), Some(SymbolKind::CallbackResult));
         assert_eq!(role("app.f._0"), None, "naming is 1-based, not 0-based");
         assert_eq!(role("app.f._3"), None, "only two params");
     }
@@ -7653,23 +7714,23 @@ mod wi351_place_tests {
     fn nested_callbacks_register_places_recursively() {
         // Param nesting: `f`'s first param `g` is itself a 2-arg callback.
         let kb = load_op("operation hof(f: (g: (Int, Int) -> Int, y: Int) -> Int) -> Int\n");
-        let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.place_role(s));
-        assert_eq!(role("hof.f"), Some(PlaceRole::Input));
-        assert_eq!(role("hof.f.g"), Some(PlaceRole::CallbackParam));
-        assert_eq!(role("hof.f.y"), Some(PlaceRole::CallbackParam));
-        assert_eq!(role("hof.f.result"), Some(PlaceRole::CallbackResult));
+        let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
+        assert_eq!(role("hof.f"), Some(SymbolKind::Param));
+        assert_eq!(role("hof.f.g"), Some(SymbolKind::CallbackParam));
+        assert_eq!(role("hof.f.y"), Some(SymbolKind::CallbackParam));
+        assert_eq!(role("hof.f.result"), Some(SymbolKind::CallbackResult));
         // The nested callback `g`'s own params/result, one level deeper.
-        assert_eq!(role("hof.f.g._1"), Some(PlaceRole::CallbackParam));
-        assert_eq!(role("hof.f.g._2"), Some(PlaceRole::CallbackParam));
-        assert_eq!(role("hof.f.g.result"), Some(PlaceRole::CallbackResult));
+        assert_eq!(role("hof.f.g._1"), Some(SymbolKind::CallbackParam));
+        assert_eq!(role("hof.f.g._2"), Some(SymbolKind::CallbackParam));
+        assert_eq!(role("hof.f.g.result"), Some(SymbolKind::CallbackResult));
 
         // Result nesting: a curried op — `f`'s result is itself a callback.
         let kb = load_op("operation curry(f: (Int) -> (Int) -> Bool) -> Bool\n");
-        let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.place_role(s));
-        assert_eq!(role("curry.f._1"), Some(PlaceRole::CallbackParam));
-        assert_eq!(role("curry.f.result"), Some(PlaceRole::CallbackResult));
+        let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
+        assert_eq!(role("curry.f._1"), Some(SymbolKind::CallbackParam));
+        assert_eq!(role("curry.f.result"), Some(SymbolKind::CallbackResult));
         // The result-callback's own param/result, two dots deep.
-        assert_eq!(role("curry.f.result._1"), Some(PlaceRole::CallbackParam));
-        assert_eq!(role("curry.f.result.result"), Some(PlaceRole::CallbackResult));
+        assert_eq!(role("curry.f.result._1"), Some(SymbolKind::CallbackParam));
+        assert_eq!(role("curry.f.result.result"), Some(SymbolKind::CallbackResult));
     }
 }

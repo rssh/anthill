@@ -2641,7 +2641,7 @@ fact WorkItem(
   description: "Load-time flow-derivation pass for the Modify-effect feed analysis (docs/design/modify-effect-derive.md §1 + §'Derived from a body'). Walk each operation's body (operation_body, WI-305) and emit ground flow(kind, from, to) facts capturing which place feeds which callback parameter/result: destructuring cons(h,rest):=xs -> flow(element_of, xs, ...); callback application f(z,h) -> flow(direct, z, f.a) + flow(element_of, xs, f.t); recursive/return positions -> flow(direct, f.result, ...) and flow(direct, ..., result). ALSO derive from an op's defining rules/laws (the stdlib 'rule length(cons(?x,?xs)) = ...' idiom) the same way, so primitives specified by rules need no hand declaration. Emit provenance(place, input|fresh_output|op_result|local) facts from the SIGNATURE (params=input, callback results=fresh_output, op result=op_result). Facts asserted top-level (no OperationInfo field). FlowKind = direct|element_of|field_of(name). Graph is acyclic (callback interior not walked) so no fixpoint needed. ACCEPTANCE: foldLeft/foreach bodies derive exactly the flow/provenance facts in docs/design/modify-effect-derive.md (derived == what a bodyless op would declare); a test asserting the derived facts; cargo-test green. Mirrors infer_effects_row_requires (WI-320). Depends on op.param projection.",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-351"],
-  status: Open)
+  status: Delivered(agent: "claude", at: "2026-05-31T21:11:56Z"))
 
 fact WorkItem(
   id: "WI-353",

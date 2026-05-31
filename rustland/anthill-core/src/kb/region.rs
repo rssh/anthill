@@ -213,34 +213,39 @@ pub(crate) fn op_boundary_effects(
 mod tests {
     use super::*;
 
-    /// WI-341 step 1: `is_result_region_sym` is identity-based, not
-    /// spelling-based. A symbol whose name merely *ends in* `.result` but
-    /// was never registered as an operation's result binder must NOT be
-    /// classified as a result region (the pre-WI-341 `rsplit('.') ==
-    /// "result"` match would have wrongly returned true here). A registered
-    /// result-binder symbol returns true.
+    /// WI-352: `is_result_region_sym` is kind-based, not spelling-based. A
+    /// symbol whose name merely *ends in* `.result` but is not classified
+    /// `SymbolKind::OpResult` must NOT be a result region (the pre-WI-341
+    /// `rsplit('.') == "result"` match would have wrongly returned true). A
+    /// symbol classified `OpResult` returns true. (WI-341 first moved this off
+    /// spelling onto symbol identity; WI-351 used a side-table; WI-352 makes
+    /// the symbol's kind carry the truth.)
     #[test]
-    fn result_region_is_identity_not_spelling() {
+    fn result_region_is_kind_not_spelling() {
         let mut kb = KnowledgeBase::new();
 
-        // A symbol spelled like a result name but NOT a registered binder —
+        // A symbol spelled like a result name but NOT classified `OpResult` —
         // e.g. a user sort/field that happens to be called `result`.
         let lookalike = kb.intern("SomeSort.result");
         assert!(
             !is_result_region_sym(&kb, lookalike),
-            "an unregistered `*.result` symbol must not be a result region \
-             (identity, not spelling)"
+            "a non-`OpResult` `*.result` symbol must not be a result region \
+             (kind, not spelling)"
         );
 
-        // A genuinely registered op result binder is recognised.
-        let real = kb.intern("Cell.new.result");
-        kb.register_result_binder(real);
+        // A symbol classified `OpResult` is recognised.
+        let real = kb.symbols.define(
+            "Cell.new.result",
+            "Cell.new.result",
+            crate::intern::SymbolKind::OpResult,
+            0,
+        );
         assert!(
             is_result_region_sym(&kb, real),
-            "a registered result-binder symbol must be recognised"
+            "an `OpResult`-kind symbol must be recognised"
         );
 
-        // And the lookalike is still rejected after another binder exists.
+        // And the lookalike is still rejected.
         assert!(!is_result_region_sym(&kb, lookalike));
     }
 }

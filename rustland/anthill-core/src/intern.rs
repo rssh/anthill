@@ -34,9 +34,33 @@ pub enum SymbolKind {
     Fact,
     Rule,
     Constraint,
+    /// An operation parameter — the `input` place of the operation frame
+    /// (proposal 046 / WI-352). Also the implicit dataflow `provenance` of the
+    /// name: an op param IS its input.
     Param,
     Field,
     Goal,
+    // ── Operation-frame places (WI-352) ─────────────────────────────
+    // The reserved result and callback-derived binders introduced by an
+    // operation signature. WI-351 mis-tagged these as `Param` (a result is
+    // not a parameter) and kept the real classification in an external
+    // `place_roles` side-table; WI-352 moves the truth onto the symbol's
+    // kind, so `provenance` and `is_result_binder` are functions of it. These
+    // route as values and stay scope-encapsulated exactly like `Param`.
+    /// The operation's reserved return-value name `<op>.result` (and its
+    /// tuple-field projections) — proposal 041. `provenance = op_result`;
+    /// `is_result_binder(sym) == (kind == OpResult)`.
+    OpResult,
+    /// A parameter of a callback-typed op parameter — `<op>.f.a`. A flow
+    /// *target* (the op feeds it); carries no `provenance` of its own.
+    CallbackParam,
+    /// A callback-typed op parameter's result — `<op>.f.result`.
+    /// `provenance = fresh_output` (the callback mints it inside the op).
+    CallbackResult,
+    /// A `let`-bound local in an operation body. `provenance = local`.
+    /// (WI-352 reserves the kind; *tagging* let-locals with it — interning
+    /// them as scoped symbols during body lowering — is deferred.)
+    LocalLet,
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +73,16 @@ pub enum SymbolDef {
         qualified_name: String,
         kind: SymbolKind,
         scope_raw: u32,
+        /// WI-352 — for a *callable* place (an operation, or a callback-typed
+        /// parameter), the ordered argument-place symbols it binds: an op's
+        /// param places (`reduce.xs`, `reduce.z`, `reduce.f`) or a callback's
+        /// own param places (`reduce.f.a`, `reduce.f.t`). Empty for everything
+        /// else. This makes the higher-order structure self-describing on the
+        /// symbol, so a body's `apply(F, args)` maps `args[i]` to `F`'s i-th
+        /// place purely from symbol data — what the flow-derivation pass keys
+        /// on, for the op (self-recursion) and callbacks alike. The result
+        /// place is `<F>.result`, found by name, so it is not stored here.
+        arg_places: Vec<Symbol>,
     },
 }
 
@@ -161,11 +195,32 @@ impl SymbolTable {
             qualified_name: qualified_name.to_owned(),
             kind,
             scope_raw,
+            arg_places: Vec::new(),
         });
         scope.locals.insert(short_name.to_owned(), sym);
         self.by_qualified_name
             .insert(qualified_name.to_owned(), sym);
         sym
+    }
+
+    /// WI-352 — record the ordered argument-place symbols of a *callable*
+    /// place (an operation, or a callback-typed parameter). See
+    /// [`SymbolDef::Resolved::arg_places`]. Idempotent overwrite; a no-op on
+    /// an unresolved symbol.
+    pub fn set_arg_places(&mut self, sym: Symbol, places: Vec<Symbol>) {
+        if let Some(SymbolDef::Resolved { arg_places, .. }) = self.defs.get_mut(sym.0 as usize) {
+            *arg_places = places;
+        }
+    }
+
+    /// WI-352 — the ordered argument-place symbols of `sym` (empty when `sym`
+    /// is not a callable place, or unresolved). The result place is `<sym>.result`
+    /// (found by name), not included here.
+    pub fn arg_places(&self, sym: Symbol) -> &[Symbol] {
+        match self.defs.get(sym.0 as usize) {
+            Some(SymbolDef::Resolved { arg_places, .. }) => arg_places,
+            _ => &[],
+        }
     }
 
     /// Mark a name as exposed from a scope to its enclosing scope via the

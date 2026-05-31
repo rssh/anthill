@@ -71,6 +71,11 @@ pub enum BuiltinTag {
     Scope,
     /// `anthill.reflect.kind(?sym, ?result)` — Symbol → kind string.
     Kind,
+    /// `anthill.reflect.feed.provenance(?place, ?result)` — place Symbol →
+    /// `Provenance`, a function of the symbol's kind (WI-352): `Param`→`input`,
+    /// `OpResult`→`op_result`, `CallbackResult`→`fresh_output`,
+    /// `LocalLet`→`local`; anything else (incl. `CallbackParam`) fails.
+    Provenance,
     /// `anthill.reflect.field_access(?object, ?field, ?result)` — dot projection.
     FieldAccess,
     /// `anthill.reflect.Expr.ho_apply(?P, args...)` — higher-order predicate application.
@@ -1567,6 +1572,7 @@ impl KnowledgeBase {
             BuiltinTag::ResolveSortInstParam => self.builtin_resolve_sort_inst_param(as_term(goal), answer_subst),
             BuiltinTag::Scope => self.builtin_scope(goal, answer_subst),
             BuiltinTag::Kind => self.builtin_kind(goal, answer_subst),
+            BuiltinTag::Provenance => self.builtin_provenance(goal, answer_subst),
             BuiltinTag::FieldAccess => self.builtin_field_access(as_term(goal), answer_subst),
             BuiltinTag::Eq => self.builtin_eq(goal, answer_subst),
             BuiltinTag::Neq => self.builtin_neq(goal, answer_subst),
@@ -1898,6 +1904,51 @@ impl KnowledgeBase {
             }
             None => BuiltinResult::Failure,
         }
+    }
+
+    /// WI-352 — `anthill.reflect.feed.provenance(?place, ?result)`: the place
+    /// symbol's `Provenance`, a pure function of its `SymbolKind` (so there are
+    /// no materialized provenance facts; the symbol's kind is the source of
+    /// truth). `Param`→`input`, `OpResult`→`op_result`,
+    /// `CallbackResult`→`fresh_output`, `LocalLet`→`local`; anything else
+    /// (notably `CallbackParam`, a flow *target*, and non-place symbols) has no
+    /// provenance and the goal fails. Used by `feed`'s `keep_modify` rules.
+    fn builtin_provenance<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        let place_val = match self.walk_arg(goal.pos_arg(self, 0), subst) {
+            Some(v) => v,
+            None => return BuiltinResult::Failure,
+        };
+        if self.value_is_unbound_var(&place_val) {
+            return BuiltinResult::Delay;
+        }
+        let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
+        let walked = reify_goal_value(self, &place_val);
+        // A `Symbol` value is a `Term::Ref`; a canonical sort/place reference is
+        // a nullary `Fn` — accept either, mirroring `builtin_kind`.
+        let sym = match self.terms.get(walked) {
+            Term::Ref(s) => *s,
+            Term::Fn { functor, .. } => *functor,
+            _ => return BuiltinResult::Failure,
+        };
+        let prov_qn = match self.kind_of(sym) {
+            Some(crate::intern::SymbolKind::Param) => "anthill.reflect.feed.Provenance.input",
+            Some(crate::intern::SymbolKind::OpResult) => "anthill.reflect.feed.Provenance.op_result",
+            Some(crate::intern::SymbolKind::CallbackResult) => {
+                "anthill.reflect.feed.Provenance.fresh_output"
+            }
+            Some(crate::intern::SymbolKind::LocalLet) => "anthill.reflect.feed.Provenance.local",
+            // CallbackParam (a flow target) and non-place symbols: no provenance.
+            _ => return BuiltinResult::Failure,
+        };
+        let prov_sym = match self.try_resolve_symbol(prov_qn) {
+            Some(s) => s,
+            None => return BuiltinResult::Failure,
+        };
+        // A bare nullary enum variant (`input`, …) appears in rule bodies as a
+        // `Term::Ref` (not a nullary `Fn` — that is the sort-ref shape), so emit
+        // a `Ref` to unify with the `keep_modify` rule's `provenance(?r, input)`.
+        let prov_term = self.alloc(Term::Ref(prov_sym));
+        self.finish_result(target, prov_term)
     }
 
     /// Shared front-half for the occurrence builtins (WI-297): walk arg0 to the
@@ -2553,6 +2604,10 @@ impl KnowledgeBase {
                     crate::intern::SymbolKind::Param => "Param",
                     crate::intern::SymbolKind::Field => "Field",
                     crate::intern::SymbolKind::Goal => "Goal",
+                    crate::intern::SymbolKind::OpResult => "OpResult",
+                    crate::intern::SymbolKind::CallbackParam => "CallbackParam",
+                    crate::intern::SymbolKind::CallbackResult => "CallbackResult",
+                    crate::intern::SymbolKind::LocalLet => "LocalLet",
                 }
             }
             _ => return BuiltinResult::Failure,

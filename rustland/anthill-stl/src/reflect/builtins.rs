@@ -871,6 +871,10 @@ fn kind_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
         Some(SymbolKind::Param) => "Param",
         Some(SymbolKind::Field) => "Field",
         Some(SymbolKind::Goal) => "Goal",
+        Some(SymbolKind::OpResult) => "OpResult",
+        Some(SymbolKind::CallbackParam) => "CallbackParam",
+        Some(SymbolKind::CallbackResult) => "CallbackResult",
+        Some(SymbolKind::LocalLet) => "LocalLet",
         None => "Unresolved",
     };
     Ok(Value::Str(kind_str.into()))

@@ -1,0 +1,63 @@
+-- Feed / flow substrate for effect derivation (proposal 046, WI-352).
+--
+-- The effect-agnostic dataflow vocabulary the `Modify` `effect_derive` slice
+-- runs over: `flow` facts (which place feeds which, derived from an operation
+-- body by the loader's flow-derivation pass), `provenance` (a place's boundary
+-- role, a function of its symbol kind), and the generic reachability/masking
+-- rules. Only `keep_modify` is Modify-specific; the rest is reusable.
+--
+-- See docs/design/modify-effect-derive.md §"A fully-defined feed spec".
+namespace anthill.reflect.feed
+  import anthill.reflect.{Symbol}
+
+  -- What was hiding inside a feed edge: how `to` relates to `from`.
+  -- `kind` is a PRECISION knob only — soundness never depends on it (046
+  -- §"Role of kind"); keep/drop ignores it, it matters only at the region
+  -- re-key. v1 records it but treats every edge as `direct`.
+  enum FlowKind
+    entity direct                     -- y is x itself (identity / threading)
+    entity element_of                 -- y is an element of x (the old `member`)
+    entity field_of(field: Symbol)    -- y is x.field
+  end
+
+  -- A feed edge over places. These facts ARE the feed-relationship; the
+  -- loader asserts a per-operation set, derived from the body (or its laws).
+  enum Flow
+    entity flow(kind: FlowKind, from: Symbol, to: Symbol)
+  end
+
+  -- A place's boundary role, from the op's frame. Not stored as facts: it is
+  -- a function of the place symbol's kind (WI-352), exposed by the
+  -- `provenance` builtin below.
+  enum Provenance
+    entity input          -- an operation parameter (caller-supplied)
+    entity fresh_output   -- a value the op freshly produced (a callback result)
+    entity op_result      -- the operation's own return value
+    entity local          -- a non-escaping body local
+  end
+
+  -- provenance(place) — the place's `Provenance`, read from its `SymbolKind`
+  -- (Param->input, OpResult->op_result, CallbackResult->fresh_output,
+  -- LocalLet->local; CallbackParam yields no provenance — it is a flow target).
+  -- A builtin (like `extract_sort_ref`); used in rule bodies as
+  -- `provenance(?place, ?p)` with the result unified into the second argument.
+  operation provenance(place: Symbol) -> Provenance
+
+  -- reaches: transitive feed reachability over the `flow` facts. The graph is
+  -- acyclic (a callback's interior is not walked), so this terminates with no
+  -- fixpoint.
+  rule reaches(?from, ?to) :- flow(kind: ?k, from: ?from, to: ?to)
+  rule reaches(?from, ?to)
+    :- flow(kind: ?k, from: ?from, to: ?mid), reaches(?mid, ?to)
+
+  rule origin(?place, ?src) :- reaches(?src, ?place)
+
+  -- keep_modify(?p, ?r): a `Modify[?p]` on a callback parameter surfaces, kept
+  -- and re-keyed to ?r, when ?p's origin is an input (?r = that input) …
+  rule keep_modify(?p, ?r) :- origin(?p, ?r), provenance(?r, input)
+  -- … or a fresh output that escapes through the op result (?r = result).
+  -- Otherwise (fresh-but-non-escaping, locals): no solution -> dropped.
+  rule keep_modify(?p, ?result)
+    :- origin(?p, ?src), provenance(?src, fresh_output),
+       reaches(?src, ?result), provenance(?result, op_result)
+end
