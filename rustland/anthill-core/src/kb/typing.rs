@@ -476,7 +476,11 @@ pub struct TypingEnv {
     // String keys cost a fresh allocation per bind + a hash over
     // the name's bytes at every lookup, and TypingEnv gets cloned
     // on every Visit push of the iterative typer.
-    var_bindings: HashMap<Symbol, TermId>,
+    // WI-341 Stage A: a var's TYPE is carrier-agnostic (`Value`) — a callback
+    // parameter whose arrow effect is denoted-bearing (`Modify[a]`) is a
+    // `Value::Node` arrow and cannot be a hash-consed `TermId`. Ground bindings
+    // are `Value::Term`.
+    var_bindings: HashMap<Symbol, Value>,
     type_bindings: HashMap<Symbol, TermId>,
     local_resources: Vec<Symbol>,
     /// Enclosing sort for defer-to-requirement detection plus a
@@ -530,12 +534,12 @@ impl TypingEnv {
         self.enclosing.as_ref().map(|e| e.requires.as_slice())
     }
 
-    pub fn bind_var(&mut self, name: Symbol, ty: TermId) {
+    pub fn bind_var(&mut self, name: Symbol, ty: Value) {
         self.var_bindings.insert(name, ty);
     }
 
-    pub fn lookup_var(&self, name: Symbol) -> Option<TermId> {
-        self.var_bindings.get(&name).copied()
+    pub fn lookup_var(&self, name: Symbol) -> Option<Value> {
+        self.var_bindings.get(&name).cloned()
     }
 
     pub fn bind_type(&mut self, param: Symbol, ty: TermId) {
@@ -589,6 +593,14 @@ impl TypeResult {
     /// arrow) builds `TypeResult { ty: <Value>, .. }` directly.
     pub fn pure(ty: TermId, env: TypingEnv, node: Rc<NodeOccurrence>) -> Self {
         Self { ty: Value::Term(ty), env, effects: Vec::new(), node }
+    }
+
+    /// Pure result whose type is already carrier-agnostic (`Value`) — e.g. a
+    /// var-ref whose bound type came from the `Value`-carried env (WI-341 Stage
+    /// A). A `Value::Node` (denoted-bearing callback arrow) flows through
+    /// unchanged.
+    pub fn pure_value(ty: Value, env: TypingEnv, node: Rc<NodeOccurrence>) -> Self {
+        Self { ty, env, effects: Vec::new(), node }
     }
 }
 
@@ -1584,7 +1596,7 @@ fn check_bare_ref(
     occ: &Rc<NodeOccurrence>,
 ) -> Result<TypeResult, TypeError> {
     if let Some(ty) = env.lookup_var(sym) {
-        return Ok(TypeResult::pure(ty, env.clone(), Rc::clone(occ)));
+        return Ok(TypeResult::pure_value(ty, env.clone(), Rc::clone(occ)));
     }
     if kb.is_constructor_symbol(sym) {
         return check_constructor_iter(kb, env, sym, &[], &[], &[], &[], span, None, occ);
@@ -1646,14 +1658,14 @@ fn lookup_binding_by_short_name(
     kb: &KnowledgeBase,
     env: &TypingEnv,
     var_sym: Symbol,
-) -> Option<TermId> {
+) -> Option<Value> {
     // `resolve_sym` borrows `kb` immutably; the closure re-borrows it the same
     // way, so `target` and each key's name coexist as shared borrows (no clone).
     let target = short_name_of(kb.resolve_sym(var_sym));
     env.var_bindings
         .iter()
         .find(|(s, _)| short_name_of(kb.resolve_sym(**s)) == target)
-        .map(|(_, t)| *t)
+        .map(|(_, t)| t.clone())
 }
 
 // ── WI-279 INC2: sort-specific `[simp]` dot-rule override ────────────────
@@ -2168,9 +2180,9 @@ fn visit_type(
             };
             let ty = bound.unwrap_or_else(|| {
                 let fresh = kb.intern("?logical_var");
-                kb.make_type_var(fresh)
+                Value::Term(kb.make_type_var(fresh))
             });
-            results.push(Ok(TypeResult::pure(ty, unwrap_env(env), Rc::clone(&occ))));
+            results.push(Ok(TypeResult::pure_value(ty, unwrap_env(env), Rc::clone(&occ))));
         }
 
         // WI-279: a value-receiver dot form `?x.member(args)` / `?x.member`.
@@ -3388,12 +3400,17 @@ fn check_apply_iter(
     }
 
     // Path 2: variable with arrow type
-    if let Some(fn_type_tid) = env.lookup_var(fn_sym) {
-        if let Some((ret_type, effects)) = extract_function_type_parts(kb, fn_type_tid) {
-            // WI-342: `extract_function_type_parts` yields ground `TermId` effect
-            // labels (read off a hash-consed arrow type) — wrap as `Value::Term`.
-            let effects = effects.into_iter().map(Value::Term).collect();
-            return Ok(TypeResult { ty: Value::Term(ret_type), env: env.clone(), effects, node: Rc::clone(occ) });
+    if let Some(fn_type) = env.lookup_var(fn_sym) {
+        // WI-341 Stage A: the env carries `Value`. A ground (`Value::Term`)
+        // callback arrow reads its parts off the hash-consed term as before; a
+        // `Value::Node` (denoted-bearing) callback arrow's `Value`-peer reader
+        // lands in a later slice — no Node binding exists yet (op param types
+        // still flow through the `TermId` path), so `Value::Term` is the only case.
+        if let Value::Term(fn_type_tid) = fn_type {
+            if let Some((ret_type, effects)) = extract_function_type_parts(kb, fn_type_tid) {
+                let effects = effects.into_iter().map(Value::Term).collect();
+                return Ok(TypeResult { ty: Value::Term(ret_type), env: env.clone(), effects, node: Rc::clone(occ) });
+            }
         }
     }
 
@@ -6546,7 +6563,7 @@ fn extend_env_from_pattern(
                         let fresh = kb.intern("?pat");
                         kb.make_type_var(fresh)
                     });
-                    env.bind_var(sym, ty);
+                    env.bind_var(sym, Value::Term(ty));
                     // Pattern-bound names are local — effects on them
                     // shouldn't escape the surrounding match/case scope
                     // (matches `check_let_expr`'s declare_local_resource
@@ -10253,7 +10270,11 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
             .and_then(|(parent_qn, _)| kb.try_resolve_symbol(parent_qn));
         env.set_enclosing_sort(kb, parent_sym);
         for (name, ty) in &op.params {
-            env.bind_var(*name, *ty);
+            // WI-341 Stage A: env carries `Value`; op param types are still
+            // `TermId` here (the loader's TermId path) — wrap. A callback param
+            // whose arrow effect is denoted-bearing becomes `Value::Node` once
+            // op param types flow through the `Value` loader path (later slice).
+            env.bind_var(*name, Value::Term(*ty));
         }
 
         // WI-270: thread the declared return type as the body's

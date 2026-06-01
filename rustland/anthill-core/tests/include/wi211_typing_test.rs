@@ -87,7 +87,7 @@ fn stream_head_on_concrete_stream_yields_option_with_concrete_t() {
 
     let mut env = TypingEnv::empty();
     let s_sym = kb.intern("s");
-    env.bind_var(s_sym, stream_concrete);
+    env.bind_var(s_sym, anthill_core::eval::Value::Term(stream_concrete));
 
     let result = type_check_expr(&mut kb, &env, apply_term)
         .expect("Stream.head(s) for s:Stream[T=Term,E=Error] should type-check");
