@@ -144,7 +144,7 @@ pub fn load_kb_with_extras(source: &str, extra_paths: &[PathBuf]) -> KnowledgeBa
             if std::env::var("ANTHILL_TEST_IGNORE_LOAD_ERRORS").is_err() {
                 panic!("load failed with {} errors", errs.len());
             }
-            load::LoadResult { defined_sorts: Vec::new(), fact_rule_ids: Vec::new() }
+            load::LoadResult::default()
         });
     kb
 }

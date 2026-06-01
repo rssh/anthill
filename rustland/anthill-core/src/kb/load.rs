@@ -37,6 +37,11 @@ pub struct LoadResult {
     /// Parallel with `parsed.fact_spans()` so persistence backends can
     /// pair each fact's RuleId with its source byte range.
     pub fact_rule_ids: Vec<crate::kb::RuleId>,
+    /// Non-fatal diagnostics accumulated during load (WI-345). Empty unless
+    /// a pass emitted an advisory warning (e.g. WI-346 requires-shadow).
+    /// Populated only on the `Ok` path: a failing load returns
+    /// `Err(errors)` and drops warnings — you fix the errors first.
+    pub warnings: Vec<LoadWarning>,
 }
 
 // ── Source resolution ──────────────────────────────────────────
@@ -225,6 +230,39 @@ impl std::fmt::Display for LoadError {
             LoadError::Other { message } => {
                 write!(f, "load error: {}", message)
             }
+        }
+    }
+}
+
+/// A non-fatal load diagnostic (WI-345). Parallel to [`LoadError`], but
+/// advisory: emitting one does **not** fail the load. Surfaced via
+/// [`LoadResult::warnings`] so lint-style passes can report findings that
+/// are legal-but-suspicious (e.g. the WI-346 requires-shadow) without
+/// blocking the program. Kept a distinct type — not a non-blocking
+/// `LoadError` — so "the load failed" and "the load has advice" never get
+/// conflated.
+#[derive(Clone, Debug)]
+pub enum LoadWarning {
+    /// Open-ended advisory message. Specific span-bearing variants (e.g.
+    /// the WI-346 requires-shadow) are added by the passes that emit them.
+    Other { message: String },
+}
+
+impl LoadWarning {
+    /// Format with `line:col` using source text, parallel to
+    /// [`LoadError::format_with_source`]. Variants that carry a span will
+    /// resolve a location here; the current span-less `Other` ignores
+    /// `source` and renders the bare message.
+    pub fn format_with_source(&self, source: &str) -> String {
+        let _ = source; // reserved for span-bearing variants (WI-346)
+        self.to_string()
+    }
+}
+
+impl std::fmt::Display for LoadWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoadWarning::Other { message } => write!(f, "warning: {}", message),
         }
     }
 }
@@ -1771,7 +1809,7 @@ pub fn load(
     }
     resolve_instantiations(kb);
     if all_errors.is_empty() {
-        Ok(LoadResult { defined_sorts: all_sorts, fact_rule_ids: all_fact_ids })
+        Ok(LoadResult { defined_sorts: all_sorts, fact_rule_ids: all_fact_ids, warnings: Vec::new() })
     } else {
         Err(all_errors)
     }
@@ -1857,6 +1895,11 @@ fn load_phase_inner(
     }
 
     let mut all_errors = scan_definitions(kb, files);
+    // WI-345: non-fatal diagnostics, accumulated parallel to `all_errors`.
+    // Lint passes (e.g. WI-346 requires-shadow) extend this; it rides out on
+    // the merged `LoadResult` when the load succeeds. (WI-346 makes it `mut`
+    // and pushes into it; the channel itself is established here.)
+    let all_warnings: Vec<LoadWarning> = Vec::new();
     mark!("scan_definitions");
     kb.resolve_builtins();
     mark!("resolve_builtins");
@@ -1941,7 +1984,7 @@ fn load_phase_inner(
     mark!("check_provider_requires");
     if all_errors.is_empty() {
         Ok((
-            LoadResult { defined_sorts: all_sorts, fact_rule_ids: all_fact_ids },
+            LoadResult { defined_sorts: all_sorts, fact_rule_ids: all_fact_ids, warnings: all_warnings },
             per_file,
         ))
     } else {
@@ -1963,6 +2006,7 @@ fn load_with_visited(
     let result = LoadResult {
         defined_sorts: loader.defined_sorts,
         fact_rule_ids: loader.fact_rule_ids,
+        warnings: Vec::new(),
     };
     if loader.errors.is_empty() {
         Ok(result)
