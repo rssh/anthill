@@ -243,9 +243,22 @@ impl std::fmt::Display for LoadError {
 /// conflated.
 #[derive(Clone, Debug)]
 pub enum LoadWarning {
-    /// Open-ended advisory message. Specific span-bearing variants (e.g.
-    /// the WI-346 requires-shadow) are added by the passes that emit them.
+    /// Open-ended advisory message.
     Other { message: String },
+    /// WI-346: a sort that `requires` a spec declares a local operation whose
+    /// short name shadows one of that spec's own operations. The two are
+    /// distinct, unrelated symbols — `requires` never overrides (override is
+    /// the `provides` direction) — so this is legal but usually a mistake
+    /// (the author meant to override). Skipped when the sort also *provides*
+    /// the spec, where the own op IS a legitimate override.
+    RequiresShadow {
+        /// Qualified name of the sort declaring the shadowing op.
+        sort: String,
+        /// Short name of the shadowed (and shadowing) operation.
+        op: String,
+        /// Qualified name of the required spec that also declares `op`.
+        spec: String,
+    },
 }
 
 impl LoadWarning {
@@ -263,6 +276,11 @@ impl std::fmt::Display for LoadWarning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LoadWarning::Other { message } => write!(f, "warning: {}", message),
+            LoadWarning::RequiresShadow { sort, op, spec } => write!(f,
+                "warning: operation `{op}` in `{sort}` shadows the inherited `{spec}.{op}` \
+                 (`{sort}` requires `{spec}`); `requires` does not override — the two are \
+                 distinct operations. Qualify `{spec}.{op}` to call the inherited one, or \
+                 rename `{op}` to silence."),
         }
     }
 }
@@ -1896,10 +1914,9 @@ fn load_phase_inner(
 
     let mut all_errors = scan_definitions(kb, files);
     // WI-345: non-fatal diagnostics, accumulated parallel to `all_errors`.
-    // Lint passes (e.g. WI-346 requires-shadow) extend this; it rides out on
-    // the merged `LoadResult` when the load succeeds. (WI-346 makes it `mut`
-    // and pushes into it; the channel itself is established here.)
-    let all_warnings: Vec<LoadWarning> = Vec::new();
+    // Lint passes (e.g. WI-346 requires-shadow, below) extend this; it rides
+    // out on the merged `LoadResult` when the load succeeds.
+    let mut all_warnings: Vec<LoadWarning> = Vec::new();
     mark!("scan_definitions");
     kb.resolve_builtins();
     mark!("resolve_builtins");
@@ -1982,6 +1999,11 @@ fn load_phase_inner(
     // must itself be satisfied — else the satisfaction fact is unsound.
     all_errors.extend(super::typing::check_provider_requires(kb));
     mark!("check_provider_requires");
+    // WI-346: requires-shadow lint — advisory (non-fatal), so it lands in
+    // `all_warnings`, not `all_errors`. A legal-but-suspicious same-named op on
+    // a `requires`-user (which does NOT override) should be flagged, not block.
+    all_warnings.extend(check_requires_shadows(kb));
+    mark!("check_requires_shadows");
     if all_errors.is_empty() {
         Ok((
             LoadResult { defined_sorts: all_sorts, fact_rule_ids: all_fact_ids, warnings: all_warnings },
@@ -2986,6 +3008,55 @@ fn sorts_and_own_ops(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<Symbol>)> {
         out.push((sort_sym, ops));
     }
     out
+}
+
+/// WI-346 — requires-shadow lint. A sort that `requires` a spec and declares a
+/// local operation whose short name matches one of that spec's *own* operations
+/// shadows the inherited name. Per `kernel-language.md` §8.7 those are distinct,
+/// unrelated symbols — `requires` never overrides (override is the `provides`
+/// direction; a value viewed as the spec projects the spec's op, not the local
+/// one) — so it loads, but it is a frequent footgun: the author usually meant to
+/// override. Emit a non-fatal [`LoadWarning::RequiresShadow`] naming the sort,
+/// op, and spec.
+///
+/// A sort that also *provides* the spec (`fact Spec[sort]`) is skipped: there the
+/// own op IS the override (own-op-beats-inherited), which is intentional. Only
+/// the spec's *direct* own ops are compared (not transitively inherited ones) —
+/// the common, on-the-nose case; transitive shadows can be a follow-up.
+fn check_requires_shadows(kb: &mut KnowledgeBase) -> Vec<LoadWarning> {
+    // Own declared ops per sort — an owned snapshot, so no immutable borrow of
+    // `kb` is held across the `&mut`/`&` calls in the loop below.
+    let own: HashMap<Symbol, Vec<Symbol>> =
+        sorts_and_own_ops(kb).into_iter().collect();
+    // Short name = last `.`-segment of the operation's qualified name
+    // (`a.b.Sort.op` → `op`); robust regardless of how the symbol interns.
+    let op_short = |kb: &KnowledgeBase, s: Symbol| -> String {
+        kb.qualified_name_of(s).rsplit('.').next().unwrap_or("").to_string()
+    };
+    let mut warnings = Vec::new();
+    for (&sort, ops) in &own {
+        if ops.is_empty() { continue; }
+        for entry in super::typing::direct_requires_chain(kb, sort) {
+            let spec = entry.required_sort;
+            // A provider's own op is a legitimate override, not a shadow.
+            if super::typing::sort_provides(kb, sort, spec) { continue; }
+            let Some(spec_ops) = own.get(&spec) else { continue };
+            if spec_ops.is_empty() { continue; }
+            let spec_short: std::collections::HashSet<String> =
+                spec_ops.iter().map(|&s| op_short(kb, s)).collect();
+            for &op in ops {
+                let osn = op_short(kb, op);
+                if spec_short.contains(&osn) {
+                    warnings.push(LoadWarning::RequiresShadow {
+                        sort: kb.qualified_name_of(sort).to_string(),
+                        op: osn,
+                        spec: kb.qualified_name_of(spec).to_string(),
+                    });
+                }
+            }
+        }
+    }
+    warnings
 }
 
 /// Extract the carrier sort symbol from a `SortProvidesInfo.sort_ref`

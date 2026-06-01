@@ -10694,7 +10694,7 @@ fn check_entity_facts(kb: &mut KnowledgeBase, ctor_syms: &[Symbol], errors: &mut
 /// clauses and bare `fact Spec[T=X]` facts into `SortProvidesInfo`, so this
 /// one query covers both. Used so a fact field declared with a spec sort
 /// accepts a value whose own sort satisfies that spec (WI-036).
-fn sort_provides(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> bool {
+pub(crate) fn sort_provides(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> bool {
     let provides_sym = match kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") {
         Some(s) => s,
         None => return false,

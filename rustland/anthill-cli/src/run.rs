@@ -180,18 +180,26 @@ fn build_kb(paths: &[PathBuf]) -> Result<KnowledgeBase, i32> {
     // visible in parallel with explicit `import` clauses).
     let mut all_refs: Vec<&ParsedFile> = stdlib_parsed.iter().collect();
     all_refs.extend(user_parsed.iter());
-    if let Err(errs) = load::load_all(&mut kb, &all_refs, &resolver) {
-        let mut had_type_error = false;
-        for e in &errs {
-            if e.is_load_blocking() {
-                had_type_error = true;
-                eprintln!("error: {e}");
-            } else {
-                eprintln!("warning: {e}");
+    match load::load_all(&mut kb, &all_refs, &resolver) {
+        Ok(result) => {
+            // WI-346: surface advisory load warnings (e.g. requires-shadow).
+            for w in &result.warnings {
+                eprintln!("{w}");
             }
         }
-        if had_type_error {
-            return Err(EXIT_COMPILE);
+        Err(errs) => {
+            let mut had_type_error = false;
+            for e in &errs {
+                if e.is_load_blocking() {
+                    had_type_error = true;
+                    eprintln!("error: {e}");
+                } else {
+                    eprintln!("warning: {e}");
+                }
+            }
+            if had_type_error {
+                return Err(EXIT_COMPILE);
+            }
         }
     }
 

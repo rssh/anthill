@@ -817,7 +817,7 @@ fn dispatch_int_add_x_x_type_checks_via_spec_satisfaction() {
 
 #[test]
 fn requires_user_with_same_named_op_does_not_provide_or_override() {
-    let mut kb = load_with(r#"
+    let (mut kb, load_result, _errs) = load_capturing_errors(r#"
         namespace ovr.req_vs_prov
           export OvrSpec, OvrCarrier, OvrProv, OvrReq
           sort OvrSpec
@@ -871,4 +871,16 @@ fn requires_user_with_same_named_op_does_not_provide_or_override() {
             "expected Unique dispatch to the provider (requires-user must not \
              contribute a candidate); got {other:?}"),
     }
+
+    // 4. WI-346: the same-named op on the requires-user is now flagged as an
+    //    advisory shadow (the WI-345 channel's first consumer). It does not
+    //    override, so the author is warned they likely meant `provides`.
+    assert!(
+        load_result.warnings.iter().any(|w| {
+            let s = w.to_string();
+            s.contains("OvrReq") && s.contains("ovr_op") && s.contains("OvrSpec")
+        }),
+        "expected a RequiresShadow warning for OvrReq.ovr_op shadowing OvrSpec.ovr_op; \
+         got: {:?}",
+        load_result.warnings.iter().map(|w| w.to_string()).collect::<Vec<_>>());
 }

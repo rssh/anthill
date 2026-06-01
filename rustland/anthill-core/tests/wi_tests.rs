@@ -17,6 +17,9 @@ mod wi343_provider_requires_test;
 #[path = "include/wi345_warnings_channel_test.rs"]
 mod wi345_warnings_channel_test;
 
+#[path = "include/wi346_requires_shadow_test.rs"]
+mod wi346_requires_shadow_test;
+
 #[path = "include/wi246_rule_body_desc_test.rs"]
 mod wi246_rule_body_desc_test;
 

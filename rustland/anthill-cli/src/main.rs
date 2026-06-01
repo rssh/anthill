@@ -525,18 +525,26 @@ fn load_kb_with_stdlib(paths: &[PathBuf], verbose: bool, include_stdlib: bool)
     let resolver = FileSourceResolver::new(base_dirs);
 
     let refs: Vec<&ParsedFile> = parsed_files.iter().collect();
-    if let Err(load_errors) = load::load_all(&mut kb, &refs, &resolver) {
-        let mut had_type_error = false;
-        for e in &load_errors {
-            if e.is_load_blocking() {
-                had_type_error = true;
-                eprintln!("error: {e}");
-            } else {
-                eprintln!("warning: {e}");
+    match load::load_all(&mut kb, &refs, &resolver) {
+        Ok(result) => {
+            // WI-346: surface advisory load warnings (e.g. requires-shadow).
+            for w in &result.warnings {
+                eprintln!("{w}");
             }
         }
-        if had_type_error {
-            return Err(1);
+        Err(load_errors) => {
+            let mut had_type_error = false;
+            for e in &load_errors {
+                if e.is_load_blocking() {
+                    had_type_error = true;
+                    eprintln!("error: {e}");
+                } else {
+                    eprintln!("warning: {e}");
+                }
+            }
+            if had_type_error {
+                return Err(1);
+            }
         }
     }
 
