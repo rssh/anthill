@@ -8,11 +8,14 @@ WI-341 binder-identity-as-logic-var, WI-342/348 value carriers.
 **Companion:** `docs/brainstorms/region-analysis-organization.md` (where the
 analysis lives), `docs/design/value-facts-carrier-agnostic-resolver.md` (how
 `OperationInfo` carries denoted metadata).
-**Tracking:** WI-351 (`op.param` projection — shared prerequisite) → WI-352
-(load-time flow-derivation pass) → WI-353 (`region.rs` propagation + masking, the
-`effect_derive` `Modify` slice); WI-354 (in-operation rules, ergonomics, deferred).
-The `find`-style `-Modify(a)` *checking* direction is WI-341 (binder-as-value-var),
-separate from the propagation chain above.
+**Tracking:** WI-351 (`op.param` places — shared prerequisite) → WI-358
+(single-param named-arrow grammar) → WI-352 (load-time flow-derivation pass) →
+WI-353 (`region.rs` op-boundary classifier — **delivered** `ef9aae5`, masking
+only) → WI-341 (binder-as-value-var / loader binder context) + WI-342
+(entity-representation migration) → WI-360 (front-end emit of a callback's
+`Modify[a]` → place `f.a`, activates WI-353 end-to-end); WI-354 (in-operation
+rule ergonomics, deferred). The `find`-style `-Modify(a)` *checking* direction
+rides on WI-341.
 
 ## The question
 
