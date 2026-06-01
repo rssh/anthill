@@ -5548,9 +5548,76 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
                     }
                 }
             }
+
+            // ── contract refinement (requires/ensures, structural subset) ───
+            // Compare in the spec op's param vocabulary: align the impl op's
+            // params to the spec's positionally (contracts are predicates over
+            // op params, not the spec type-param, so σ is not applied). The
+            // loader's auto-`EffectsRuntime` requires are filtered out — those
+            // are the effects check's concern. Conservative: clauses match by
+            // structural (TermId) equality; a logically-equivalent but
+            // syntactically-different refinement is not yet recognized (a
+            // future SMT-backed entailment check would subsume this).
+            let align: Vec<(Symbol, TermId)> = {
+                let mut a = Vec::new();
+                for ((ip, _), (sp, _)) in impl_info.params.iter().zip(spec_info.params.iter()) {
+                    if ip != sp {
+                        let sp_ref = kb.alloc(Term::Ref(*sp));
+                        a.push((*ip, sp_ref));
+                    }
+                }
+                a
+            };
+            // precondition no-stronger: every impl precondition must be one the
+            // spec also requires (the override demands no more than the spec).
+            let spec_pre = user_precondition_clauses(kb, &spec_info.requires);
+            for ic in user_precondition_clauses(kb, &impl_info.requires) {
+                let ic = substitute_impl_params_alloc(kb, ic, &align);
+                if !spec_pre.contains(&ic) {
+                    errors.push(LoadError::IncompatibleOverride {
+                        carrier: kb.qualified_name_of(p.carrier).to_string(),
+                        spec: kb.qualified_name_of(p.spec).to_string(),
+                        op: sn.clone(),
+                        reason: "it strengthens the precondition — the override `requires` a \
+                                 condition the spec operation does not".to_string(),
+                    });
+                }
+            }
+            // postcondition no-weaker: every spec postcondition must be one the
+            // impl also ensures (the override promises no less than the spec).
+            let impl_post: Vec<TermId> = impl_info.ensures.iter()
+                .map(|&c| substitute_impl_params_alloc(kb, c, &align))
+                .collect();
+            for &sc in &spec_info.ensures {
+                if !impl_post.contains(&sc) {
+                    errors.push(LoadError::IncompatibleOverride {
+                        carrier: kb.qualified_name_of(p.carrier).to_string(),
+                        spec: kb.qualified_name_of(p.spec).to_string(),
+                        op: sn.clone(),
+                        reason: "it weakens the postcondition — the override does not `ensure` a \
+                                 condition the spec operation promises".to_string(),
+                    });
+                }
+            }
         }
     }
     errors
+}
+
+/// User precondition clauses of an operation — its `requires` field minus the
+/// loader's auto-inferred `EffectsRuntime[Effects=E]` entries (WI-320), which
+/// track the effect row, not a caller-facing precondition. WI-347.
+fn user_precondition_clauses(kb: &KnowledgeBase, clauses: &[TermId]) -> Vec<TermId> {
+    clauses.iter().copied().filter(|&c| !is_effects_runtime_clause(kb, c)).collect()
+}
+
+/// Is `tid` an auto-inferred `EffectsRuntime[Effects=…]` requires clause?
+/// Such clauses are `Fn{ functor: EffectsRuntime, … }` (see
+/// `infer_effects_row_requires`); they ride in the `requires` list but are not
+/// user preconditions, so the override contract check skips them.
+fn is_effects_runtime_clause(kb: &KnowledgeBase, tid: TermId) -> bool {
+    matches!(kb.get_term(tid),
+        Term::Fn { functor, .. } if kb.qualified_name_of(*functor) == "anthill.prelude.EffectsRuntime")
 }
 
 /// Apply a provision's σ (spec param symbol → binding) to a spec operation's

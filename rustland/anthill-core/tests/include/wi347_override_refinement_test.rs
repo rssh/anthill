@@ -152,3 +152,90 @@ fn override_dropping_effect_loads() {
     assert!(errs.is_empty(),
         "an override that drops a spec effect (narrows the row) should load clean; got: {errs:?}");
 }
+
+// ── strengthening the precondition is rejected ──────────────────────────
+
+#[test]
+fn override_strengthening_precondition_rejected() {
+    // Spec `op` has no precondition; the override adds `requires gt(x, 0)`,
+    // demanding more of callers than the spec promised. A caller that satisfied
+    // the spec's (empty) precondition could now violate the override's — unsound.
+    let src = r#"
+        namespace wi347.pre_strong
+          import anthill.prelude.{Int}
+          import anthill.prelude.Ordered.{gt}
+          export Sp, Carrier
+          sort Sp
+            sort T = ?
+            operation op(x: T) -> T
+          end
+          sort Carrier
+            entity c(id: Int)
+            fact Sp[T = Carrier]
+            operation op(x: Carrier) -> Carrier requires gt(x, 0) = x
+          end
+        end
+    "#;
+    let errs = load_errors(src);
+    assert!(
+        errs.iter().any(|e|
+            e.contains("wi347.pre_strong.Carrier") && e.contains("op") && e.contains("precondition")),
+        "expected IncompatibleOverride: the override strengthens the precondition; got: {errs:?}");
+}
+
+// ── weakening the postcondition is rejected ─────────────────────────────
+
+#[test]
+fn override_weakening_postcondition_rejected() {
+    // Spec `op` promises `ensures gt(x, 0)`; the override drops it, promising
+    // less than the spec — a caller relying on the postcondition is unsound.
+    let src = r#"
+        namespace wi347.post_weak
+          import anthill.prelude.{Int}
+          import anthill.prelude.Ordered.{gt}
+          export Sp, Carrier
+          sort Sp
+            sort T = ?
+            operation op(x: T) -> T ensures gt(x, 0)
+          end
+          sort Carrier
+            entity c(id: Int)
+            fact Sp[T = Carrier]
+            operation op(x: Carrier) -> Carrier = x
+          end
+        end
+    "#;
+    let errs = load_errors(src);
+    assert!(
+        errs.iter().any(|e|
+            e.contains("wi347.post_weak.Carrier") && e.contains("op") && e.contains("postcondition")),
+        "expected IncompatibleOverride: the override weakens the postcondition; got: {errs:?}");
+}
+
+// ── matching contract loads clean (param-alignment) ─────────────────────
+
+#[test]
+fn override_matching_contract_loads() {
+    // The override declares exactly the spec's precondition and postcondition.
+    // Equal contracts (modulo the positional param rename) trivially refine, so
+    // it loads — pins that the check does not false-positive on a faithful impl.
+    let src = r#"
+        namespace wi347.contract_ok
+          import anthill.prelude.{Int}
+          import anthill.prelude.Ordered.{gt}
+          export Sp, Carrier
+          sort Sp
+            sort T = ?
+            operation op(x: T) -> T requires gt(x, 0) ensures gt(x, 0)
+          end
+          sort Carrier
+            entity c(id: Int)
+            fact Sp[T = Carrier]
+            operation op(x: Carrier) -> Carrier requires gt(x, 0) ensures gt(x, 0) = x
+          end
+        end
+    "#;
+    let errs = load_errors(src);
+    assert!(errs.is_empty(),
+        "matching precondition/postcondition on spec and override should load clean; got: {errs:?}");
+}

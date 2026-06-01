@@ -53,6 +53,15 @@ pub struct OpInfoRecord {
     /// Body NodeOccurrence read from `kb.op_bodies`. `None` when the
     /// operation is body-less (a spec op declaration).
     pub body_node: Option<Rc<NodeOccurrence>>,
+    /// WI-347 — precondition clause terms (the `requires` field). Each entry is
+    /// one clause: a goal term, or a `conjunction(g1, …)` when the clause had
+    /// several goals. **Includes** the auto-inferred `EffectsRuntime[Effects=E]`
+    /// requires appended by the loader (WI-320); a consumer comparing user
+    /// preconditions filters those out (see `check_override_refinement`).
+    pub requires: Vec<TermId>,
+    /// WI-347 — postcondition clause terms (the `ensures` field), same per-clause
+    /// shape as `requires`. No auto-inferred entries are mixed in.
+    pub ensures: Vec<TermId>,
 }
 
 /// Walk `OperationInfo` facts, returning the record for `op_sym` if
@@ -82,6 +91,8 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
         let params = extract_params(kb, head_field(kb, head, "params"));
         let type_params = extract_type_params(kb, head_field_term(kb, head, "type_params"));
         let body_node = kb.op_body_node(op_sym).cloned();
+        let requires = clause_list_field(kb, head, "requires");
+        let ensures = clause_list_field(kb, head, "ensures");
         return Some(OpInfoRecord {
             op_sym,
             params,
@@ -89,6 +100,8 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
             effects,
             type_params,
             body_node,
+            requires,
+            ensures,
         });
     }
     None
@@ -124,6 +137,18 @@ pub fn head_field_value(kb: &KnowledgeBase, head: &Value, key: &str) -> Option<V
         ViewItem::Value(v) => v.clone(),
         ViewItem::Node(occ) => Value::Node(occ),
     })
+}
+
+/// Decode a clause-list field (`requires` / `ensures`) to its clause terms.
+/// The field is a ground `TermId` cons-list built by `convert_clause_list`;
+/// each element is one clause term. A non-`Term` (value-fact) carrier or an
+/// absent field yields an empty list (contracts are ground predicate terms, so
+/// the value-fact path is not expected here).
+fn clause_list_field(kb: &KnowledgeBase, head: &Value, key: &str) -> Vec<TermId> {
+    match head_field_term(kb, head, key) {
+        Some(list_tid) => list_to_vec(kb, list_tid),
+        None => Vec::new(),
+    }
 }
 
 /// The operation symbol carried in an `OperationInfo` head's `name` field
