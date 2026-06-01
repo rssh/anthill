@@ -5647,6 +5647,18 @@ impl<'a> Loader<'a> {
     ) -> node_occurrence::TypeChild {
         match ty {
             TypeExpr::Simple(name) => {
+                // WI-341: a callback arrow's own param (`a` in `Modify[a]`,
+                // in scope only while loading that callback param's arrow type)
+                // resolves to its `CallbackParam` place — minted as a
+                // `Value::Node` `denoted` occurrence (not a hash-consed `Ref`).
+                if name.segments.len() == 1 && !self.arrow_binder_scope.is_empty() {
+                    let nm = self.parsed.symbols.name(name.segments[0]);
+                    if let Some(&place) = self.arrow_binder_scope.get(nm) {
+                        return node_occurrence::TypeChild::Node(
+                            self.kb.make_denoted_occ_ref(place, span, owner),
+                        );
+                    }
+                }
                 let sort_sym = self.remap_name(name);
                 let short_name = self.kb.resolve_sym(sort_sym).to_owned();
                 // A type-param name is a ground logic Var — defer to the
@@ -5717,12 +5729,80 @@ impl<'a> Loader<'a> {
                     node_occurrence::TypeChild::Ground(self.type_expr_to_term(ty))
                 }
             }
-            // No denoted obligation for any other label shape (sort_ref,
-            // arrow, tuple, bare denoted, `-E`): build the hash-consed form.
-            // A bare top-level `denoted` effect label is not minted by any
-            // current producer; if one appears it rides as a ground `Term`
-            // denoted (the pre-E2 behavior), which the deferred non-effect
-            // loader-flip slice will Node-ify.
+            TypeExpr::Arrow { params, return_type, effects } => {
+                use node_occurrence::TypeChild;
+                // WI-341: a callback arrow whose effect is denoted-bearing
+                // (`Modify[a]`) becomes a `Value::Node` arrow so the occurrence is
+                // CARRIED, not re-grounded. The binder scope applies only to the
+                // EFFECT labels (a self-referential `Modify[a]`); suspend it for
+                // the param/return TYPE positions (mirror `type_expr_to_term`),
+                // restore it for the effects.
+                let saved = std::mem::take(&mut self.arrow_binder_scope);
+                let param_child = if params.len() == 1 {
+                    self.type_expr_to_child(&params[0].1, span, owner)
+                } else {
+                    let mut fields: Vec<(Symbol, TypeChild)> = Vec::new();
+                    let mut any = false;
+                    for (i, (name, p)) in params.iter().enumerate() {
+                        let key = match name {
+                            Some(s) => {
+                                let nm = self.parsed.symbols.name(*s).to_owned();
+                                self.kb.intern(&nm)
+                            }
+                            None => self.kb.intern(&format!("_{}", i + 1)),
+                        };
+                        let c = self.type_expr_to_child(p, span, owner);
+                        any |= matches!(c, TypeChild::Node(_));
+                        fields.push((key, c));
+                    }
+                    if any {
+                        TypeChild::Node(self.kb.make_named_tuple_occ(fields, span, owner))
+                    } else {
+                        let ground: Vec<(Symbol, TermId)> = fields
+                            .into_iter()
+                            .map(|(k, c)| match c {
+                                TypeChild::Ground(t) => (k, t),
+                                TypeChild::Node(_) => unreachable!("checked !any"),
+                            })
+                            .collect();
+                        TypeChild::Ground(self.kb.make_named_tuple_type(&ground))
+                    }
+                };
+                let result_child = self.type_expr_to_child(return_type, span, owner);
+                self.arrow_binder_scope = saved;
+                let effect_children: Vec<TypeChild> = effects
+                    .iter()
+                    .map(|e| self.type_expr_to_child(e, span, owner))
+                    .collect();
+                let any_node = matches!(param_child, TypeChild::Node(_))
+                    || matches!(result_child, TypeChild::Node(_))
+                    || effect_children.iter().any(|c| matches!(c, TypeChild::Node(_)));
+                if !any_node {
+                    // Fully ground arrow — the hash-consed builder is faithful.
+                    return TypeChild::Ground(self.type_expr_to_term(ty));
+                }
+                // Fold the effect children into an `effects_rows` occurrence
+                // (present(label) merged into a row), carried on the arrow.
+                let mut row = self.kb.make_empty_row_occ(span, owner);
+                for label in effect_children.into_iter().rev() {
+                    let present = self.kb.make_present_occ(label, span, owner);
+                    row = self
+                        .kb
+                        .make_merge_occ(TypeChild::Node(present), TypeChild::Node(row), span, owner);
+                }
+                let effects_child = TypeChild::Node(
+                    self.kb.make_effects_rows_occ(TypeChild::Node(row), span, owner),
+                );
+                TypeChild::Node(
+                    self.kb
+                        .make_arrow_occ(param_child, result_child, effects_child, span, owner),
+                )
+            }
+            // No denoted obligation for any other label shape (sort_ref, tuple,
+            // bare denoted, `-E`): build the hash-consed form. A bare top-level
+            // `denoted` effect label is not minted by any current producer; if
+            // one appears it rides as a ground `Term` denoted (the pre-E2
+            // behavior), which the deferred non-effect loader-flip slice Node-ifies.
             _ => node_occurrence::TypeChild::Ground(self.type_expr_to_term(ty)),
         }
     }
@@ -6583,7 +6663,12 @@ impl<'a> Loader<'a> {
         let field_info_sym = self.kb.resolve_symbol("anthill.reflect.FieldInfo");
         let fi_name_sym = self.kb.intern("name");
         let fi_type_sym = self.kb.intern("type_name");
-        let param_terms: Vec<TermId> = o.params
+        // WI-341 Stage A: param types are carrier-agnostic. A callback param
+        // whose arrow effect is denoted-bearing (`Modify[a]`) is a `Value::Node`
+        // arrow → a *value* FieldInfo entity carrying the occurrence; a ground
+        // param stays a hash-consed FieldInfo term. When any param is `Node` the
+        // params list (and the OperationInfo head) become a value fact.
+        let param_field_values: Vec<crate::eval::value::Value> = o.params
             .iter()
             .map(|p| {
                 let param_name_str = self.parsed.symbols.name(p.name).to_owned();
@@ -6597,24 +6682,54 @@ impl<'a> Loader<'a> {
                 let name_term = self.kb.alloc(Term::Ref(field_sym));
                 // WI-341: bind a callback param's arrow param names to their
                 // `CallbackParam` places for this arrow type's conversion, so a
-                // self-referential effect (`Modify[a]`) resolves to `<op>.f.a`. A
-                // no-op for a non-callback param (empty `arg_places`); the arrow
-                // case scopes the binders to effect positions; cleared after so
-                // they never leak to the next param or the operation body.
+                // self-referential effect (`Modify[a]`) resolves to `<op>.f.a`.
+                // Cleared after so they never leak to the next param / the body.
                 self.set_arrow_binder_scope(field_sym);
-                let type_term = self.type_expr_to_term(&p.ty);
+                let type_value = self.type_expr_to_value(&p.ty);
                 self.arrow_binder_scope.clear();
-                self.kb.alloc(Term::Fn {
-                    functor: field_info_sym,
-                    pos_args: SmallVec::new(),
-                    named_args: SmallVec::from_slice(&[
-                        (fi_name_sym, name_term),
-                        (fi_type_sym, type_term),
-                    ]),
-                })
+                match type_value {
+                    crate::eval::value::Value::Node(_) => {
+                        // Denoted-bearing param type → value FieldInfo entity.
+                        let named: Vec<(Symbol, crate::eval::value::Value)> = vec![
+                            (fi_name_sym, crate::eval::value::Value::Term(name_term)),
+                            (fi_type_sym, type_value),
+                        ];
+                        crate::eval::value::Value::Entity {
+                            functor: field_info_sym,
+                            pos: std::rc::Rc::from(Vec::new()),
+                            named: std::rc::Rc::from(named),
+                        }
+                    }
+                    crate::eval::value::Value::Term(type_term) => {
+                        // Ground param type → hash-consed FieldInfo term.
+                        crate::eval::value::Value::Term(self.kb.alloc(Term::Fn {
+                            functor: field_info_sym,
+                            pos_args: SmallVec::new(),
+                            named_args: SmallVec::from_slice(&[
+                                (fi_name_sym, name_term),
+                                (fi_type_sym, type_term),
+                            ]),
+                        }))
+                    }
+                    other => other,
+                }
             })
             .collect();
-        let params_list = build_list(self.kb, &param_terms);
+        let params_all_ground = param_field_values
+            .iter()
+            .all(|v| matches!(v, crate::eval::value::Value::Term(_)));
+        let params_field: crate::eval::value::Value = if params_all_ground {
+            let terms: Vec<TermId> = param_field_values
+                .iter()
+                .map(|v| match v {
+                    crate::eval::value::Value::Term(t) => *t,
+                    _ => unreachable!("params_all_ground"),
+                })
+                .collect();
+            crate::eval::value::Value::Term(build_list(self.kb, &terms))
+        } else {
+            build_value_list(self.kb, param_field_values)
+        };
 
         // WI-348 (value-fact payoff): effect labels are carrier-agnostic
         // `Value`s and ride directly in the `OperationInfo` fact built below —
@@ -6677,26 +6792,29 @@ impl<'a> Loader<'a> {
         // effects ride as a value cons-list and the head must be a value fact.
         // Every other field is always a ground `Value::Term`.
         use crate::eval::value::Value;
-        let all_ground = effect_values
+        let effects_all_ground = effect_values
             .iter()
             .all(|v| matches!(v, Value::Term(_)));
-        let effects_field = if all_ground {
+        let effects_field = if effects_all_ground {
             let effect_terms: Vec<TermId> = effect_values
                 .iter()
                 .map(|v| match v {
                     Value::Term(t) => *t,
-                    _ => unreachable!("all_ground guard guarantees Value::Term"),
+                    _ => unreachable!("effects_all_ground guard guarantees Value::Term"),
                 })
                 .collect();
             Value::Term(build_list(self.kb, &effect_terms))
         } else {
             build_value_list(self.kb, effect_values)
         };
+        // WI-341 Stage A: the head is a value fact when EITHER params or effects
+        // carry a `Value::Node` (denoted-bearing); else a hash-consed `Term::Fn`.
+        let all_ground = params_all_ground && effects_all_ground;
         // Single source of truth for the field set / order. Readers resolve by
         // key (functor + `NamedKey(sym)`), so order is not load-bearing.
         let named: Vec<(Symbol, Value)> = vec![
             (name_sym, Value::Term(name_ref)),
-            (params_sym, Value::Term(params_list)),
+            (params_sym, params_field),
             (return_type_sym, Value::Term(return_term)),
             (effects_sym, effects_field),
             (requires_sym, Value::Term(requires_list)),

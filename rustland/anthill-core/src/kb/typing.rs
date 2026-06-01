@@ -3401,18 +3401,25 @@ fn check_apply_iter(
         return Ok(TypeResult { ty: Value::Term(resolved_ret), env: env.clone(), effects, node: Rc::clone(occ) });
     }
 
-    // Path 2: variable with arrow type
+    // Path 2: variable with arrow type. WI-341 Stage A: the env carries `Value`.
     if let Some(fn_type) = env.lookup_var(fn_sym) {
-        // WI-341 Stage A: the env carries `Value`. A ground (`Value::Term`)
-        // callback arrow reads its parts off the hash-consed term as before; a
-        // `Value::Node` (denoted-bearing) callback arrow's `Value`-peer reader
-        // lands in a later slice — no Node binding exists yet (op param types
-        // still flow through the `TermId` path), so `Value::Term` is the only case.
-        if let Value::Term(fn_type_tid) = fn_type {
-            if let Some((ret_type, effects)) = extract_function_type_parts(kb, fn_type_tid) {
-                let effects = effects.into_iter().map(Value::Term).collect();
-                return Ok(TypeResult { ty: Value::Term(ret_type), env: env.clone(), effects, node: Rc::clone(occ) });
+        match &fn_type {
+            // A ground callback arrow reads its parts off the hash-consed term.
+            Value::Term(fn_type_tid) => {
+                if let Some((ret_type, effects)) = extract_function_type_parts(kb, *fn_type_tid) {
+                    let effects = effects.into_iter().map(Value::Term).collect();
+                    return Ok(TypeResult { ty: Value::Term(ret_type), env: env.clone(), effects, node: Rc::clone(occ) });
+                }
             }
+            // A `Value::Node` callback arrow (denoted-bearing effect, e.g.
+            // `Modify[a]`) is read carrier-agnostically — its `result` child and
+            // its effect labels, the occurrence never re-grounded.
+            Value::Node(_) => {
+                if let Some((ret_ty, effects)) = extract_function_type_parts_value(kb, &fn_type) {
+                    return Ok(TypeResult { ty: ret_ty, env: env.clone(), effects, node: Rc::clone(occ) });
+                }
+            }
+            _ => {}
         }
     }
 
@@ -6407,6 +6414,32 @@ pub(crate) fn effects_rows_to_flat_list(kb: &KnowledgeBase, ty: TermId) -> Vec<T
 /// Used when applying a function value — `f(x)` yields the result type.
 fn extract_function_type_parts(kb: &KnowledgeBase, fn_type: TermId) -> Option<(TermId, Vec<TermId>)> {
     arrow_parts(kb, fn_type).map(|(_, result, effects)| (result, effects))
+}
+
+/// WI-341 Stage A: carrier-agnostic peer of [`extract_function_type_parts`] for a
+/// `Value::Node` callback arrow (a denoted-bearing effect like `Modify[a]`).
+/// Reads the arrow's `result` child and decodes its `effects` row into present
+/// labels via [`decompose_effect_row`] — the occurrence is never re-grounded.
+fn extract_function_type_parts_value(
+    kb: &mut KnowledgeBase,
+    fn_type: &Value,
+) -> Option<(Value, Vec<Value>)> {
+    let result_key = kb.intern("result");
+    let effects_key = kb.intern("effects");
+    let result = view_item_value(&fn_type.named_arg(kb, result_key)?);
+    // Own the effects child before `decompose_effect_row` (&mut kb) so the
+    // `ViewItem`'s `kb` borrow does not outlive the immutable read.
+    let eff_value: Option<Value> = fn_type.named_arg(kb, effects_key).as_ref().map(view_item_value);
+    let effects = match eff_value {
+        Some(eff) => {
+            let subst = Substitution::new();
+            decompose_effect_row(kb, &subst, &eff)
+                .map(|(present, _tail, _absent)| present)
+                .unwrap_or_default()
+        }
+        None => Vec::new(),
+    };
+    Some((result, effects))
 }
 
 /// The param type of a callable (`arrow` or `Function[A, B, E]`), used to
