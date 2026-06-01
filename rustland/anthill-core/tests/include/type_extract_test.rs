@@ -56,7 +56,7 @@ fn extract_parameterized_reifies_parameterized_with_typebinding() {
         .try_resolve_symbol("anthill.prelude.TypeExtractor.Parameterized")
         .expect("Parameterized ctor");
     let binding_ctor = kb
-        .try_resolve_symbol("anthill.prelude.TypeExtractor.TypeBinding")
+        .try_resolve_symbol("anthill.prelude.TypeBinding")
         .expect("TypeBinding ctor");
     let cons_sym = kb
         .try_resolve_symbol("anthill.prelude.List.cons")

@@ -1367,7 +1367,26 @@ fn to_snake_case(s: &str) -> String {
         prev_was_sep = false;
     }
 
-    result
+    escape_rust_keyword(result)
+}
+
+/// Wrap a generated identifier as a raw identifier (`r#name`) when it collides
+/// with a Rust keyword, so codegen output stays compilable (e.g. an anthill
+/// field named `type`). The few keywords that can't be raw (`crate` / `self` /
+/// `super` / `Self`) get a trailing underscore instead.
+fn escape_rust_keyword(name: String) -> String {
+    const RESERVED: &[&str] = &[
+        "as", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn",
+        "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
+        "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe",
+        "use", "where", "while", "async", "await", "abstract", "become", "box", "do", "final",
+        "macro", "override", "priv", "typeof", "unsized", "virtual", "yield", "try",
+    ];
+    match name.as_str() {
+        "crate" | "self" | "super" | "Self" => format!("{name}_"),
+        n if RESERVED.contains(&n) => format!("r#{name}"),
+        _ => name,
+    }
 }
 
 /// Extract a sort name from a fact term (for fact-as-supertrait pattern).

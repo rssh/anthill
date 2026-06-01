@@ -777,6 +777,18 @@ fn ti_entity(
     Ok(Value::Entity { functor, pos: Vec::new().into(), named: fields.into() })
 }
 
+/// Build a standalone `TypeExtractor` helper record (`anthill.prelude.<short>` —
+/// `TypeBinding` / `NamedTupleElement`, which live outside the enum).
+fn ti_record(
+    interp: &mut Interpreter,
+    short: &str,
+    fields: Vec<(crate::intern::Symbol, Value)>,
+) -> Result<Value, EvalError> {
+    let qname = format!("anthill.prelude.{}", short);
+    let functor = require_symbol(interp, &qname, short)?;
+    Ok(Value::Entity { functor, pos: Vec::new().into(), named: fields.into() })
+}
+
 /// Re-wrap a deep-form `List[T]` of 2-field records into a value list of
 /// `TypeExtractor.<ctor>` entities, reading `key1`/`key2` from each element.
 /// (The deep and TypeExtractor field names coincide — `param`/`value` for a
@@ -801,7 +813,7 @@ fn ti_rewrap_list(
             ti_read_field(&interp.kb, &el, key1),
             ti_read_field(&interp.kb, &el, key2),
         ) {
-            out.push(ti_entity(interp, ctor, vec![(key1, a), (key2, b)])?);
+            out.push(ti_record(interp, ctor, vec![(key1, a), (key2, b)])?);
         }
     }
     build_value_list(interp, out)

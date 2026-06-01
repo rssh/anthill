@@ -120,6 +120,14 @@ enum anthill.prelude.EffectExpression
   fact Eq[T = EffectExpression]
 end
 
+-- Standalone records used by `TypeExtractor` — kept OUTSIDE the enum (so the
+-- Rust bootstrap emits them as structs usable as `Vec<TypeBinding>` /
+-- `Vec<NamedTupleElement>`), and as top-level qualified-name entities (so they
+-- land in the same Rust module scope as the qualified-name enums beside them).
+-- `param`/`value` of a binding, `name`/`type` of a tuple element.
+entity anthill.prelude.TypeBinding(param: anthill.reflect.Symbol, value: anthill.reflect.Term)
+entity anthill.prelude.NamedTupleElement(name: anthill.reflect.Symbol, type: anthill.reflect.Term)
+
 {< TypeExtractor: the reified deep structure of a `Type`.
 
    A `Type` *value* is term-backed (the engine stores it as an ordinary term —
@@ -146,12 +154,4 @@ enum anthill.prelude.TypeExtractor
      non-type term, or a malformed type expression). Keeps `extract` total
      rather than returning an `Option`. `term` is the offending input. >}
   entity Error(term: Term)
-
-  {< A parameter binding in a `Parameterized` extract (`param = value`).
-     `value` is the bound sub-type — a term that is itself a type, so it feeds
-     straight back into `extract`. >}
-  entity TypeBinding(param: Symbol, value: Term)
-  {< One element of a `NamedTuple` extract (`name : type`) — named for its parent,
-     since it is specific to named tuples. `type` is the element's sub-type term. >}
-  entity NamedTupleElement(name: Symbol, type: Term)
 end
