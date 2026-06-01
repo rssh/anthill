@@ -16,7 +16,9 @@ use std::collections::HashMap;
 use anthill_core::intern::{Symbol, SymbolKind};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::term::{Literal, Term, TermId};
-use anthill_core::kb::typing::extract_sort_ref_sym;
+use anthill_core::kb::term_view::TermIdView;
+use anthill_core::kb::typing::{extract_sort_ref_sym, extract_type, TypeExtractor};
+use anthill_core::eval::Value;
 
 // ── Templates ────────────────────────────────────────────────────────
 //
@@ -753,24 +755,24 @@ fn is_body_emittable(ctx: &CodegenContext, type_term: TermId) -> bool {
 /// expression) and `is_body_emittable` (which decides whether a body
 /// can be synthesised).
 fn unpack_parameterized(kb: &KnowledgeBase, term: TermId) -> Option<(Symbol, Vec<TermId>)> {
-    let Term::Fn { functor, named_args, .. } = kb.get_term(term) else { return None };
-    if kb.resolve_sym(*functor) != "parameterized" { return None; }
-    let base_term = named_args.iter()
-        .find(|(s, _)| kb.resolve_sym(*s) == "base")
-        .map(|(_, v)| *v)?;
-    let base_sym = extract_sort_ref_sym(kb, base_term)?;
-    let bindings_term = named_args.iter()
-        .find(|(s, _)| kb.resolve_sym(*s) == "bindings")
-        .map(|(_, v)| *v)?;
-    let mut values = Vec::new();
-    for binding in walk_list(kb, bindings_term) {
-        let Term::Fn { named_args: ba, .. } = kb.get_term(binding) else { return None };
-        let value = ba.iter()
-            .find(|(s, _)| kb.resolve_sym(*s) == "value")
-            .map(|(_, v)| *v)?;
-        values.push(value);
-    }
-    Some((base_sym, values))
+    // WI-361: read base + binding values form-agnostically — deep
+    // `parameterized(base: sort_ref(S), bindings)` or term-backed `Fn{S, named}`.
+    let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, &TermIdView(term)) else {
+        return None;
+    };
+    // cpp-gen operates on well-formed ground parameterized types: every binding is
+    // a `TypeBinding(param, value)` whose value is a hash-consed `TermId`, so the
+    // bindings map cleanly to ordered positional template args. (A non-`Term` value
+    // maps to `None` → whole result `None`; a binding missing `value` is skipped by
+    // `extract_type` — both unreachable for loader-built types.)
+    let values: Option<Vec<TermId>> = bindings
+        .iter()
+        .map(|(_, v)| match v {
+            Value::Term(t) => Some(*t),
+            _ => None,
+        })
+        .collect();
+    Some((base, values?))
 }
 
 /// Convert a snake_case identifier to camelCase. Naive transform —

@@ -21,7 +21,9 @@ use crate::span::{Span, SourceId, SourceSpan};
 use super::{KnowledgeBase, SortKind};
 use super::term::{Term, TermId, Var, VarId, Literal};
 use super::node_occurrence::{self, Expr, NodeOccurrence};
-use super::typing::{extract_type_param, get_named_arg, list_to_vec};
+use super::term_view::TermIdView;
+use super::typing::{extract_sort_ref_sym, extract_type, TypeExtractor};
+use crate::eval::value::Value;
 
 // ── Load result ──────────────────────────────────────────────
 
@@ -4170,14 +4172,17 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// True iff `ty` is `sort_ref(name: <List sym>)`.
-    fn is_list_sort_ref(kb: &KnowledgeBase, ty: TermId) -> bool {
-        let Term::Fn { functor, named_args, .. } = kb.get_term(ty) else { return false };
-        if kb.resolve_sym(*functor) != "sort_ref" { return false; }
-        let Some(name_tid) = get_named_arg(kb, named_args, "name") else { return false };
-        let Term::Ref(target) = kb.get_term(name_tid) else { return false };
-        let n = kb.qualified_name_of(*target);
+    /// True iff `sym` names the stdlib `List` sort. Shared by [`Self::is_list_sort_ref`]
+    /// (the whole-type check) and [`Self::find_list_element_type`] (the base check).
+    fn is_list_sort_sym(kb: &KnowledgeBase, sym: Symbol) -> bool {
+        let n = kb.qualified_name_of(sym);
         n == "anthill.prelude.List" || n == "anthill.prelude.List.List"
+    }
+
+    /// True iff `ty` is the `List` sort. WI-361 dual-form: the term-backed bare
+    /// sort `Ref(List)` or the deep `sort_ref(name: Ref(List))`.
+    fn is_list_sort_ref(kb: &KnowledgeBase, ty: TermId) -> bool {
+        extract_sort_ref_sym(kb, ty).is_some_and(|s| Self::is_list_sort_sym(kb, s))
     }
 
     /// `Some(element_hint)` if `ty` is List-shaped, else `None` — outer
@@ -4187,23 +4192,29 @@ impl<'a> Loader<'a> {
     /// directly without the `some(…)` envelope.
     fn find_list_element_type(kb: &KnowledgeBase, ty: TermId) -> Option<Option<TermId>> {
         if Self::is_list_sort_ref(kb, ty) { return Some(None); }
-        let Term::Fn { functor, named_args, .. } = kb.get_term(ty) else { return None };
-        if kb.resolve_sym(*functor) != "parameterized" { return None; }
-
-        let base_is_list = get_named_arg(kb, named_args, "base")
-            .map(|b| Self::is_list_sort_ref(kb, b))
-            .unwrap_or(false);
-        if base_is_list {
-            return Some(extract_type_param(kb, ty, "T"));
+        // WI-361: a parameterized `List[T=X]` is deep `parameterized(base: List,
+        // bindings)` or term-backed `Fn{List, named}` — read base + bindings
+        // form-agnostically via `extract_type`.
+        let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, &TermIdView(ty)) else {
+            return None;
+        };
+        if Self::is_list_sort_sym(kb, base) {
+            // The element hint is the `T` binding's value — already materialized in
+            // `bindings`, so read it here rather than re-walking via extract_type_param.
+            let hint = bindings
+                .iter()
+                .find(|(p, _)| kb.resolve_sym(*p) == "T")
+                .and_then(|(_, v)| match v {
+                    Value::Term(t) => Some(*t),
+                    _ => None,
+                });
+            return Some(hint);
         }
 
-        let bindings = get_named_arg(kb, named_args, "bindings")?;
-        for binding in list_to_vec(kb, bindings) {
-            if let Term::Fn { named_args: ba, .. } = kb.get_term(binding) {
-                if let Some(value) = get_named_arg(kb, ba, "value") {
-                    if let Some(inner) = Self::find_list_element_type(kb, value) {
-                        return Some(inner);
-                    }
+        for (_param, value) in &bindings {
+            if let Value::Term(v) = value {
+                if let Some(inner) = Self::find_list_element_type(kb, *v) {
+                    return Some(inner);
                 }
             }
         }

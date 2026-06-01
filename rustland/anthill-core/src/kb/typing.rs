@@ -617,65 +617,39 @@ pub(crate) fn external_effects(kb: &KnowledgeBase, env: &TypingEnv, effects: &[V
     }).cloned().collect()
 }
 
-/// Extract the resource symbol from an effect label, carrier-agnostically
-/// (WI-342 effects-vertical). A ground (`Value::Term`) label delegates to the
-/// hash-consed reader; a `Value::Node` (denoted-bearing) label is read off the
-/// occurrence in E2 (no Node label is minted into effects pre-E2, so the arm is
-/// currently unreachable — `None` is the sound default).
+/// Extract the resource symbol named by an effect label, carrier-agnostically
+/// (WI-361/WI-342). A `Modify[c]` label is a `parameterized` type whose binding
+/// value carries the resource as `denoted(Ref(c))` → `Some(c)`; a bare effect
+/// label (e.g. `ReadIO` = a `sort_ref`, no binding) has no resource → `None`.
+/// One `extract_type` classification reads BOTH the ground `TermId` and the
+/// `Value::Node` (denoted-bearing) forms — no `TermId`-specific twin. Effect
+/// labels are well-formed `parameterized(base: sort_ref(Modify), …)` types
+/// (`make_sort_ref` base) in production, so the base classifies cleanly.
 pub(crate) fn extract_effect_resource_sym(kb: &KnowledgeBase, effect: &Value) -> Option<Symbol> {
-    match effect {
-        Value::Term(t) => extract_effect_resource_sym_term(kb, *t),
-        // WI-342 E2: a `Value::Node` label is a `parameterized` (`Modify[c]`)
-        // whose resource binding carries the region as a `denoted(Ref(c))`. Read
-        // the bindings carrier-agnostically and return the first denoted Ref —
-        // the occurrence peer of the `unwrap_denoted_value` read in the term arm.
-        _ => parameterized_bindings(kb, effect)
-            .iter()
-            .find_map(|(_, v)| value_denoted_ref(v)),
-    }
+    let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, effect) else {
+        return None;
+    };
+    bindings.iter().find_map(|(_, v)| effect_binding_resource(kb, v))
 }
 
-/// The symbol a `Value::Node` `denoted`'s carried value refers to, if it is an
-/// `Expr::Ref` occurrence (`Modify[c]`'s `c`). Occurrence peer of the
-/// `unwrap_denoted_value` → `Ref` read used by [`extract_effect_resource_sym_term`].
-fn value_denoted_ref(v: &Value) -> Option<Symbol> {
-    let Value::Node(occ) = v else { return None };
-    match occ.as_type() {
-        Some(TypeNode::Denoted { value }) => match &value.kind {
-            NodeKind::Expr { expr: Expr::Ref(s), .. } => Some(*s),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Extract the resource symbol from a hash-consed effect term.
-/// e.g., Modify[T = store] → Some(store), or sort_ref(name: Modify) → None (no resource)
-fn extract_effect_resource_sym_term(kb: &KnowledgeBase, effect: TermId) -> Option<Symbol> {
-    let functor_name = type_functor_name(kb, effect)?;
-    match functor_name {
-        "parameterized" => {
-            if let Term::Fn { named_args, .. } = kb.get_term(effect) {
-                let bindings_tid = get_named_arg(kb, named_args, "bindings")?;
-                let bindings = list_to_vec(kb, bindings_tid);
-                for b in &bindings {
-                    if let Some(value_tid) = binding_value(kb, *b) {
-                        // WI-302: a value-in-type binding (`Modify[c]`) stores the
-                        // resource as `denoted(value: Ref(c))`; see through the
-                        // wrapper to the underlying value before extracting.
-                        let value_tid = unwrap_denoted_value(kb, value_tid);
-                        // `extract_sort_ref_sym` names the sort for both a deep
-                        // `sort_ref` and the bare `Ref(S)` a value-in-type takes
-                        // (WI-361), so one check covers both.
-                        if let Some(sym) = extract_sort_ref_sym(kb, value_tid) {
-                            return Some(sym);
-                        }
-                    }
-                }
+/// The resource sort a `Modify` binding value names — `denoted(Ref(c)) → c` —
+/// read carrier-agnostically over [`TermView`] (one walk for the ground `TermId`
+/// `denoted(value: Ref(c))` and the `Value::Node` `Denoted{Expr::Ref(c)}`
+/// occurrence alike, no per-carrier branch): [`type_head`] classifies the
+/// `denoted` wrapper and the inner `sort_ref` / bare `Ref(S)` for either carrier,
+/// and `named_arg` reads the `value` child as a `ViewItem` (itself a `TermView`).
+fn effect_binding_resource<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Symbol> {
+    match type_head(kb, v) {
+        TypeHead::Denoted => {
+            let value_sym = kb.lookup_symbol("value")?;
+            let inner = v.named_arg(kb, value_sym)?;
+            match type_head(kb, &inner) {
+                TypeHead::SortRef(s) => Some(s),
+                _ => None,
             }
-            None
         }
-        "sort_ref" => None,
+        // Defensive: a non-`denoted` bare value names its sort directly.
+        TypeHead::SortRef(s) => Some(s),
         _ => None,
     }
 }
@@ -1991,7 +1965,15 @@ fn visit_type(
             // its param unbound in the body env and every reference to it
             // failed resolution as `UnresolvedName`.
             let param_type = extract_pattern_type_ann(kb, param)
-                .or_else(|| expected.and_then(|exp| extract_function_param_type(kb, exp)))
+                .or_else(|| {
+                    // Checking direction: the expected arrow's param slot. The
+                    // pattern-env slot is still a `TermId`, so re-ground at this
+                    // sink (`extract_function_param_type` now yields a `Value`).
+                    expected.and_then(|exp| {
+                        extract_function_param_type(kb, &TermIdView(exp))
+                            .map(|v| value_to_term_id(kb, &v))
+                    })
+                })
                 .unwrap_or_else(|| {
                     let fresh = kb.intern("?param");
                     kb.make_type_var(fresh)
@@ -2000,10 +1982,12 @@ fn visit_type(
             extend_env_from_pattern(kb, &mut lambda_env, param, Some(param_type));
             // WI-270: if expected is `arrow(param, result, effects)`,
             // decompose and pass `result` to the body. Mismatching
-            // shapes (or `None`) leave the body without a hint.
-            let body_expected = expected
-                .and_then(|exp| extract_function_type_parts(kb, exp))
-                .map(|(ret, _)| ret);
+            // shapes (or `None`) leave the body without a hint. The LambdaBody
+            // frame's hint slot is a `TermId`, so re-ground at this sink.
+            let body_expected = expected.and_then(|exp| {
+                extract_function_type_parts(kb, &TermIdView(exp))
+                    .map(|(ret, _)| value_to_term_id(kb, &ret))
+            });
             work.push(TypeWorkOp::Build(TypeBuildFrame::LambdaBody {
                 occ: Rc::clone(&occ),
                 param_type,
@@ -3450,24 +3434,13 @@ fn check_apply_iter(
     }
 
     // Path 2: variable with arrow type. WI-341 Stage A: the env carries `Value`.
+    // WI-361/WI-342: one carrier-agnostic read — a ground (`Value::Term`) and a
+    // `Value::Node` callback arrow (denoted-bearing effect, e.g. `Modify[a]`)
+    // both flow through `extract_function_type_parts`, the occurrence never
+    // re-grounded.
     if let Some(fn_type) = env.lookup_var(fn_sym) {
-        match &fn_type {
-            // A ground callback arrow reads its parts off the hash-consed term.
-            Value::Term(fn_type_tid) => {
-                if let Some((ret_type, effects)) = extract_function_type_parts(kb, *fn_type_tid) {
-                    let effects = effects.into_iter().map(Value::Term).collect();
-                    return Ok(TypeResult { ty: Value::Term(ret_type), env: env.clone(), effects, node: Rc::clone(occ) });
-                }
-            }
-            // A `Value::Node` callback arrow (denoted-bearing effect, e.g.
-            // `Modify[a]`) is read carrier-agnostically — its `result` child and
-            // its effect labels, the occurrence never re-grounded.
-            Value::Node(_) => {
-                if let Some((ret_ty, effects)) = extract_function_type_parts_value(kb, &fn_type) {
-                    return Ok(TypeResult { ty: ret_ty, env: env.clone(), effects, node: Rc::clone(occ) });
-                }
-            }
-            _ => {}
+        if let Some((ret_ty, effects)) = extract_function_type_parts(kb, &fn_type) {
+            return Ok(TypeResult { ty: ret_ty, env: env.clone(), effects, node: Rc::clone(occ) });
         }
     }
 
@@ -6455,79 +6428,114 @@ fn check_constructor_iter(
     }
 }
 
-/// Extract return type and effects from an arrow(param, result, effects) type term.
-/// True when `ty` is `parameterized(base = Function, …)` — the stdlib
-/// `Function[A, B, E]` surface type. `arrow` is the typer's shorthand for
-/// it, so the two are the same callable type (see [`arrow_parts`]).
-fn is_function_type(kb: &KnowledgeBase, ty: TermId) -> bool {
-    matches!(
-        type_head(kb, &TermIdView(ty)),
-        TypeHead::Parameterized { base, .. } if kb.qualified_name_of(base) == "anthill.prelude.Function"
-    )
-}
-
-/// Decompose a callable type into `(param, result, effects)`.
+/// Decompose a callable type into `(param, result, effects-row)` — carrier-
+/// agnostic over [`TermView`], outputs owned [`Value`]s (WI-361/WI-342: input
+/// `TermView`, output `Value`; never re-grounds, so a `Value::Node` callback
+/// arrow with a denoted-bearing effect flows through losslessly).
 ///
-/// The typer's canonical function type is `arrow(param, result, effects)`;
-/// the stdlib surface type `Function[A, B, E]` is the *same* type — `arrow`
-/// is its shorthand (`A` = param, `B` = result, `E` = effects). Both
-/// decompose here so a `Function`-typed operation parameter is callable
+/// The typer's canonical function type is `arrow(param, result, effects)`; the
+/// stdlib surface type `Function[A, B, E]` is the *same* type — `arrow` is its
+/// shorthand (`A` = param, `B` = result, `E` = effects). Both decompose here so
+/// a `Function`-typed operation parameter is callable
 /// (`operation map(l, f: Function[A, B]) = ... f(h) ...`) just like a
-/// lambda-bound arrow. `param` is `None` only when the source omits it.
-/// Returns `None` for non-callable types. (WI-289)
-fn arrow_parts(kb: &KnowledgeBase, ty: TermId) -> Option<(Option<TermId>, TermId, Vec<TermId>)> {
-    match type_functor_name(kb, ty) {
-        Some("arrow") => {
-            let named_args = match kb.get_term(ty) {
-                Term::Fn { named_args, .. } => named_args.clone(),
-                _ => return None,
-            };
-            let result = get_named_arg(kb, &named_args, "result")?;
-            let param = get_named_arg(kb, &named_args, "param");
-            // WI-307 v1a: arrow.effects is now `effects_rows(EffectExpression)`
-            // (singular Type), not `List[Type]`. Decode the EffectExpression
-            // back to the flat `Vec<TermId>` shape that pre-v1a callers
-            // expect (concrete labels + at most one tail Var) so non-row-aware
-            // consumers (region.rs, op_info, type_display_name) keep working
-            // unchanged. Row-aware callers (unify_arrow, arrow_compatible)
-            // walk the effects_rows EffectExpression directly.
-            let effects = get_named_arg(kb, &named_args, "effects")
-                .map(|e| effects_rows_to_flat_list(kb, e))
-                .unwrap_or_default();
-            Some((param, result, effects))
+/// lambda-bound arrow. `param` is `None` when the source omits it; the effects
+/// row is `None` when omitted (a bare `Function` without `E` → polymorphic).
+/// The third element is the RAW effects child — a canonical `effects_rows(...)`
+/// for an arrow, or a `Function.E` binding that may still be a legacy
+/// `List[Type]` (pre-WI-331); callers normalize/flatten as they need via
+/// [`canonical_effects_row`] / [`effect_row_present_values`]. Returns `None` for
+/// non-callable types. (WI-289)
+fn arrow_parts<V: TermView>(
+    kb: &mut KnowledgeBase,
+    ty: &V,
+) -> Option<(Option<Value>, Value, Option<Value>)> {
+    // `extract_type` reads an `arrow`'s param/result/effects children and a
+    // `Function`'s A/B/E bindings carrier-agnostically. Pre-intern the child
+    // keys so a `Value::Node` carrier's named-child lookups resolve even in a
+    // minimal KB (the term builders intern them; cf. WI-361 slice 4's `base`).
+    for key in ["param", "result", "effects", "base"] {
+        kb.intern(key);
+    }
+    match extract_type(kb, ty) {
+        TypeExtractor::Arrow { param, result, effects } => {
+            Some((Some(param), result, Some(effects)))
         }
-        Some("parameterized") if is_function_type(kb, ty) => {
-            let result = extract_type_param(kb, ty, "B")?;
-            let param = extract_type_param(kb, ty, "A");
-            // Function[E] parameter binding still flows through as List[Type]
-            // (the parameter shape hasn't migrated). When/if Function.E binds
-            // an effects_rows Type, this branch follows the arrow branch.
-            //
-            // WI-307 code-review #5: dispatch via Symbol identity, not
-            // short-name compare. A user-defined entity in another namespace
-            // with short name `effects_rows` would otherwise be misrouted
-            // through effects_rows_to_flat_list. The cached symbol resolves
-            // against the canonical anthill.prelude.Type.effects_rows; a
-            // missing symbol (pre-stdlib bootstrap) falls back to the legacy
-            // List path, which is correct since no effects_rows term can
-            // exist before its symbol is registered.
-            let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.Type.effects_rows");
-            let effects = extract_type_param(kb, ty, "E")
-                .map(|e| {
-                    let is_effects_rows = match (effects_rows_sym, kb.get_term(e)) {
-                        (Some(er), Term::Fn { functor, .. }) => *functor == er,
-                        _ => false,
-                    };
-                    if is_effects_rows {
-                        effects_rows_to_flat_list(kb, e)
-                    } else {
-                        list_to_vec(kb, e)
-                    }
-                })
-                .unwrap_or_default();
-            Some((param, result, effects))
+        TypeExtractor::Parameterized { base, bindings }
+            if kb.qualified_name_of(base) == "anthill.prelude.Function" =>
+        {
+            let find = |name: &str| {
+                bindings
+                    .iter()
+                    .find(|(p, _)| kb.resolve_sym(*p) == name)
+                    .map(|(_, v)| v.clone())
+            };
+            let result = find("B")?;
+            Some((find("A"), result, find("E")))
         }
         _ => None,
+    }
+}
+
+/// Normalize a raw effects-row [`Value`] (the third element of [`arrow_parts`])
+/// into a canonical `effects_rows(...)` carrier the row machinery
+/// ([`subtype_effect_rows`] / [`unify_effect_rows`]) consumes. An arrow's
+/// `effects` child and a `Value::Node` row are already canonical and pass
+/// through untouched; only a legacy `List[Type]` `Function.E` binding (a
+/// `TermId` carrier) is flattened and re-canonicalized.
+fn canonical_effects_row(kb: &mut KnowledgeBase, row: &impl TermView) -> Value {
+    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.Type.effects_rows");
+    match row.as_bind_value() {
+        // Ground carrier: a canonical `effects_rows(...)` passes through; a
+        // legacy `List[Type]` (Function.E pre-WI-331) is flattened + re-
+        // canonicalized so the row machinery sees one shape.
+        BindValue::Term(t) => {
+            let is_canonical = matches!(
+                (kb.get_term(t), effects_rows_sym),
+                (Term::Fn { functor, .. }, Some(er)) if *functor == er
+            );
+            if is_canonical {
+                Value::Term(t)
+            } else {
+                let flat = list_to_vec(kb, t);
+                Value::Term(kb.build_canonical_effects_rows(&flat))
+            }
+        }
+        // A `Value::Node` effects row is always the canonical occurrence form.
+        BindValue::Value(v) => v,
+        // An effects row is never carried as a deferred query path; the empty
+        // row is a safe (unreachable) fallback.
+        BindValue::Path(_) => Value::Term(kb.build_canonical_effects_rows(&[])),
+    }
+}
+
+/// Flatten a raw effects-row [`Value`] into its present effect labels (plus an
+/// open-row tail var, matching the ground `effects_rows_to_flat_list` and the
+/// WI-341 `Value` path) — the carrier-agnostic effects a call site incurs.
+/// Carrier-agnostic; a `Value::Node` row's occurrence labels are never
+/// re-grounded. A legacy `List[Type]` binding's elements ARE the labels.
+fn effect_row_present_values(kb: &mut KnowledgeBase, row: &impl TermView) -> Vec<Value> {
+    match row.as_bind_value() {
+        // Ground carrier: the established flat-list walk (exact pre-WI-361
+        // behavior; its non-wrapper fallback also handles a legacy `List[Type]`
+        // Function.E binding pre-WI-331).
+        BindValue::Term(t) => {
+            effects_rows_to_flat_list(kb, t).into_iter().map(Value::Term).collect()
+        }
+        // `Value::Node` carrier: decompose the occurrence row into its present
+        // labels (plus an open-row tail), the occurrence never re-grounded
+        // (WI-341) — matching the former `extract_function_type_parts_value`.
+        _ => {
+            let subst = Substitution::new();
+            match decompose_effect_row(kb, &subst, row) {
+                Some((mut present, tail, _absent)) => {
+                    if let Some(tail_tid) = tail {
+                        present.push(Value::Term(tail_tid));
+                    }
+                    present
+                }
+                None => Vec::new(),
+            }
+        }
     }
 }
 
@@ -6654,52 +6662,27 @@ pub(crate) fn effects_rows_to_flat_list(kb: &KnowledgeBase, ty: TermId) -> Vec<T
     out
 }
 
-/// Result + effects of a callable type (`arrow` or `Function[A, B, E]`).
-/// Used when applying a function value — `f(x)` yields the result type.
-fn extract_function_type_parts(kb: &KnowledgeBase, fn_type: TermId) -> Option<(TermId, Vec<TermId>)> {
-    arrow_parts(kb, fn_type).map(|(_, result, effects)| (result, effects))
-}
-
-/// WI-341 Stage A: carrier-agnostic peer of [`extract_function_type_parts`] for a
-/// `Value::Node` callback arrow (a denoted-bearing effect like `Modify[a]`).
-/// Reads the arrow's `result` child and decodes its `effects` row into present
-/// labels via [`decompose_effect_row`] — the occurrence is never re-grounded.
-fn extract_function_type_parts_value(
+/// Result + effects of a callable type (`arrow` or `Function[A, B, E]`), used
+/// when applying a function value — `f(x)` yields the result type. Carrier-
+/// agnostic over [`TermView`] (WI-361/WI-342): a ground `TermId` arrow and a
+/// `Value::Node` callback arrow (a denoted-bearing effect like `Modify[a]`)
+/// take one path — the result is the `Value` carrier and the effects are the
+/// row's present labels (plus an open-row tail var), the occurrence never
+/// re-grounded. Folds the former TermId / `_value` twins into one.
+fn extract_function_type_parts<V: TermView>(
     kb: &mut KnowledgeBase,
-    fn_type: &Value,
+    fn_type: &V,
 ) -> Option<(Value, Vec<Value>)> {
-    let result_key = kb.intern("result");
-    let effects_key = kb.intern("effects");
-    let result = view_item_value(&fn_type.named_arg(kb, result_key)?);
-    // Own the effects child before `decompose_effect_row` (&mut kb) so the
-    // `ViewItem`'s `kb` borrow does not outlive the immutable read.
-    let eff_value: Option<Value> = fn_type.named_arg(kb, effects_key).as_ref().map(view_item_value);
-    let effects = match eff_value {
-        Some(eff) => {
-            let subst = Substitution::new();
-            decompose_effect_row(kb, &subst, &eff)
-                .map(|(mut present, tail, _absent)| {
-                    // Keep the open-row tail var as a trailing effect entry, to
-                    // match the ground path (`effects_rows_to_flat_list` appends
-                    // the row Var). Loader-built denoted callback rows are closed
-                    // (no tail) today, so this is forward-parity, not a live case.
-                    if let Some(tail_tid) = tail {
-                        present.push(Value::Term(tail_tid));
-                    }
-                    present
-                })
-                .unwrap_or_default()
-        }
-        None => Vec::new(),
-    };
+    let (_, result, eff) = arrow_parts(kb, fn_type)?;
+    let effects = eff.map(|row| effect_row_present_values(kb, &row)).unwrap_or_default();
     Some((result, effects))
 }
 
-/// The param type of a callable (`arrow` or `Function[A, B, E]`), used to
-/// type a lambda's parameter from the checking direction (an expected
-/// `Function[A, B]` tells us the param is `A`).
-fn extract_function_param_type(kb: &KnowledgeBase, fn_type: TermId) -> Option<TermId> {
-    arrow_parts(kb, fn_type).and_then(|(param, _, _)| param)
+/// The param type of a callable (`arrow` or `Function[A, B, E]`), used to type a
+/// lambda's parameter from the checking direction (an expected `Function[A, B]`
+/// tells us the param is `A`). Carrier-agnostic over [`TermView`], `Value` out.
+fn extract_function_param_type<V: TermView>(kb: &mut KnowledgeBase, fn_type: &V) -> Option<Value> {
+    arrow_parts(kb, fn_type)?.0
 }
 
 /// Ordered component types of a `named_tuple(fields: [TypeField(name,
@@ -6786,22 +6769,21 @@ fn build_pattern_subst(
     scrutinee_type: TermId,
     parent_sort: Symbol,
 ) -> Option<Substitution> {
-    if type_functor_name(kb, scrutinee_type) != Some("parameterized") {
+    // WI-361: read the bindings form-agnostically — deep `parameterized(base,
+    // bindings)` or term-backed `Fn{S, named}`. A non-parameterized scrutinee
+    // (bare sort, arrow, …) yields no pattern subst.
+    let TypeExtractor::Parameterized { bindings, .. } =
+        extract_type(kb, &TermIdView(scrutinee_type))
+    else {
         return None;
-    }
-    let named_args = match kb.get_term(scrutinee_type) {
-        Term::Fn { named_args, .. } => named_args.clone(),
-        _ => return None,
     };
-    let bindings_tid = get_named_arg(kb, &named_args, "bindings")?;
 
     let mut subst = Substitution::new();
     let mut any = false;
-    for b in list_to_vec(kb, bindings_tid) {
-        let (Some(param), Some(value)) = (binding_param_sym(kb, b), binding_value(kb, b))
-        else { continue };
-        if let Some(vid) = type_param_vid_in_sort(kb, parent_sort, param) {
-            subst.bind_term(vid, value);
+    for (param, value) in &bindings {
+        let Value::Term(value) = value else { continue };
+        if let Some(vid) = type_param_vid_in_sort(kb, parent_sort, *param) {
+            subst.bind_term(vid, *value);
             any = true;
         }
     }
@@ -7653,40 +7635,37 @@ fn walk_type_deep(kb: &mut KnowledgeBase, subst: &Substitution, ty: TermId) -> T
 
 /// Walk a type term through the substitution, resolving Vars and type params.
 fn walk_type(kb: &KnowledgeBase, subst: &Substitution, ty: TermId) -> TermId {
-    match kb.get_term(ty) {
-        Term::Var(Var::Global(vid)) => {
-            match subst.resolve_with_term(*vid) {
-                Some(bound) => walk_type(kb, subst, bound),
-                None => ty,
-            }
-        }
-        Term::Fn { functor, .. } if kb.resolve_sym(*functor) == "sort_ref" => {
-            let sym = match extract_sort_ref_sym(kb, ty) {
-                Some(s) => s,
-                None => return ty,
-            };
-            // Only resolve the sort_ref through its SortAlias-to-Var if
-            // the symbol is a *sort-level type parameter* (registered
-            // via `sort T = ?` inside a sort body). Top-level abstract
-            // sorts like `sort Term = ?` in anthill.reflect also have a
-            // SortAlias-to-Var entry, but they're concrete-but-opaque
-            // types from a typer perspective — collapsing every
-            // sort_ref(Term) into Term's alias Var would lose the
-            // sort_ref form and surface as `TermId(N)` in diagnostics.
-            if !is_sort_param_symbol(kb, sym) {
-                return ty;
-            }
-            let alias_target = match resolve_sort_alias(kb, sym) {
-                Some(t) => t,
-                None => return ty,
-            };
-            if let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) {
-                subst.resolve_with_term(*vid).map_or(alias_target, |bound| walk_type(kb, subst, bound))
-            } else {
-                alias_target
-            }
-        }
-        _ => ty,
+    if let Term::Var(Var::Global(vid)) = kb.get_term(ty) {
+        return match subst.resolve_with_term(*vid) {
+            Some(bound) => walk_type(kb, subst, bound),
+            None => ty,
+        };
+    }
+    // WI-361: a bare sort is `Ref(S)` (term backing) or `sort_ref(name: Ref(S))`
+    // (deep); `extract_sort_ref_sym` recognizes both. Any other shape (a
+    // parameterized / arrow / non-type term) is left unchanged.
+    let sym = match extract_sort_ref_sym(kb, ty) {
+        Some(s) => s,
+        None => return ty,
+    };
+    // Only resolve the sort ref through its SortAlias-to-Var if the symbol is
+    // a *sort-level type parameter* (registered via `sort T = ?` inside a sort
+    // body). Top-level abstract sorts like `sort Term = ?` in anthill.reflect
+    // also have a SortAlias-to-Var entry, but they're concrete-but-opaque types
+    // from a typer perspective — collapsing every `sort_ref(Term)` into Term's
+    // alias Var would lose the sort-ref form and surface as `TermId(N)` in
+    // diagnostics.
+    if !is_sort_param_symbol(kb, sym) {
+        return ty;
+    }
+    let alias_target = match resolve_sort_alias(kb, sym) {
+        Some(t) => t,
+        None => return ty,
+    };
+    if let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) {
+        subst.resolve_with_term(*vid).map_or(alias_target, |bound| walk_type(kb, subst, bound))
+    } else {
+        alias_target
     }
 }
 
@@ -8657,7 +8636,7 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
         // (see `arrow_parts`), so a lambda's `arrow(Int, Int)` body satisfies
         // a declared `Function[Int, Int]` return and vice versa. (WI-289)
         (Some("arrow"), Some("parameterized")) | (Some("parameterized"), Some("arrow")) => {
-            arrow_function_compatible(kb, subst, actual, expected)
+            arrow_function_compatible(kb, subst, &TermIdView(actual), &TermIdView(expected))
         }
         (Some("named_tuple"), Some("named_tuple")) => {
             named_tuple_compatible(kb, subst, actual, expected)
@@ -8730,11 +8709,22 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
         (Some("parameterized"), Some("parameterized")) => {
             parameterized_compatible_view(kb, subst, &a, &e)
         }
+        // WI-361/WI-342: `arrow` and `Function[A,B,E]` denote the same callable
+        // type. Read the parts carrier-agnostically (no re-ground) so a
+        // `Value::Node` arrow checks against a `Function` without the lossy
+        // `occ_to_term` bridge the `_` fallback would force on a denoted effect.
+        // (A *term-backed* `Function` reports its raw functor here, not
+        // `parameterized`, so that pairing still takes the re-grounding fallback
+        // below — same residual as the other term-backed view forms.)
+        (Some("arrow"), Some("parameterized")) | (Some("parameterized"), Some("arrow")) => {
+            arrow_function_compatible(kb, subst, &a, &e)
+        }
         // WI-342: any pair without a carrier-agnostic subtype arm yet
-        // (`arrow`-vs-`Function[…]`, `parameterized`-vs-`sort_ref`, `named_tuple`)
-        // re-grounds both sides and delegates to `types_compatible_term_dispatch`
-        // — sound (lossless) and strictly more complete than the old `_ => false`.
-        // In lockstep with `unify_view_structural`'s identical bridge.
+        // (`parameterized`-vs-`sort_ref`, `named_tuple`, term-backed forms whose
+        // raw functor isn't a canonical tag) re-grounds both sides and delegates
+        // to `types_compatible_term_dispatch` — sound (lossless) and strictly
+        // more complete than the old `_ => false`. In lockstep with
+        // `unify_view_structural`'s identical bridge.
         _ => {
             let at = view_to_term_id(kb, &a);
             let et = view_to_term_id(kb, &e);
@@ -8856,112 +8846,66 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
 }
 
 /// Compatibility between the typer's `arrow(param, result, effects)` and the
-/// stdlib `Function[A, B, E]` (in either order) — they denote the same
-/// callable type. Decomposes both via [`arrow_parts`] (which yields `None`
-/// for a non-`Function` parameterized type, so `arrow` vs `List[T]` stays
-/// incompatible), checks contravariant param + covariant result compat,
-/// and (WI-332) covariant effects via [`subtype_effect_rows`] when both
-/// sides explicitly carry an effects field. Original WI-289.
-fn arrow_function_compatible(kb: &mut KnowledgeBase, subst: &mut Substitution, actual: TermId, expected: TermId) -> bool {
-    let (a_param, a_result, _) = match arrow_parts(kb, actual) {
+/// stdlib `Function[A, B, E]` (in either order) — they denote the same callable
+/// type. Carrier-agnostic over [`TermView`] (WI-361/WI-342): routed here from
+/// BOTH the `TermId` dispatch ([`types_compatible_term_dispatch`], via
+/// [`TermIdView`]) AND the `Value`-carrier dispatch
+/// ([`types_compatible_view_structural`]), so a `Value::Node` callback arrow
+/// checks against a `Function[A, B, E]` directly — without the lossy
+/// `view_to_term_id` re-ground the generic fallback would otherwise force on a
+/// denoted-bearing effect. Decomposes both via [`arrow_parts`] (which yields
+/// `None` for a non-`Function` parameterized type, so `arrow` vs `List[T]` stays
+/// incompatible), checks contravariant param + covariant result, and (WI-332)
+/// covariant effects via the carrier-agnostic [`subtype_effect_rows`]. WI-289.
+fn arrow_function_compatible<A: TermView, E: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    actual: &A,
+    expected: &E,
+) -> bool {
+    let (a_param, a_result, a_eff) = match arrow_parts(kb, actual) {
         Some(parts) => parts,
         None => return false,
     };
-    let (b_param, b_result, _) = match arrow_parts(kb, expected) {
+    let (b_param, b_result, b_eff) = match arrow_parts(kb, expected) {
         Some(parts) => parts,
         None => return false,
     };
 
     // Param is contravariant (expected param <: actual param), result
-    // covariant — matching `arrow_compatible`. A missing param on either
-    // side (bare `Function` without an `A` binding, polymorphic) is treated
-    // as unconstrained, accepting.
-    let params_ok = match (a_param, b_param) {
-        (Some(ap), Some(bp)) => types_compatible(kb, subst, &TermIdView(bp), &TermIdView(ap)),
+    // covariant — matching `arrow_compatible`. A missing param on either side
+    // (a bare `Function` without an `A` binding, polymorphic) is unconstrained.
+    let params_ok = match (&a_param, &b_param) {
+        (Some(ap), Some(bp)) => types_compatible(kb, subst, bp, ap),
         _ => true,
     };
     if !params_ok {
         return false;
     }
-    if !types_compatible(kb, subst, &TermIdView(a_result), &TermIdView(b_result)) {
+    if !types_compatible(kb, subst, &a_result, &b_result) {
         return false;
     }
 
-    // WI-332: covariant effects via [`subtype_effect_rows`], consistent
-    // with `arrow_compatible`. Pre-WI-332 this site discarded effects
-    // entirely, so the same denotational type written as the typer's
-    // `arrow(Int, Int, {ReadIO})` and the stdlib `Function[A=Int, B=Int,
-    // E=…]` shorthand could give opposite subtype answers — the arrow
-    // form went through `arrow_compatible` (effects checked) while the
-    // Function form landed here (effects discarded).
+    // WI-332: covariant effects via [`subtype_effect_rows`], consistent with
+    // `arrow_compatible`. **Missing E** is treated symmetrically with missing A:
+    // omitting the binding means *polymorphic* (accept any), NOT *empty* — so
+    // `Function[A, B]` (no E) accepts an effectful actual, while the explicit
+    // `Function[A=…, B=…, E={}]` form keeps the closed-empty semantic and rejects
+    // effectful actuals (regression-tested). The arrow side always synthesizes an
+    // `effects` field, so its `None` arm is defensive only.
     //
-    // **Missing E** is treated symmetrically with missing A: omitting the
-    // binding entirely means *polymorphic* (accept any), not *empty*. So
-    // `Function[A, B]` (no E binding) is a callable type whose effects
-    // are unconstrained, and an effectful actual subtypes it. The
-    // explicit `Function[A=…, B=…, E={}]` form retains the closed-empty
-    // semantic and rejects effectful actuals (regression-tested below).
-    // The arrow side always synthesizes an `effects` field (via
-    // `make_arrow_type` and `build_canonical_effects_rows`), so its None
-    // arm is defensive only.
-    //
-    // WI-335: the threaded subst is shared across param/result/effects
-    // sub-checks so a row var bound by the param check (or the effects
-    // check) is visible in the others — same fix as in
-    // `arrow_compatible`.
-    let actual_effects_field = arrow_effects_field(kb, actual);
-    let expected_effects_field = arrow_effects_field(kb, expected);
-    match (actual_effects_field, expected_effects_field) {
-        // Either side polymorphic in E → accept (matches the
-        // missing-param convention above).
+    // WI-335: the threaded subst is shared across the param/result/effects
+    // sub-checks so a row var bound in one position is visible in the others.
+    match (a_eff, b_eff) {
+        // Either side polymorphic in E → accept.
         (None, _) | (_, None) => true,
         (Some(ae), Some(ee)) => {
-            subtype_effect_rows(kb, subst, &TermIdView(ae), &TermIdView(ee))
+            // Normalize a legacy `List[Type]` E binding to a canonical row; an
+            // already-canonical row (or a `Value::Node` row) passes through.
+            let ae = canonical_effects_row(kb, &ae);
+            let ee = canonical_effects_row(kb, &ee);
+            subtype_effect_rows(kb, subst, &ae, &ee)
         }
-    }
-}
-
-/// Extract the raw effects-row Type term from a callable type (either an
-/// `arrow(...)` or a `Function[A, B, E]`-shaped parameterized). Returns
-/// `None` when the side omits the field (Function without an explicit `E`
-/// binding) — the caller uses that to distinguish *polymorphic* (no
-/// constraint) from *explicit closed empty row*.
-///
-/// Stays in the raw `effects_rows`-or-legacy-List shape; the caller
-/// normalizes via [`KnowledgeBase::build_canonical_effects_rows`] only
-/// when both sides are explicitly bound.
-fn arrow_effects_field(kb: &mut KnowledgeBase, ty: TermId) -> Option<TermId> {
-    match type_functor_name(kb, ty) {
-        Some("arrow") => {
-            let named_args = match kb.get_term(ty) {
-                Term::Fn { named_args, .. } => named_args.clone(),
-                _ => return None,
-            };
-            // arrow.effects field is always `effects_rows(EffectExpression)`
-            // post-WI-307; pass it through directly.
-            get_named_arg(kb, &named_args, "effects")
-        }
-        Some("parameterized") if is_function_type(kb, ty) => {
-            // Function.E binding may be either `effects_rows(...)` (new)
-            // or a legacy `List[Type]` (until the stdlib schema sync of
-            // WI-331). Normalize the legacy shape via the same flatten +
-            // canonicalize path arrow_parts uses; pass through the
-            // canonical shape directly.
-            let e_value = extract_type_param(kb, ty, "E")?;
-            let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.Type.effects_rows");
-            let is_effects_rows = match (effects_rows_sym, kb.get_term(e_value)) {
-                (Some(er), Term::Fn { functor, .. }) => *functor == er,
-                _ => false,
-            };
-            if is_effects_rows {
-                Some(e_value)
-            } else {
-                // Legacy List[Type] — flatten and re-canonicalize.
-                let flat = list_to_vec(kb, e_value);
-                Some(kb.build_canonical_effects_rows(&flat))
-            }
-        }
-        _ => None,
     }
 }
 
@@ -9115,10 +9059,27 @@ fn join_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<Value> {
 /// only affects annotation-free synthesis. Returns `a` when neither side
 /// is parameterized (identical types). Keeps [`join_types`] commutative.
 fn more_general_type(kb: &KnowledgeBase, a: &Value, b: &Value) -> Value {
-    match (resolved_functor_name(kb, a), resolved_functor_name(kb, b)) {
+    match (more_general_form(kb, a), more_general_form(kb, b)) {
         (Some("sort_ref"), Some("parameterized")) => a.clone(),
         (Some("parameterized"), Some("sort_ref")) => b.clone(),
         _ => a.clone(),
+    }
+}
+
+/// The form tag of a branch type for [`more_general_type`]'s bare-vs-
+/// parameterized normalization. WI-361 dual-form on the `TermId` carrier (a
+/// term-backed `Ref(S)` / `Fn{S,named}` reports `sort_ref` / `parameterized`
+/// via [`type_dispatch_name`], where the raw functor would not); a `Value::Node`
+/// keeps the raw-functor reading — it is never a bare sort, and only these two
+/// tags drive the normalization.
+fn more_general_form(kb: &KnowledgeBase, v: &Value) -> Option<&'static str> {
+    match v {
+        Value::Term(t) => type_dispatch_name(kb, *t),
+        _ => match resolved_functor_name(kb, v) {
+            Some("parameterized") => Some("parameterized"),
+            Some("sort_ref") => Some("sort_ref"),
+            _ => None,
+        },
     }
 }
 
@@ -9893,8 +9854,9 @@ pub enum TypeExtractor {
 
 /// The structural kind of a type carrier WITHOUT materializing its children —
 /// the cheap classification shared by [`extract_type`] (which adds the child
-/// payloads) and the dispatch-key readers ([`sort_functor_of`], `is_function_type`)
-/// that only need the head. Dual-form: recognizes both the deep representation
+/// payloads) and the dispatch-key readers ([`sort_functor_of`], the callable
+/// decomposition in [`arrow_parts`]) that only need the head. Dual-form:
+/// recognizes both the deep representation
 /// (`sort_ref` / `parameterized` / …) and the term backing (`Ref(S)` /
 /// `Fn{S, named}`).
 enum TypeHead {
@@ -10057,21 +10019,6 @@ fn view_child_sym<V: TermView>(kb: &KnowledgeBase, ty: &V, key: &str) -> Option<
         },
         _ => None,
     }
-}
-
-/// WI-302: unwrap a `denoted(value: V)` wrapper to its inner value term.
-/// Value-in-type bindings (`Modify[c]`) store the resource as
-/// `denoted(value: Ref(c))`; readers that want the underlying value see
-/// through the wrapper. Returns the input unchanged when not a `denoted`.
-fn unwrap_denoted_value(kb: &KnowledgeBase, ty: TermId) -> TermId {
-    if let Term::Fn { functor, named_args, .. } = kb.get_term(ty) {
-        if kb.resolve_sym(*functor) == "denoted" {
-            if let Some(v) = get_named_arg(kb, named_args, "value") {
-                return v;
-            }
-        }
-    }
-    ty
 }
 
 /// The "sort head" of an inferred type — the least declared sort it
@@ -10411,7 +10358,9 @@ fn check_value_against_type(
     field_sym: Symbol,
     span: Option<Span>,
 ) -> Option<TypeError> {
-    let type_functor = type_functor_name(kb, declared_type);
+    // WI-361: dispatch on the canonical form tag so a term-backed `Ref(S)` /
+    // `Fn{S,named}` routes to the same arms as the deep `sort_ref` / `parameterized`.
+    let type_functor = type_dispatch_name(kb, declared_type);
 
     match type_functor {
         Some("sort_ref") => {
@@ -10532,14 +10481,13 @@ fn check_value_against_parameterized(
     field_sym: Symbol,
     span: Option<Span>,
 ) -> Option<TypeError> {
-    let declared_args = match kb.get_term(declared_type) {
-        Term::Fn { named_args, .. } => named_args.clone(),
-        _ => return None,
+    // WI-361: read base + bindings form-agnostically — deep
+    // `parameterized(base: sort_ref(S), bindings)` or term-backed `Fn{S, named}`.
+    let TypeExtractor::Parameterized { base: base_sym, bindings } =
+        extract_type(kb, &TermIdView(declared_type))
+    else {
+        return None;
     };
-
-    // Extract base sort
-    let base_tid = get_named_arg(kb, &declared_args, "base")?;
-    let base_sym = extract_sort_ref_sym(kb, base_tid)?;
 
     // Get the value's constructor symbol
     let val_functor = match kb.get_term(value) {
@@ -10565,7 +10513,7 @@ fn check_value_against_parameterized(
     // is kept for the binding-free case, where it is already precise.
     if let Some(parent) = kb.constructor_parent_sort(val_functor) {
         if !constructor_matches_declared(kb, parent, base_sym) {
-            let goal_bindings = declared_type_goal_bindings(kb, &declared_args);
+            let goal_bindings = declared_type_goal_bindings(kb, &bindings);
             let accepted = if goal_bindings.is_empty() {
                 sort_sym_of_term(kb, parent).is_some_and(|p| sort_provides(kb, p, base_sym))
             } else {
@@ -10588,17 +10536,12 @@ fn check_value_against_parameterized(
     // multiple entries for short names like "T" (List, Option, Stream,
     // …), and an unscoped short-name lookup may return the wrong sort's
     // `Var`, leaving `walk_type` on the entity's field types
-    // unsubstituted.
-    let bindings_tid = get_named_arg(kb, &declared_args, "bindings")?;
-    let bindings = list_to_vec(kb, bindings_tid);
+    // unsubstituted. WI-361: bindings come carrier-agnostic from `extract_type`.
     let mut subst = Substitution::new();
-    for b in &bindings {
-        let param_sym = binding_param_sym(kb, *b);
-        let value_type = binding_value(kb, *b);
-        if let (Some(psym), Some(vt)) = (param_sym, value_type) {
-            if let Some(vid) = type_param_vid_in_sort(kb, base_sym, psym) {
-                subst.bind(vid, vt);
-            }
+    for (psym, value_type) in &bindings {
+        let Value::Term(vt) = value_type else { continue };
+        if let Some(vid) = type_param_vid_in_sort(kb, base_sym, *psym) {
+            subst.bind(vid, *vt);
         }
     }
 
@@ -10640,20 +10583,17 @@ fn check_value_against_parameterized(
 /// bare-sort-ref shape the instance resolver matches against.
 fn declared_type_goal_bindings(
     kb: &mut KnowledgeBase,
-    declared_args: &SmallVec<[(Symbol, TermId); 2]>,
+    bindings: &[(Symbol, Value)],
 ) -> SmallVec<[(Symbol, TermId); 2]> {
-    let raw: Vec<(Symbol, TermId)> = match get_named_arg(kb, declared_args, "bindings") {
-        Some(bindings_tid) => list_to_vec(kb, bindings_tid)
-            .into_iter()
-            .filter_map(|b| match (binding_param_sym(kb, b), binding_value(kb, b)) {
-                (Some(p), Some(v)) => Some((p, v)),
-                _ => None,
-            })
-            .collect(),
-        None => Vec::new(),
-    };
-    raw.into_iter()
-        .map(|(p, v)| (p, canonicalize_goal_value(kb, v)))
+    // WI-361: `bindings` are the carrier-agnostic `(param, value-type)` pairs from
+    // [`extract_type`]; a `Value::Term` value canonicalizes into the bare-sort-ref
+    // shape the instance resolver matches against.
+    bindings
+        .iter()
+        .filter_map(|(p, v)| match v {
+            Value::Term(t) => Some((*p, canonicalize_goal_value(kb, *t))),
+            _ => None,
+        })
         .collect()
 }
 

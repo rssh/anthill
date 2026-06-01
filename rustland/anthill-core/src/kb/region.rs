@@ -435,7 +435,11 @@ end
     /// A synthetic ground `Modify[T = <resource>]` label, the shape the loader's
     /// value-in-type lowering produces (`parameterized` + `denoted(Ref(_))`).
     fn modify_label(kb: &mut KnowledgeBase, resource: Symbol) -> Value {
-        let base = kb.make_name_term("Modify");
+        // Build the `Modify` base as a real `sort_ref` — matching production
+        // (mod.rs `make_sort_ref`, load.rs type-expr lowering), NOT a bare
+        // `make_name_term` — so the label is a well-formed `parameterized` type
+        // the carrier-agnostic `extract_type` readers accept (WI-361).
+        let base = kb.make_sort_ref_by_name("Modify");
         let res_ref = kb.alloc(Term::Ref(resource));
         let denoted = kb.make_denoted(res_ref);
         let t = kb.intern("T");
