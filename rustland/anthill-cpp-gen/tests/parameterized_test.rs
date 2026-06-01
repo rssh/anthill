@@ -50,6 +50,33 @@ struct User {
 }
 
 #[test]
+fn two_param_field_lowers_in_declaration_order() {
+    // WI-361 regression guard: term-backed parameterized bindings are stored in
+    // canonical symbol-interning order, NOT declaration order, so cpp-gen must
+    // emit C++ template args in the sort's DECLARED param order. A 2-param sort
+    // `Pair { sort Z = ?; sort A = ? }` mapped to `std::pair` must lower
+    // `Pair[Z = Int, A = String]` as `std::pair<int64_t, std::string>` (Z first),
+    // regardless of how Z/A intern. Pre-fix this emitted the args swapped.
+    let source = r#"
+        namespace test.params
+          import anthill.prelude.{Int, String}
+          export Pair, Holder
+          sort Pair
+            sort Z = ?
+            sort A = ?
+          end
+          entity Holder(p: Pair[Z = Int, A = String])
+        end
+    "#;
+    let kb = load_kb_with(source);
+    let cpp = emit_entity_struct(&kb, "test.params.Holder").expect("emit Holder");
+    assert!(
+        cpp.contains("std::pair<int64_t, std::string>"),
+        "2-param type must lower in declaration order (Z=Int then A=String); got:\n{cpp}"
+    );
+}
+
+#[test]
 fn nested_parameterization() {
     // Option[T = List[T = Float]] → std::optional<std::vector<double>>
     let source = r#"

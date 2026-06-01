@@ -745,7 +745,7 @@ fn is_body_emittable(ctx: &CodegenContext, type_term: TermId) -> bool {
     if !base_known {
         return false;
     }
-    binding_values.iter().all(|v| is_body_emittable(ctx, *v))
+    binding_values.iter().all(|(_, v)| is_body_emittable(ctx, *v))
 }
 
 /// If `type_term` is a `parameterized(base: sort_ref(<sort>), bindings:
@@ -754,21 +754,23 @@ fn is_body_emittable(ctx: &CodegenContext, type_term: TermId) -> bool {
 /// Shared between `lower_parameterized` (which formats the C++ template
 /// expression) and `is_body_emittable` (which decides whether a body
 /// can be synthesised).
-fn unpack_parameterized(kb: &KnowledgeBase, term: TermId) -> Option<(Symbol, Vec<TermId>)> {
-    // WI-361: read base + binding values form-agnostically — deep
+fn unpack_parameterized(kb: &KnowledgeBase, term: TermId) -> Option<(Symbol, Vec<(Symbol, TermId)>)> {
+    // WI-361: read base + `(param, value)` bindings form-agnostically — deep
     // `parameterized(base: sort_ref(S), bindings)` or term-backed `Fn{S, named}`.
+    // The param symbol is kept so `lower_parameterized` can order the template
+    // args by the sort's DECLARATION order (the bindings are stored in canonical
+    // symbol-interning order, NOT declaration order, post the WI-361 flip).
     let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, &TermIdView(term)) else {
         return None;
     };
     // cpp-gen operates on well-formed ground parameterized types: every binding is
-    // a `TypeBinding(param, value)` whose value is a hash-consed `TermId`, so the
-    // bindings map cleanly to ordered positional template args. (A non-`Term` value
-    // maps to `None` → whole result `None`; a binding missing `value` is skipped by
-    // `extract_type` — both unreachable for loader-built types.)
-    let values: Option<Vec<TermId>> = bindings
+    // a `TypeBinding(param, value)` whose value is a hash-consed `TermId`. (A
+    // non-`Term` value maps to `None` → whole result `None`; a binding missing
+    // `value` is skipped by `extract_type` — both unreachable for loader types.)
+    let values: Option<Vec<(Symbol, TermId)>> = bindings
         .iter()
-        .map(|(_, v)| match v {
-            Value::Term(t) => Some(*t),
+        .map(|(p, v)| match v {
+            Value::Term(t) => Some((*p, *t)),
             _ => None,
         })
         .collect();
@@ -2677,7 +2679,7 @@ fn lower_parameterized(
     type_term: TermId,
 ) -> Result<String, CppCodegenError> {
     let kb = ctx.kb;
-    let (base_sym, binding_values) = unpack_parameterized(kb, type_term).ok_or_else(|| {
+    let (base_sym, binding_pairs) = unpack_parameterized(kb, type_term).ok_or_else(|| {
         CppCodegenError {
             message: "expected a parameterized(base: ..., bindings: [...]) term".into(),
         }
@@ -2695,8 +2697,35 @@ fn lower_parameterized(
             ),
         })?;
 
-    let mut args = Vec::with_capacity(binding_values.len());
-    for value in binding_values {
+    // C++ template args follow the sort's DECLARATION order (`template<K, V>`),
+    // but `binding_pairs` are stored in canonical symbol-interning order (WI-361
+    // flip). Reorder by `type_params_of_sort` (source/declaration order); fall back
+    // to stored order if the sort exposes no declared params (defensive).
+    let decl_order = kb.type_params_of_sort(base_sym);
+    let ordered: Vec<TermId> = if decl_order.is_empty() {
+        binding_pairs.iter().map(|(_, v)| *v).collect()
+    } else {
+        let mut out: Vec<TermId> = decl_order
+            .iter()
+            .filter_map(|pname| {
+                binding_pairs
+                    .iter()
+                    .find(|(p, _)| kb.resolve_sym(*p) == pname.as_str())
+                    .map(|(_, v)| *v)
+            })
+            .collect();
+        // Defensive: append any binding whose param wasn't in the declared set
+        // (over-application — not produced by well-formed types) so nothing is lost.
+        for (p, v) in &binding_pairs {
+            if !decl_order.iter().any(|n| kb.resolve_sym(*p) == n.as_str()) {
+                out.push(*v);
+            }
+        }
+        out
+    };
+
+    let mut args = Vec::with_capacity(ordered.len());
+    for value in ordered {
         args.push(lower_type(ctx, value)?);
     }
 
