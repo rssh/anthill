@@ -225,3 +225,83 @@ fn provider_transitive_requires_gap_errors() {
     assert!(text.contains("wi356.transitive.B"),
         "expected the diagnostic to name the unmet transitive requirement B; got:\n{text}");
 }
+
+// ── WI-359: the SHORTHAND `requires Ring[F]` (Ring's param is named `T`, so
+//    the names differ) preserves the cross-param binding, so the check is
+//    binding-precise. Before WI-359 the `F` was dropped (stored `Ring[T =
+//    Ring.T]`), the goal stayed abstract, and this provision passed via the
+//    existence fallback — a false negative. ───────────────────────────────
+
+#[test]
+fn shorthand_requires_binding_precise_wrong_field_errors() {
+    // `VS[V, F] requires Ring[F]` — positional shorthand; Ring's own param is
+    // `T`. `Carrier` provides `VS[V=Carrier, F=NonRing]` and `Ring[T=Carrier]`.
+    // The requirement at this provision is `Ring` over `NonRing`, which has no
+    // `Ring` — must error, even though the carrier provides `Ring` at `Carrier`.
+    let src = r#"
+        namespace wi359.shorthand
+          export Ring, VS, Carrier, NonRing
+          sort Ring
+            sort T = ?
+            operation rtag(x: T) -> Int
+            rule rtag(?x) = 0
+          end
+          sort VS
+            sort V = ?
+            sort F = ?
+            requires Ring[F]
+            operation vtag(v: V) -> Int
+            rule vtag(?v) = 0
+          end
+          sort NonRing
+            entity nonring(id: Int)
+          end
+          sort Carrier
+            entity carrier(id: Int)
+            fact Ring[T = Carrier]
+            fact VS[V = Carrier, F = NonRing]
+          end
+        end
+    "#;
+    let (_kb, errs) = load_capturing_errors(src);
+    let text = errors_text(&errs);
+    assert!(!errs.is_empty(),
+        "expected an UnsatisfiedProviderRequires error: VS[F=NonRing] requires Ring over \
+         NonRing (which provides no Ring); the shorthand `requires Ring[F]` must now carry \
+         the F binding so the check is binding-precise; got clean load");
+    assert!(text.contains("wi359.shorthand.VS") && text.contains("wi359.shorthand.Ring"),
+        "expected the diagnostic to name VS and its unmet Ring requirement; got:\n{text}");
+}
+
+#[test]
+fn shorthand_requires_binding_precise_right_field_loads() {
+    // The positive twin: `Carrier`'s field `F` is `Carrier` itself, which DOES
+    // provide `Ring` — so `VS[V=Carrier, F=Carrier]` loads clean through the
+    // precise path. Pins that WI-359 didn't just make everything error.
+    let src = r#"
+        namespace wi359.shorthand_ok
+          export Ring, VS, Carrier
+          sort Ring
+            sort T = ?
+            operation rtag(x: T) -> Int
+            rule rtag(?x) = 0
+          end
+          sort VS
+            sort V = ?
+            sort F = ?
+            requires Ring[F]
+            operation vtag(v: V) -> Int
+            rule vtag(?v) = 0
+          end
+          sort Carrier
+            entity carrier(id: Int)
+            fact Ring[T = Carrier]
+            fact VS[V = Carrier, F = Carrier]
+          end
+        end
+    "#;
+    let (_kb, errs) = load_capturing_errors(src);
+    assert!(errs.is_empty(),
+        "VS[V=Carrier, F=Carrier] requires Ring over Carrier, which provides Ring; \
+         should load clean; got:\n{}", errors_text(&errs));
+}

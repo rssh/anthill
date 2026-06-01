@@ -5891,6 +5891,16 @@ fn is_type_param_value(kb: &KnowledgeBase, value: TermId) -> bool {
     match kb.get_term(value) {
         Term::Var(_) => true,
         Term::Ref(sym) | Term::Ident(sym) => is_sort_param_symbol(kb, *sym),
+        // WI-359: a bare param name also surfaces as a nullary `Fn` (the
+        // `make_name_term` shape — e.g. an enclosing sort's open param
+        // captured into a `requires` SortView). Treat `Fn{param}` like
+        // `Ref(param)` so defer-to-requirement matching and candidate
+        // leniency see it as the wildcard it is.
+        Term::Fn { functor, pos_args, named_args }
+            if pos_args.is_empty() && named_args.is_empty() =>
+        {
+            is_sort_param_symbol(kb, *functor)
+        }
         _ => false,
     }
 }
@@ -7316,7 +7326,7 @@ fn walk_type(kb: &KnowledgeBase, subst: &Substitution, ty: TermId) -> TermId {
 /// parent sort. Distinguishes `sort T = ?` inside `sort Stream { … }`
 /// (which IS a type-param) from `sort Term = ?` at namespace level
 /// (which is a top-level abstract sort, not a type parameter).
-fn is_sort_param_symbol(kb: &KnowledgeBase, sym: Symbol) -> bool {
+pub(crate) fn is_sort_param_symbol(kb: &KnowledgeBase, sym: Symbol) -> bool {
     use crate::intern::SymbolDef;
     let SymbolDef::Resolved { scope_raw, .. } = kb.symbols.get(sym) else {
         return false;

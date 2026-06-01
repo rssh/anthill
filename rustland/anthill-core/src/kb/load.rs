@@ -948,11 +948,25 @@ fn build_instantiation_term(
     kb: &mut KnowledgeBase,
     parse_sym: &crate::intern::SymbolTable,
     type_expr: &TypeExpr,
-    _current_scope: TermId,
+    current_scope: TermId,
 ) -> TermId {
     match type_expr {
         TypeExpr::Simple(name) => {
             let n = join_segments(parse_sym, &name.segments);
+            // WI-359: a bare name that resolves to an enclosing type-param (the
+            // `F` in `requires Ring[F]`, the `T` in `requires Eq[T]`) becomes a
+            // `Ref` to that param symbol — so the cross-param binding survives
+            // into the requires SortView and `resolve_requires_bindings` can tie
+            // it to a concrete value (a generic name term cannot be). Only
+            // type-params take this path; concrete sort names keep the
+            // scope-lookup so their shape is unchanged.
+            if let crate::intern::ResolveResult::Found(sym) =
+                kb.symbols.resolve_in_scope(&n, current_scope.raw())
+            {
+                if super::typing::is_sort_param_symbol(kb, sym) {
+                    return kb.alloc(Term::Ref(sym));
+                }
+            }
             find_scope_by_name(kb, &n)
                 .unwrap_or_else(|| kb.make_name_term(&n))
         }
@@ -963,7 +977,7 @@ fn build_instantiation_term(
             let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
             let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
             for b in bindings {
-                let val = build_instantiation_term(kb, parse_sym, &b.bound, _current_scope);
+                let val = build_instantiation_term(kb, parse_sym, &b.bound, current_scope);
                 match &b.param {
                     Some(p) => {
                         let key = kb.symbols.intern(&join_segments(parse_sym, &p.segments));
@@ -996,7 +1010,7 @@ fn build_instantiation_term(
                 .unwrap_or_else(|| kb.symbols.intern("TupleLiteral"));
             let named_args: SmallVec<[(Symbol, TermId); 2]> = fields.iter().map(|(sym, ty)| {
                 let key = kb.symbols.intern(parse_sym.name(*sym));
-                let val = build_instantiation_term(kb, parse_sym, ty, _current_scope);
+                let val = build_instantiation_term(kb, parse_sym, ty, current_scope);
                 (key, val)
             }).collect();
             kb.alloc(Term::Fn {
@@ -1012,12 +1026,12 @@ fn build_instantiation_term(
                 kb.symbols.intern("arrow")
             };
             let mut pos_args: SmallVec<[TermId; 4]> = params.iter()
-                .map(|(_, p)| build_instantiation_term(kb, parse_sym, p, _current_scope))
+                .map(|(_, p)| build_instantiation_term(kb, parse_sym, p, current_scope))
                 .collect();
-            let ret = build_instantiation_term(kb, parse_sym, return_type, _current_scope);
+            let ret = build_instantiation_term(kb, parse_sym, return_type, current_scope);
             pos_args.push(ret);
             for eff in effects {
-                let eff_term = build_instantiation_term(kb, parse_sym, eff, _current_scope);
+                let eff_term = build_instantiation_term(kb, parse_sym, eff, current_scope);
                 pos_args.push(eff_term);
             }
             kb.alloc(Term::Fn {
@@ -2120,7 +2134,30 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
                         };
 
                         if let Some(ss) = spec_sym {
-                            updates.push((*rid, sr_tid, ss, inst_named.clone()));
+                            // WI-359: capture positional bindings too. `requires
+                            // Ring[F]` stores `pos_args = [Ring-base, <F>]` with
+                            // no named args; map each positional (after the base)
+                            // to the spec's param in declaration order so it
+                            // reaches the slot-fill loop below as a named binding
+                            // — otherwise the slot falls back to the self-ref
+                            // default and the cross-param link is lost.
+                            let mut bindings = inst_named.clone();
+                            if pos_args.len() > 1 {
+                                let params = kb.type_params_of_sort(ss);
+                                let named_shorts: Vec<String> = bindings.iter()
+                                    .map(|(k, _)| kb.resolve_sym(*k)
+                                        .rsplit('.').next().unwrap_or("").to_string())
+                                    .collect();
+                                for (i, pv) in pos_args.iter().skip(1).enumerate() {
+                                    if let Some(pname) = params.get(i) {
+                                        if !named_shorts.iter().any(|s| s == pname) {
+                                            let key = kb.intern(pname);
+                                            bindings.push((key, *pv));
+                                        }
+                                    }
+                                }
+                            }
+                            updates.push((*rid, sr_tid, ss, bindings));
                         }
                     }
                 }
