@@ -1883,6 +1883,18 @@ fn load_phase_inner(
     // `kb.sort_ops_lookup` instead of the string-concat fallback.
     build_sort_ops_table(kb);
     mark!("build_sort_ops_table");
+    // WI-352/WI-353: derive `flow(kind, from, to)` facts from operation bodies
+    // BEFORE op-body type-checking, because the typer's operation-boundary
+    // masking (WI-353, `region::op_boundary_effects`) consumes them via
+    // `keep_modify` to re-key a callback parameter's `Modify` to the op's data —
+    // so the facts must be asserted before the typer runs. The pass walks body
+    // STRUCTURE only (apply/match occurrences + `arg_places`), needs no types,
+    // and runs on the pre-`[simp]` bodies; feeds key on argument positions, which
+    // dispatch / `[simp]` rewrites preserve, so the derived facts are stable
+    // across the rewrite. The facts are auxiliary (own namespace/functor) and do
+    // not perturb resolution.
+    super::flow_derive::run(kb);
+    mark!("flow_derive::run");
     // WI-283: `[simp]` firing over operation bodies now runs *inside* the
     // typer (`typing::build_type`), where it is type-directed — children
     // are typed first, so `min_sort`/`requires` guards have the operand's
@@ -1906,12 +1918,6 @@ fn load_phase_inner(
         all_errors.push(err.to_load_error(kb));
     }
     mark!("req_insertion::run");
-    // WI-352: derive `flow(kind, from, to)` facts from operation bodies for the
-    // Modify effect_derive slice. Runs after bodies are fully elaborated; the
-    // facts are auxiliary metadata (own namespace/functor) and don't perturb
-    // resolution. WI-353 will consume them via `keep_modify`.
-    super::flow_derive::run(kb);
-    mark!("flow_derive::run");
     // WI-343: provider-side requires coverage. For each `fact Spec[X]`,
     // every spec-level `requires` of Spec (at the provision's bindings)
     // must itself be satisfied — else the satisfaction fact is unsound.
@@ -3680,6 +3686,13 @@ struct Loader<'a> {
     current_scope: TermId,
     // Cache: type param name → TermId (Var) per scope, so all references to T share the same Var
     type_param_vars: HashMap<(u32, String), TermId>,
+    // WI-341 loader binder context: while loading a callback PARAMETER's arrow
+    // type, its arrow param names (`a`, `t`) are bound here to their registered
+    // `CallbackParam` place symbols (`<op>.f.a`), so a self-referential arrow
+    // effect like `Modify[a]` resolves to the place `<op>.f.a` (the binder's
+    // canonical name from the op frame, doc §2) rather than failing as an
+    // unresolved name. Empty except during that one arrow-type conversion.
+    arrow_binder_scope: HashMap<String, Symbol>,
     // Description index counter per target (keyed by TermId raw)
     desc_index: HashMap<u32, i64>,
     // ── Occurrence tracking ─────────────────────────────────────
@@ -3824,6 +3837,7 @@ impl<'a> Loader<'a> {
             current_scope: global_scope,
             desc_index: HashMap::new(),
             type_param_vars: HashMap::new(),
+            arrow_binder_scope: HashMap::new(),
             defined_sorts: Vec::new(),
             fact_rule_ids: Vec::new(),
             source_id,
@@ -5376,11 +5390,48 @@ impl<'a> Loader<'a> {
         })
     }
 
+    /// WI-341: bind a callback parameter's arrow param names to their registered
+    /// `CallbackParam` place symbols, so a self-referential arrow effect
+    /// (`Modify[a]`) resolves to the place `<op>.f.a` — the binder's canonical
+    /// name from the op frame (doc §2). The places are read straight off the
+    /// callback symbol's `arg_places` (set by `register_callback_places`), which
+    /// is authoritative and already excludes the arrow `result` (so it is not
+    /// bound and cannot shadow the op's reserved `result`) and handles the
+    /// unnamed/`result`-named conventions — unlike reconstructing qualified
+    /// strings. Each binder is keyed by the place's own short name (`…f.a` → `a`).
+    /// A non-callback param has empty `arg_places`, leaving the scope empty.
+    /// Nested-arrow params (`f.g.x`) are out of v1 scope (only the top-level
+    /// callback's `arg_places` are bound; the arrow case suspends the scope while
+    /// converting nested arrows, so their effects do not see this binder).
+    fn set_arrow_binder_scope(&mut self, callback_sym: Symbol) {
+        self.arrow_binder_scope.clear();
+        let places: Vec<Symbol> = self.kb.symbols.arg_places(callback_sym).to_vec();
+        for place in places {
+            if let Some(short) = self.kb.qualified_name_of(place).rsplit('.').next() {
+                let short = short.to_owned();
+                self.arrow_binder_scope.insert(short, place);
+            }
+        }
+    }
+
     /// Convert a TypeExpr to a Type entity term in the KB.
     /// Produces sort_ref, parameterized, arrow, type_var, named_tuple terms.
     fn type_expr_to_term(&mut self, ty: &TypeExpr) -> TermId {
         match ty {
             TypeExpr::Simple(name) => {
+                // WI-341 loader binder context: a single-segment name matching a
+                // callback arrow's own param (in scope only while loading that
+                // callback param's arrow type) resolves to its `CallbackParam`
+                // place — a self-referential effect `Modify[a]` becomes
+                // `denoted(Ref(<op>.f.a))` = `Modify[f.a]`, the same value-in-type
+                // lowering the `is_value` arm below gives `result` / a bare place.
+                if name.segments.len() == 1 && !self.arrow_binder_scope.is_empty() {
+                    let nm = self.parsed.symbols.name(name.segments[0]);
+                    if let Some(&place) = self.arrow_binder_scope.get(nm) {
+                        let value = self.kb.alloc(Term::Ref(place));
+                        return self.kb.make_denoted(value);
+                    }
+                }
                 let sort_sym = self.remap_name(name);
                 let short_name = self.kb.resolve_sym(sort_sym).to_owned();
                 // If this symbol is a type parameter, use a Var directly.
@@ -5485,6 +5536,15 @@ impl<'a> Loader<'a> {
                 self.kb.make_named_tuple_type(&type_fields)
             }
             TypeExpr::Arrow { params, return_type, effects } => {
+                // WI-341: the binder scope (a callback param's own arrow params)
+                // applies ONLY to this arrow's EFFECT labels — a self-referential
+                // `Modify[a]`. Param and return TYPE positions must resolve
+                // normally: a type or type-param named like an arrow param must
+                // NOT be captured to a place. So suspend the scope while
+                // converting param/return types (this also keeps a nested arrow's
+                // own effects from seeing the outer binder) and restore it for the
+                // effect labels below.
+                let saved_binders = std::mem::take(&mut self.arrow_binder_scope);
                 // For single-param arrows, use param directly.
                 // For multi-param, build a named_tuple of param types — keyed
                 // by the param's declared name when present (spec §5.4), else
@@ -5509,6 +5569,9 @@ impl<'a> Loader<'a> {
                     self.kb.make_named_tuple_type(&param_fields)
                 };
                 let result_type = self.type_expr_to_term(return_type);
+                // Restore the binder scope: effect labels resolve their arrow-param
+                // references (`Modify[a]`) to the callback's places.
+                self.arrow_binder_scope = saved_binders;
                 let effect_terms: Vec<TermId> = effects.iter()
                     .map(|e| self.type_expr_to_term(e))
                     .collect();
@@ -6532,7 +6595,15 @@ impl<'a> Loader<'a> {
                     self.kb.symbols.define(&param_name_str, &field_qualified, SymbolKind::Field, self.current_scope.raw())
                 };
                 let name_term = self.kb.alloc(Term::Ref(field_sym));
+                // WI-341: bind a callback param's arrow param names to their
+                // `CallbackParam` places for this arrow type's conversion, so a
+                // self-referential effect (`Modify[a]`) resolves to `<op>.f.a`. A
+                // no-op for a non-callback param (empty `arg_places`); the arrow
+                // case scopes the binders to effect positions; cleared after so
+                // they never leak to the next param or the operation body.
+                self.set_arrow_binder_scope(field_sym);
                 let type_term = self.type_expr_to_term(&p.ty);
+                self.arrow_binder_scope.clear();
                 self.kb.alloc(Term::Fn {
                     functor: field_info_sym,
                     pos_args: SmallVec::new(),

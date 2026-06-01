@@ -145,3 +145,6 @@ mod wi351_callback_place_test;
 
 #[path = "include/wi352_flow_derive_test.rs"]
 mod wi352_flow_derive_test;
+
+#[path = "include/wi341_callback_modify_test.rs"]
+mod wi341_callback_modify_test;
