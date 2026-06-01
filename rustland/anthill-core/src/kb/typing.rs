@@ -6434,7 +6434,16 @@ fn extract_function_type_parts_value(
         Some(eff) => {
             let subst = Substitution::new();
             decompose_effect_row(kb, &subst, &eff)
-                .map(|(present, _tail, _absent)| present)
+                .map(|(mut present, tail, _absent)| {
+                    // Keep the open-row tail var as a trailing effect entry, to
+                    // match the ground path (`effects_rows_to_flat_list` appends
+                    // the row Var). Loader-built denoted callback rows are closed
+                    // (no tail) today, so this is forward-parity, not a live case.
+                    if let Some(tail_tid) = tail {
+                        present.push(Value::Term(tail_tid));
+                    }
+                    present
+                })
                 .unwrap_or_default()
         }
         None => Vec::new(),
@@ -7080,6 +7089,18 @@ fn unify_denoted_view<A: TermView, B: TermView>(kb: &mut KnowledgeBase, a: &A, b
             // i-th param of each. (A free reference — an op param `Modify[s]`,
             // the result — is not a CallbackParam, so it falls back to symbol
             // identity above, never alpha-equated.)
+            //
+            // SOUNDNESS INVARIANT (position-only comparison): a raw
+            // `Modify[CallbackParam]` label exists ONLY inside its own callback
+            // arrow's `effects` child — the binder is meaningless outside its
+            // arrow's scope, and `region::op_boundary_effects` re-keys any
+            // callback Modify to a concrete op place (input / result) before it
+            // reaches a top-level op effect row. So two `CallbackParam` denoteds
+            // only ever meet here through `arrow_compatible_view`, which has
+            // ALREADY aligned the two arrows (param children unified first) — i.e.
+            // they are corresponding binders, so equal position ⇒ same binder.
+            // A future caller comparing two binders NOT through aligned-arrow
+            // unify would break this — keep callback-Modify labels arrow-local.
             match (callback_binder_position(kb, sa), callback_binder_position(kb, sb)) {
                 (Some(pa), Some(pb)) => pa == pb,
                 _ => false,

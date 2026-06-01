@@ -3355,6 +3355,33 @@ fn build_value_list(kb: &mut KnowledgeBase, items: Vec<crate::eval::value::Value
     list
 }
 
+/// WI-341: a homogeneous `OperationInfo` list field (params, effects) as a
+/// carrier-agnostic `Value` plus its all-ground flag. All-`Value::Term` items
+/// build a hash-consed `Term` cons-list (`Value::Term`); any `Value::Node` builds
+/// a value cons-list. The flag drives the head's carrier (a ground head fits a
+/// `Term::Fn`; a `Node` anywhere forces a value fact). Shared by the params and
+/// effects assembly in `load_operation` so the carrier-selection lives once.
+fn value_or_ground_list(
+    kb: &mut KnowledgeBase,
+    items: Vec<crate::eval::value::Value>,
+) -> (crate::eval::value::Value, bool) {
+    use crate::eval::value::Value;
+    let all_ground = items.iter().all(|v| matches!(v, Value::Term(_)));
+    let list = if all_ground {
+        let terms: Vec<TermId> = items
+            .iter()
+            .map(|v| match v {
+                Value::Term(t) => *t,
+                _ => unreachable!("all_ground"),
+            })
+            .collect();
+        Value::Term(build_list(kb, &terms))
+    } else {
+        build_value_list(kb, items)
+    };
+    (list, all_ground)
+}
+
 /// Build `none()` — the Option.none constructor.
 pub(crate) fn build_none(kb: &mut KnowledgeBase) -> TermId {
     let none_sym = kb.resolve_symbol("anthill.prelude.Option.none");
@@ -6711,25 +6738,13 @@ impl<'a> Loader<'a> {
                             ]),
                         }))
                     }
-                    other => other,
+                    // `type_expr_to_value` yields only `Value::Term` / `Value::Node`
+                    // (TypeChild has two variants), never `Value::Var`/entity.
+                    other => unreachable!("a param type is Term or Node, got {other:?}"),
                 }
             })
             .collect();
-        let params_all_ground = param_field_values
-            .iter()
-            .all(|v| matches!(v, crate::eval::value::Value::Term(_)));
-        let params_field: crate::eval::value::Value = if params_all_ground {
-            let terms: Vec<TermId> = param_field_values
-                .iter()
-                .map(|v| match v {
-                    crate::eval::value::Value::Term(t) => *t,
-                    _ => unreachable!("params_all_ground"),
-                })
-                .collect();
-            crate::eval::value::Value::Term(build_list(self.kb, &terms))
-        } else {
-            build_value_list(self.kb, param_field_values)
-        };
+        let (params_field, params_all_ground) = value_or_ground_list(self.kb, param_field_values);
 
         // WI-348 (value-fact payoff): effect labels are carrier-agnostic
         // `Value`s and ride directly in the `OperationInfo` fact built below —
@@ -6792,21 +6807,7 @@ impl<'a> Loader<'a> {
         // effects ride as a value cons-list and the head must be a value fact.
         // Every other field is always a ground `Value::Term`.
         use crate::eval::value::Value;
-        let effects_all_ground = effect_values
-            .iter()
-            .all(|v| matches!(v, Value::Term(_)));
-        let effects_field = if effects_all_ground {
-            let effect_terms: Vec<TermId> = effect_values
-                .iter()
-                .map(|v| match v {
-                    Value::Term(t) => *t,
-                    _ => unreachable!("effects_all_ground guard guarantees Value::Term"),
-                })
-                .collect();
-            Value::Term(build_list(self.kb, &effect_terms))
-        } else {
-            build_value_list(self.kb, effect_values)
-        };
+        let (effects_field, effects_all_ground) = value_or_ground_list(self.kb, effect_values);
         // WI-341 Stage A: the head is a value fact when EITHER params or effects
         // carry a `Value::Node` (denoted-bearing); else a hash-consed `Term::Fn`.
         let all_ground = params_all_ground && effects_all_ground;
