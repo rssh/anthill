@@ -3002,7 +3002,7 @@ fn check_apply_iter(
         // op's `?E` Var binds to WorkItem here, and the post-arg
         // unconstrained-param check sees it as pinned.
         if let Some(exp) = expected {
-            unify_types(kb, &mut subst, &TermIdView(op.return_type), &TermIdView(exp));
+            unify_types(kb, &mut subst, &op.return_type, &TermIdView(exp));
         }
         let mut arg_effects: Vec<Value> = Vec::new();
         let mut param_to_arg_sym: HashMap<Symbol, Symbol> = HashMap::new();
@@ -3059,8 +3059,9 @@ fn check_apply_iter(
         let effects = merge_effects(&substituted_op_effects, &arg_effects);
 
         // Resolve return type deeply so `Option[T = Var(vid_T)]`
-        // collapses to `Option[T = Term]` once `vid_T` is bound.
-        let resolved_ret = walk_type_deep(kb, &subst, op.return_type);
+        // collapses to `Option[T = Term]` once `vid_T` is bound. WI-341:
+        // carrier-agnostic walk (the return type is a `Value`).
+        let resolved_ret = walk_type_deep_value(kb, &subst, &op.return_type);
 
         // WI-270: every declared op type-parameter must be pinned by
         // some combination of: explicit `[bindings]`, caller-side
@@ -3150,7 +3151,7 @@ fn check_apply_iter(
                         },
                     );
                     return Ok(TypeResult {
-                        ty: Value::Term(resolved_ret),
+                        ty: resolved_ret.clone(),
                         env: env.clone(),
                         effects,
                         node: Rc::clone(occ),
@@ -3181,7 +3182,7 @@ fn check_apply_iter(
                     || !spec_warrants_abstract_check(kb, spec_sort);
                 if has_witness {
                     return Ok(TypeResult {
-                        ty: Value::Term(resolved_ret),
+                        ty: resolved_ret.clone(),
                         env: env.clone(),
                         effects,
                         node: Rc::clone(occ),
@@ -3398,7 +3399,7 @@ fn check_apply_iter(
             }
         }
 
-        return Ok(TypeResult { ty: Value::Term(resolved_ret), env: env.clone(), effects, node: Rc::clone(occ) });
+        return Ok(TypeResult { ty: resolved_ret, env: env.clone(), effects, node: Rc::clone(occ) });
     }
 
     // Path 2: variable with arrow type. WI-341 Stage A: the env carries `Value`.
@@ -4003,8 +4004,8 @@ pub(crate) fn record_apply_within_rewrite(
 
 /// Full operation info for type checking: params with types, return type, effects.
 struct OperationInfoFull {
-    params: Vec<(Symbol, Value)>,  // (param_name, param_type); WI-341 Stage A carrier-agnostic
-    return_type: TermId,
+    params: Vec<(Symbol, Value)>,  // (param_name, param_type); WI-341 carrier-agnostic
+    return_type: Value,            // WI-341 carrier-agnostic
     effects: Vec<Value>,
     /// Operation-level type parameters in declaration order, as
     /// `(name, Var(VarId) term)` pairs.
@@ -10316,7 +10317,7 @@ fn extract_parent_name(kb: &KnowledgeBase, parent: TermId) -> String {
 fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &mut Vec<TypeError>) {
     struct OpInfo {
         op_sym: Symbol,
-        return_type: TermId,
+        return_type: Value,  // WI-341 carrier-agnostic
         declared_effects: Vec<Value>,
         body_node: Rc<NodeOccurrence>,
         params: Vec<(Symbol, Value)>,
@@ -10371,7 +10372,10 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
         // top-down `expected`. The body's `let v: T = …`-style
         // annotations and inner Apply/Constructor calls then see a
         // caller-side hint that pins otherwise-free type-params.
-        match type_check_node(kb, &env, &op.body_node, Some(op.return_type)) {
+        // WI-341: `type_check_node`'s top-down hint is a ground `TermId`; pass it
+        // for a ground return type, drop it (`None`) for a `Value::Node` (denoted-
+        // bearing) return — never materialize the occurrence into the hint.
+        match type_check_node(kb, &env, &op.body_node, op.return_type.as_term()) {
             Ok(result) => {
                 // WI-283: the typer is tree-producing — `result.node` is
                 // the (possibly `[simp]`-rewritten) body. Write the
@@ -10383,17 +10387,18 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                     kb.set_op_body_node(op.op_sym, Rc::clone(&result.node));
                 }
                 let mut subst = Substitution::new();
-                // WI-342 ty-slot: the result type is carrier-agnostic. The
-                // subtype check takes it directly (`Value: TermView`) — this is
-                // where a lambda's `Value::Node` arrow flows cross-carrier against
-                // the declared (ground) return arrow. The `TypeError` field stays
-                // a `TermId`, so re-ground for the diagnostic.
-                if !types_compatible(kb, &mut subst, &result.ty, &TermIdView(op.return_type)) {
+                // WI-341/342: both sides are carrier-agnostic `Value` — the
+                // subtype check takes them directly (`Value: TermView`), where a
+                // lambda's `Value::Node` arrow flows cross-carrier against the
+                // declared return arrow. The `TypeError` fields are `TermId` (for
+                // display only), so re-ground both for the diagnostic.
+                if !types_compatible(kb, &mut subst, &result.ty, &op.return_type) {
                     let actual = value_to_term_id(kb, &result.ty);
+                    let expected = value_to_term_id(kb, &op.return_type);
                     errors.push(TypeError::TypeMismatch {
                         span: None,
                         context: TypeErrorContext::OperationReturn { op_name: op.op_sym },
-                        expected: op.return_type,
+                        expected,
                         actual,
                     });
                 }
@@ -10406,7 +10411,7 @@ fn check_operation_bodies(kb: &mut KnowledgeBase, op_syms: &[Symbol], errors: &m
                 let ext_effects = super::region::op_boundary_effects(
                     kb,
                     &result.env,
-                    op.return_type,
+                    &op.return_type,
                     op.op_sym,
                     op_result_sym,
                     &region_sorts,

@@ -36,10 +36,10 @@ pub struct OpInfoRecord {
     /// Read carrier-faithfully from the `OperationInfo` head (value fact when any
     /// param/effect is `Node`), never materialized back to a term.
     pub params: Vec<(Symbol, Value)>,
-    /// WI-341 Stage A: still `TermId` pending the next slice — making this
-    /// `Value` cascades into `type_check_node`'s `expected: Option<TermId>`,
-    /// `op_boundary_effects` / `region.rs`, and `eval`, so it lands separately.
-    pub return_type: TermId,
+    /// WI-341: carrier-agnostic — a denoted-bearing return type (an op returning
+    /// a `Modify`-carrying callback) is a `Value::Node`; ground returns are
+    /// `Value::Term`. Read carrier-faithfully, never materialized to a term.
+    pub return_type: Value,
     /// Effect labels, carrier-agnostic `Value`s read directly from the
     /// `OperationInfo` fact (WI-348). A ground label (`Error`) is a
     /// `Value::Term`; a `denoted`-bearing label (`Modify[c]`) is a `Value::Node`
@@ -77,7 +77,7 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
             });
         if name_match != Some(op_sym) { continue; }
 
-        let return_type = head_field_term(kb, head, "return_type")?;
+        let return_type = head_field_value(kb, head, "return_type")?;
         let effects = effects_of_head(kb, head);
         let params = extract_params(kb, head_field(kb, head, "params"));
         let type_params = extract_type_params(kb, head_field_term(kb, head, "type_params"));

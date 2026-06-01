@@ -191,7 +191,7 @@ fn push_effect_dedup(out: &mut Vec<Value>, effect: Value) {
 pub(crate) fn op_boundary_effects(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
-    return_type: TermId,
+    return_type: &Value,
     op_sym: Symbol,
     op_result_sym: Option<Symbol>,
     regions: &HashSet<Symbol>,
@@ -200,7 +200,14 @@ pub(crate) fn op_boundary_effects(
     // 1. Existing local-resource drop (let/match-bound names).
     let after_local = external_effects(kb, env, effects);
     // 2. Result-region masking, keyed on whether the result can carry one.
-    let admits = result_type_admits_region(kb, return_type, regions);
+    // WI-341: the return type is carrier-agnostic. A `Value::Node` return type is
+    // denoted-bearing — an op returning a `Modify`-carrying callback; a function
+    // value carries no escaping DATA region, so it does not admit one (and such
+    // an op never has a `Modify[result]` in its row to mask anyway).
+    let admits = match return_type {
+        Value::Term(t) => result_type_admits_region(kb, *t, regions),
+        _ => false,
+    };
     // WI-353: candidate `into` places for a callback-parameter `Modify` — the
     // op's own DATA argument places plus its `result`. Built lazily (only the
     // rare `CallbackParam` arm reads it; the common op carries no such effect).
@@ -455,11 +462,11 @@ end
         let result_sym = kb.try_resolve_symbol(&format!("{op_qn}.result"));
         let regions = region_sorts(kb);
         let ret = sym(kb, ret_qn);
-        let ret_ty = kb.alloc(Term::Ref(ret));
+        let ret_ty = Value::Term(kb.alloc(Term::Ref(ret)));
         let resource = sym(kb, &format!("{op_qn}.{modify_on}"));
         let row = vec![modify_label(kb, resource)];
         let env = TypingEnv::empty();
-        let out = op_boundary_effects(kb, &env, ret_ty, op_sym, result_sym, &regions, &row);
+        let out = op_boundary_effects(kb, &env, &ret_ty, op_sym, result_sym, &regions, &row);
         resources(kb, &out)
     }
 

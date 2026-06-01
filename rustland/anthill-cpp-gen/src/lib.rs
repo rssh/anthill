@@ -908,7 +908,20 @@ fn operations_in_sort(
                 message: format!("operation '{name}' missing OperationInfo"),
             })?;
 
-        let return_term = rec.return_type;
+        // WI-341: the return type is carrier-agnostic; a denoted-bearing
+        // (`Value::Node`) return — an op returning a `Modify`-carrying callback —
+        // is unsupported by C++ codegen (never materialized).
+        let return_term = match &rec.return_type {
+            anthill_core::eval::Value::Term(t) => *t,
+            _ => {
+                return Err(CppCodegenError {
+                    message: format!(
+                        "operation '{name}' has a denoted-bearing return type \
+                         unsupported by C++ codegen"
+                    ),
+                })
+            }
+        };
         let return_type_cpp = lower_type(ctx, return_term)?;
 
         let mut params = Vec::new();
